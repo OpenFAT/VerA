@@ -605,7 +605,7 @@ pub const Parser = struct {
                 return std.math.order(want, at);
             }
         }.f;
-        return std.sort.lowerBound(u32, self.attr_at.items, tok, order);
+        return std.sort.lowerBound(u32, rows, tok, order);
     }
 
     /// `skipAttributes`, then binds what it read to `owner` (an operator or

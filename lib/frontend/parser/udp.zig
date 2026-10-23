@@ -204,7 +204,7 @@ fn parseUdpEntry(self: *Parser, sequential: *?bool, rows: *std.ArrayList(Ast.Udp
     const inputs = cols[0].text.items;
     var edge_count: usize = 0;
     for (inputs) |c| {
-        if (std.mem.findScalar(u8, "01xX?bB", c) != null) continue;
+        if (isLevelSymbol(c)) continue;
         if (std.mem.findScalar(u8, "rRfFpPnN*()", c) != null) {
             if (is_seq) {
                 // IEEE 1364-2005 8.1.4/8.4: at most one input
@@ -350,7 +350,7 @@ fn checkUdpConflicts(self: *Parser, name: Ast.StrId, rows: []const Ast.UdpRow, i
     }
 }
 
-// A.5.3 `level_symbol ::= 0 | 1 | x | X | ? | b | B`.
+/// A.5.3 `level_symbol ::= 0 | 1 | x | X | ? | b | B`.
 fn isLevelSymbol(c: u8) bool {
     return std.mem.findScalar(u8, "01xX?bB", c) != null;
 }

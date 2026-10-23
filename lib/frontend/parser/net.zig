@@ -394,29 +394,35 @@ pub fn parseNetNames(self: *Parser, b: *parse_module.Body, disc: Ast.StrId, kind
         // apply §7.4.4 (E0902). The entry adds no node: `internNode` finds the
         // port's slot by name.
         const port = if (is_ground) null else findPort(b, name);
-        // A discipline declaration is §7.4.4's to judge (E0902).
-        if (port != null and b.ansi and disc == .none) try self.report(tok, .E0218, "`{s}`", .{self.file.str(name)});
-        if (port != null and signed) port.?.is_signed = true;
+        if (port) |p| {
+            // A discipline declaration is §7.4.4's to judge (E0902).
+            if (b.ansi and disc == .none) try self.report(tok, .E0218, "`{s}`", .{self.file.str(name)});
+            if (signed) p.is_signed = true;
+        }
         // IEEE 1364-2005 §12.3.3 completes a port with one type declaration;
         // a second `wire x;` in a digital parse is a net of its own, for the
         // engine's duplicate check (§4.11). A discipline after the net type
         // (`wire x; ddiscrete x;`, VAMS §7.3.2) still completes the port: it
         // sets the discipline and keeps the type already folded.
-        const again = port != null and port.?.typed;
-        if (port != null and port.?.discipline == .none and (!again or disc != .none)) {
-            if (self.digital) port.?.typed = true;
+        const completes: ?*Ast.Port = if (port) |p|
+            (if (p.discipline == .none and (!p.typed or disc != .none)) p else null)
+        else
+            null;
+        if (completes) |p| {
+            const again = p.typed;
+            if (self.digital) p.typed = true;
             // §3.6.3.1: "the description attribute may also be specified on
             // the port declaration line ... the last attribute value shall be
             // used". This line appends no row, so its prefix joins the port's.
-            try self.copyAttributes(self.item_tok, port.?.main_tok);
-            port.?.discipline = disc;
+            try self.copyAttributes(self.item_tok, p.main_tok);
+            p.discipline = disc;
             // §6.5.2.2: this is the port type declaration. Recorded beside the
             // direction declaration's range, not over it (`Ast.Port.type_range`).
-            if (!again) port.?.type_range = range;
+            if (!again) p.type_range = range;
             // The net type too: §7.9 resolves by it, so `tri0 p;` on a port
             // must not stay a `wire`. A discipline-only declaration passes
             // `.wire`, A.2.1.3's default.
-            if (!again) port.?.kind = kind;
+            if (!again) p.kind = kind;
             // A Port has no initializer slot, so `electrical p = 5.0;` on a
             // header port gets a net entry with no discipline for the
             // nodeset. The empty discipline keeps it out of §7.4.4 (E0902),
