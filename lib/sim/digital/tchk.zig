@@ -33,6 +33,7 @@ const evaluate = @import("evaluate.zig");
 const exec = @import("exec.zig");
 const waiters = @import("waiters.zig");
 const wordMask = @import("net.zig").wordMask;
+const planeBit = @import("net.zig").planeBit;
 
 /// A.7.5.1's twelve commands. The tag is the command without its `$`.
 pub const Kind = enum { setup, hold, setuphold, removal, recovery, recrem, skew, timeskew, fullskew, width, period, nochange };
@@ -471,10 +472,6 @@ fn level(b: Int.Bit) u8 {
     };
 }
 
-fn bitOf(v: u64, x: u64) Int.Bit {
-    return @fromBackingInt(@intCast(@as(u2, @intCast(v & 1)) | @as(u2, @intCast(x & 1)) << 1));
-}
-
 /// The §15.4 transition (`Ast.TimingCheck.transition`, 0 for none) that a
 /// change of the slot made of `ev`'s bits, read on their least significant
 /// bit (VD-104), or null when it left them alone. §15.7: "the transition of
@@ -483,10 +480,10 @@ fn transitionOf(r: *Run, ev: *Event, before: Int.Bit, after: Int.Bit) ?u8 {
     if (ev.width == 0) return Ast.TimingCheck.transition(level(before), level(after));
     const now = waiters.termBits(r.values[ev.slot], ev.lo, ev.width);
     if (now[0] == ev.v and now[1] == ev.x) return null;
-    const b = bitOf(ev.v, ev.x);
+    const b = planeBit(ev.v, ev.x);
     ev.v = now[0];
     ev.x = now[1];
-    return Ast.TimingCheck.transition(level(b), level(bitOf(now[0], now[1])));
+    return Ast.TimingCheck.transition(level(b), level(planeBit(now[0], now[1])));
 }
 
 /// Whether a change making transition `bit` is an occurrence of an event

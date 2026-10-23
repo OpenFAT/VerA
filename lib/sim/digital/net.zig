@@ -860,10 +860,22 @@ pub fn filled(a: std.mem.Allocator, width: u32, signed: bool, fill: Int.Bit) Err
 /// Write one packed bit. The read side is `Int.Literal.bit`; only the §7.9
 /// resolution fold writes bit by bit. `index` must be below `value.width`.
 pub fn setBit(value: Int.Literal, index: u32, b: Int.Bit) void {
-    const at = @as(u64, 1) << @truncate(index);
+    // Branchless: the per-bit resolution fold calls this with data-dependent
+    // bits, so the plane bits are blended in rather than chosen by `if`.
+    const sh: u6 = @truncate(index);
     const word = index / 64;
-    if (@backingInt(b) & 1 != 0) value.values()[word] |= at else value.values()[word] &= ~at;
-    if (@backingInt(b) >> 1 != 0) value.unknowns()[word] |= at else value.unknowns()[word] &= ~at;
+    const bits: u64 = @backingInt(b);
+    const v = &value.values()[word];
+    const u = &value.unknowns()[word];
+    v.* = (v.* & ~(@as(u64, 1) << sh)) | ((bits & 1) << sh);
+    u.* = (u.* & ~(@as(u64, 1) << sh)) | ((bits >> 1) << sh);
+}
+
+/// The bit whose value-plane bit is bit 0 of `v` and unknown-plane bit bit 0
+/// of `x`: the read side of a (values, unknowns) word pair such as
+/// `waiters.termBits` returns. Higher bits are ignored.
+pub fn planeBit(v: u64, x: u64) Int.Bit {
+    return @fromBackingInt(@as(u2, @truncate(v & 1)) | @as(u2, @truncate(x & 1)) << 1);
 }
 
 /// The bits of plane word `w` that lie inside a `width`-bit value; the ones
