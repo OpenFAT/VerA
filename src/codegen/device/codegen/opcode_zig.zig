@@ -37,8 +37,8 @@ pub const Row = struct {
     /// ops share the real spelling in `foldConst`'s f64 domain; `idiv` has
     /// none because its truncation is not f64 `/`.
     host_f64: ?[]const []const u8,
-    /// The op is real-valued and its host spelling runs on a GPU without
-    /// libm: what `host_expr.f64Const` admits in a unit body.
+    /// `host_expr.devSafe`: the op is real-valued and its host spelling runs
+    /// on a GPU without libm.
     dev_safe: bool,
     /// The op is a libm call on the host, costly enough that evaluating it
     /// eagerly is a price (`lanes.eagerCostly`).
@@ -156,7 +156,7 @@ test "opcode_zig: every row agrees with the IR table's shape" {
             try std.testing.expect(class == .unary or class == .binary);
             try std.testing.expect(!Mir.opcode.get(op).int);
         }
-        // `dev_safe` is REAL-ONLY (`f64Const`), and a GPU form is a host form.
+        // `devSafe` is REAL-ONLY (see there), and a GPU form is a host form.
         if (r.dev_safe) {
             try std.testing.expect(!Mir.opcode.get(op).int);
             try std.testing.expect(r.host_f64 != null);
