@@ -23,8 +23,10 @@ const poison = Lower.poison;
 
 /// This file's private state on `Lower` (`Lower.random_state`).
 pub const State = struct {
-    /// Preserve the implementation's omitted-seed sequence numbering across
-    /// constant/parameter sites, which now keep their own source-seeded state.
+    /// The next site whose seed is no integer variable, in source order. An
+    /// omitted seed starts at `1 + 7919·ordinal` (`rng_auto_seeds`); a
+    /// constant or parameter seed takes an ordinal too, so adding one shifts
+    /// the omitted seeds after it.
     rng_site_ordinal: u32 = 0,
     /// One hidden seed and first-call flag per source site and elaborated scope.
     rng_internal: std.StringHashMapUnmanaged(InternalSeed) = .empty,

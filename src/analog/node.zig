@@ -591,7 +591,7 @@ pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!u3
 /// §7.2.4: the node's potential tolerance is the smallest among the
 /// continuous segments sharing it. Preserve the net's resolved discipline:
 /// §5.5.3 still reads that net's local nature attributes, not this minimum.
-pub fn collectSignalAbstols(self: *Lower, segments: []const @import("elab").Elaborate.SignalDiscipline) Oom!void {
+pub fn collectSignalAbstols(self: *Lower, segments: []const Elaborate.SignalDiscipline) Oom!void {
     var key_buf: [lower_shape.elem_key_len]u8 = undefined;
     for (segments) |s| {
         const info = self.out.disciplines.get(s.discipline) orelse continue;
@@ -754,7 +754,7 @@ pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32 {
             };
             // A part-select names several nets: a vector branch's terminal
             // (`vecTerminal`), never one node.
-            if (ex.tag(ex.rhs(e)) == .range or ex.tag(ex.rhs(e)) == .indexed_range) {
+            if (partSelect(self, e)) {
                 try self.err(self.file.exprs.mainTok(e), .E0351, "a part-select of `{s}` names several nets; a branch declaration takes one (§3.12), a probe one element", .{name});
                 return ground;
             }
