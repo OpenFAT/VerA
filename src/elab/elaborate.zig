@@ -555,6 +555,10 @@ pub const Flatten = struct {
     /// (`names.syncParamValues`), and how many leading rows it has folded.
     param_values: std.ArrayList(elab_names.ParamValue) = .empty,
     param_warm: usize = 0,
+    /// Each flat name → its first scalar `params` row, the one `names`'
+    /// folds read; kept by `names.syncParamValues`, so a fold's identifier
+    /// is one lookup, not a scan of every flat parameter.
+    param_index: std.AutoHashMapUnmanaged(Ast.StrId, u32) = .empty,
     /// `Design.system_checks`, as overrides are composed.
     system_checks: std.ArrayList(SystemCheck) = .empty,
 
