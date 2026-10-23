@@ -930,14 +930,19 @@ pub const TestResult = struct {
     file: Ast.SourceFile,
     bag: *diag.Bag,
 
+    /// Diagnostics the bag kept, warnings included: its cap and dedupe
+    /// have already dropped the rest.
     pub fn count(self: TestResult) usize {
         return self.bag.count();
     }
 
+    /// The `i`th diagnostic's code, in report order. `i` must be below `count`.
     pub fn code(self: TestResult, i: usize) diag.Code {
         return self.bag.at(i).code;
     }
 
+    /// The `i`th diagnostic's message, the headline under its code's title.
+    /// `i` must be below `count`.
     pub fn msg(self: TestResult, i: usize) []const u8 {
         return self.bag.at(i).message;
     }
