@@ -331,8 +331,8 @@ pub fn eval(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, width: u32) Error!I
 
 // ---- reals (IEEE 1364-2005 §4.8, §17.8, §17.11.2) ---------------------------
 
-/// A real as the 64-bit slot value that holds it.
-/// §3.6 `text` as packed ASCII, the first character most significant.
+/// §3.6 `text` as packed ASCII, the first character most significant, in
+/// `a`. An empty string is one zero byte wide (`compile.stringWidth`).
 pub fn stringLiteral(a: std.mem.Allocator, text: []const u8) Error!Int.Literal {
     const value = try filled(a, compile.stringWidth(text), false, .zero);
     for (text, 0..) |c, i| {
@@ -342,6 +342,7 @@ pub fn stringLiteral(a: std.mem.Allocator, text: []const u8) Error!Int.Literal {
     return value;
 }
 
+/// A real as the 64-bit slot value that holds it.
 pub fn realLiteral(a: std.mem.Allocator, r: f64) Error!Int.Literal {
     const out = try filled(a, 64, true, .zero);
     out.values()[0] = @bitCast(r);

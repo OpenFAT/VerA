@@ -630,12 +630,18 @@ pub const Signal = struct {
 
     /// The four-state value of the range: wholly on one side is that side's
     /// value, HiZ alone is z, and anything that straddles HiZ (§7.10.2's H
-    /// and L among them) is x.
+    /// and L among them) is x. Requires `lo <= hi`, which every `Signal`
+    /// built here keeps (a reduction across a switch is monotone).
     pub fn collapse(self: Signal) Int.Bit {
-        if (self.lo > 0) return .one;
-        if (self.hi < 0) return .zero;
-        if (self.none()) return .z;
-        return .x;
+        // Branchless, since the per-bit fold calls it on data-dependent
+        // signals: the unknown plane is "the range touches HiZ" (lo <= 0 <=
+        // hi), the value plane "it reaches strength1, or it is an L, which
+        // reaches strength0 and stops at HiZ". The branchy reading is the
+        // oracle of the test "Signal.collapse agrees with the clause's
+        // reading on every range".
+        const u = @intFromBool(self.lo <= 0) & @intFromBool(self.hi >= 0);
+        const v = @intFromBool(self.hi > 0) | (@intFromBool(self.lo < 0) & @intFromBool(self.hi == 0));
+        return @fromBackingInt(@as(u2, v) | @as(u2, u) << 1);
     }
 };
 
@@ -860,10 +866,29 @@ pub fn filled(a: std.mem.Allocator, width: u32, signed: bool, fill: Int.Bit) Err
 /// Write one packed bit. The read side is `Int.Literal.bit`; only the §7.9
 /// resolution fold writes bit by bit. `index` must be below `value.width`.
 pub fn setBit(value: Int.Literal, index: u32, b: Int.Bit) void {
-    const at = @as(u64, 1) << @truncate(index);
+    // Branchless: the per-bit resolution fold calls this with data-dependent
+    // bits, so the plane bits are blended in rather than chosen by `if`.
+    const sh: u6 = @truncate(index);
     const word = index / 64;
-    if (@backingInt(b) & 1 != 0) value.values()[word] |= at else value.values()[word] &= ~at;
-    if (@backingInt(b) >> 1 != 0) value.unknowns()[word] |= at else value.unknowns()[word] &= ~at;
+    const bits: u64 = @backingInt(b);
+    const v = &value.values()[word];
+    const u = &value.unknowns()[word];
+    v.* = (v.* & ~(@as(u64, 1) << sh)) | ((bits & 1) << sh);
+    u.* = (u.* & ~(@as(u64, 1) << sh)) | ((bits >> 1) << sh);
+}
+
+/// The bit whose value-plane bit is bit 0 of `v` and unknown-plane bit bit 0
+/// of `x`: the read side of a (values, unknowns) word pair such as
+/// `waiters.termBits` returns. Higher bits are ignored.
+pub fn planeBit(v: u64, x: u64) Int.Bit {
+    return @fromBackingInt(@as(u2, @truncate(v & 1)) | @as(u2, @truncate(x & 1)) << 1);
+}
+
+/// `b` as the character §18.2.1 and §15.4's edge descriptors write it: `0`, `1`, `z`
+/// or `x`. A table load indexed by the encoding, so a vector's digits are
+/// written without a branch per bit.
+pub fn bitChar(b: Int.Bit) u8 {
+    return "01zx"[@backingInt(b)];
 }
 
 /// The bits of plane word `w` that lie inside a `width`-bit value; the ones
@@ -1012,6 +1037,35 @@ test "IEEE1364-2005 section 7.9 wired logic resolves all drivers of one net" {
         \\z z z z z
         \\
     );
+}
+
+test "Signal.collapse agrees with the clause's reading on every range" {
+    // §7.10: wholly strength1 is 1, wholly strength0 is 0, HiZ alone is z,
+    // anything straddling HiZ (H and L among them) is x.
+    var lo: i8 = -7;
+    while (lo <= 7) : (lo += 1) {
+        var hi: i8 = lo;
+        while (hi <= 7) : (hi += 1) {
+            const s: Signal = .{ .lo = lo, .hi = hi };
+            const want: Int.Bit = if (lo > 0) .one else if (hi < 0) .zero else if (s.none()) .z else .x;
+            try std.testing.expectEqual(want, s.collapse());
+        }
+    }
+}
+
+test "setBit writes what Literal.bit and planeBit read back, and leaves the other bits" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bits = [_]Int.Bit{ .zero, .one, .z, .x };
+    for (bits) |fill| for (bits) |b| for ([_]u32{ 0, 63, 64, 69 }) |at| {
+        const v = try filled(arena.allocator(), 70, false, fill);
+        setBit(v, at, b);
+        try std.testing.expectEqual(b, v.bit(at));
+        try std.testing.expectEqual(b, planeBit(v.values()[at / 64] >> @intCast(at % 64), v.unknowns()[at / 64] >> @intCast(at % 64)));
+        for (0..70) |i| if (i != at) try std.testing.expectEqual(fill, v.bit(@intCast(i)));
+    };
+    // §18.2.1 Table 18-1's characters, by name.
+    for (bits, [_]u8{ '0', '1', 'z', 'x' }) |b, ch| try std.testing.expectEqual(ch, bitChar(b));
 }
 
 test "IEEE1364-2005 Figure 7-25 wired logic over an ambiguous strength" {

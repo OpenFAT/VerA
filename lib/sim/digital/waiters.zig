@@ -17,6 +17,7 @@ const Error = root.Error;
 const Run = root.Run;
 const expectRun = root.expectRun;
 const setBit = @import("net.zig").setBit;
+const planeBit = @import("net.zig").planeBit;
 const wordMask = @import("net.zig").wordMask;
 const evaluate = @import("evaluate.zig");
 const exec = @import("exec.zig");
@@ -108,8 +109,8 @@ pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64 {
 fn selectChanged(t: *Term, value: Int.Literal) bool {
     const now = termBits(value, t.lo, t.width);
     if (now[0] == t.v and now[1] == t.x) return false;
-    const before: Int.Bit = @fromBackingInt(@intCast(@as(u2, @intCast(t.v & 1)) | @as(u2, @intCast(t.x & 1)) << 1));
-    const after: Int.Bit = @fromBackingInt(@intCast(@as(u2, @intCast(now[0] & 1)) | @as(u2, @intCast(now[1] & 1)) << 1));
+    const before = planeBit(t.v, t.x);
+    const after = planeBit(now[0], now[1]);
     t.v = now[0];
     t.x = now[1];
     return t.edge.matches(before, after);
@@ -139,7 +140,9 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
         // A real changes when its value does: -0.0 and +0.0 compare equal
         // (VAMS §3.7, IEEE 754 `==`), and a NaN never equals itself.
         const differ = !std.mem.eql(u64, dest.planes, planes);
-        const changed = if (self.reals.contains(target))
+        // Every real slot is 64 bits wide (§4.8, VAMS §3.7), so the width
+        // test spares the hash lookup on most stores.
+        const changed = if (dest.width == 64 and self.reals.contains(target))
             @as(f64, @bitCast(dest.planes[0])) != @as(f64, @bitCast(planes[0]))
         else
             differ;
@@ -265,8 +268,7 @@ pub fn forceValue(self: *Run, slot: u32, planes: []const u64) Error!void {
 pub fn requestAnalog(self: *Run) Error!void {
     if (self.analog_pending) return;
     self.analog_pending = true;
-    _ = self.scheduler.schedule(.analog, root.analog_payload) catch |e|
-        return if (e == error.OutOfMemory) error.OutOfMemory else self.fail(0, "digital scheduling failure: {t}", .{e});
+    _ = self.scheduler.schedule(.analog, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
 }
 
 test "ams_implicit_d2a_queues_only_the_macro_process" {
@@ -301,8 +303,7 @@ fn requestD2a(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!vo
     };
     if (self.d2a_fired == 0 or self.d2a_pending) return;
     self.d2a_pending = true;
-    _ = self.scheduler.schedule(.explicit_d2a, root.analog_payload) catch |e|
-        return if (e == error.OutOfMemory) error.OutOfMemory else self.fail(0, "digital scheduling failure: {t}", .{e});
+    _ = self.scheduler.schedule(.explicit_d2a, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
 }
 
 /// §17.1.3: "the entire argument list is displayed at the end of the time
