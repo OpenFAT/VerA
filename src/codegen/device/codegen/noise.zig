@@ -18,7 +18,7 @@ const gen_file = @import("file.zig");
 const gen_setup = @import("setup.zig");
 const gen_unit = @import("unit.zig");
 const Mir = @import("ir").Mir;
-const Lower = @import("ir").Lowered;
+const Lowered = @import("ir").Lowered;
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;
 const coreIdx = gen_dispatch.coreIdx;
@@ -205,7 +205,6 @@ fn emitNoiseTablePoints(self: *Gen) Error!void {
     const saved_model = self.uses.model;
     self.uses.model = false;
     var body: std.ArrayList(u8) = .empty;
-    var at: usize = 0;
     for (self.noise.tabs, 0..) |pts, k| {
         const mvs = if (k < self.noise.tab_vals.len) self.noise.tab_vals[k] else &.{};
         // A parametric table's MIR knots are positional against its points.
@@ -217,21 +216,18 @@ fn emitNoiseTablePoints(self: *Gen) Error!void {
             } else .{ try gen_file.fmtF64(self, p[0]), try gen_file.fmtF64(self, p[1]) };
             try body.print(self.arena, "        .{{ {s}, {s} }},\n", .{ pair[0], pair[1] });
         }
-        at += pts.len;
     }
-    assert(at == total);
     const reads_model = self.uses.model;
     self.uses.model = saved_model or reads_model;
     if (!reads_model) gen_unit.patchParam(self, at_model, "model".len);
     try self.w("    var pts: [{d}][2]f64 = .{{\n", .{total});
     try self.w("{s}", .{body.items});
     try self.w("    }};\n", .{});
-    at = 0;
+    var at: usize = 0;
     for (self.noise.tabs) |pts| {
         try self.w("    contract.sortNoiseTable(pts[{d}..{d}]);\n", .{ at, at + pts.len });
         at += pts.len;
     }
-    assert(at == total);
     try self.w("    return pts;\n}}\n\n", .{});
 }
 
@@ -355,10 +351,10 @@ fn refuseAc(self: *Gen) Error!void {
         "phase must be a constant or parameter expression\");\n\n", .{});
 }
 
-/// Returns `Lower.NoiseKind` as a `contract.NoiseGen.kind` name. §4.6.4.3
+/// Returns `Lowered.NoiseKind` as a `contract.NoiseGen.kind` name. §4.6.4.3
 /// and §4.6.4.4 are one exported kind: the host reads `noise_tables` for
 /// either, and the table's `interp` field says which interpolation.
-fn contractNoiseKind(k: Lower.NoiseKind) []const u8 {
+fn contractNoiseKind(k: Lowered.NoiseKind) []const u8 {
     return switch (k) {
         .thermal => "thermal",
         .flicker => "flicker",

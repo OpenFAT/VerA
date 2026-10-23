@@ -1147,10 +1147,9 @@ pub fn declKeyword(line: []const u8) ?usize {
 /// §9.4.3 integer padding, for a printing artifact or a device that formats
 /// into a string. `std.fmt` writes `+42` for `{d:>5}`; §9.4.3 (like C's
 /// `%5d`) writes ` 42`, so the rendered decimal is padded instead.
-// ponytail: 24 bytes is i64's widest decimal (20 chars) plus slack, so the
-// `catch unreachable` cannot fire. Zero-padding a negative number yields
-// `00-42` where C yields `-0042`; fixing it means reimplementing the sign
-// placement here.
+// 24 bytes is i64's widest decimal (20 chars) plus slack, so the
+// `catch unreachable` cannot fire. A '0', '+' or ' ' flag never reaches
+// `zPadInt`: `cg_display` composes those fields in scratch (`.cint`).
 pub const display_txt =
     \\fn zPadInt(buf: []u8, v: i64) []const u8 { // §9.4.3 %<width>d
     \\    return std.mem.print(buf, "{d}", .{v}) catch unreachable;
