@@ -757,7 +757,7 @@ fn emitDerive(self: *Gen) Error!void {
     // §3.4.7 first: an override written through the alias must be the
     // original's value before a §6.3.4 dependent parameter reads it. The
     // write sets the original too (#76): "the value of the parameter dtemp
-    // ... is 5" after `.trise(5)`, so its own `__given` (§9.19 `$param_given`,
+    // ... is 5" after `.trise(5)`, so its own given bit (§9.19 `$param_given`,
     // and the §6.3.4 guard below that keeps a default from erasing it) is raised.
     for (self.lowered.aliases.items, 0..) |al, i| {
         const a = self.names.a_names[i];
@@ -797,8 +797,8 @@ fn emitDerive(self: *Gen) Error!void {
         };
         // §6.3.4 gives the default; an explicit host write wins (else a card's
         // `VTH0` over `VTH0 = VTHO` would be erased). Only a localparam is
-        // overwritten unconditionally. `plan/names.zig` raised the `__given`
-        // companion for every non-local derived parameter.
+        // overwritten unconditionally. `plan/names.zig` gave a given bit
+        // to every non-local derived parameter.
         if (!p.is_local)
             try self.w("    if (!model.given__.isSet({d})) ", .{self.names.given_bit[i]})
         else
