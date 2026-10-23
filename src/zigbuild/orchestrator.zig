@@ -52,6 +52,14 @@ pub const Backend = enum {
     pub fn forHost(b: Backend) Backend {
         return if (builtin.target.os.tag == .windows) .llvm else b; // os: picks a backend; every target builds
     }
+
+    /// The `zig` flags that select `forHost(b)`.
+    pub fn flags(b: Backend) []const []const u8 {
+        return switch (b.forHost()) {
+            .self_hosted => &.{ "-fno-llvm", "-fno-lld" },
+            .llvm => &.{"-fllvm"},
+        };
+    }
 };
 
 /// One support module on the compiler command line. `name` is the `@import`
@@ -79,13 +87,8 @@ pub fn fileStem(a: Allocator, name: []const u8) ![]const u8 {
     if (plain and name.len <= 128) return name;
     var n: usize = 0;
     while (n < @min(name.len, 64) and (std.ascii.isAlphanumeric(name[n]) or name[n] == '_')) n += 1;
-    assert(n <= 64);
-    assert(n <= name.len);
-    const stem = try a.print("{s}-{x:0>16}", .{ name[0..n], std.hash.Wyhash.hash(0, name) });
     // The plain prefix, the `-` no plain name holds, 16 hex digits of a u64.
-    assert(stem.len == n + 1 + 16);
-    assert(stem[n] == '-');
-    return stem;
+    return a.print("{s}-{x:0>16}", .{ name[0..n], std.hash.Wyhash.hash(0, name) });
 }
 
 /// How a `.so` build compiles and where it writes. Strings are borrowed and
@@ -385,16 +388,15 @@ fn buildArgv(arena: Allocator, o: Options, part: ?[]const u8) ![]const []const u
     try a.appendSlice(arena, link_libc);
     if (o.target) |t| try a.appendSlice(arena, &.{ "-target", t });
 
-    const backend: Backend = if (part) |p| (if (coldSelfHosted(o, p)) .self_hosted else o.backend.forHost()) else o.backend.forHost();
-    switch (backend) {
-        // The only backend that patches in place, so the only one where
-        // `-fincremental` pays. Not for a cold piece of an LLVM build
-        // (`coldSelfHosted`): lld links it beside the LLVM objects and
-        // refuses an incremental object's padded `.eh_frame` ("corrupted
-        // .eh_frame: FDE version 1 or 3 expected").
-        .self_hosted => try a.appendSlice(arena, if (backend != o.backend.forHost()) &.{ "-fno-llvm", "-fno-lld" } else &.{ "-fno-llvm", "-fno-lld", "-fincremental" }),
-        .llvm => try a.append(arena, "-fllvm"),
-    }
+    const host = o.backend.forHost();
+    const backend: Backend = if (part != null and coldSelfHosted(o, part.?)) .self_hosted else host;
+    try a.appendSlice(arena, backend.flags());
+    // The only backend that patches in place, so the only one where
+    // `-fincremental` pays. Not for a cold piece of an LLVM build
+    // (`coldSelfHosted`): lld links it beside the LLVM objects and
+    // refuses an incremental object's padded `.eh_frame` ("corrupted
+    // .eh_frame: FDE version 1 or 3 expected").
+    if (backend == .self_hosted and host == .self_hosted) try a.append(arena, "-fincremental");
     if (strip(o.optimize, o.debug_info)) try a.append(arena, "-fstrip");
     if (part == null) if (o.engine) |e| try a.append(arena, e);
 
@@ -418,10 +420,6 @@ fn buildArgv(arena: Allocator, o: Options, part: ?[]const u8) ![]const []const u
         for (m.deps) |d| try a.appendSlice(arena, &.{ "--dep", d });
         try a.append(arena, try arena.print("-M{s}={s}", .{ m.name, m.root }));
     }
-
-    // The program, its subcommand and `--listen=-` lead: `Server` speaks to it.
-    assert(a.items.len >= 3);
-    assert(a.items[0].ptr == o.zig_exe.ptr);
     return a.items;
 }
 
@@ -442,7 +440,6 @@ fn pieceNames(arena: Allocator, chunks: u32) ![]const []const u8 {
     const names = try arena.alloc([]const u8, parts.len + chunks);
     for (names[0..parts.len], parts) |*n, p| n.* = @tagName(p);
     for (names[parts.len..], 0..) |*n, k| n.* = try arena.print("setup{d}", .{k});
-    assert(names.len == parts.len + chunks);
     return names;
 }
 
@@ -450,7 +447,8 @@ fn pieceNames(arena: Allocator, chunks: u32) ![]const []const u8 {
 /// takes `-O` and `-fstrip` for the compiler_rt it adds.
 fn linkArgv(arena: Allocator, o: Options, objs: []const []const u8) ![]const []const u8 {
     assert(objs.len > 0);
-    const head = [_][]const u8{
+    var a: std.ArrayList([]const u8) = .empty;
+    try a.appendSlice(arena, &.{
         o.zig_exe,
         "build-lib",
         "--listen=-",
@@ -463,16 +461,12 @@ fn linkArgv(arena: Allocator, o: Options, objs: []const []const u8) ![]const []c
         o.name,
         "--cache-dir",
         try std.fs.path.join(arena, &.{ o.work_dir, ".zig-cache" }),
-    };
-    const stripped = strip(o.optimize, o.debug_info);
-    var a: std.ArrayList([]const u8) = try .initCapacity(arena, head.len + link_libc.len + 2 * @as(usize, @intFromBool(o.target != null)) + @intFromBool(stripped) + objs.len + @intFromBool(o.engine != null));
-    a.appendSliceAssumeCapacity(&head);
-    a.appendSliceAssumeCapacity(link_libc);
-    if (o.target) |t| a.appendSliceAssumeCapacity(&.{ "-target", t });
-    if (stripped) a.appendAssumeCapacity("-fstrip");
-    a.appendSliceAssumeCapacity(objs);
-    if (o.engine) |e| a.appendAssumeCapacity(e);
-    assert(a.items.len == a.capacity);
+    });
+    try a.appendSlice(arena, link_libc);
+    if (o.target) |t| try a.appendSlice(arena, &.{ "-target", t });
+    if (strip(o.optimize, o.debug_info)) try a.append(arena, "-fstrip");
+    try a.appendSlice(arena, objs);
+    if (o.engine) |e| try a.append(arena, e);
     return a.items;
 }
 
@@ -535,10 +529,7 @@ pub fn buildEngine(gpa: Allocator, io: Io, o: Options, cache_dir: []const u8) !E
     });
     try a.appendSlice(arena, link_libc);
     if (o.target) |t| try a.appendSlice(arena, &.{ "-target", t });
-    try a.appendSlice(arena, switch (o.backend.forHost()) {
-        .self_hosted => &.{ "-fno-llvm", "-fno-lld" },
-        .llvm => &.{"-fllvm"},
-    });
+    try a.appendSlice(arena, o.backend.flags());
     if (strip(o.optimize, o.debug_info)) try a.append(arena, "-fstrip");
     try a.appendSlice(arena, &.{ "--dep", "sim", try arena.print("-Mroot={s}", .{root}) });
     for (o.modules) |m| if (!std.mem.eql(u8, m.name, "dyn")) {
@@ -591,27 +582,22 @@ fn compileFresh(gpa: Allocator, io: Io, arena: Allocator, o: Options, device: Ou
     const parts = comptime std.enums.values(Part);
     const split = splits(o, device);
     const pieces = try pieceNames(arena, if (split) device.setup_chunks else 0);
-    if (!split) assert(pieces.len == parts.len);
 
     // Spawned before the tree is written, so the compilers start up while
     // VerA writes.
     const servers = try arena.alloc(Server, if (split) pieces.len else 1);
-    assert(servers.len <= pieces.len);
-    if (split) assert(servers.len == pieces.len);
     var started: usize = 0;
     defer for (servers[0..started]) |*s| s.close(io);
     for (servers, pieces[0..servers.len]) |*s, p| {
         try s.spawn(io, arena, try buildArgv(arena, o, if (split) p else null));
         started += 1;
     }
-    assert(started == servers.len);
 
     _ = try writeTree(io, gpa, o, device);
     if (split) {
         var dir = try Io.Dir.cwd().openDir(io, o.work_dir, .{});
         defer dir.close(io);
         for (pieces, 0..) |p, i| {
-            if (i >= parts.len) assert(i - parts.len < device.setup_chunks);
             const text = if (i < parts.len)
                 try shim.part(arena, o.name, parts[i], o.engine != null, device.setup_chunks != 0)
             else
@@ -652,9 +638,6 @@ fn compileFresh(gpa: Allocator, io: Io, arena: Allocator, o: Options, device: Ou
         return .{ .failed = b };
     }
 
-    // One object per `Part` at least (`pieceNames`); `linkArgv` itself
-    // only formats, and its test links two.
-    assert(objs.len >= std.enums.values(Part).len);
     var link: Server = undefined;
     try link.spawn(io, arena, try linkArgv(arena, o, objs));
     defer link.close(io);
@@ -709,11 +692,7 @@ fn artifactKey(io: Io, arena: Allocator, o: Options, device: Output) !u64 {
 /// Publishes `src`, a finished library, as `publish` does a compiler's;
 /// null when there is none to copy. Caller owns the returned path.
 fn publishFile(io: Io, gpa: Allocator, o: Options, src: []const u8, generation: u32) !?[]u8 {
-    const t = &builtin.target;
-    const dst = try gpa.print("{s}{c}{s}{s}.{d}{s}", .{
-        o.work_dir, std.fs.path.sep, t.libPrefix(),
-        o.name,     generation,      t.dynamicLibSuffix(),
-    });
+    const dst = try generationPath(gpa, o, generation);
     errdefer gpa.free(dst);
     try Io.Dir.cwd().createDirPath(io, o.work_dir);
     Io.Dir.cwd().copyFile(src, .cwd(), dst, io, .{}) catch |e| switch (e) {
@@ -753,15 +732,22 @@ fn publish(io: Io, gpa: Allocator, o: Options, digest: Cache.BinDigest, generati
     });
     defer gpa.free(src);
 
-    const dst = try gpa.print("{s}{c}{s}{s}.{d}{s}", .{
-        o.work_dir, std.fs.path.sep, t.libPrefix(),
-        o.name,     generation,      t.dynamicLibSuffix(),
-    });
+    const dst = try generationPath(gpa, o, generation);
     errdefer gpa.free(dst);
 
     const cwd: Io.Dir = .cwd();
     cwd.copyFile(src, cwd, dst, io, .{}) catch return error.NoArtifact;
     return dst;
+}
+
+/// `<work_dir>/lib<name>.<generation>.so`, spelled as this target names a
+/// library: the fresh path a host dlopens. Caller owns it.
+fn generationPath(gpa: Allocator, o: Options, generation: u32) ![]u8 {
+    const t = &builtin.target;
+    return gpa.print("{s}{c}{s}{s}.{d}{s}", .{
+        o.work_dir, std.fs.path.sep, t.libPrefix(),
+        o.name,     generation,      t.dynamicLibSuffix(),
+    });
 }
 
 test "Backend.auto is self-hosted only for Debug on x86_64" {

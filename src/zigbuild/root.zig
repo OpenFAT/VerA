@@ -4,7 +4,8 @@
 //! child. Re-exports only; the files import each other directly. Imports no
 //! compiler module: the spine hands it bytes.
 //! `contract`: `Part` is the host's `DevicePart`. `dynlib`: only the tests
-//! that load what they built.
+//! that load what they built. No LRM clause beyond §8.3's ABI: the argv and
+//! the protocol are Zig's.
 
 const orchestrator = @import("orchestrator.zig");
 const exe = @import("exe.zig");
@@ -21,7 +22,8 @@ pub const Output = orchestrator.Output;
 pub const Result = orchestrator.Result;
 /// The pieces a split build compiles in parallel (`contract.DevicePart`).
 pub const Part = orchestrator.Part;
-/// A module name as a file-name stem.
+/// A module name as a file-name stem: kept when short and plain, else a
+/// plain prefix and a hash, so any §2.8.1 escaped name is a legal file name.
 pub const fileStem = orchestrator.fileStem;
 /// Writes the device tree a `.so` build compiles, touching only changed files.
 pub const writeTree = orchestrator.writeTree;
@@ -42,7 +44,10 @@ pub const Staged = exe.Staged;
 pub const stage = exe.stage;
 /// Builds several staged testbenches into one binary.
 pub const buildBatch = exe.buildBatch;
+/// The `sim` runtime's module rows, roots relative to the VerA tree; must
+/// match build.zig's `module_specs` for `sim` and what it imports.
 pub const runtime_modules = exe.runtime_modules;
+/// The VerA tree a `contract` root sits in (`<tree>/lib/contract.zig`).
 pub const treeOf = exe.treeOf;
 /// The `argv[0]` prefix a batch binary dispatches on.
 pub const batch_argv0 = exe.batch_argv0;

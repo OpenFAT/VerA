@@ -1,7 +1,8 @@
 //! Testbench build: device.zig and runner text in, one `zig build-exe` (or
 //! `build-lib`) out, as the binary's path or the compiler's stderr. The runner
 //! text is the caller's (`tb.renderRunner`); this file owns the argv, the
-//! module files on disk and the batch root.
+//! module files on disk and the batch root. No LRM clause: the argv is
+//! Zig's, and every clause the binary implements is in the text it builds.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -174,15 +175,10 @@ fn argvHead(arena: Allocator, opts: BuildOptions, verb: []const u8, bin: []const
         // BadPathName on an absolute path).
         "-fno-emit-implib",
     });
-    try argv.appendSlice(arena, switch ((opts.backend orelse orchestrator.Backend.auto(opts.optimize, builtin.target.cpu.arch)).forHost()) {
-        .self_hosted => &.{ "-fno-llvm", "-fno-lld" },
-        .llvm => &.{"-fllvm"},
-    });
+    try argv.appendSlice(arena, (opts.backend orelse orchestrator.Backend.auto(opts.optimize, builtin.target.cpu.arch)).flags());
     // No debug info where there are no safety checks to trace: emitting it
     // is most of an unsafe build's LLVM time.
     if (opts.strip orelse orchestrator.strip(opts.optimize, opts.debug_info)) try argv.append(arena, "-fstrip");
-    // Compiler, verb, output, `-O`, the cache pair, implib, then a backend.
-    assert(argv.items.len >= 8);
     return argv;
 }
 
@@ -190,7 +186,6 @@ fn argvHead(arena: Allocator, opts: BuildOptions, verb: []const u8, bin: []const
 /// `.ok` payload; on a failed build it is freed and `zig`'s stderr becomes the
 /// `.failed` payload. On an error return `bin` is still the caller's.
 fn runZig(gpa: Allocator, io: Io, argv: []const []const u8, bin: []const u8) !BuildResult {
-    assert(argv.len >= 8); // `argvHead`'s floor.
     const r = try std.process.run(gpa, io, .{ .argv = argv });
     gpa.free(r.stdout);
     const failed = switch (r.term) {
