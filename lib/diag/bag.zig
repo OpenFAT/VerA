@@ -489,7 +489,7 @@ pub const Builder = struct {
             .kind = kind,
             .text = t,
             .fix_repl = repl,
-            .fix_span = if (fix) |f| f.span else .{ .start = 0, .end = 0 },
+            .fix_span = if (fix) |f| f.span else .none,
         };
         self.n_notes += 1;
     }

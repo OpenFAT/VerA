@@ -1,8 +1,9 @@
-//! The diagnostic code catalogue: one stable identifier per diagnosable
-//! condition, with its title, LRM clause and `--explain` text.
+//! The diagnostic code catalogue: a `Code` in, its `Info` (title, LRM clause,
+//! `--explain` text) out, one indexed load into a table built at comptime.
+//! Each row cites its own clause in `Info.lrm`; the file's code cites none.
 //!
 //! No imports: every stage can name a code without pulling in the renderer,
-//! and `diag.zig` imports this file without a cycle.
+//! and `root.zig` imports this file without a cycle.
 
 /// Static documentation for one code; every field is a comptime string literal.
 pub const Info = struct {
@@ -547,8 +548,8 @@ pub fn info(c: Code) Info {
 
 // Built at comptime from the exhaustive `infoOf` switch: a code without an arm
 // fails to compile, text binds to a code by name, and the switch itself never
-// reaches the binary. What does: 370 rows x 48 B = 17.8 KB of `.rodata` plus
-// about 214 KB of text, no relocations in the static executable, and nothing
+// reaches the binary. What does: one 48 B row per code (421 rows, 19.7 KiB, on
+// 2026-10-23) of `.rodata` plus the text, no relocations in the static executable, and nothing
 // touched until a diagnostic renders. Rows of u32 offsets into one blob would
 // save ~14 KB of the binary and no RSS; not worth a second encoding.
 const table = build: {
