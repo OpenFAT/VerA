@@ -20,11 +20,6 @@ const AcDynWant = tb.AcDynWant;
 
 /// The directive line prefix. A plain `//` comment is never a directive.
 const marker = "//!";
-comptime {
-    // A plain `//` comment must not read as a directive.
-    assert(marker.len == 3);
-    assert(std.mem.startsWith(u8, marker, "//"));
-}
 
 /// Every keyword a `//!` line may open with, spelled as written. Any other
 /// word is `error.UnknownDirective`, so a typo cannot silently check nothing.
@@ -350,7 +345,7 @@ pub fn parse(arena: Allocator, source: []const u8) Error!Directives {
     return d;
 }
 
-/// Returns whether `s` is a `//! lrm` cite: a chapter number or annex letter,
+/// Returns whether `cite` is a `//! lrm` cite: a chapter number or annex letter,
 /// then dotted numbers (`5.8`, `A.8.3`, `B`), then optionally `:<n>`, the
 /// n-th normative sentence of that clause (`5.6.1.3:2`). Syntax only: a
 /// well-formed section the LRM does not have still passes.
@@ -399,10 +394,7 @@ fn validNoiseEntry(s: []const u8) bool {
     const kind = std.mem.trim(u8, s[0..open], " \t");
     // `table` is §4.6.4.3 AND §4.6.4.4: both export one kind, and which
     // interpolation applies is `noise_tables[k].interp`, not the row's tag.
-    const kinds = [_][]const u8{ "thermal", "shot", "flicker", "table" };
-    for (kinds) |k| {
-        if (std.mem.eql(u8, kind, k)) break;
-    } else return false;
+    if (std.meta.stringToEnum(enum { thermal, shot, flicker, table }, kind) == null) return false;
     const inner = s[open + 1 .. hash - 1];
     const comma = std.mem.findScalar(u8, inner, ',') orelse return false;
     return std.mem.trim(u8, inner[0..comma], " \t").len != 0 and
@@ -414,10 +406,7 @@ fn validNoiseEntry(s: []const u8) bool {
 /// contain spaces (`thermal(p, n)#0`).
 fn parseNoiseEntry(arena: Allocator, s: []const u8) Error!NoiseWant {
     const hash = std.mem.findScalar(u8, s, '#') orelse return error.BadSyntax;
-    var end = hash + 1;
-    while (end < s.len and s[end] != ' ' and s[end] != '\t') end += 1;
-    assert(end > hash);
-    assert(end <= s.len);
+    const end = std.mem.findAnyPos(u8, s, hash + 1, " \t") orelse s.len;
     const topo = s[0..end];
     if (!validNoiseEntry(topo)) return error.BadSyntax;
 
@@ -472,10 +461,7 @@ fn parseNoiseEntry(arena: Allocator, s: []const u8) Error!NoiseWant {
 fn parseMetaEntry(arena: Allocator, s: []const u8) Error![]const u8 {
     var it = std.mem.tokenizeAny(u8, s, " \t");
     const kind = it.next() orelse return error.BadSyntax;
-    const kinds = [_][]const u8{ "parameter", "variable", "net" };
-    for (kinds) |k| {
-        if (std.mem.eql(u8, kind, k)) break;
-    } else return error.BadSyntax;
+    if (std.meta.stringToEnum(enum { parameter, variable, net }, kind) == null) return error.BadSyntax;
     const name = it.next() orelse return error.BadSyntax;
     var desc: ?[]const u8 = null;
     var units: ?[]const u8 = null;
