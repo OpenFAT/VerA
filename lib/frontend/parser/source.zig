@@ -4,7 +4,8 @@
 //! discipline, connectrules, paramset, library, config and primitive declarations,
 //! each parsed by the file that owns its grammar (`udp.zig` for a primitive).
 //!
-//! LRM clauses cited: §1, §1.1, §2.2, §2.7, §6.2, §6.4, §7.6, §7.7, §10.6.
+//! LRM clauses cited: §1, §1.1, §2.2, §2.7, §6.2, §6.4, §7.6, §7.7, §10.6,
+//! annex C.4, C.17.
 
 const std = @import("std");
 const parser = @import("../parser.zig");
@@ -29,23 +30,6 @@ const diag = @import("diag");
 /// `self.file` with every description appended after any seeded ones.
 /// Returns `error.ParseError` if any diagnostic was an error; the
 /// diagnostics are in `self.bag`.
-/// Annex C.4 "the domain binding type discrete shall be an error in
-/// Verilog-A": E0250 at each port, net or `reg` naming a discipline of
-/// domain discrete. The definition itself is ignored (C.17).
-fn refuseDiscreteUses(self: *Parser, disciplines: []const Ast.DisciplineDecl, modules: []const Ast.ModuleDecl) error{OutOfMemory}!void {
-    for (modules) |m| {
-        for (m.ports) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
-        for (m.nets) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
-        for (m.vars) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
-    }
-}
-
-fn refuseDiscreteUse(self: *Parser, disciplines: []const Ast.DisciplineDecl, name: Ast.StrId, tok: u32) error{OutOfMemory}!void {
-    if (name == .none) return;
-    for (disciplines) |d| if (d.name == name and d.domain == .discrete)
-        return self.refuseDigital(tok, "domain discrete");
-}
-
 pub fn parseSourceFile(self: *Parser) Error!Ast.SourceFile {
     try self.access_names.put(self.arena, "V", {});
     try self.access_names.put(self.arena, "I", {});
@@ -154,6 +138,23 @@ pub fn parseSourceFile(self: *Parser) Error!Ast.SourceFile {
     self.file.configs = configs.items;
     if (self.failed) return error.ParseError;
     return self.file;
+}
+
+/// Annex C.4 "the domain binding type discrete shall be an error in
+/// Verilog-A": E0250 at each port, net or `reg` naming a discipline of
+/// domain discrete. The definition itself is ignored (C.17).
+fn refuseDiscreteUses(self: *Parser, disciplines: []const Ast.DisciplineDecl, modules: []const Ast.ModuleDecl) error{OutOfMemory}!void {
+    for (modules) |m| {
+        for (m.ports) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+        for (m.nets) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+        for (m.vars) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+    }
+}
+
+fn refuseDiscreteUse(self: *Parser, disciplines: []const Ast.DisciplineDecl, name: Ast.StrId, tok: u32) error{OutOfMemory}!void {
+    if (name == .none) return;
+    for (disciplines) |d| if (d.name == name and d.domain == .discrete)
+        return self.refuseDigital(tok, "domain discrete");
 }
 
 /// §2.7 Table 2-2 over every string literal still to be parsed, wherever the
