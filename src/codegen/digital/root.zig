@@ -11,9 +11,9 @@ const sim_digital = @import("sim").digital;
 /// The emitter itself, for the tests of what it writes (`tests/unit.zig`).
 pub const emit = @import("emit.zig");
 
-/// `vera --schedule=`: same-time events in FIFO order, or levelized.
 /// `--emit-rtlil`: the design as Yosys RTLIL.
 pub const rtlil = @import("rtlil.zig");
+/// `vera --schedule=`: same-time events in FIFO order, or levelized.
 pub const Schedule = emit.Schedule;
 /// `vera --state=`: which logic the executable computes.
 pub const Logic = emit.Logic;
