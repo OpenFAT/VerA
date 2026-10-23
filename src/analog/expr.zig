@@ -328,11 +328,8 @@ fn lowerRegSelect(self: *Lower, e: Ast.ExprId, name: []const u8, src: union(enum
         try self.err(ex.mainTok(sub), .E0329, "an indexed part-select of `{s}` read from the analog context", .{name});
         return poison;
     }
-    const a = selectBound(self, hi_e) orelse {
-        try self.err(ex.mainTok(sub), .E0329, "a select of `{s}` read from the analog context needs constant bounds", .{name});
-        return poison;
-    };
-    const b = selectBound(self, lo_e) orelse {
+    const a: i64, const b: i64 = bounds: {
+        if (selectBound(self, hi_e)) |ka| if (selectBound(self, lo_e)) |kb| break :bounds .{ ka, kb };
         try self.err(ex.mainTok(sub), .E0329, "a select of `{s}` read from the analog context needs constant bounds", .{name});
         return poison;
     };
@@ -1247,21 +1244,16 @@ fn lowerBranchAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
             // because `contribIndex` has already created the statement's own
             // entry. Codegen's `FreeFlow` row defines the unknown,
             // `x[u] − Σ contributions = 0`, like `portFlowRead`'s for `I(<p>)`.
-            if (self.contrib_target) |ct| {
-                if (ct.access == .flow and t.access == .flow and
-                    ct.hi == t.hi and ct.lo == t.lo and ct.br == t.br)
-                {
-                    const u = try lower_node.flowUnknown(self, t.hi, t.lo);
-                    const v = try lower_node.probe(self, u);
-                    return .{ .v = if (t.neg) try self.emit(.fneg, &.{v}) else v, .ty = .real };
-                }
-            }
+            const implicit = if (self.contrib_target) |ct|
+                ct.access == .flow and ct.hi == t.hi and ct.lo == t.lo and ct.br == t.br
+            else
+                false;
             // Only once a flow contribution has already been lowered onto this
             // pair. An uncontributed branch is a §5.4.2.1 flow probe, and a
             // potential source's branch current is pinned by its branch row;
             // both read the unknown, including §5.6.8.1's hierarchical case
             // (`potentialSourceHere`).
-            if (!potentialSourceHere(self, t)) if (flowAccum(self, t)) |acc| {
+            if (!implicit and !potentialSourceHere(self, t)) if (flowAccum(self, t)) |acc| {
                 // §5.6.1.2: the retained value of a source branch is the whole
                 // of what was contributed to it, reactive half included.
                 //
@@ -1360,15 +1352,20 @@ fn lowerPortAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         return poison;
     }
     if (try instancePortFlow(self, e)) |tv| return tv;
-    // `nodeOf` stands ground in for a terminal it refused (E0351/E0352), and
-    // ground is no port: that is the same mistake, not a second E0508.
+    const p = try nodeUnrefused(self, self.file.exprs.lhs(e)) orelse return poison;
+    return portFlowRead(self, e, p);
+}
+
+/// `nodeOf`, or null when it refused the terminal (E0351/E0352). It stands
+/// ground in for a refused one, and ground is no port: a caller that went on
+/// would report the same mistake a second time, as E0508.
+fn nodeUnrefused(self: *Lower, e: Ast.ExprId) Oom!?u32 {
     const had = self.had_error;
     self.had_error = false;
-    const p = try lower_node.nodeOf(self, self.file.exprs.lhs(e));
+    const p = try lower_node.nodeOf(self, e);
     const refused = self.had_error;
     self.had_error = had or refused;
-    if (refused) return poison;
-    return portFlowRead(self, e, p);
+    return if (refused) null else p;
 }
 
 /// §5.4.3 "The port access function accesses the flow into a port of a
@@ -1411,12 +1408,7 @@ fn instancePortFlow(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
     const name = self.file.str(ex.strOf(e));
     const access = self.access_kind.get(name) orelse return null; // `portFlowRead` names it (E0501)
     if (access == .potential) return null; // and this (E0507)
-    const had = self.had_error;
-    self.had_error = false;
-    const p = try lower_node.nodeOf(self, lhs);
-    const refused = self.had_error;
-    self.had_error = had or refused;
-    if (refused) return poison;
+    const p = try nodeUnrefused(self, lhs) orelse return poison;
     try lower_contrib.checkAccessMatch(self, e, name, access, p);
     // Every block of the hierarchy is behind this one.
     for (self.cur_block..self.module.?.analog.len) |j| {
