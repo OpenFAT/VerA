@@ -65,20 +65,15 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
             try self.err(d.main_tok, .E0339, "`{s}` declares `domain discrete` and binds a nature", .{
                 self.file.str(d.name),
             });
-        if (d.potential != .none) {
-            const n = natureOf(self, d.potential);
-            if (n.abstol) |a| info.potential_abstol = a;
-            if (n.access) |acc| {
-                info.potential_access = acc;
-                try self.access_kind.put(self.arena, acc, .potential);
-            }
-        }
-        if (d.flow != .none) {
-            const n = natureOf(self, d.flow);
-            if (n.abstol) |a| info.flow_abstol = a;
-            if (n.access) |acc| {
-                info.flow_access = acc;
-                try self.access_kind.put(self.arena, acc, .flow);
+        inline for (.{ Lower.Access.potential, Lower.Access.flow }) |half| {
+            const bound = @field(d, @tagName(half));
+            if (bound != .none) {
+                const n = natureOf(self, bound);
+                if (n.abstol) |a| @field(info, @tagName(half) ++ "_abstol") = a;
+                if (n.access) |acc| {
+                    @field(info, @tagName(half) ++ "_access") = acc;
+                    try self.access_kind.put(self.arena, acc, half);
+                }
             }
         }
         // §3.6.2.3 discipline-level attribute overrides win over the nature's.
