@@ -759,8 +759,7 @@ fn sweepPoint(out: *std.ArrayList(u8), arena: Allocator, d: Directives, pt: []co
     if (pt.len == 0) return;
     try out.appendSlice(arena, "        diag_sweep = \"");
     for (pt, 0..) |v, k| {
-        const s = if (k < d.sweeps.len) d.sweeps[k] else d.psweeps[k - d.sweeps.len];
-        try out.print(arena, "{s}{f}={d}", .{ if (k == 0) "" else " ", std.zig.fmtString(s.name), v });
+        try out.print(arena, "{s}{f}={d}", .{ if (k == 0) "" else " ", std.zig.fmtString(column(d, k).name), v });
     }
     try out.appendSlice(arena, "\";\n");
 }
@@ -809,14 +808,19 @@ fn timeArrays(out: *std.ArrayList(u8), arena: Allocator, d: Directives) Error!vo
     // `parse` gives every grid and every wave at least one value.
     assert(d.times.len != 0);
     try out.appendSlice(arena, "const times = [_]f64{");
-    for (d.times, 0..) |t, i| try out.print(arena, "{s}{f}", .{ if (i == 0) " " else ", ", fmtF64(t) });
+    try f64List(out, arena, d.times);
     try out.appendSlice(arena, " };\n");
     for (d.waves, 0..) |wv, k| {
         assert(wv.values.len != 0);
         try out.print(arena, "const wave_{d} = [_]f64{{", .{k});
-        for (wv.values, 0..) |v, i| try out.print(arena, "{s}{f}", .{ if (i == 0) " " else ", ", fmtF64(v) });
+        try f64List(out, arena, wv.values);
         try out.appendSlice(arena, " };\n");
     }
+}
+
+/// Writes `xs` as the inside of a Zig array literal: ` a, b, c`, each by `fmtF64`.
+fn f64List(out: *std.ArrayList(u8), arena: Allocator, xs: []const f64) Error!void {
+    for (xs, 0..) |x, i| try out.print(arena, "{s}{f}", .{ if (i == 0) " " else ", ", fmtF64(x) });
 }
 
 /// The relative compare for `white`/`flicker`/`ef`/`points`, emitted locally
@@ -835,14 +839,12 @@ const noise_close =
 /// statement per asserting line.
 fn emitNoiseComptime(arena: Allocator, out: *std.ArrayList(u8), d: Directives) Error!void {
     var any_points = false;
+    var any_label = false;
     for (d.noise) |w| {
-        if (w.points != null or w.psd != null) any_points = true;
+        any_points = any_points or w.points != null or w.psd != null;
+        any_label = any_label or w.name != null or w.interp != null;
     }
-    var any = any_points;
-    for (d.noise) |w| {
-        if (w.name != null or w.interp != null) any = true;
-    }
-    if (!any) return;
+    if (!any_points and !any_label) return;
     try out.appendSlice(arena, "    if (comptime @hasDecl(D, \"noise_gens\")) {\n");
     if (any_points) try out.appendSlice(arena, noise_close);
     for (d.noise, 0..) |w, k| {
@@ -1239,14 +1241,9 @@ fn emitLimitCheck(arena: Allocator, out: *std.ArrayList(u8), d: Directives, mdl:
 pub fn expand(arena: Allocator, d: Directives) Error![]const []const f64 {
     const dims = d.sweeps.len + d.psweeps.len;
     if (dims == 0) return &.{&.{}};
-    const col = struct {
-        fn at(dd: Directives, k: usize) Sweep {
-            return if (k < dd.sweeps.len) dd.sweeps[k] else dd.psweeps[k - dd.sweeps.len];
-        }
-    };
     var total: usize = 1;
     for (0..dims) |k| {
-        total *|= col.at(d, k).values.len;
+        total *|= column(d, k).values.len;
         if (total > max_points) return error.TooManyPoints;
     }
     // One block of `total * dims` cells; each row is a view into it.
@@ -1258,7 +1255,7 @@ pub fn expand(arena: Allocator, d: Directives) Error![]const []const f64 {
         var k = dims;
         while (k > 0) {
             k -= 1;
-            const vals = col.at(d, k).values;
+            const vals = column(d, k).values;
             assert(vals.len != 0); // `parseNumbers` refuses an empty list.
             row_cells[k] = vals[rem % vals.len];
             rem /= vals.len;
@@ -1270,6 +1267,11 @@ pub fn expand(arena: Allocator, d: Directives) Error![]const []const f64 {
     assert(rows.len == total);
     assert(total <= max_points);
     return rows;
+}
+
+/// Column `k` of an `expand` row: the `sweeps`, then the `psweeps`.
+fn column(d: Directives, k: usize) Sweep {
+    return if (k < d.sweeps.len) d.sweeps[k] else d.psweeps[k - d.sweeps.len];
 }
 
 /// Formats `x` as a Zig expression that evaluates to the same f64, bit for
