@@ -318,18 +318,7 @@ pub const ScopeLists = struct {
 
     /// Frees the lists (owned by `gpa`); the rows they index stay.
     pub fn deinit(s: *ScopeLists, gpa: std.mem.Allocator) void {
-        s.internal.deinit(gpa);
-        s.gen_arrays.deinit(gpa);
-        s.param_assigns.deinit(gpa);
-        s.mod_paths.deinit(gpa);
-        s.tchks.deinit(gpa);
-        s.cont_assigns.deinit(gpa);
-        s.processes.deinit(gpa);
-        s.tasks.deinit(gpa);
-        s.functions.deinit(gpa);
-        s.events.deinit(gpa);
-        s.event_arrays.deinit(gpa);
-        s.primitives.deinit(gpa);
+        inline for (@typeInfo(ScopeLists).@"struct".field_names) |name| @field(s, name).deinit(gpa);
     }
 
     /// Frozen as tagged rows, the shape `vpi_iterate(tag, module)` reads.
@@ -1739,7 +1728,8 @@ const tchk_kinds = std.StaticStringMap(TchkKind).initComptime(.{
 });
 
 // ---------------------------------------------------------------------------
-// Tests: the tables. The rows themselves are test.zig's, over designs.
+// Tests: the tables. The rows themselves are tests/unit.zig's `vpi_tests`,
+// over designs.
 // ---------------------------------------------------------------------------
 
 test "typeName spells every behavioural type the builders make, as its constant is named" {

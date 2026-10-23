@@ -115,14 +115,10 @@ pub fn attach(b: *code.Builder, parent: u32, owner: Ast.AttributeOwner, definiti
         const binding = b.file.attributes.items[k];
         for (binding.specs) |spec| {
             const name = b.file.str(spec.name);
-            var found: ?u32 = null;
-            for (b.objects.coldOf(parent).attributes) |at| {
-                const old = b.objects.hot.items[at];
-                if (std.mem.eql(u8, old.name, name) and old.props[0].value == @intFromBool(definition)) {
-                    found = at;
-                    break;
-                }
-            }
+            const found: ?u32 = for (b.objects.coldOf(parent).attributes) |at| {
+                const old = &b.objects.hot.items[at];
+                if (std.mem.eql(u8, old.name, name) and old.props[0].value == @intFromBool(definition)) break at;
+            } else null;
             // Declaration-list fan-out may copy an earlier prefix after a
             // later one was parsed. Source order, not append order, wins.
             if (found) |at| if (b.objects.hot.items[at].src_tok >= spec.main_tok) continue;
