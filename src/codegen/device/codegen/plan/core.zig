@@ -112,7 +112,8 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
             const fam_v = if (op == .path_prev) &pv else &qv;
             const fam_l = if (op == .path_prev) &pl else &ql;
             const v = in.an.rv(@fromBackingInt(@intCast(operand)));
-            // ponytail: keep first-seen order with the stdlib membership scan.
+            // ponytail: first-seen order by a linear membership scan, O(latches²)
+            // per family; a bitset over `nv` if a model carries thousands.
             if (std.mem.findScalar(Mir.Value, fam_v.items, v) != null) continue;
             if (self.lo_idx[@backingInt(v)] == none_u32) {
                 self.lo_idx[@backingInt(v)] = @intCast(vals.items.len);
@@ -225,6 +226,8 @@ const Mark = struct {
     need: []bool,
     blk: []bool,
     work: std.ArrayList(Mir.Value) = .empty,
+    /// Blocks marked by `block` whose controlling branches are not yet.
+    blk_work: std.ArrayList(u32) = .empty,
 
     fn mark(m: *Mark, v0: Mir.Value) Error!void {
         const v = m.in.an.rv(v0);
@@ -234,13 +237,20 @@ const Mark = struct {
     }
 
     /// Block `b` runs only as the branches it is control-dependent on say.
+    /// A worklist, not a recursion: a chain of control dependences is as
+    /// deep as the source nests its `if`s, which has no bound.
     fn block(m: *Mark, b: u32) Error!void {
+        try m.pushBlock(b);
+        while (m.blk_work.pop()) |bb| for (m.cds.cd[m.cds.off[bb]..m.cds.off[bb + 1]]) |c| {
+            try m.mark(plan_setup.branchCond(m.in, c.a).?);
+            try m.pushBlock(c.a);
+        };
+    }
+
+    fn pushBlock(m: *Mark, b: u32) Error!void {
         if (b >= m.blk.len or m.blk[b]) return;
         m.blk[b] = true;
-        for (m.cds.cd[m.cds.off[b]..m.cds.off[b + 1]]) |c| {
-            try m.mark(plan_setup.branchCond(m.in, c.a).?);
-            try m.block(c.a);
-        }
+        try m.blk_work.append(m.in.arena, b);
     }
 
     fn visit(m: *Mark, v: Mir.Value) Error!void {
