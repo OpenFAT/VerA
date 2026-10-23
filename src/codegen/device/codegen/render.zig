@@ -65,7 +65,6 @@ pub fn renderToArena(self: *Gen, v: Mir.Value, want: VTy) Error![]const u8 {
     assert(self.out.items.len >= at);
     const s = try self.arena.dupe(u8, self.out.items[at..]);
     self.out.shrinkRetainingCapacity(at);
-    assert(self.out.items.len == at);
     return s;
 }
 
@@ -224,8 +223,9 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
     // lane-parallel S gets a per-lane pick. Costly arms on a condition that
     // varies with the solve run both on a GPU target only (#81: `zSpec`),
     // where a branch costs the register allocator more than the arm.
+    const res_ty = self.an.vty[@backingInt(res)];
     if (op == .select) {
-        const want = self.an.vty[@backingInt(self.mir.instResult(inst))];
+        const want = res_ty;
         if (want == .real and self.float.strict and
             float_lanes.eagerSafe(self, b2, 0) and float_lanes.eagerSafe(self, c, 0))
         {
@@ -244,14 +244,13 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
     // §4.3.2 a domain-restricted row `ifconv`'s `.speculate` moved out of its
     // arm runs on its domain's safe argument while its guard is false, so it
     // neither reports nor leaves the domain where the source never ran it.
+    const saved = self.subst;
+    defer self.subst = saved;
     if (self.mir.guardOf(inst)) |lit| {
         const dom = Mir.opcode.get(op).domain;
-        const saved = self.subst;
-        defer self.subst = saved;
         self.subst = .{ .v = self.an.rv(if (dom == .nonzero_divisor) b2 else a), .lit = lit, .safe = safeArg(dom) };
-        return renderOp(self, op, a, b2, self.an.vty[@backingInt(self.mir.instResult(inst))]);
     }
-    return renderOp(self, op, a, b2, self.an.vty[@backingInt(self.mir.instResult(inst))]);
+    return renderOp(self, op, a, b2, res_ty);
 }
 
 /// A real select that runs both arms and picks. An integer-condition `S`
@@ -880,7 +879,8 @@ pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty:
         },
         // §4.2.11 "fill the vacated bit positions with zeroes" at §3.2.1's
         // 32-bit width, so not `std.math.shr(i64, ...)`, which sign-fills.
-        .shr => try shrLogical(self, a, b2),
+        // `zShr` defines an over-wide or negative count as 0.
+        .shr => try intCall2(self, "zShr", a, b2),
         // §3.2.2 array ops are rendered by `renderLoad`/`emitArrayStmt`.
         .phi, .select, .call, .branch, .jump, .anew, .fload, .iload, .store => unreachable,
     }
@@ -905,17 +905,17 @@ pub fn foldHidesSlot(self: *Gen, v0: Mir.Value, depth: u32) bool {
     };
 }
 
-/// Writes the f64 value of a derivative-free operand (callers check `dFree`).
-/// Prefers the arithmetic itself (`model.is`); falls back to `.val()` of the
-/// rendered S for values with no GPU-safe f64 spelling (`$temperature`, a
-/// transcendental of a parameter). Depth 1: naming the operand's own slot
-/// is wanted here, unlike `renderInst`'s depth-0 self-reference.
 /// Whether real `v` is derivative-free yet x-dependent: a `.val()` of it
 /// would be one point's value (see `renderOp`'s `.fadd, .fsub, .fmul`).
 fn perPoint(self: *Gen, v: Mir.Value) bool {
     return self.an.dFree(v) and float_lanes.perPoint(self, v) and self.an.tyOf(self.an.rv(v)) == .real;
 }
 
+/// Writes the f64 value of a derivative-free operand (callers check `dFree`).
+/// Prefers the arithmetic itself (`model.is`); falls back to `.val()` of the
+/// rendered S for values with no GPU-safe f64 spelling (`$temperature`, a
+/// transcendental of a parameter). Depth 1: naming the operand's own slot
+/// is wanted here, unlike `renderInst`'s depth-0 self-reference.
 fn writeConst(self: *Gen, v: Mir.Value) Error!void {
     if (try gen_host.f64Const(self, v, 1, true)) |s| return self.b("{s}", .{s});
     // A derivative-free value can still differ per point (a `ddx`-stripped
@@ -1091,7 +1091,6 @@ pub fn emitRng(self: *Gen, c: Mir.Callee, args: []const Mir.Value) Error!void {
         fn_name.appendAssumeCapacity(if (up) std.ascii.toUpper(ch) else ch);
         up = false;
     }
-    assert(fn_name.items.len > "zRng".len);
     try self.b("S.con({s}(", .{fn_name.items});
     try renderVal(self, if (args.len > 0) args[0] else .zero, .int);
     for (args[@min(1, args.len)..]) |a| {
@@ -1203,17 +1202,6 @@ pub fn intArg(self: *const Gen, args: []const Mir.Value, i: usize) ?usize {
 // ponytail: integer callees infer their type; add a typed variant only for a caller.
 fn intCall2(self: *Gen, name: []const u8, a: Mir.Value, b2: Mir.Value) Error!void {
     try self.b("{s}(", .{name});
-    try renderVal(self, a, .int);
-    try self.b(", ", .{});
-    try renderVal(self, b2, .int);
-    try self.b(")", .{});
-}
-
-/// Writes §4.2.11 `>>`: a logical shift over §3.2.1's 32-bit `integer`, so
-/// `-16 >> 2` is 1073741820. A zero count is the identity; `zShr` defines an
-/// over-wide or negative count as 0.
-fn shrLogical(self: *Gen, a: Mir.Value, b2: Mir.Value) Error!void {
-    try self.b("zShr(", .{});
     try renderVal(self, a, .int);
     try self.b(", ", .{});
     try renderVal(self, b2, .int);
