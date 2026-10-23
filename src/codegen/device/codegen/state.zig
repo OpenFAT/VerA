@@ -135,7 +135,7 @@ pub fn inPlaceArrays(self: *Gen) Error![]const bool {
     const flags = try self.arena.alloc(bool, n);
     for (flags, 0..) |*f, id| f.* = gen_render.cow(self, @intCast(id));
     for (0..self.mir.insts.len) |ii| {
-        const inst: Mir.Inst = @fromBackingInt(@intCast(@as(u32, @intCast(ii))));
+        const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         if (self.mir.instOp(inst) != .anew) continue;
         const d = self.mir.instData(inst).anew;
         const tp = d.tp orelse continue;
@@ -413,7 +413,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
         self.ctrl_tok = self.mir.instTok(inst); // E0515's fallback span
         const original_args = self.mir.instData(inst).call.args;
         const latest = self.lowered.timer_controls.get(inst);
-        const args: []const @import("ir").Mir.Value = if (latest) |*v| v else original_args;
+        const args: []const Mir.Value = if (latest) |*v| v else original_args;
         const lo = gen_unit.opInputIdx(self, @intCast(i));
         if (latest != null) {
             try self.w("    {{\n        const in = {s};\n", .{try gen_call.ctrlStep(self, args, 0, "0.0")});
@@ -676,10 +676,9 @@ fn emitAdvanceIteration(self: *Gen) Error!void {
     if (self.iter_core.lo_vals.len != 0) self.core = self.iter_core;
     var uses_core = false;
     for (self.lowered.limit_slots.items) |slot| uses_core = uses_core or gen_dispatch.coreIdx(self, self.an.rv(slot.final)) != null;
-    const uses_inst = uses_core or self.lowered.limit_slots.items.len != 0;
-    const core_name = if (uses_core) "S" else "_";
-    try self.w("pub fn advanceIteration(comptime {s}: type, {s}: *const Model, {s}: *Instance, {s}: [n_u]f64, {s}: contract.SimState) void {{\n", .{
-        core_name, if (uses_core) "model" else "_", if (uses_inst) "inst" else "_", if (uses_core) "x" else "_", if (uses_core) "sim" else "_",
+    // `inst` is always named: every limiter slot is stored into it.
+    try self.w("pub fn advanceIteration(comptime {s}: type, {s}: *const Model, inst: *Instance, {s}: [n_u]f64, {s}: contract.SimState) void {{\n", .{
+        if (uses_core) "S" else "_", if (uses_core) "model" else "_", if (uses_core) "x" else "_", if (uses_core) "sim" else "_",
     });
     if (uses_core) try self.w(
         "    const m = {s}(S, zVals(S, &x), model, {s}, sim{s});\n",
@@ -755,23 +754,7 @@ pub fn emitCollapse(self: *Gen, pairs: []const CollapsePair) Error!void {
             pi, self.names.u_names[p.victim], self.names.u_names[p.target],
         });
     }
-    try self.w(
-        \\    var out: [n_u]?u8 = @splat(null);
-        \\    for (0..n_u) |u| {{
-        \\        const r = zCollapseRoot(&parent, @intCast(u));
-        \\        if (r != u) out[u] = r;
-        \\    }}
-        \\
-    , .{});
-    // Unconditional, unlike the union: the flag decides whether the nodes
-    // merge, but the branch-flow unknown is aliased either way. Not taken,
-    // the branch is a conductance stamped straight into KCL
-    // (`emitSwitchRow`), so its current row is never written.
-    for (pairs) |p| {
-        try self.w("    out[@intFromEnum(U.{s})] = zCollapseRoot(&parent, @intFromEnum(U.{s}));\n", .{
-            self.names.u_names[p.flow_u], self.names.u_names[p.target],
-        });
-    }
+    try emitAliases(self, pairs);
     try self.w("    return out;\n}}\n\n", .{});
     try self.w(
         \\fn zCollapseRoot(parent: *const [n_u]u8, start: u8) u8 {{
@@ -815,6 +798,17 @@ fn emitCollapseFull(self: *Gen, pairs: []const CollapsePair) Error!void {
             self.names.u_names[p.victim], self.names.u_names[p.target],
         });
     }
+    try emitAliases(self, pairs);
+    try self.w("    break :blk out;\n}};\n\n", .{});
+}
+
+/// Writes `collapse`'s and `collapse_full`'s `out` from the union-find
+/// `parent` both have built: each unknown's root, then every pair's
+/// branch-flow unknown. Unconditional, unlike the union: the flag decides
+/// whether the nodes merge, but the branch-flow unknown is aliased either
+/// way. Not taken, the branch is a conductance stamped straight into KCL
+/// (`emitSwitchRow`), so its current row is never written.
+fn emitAliases(self: *Gen, pairs: []const CollapsePair) Error!void {
     try self.w(
         \\    var out: [n_u]?u8 = @splat(null);
         \\    for (0..n_u) |u| {{
@@ -828,7 +822,6 @@ fn emitCollapseFull(self: *Gen, pairs: []const CollapsePair) Error!void {
             self.names.u_names[p.flow_u], self.names.u_names[p.target],
         });
     }
-    try self.w("    break :blk out;\n}};\n\n", .{});
 }
 
 /// Writes `delays`: each §4.5.7 site's transport delay over `Model` alone
@@ -905,7 +898,8 @@ pub fn emitNextBreakpoint(self: *Gen) Error!void {
     defer self.uses.model = saved;
     self.uses.model = false;
 
-    var timers: std.ArrayList([3]?[]const u8) = .empty;
+    const Timer = struct { start: []const u8, period: []const u8, guard: ?[]const u8 };
+    var timers: std.ArrayList(Timer) = .empty;
     for (self.names.units, 0..) |u, i| {
         if (u.role != .analog_op or u.op != .timer) continue;
         const inst = self.names.opInstOf(@intCast(i)) orelse return;
@@ -926,7 +920,7 @@ pub fn emitNextBreakpoint(self: *Gen) Error!void {
         // start_time is legal Verilog-A this hook cannot describe.
         const start = try gen_host.f64Const(self, if (args.len > 0) args[0] else .zero, 0, false) orelse return;
         const period = try gen_host.f64Const(self, if (args.len > 1) args[1] else .zero, 0, false) orelse return;
-        try timers.append(self.arena, .{ start, period, guard });
+        try timers.append(self.arena, .{ .start = start, .period = period, .guard = guard });
     }
     if (timers.items.len == 0) return;
 
@@ -938,9 +932,9 @@ pub fn emitNextBreakpoint(self: *Gen) Error!void {
         \\
     , .{if (self.uses.model) "model" else "_"});
     for (timers.items) |tm| {
-        if (tm[2]) |g| try self.w("    if (({s}) != 0.0) {{\n    ", .{g});
-        try self.w("    if (zNextTimer({s}, {s}, t)) |b| best = @min(best, b);\n", .{ tm[0].?, tm[1].? });
-        if (tm[2] != null) try self.w("    }}\n", .{});
+        if (tm.guard) |g| try self.w("    if (({s}) != 0.0) {{\n    ", .{g});
+        try self.w("    if (zNextTimer({s}, {s}, t)) |b| best = @min(best, b);\n", .{ tm.start, tm.period });
+        if (tm.guard != null) try self.w("    }}\n", .{});
     }
     try self.w(
         \\    return if (best == std.math.inf(f64)) null else best;

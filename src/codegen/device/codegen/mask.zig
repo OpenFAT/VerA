@@ -72,7 +72,7 @@ pub fn lessThan(_: void, a: []const u64, b: []const u64) bool {
 
 /// The Zig type of a mask over `n_u` unknowns, `contract.MaskOf(n_u)`.
 pub fn typeName(buf: *[16]u8, n_u: u32) []const u8 {
-    return std.fmt.bufPrint(buf, "u{d}", .{@max(64, n_u)}) catch unreachable;
+    return std.mem.print(buf, "u{d}", .{@max(64, n_u)}) catch unreachable;
 }
 
 /// `{f}` of `m` as one hex literal without its `0x`: the top word unpadded,
@@ -98,9 +98,9 @@ pub const Hex = struct {
 
 test "a one-word mask prints as the u64 literal did, a wider one as one literal" {
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("3", try std.fmt.bufPrint(&buf, "{f}", .{hex(&.{3}, false)}));
-    try std.testing.expectEqualStrings("0000000000000003", try std.fmt.bufPrint(&buf, "{f}", .{hex(&.{3}, true)}));
-    try std.testing.expectEqualStrings("10000000000000002", try std.fmt.bufPrint(&buf, "{f}", .{hex(&.{ 2, 1 }, false)}));
+    try std.testing.expectEqualStrings("3", try std.mem.print(&buf, "{f}", .{hex(&.{3}, false)}));
+    try std.testing.expectEqualStrings("0000000000000003", try std.mem.print(&buf, "{f}", .{hex(&.{3}, true)}));
+    try std.testing.expectEqualStrings("10000000000000002", try std.mem.print(&buf, "{f}", .{hex(&.{ 2, 1 }, false)}));
     var tb: [16]u8 = undefined;
     try std.testing.expectEqualStrings("u64", typeName(&tb, 3));
     try std.testing.expectEqualStrings("u130", typeName(&tb, 130));
