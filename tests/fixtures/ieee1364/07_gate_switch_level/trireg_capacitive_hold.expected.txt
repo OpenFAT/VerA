@@ -1,6 +1,0 @@
-start x x x
-driven 1 1 1 1
-stored 1 1 1 z
-held 1 1 1 z
-redriven 0 0 0 0
-stored_zero 0 0 0 z

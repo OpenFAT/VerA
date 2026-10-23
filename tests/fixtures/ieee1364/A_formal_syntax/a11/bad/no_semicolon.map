@@ -1,4 +1,0 @@
-// IEEE 1364-2005 A.1.1: an include_statement with no `;` before the next
-// library_description.
-include ../more.map
-library libd ../cells/a.v;

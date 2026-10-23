@@ -1,6 +1,0 @@
-and=000001xx0xxx0xxx
-or=01xx1111x1xxx1xx
-xor=01xx10xxxxxxxxxx
-xnor=10xx01xxxxxxxxxx 10xx01xxxxxxxxxx
-not=10xx
-fill=00001010 10101111

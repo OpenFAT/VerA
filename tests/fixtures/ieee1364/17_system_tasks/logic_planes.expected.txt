@@ -1,8 +1,0 @@
-array and  10
-array or   11
-array nand 01
-array nor  00
-plane and  01
-plane or   11
-plane nand 10
-plane nor  00

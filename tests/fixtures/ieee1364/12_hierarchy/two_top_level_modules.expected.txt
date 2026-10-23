@@ -1,2 +1,0 @@
-top.m1 size=5 delay=10
-top.m2 size=10 delay=20

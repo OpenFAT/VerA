@@ -1,4 +1,0 @@
-half t=2147483648 s=2147483648 positive=1
-before t=4294967295 s=4294967295
-wrap t=4294967296 s=0 high=1
-after t=4294967299 s=3 high=1

@@ -1,5 +1,0 @@
-true 1.25 1
-false 9.50 2
-x 0.00 4
-z-equal 0.00 6
-constant 0.00

@@ -1,3 +1,0 @@
-t=14 plain=0 inv=0 ceq=0 eq=1 neq=1 cneq=0 vec=0 expr=1
-t=24 plain=1 inv=0 ceq=1 eq=0 neq=0 cneq=1 vec=0 expr=0
-t=34 plain=1 inv=1 ceq=1 eq=0 neq=0 cneq=1 vec=1 expr=0

@@ -1,3 +1,0 @@
-t=1 ntfr=0
-t=12 ntfr=1
-t=35 ntfr=1

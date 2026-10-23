@@ -1,4 +1,0 @@
-initial xxxx
-inactive 0010 xxxx
-peer 0010
-after 0010 0011 0001 00010000

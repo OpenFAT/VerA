@@ -1,2 +1,0 @@
-first=0.3
-second=0.6

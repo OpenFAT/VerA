@@ -1,9 +1,0 @@
-read 5 1 9
-sign ffa5 00a5
-write 99
-concat 39 38
-nba 29 3c
-outside xxxx
-unknown-word xxxx
-unchanged 29 3c
-wide abc 1

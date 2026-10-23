@@ -1,5 +1,0 @@
-wide 12 4142434445464748494a4b4c
-zero-count 0 12
-memory 4 16e 170 155 changes=1
-eof 0 4142434445464748494a4b4c
-last-address 1 41 1

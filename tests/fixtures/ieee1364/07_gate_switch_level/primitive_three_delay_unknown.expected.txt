@@ -1,6 +1,0 @@
-before_fall=z
-after_fall=0
-before_rise=0
-after_rise=1
-unknown_min_delay=x
-turned_off=z

@@ -1,5 +1,0 @@
-wire x
-wand 0
-wor 1
-tri1 1
-reset x

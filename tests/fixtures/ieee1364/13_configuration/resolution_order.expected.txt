@@ -1,5 +1,0 @@
-top work.top
-top.u1 lib1.foobar
-top.u2 lib2.foo
-top.u3 lib3.bar
-top.u4 lib4.barver

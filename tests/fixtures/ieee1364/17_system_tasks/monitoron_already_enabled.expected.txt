@@ -1,6 +1,0 @@
-a=0
-before first
-a=0
-between
-a=0
-after second

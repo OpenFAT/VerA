@@ -1,3 +1,0 @@
-wire=0xx0x1x1xxxx01xz tri=0xx0x1x1xxxx01xz
-wand=000001x10xxx01xz triand=000001x10xxx01xz
-wor=01x01111x1xx01xz trior=01x01111x1xx01xz

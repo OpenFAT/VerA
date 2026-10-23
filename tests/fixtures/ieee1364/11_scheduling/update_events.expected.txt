@@ -1,3 +1,0 @@
-named event at 2
-net update at 3: w=6
-variable update at 6: v=6

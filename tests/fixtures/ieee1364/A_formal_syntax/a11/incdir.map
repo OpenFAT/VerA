@@ -1,2 +1,0 @@
-// IEEE 1364-2005 A.1.1: a library_declaration with an -incdir list.
-library liba cells/a.v -incdir cells, bad;

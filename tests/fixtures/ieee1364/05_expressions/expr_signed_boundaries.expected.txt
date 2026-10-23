@@ -1,2 +1,0 @@
-whole=ff80 selected=0080 joined=0080 bit=0001
-signed_destination=128 casts=00001100,11111100

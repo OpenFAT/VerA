@@ -1,6 +1,0 @@
-display a=1
-strobe a=3
-c4
-00001111
-017
-

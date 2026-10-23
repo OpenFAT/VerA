@@ -1,4 +1,0 @@
-a=0 got and=0 nand=1 or=0 nor=1 xor=0 xnor=1 want 0 1 0 1 0 1
-a=1 got and=1 nand=0 or=1 nor=0 xor=1 xnor=0 want 1 0 1 0 1 0
-a=x got and=x nand=x or=x nor=x xor=x xnor=x want x x x x x x
-a=z got and=x nand=x or=x nor=x xor=x xnor=x want x x x x x x

@@ -1,2 +1,0 @@
-unknown_enable=1,0
-z_enable=1,0

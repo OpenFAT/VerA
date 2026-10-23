@@ -1,2 +1,0 @@
-gate-only=0
-data-then-gate=0

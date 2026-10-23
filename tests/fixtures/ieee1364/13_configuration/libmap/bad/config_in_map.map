@@ -1,6 +1,0 @@
-// IEEE 1364-2005 §13.2.2: a map holds library and include statements only;
-// a config is source text (§13.3), even though A.1.1 derives one here.
-library lib1 ../../proj/lib1/;
-config cfg;
-  design work.top;
-endconfig

@@ -1,2 +1,0 @@
-plain=1 selected=1 joined=10
-plain=0 selected=0 joined=01

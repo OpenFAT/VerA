@@ -1,6 +1,0 @@
-// IEEE 1364-2005 §13.7.3, p. 209, evaluated from /proj/tb, with its absolute
-// /proj/lib1 paths written relative to this directory.
-library lib1 "../lib1/foo*.v";
-library lib2 "../lib1/foo.v";
-library lib3 "../lib1/";
-library lib4 "../lib1/*ver.v";

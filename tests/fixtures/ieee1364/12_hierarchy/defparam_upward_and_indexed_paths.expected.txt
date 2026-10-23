@@ -1,3 +1,0 @@
-b_12_2_1_defparam_upward_and_indexed_paths.u.l p=7
-b_12_2_1_defparam_upward_and_indexed_paths.g[0].l p=20
-b_12_2_1_defparam_upward_and_indexed_paths.g[1].l p=21

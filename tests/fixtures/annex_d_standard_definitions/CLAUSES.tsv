@@ -1,9 +1,0 @@
-# Annex D clauses that state no rule an input can break, classified per
-# specification/CLAUSE-AUDIT.md §5. Tab-separated: <clause> <kind> <evidence>.
-# Annex D publishes three files verbatim and has no prose rules of its own; the
-# rules a user can break by misusing what D.1 declares (an access function its
-# discipline does not bind) are cited under D.1 and 4.4 by this directory's
-# reject fixtures. Read against specification/annex-d-stddefs.html, 2026-09-24.
-D	no-prohibition	"This annex contains the standard definition packages (disciplines.vams, constants.vams and driver_access.vams) for Verilog-AMS HDL. ... verbatim copies of these three standard definition files that make up this Annex may be used and distributed without restrictions." A container for three files. Positive: mathematical_constants.va, driver_access_include.va, literal_electrical_disciplines.va (each reads the implementation's own copy and asserts it).
-D.2	no-prohibition	The file text only: "`ifdef CONSTANTS_VAMS `else `define CONSTANTS_VAMS 1 ... `define M_PI 3.14159265358979323846 ... `ifdef PHYSICAL_CONSTANTS_NIST2018 `define P_Q `P_Q_NIST2018 ..." Macro definitions and a selector chain; every macro is defined for every combination of selectors. Positive: mathematical_constants.va (all fourteen M_ constants), physical_constants_nist2018.va / _spice.va / _old.va / _nist2010.va / _nist1998.va (each selector arm), vacuum_constants.va, celsius_constant.va.
-D.3	no-prohibition	The file text only: "`ifdef DRIVER_ACCESS_VAMS `else `define DRIVER_ACCESS_VAMS 1 `define DRIVER_UNKNOWN 32'b00000000000 // No information ... `define DRIVER_WAND 32'b10000000000 // driver is a wand net `endif". Twelve mask definitions under a guard. Positive: driver_access_include.va (includes the shipped file and asserts all twelve masks and their disjointness).

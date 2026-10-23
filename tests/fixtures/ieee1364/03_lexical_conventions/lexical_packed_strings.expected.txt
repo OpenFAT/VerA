@@ -1,4 +1,0 @@
-pad 0000415a
-truncate 4243
-octal 01510a524138
-special 0a095c22

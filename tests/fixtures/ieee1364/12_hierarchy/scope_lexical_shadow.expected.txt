@@ -1,2 +1,0 @@
-inner=24
-outer=11

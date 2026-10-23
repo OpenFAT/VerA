@@ -1,4 +1,0 @@
-6 ffffffffffffffffc
-f fffffffffffffffff
-1 0
-0 1

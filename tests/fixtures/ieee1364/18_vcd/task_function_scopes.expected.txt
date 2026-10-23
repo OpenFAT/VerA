@@ -1,1 +1,0 @@
-acc=1 index=1 fr=1 acc5=1

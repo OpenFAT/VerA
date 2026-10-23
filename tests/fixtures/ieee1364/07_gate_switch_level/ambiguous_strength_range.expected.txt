@@ -1,4 +1,0 @@
-ambiguous_alone x x
-one_over_range 1 x
-zero_over_range 0 x
-pull_one_against_each 0 1

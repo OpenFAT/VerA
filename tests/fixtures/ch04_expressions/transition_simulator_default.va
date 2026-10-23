@@ -1,7 +1,0 @@
-// Host-only stimulus: deliberately has no default_transition directive.
-// A real host supplies and documents its default durations.
-module transition_simulator_default(in, out);
-    inout in, out;
-    electrical in, out;
-    analog V(out) <+ transition(V(in));
-endmodule

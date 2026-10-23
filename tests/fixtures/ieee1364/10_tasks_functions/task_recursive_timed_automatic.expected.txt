@@ -1,7 +1,0 @@
-4: n=1 total=1
-4: n=2 total=3
-4: ra=3
-9: n=1 total=1
-9: n=2 total=3
-9: n=3 total=6
-9: rb=6

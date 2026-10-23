@@ -1,8 +1,0 @@
-0 factorial=1
-1 factorial=1
-2 factorial=2
-3 factorial=6
-4 factorial=24
-5 factorial=120
-6 factorial=720
-7 factorial=5040

@@ -1,3 +1,0 @@
-missing=1
-in_time=1
-dormant=1

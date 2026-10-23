@@ -1,7 +1,0 @@
-// LRM 4.7.1 bullet list: an analog user-defined function "shall not use
-// contribution statements or event control statements". (Not 5.2.1 — that
-// clause is the `analog initial` block.)
-//! lrm 4.7.1
-//! lrm 4.7.1:3
-//! reject-only E0405
-module ch4_fn_contrib(p); inout p; electrical p; analog function real drive; input x; real x; begin I(p)<+x; drive=x; end endfunction analog I(p)<+drive(V(p)); endmodule

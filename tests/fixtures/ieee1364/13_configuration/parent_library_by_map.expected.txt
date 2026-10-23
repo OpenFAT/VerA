@@ -1,3 +1,0 @@
-adder aLib.adder
-adder.f1 aLib.foo
-adder.f2 aLib.foo

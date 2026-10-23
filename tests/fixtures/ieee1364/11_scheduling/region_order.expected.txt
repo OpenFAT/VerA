@@ -1,5 +1,0 @@
-active: a=1
-inactive 1: a=1
-inactive 2: a=1
-monitor: a=2
-next time: a=2

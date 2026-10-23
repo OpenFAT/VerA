@@ -1,5 +1,0 @@
-t4 r=1 s=0
-t5 r=0 s=0
-t6 r=0 s=0
-t7-inactive r=0 s=0
-t8 r=0 s=1

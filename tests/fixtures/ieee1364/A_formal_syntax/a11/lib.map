@@ -1,5 +1,0 @@
-// IEEE 1364-2005 A.1.1 library_text for b_A_1_1_library_text.v: a
-// library_declaration of two file_path_specs, one quoted, then an
-// include_statement.
-library liba cells/a.v, "cells/b.v";
-include more.map;

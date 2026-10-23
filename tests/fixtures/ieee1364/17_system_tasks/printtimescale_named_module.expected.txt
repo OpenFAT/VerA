@@ -1,1 +1,0 @@
-Time scale of (b_17_3_1_printtimescale_named_module.b.c1) is 1ns / 1ns

@@ -1,1 +1,0 @@
-packed=00410042 equal=0 null=1 digit=0

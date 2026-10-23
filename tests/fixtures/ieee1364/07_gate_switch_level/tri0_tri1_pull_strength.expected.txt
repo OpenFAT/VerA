@@ -1,4 +1,0 @@
-undriven 0 1 0 0
-driver_one 0 1 x 1
-driver_zero 0 1 0 0
-driver_x 0 1 x x

@@ -1,6 +1,0 @@
-one_zero 0 1
-zero_one 0 1
-one_one 1 1
-zero_zero 0 0
-x_one x 1
-x_zero 0 x

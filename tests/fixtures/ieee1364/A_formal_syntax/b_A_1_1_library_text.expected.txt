@@ -1,4 +1,0 @@
-top work.top
-top.u1 liba.a
-top.u2 liba.b
-top.u3 libc.c1

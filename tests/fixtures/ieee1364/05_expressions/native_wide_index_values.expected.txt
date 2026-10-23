@@ -1,7 +1,0 @@
-positive 0 a
-negative 9
-writes 35 66 3 3
-outside x xxxx
-huge x xxxx xx
-unknown x xxxx
-unchanged 35 66

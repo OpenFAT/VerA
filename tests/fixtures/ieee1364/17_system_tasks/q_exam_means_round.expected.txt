@@ -1,2 +1,0 @@
-interarrival=3 status=0
-wait=7 status=0

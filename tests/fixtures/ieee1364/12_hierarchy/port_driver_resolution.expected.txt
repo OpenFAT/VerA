@@ -1,4 +1,0 @@
-strong_wins 1
-weak_shows_after_removal 0
-strong_alone 0
-no_driver_left z

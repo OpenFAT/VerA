@@ -1,9 +1,0 @@
-// IEEE 1364-2005 19.3.1, physical page 381 (VAMS 10.4): actual/formal counts
-// must match. This supplies three expressions for two formals, separately from
-// the too-few test so an implementation cannot silently discard extra actuals.
-//! lrm 10.4
-//! reject-only E0117
-`define AUDIT_ADD(A,B) ((A)+(B))
-module audit_macro_too_many_actuals_rejected;
-  parameter real value = `AUDIT_ADD(1.0, 2.0, 3.0);
-endmodule

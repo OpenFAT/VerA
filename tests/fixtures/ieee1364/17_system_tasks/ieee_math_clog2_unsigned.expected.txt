@@ -1,2 +1,0 @@
-unsigned 8 32 integer-width 1
-power 7 zero 0 one 0

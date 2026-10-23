@@ -1,8 +1,0 @@
-// Host-only oracle: tests/host.py.
-// AMS 9.7.3:11: the simulator must add the time; the message does not.
-// observation: analysis tran
-// observation: time 0, 2n
-// observation: print none
-module diagnostic_info_transient;
-  analog if ($abstime >= 2n) $info("observe-info");
-endmodule

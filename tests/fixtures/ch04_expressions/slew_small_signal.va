@@ -1,6 +1,0 @@
-// Host-only small-signal linearization at settled and actively slewing states.
-module slew_small_signal(in,out);
-    inout in,out;
-    electrical in,out;
-    analog V(out) <+ slew(V(in), 3e8, -3e8);
-endmodule

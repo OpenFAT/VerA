@@ -1,9 +1,0 @@
-// LRM 4.7.2: the actual for an output formal must be a variable; V(p) is not
-// an lvalue.
-//! lrm 4.7.2.3
-//! lrm 4.7.2.3:1
-//! lrm 4.7.3
-//! lrm 4.7.3:3
-//! reject-only E0316
-//! neighbour function_output_inout.va
-module ch4_fn_out_actual(p); inout p; electrical p; real dummy; analog function real f; input x; output y; real x,y; begin y=x; f=x; end endfunction analog begin dummy=f(V(p),V(p)); I(p)<+dummy; end endmodule

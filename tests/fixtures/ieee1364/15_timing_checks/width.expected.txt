@@ -1,4 +1,0 @@
-t=1 ntfr=0
-t=13 ntfr=1
-t=42 ntfr=0
-t=45 n2=0

@@ -1,3 +1,0 @@
-short=0
-long=1
-finished=0

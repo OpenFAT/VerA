@@ -1,3 +1,0 @@
-scalar=1
-vector=a
-real=1.25

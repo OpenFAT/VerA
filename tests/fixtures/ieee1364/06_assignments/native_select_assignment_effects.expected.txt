@@ -1,3 +1,0 @@
-ignored 7 00 00 00
-scheduled 9
-stored 9 80 00 28

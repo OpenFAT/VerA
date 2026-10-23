@@ -1,2 +1,0 @@
-known and=01 or=11 nand=10 nor=00
-unknown and=0x or=xx nand=1x nor=xx

@@ -1,5 +1,0 @@
-suite: osdi
-what: hand-derived ngspice decks over `vera --emit-osdi` libraries (PART 1's proof that ngspice loads VerA's OSDI); mixed.sp loads a .v library beside a .va one
-url: none (every file here is VerA's own)
-license: Apache-2.0 (VerA)
-files: resistor.va resistor.sp diode.va diode.sp mixed.v mixed.va mixed.sp

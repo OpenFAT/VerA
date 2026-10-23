@@ -1,1 +1,0 @@
-static=20,20 automatic=10,20

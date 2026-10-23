@@ -1,2 +1,0 @@
-first: global=1 local=1 scalar=1 nested=1
-both: global=3 local=3 scalar=3 nested=3

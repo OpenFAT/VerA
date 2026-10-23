@@ -1,5 +1,0 @@
-strong_one_beats_weak_zero 1
-strong_zero_beats_weak_one 0
-strong_removed_weak_shows 1
-both_zero 0
-strong_x_covers_weak_zero x

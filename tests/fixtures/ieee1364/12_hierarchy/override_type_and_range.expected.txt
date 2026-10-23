@@ -1,4 +1,0 @@
-b_12_2_override_type_and_range.f1 A=2 ~B=101 neg=0 S=7
-b_12_2_override_type_and_range.f2 A=5 ~B=00110111 neg=0 S=-16
-b_12_2_override_type_and_range.f3 A=2 ~B=0111 neg=1 S=7
-b_12_2_override_type_and_range.f4 A=3 ~B=101 neg=0 S=7

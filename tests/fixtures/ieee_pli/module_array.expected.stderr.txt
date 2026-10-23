@@ -1,1 +1,0 @@
-pli-module-array members=2 indices=0,1

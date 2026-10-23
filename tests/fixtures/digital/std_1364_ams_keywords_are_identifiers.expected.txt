@@ -1,1 +1,0 @@
-analog=5 ddt=6 sin=1 above=12

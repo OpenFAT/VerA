@@ -1,6 +1,0 @@
-suite: vampyre
-what: VAMPyRE (the CMC's Verilog-A rule checker) and VerA judging the same compact models, on the two findings both make: hidden state (a variable read before it is set, which VerA holds across evaluations, §5.10) and integer division by a divisor that may be zero (VerA W0653)
-url: https://github.com/analogdevicesinc/vampyre
-commit: d0acfc4b9265c6b2e82373c7da6599efa0651a19
-license: ECL-2.0 (Analog Devices, Inc.); FETCHED at test time into the cache, never committed
-files: vampyre.py (run, never imported); the models are the va-models suite's MANIFEST rows, fetched by that suite's pin

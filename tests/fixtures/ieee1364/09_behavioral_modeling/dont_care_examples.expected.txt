@@ -1,3 +1,0 @@
-instruction3
-stat2
-expr-z

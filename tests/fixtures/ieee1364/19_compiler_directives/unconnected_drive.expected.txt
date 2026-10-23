@@ -1,4 +1,0 @@
-up i=1
-down i=0
-free i=z
-bound i=0

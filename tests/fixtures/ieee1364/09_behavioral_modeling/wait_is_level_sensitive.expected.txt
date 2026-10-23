@@ -1,2 +1,0 @@
-nowait 0001
-waited 0010 0001

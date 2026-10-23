@@ -1,3 +1,0 @@
-early: hits=0 fixed=1 or=0 wide=0 x=0 held=0 nba=0
-sampled: hits=1 or=2 held=7 nba=9 repeat=1
-final: hits=4 fixed=1 or=5 wide=1 x=2 function=4 held=7 nba=9 repeat=2 calls=1
