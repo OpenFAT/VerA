@@ -101,7 +101,8 @@ pub fn zHistAt(ts: []const f64, vs: []const f64, head: u64, t: f64) f64 {
 /// are kept, past the live ones, until a push overwrites them: that is what
 /// lets `zHistRevert` undo a thinning push exactly. A ring that never thins
 /// answers exactly as a plain ring does. W1051 prints once per site, with the
-/// widest spacing left.
+/// widest spacing left, on a host only: a GPU kernel has no stderr and no
+/// mutable global for the once-flag, so it thins silently (same samples).
 pub fn zHistThin(comptime site: []const u8, ts: []f64, vs: []f64, head: *u64, now: f64, w: f64) void {
     const n = ts.len;
     // Below 8 samples a thinned ring would keep n - 1 and a revert could not
@@ -111,6 +112,7 @@ pub fn zHistThin(comptime site: []const u8, ts: []f64, vs: []f64, head: *u64, no
     if (!(ts[(o + 1) % n] > now - w)) return;
     zhThin(ts, vs, o);
     head.* = zhKept(n);
+    if (comptime zh_device) return;
     const Once = struct {
         const name = site;
         var warned = false;
@@ -122,6 +124,12 @@ pub fn zHistThin(comptime site: []const u8, ts: []f64, vs: []f64, head: *u64, no
     zhs.debug.print("warning[W1051]: absdelay `{s}`: its {d}-sample history filled inside its {e} s window; " ++
         "older samples are now {e} s apart; see `vera --explain W1051`\n", .{ site, n, w, gap });
 }
+
+/// A GPU target (`zSpec`'s test): `zHistThin` drops its host-only warning.
+const zh_device = switch (@import("builtin").target.cpu.arch) {
+    .nvptx64, .amdgcn => true,
+    else => false,
+};
 
 /// The samples a thinned ring of `n` keeps: every other one of the older
 /// half `n / 2` (the first included), and all of the newer half.
