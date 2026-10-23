@@ -39,7 +39,7 @@ const std = @import("std");
 /// An additive optional declaration stays optional for a host that checks
 /// it with `@hasDecl`. Replaces the integer `abi_version` (last 6) and the
 /// device's `contract_abi`, 2026-10-18.
-pub const vera_version = "0.12.1";
+pub const vera_version = "0.13.0";
 
 /// Whether this program asked for the contract's conformance checks: its root
 /// module declares `pub const vera_validate_contract = true`. Off by default:

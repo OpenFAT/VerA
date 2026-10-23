@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## v0.13.0 — 2026-10-23
+
+| Measure | Number | Remaining to v1.0.0 | Command |
+|---|---|---|---|
+| **A** — fixtures behaving as stated | **2759 / 2759 — 100.0%** | 0 rows | `zig build benchmark -- --strict` |
+| &nbsp;&nbsp;↳ FAIL · unasserted · XFAIL | 0 · 0 · 0 | all three to 0 | same run |
+| **C** — clauses with both citation polarities (static) | **489 / 612 — 79.9%** | 1 clauses | `zig build benchmark -- --coverage` |
+| &nbsp;&nbsp;↳ positive-only · rejection-only · uncited | 0 · 1 · 0 | requires rule-level review | same run |
+| &nbsp;&nbsp;↳ classified under `CLAUSE-AUDIT.md` §5 (`CLAUSES.tsv`) | 122 | reviewed claims, not evidence | same run |
+| **B** — IEEE 1364-2005 clauses with both citation polarities (static) | **397 / 808 — 49.1%** | 9 clauses | `zig build test-1364 -- --coverage` |
+| &nbsp;&nbsp;↳ positive-only · rejection-only · uncited · classified | 8 · 1 · 0 · 402 | §§17–18 obligation detail: `specification/CLAUSE-AUDIT.md` §7.1 | same run |
+| `zig build test` | **pass** | pass | `zig build test` |
+| `zig build test-devices` | **pass** | pass | `zig build test-devices` |
+
+`--strict` exit code **0** — 0 only when FAIL, unasserted and XFAIL are all 0.
+A, B and C are measured by this script and nothing else may write them.
+
+B and C count citations without executing fixtures. It is not a conformance score:
+XFAILs and implementation-limit rejections can supply citations, and a clause
+can contain multiple untested rules. See `specification/CLAUSE-AUDIT.md`.
+
 - **`zig build test-spice`** runs the `.sp` decks on ESPice and grades its
   CSV against each deck's oracle. ESPice is `build.zig.zon`'s lazy `espice`
   dependency, built with `--fork .` so that its devices are compiled by this
@@ -24,6 +45,22 @@
   one device, and a circuit is a deck ESPice runs.
   `ch09_system_tasks/bound_step_below_minimum_step.va` went with them
   (§9.17.2's minimum-step floor is the simulator's).
+- **`zig build conformance`** runs the VAMS Conformance Suite
+  (`tests/conformance`, a submodule: `git submodule update --init --recursive
+  tests/conformance`) through its `conform` harness from `nix develop
+  .#external`, against this build's vera; `tools/vera.xfail` lists the known
+  failures, seeded from the first full run (7846 tests: 4389 pass, 2316
+  known failures, 1141 skipped; the largest cluster is annex C.4's `domain
+  discrete` refused in the included `disciplines.vams` under
+  `--sim=verilogA`). `CONFORM_JOBS` caps the harness's parallelism. The
+  digital external suites (`tools/external_digital.py`, `ivtest`, `sv-tests`,
+  `iverilog-diff`) moved into the suite.
+- A `.v` module instantiating itself without a terminating generate (IEEE
+  1364-2005 §12.1.3) is refused at 256 levels or 2^18 instances instead of
+  elaborated without end (ivtest `pr2728812c` reached 25 GB).
+- `zHistThin`'s W1051 warning and its once-flag are host-only: a GPU kernel
+  thins an `absdelay` ring silently (same samples), without touching stderr
+  or a mutable global.
 - `Instance.systf` exists only in a device that declares `systf_calls`: 8 bytes
   fewer per instance of every other device (`Lowered.Uses.systf`).
 - `Setup` holds a copy of every card value `eval` reads, beside the derived

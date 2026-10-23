@@ -1,7 +1,7 @@
 $ vera --emit-zig --allow=W0650 diode.va | grep "^pub "
 pub const U = enum(u8) {
 pub const num_ports: usize = 2;
-pub const vera_version = "0.12.1";
+pub const vera_version = "0.13.0";
 pub const u_abstol = [n_u]f64{
 pub const Model = struct {
 pub fn checkRange(model: *const Model) ?[]const u8 {
