@@ -3715,7 +3715,7 @@ pub fn InstancePtr(comptime D: type) type {
 ///   initState(&model, &inst)     once per instance, before the first solve, and
 ///                                at the start of each later analysis: it resets
 ///                                what `updateState` advances in `inst` (§4.6.2)
-///   seed(S, ...)               once before Newton iteration 1
+///   seed(S, ...)                 once before Newton iteration 1
 ///   eval / q / evalQ             every iterate; `q` returns one charge per site
 ///                                (`Sites`), `evalQ` both from one evaluation
 ///   limit(S, ..., cur, old, sim) every iterate, on the instance's private limited
