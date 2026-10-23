@@ -633,7 +633,10 @@ fn parseModuleItemBody(self: *Parser, b: *Body) Error!void {
             self.pos += 1;
             self.gen_depth += 1;
             defer self.gen_depth -= 1;
-            try parseModuleItems(self, b, .kw_endgenerate);
+            // `generate generate ...` nests as deep as the input, each one a
+            // native level that reaches no `enter`: `descend` counts it and
+            // moves to a fresh stack segment when this one is full.
+            try self.descend(parseModuleItems, .{ self, b, @as(token.Tag, .kw_endgenerate) });
             _ = try self.expect(.kw_endgenerate);
         },
         // A.2.1.3 `discipline_identifier list_of_net_identifiers ;`

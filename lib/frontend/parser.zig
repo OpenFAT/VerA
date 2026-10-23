@@ -811,7 +811,8 @@ pub const Parser = struct {
 
     /// Calls the grammar function `f(args)` as one more native level: on a
     /// fresh segment when this one is full. For a recursion that reaches no
-    /// `enter` site (the right-associative `?:` arm).
+    /// `enter` site (the right-associative `?:` arm, a nested generate
+    /// region).
     pub fn descend(self: *Parser, comptime f: anytype, args: anytype) @typeInfo(@TypeOf(f)).@"fn".return_type.? {
         if (self.segmentDue()) return self.segment(f, args);
         self.seg.frames += 1;
