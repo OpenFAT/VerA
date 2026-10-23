@@ -37,6 +37,8 @@ pub const Literal = struct {
     width: u32,
     /// Written with a §2.6.1 size; an unsized literal's width is VerA's.
     sized: bool,
+    /// Read as two's complement (IEEE 1364-2005 §5.5.1); `parse` sets it for
+    /// a `'s` base or a simple decimal (§2.6.1).
     signed: bool,
     /// The value plane then the unknown plane, equal halves.
     planes: []u64,
@@ -462,8 +464,7 @@ pub const Literal = struct {
     pub fn shift(self: Literal, allocator: std.mem.Allocator, op: Shift, rhs: Literal) std.mem.Allocator.Error!Literal {
         const out = try allocate(allocator, self.width, self.signed);
         if (rhs.hasUnknown()) {
-            @memset(out.planes, std.math.maxInt(u64));
-            out.clearPadding();
+            out.fillUnknown();
             return out;
         }
         const amount: u32 = count: {
@@ -752,7 +753,6 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8) (Error || std.mem.Alloc
             width = std.math.add(u32, width, c - '0') catch return error.Overflow;
         }
         if (sized and width == 0) return error.ZeroSize;
-        if (width > max_width) return error.Overflow;
         if (sized and size_text[0] == '0') return error.DigitOutOfRange;
     }
     if (digits.len == 0) return error.MissingDigits;
@@ -844,7 +844,7 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8) (Error || std.mem.Alloc
             }
             bit += shift;
         }
-        if (radix != 10 and any_unknown) {
+        if (any_unknown) {
             const used = @as(u64, count) * shift;
             const leading = std.ascii.toLower(digits[0]);
             if (used < width and (leading == 'x' or leading == 'z' or leading == '?')) {
@@ -867,7 +867,6 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8) (Error || std.mem.Alloc
             if (word != 0) actual = @intCast(i * 64 + 64 - @clz(word));
         }
         literal.width = @max(64, actual);
-        if (literal.width > max_width) return error.Overflow;
     }
     return literal;
 }
