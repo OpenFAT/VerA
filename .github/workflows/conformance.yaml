@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
       - uses: cachix/install-nix-action@v31
       - name: Audit and evidence accounting tests
         run: |
@@ -21,16 +23,16 @@ jobs:
           nix develop -c python3 tests/host.py selftest
       - name: Build-step inventory
         run: nix develop -c python3 tools/conformance.py steps
-      - name: Requirement ledger and citations
-        run: |
-          nix develop -c python3 tools/conformance.py obligations
-          nix develop -c python3 tools/conformance.py lint-cites
+      - name: Fixture cites against the requirement ledger
+        run: nix develop -c python3 tools/conformance.py lint-cites
 
   fixtures:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
       - uses: cachix/install-nix-action@v31
       - name: Execute suites and measure coverage
         run: nix develop -c python3 tools/conformance.py run --jobs=2 --output=/tmp/vera-conformance
@@ -65,6 +67,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
       - uses: cachix/install-nix-action@v31
       - name: All digital transcripts through emitted executables
         run: nix develop -c zig build test-devices -- --native
@@ -78,13 +82,15 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
       - uses: cachix/install-nix-action@v31
       - name: Behavioural Verilog simulates and lints
         run: nix develop -c zig build test-beh-verilog
 
   # The footprint and speed scaling table: generated-device byte counts and
   # MIR footprint against fixture size. It compiles nothing from
-  # tests/fixtures, so it is fast and it is the size-regression signal.
+  # tests/conformance, so it is fast and it is the size-regression signal.
   # Reports, never gates.
   sweep:
     runs-on: ubuntu-latest
@@ -92,6 +98,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
       - uses: cachix/install-nix-action@v31
       - name: Benchmark sweep, footprint and speed
         run: |

@@ -46,7 +46,7 @@ pub fn shapeOverrides(arena: Allocator, d: Directives, lowered: *const Lowered) 
 /// (`Directives.mem_bytes`): eight per element, real or integer. Plus the
 /// IEEE 1364 §5.4 wide temporaries (`wide_kernels.zig`): one value per node
 /// of every sized tree and the division's scratch, three values' bytes per
-/// node (specification/Vague_Decisions.md §7, "wide `reg` temporaries").
+/// node (docs/specification/Vague_Decisions.md §7, "wide `reg` temporaries").
 pub fn memBytes(lowered: *const Lowered) u64 {
     var n: u64 = 0;
     for (lowered.mem_arrays.items) |m| n += 8 * @as(u64, m.len);

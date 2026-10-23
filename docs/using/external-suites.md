@@ -9,7 +9,7 @@ suite prints the case by name so someone can find out which.
 
 None of the external code is stored in the repository. Each suite is a
 folder under
-[`tests/fixtures/external/`](https://github.com/OmarSiwy/VerA/tree/main/tests/fixtures/external)
+`tests/conformance/vera/external/` (the VAMS Conformance Suite submodule)
 holding a manifest that pins what is fetched (a URL and a commit, or a file
 and its SHA-256) and states its license. The scripts fetch it at run time
 into `.zig-cache/external/`, which git ignores.

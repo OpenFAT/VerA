@@ -19,7 +19,7 @@
 // type `analog/wide.zig` computed. The analog context has no x or z (§7.3.2),
 // so the IEEE 1364 operations that yield x yield 0 here: a division or
 // remainder by zero, and zero to a negative power
-// (specification/Vague_Decisions.md VD-116).
+// (docs/specification/Vague_Decisions.md VD-116).
 //
 // `std` is spelled `zwstd` HERE for the reason `file_kernels.zig` spells it
 // `zfstd`: the text is embedded into device.zig, which declares `std` already.

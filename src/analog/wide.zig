@@ -9,7 +9,7 @@
 //! (`leaf_*`) are the call's arguments. `codegen/wide.zig` renders the tree
 //! over `kernels/wide_kernels.zig`.
 //!
-//! The rule (specification/Vague_Decisions.md VD-116). IEEE 1364 §5.4.1 Table
+//! The rule (docs/specification/Vague_Decisions.md VD-116). IEEE 1364 §5.4.1 Table
 //! 5-22 and §5.5.1 give every operand a self-determined width and sign; the
 //! assignment's left-hand width joins the context of the right-hand side
 //! (§5.4.1, "including the left-hand side of an assignment"), §5.5.2

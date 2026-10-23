@@ -355,7 +355,7 @@ pub fn zcFlag(c: u8) ?u8 {
 /// formatting capabilities available in the C language" to Table 9-23's real
 /// conversions only, so it is %e/%f/%g, either case. Table 9-22's rows,
 /// `%m`/`%l` and §2.6.2's `%r` have no '#' form (E0825;
-/// `specification/Vague_Decisions.md` §6).
+/// `docs/specification/Vague_Decisions.md` §6).
 pub fn zcAltOk(conv: u8) bool {
     return switch (conv | 0x20) {
         'e', 'f', 'g' => true,
@@ -728,7 +728,7 @@ pub fn zCReal(buf: []u8, v: f64, conv: u8, flags: u8, width: usize, prec: i64) [
             // digits. The two cannot both hold; with an explicit precision the
             // clause's printed example is what VerA follows, because a tool
             // that follows the LRM's own example is following the LRM. See
-            // tests/fixtures/ch09_system_tasks/s01_01_*.va, which withdraws the
+            // tests/conformance/tests/verilog-a/ch09_system_tasks/real_g_conversion_is_significant_digits.va, which withdraws the
             // explicit-precision rows for exactly this reason.
             zcFixed(&o, &z, if (prec < 0) 6 else @intCast(prec), alt);
         } else {

@@ -5,7 +5,7 @@
 //! `zigbuild.compileRelease`); this file names what the target cannot carry
 //! before a library is built: OSDI 0.4 has no slot for a step-rejection
 //! request (E1099) or for the correlation of two noise rows of one generator
-//! (W1098, specification/Vague_Decisions.md VD-102).
+//! (W1098, docs/specification/Vague_Decisions.md VD-102).
 //! Clauses: §4.6.4.6 (correlated noise), §9.17 (`$vera_reject_step`).
 
 const diag = @import("diag");

@@ -336,7 +336,7 @@ ret: ?RetCtx = null,
 /// declaration shadows the module's parameter of the same name.
 func_params: []const Ast.ParamDecl = &.{},
 /// Nonzero while `lowerClog2` lowers its operand as a host card sets it
-/// (specification/Vague_Decisions.md VD-089): each `hostSizedParam` then reads as a
+/// (docs/specification/Vague_Decisions.md VD-089): each `hostSizedParam` then reads as a
 /// signed integer of this many bits instead of its declaration's width.
 clog2_host: u8 = 0,
 /// §4.7.1 recursion guard — names on the inline stack.

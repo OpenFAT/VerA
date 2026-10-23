@@ -1046,7 +1046,7 @@ test tokenSpan {
 test simparamAnswer {
     // §9.15: a known name answers whether or not a fallback is written; an
     // unknown one returns the fallback, else is not known. Values are
-    // VD-072's (`specification/Vague_Decisions.md`), not this table's.
+    // VD-072's (`docs/specification/Vague_Decisions.md`), not this table's.
     const l: Lowered = .{};
     const t = std.testing;
     for ([_]bool{ false, true }) |fb| {

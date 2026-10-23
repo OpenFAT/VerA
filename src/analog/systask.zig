@@ -687,7 +687,7 @@ pub fn checkFormatPairing(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!
 const Conv = struct { letter: u8, alt: bool, prefixed: bool = false, field: u64 = 0 };
 
 /// The largest field width or precision an analog-context format may
-/// write (#45; `specification/Vague_Decisions.md` §7): 2^30. The device
+/// write (#45; `docs/specification/Vague_Decisions.md` §7): 2^30. The device
 /// kernel `str_kernels.zCReal` indexes digits as i32, the precision plus
 /// f64's 309 integer digits and its rounding position, and `cg_display`
 /// sizes each field's scratch as width + precision + 328 bytes in a u64;

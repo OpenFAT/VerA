@@ -473,7 +473,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // when the output of limexp() equals the exponential of the input".
         // `eval` sees one iterate and never the previous one, so the only
         // limiting it can do that still converges to exp is none: limexp is
-        // `exp`'s own text (specification/Vague_Decisions.md VD-121).
+        // `exp`'s own text (docs/specification/Vague_Decisions.md VD-121).
         .limexp => return gen_render.renderOp(self, .exp, if (args.len > 0) args[0] else .f_zero, .f_zero, .real),
 
         // §4.5.14 ddx(f, V(node)); the unknown index is an int literal. Pins:

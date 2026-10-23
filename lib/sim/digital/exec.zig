@@ -582,7 +582,7 @@ fn doneFlush(self: *Run, start: u32) Error!void {
 /// iteration): an untimed loop never returns to the scheduler, so each pass
 /// counts against the time step's event budget (`Run.budget`), and
 /// `initial forever x = 1;` is refused by name instead of hanging at one
-/// tick (specification/Vague_Decisions.md §7). `rt.State.loopIteration` is
+/// tick (docs/specification/Vague_Decisions.md §7). `rt.State.loopIteration` is
 /// the native executable's.
 fn loopIteration(self: *Run) Error!void {
     self.budget_used += 1;

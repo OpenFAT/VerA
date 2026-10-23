@@ -11,8 +11,8 @@
 //!   `golden`     `Golden`, the before/after snapshot of what vera says
 //!   `canary`     `Canary`, the wrong-on-purpose fixtures the judge must FAIL
 //! `Fixtures` is the harness every mode shares (the fixture walk, the verdict
-//! algebra, the parallel run); `Analog` plugs VerA into it; `Lint`, `Coverage`
-//! and `Digital` are its tables; `Child` runs a process to completion.
+//! algebra, the parallel run); `Analog` plugs VerA into it; `Lint` and
+//! `Digital` are its tables; `Child` runs a process to completion.
 //!
 //! One file: a nested namespace may not redeclare a name of the file scope
 //! (`std`, say), so the file scope declares only `main`, the test below and
@@ -20,6 +20,16 @@
 //!
 //! `tools/conformance.py` parses the `pass fail unasserted xfail` row `Suite`
 //! prints: that row's text is frozen.
+//!
+//! The fixtures are the VAMS Conformance Suite's `tests/` (`suite_options.fixture_root`,
+//! the submodule `tests/conformance`): `verilog-a/`, `verilog-ams/` (its `digital/`
+//! the digital-context cases), `spice/`, `verilog/` (IEEE 1364-2005) and `include/`
+//! (`check.vh`); its `netlist/` is ESPice's. Every path a verdict prints is relative
+//! to that root. The suite's conventions hold: a source `include`s the annex D files
+//! it uses (every compile sets `require_std_includes`), a `.v` names its extra inputs
+//! with `//@` lines, and no fixture carries `//! xfail`: VerA's own expected failures
+//! are `<vera_root>/xfail`. `vera_root` (`tests/conformance/vera`) also holds the
+//! canary and the per-chapter `CLAUSES.tsv`.
 
 pub fn main(init: @import("std").process.Init) !u8 {
     return Suite.main(init);
@@ -34,7 +44,6 @@ test {
     _ = Canary;
     _ = CFixtures;
     _ = Child;
-    _ = Coverage;
     _ = Devices;
     _ = Digital;
     _ = Fuzz;
@@ -76,8 +85,7 @@ const Suite = struct {
     ///   zig build benchmark                         # the suite, timed
     ///   zig build benchmark -- ch04                 # only paths matching `ch04`
     ///   zig build benchmark -- --strict             # unasserted and xfail FAIL
-    ///   zig build benchmark -- --fixture-root=tests/pending   # the tree meant to fail
-    ///   zig build benchmark -- --coverage           # LRM clauses cited and uncited
+    ///   zig build benchmark -- --fixture-root=DIR   # another tree laid out like the suite's tests/
     ///   zig build benchmark -- --sweep              # the generated size sweep instead
     ///   zig build benchmark -Doptimize=ReleaseFast  # the timing that ships
     ///
@@ -94,7 +102,7 @@ const Suite = struct {
         if (first) |a| {
             if (std.mem.eql(u8, a, "ams")) return benchmark(init, vera_exe, "--strict", &args, false);
             if (std.mem.eql(u8, a, "devices")) return devices.run(init, vera_exe, &args, &devices.digital_dirs);
-            if (std.mem.eql(u8, a, devices.ieee1364_dir)) return devices.run(init, vera_exe, &args, &.{devices.ieee1364_dir});
+            if (std.mem.eql(u8, a, "ieee1364")) return devices.run(init, vera_exe, &args, &.{devices.ieee1364_dir});
             if (std.mem.eql(u8, a, "vpi")) return c_fixtures.run(init, &args);
             if (std.mem.eql(u8, a, "spice")) return spice_decks.run(init, vera_exe, &args);
             if (std.mem.eql(u8, a, "golden")) return golden.run(init, vera_exe, &args);
@@ -144,8 +152,8 @@ const Suite = struct {
                 return 2;
             } else cfg.filter = arg;
         }
-        // `--fixture-root=tests/pending` is how a human writes it; resolved once,
-        // so every FAIL line names an absolute path.
+        // `--fixture-root=DIR` is how a human writes it; resolved once, so every
+        // FAIL line names an absolute path.
         cfg.root = std.fs.path.resolveAlloc(arena, &.{cfg.root}) catch cfg.root;
 
         var out_buf: [1 << 16]u8 = undefined;
@@ -155,11 +163,8 @@ const Suite = struct {
 
         if (do_sweep) return size_sweep.report(gpa, io, arena, w);
 
-        // `--coverage` is a question about the FIXTURES — which LRM clauses they
-        // cite — so it compiles nothing and there is nothing to time or compare.
         var tctx: torture.Ctx = .{ .cfg = &cfg };
         defer tctx.deinit(gpa);
-        if (cfg.coverage) return harness.run(init, torture.compiler(&tctx), cfg, null);
 
         // THE DEPTH PASS: VerA compiles, builds a testbench, runs it and reads the
         // `ok=` columns. It owns the exit code, because it is the only pass that
@@ -184,7 +189,7 @@ const Suite = struct {
         cfg: harness.Config,
         depth: harness.Counts,
     ) !void {
-        const fixtures = try harness.collect(arena, io, cfg.root, cfg.filter);
+        const fixtures = try harness.collect(arena, io, cfg.root, &harness.ams_dirs, cfg.filter);
         if (fixtures.len == 0) return;
 
         // VerA's accept/reject prose is discarded: the depth pass already printed
@@ -305,7 +310,7 @@ const Suite = struct {
 };
 
 const Fixtures = struct {
-    //! The conformance harness: `tests/fixtures/**/*.va` and a plugged-in
+    //! The conformance harness: the suite's AMS fixtures (`ams_dirs`) and a plugged-in
     //! `Compiler` -> one verdict per fixture and a report. Everything that is not
     //! about a particular compiler lives here: the fixture walk (`collect`), the
     //! verdict algebra (`judge`, `decide`) and the parallel run (`run`, the
@@ -314,22 +319,20 @@ const Fixtures = struct {
     //!
     //! Sub-files under `harness/`, each a table of free functions:
     //!   `lint.zig`      the assertion lint `decide` runs before compiling
-    //!   `coverage.zig`  `--coverage`, the static citation inventory
     //!   `digital.zig`   the `.v` runner metadata both digital runners read
     //! The other runners import the sub-file they need directly.
     //!
     //! The verdict algebra is frozen behaviour: an `ok=1`
-    //! transcript is `met` only through the compiler plug, `//! xfail` turns
-    //! `unmet` into XFAIL and `met` into an XPASS FAIL, and `--strict` fails
-    //! unasserted and XFAIL fixtures.
+    //! transcript is `met` only through the compiler plug, `//! xfail` (or a
+    //! `xfail_list` line) turns `unmet` into XFAIL and `met` into an XPASS FAIL,
+    //! and `--strict` fails unasserted and XFAIL fixtures.
 
     const std = @import("std");
     const vera = @import("vera");
-    /// `fixture_root` and `docs_root`, from `build.zig`; shared by every runner so
-    /// all compilers are judged on the same fixtures against the same LRM.
+    /// `fixture_root` and `vera_root`, from `build.zig`; shared by every runner
+    /// so all compilers are judged on the same fixtures.
     const options = @import("suite_options");
     const lint = Lint;
-    const coverage = Coverage;
     const digital = Digital;
 
     const Io = std.Io;
@@ -342,6 +345,59 @@ const Fixtures = struct {
         .{ "ReleaseSmall", .small },
     });
 
+    /// The directories under the fixture root the AMS walk (`collect`) covers:
+    /// Verilog-A, Verilog-AMS and annex E's SPICE, plus the `.va` sources under
+    /// `verilog/` (an analog design a `pli/` `.c` drives, with its own cites); the
+    /// IEEE 1364 `.v` there is the `devices` modes' (`Devices.ieee1364_dir`). Never
+    /// `netlist/` (ESPice's decks) or `include/`.
+    pub const ams_dirs = [_][]const u8{ "verilog-a", "verilog-ams", "spice", Devices.ieee1364_dir };
+
+    /// `check.vh` and `erfc.vh`: the include dir of every compile, after the
+    /// fixture's own directory.
+    pub const include_dir = options.fixture_root ++ "/include";
+
+    /// VerA's own expected failures. The suite carries no `//! xfail` lines (a
+    /// tool's known failures are its `tools/<tool>.xfail`), so this list is VerA's:
+    /// one path a line, relative to the suite root (`tests/verilog/16_sdf/x.v`),
+    /// the reason after `#`; a line starting `#` is a comment. A fixture listed
+    /// here is judged exactly as if it carried `//! xfail <reason>`.
+    pub const xfail_list = options.vera_root ++ "/xfail";
+
+    /// The reason `xfail_list` gives the fixture at `path` under `root` (the
+    /// suite's `tests/`, so the key is `path` relative to `root`'s parent): ""
+    /// for a bare line, null when it is not listed. Read per call: the file is a
+    /// few lines, and a run's workers then share nothing.
+    pub fn listedXfail(arena: std.mem.Allocator, io: Io, root: []const u8, path: []const u8) !?[]const u8 {
+        const suite_root = std.fs.path.dirname(root) orelse return null;
+        if (!std.mem.startsWith(u8, path, suite_root)) return null;
+        const text = Io.Dir.cwd().readFileAlloc(io, xfail_list, arena, .limited(1 << 20)) catch |err| switch (err) {
+            error.FileNotFound => return null,
+            else => return err,
+        };
+        return xfailIn(text, std.mem.trimStart(u8, path[suite_root.len..], "/"));
+    }
+
+    /// `listedXfail`'s lookup of `rel` in the list's `text`.
+    fn xfailIn(text: []const u8, rel: []const u8) ?[]const u8 {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            const hash = std.mem.findScalar(u8, line, '#') orelse line.len;
+            if (!std.mem.eql(u8, std.mem.trim(u8, line[0..hash], " \t"), rel)) continue;
+            return std.mem.trim(u8, line[@min(hash + 1, line.len)..], " \t");
+        }
+        return null;
+    }
+
+    test "the xfail list: a path, its reason after `#`, comments skipped" {
+        const text = "# VerA's\ntests/verilog/16_sdf/a.v # SDF is refused.\n  tests/verilog/b.v\n";
+        try std.testing.expectEqualStrings("SDF is refused.", xfailIn(text, "tests/verilog/16_sdf/a.v").?);
+        try std.testing.expectEqualStrings("", xfailIn(text, "tests/verilog/b.v").?);
+        try std.testing.expect(xfailIn(text, "tests/verilog/16_sdf") == null);
+        try std.testing.expect(xfailIn(text, "# VerA's") == null);
+    }
+
     /// `std.mem.sort` order for strings: bytewise.
     pub fn strLess(_: void, a: []const u8, b: []const u8) bool {
         return std.mem.lessThan(u8, a, b);
@@ -351,13 +407,13 @@ const Fixtures = struct {
     /// `collect` was given). One row per collected fixture; the stem and the
     /// directory are slices of `path`, derived rather than stored.
     pub const Fixture = struct {
-        /// `tests/fixtures/ch04_expressions/01_arithmetic.va`; ends in `.va` or `.v`.
+        /// `<root>/verilog-a/ch04_expressions/01_arithmetic.va`; ends in `.va` or `.v`.
         path: []const u8,
-        /// The suite root this fixture was collected from (`tests/fixtures`, or
-        /// `tests/pending` under `--fixture-root=`): the second include dir, since
-        /// `check.vh` lives there, and the scratch namespace.
+        /// The fixture root this fixture was collected from (the suite's `tests/`,
+        /// or another under `--fixture-root=`): what a printed path is relative
+        /// to, the key `listedXfail` reads, and the scratch namespace.
         root: []const u8,
-        /// `ch04_expressions_01_arithmetic` — the scratch directory name.
+        /// `verilog-a_ch04_expressions_01_arithmetic` — the scratch directory name.
         ///
         /// Not the stem: stems repeat across chapters, and fixtures sharing a
         /// scratch directory race in parallel.
@@ -370,7 +426,7 @@ const Fixtures = struct {
             return base[0 .. base.len - ext];
         }
 
-        /// `tests/fixtures/ch04_expressions`, the first include dir.
+        /// `<root>/verilog-a/ch04_expressions`, the first include dir.
         pub fn dir(f: Fixture) []const u8 {
             return std.fs.path.dirname(f.path) orelse ".";
         }
@@ -433,8 +489,7 @@ const Fixtures = struct {
     /// Every suite knob, parsed once by `tests/suite.zig` and shared by all the
     /// compilers in a run, so a head-to-head never walks two fixture sets.
     pub const Config = struct {
-        /// The fixture tree to walk. `tests/pending` holds approved fixtures VerA
-        /// does not meet yet; a nonzero exit is its expected state.
+        /// The fixture tree to walk: its `ams_dirs`.
         root: []const u8 = options.fixture_root,
         /// A plain substring over the whole path.
         filter: ?[]const u8 = null,
@@ -443,7 +498,6 @@ const Fixtures = struct {
         /// cite the mutated file's clauses, `tools/conformance.py mutate`).
         list: ?[]const u8 = null,
         strict: bool = false,
-        coverage: bool = false,
         /// Worker threads, default one per core. `-j1` prints as it goes, which
         /// shows the fixture a run is stuck on.
         jobs: usize = 0,
@@ -510,7 +564,6 @@ const Fixtures = struct {
     pub fn takeArg(cfg: *Config, a: []const u8) bool {
         if (std.mem.eql(u8, a, "--strict")) cfg.strict = true //
         else if (std.mem.eql(u8, a, "--no-batch")) cfg.batch = false //
-        else if (std.mem.eql(u8, a, "--coverage")) cfg.coverage = true //
         else if (std.mem.startsWith(u8, a, "--fixture-root=")) cfg.root = a["--fixture-root=".len..] //
         else if (std.mem.startsWith(u8, a, "--verdicts=")) cfg.verdicts = a["--verdicts=".len..] //
         else if (std.mem.startsWith(u8, a, "--list=")) cfg.list = a["--list=".len..] //
@@ -655,18 +708,12 @@ const Fixtures = struct {
         var stderr = Io.File.stderr().writer(io, &stderr_buf);
         const w = &stderr.interface;
 
-        var fixtures = try collect(arena, io, cfg.root, cfg.filter);
+        var fixtures = try collect(arena, io, cfg.root, &ams_dirs, cfg.filter);
         if (cfg.list) |path| fixtures = try keepListed(arena, io, path, cfg.root, fixtures);
         if (fixtures.len == 0) {
             try w.print("{s}: no fixtures under {s}\n", .{ compiler.name, cfg.root });
             try w.flush();
             return 1;
-        }
-
-        if (cfg.coverage) {
-            const ok = try coverage.report(arena, io, options.docs_root, cfg.root, cfg.filter, fixtures, w);
-            try w.flush();
-            return if (ok) 0 else 1;
         }
 
         if (compiler.prepare) |prepare| if (cfg.batch) try prepare(compiler.ctx, gpa, io, fixtures, @max(cfg.jobs, 1));
@@ -775,43 +822,49 @@ const Fixtures = struct {
         if (c.xfail != 0) try w.print(
             "  {d} XFAIL — the fixture is right and {s} is not: it states a real LRM\n" ++
                 "  requirement that {s} is known not to meet yet, and said so on its\n" ++
-                "  `//! xfail` line (printed with the reason above). Not a pass — nothing\n" ++
-                "  was proved. The day it starts meeting it the run FAILs with an XPASS,\n" ++
-                "  so the marker cannot outlive the limitation and quietly hide a\n" ++
-                "  regression. (`--strict` fails on these.)\n",
+                "  `//! xfail` line or its xfail list row (printed with the reason above).\n" ++
+                "  Not a pass — nothing was proved. The day it starts meeting it the run\n" ++
+                "  FAILs with an XPASS, so the marker cannot outlive the limitation and\n" ++
+                "  quietly hide a regression. (`--strict` fails on these.)\n",
             .{ c.xfail, compiler.name, compiler.name },
         );
     }
 
-    /// Every fixture under `root`, sorted by path so the run is deterministic
-    /// (`Dir.walk` order is explicitly undefined) and a failing run is
-    /// reproducible and diffable. `filter` is a plain substring over the whole
-    /// path: `zig build benchmark -- ch04` runs one group. The rows and their
-    /// strings live in `arena`; a missing `root` is an empty list.
-    pub fn collect(arena: std.mem.Allocator, io: Io, root: []const u8, filter: ?[]const u8) ![]const Fixture {
-        var dir = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| switch (err) {
-            error.FileNotFound => return &.{},
-            else => return err,
-        };
-        defer dir.close(io);
-
+    /// Every fixture under `dirs` of `root` (`ams_dirs`; `&.{""}` is the whole
+    /// root), sorted by path so the run is deterministic (`Dir.walk` order is
+    /// explicitly undefined) and a failing run is reproducible and diffable. A
+    /// test in two language directories is two fixtures. `filter` is a plain
+    /// substring over the whole path: `zig build benchmark -- ch04` runs one
+    /// group. The rows and their strings live in `arena`; a missing directory
+    /// contributes nothing.
+    pub fn collect(arena: std.mem.Allocator, io: Io, root: []const u8, dirs: []const []const u8, filter: ?[]const u8) ![]const Fixture {
         // `fixtureExt` reads each `.va` and golden-less `.v` whole to look for a directive.
         // Those reads are dead once it answers, so they go to a scratch arena
         // reset per file instead of living in `arena` for the whole run.
         var scratch: std.heap.ArenaAllocator = .init(arena);
         var list: std.ArrayList(Fixture) = .empty;
-        var walker = try dir.walk(arena);
-        defer walker.deinit();
-        while (try walker.next(io)) |entry| {
-            if (entry.kind != .file or underCanary(entry.path)) continue;
-            _ = scratch.reset(.retain_capacity);
-            const ext = fixtureExt(scratch.allocator(), io, dir, entry.path) orelse continue;
-            const path = try std.fs.path.join(arena, &.{ root, entry.path });
-            if (filter) |f| if (std.mem.find(u8, path, f) == null) continue;
-            const slug = try arena.dupe(u8, entry.path[0 .. entry.path.len - ext.len]);
-            std.mem.replaceScalar(u8, slug, '/', '_');
-            std.mem.replaceScalar(u8, slug, '\\', '_');
-            try list.append(arena, .{ .path = path, .root = root, .slug = slug });
+        for (dirs) |sub| {
+            var dir = Io.Dir.cwd().openDir(io, try std.fs.path.join(arena, &.{ root, sub }), .{ .iterate = true }) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                else => return err,
+            };
+            defer dir.close(io);
+            var walker = try dir.walk(arena);
+            defer walker.deinit();
+            while (try walker.next(io)) |entry| {
+                if (entry.kind != .file) continue;
+                // IEEE 1364's `.v` is the `devices` modes' own; only its `.va` is here.
+                if (std.mem.eql(u8, sub, Devices.ieee1364_dir) and !std.mem.endsWith(u8, entry.path, ".va")) continue;
+                _ = scratch.reset(.retain_capacity);
+                const ext = fixtureExt(scratch.allocator(), io, dir, entry.path) orelse continue;
+                const rel = try std.fs.path.join(arena, &.{ sub, entry.path });
+                const path = try std.fs.path.join(arena, &.{ root, rel });
+                if (filter) |f| if (std.mem.find(u8, path, f) == null) continue;
+                const slug = try arena.dupe(u8, rel[0 .. rel.len - ext.len]);
+                std.mem.replaceScalar(u8, slug, '/', '_');
+                std.mem.replaceScalar(u8, slug, '\\', '_');
+                try list.append(arena, .{ .path = path, .root = root, .slug = slug });
+            }
         }
         std.mem.sort(Fixture, list.items, {}, struct {
             fn lt(_: void, a: Fixture, b: Fixture) bool {
@@ -821,12 +874,6 @@ const Fixtures = struct {
         return list.items;
     }
 
-    /// `canary/` under the fixture root holds the wrong-on-purpose fixtures
-    /// `canary.zig` judges on their own: every walk of the root skips it.
-    pub fn underCanary(rel: []const u8) bool {
-        return std.mem.startsWith(u8, rel, "canary") and rel.len > "canary".len and std.fs.path.isSep(rel["canary".len]);
-    }
-
     /// Is this path a fixture for the accept/reject walk, and if so what extension
     /// does its stem end at? `null` means "not this walk's business".
     ///
@@ -834,19 +881,15 @@ const Fixtures = struct {
     /// design a host test loads (a `//! device` line of a `*_host.zig`, the VPI walk's
     /// `vpi_design.va`), the same rule as item 3 below. `.v` is the awkward one,
     /// because three different things share that extension in
-    /// `tests/fixtures/{ieee1364,digital}/`:
+    /// `verilog-ams/digital/` (IEEE 1364's `verilog/` is not walked for `.v`):
     ///
-    ///   1. Files with a `<stem>.expected.txt` beside them belong to `zig build
-    ///      test-devices` (`harness/devices.zig`'s `digitalCases`), not here.
-    ///   2. Files with a directive and no golden are judged here: `//! reject`
-    ///      rows by the usual algebra, `//! expect vcd` rows by `judgeVcd`.
+    ///   1. Files with a `<stem>.expected.txt` beside them, or a `//! reject`
+    ///      line (`Digital.negative`), belong to `zig build test-devices`
+    ///      (`Devices.digitalCases`), not here.
+    ///   2. Other files with a directive are judged here: `//! expect vcd` rows
+    ///      by `judgeVcd`, the rest by the usual algebra.
     ///   3. Files with no directive (VPI support designs such as `design.v`)
     ///      are not fixtures.
-    ///
-    /// So: a `.v` joins this legacy walk when it carries a directive and has no
-    /// golden, unless explicitly opted into the digital-negative runner below.
-    /// Legacy negative results are analog compilation results, NOT evidence that
-    /// the digital executor diagnosed the intended rule.
     ///
     /// The whole file is scanned with `tb.parse`'s line rule (see `hasDirective`).
     fn fixtureExt(arena: std.mem.Allocator, io: Io, dir: Io.Dir, rel: []const u8) ?[]const u8 {
@@ -862,8 +905,7 @@ const Fixtures = struct {
         if (dir.access(io, golden, .{})) |_| return null else |_| {}
 
         const source = dir.readFileAlloc(io, rel, arena, .limited(1 << 20)) catch return null;
-        // Explicit digital negatives belong to bench's `--run` runner; unmarked
-        // `.v` rejects take the analog compile route.
+        // A digital negative belongs to the devices' `--run` runner.
         if (digital.negative(source)) return null;
         return if (hasDirective(source)) ".v" else null;
     }
@@ -928,10 +970,12 @@ const Fixtures = struct {
 
         // The `//!` lines are read from the RAW source: the preprocessor deletes
         // comments (§2.4), so after compilation they are gone.
-        const d = vera.tb.parse(arena, source) catch |err| {
+        var d = vera.tb.parse(arena, source) catch |err| {
             try w.print("FAIL {s}: `//!` directive: {t}\n", .{ f.path, err });
             return .fail;
         };
+        // VerA's own list stands in for the `//! xfail` line the suite dropped.
+        if (d.xfail == null) d.xfail = try listedXfail(arena, io, f.root, f.path);
 
         const verdict = try decide(gpa, io, arena, compiler, f, source, d, strict, w);
 
@@ -979,7 +1023,7 @@ const Fixtures = struct {
             // A digital transcript case is judged by its golden, not by `tb`
             // directives (`harness/digital.zig`), so only its polarity is read.
             const refusing = if (std.mem.endsWith(u8, n, ".v"))
-                digital.negative(text) or std.mem.find(u8, text, "//! reject") != null
+                digital.negative(text)
             else
                 refuses(vera.tb.parse(arena, text) catch |err| {
                     try w.print("FAIL {s}: `//! neighbour {s}`: its directives do not parse: {t}\n", .{ f.path, n, err });
@@ -1045,10 +1089,11 @@ const Fixtures = struct {
                 // limitation silences the next regression at that rule.
                 if (xfail != null) {
                     try w.print(
-                        "FAIL {s}: XPASS — marked `//! xfail`, but {s} now does exactly what the\n" ++
-                            "  fixture says it must. Delete the `//! xfail` line: the limitation is\n" ++
-                            "  fixed, and a marker outliving it hides the next regression.\n",
-                        .{ f.path, compiler.name },
+                        "FAIL {s}: XPASS — marked xfail, but {s} now does exactly what the\n" ++
+                            "  fixture says it must. Delete its `//! xfail` line or its row in\n" ++
+                            "  {s}: the limitation is fixed, and a marker outliving it hides the\n" ++
+                            "  next regression.\n",
+                        .{ f.path, compiler.name, xfail_list },
                     );
                     return .fail;
                 }
@@ -1119,7 +1164,7 @@ const Fixtures = struct {
         const produced = try std.fs.path.join(arena, &.{ dir, want.produced });
         Io.Dir.cwd().deleteFile(io, produced) catch {};
         const r = try std.process.run(arena, io, .{
-            .argv = &.{ exe, "--run", "-I", f.root, "-I", f.dir(), f.path },
+            .argv = &.{ exe, "--run", "-I", include_dir, "-I", f.dir(), f.path },
             .cwd = .{ .path = dir },
         });
         if (r.term != .exited or r.term.exited != 0) {
@@ -1153,15 +1198,15 @@ const Fixtures = struct {
         defer tmp.cleanup();
         var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena.deinit();
-        const marked = "// digital-runner: reject\n//! reject no arguments\n";
+        const marked = "//! reject no arguments\n";
         try tmp.dir.writeFile(io, .{ .sub_path = "negative.v", .data = marked });
-        try tmp.dir.writeFile(io, .{ .sub_path = "legacy.v", .data = "//! reject E0205\n" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "dump.v", .data = "//! expect vcd a.vcd == a.golden.vcd\n" });
         try tmp.dir.writeFile(io, .{ .sub_path = "analog.va", .data = marked });
         try tmp.dir.writeFile(io, .{ .sub_path = "positive.v", .data = "//! lrm 9.10\n" });
         try tmp.dir.writeFile(io, .{ .sub_path = "positive.expected.txt", .data = "ok\n" });
         try tmp.dir.writeFile(io, .{ .sub_path = "host_design.va", .data = "module m; endmodule\n" });
         try std.testing.expect(fixtureExt(arena.allocator(), io, tmp.dir, "negative.v") == null);
-        try std.testing.expectEqualStrings(".v", fixtureExt(arena.allocator(), io, tmp.dir, "legacy.v").?);
+        try std.testing.expectEqualStrings(".v", fixtureExt(arena.allocator(), io, tmp.dir, "dump.v").?);
         try std.testing.expectEqualStrings(".va", fixtureExt(arena.allocator(), io, tmp.dir, "analog.va").?);
         try std.testing.expect(fixtureExt(arena.allocator(), io, tmp.dir, "positive.v") == null);
         // A `.va` a host test loads carries no directive and is not collected.
@@ -1171,7 +1216,6 @@ const Fixtures = struct {
     // The sub-files hold their own tests; Zig collects them only through a reference.
     test {
         _ = lint;
-        _ = coverage;
         _ = digital;
     }
 };
@@ -1189,7 +1233,7 @@ const Analog = struct {
     const harness = Fixtures;
     const digital = Digital;
     const options = @import("suite_options");
-    /// The suite's fixture root and LRM directory, shared with `fixtures.zig`.
+    /// The suite's fixture root and LRM directory, shared with `Fixtures`.
     const suite = options;
 
     const Io = std.Io;
@@ -1460,7 +1504,7 @@ const Analog = struct {
         }
         // `//! reject-only`: the refusal is the named rule's alone. An error no
         // pattern names is a second refusal riding inside this one, which a plain
-        // `reject` cannot see (CLAUSE-AUDIT.md §6.3, §6.4).
+        // `reject` cannot see.
         if (harness.probe_reject_only) {
             for (0..bad.diags.count()) |i| {
                 if (bad.diags.at(i).severity != .err) continue;
@@ -1498,7 +1542,9 @@ const Analog = struct {
         // codegen emitting `@compileError`, which `.lint` would never see.
         var result = vera.compileSourceOpts(gpa, source, .build, .{
             .file_name = f.path,
-            .include_dirs = &.{ f.dir(), f.root },
+            .include_dirs = &.{ f.dir(), harness.include_dir },
+            // The suite's convention: a source includes the annex D files it uses.
+            .require_std_includes = true,
             .diags = &diags,
             // Annex E.2: the fixture's `//! spice` cards, read as a netlist.
             .spice_netlist = d.spice,
@@ -1670,7 +1716,8 @@ const Analog = struct {
 
         var opts: vera.Options = .{
             .file_name = f.path,
-            .include_dirs = &.{ f.dir(), f.root },
+            .include_dirs = &.{ f.dir(), harness.include_dir },
+            .require_std_includes = true,
             .diags = &diags,
             .lint = levels,
             .display = if (d.display_record) .record else .emit,
@@ -2038,6 +2085,7 @@ const Analog = struct {
         var report: Io.Writer.Allocating = .init(gpa);
         defer report.deinit();
         const source =
+            \\`include "disciplines.vams"
             \\module check_count_oracle(p, n);
             \\  inout p, n; electrical p, n;
             \\  analog $strobe("single observation ok=1");
@@ -2069,6 +2117,7 @@ const Analog = struct {
         var report: Io.Writer.Allocating = .init(gpa);
         defer report.deinit();
         const source =
+            \\`include "disciplines.vams"
             \\module exit_oracle(p, n);
             \\  inout p, n; electrical p, n;
             \\  analog begin
@@ -2095,10 +2144,10 @@ const Analog = struct {
 };
 
 const Canary = struct {
-    //! `zig build test-canary`: the judge judged. `tests/fixtures/canary/` holds
-    //! fixtures that are wrong on purpose, and its `EXPECT.tsv` says what the
-    //! harness must answer for each -> exit 0 only when every answer is the
-    //! expected one.
+    //! `zig build test-canary`: the judge judged. `<vera_root>/canary/` holds
+    //! fixtures that are wrong on purpose (VerA's own, outside the suite's
+    //! `tests/`), and its `EXPECT.tsv` says what the harness must answer for each
+    //! -> exit 0 only when every answer is the expected one.
     //!
     //! A suite that cannot say FAIL proves nothing by saying PASS: each row here
     //! is a way a fixture can look green while asserting nothing, and the run
@@ -2129,7 +2178,7 @@ const Canary = struct {
         const w = &stderr.interface;
         defer w.flush() catch {};
 
-        const root = try std.fs.path.join(arena, &.{ options.fixture_root, "canary" });
+        const root = options.vera_root ++ "/canary";
         const table = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ root, "EXPECT.tsv" }), arena, .limited(1 << 16));
         const rows = try parse(arena, table);
 
@@ -2140,7 +2189,7 @@ const Canary = struct {
         defer ctx.deinit(gpa);
         const compiler = torture.compiler(&ctx);
 
-        const fixtures = try harness.collect(arena, io, root, null);
+        const fixtures = try harness.collect(arena, io, root, &.{""}, null);
         var bad: usize = 0;
         for (fixtures) |f| {
             const name = std.fs.path.basename(f.path);
@@ -2223,10 +2272,11 @@ const CFixtures = struct {
     const Io = std.Io;
     const Args = std.process.Args.Iterator;
 
-    /// Directories holding `.c` fixtures. Some groups share a header beside them
-    /// (`p02_check.h`, `p03_vpi_analog.h`), so the fixture's own directory goes on
-    /// the include path as well as `src/vpi`.
-    const vpi_dirs = [_][]const u8{ "ch11_vpi", "ch12_vpi_routines", "ieee_pli" };
+    /// Directories under the fixture root holding `.c` fixtures. Some groups
+    /// share a header beside them (`p02_check.h`, `p03_vpi_analog.h`,
+    /// `b_check.h`), so the fixture's own directory goes on the include path as
+    /// well as `src/vpi`.
+    const vpi_dirs = [_][]const u8{ "verilog-ams/ch11_vpi", "verilog-ams/ch12_vpi_routines", "verilog/pli" };
 
     /// The `vpi` mode: compiles each `.c` fixture matching the filter in `args`
     /// and prints one FAIL line per refusal and a census to stderr. Exit 1 on any
@@ -2360,806 +2410,6 @@ const Child = struct {
     }
 };
 
-const Coverage = struct {
-    //! `zig build benchmark -- --coverage`: the collected fixtures' `//! lrm`
-    //! cites, the `.c` VPI fixtures' cites, every `CLAUSES.tsv` row, and the LRM's
-    //! table of contents read out of `specification/*.html` -> the static citation
-    //! inventory on stderr (measure C). Nothing is compiled or run.
-    //!
-    //! The report's lines are parsed by `tools/conformance.py`: the
-    //! `<n> of <m> LRM clauses cited` tally and its polarity row are frozen text.
-    //!
-    //! Clauses: `specification/CLAUSE-AUDIT.md` §5 (the classification kinds) and §5.7
-    //! (`not_supported`, IEEE 1364-only).
-
-    const std = @import("std");
-    const vera = @import("vera");
-    const options = @import("suite_options");
-    const harness = Fixtures;
-
-    const Io = std.Io;
-    const Fixture = harness.Fixture;
-    const strLess = harness.strLess;
-
-    /// `--coverage`: the cited clauses, the uncited ones, and cites that name no
-    /// clause, all against the table of contents read from `specification/*.html`.
-    ///
-    /// A static inventory: nothing is compiled or run, so a cite proves nothing
-    /// (an XFAIL still cites). Each cite carries its fixture's declared polarity,
-    /// and the report separates `+` from `-` and lists one-sided clauses, because
-    /// refusing a construct is not implementing it. One-sided is listed, not
-    /// scored: a clause that states no error has nothing to reject.
-    ///
-    /// The `.c` VPI fixtures cite with the same `//! lrm` lines (`cCites`), with
-    /// per-line polarity, and count only when `build.zig` runs them: a `.c` that
-    /// only compiles is listed as `~` and moves no number.
-    ///
-    /// Returns whether every cite resolved; an unresolved cite is a fixture defect.
-    /// Uncited and one-sided clauses are work items and do not affect the result.
-    pub fn report(
-        arena: std.mem.Allocator,
-        io: Io,
-        docs_root: []const u8,
-        root: []const u8,
-        filter: ?[]const u8,
-        fixtures: []const Fixture,
-        w: *Io.Writer,
-    ) !bool {
-        const clauses = try lrmClauses(arena, io, docs_root);
-        try w.writeAll(
-            "STATIC CITATION INVENTORY — fixtures are not executed by --coverage.\n" ++
-                "Both polarities cited does not establish passing tests, valid oracles,\n" ++
-                "all rules within a clause, or Verilog-A applicability. XFAIL citations\n" ++
-                "and implementation-limit rejections remain in this inventory.\n\n",
-        );
-
-        var cites: std.ArrayList(Cite) = .empty;
-        var citing: usize = 0;
-        for (fixtures) |f| {
-            const source = try Io.Dir.cwd().readFileAlloc(io, f.path, arena, .limited(1 << 20));
-            // A fixture whose directives do not parse is reported by the run
-            // proper; a coverage report is not the place to fail on it.
-            const d = vera.tb.parse(arena, source) catch continue;
-            var cited = false;
-            for (d.lrm) |s| {
-                // A sentence cite (`5.6.1.3:2`) is the requirement ledger's
-                // (`conformance.py metric`), not this
-                // clause inventory's: only a bare clause cite counts here.
-                if (std.mem.findScalar(u8, s, ':') != null) continue;
-                cited = true;
-                try cites.append(arena, .{
-                    .section = s,
-                    .path = f.path,
-                    .side = if (d.reject.len != 0 or d.reject_run.len != 0) .neg else .pos,
-                });
-            }
-            if (cited) citing += 1;
-        }
-        const c_files = try cFixtures(arena, io, root, filter);
-        var bad_tags: usize = 0;
-        for (c_files) |path| {
-            const source = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 20));
-            const before = cites.items.len;
-            cCites(arena, &cites, path, source, cFixtureRuns(path)) catch |err| switch (err) {
-                error.BadCTag => {
-                    try w.print("BAD TAG — {s}: a `//!` line that is not `lrm <clause>` or `lrm-reject <clause>`\n", .{path});
-                    bad_tags += 1;
-                    continue;
-                },
-                else => |e| return e,
-            };
-            for (cites.items[before..]) |c| if (c.side != .compiled) {
-                citing += 1;
-                break;
-            };
-        }
-        std.mem.sort(Cite, cites.items, {}, struct {
-            fn lt(_: void, a: Cite, b: Cite) bool {
-                if (std.mem.eql(u8, a.section, b.section)) return std.mem.lessThan(u8, a.path, b.path);
-                return sectionLessThan(a.section, b.section);
-            }
-        }.lt);
-
-        // Declared fixture intent only. Results and rule-level evidence are not
-        // inputs to this report, so neither flag can mean a verified obligation.
-        const Sides = struct { pos: bool = false, neg: bool = false };
-        var cited: std.StringHashMapUnmanaged(Sides) = .empty;
-        for (cites.items) |c| {
-            // A compile-only `.c` cite is listed, never counted: it is not runtime
-            // evidence of either polarity.
-            if (c.side == .compiled) continue;
-            const g = try cited.getOrPut(arena, c.section);
-            if (!g.found_existing) g.value_ptr.* = .{};
-            if (c.side == .neg) g.value_ptr.neg = true else g.value_ptr.pos = true;
-        }
-        var compiled: std.StringHashMapUnmanaged(void) = .empty;
-        for (cites.items) |c| if (c.side == .compiled) try compiled.put(arena, c.section, {});
-
-        var prev: []const u8 = "";
-        for (cites.items) |c| {
-            if (!std.mem.eql(u8, c.section, prev)) {
-                try w.print("§{s}\n", .{c.section});
-                prev = c.section;
-            }
-            // `+` declares a positive fixture, `-` declares a rejection fixture,
-            // `~` a compile-only `.c` fixture. Show each path so a reviewer can
-            // inspect the actual evidence.
-            try w.print("  {s} {s}\n", .{ switch (c.side) {
-                .pos => "+",
-                .neg => "-",
-                .compiled => "~",
-            }, c.path });
-        }
-
-        // The cites that name nothing in the LRM. Sorted with everything else, so
-        // this walk is over the same array and only has to skip what resolved.
-        var unresolved: usize = 0;
-        prev = "";
-        for (cites.items) |c| {
-            if (clauses.get(c.section) != null) continue;
-            if (!std.mem.eql(u8, c.section, prev)) {
-                if (unresolved == 0) try w.print(
-                    "\nUNRESOLVED — a `//! lrm` cite naming no clause in {s}. Either the\n" ++
-                        "clause is spelled wrong or it is a table or figure number, which is a\n" ++
-                        "different numbering space (Table G.7 lives under clause G.1).\n",
-                    .{docs_root},
-                );
-                try w.print("§{s}\n", .{c.section});
-                prev = c.section;
-                unresolved += 1;
-            }
-            try w.print("  {s}\n", .{c.path});
-        }
-
-        // The three work lists, in one walk of the contents page. Titles are printed
-        // because a bare number is not a work item and "§7.8.2" plus "Signal
-        // segmentation" is.
-        var uncited: std.ArrayList(Clause) = .empty;
-        var pos_only: std.ArrayList(Clause) = .empty;
-        var neg_only: std.ArrayList(Clause) = .empty;
-        var it = clauses.valueIterator();
-        while (it.next()) |cl| {
-            const s = cited.get(cl.id) orelse {
-                try uncited.append(arena, cl.*);
-                continue;
-            };
-            if (s.pos and !s.neg) try pos_only.append(arena, cl.*);
-            if (s.neg and !s.pos) try neg_only.append(arena, cl.*);
-        }
-        const byId = struct {
-            fn lt(_: void, a: Clause, b: Clause) bool {
-                return sectionLessThan(a.id, b.id);
-            }
-        }.lt;
-        for ([_]*std.ArrayList(Clause){ &uncited, &pos_only, &neg_only }) |l|
-            std.mem.sort(Clause, l.items, {}, byId);
-
-        // CLAUSE-AUDIT §5 classifications. A one-way or uncited clause the audit
-        // classifies leaves its work list for a fifth bucket, printed with its
-        // evidence so a reviewer reads the quote rather than the count. A clause
-        // tested both ways stays there: a classification never outranks evidence.
-        const classes = try readClassifications(arena, io, root, &clauses, &cited, w);
-        var classified: std.ArrayList(Classified) = .empty;
-        for ([_]*std.ArrayList(Clause){ &uncited, &pos_only, &neg_only }) |l| {
-            var keep: usize = 0;
-            for (l.items) |cl| {
-                if (classes.map.get(cl.id)) |c| {
-                    try classified.append(arena, .{ .clause = cl, .row = c });
-                    continue;
-                }
-                l.items[keep] = cl;
-                keep += 1;
-            }
-            l.shrinkRetainingCapacity(keep);
-        }
-        std.mem.sort(Classified, classified.items, {}, struct {
-            fn lt(_: void, a: Classified, b: Classified) bool {
-                return sectionLessThan(a.clause.id, b.clause.id);
-            }
-        }.lt);
-
-        if (neg_only.items.len != 0) {
-            try w.print(
-                "\nREJECTION CITATIONS ONLY — every citing fixture declares `//! reject`.\n" ++
-                    "Review whether it pins a normative prohibition, an implementation\n" ++
-                    "choice, or a missing feature. No positive behavior is established.\n",
-                .{},
-            );
-            for (neg_only.items) |cl| try w.print("§{s} {s}  ({s})\n", .{ cl.id, cl.title, cl.file });
-        }
-        if (pos_only.items.len != 0) {
-            try w.print(
-                "\nPOSITIVE CITATIONS ONLY — no `//! reject` fixture cites these, so no citation pins\n" ++
-                    "what the clause rules OUT. A clause that states no error has nothing to\n" ++
-                    "reject and belongs here; one whose text says `shall not` or `is an\n" ++
-                    "error` does not.\n",
-                .{},
-            );
-            for (pos_only.items) |cl| try w.print("§{s} {s}  ({s})\n", .{ cl.id, cl.title, cl.file });
-        }
-        if (uncited.items.len != 0) {
-            try w.print("\nUNCITED — no fixture names these at all:\n", .{});
-            for (uncited.items) |cl| try w.print("§{s} {s}  ({s}){s}\n", .{
-                cl.id,
-                cl.title,
-                cl.file,
-                if (compiled.contains(cl.id)) "  ~ compile-only .c cite" else "",
-            });
-        }
-
-        if (classified.items.len != 0) {
-            try w.print(
-                "\nCLASSIFIED — CLAUSE-AUDIT §5: the clause states no obligation an input can\n" ++
-                    "break, or its obligation is of a kind a fixture may not pin one way. Each\n" ++
-                    "row is a reviewed claim, not evidence; its quote is in the file named.\n",
-                .{},
-            );
-            for (classified.items) |c| try w.print("§{s} {s}  [{s}]  ({s})\n", .{
-                c.clause.id, c.clause.title, @tagName(c.row.kind), c.row.file,
-            });
-        }
-
-        const n = clauses.count();
-        var uncited_classified: usize = 0;
-        for (classified.items) |c| {
-            if (cited.get(c.clause.id) == null) uncited_classified += 1;
-        }
-        try w.print(
-            "\n{d} of {d} LRM clauses cited, by {d} of {d} fixtures\n" ++
-                "  {d} cited both ways · {d} positive citations only · {d} rejection citations only · {d} uncited · {d} classified\n",
-            .{
-                n - uncited.items.len - uncited_classified,                                             n,
-                citing,                                                                                 fixtures.len + c_files.len,
-                n - uncited.items.len - pos_only.items.len - neg_only.items.len - classified.items.len, pos_only.items.len,
-                neg_only.items.len,                                                                     uncited.items.len,
-                classified.items.len,
-            },
-        );
-        var compiled_only: usize = 0;
-        for (uncited.items) |cl| {
-            if (compiled.contains(cl.id)) compiled_only += 1;
-        }
-        if (compiled_only != 0) try w.print(
-            "  {d} of the uncited carry only compile-only `.c` cites (`~`), which are not counted\n",
-            .{compiled_only},
-        );
-        if (unresolved != 0) try w.print("{d} cite(s) resolve to no clause\n", .{unresolved});
-        if (bad_tags != 0) try w.print("{d} `.c` fixture(s) carry a malformed tag\n", .{bad_tags});
-        if (classes.bad != 0) try w.print("{d} CLAUSES.tsv row(s) rejected\n", .{classes.bad});
-        return unresolved == 0 and bad_tags == 0 and classes.bad == 0;
-    }
-
-    /// The CLAUSE-AUDIT §5 kinds a `CLAUSES.tsv` row may name, plus
-    /// `no_prohibition`: a normative clause whose every sentence is positive, so
-    /// its positive fixtures are the whole obligation and there is nothing to
-    /// reject. That one kind is checked against the evidence: it is refused unless
-    /// a positive fixture cites the clause.
-    ///
-    /// `not_supported` (CLAUSE-AUDIT §5.7) is IEEE 1364-only: a clause
-    /// `CLAUSE-AUDIT.md` §5.7 puts out of scope, which VerA refuses or warns about by
-    /// name. An AMS `CLAUSES.tsv` row naming it is rejected.
-    pub const ClassKind = enum {
-        non_normative,
-        no_prohibition,
-        optional,
-        implementation_defined,
-        resource_limit,
-        unspecified,
-        not_supported,
-    };
-
-    const ClassRow = struct { kind: ClassKind, file: []const u8 };
-    const Classified = struct { clause: Clause, row: ClassRow };
-
-    /// Read every `CLAUSES.tsv` directly under a fixture directory of `root`.
-    /// A row is `<clause>\t<kind>\t<evidence>`; `#` starts a comment line. The
-    /// kind is spelled with hyphens (`non-normative`). A row that names no clause,
-    /// names an unknown kind, carries no evidence, or claims `no-prohibition` for
-    /// a clause no positive fixture cites is REJECTED: printed, not counted, and it
-    /// fails the run the way an unresolved cite does.
-    fn readClassifications(
-        arena: std.mem.Allocator,
-        io: Io,
-        root: []const u8,
-        clauses: *const std.StringHashMapUnmanaged(Clause),
-        cited: anytype,
-        w: *Io.Writer,
-    ) !struct { map: std.StringHashMapUnmanaged(ClassRow), bad: usize } {
-        var map: std.StringHashMapUnmanaged(ClassRow) = .empty;
-        var bad: usize = 0;
-        var dir = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| switch (err) {
-            error.FileNotFound => return .{ .map = map, .bad = 0 },
-            else => return err,
-        };
-        defer dir.close(io);
-        var files: std.ArrayList([]const u8) = .empty;
-        var walker = try dir.walk(arena);
-        defer walker.deinit();
-        while (try walker.next(io)) |e| {
-            if (e.kind != .file or !std.mem.eql(u8, e.basename, "CLAUSES.tsv")) continue;
-            // Numbered in IEEE 1364-2005, not this LRM: `Ieee1364` reads it.
-            if (std.mem.startsWith(u8, e.path, "ieee1364" ++ std.fs.path.sep_str)) continue;
-            try files.append(arena, try std.fs.path.join(arena, &.{ root, e.path }));
-        }
-        std.mem.sort([]const u8, files.items, {}, strLess);
-        for (files.items) |path| {
-            const text = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 20));
-            var lines = std.mem.splitScalar(u8, text, '\n');
-            var line_no: usize = 0;
-            while (lines.next()) |raw| {
-                line_no += 1;
-                const line = std.mem.trim(u8, raw, " \r");
-                if (line.len == 0 or line[0] == '#') continue;
-                const why = classifyRow(arena, line, clauses, cited) catch |err| {
-                    try w.print("BAD CLASSIFICATION — {s}:{d}: {s}\n", .{ path, line_no, @errorName(err) });
-                    bad += 1;
-                    continue;
-                };
-                const g = try map.getOrPut(arena, why.id);
-                if (!g.found_existing) g.value_ptr.* = .{ .kind = why.kind, .file = path };
-            }
-        }
-        return .{ .map = map, .bad = bad };
-    }
-
-    fn classifyRow(
-        arena: std.mem.Allocator,
-        line: []const u8,
-        clauses: *const std.StringHashMapUnmanaged(Clause),
-        cited: anytype,
-    ) !struct { id: []const u8, kind: ClassKind } {
-        var cols = std.mem.splitScalar(u8, line, '\t');
-        var id = std.mem.trim(u8, cols.next() orelse return error.MissingClause, " ");
-        if (id.len != 0 and std.mem.startsWith(u8, id, "§")) id = id["§".len..];
-        if (clauses.get(id) == null) return error.UnknownClause;
-        const kind_text = std.mem.trim(u8, cols.next() orelse return error.MissingKind, " ");
-        const spelled = try arena.dupe(u8, kind_text);
-        std.mem.replaceScalar(u8, spelled, '-', '_');
-        const kind = std.meta.stringToEnum(ClassKind, spelled) orelse return error.UnknownKind;
-        if (kind == .not_supported) return error.NotSupportedIsIeee1364Only;
-        const evidence = std.mem.trim(u8, cols.rest(), " \t");
-        if (evidence.len == 0) return error.MissingEvidence;
-        if (kind == .no_prohibition) {
-            const s = cited.get(id) orelse return error.NoPositiveFixture;
-            if (!s.pos) return error.NoPositiveFixture;
-        }
-        return .{ .id = id, .kind = kind };
-    }
-
-    /// One `//! lrm` citation and the polarity its fixture declares.
-    const Cite = struct {
-        section: []const u8,
-        path: []const u8,
-        side: enum { pos, neg, compiled },
-    };
-
-    /// The `.c` VPI fixtures under `root`. `collect` does not walk them: they are
-    /// C applications, not VerA source, and only `--coverage` reads them.
-    fn cFixtures(arena: std.mem.Allocator, io: Io, root: []const u8, filter: ?[]const u8) ![]const []const u8 {
-        var dir = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| switch (err) {
-            error.FileNotFound => return &.{},
-            else => return err,
-        };
-        defer dir.close(io);
-        var list: std.ArrayList([]const u8) = .empty;
-        var walker = try dir.walk(arena);
-        defer walker.deinit();
-        while (try walker.next(io)) |e| {
-            if (e.kind != .file or !std.mem.endsWith(u8, e.path, ".c")) continue;
-            const path = try std.fs.path.join(arena, &.{ root, e.path });
-            if (filter) |f| if (std.mem.find(u8, path, f) == null) continue;
-            try list.append(arena, path);
-        }
-        return list.items;
-    }
-
-    /// Does `build.zig` RUN this `.c` fixture in-process and assert its output?
-    /// `options.vpi_runs` is build.zig's `vpiRuns`: the `.c` files with `//! design`.
-    fn cFixtureRuns(path: []const u8) bool {
-        for (options.vpi_runs) |r| {
-            if (std.mem.endsWith(u8, path, r)) return true;
-        }
-        return false;
-    }
-
-    /// A `.c` fixture's tags: the `.va` grammar, one per line, as C99 `//`
-    /// comments. Polarity is PER LINE, because one C application can both assert
-    /// a routine's result and assert that the routine refuses invalid input:
-    ///
-    ///   //! lrm 12.16          a result this clause requires is asserted
-    ///   //! lrm-reject 12.34   a refusal (error return, vpi_chk_error) is asserted
-    ///
-    /// Neither counts unless the fixture runs (`runs`): a compile-only fixture's
-    /// cites become `.compiled`, listed and never counted. `inherited` and
-    /// `inherited-reject` cite IEEE 1364-2005 and are `Ieee1364`'s, so
-    /// they are skipped here, as are build.zig's run lines (`design`, `stdout`,
-    /// `stderr`, `xfail`, `refuse`; `VpiRun`). Any other `//!` key is a
-    /// malformed tag, reported rather than skipped.
-    fn cCites(
-        arena: std.mem.Allocator,
-        out: *std.ArrayList(Cite),
-        path: []const u8,
-        source: []const u8,
-        runs: bool,
-    ) !void {
-        var lines = std.mem.splitScalar(u8, source, '\n');
-        while (lines.next()) |raw| {
-            const line = std.mem.trim(u8, raw, " \t\r");
-            if (!std.mem.startsWith(u8, line, "//!")) continue;
-            var words = std.mem.tokenizeAny(u8, line["//!".len..], " \t");
-            const key = words.next() orelse return error.BadCTag;
-            if (std.mem.eql(u8, key, "inherited") or std.mem.eql(u8, key, "inherited-reject")) continue;
-            if (for ([_][]const u8{ "design", "stdout", "stderr", "xfail", "refuse" }) |k| {
-                if (std.mem.eql(u8, key, k)) break true;
-            } else false) continue;
-            const reject = if (std.mem.eql(u8, key, "lrm"))
-                false
-            else if (std.mem.eql(u8, key, "lrm-reject"))
-                true
-            else
-                return error.BadCTag;
-            const section = words.next() orelse return error.BadCTag;
-            if (words.next() != null) return error.BadCTag;
-            // A sentence cite is the ledger's, as in `report`.
-            if (std.mem.findScalar(u8, section, ':') != null) continue;
-            try out.append(arena, .{
-                .section = section,
-                .path = path,
-                .side = if (!runs) .compiled else if (reject) .neg else .pos,
-            });
-        }
-    }
-
-    test "a .c fixture's polarity is per line, and only a running one counts" {
-        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const src = "/* 12.34 in prose is not a tag */\n//! lrm 12.6\n  //! lrm-reject 12.34\n" ++
-            "//! inherited IEEE 1364-2005 27.14\n//! inherited-reject IEEE 1364-2005 27.14\n" ++
-            "//! lrm 12.16:3\n" ++ // a sentence cite is the ledger's, not counted here
-            "//! design ch12/d.va\n//! stdout p03: checks=1\n//! stderr\nint x;\n"; // build.zig's, not tags
-        var cites: std.ArrayList(Cite) = .empty;
-        try cCites(arena, &cites, "a.c", src, true);
-        try std.testing.expectEqual(@as(usize, 2), cites.items.len);
-        try std.testing.expectEqualStrings("12.6", cites.items[0].section);
-        try std.testing.expect(cites.items[0].side == .pos);
-        try std.testing.expect(cites.items[1].side == .neg);
-        cites.clearRetainingCapacity();
-        try cCites(arena, &cites, "a.c", src, false);
-        for (cites.items) |c| try std.testing.expect(c.side == .compiled);
-        try std.testing.expectError(error.BadCTag, cCites(arena, &cites, "a.c", "//! reject E0512\n", true));
-        try std.testing.expectError(error.BadCTag, cCites(arena, &cites, "a.c", "//! lrm\n", true));
-    }
-
-    /// One numbered clause of the LRM, as `specification/*.html` spells it.
-    pub const Clause = struct {
-        /// `4.2.1`, `A.8.3`, `B` — the spelling a `//! lrm` line uses.
-        id: []const u8,
-        /// `Operators with real operands`.
-        title: []const u8,
-        /// `ch4-expressions.html`.
-        file: []const u8,
-    };
-
-    /// The LRM's table of contents, read out of `specification/*.html` at run time.
-    ///
-    /// Headings are recovered from the rendered text, not `id=` anchors: the
-    /// chapters disagree on markup and the anchors are incomplete, while text finds
-    /// every clause the anchors do.
-    fn lrmClauses(
-        arena: std.mem.Allocator,
-        io: Io,
-        docs_root: []const u8,
-    ) !std.StringHashMapUnmanaged(Clause) {
-        var out: std.StringHashMapUnmanaged(Clause) = .empty;
-        var dir = try Io.Dir.cwd().openDir(io, docs_root, .{ .iterate = true });
-        defer dir.close(io);
-
-        var names: std.ArrayList([]const u8) = .empty;
-        var walker = try dir.walk(arena);
-        while (try walker.next(io)) |e| {
-            if (e.kind != .file) continue;
-            if (!std.mem.endsWith(u8, e.basename, ".html")) continue;
-            // The frameset, not a chapter: every number on it is a link to one.
-            if (std.mem.eql(u8, e.basename, "index.html")) continue;
-            try names.append(arena, try arena.dupe(u8, e.path));
-        }
-        // `walk` order is explicitly undefined and first-wins below, so a clause
-        // number occurring in two files would otherwise be attributed at random.
-        std.mem.sort([]const u8, names.items, {}, strLess);
-
-        for (names.items) |name| {
-            const prefix = clausePrefix(std.fs.path.basename(name)) orelse continue;
-            const html = try dir.readFileAlloc(io, name, arena, .limited(4 << 20));
-            const text = try renderText(arena, html);
-            var lines = std.mem.splitScalar(u8, text, '\n');
-            while (lines.next()) |raw| {
-                const h = splitHeading(std.mem.trim(u8, raw, " \t\r")) orelse continue;
-                if (!underPrefix(h.id, prefix)) continue;
-                // First wins: a heading is declared once and cross-referenced many
-                // times, and the declaration comes first in a chapter's own file.
-                const g = try out.getOrPut(arena, h.id);
-                if (!g.found_existing) g.value_ptr.* = .{ .id = h.id, .title = h.title, .file = name };
-            }
-        }
-        return out;
-    }
-
-    /// Which chapter or annex a file declares: `ch9-system.html` -> `9`,
-    /// `annex-a-syntax.html` -> `A`. Null for a file that declares neither.
-    ///
-    /// A heading declares a clause of its own file; requiring that rejects
-    /// cross-references that open a paragraph (ch9 cites IEEE 1364 §17.9.3; Annex
-    /// G's change tables list ch7 subclauses).
-    fn clausePrefix(basename: []const u8) ?[]const u8 {
-        if (std.mem.startsWith(u8, basename, "ch")) {
-            const dash = std.mem.findScalar(u8, basename, '-') orelse return null;
-            const n = basename[2..dash];
-            if (n.len == 0 or n.len > 2) return null;
-            for (n) |c| if (!std.ascii.isDigit(c)) return null;
-            return n;
-        }
-        if (std.mem.startsWith(u8, basename, "annex-") and basename.len > 6) {
-            const letter = std.ascii.toUpper(basename[6]);
-            if (letter < 'A' or letter > 'H') return null;
-            if (basename[7] != '-') return null;
-            // Uppercased, so the slice cannot be into `basename`: it is into a
-            // static table instead of an allocation.
-            return "ABCDEFGH"[letter - 'A' ..][0..1];
-        }
-        return null;
-    }
-
-    /// Is `id` the clause `prefix` names, or one beneath it? `1` covers `1.3.1` and
-    /// NOT `10.2`, which is why this is not `startsWith` on its own.
-    fn underPrefix(id: []const u8, prefix: []const u8) bool {
-        if (std.mem.eql(u8, id, prefix)) return true;
-        return id.len > prefix.len and
-            std.mem.startsWith(u8, id, prefix) and
-            id[prefix.len] == '.';
-    }
-
-    /// Split a rendered line into a clause number and its title, or null.
-    ///
-    ///     `4.2.1 Operators with real operands`  -> { "4.2.1", "Operators with…" }
-    ///     `A.8.3 Expressions`                   -> { "A.8.3", "Expressions" }
-    ///     `Annex B (normative) List of keywords`-> { "B", "(normative) List of…" }
-    ///
-    /// A NUMERIC id needs at least two components. Chapter 2 prints sized literals
-    /// one per line — `32 'h 12ab_f001`, `8 'd -6  // this is illegal syntax` — and
-    /// every one of them is a heading under a looser rule. An annex LETTER may
-    /// stand alone: Annex B and Annex H have no numbered subclauses at all, and
-    /// fixtures cite them as `B` and `H`.
-    ///
-    /// The title is not inspected beyond being non-empty, deliberately. Requiring a
-    /// capital drops §5.10.3.1 `cross function`, and every rule that guesses at
-    /// prose costs a real clause to buy a false one.
-    fn splitHeading(line: []const u8) ?struct { id: []const u8, title: []const u8 } {
-        // `Annex B (normative) List of keywords`. Annexes B and H have no numbered
-        // subclauses at all and fixtures cite them by bare letter, so the annex
-        // title itself has to be a clause.
-        //
-        // The `(` is load-bearing, not decoration: every annex title carries its
-        // normative status in parentheses, and without requiring it the rule also
-        // matches Annex C's PROSE — "Annex E defines the SPICE compatibility for
-        // both …" opens a paragraph, and a paragraph starts a line here because
-        // every tag renders as one.
-        const annex = "Annex ";
-        if (std.mem.startsWith(u8, line, annex) and line.len > annex.len + 2) {
-            const letter = line[annex.len];
-            const rest = std.mem.trim(u8, line[annex.len + 1 ..], " \t");
-            if (letter >= 'A' and letter <= 'H' and line[annex.len + 1] == ' ' and
-                rest.len != 0 and rest[0] == '(') return .{
-                .id = line[annex.len .. annex.len + 1],
-                .title = rest,
-            };
-        }
-        const sp = std.mem.findAny(u8, line, " \t") orelse return null;
-        const title = std.mem.trim(u8, line[sp..], " \t");
-        if (title.len < 3) return null;
-        if (!isClauseId(line[0..sp])) return null;
-        return .{ .id = line[0..sp], .title = title };
-    }
-
-    fn isClauseId(id: []const u8) bool {
-        var parts = std.mem.splitScalar(u8, id, '.');
-        const first = parts.next().?;
-        const lettered = first.len == 1 and first[0] >= 'A' and first[0] <= 'H';
-        if (!lettered) {
-            if (first.len == 0 or first.len > 2 or first[0] == '0') return false;
-            for (first) |c| if (!std.ascii.isDigit(c)) return false;
-        }
-        var components: usize = 1;
-        while (parts.next()) |p| {
-            // No component is zero or zero-padded, which is what separates a clause
-            // number from a row of a numeric table: ch9 prints `1.0   1.0   1.5`.
-            if (p.len == 0 or p[0] == '0') return false;
-            for (p) |c| if (!std.ascii.isDigit(c)) return false;
-            components += 1;
-        }
-        return lettered or components >= 2;
-    }
-
-    /// Render HTML to text well enough to find a heading on a line of its own.
-    ///
-    /// Every tag becomes a NEWLINE rather than nothing, so `<h3 id="…">4.2.1 Foo</h3>`
-    /// lands as its own line instead of being glued to the paragraph before it —
-    /// which is what makes the leading-`4.2.1` test mean "this line IS the heading"
-    /// rather than "this line mentions §4.2.1", and is why a cross-reference
-    /// ("see the discussion in 4.5.15") does not become a clause.
-    fn renderText(arena: std.mem.Allocator, html: []const u8) ![]u8 {
-        var out: std.ArrayList(u8) = .empty;
-        try out.ensureTotalCapacity(arena, html.len);
-        var i: usize = 0;
-        while (i < html.len) {
-            switch (html[i]) {
-                '<' => {
-                    i = (std.mem.findScalarPos(u8, html, i, '>') orelse html.len - 1) + 1;
-                    out.appendAssumeCapacity('\n');
-                },
-                '&' => {
-                    const end = std.mem.findScalarPos(u8, html, i, ';') orelse {
-                        out.appendAssumeCapacity(html[i]);
-                        i += 1;
-                        continue;
-                    };
-                    // A heading's separator is the whole reason this is here: the
-                    // annexes write `A.8.3&nbsp;Expressions`, and left as bytes
-                    // that is one token with no space in it.
-                    const name = html[i + 1 .. end];
-                    // Anything not listed keeps its `&` and is walked as text: the
-                    // only job here is that a heading's number and its title end up
-                    // separated by something `indexOfAny(" \t")` can find.
-                    if (entities.get(name)) |repl| {
-                        out.appendSliceAssumeCapacity(repl);
-                        i = end + 1;
-                    } else {
-                        out.appendAssumeCapacity('&');
-                        i += 1;
-                    }
-                },
-                // U+00A0 as UTF-8. Same job as `&nbsp;` and the same chapters use
-                // both.
-                0xC2 => {
-                    if (i + 1 < html.len and html[i + 1] == 0xA0) {
-                        out.appendAssumeCapacity(' ');
-                        i += 2;
-                    } else {
-                        out.appendAssumeCapacity(html[i]);
-                        i += 1;
-                    }
-                },
-                else => {
-                    out.appendAssumeCapacity(html[i]);
-                    i += 1;
-                },
-            }
-        }
-        return out.items;
-    }
-
-    const entities = std.StaticStringMap([]const u8).initComptime(.{
-        .{ "nbsp", " " },  .{ "#160", " " }, .{ "amp", "&" },
-        .{ "lt", "<" },    .{ "gt", ">" },   .{ "quot", "\"" },
-        .{ "apos", "'" },  .{ "#39", "'" },  .{ "mdash", "-" },
-        .{ "ndash", "-" },
-    });
-
-    /// Order cites the way the LRM's contents page does: numerically per component,
-    /// so §10 follows §9 instead of §1, and chapters come before annexes.
-    fn sectionLessThan(a: []const u8, b: []const u8) bool {
-        var ia = std.mem.splitScalar(u8, a, '.');
-        var ib = std.mem.splitScalar(u8, b, '.');
-        while (true) {
-            const pa = ia.next() orelse return ib.next() != null; // a prefix sorts first
-            const pb = ib.next() orelse return false;
-            if (std.mem.eql(u8, pa, pb)) continue;
-            const na = std.fmt.parseInt(u32, pa, 10) catch null;
-            const nb = std.fmt.parseInt(u32, pb, 10) catch null;
-            if (na != null and nb != null) return na.? < nb.?;
-            if (na != null) return true;
-            if (nb != null) return false;
-            return std.mem.lessThan(u8, pa, pb);
-        }
-    }
-
-    test "lrm cites sort like a contents page, not like strings" {
-        try std.testing.expect(sectionLessThan("9.4", "10.1")); // not lexicographic
-        try std.testing.expect(!sectionLessThan("10.1", "9.4"));
-        try std.testing.expect(sectionLessThan("4.5", "4.5.11"));
-        try std.testing.expect(sectionLessThan("4.5.2", "4.5.11"));
-        try std.testing.expect(sectionLessThan("12", "A.1")); // chapters before annexes
-        try std.testing.expect(sectionLessThan("A.1.2", "B"));
-        try std.testing.expect(!sectionLessThan("5.8", "5.8"));
-    }
-
-    test "a heading is a clause; a cross-reference is not" {
-        // The shapes the chapters actually use.
-        try std.testing.expectEqualStrings("4.2.1", splitHeading("4.2.1 Operators with real operands").?.id);
-        try std.testing.expectEqualStrings("Operators with real operands", splitHeading("4.2.1 Operators with real operands").?.title);
-        try std.testing.expectEqualStrings("A.8.3", splitHeading("A.8.3 Expressions").?.id);
-        // §5.10.3.1 is `cross function`, lowercase. Requiring a capital would drop it.
-        try std.testing.expectEqualStrings("5.10.3.1", splitHeading("5.10.3.1 cross function").?.id);
-        // Annexes B and H have no numbered subclauses, so the annex title is the clause.
-        try std.testing.expectEqualStrings("B", splitHeading("Annex B (normative) List of keywords").?.id);
-        // …and Annex C's PROSE opens the same way. The parenthesis is the difference.
-        try std.testing.expect(splitHeading("Annex E defines the SPICE compatibility for both.") == null);
-
-        // A chapter-2 sized literal is not clause 32, and a numeric table row is
-        // not clause 1.0.
-        try std.testing.expect(splitHeading("32 'h 12ab_f001") == null);
-        try std.testing.expect(splitHeading("1.0   1.0   1.5") == null);
-        // A bare chapter number is covered by its subclauses, and `9.` is not a clause.
-        try std.testing.expect(splitHeading("9. System tasks and functions") == null);
-
-        // A heading declares a clause of its own file. `17.9.3` is a clause of IEEE
-        // 1364, quoted in chapter 9; `7.10.5` is a row of an Annex G change table.
-        try std.testing.expectEqualStrings("9", clausePrefix("ch9-system.html").?);
-        try std.testing.expectEqualStrings("A", clausePrefix("annex-a-syntax.html").?);
-        try std.testing.expect(clausePrefix("index.html") == null);
-        try std.testing.expect(!underPrefix("17.9.3", "9"));
-        try std.testing.expect(!underPrefix("7.10.5", "G"));
-        try std.testing.expect(underPrefix("1.3.1", "1"));
-        try std.testing.expect(!underPrefix("10.2", "1")); // not a prefix match on digits
-    }
-
-    test "html renders to text a heading can be found in" {
-        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-
-        // Every tag becomes a newline, so a heading is on a line of its own even
-        // when it is glued to the paragraph before it in the source.
-        const t = try renderText(arena, "<p>text</p><h3 id=\"s4-2-1\">4.2.1 Foo</h3>");
-        var found = false;
-        var lines = std.mem.splitScalar(u8, t, '\n');
-        while (lines.next()) |l| {
-            const h = splitHeading(std.mem.trim(u8, l, " \t\r")) orelse continue;
-            try std.testing.expectEqualStrings("4.2.1", h.id);
-            found = true;
-        }
-        try std.testing.expect(found);
-
-        // The annexes separate a number from its title with `&nbsp;`, which left as
-        // bytes is one token with no space in it.
-        const nb = try renderText(arena, "A.8.3&nbsp;Expressions");
-        try std.testing.expectEqualStrings("A.8.3", splitHeading(nb).?.id);
-        // …and with a raw U+00A0, in the same document.
-        const raw = try renderText(arena, "A.8.3\u{00a0}Expressions");
-        try std.testing.expectEqualStrings("A.8.3", splitHeading(raw).?.id);
-        // An entity this does not know keeps its `&` and stays text.
-        try std.testing.expectEqualStrings("a&circ;b", try renderText(arena, "a&circ;b"));
-    }
-
-    test "the LRM's contents page is readable, and is the one in docs/" {
-        // The guard that matters: a markup change in `docs/` that silently emptied
-        // the table would turn `--coverage` into "everything is covered" — the
-        // exact false green the whole report exists to prevent.
-        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-
-        // Reads twenty files and nothing else, so the single-threaded `Io` the rest
-        // of the tree reaches for in the same situation is enough here too.
-        const io = Io.Threaded.global_single_threaded.io();
-
-        var clauses = try lrmClauses(arena, io, options.docs_root);
-        // A floor, not the count: the count is what `--coverage` prints and it must
-        // be free to move as `docs/` is corrected. 500 is far below the 611 this
-        // tree finds and far above what any partial parse would leave.
-        try std.testing.expect(clauses.count() > 500);
-        try std.testing.expectEqualStrings(
-            "Operators with real operands",
-            clauses.get("4.2.1").?.title,
-        );
-        // Chapter 5 carries its headings as bare lines and has three `id=` anchors
-        // in the whole file, which is why this reads text and not anchors.
-        try std.testing.expectEqualStrings("cross function", clauses.get("5.10.3.1").?.title);
-        // A clause of IEEE 1364 quoted in chapter 9 is not a clause of this LRM.
-        try std.testing.expect(clauses.get("17.9.3") == null);
-    }
-};
-
 const Devices = struct {
     //! The `devices` mode: `vera --run x.v` transcripts against committed goldens,
     //! which need the `vera` binary and so cannot be `test` blocks.
@@ -3167,10 +2417,10 @@ const Devices = struct {
     //!   zig build test-devices          # all of it
     //!   zig build test-devices -- rng   # the cases whose name contains `rng`
     //!
-    //! Cases come from `tests/fixtures/digital/` and `tests/fixtures/ieee1364/`,
-    //! sorted, so a FAIL name list diffs between two runs. `--native` hands the
-    //! same cases to `native.zig`, `--fuzz` goes to `fuzz.zig`, and `--coverage`
-    //! to `ieee1364.zig`.
+    //! Cases come from the suite's `verilog-ams/digital/` and `verilog/`, sorted,
+    //! so a FAIL name list diffs between two runs. `--native` hands the same
+    //! cases to `Native`, `--fuzz` goes to `Fuzz`, and `--coverage` to
+    //! `Ieee1364`.
 
     const std = @import("std");
     const options = @import("suite_options");
@@ -3189,19 +2439,21 @@ const Devices = struct {
     /// semantics, so `.v` and not `.va`: the shared frontend plus `sim/`, with no
     /// analog path at all.
     ///
-    /// Walked recursively, not listed: `tests/fixtures/ieee1364/<NN_clause>/` (IEEE
-    /// 1364-2005, one directory per clause) and `tests/fixtures/digital/`
+    /// Walked recursively, not listed, under the fixture root: `verilog/<NN_clause>/`
+    /// (IEEE 1364-2005, one directory per clause) and `verilog-ams/digital/`
     /// (digital-context Verilog-AMS rules such as wreal and the `--std` boundary).
     ///
-    /// A `.v` is a case when it has `.expected.txt` or `// digital-runner: reject`;
-    /// a support design with neither (a UDP library a fixture instantiates) is not.
-    /// A reject with an `.expected.txt` is a run an error did not end (IEEE
-    /// 1364-2005 §17.2.9's terminated load): it must fail as the reject lines say
-    /// and print the transcript.
-    pub const digital_dirs = [_][]const u8{ "digital", ieee1364_dir };
-    /// The IEEE 1364-2005 transcript tree under `tests/fixtures`, which
-    /// `zig build test-1364` runs alone.
-    pub const ieee1364_dir = "ieee1364";
+    /// A `.v` is a case when it has `.expected.txt`, a `//! reject` line
+    /// (`digital.negative`) or a `//! expect vcd` line; a support design with none
+    /// (a UDP library a fixture instantiates) is not. A reject with an
+    /// `.expected.txt` is a run an error did not end (IEEE 1364-2005 §17.2.9's
+    /// terminated load): it must fail as the reject lines say and print the
+    /// transcript. `verilog/pli/` is not walked: its designs are loaded by the `.c`
+    /// fixtures `build.zig` runs.
+    pub const digital_dirs = [_][]const u8{ "verilog-ams/digital", ieee1364_dir };
+    /// The IEEE 1364-2005 transcript tree under the fixture root, which `zig
+    /// build test-1364` (the `ieee1364` mode) runs alone.
+    pub const ieee1364_dir = "verilog";
 
     /// The `devices` and `ieee1364` modes over the cases under `dirs`: the
     /// verdicts and a census on stderr, exit 1 on any FAIL or when nothing
@@ -3215,7 +2467,7 @@ const Devices = struct {
         defer arena_state.deinit();
 
         var filter: ?[]const u8 = null;
-        // `--verdicts=F`: one `<verdict>\t<path under tests/fixtures>` row per
+        // `--verdicts=F`: one `<verdict>\t<path under the fixture root>` row per
         // case, `harness.writeVerdicts`'s format, so `tools/conformance.py
         // metric` reads a digital case's verdict as it reads a .va fixture's.
         var verdicts_path: ?[]const u8 = null;
@@ -3262,7 +2514,7 @@ const Devices = struct {
         const w = &stderr.interface;
         defer w.flush() catch {};
 
-        const cases = try digitalCases(gpa, io, dirs, native_flags != null);
+        const cases = try digitalCases(gpa, io, dirs);
         defer {
             for (cases) |c| gpa.free(c);
             gpa.free(cases);
@@ -3322,12 +2574,10 @@ const Devices = struct {
         return false;
     }
 
-    /// Digital transcript cases and explicitly opted-in diagnostic cases, sorted
-    /// so two runs report in the same order. Support files are not cases.
-    /// Case names are fixture-root-relative stems, `ieee1364/05_expressions/control`.
-    /// `vcd`: also the `//! expect vcd` fixtures, whose `--run` the .va suite
-    /// judges (`harness.judgeVcd`) and whose executable `--native` does.
-    fn digitalCases(gpa: Allocator, io: Io, dirs: []const []const u8, vcd: bool) ![]const []const u8 {
+    /// Digital transcript cases, diagnostic cases and `//! expect vcd` dump cases,
+    /// sorted so two runs report in the same order. Support files are not cases.
+    /// Case names are fixture-root-relative stems, `verilog/05_expressions/control`.
+    fn digitalCases(gpa: Allocator, io: Io, dirs: []const []const u8) ![]const []const u8 {
         var list: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (list.items) |c| gpa.free(c);
@@ -3343,13 +2593,14 @@ const Devices = struct {
             while (try walker.next(io)) |entry| {
                 if (entry.kind != .file) continue;
                 if (!std.mem.eql(u8, std.fs.path.extension(entry.path), ".v")) continue;
+                if (std.mem.startsWith(u8, entry.path, "pli" ++ std.fs.path.sep_str)) continue;
                 const stem = entry.path[0 .. entry.path.len - ".v".len];
                 const golden = try gpa.print("{s}.expected.txt", .{stem});
                 defer gpa.free(golden);
                 const has_golden = if (dir.access(io, golden, .{})) |_| true else |_| false;
                 const source = try dir.readFileAlloc(io, entry.path, gpa, .limited(1 << 20));
                 defer gpa.free(source);
-                const dumps = vcd and !has_golden and digital.vcdExpectation(source) != null;
+                const dumps = !has_golden and digital.vcdExpectation(source) != null;
                 if (!dumps and !digital.caseSelected(has_golden, source)) continue;
                 try list.append(gpa, try gpa.print("{s}/{s}", .{ sub, stem }));
             }
@@ -3358,12 +2609,12 @@ const Devices = struct {
         return list.toOwnedSlice(gpa);
     }
 
-    /// `digitalCase` under `//! xfail`, with the .va suite's algebra
-    /// (`harness.judge`): an unmet xfail case is XFAIL and does not fail the run;
-    /// a met one is an XPASS FAIL, so a marker cannot outlive its limitation.
+    /// `digitalCase` under `//! xfail` or a `harness.xfail_list` row, with the .va
+    /// suite's algebra (`harness.judge`): an unmet xfail case is XFAIL and does not
+    /// fail the run; a met one is an XPASS FAIL, so a marker cannot outlive its
+    /// limitation.
     fn digitalVerdict(arena: Allocator, io: Io, vera_exe: []const u8, case: []const u8, w: *Io.Writer) !enum { pass, fail, xfail } {
-        const src = try arena.print("{s}/{s}.v", .{ options.fixture_root, case });
-        const xfail = digital.xfailReason(try Io.Dir.cwd().readFileAlloc(io, src, arena, .limited(1 << 20))) orelse
+        const xfail = try xfailOf(arena, io, case) orelse
             return if (try digitalCase(arena, io, vera_exe, case, w)) .pass else .fail;
         if (xfail.len == 0) {
             try w.print("FAIL {s}: `//! xfail` names no reason\n", .{case});
@@ -3371,18 +2622,40 @@ const Devices = struct {
         }
         var detail: Io.Writer.Allocating = .init(arena);
         if (try digitalCase(arena, io, vera_exe, case, &detail.writer)) {
-            try w.print("FAIL {s}: XPASS — marked `//! xfail`, but VerA now does what the fixture says.\n" ++
-                "  Delete the `//! xfail` line.\n", .{case});
+            try w.print("FAIL {s}: XPASS — marked xfail, but VerA now does what the fixture says.\n" ++
+                "  Delete its `//! xfail` line or its row in {s}.\n", .{ case, harness.xfail_list });
             return .fail;
         }
         try w.print("XFAIL {s}: known: {s}\n", .{ case, xfail });
         return .xfail;
     }
 
+    /// A case's xfail reason: its own `//! xfail` line, else its
+    /// `harness.xfail_list` row; null when it has neither.
+    fn xfailOf(arena: Allocator, io: Io, case: []const u8) !?[]const u8 {
+        const src = try arena.print("{s}/{s}.v", .{ options.fixture_root, case });
+        const source = try Io.Dir.cwd().readFileAlloc(io, src, arena, .limited(1 << 20));
+        if (digital.xfailReason(source)) |why| return why;
+        return harness.listedXfail(arena, io, options.fixture_root, src);
+    }
+
     fn digitalCase(arena: Allocator, io: Io, vera_exe: []const u8, case: []const u8, w: *Io.Writer) !bool {
         const src = try arena.print("{s}/{s}.v", .{ options.fixture_root, case });
         const source = try Io.Dir.cwd().readFileAlloc(io, src, arena, .limited(1 << 20));
         const argv = try std.mem.concat(arena, []const u8, &.{ &.{ vera_exe, "--run", src }, try digital.runnerArgs(arena, source, std.fs.path.dirname(src).?) });
+        // A §18 dump case's evidence is the file its run writes, in a directory
+        // of its own; `Native.vcdDiff` compares it with the golden beside the case.
+        if (!digital.negative(source)) if (digital.vcdExpectation(source)) |v| {
+            const work = try arena.print("vcd/{s}", .{case});
+            try Io.Dir.cwd().createDirPath(io, work);
+            Io.Dir.cwd().deleteFile(io, try std.fs.path.join(arena, &.{ work, v.produced })) catch {};
+            const r = try child.captureIn(arena, io, argv, work);
+            if (r.exit != 0) {
+                try w.print("FAIL {s}: vera --run exited {d}\n{s}\n", .{ case, r.exit, r.stderr });
+                return false;
+            }
+            return native.vcdDiff(arena, io, w, case, work, v, false);
+        };
         if (digital.negative(source)) {
             const r = try child.capture(arena, io, argv);
             if (!digital.rejectionMatches(source, r.exit, r.stderr)) {
@@ -3416,11 +2689,11 @@ const Devices = struct {
 
 const Digital = struct {
     //! The `.v` runner metadata both digital runners read: a fixture's raw source
-    //! -> its routing (`// digital-runner: reject`), its extra `vera` arguments,
-    //! its `//! reject`, `//! xfail` and `// digital-runner: warning` obligations
-    //! judged against a run's stderr, and its `//! expect vcd` dump comparison.
-    //! `devices.zig`, `native.zig`, `../ieee1364.zig`, `../analog.zig` and
-    //! `../fixtures.zig` (`collect`, `judge`, `judgeVcd`) import it directly.
+    //! -> its routing (a `//! reject` line), its extra `vera` arguments (the
+    //! suite's `//@` lines), its `//! reject`, `//! xfail` and `//! warn`
+    //! obligations judged against a run's stderr, and its `//! expect vcd` dump
+    //! comparison. `Devices`, `Native`, `Ieee1364`, `Analog` and `Fixtures`
+    //! (`collect`, `judge`, `judgeVcd`) read it.
     //!
     //! None of it is a `tb` directive: `tb.parse` describes the analog harness and
     //! must not take a digital diagnostic as its evidence.
@@ -3430,47 +2703,62 @@ const Digital = struct {
 
     const std = @import("std");
 
-    /// Runner metadata, deliberately not a tb directive: tb.parse describes the
-    /// analog harness and must not interpret a digital diagnostic as its evidence.
+    /// Whether a `.v` is a digital reject case: a `//! reject` or `//! reject-only`
+    /// line, the suite's own rule (`harness/conform.c`). A `_rejected` file name
+    /// says the same, but the line is what decides. Runner metadata, deliberately
+    /// not a tb directive: tb.parse describes the analog harness and must not
+    /// interpret a digital diagnostic as its evidence.
     pub fn negative(source: []const u8) bool {
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |raw| {
-            if (std.mem.eql(u8, std.mem.trim(u8, raw, " \t\r"), "// digital-runner: reject")) return true;
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (!std.mem.startsWith(u8, line, "//!")) continue;
+            var words = std.mem.tokenizeAny(u8, line["//!".len..], " \t");
+            const word = words.next() orelse continue;
+            if (std.mem.eql(u8, word, "reject") or std.mem.eql(u8, word, "reject-only")) return true;
         }
         return false;
     }
 
-    /// The `vera` arguments a digital case passes after its own path, one
-    /// `// digital-runner:` line each: `--std=SPEC`, `--event-budget=N`; `--libmap FILE` and
-    /// `files FILE...` (more sources, after the fixture), both relative to the
-    /// fixture's directory `dir`; and `-L LIB`.
+    /// The `vera` arguments a digital case passes after its own path, from the
+    /// suite's `//@` lines (`harness/conform.c`): `//@ std SPEC` is `--std=SPEC`;
+    /// `//@ libmap FILE` is `--libmap FILE` and `//@ files FILE...` more sources
+    /// after the fixture, both relative to the fixture's directory `dir`; and
+    /// `//@ liblist LIB...` is `-L LIB` each. Any other `//@` word is
+    /// `error.BadDirective`, as the suite's harness refuses it. VerA's own
+    /// `//! event-budget N` is `--event-budget=N` (the harness ignores `//!`
+    /// words it does not know, so this one is VerA's to read).
     pub fn runnerArgs(arena: std.mem.Allocator, source: []const u8, dir: []const u8) ![]const []const u8 {
-        const key = "// digital-runner: ";
         var out: std.ArrayList([]const u8) = .empty;
         var files: std.ArrayList([]const u8) = .empty;
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |raw| {
             const line = std.mem.trim(u8, raw, " \t\r");
-            if (!std.mem.startsWith(u8, line, key)) continue;
-            const rest = line[key.len..];
-            var words = std.mem.tokenizeAny(u8, rest, " \t");
-            const first = words.next() orelse continue;
-            if (std.mem.startsWith(u8, first, "--std=") or std.mem.startsWith(u8, first, "--event-budget=")) {
-                try out.append(arena, first);
-            } else if (std.mem.eql(u8, first, "--libmap")) {
-                try out.appendSlice(arena, &.{ first, try std.fs.path.join(arena, &.{ dir, words.next() orelse return error.BadDirective }) });
-            } else if (std.mem.eql(u8, first, "-L")) {
-                try out.appendSlice(arena, &.{ first, words.next() orelse return error.BadDirective });
-            } else if (std.mem.eql(u8, first, "files")) {
-                while (words.next()) |f| try files.append(arena, try std.fs.path.join(arena, &.{ dir, f }));
+            if (std.mem.cutPrefix(u8, line, "//! event-budget")) |rest| {
+                const n = std.mem.trim(u8, rest, " \t");
+                if (n.len == 0) return error.BadDirective;
+                try out.append(arena, try std.mem.concat(arena, u8, &.{ "--event-budget=", n }));
+                continue;
             }
+            if (!std.mem.startsWith(u8, line, "//@")) continue;
+            var words = std.mem.tokenizeAny(u8, line["//@".len..], " \t");
+            const key = words.next() orelse return error.BadDirective;
+            if (std.mem.eql(u8, key, "std")) {
+                try out.append(arena, try std.mem.concat(arena, u8, &.{ "--std=", words.next() orelse return error.BadDirective }));
+            } else if (std.mem.eql(u8, key, "libmap")) {
+                try out.appendSlice(arena, &.{ "--libmap", try std.fs.path.join(arena, &.{ dir, words.next() orelse return error.BadDirective }) });
+            } else if (std.mem.eql(u8, key, "liblist")) {
+                while (words.next()) |lib| try out.appendSlice(arena, &.{ "-L", lib });
+            } else if (std.mem.eql(u8, key, "files")) {
+                while (words.next()) |f| try files.append(arena, try std.fs.path.join(arena, &.{ dir, f }));
+            } else return error.BadDirective;
         }
         try out.appendSlice(arena, files.items);
         return out.items;
     }
 
-    /// Whether a `.v` is a digital transcript case: it has a golden or opts into
-    /// the digital reject runner. Anything else is support material.
+    /// Whether a `.v` is a digital transcript case: it has a golden or is a
+    /// reject case (`negative`). Anything else is support material.
     pub fn caseSelected(has_golden: bool, source: []const u8) bool {
         return has_golden or negative(source);
     }
@@ -3538,15 +2826,16 @@ const Digital = struct {
         return null;
     }
 
-    /// Optional warning obligations on a successful digital transcript. Match
-    /// actual diagnostic headers, never source excerpts or arbitrary stderr text.
-    /// A positive still needs its exact stdout oracle and a successful exit.
+    /// Optional warning obligations on a successful digital transcript, one
+    /// `//! warn <pattern>` line each. Match actual diagnostic headers, never
+    /// source excerpts or arbitrary stderr text. A positive still needs its exact
+    /// stdout oracle and a successful exit.
     pub fn warningsMatch(source: []const u8, stderr: []const u8) bool {
         var diagnostics = std.mem.splitScalar(u8, stderr, '\n');
         while (diagnostics.next()) |raw| {
             if (std.mem.startsWith(u8, std.mem.trim(u8, raw, " \t\r"), "error[")) return false;
         }
-        const prefix = "// digital-runner: warning";
+        const prefix = "//! warn";
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |raw| {
             const line = std.mem.trim(u8, raw, " \t\r");
@@ -3637,25 +2926,27 @@ const Digital = struct {
     }
 
     test "digital positive warning obligations inspect diagnostic headers" {
-        const source = "// digital-runner: warning W1150\n// digital-runner: warning memory data count\n";
+        const source = "//! warn W1150\n//! warn memory data count\n";
         const warning = "warning[W1150]: memory data count differs from requested range\n";
         try std.testing.expect(warningsMatch(source, warning));
         try std.testing.expect(!warningsMatch(source, ""));
         try std.testing.expect(!warningsMatch(source, "warning[W1150]: unrelated\n12 | // memory data count\n"));
         try std.testing.expect(!warningsMatch(source, "memory data count W1150\n"));
         try std.testing.expect(!warningsMatch(source, "error[W1150]: memory data count\n"));
-        try std.testing.expect(!warningsMatch("// digital-runner: warning\n", warning));
+        try std.testing.expect(!warningsMatch("//! warn\n", warning));
         try std.testing.expect(warningsMatch("module ordinary; endmodule", warning));
         try std.testing.expect(!warningsMatch("module ordinary; endmodule", "error[E1100]: failure\n"));
-        try std.testing.expect(warningsMatch("initial $display(\"// digital-runner: warning absent\");", ""));
-        try std.testing.expect(warningsMatch("// digital-runner: warningish comment", ""));
+        try std.testing.expect(warningsMatch("initial $display(\"//! warn absent\");", ""));
+        try std.testing.expect(warningsMatch("//! warnings are prose", ""));
+        try std.testing.expect(warningsMatch("//! nowarn\n", ""));
     }
 
     test "digital negative routing is explicit and diagnostics are specific" {
-        const source = "// digital-runner: reject\n//! reject E1100\n//! reject no arguments\n";
+        const source = "//! reject E1100\n//! reject no arguments\n";
         try std.testing.expect(negative(source));
-        try std.testing.expect(!negative("//! reject E1100\n"));
-        try std.testing.expect(!negative("initial $display(\"// digital-runner: reject\");"));
+        try std.testing.expect(negative("  //! reject-only E1100\n"));
+        try std.testing.expect(!negative("// reject E1100\n//! rejected\n//! reject-run E0601\n"));
+        try std.testing.expect(!negative("initial $display(\"//! reject\");"));
         const diagnostic = "error[E1100]: function takes no arguments";
         try std.testing.expect(rejectionMatches(source, 1, diagnostic));
         try std.testing.expect(!rejectionMatches(source, 0, diagnostic));
@@ -3675,17 +2966,21 @@ const Digital = struct {
         try std.testing.expect(xfailReason("// xfail prose\n//! xfailed\n") == null);
         try std.testing.expect(caseSelected(false, source));
         try std.testing.expect(caseSelected(true, "module positive; endmodule"));
-        try std.testing.expect(!caseSelected(false, "//! reject E1100\n"));
+        try std.testing.expect(!caseSelected(false, "//! lrm 9.10\n"));
         try std.testing.expect(!caseSelected(false, "module support; endmodule"));
         var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena.deinit();
-        const args = try runnerArgs(arena.allocator(), "// digital-runner: reject\n// digital-runner: files a.v b.vg\n// digital-runner: --std=1364-2005\n// digital-runner: --libmap m/lib.map\n// digital-runner: -L gateLib\n", "d");
+        const args = try runnerArgs(arena.allocator(), "//! reject E1100\n//@ files a.v b.vg\n//@ std 1364-2005\n  //@ libmap m/lib.map\n//@ liblist gateLib\n", "d");
         // Joined to the fixture's directory with the host's separator.
         const sep = std.fs.path.sep_str;
         const want = [_][]const u8{ "--std=1364-2005", "--libmap", "d" ++ sep ++ "m/lib.map", "-L", "gateLib", "d" ++ sep ++ "a.v", "d" ++ sep ++ "b.vg" };
         try std.testing.expectEqual(want.len, args.len);
         for (want, args) |w, a| try std.testing.expectEqualStrings(w, a);
-        try std.testing.expectEqual(0, (try runnerArgs(arena.allocator(), "// digital-runner: reject\n", "d")).len);
+        try std.testing.expectEqual(0, (try runnerArgs(arena.allocator(), "//! reject E1100\n// @ std prose\n", "d")).len);
+        try std.testing.expectError(error.BadDirective, runnerArgs(arena.allocator(), "//@ event-budget 10\n", "d"));
+        const budget = try runnerArgs(arena.allocator(), "//! event-budget 1000\n//! reject E1100\n", "d");
+        try std.testing.expectEqual(1, budget.len);
+        try std.testing.expectEqualStrings("--event-budget=1000", budget[0]);
     }
 };
 
@@ -3972,7 +3267,7 @@ const Golden = struct {
     //!   zig build golden -- diff A B      # two tags, or two snapshot directories
     //!
     //! A snapshot is `.zig-cache/vera-golden/<tag>/`, per `.va` and `.v` under
-    //! `tests/fixtures`:
+    //! the fixture root (the suite's `tests/`, not its `netlist/`):
     //!
     //!   <path>.txt           `vera --emit-zig` stdout, then a last line `exit=<code>`
     //!   <path>.stderr        its stderr: the message text is held too, and vera
@@ -4064,8 +3359,8 @@ const Golden = struct {
         }
 
         /// One fixture's files (the header lists them): `vera --emit-zig`, then
-        /// the in-process kinds. The include path is the shared `tests/fixtures`
-        /// and the fixture's own directory. Only an I/O failure of the snapshot
+        /// the in-process kinds. The include path is the suite's `include/`
+        /// (`harness.include_dir`) and the fixture's own directory. Only an I/O failure of the snapshot
         /// itself is returned; a kind's own failure is its `error=` file.
         fn one(pool: *Pool, rel: []const u8) !void {
             var arena_state: std.heap.ArenaAllocator = .init(pool.gpa);
@@ -4077,7 +3372,7 @@ const Golden = struct {
             const txt = try std.mem.concat(arena, u8, &.{ base, ".txt" });
             const err = try std.mem.concat(arena, u8, &.{ base, ".stderr" });
             try Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(txt).?);
-            const includes: []const []const u8 = &.{ options.fixture_root, std.fs.path.dirname(src).? };
+            const includes: []const []const u8 = &.{ harness.include_dir, std.fs.path.dirname(src).? };
 
             const code: u32 = code: {
                 const out_file = try Io.Dir.cwd().createFile(io, txt, .{});
@@ -4086,8 +3381,8 @@ const Golden = struct {
                 defer err_file.close(io);
                 var child = try std.process.spawn(io, .{
                     .argv = &.{
-                        pool.vera,                  "--emit-zig",         "--color=never",
-                        "-I",                       options.fixture_root, "-I",
+                        pool.vera,                  "--emit-zig",        "--color=never",
+                        "-I",                       harness.include_dir, "-I",
                         std.fs.path.dirname(src).?, src,
                     },
                     .cwd = .{ .path = options.repo_root },
@@ -4144,6 +3439,7 @@ const Golden = struct {
         var opts: vera.Options = .{
             .file_name = src,
             .include_dirs = includes,
+            .require_std_includes = true,
             .diags = &bag,
             .display = if (d.display_record) .record else .emit,
             .spice_netlist = d.spice,
@@ -4178,7 +3474,7 @@ const Golden = struct {
         var bag: vera.diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
         // `.record` is `vera`'s default display (`args.Cli`), not `Options`'.
-        var result = try vera.compileSourceOpts(gpa, source, .build, .{ .file_name = src, .include_dirs = includes, .diags = &bag, .display = .record });
+        var result = try vera.compileSourceOpts(gpa, source, .build, .{ .file_name = src, .include_dirs = includes, .require_std_includes = true, .diags = &bag, .display = .record });
         defer result.deinit();
         const device = try result.generateOutput();
         if (result.device_has_compile_error) return error.CodegenRefused;
@@ -4212,7 +3508,8 @@ const Golden = struct {
         return prog.text;
     }
 
-    /// Every `.va` and `.v` under `tests/fixtures`, relative to it.
+    /// Every `.va` and `.v` under the fixture root but its `netlist/` (ESPice's
+    /// decks), relative to the root.
     fn fixtureList(arena: Allocator, io: Io) ![]const []const u8 {
         var dir = try Io.Dir.cwd().openDir(io, options.fixture_root, .{ .iterate = true });
         defer dir.close(io);
@@ -4220,7 +3517,7 @@ const Golden = struct {
         var walker = try dir.walk(arena);
         defer walker.deinit();
         while (try walker.next(io)) |e| {
-            if (e.kind != .file or harness.underCanary(e.path)) continue;
+            if (e.kind != .file or std.mem.startsWith(u8, e.path, "netlist" ++ std.fs.path.sep_str)) continue;
             if (!std.mem.endsWith(u8, e.path, ".va") and !std.mem.endsWith(u8, e.path, ".v")) continue;
             try list.append(arena, try arena.dupe(u8, e.path));
         }
@@ -4266,7 +3563,7 @@ const Golden = struct {
         return list.items;
     }
 
-    /// `diff -r a b` with every `<root>/tests/fixtures/` written `tests/fixtures/`
+    /// `diff -r a b` with every `<root>/tests/conformance/tests/` written `tests/conformance/tests/`
     /// on both sides. Prints one line per file that is missing or differs, then
     /// IDENTICAL or the count; exit 1 on any difference.
     fn compare(arena: Allocator, io: Io, a: []const u8, b: []const u8, w: *Io.Writer) !u8 {
@@ -4308,12 +3605,12 @@ const Golden = struct {
         return 1;
     }
 
-    /// `text` with each absolute path's root cut back to `tests/fixtures`. A
-    /// path starts after a space, quote, backtick or parenthesis, or at a line
+    /// `text` with each absolute path's root cut back to `tests/conformance/tests`.
+    /// A path starts after a space, quote, backtick or parenthesis, or at a line
     /// start, and must start with `/`. It may name the fixture root itself, as
-    /// the include-search note does (`searched: <root>/tests/fixtures, ...`).
+    /// the include-search note does (`searched: <root>/tests/conformance/tests, ...`).
     fn unrooted(arena: Allocator, text: []const u8) ![]const u8 {
-        const key = "/tests/fixtures";
+        const key = "/tests/conformance/tests";
         var out: std.ArrayList(u8) = .empty;
         var rest = text;
         while (std.mem.find(u8, rest, key)) |at| {
@@ -4337,37 +3634,54 @@ const Golden = struct {
         var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const a = "  --> /home/a/VerA/tests/fixtures/ch02/x.va:3:5\n`/home/a/VerA/tests/fixtures/y.vh`\n";
-        const b = "  --> /tmp/wt/b/tests/fixtures/ch02/x.va:3:5\n`/tmp/wt/b/tests/fixtures/y.vh`\n";
+        const a = "  --> /home/a/VerA/tests/conformance/tests/verilog-a/ch02/x.va:3:5\n`/home/a/VerA/tests/conformance/tests/include/y.vh`\n";
+        const b = "  --> /tmp/wt/b/tests/conformance/tests/verilog-a/ch02/x.va:3:5\n`/tmp/wt/b/tests/conformance/tests/include/y.vh`\n";
         try std.testing.expectEqualStrings(try unrooted(arena, a), try unrooted(arena, b));
-        try std.testing.expectEqualStrings("  --> tests/fixtures/ch02/x.va:3:5\n", try unrooted(arena, "  --> /r/tests/fixtures/ch02/x.va:3:5\n"));
+        try std.testing.expectEqualStrings("  --> tests/conformance/tests/verilog-a/x.va:3:5\n", try unrooted(arena, "  --> /r/tests/conformance/tests/verilog-a/x.va:3:5\n"));
         // The include-search note names the root itself, with no slash after it.
         try std.testing.expectEqualStrings(
-            "searched: tests/fixtures, tests/fixtures/ch10\n",
-            try unrooted(arena, "searched: /a/b/tests/fixtures, /a/b/tests/fixtures/ch10\n"),
+            "searched: tests/conformance/tests, tests/conformance/tests/include\n",
+            try unrooted(arena, "searched: /a/b/tests/conformance/tests, /a/b/tests/conformance/tests/include\n"),
         );
         // A longer name is not the fixture root.
-        try std.testing.expectEqualStrings("/r/tests/fixtures2/x", try unrooted(arena, "/r/tests/fixtures2/x"));
+        try std.testing.expectEqualStrings("/r/tests/conformance/tests2/x", try unrooted(arena, "/r/tests/conformance/tests2/x"));
         // A relative mention is not a root and stays as written.
-        try std.testing.expectEqualStrings("see tests/fixtures/a.va", try unrooted(arena, "see tests/fixtures/a.va"));
+        try std.testing.expectEqualStrings("see tests/conformance/tests/a.va", try unrooted(arena, "see tests/conformance/tests/a.va"));
     }
 };
 
 const Ieee1364 = struct {
-    //! `zig build test-1364 -- --coverage`: `tests/fixtures/ieee1364/CLAUSES.tsv`,
-    //! every `.v` under `ieee1364/` and every `.c` in build.zig's `vpi_runs` -> the
-    //! AMS coverage report's work lists and summary, over IEEE 1364-2005 clauses,
-    //! plus one row per chapter.
+    //! `zig build test-1364 -- --coverage`: `<vera_root>/clauses/ieee1364/CLAUSES.tsv`
+    //! (the clause table: every IEEE 1364-2005 clause, its title and its kind),
+    //! every `.v` case under the suite's `verilog/` and every `.c` in build.zig's
+    //! `vpi_runs` -> the work lists and summary over those clauses, plus one row
+    //! per chapter.
     //!
     //! Static: nothing is compiled or run, so a cite (`//! inherited IEEE 1364-2005
     //! <clause>`) says what a fixture claims, not that it passes. A `.c` fixture's
     //! polarity is per line (`//! inherited-reject IEEE 1364-2005 <clause>` for a
-    //! refusal), as `harness/coverage.zig`'s `cCites` reads its AMS tags.
+    //! refusal).
 
     const std = @import("std");
     const harness = Fixtures;
     const digital = Digital;
-    const ClassKind = Coverage.ClassKind;
+
+    /// The kinds a `CLAUSES.tsv` row may name, spelled with hyphens in the file
+    /// (`non-normative`): a clause that states no obligation a fixture pins, or
+    /// one whose obligation is of a kind a fixture may not pin one way.
+    /// `no_prohibition` is a normative clause whose every sentence is positive,
+    /// so its positive fixtures are the whole obligation; it is refused unless a
+    /// positive fixture cites the clause. `not_supported` is a clause out of
+    /// VerA's scope, which it refuses or warns about by name.
+    pub const ClassKind = enum {
+        non_normative,
+        no_prohibition,
+        optional,
+        implementation_defined,
+        resource_limit,
+        unspecified,
+        not_supported,
+    };
     const options = @import("suite_options");
 
     const Io = std.Io;
@@ -4408,7 +3722,7 @@ const Ieee1364 = struct {
         const w = &stderr.interface;
         defer w.flush() catch {};
 
-        const root = try std.fs.path.join(arena, &.{ options.fixture_root, "ieee1364" });
+        const root = options.fixture_root ++ "/" ++ Devices.ieee1364_dir;
         var dir = try Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
         defer dir.close(io);
 
@@ -4417,7 +3731,7 @@ const Ieee1364 = struct {
         var index: std.StringHashMapUnmanaged(usize) = .empty;
         var bad: usize = 0;
         {
-            const text = try dir.readFileAlloc(io, "CLAUSES.tsv", arena, .limited(1 << 20));
+            const text = try Io.Dir.cwd().readFileAlloc(io, options.vera_root ++ "/clauses/ieee1364/CLAUSES.tsv", arena, .limited(1 << 20));
             var lines = std.mem.splitScalar(u8, text, '\n');
             var line_no: usize = 0;
             while (lines.next()) |raw| {
@@ -4441,7 +3755,7 @@ const Ieee1364 = struct {
         }
 
         try w.writeAll(
-            "STATIC CITATION INVENTORY — IEEE 1364-2005, fixtures under ieee1364/.\n" ++
+            "STATIC CITATION INVENTORY — IEEE 1364-2005, fixtures under verilog/.\n" ++
                 "Fixtures are not executed by --coverage; both polarities cited does not\n" ++
                 "establish passing tests or every rule within a clause.\n\n",
         );
@@ -4455,11 +3769,13 @@ const Ieee1364 = struct {
         defer walker.deinit();
         while (try walker.next(io)) |e| {
             if (e.kind != .file or !std.mem.endsWith(u8, e.path, ".v")) continue;
+            // `pli/`'s designs are the `.c` fixtures' (`vpi_runs`, below).
+            if (std.mem.startsWith(u8, e.path, "pli" ++ std.fs.path.sep_str)) continue;
             const path = try arena.dupe(u8, e.path);
             const source = try dir.readFileAlloc(io, path, arena, .limited(1 << 20));
-            const neg = digital.negative(source) or hasReject(source);
-            // A source a case reads through `// digital-runner: files` has no
-            // golden and is not a case.
+            const neg = digital.negative(source);
+            // A source a case reads through `//@ files` has no golden and is not
+            // a case.
             if (!neg) for ([_][]const u8{ ".expected.txt", ".expected.vcd" }) |ext| {
                 if (dir.access(io, try std.mem.concat(arena, u8, &.{ path[0 .. path.len - 2], ext }), .{})) |_| break else |_| {}
             } else continue;
@@ -4476,7 +3792,7 @@ const Ieee1364 = struct {
             citing += 1;
             for (cites.items) |id| {
                 const i = index.get(id) orelse {
-                    try w.print("UNRESOLVED — ieee1364/{s} cites §{s}, which CLAUSES.tsv does not list\n", .{ path, id });
+                    try w.print("UNRESOLVED — verilog/{s} cites §{s}, which CLAUSES.tsv does not list\n", .{ path, id });
                     unresolved += 1;
                     continue;
                 };
@@ -4484,11 +3800,10 @@ const Ieee1364 = struct {
             }
         }
 
-        // Only a `.c` fixture that runs is evidence, the rule `harness/coverage.zig`'s `cCites`
-        // applies: `vpi_runs` is build.zig's list of those, relative to the root.
-        const repo = std.fs.path.dirname(std.fs.path.dirname(options.fixture_root).?).?;
+        // Only a `.c` fixture that runs is evidence: `vpi_runs` is build.zig's
+        // list of those, relative to the repository.
         for (options.vpi_runs) |rel| {
-            const source = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ repo, rel }), arena, .limited(1 << 20));
+            const source = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ options.repo_root, rel }), arena, .limited(1 << 20));
             var pos: std.ArrayList([]const u8) = .empty;
             var neg: std.ArrayList([]const u8) = .empty;
             try inheritedCites(arena, source, pos_key, &pos);
@@ -4508,8 +3823,8 @@ const Ieee1364 = struct {
             }
         }
 
-        // The same buckets `harness/coverage.zig`'s `report` prints. A classification moves
-        // a one-way or uncited clause out of its work list; two-way evidence wins.
+        // A classification moves a one-way or uncited clause out of its work
+        // list; two-way evidence wins.
         for (clauses.items) |c| {
             if (c.kind == .no_prohibition and !c.pos) {
                 try w.print("BAD CLAUSES.tsv ROW — §{s}: no-prohibition, but no positive fixture cites it\n", .{c.id});
@@ -4523,7 +3838,7 @@ const Ieee1364 = struct {
             "\nREJECTION CITATIONS ONLY — no positive behaviour is established:\n",
             "\nUNCITED — no fixture names these at all:\n",
             "\nCLASSIFIED — CLAUSES.tsv says the clause states no obligation a fixture pins,\n" ++
-                "or (not_supported) that CLAUSE-AUDIT.md §5.7 scopes it out and VerA refuses or warns:\n",
+                "or (not_supported) that it is out of VerA's scope and VerA refuses or warns:\n",
         };
         for ([_]Bucket{ .pos_only, .neg_only, .uncited, .classified }) |want| {
             var printed = false;
@@ -4555,7 +3870,7 @@ const Ieee1364 = struct {
         if (uncited_paths.items.len != 0) {
             std.mem.sort([]const u8, uncited_paths.items, {}, harness.strLess);
             try w.writeAll("\nFIXTURES CITING NO 1364-2005 CLAUSE — they run, and count for nothing here:\n");
-            for (uncited_paths.items) |p| try w.print("  ieee1364/{s}\n", .{p});
+            for (uncited_paths.items) |p| try w.print("  verilog/{s}\n", .{p});
         }
 
         try w.writeAll("\nchapter\tfixtures\tuncited-fixtures\tclauses\tboth\tpos-only\trej-only\tuncited\tclassified\n");
@@ -4628,18 +3943,6 @@ const Ieee1364 = struct {
         return .{ .id = id, .title = title, .kind = kind };
     }
 
-    fn hasReject(source: []const u8) bool {
-        var lines = std.mem.splitScalar(u8, source, '\n');
-        while (lines.next()) |raw| {
-            const line = std.mem.trim(u8, raw, " \t\r");
-            if (!std.mem.startsWith(u8, line, "//!")) continue;
-            var words = std.mem.tokenizeAny(u8, line["//!".len..], " \t");
-            const word = words.next() orelse continue;
-            if (std.mem.eql(u8, word, "reject") or std.mem.eql(u8, word, "reject-only")) return true;
-        }
-        return false;
-    }
-
     const pos_key = "inherited IEEE 1364-2005 ";
     const neg_key = "inherited-reject IEEE 1364-2005 ";
 
@@ -4679,8 +3982,6 @@ const Ieee1364 = struct {
         got.clearRetainingCapacity();
         try inheritedCites(arena, "//! inherited-reject IEEE 1364-2005 27.14\n", neg_key, &got);
         try std.testing.expectEqual(@as(usize, 1), got.items.len);
-        try std.testing.expect(hasReject("//! reject E0235\n"));
-        try std.testing.expect(!hasReject("// reject E0235\n//! rejected\n"));
     }
 };
 
@@ -5146,10 +4447,9 @@ const Native = struct {
     const NativeVerdict = struct { pass: bool, fallback: ?[]const u8, refused: bool = false, xfail: bool = false, state: RunState = .four };
     const RunState = enum { four, two, rerun };
 
-    /// `nativeCase` under `//! xfail`, with `digitalVerdict`'s algebra.
+    /// `nativeCase` under `//! xfail` or an xfail list row, with `digitalVerdict`'s algebra.
     fn nativeVerdict(arena: Allocator, io: Io, vera_exe: []const u8, flags: []const []const u8, snapshot: bool, case: []const u8, w: *Io.Writer) !NativeVerdict {
-        const src = try arena.print("{s}/{s}.v", .{ options.fixture_root, case });
-        const xfail = digital.xfailReason(try Io.Dir.cwd().readFileAlloc(io, src, arena, .limited(1 << 20))) orelse
+        const xfail = try devices.xfailOf(arena, io, case) orelse
             return nativeCase(arena, io, vera_exe, flags, snapshot, case, w);
         if (xfail.len == 0) {
             try w.print("FAIL {s}: `//! xfail` names no reason\n", .{case});
@@ -5158,8 +4458,8 @@ const Native = struct {
         var detail: Io.Writer.Allocating = .init(arena);
         var v = try nativeCase(arena, io, vera_exe, flags, snapshot, case, &detail.writer);
         if (v.pass) {
-            try w.print("FAIL {s}: XPASS — marked `//! xfail`, but VerA now does what the fixture says.\n" ++
-                "  Delete the `//! xfail` line.\n", .{case});
+            try w.print("FAIL {s}: XPASS — marked xfail, but VerA now does what the fixture says.\n" ++
+                "  Delete its `//! xfail` line or its row in {s}.\n", .{ case, harness.xfail_list });
             v.pass = false;
             return v;
         }
@@ -5469,24 +4769,28 @@ const SpiceDecks = struct {
         const w = &stderr.interface;
         defer w.flush() catch {};
 
+        // The decks: every `.sp` with an `.expected.json` beside it under the AMS
+        // directories (`harness.ams_dirs`), relative to the fixture root. Never
+        // the suite's `netlist/` (ESPice's own decks), nor VerA's
+        // `vera/osdi/*.sp` (ngspice `.control` decks `tools/external_analog.py`
+        // runs, with no `.hdl` card and no `.expected.json`).
         var decks: std.ArrayList([]const u8) = .empty;
         defer decks.deinit(gpa);
-        {
-            var root = try Io.Dir.cwd().openDir(io, options.fixture_root, .{ .iterate = true });
+        for (harness.ams_dirs) |sub| {
+            const pa = arena_state.allocator();
+            var root = Io.Dir.cwd().openDir(io, try std.fs.path.join(pa, &.{ options.fixture_root, sub }), .{ .iterate = true }) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                else => return err,
+            };
             defer root.close(io);
-            var walker = try root.walk(arena_state.allocator());
+            var walker = try root.walk(pa);
             defer walker.deinit();
             while (try walker.next(io)) |entry| {
                 if (entry.kind != .file) continue;
                 if (!std.mem.endsWith(u8, entry.path, ".sp")) continue;
-                // `external/` holds suites with their own runner and oracles
-                // (`tools/external_analog.py`, in `nix develop .#benchmarking`):
-                // `external/osdi/*.sp` are ngspice `.control` decks over `vera
-                // --emit-osdi` libraries, graded by their `*! expect` lines, with
-                // no `.hdl` card and no `.expected.json`. Not this mode's decks.
-                if (std.mem.startsWith(u8, entry.path, "external") and entry.path.len > "external".len and
-                    (entry.path["external".len] == '/' or entry.path["external".len] == '\\')) continue;
-                try decks.append(gpa, try arena_state.allocator().dupe(u8, entry.path));
+                const oracle = try pa.print("{s}.expected.json", .{entry.path[0 .. entry.path.len - ".sp".len]});
+                if (root.access(io, oracle, .{})) |_| {} else |_| continue;
+                try decks.append(gpa, try std.fs.path.join(pa, &.{ sub, entry.path }));
             }
         }
         std.mem.sort([]const u8, decks.items, {}, harness.strLess);
@@ -5507,8 +4811,7 @@ const SpiceDecks = struct {
             const name = std.fs.path.basename(rel);
             var bad = false;
 
-            // 1. The oracle. A deck with no `.expected.json` states no result, so
-            //    no simulator could grade it and it is not a fixture yet.
+            // 1. The oracle, which the walk saw beside the deck.
             const stem = path[0 .. path.len - ".sp".len];
             const oracle_path = try pa.print("{s}.expected.json", .{stem});
             const oracle = Io.Dir.cwd().readFileAlloc(io, oracle_path, pa, .limited(1 << 20)) catch blk: {
@@ -5536,11 +4839,11 @@ const SpiceDecks = struct {
                 };
                 models += 1;
                 // 3. VerA's own half: the model has to compile. `--check` and both
-                //    include dirs: `check.vh` is at the suite
-                //    root and the model's siblings are beside it.
+                //    include dirs: `check.vh` is in the suite's `include/` and the
+                //    model's siblings are beside it.
                 const r = child.capture(pa, io, &.{
-                    vera_exe, "--check",            "--contract", options.contract,
-                    "-I",     options.fixture_root, "-I",         dir_path,
+                    vera_exe, "--check",           "--contract", options.contract,
+                    "-I",     harness.include_dir, "-I",         dir_path,
                     model,
                 }) catch |e| {
                     try w.print("FAIL {s}: could not run vera: {s}\n", .{ name, @errorName(e) });
@@ -5630,10 +4933,10 @@ const SpiceDecks = struct {
         try Io.Dir.cwd().deleteTree(io, work);
         try Io.Dir.cwd().createDirPath(io, work);
         const out = try std.fs.path.join(arena, &.{ work, try arena.print("{s}.csv", .{stem}) });
-        // `-I`: the models `include "check.vh"` from the fixture root, as the
-        // `vera --check` half is told; espice searches a model's own directory
-        // and each `-I` for its `.hdl` includes.
-        const argv = try std.mem.concat(arena, []const u8, &.{ &.{ espice, "--format=csv", "-r", out, "-I", options.fixture_root }, espice_args, &.{deck} });
+        // `-I`: the models `include "check.vh"` from the suite's `include/`, as
+        // the `vera --check` half is told; espice searches a model's own
+        // directory and each `-I` for its `.hdl` includes.
+        const argv = try std.mem.concat(arena, []const u8, &.{ &.{ espice, "--format=csv", "-r", out, "-I", harness.include_dir }, espice_args, &.{deck} });
         // From the deck's directory, as `.hdl` paths are written relative to it;
         // `deck` and `out` are absolute.
         const r = child.captureIn(arena, io, argv, dir_path) catch |e|

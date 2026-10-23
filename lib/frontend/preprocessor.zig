@@ -511,8 +511,12 @@ pub const Macro = struct {
     /// Defined by the prelude's annex D.2 constants.vams: under
     /// `Options.require_std_includes` a use needs `include "constants.vams"`.
     annex_d2: bool = false,
+    /// Defined by the prelude's annex D.1 disciplines.vams (its guard
+    /// `DISCIPLINES_VAMS`): under `Options.require_std_includes` an `ifdef
+    /// reads it as undefined until the source includes the file.
+    annex_d1: bool = false,
 
-    // Budget: two slices and two flags. A few hundred per compilation (psp103
+    // Budget: two slices and three flags. A few hundred per compilation (psp103
     // holds 204: 45 prelude, 156 its own, 3 predefined), so packing the slices
     // into pool offsets would save under 4 KB of scratch.
     comptime {
@@ -775,6 +779,9 @@ pub const Pp = struct {
         var it = pp.macros.valueIterator();
         while (it.next()) |m| m.annex_d2 = !m.predefined;
         try pp.runFile(pp_annex_d.disciplines_vams, "disciplines.vams", null);
+        // What D.1 added (its own guard) is D.1's, for the same rule.
+        var d1 = pp.macros.valueIterator();
+        while (d1.next()) |m| m.annex_d1 = !m.predefined and !m.annex_d2;
         // Annex E after annex D.1: the primitives' ports are `electrical`, which
         // disciplines.vams declares, and the source rows read `M_TWO_PI, which
         // constants.vams defines. Before the user's source, so nothing the user

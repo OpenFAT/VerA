@@ -161,6 +161,20 @@ pub fn directive(pp: *Pp, text: []const u8, at: usize) Error!usize {
 }
 
 /// `ifdef / `ifndef / `elsif / `else / `endif (IEEE 1364 §19.4).
+/// `ifdef's view of a macro. Under `Options.require_std_includes` the
+/// prelude's annex D macros (D.2's constants, D.1's guard `DISCIPLINES_VAMS`)
+/// are hidden with the definitions they belong to until the source includes
+/// that file, so `` `ifndef DISCIPLINES_VAMS `include ... `` includes it here
+/// exactly as in a tool without a prelude. A source's own `define of a guard
+/// is its own macro, and defined.
+fn isDefined(pp: *Pp, name: []const u8) bool {
+    const m = pp.macros.get(name) orelse return false;
+    if (!pp.opts.require_std_includes or pp.in_std_defs) return true;
+    if (m.annex_d2) return pp.constants_included;
+    if (m.annex_d1) return pp.disciplines_included;
+    return true;
+}
+
 fn conditional(pp: *Pp, text: []const u8, at: usize, after_name: usize, kind: Directive) Error!usize {
     std.debug.assert(after_name > at); // past the '`' and the word
     std.debug.assert(after_name <= text.len);
@@ -178,7 +192,7 @@ fn conditional(pp: *Pp, text: []const u8, at: usize, after_name: usize, kind: Di
             const macro = r.escapedIdent() orelse r.ident() orelse
                 return pp.fail(sp, .E0104, "`{s}", .{@tagName(kind)});
             const parent = pp.emitting();
-            const defined = pp.macros.contains(macro);
+            const defined = isDefined(pp, macro);
             const want = if (kind == .ifdef) defined else !defined;
             const active = parent and want;
             try pp.conds.append(pp.scratch, .{
@@ -202,7 +216,7 @@ fn conditional(pp: *Pp, text: []const u8, at: usize, after_name: usize, kind: Di
                 // Same A.9.3 pair as `ifdef above: the name may be escaped.
                 const macro = r.escapedIdent() orelse r.ident() orelse
                     return pp.fail(sp, .E0107, "", .{});
-                top.active = top.parent_active and !top.taken and pp.macros.contains(macro);
+                top.active = top.parent_active and !top.taken and isDefined(pp, macro);
                 if (top.active) top.taken = true;
             }
         },

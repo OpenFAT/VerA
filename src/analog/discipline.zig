@@ -116,7 +116,7 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
 /// annex D's `disciplines.vams` to every compilation, so comparing across that
 /// prelude would reject a declaration its author did not write. §3.13.2's
 /// access rule (E0335) compares globally, with the prelude's natures in only
-/// when the source includes annex D.1 (specification/Vague_Decisions.md VD-096).
+/// when the source includes annex D.1 (docs/specification/Vague_Decisions.md VD-096).
 pub fn checkNatureTable(self: *Lower) Oom!void {
     const natures = self.file.natures;
     // §3.6.1.2 access identifier per nature, `.none` when it declares no
@@ -217,7 +217,7 @@ pub fn checkNatureTable(self: *Lower) Oom!void {
     // declared twice (annex D's own headers arrive that way when a fixture
     // restates them) is one claim, not two. The preloaded annex D natures
     // (the first `builtin_natures`) count only when the source includes D.1
-    // itself (specification/Vague_Decisions.md VD-096): VerA supplies them to every
+    // itself (docs/specification/Vague_Decisions.md VD-096): VerA supplies them to every
     // compilation, and a model that never asked for them may declare its own
     // `access = V` nature.
     const builtin = if (self.file.annex_d_included) 0 else @min(self.file.builtin_natures, natures.len);

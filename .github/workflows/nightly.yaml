@@ -5,7 +5,7 @@
 #             cannot see an error that size (L2b)
 #   certify   every Jacobian entry against a central difference (L4a)
 #   metric    each ledger row's evidence level, ratcheted against the
-#             committed tests/fixtures/conformance/LEVELS.tsv, and the table in the summary
+#             committed tests/conformance/vera/ledger/LEVELS.tsv, and the table in the summary
 name: nightly
 
 on:
@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
       - uses: cachix/install-nix-action@v31
 
       - name: Strict suite, with verdicts
@@ -32,7 +34,7 @@ jobs:
         run: |
           nix develop -c zig build -Doptimize=ReleaseFast benchmark -- --perturb --verdicts=/tmp/perturbed.tsv 2> /tmp/perturb.txt | tail -3
           status="${PIPESTATUS[0]}"
-          grep '^LOOSE ' /tmp/perturb.txt | sed 's|^LOOSE .*/tests/fixtures/|LOOSE |' | sort > /tmp/loose.txt || true
+          grep '^LOOSE ' /tmp/perturb.txt | sed 's|^LOOSE .*/tests/conformance/tests/|LOOSE |' | sort > /tmp/loose.txt || true
           exit "$status"
 
       - name: Derivative certificate (L4a)

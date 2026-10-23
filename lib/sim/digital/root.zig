@@ -1180,7 +1180,7 @@ pub const Run = struct {
     /// next. The run is elaborated again from the source and options it was
     /// made from, into the same arena, so every slot, scope, pc and check
     /// keeps its number and what a host holds by number stays valid. What a
-    /// host installed over the run is kept (specification/Vague_Decisions.md VD-106):
+    /// host installed over the run is kept (docs/specification/Vague_Decisions.md VD-106):
     /// its hooks, its value-change watches, and the delays and timing check
     /// limits it put. ponytail: each reset leaves the old run's memory in
     /// the arena; a long run of resets wants the run in an arena of its own.

@@ -850,7 +850,7 @@ pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
 /// its value at the last report, a change being VD-032's `!=`. An argument
 /// is not compared whole: `$time`, `$stime` and `$realtime` are the clause's
 /// exceptions inside an expression too, so time passing alone reports
-/// nothing (specification/Vague_Decisions.md VD-111).
+/// nothing (docs/specification/Vague_Decisions.md VD-111).
 pub fn monitorDue(self: *Run, a: std.mem.Allocator) Error!bool {
     const m = self.monitor orelse return false;
     if (self.monitor_slot_hit) return true;

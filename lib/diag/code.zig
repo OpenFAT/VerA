@@ -725,6 +725,12 @@ fn infoOf(c: Code) Info {
             \\
             \\If the definition lives in another file, add an `include for it,
             \\or pass the directory holding it via the include search path.
+            \\
+            \\Annex D.2's macros (`M_PI`, `P_K` and the rest) are defined by
+            \\constants.vams, and `vera` gives them only to a source that
+            \\includes it: write `include "constants.vams"` (or "constants.h")
+            \\before the first use. VerA ships the file, so no include path is
+            \\needed.
             ,
         },
         .E0116 => .{
@@ -3653,6 +3659,12 @@ fn infoOf(c: Code) Info {
             \\    child c1();    // A.4.1 module_instance, even with no ports
             \\
             \\Otherwise declare the discipline, or `include "disciplines.vams"`.
+            \\
+            \\Annex D.1's disciplines (`electrical`, `thermal`, `logic` and the
+            \\rest) are declared by disciplines.vams, and `vera` gives them only
+            \\to a source that includes it: write `include "disciplines.vams"`
+            \\(or "discipline.h") before the first module. VerA ships the file,
+            \\so no include path is needed.
             ,
         },
         .E0372 => .{

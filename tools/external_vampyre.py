@@ -4,7 +4,7 @@ analyses, on the same compact models, compared finding by finding.
 
     tools/external_vampyre.py [--vera PATH] [--out DIR] [MODEL ...]
 
-The models: the suite's own self-test probes (tests/fixtures/external/vampyre/
+The models: the suite's own self-test probes (tests/conformance/vera/external/vampyre/
 *.va, each naming with `// vampyre-agree: <finding>/<key>` (a plain comment,
 so the fixture suite does not collect them) the agreements it must
 produce, so an empty comparison cannot pass), the va-models suite's rows

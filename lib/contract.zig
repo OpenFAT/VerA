@@ -530,7 +530,7 @@ pub const gm = struct {
     const log2e = 1.44269504088896338700;
 
     /// exp, log and pow are VerA's own, one implementation on every target
-    /// (host, NVPTX, AMDGCN): faithful (< 1 ulp; specification/Vague_Decisions.md, "Host
+    /// (host, NVPTX, AMDGCN): faithful (< 1 ulp; docs/specification/Vague_Decisions.md, "Host
     /// math"), fma-free so every target rounds alike (`exact_everywhere`).
     /// `exp`/`log` take `f64` or `@Vector(n, f64)`; `powV` is pow's vector
     /// form.
@@ -625,7 +625,7 @@ pub const gm = struct {
     // `atan`, so they need no libm (NVPTX, AMDGCN) and one function serves the
     // compiler's folds (`kernels/fold.zig`), the prover's bounds
     // (`prove/transfer.zig`) and a device's value (`kernel_text.zig`).
-    // An exact f64 model against mpmath (specification/Vague_Decisions.md
+    // An exact f64 model against mpmath (docs/specification/Vague_Decisions.md
     // VD-123): under 2 ulp (acosh near 1 the worst, 1.94); log10 0.67 ulp
     // and exact at every power of ten. `tests/unit.zig` holds the bounds.
 
@@ -1912,7 +1912,7 @@ pub const gm = struct {
     }
 
     test "exp/log/pow stay within the documented bound of an f128 oracle" {
-        // specification/Vague_Decisions.md: exp <= 0.52, log <= 0.52, pow <= 0.55 ulp
+        // docs/specification/Vague_Decisions.md: exp <= 0.52, log <= 0.52, pow <= 0.55 ulp
         // (measured maxima 0.507, 0.500, 0.505; the margin is the bound ARM
         // proves). A fixed sample, so the test is reproducible.
         var prng = std.Random.DefaultPrng.init(0x7a11);

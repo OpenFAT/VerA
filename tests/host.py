@@ -172,7 +172,7 @@ def run_vera_cases(case_class, artifact, argv=None):
 # diagnostic_observations: simulator diagnostics an HDL model cannot observe.
 # ---------------------------------------------------------------------------
 
-DIAGNOSTIC_FIXTURES = FIXTURES / "ch09_system_tasks"
+DIAGNOSTIC_FIXTURES = FIXTURES / "verilog-a/ch09_system_tasks"
 
 
 class DiagnosticObservations(unittest.TestCase):
@@ -349,7 +349,7 @@ class PairedCompilerObservations(unittest.TestCase):
         command = [
             str(VERA), "--lint" if reject else "--run",
             "--diagnostics=json" if reject else "--diagnostics=text",
-            "--color=never", "-I", str(FIXTURES),
+            "--color=never", "-I", str(FIXTURES / "include"),
             "--work-dir", str(self.work / source.stem), str(source),
         ]
         return subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=180)
@@ -358,11 +358,11 @@ class PairedCompilerObservations(unittest.TestCase):
         # Both candidates admit l=1. A has no un-overridden parameter and wins.
         # Looking at the module's range too early would wrongly fall back to B.
         assert_exclusive_refusal(
-            self.invoke("ch06_hierarchy/paramset_selection_ignores_module_ranges_rejected.va",
+            self.invoke("verilog-a/ch06_hierarchy/paramset_selection_ignores_module_ranges_rejected.va",
                         reject=True), "E0361"
         )
         assert_numeric_control(
-            self.invoke("ch06_hierarchy/paramset_selection_by_paramset_ranges.va"),
+            self.invoke("verilog-a/ch06_hierarchy/paramset_selection_by_paramset_ranges.va"),
             {
                 "the paramset with fewer un-overridden parameters is selected": (2.0, 0.0),
                 "so the resistor stamps 0.5 / 2.0": (0.25, 0.0),
@@ -371,21 +371,21 @@ class PairedCompilerObservations(unittest.TestCase):
 
     def test_bare_default_discipline_withdraws_the_default(self):
         assert_exclusive_refusal(
-            self.invoke("ch10_directives/default_discipline_reset_leaves_no_default.va",
+            self.invoke("verilog-ams/ch10_directives/default_discipline_reset_leaves_no_default.va",
                         reject=True), "E0337"
         )
         assert_numeric_control(
-            self.invoke("ch10_directives/default_discipline_undeclared_net.va"),
+            self.invoke("verilog-ams/ch10_directives/default_discipline_undeclared_net.va"),
             {"the defaulted net has the electrical potential access": (0.5, 0.0)},
         )
 
     def test_standalone_hierarchy_accepts_instances_and_parameter_overrides(self):
         assert_exclusive_refusal(
-            self.invoke("ch06_hierarchy/nested_module_definition_rejected.va", reject=True),
+            self.invoke("verilog-a/ch06_hierarchy/nested_module_definition_rejected.va", reject=True),
             "E0240",
         )
         assert_numeric_control(
-            self.invoke("ch06_hierarchy/hierarchy_overview_instances_and_overrides.va"),
+            self.invoke("verilog-a/ch06_hierarchy/hierarchy_overview_instances_and_overrides.va"),
             {
                 "a parameter overridden by order": (2.0, 0.0),
                 "a parameter overridden by name": (3.0, 0.0),
@@ -396,7 +396,7 @@ class PairedCompilerObservations(unittest.TestCase):
             },
         )
         assert_numeric_control(
-            self.invoke("ch06_hierarchy/defparam_precedence_over_instance_override.va"),
+            self.invoke("verilog-a/ch06_hierarchy/defparam_precedence_over_instance_override.va"),
             {
                 "the defparam wins a conflict with the instance assignment": (5.0, 0.0),
                 "a defparam alone replaces the default": (7.0, 0.0),
@@ -729,9 +729,9 @@ class IndirectEquationObservations(HostProfileCase):
 # opaque driver). None is assumed for VerA; the adapter must establish it.
 # ---------------------------------------------------------------------------
 
-IDENTIFIER = FIXTURES / "ch02_lexical/identifier_length_limit.va.in"
-INPUT = FIXTURES / "ch09_system_tasks/input_position_restore_failure.va"
-DRIVER = FIXTURES / "ch09_system_tasks/driver_type_unavailable.va"
+IDENTIFIER = FIXTURES / "verilog-a/ch02_lexical/identifier_length_limit.va.in"
+INPUT = FIXTURES / "verilog-a/ch09_system_tasks/input_position_restore_failure.va"
+DRIVER = FIXTURES / "verilog-a/ch09_system_tasks/driver_type_unavailable.va"
 
 
 def compile_result(case, observation, accepted, diagnostic=None):
@@ -1266,8 +1266,8 @@ class SchedulingObservations(HostProfileCase):
 # them) sit in the chapter directories of the clauses they observe.
 # ---------------------------------------------------------------------------
 
-LANGUAGE_FIXTURES = "tests/fixtures/ch03_data_types/"
-MODELS = {name: f"tests/conformance/tests/{chapter}/{name}.va" for chapter, names in (
+LANGUAGE_FIXTURES = "tests/conformance/tests/verilog-a/ch03_data_types/"
+MODELS = {name: f"tests/conformance/tests/verilog-a/{chapter}/{name}.va" for chapter, names in (
     ("ch03_data_types", ("operator_equation_tolerances", "structural_unknown_domain")),
     ("ch04_expressions", ("transition_resolution", "transition_simulator_default", "slew_small_signal")),
 ) for name in names}

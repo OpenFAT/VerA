@@ -1107,7 +1107,7 @@ fn widthRecord(g: *Gen, v: Mir.Value) ?WidthRecord {
 /// digital engine prints it (`kernels/fmt.zig` `autoWidth`). Lowering
 /// records an integer operand's width and sign (`systask.decimalWidth`); a
 /// real is the 64-bit signed integer it converts to, 20 columns
-/// (specification/Vague_Decisions.md VD-120). Null for an integer with no
+/// (docs/specification/Vague_Decisions.md VD-120). Null for an integer with no
 /// record (a 1-bit result, or a sink lowering does not size), a string
 /// operand (§2.7's integer has no fixed width) and a one-column field.
 fn decimalField(g: *Gen, v: Mir.Value) ?usize {

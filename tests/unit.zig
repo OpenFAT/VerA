@@ -7744,7 +7744,7 @@ pub const lower_tests = struct {
 };
 
 pub const rtlil_tests = struct {
-    //! `digital.rtlil` over the designs `tests/fixtures/rtlil/` holds: the RTLIL text a
+    //! `digital.rtlil` over the designs `tests/conformance/vera/rtlil/` holds: the RTLIL text a
     //! module, a process, a cell and a refusal come out as. Yosys's own reading of
     //! the same text is `zig build test-rtlil`.
 
@@ -7752,7 +7752,7 @@ pub const rtlil_tests = struct {
     const digital = @import("digital");
     const diag = @import("diag");
 
-    const counter = @embedFile("fixtures/rtlil/counter.v");
+    const counter = @embedFile("conformance/vera/rtlil/counter.v");
 
     fn emit(arena: std.mem.Allocator, src: []const u8) ![]const u8 {
         var bag: diag.Bag = .init(arena);
@@ -9465,6 +9465,7 @@ pub const preprocessor_tests = struct {
     const scan_stops = Preprocessor.scan_stops;
     const findStop = Preprocessor.findStop;
     const Qualifier = Preprocessor.Qualifier;
+    const vera = @import("vera");
 
     // ---------------------------------------------------------------------------
     // Tests
@@ -11257,6 +11258,98 @@ pub const preprocessor_tests = struct {
         const fix = notes[0].fix.?;
         try testing.expectEqualStrings("`GAIN", fix.replacement);
         try testing.expectEqualStrings("`GAN", src[fix.span.start..fix.span.end]);
+    }
+
+    // `require_std_includes`, the conformance suite's convention and `vera`'s:
+    // the prelude is still prepended, but a source reaches annex D only by
+    // including it.
+    const std_model =
+        \\module res(p, n);
+        \\  inout p, n;
+        \\  electrical p, n;
+        \\  parameter real r = 1000.0 from (0.0:inf);
+        \\  analog I(p, n) <+ V(p, n) / r;
+        \\endmodule
+    ;
+    /// `std_model` reading annex D.2's `M_PI.
+    const pi_model =
+        \\module res(p, n);
+        \\  inout p, n;
+        \\  electrical p, n;
+        \\  parameter real r = 1000.0 * `M_PI from (0.0:inf);
+        \\  analog I(p, n) <+ V(p, n) / r;
+        \\endmodule
+    ;
+    const std_includes = "`include \"disciplines.vams\"\n`include \"constants.vams\"\n";
+
+    /// Whether a `.lint` of `src` fails with a `code` diagnostic.
+    fn lintReports(src: []const u8, opts: vera.Options, code: diag.Code) !bool {
+        var bag: diag.Bag = .init(testing.allocator);
+        defer bag.deinit(testing.allocator);
+        var o = opts;
+        o.diags = &bag;
+        try testing.expectError(error.CompileFailed, vera.compileSourceOpts(testing.allocator, src, .lint, o));
+        for (0..bag.count()) |i| if (bag.at(i).code == code) return true;
+        return false;
+    }
+
+    test "require_std_includes: annex D reaches a source that includes it, under --sim=verilogA too" {
+        const gpa = testing.allocator;
+        // Annex C.17: disciplines.vams's discrete `logic` and `ddiscrete` are
+        // ignored, with the prelude (the include is then guarded empty) or
+        // without it (the include splices the header itself).
+        for ([_]vera.Sim{ .verilog_ams, .verilog_a }) |sim| for ([_]bool{ true, false }) |std_defs| {
+            var res = try vera.compileSourceOpts(gpa, std_includes ++ std_model, .lint, .{ .require_std_includes = true, .sim = sim, .std_defs = std_defs });
+            res.deinit();
+        };
+        var pi = try vera.compileSourceOpts(gpa, std_includes ++ pi_model, .lint, .{ .require_std_includes = true });
+        pi.deinit();
+    }
+
+    test "require_std_includes: annex D without its include is E0371 or E0115, and is not without the option" {
+        // A D.1 discipline without disciplines.vams.
+        try testing.expect(try lintReports(std_model, .{ .require_std_includes = true }, .E0371));
+        var res = try vera.compileSourceOpts(testing.allocator, std_model, .lint, .{});
+        res.deinit();
+        // A D.2 macro without constants.vams.
+        const pi = "`include \"disciplines.vams\"\n" ++ pi_model;
+        try testing.expect(try lintReports(pi, .{ .require_std_includes = true }, .E0115));
+        var res2 = try vera.compileSourceOpts(testing.allocator, pi, .lint, .{});
+        res2.deinit();
+    }
+
+    test "require_std_includes: annex D's own guards read as undefined until the file is included" {
+        // A header that includes D.1 only when nothing has yet (the suite's
+        // check.vh): the prelude's `DISCIPLINES_VAMS` must not hide the include.
+        const guarded = "`ifndef DISCIPLINES_VAMS\n`include \"disciplines.vams\"\n`endif\n" ++
+            "`ifndef CONSTANTS_VAMS\n`include \"constants.vams\"\n`endif\n";
+        var res = try vera.compileSourceOpts(testing.allocator, guarded ++ pi_model, .lint, .{ .require_std_includes = true });
+        res.deinit();
+        // A source that declares its own base natures defines the guard first,
+        // and the header then leaves annex D's out (no E0335 on access `V`).
+        const own = "`define DISCIPLINES_VAMS 1\n" ++ guarded ++
+            \\nature own_v; units = "V"; access = V; abstol = 1m; endnature
+            \\nature own_i; units = "A"; access = I; abstol = 1n; endnature
+            \\discipline own_e; domain continuous; potential own_v; flow own_i; enddiscipline
+            \\module m(p); inout p; own_e p; analog I(p) <+ V(p); endmodule
+            \\
+        ;
+        var res2 = try vera.compileSourceOpts(testing.allocator, own, .lint, .{ .require_std_includes = true });
+        res2.deinit();
+        // Without the option the guards are the prelude's, as before.
+        var res3 = try vera.compileSourceOpts(testing.allocator, guarded ++ std_model, .lint, .{});
+        res3.deinit();
+    }
+
+    test "--sim=verilogA: a user's discrete discipline is E0250 where a net uses it (annex C.4)" {
+        // C.17 ignores the definition itself; C.4's error is the domain
+        // binding a net or port takes from it.
+        const src = std_includes ++
+            \\discipline d; domain discrete; enddiscipline
+            \\module m(a); inout a; d a; endmodule
+            \\
+        ;
+        try testing.expect(try lintReports(src, .{ .require_std_includes = true, .sim = .verilog_a }, .E0250));
     }
 
     /// Preprocesses `src` with every allocation on `gpa`, for
@@ -14435,7 +14528,7 @@ pub const codegen_tests = struct {
         // `filter_kernels.zig` has, and the reason both live in real Zig files.
         //
         // Every row below is a sentence of §9.5.4.2, and the numbers are the ones
-        // tests/fixtures/ch09_system_tasks/{048,162,09,06} hold VerA to.
+        // tests/conformance/tests/verilog-a/ch09_system_tasks/{048,162,09,06} hold VerA to.
         const k = @import("kernels").str_kernels;
         // "the number of successfully matched and assigned input items is returned"
         try std.testing.expectEqual(@as(i64, 1), k.zScanN("42", "%d"));
@@ -14471,7 +14564,7 @@ pub const codegen_tests = struct {
         // printing artifact, so what runs here is byte-for-byte what runs there.
         //
         // Every claim below is a sentence of §9.5.1/§9.5.4/§9.5.5/§9.5.7/§9.5.8, and
-        // the digits are the ones tests/fixtures/ch09_system_tasks/{07,046,049,050,
+        // the digits are the ones tests/conformance/tests/verilog-a/ch09_system_tasks/{07,046,049,050,
         // 051,053,054,158,11} hold VerA to.
         const k = @import("kernels").file_kernels;
         // The kernels resolve a path relative to the process cwd (which is exactly
@@ -19515,11 +19608,13 @@ pub const exhaustive_tests = struct {
 
 pub const citations_tests = struct {
     //! Every diagnostic's `.lrm` citation against the clauses that exist: the
-    //! headings of `specification/*.html` (the Verilog-AMS LRM 2023) and the rows of
-    //! `tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv` (IEEE 1364-2005, whose PDF is not in
-    //! git), both read at test time from `repo_options.repo_root` as
-    //! `exhaustive.zig` reads source. In: `diag.info(c).lrm` for every code. Out:
-    //! pass, or one line per citation that names no clause.
+    //! AMS clause inventory (the clause of every row of
+    //! `tests/conformance/vera/ledger/OBLIGATIONS.tsv`, plus each chapter's
+    //! `vera/clauses/*/CLAUSES.tsv`, the rule-free clauses) and the rows of
+    //! `tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv` (IEEE 1364-2005),
+    //! all read at test time from `repo_options.repo_root` as `exhaustive.zig`
+    //! reads source. In: `diag.info(c).lrm` for every code. Out: pass, or one
+    //! line per citation that names no clause.
     //!
     //! No LRM clause: this checks VerA's own catalogue (#68). E0501 cited a
     //! §3.6.1.4 the 2023 LRM does not have (#62); its §3.6.1 has subclauses 1-3.
@@ -19531,37 +19626,14 @@ pub const citations_tests = struct {
 
     const Clauses = std.StringHashMapUnmanaged(void);
 
-    /// `1`, `3.6.1.2`, `A`, `A.1.2`: a number or annex letter, then `.number`s.
-    fn isClause(s: []const u8) bool {
-        if (s.len == 0) return false;
-        var parts = std.mem.splitScalar(u8, s, '.');
-        const first = parts.first();
-        const annex = first.len == 1 and first[0] >= 'A' and first[0] <= 'H';
-        if (!annex and !allDigits(first)) return false;
-        while (parts.next()) |p| if (!allDigits(p)) return false;
-        return true;
-    }
-
-    fn allDigits(s: []const u8) bool {
-        if (s.len == 0) return false;
-        for (s) |c| if (!std.ascii.isDigit(c)) return false;
-        return true;
-    }
-
-    /// Adds the clause number that opens each `<h1>`..`<h6>`: "3.6.1.2 Attributes",
-    /// "10. Compiler directives", "Annex A (normative) ...". Keys borrow `html`.
-    fn addHeadings(gpa: std.mem.Allocator, set: *Clauses, html: []const u8) !void {
-        var i: usize = 0;
-        while (std.mem.findPos(u8, html, i, "<h")) |at| {
-            i = at + 2;
-            if (i >= html.len or html[i] < '1' or html[i] > '6') continue;
-            const gt = std.mem.findScalarPos(u8, html, i, '>') orelse return;
-            var text = html[gt + 1 ..];
-            text = text[0 .. std.mem.findScalar(u8, text, '<') orelse text.len];
-            if (std.mem.startsWith(u8, text, "Annex ")) text = text["Annex ".len..];
-            var tok = text[0 .. std.mem.findScalar(u8, text, ' ') orelse text.len];
-            if (std.mem.endsWith(u8, tok, ".")) tok = tok[0 .. tok.len - 1];
-            if (isClause(tok)) try set.put(gpa, tok, {});
+    /// Adds the first column of every row of a ledger, up to a `:` (the
+    /// requirement ledger's ids are `<clause>:<ordinal>`). Keys borrow `tsv`.
+    fn addClauses(gpa: std.mem.Allocator, set: *Clauses, tsv: []const u8) !void {
+        var rows = std.mem.splitScalar(u8, tsv, '\n');
+        while (rows.next()) |row| {
+            if (row.len == 0 or row[0] == '#') continue;
+            const id = row[0 .. std.mem.findScalar(u8, row, '\t') orelse row.len];
+            try set.put(gpa, id[0 .. std.mem.findScalar(u8, id, ':') orelse id.len], {});
         }
     }
 
@@ -19574,24 +19646,25 @@ pub const citations_tests = struct {
         const root = try Io.Dir.cwd().openDir(io, repo_root, .{});
         defer root.close(io);
         var lrm: Clauses = .empty;
-        var spec = try root.openDir(io, "specification", .{ .iterate = true });
-        defer spec.close(io);
-        var it = spec.iterate();
+        try addClauses(arena, &lrm, try root.readFileAlloc(io, "tests/conformance/vera/ledger/OBLIGATIONS.tsv", arena, .limited(1 << 26)));
+        var clauses = try root.openDir(io, "tests/conformance/vera/clauses", .{ .iterate = true });
+        defer clauses.close(io);
+        var it = clauses.iterate();
         while (try it.next(io)) |e| {
-            if (e.kind != .file or !std.mem.endsWith(u8, e.name, ".html")) continue;
-            try addHeadings(arena, &lrm, try spec.readFileAlloc(io, e.name, arena, .limited(1 << 24)));
+            if (e.kind != .directory or std.mem.eql(u8, e.name, "ieee1364")) continue;
+            const path = try std.fs.path.join(arena, &.{ e.name, "CLAUSES.tsv" });
+            const tsv = clauses.readFileAlloc(io, path, arena, .limited(1 << 24)) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                else => return err,
+            };
+            try addClauses(arena, &lrm, tsv);
         }
-        // The heading reader found a deep clause and an annex subclause, so a
-        // miss below is the citation's, not the reader's.
+        // The inventory holds a deep clause and an annex subclause, so a miss
+        // below is the citation's, not the reader's.
         try std.testing.expect(lrm.contains("3.6.1.2") and lrm.contains("A.1.2"));
 
         var ieee: Clauses = .empty;
-        const tsv = try root.readFileAlloc(io, "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv", arena, .limited(1 << 24));
-        var lines = std.mem.splitScalar(u8, tsv, '\n');
-        while (lines.next()) |line| {
-            if (line.len == 0 or line[0] == '#') continue;
-            try ieee.put(arena, line[0 .. std.mem.findScalar(u8, line, '\t') orelse line.len], {});
-        }
+        try addClauses(arena, &ieee, try root.readFileAlloc(io, "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv", arena, .limited(1 << 24)));
 
         var missing: usize = 0;
         for (0..@typeInfo(diag.Code).@"enum".field_names.len) |i| {
@@ -19634,7 +19707,7 @@ pub const oom_tests = struct {
 
     /// `check.vh` lives here; every fixture below includes nothing else but the
     /// built-in annex D files.
-    const include_dirs: []const []const u8 = &.{@import("repo_options").repo_root ++ "/tests/conformance/tests"};
+    const include_dirs: []const []const u8 = &.{@import("repo_options").repo_root ++ "/tests/conformance/tests/include"};
 
     fn compileOne(gpa: std.mem.Allocator, src: []const u8, target: vera.Target) !void {
         var bag: vera.diag.Bag = .init(gpa);
@@ -19682,7 +19755,7 @@ pub const oom_tests = struct {
     } };
 
     fn oom(comptime path: []const u8, target: vera.Target) !void {
-        const src = @embedFile("fixtures/" ++ path);
+        const src = @embedFile("conformance/tests/" ++ path);
         // The sweep assumes every clean compile makes the same allocations; say
         // so by count when one does not, rather than as std's bare
         // NondeterministicMemoryUsage.
@@ -19700,70 +19773,70 @@ pub const oom_tests = struct {
     }
 
     test "OOM .lint ch01_intro" {
-        try oom("ch01_intro/reference_ground.va", .lint);
+        try oom("verilog-a/ch01_intro/reference_ground.va", .lint);
     }
     test "OOM .lint ch02_lexical" {
-        try oom("ch02_lexical/operator_arity.va", .lint);
+        try oom("verilog-a/ch02_lexical/operator_arity.va", .lint);
     }
     test "OOM .lint ch03_data_types" {
-        try oom("ch03_data_types/nature_compatibility_rules.va", .lint);
+        try oom("verilog-a/ch03_data_types/nature_compatibility_rules.va", .lint);
     }
     test "OOM .lint ch04_expressions" {
-        try oom("ch04_expressions/parameter_reduction_and_arithmetic_shift.va", .lint);
+        try oom("verilog-a/ch04_expressions/parameter_reduction_and_arithmetic_shift.va", .lint);
     }
     test "OOM .lint ch05_analog_behavior" {
-        try oom("ch05_analog_behavior/port_flow_includes_the_reactive_part.va", .lint);
+        try oom("verilog-a/ch05_analog_behavior/port_flow_includes_the_reactive_part.va", .lint);
     }
     test "OOM .lint ch06_hierarchy" {
-        try oom("ch06_hierarchy/paramset_selected_after_generate.va", .lint);
+        try oom("verilog-a/ch06_hierarchy/paramset_selected_after_generate.va", .lint);
     }
     test "OOM .lint ch07_mixed_signal" {
-        try oom("ch07_mixed_signal/mixed_signal_smallest_abstol.va", .lint);
+        try oom("verilog-ams/ch07_mixed_signal/mixed_signal_smallest_abstol.va", .lint);
     }
     test "OOM .lint ch08_scheduling" {
-        try oom("ch08_scheduling/shared_conservative_node.va", .lint);
+        try oom("verilog-a/ch08_scheduling/shared_conservative_node.va", .lint);
     }
     test "OOM .lint ch09_system_tasks" {
-        try oom("ch09_system_tasks/control_default_filling.va", .lint);
+        try oom("verilog-a/ch09_system_tasks/control_default_filling.va", .lint);
     }
     test "OOM .lint ch10_directives" {
-        try oom("ch10_directives/default_transition_ramp.va", .lint);
+        try oom("verilog-a/ch10_directives/default_transition_ramp.va", .lint);
     }
     test "OOM .lint ch11_vpi" {
-        try oom("ch11_vpi/vpi_design.va", .lint);
+        try oom("verilog-ams/ch11_vpi/vpi_design.va", .lint);
     }
     test "OOM .lint ch12_vpi_routines" {
-        try oom("ch12_vpi_routines/rc_ac.va", .lint);
+        try oom("verilog-ams/ch12_vpi_routines/rc_ac.va", .lint);
     }
     test "OOM .lint annex_a_syntax" {
-        try oom("annex_a_syntax/expression_primaries.va", .lint);
+        try oom("verilog-a/annex_a_syntax/expression_primaries.va", .lint);
     }
     test "OOM .lint annex_b_keywords" {
-        try oom("annex_b_keywords/escaped_keyword_port.va", .lint);
+        try oom("verilog-a/annex_b_keywords/escaped_keyword_port.va", .lint);
     }
     test "OOM .lint annex_c_analog_subset" {
-        try oom("annex_c_analog_subset/compiler_directives.va", .lint);
+        try oom("verilog-a/annex_c_analog_subset/compiler_directives.va", .lint);
     }
     test "OOM .lint annex_d_standard_definitions" {
-        try oom("annex_d_standard_definitions/thermal_definitions.va", .lint);
+        try oom("verilog-a/annex_d_standard_definitions/thermal_definitions.va", .lint);
     }
     test "OOM .lint annex_e_spice" {
-        try oom("annex_e_spice/primitive_mesfet.va", .lint);
+        try oom("spice/primitive_mesfet.va", .lint);
     }
     test "OOM .lint annex_f_resolution" {
-        try oom("annex_f_resolution/resolveto_resolution.va", .lint);
+        try oom("verilog-ams/annex_f_resolution/resolveto_resolution.va", .lint);
     }
     test "OOM .lint annex_g_change_history" {
-        try oom("annex_g_change_history/transition_fall_time_binding.va", .lint);
+        try oom("verilog-a/annex_g_change_history/transition_fall_time_binding.va", .lint);
     }
     test "OOM .lint annex_h_glossary" {
-        try oom("annex_h_glossary/node_port_terminal.va", .lint);
+        try oom("verilog-a/annex_h_glossary/node_port_terminal.va", .lint);
     }
     test "OOM .build ch05_analog_behavior (codegen)" {
-        try oom("ch05_analog_behavior/port_flow_includes_the_reactive_part.va", .build);
+        try oom("verilog-a/ch05_analog_behavior/port_flow_includes_the_reactive_part.va", .build);
     }
     test "OOM .build annex_e_spice (codegen)" {
-        try oom("annex_e_spice/primitive_mesfet.va", .build);
+        try oom("spice/primitive_mesfet.va", .build);
     }
 };
 

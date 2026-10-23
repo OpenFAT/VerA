@@ -13,7 +13,7 @@ pub const Time = u64;
 /// Six current-time regions. The future heap is the seventh logical region.
 /// VAMS §8.5.1 and §8.5.3.6 put explicit D2A before inactive; §8.5.2's
 /// pseudocode reverses these two. We follow the explicit normative ordering;
-/// specification/ch8-scheduling.html carries an editorial note on the discrepancy.
+/// the LRM's §8.5.2 editorial note (docs/specification/VAMS-LRM-2023.pdf) records the discrepancy.
 pub const Region = enum(u3) { active, explicit_d2a, inactive, nba, analog, monitor };
 /// The region a future event lands in when its time comes: §8.5.1 lets only
 /// `#d` resumptions (inactive) and delayed nonblocking updates (nba) wait

@@ -1848,7 +1848,6 @@ verilog-a/ch09_system_tasks/binding_detection.va
 verilog-a/ch09_system_tasks/binding_source_overrides.va
 verilog-a/ch09_system_tasks/binding_unused_parent_port.va
 verilog-a/ch09_system_tasks/bitstoreal.va
-verilog-a/ch09_system_tasks/bound_step_below_minimum_step.va
 verilog-a/ch09_system_tasks/bound_step_infinite_is_no_bound.va
 verilog-a/ch09_system_tasks/bound_step_smallest_active_wins.va
 verilog-a/ch09_system_tasks/bound_step.va

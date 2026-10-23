@@ -109,8 +109,9 @@ builds a host step by step.
   too, so ngspice can load a Verilog module beside a Verilog-A model.
 - **Languages:** Verilog-AMS and IEEE 1364-2005 Verilog. SystemVerilog (E1104)
   and VHDL are out of scope.
-- **Open bugs** are `//! xfail` fixtures, each naming its clause; CI's verdict
-  ratchet ([`tests/conformance/vera/ledger/VERDICTS.tsv`](tests/conformance/vera/ledger/VERDICTS.tsv)) fails
+- **Open bugs** are fixtures listed in the conformance suite's `vera/xfail`,
+  each with its reason; CI's verdict
+  ratchet ([`vera/ledger/VERDICTS.tsv`](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/vera/ledger/VERDICTS.tsv)) fails
   on any verdict change. Operating-point variables are not exported to OSDI yet.
 
 ## Conformance
@@ -121,6 +122,8 @@ See [the test guide](tests/README.md) and the [live report](https://omarsiwy.git
 
 ## Contributing
 
+The fixtures live in the [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+a submodule: run `git submodule update --init tests/conformance` after cloning.
 Run `nix develop -c zig build test` and the relevant language fixtures; see [tests/README.md](tests/README.md).
 Questions and bugs go to [GitHub issues](https://github.com/OmarSiwy/VerA/issues).
 

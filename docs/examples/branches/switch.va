@@ -1,4 +1,4 @@
-// A switch branch (LRM 5.6.5), after tests/conformance/tests' switch_branch_solved:
+// A switch branch (LRM 5.6.5), after the conformance suite's switch_branch_solved:
 // a 2 V source behind 1k drives p, and a 1k load hangs from n.
 //   closed (V(c) = 1): V(p,n) <+ 0 ties p to n:
 //                      (V - 2)/1k + V/1k = 0  ->  V(p) = V(n) = 1 V

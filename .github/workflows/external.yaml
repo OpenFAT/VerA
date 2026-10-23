@@ -1,7 +1,7 @@
 # The external suites, every reference tool from `nix develop .#external`
 # (the reference tools of `.#benchmarking`, without its GPU toolchains).
 # Each gates by NAME: a disagreement passes only when
-# a row of its suite's TRIAGE.md (tests/fixtures/external/<suite>/) names it
+# a row of its suite's TRIAGE.md (tests/conformance/vera/external/<suite>/) names it
 # (the conformance job: a line of tools/vera.xfail)
 # with a verdict, and a row that names nothing is STALE and fails too, as an
 # XPASS does. Upstream sources are fetched at their pinned commits into
@@ -33,6 +33,8 @@ jobs:
       VERA_EXTERNAL_TIMEOUT: "120"
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # tests/conformance/vera: the decks, MANIFESTs and TRIAGE.md
       - uses: cachix/install-nix-action@v31
       - name: Build vera
         run: nix develop .#external -c zig build -Doptimize=ReleaseFast install
@@ -60,12 +62,14 @@ jobs:
   # VAMPyRE (tools/external_vampyre.py): the CMC's Verilog-A rule checker and
   # VerA on the same compact models, on the findings both make (hidden state,
   # integer division by a divisor that may be zero). Every disagreement is a
-  # row of tests/fixtures/external/vampyre/TRIAGE.md, gated by name.
+  # row of tests/conformance/vera/external/vampyre/TRIAGE.md, gated by name.
   external-vampyre:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true  # tests/conformance/vera/external/vampyre
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.18.0-dev.349+d924f83bf

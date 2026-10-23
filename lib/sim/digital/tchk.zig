@@ -10,7 +10,7 @@
 //! not evaluate (§15.5.2's conditions, a negative $nochange end offset) is
 //! refused by name (E1149), never accepted and ignored.
 //!
-//! When a check is judged (specification/Vague_Decisions.md VD-104): at the event, in
+//! When a check is judged (docs/specification/Vague_Decisions.md VD-104): at the event, in
 //! the order the time step's events arrive. A reference and a data event
 //! at the same time are one pair, judged once whichever comes first, so the
 //! window rules do not depend on that order: a data event remembers whether

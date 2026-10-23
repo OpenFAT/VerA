@@ -1036,7 +1036,7 @@ extern vpiHandle  vpi_handle_multi(PLI_INT32 type, vpiHandle refHandle1, vpiHand
  * and are put as vpiScaledRealTime in the first port's time unit; like a
  * module path's they are the model's, and no simulation applies one. A put
  * needs a digital run and warns W0251 there, so the design's diagnostics
- * say so (specification/Vague_Decisions.md VD-114).
+ * say so (docs/specification/Vague_Decisions.md VD-114).
  * -------------------------------------------------------------------------- */
 #define vpiInterModPath        26
 #define vpiModPath             31

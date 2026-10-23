@@ -118,8 +118,13 @@ pub const Options = struct {
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams (§3.6.2).
     std_defs: bool = true,
     /// The source must `include` the annex D files it uses
-    /// (`Preprocessor.Options.require_std_includes`). `vera` and
-    /// `--lsp` set it; the library default keeps the fixtures' implicit prelude.
+    /// (`Preprocessor.Options.require_std_includes`): a D.2 macro without
+    /// constants.vams is E0115, a D.1 discipline without disciplines.vams is
+    /// E0371. The convention of the conformance suite and of `vera` (every
+    /// mode: `--check`, `--lint`, `--run`, the emitters, `--lsp`), all of
+    /// which set it, as does the suite's harness. Off by default, so a
+    /// library caller compiling text it generated (a testbench, a unit test)
+    /// keeps the implicit prelude.
     require_std_includes: bool = false,
     /// The source language, `vera --std=`. See `Parser.setLanguage`.
     language: KeywordSet = token.default_keyword_set,

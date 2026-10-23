@@ -55,6 +55,19 @@ can contain multiple untested rules. See `specification/CLAUSE-AUDIT.md`.
   `--sim=verilogA`). `CONFORM_JOBS` caps the harness's parallelism. The
   digital external suites (`tools/external_digital.py`, `ivtest`, `sv-tests`,
   `iverilog-diff`) moved into the suite.
+- **`tests/fixtures/` moved into the VAMS Conformance Suite**
+  (`tests/conformance`, a submodule): `git submodule update --init
+  tests/conformance` after cloning. The corpus is the suite's `tests/`, split
+  by language (`verilog-a/`, `verilog-ams/`, `verilog/`, `spice/`,
+  `include/`) and written to its conventions: each source includes
+  `disciplines.vams` itself, a `.v` case's options are `//@ std|libmap|files|
+  liblist` lines, a `.c`'s `//! design` is relative to the `.c`. What only
+  VerA uses is the suite's `vera/`: the hosts (`host/`, `//! device
+  tests/...`), `canary/`, `ledger/`, `clauses/`, `rtlil/`, `beh_verilog/`,
+  `osdi/`, `external/`, and `xfail`, which replaces the fixtures' `//! xfail`
+  lines. VerA's runners compile fixtures with no prelude: the annex D.1
+  disciplines are hidden unless the source includes `disciplines.vams`, and
+  E0371 names the missing include.
 - A `.v` module instantiating itself without a terminating generate (IEEE
   1364-2005 §12.1.3) is refused at 256 levels or 2^18 instances instead of
   elaborated without end (ivtest `pr2728812c` reached 25 GB).

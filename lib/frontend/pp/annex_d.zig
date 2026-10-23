@@ -1,6 +1,6 @@
 //! Annex D.2 constants.vams and D.1 disciplines.vams as embedded text, the
 //! bytes `include resolves those names to. Data only, transcribed from
-//! specification/annex-d-stddefs.html.
+//! the LRM (docs/specification/VAMS-LRM-2023.pdf) annex D.
 //! LRM annex D.1, D.2.
 
 // ---------------------------------------------------------------------------
