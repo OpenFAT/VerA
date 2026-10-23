@@ -195,8 +195,11 @@ pub const PsOutput = struct { report: []const u8, flat: []const u8 };
 /// §6.6.2 leaves an unselected generate arm out of the model. Flattening keeps
 /// both arms, so the flattened gate travels with the source diagnostic site.
 pub const ParamsetDefparam = struct {
+    /// The defparam statement's token, where the diagnostic points.
     main_tok: u32,
+    /// The nearest paramset instance's path, without its trailing `sep`.
     instance: []const u8,
+    /// The unit's §6.6 gate in flat names; `.none` when no scheme gates it.
     gate: Ast.ExprId,
 };
 
@@ -235,6 +238,8 @@ pub const NetPart = struct {
     net: []const u8,
     /// `[a]`, `[a:b]`, or IEEE 1364-2005 §5.2.1's `[a +: b]` and `[a -: b]`.
     sel: enum { whole, bit, range, up, down } = .whole,
+    /// The select's first and second folded values; `b == a` for a bit,
+    /// both 0 for a whole net.
     a: i64 = 0,
     b: i64 = 0,
 };

@@ -22,6 +22,7 @@ pub const Defparam = struct {
     /// expression involving ... parameters declared in the same module as the
     /// defparam statement").
     value: Ast.ExprId,
+    /// The defparam statement's token, where E0907/E0908 point.
     tok: u32,
     /// §6.3.1 a path that named no parameter of the elaborated design is E0907,
     /// and this is how that is noticed: nothing ever claimed it.
