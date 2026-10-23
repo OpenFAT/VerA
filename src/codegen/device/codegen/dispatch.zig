@@ -230,14 +230,22 @@ fn emitQ(self: *Gen) Error!void {
         \\
     , .{});
     try writeLead(self, "q", "out");
+    if (gen_instance.hasStatus(self)) {
+        try self.w(
+            \\    var out: contract.Sites(Self, S) = zSitesZero(S);
+            \\    if (inst.vera_status__ == 0) {{
+            \\        const m = @call(.always_inline, core, .{{ S, zProbe(S, x), model, inst, sim{s} }});
+            \\        zStatusStore(inst, m);
+            \\        if (inst.vera_status__ == 0) out = 
+        , .{self.heldArg(false)});
+        try writeSites(self);
+        try self.w(";\n    }}\n" ++ status_tail, .{});
+        return;
+    }
     try self.w(
-        \\{s}    const m = @call(.always_inline, core, .{{ S, zProbe(S, x), model, inst, sim{s} }});
-        \\{s}
-    , .{
-        if (gen_instance.hasStatus(self)) status_pre ++ "zSitesZero(S);\n" else "",
-        self.heldArg(false),
-        if (gen_instance.hasStatus(self)) status_post ++ "zSitesZero(S);\n" else "",
-    });
+        \\    const m = @call(.always_inline, core, .{{ S, zProbe(S, x), model, inst, sim{s} }});
+        \\
+    , .{self.heldArg(false)});
     try self.w("    return ", .{});
     try writeSites(self);
     try self.w(";\n}}\n\n", .{});
@@ -477,20 +485,26 @@ fn emitEval(self: *Gen) Error!void {
     if (self.core_wanted and (self.lowered.timepoints.items.len != 0 or st)) {
         // VerA's `vera_timepoint` (§2.9): the core result fills a stale cache.
         // §9.7.3 a status latches, and a latched one zeroes every row.
-        try self.w(
+        const tp = if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "";
+        if (st) try self.w(
             \\pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {{
-            \\{s}    const xs = zProbe(S, x);
+            \\    var out: contract.Rows(Self, S) = zRowsZero(S);
+            \\    if (inst.vera_status__ == 0) {{
+            \\        const xs = zProbe(S, x);
+            \\        const m = @call(.always_inline, core, .{{ S, xs, model, inst, sim{s} }});
+            \\{s}        zStatusStore(inst, m);
+            \\        if (inst.vera_status__ == 0) out = zResidual(S, xs, m);
+            \\    }}
+            \\
+        ++ status_tail, .{ self.heldArg(false), tp8(self) }) else try self.w(
+            \\pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {{
+            \\    const xs = zProbe(S, x);
             \\    const m = @call(.always_inline, core, .{{ S, xs, model, inst, sim{s} }});
-            \\{s}{s}    return zResidual(S, xs, m);
+            \\{s}    return zResidual(S, xs, m);
             \\}}
             \\
             \\
-        , .{
-            if (st) status_pre ++ "zRowsZero(S);\n" else "",
-            self.heldArg(false),
-            if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "",
-            if (st) status_post ++ "zRowsZero(S);\n" else "",
-        });
+        , .{ self.heldArg(false), tp });
     } else if (self.core_wanted) {
         try self.w(
             \\pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {{
@@ -532,12 +546,18 @@ fn writeLead(self: *Gen, call: []const u8, ret: []const u8) Error!void {
     , .{ call, ret });
 }
 
-/// §9.7.3 a status device's entry-point guards (`gen_instance.hasStatus`): a
-/// latched status returns zero rows before the core runs, and the core's own
-/// report latches and does the same. Each is followed by the zero value.
-const status_pre = "    if (inst.vera_status__ != 0) return ";
-const status_post = "    zStatusStore(inst, m);\n" ++ status_pre;
-const zero_both = ".{ .res = zRowsZero(S), .q = zSitesZero(S) };\n";
+/// §9.7.3 a status device's entry points (`gen_instance.hasStatus`): a
+/// latched status returns zero rows without running the core, and the core's
+/// own report latches and does the same. One result variable, seeded zero,
+/// and one return: an early `return` per guard left three copies of the
+/// result in the GPU frame, the paths merged by a pointer phi that SROA
+/// cannot split (bsimcmg's `evalQ`: 20.8 → 9.8 KB). `status_tail` closes it.
+const status_tail = "    return out;\n}}\n\n";
+
+/// VerA's `vera_timepoint` (§2.9) store inside a status guard's block.
+fn tp8(self: *const Gen) []const u8 {
+    return if (self.lowered.timepoints.items.len != 0) "        zTpStore(inst, sim, m);\n" else "";
+}
 
 /// Emits the §5.6 stamp rows for one residual half into a `res` the caller
 /// has declared. Accumulates `uses.x`/`uses.model`/`uses.inst`, `jac.pat`, `jac.rows`
@@ -810,16 +830,28 @@ fn emitFused(self: *Gen) Error!void {
         \\
     , .{});
     try writeLead(self, "evalQ", ".{ .res = out.res, .q = out.q }");
+    const tp = if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "";
+    if (gen_instance.hasStatus(self)) {
+        try self.w(
+            \\    var res: contract.Rows(Self, S) = zRowsZero(S);
+            \\    var qs: contract.Sites(Self, S) = zSitesZero(S);
+            \\    if (inst.vera_status__ == 0) {{
+            \\        const xs = zProbe(S, x);
+            \\        const m = @call(.always_inline, core, .{{ S, xs, model, inst, sim{s} }});
+            \\{s}        zStatusStore(inst, m);
+            \\        if (inst.vera_status__ == 0) {{
+            \\            res = zResidual(S, xs, m);
+            \\            qs = 
+        , .{ self.heldArg(false), tp8(self) });
+        try writeSites(self);
+        try self.w(";\n        }}\n    }}\n    return .{{ .res = res, .q = qs }};\n}}\n\n", .{});
+        return;
+    }
     try self.w(
-        \\{s}    const xs = zProbe(S, x);
+        \\    const xs = zProbe(S, x);
         \\    const m = @call(.always_inline, core, .{{ S, xs, model, inst, sim{s} }});
-        \\{s}{s}
-    , .{
-        if (gen_instance.hasStatus(self)) status_pre ++ zero_both else "",
-        self.heldArg(false),
-        if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "",
-        if (gen_instance.hasStatus(self)) status_post ++ zero_both else "",
-    });
+        \\{s}
+    , .{ self.heldArg(false), tp });
     // §5.6.1.2 the charges, one per site, off the same core.
     try self.b("    return .{{ .res = zResidual(S, xs, m), .q = ", .{});
     try writeSites(self);

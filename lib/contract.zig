@@ -2178,6 +2178,21 @@ comptime {
     std.debug.assert(@sizeOf(SimState) == 24 and @offsetOf(SimState, "iteration") == 20);
 }
 
+/// Which `SimState` fields `eval`, `q` and `evalQ` read (`D.sim_reads`).
+///   t, dt: read outside the `then` arm of a §5.10.2 `initial_step` event,
+///     whose evaluations a host tells apart by `initial_step` itself. False
+///     means every evaluation off the initial step is a function of the time
+///     only through `kind`, `initial_step`, `final_step` and
+///     `analog_initial`, so a host may reuse one across timepoints.
+///   iteration: read anywhere.
+/// `kind`, `initial_step`, `final_step` and `analog_initial` are not listed.
+pub const SimReads = struct { t: bool = true, dt: bool = true, iteration: bool = true };
+
+/// Returns `D.sim_reads`, or every field read when undeclared. A superset.
+pub fn simReads(comptime D: type) SimReads {
+    return if (@hasDecl(D, "sim_reads")) D.sim_reads else .{};
+}
+
 /// What an unknown is, per position of the optional `u_kinds` table.
 pub const UnknownKind = enum {
     voltage,
@@ -3935,6 +3950,8 @@ pub fn validate(comptime D: type) void {
     // overrides included): the absolute half of a Newton stopping test.
     if (@hasDecl(D, "u_abstol") and @TypeOf(D.u_abstol) != [n]f64)
         @compileError(name ++ ".u_abstol must be [|U|]f64");
+    if (@hasDecl(D, "sim_reads") and @TypeOf(D.sim_reads) != SimReads)
+        @compileError(name ++ ".sim_reads must be contract.SimReads");
 
     // §3.6.3.2 a net initializer (`electrical n = 5.0;`) is a nodeset: a
     // starting guess for that unknown, null where none is given. It is not an
@@ -4191,6 +4208,7 @@ const AllowedPubDecl = enum {
     limit,
     limit_reads,
     limit_writes,
+    sim_reads,
     deriv_reads,
     ddx_reads,
     jac_const,
@@ -4903,6 +4921,8 @@ const MockAll = struct {
         return .{ .{ 0.25 * g, 0.0 }, .{ 0.75 * g, 0.0 } };
     }
     pub const lane_masks = [_]LaneUse{.{ .mask = 0b11, .uses = 1 }};
+    /// A resistor reads no time.
+    pub const sim_reads: SimReads = .{ .t = false, .dt = false, .iteration = false };
 };
 
 test "validate: minimal resistor" {

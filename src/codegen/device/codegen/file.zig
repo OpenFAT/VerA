@@ -145,6 +145,8 @@ pub fn emitFile(self: *Gen) Error!void {
     if (self.lowered.table_samples.items.len != 0 or self.lowered.timepoints.items.len != 0 or gen_instance.hasStatus(self)) try self.w("pub const mutable_eval = true;\n", .{});
     try gen_setup.emitSetup(self);
     try gen_unit.emitUnits(self);
+    try self.w("/// What `eval`, `q` and `evalQ` read of `SimState` (`contract.SimReads`).\n" ++
+        "pub const sim_reads: contract.SimReads = .{{ .t = {}, .dt = {}, .iteration = {} }};\n\n", .{ self.sim_reads.t, self.sim_reads.dt, self.sim_reads.iteration });
     try gen_dispatch.emitDispatchers(self);
     try gen_noise.emitNoiseTable(self);
     try gen_noise.emitAcTable(self);

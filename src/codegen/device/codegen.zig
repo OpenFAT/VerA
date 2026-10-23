@@ -269,6 +269,12 @@ pub const Gen = struct {
     plan: UnitPlan = undefined,
     /// Which uniform parameters the body read (`unit.Uses`).
     uses: gen_unit.Uses = .{},
+    /// `out` ranges of the final emission's `then` arms of a §5.10.2
+    /// `initial_step` branch (`cfg.emitTerm`), for `unit.scanSimReads`.
+    init_arms: std.ArrayList([2]usize) = .empty,
+    /// What the shared core reads of `SimState` (`unit.scanSimReads`),
+    /// written out as `sim_reads`. All false when there is no core.
+    sim_reads: gen_unit.SimReads = .{},
     /// Set when the unit asks for a value the LRM fixes and this backend
     /// cannot produce (§4.5's non-constant control argument, E0515; a §3.6.2.2
     /// signal-flow contribution). The whole body collapses to one

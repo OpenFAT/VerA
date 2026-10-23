@@ -145,7 +145,9 @@ const Resume = union(enum) {
     /// and write that child.
     merge_kids: struct { mc: []const u32, j: usize, depth: u32, at_inner: usize, body_start: usize, peeped: bool, dropped: bool },
     /// After an `if`'s `then` arm: `} else {` and the `else` arm.
-    else_arm: struct { from: u32, to: u32, depth: u32, else_dead: bool },
+    /// `init_at`: where the arm's text starts when the branch tests
+    /// §5.10.2 `initial_step` (`Gen.init_arms`).
+    else_arm: struct { from: u32, to: u32, depth: u32, else_dead: bool, init_at: ?usize = null },
     /// After the `else` arm: the closing brace, putting `su.dead` back.
     if_end: struct { depth: u32, was_dead: bool },
 };
@@ -197,6 +199,7 @@ fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step 
             return null;
         },
         .else_arm => |e| {
+            if (e.init_at) |at| try self.init_arms.append(self.arena, .{ at, self.out.items.len });
             gen_unit.scopeClose(self, self.out.items.len);
             try self.ind(e.depth);
             try self.b("}} else {{\n", .{});
@@ -365,12 +368,21 @@ fn emitTerm(self: *Gen, bi: u32, depth: u32, stack: *std.ArrayList(Resume), targ
             } else try renderCond(self, d.cond);
             try self.b(") {{\n", .{});
             try gen_unit.scopeOpen(self);
-            try stack.append(self.gpa, .{ .else_arm = .{ .from = bi, .to = @backingInt(d.else_block), .depth = depth, .else_dead = else_dead } });
+            const init_at: ?usize = if (!self.su.mode and initialStep(self, d.cond)) self.out.items.len else null;
+            try stack.append(self.gpa, .{ .else_arm = .{ .from = bi, .to = @backingInt(d.else_block), .depth = depth, .else_dead = else_dead, .init_at = init_at } });
             return .{ .edge = .{ .from = bi, .to = @backingInt(d.then_block), .depth = depth + 1 } };
         },
         // `an.term` is the block's branch or jump, found by opcode.
         .unary, .binary, .ternary, .phi, .call, .anew, .load, .store => unreachable,
     }
+}
+
+/// Whether `cond` is a §5.10.2 `initial_step` event's flag, with or without
+/// an analysis list.
+fn initialStep(self: *const Gen, cond: Mir.Value) bool {
+    const def = self.mir.valueDef(self.an.rv(cond));
+    if (def != .inst_result or self.mir.instOp(def.inst_result) != .call) return false;
+    return self.mir.instData(def.inst_result).call.callee == .initial_step;
 }
 
 /// Writes `cond` as a Zig bool (`!= 0` on its scalar value) and pins lanes
