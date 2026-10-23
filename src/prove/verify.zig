@@ -371,7 +371,7 @@ fn version(mir: *const Mir, an: *const Analysis, v: Mir.Value) bool {
 }
 
 /// `held_vars` row i is what codegen reads as row i: a scalar's seed is the
-/// `$held_*` call (`$held_real`, `$held_int`, `$held_str`) whose argument is
+/// `$held_*` call (`$held_real`, `$held_int`, `$held_str`, `$held_wide`) whose argument is
 /// i, an array's seed the `anew` of the array whose `held` is i.
 fn held(mir: *const Mir, lowered: *const Lowered, an: *const Analysis) ?Violation {
     for (lowered.held_vars.items, 0..) |h, i| {

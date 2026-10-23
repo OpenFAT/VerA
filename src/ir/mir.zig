@@ -627,11 +627,11 @@ pub fn blockLast(self: *const Mir, block: Block) Inst {
 }
 
 /// Unlinks every instruction of `from` after `after` (all of them when `after`
-/// is `.none`) and relink them, in order, in front of `to`'s terminator. For a
+/// is `.none`) and relinks them, in order, in front of `to`'s terminator. For a
 /// value computed after a join that one incoming edge has to carry: the
-/// operands must already be available at the end of `to`. True when there is
-/// nothing to move; moves nothing and returns false when `to` has no
-/// terminator yet or is `from`.
+/// operands must already be available at the end of `to`. Returns true when
+/// it moved the tail or there was none to move; moves nothing and returns
+/// false when `to` has no terminator yet or is `from`. O(len(`to`) + moved).
 pub fn moveTailBefore(self: *Mir, from: Block, after: Inst, to: Block) bool {
     const next = self.insts.items(.next);
     const first = self.blocks.items(.first);
