@@ -112,7 +112,7 @@ pub const vpiVariables: c_int = 100;
 pub const vpiAutomatic: c_int = 50;
 
 // §11.6.2/§11.6.5–§11.6.7, the analog classes. Verilog-AMS names these and
-// numbers none; VerA's numbers, shared with tests/fixtures/ch12_vpi_routines/
+// numbers none; VerA's numbers, shared with tests/conformance/tests/verilog-ams/ch12_vpi_routines/
 // p03_vpi_analog.h so a plugin including both sees one value per name.
 pub const vpiQuantity: c_int = 720;
 pub const vpiBranch: c_int = 721;

@@ -1109,7 +1109,7 @@ test "emit: a row placed after its block's terminator still runs, before it" {
 
 test "emit refuses a vera_pin or vera_delay whose value is not one" {
     // Only the attribute's value is judged here; `attrs.va` in
-    // test-beh-verilog runs the accepted ones by name.
+    // test-external runs the accepted ones by name.
     const bad = [_]struct { name: []const u8, value: ?Const, says: []const u8 }{
         .{ .name = "vera_pin", .value = null, .says = "vera_pin takes" },
         .{ .name = "vera_pin", .value = .{ .real = 1 }, .says = "vera_pin takes" },

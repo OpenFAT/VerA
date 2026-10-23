@@ -92,7 +92,7 @@ pub const Row = struct {
     // Budget: one row per event queued at once (recycled). `Pending.write`
     // is the widest payload: a slot, a value and an optional select.
     comptime {
-        std.debug.assert(@sizeOf(Row) == 88);
+        std.debug.assert(@sizeOf(Row) <= 88);
     }
 };
 

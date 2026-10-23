@@ -9,7 +9,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
+
+# The merge tier: a newer push to a pull request cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   cross:
@@ -20,9 +26,33 @@ jobs:
       matrix:
         target: [x86_64-linux-gnu, aarch64-linux-gnu, x86_64-macos, aarch64-macos, x86_64-windows]
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.18.0-dev.349+d924f83bf
       - name: Build every artifact for ${{ matrix.target }}
         run: zig build build-all -Dtarget=${{ matrix.target }}
+
+  # vera as WebAssembly, for a browser or any WASI host. The front end and every
+  # --emit-* that only writes text run there; anything that spawns `zig`
+  # (--check's build, --run, --emit-so, --emit-exe) cannot. The oracle is the
+  # native vera: the same fixture's --emit-zig must be byte-identical.
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: true  # tests/conformance/vera/beh_verilog: the fixture compared
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
+      - name: Build vera.wasm and native vera
+        run: |
+          nix develop -c zig build -Dtarget=wasm32-wasi -Doptimize=ReleaseSmall install --prefix out/wasm
+          nix develop -c zig build install --prefix out/native
+      - name: vera.wasm and native vera emit the same Zig
+        run: |
+          set -euo pipefail
+          f=tests/conformance/vera/beh_verilog/rc_charge.va
+          nix shell nixpkgs#wasmtime -c wasmtime --dir . out/wasm/bin/vera.wasm --allow=W0650 --emit-zig "$f" -o wasm.zig
+          out/native/bin/vera --allow=W0650 --emit-zig "$f" -o native.zig
+          cmp wasm.zig native.zig

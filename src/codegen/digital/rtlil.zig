@@ -1034,7 +1034,7 @@ const Emitter = struct {
 
 // ---------------------------------------------------------------------------
 // Tests: `tests/unit.zig` emits designs and reads the text back;
-// `zig build test-rtlil` has Yosys read it.
+// `zig build test-external` has Yosys read it.
 // ---------------------------------------------------------------------------
 
 test "constSig: two's complement, MSB first, past 64 bits sign-extended" {

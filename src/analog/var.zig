@@ -96,7 +96,7 @@ pub const State = struct {
 pub const ScopeEntry = struct { name: []const u8, prev_var: u32, prev_array: u32 };
 // Budget: a name and two handles. It was 88 B with the bindings inline.
 comptime {
-    std.debug.assert(@sizeOf(ScopeEntry) == 24);
+    std.debug.assert(@sizeOf(ScopeEntry) <= 24);
 }
 
 /// One enclosing §5.3.2 named block, as `scanHeld` sees it: the dotted prefix

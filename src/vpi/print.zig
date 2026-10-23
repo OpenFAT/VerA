@@ -698,7 +698,7 @@ fn stripZeros(s: []const u8) []const u8 {
 
 // ---------------------------------------------------------------------------
 // Tests. The C-side check — that the header's prototypes and these exports
-// agree, and that the channels hit the disk — is tests/fixtures/ch11_vpi/
+// agree, and that the channels hit the disk — is tests/conformance/tests/verilog-ams/ch11_vpi/
 // printf_mcd.c, run by `zig build test-vpi`.
 // ---------------------------------------------------------------------------
 

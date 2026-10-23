@@ -139,7 +139,7 @@ Their exact syntax is in the header of
 
 ## Directives the fixture suite grades
 
-VerA's own test suite (`zig build benchmark -- --strict`) runs every fixture
+VerA's own test suite (`zig build suite -- --strict`) runs every fixture
 under `tests/conformance/tests/` (the
 [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
 a submodule) through the same testbench and grades it by these.

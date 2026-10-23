@@ -1,5 +1,4 @@
-//! The suite runner behind `zig build benchmark`, `test-ams`, `test-devices`,
-//! `test-1364`, `test-vpi-fixtures`, `test-spice`, `golden` and `test-canary`:
+//! The suite runner behind `zig build suite -- <mode>`, `test-spice` and the canary in `test`:
 //! fixtures -> verdicts on stderr and a timing table on stdout. `Suite.main`
 //! dispatches on the mode word; each mode is one namespace below:
 //!   (none)       `Suite`: `benchmark`, the depth pass and the timing table
@@ -82,12 +81,12 @@ const Suite = struct {
     /// mode word (`devices`, `ieee1364`, `vpi`, `spice`, `golden`) or
     /// benchmark arguments:
     ///
-    ///   zig build benchmark                         # the suite, timed
-    ///   zig build benchmark -- ch04                 # only paths matching `ch04`
-    ///   zig build benchmark -- --strict             # unasserted and xfail FAIL
-    ///   zig build benchmark -- --fixture-root=DIR   # another tree laid out like the suite's tests/
-    ///   zig build benchmark -- --sweep              # the generated size sweep instead
-    ///   zig build benchmark -Doptimize=ReleaseFast  # the timing that ships
+    ///   zig build suite                         # the suite, timed
+    ///   zig build suite -- ch04                 # only paths matching `ch04`
+    ///   zig build suite -- --strict             # unasserted and xfail FAIL
+    ///   zig build suite -- --fixture-root=DIR   # another tree laid out like the suite's tests/
+    ///   zig build suite -- --sweep              # the generated size sweep instead
+    ///   zig build suite -Doptimize=ReleaseFast  # the timing that ships
     ///
     /// Returns the process exit code.
     pub fn main(init: std.process.Init) !u8 {
@@ -834,7 +833,7 @@ const Fixtures = struct {
     /// root), sorted by path so the run is deterministic (`Dir.walk` order is
     /// explicitly undefined) and a failing run is reproducible and diffable. A
     /// test in two language directories is two fixtures. `filter` is a plain
-    /// substring over the whole path: `zig build benchmark -- ch04` runs one
+    /// substring over the whole path: `zig build suite -- ch04` runs one
     /// group. The rows and their strings live in `arena`; a missing directory
     /// contributes nothing.
     pub fn collect(arena: std.mem.Allocator, io: Io, root: []const u8, dirs: []const []const u8, filter: ?[]const u8) ![]const Fixture {
@@ -884,7 +883,7 @@ const Fixtures = struct {
     /// `verilog-ams/digital/` (IEEE 1364's `verilog/` is not walked for `.v`):
     ///
     ///   1. Files with a `<stem>.expected.txt` beside them, or a `//! reject`
-    ///      line (`Digital.negative`), belong to `zig build test-devices`
+    ///      line (`Digital.negative`), belong to `zig build suite -- devices`
     ///      (`Devices.digitalCases`), not here.
     ///   2. Other files with a directive are judged here: `//! expect vcd` rows
     ///      by `judgeVcd`, the rest by the usual algebra.
@@ -1221,7 +1220,7 @@ const Fixtures = struct {
 };
 
 const Analog = struct {
-    //! VerA as a harness `Compiler` for `zig build benchmark`: fixture -> verdict.
+    //! VerA as a harness `Compiler` for `zig build suite`: fixture -> verdict.
     //! `//! reject` must refuse with every substring in the diagnostic; `//! warn`
     //! must compile with each substring in a warning; anything else must compile,
     //! build a native testbench, run, and print `ok=1` for every assertion. The
@@ -2144,8 +2143,8 @@ const Analog = struct {
 };
 
 const Canary = struct {
-    //! `zig build test-canary`: the judge judged. `<vera_root>/canary/` holds
-    //! fixtures that are wrong on purpose (VerA's own, outside the suite's
+    //! The canary in `zig build test`: the judge judged. `<vera_root>/canary/`
+    //! holds fixtures that are wrong on purpose (VerA's own, outside the suite's
     //! `tests/`), and its `EXPECT.tsv` says what the harness must answer for each
     //! -> exit 0 only when every answer is the expected one.
     //!
@@ -2261,8 +2260,8 @@ const CFixtures = struct {
     //! run) against src/vpi/vpi_user.h, so the ABI the LRM describes is checked by
     //! a C compiler. The fixtures that run are `build.zig`'s `vpi_runs`.
     //!
-    //!   zig build test-vpi-fixtures           # all of them
-    //!   zig build test-vpi-fixtures -- p03    # the ones whose name contains p03
+    //!   zig build suite -- vpi           # all of them
+    //!   zig build suite -- vpi p03    # the ones whose name contains p03
 
     const std = @import("std");
     const options = @import("suite_options");
@@ -2414,8 +2413,8 @@ const Devices = struct {
     //! The `devices` mode: `vera --run x.v` transcripts against committed goldens,
     //! which need the `vera` binary and so cannot be `test` blocks.
     //!
-    //!   zig build test-devices          # all of it
-    //!   zig build test-devices -- rng   # the cases whose name contains `rng`
+    //!   zig build suite -- devices          # all of it
+    //!   zig build suite -- devices rng   # the cases whose name contains `rng`
     //!
     //! Cases come from the suite's `verilog-ams/digital/` and `verilog/`, sorted,
     //! so a FAIL name list diffs between two runs. `--native` hands the same
@@ -2452,7 +2451,7 @@ const Devices = struct {
     /// fixtures `build.zig` runs.
     pub const digital_dirs = [_][]const u8{ "verilog-ams/digital", ieee1364_dir };
     /// The IEEE 1364-2005 transcript tree under the fixture root, which `zig
-    /// build test-1364` (the `ieee1364` mode) runs alone.
+    /// build suite -- ieee1364` runs alone.
     pub const ieee1364_dir = "verilog";
 
     /// The `devices` and `ieee1364` modes over the cases under `dirs`: the
@@ -2991,7 +2990,7 @@ const Fuzz = struct {
     //! rules at the points someone thought of; this is the check on the rule
     //! being implemented twice (`exec.evalContext`, `emit_expr.value`).
     //!
-    //!   zig build test-devices -- --fuzz 2000
+    //!   zig build suite -- devices --fuzz 2000
 
     const std = @import("std");
     const options = @import("suite_options");
@@ -3261,10 +3260,10 @@ const Golden = struct {
     //! The `golden` mode: what the compiler SAYS about every fixture, snapshotted,
     //! so a refactor can prove it changed nothing.
     //!
-    //!   zig build golden -- before        # on the pre-change tree
-    //!   zig build golden -- after         # ... the change ...
-    //!   zig build golden -- diff          # before vs after; exit 1 on a difference
-    //!   zig build golden -- diff A B      # two tags, or two snapshot directories
+    //!   zig build suite -- golden before        # on the pre-change tree
+    //!   zig build suite -- golden after         # ... the change ...
+    //!   zig build suite -- golden diff          # before vs after; exit 1 on a difference
+    //!   zig build suite -- golden diff A B      # two tags, or two snapshot directories
     //!
     //! A snapshot is `.zig-cache/vera-golden/<tag>/`, per `.va` and `.v` under
     //! the fixture root (the suite's `tests/`, not its `netlist/`):
@@ -3291,7 +3290,7 @@ const Golden = struct {
     //! older tree wrote.
     //!
     //! Not a cacheable build step: the build graph cannot see fixture contents, so
-    //! a cached run would compare nothing (`build.zig`'s note on `test-devices`).
+    //! a cached run would compare nothing (`build.zig`'s note on the `suite` step).
 
     const std = @import("std");
     const options = @import("suite_options");
@@ -3320,7 +3319,7 @@ const Golden = struct {
 
         const store = try std.fs.path.join(arena, &.{ options.repo_root, ".zig-cache", "vera-golden" });
         const word = args.next() orelse {
-            try w.writeAll("usage: zig build golden -- <tag> | diff [<a> <b>]\n");
+            try w.writeAll("usage: zig build suite -- golden <tag> | diff [<a> <b>]\n");
             return 2;
         };
         if (std.mem.eql(u8, word, "diff")) {
@@ -3651,7 +3650,7 @@ const Golden = struct {
 };
 
 const Ieee1364 = struct {
-    //! `zig build test-1364 -- --coverage`: `<vera_root>/clauses/ieee1364/CLAUSES.tsv`
+    //! `zig build suite -- ieee1364 --coverage`: `<vera_root>/clauses/ieee1364/CLAUSES.tsv`
     //! (the clause table: every IEEE 1364-2005 clause, its title and its kind),
     //! every `.v` case under the suite's `verilog/` and every `.c` in build.zig's
     //! `vpi_runs` -> the work lists and summary over those clauses, plus one row
@@ -4381,11 +4380,11 @@ const Native = struct {
     //! A `// native-required` fixture makes that fallback a FAIL in native modes.
     //! The forced two-state report keeps its separate x/z refusal policy below.
     //!
-    //!   zig build test-1364 -- --native            # all of IEEE 1364
-    //!   zig build test-1364 -- --native=static     # combinational logic levelized
-    //!   zig build test-devices -- --native d04     # the cases whose name has d04
-    //!   zig build test-1364 -- --native=two-state  # a report, not a gate: see below
-    //!   zig build test-1364 -- --native=snapshot   # every tick run twice (below)
+    //!   zig build suite -- ieee1364 --native            # all of IEEE 1364
+    //!   zig build suite -- ieee1364 --native=static     # combinational logic levelized
+    //!   zig build suite -- devices --native d04     # the cases whose name has d04
+    //!   zig build suite -- ieee1364 --native=two-state  # a report, not a gate: see below
+    //!   zig build suite -- ieee1364 --native=snapshot   # every tick run twice (below)
     //!
     //! `--snapshot` (after any `--native=`) runs each executable with
     //! `--vera-snapshot`: at every tick boundary its state is saved, the tick run
@@ -5191,7 +5190,7 @@ const SpiceDecks = struct {
 };
 
 const SizeSweep = struct {
-    //! `zig build benchmark -- --sweep`: generated Verilog-A of growing size ->
+    //! `zig build suite -- --sweep`: generated Verilog-A of growing size ->
     //! a MIR footprint table and a per-phase timing table on stdout. Each axis of
     //! `gen` is swept over `sweep` with the others at 1, so the slope is the
     //! point: an O(n^2) scan and a flat one can cost the same at n = 8.

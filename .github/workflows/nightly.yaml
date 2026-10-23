@@ -6,6 +6,12 @@
 #   certify   every Jacobian entry against a central difference (L4a)
 #   metric    each ledger row's evidence level, ratcheted against the
 #             committed tests/conformance/vera/ledger/LEVELS.tsv, and the table in the summary
+#   determinism  every fixture's --emit-zig three times, byte-compared (L11)
+#   adversarial  deep nesting and huge counts: a named diagnostic, never a crash (L10)
+#   sweep     the footprint and speed scaling table (reports, never gates)
+#
+# GitHub disables a schedule after 60 days without repository activity: a
+# quiet stretch needs one workflow_dispatch run, or the nightly stops.
 name: nightly
 
 on:
@@ -18,21 +24,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: true  # tests/conformance: the fixtures and VerA's ledgers
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
 
       - name: Strict suite, with verdicts
         continue-on-error: true
         run: |
-          nix develop -c zig build -Doptimize=ReleaseFast test-ams -- --verdicts=/tmp/verdicts.tsv 2>&1 | tail -5
+          nix develop -c zig build -Doptimize=ReleaseFast suite -- ams --verdicts=/tmp/verdicts.tsv 2>&1 | tail -5
           exit "${PIPESTATUS[0]}"
 
       - name: Perturbed run (L2b)
         continue-on-error: true
         run: |
-          nix develop -c zig build -Doptimize=ReleaseFast benchmark -- --perturb --verdicts=/tmp/perturbed.tsv 2> /tmp/perturb.txt | tail -3
+          nix develop -c zig build -Doptimize=ReleaseFast suite -- --perturb --verdicts=/tmp/perturbed.tsv 2> /tmp/perturb.txt | tail -3
           status="${PIPESTATUS[0]}"
           grep '^LOOSE ' /tmp/perturb.txt | sed 's|^LOOSE .*/tests/conformance/tests/|LOOSE |' | sort > /tmp/loose.txt || true
           exit "$status"
@@ -40,7 +46,7 @@ jobs:
       - name: Derivative certificate (L4a)
         continue-on-error: true
         run: |
-          nix develop -c zig build -Doptimize=ReleaseFast benchmark -- --certify --verdicts=/tmp/certified.tsv 2> /tmp/certify.txt | tail -3
+          nix develop -c zig build -Doptimize=ReleaseFast suite -- --certify --verdicts=/tmp/certified.tsv 2> /tmp/certify.txt | tail -3
           status="${PIPESTATUS[0]}"
           grep -E '^fd_check FAIL|^FAIL ' /tmp/certify.txt > /tmp/fd-failures.txt || true
           exit "$status"
@@ -48,7 +54,7 @@ jobs:
       - name: Digital transcripts, with verdicts
         continue-on-error: true
         run: |
-          nix develop -c zig build -Doptimize=ReleaseFast test-devices -- --verdicts=/tmp/digital.tsv 2>&1 | tail -3
+          nix develop -c zig build -Doptimize=ReleaseFast suite -- devices --verdicts=/tmp/digital.tsv 2>&1 | tail -3
           exit "${PIPESTATUS[0]}"
 
       - name: Coverage-guided fuzzing, bounded (L6)
@@ -57,8 +63,29 @@ jobs:
           nix develop -c zig build fuzz --fuzz=200K 2>&1 | tail -20
           exit "${PIPESTATUS[0]}"
 
+      # L11: every .va fixture's --emit-zig twice from the root and once from
+      # another cwd, byte-compared. A difference is nondeterminism in codegen,
+      # fixed at its order, never in the test.
+      - name: Determinism (L11)
+        continue-on-error: true
+        run: |
+          nix develop -c zig build -Doptimize=ReleaseFast install
+          nix develop -c python3 tools/conformance.py determinism zig-out/bin/vera
+
+      # L10: adversarial sizes through `vera --check` under a memory and time
+      # cap; exit 0 or a named diagnostic, never a signal or a timeout.
+      - name: Adversarial sizes (L10)
+        continue-on-error: true
+        run: nix develop -c python3 tools/conformance.py adversarial zig-out/bin/vera
+
+      - name: Footprint and speed sweep (reports)
+        continue-on-error: true
+        run: |
+          nix develop -c zig build -Doptimize=ReleaseFast suite -- --sweep 2>&1 | tee /tmp/sweep.txt
+          { echo '## Footprint and speed sweep'; echo '```'; cat /tmp/sweep.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Execute VPI evidence
-        run: nix develop -c zig build test-vpi -Dtest-results=/tmp/vpi-results
+        run: nix develop -c zig build test -Dtest-results=/tmp/vpi-results
 
       - name: Conformance metric and level ratchet (gate)
         run: |
@@ -77,7 +104,7 @@ jobs:
             echo '```'; head -50 /tmp/fd-failures.txt 2>/dev/null; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: nightly-evidence

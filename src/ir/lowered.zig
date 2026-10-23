@@ -731,12 +731,12 @@ pub const TimescaleEvent = base.Region(?Timescale);
 // docs/seams/s1-lower.md has the narrower shapes the readers outside
 // lowering would have to accept.
 comptime {
-    std.debug.assert(@sizeOf(ParamInfo) == 88); // ~850 rows on a compact model
-    std.debug.assert(@sizeOf(Node) == 72); // SoA (`nodes` is a MultiArrayList)
-    std.debug.assert(@sizeOf(Contribution) == 56); // u32 node rows (#29)
+    std.debug.assert(@sizeOf(ParamInfo) <= 88); // ~850 rows on a compact model
+    std.debug.assert(@sizeOf(Node) <= 72); // SoA (`nodes` is a MultiArrayList)
+    std.debug.assert(@sizeOf(Contribution) <= 56); // u32 node rows (#29)
     std.debug.assert(@sizeOf(ChargeSite) == 24);
-    std.debug.assert(@sizeOf(HeldVar) == 56);
-    std.debug.assert(@sizeOf(NoiseSrc) == 56);
+    std.debug.assert(@sizeOf(HeldVar) <= 56);
+    std.debug.assert(@sizeOf(NoiseSrc) <= 56);
     // The node sentinels: `ground` is never "absent" (`none_u32`).
     std.debug.assert(ground < none_u32);
 }

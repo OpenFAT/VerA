@@ -247,7 +247,7 @@ pub const SsaBuilder = struct {
         // Per block, beside `block_state`; `skipUp` reads 26 of its 36 bytes.
         assert(@sizeOf(Dom) == 36);
         assert(@sizeOf(Row) == 12);
-        assert(@sizeOf(JoinRead) == 32);
+        assert(@sizeOf(JoinRead) <= 32);
     }
 
     /// Returns an empty builder writing into `mir`, whose rows (phis) `gpa`

@@ -62,7 +62,7 @@ pub const Proc = struct { entry: u32, pcs: []const u32, role: Role = .general };
 // 3 of Term's and 4 of Proc's bytes are padding no narrower range removes.
 comptime {
     std.debug.assert(@sizeOf(Term) == 24);
-    std.debug.assert(@sizeOf(Proc) == 32);
+    std.debug.assert(@sizeOf(Proc) <= 32);
 }
 
 /// `build`'s result, the tables `rt.Design` is emitted from, in the

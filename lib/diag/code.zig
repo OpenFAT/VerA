@@ -20,7 +20,7 @@ pub const Info = struct {
 
     // Budget: three slices, 48 B for each of the catalogue's rows.
     comptime {
-        if (@sizeOf(Info) != 48) @compileError("Info grew: every catalogue row pays for it");
+        if (@sizeOf(Info) > 48) @compileError("Info grew: every catalogue row pays for it");
     }
 };
 

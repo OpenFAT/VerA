@@ -44,7 +44,7 @@ pub const Literal = struct {
     // Passed by value through every interpreter operator: one slice, a
     // width and two flags, no padding beyond the slice's alignment.
     comptime {
-        std.debug.assert(@sizeOf(Literal) == 24);
+        std.debug.assert(@sizeOf(Literal) <= 24);
     }
 
     /// Returns the value plane, least significant word first. It can be
