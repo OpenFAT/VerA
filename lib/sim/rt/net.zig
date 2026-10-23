@@ -296,11 +296,10 @@ fn fill(planes: []u64, w: u32, b: Bit) void {
     }
 }
 
+/// Bit `i` of `planes`, values then unknowns.
 fn bitAt(planes: []const u64, i: u32) Int.Bit {
     const n = planes.len / 2;
-    const v: u2 = @intCast(planes[i / 64] >> @intCast(i % 64) & 1);
-    const x: u2 = @intCast(planes[n + i / 64] >> @intCast(i % 64) & 1);
-    return @fromBackingInt(@intCast(v | x << 1));
+    return bitOf(planes[0..n], planes[n..], i);
 }
 
 fn setBit(planes: []u64, i: u32, b: Int.Bit) void {
@@ -461,9 +460,8 @@ fn pathFired(s: *const State, p: Path, at: u64) bool {
     const c = t.src_seen[t.src_ix.get(p.src).?] orelse return false;
     if (c.time != at) return false;
     if (p.edge == .none or p.src_bit >= 64) return true;
-    const sh: u6 = @intCast(p.src_bit);
-    const before: Int.Bit = @fromBackingInt(@intCast(@as(u2, @intCast(c.before[0] >> sh & 1)) | @as(u2, @intCast(c.before[1] >> sh & 1)) << 1));
-    const after: Int.Bit = @fromBackingInt(@intCast(@as(u2, @intCast(c.after[0] >> sh & 1)) | @as(u2, @intCast(c.after[1] >> sh & 1)) << 1));
+    const before = bitOf(c.before[0..1], c.before[1..2], p.src_bit);
+    const after = bitOf(c.after[0..1], c.after[1..2], p.src_bit);
     if (before == after) return false;
     return if (p.edge == .posedge) before == .zero or after == .one else before == .one or after == .zero;
 }
@@ -635,10 +633,7 @@ fn fold(t: *Nets, k: u32, res: []u64, cv: []const u64, cx: []const u64, moved: *
             acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
         }
         if (n.kind == .trireg and acc.none()) {
-            const w = at / 64;
-            const sh: u6 = @intCast(at % 64);
-            const cb: Int.Bit = @fromBackingInt(@intCast(@as(u2, @intCast(cv[w] >> sh & 1)) | @as(u2, @intCast(cx[w] >> sh & 1)) << 1));
-            acc = .of(cb, n.charge, n.charge);
+            acc = .of(bitOf(cv, cx, at), n.charge, n.charge);
             floating += 1;
         }
         acc = acc.combine(dnet.netPull(n.kind));
@@ -972,7 +967,7 @@ test "§6.5.7.1 a port window passes its source bits, z and x included, and show
     d.x = &.{ 0, 0b0100 };
     d.nets = &.{.{ .kind = .wire, .slot = 0, .off = 0, .width = 4, .drivers = &.{0}, .strong = false }};
     d.drivers = &.{.{ .net = 0, .source = .{ .bridge = .{ .src_off = 1, .src_lo = 0, .dst_lo = 0, .width = 4 } } }};
-    const s = try root.testState(arena.allocator(), &d);
+    const s = try root.quietState(arena.allocator(), &d, -9);
     try bridge(s, 0);
     try std.testing.expectEqual(@as(u64, 0b1010), s.v[0]);
     try std.testing.expectEqual(@as(u64, 0b0100), s.x[0]);
@@ -999,7 +994,7 @@ test "§7.11 a strength-only change re-runs the MOS switch reading it, and only 
         .{ .net = 1, .source = .{ .mos = .{ .n_type = false, .resistive = false, .data_net = 0 } } },
         .{ .net = 1, .delay = .{ .rise = 5, .fall = 5, .off = 5, .present = true }, .source = .expr },
     };
-    const s = try root.testState(arena.allocator(), &d);
+    const s = try root.quietState(arena.allocator(), &d, -9);
     try pull(s, 0);
     try drive(s, 1, &.{ 1, 0 }, false);
     try mos(s, 2, .one, .zero);
@@ -1049,7 +1044,7 @@ test "§14.3.3 the source that transitioned last picks the delay, the smallest o
         .{ .kind = .wire, .slot = 0, .off = 0, .width = 1, .drivers = &.{}, .strong = false, .paths = &ex1 },
         .{ .kind = .wire, .slot = 0, .off = 0, .width = 1, .drivers = &.{}, .strong = false, .paths = &ex2 },
     };
-    const s = try root.testState(a, &d);
+    const s = try root.quietState(a, &d, -9);
     const zero = [_]u64{0};
     const rise = [_]u64{ 1, 0 };
     const fall = [_]u64{ 0, 0 };
@@ -1092,7 +1087,7 @@ test "§14.3.1/§14.3.2 a path's delay per transition follows Tables 14-2 and 14
     d.slots = 2;
     const paths = [_]Path{.{ .src = 1, .src_off = 1, .table = dnet.pathTable(&.{ 5, 12, 17, 10, 6, 22 }) }};
     d.nets = &.{.{ .kind = .wire, .slot = 0, .off = 0, .width = 1, .drivers = &.{}, .strong = false, .paths = &paths }};
-    const s = try root.testState(a, &d);
+    const s = try root.quietState(a, &d, -9);
     s.v[1] = 1;
     pathSeen(s, 1);
     // Planes per `Int.Bit`: 0 = (0, 0), 1 = (1, 0), z = (0, 1), x = (1, 1).

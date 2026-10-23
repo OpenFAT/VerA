@@ -330,13 +330,7 @@ pub fn Device(comptime spec: Spec) type {
         /// no file or dump (`root.State.quiet`) and its transcript in memory
         /// until `keep` holds it in `State.say`.
         fn open(a: std.mem.Allocator, saved: ?[]const u8) !*root.State {
-            const s = try a.create(root.State);
-            try s.initIn(a, std.Io.failing, spec.design, spec.units);
-            const text = try a.create(std.Io.Writer.Allocating);
-            text.* = .init(a);
-            s.quiet = true;
-            s.sink = &text.writer;
-            s.out = s.sink;
+            const s = try root.quietState(a, spec.design, spec.units);
             if (saved) |b| try s.restore(b);
             return s;
         }

@@ -272,16 +272,18 @@ pub const Edge = enum(u2) {
     posedge,
     negedge,
 
+    // One load and a shift, no branch on the data: the wake loops test one
+    // edge per waiter.
     fn matches(self: Edge, before: Bit, after: Bit) bool {
-        if (self == .any) return true;
-        if (before == after) return false;
-        return switch (self) {
-            .posedge => before == .zero or after == .one,
-            .negedge => before == .one or after == .zero,
-            .any => unreachable,
-        };
+        const at = @as(u4, @backingInt(before)) << 2 | @backingInt(after);
+        return edge_hits[@backingInt(self)] >> at & 1 != 0;
     }
 };
+
+/// Per `Edge`, bit `4 * before + after` (`Bit` encodings) is set when that
+/// transition wakes it: every change and no change for `any`; for `posedge`
+/// 0 -> x, z, 1 and x, z -> 1; for `negedge` 1 -> x, z, 0 and x, z -> 0.
+const edge_hits = [3]u16{ 0xffff, 0x220e, 0x11d0 };
 
 /// `Rerun`: a `--state=auto` executable's 2-state phase met an x or z it
 /// cannot hold (`Phase`); `auto` runs the design again, 4-state.
@@ -955,12 +957,7 @@ pub const State = struct {
     }
 
     fn say(self: *State, comptime message: []const u8, args: anytype) void {
-        if (self.quiet) return;
-        self.out.flush() catch {};
-        var buf: [512]u8 = undefined;
-        var e = std.Io.File.stderr().writerStreaming(self.io, &buf);
-        e.interface.print("error[E1100]: " ++ message ++ "\n", args) catch {};
-        e.interface.flush() catch {};
+        self.diagnose("error[E1100]: ", message, args);
     }
 
     // Under `--two-state` the x plane stays zero, and a read says so as a
@@ -1147,8 +1144,7 @@ pub const State = struct {
             break :blk @as(u32, @intCast(self.late.items.len - 1));
         };
         self.late.items[k] = .{ .slot = slot, .off = off, .n = n, .real = is_real, .words = words };
-        _ = self.sched.scheduleAfter(after, .nba, late_base + k) catch |e|
-            return if (e == error.OutOfMemory) error.OutOfMemory else self.fail("digital timing failure: {t}", .{e});
+        _ = self.sched.scheduleAfter(after, .nba, late_base + k) catch |e| return self.timeFail(e);
     }
 
     /// §10.3 `disable` of the named block or task copy at pcs `[lo, hi)`:
@@ -1443,7 +1439,7 @@ pub const State = struct {
     /// `after` ticks later (inactive).
     fn runPlain(self: *State, pc: u32, after: ?u64) Error!void {
         _ = (if (after) |t|
-            self.sched.scheduleAfter(t, .inactive, pc) catch |e| return if (e == error.OutOfMemory) error.OutOfMemory else self.fail("digital timing failure: {t}", .{e})
+            self.sched.scheduleAfter(t, .inactive, pc) catch |e| return self.timeFail(e)
         else
             self.sched.schedule(.active, pc) catch |e| return self.schedFail(e));
     }
@@ -1948,21 +1944,36 @@ pub const State = struct {
         try display.strength(self.out, .of(literal(&buf, w, false).bit(0), .strong, .strong));
     }
 
-    /// §17.2 file I/O and §17.2.3 held formats (`system.zig`), called as
-    /// methods by the emitted design.
+    // §17.2 file I/O and §17.2.3 held formats (`system.zig`), called as
+    // methods by the emitted design.
+
+    /// §17.2.1 `$fopen`.
     pub const fopen = rt_system.fopen;
+    /// The §17.2 descriptor tasks `system.fileOp` covers.
     pub const fileOp = rt_system.fileOp;
+    /// §17.2.4.2 `$fgets`.
     pub const fileLine = rt_system.fileLine;
+    /// §17.2.4.4 `$fread` of one word.
     pub const fileWord = rt_system.fileWord;
+    /// §17.2.7 `$ferror`.
     pub const fileError = rt_system.fileError;
+    /// §17.2.1 `$fclose`.
     pub const fclose = rt_system.fclose;
+    /// §17.2.4.3 `$sscanf`.
     pub const scan = rt_system.scan;
+    /// §17.2.4.3 `$fscanf`, ended by `finishFileScan`.
     pub const scanFile = rt_system.scanFile;
+    /// The end of a `scanFile`.
     pub const finishFileScan = rt_system.finishFileScan;
+    /// §17.2.2 a `capture` sent to a descriptor's channels.
     pub const fshow = rt_system.fshow;
+    /// §17.2.3 a `$sformat` format held in a variable.
     pub const Format = rt_system.Format;
+    /// The `Format` of a held value.
     pub const formatOf = rt_system.formatOf;
+    /// A `Format`'s next argument-taking conversion.
     pub const nextSpec = rt_system.nextSpec;
+    /// A `Format`'s text after its last argument.
     pub const endFormat = rt_system.endFormat;
 
     /// One `%s` or `%c` operand (§17.1.1.7).
@@ -2003,12 +2014,14 @@ const two_slots: Design = .{
     .subs = 1,
 };
 
-/// A `State` over `d` as `device.zig` opens one: `quiet`, so no
-/// diagnostic and no file, and its transcript in memory
-/// (`sink.buffered()`); everything in `a`.
-pub fn testState(a: std.mem.Allocator, d: *const Design) !*State {
+/// A `State` over `d` whose effects stay inside it (`State.quiet`): no
+/// diagnostic, no file, no dump, and its transcript in memory
+/// (`sink.buffered()`). `units` is `init`'s `time_units`. Everything is
+/// allocated from `a` and never freed (`State.initIn`): give it an arena.
+/// The contract device opens its engine this way (`device.zig`).
+pub fn quietState(a: std.mem.Allocator, d: *const Design, units: i32) Error!*State {
     const s = try a.create(State);
-    try s.initIn(a, std.Io.failing, d, -9);
+    try s.initIn(a, std.Io.failing, d, units);
     const transcript = try a.create(std.Io.Writer.Allocating);
     transcript.* = .init(a);
     s.quiet = true;
@@ -2039,7 +2052,7 @@ test "Edge.matches is §9.7.2 Table 9-1" {
 test "§9.2.2 nonblocking rows land in order after the active region, a $strobe after them" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     const id = try s.park(3);
     try s.watch(id, 0, .any);
     try s.strobe(7);
@@ -2058,7 +2071,7 @@ test "§9.2.2 nonblocking rows land in order after the active region, a $strobe 
 test "§9.2.2 a #0 nonblocking row lands this step, a #5 one at tick 5" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     try s.nbaAfter(Reach.all, 5, 0, 0, W{ .v = 0, .x = 0 }, @as(u64, 0b10));
     try s.nbaAfter(Reach.all, 0, 0, 0, W{ .v = 0b11, .x = 0 }, @as(u64, 0b11));
     try testing.expectEqual(@as(?u32, null), try s.next(0));
@@ -2073,7 +2086,7 @@ test "§9.2.2 a #0 nonblocking row lands this step, a #5 one at tick 5" {
 test "§4.8 a real store of -0.0 over 0.0 is no event but keeps its bits; NaN always is one" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     const id = try s.park(4);
     try s.watch(id, 0, .any);
     try s.putReal(0, 0, logic.realBits(-0.0), std.math.maxInt(u64));
@@ -2090,7 +2103,7 @@ test "§4.8 a real store of -0.0 over 0.0 is no event but keeps its bits; NaN al
 test "§9.7.2 a constant select term wakes on its own bits' edge, not the slot's" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     const id = try s.park(6);
     try s.watchBits(id, 0, 0, 4, 4, .posedge);
     // A select term's edge is not of the slot's bit 0, so any change of the
@@ -2108,7 +2121,7 @@ test "§9.7.2 a constant select term wakes on its own bits' edge, not the slot's
 test "§10.3 disable drops what waits or is queued inside its range and continues at its end" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     const inside = try s.park(10);
     try s.watch(inside, 0, .any);
     const outside = try s.park(30);
@@ -2130,7 +2143,7 @@ test "§10.3 disable drops what waits or is queued inside its range and continue
 test "§17.1.3 one $monitor line per time step however many watched stores" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     try s.monitor(2, &.{0});
     try testing.expectEqual(@as(?u32, show_base + 2), try s.next(no_limit));
     try testing.expectEqual(@as(?u32, null), try s.next(no_limit));
@@ -2167,7 +2180,7 @@ test "§8 a UDP of any number of inputs: 65, one past the old 64, and 300" {
         d.drivers = &.{.{ .net = 0, .source = .{ .udp = 0 } }};
         const udps = [_]net.Udp{.{ .rows = rows, .sequential = false, .ins = n, .state = .x }};
         d.udps = &udps;
-        const s = try testState(a, &d);
+        const s = try quietState(a, &d, -9);
         const ins = try a.alloc(Bit, n);
         @memset(ins, .one);
         try net.udp(s, 0, ins);
@@ -2184,7 +2197,7 @@ test "§8 a UDP of any number of inputs: 65, one past the old 64, and 300" {
 test "§10.2.3 enter sets an automatic frame aside as x and leave restores it, at any depth" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &two_slots);
+    const s = try quietState(arena.allocator(), &two_slots, -9);
     const all = std.math.maxInt(u64);
     try s.enter(0, 0, &.{ all, all });
     try testing.expectEqual(W{ .v = all, .x = all }, s.get(1));
@@ -2202,7 +2215,7 @@ test "§10.2.3 enter sets an automatic frame aside as x and leave restores it, a
 test "setChars puts the last characters in the low bytes, cut to the width" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     s.x[0] = 5;
     s.setChars(0, 16, "abc");
     try testing.expectEqual(W{ .v = 0x6263, .x = 0 }, s.get(0));
@@ -2216,7 +2229,7 @@ test "setChars puts the last characters in the low bytes, cut to the width" {
 test "§9.7.1 delays: an x is no delay, a negative integer an unsigned time; §9.6 repeat counts" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     // 1 ns units at 1 ps precision: 1000 ticks per unit.
     const scale = try Scale.init(.ns, .ps, .ps);
     try testing.expectEqual(@as(u64, 0), try s.ticks(.{ .v = 5, .x = 1 }, false, scale));
@@ -2239,7 +2252,7 @@ test "§9.7.1 delays: an x is no delay, a negative integer an unsigned time; §9
 test "a saved tick boundary restores the clock, the values and the suspensions" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     const id = try s.park(3);
     try s.watch(id, 0, .posedge);
     try s.run(8, 10);
@@ -2275,7 +2288,7 @@ const wide_slot: Design = .{
 test "§9.7.2 a select term across a word boundary reads both words; a 64-bit one its whole word" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &wide_slot);
+    const s = try quietState(arena.allocator(), &wide_slot, -9);
     // Bits 60..67: word 0's top four, word 1's bottom four.
     const id = try s.park(6);
     try s.watchBits(id, 0, 0, 60, 8, .posedge);
@@ -2296,7 +2309,7 @@ test "§9.7.2 a select term across a word boundary reads both words; a 64-bit on
 test "a node's store wakes on a change in any word of a wide value, and on none without one" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &wide_slot);
+    const s = try quietState(arena.allocator(), &wide_slot, -9);
     const v = s.view();
     const same: logic.Wide(2) = .{ .v = .{ 0, 0 }, .x = .{ 0, 0 } };
     var id = try s.park(3);
@@ -2316,7 +2329,7 @@ test "a node's store wakes on a change in any word of a wide value, and on none 
 test "the 2-state phase refuses an x or z store only where the mask selects it" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try testState(arena.allocator(), &one_slot);
+    const s = try quietState(arena.allocator(), &one_slot, -9);
     const P = Phase(true);
     try P.set(s, 0, W{ .v = 5, .x = 2 }, @as(u64, 0b101));
     try testing.expectEqual(@as(u64, 5), s.v[0]);
@@ -2331,7 +2344,7 @@ fn initOnce(gpa: std.mem.Allocator, d: *const Design) !void {
     // `State` frees nothing itself (`initIn`): its arena does.
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
-    _ = try testState(arena.allocator(), d);
+    _ = try quietState(arena.allocator(), d, -9);
 }
 
 test "State.initIn fails cleanly at every allocation" {
