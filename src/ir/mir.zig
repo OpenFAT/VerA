@@ -419,7 +419,7 @@ pub fn reserve(self: *Mir, gpa: std.mem.Allocator, insts: u32, values: u32, extr
 fn addValue(self: *Mir, gpa: std.mem.Allocator, kind: DefKind, payload: u64) !Value {
     const i = self.defs.len + Value.first_dynamic;
     assert(i < std.math.maxInt(u32));
-    const v: Value = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+    const v: Value = @fromBackingInt(@intCast(i));
     // Both reserved first: `alias` stays parallel to `defs` on failure.
     try self.defs.ensureUnusedCapacity(gpa, 1);
     try self.alias.ensureUnusedCapacity(gpa, 1);
@@ -514,10 +514,10 @@ pub fn valueDef(self: *const Mir, value: Value) Def {
         .undef => .undef,
         .float_const => .{ .float_const = @bitCast(row.payload) },
         .int_const => .{ .int_const = @bitCast(row.payload) },
-        .str_const => .{ .str_const = self.strings.get(@fromBackingInt(@intCast(@as(u32, @truncate(row.payload))))) },
+        .str_const => .{ .str_const = self.strings.get(@fromBackingInt(@truncate(row.payload))) },
         .param_ref => .{ .param_ref = @truncate(row.payload) },
         .block_param => .{ .block_param = @truncate(row.payload) },
-        .inst_result => .{ .inst_result = @fromBackingInt(@intCast(@as(u32, @truncate(row.payload)))) },
+        .inst_result => .{ .inst_result = @fromBackingInt(@truncate(row.payload)) },
     };
 }
 
@@ -587,7 +587,7 @@ pub fn addBlock(self: *Mir, gpa: std.mem.Allocator) !Block {
     const i = self.blocks.len;
     assert(i < std.math.maxInt(u32));
     try self.blocks.append(gpa, .{});
-    return @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+    return @fromBackingInt(@intCast(i));
 }
 
 /// Returns the number of blocks.
@@ -711,7 +711,7 @@ fn addInst(self: *Mir, gpa: std.mem.Allocator, block: Block, row: InstRow) !Inst
     stamped.tok = self.cur_tok; // provenance: see InstRow.tok and cur_tok
     stamped.block = block;
     try self.insts.append(gpa, stamped);
-    const inst: Inst = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+    const inst: Inst = @fromBackingInt(@intCast(i));
 
     const b = @backingInt(block);
     const last = self.blocks.items(.last)[b];

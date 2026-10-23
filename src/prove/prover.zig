@@ -192,7 +192,7 @@ pub const Prover = struct {
         @memset(self.guard, .{});
 
         for (0..n) |i| {
-            const v: Mir.Value = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+            const v: Mir.Value = @fromBackingInt(@intCast(i));
             switch (self.mir.valueDef(v)) {
                 // §4.2 constant expressions: exact.
                 .float_const => |c| {
@@ -368,7 +368,7 @@ pub const Prover = struct {
         var n_classes: u32 = 0;
 
         for (0..self.mir.insts.len) |i| {
-            const inst: Mir.Inst = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+            const inst: Mir.Inst = @fromBackingInt(@intCast(i));
             const op = self.mir.instOp(inst);
             // §3.2.2 two `anew`s of one array, or two equal stores, are two
             // versions of one storage at two times, not one value.
@@ -416,7 +416,7 @@ pub const Prover = struct {
         self.countUses();
 
         for (0..self.mir.insts.len) |i| {
-            const inst: Mir.Inst = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+            const inst: Mir.Inst = @fromBackingInt(@intCast(i));
             if (self.mir.instOp(inst) != .select) continue;
             const t = self.mir.instData(inst).ternary;
             try self.markArm(t.then_val, t.cond, true);
@@ -436,7 +436,7 @@ pub const Prover = struct {
             self.uses[self.idxOf(c.react_val)] += 1;
         }
         for (0..mir.blockCount()) |b| {
-            var it = mir.blockInsts(@fromBackingInt(@intCast(@as(u32, @intCast(b)))));
+            var it = mir.blockInsts(@fromBackingInt(@intCast(b)));
             while (it.next()) |inst| {
                 if (mir.instOp(inst) == .phi) {
                     if (mir.hasAlias(mir.instResult(inst))) continue;

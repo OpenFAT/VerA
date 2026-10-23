@@ -132,7 +132,7 @@ fn cardOnly(mir: *const Mir, v0: Mir.Value, budget: *u32) bool {
 fn countPreds(mir: *const Mir, preds: []u32) void {
     @memset(preds, 0);
     for (0..preds.len) |b| {
-        var it = mir.blockInsts(@fromBackingInt(@intCast(@as(u32, @intCast(b)))));
+        var it = mir.blockInsts(@fromBackingInt(@intCast(b)));
         while (it.next()) |inst| {
             switch (mir.instData(inst)) {
                 .branch => |d| {
