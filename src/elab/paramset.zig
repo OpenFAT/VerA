@@ -150,17 +150,6 @@ fn tieBreak(
     live.shrinkRetainingCapacity(w);
 }
 
-/// Returns whether a named instance override with a value lands on paramset
-/// parameter `name`, directly or through a §3.4.7 alias.
-pub fn overridesParam(inst: *const Ast.Instance, ps: *const Ast.ParamsetDecl, name: Ast.StrId) bool {
-    for (inst.params) |o| {
-        if (o.value == .none) continue;
-        if (o.name == name) return true;
-        for (ps.aliasparams) |al| if (al.alias == o.name and al.target == name) return true;
-    }
-    return false;
-}
-
 /// Whether an external override names a public parameter of this candidate.
 /// §6.4 hides unexposed parameters of the underlying module; §3.4.5 excludes
 /// localparams. System parameters (and their aliases) keep §9.18's binding.
@@ -540,26 +529,6 @@ fn readsVar(file: *const Ast.SourceFile, ps: *const Ast.ParamsetDecl, e: Ast.Exp
 // ---------------------------------------------------------------------------
 
 const fixture = @import("fixture.zig");
-
-test overridesParam {
-    var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
-    defer f.deinit();
-    try fixture.parse(&f,
-        \\module top(p); inout p; electrical p; ps #(.ag(2.0)) u(p); ps #(.g()) v(p); ps #(.h(1.0)) w(p); endmodule
-        \\paramset ps base; parameter real g = 1.0; parameter real h = 1.0; aliasparam ag = g; .k = g; endparamset
-        \\module base(a); inout a; electrical a; parameter real k = 0.0; endmodule
-    );
-    const insts = f.file.modules[0].instances;
-    const ps = &f.file.paramsets[0];
-    const g = fixture.id(&f.file, "g").?;
-    const h = fixture.id(&f.file, "h").?;
-    // §3.4.7 an override through the alias lands on its target.
-    try std.testing.expect(overridesParam(&insts[0], ps, g));
-    // §6.3.3 an empty association overrides nothing.
-    try std.testing.expect(!overridesParam(&insts[1], ps, g));
-    try std.testing.expect(!overridesParam(&insts[2], ps, g));
-    try std.testing.expect(overridesParam(&insts[2], ps, h));
-}
 
 test "§6.4.2 ties: the greatest number of ranged localparams, then the fewest unconnected ports; still tied is E0914" {
     // Rule 1 ties both pairs below (each leaves its one parameter `l` at its

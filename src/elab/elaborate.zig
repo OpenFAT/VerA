@@ -1275,9 +1275,6 @@ test "empty named associations use paramset defaults in admission and tie scores
     } else unreachable;
     try std.testing.expectEqual(@as(f64, 2.0), f.file.exprs.realValue(ps_value.default));
     try std.testing.expect(!ps_value.is_override);
-    const inst = &f.file.modules[0].instances[0];
-    const ps = &f.file.paramsets[0];
-    try std.testing.expect(!elab_paramset.overridesParam(inst, ps, ps.params[0].name));
 }
 
 test "§6.4.2 the paramset whose range admits the override is selected, and a gap is E0911" {
