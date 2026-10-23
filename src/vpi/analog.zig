@@ -552,8 +552,10 @@ pub const Error = error{ NoLibrary, BackupExhausted, Singular };
 // §12.10 values
 // ---------------------------------------------------------------------------
 
+const ground = @import("ir").Lowered.ground;
+
 fn unknownAt(x: [*]const f64, row: u32) f64 {
-    return if (row == @import("ir").Lowered.ground) 0 else x[row];
+    return if (row == ground) 0 else x[row];
 }
 
 /// `NoAnalysis`: no library or no solution yet. `NoSolution`: the library
@@ -565,7 +567,7 @@ pub const ValueError = error{ NoAnalysis, NoSolution, Unknowable, SmallSignal };
 
 /// Whether `bi`'s `Lib.x` holds `row`: ground reads 0 and needs no slot.
 fn holds(bi: *const Binding, row: u32) bool {
-    return row == @import("ir").Lowered.ground or row < bi.n_x;
+    return row == ground or row < bi.n_x;
 }
 
 /// §11.6.7 a quantity's "real value" and "imaginary value".
@@ -665,12 +667,10 @@ pub export fn vpi_get_analog_value(obj: vpiHandle, value_p: ?*AnalogValue) void 
         }
         return;
     };
-    const re = val.re;
-    const im = val.im;
     switch (v.format) {
         vpiRealVal => {
-            v.real = .{ .real = re };
-            v.imaginary = .{ .real = im };
+            v.real = .{ .real = val.re };
+            v.imaginary = .{ .real = val.im };
         },
         vpiExpStrVal, vpiDecStrVal, vpiStringVal => {
             // Table 12-2. The strings live in THIS routine's buffer — "different
@@ -681,8 +681,8 @@ pub export fn vpi_get_analog_value(obj: vpiHandle, value_p: ?*AnalogValue) void 
             // part's choice is the one reported.
             var chose: c_int = v.format;
             var im_chose: c_int = v.format;
-            const a = analogString(&analog_buf[0], re, v.format, &chose) orelse return;
-            const b = analogString(&analog_buf[1], im, v.format, &im_chose) orelse return;
+            const a = analogString(&analog_buf[0], val.re, v.format, &chose) orelse return;
+            const b = analogString(&analog_buf[1], val.im, v.format, &im_chose) orelse return;
             v.format = chose;
             v.real.str = a;
             v.imaginary.str = b;
@@ -729,11 +729,22 @@ fn analogString(buf: *[analog_len]u8, x: f64, format: c_int, chose: *c_int) ?[*:
 fn printfE(buf: *[analog_len]u8, x: f64, prec: usize) ?[:0]const u8 {
     if (!std.math.isFinite(x)) return nonFinite(buf, x);
     var tmp: [64]u8 = undefined;
-    const raw = std.mem.print(&tmp, "{e:.[1]}", .{ x, prec }) catch return null;
+    const e = splitE(&tmp, x, prec) orelse return null;
+    return spellE(buf, e.mantissa, e.exp);
+}
+
+/// Zig's `{e:.<prec>}` of finite `x`, written into `tmp`, split at its `e`.
+fn splitE(tmp: *[64]u8, x: f64, prec: usize) ?struct { mantissa: []const u8, exp: i32 } {
+    const raw = std.mem.print(tmp, "{e:.[1]}", .{ x, prec }) catch return null;
     const at = std.mem.findScalar(u8, raw, 'e') orelse return null;
     const exp = std.fmt.parseInt(i32, raw[at + 1 ..], 10) catch return null;
+    return .{ .mantissa = raw[0..at], .exp = exp };
+}
+
+/// C's exponent spelling after `mantissa`: `e`, a sign, at least two digits.
+fn spellE(buf: *[analog_len]u8, mantissa: []const u8, exp: i32) ?[:0]const u8 {
     const sign: u8 = if (exp < 0) '-' else '+';
-    return std.mem.printSentinel(buf, "{s}e{c}{d:0>2}", .{ raw[0..at], sign, @abs(exp) }, 0) catch null;
+    return std.mem.printSentinel(buf, "{s}e{c}{d:0>2}", .{ mantissa, sign, @abs(exp) }, 0) catch null;
 }
 
 /// C's `%g` (precision 6): %e when the exponent is below -4 or at least 6,
@@ -750,27 +761,21 @@ fn printfG(buf: *[analog_len]u8, x: f64, chose: *c_int) ?[:0]const u8 {
         return nonFinite(buf, x);
     }
     var tmp: [64]u8 = undefined;
-    const raw = std.mem.print(&tmp, "{e:.5}", .{x}) catch return null;
-    const at = std.mem.findScalar(u8, raw, 'e') orelse return null;
-    const exp = std.fmt.parseInt(i32, raw[at + 1 ..], 10) catch return null;
-    if (exp < -4 or exp >= 6) {
+    const e = splitE(&tmp, x, 5) orelse return null;
+    if (e.exp < -4 or e.exp >= 6) {
         chose.* = vpiExpStrVal;
-        var m: []const u8 = raw[0..at];
-        if (std.mem.findScalar(u8, m, '.') != null) {
-            m = std.mem.trimEnd(u8, m, "0");
-            m = std.mem.trimEnd(u8, m, ".");
-        }
-        const sign: u8 = if (exp < 0) '-' else '+';
-        return std.mem.printSentinel(buf, "{s}e{c}{d:0>2}", .{ m, sign, @abs(exp) }, 0) catch null;
+        return spellE(buf, dropZeros(e.mantissa), e.exp);
     }
     chose.* = vpiDecStrVal;
-    const decimals: usize = @intCast(5 - exp);
-    var fixed: []const u8 = std.mem.print(&tmp, "{d:.[1]}", .{ x, decimals }) catch return null;
-    if (std.mem.findScalar(u8, fixed, '.') != null) {
-        fixed = std.mem.trimEnd(u8, fixed, "0");
-        fixed = std.mem.trimEnd(u8, fixed, ".");
-    }
-    return std.mem.printSentinel(buf, "{s}", .{fixed}, 0) catch null;
+    const decimals: usize = @intCast(5 - e.exp);
+    const fixed = std.mem.print(&tmp, "{d:.[1]}", .{ x, decimals }) catch return null;
+    return std.mem.printSentinel(buf, "{s}", .{dropZeros(fixed)}, 0) catch null;
+}
+
+/// %g's trailing zeros of a fraction, and then a bare point, dropped.
+fn dropZeros(digits: []const u8) []const u8 {
+    if (std.mem.findScalar(u8, digits, '.') == null) return digits;
+    return std.mem.trimEnd(u8, std.mem.trimEnd(u8, digits, "0"), ".");
 }
 
 // C11 7.21.6.1's spelling of an infinity or a NaN under %e and %g: `[-]inf`,
@@ -821,7 +826,8 @@ pub export fn vpi_get_analog_freq() f64 {
 /// §12.22.2 one call's output arguments, as its latest calltf left them:
 /// `val[j - 1]` and row j - 1 of `part` (d(argument j)/d(argument i)) for each
 /// argument j with `put[j - 1]`, which calltf put a value or a partial on.
-/// `Binding.output` answers from it. One buffer, `buf`, holds all three.
+/// `Binding.output` answers from it. `buf` holds `val` then `part`; `put` is
+/// its own allocation. Both are `gpa`'s, freed at `Binding.detach`.
 const Out = struct {
     buf: []f64,
     put: []bool,
@@ -1176,7 +1182,7 @@ test "§12.7-§12.9, §12.18 setPoint: the routines answer the point a host set,
 
 test "holds: a calls-only library holds no unknown, ground needs none" {
     var b: Binding = .{};
-    try std.testing.expect(holds(&b, @import("ir").Lowered.ground));
+    try std.testing.expect(holds(&b, ground));
     try std.testing.expect(!holds(&b, 0));
     b.n_x = 2;
     try std.testing.expect(holds(&b, 1));
