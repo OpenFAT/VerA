@@ -305,10 +305,10 @@ test "live-outs are deduplicated in job order; display stays out; held values in
     try f.lowered.held_vars.append(a, .{ .name = "h", .ty = .real, .init = .f_zero, .seed = .f_zero, .final = vb });
     const an = try f.analysis();
     const jobs = [_]Job{
-        .{ .kind = .resist, .target = vb, .mode = .optimized, .comment = "" },
-        .{ .kind = .react, .target = va, .mode = .optimized, .comment = "" },
-        .{ .kind = .held, .target = vb, .mode = .strict, .comment = "" }, // shared with job 0
-        .{ .kind = .display, .target = va, .mode = .strict, .comment = "" },
+        .{ .kind = .resist, .target = vb, .mode = .optimized },
+        .{ .kind = .react, .target = va, .mode = .optimized },
+        .{ .kind = .held, .target = vb, .mode = .strict }, // shared with job 0
+        .{ .kind = .display, .target = va, .mode = .strict },
     };
 
     const c = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &jobs);
@@ -328,7 +328,7 @@ test "no targets: an empty core with no name; a zero target stays out" {
     const a = f.alloc();
     const an = try f.analysis();
     // An operator with no input queues `.f_zero`, which renders inline.
-    const jobs = [_]Job{.{ .kind = .op_input, .target = .f_zero, .mode = .strict, .comment = "" }};
+    const jobs = [_]Job{.{ .kind = .op_input, .target = .f_zero, .mode = .strict }};
     const c = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &jobs);
     try std.testing.expectEqual(@as(usize, 0), c.lo_vals.len);
     try std.testing.expectEqualStrings("", c.name);
@@ -347,7 +347,7 @@ test "§5.6.1.2 path latches: one latch per operand, a target's slot reused, a n
     _ = try f.mir.emit(a, .entry, .path_prev, &.{x}); // CSE-shared: the same latch
     _ = try f.mir.emit(a, .entry, .path_acc, &.{y});
     const an = try f.analysis();
-    const jobs = [_]Job{.{ .kind = .resist, .target = x, .mode = .strict, .comment = "" }};
+    const jobs = [_]Job{.{ .kind = .resist, .target = x, .mode = .strict }};
 
     const c = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &jobs);
     try std.testing.expectEqualSlices(Mir.Value, &.{ x, y }, c.lo_vals);
@@ -373,8 +373,8 @@ test "§5.10 a held-array store only updateState reads is held-only; one eval lo
         const ld = try f.mir.emit(a, .entry, .fload, &.{ st, .zero });
         const an = try f.analysis();
         const jobs = [_]Job{
-            .{ .kind = .resist, .target = if (eval_loads) ld else vb, .mode = .strict, .comment = "" },
-            .{ .kind = .held, .target = st, .mode = .strict, .comment = "" },
+            .{ .kind = .resist, .target = if (eval_loads) ld else vb, .mode = .strict },
+            .{ .kind = .held, .target = st, .mode = .strict },
         };
 
         const c = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &jobs);
