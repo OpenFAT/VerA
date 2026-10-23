@@ -270,10 +270,7 @@ fn renderOne(
     // --- notes, helps, suggestions ------------------------------------------
     var nbuf: [diag_entry.max_children]diag_entry.Note = undefined;
     for (bag.notes(e, &nbuf)) |n| {
-        const word = switch (n.kind) {
-            .note => "note",
-            .help => "help",
-        };
+        const word = @tagName(n.kind); // also the JSON `kind`
         const colour = switch (n.kind) {
             .note => p.note,
             .help => p.help,
@@ -427,7 +424,7 @@ fn renderFix(
 /// The LRM numbers its clauses (`5.6.1`) and letters its annexes (`A.6.4`,
 /// `C`), so a bare `LRM C` reads as a typo where `LRM annex C` reads as a
 /// pointer. One test on the first byte; the citations are the fixed set in
-/// `diag_code.zig` and every one of them starts with either a digit or an
+/// `code.zig` and every one of them starts with either a digit or an
 /// annex letter.
 fn annexWord(lrm: []const u8) []const u8 {
     return if (lrm.len != 0 and lrm[0] >= 'A' and lrm[0] <= 'H') "annex " else "";

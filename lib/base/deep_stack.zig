@@ -64,7 +64,7 @@ pub const Error = error{DeepStackUnavailable};
 
 /// Stack bytes per nesting level, for the deepest walk measured (see the
 /// header). Debug frames are several times release frames.
-pub const bytes_per_level: usize = switch (builtin.mode) {
+const bytes_per_level: usize = switch (builtin.mode) {
     .Debug => 16 * 1024,
     .ReleaseSafe, .ReleaseFast, .ReleaseSmall => 8 * 1024,
 };
@@ -112,7 +112,8 @@ pub var refuse_for_test: bool = false;
 /// Calls `func` with `args` on a fresh thread whose stack holds `depth_hint`
 /// nesting levels (`bytesFor`) and returns its result; the calling thread
 /// waits. A hint of at most `in_place_levels` calls `func` directly.
-/// `depth_hint` counts levels of the walk `bytes_per_level` was measured on; a walk with larger frames per level scales its hint.
+/// `depth_hint` counts levels of the walk `bytes_per_level` was measured
+/// on; a walk with larger frames per level scales its hint.
 /// `func` may touch the caller's state: the caller is blocked until it
 /// returns, and the join orders every write before the caller reads.
 pub fn run(depth_hint: usize, comptime func: anytype, args: anytype) Result(@TypeOf(func)) {
