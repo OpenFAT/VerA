@@ -485,7 +485,7 @@ test "integerSourceSigned: an untyped local parameter carries its default's sign
     var unsigned: u32 = 0;
     var signed: u32 = 0;
     for (0..ex.len()) |n| {
-        const e: @import("frontend").Ast.ExprId = @fromBackingInt(@intCast(n));
+        const e: Ast.ExprId = @fromBackingInt(@intCast(n));
         if (ex.tag(e) != .binary or ex.binOp(e) != .lt) continue;
         if (unsignedCompare(&h.low, e) != null) unsigned += 1 else signed += 1;
     }
