@@ -245,7 +245,7 @@ fn planNoiseTable(
             return null;
         }
         if (!lit) parametric = true;
-        k.* = .{ .f = f.?.f, .p = pwr.?.f, .fv = fv, .pv = pv };
+        k.* = .{ .f = f.?, .p = pwr.?, .fv = fv, .pv = pv };
     }
     std.mem.sort(Knot, knots, {}, struct {
         fn lt(_: void, x: Knot, y: Knot) bool {

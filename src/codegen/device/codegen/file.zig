@@ -596,7 +596,7 @@ fn defaultInt(self: *Gen, p: Lower.ParamInfo) ?i64 {
         .str => 0,
     };
     const c = self.an.foldConst(p.default, true) orelse return null;
-    return std.math.lossyCast(i64, @round(c.f));
+    return std.math.lossyCast(i64, @round(c));
 }
 
 /// How many §9.19 given bits `Model.given__` holds: one per flagged
@@ -684,7 +684,7 @@ fn emitModel(self: *Gen) Error!void {
     // `derive` does not get a plausible 0.
     for (self.topo.cpairs, 0..) |p, k| {
         if (!p.card) continue;
-        const d = if (self.an.foldConst(p.flag, true)) |f| try fmtF64(self, f.f) else kt.nan_lit;
+        const d = if (self.an.foldConst(p.flag, true)) |f| try fmtF64(self, f) else kt.nan_lit;
         try self.w("    {s}: f64 = {s}, // §5.6.5 retention flag — `derive` writes it\n", .{ try gen_dispatch.guardField(self, @intCast(k)), d });
     }
     // §9.10 `$temperature`, kelvin: one number per Model row, so every value
@@ -1031,14 +1031,14 @@ fn paramDefault(self: *Gen, p: Lower.ParamInfo, want: VTy) Error![]const u8 {
         .wide => unreachable, // `tyOfParam` types no parameter wide
     };
     return switch (want) {
-        .real => try fmtF64(self, if (c) |k| k.f else 0.0),
+        .real => try fmtF64(self, c orelse 0.0),
         // ponytail: a default with no AST fold (`p.folded`, which saturates an
         // explicit integer at 32 bits above) clamps to the i64 carrier
         // (`lossyCast`: NaN -> 0) instead of panicking the compiler, as the
         // fold (`fold.Const.asInt`) and the runtime `fi_cast` do; `derive` then
         // keeps an explicit integer's low 32 bits. §4.2.1.1 fixes no overflow
         // rule. Upgrade path: a lowering-time diagnostic on the default's span.
-        .int => try self.arena.print("{d}", .{if (c) |k| std.math.lossyCast(i64, @round(k.f)) else 0}),
+        .int => try self.arena.print("{d}", .{if (c) |k| std.math.lossyCast(i64, @round(k)) else 0}),
         .str => blk: {
             const def = self.mir.valueDef(self.an.rv(p.default));
             break :blk if (def == .str_const)

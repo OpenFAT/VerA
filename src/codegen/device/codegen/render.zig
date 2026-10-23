@@ -205,7 +205,7 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
         // A value the analysis folds from literals alone (never through a
         // parameter) is its literal: `pow(0.5178…, -2)` is no `zPowK` call.
         // The planner made it a slot-free leaf (`UnitPlan.literal`).
-        if (self.plan.literal(res)) return self.b("S.con({s})", .{try gen_file.fmtF64(self, self.an.foldConst(res, false).?.f)});
+        if (self.plan.literal(res)) return self.b("S.con({s})", .{try gen_file.fmtF64(self, self.an.foldConst(res, false).?)});
         if (try gen_host.f64Const(self, res, 0, true)) |s| return self.b("S.con({s})", .{s});
     }
 
@@ -742,7 +742,7 @@ pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty:
                 null;
             // §4.3.2 the domain check (`zPowK`) wherever the op runs, and
             // the bare method where `setup` speculates it (`Setup.spec`).
-            const k_text: ?[]const u8 = if (self.an.foldConst(b2, false)) |k| try gen_file.fmtF64(self, k.f) else par_exp;
+            const k_text: ?[]const u8 = if (self.an.foldConst(b2, false)) |k| try gen_file.fmtF64(self, k) else par_exp;
             if (k_text) |k| {
                 if (self.su.spec) try self.b("(", .{}) else try self.b("zPowK(S, ", .{});
                 try renderVal(self, a, .real);
@@ -931,7 +931,7 @@ fn writeConst(self: *Gen, v: Mir.Value) Error!void {
 fn writeNegConst(self: *Gen, v: Mir.Value) Error!void {
     // Same guard as `f64Const`.
     if (!foldHidesSlot(self, v, 0)) {
-        if (self.an.foldConst(v, false)) |k| return self.b("{s}", .{try gen_file.fmtF64(self, -k.f)});
+        if (self.an.foldConst(v, false)) |k| return self.b("{s}", .{try gen_file.fmtF64(self, -k)});
     }
     try self.b("-(", .{});
     try writeConst(self, v);

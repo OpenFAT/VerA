@@ -153,9 +153,9 @@ pub fn crossTest(self: *Gen, n: []const u8, args: []const Mir.Value, in: []const
         // §5.10.3.1 "For any other values of dir, the cross() function does
         // not generate an event". §4.5.10's direction is the same closed
         // set, so `last_crossing` reads it the same way.
-        if (c.f == 1.0) return self.arena.print("inst.{0s}__prev <= 0.0 and {1s} > 0.0", .{ n, in });
-        if (c.f == -1.0) return self.arena.print("inst.{0s}__prev >= 0.0 and {1s} < 0.0", .{ n, in });
-        if (c.f != 0.0) return "false";
+        if (c == 1.0) return self.arena.print("inst.{0s}__prev <= 0.0 and {1s} > 0.0", .{ n, in });
+        if (c == -1.0) return self.arena.print("inst.{0s}__prev >= 0.0 and {1s} < 0.0", .{ n, in });
+        if (c != 0.0) return "false";
         return self.arena.print(
             "(inst.{0s}__prev <= 0.0 and {1s} > 0.0) or (inst.{0s}__prev >= 0.0 and {1s} < 0.0)",
             .{ n, in },
@@ -188,7 +188,7 @@ pub fn crossLocated(self: *Gen, args: []const Mir.Value) Error!bool {
     for (args[2..@min(args.len, 4)]) |a| if (try gen_host.ctrlIsDynamic(self, a)) return false;
     if (args.len < 5) return true;
     const en = self.an.foldConst(args[4], false) orelse return false;
-    return en.f != 0.0;
+    return en != 0.0;
 }
 
 /// Returns whether any `cross` in the module is `crossLocated`.
@@ -219,14 +219,14 @@ fn enableTest(self: *Gen, k: OpKind, args: []const Mir.Value) Error![]const u8 {
 /// argument, a literal lowering emitted.
 pub fn heldIdx(self: *const Gen, args: []const Mir.Value) usize {
     const c = self.an.foldConst(if (args.len != 0) args[0] else .zero, false) orelse return 0;
-    const i: usize = @intFromFloat(c.f);
+    const i: usize = @intFromFloat(c);
     return @min(i, self.names.held_names.len -| 1);
 }
 
 /// The literal index at argument `i` of a lowering-minted call (`$tp_*`).
 fn litArg(self: *const Gen, args: []const Mir.Value, i: usize) u32 {
     const c = self.an.foldConst(if (i < args.len) args[i] else .zero, false) orelse return 0;
-    return @intFromFloat(c.f);
+    return @intFromFloat(c);
 }
 
 /// Returns whether this call, as `emitCall` renders it, reads state the host
@@ -482,7 +482,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             if (args.len > 0) float_lanes.pinLanes(self, args[0]);
             const u = if (args.len > 1) self.an.foldConst(args[1], true) else null;
             // Saturating cast: bad MIR must not panic the compiler.
-            const lane = if (u) |x| std.math.lossyCast(i64, x.f) else 0;
+            const lane = if (u) |x| std.math.lossyCast(i64, x) else 0;
             // The value reads a lane, so record it in `ddx_reads`.
             // An index outside the unknowns marks every lane: a superset.
             gen_mask.orIn(self.jac.ddx_reads, try gen_dispatch.bits(self, &.{if (lane >= 0 and lane < self.names.n_u) @intCast(lane) else none_u32}, &.{}));
@@ -793,7 +793,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             const port = if (args.len == 1) self.an.foldConst(args[0], false) else null;
             if (port) |ord| {
                 self.uses.model = true;
-                return self.b("@as(i64, @intFromBool((model.port_connected__ >> {d}) & 1 != 0))", .{std.math.lossyCast(u6, ord.f)});
+                return self.b("@as(i64, @intFromBool((model.port_connected__ >> {d}) & 1 != 0))", .{std.math.lossyCast(u6, ord)});
             }
             return self.b("@as(i64, 1)", .{});
         },
@@ -1487,7 +1487,7 @@ fn transitionTime(self: *Gen, args: []const Mir.Value, i: usize, dflt: []const u
     // `resolve_params = false`: only a time that is zero without parameters
     // is absent at compile time; a card may override a zero default.
     if (self.an.foldConst(args[i], false)) |c| {
-        if (c.f == 0.0) return dflt;
+        if (c == 0.0) return dflt;
         return gen_host.f64Expr(self, args[i]);
     }
     const e = try gen_host.f64Expr(self, args[i]);

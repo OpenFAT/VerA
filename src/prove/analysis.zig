@@ -1433,20 +1433,17 @@ pub fn tyOfParam(t: Lower.Type) VTy {
 // per-unit planner fold through this.
 // ---------------------------------------------------------------------------
 
-/// A folded constant, as a real.
-pub const Folded = struct { f: f64 };
-
-/// Returns `v` as a §4.2 constant expression, or null. Used for parameter
+/// Returns `v` as a §4.2 constant expression, read as a real, or null. Used for parameter
 /// defaults (`parameter real b = a*2;`, §6.3.4) and §4.5 operator control
 /// arguments; anything touching an unknown or a call is not constant.
 /// `resolve_params` looks through a parameter to its declared default, which
 /// only a Model default may do. O(1): a load from `folds`. Requires `build`
 /// (`buildLiteralFolds` for `resolve_params = false`); asserts that the
 /// column it reads was built.
-pub fn foldConst(self: *const Analysis, v: Mir.Value, resolve_params: bool) ?Folded {
+pub fn foldConst(self: *const Analysis, v: Mir.Value, resolve_params: bool) ?f64 {
     std.debug.assert(self.folds[@intFromBool(resolve_params)].kind.len == self.nv);
     const c = self.folds[@intFromBool(resolve_params)].get(v) orelse return null;
-    return .{ .f = c.asReal() };
+    return c.asReal();
 }
 
 fn buildFolds(self: *Analysis) Error!void {
@@ -1931,13 +1928,13 @@ test foldConst {
     defer arena.deinit();
     const an = try build(arena.allocator(), &mir, &lowered);
     // Only a Model default looks through a parameter to its declaration.
-    try std.testing.expectEqual(@as(?Folded, null), an.foldConst(twice, false));
-    try std.testing.expectEqual(@as(f64, 5), an.foldConst(twice, true).?.f);
-    try std.testing.expectEqual(@as(?Folded, null), an.foldConst(bad, true));
-    try std.testing.expectEqual(@as(f64, 10), an.foldConst(sel, false).?.f);
-    try std.testing.expectEqual(@as(f64, 2), an.foldConst(isum, false).?.f);
-    try std.testing.expectEqual(@as(?Folded, null), an.foldConst(varies, true));
-    try std.testing.expectEqual(@as(?Folded, null), an.foldConst(.undef, true));
+    try std.testing.expectEqual(@as(?f64, null), an.foldConst(twice, false));
+    try std.testing.expectEqual(@as(f64, 5), an.foldConst(twice, true).?);
+    try std.testing.expectEqual(@as(?f64, null), an.foldConst(bad, true));
+    try std.testing.expectEqual(@as(f64, 10), an.foldConst(sel, false).?);
+    try std.testing.expectEqual(@as(f64, 2), an.foldConst(isum, false).?);
+    try std.testing.expectEqual(@as(?f64, null), an.foldConst(varies, true));
+    try std.testing.expectEqual(@as(?f64, null), an.foldConst(.undef, true));
 }
 
 test "analysis: §3.2.2 array versions, value types and per-instance reads" {
