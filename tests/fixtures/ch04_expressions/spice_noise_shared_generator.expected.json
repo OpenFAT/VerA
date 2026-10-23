@@ -4,7 +4,7 @@
   "purpose": "LRM 4.6.4.6: one noise function on two branches is one source whose contributions add as phasors",
   "oracle": {
     "kind": "analytic",
-    "derivation": "One white_noise n of 1e-18 A^2/Hz, contributed as 2*n on out-0 and -3*n on x-0. Conductances: out has g1 = 1 mS to 0, R1 = 1k to in (a small-signal short) and g3 = 1 mS to x; x has g2 = 2 mS to 0. Y = [[3e-3, -1e-3], [-1e-3, 3e-3]], det 8e-6, so Z_oo = 375 and Z_ox = 125 ohm, real. One source: H = 2*375 - 3*125 = 375 ohm, onoise = 375e-9 = 3.75e-7 V/sqrt(Hz), flat. Independent rows would give 8.385e-7, one source with the sign dropped 1.125e-6. oct 1 from 1k to 4k: 1k, 2k, 4k (8k is past 4k*(1 + 2e-3))."
+    "derivation": "One white_noise n of 1e-18 A^2/Hz, contributed as 2*n on out-0 and -3*n on x-0. Conductances: out has g1 = 1 mS to 0, R1 = 1k to in (a small-signal short; noisy=0, so its 4kT/R stays out) and g3 = 1 mS to x; x has g2 = 2 mS to 0. Y = [[3e-3, -1e-3], [-1e-3, 3e-3]], det 8e-6, so Z_oo = 375 and Z_ox = 125 ohm, real. One source: H = 2*375 - 3*125 = 375 ohm, onoise = 375e-9 = 3.75e-7 V/sqrt(Hz), flat. Independent rows would give 8.385e-7, one source with the sign dropped 1.125e-6. oct 1 from 1k to 4k: 1k, 2k, 4k (8k is past 4k*(1 + 2e-3))."
   },
   "expect": {
     "status": "success",
@@ -40,5 +40,5 @@
     "finite_values_required": true,
     "all_requested_analyses_must_complete": true
   },
-  "netlist_sha256": "023aca411362f1b1cf39cf2f056aff1e710ab9ca475715030b2f65ce4cf382ed"
+  "netlist_sha256": "22903a7caaf840d46944a61fe2791fb9166fb9da7bc8131c8619da341170a004"
 }

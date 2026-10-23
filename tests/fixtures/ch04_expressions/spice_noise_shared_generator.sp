@@ -15,10 +15,13 @@
 *
 * The sweep is oct 1 from 1k to 4k: 1k, 2k, 4k (the next, 8k, is past
 * 4k*(1 + 2e-3)).
+*
+* R1 is noisy=0: a SPICE resistor carries 4kT/R by default, and this deck
+* isolates the model's one generator, whose two contributions are the claim.
 * Expected results: spice_noise_shared_generator.expected.json
 .hdl "spice_noise_shared_pair.va"
 V1 in 0 DC 0 AC 1
-R1 in out 1k
+R1 in out 1k noisy=0
 Np out x 0 spice_noise_shared_pair
 .noise v(out) V1 oct 1 1k 4k
 .end

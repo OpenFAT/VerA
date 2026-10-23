@@ -4,7 +4,7 @@
   "purpose": "LRM 4.6.4.2 flicker_noise: the PSD falls as 1/f^exponent",
   "oracle": {
     "kind": "analytic",
-    "derivation": "dec 1 from 1 to 100: points 1, 10, 100. The only generator is the model's flicker_noise(1e-18, 2.0) across out-0, S_I = 1e-18/f^2 A^2/Hz (Rs is Table E.1's resistor, which declares no noise; the model's V/1000 contribution is noiseless; Vin is a small-signal short). It sees Rs||r = 500 ohm, so onoise(f) = 500*sqrt(1e-18/f^2) = 5e-7/f V/sqrt(Hz): 5e-7, 5e-8, 5e-9. An exponent of 1 instead of 2 gives 5e-7/sqrt(f) and fails at 10 and 100 Hz."
+    "derivation": "dec 1 from 1 to 100: points 1, 10, 100. The only generator is the model's flicker_noise(1e-18, 2.0) across out-0, S_I = 1e-18/f^2 A^2/Hz (Rs is a SPICE resistor with noisy=0, so its 4kT/R stays out and the generator is isolated; the model's V/1000 contribution is noiseless; Vin is a small-signal short). It sees Rs||r = 500 ohm, so onoise(f) = 500*sqrt(1e-18/f^2) = 5e-7/f V/sqrt(Hz): 5e-7, 5e-8, 5e-9. An exponent of 1 instead of 2 gives 5e-7/sqrt(f) and fails at 10 and 100 Hz."
   },
   "expect": {
     "status": "success",
@@ -32,5 +32,5 @@
     "finite_values_required": true,
     "all_requested_analyses_must_complete": true
   },
-  "netlist_sha256": "4adf5310f89180099425589ffde855e6a60a9ae42eeee4144246928a495d7812"
+  "netlist_sha256": "982b31eeed731dbbdc02b7a6883a08e2d8a708f937640d12f91063cb18803aaa"
 }

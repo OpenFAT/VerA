@@ -4,7 +4,7 @@
   "purpose": ".noise dec: SPICE's logarithmic grid, n points per decade by a fixed ratio up to fstop",
   "oracle": {
     "kind": "analytic",
-    "derivation": "dec 2 from 1k to 100k: points 1e3*10^(k/2) while a point stays at or under 1e5*(1 + 10^0.5*1e-3) = 100316.2 (ngspice noisean.c), so five: 1000, 3162.28, 10000, 31622.8, 100000; 316227.8 is past it. The only generator is the model's white_noise of 1e-20 A^2/Hz across out-0 (Rs is Table E.1's resistor, which declares no noise; Vin is a small-signal short). It sees Rs||r = 500 ohm in parallel with c = 10 nF: onoise(f) = 1e-10 * 500 / sqrt(1 + (2*pi*f*500*1e-8)^2), corner 31.83 kHz. Values by python3."
+    "derivation": "dec 2 from 1k to 100k: points 1e3*10^(k/2) while a point stays at or under 1e5*(1 + 10^0.5*1e-3) = 100316.2 (ngspice noisean.c), so five: 1000, 3162.28, 10000, 31622.8, 100000; 316227.8 is past it. The only generator is the model's white_noise of 1e-20 A^2/Hz across out-0 (Rs is a SPICE resistor with noisy=0, so its 4kT/R stays out and the amplitude is the model's generator alone; Vin is a small-signal short). It sees Rs||r = 500 ohm in parallel with c = 10 nF: onoise(f) = 1e-10 * 500 / sqrt(1 + (2*pi*f*500*1e-8)^2), corner 31.83 kHz. Values by python3."
   },
   "expect": {
     "status": "success",
@@ -44,5 +44,5 @@
     "finite_values_required": true,
     "all_requested_analyses_must_complete": true
   },
-  "netlist_sha256": "f079d040ff59df2e003f5b1cb651417d69830ee96a7e4a3810f602c07737fcc6"
+  "netlist_sha256": "912a4bdb37ba37d491ded184c76fc2cc0b6ba9a906dab78a4d927cfed0b1af86"
 }

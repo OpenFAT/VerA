@@ -9,8 +9,10 @@
 * 3.2273, 3.0507, 3.0035, 3.00002, so V(out) = 3. A runner that ignored the
 * nodeset starts at the cold 0 and lands on 1; one that clamped it gives
 * 2.75. The circuit holds no charge, so every transient row repeats the
-* operating point. Tolerance 1e-6: the published point is Newton's last
-* linearization point, within SPICE's reltol of the root.
+* operating point. At t = 0 the published point is Newton's last
+* linearization point, inside SPICE's reltol of the root (atol 1e-3); each
+* transient point re-solves from the last, so the samples inside the run
+* are held to 1e-6.
 * Expected results: spice_op_nodeset_root.expected.json
 .hdl "spice_nodeset_cubic.va"
 N1 out 0 spice_nodeset_cubic
