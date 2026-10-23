@@ -316,7 +316,7 @@ fn emitAcDyn(self: *Gen, any_q: bool) Error!void {
     for (0..n) |r| for (0..n) |c| {
         if (gen_mask.has(rowOf(self, self.jac.dpat, @intCast(r)), c)) slots.appendAssumeCapacity(@intCast(r * n + c));
     };
-    std.debug.assert(slots.items.len == slots.capacity);
+    assert(slots.items.len == slots.capacity);
     if (slots.items.len == 0) return;
     try self.w(
         \\/// §4.5.7/§4.5.11/§4.5.12 the slots `row * n_u + col` whose small-signal
@@ -802,17 +802,14 @@ fn emitStamps(self: *Gen, react: bool) Error!u32 {
         patRow(self, pp.u, try bits(self, if (react) &.{} else &.{pp.u}, &.{try patOf(self, pp.port)}));
         if (self.jac.dpat.len != 0) gen_mask.orIn(rowOf(self, self.jac.dpat, pp.u), rowOf(self, self.jac.dpat, pp.port));
         try linPortProbe(self, pp.u, pp.port, !react);
-        if (react) {
-            try rowSet(self, pp.u);
-            try self.b("res[@intFromEnum(U.{s})].neg()", .{self.names.u_names[pp.port]});
-            try rowEnd(self);
-        } else {
-            try rowSet(self, pp.u);
+        try rowSet(self, pp.u);
+        if (react)
+            try self.b("res[@intFromEnum(U.{s})].neg()", .{self.names.u_names[pp.port]})
+        else
             try self.b("x[@intFromEnum(U.{0s})].sub(res[@intFromEnum(U.{1s})])", .{
                 self.names.u_names[pp.u], self.names.u_names[pp.port],
             });
-            try rowEnd(self);
-        }
+        try rowEnd(self);
     }
 
     return stamps;
@@ -1113,9 +1110,7 @@ pub fn stamp(self: *Gen, depth: u32, node: u32, sign: StampSign, val: []const u8
 /// pattern (`contract.rowMask`), so every value assigned to it widens there.
 /// `rowEnd` closes it.
 fn rowSet(self: *Gen, u: u32) Error!void {
-    const n = self.names.u_names[u];
-    try self.b("res[@intFromEnum(U.{s})] = ", .{n});
-    try self.b("zRow(S, .{s}, ", .{n});
+    try self.b("res[@intFromEnum(U.{0s})] = zRow(S, .{0s}, ", .{self.names.u_names[u]});
 }
 
 fn rowEnd(self: *Gen) Error!void {
@@ -1178,12 +1173,14 @@ fn linClear(self: *Gen, row: u32) void {
     const l = self.jac.lin[@intFromBool(self.jac.react)];
     if (l.len == 0) return;
     l[row].clearRetainingCapacity();
-    // Its guarded constants go with the assignment too.
+    // Its guarded constants go with the assignment too, the rest in order.
     if (self.jac.react) return;
-    var k: usize = 0;
-    while (k < self.jac.guarded.items.len) {
-        if (self.jac.guarded.items[k].row == row) _ = self.jac.guarded.orderedRemove(k) else k += 1;
-    }
+    var keep: usize = 0;
+    for (self.jac.guarded.items) |e| if (e.row != row) {
+        self.jac.guarded.items[keep] = e;
+        keep += 1;
+    };
+    self.jac.guarded.shrinkRetainingCapacity(keep);
 }
 
 /// Records that row `row` is assigned `V(hi) − V(lo) − <core value>`: §5.6's branch
