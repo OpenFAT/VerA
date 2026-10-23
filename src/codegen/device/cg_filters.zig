@@ -119,7 +119,6 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
     };
     // `filterSide` refuses an empty denominator, so a plan has a section.
     assert(den.items.len > 0);
-    assert(lets.items.len <= 2);
     for (0..p.ns) |i| {
         p.deg = @max(p.deg, @max(p.poly(true, i).len, p.poly(false, i).len) - 1);
     }
@@ -136,7 +135,6 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
             };
         }
         p.period = try g.f64Expr(args[dv.next]);
-        p.uses_model = g.uses.model;
         // §4.5.12 τ and t0. Absent or the literal 0, the sampler steps
         // abruptly on the k·T grid (the plain `zZiEval`). Otherwise the samples
         // fall on t0 + k·T and each one is reached by a τ-long transition
@@ -166,7 +164,6 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
     // §4.5.11 the optional ε argument only "deriv[es] an absolute
     // tolerance (if needed)"; VerA has no per-signal tolerance table, so
     // dropping it changes no value the device computes.
-    assert(p.err == null);
     if (z) assert(p.period != null);
     if (!z) assert(p.period == null);
     if (p.tau != null) assert(p.t0 != null);
@@ -179,7 +176,6 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
 pub fn planAll(g: *Gen) Error!void {
     g.filters = try g.arena.alloc(?FilterPlan, g.names.units.len);
     @memset(g.filters, null);
-    assert(g.filters.len == g.names.units.len);
     const saved_tok = g.ctrl_tok;
     defer g.ctrl_tok = saved_tok;
     for (g.names.units, 0..) |u, i| {
@@ -221,10 +217,7 @@ fn readVec(g: *const Gen, args: []const Mir.Value, i: usize) ?Vec {
     if (def != .int_const or def.int_const < 0) return null;
     const n: usize = @intCast(def.int_const);
     if (i + 1 + n > args.len) return null;
-    const v: Vec = .{ .elems = args[i + 1 ..][0..n], .next = i + 1 + n };
-    assert(v.next <= args.len);
-    assert(v.next > i);
-    return v;
+    return .{ .elems = args[i + 1 ..][0..n], .next = i + 1 + n };
 }
 
 /// Renders filter coefficients, collecting the ones §4.5.14 samples.
@@ -237,7 +230,6 @@ const Coefs = struct {
     fn text(cx: *Coefs, g: *Gen, e: Mir.Value) Error![]const u8 {
         if (!try gen_host.ctrlIsDynamic(g, e)) return g.f64Expr(e);
         try cx.sampled.append(g.arena, e);
-        assert(cx.sampled.items.len > 0);
         return g.arena.print("k[{d}]", .{cx.sampled.items.len - 1});
     }
 };
@@ -273,7 +265,6 @@ fn filterSide(
         if (is_den and all_zero)
             return "LRM 4.5.11/4.5.12: the denominator coefficients of this filter are identically zero";
         try out.append(g.arena, poly);
-        assert(out.items.len > 0);
         return null;
     }
     // §4.5.11.1 "ζ is a vector of M pairs of real numbers … the first
@@ -291,7 +282,6 @@ fn filterSide(
         card = card or c;
         card_im = card_im or (c and i % 2 == 1);
     }
-    assert(elems.len > 0);
     if (card_im) return runtimeRoots(g, cx, out, lets, elems, z);
     const mark = out.items.len;
     const smark = cx.sampled.items.len;
@@ -319,7 +309,6 @@ fn runtimeRoots(
     const k = lets.items.len;
     // One let per side at most: the capacity `filterPlan` reserved.
     assert(k < 2);
-    const out_before = out.items.len;
     var t: std.ArrayList(u8) = .empty;
     try t.print(g.arena, "const zr{d} = zRootSecs({d}, {s}, .{{ ", .{ k, m, if (z) "true" else "false" });
     for (elems, 0..) |e, i| {
@@ -333,7 +322,6 @@ fn runtimeRoots(
         for (poly, 0..) |*c, j| c.* = try g.arena.print("zr{d}[{d}][{d}]", .{ k, s, j });
         try out.append(g.arena, poly);
     }
-    assert(out.items.len == out_before + (m + 1) / 2);
     return null;
 }
 

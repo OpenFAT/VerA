@@ -22,7 +22,6 @@ const opdb = @import("op_zig.zig");
 const cg_filters = @import("../cg_filters.zig");
 const cg_strcap = @import("../cg_strcap.zig");
 const kt = @import("kernel_text.zig");
-const Lower = @import("ir").Lowered;
 const Lowered = @import("ir").Lowered;
 const Mir = @import("ir").Mir;
 const Error = codegen.Error;
@@ -452,7 +451,7 @@ fn emitTpFields(self: *Gen) Error!void {
 /// `Instance` (`eval`, `evalQ`). A local copy of a held history and its copy
 /// in the core's result are what put txl's 2048-deep history at 165 KB of
 /// GPU stack, and the coupled lines' at 307-612 KB (#82).
-pub fn tpInPlace(self: *const Gen, sl: Lower.TpSlot) bool {
+pub fn tpInPlace(self: *const Gen, sl: Lowered.TpSlot) bool {
     if (sl.array == none_u32 or !gen_render.cow(self, sl.array)) return false;
     // The slot's field exists only when the full core carries the final
     // version (`emitTpFields`); a slice's `plan.lo_idx` is its own.
@@ -616,7 +615,7 @@ fn keepHist(self: *Gen, comptime fmt: []const u8, args: anytype) Error!void {
 /// Emits a §3.2.2/§5.10 held array's `Instance` field: plain values,
 /// defaulting element by element to the declared initializer (§3.2's zero
 /// where the pattern is silent), the spec default as for a held scalar.
-fn emitHeldArrayField(self: *Gen, h: Lower.HeldVar, name: []const u8, comment: []const u8) Error!void {
+fn emitHeldArrayField(self: *Gen, h: Lowered.HeldVar, name: []const u8, comment: []const u8) Error!void {
     const m = self.lowered.mem_arrays.items[h.array];
     const ty: []const u8 = if (m.ty == .integer) "i64" else "f64";
     var all_zero = true;
@@ -669,13 +668,13 @@ pub fn dirtyTracked(self: *const Gen, id: u32) bool {
 const dirty_min_len = 64;
 
 /// Returns the `Lowered.held_vars` row's array id when it is dirty-tracked.
-fn dirtyArray(self: *const Gen, h: Lower.HeldVar) ?u32 {
+fn dirtyArray(self: *const Gen, h: Lowered.HeldVar) ?u32 {
     if (h.array == none_u32 or !dirtyTracked(self, h.array)) return null;
     return h.array;
 }
 
 /// Returns the module's `Lowered.held_vars` row named `name`, if any.
-fn heldNamed(self: *const Gen, name: []const u8) ?Lower.HeldVar {
+fn heldNamed(self: *const Gen, name: []const u8) ?Lowered.HeldVar {
     for (self.names.held_names, self.lowered.held_vars.items) |n, h| {
         if (std.mem.eql(u8, n, name)) return h;
     }
@@ -683,7 +682,7 @@ fn heldNamed(self: *const Gen, name: []const u8) ?Lower.HeldVar {
 }
 
 /// Returns the element type of held array row `h`'s `Instance` field.
-fn elemTy(self: *const Gen, h: Lower.HeldVar) []const u8 {
+fn elemTy(self: *const Gen, h: Lowered.HeldVar) []const u8 {
     return if (self.lowered.mem_arrays.items[h.array].ty == .integer) "i64" else "f64";
 }
 
@@ -767,13 +766,12 @@ pub fn emitStateCtl(self: *Gen, t_prev: bool) Error!void {
     for (self.names.held_names, self.lowered.held_vars.items) |n, h| {
         if (!fsm) break;
         if (h.why != .event) continue;
-        // §3.2.2 a held array compares element by element; a string by text.
-        if (h.array != none_u32)
+        // §3.2.2 a held array (and a wide `reg`) compares element by element;
+        // a string by text.
+        if (h.array != none_u32 or h.ty == .wide)
             try self.w("{s}!std.meta.eql(inst.{s}, state.{s})", .{ if (first) " " else "\n            or ", n, n })
         else if (h.ty == .string)
             try self.w("{s}!std.mem.eql(u8, inst.{s}.get(), state.{s}.get())", .{ if (first) " " else "\n            or ", n, n })
-        else if (h.ty == .wide)
-            try self.w("{s}!std.meta.eql(inst.{s}, state.{s})", .{ if (first) " " else "\n            or ", n, n })
         else
             try self.w("{s}(inst.{s} != state.{s})", .{ if (first) " " else "\n            or ", n, n });
         first = false;

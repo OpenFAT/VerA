@@ -43,13 +43,11 @@ comptime {
 /// again while its own capacity is computed (a loop's phi) counts `row`.
 pub fn cap(g: *Gen, v0: Mir.Value) Error!u64 {
     if (g.held_caps == null) try planHeld(g);
-    assert(g.held_caps != null);
     const v = g.an.rv(v0);
     if (g.str_caps.get(v)) |c| return c;
     try g.str_caps.put(g.arena, v, row);
     const c = try compute(g, v);
     try g.str_caps.put(g.arena, v, c);
-    assert(g.str_caps.get(v).? == c);
     return c;
 }
 
@@ -118,9 +116,7 @@ pub fn rtFormatCap(g: *Gen, args: []const Mir.Value) Error!u64 {
         .real, .int => 512,
         .wide => unreachable, // lowering hands a task no wide value: a whole wide `reg` read is E0222
     };
-    const c = @max(n, row);
-    assert(c >= row);
-    return c;
+    return @max(n, row);
 }
 
 /// The capacity of §5.10 held string `i` (`Lowered.held_vars` row): what its

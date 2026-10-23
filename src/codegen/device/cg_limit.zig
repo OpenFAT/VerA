@@ -17,14 +17,11 @@ const Error = cg.Error;
 // The pure half: which sites are honoured, and the questions both halves ask.
 const plan_limit = @import("codegen/plan/limit.zig");
 const gen_mask = @import("codegen/mask.zig");
-/// A `$limit` algorithm name (§9.17.3).
-pub const Alg = plan_limit.Alg;
-/// One honoured `$limit` site.
-pub const LimitCall = plan_limit.LimitCall;
+const LimitCall = plan_limit.LimitCall;
 const Ladder = plan_limit.Ladder;
 const Rung = plan_limit.Rung;
 
-const none_u32 = std.math.maxInt(u32);
+const none_u32 = cg.none_u32;
 
 // -------------------------------------------------------- the live sets
 

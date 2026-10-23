@@ -24,19 +24,6 @@ const none_u32 = codegen.none_u32;
 const VTy = codegen.VTy;
 const opcode_zig = codegen.opcode_zig;
 
-/// Returns whether `op` has a plain-f64 spelling a GPU can execute.
-///
-/// Unit bodies also compile for nvptx, which has no libm, so only arithmetic
-/// LLVM lowers to one PTX instruction qualifies; everything else keeps its S
-/// form. Real opcodes only: `f64Const` renders integer opcodes in f64, which
-/// drops §3.2's 32-bit wraparound, so an integer residual goes through
-/// `intBin32` instead. Only `f64Const`'s `in_unit` path consults this.
-fn devSafe(op: Mir.Opcode) bool {
-    // The `dev_safe` column: sqrt/floor/ceil are there because they are
-    // sqrt.rn.f64 and cvt.rmi/rpi.f64.f64, single instructions.
-    return opcode_zig.get(op).dev_safe;
-}
-
 /// Returns `inst` as a ternary: the optimizer's select, or a pure two-way CFG
 /// merge rebuilt from its phi. Null for loop-carried or multiway phis and
 /// for arms containing a call.
@@ -338,7 +325,12 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
         },
         .inst_result => |inst| {
             const row = self.mir.instRow(inst);
-            if (in_unit and !devSafe(row.op)) return null;
+            // A unit body also compiles for nvptx, which has no libm, so it
+            // takes only `opcode_zig`'s `dev_safe` opcodes: arithmetic LLVM
+            // lowers to one PTX instruction (sqrt/floor/ceil are sqrt.rn.f64
+            // and cvt.rmi/rpi.f64.f64). Real opcodes only: f64 drops §3.2's
+            // 32-bit wraparound, so an integer residual goes through `intBin32`.
+            if (in_unit and !opcode_zig.get(row.op).dev_safe) return null;
             if (!in_unit and (row.op == .select or row.op == .phi)) return hostConditionalExpr(self, inst, depth, .real);
             // §9.15 a parameter default over `$simparam`, in the analog
             // block's order (`Lowered.simparamAnswer`): a host field is a
@@ -394,10 +386,7 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
 /// expression. Otherwise reports E0515 at the source, marks the build fatal
 /// and returns "0.0".
 pub fn f64Expr(self: *Gen, v0: Mir.Value) Error![]const u8 {
-    if (try f64Const(self, v0, 0, false)) |s| {
-        assert(s.len > 0);
-        return s;
-    }
+    if (try f64Const(self, v0, 0, false)) |s| return s;
     // Point at the argument's defining expression, else the operator call.
     const v = self.an.rv(v0);
     const def = self.mir.valueDef(v);
