@@ -1,0 +1,34 @@
+// The device of spice_noise_series_voltage.sp: a resistor r written as a
+// §5.6 potential contribution, V(p,n) <+ r*I(p,n), with one §4.6.4.1
+// white_noise of a literal density pwr in that contribution (no k, no T,
+// so the deck's arithmetic carries no constant VerA and a reference might
+// disagree on). §4.6.4.1: a noise function in a potential contribution is a
+// noise voltage in series with the branch, not a current across it; the
+// deck's load halves it, where a current across r || load would be 1000
+// times larger.
+//
+// WHAT THIS FILE ASSERTS ON ITS OWN. The `//! noise` line is the export
+// claim: one thermal-kind row (§4.6.4.1's white_noise) of density 1e-18
+// V^2/Hz placed row == col on the branch current `flow(p,n)` (its `U` tag
+// is that name with its punctuation Z-escaped), the unknown whose own row
+// is the branch relation V(p,n) − r·I(p,n); its own generator (#0). The
+// CHECKX is §4.6.4: the source reads 0 outside a small-signal analysis, so
+// at the dc point the relation holds with I(p,n) = 0.
+//
+//! lrm 4.6.4.1
+//! lrm 4.6.4
+//! noise thermal(flowZ28pZ2cnZ29,flowZ28pZ2cnZ29)#0 name=series white=1e-18
+//! analysis noise
+//! bias V(p) = 0.0, V(n) = 0.0
+`include "check.vh"
+module spice_noise_series_resistor(p, n);
+    inout p, n;
+    electrical p, n;
+    parameter real r = 1000.0 from (0:inf);
+    parameter real pwr = 1e-18 from [0:inf);
+
+    analog begin
+        V(p, n) <+ r * I(p, n) + white_noise(pwr, "series");
+        `CHECKX("§4.6.4 the source reads 0 at a dc point, so V(p,n) = r*I(p,n) = 0", V(p, n), 0.0);
+    end
+endmodule

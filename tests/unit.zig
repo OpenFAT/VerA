@@ -12656,13 +12656,15 @@ pub const codegen_tests = struct {
         const src = try h.gen(std.testing.allocator);
         // ONE generator (both rows carry `.source = 0`) with TWO coefficients.
         // Without them both rows report the raw 1e-18 and a host computes this
-        // module's output noise 4x and 9x low.
+        // module's output noise 4x and 9x low. Both are voltages in series
+        // with their branch (§4.6.4.1), so each coefficient carries the branch
+        // row's sign, `V(hi,lo) − <value>`: `-(...)`.
         const at = std.mem.find(u8, src, "pub fn noisePsd(").?;
-        try std.testing.expect(std.mem.find(u8, src[at..], ".coeff = 2") != null);
+        try std.testing.expect(std.mem.find(u8, src[at..], ".coeff = -(2") != null);
         // §1.3.1.2: `V(d,c)` drives the same branch as `V(c,d)` with the sign
         // flipped, and the SIGN is what separates correlation from
         // anti-correlation, so it has to survive into the export.
-        try std.testing.expect(std.mem.find(u8, src[at..], ".coeff = -3") != null);
+        try std.testing.expect(std.mem.find(u8, src[at..], ".coeff = -(-3") != null);
     }
 
     test "codegen: §4.6.4.6 a generator no single factor describes keeps coefficient 1" {

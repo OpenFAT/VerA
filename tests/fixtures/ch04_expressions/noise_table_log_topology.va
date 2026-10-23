@@ -19,12 +19,15 @@
 // Two generators on one branch, which is also §4.6.4's own shape ("multiple
 // noise contributions to a single branch are combined"): a white one and a
 // tabulated one, so the `table` row cannot be the only row and a lowering that
-// overwrote one kind with the other would be caught.
+// overwrote one kind with the other would be caught. Both are voltages in
+// series with the branch (§4.6.4.1, a potential contribution), so both sit
+// row == col on its current unknown `flow(out,gnd_ref)`, whose `U` tag is
+// that name with its punctuation Z-escaped.
 //
 //! lrm 4.6.4.4
 //! lrm 4.6.2
-//! noise thermal(out,gnd_ref)#0
-//! noise table(out,gnd_ref)#1
+//! noise thermal(flowZ28outZ2cgnd_refZ29,flowZ28outZ2cgnd_refZ29)#0
+//! noise table(flowZ28outZ2cgnd_refZ29,flowZ28outZ2cgnd_refZ29)#1
 //! analysis dc
 //! bias V(out) = 0.0
 //! bias V(gnd_ref) = 0.0

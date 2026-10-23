@@ -17,7 +17,13 @@ may call at any state vector, in any order.
 
 `noise_gens` is the list of LRM §4.6.4 generators. Position `k` is a
 generator of `kind` (`thermal`, `shot`, `flicker`, `table`) on the branch
-`(row, col)`, and position `k` of `noisePsd(S, x, &model, &inst, sim)` is its
+`(row, col)`: a current generator (a noise function in a flow contribution)
+between its two nodes, `row == col` when one is the reference; a voltage
+generator (§4.6.4.1, a noise function in a potential contribution) in series
+with its branch, `row == col` on the branch's current unknown
+(`U.@"flow(a,b)"`), entering that unknown's own equation row with the row's
+sign already in `coeff`. Add `coeff·n` to row `row` and, when `col` differs,
+subtract it from `col`. Position `k` of `noisePsd(S, x, &model, &inst, sim)` is its
 spectral density at the state vector `x`, as a `PsdTerm`. Pass `eval`'s
 family as `S`: a `ddx` in a PSD argument (a channel noise's gm) reads its
 partial there, and reads 0 in a family without lanes.

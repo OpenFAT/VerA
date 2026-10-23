@@ -9,6 +9,7 @@ const Mir = @import("ir").Mir;
 const Lower = @import("ir").Lowered;
 const diag = @import("diag");
 const Input = @import("prove").Input;
+const plan_topo = @import("topology.zig");
 
 /// Every fallible call here fails only on allocation.
 pub const Error = std.mem.Allocator.Error;
@@ -48,9 +49,15 @@ pub const Noise = struct {
 /// they are built once here.
 pub const NoiseRow = struct {
     /// The generator's `nodes` rows: `hi` and `lo`, or `row == col` for a
-    /// generator to §1.3.1.1 ground.
+    /// generator to §1.3.1.1 ground, or `row == col` on the branch current
+    /// of a potential contribution (`neg`).
     row: u32,
     col: u32,
+    /// §4.6.4.1 a generator in a potential contribution is a voltage in
+    /// series with its branch, so it enters the branch-current row, which
+    /// `dispatch.zig` writes as `V(hi,lo) − <value>`: the row's sign goes
+    /// into the emitted coefficient (or magnitude).
+    neg: bool = false,
     kind: Lower.NoiseKind,
     /// §4.6.4.6 dense generator id: rows sharing it are one generator. At
     /// most the row count, which a `u32` index everywhere else bounds.
@@ -77,7 +84,7 @@ pub const NoiseRow = struct {
 /// first-seen order. §4.6.3's `ac_stim` arrives on the same set and leaves in
 /// `ac_rows`: it is a stimulus, not a generator. Refusals are recorded, not
 /// reported.
-pub fn plan(self: Input) Error!Noise {
+pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
     var out: Noise = .{};
     var rows: std.ArrayList(NoiseRow) = .empty;
     var ac: std.ArrayList(NoiseRow) = .empty;
@@ -86,7 +93,7 @@ pub fn plan(self: Input) Error!Noise {
     var refused: std.ArrayList(u32) = .empty;
     var tabs: std.ArrayList([]const [2]f64) = .empty;
     var tab_vals: std.ArrayList([]const [2]Mir.Value) = .empty;
-    for (self.lowered.contributions.items) |c| {
+    for (self.lowered.contributions.items, 0..) |c, ci| {
         if (c.noise_srcs.len == 0) continue;
         // §1.3.1.1 ground is not an unknown: a to-ground generator is
         // spelled row == col, and one on ground-ground has neither. The
@@ -98,8 +105,17 @@ pub fn plan(self: Input) Error!Noise {
                 "ground-ground branch, which has no row or column to export it in", .{});
             continue;
         }
-        const row = if (c.hi != Lower.ground) c.hi else c.lo;
-        const col = if (c.lo != Lower.ground) c.lo else row;
+        // A current generator (a flow contribution) is between `hi` and
+        // `lo`, KCL rows. §4.6.4.1 a voltage generator (a potential
+        // contribution) is in series with the branch: it enters the branch
+        // current's own row, `branch_u[i]` from `plan/names.zig`, as
+        // `row == col` there, with `NoiseRow.neg` carrying the row's sign.
+        // Not on a §5.6.5 switch branch: whether its current unknown exists
+        // is decided per instance at run time, so the generator stays on
+        // the nodes, where a host folds it into KCL either way.
+        const series = c.kind == .direct and c.access == .potential and plan_topo.switchFlowOf(self, ci) == null;
+        const row = if (series) branch_u[ci] else if (c.hi != Lower.ground) c.hi else c.lo;
+        const col = if (series) row else if (c.lo != Lower.ground) c.lo else row;
         for (c.noise_srcs) |s| {
             // §4.6.3 a stimulus has no PSD, no table and no §4.6.4.6
             // identity: one call is one source, and `addNoiseSrc` already
@@ -109,6 +125,7 @@ pub fn plan(self: Input) Error!Noise {
                 try ac.append(self.arena, .{
                     .row = row,
                     .col = col,
+                    .neg = series,
                     .kind = s.kind,
                     .source = 0,
                     .pwr = self.an.rv(s.pwr), // mag
@@ -148,6 +165,7 @@ pub fn plan(self: Input) Error!Noise {
             try rows.append(self.arena, .{
                 .row = row,
                 .col = col,
+                .neg = series,
                 .kind = s.kind,
                 .source = @intCast(sid),
                 .pwr = self.an.rv(s.pwr),
@@ -323,7 +341,7 @@ test "a noise table is sorted, and a repeated frequency is refused" {
     try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = Lower.ground, .noise_srcs = &srcs1 });
     const an = try f.analysis();
 
-    const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered });
+    const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
     try std.testing.expectEqual(@as(usize, 1), n.rows.len);
     try std.testing.expectEqual(@as(?u16, 0), n.rows[0].table);
     try std.testing.expectEqualSlices([2]f64, &.{ .{ 10, 4 }, .{ 1e3, 2 } }, n.tabs[0]);
@@ -350,7 +368,7 @@ test "rows: to-ground is row == col, ground-ground is E0520, a stimulus goes to 
     try f.lowered.contributions.append(a, .{ .access = .flow, .hi = Lower.ground, .lo = Lower.ground, .noise_srcs = &th });
     const an = try f.analysis();
 
-    const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered });
+    const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
     try std.testing.expectEqual(@as(usize, 2), n.rows.len);
     // I(b) to ground: row = col = b. I(<gnd>, a): row = col = a.
     try std.testing.expectEqual(@as(u32, 1), n.rows[0].row);
@@ -392,7 +410,7 @@ test "§4.6.4.3 table checks: no vector, an odd count, a non-positive frequency,
         const srcs = try a.dupe(Lower.NoiseSrc, &.{.{ .kind = cs.kind, .table = vals, .id = 1 }});
         try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = Lower.ground, .noise_srcs = srcs });
         const an = try f.analysis();
-        const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered });
+        const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
         try std.testing.expectEqual(@as(usize, 0), n.rows.len);
         try std.testing.expectEqual(@as(usize, 1), n.refusals.items.len);
         try std.testing.expectEqual(diag.Code.E0519, n.refusals.items[0].code);
@@ -408,7 +426,7 @@ test "§4.6.4.3 table checks: no vector, an odd count, a non-positive frequency,
         const srcs = [_]Lower.NoiseSrc{.{ .kind = .table, .table = &vals, .id = 1 }};
         try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = Lower.ground, .noise_srcs = &srcs });
         const an = try f.analysis();
-        const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered });
+        const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
         try std.testing.expectEqual(@as(usize, 0), n.refusals.items.len);
         try std.testing.expectEqualSlices([2]f64, &.{.{ 10, 0 }}, n.tabs[0]);
     }
@@ -430,7 +448,7 @@ test "a parameter knot keeps its MIR values beside the defaults; a literal table
     try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = 0, .noise_srcs = &s1 });
     const an = try f.analysis();
 
-    const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered });
+    const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
     try std.testing.expectEqual(@as(usize, 2), n.tabs.len);
     // The declared default is what a comptime table can hold.
     try std.testing.expectEqualSlices([2]f64, &.{.{ 5, 3 }}, n.tabs[1]);
@@ -438,6 +456,41 @@ test "a parameter knot keeps its MIR values beside the defaults; a literal table
     try std.testing.expectEqual(@as(usize, 0), n.tab_vals[0].len);
     try std.testing.expectEqualSlices([2]Mir.Value, &.{.{ fc, three }}, n.tab_vals[1]);
 }
+
+test "§4.6.4.1 a generator in a potential contribution is row == col on the branch current, its sign in `neg`" {
+    var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+    try f.init(&.{ "a", "b" });
+    defer f.deinit();
+    const a = f.alloc();
+    const pwr = try f.mir.addFloatConst(a, 1e-18);
+    const th = [_]Lower.NoiseSrc{.{ .kind = .thermal, .id = 7, .pwr = pwr }};
+    const fl = [_]Lower.NoiseSrc{.{ .kind = .thermal, .id = 8, .pwr = pwr }};
+    const sw = [_]Lower.NoiseSrc{.{ .kind = .thermal, .id = 9, .pwr = pwr }};
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 0, .lo = 1, .noise_srcs = &th });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = Lower.ground, .noise_srcs = &fl });
+    // §5.6.5 a switch branch: a potential and a flow contribution over one pair.
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = 0, .noise_srcs = &sw });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = 0 });
+    const an = try f.analysis();
+    // `plan/names.zig` gave the potential branches the current unknowns 2 and 3.
+    const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{ 2, names_none, 3, names_none });
+    try std.testing.expectEqual(@as(usize, 3), n.rows.len);
+    try std.testing.expectEqual(@as(u32, 2), n.rows[0].row);
+    try std.testing.expectEqual(@as(u32, 2), n.rows[0].col);
+    try std.testing.expect(n.rows[0].neg);
+    // The flow contribution is a current to ground: row == col == b.
+    try std.testing.expectEqual(@as(u32, 1), n.rows[1].row);
+    try std.testing.expectEqual(@as(u32, 1), n.rows[1].col);
+    try std.testing.expect(!n.rows[1].neg);
+    // The switch branch keeps the node form, (b, a), whether or not its
+    // current unknown exists at run time.
+    try std.testing.expectEqual(@as(u32, 1), n.rows[2].row);
+    try std.testing.expectEqual(@as(u32, 0), n.rows[2].col);
+    try std.testing.expect(!n.rows[2].neg);
+}
+
+/// `plan/names.zig`'s "no branch current" marker, for the tests' `branch_u`.
+const names_none = std.math.maxInt(u32);
 
 test "§4.6.4.6 one table call shared by two branches is one generator: one table, or one refusal" {
     for ([_]bool{ true, false }) |valid| {
@@ -452,7 +505,7 @@ test "§4.6.4.6 one table call shared by two branches is one generator: one tabl
         try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = Lower.ground, .noise_srcs = &srcs });
         const an = try f.analysis();
 
-        const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered });
+        const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
         if (valid) {
             try std.testing.expectEqual(@as(usize, 2), n.rows.len);
             try std.testing.expectEqual(@as(usize, 1), n.tabs.len);

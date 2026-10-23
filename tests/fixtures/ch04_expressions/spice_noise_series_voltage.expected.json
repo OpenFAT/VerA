@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "analysis": "noise",
+  "purpose": "LRM 4.6.4.1: a noise function in a potential contribution is a voltage in series with the branch, not a current across it",
+  "oracle": {
+    "kind": "analytic",
+    "derivation": "The model is a 1k resistor written as V(p,n) <+ r*I(p,n) + white_noise(1e-18): a series source e_n = 1e-9 V/sqrt(Hz) in the out-0 branch. Vin is a small-signal short, so Rs = 1k (noisy=0) loads out to ground: onoise = e_n * Rs/(r + Rs) = 5e-10 V/sqrt(Hz), flat, at both points of lin 2 1k 2k. A host that injected the generator as a current of 1e-9 A/sqrt(Hz) between out and 0 would read e_n * (r || Rs) = 5e-7, a thousand times more."
+  },
+  "expect": {
+    "status": "success",
+    "plots": [
+      {
+        "name": "Noise Spectral Density Curves",
+        "match": "exact",
+        "row_count": 2,
+        "axis": {
+          "name": "frequency",
+          "values": [1000.0, 2000.0],
+          "rtol": 1e-12,
+          "atol": 0.0
+        },
+        "columns": {
+          "onoise_spectrum": {
+            "unit": "V/sqrt(Hz)",
+            "rtol": 1e-09,
+            "atol": 1e-20,
+            "values": [5.0e-10, 5.0e-10]
+          }
+        }
+      }
+    ],
+    "finite_values_required": true,
+    "all_requested_analyses_must_complete": true
+  },
+  "netlist_sha256": "dae036ea652ea2d349958dcfe400f48c59f3dc3778440c4daac94ed892d4680e"
+}

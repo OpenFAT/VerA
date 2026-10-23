@@ -13,6 +13,12 @@
   PSDs, `PsdTerm.coeff` and §4.6.4.6 correlation in its noise analysis), so
   `test-spice` passes on the first ESPice commit that carries them, which the
   next release pins.
+- A noise function, or an `ac_stim`, in a potential contribution is a source
+  in series with its branch (§4.6.4.1): `noise_gens` and `ac_gens` place it
+  `row == col` on the branch-current unknown (`flow(a,b)`) with the branch
+  row's sign in `PsdTerm.coeff` (a negative magnitude for a stimulus). It was
+  placed as a current between the branch's nodes, a thousandfold error in
+  `spice_noise_series_voltage.sp`, which now grades it on ESPice.
 - `lib/sim/spice/` (the one-device copy of ESPice's CPU solver) and the
   `//! tran` / `//! onoise` testbench directives are gone: a testbench drives
   one device, and a circuit is a deck ESPice runs.

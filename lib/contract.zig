@@ -2275,7 +2275,15 @@ const host_model_fields = [_][]const u8{
 
 /// §4.6.4 one noise generator: position k of `noise_gens` is a generator of
 /// `kind` on the (row, col) branch, and position k of `noisePsd`'s result is
-/// its PSD. A `.table` generator's PSD is its table at the card,
+/// its PSD. A current generator (a noise function in a flow contribution)
+/// has `row` and `col` as its nodes, or `row == col` for one to the
+/// reference. A voltage generator (§4.6.4.1, a noise function in a potential
+/// contribution) is in series with its branch: `row == col` is the branch's
+/// current unknown (`U.@"flow(a,b)"`), and the generator enters that
+/// unknown's own equation row, `V(a,b) − <value>`, with the row's sign
+/// already in `PsdTerm.coeff`. A host adds `coeff·n` to row `row` and, when
+/// `col` differs, subtracts it from `col`, whichever kind the unknown is.
+/// A `.table` generator's PSD is its table at the card,
 /// `noiseTable(D, &model, table.?)`; its `noisePsd` entry reads zero. The per-use scale factor is
 /// `PsdTerm.coeff`, because it may depend on the bias.
 pub fn NoiseGen(comptime D: type) type {
@@ -2511,7 +2519,10 @@ pub fn fileIo(comptime D: type) ?FileIo {
 }
 
 /// §4.6.3 one AC stimulus: position k of `ac_gens` is an `ac_stim` call on the
-/// (row, col) branch, and position k of `acStim`'s result is its phasor.
+/// (row, col) branch, and position k of `acStim`'s result is its phasor. The
+/// (row, col) rule is `NoiseGen`'s: a stimulus in a potential contribution is
+/// a voltage source in series with its branch, `row == col` on the branch's
+/// current unknown, its phasor carrying that row's sign (a negative `mag`).
 /// The residual carries only the phasor's real part, `mag·cos(phase)`. A host
 /// that solves a complex small-signal system reads this table instead of that
 /// residual term; adding both counts the real part twice.

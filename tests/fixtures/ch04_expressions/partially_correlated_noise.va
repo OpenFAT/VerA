@@ -15,7 +15,10 @@
 // identical — while `n12`, one call used on both branches, carries the SAME id
 // on both rows. Four rows, three sources: #0/#2 unshared, #1 shared, which is
 // exactly the partial correlation the clause describes and the only encoding
-// of it a host can act on.
+// of it a host can act on. The two rows of the potential contribution are
+// voltages in series with branch (a,b) (§4.6.4.1): row == col on its current
+// unknown `flow(a,b)`, whose `U` tag Z-escapes the punctuation; the flow
+// contribution's rows are currents between b and c.
 //
 // The dc values are §4.6's "when not active, the small-signal source functions
 // return zero (0)": every combination is exactly 0.0 here, so the potential
@@ -23,8 +26,8 @@
 //
 //! lrm 4.6.4.6
 //! lrm 4.6.4.6:1000
-//! noise thermal(a,b)#0
-//! noise thermal(a,b)#1
+//! noise thermal(flowZ28aZ2cbZ29,flowZ28aZ2cbZ29)#0
+//! noise thermal(flowZ28aZ2cbZ29,flowZ28aZ2cbZ29)#1
 //! noise thermal(b,c)#2
 //! noise thermal(b,c)#1
 //! analysis dc

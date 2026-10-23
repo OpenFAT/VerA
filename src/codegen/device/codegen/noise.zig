@@ -131,7 +131,10 @@ pub fn emitNoiseTable(self: *Gen) Error!void {
         // in: a table row's spectrum is comptime data that cannot absorb a
         // bias-dependent factor, and two rows sharing a source need both
         // coefficients, since their signed product is the cross-spectrum.
-        const coeff = try psdRef(self, nr.coeff, true);
+        const plain = try psdRef(self, nr.coeff, true);
+        // A series generator enters its branch row `V(a,b) − <value>`: the
+        // row's sign rides in the coefficient (`plan/noise.zig` `neg`).
+        const coeff = if (nr.neg) try self.arena.print("-({s})", .{plain}) else plain;
         switch (nr.kind) {
             // §4.6.4.3/.4 the table is the spectrum: anything here would be
             // added to it, so the parametric part of a table row is zero.
@@ -282,10 +285,10 @@ pub fn emitAcTable(self: *Gen) Error!void {
             all_stated = false;
             break;
         }
-        v.* = .{
-            if (nr.coeff == .f_one) mag.? else try self.arena.print("({s}) * ({s})", .{ mag.?, coeff.? }),
-            phase.?,
-        };
+        const scaled = if (nr.coeff == .f_one) mag.? else try self.arena.print("({s}) * ({s})", .{ mag.?, coeff.? });
+        // A series stimulus enters its branch row `V(a,b) − <value>`: the
+        // row's sign rides as a negative magnitude (`plan/noise.zig` `neg`).
+        v.* = .{ if (nr.neg) try self.arena.print("-({s})", .{scaled}) else scaled, phase.? };
     }
     const reads_model = self.uses.model or uses_core;
     const reads_inst = self.uses.inst or uses_core;

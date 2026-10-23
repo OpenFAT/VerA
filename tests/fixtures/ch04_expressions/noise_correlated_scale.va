@@ -85,8 +85,8 @@
 //! lrm 4.6.4.6
 //! lrm 4.5.6
 //! lrm 4.6.4.6:1000
-//! noise thermal(a,b)#0 name=shared white=4e-18
-//! noise thermal(c,d)#0 name=shared white=9e-18
+//! noise thermal(flowZ28aZ2cbZ29,flowZ28aZ2cbZ29)#0 name=shared white=4e-18
+//! noise thermal(flowZ28cZ2cdZ29,flowZ28cZ2cdZ29)#0 name=shared white=9e-18
 //! analysis noise
 //! bias V(a) = 0.0
 //! bias V(b) = 0.0

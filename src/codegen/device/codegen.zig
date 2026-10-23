@@ -503,8 +503,9 @@ pub const Gen = struct {
         // `$limit` become core live-outs, and `buildJobs` is what queues them.
         self.limits = try plan_limit.plan(self.input(), self.names.u_names);
         // Before `buildJobs`: §4.6.4 the PSD arguments become core live-outs
-        // too, and `buildJobs` is what queues them.
-        self.noise = try plan_noise.plan(self.input());
+        // too, and `buildJobs` is what queues them. After `plan_names.plan`:
+        // a generator in a potential contribution sits on its branch current.
+        self.noise = try plan_noise.plan(self.input(), self.names.branch_u);
         for (self.noise.refusals.items) |r| {
             if (self.diags) |bag| try bag.add(.codegen, r.code, self.lowered.tokenSpan(r.tok), "{s}", .{r.msg});
             self.any_fatal = true;

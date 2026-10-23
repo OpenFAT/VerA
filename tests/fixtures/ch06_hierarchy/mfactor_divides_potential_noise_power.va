@@ -10,7 +10,9 @@
 // published density the `//! noise` line reads from `noisePsd`.
 //
 // BY HAND: 1.0 / 4 = 0.25 V^2/Hz on the branch (p,n). Unscaled it reads 1.0;
-// multiplied (the flow rule applied to a potential) it reads 4.0.
+// multiplied (the flow rule applied to a potential) it reads 4.0. A series
+// voltage sits row == col on the branch current `flow(p,n)` (§4.6.4.1),
+// whose `U` tag is that name with its punctuation Z-escaped.
 //
 // THE COUNT, from tb/runner.zig: one CHECKX, then the runner's noise lines
 // for one `//! noise` entry: the table count, the row's topology, its name
@@ -20,7 +22,7 @@
 //
 //! lrm 6.3.6
 //! lrm 6.3.6:6
-//! noise thermal(p,n)#0 name=w white=0.25
+//! noise thermal(flowZ28pZ2cnZ29,flowZ28pZ2cnZ29)#0 name=w white=0.25
 //! analysis noise
 //! bias V(p) = 0.0, V(n) = 0.0
 //! checks 5
