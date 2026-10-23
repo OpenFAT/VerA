@@ -13381,7 +13381,7 @@ pub const codegen_tests = struct {
         // the add from panicking; the truncation is §3.2's width. The left operand
         // is a PARAMETER, so neither fold can reach it and the wrap has to survive
         // as emitted code, which is the site this half of the test is about.
-        try std.testing.expect(std.mem.find(u8, src, "@as(i32, @truncate(((model.big) +% (@as(i64, 1)))))") != null);
+        try std.testing.expect(std.mem.find(u8, src, "@as(i32, @truncate(((@as(i64, model.big)) +% (@as(i64, 1)))))") != null);
     }
 
     test "codegen: a unit whose target is defined in one arm returns a VALUE, not undefined" {
@@ -13830,6 +13830,111 @@ pub const codegen_tests = struct {
         try std.testing.expect(std.mem.find(u8, src, "inst.systf.?") != null);
     }
 
+    test "codegen: Instance carries a `systf` slot only when a `$name` is left to the host" {
+        // The slot is 8 bytes on every instance, so a device that resolves
+        // every `$name` itself has none (`Lowered.Uses.systf`).
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module r(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter real g = 1.0;
+            \\  analog I(p, n) <+ g * V(p, n);
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const src = try h.gen(std.testing.allocator);
+        try std.testing.expect(std.mem.find(u8, src, "systf:") == null);
+        try std.testing.expect(std.mem.find(u8, src, "pub const systf_calls") == null);
+    }
+
+    test "codegen: §3.4.2 an integer parameter takes the narrowest field its range and default allow" {
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module nw(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter integer m = 1 from [0:3];
+            \\  parameter integer t = 1 from [-1:1] exclude 0;
+            \\  parameter integer k = 7;
+            \\  parameter integer d = m + 1 from [0:3];
+            \\  parameter integer w = 300 from [0:1000];
+            \\  parameter real g = 1.0;
+            \\  analog I(p, n) <+ g * V(p, n) * (m + t + k + d + w);
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const src = try h.gen(std.testing.allocator);
+        // The range and the default size the field; no range, or a `derive`
+        // target, keeps the i64 carrier of §3.4.1's 32-bit value.
+        try std.testing.expect(std.mem.find(u8, src, "    m: u8 = 1,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    t: i8 = 1,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    k: i64 = 7,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    d: i64 = 2,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    w: u16 = 300,\n") != null);
+        // A read widens to the i64 the bodies compute in.
+        try std.testing.expect(std.mem.find(u8, src, "@as(i64, model.m)") != null);
+    }
+
+    test "codegen: §9.19 the given flags are one bitset, named by given_params and set by setGiven" {
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module gv(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter real a = 1.0;
+            \\  parameter real b = a;
+            \\  parameter real c = 2.0;
+            \\  analog I(p, n) <+ V(p, n) * (b + c + $param_given(c));
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const src = try h.gen(std.testing.allocator);
+        // `b` is a derive target, `c` is asked about, `a` is neither.
+        try std.testing.expect(std.mem.find(u8, src, "    given__: std.StaticBitSet(2) = .empty,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    pub const given_params = [_][]const u8{\n        \"b\",\n        \"c\",\n    };") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    pub fn setGiven(model: *Model, name: []const u8) void {") != null);
+        try std.testing.expect(std.mem.find(u8, src, "if (!model.given__.isSet(0)) model.b = model.a;") != null);
+        try std.testing.expect(std.mem.find(u8, src, "@intFromBool(model.given__.isSet(1))") != null);
+        try std.testing.expect(std.mem.find(u8, src, "__given") == null);
+    }
+
+    test "codegen: a card value eval reads is copied into Setup beside the derived values" {
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module cp(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter real r = 2.0;
+            \\  parameter real s = 3.0;
+            \\  analog I(p, n) <+ V(p, n) * exp(r) + V(p, n) * V(p, n) * s;
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const src = try h.gen(std.testing.allocator);
+        // `exp(r)` is derived; `s` is a plain read, copied so the core touches
+        // `su` alone. `r` feeds only the derived root, so it is not copied.
+        try std.testing.expect(std.mem.find(u8, src, "    r: [2]f64 = @splat(") != null);
+        try std.testing.expect(std.mem.find(u8, src, "model.su.r[0] = (S.con(model.s)).val();") != null);
+        try std.testing.expect(std.mem.find(u8, src, ".scale(model.su.r[0])") != null);
+        // The card is read once, by the copy.
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, src, "S.con(model.s)"));
+        // With nothing derived there is no `Setup` to pack into: the card is read.
+        var h2: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module cq(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter real s = 3.0;
+            \\  analog I(p, n) <+ V(p, n) * s;
+            \\endmodule
+        , &h2);
+        defer h2.deinit();
+        const src2 = try h2.gen(std.testing.allocator);
+        try std.testing.expect(std.mem.find(u8, src2, "pub const Setup") == null);
+        try std.testing.expect(std.mem.find(u8, src2, "(model.s)") != null);
+    }
+
     test "codegen: a systf call reassembles the host's value and partials into one S" {
         // The shape §12.22.1 forces, and the reason it is forced: `eval` is generic
         // over S and a function POINTER cannot be, so the host returns a value and
@@ -14043,19 +14148,24 @@ pub const codegen_tests = struct {
         , &h);
         defer h.deinit();
         const src = try h.gen(std.testing.allocator);
+        // Bits: `dtemp` 0 (the only flagged parameter), then the aliases
+        // `trise` 1 and `cc` 2 (`given_params`).
+        try std.testing.expect(std.mem.find(u8, src, "    given__: std.StaticBitSet(3) = .empty,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    pub const given_params = [_][]const u8{\n        \"dtemp\",\n        \"trise\",\n        \"cc\",\n    };") != null);
         const alias_then_default =
-            \\    if (model.trise__given) {
+            \\    if (model.given__.isSet(1)) {
             \\        model.dtemp = model.trise;
-            \\        model.dtemp__given = true;
+            \\        model.given__.set(0);
             \\    }
             \\
         ;
         const at = std.mem.find(u8, src, alias_then_default) orelse return error.TestUnexpectedResult;
         // The alias is folded first, so the guarded default sees the raised flag.
-        const guard = std.mem.find(u8, src, "if (!model.dtemp__given) model.dtemp = model.a;") orelse return error.TestUnexpectedResult;
+        const guard = std.mem.find(u8, src, "if (!model.given__.isSet(0)) model.dtemp = model.a;") orelse return error.TestUnexpectedResult;
         try std.testing.expect(at < guard);
-        try std.testing.expect(std.mem.find(u8, src, "    if (model.cc__given) model.c = model.cc;\n") != null);
-        try std.testing.expect(std.mem.find(u8, src, "c__given = true") == null);
+        try std.testing.expect(std.mem.find(u8, src, "    if (model.given__.isSet(2)) model.c = model.cc;\n") != null);
+        // Only `dtemp`'s bit is raised in `derive`: `c` has none to raise.
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, src, "\n        model.given__.set("));
     }
 
     test "codegen: §3.4.2 checkRange names a card value outside its from/exclude ranges (#80)" {
@@ -14142,8 +14252,8 @@ pub const codegen_tests = struct {
 
         // Precedence: the card wins. `__given` is the same flag §9.19 uses, raised
         // by the host's `applyKv` when the model card named the parameter.
-        try std.testing.expect(std.mem.find(u8, src, "if (!model.tnom__given) model.tnom = model.nom_temp__;") != null);
-        try std.testing.expect(std.mem.find(u8, src, "if (!model.tnomk__given) model.tnomk = (model.nom_temp__) + (273.15);") != null);
+        try std.testing.expect(std.mem.find(u8, src, "if (!model.given__.isSet(0)) model.tnom = model.nom_temp__;") != null);
+        try std.testing.expect(std.mem.find(u8, src, "if (!model.given__.isSet(1)) model.tnomk = (model.nom_temp__) + (273.15);") != null);
 
         // A default that reads the host's table is not W1050: `derive()`
         // overwrites the field, which is that warning's own silence condition.
@@ -14185,7 +14295,7 @@ pub const codegen_tests = struct {
         try std.testing.expect(std.mem.count(u8, src, "reltol__: f64 = 0.001,") == 1);
         try std.testing.expect(std.mem.count(u8, src, "vntol__: f64 = 0.000001,") == 1);
         try std.testing.expect(std.mem.find(u8, src, "abstol__") == null);
-        try std.testing.expect(std.mem.find(u8, src, "if (!model.rt__given) model.rt = model.reltol__;") != null);
+        try std.testing.expect(std.mem.find(u8, src, "if (!model.given__.isSet(0)) model.rt = model.reltol__;") != null);
         // A known name ignores its fallback (§9.15).
         try std.testing.expect(std.mem.find(u8, src, "S.con(model.vntol__)") != null);
     }
@@ -15298,8 +15408,8 @@ pub const codegen_tests = struct {
         , &h);
         defer h.deinit();
         const src = try h.gen(std.testing.allocator);
-        try std.testing.expect(std.mem.find(u8, src, "    r: [1]f64 = @splat(" ++ gen_kernel_text.nan_lit ++ "),\n    /// One per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: [1]bool = @splat(false),\n};") != null);
-        try std.testing.expect(std.mem.find(u8, src, "model.su.b[0] = (") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    r: [1]f64 = @splat(" ++ gen_kernel_text.nan_lit ++ "),\n    /// One bit per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: std.StaticBitSet(1) = .empty,\n};") != null);
+        try std.testing.expect(std.mem.find(u8, src, "model.su.b.setValue(0, (") != null);
     }
 
     test "codegen: §5.10.2 a held variable written only by @(initial_step) is computed once, by setup" {
@@ -17353,7 +17463,7 @@ pub const exe_tests = struct {
         try testing.expect(std.mem.find(u8, src, "point(1, &x") != null);
         // §3.4.1/§4.2.1.1: card values go through `cardValue`, which rounds for
         // an `integer` parameter.
-        try testing.expect(std.mem.find(u8, src, "model.g = cardValue(@TypeOf(model.g), 0.002)") != null);
+        try testing.expect(std.mem.find(u8, src, "model.g = cardValue(@TypeOf(model.g), \"g\", 0.002)") != null);
     }
 
     test "every directive set that parses renders to Zig that passes AstGen" {
@@ -17565,7 +17675,7 @@ pub const exe_tests = struct {
         // 2 x 3 points, the parameter column fastest.
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "        var pm = model;\n"));
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "        if (comptime @hasDecl(D, \"derive\")) D.derive(Val, &pm);\n"));
-        try testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "        pm.r = cardValue(@TypeOf(pm.r), 3);\n"));
+        try testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "        pm.r = cardValue(@TypeOf(pm.r), \"r\", 3);\n"));
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "solve(&x, &forced, &pm, &inst);"));
     }
 
@@ -17616,7 +17726,7 @@ pub const exe_tests = struct {
         const src = try tb.renderVpiLib(arena, "vpi", d);
         try expectAstGen(src);
         for ([_][]const u8{
-            "    g_model.g = cardValue(@TypeOf(g_model.g), 0.002);\n",
+            "    g_model.g = cardValue(@TypeOf(g_model.g), \"g\", 0.002);\n",
             "    set(&g_x, &g_forced, \"n\", 0);\n",
             "    set(&g_x, &g_forced, \"in\", pwl(&wave_0, t));\n",
             "const times = [_]f64{ 0, 0.000000001 };\n",

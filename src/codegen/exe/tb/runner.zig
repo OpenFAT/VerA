@@ -763,12 +763,12 @@ fn setCard(out: *std.ArrayList(u8), arena: Allocator, indent: []const u8, card: 
     assert(card.len != 0);
     // §3.4.1/§4.2.1.1 via `cardValue`: a card is written in reals and an
     // integer parameter rounds, away from zero on a tie.
-    try out.print(arena, "{s}{s}.{f} = cardValue(@TypeOf({s}.{f}), {f});\n", .{
-        indent, card, std.zig.fmtId(name), card, std.zig.fmtId(name), fmtF64(value),
+    try out.print(arena, "{s}{s}.{f} = cardValue(@TypeOf({s}.{f}), \"{f}\", {f});\n", .{
+        indent, card, std.zig.fmtId(name), card, std.zig.fmtId(name), std.zig.fmtString(name), fmtF64(value),
     });
-    // §9.19 `$param_given` reads the companion field when codegen emitted one.
-    try out.print(arena, "{s}if (comptime @hasField(D.Model, \"{f}__given\")) @field({s}, \"{f}__given\") = true;\n", .{
-        indent, std.zig.fmtString(name), card, std.zig.fmtString(name),
+    // §9.19 `$param_given` reads the bit `setGiven` raises, when codegen emitted one.
+    try out.print(arena, "{s}if (comptime @hasDecl(D.Model, \"setGiven\")) {s}.setGiven(\"{f}\");\n", .{
+        indent, card, std.zig.fmtString(name),
     });
 }
 

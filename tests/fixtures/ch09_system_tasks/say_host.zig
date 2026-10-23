@@ -12,11 +12,16 @@ const D = @import("device");
 
 const n_u = @typeInfo(D.U).@"enum".field_names.len;
 const S = contract.RefFamily(f64, &.{ 0, 1 }, .{});
+/// `setup`'s value-only family.
+const V = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
 
 fn sayAt(v: f64, out: *contract.Say) void {
     var x: [n_u]f64 = @splat(0.0);
     x[@backingInt(D.U.p)] = v;
-    const m: D.Model = .{};
+    var m: D.Model = .{};
+    // `say` reads `su` as `eval` does: `setup` copies the card value the
+    // display unit reads (`lim`) beside the derived values.
+    if (@hasDecl(D, "setup")) D.setup(V, &m);
     // `say` takes `contract.InstancePtr(D)`, as `eval` does: say_ops's
     // `$error` makes it `mutable_eval`.
     var inst: D.Instance = .{};

@@ -114,6 +114,12 @@ pub fn planSetup(self: *Gen) Error!void {
             if (self.su.idx[@backingInt(lv)] != none_u32 and !self.plan.cached(lv)) root[@backingInt(lv)] = true;
         }
     }
+    // A card copied beside nothing is a slower read: without a derived root
+    // there is no `Setup` to pack it into, and the bodies keep reading the card.
+    const derived = for (0..nv) |i| {
+        if (root[i] and self.mir.valueDef(@fromBackingInt(@intCast(@as(u32, @intCast(i))))) == .inst_result) break true;
+    } else false;
+    if (!derived) @memset(root, false);
     @memset(self.su.idx, none_u32);
     const same = try valueNumbers(self);
     defer self.gpa.free(same);
@@ -177,6 +183,9 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
     for (Mir.Value.first_dynamic..nv) |i| {
         const v: Mir.Value = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
         if (!plan_setup.candidate(self.input(), self.sinv.val, v) or self.an.rv(v) != v) continue;
+        // A parameter leaf is one value per parameter (`param_values`), so
+        // it is its own number.
+        if (self.mir.valueDef(v) != .inst_result) continue;
         const inst = self.mir.valueDef(v).inst_result;
         if (self.mir.guardOf(inst) != null) continue; // the guard is not in the key
         const row = self.mir.instRow(inst);
@@ -217,7 +226,10 @@ fn placedOver(self: *const Gen, a: Mir.Value, b: Mir.Value) bool {
 
 fn placeOf(self: *const Gen, v: Mir.Value) u32 {
     const h = self.sinv.home[@backingInt(v)];
-    return if (h != none_u32) h else self.an.def_block[@backingInt(v)];
+    if (h != none_u32) return h;
+    const b = self.an.def_block[@backingInt(v)];
+    // A leaf (a parameter) has no block: `setup` has it from the entry.
+    return if (b == none_u32) 0 else b;
 }
 
 /// Returns the text reading root `v`'s `Setup` field, as an f64 (`as_f64`)
@@ -227,8 +239,8 @@ pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
     const k = self.su.idx[i];
     self.uses.model = true;
     if (rootGroup(self, v) == 2) {
-        if (as_f64) return self.arena.print("@as(f64, @floatFromInt(@intFromBool(model.su.b[{d}])))", .{k});
-        return self.arena.print("@as(i64, @intFromBool(model.su.b[{d}]))", .{k});
+        if (as_f64) return self.arena.print("@as(f64, @floatFromInt(@intFromBool(model.su.b.isSet({d}))))", .{k});
+        return self.arena.print("@as(i64, @intFromBool(model.su.b.isSet({d})))", .{k});
     }
     if (self.an.vty[i] == .int) {
         if (as_f64) return self.arena.print("@as(f64, @floatFromInt(model.su.i[{d}]))", .{k});
@@ -252,7 +264,7 @@ pub fn emitSetupDecl(self: *Gen) Error!void {
     , .{});
     if (self.su.real != 0) try self.w("    /// One per invariant real; `eval` reads `model.su.r[k]`.\n    r: [{d}]f64 = @splat(" ++ kt.nan_lit ++ "),\n", .{self.su.real});
     if (self.su.int != 0) try self.w("    /// One per invariant integer; `eval` reads `model.su.i[k]`.\n    i: [{d}]i64 = @splat(0),\n", .{self.su.int});
-    if (n_flag != 0) try self.w("    /// One per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: [{d}]bool = @splat(false),\n", .{n_flag});
+    if (n_flag != 0) try self.w("    /// One bit per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: std.StaticBitSet({d}) = .empty,\n", .{n_flag});
     try self.w("}};\n\n", .{});
 }
 
@@ -423,9 +435,9 @@ pub fn emitStores(self: *Gen, depth: u32, stop: []const u8) Error!void {
         const k = self.su.idx[@backingInt(v)];
         try self.ind(depth);
         if (rootGroup(self, v) == 2) {
-            try self.b("model.su.b[{d}] = (", .{k});
+            try self.b("model.su.b.setValue({d}, (", .{k});
             try gen_render.renderVal(self, v, .int);
-            try self.b(") != 0;\n", .{});
+            try self.b(") != 0);\n", .{});
         } else if (self.an.vty[@backingInt(v)] == .int) {
             try self.b("model.su.i[{d}] = ", .{k});
             try gen_render.renderVal(self, v, .int);

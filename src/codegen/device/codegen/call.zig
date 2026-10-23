@@ -779,9 +779,9 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // §9.19 $param_given / $port_connected.
         .@"$param_given" => {
             const def = if (args.len > 0) self.mir.valueDef(self.an.rv(args[0])) else Mir.Def.undef;
-            if (def == .param_ref) {
+            if (def == .param_ref and self.names.given_bit[def.param_ref] != none_u32) {
                 self.uses.model = true;
-                return self.b("@as(i64, @intFromBool(model.{s}__given))", .{self.names.p_names[def.param_ref]});
+                return self.b("@as(i64, @intFromBool(model.given__.isSet({d})))", .{self.names.given_bit[def.param_ref]});
             }
             return self.b("@as(i64, 0)", .{});
         },

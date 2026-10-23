@@ -82,12 +82,17 @@ pub fn emitInstance(self: *Gen) Error!void {
         \\    /// discontinuity (0 = the equation itself, 1 = its slope, …), or
         \\    /// -1 for "none announced this step". Written by `updateState`.
         \\    discontinuity_order: i32 = -1,
-        \\    /// §2.8.3/§12.32 the VPI application. Read only by a `$name`
-        \\    /// this compiler could not resolve; `contract.validateHost`
-        \\    /// is what keeps it non-null when `systf_calls` is not empty.
-        \\    systf: ?*const contract.SystfHost = null,
         \\
     , .{});
+    // §2.8.3/§12.32: only a device with a `$name` left to a VPI application
+    // has a binding to hold; the slot is 8 bytes on every instance.
+    if (self.lowered.uses.contains(.systf)) try self.w(
+        "    /// §2.8.3/§12.32 the VPI application. Read only by a `$name`\n" ++
+            "    /// this compiler could not resolve; `contract.validateHost`\n" ++
+            "    /// is what keeps it non-null when `systf_calls` is not empty.\n" ++
+            "    systf: ?*const contract.SystfHost = null,\n",
+        .{},
+    );
     // §9.17 the two fields `updateState` resets every accepted point are
     // history only where an operator moves them off the reset value; without
     // one they are the same constant before and after any revert, and their

@@ -542,6 +542,87 @@ fn abstolOf(self: *const Gen, i: u32) f64 {
     return if (flow) info.flow_abstol else info.potential_abstol;
 }
 
+/// Returns the `Model` field type of a §3.4 integer parameter: the `i64`
+/// carrier (an inferred integral one keeps its initializer's bit pattern;
+/// an explicit `integer` holds §3.4.1's 32-bit value, and `derive` keeps the
+/// low 32 bits of whatever a host writes), or the narrowest of i8/u8/i16/u16
+/// that holds its folded §3.4.2 `from` ranges and its default when the card
+/// alone writes it. A `derive` target keeps the carrier: a dependent default
+/// outside the range must still be stored for `checkRange` to name. A host
+/// writes a narrow field with a checked cast (docs/host/device.md).
+fn intFieldType(self: *Gen, p: Lower.ParamInfo) []const u8 {
+    if (!p.integer32 or p.is_local or self.an.foldConst(p.default, false) == null) return "i64";
+    var lo = std.math.inf(f64);
+    var hi = -std.math.inf(f64);
+    for (p.ranges) |r| {
+        if (r.kind != .from) continue;
+        const l = r.lo orelse return "i64";
+        const h = r.hi orelse return "i64";
+        if (r.strings or !std.math.isFinite(l) or !std.math.isFinite(h)) return "i64";
+        // Integer ends: an open bound excludes the integer it names.
+        lo = @min(lo, if (r.lo_inclusive) @ceil(l) else @floor(l) + 1);
+        hi = @max(hi, if (r.hi_inclusive) @floor(h) else @ceil(h) - 1);
+    }
+    if (lo > hi) return "i64"; // no `from` range, or an empty one
+    // §3.4.2 checks the card, not the default: the default must fit too.
+    const d: f64 = @floatFromInt(defaultInt(self, p) orelse return "i64");
+    lo = @min(lo, d);
+    hi = @max(hi, d);
+    if (lo >= 0) return if (hi <= std.math.maxInt(u8)) "u8" else if (hi <= std.math.maxInt(u16)) "u16" else "i64";
+    if (lo >= std.math.minInt(i8) and hi <= std.math.maxInt(i8)) return "i8";
+    if (lo >= std.math.minInt(i16) and hi <= std.math.maxInt(i16)) return "i16";
+    return "i64";
+}
+
+/// The folded default of an integer parameter, as `paramDefault` prints
+/// it, or null when it is not a constant.
+fn defaultInt(self: *Gen, p: Lower.ParamInfo) ?i64 {
+    if (p.folded) |k| return switch (k) {
+        .int => |v| if (p.integer32) @import("kernels").fold.wrap32(v) else v,
+        .real => |v| if (p.integer32) std.math.lossyCast(i32, @round(v)) else std.math.lossyCast(i64, @round(v)),
+        .str => 0,
+    };
+    const c = self.an.foldConst(p.default, true) orelse return null;
+    return std.math.lossyCast(i64, @round(c.f));
+}
+
+/// How many §9.19 given bits `Model.given__` holds: one per flagged
+/// parameter, then one per §3.4.7 alias.
+fn givenCount(self: *const Gen) usize {
+    return self.names.n_given + self.lowered.aliases.items.len;
+}
+
+/// Emits `Model.given_params` and `Model.setGiven`, the host's side of
+/// `given__`, inside the struct so a host holding the `Model` type alone
+/// (a generic card writer) reaches them.
+fn emitGiven(self: *Gen) Error!void {
+    if (givenCount(self) == 0) return;
+    try self.w(
+        \\    /// The names with a §9.19 `$param_given` bit in `given__`, bit k for
+        \\    /// name k: every parameter the model asks about or whose default
+        \\    /// `derive` fills, then every §3.4.7 alias. `setGiven` sets one.
+        \\    pub const given_params = [_][]const u8{{
+        \\
+    , .{});
+    for (self.lowered.params.items, 0..) |_, i| if (self.names.p_given[i]) try self.w("        \"{s}\",\n", .{self.names.p_names[i]});
+    for (self.names.a_names) |a| try self.w("        \"{s}\",\n", .{a});
+    try self.w(
+        \\    }};
+        \\
+        \\    /// §9.19 marks `name` (a field's spelling) given: sets its bit. A name
+        \\    /// without one is a no-op, since nothing reads it.
+        \\    pub fn setGiven(model: *Model, name: []const u8) void {{
+        \\        for (given_params, 0..) |n, k| {{
+        \\            if (std.mem.eql(u8, n, name)) {{
+        \\                model.given__.set(k);
+        \\                return;
+        \\            }}
+        \\        }}
+        \\    }}
+        \\
+    , .{});
+}
+
 /// Emits `Model`: one typed field per §3.4 parameter, initialized to its
 /// folded spec default, plus alias, `tnom` and retention-flag fields.
 fn emitModel(self: *Gen) Error!void {
@@ -549,22 +630,19 @@ fn emitModel(self: *Gen) Error!void {
     for (self.lowered.params.items, 0..) |p, i| {
         const ty: []const u8 = switch (Analysis.tyOfParam(p.ty)) {
             .real => "f64",
-            .int => "i64",
+            .int => intFieldType(self, p),
             .str => "[]const u8",
             .wide => unreachable, // `tyOfParam` types no parameter wide
         };
         try checkParamDefault(self, p);
         try self.w("    {s}: {s} = {s},\n", .{ self.names.p_names[i], ty, try paramDefault(self, p, Analysis.tyOfParam(p.ty)) });
-        if (self.names.p_given[i]) {
-            try self.w("    {s}__given: bool = false, // §9.19 $param_given\n", .{self.names.p_names[i]});
-        }
     }
     // §3.4.7 aliasparam: "The aliasparam declaration creates an alternate
     // name ... which can be used to override the value of the parameter", so
     // the alias is part of the model card. It is a second field because Zig
     // has no field aliases; `derive` folds it back onto the original.
-    // The `__given` flag is unconditional: it is the only way to tell "the
-    // host overrode the alias" from "the host left it at the default".
+    // Its given bit is unconditional: it is the only way to tell "the host
+    // overrode the alias" from "the host left it at the default".
     for (self.lowered.aliases.items, 0..) |al, i| {
         const p = self.lowered.params.items[al.param];
         const ty = Analysis.tyOfParam(p.ty);
@@ -572,15 +650,23 @@ fn emitModel(self: *Gen) Error!void {
             self.names.a_names[i],
             switch (ty) {
                 .real => "f64",
-                .int => "i64",
+                .int => intFieldType(self, p),
                 .str => "[]const u8",
                 .wide => unreachable, // `tyOfParam` types no parameter wide
             },
             try paramDefault(self, p, ty),
             p.name,
         });
-        try self.w("    {s}__given: bool = false,\n", .{self.names.a_names[i]});
     }
+    // §9.19 the given flags, one bit each (`given_params` names them): a
+    // byte per flag was 514 bytes of bsimcmg's Model row, 65 as bits.
+    if (givenCount(self) != 0) try self.w(
+        \\    /// §9.19 `$param_given`: bit k is set when the host's card named
+        \\    /// `given_params[k]` (`setGiven`). `Model{{}}` has none set; `derive`
+        \\    /// reads them and raises an alias's original.
+        \\    given__: std.StaticBitSet({d}) = .empty,
+        \\
+    , .{givenCount(self)});
     // §9.15 the host-published simulation parameters. Model, not Instance:
     // each `.options` entry is one number per run. The initializer is the
     // default, for a host that never writes it.
@@ -641,6 +727,8 @@ fn emitModel(self: *Gen) Error!void {
         \\    su_ok: if (std.debug.runtime_safety and contract.validating) bool else void = if (std.debug.runtime_safety and contract.validating) false else {{}},
         \\
     , .{});
+    // Declarations go after the fields (Zig allows none between them).
+    try emitGiven(self);
     try self.w("}};\n\n", .{});
 }
 
@@ -672,17 +760,20 @@ fn emitDerive(self: *Gen) Error!void {
     for (self.lowered.aliases.items, 0..) |al, i| {
         const a = self.names.a_names[i];
         const p = self.names.p_names[al.param];
+        const ab = self.names.n_given + i;
         if (self.names.p_given[al.param])
-            try self.w("    if (model.{0s}__given) {{\n        model.{1s} = model.{0s};\n        model.{1s}__given = true;\n    }}\n", .{ a, p })
+            try self.w("    if (model.given__.isSet({d})) {{\n        model.{s} = model.{s};\n        model.given__.set({d});\n    }}\n", .{ ab, p, a, self.names.given_bit[al.param] })
         else
-            try self.w("    if (model.{0s}__given) model.{1s} = model.{0s};\n", .{ a, p });
+            try self.w("    if (model.given__.isSet({d})) model.{s} = model.{s};\n", .{ ab, p, a });
     }
     // §3.4.1 an explicit `integer` parameter is a 32-bit value, but the host
     // writes the ABI's i64 carrier (4294967297 for 1). Reduce it here, once
     // per card, so every later read (a dependent default below, `setup`,
     // `checkShape`, `eval`) sees the low 32 bits and the hot loop pays nothing.
+    // A field the range sized narrower (`intFieldType`) holds 32 bits or fewer.
     for (self.lowered.params.items, 0..) |p, i| {
         if (p.is_local or !p.integer32 or Analysis.tyOfParam(p.ty) != .int) continue;
+        if (!std.mem.eql(u8, intFieldType(self, p), "i64")) continue;
         try self.w("    model.{0s} = @as(i32, @truncate(model.{0s}));\n", .{self.names.p_names[i]});
     }
     for (self.lowered.params.items, 0..) |p, i| {
@@ -707,7 +798,7 @@ fn emitDerive(self: *Gen) Error!void {
         // overwritten unconditionally. `plan/names.zig` raised the `__given`
         // companion for every non-local derived parameter.
         if (!p.is_local)
-            try self.w("    if (!model.{s}__given) ", .{self.names.p_names[i]})
+            try self.w("    if (!model.given__.isSet({d})) ", .{self.names.given_bit[i]})
         else
             try self.w("    ", .{});
         switch (ty) {
@@ -754,8 +845,9 @@ fn emitShapeCheck(self: *Gen) Error!void {
         // parameter is that constant every time and cannot disagree.
         if (p.is_local and self.an.foldConst(p.default, false) != null) continue;
         // §3.4.1 gives an explicit integer its low 32 bits even when the host
-        // writes a wider carrier. Compare the value used by selection.
-        if (ty == .int and p.integer32)
+        // writes a wider carrier. Compare the value used by selection; a field
+        // the range sized narrower (`intFieldType`) holds it already.
+        if (ty == .int and p.integer32 and std.mem.eql(u8, intFieldType(self, p), "i64"))
             try self.w("    if (@as(i32, @truncate(model.{s})) != {s}) return \"{f}\";\n", .{ self.names.p_names[i], try paramDefault(self, p, ty), std.zig.fmtString(p.name) })
         else
             try self.w("    if (model.{s} != {s}) return \"{f}\";\n", .{ self.names.p_names[i], try paramDefault(self, p, ty), std.zig.fmtString(p.name) });

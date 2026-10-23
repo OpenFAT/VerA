@@ -480,7 +480,7 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
                     .int => std.math.cast(F, slot(i32, &vals[i]).*) orelse return p.field,
                     .str => if (slot(Str, &vals[i]).*) |z| std.mem.span(z) else @as(F, ""),
                 };
-                if (@hasField(D.Model, p.field ++ "__given")) @field(m, p.field ++ "__given") = true;
+                if (@hasDecl(D.Model, "setGiven")) m.setGiven(p.field);
             };
             return null;
         }

@@ -150,7 +150,9 @@ pub fn renderValueRef(self: *Gen, v: Mir.Value) Error!void {
             self.uses.model = true;
             switch (Analysis.tyOfParam(self.lowered.params.items[p].ty)) {
                 .real => try self.b("S.con(model.{s})", .{self.names.p_names[p]}),
-                .int, .str => try self.b("model.{s}", .{self.names.p_names[p]}),
+                // The field may be narrower than the i64 the bodies compute in.
+                .int => try self.b("@as(i64, model.{s})", .{self.names.p_names[p]}),
+                .str => try self.b("model.{s}", .{self.names.p_names[p]}),
                 .wide => unreachable, // `tyOfParam` types no parameter wide
             }
         },

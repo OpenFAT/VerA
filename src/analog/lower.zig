@@ -984,6 +984,9 @@ pub fn emit(self: *Lower, op: Mir.Opcode, ops: []const Mir.Value) Oom!Mir.Value 
 
 /// Appends a call to `name` in the current block (`Mir.emitCall`).
 pub fn call(self: *Lower, name: []const u8, args: []const Mir.Value) Oom!Mir.Value {
+    // §2.8.3 a `$name` no clause defines is the host's: the device owes it
+    // an `Instance.systf` binding (`Uses.systf`).
+    if (Mir.Callee.fromName(name) == .systf) self.out.uses.insert(.systf);
     const callee = try self.mir.internString(self.arena, name);
     return self.mir.emitCall(self.arena, self.cur, callee, args);
 }

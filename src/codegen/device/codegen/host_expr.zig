@@ -119,7 +119,7 @@ pub fn i64Const(self: *Gen, v0: Mir.Value, depth: u32) Error!?[]const u8 {
             if (Analysis.tyOfParam(self.lowered.params.items[p].ty) == .str) return null;
             self.uses.model = true;
             return switch (Analysis.tyOfParam(self.lowered.params.items[p].ty)) {
-                .int => try self.arena.print("model.{s}", .{self.names.p_names[p]}),
+                .int => try self.arena.print("@as(i64, model.{s})", .{self.names.p_names[p]}),
                 .real => try self.arena.print("std.math.lossyCast(i64, @round(model.{s}))", .{self.names.p_names[p]}),
                 .str => unreachable,
                 .wide => unreachable, // `tyOfParam` types no parameter wide
@@ -143,7 +143,9 @@ pub fn i64Const(self: *Gen, v0: Mir.Value, depth: u32) Error!?[]const u8 {
                     const def = if (d.args.len > 0) self.mir.valueDef(self.an.rv(d.args[0])) else Mir.Def.undef;
                     if (def != .param_ref) return "@as(i64, 0)";
                     self.uses.model = true;
-                    return try self.arena.print("@as(i64, @intFromBool(model.{s}__given))", .{self.names.p_names[def.param_ref]});
+                    const bit = self.names.given_bit[def.param_ref];
+                    if (bit == none_u32) return "@as(i64, 0)";
+                    return try self.arena.print("@as(i64, @intFromBool(model.given__.isSet({d})))", .{bit});
                 }
                 if (d.callee != .@"$clog2") return null;
                 // `lowerClog2` writes the operand and its width, always both.

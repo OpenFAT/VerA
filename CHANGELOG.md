@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- `Instance.systf` exists only in a device that declares `systf_calls`: 8 bytes
+  fewer per instance of every other device (`Lowered.Uses.systf`).
+- `Setup` holds a copy of every card value `eval` reads, beside the derived
+  values, so an evaluation touches `su` alone: bsimcmg's core read 171 of
+  the card's 1,901 fields over 74 cache lines; packed they are 22. A device
+  with nothing derived keeps reading the card. `say` reads the copies too, so
+  a host calls `setup` before it, as before `eval`.
+- `Setup.b`, the invariant flags `eval` branches on, is a `std.StaticBitSet`
+  (bsimcmg: 316 bytes to 40, one cache line).
+- An `integer` parameter's `Model` field is the narrowest of i8/u8/i16/u16 its
+  declared `from` range and default allow when the card alone writes it; a
+  host writes one with a checked cast. Every other integer keeps the i64
+  carrier and `derive`'s reduction to its low 32 bits.
+- The §9.19 given flags are one bitset, `Model.given__`, with
+  `Model.given_params` naming the bits and `model.setGiven(name)` raising one:
+  the `<name>__given` fields are gone (bsimcmg: 514 bytes to 65). A host that
+  set them by name calls `setGiven` instead; VerA's OSDI dyn and testbench do.
+
 ## v0.12.1 — 2026-10-22
 
 | Measure | Number | Remaining to v1.0.0 | Command |

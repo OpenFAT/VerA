@@ -38,6 +38,11 @@ pub const Names = struct {
     /// because §9.19 `$param_given` queries it or because it is a `derive()`
     /// target (a card parameter whose default does not fold).
     p_given: []bool = &.{},
+    /// Per `Lowered.params` entry: the parameter's bit in `Model.given__`, or
+    /// `none_u32` without a flag. An alias's bit is `n_given` + its index.
+    given_bit: []u32 = &.{},
+    /// How many parameters have a bit; the aliases' bits follow them.
+    n_given: u32 = 0,
 
     /// The operator `call` unit `unit` was enumerated from (`naming` records
     /// it), or null for a contribution unit. Asserts `unit` indexes `units`.
@@ -147,6 +152,12 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
             const def = mir.valueDef(an.rv(d.args[0]));
             if (def == .param_ref) self.p_given[def.param_ref] = true;
         }
+    }
+    self.given_bit = try a.alloc(u32, lowered.params.items.len);
+    self.n_given = 0;
+    for (self.p_given, self.given_bit) |g, *b| {
+        b.* = if (g) self.n_given else none_u32;
+        if (g) self.n_given += 1;
     }
     return self;
 }

@@ -44,7 +44,16 @@ an ignored hook.
 
 ## Model, Setup and the card
 
-`Model` is flat: every parameter is a field you write directly. Some fields
+`Model` is flat: every parameter is a field you write directly. A `real`
+parameter is an `f64`. An `integer` parameter is an `i64`, the carrier of its
+32-bit value (write any integer; `derive` keeps the low 32 bits), or the
+narrowest of `i8`, `u8`, `i16` and `u16` that holds its declared `from` range
+and its default when nothing but the card writes it; write one of those with
+a checked cast (`std.math.cast`), since a value the field cannot hold is
+outside that range. LRM §9.19's given
+flags are one bitset, `given__`: after writing a parameter your card names,
+call `model.setGiven("name")` with the field's spelling. `Model.given_params`
+lists the names that have a bit; any other name is a no-op. Some fields
 are the host's to write, all `f64`, each defaulting to the SPICE value
 (`host_model_fields`): `temperature__` (kelvin, 300.15), `nom_temp__`
 (`$simparam("tnom")`, °C), `reltol__`, `abstol__`, `vntol__`, `gmin__` and
@@ -71,7 +80,9 @@ The order in which a host prepares a card is fixed:
    outside its declared `from`/`exclude` ranges (LRM §3.4.2, "an error ...
    during simulation"). Refuse the card.
 5. `setup(V, &model)`: fills `model.su`, the solve-invariant values `eval`
-   would otherwise recompute every iterate (`Setup`). Once per `Model` row,
+   would otherwise recompute every iterate (`Setup`), and a copy of every
+   card value `eval` reads, so an evaluation (or a `say`) touches `su` alone
+   and not the card's own cache lines. Once per `Model` row,
    and again after every write to the card, `temperature__`, or a
    `$simparam` named in `setup_simparams`. Until it runs, `su` holds NaN, so a
    forgotten call is a NaN residual, not a plausible wrong one.

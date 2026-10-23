@@ -686,6 +686,9 @@ pub const Kernel = enum {
     /// `Instance.cwd`/`analysis_name` slices and their GPU-safe twins,
     /// `Model.cwd_idx__`/`analysis_name_idx__` (`contract.host_strings`).
     host_strings,
+    /// §2.8.3/§12.32 a `$name` left to a VPI application (`Mir.Callee.systf`):
+    /// the `Instance.systf` binding the host writes.
+    systf,
 };
 // ---- row types: the discrete half -------------------------------------------
 
