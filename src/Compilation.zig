@@ -882,7 +882,7 @@ pub fn compile(
             .name = result.mir.name,
             .out_path = req.out_path,
             .zig_exe = b.zig_exe,
-            .mixed = dm.mixed != null or dm.tran != null or dm.onoise != null,
+            .mixed = dm.mixed != null,
             .optimize = b.optimize,
             .backend = b.backend,
             .debug_info = b.debug_info,

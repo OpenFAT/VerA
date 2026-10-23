@@ -11,7 +11,7 @@ Run commands from the repository root through `nix develop -c`. Keep one
 | `nix develop -c zig build test-1364` | Only the IEEE 1364 digital cases |
 | `nix develop -c zig build test-vpi` | VPI module tests and C applications |
 | `nix develop -c zig build test-vpi-fixtures` | C header compatibility; compile only |
-| `nix develop -c zig build test-spice` | SPICE decks and their oracles |
+| `nix develop -c zig build test-spice --fork .` | The `.sp` decks on ESPice (built against this tree), graded against their oracles |
 | `nix develop -c zig build test-canary` | The harness FAILs every wrong-on-purpose fixture in `fixtures/canary/` |
 | `nix develop -c zig build test-observations` | Host assertions about analog diagnostic output |
 | `nix develop -c zig build test-paired-compiler` | Exact compiler refusals paired with behavioral controls |

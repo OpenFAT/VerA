@@ -47,6 +47,12 @@ pub fn build(b: *Build) void {
     const optimize = b.option(std.lang.Optimize, "optimize", "Prioritize performance, safety, or binary size") orelse .debug;
     const m: M = .{ .b = b, .target = target, .optimize = optimize };
     const results_dir = b.option([]const u8, "test-results", "Write executed unit, host and VPI test results to this directory");
+    const espice_path = b.option([]const u8, "espice", "test-spice: run this espice executable instead of building ESPice from build.zig.zon (a release, a nix profile, a local `zig build` of ../ESPice, CPU or GPU)");
+    // Off by default, unlike ESPice's own -Dgpu: device kernels cost build time
+    // and a CPU espice runs every deck. The two arches, unset, keep ESPice's defaults.
+    const espice_gpu = b.option(bool, "gpu", "ESPice's -Dgpu when test-spice builds it: compile its GPU device kernels (default false)") orelse false;
+    const cuda_arch = b.option([]const u8, "cuda-arch", "ESPice's -Dcuda-arch when test-spice builds it with -Dgpu");
+    const hip_arch = b.option([]const u8, "hip-arch", "ESPice's -Dhip-arch when test-spice builds it with -Dgpu");
     const mods = defineModules(b, target, true);
     const contract = byName(mods, "contract");
     const kernels = byName(mods, "kernels");
@@ -212,7 +218,6 @@ pub fn build(b: *Build) void {
         .{ "test-1364", "ieee1364", "Run the IEEE 1364-2005 transcript suite (`-- --coverage`: its clause inventory; `-- --native`: through `vera --emit-exe`)" },
         .{ "test-ams", "ams", "Run the Verilog-AMS fixture suite strictly, without the benchmark timing pass" },
         .{ "test-vpi-fixtures", "vpi", "Compile the .c VPI fixtures against src/vpi/vpi_user.h" },
-        .{ "test-spice", "spice", "Run the .sp decks on sim.spice and grade each against its oracle" },
         .{ "golden", "golden", "Snapshot `vera --emit-zig`, the testbench runner, the `--emit-so` tree and the `.v` program text of every fixture (`-- <tag>`), or compare two (`-- diff [a b]`)" },
     }) |s| {
         const run = b.addRunArtifact(suite_exe);
@@ -221,6 +226,49 @@ pub fn build(b: *Build) void {
         run.addPassthruArgs();
         b.step(s[0], s[2]).dependOn(&run.step);
     }
+
+    // ESPice depends on VerA, so VerA runs `espice` as a process and never
+    // imports it. `dependencyStep` fetches ESPice (with Gompute and its model
+    // tarballs) only when test-spice is requested; once fetched, every
+    // configure runs its build.zig. `--fork .` makes ESPice's own `vera` this
+    // tree (a fork replaces every package with its name and fingerprint), so
+    // the decks' devices are compiled by the compiler under test. An unused
+    // fork is a Zig error, so a -Despice run takes none. VerA never picks the
+    // backend: espice's `--backend auto` does, `-- --backend=cuda` forces one;
+    // the GPU options forward only so a built espice can be a GPU one.
+    const test_spice = b.step("test-spice", "Run the .sp decks on espice and grade each against its oracle (`--fork .` builds ESPice against this tree; -Despice=PATH runs an installed one; `-- --backend=cuda` and other unknown args reach espice)");
+    const spice_run = b.addRunArtifact(suite_exe);
+    spice_run.addArtifactArg2(exe, .{});
+    spice_run.addArg("spice");
+    // espice compiles the decks' `.hdl` models at run time, with this build's Zig,
+    // into its own cache (keyed on the model, its includes and the espice
+    // binary), kept under this tree's cache rather than ~/.cache/espice.
+    spice_run.setEnvironmentVariable("ZIG", b.graph.zig_exe);
+    spice_run.setEnvironmentVariable("ESPICE_CACHE", pathFromRoot(b, ".zig-cache/vera-suite/espice"));
+    if (espice_path) |path| {
+        spice_run.addArg(b.fmt("--espice={s}", .{path}));
+        test_spice.dependOn(&spice_run.step);
+    } else if (b.pkg_hash.len == 0) {
+        // The root package only: under `--fork .` ESPice's `vera` runs this
+        // build.zig, whose test-spice would configure ESPice again, without end.
+        if (b.dependencyStep(test_spice, "espice", .{ .target = b.graph.host, .optimize = optimize, .gpu = espice_gpu, .@"cuda-arch" = cuda_arch, .@"hip-arch" = hip_arch })) |espice| {
+            // The arguments ESPice gives its host `vera`: that instance, not a new one.
+            const vera_root = realRoot(espice.builder.dependency("vera", .{ .target = b.graph.host, .optimize = .fast }).builder);
+            if (std.mem.eql(u8, vera_root, realRoot(b))) {
+                // Not `espice.artifact("espice")`: ESPice also installs its
+                // static C library as `espice`, which makes that name ambiguous.
+                const espice_exe = for (espice.builder.install_tls.step.dependencies.items) |s| {
+                    const a = (s.cast(Build.Step.InstallArtifact) orelse continue).artifact;
+                    if (a.kind == .exe and std.mem.eql(u8, a.name, "espice")) break a;
+                } else @panic("ESPice installs no `espice` executable");
+                spice_run.addArtifactArg2(espice_exe, .{ .prefix = "--espice=" });
+                test_spice.dependOn(&spice_run.step);
+            } else {
+                test_spice.dependOn(&b.addFail(b.fmt("test-spice: ESPice's vera is {s}, not this tree, so its devices would be compiled by another VerA: run `zig build test-spice --fork .` (or -Despice=PATH for an installed espice)", .{vera_root})).step);
+            }
+        }
+    }
+    spice_run.addPassthruArgs();
 
     // These host assertions inspect diagnostics that an HDL model cannot
     // observe about itself. Use the artifact from this build, never zig-out.
@@ -801,6 +849,14 @@ fn defineModules(b: *Build, target: Build.ResolvedTarget, exported: bool) []cons
 
 fn pathFromRoot(b: *Build, sub_path: []const u8) []u8 {
     return b.pathResolve(&.{ b.root.root_dir.path orelse ".", b.root.sub_path, sub_path });
+}
+
+/// `b`'s build root, canonical. A forked package's root is its `--fork`
+/// argument as given (`.`) and the root package's is absolute, so only their
+/// real paths compare.
+fn realRoot(b: *Build) []const u8 {
+    const root = pathFromRoot(b, ".");
+    return std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, root, b.allocator) catch |e| std.debug.panic("{s}: {t}", .{ root, e });
 }
 
 fn byName(mods: []const Import, name: []const u8) *Module {

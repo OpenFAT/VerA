@@ -45,8 +45,7 @@ pub const BuildOptions = struct {
     optimize: std.lang.Optimize = .debug,
     /// Null is `Backend.auto(optimize, <this host>)`.
     backend: ?orchestrator.Backend = null,
-    /// The runner imports `sim` and `diag` (`renderMixed`'s, or a deck's
-    /// `//! tran`/`//! onoise`, which runs `sim.spice`), compiled from the
+    /// `renderMixed`'s runner imports `sim` and `diag`, compiled from the
     /// VerA tree `contract` sits in (`<root>/lib/contract.zig`).
     mixed: bool = false,
     /// Build `renderVpiLib`'s runner as a shared library for a Clause 12

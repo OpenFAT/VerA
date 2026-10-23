@@ -121,10 +121,7 @@ pub fn warnGridEvents(bag: *diag.Bag, lowered: *const Lowered, mir: *const Mir) 
 /// `renderMixed` when `d.mixed` is set. `title` keys each transcript block
 /// (the fixture's file stem). All output goes to stderr via `std.debug.print`,
 /// the stream generated `$strobe` uses, so the interleaving is deterministic.
-/// Fails with `error.TooManyPoints` past `max_points`, and with
-/// `error.BadSyntax` for a deck that writes both `//! tran` and
-/// `//! onoise`, or either without `//! solve` or beside a `bias`, `sweep`,
-/// `psweep` or `wave`: `sim.spice` solves every unknown itself.
+/// Fails with `error.TooManyPoints` past `max_points`.
 pub fn renderRunner(arena: Allocator, title: []const u8, d: Directives) Error![]const u8 {
     if (d.mixed) |mx| return renderMixed(arena, title, d, mx);
     var out: std.ArrayList(u8) = .empty;
@@ -175,7 +172,6 @@ pub fn renderRunner(arena: Allocator, title: []const u8, d: Directives) Error![]
         \\    if (comptime @hasDecl(D, "setup")) D.setup(Dual, &model);
         \\    if (comptime @hasDecl(D, "setupInstance")) D.setupInstance(&model, &inst);
         \\    // §4.6.2 one per analysis: `initState` at each analysis's first point.
-        \\    // A deck run by `lib/sim/spice` (`//! tran`) has no point here.
         \\    var state: State = undefined;
         \\    _ = &state;
         \\
@@ -260,23 +256,6 @@ pub fn renderRunner(arena: Allocator, title: []const u8, d: Directives) Error![]
         \\    }} else std.debug.print("abstol[{0f}] got=none want={{e}} ok=0\n", .{{@as(f64, {1f})}});
         \\
     , .{ std.zig.fmtString(b.name), fmtF64(b.value) });
-
-    // --- a SPICE deck's one analysis (`zig build test-spice`) ----------------
-    if (d.tran != null or d.onoise != null) {
-        // `sim.spice` solves every unknown: a deck's sources are its circuit.
-        if (!d.solve_free or d.bias.len != 0 or d.sweeps.len != 0 or d.psweeps.len != 0 or d.waves.len != 0 or
-            (d.tran != null and d.onoise != null)) return error.BadSyntax;
-        if (d.tran) |tr| {
-            try out.print(arena, "    @import(\"sim\").spice.deck.runTran(D, title, &model, &inst, {f}, {f});\n", .{ fmtF64(tr[0]), fmtF64(tr[1]) });
-        } else {
-            const on = d.onoise.?;
-            try out.print(arena, "    @import(\"sim\").spice.deck.runNoise(D, title, &model, &inst, @fromBackingInt(@intCast(ix(\"{f}\"))), &.{{", .{std.zig.fmtString(on.name)});
-            for (on.values, 0..) |f, i| try out.print(arena, "{s}{f}", .{ if (i == 0) " " else ", ", fmtF64(f) });
-            try out.appendSlice(arena, " });\n");
-        }
-        try out.print(arena, "}}\n\nconst print_residual = {};\n", .{d.print_residual});
-        return out.items;
-    }
 
     // --- one straight-line block per operating point ------------------------
     // Sweep outer, time inner. With `//! time` each sweep point is its own

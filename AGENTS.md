@@ -4,6 +4,7 @@
 
 - Run every `zig build` inside `nix develop -c …`. The shell gives each Zig store path its own global cache (`ZIG_GLOBAL_CACHE_DIR=~/.cache/zig-<store path>`). ESPice pins a different build of the same Zig version, so with a shared `~/.cache/zig` the two evict each other's build runner and every `zig build`, even `--help`, takes about 2 minutes. The first build in a fresh cache pays a one-time compile of about 70 s.
 - Edit loop: keep `zig build check --watch -fincremental` running. `check` type-checks every root without emitting or running anything, so an edit is re-checked in under a second. `zig build test-<x> --watch -fincremental` also works, but each rerun costs the tests' run time.
+- `zig build test-spice --fork .` builds ESPice against this tree and runs the `.sp` decks on it. ESPice is a lazy dependency fetched only for this step: ESPice, Gompute and the model tarballs, network once, into `zig-pkg/`. Add `--fork ../ESPice` to build a local ESPice checkout instead. `-Despice=PATH` runs an installed espice and then takes no `--fork`, since an unused fork is an error. `-Dgpu`, `-Dcuda-arch` and `-Dhip-arch` forward to ESPice's build. Once `zig-pkg/` holds ESPice, every `zig build` configures it, and one without `--fork .` also fetches the VerA that ESPice pins; delete `zig-pkg/` to drop it.
 
 ## Worktrees
 

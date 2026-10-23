@@ -1742,8 +1742,7 @@ const Analog = struct {
             .work_dir = work,
             .contract = options.contract,
             .name = result.mir.name,
-            // `src/Compilation.zig`'s rule: a `//! tran`/`//! onoise` deck runs on `sim.spice`.
-            .mixed = dm.mixed != null or dm.tran != null or dm.onoise != null,
+            .mixed = dm.mixed != null,
             .zig_exe = options.zig_exe,
             .optimize = cfg.fixture_opt,
             .backend = cfg.fixture_backend,
@@ -5395,19 +5394,22 @@ const Native = struct {
 
 const SpiceDecks = struct {
     //! The `spice` mode: each `.sp` deck (a SPICE netlist with `.hdl "model.va"`
-    //! cards and an `.expected.json` analytic oracle) -> PASS, FAIL or NOT RUN.
-    //! First the half every deck needs: the oracle exists, every `.hdl` model
-    //! resolves (`resolveModel`) and compiles. Then the deck is EXECUTED on VerA's
-    //! own runtime when it can be: `translate` turns the netlist into a
-    //! Verilog-AMS top module (Annex E primitives for R and V cards, the `.hdl`
-    //! modules for N cards) with a `//! tran` or `//! onoise` line, `vera
-    //! --emit-exe` builds it over `sim.spice` (ESPice's solver), and `grade`
-    //! holds its rows to the oracle's own values and tolerances. A deck that needs
-    //! a card or analysis the runner does not have is NOT RUN, and the line says
-    //! what is missing; it is never graded as a pass.
+    //! cards and an `.expected.json` analytic oracle) -> PASS or FAIL. First the
+    //! half every deck needs: the oracle exists, every `.hdl` model resolves
+    //! (`resolveModel`) and compiles under `vera --check`. Then `execute` runs
+    //! the deck on the ESPice CLI, a full SPICE simulator, with `--format=csv`,
+    //! and `grade` holds the CSV to the oracle's own values and tolerances.
+    //! espice runs every deck or the deck FAILs: nothing is skipped.
     //!
-    //!   zig build test-spice            # all of them
-    //!   zig build test-spice -- timer  # the decks whose name contains timer
+    //! After the mode word: `--espice=PATH` names the executable (required),
+    //! `--results=PATH` writes the per-deck ledger, a bare word filters the
+    //! decks, and any other `--` argument is espice's own, forwarded untouched
+    //! (`--backend=cuda`, `--jobs=4`): CPU or GPU is never VerA's decision.
+    //!
+    //!   zig build test-spice --fork .                         # ESPice from build.zig.zon, over this tree's vera
+    //!   zig build test-spice -Despice=PATH                    # an espice built elsewhere
+    //!   zig build test-spice --fork . -- timer                # the decks whose name contains timer
+    //!   zig build test-spice -Despice=PATH -- --backend=cuda  # forwarded to espice
 
     const std = @import("std");
     const options = @import("suite_options");
@@ -5425,9 +5427,9 @@ const SpiceDecks = struct {
         return null;
     }
 
-    /// The `spice` mode: checks, then runs, each `.sp` deck matching the filter in
-    /// `args`, printing one PASS/FAIL/NOT RUN line per deck and a census to
-    /// stderr. Exit 1 on any FAIL or when nothing matched; NOT RUN is not a FAIL.
+    /// The `spice` mode: checks, then runs on espice, each `.sp` deck matching
+    /// the filter in `args`, printing one PASS/FAIL line per deck and a census to
+    /// stderr. Exit 1 on any FAIL or when nothing matched, 2 without `--espice=`.
     pub fn run(init: std.process.Init, vera_exe: []const u8, args: *Args) !u8 {
         const gpa = init.gpa;
         const io = init.io;
@@ -5437,13 +5439,28 @@ const SpiceDecks = struct {
 
         var filter: ?[]const u8 = null;
         var results_path: ?[]const u8 = null;
+        var espice: ?[]const u8 = null;
+        var espice_args: std.ArrayList([]const u8) = .empty;
         while (args.next()) |a| {
             if (std.mem.cutPrefix(u8, a, "--results=")) |path| {
                 results_path = path;
+            } else if (std.mem.cutPrefix(u8, a, "--espice=")) |path| {
+                espice = path;
+            } else if (std.mem.startsWith(u8, a, "--")) {
+                // espice's own (`--backend=cuda`, `--jobs=4`), untouched: where a
+                // deck runs is espice's decision.
+                try espice_args.append(arena_state.allocator(), a);
             } else {
                 filter = a;
             }
         }
+        const espice_name = espice orelse return harness.usage(io, "spice: --espice=PATH names the espice executable");
+        // A built espice is build.zig's cwd-relative `.zig-cache/o/...` path and
+        // espice runs from each deck's directory; a bare name stays PATH's.
+        const espice_exe: []const u8 = if (std.mem.findScalar(u8, espice_name, std.fs.path.sep) != null)
+            try Io.Dir.cwd().realPathFileAlloc(io, espice_name, arena_state.allocator())
+        else
+            espice_name;
         var results: Io.Writer.Allocating = .init(gpa);
         defer results.deinit();
 
@@ -5466,7 +5483,7 @@ const SpiceDecks = struct {
                 // (`tools/external_analog.py`, in `nix develop .#benchmarking`):
                 // `external/osdi/*.sp` are ngspice `.control` decks over `vera
                 // --emit-osdi` libraries, graded by their `*! expect` lines, with
-                // no `.hdl` card and no `.expected.json`. Not decks for sim.spice.
+                // no `.hdl` card and no `.expected.json`. Not this mode's decks.
                 if (std.mem.startsWith(u8, entry.path, "external") and entry.path.len > "external".len and
                     (entry.path["external".len] == '/' or entry.path["external".len] == '\\')) continue;
                 try decks.append(gpa, try arena_state.allocator().dupe(u8, entry.path));
@@ -5477,7 +5494,6 @@ const SpiceDecks = struct {
         var ran: usize = 0;
         var failed: usize = 0;
         var passed: usize = 0;
-        var not_run: usize = 0;
         for (decks.items) |rel| {
             if (filter) |f| if (std.mem.find(u8, rel, f) == null) continue;
             ran += 1;
@@ -5504,7 +5520,7 @@ const SpiceDecks = struct {
             // 2. Every model the deck names, one `.hdl "<path>"` per line.
             const source = try Io.Dir.cwd().readFileAlloc(io, path, pa, .limited(1 << 20));
             var lines = std.mem.splitScalar(u8, source, '\n');
-            var models: std.ArrayList([]const u8) = .empty;
+            var models: usize = 0;
             while (lines.next()) |raw| {
                 const line = std.mem.trim(u8, raw, " \t\r");
                 if (!std.mem.startsWith(u8, line, ".hdl")) continue;
@@ -5518,7 +5534,7 @@ const SpiceDecks = struct {
                     bad = true;
                     continue;
                 };
-                try models.append(pa, model);
+                models += 1;
                 // 3. VerA's own half: the model has to compile. `--check` and both
                 //    include dirs: `check.vh` is at the suite
                 //    root and the model's siblings are beside it.
@@ -5538,7 +5554,7 @@ const SpiceDecks = struct {
                     bad = true;
                 }
             }
-            if (models.items.len == 0 and !bad) {
+            if (models == 0 and !bad) {
                 try w.print("FAIL {s}: no .hdl card, so the deck names no model\n", .{name});
                 bad = true;
             }
@@ -5547,17 +5563,8 @@ const SpiceDecks = struct {
                 continue;
             }
 
-            // 4. Execute it, when the runner has everything the deck asks for.
-            const deck = switch (try translate(pa, source, models.items)) {
-                .missing => |why| {
-                    try w.print("NOT RUN {s}: {s}\n", .{ name, why });
-                    not_run += 1;
-                    status = "skip";
-                    continue;
-                },
-                .deck => |d| d,
-            };
-            const verdict = try execute(pa, io, vera_exe, std.fs.path.basename(stem), dir_path, deck, oracle);
+            // 4. Run it on espice and hold its CSV to the oracle.
+            const verdict = try execute(pa, io, espice_exe, espice_args.items, std.fs.path.basename(stem), path, dir_path, analysisOf(source), oracle);
             switch (verdict) {
                 .pass => |what| {
                     try w.print("PASS {s}: {s}\n", .{ name, what });
@@ -5579,217 +5586,24 @@ const SpiceDecks = struct {
             try w.print("spice: nothing matched `{s}`\n", .{filter orelse ""});
             return 1;
         }
-        try w.print(
-            \\spice: {d}/{d} decks executed on sim.spice and match their oracle;
-            \\spice:   {d} NOT RUN (compile-only, the line says what is missing); {d} FAIL
-            \\
-        , .{ passed, ran, not_run, failed });
+        try w.print("spice: {d}/{d} decks executed on espice and match their oracle; {d} FAIL\n", .{ passed, ran, failed });
         return if (failed == 0) 0 else 1;
     }
 
-    /// A deck as the runner can execute it: the top module's source, and what the
-    /// oracle's columns are called in the runner's rows.
-    const Deck = struct {
-        /// `tran` or `noise`, as the oracle's `analysis` names it.
-        analysis: []const u8,
-        va: []const u8,
-    };
-
-    const Translated = union(enum) {
-        deck: Deck,
-        /// The card or option the runner has no implementation of.
-        missing: []const u8,
-    };
-
-    /// Returns `netlist` as a Verilog-AMS top module, or what of it the runner
-    /// cannot execute. Reads exactly these cards, and NOT RUN for anything else:
-    ///
-    ///   Nname n1 n2 ... module    an instance of a `.hdl` module
-    ///   Rname a b value           Annex E `resistor`
-    ///   Vname a b [DC] v [AC m]   Annex E `vsine` held at v (AC: a short in .noise)
-    ///   Vname a b PWL(t v ...)    Annex E `vpwl`
-    ///   .tran tstep tstop         `//! tran` (`sim.spice.tran`)
-    ///   .noise v(out) src lin|dec|oct n f1 f2   `//! onoise` (`sim.spice.noise`,
-    ///                                         over `noiseGrid`)
-    ///
-    /// SPICE is case-insensitive, so the deck is lower-cased first (`.hdl` paths
-    /// are already resolved into `models`). Node `0` is ground.
-    fn translate(arena: Allocator, netlist: []const u8, models: []const []const u8) !Translated {
-        const lower = try std.ascii.allocLowerString(arena, netlist);
-        var nets: std.ArrayList([]const u8) = .empty;
-        var insts: std.ArrayList(u8) = .empty;
-        var directives: std.ArrayList(u8) = .empty;
-        var analysis: ?[]const u8 = null;
-
-        var lines = std.mem.splitScalar(u8, lower, '\n');
+    /// The deck's analysis as the oracle's `analysis` names it: its first
+    /// `.tran`, `.noise`, `.ac`, `.dc` or `.op` card without the dot. SPICE cards
+    /// are case-insensitive. Null when the deck has none.
+    fn analysisOf(source: []const u8) ?[]const u8 {
+        var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |raw| {
-            const line = std.mem.trim(u8, raw, " \t\r");
-            if (line.len == 0 or line[0] == '*') continue;
-            if (line[0] == '+') return .{ .missing = "a `+` continuation card" };
-            var it = std.mem.tokenizeAny(u8, line, " \t(),");
-            const card = it.next().?;
-            if (std.mem.eql(u8, card, ".hdl") or std.mem.eql(u8, card, ".end")) continue;
-            if (std.mem.eql(u8, card, ".tran")) {
-                const tstep = spiceNumber(it.next() orelse "") orelse return .{ .missing = "a .tran card without tstep" };
-                const tstop = spiceNumber(it.next() orelse "") orelse return .{ .missing = "a .tran card without tstop" };
-                if (it.next() != null) return .{ .missing = ".tran tstart/tmax/uic: the runner steps from 0 with SPICE's default ceiling" };
-                if (analysis != null) return .{ .missing = "a second analysis card" };
-                analysis = "tran";
-                try directives.print(arena, "//! analysis tran\n//! tran {e}, {e}\n", .{ tstep, tstop });
-                continue;
-            }
-            if (std.mem.eql(u8, card, ".noise")) {
-                const out = it.next() orelse "";
-                const node = it.next() orelse "";
-                if (!std.mem.eql(u8, out, "v")) return .{ .missing = ".noise with an output that is not v(node)" };
-                _ = it.next(); // the input source: it names inoise, which no oracle here reads
-                const word = it.next() orelse "";
-                const sweep = std.meta.stringToEnum(Sweep, word) orelse
-                    return .{ .missing = try arena.print(".noise {s} sweep (lin, dec and oct are read)", .{word}) };
-                const n = std.fmt.parseInt(usize, it.next() orelse "", 10) catch return .{ .missing = ".noise sweep without a point count" };
-                const f1 = spiceNumber(it.next() orelse "") orelse return .{ .missing = ".noise without fstart" };
-                const f2 = spiceNumber(it.next() orelse "") orelse return .{ .missing = ".noise without fstop" };
-                if (n == 0 or it.next() != null) return .{ .missing = ".noise with a node pair or extra fields" };
-                if (sweep != .lin and !(f1 > 0 and f2 >= f1)) return .{ .missing = ".noise dec/oct with fstart <= 0 or fstop < fstart" };
-                if (analysis != null) return .{ .missing = "a second analysis card" };
-                analysis = "noise";
-                const freqs = try noiseGrid(arena, sweep, n, f1, f2) orelse return .{ .missing = ".noise sweep of more than 10000 points" };
-                try directives.print(arena, "//! analysis noise\n//! onoise V({s}) =", .{try net(arena, &nets, node)});
-                for (freqs, 0..) |f, k| try directives.print(arena, "{s} {e}", .{ if (k == 0) "" else ",", f });
-                try directives.append(arena, '\n');
-                continue;
-            }
-            if (card[0] == '.') return .{ .missing = try arena.print("the {s} card", .{card}) };
-
-            switch (card[0]) {
-                'n' => {
-                    var ports: std.ArrayList([]const u8) = .empty;
-                    while (it.next()) |t| try ports.append(arena, t);
-                    if (ports.items.len < 2) return .{ .missing = try arena.print("an N card without a module: {s}", .{line}) };
-                    const module = ports.pop().?;
-                    try insts.print(arena, "  {s} {s}(", .{ module, card });
-                    for (ports.items, 0..) |p, i| try insts.print(arena, "{s}{s}", .{ if (i == 0) "" else ", ", try net(arena, &nets, p) });
-                    try insts.appendSlice(arena, ");\n");
-                },
-                'r' => {
-                    const a = try net(arena, &nets, it.next() orelse return .{ .missing = "an R card without nodes" });
-                    const b = try net(arena, &nets, it.next() orelse return .{ .missing = "an R card without nodes" });
-                    const r = spiceNumber(it.next() orelse "") orelse return .{ .missing = "an R card whose value is not a number" };
-                    if (it.next() != null) return .{ .missing = "an R card with parameters" };
-                    try insts.print(arena, "  resistor #(.r({e})) {s}({s}, {s});\n", .{ r, card, a, b });
-                },
-                'v' => {
-                    const a = try net(arena, &nets, it.next() orelse return .{ .missing = "a V card without nodes" });
-                    const b = try net(arena, &nets, it.next() orelse return .{ .missing = "a V card without nodes" });
-                    var dc: f64 = 0;
-                    var pwl: std.ArrayList(f64) = .empty;
-                    while (it.next()) |t| {
-                        if (std.mem.eql(u8, t, "dc")) {
-                            dc = spiceNumber(it.next() orelse "") orelse return .{ .missing = "a V card's DC value" };
-                        } else if (std.mem.eql(u8, t, "ac")) {
-                            // A small-signal stimulus. `.noise`'s output spectrum does
-                            // not read it and `.ac` is not run, so only its magnitude
-                            // is consumed; a phase would follow it.
-                            _ = spiceNumber(it.next() orelse "") orelse return .{ .missing = "a V card's AC magnitude" };
-                        } else if (std.mem.eql(u8, t, "pwl")) {
-                            while (it.next()) |p| try pwl.append(arena, spiceNumber(p) orelse return .{ .missing = "a PWL value that is not a number" });
-                        } else if (spiceNumber(t)) |v| {
-                            dc = v;
-                        } else return .{ .missing = try arena.print("the V card source `{s}`", .{t}) };
-                    }
-                    if (pwl.items.len != 0) {
-                        if (pwl.items.len < 4 or pwl.items.len % 2 != 0) return .{ .missing = "a PWL with fewer than two points" };
-                        // SPICE's operating point is the waveform at t = 0.
-                        try insts.print(arena, "  vpwl #(.dc({e}), .nwave({d}), .wave('{{", .{ pwl.items[1], pwl.items.len });
-                        for (pwl.items, 0..) |v, i| try insts.print(arena, "{s}{e}", .{ if (i == 0) "" else ", ", v });
-                        try insts.print(arena, "}})) {s}({s}, {s});\n", .{ card, a, b });
-                    } else {
-                        try insts.print(arena, "  vsine #(.dc({e}), .offset({e}), .ampl(0.0)) {s}({s}, {s});\n", .{ dc, dc, card, a, b });
-                    }
-                },
-                else => return .{ .missing = try arena.print("the {c} device card ({s})", .{ std.ascii.toUpper(card[0]), card }) },
+            var it = std.mem.tokenizeAny(u8, raw, " \t\r");
+            const card = it.next() orelse continue;
+            if (card[0] != '.') continue;
+            for ([_][]const u8{ "tran", "noise", "ac", "dc", "op" }) |a| {
+                if (std.ascii.eqlIgnoreCase(card[1..], a)) return a;
             }
         }
-        const a = analysis orelse return .{ .missing = "no .tran or .noise card" };
-
-        var va: std.ArrayList(u8) = .empty;
-        for (models) |m| try va.print(arena, "`include \"{s}\"\n", .{std.fs.path.basename(m)});
-        // Every node is solved for: the deck's sources fix what is fixed.
-        try va.print(arena, "{s}//! solve\nmodule spice_deck;\n  ground gnd;\n", .{directives.items});
-        if (nets.items.len != 0) {
-            try va.appendSlice(arena, "  electrical ");
-            for (nets.items, 0..) |n, i| try va.print(arena, "{s}{s}", .{ if (i == 0) "" else ", ", n });
-            try va.appendSlice(arena, ";\n");
-        }
-        try va.print(arena, "{s}endmodule\n", .{insts.items});
-        return .{ .deck = .{ .analysis = a, .va = va.items } };
-    }
-
-    /// A `.noise` card's sweep kind.
-    const Sweep = enum { lin, dec, oct };
-
-    /// SPICE's `.noise` frequency grid (ngspice noisean.c). `lin`: `n` points,
-    /// both ends included. `dec`/`oct`: from `f1` by the fixed ratio 10^(1/n)
-    /// or 2^(1/n), while a point stays at or under f2·(1 + ratio·reltol), with
-    /// SPICE's default reltol 1e-3; so `dec 1 1 9.999` ends at 10, and a grid
-    /// stops under `f2` when `f2` is not on it. Point k is f1·base^(k/n), not a
-    /// running product, as ESPice's `FreqSweep` takes it. Null past 10000
-    /// points. Precondition for `dec`/`oct`: 0 < f1 <= f2.
-    fn noiseGrid(arena: Allocator, sweep: Sweep, n: usize, f1: f64, f2: f64) !?[]const f64 {
-        var out: std.ArrayList(f64) = .empty;
-        switch (sweep) {
-            .lin => for (0..n) |k| {
-                const f = if (n == 1) f1 else f1 + (f2 - f1) * @as(f64, @floatFromInt(k)) / @as(f64, @floatFromInt(n - 1));
-                try out.append(arena, f);
-            },
-            .dec, .oct => {
-                const base: f64 = if (sweep == .dec) 10 else 2;
-                const per: f64 = @floatFromInt(n);
-                const top = f2 * (1 + std.math.pow(f64, base, 1 / per) * 1e-3);
-                var k: usize = 0;
-                while (true) : (k += 1) {
-                    const f = f1 * std.math.pow(f64, base, @as(f64, @floatFromInt(k)) / per);
-                    if (f > top) break;
-                    if (out.items.len == 10000) return null;
-                    try out.append(arena, f);
-                }
-            },
-        }
-        return out.items;
-    }
-
-    /// The Verilog-AMS net for SPICE node `node`, declared once in `nets`: `0` is
-    /// ground, a node that is not an identifier (`1`) is `n_1`.
-    fn net(arena: Allocator, nets: *std.ArrayList([]const u8), node: []const u8) ![]const u8 {
-        if (std.mem.eql(u8, node, "0")) return "gnd";
-        const id = if (std.ascii.isAlphabetic(node[0]) or node[0] == '_') node else try arena.print("n_{s}", .{node});
-        for (nets.items) |n| if (std.mem.eql(u8, n, id)) return id;
-        try nets.append(arena, id);
-        return id;
-    }
-
-    /// A SPICE number: digits with an optional scale suffix (`1k`, `1meg`, `1m`);
-    /// trailing letters after the suffix are units and ignored, as SPICE does.
-    fn spiceNumber(tok: []const u8) ?f64 {
-        var end: usize = 0;
-        while (end < tok.len and (std.ascii.isDigit(tok[end]) or tok[end] == '.' or tok[end] == '-' or tok[end] == '+' or
-            ((tok[end] == 'e') and end + 1 < tok.len and (std.ascii.isDigit(tok[end + 1]) or tok[end + 1] == '-' or tok[end + 1] == '+')))) : (end += 1)
-        {}
-        if (end == 0) return null;
-        const v = std.fmt.parseFloat(f64, tok[0..end]) catch return null;
-        const rest = tok[end..];
-        const scale: f64 = if (std.mem.startsWith(u8, rest, "meg")) 1e6 else if (rest.len == 0) 1 else switch (rest[0]) {
-            't' => 1e12,
-            'g' => 1e9,
-            'k' => 1e3,
-            'm' => 1e-3,
-            'u' => 1e-6,
-            'n' => 1e-9,
-            'p' => 1e-12,
-            'f' => 1e-15,
-            else => 1,
-        };
-        return v * scale;
+        return null;
     }
 
     const Verdict = union(enum) {
@@ -5798,68 +5612,107 @@ const SpiceDecks = struct {
         fail: []const u8,
     };
 
-    /// Builds `deck` with `vera --emit-exe`, runs it, and grades its rows against
-    /// `oracle_text`.
-    fn execute(arena: Allocator, io: Io, vera_exe: []const u8, stem: []const u8, dir_path: []const u8, deck: Deck, oracle_text: []const u8) !Verdict {
+    /// Runs `deck` on espice, its CSV in a fresh `<work_root>/spice/<stem>/`, and
+    /// grades what it wrote against `oracle_text`.
+    fn execute(
+        arena: Allocator,
+        io: Io,
+        espice: []const u8,
+        espice_args: []const []const u8,
+        stem: []const u8,
+        deck: []const u8,
+        dir_path: []const u8,
+        analysis: ?[]const u8,
+        oracle_text: []const u8,
+    ) !Verdict {
         const work = try std.fs.path.join(arena, &.{ options.work_root, "spice", stem });
+        // An earlier run's `<stem>.csv.2` would be read as this run's second plot.
+        try Io.Dir.cwd().deleteTree(io, work);
         try Io.Dir.cwd().createDirPath(io, work);
-        // `.deck.va`: a model named like its deck would otherwise be found by
-        // the wrapper's own `include` and include itself.
-        const top = try std.fs.path.join(arena, &.{ work, try arena.print("{s}.deck.va", .{stem}) });
-        try Io.Dir.cwd().writeFile(io, .{ .sub_path = top, .data = deck.va });
-        const built = try child.capture(arena, io, &.{
-            vera_exe,             "--emit-exe",    "--validate-contract", "--contract", options.contract,
-            "--zig",              options.zig_exe, "--work-dir",          work,         "-I",
-            options.fixture_root, "-I",            dir_path,              top,
-        });
-        if (built.exit != 0) return .{ .fail = try arena.print("the deck's top module ({s}) does not build:\n{s}", .{ top, built.stderr }) };
-        const exe = std.mem.trimEnd(u8, built.stdout, "\n");
-        const r = try child.capture(arena, io, &.{exe});
-        if (r.exit != 0) return .{ .fail = try arena.print("the runner exited {d}:\n{s}", .{ r.exit, r.stderr }) };
-        return grade(arena, deck, r.stderr, oracle_text);
+        const out = try std.fs.path.join(arena, &.{ work, try arena.print("{s}.csv", .{stem}) });
+        // `-I`: the models `include "check.vh"` from the fixture root, as the
+        // `vera --check` half is told; espice searches a model's own directory
+        // and each `-I` for its `.hdl` includes.
+        const argv = try std.mem.concat(arena, []const u8, &.{ &.{ espice, "--format=csv", "-r", out, "-I", options.fixture_root }, espice_args, &.{deck} });
+        // From the deck's directory, as `.hdl` paths are written relative to it;
+        // `deck` and `out` are absolute.
+        const r = child.captureIn(arena, io, argv, dir_path) catch |e|
+            return .{ .fail = try arena.print("could not run {s}: {s}", .{ espice, @errorName(e) }) };
+        if (r.exit != 0) return .{ .fail = try arena.print("espice exited {d}:\n{s}", .{ r.exit, r.stderr }) };
+        return grade(arena, io, analysis, out, oracle_text);
     }
 
-    /// The runner's rows: one axis value (t or f) and one value per column.
+    /// One plot of espice's CSV: `names[i]` heads `cols[i]`, and column 0 is the
+    /// axis (`time`, `frequency`).
     const Table = struct {
-        axis: []const f64,
         names: []const []const u8,
         cols: []const []const f64,
-
-        fn column(t: Table, name: []const u8) ?[]const f64 {
-            for (t.names, t.cols) |n, c| if (std.mem.eql(u8, n, name)) return c;
-            return null;
-        }
     };
 
-    /// Collects the `tran t=... u=v ...` or `noise f=... onoise=v` rows; every
-    /// other line (the models' own `$strobe`s) is not the deck's output.
-    fn parseRows(arena: Allocator, out: []const u8, prefix: []const u8) !Table {
-        var axis: std.ArrayList(f64) = .empty;
+    /// Reads `text` as espice's `--format=csv` writes it: a header of names, then
+    /// one row of numbers per point. A name holding `,` or `"` is quoted with its
+    /// `"` doubled (RFC 4180). A row whose field count is not the header's, or a
+    /// field that is not a number, is `error.BadCsv`.
+    fn parseCsv(arena: Allocator, text: []const u8) !Table {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        const header = std.mem.trimEnd(u8, lines.first(), "\r");
         var names: std.ArrayList([]const u8) = .empty;
-        var cols: std.ArrayList(std.ArrayList(f64)) = .empty;
-        var lines = std.mem.splitScalar(u8, out, '\n');
-        while (lines.next()) |line| {
-            if (!std.mem.startsWith(u8, line, prefix) or line.len <= prefix.len or line[prefix.len] != ' ') continue;
-            var it = std.mem.tokenizeScalar(u8, line[prefix.len..], ' ');
-            var k: usize = 0;
-            while (it.next()) |kv| : (k += 1) {
-                const eq = std.mem.findScalar(u8, kv, '=') orelse return error.BadRow;
-                const v = try std.fmt.parseFloat(f64, kv[eq + 1 ..]);
-                if (k == 0) {
-                    try axis.append(arena, v);
-                    continue;
-                }
-                if (axis.items.len == 1) {
-                    try names.append(arena, kv[0..eq]);
-                    try cols.append(arena, .empty);
-                }
-                if (k - 1 >= cols.items.len) return error.BadRow;
-                try cols.items[k - 1].append(arena, v);
-            }
+        var name: std.ArrayList(u8) = .empty;
+        var quoted = false;
+        var i: usize = 0;
+        while (i < header.len) : (i += 1) {
+            const c = header[i];
+            if (quoted) {
+                if (c != '"') {
+                    try name.append(arena, c);
+                } else if (i + 1 < header.len and header[i + 1] == '"') {
+                    try name.append(arena, '"');
+                    i += 1;
+                } else quoted = false;
+            } else if (c == '"') {
+                quoted = true;
+            } else if (c == ',') {
+                try names.append(arena, name.items);
+                name = .empty;
+            } else try name.append(arena, c);
         }
-        const flat = try arena.alloc([]const f64, cols.items.len);
-        for (cols.items, flat) |c, *f| f.* = c.items;
-        return .{ .axis = axis.items, .names = names.items, .cols = flat };
+        if (quoted) return error.BadCsv;
+        try names.append(arena, name.items);
+
+        const cols = try arena.alloc(std.ArrayList(f64), names.items.len);
+        @memset(cols, .empty);
+        while (lines.next()) |raw| {
+            const line = std.mem.trimEnd(u8, raw, "\r");
+            if (line.len == 0) continue;
+            var fields = std.mem.splitScalar(u8, line, ',');
+            for (cols) |*col| {
+                const f = fields.next() orelse return error.BadCsv;
+                try col.append(arena, std.fmt.parseFloat(f64, f) catch return error.BadCsv);
+            }
+            if (fields.next() != null) return error.BadCsv;
+        }
+        const flat = try arena.alloc([]const f64, cols.len);
+        for (cols, flat) |c, *f| f.* = c.items;
+        return .{ .names = names.items, .cols = flat };
+    }
+
+    /// The column `name` of `tables`, ignoring case as SPICE does, and the axis
+    /// of the table holding it. A run may also write an operating point (one row
+    /// of the same `v(...)` names) or several plots, so the tables on the
+    /// analysis's own axis (`time` for tran, `frequency` for noise and ac) are
+    /// searched first, then every table in file order.
+    fn column(tables: []const Table, analysis: []const u8, name: []const u8) ?struct { axis: []const f64, col: []const f64 } {
+        const own: ?[]const u8 = if (std.mem.eql(u8, analysis, "tran"))
+            "time"
+        else if (std.mem.eql(u8, analysis, "noise") or std.mem.eql(u8, analysis, "ac"))
+            "frequency"
+        else
+            null;
+        if (own) |axis| for (tables) |t| if (std.ascii.eqlIgnoreCase(t.names[0], axis)) {
+            for (t.names, t.cols) |n, c| if (std.ascii.eqlIgnoreCase(n, name)) return .{ .axis = t.cols[0], .col = c };
+        };
+        for (tables) |t| for (t.names, t.cols) |n, c| if (std.ascii.eqlIgnoreCase(n, name)) return .{ .axis = t.cols[0], .col = c };
+        return null;
     }
 
     fn num(v: std.json.Value) ?f64 {
@@ -5892,14 +5745,6 @@ const SpiceDecks = struct {
         return @abs(got - want) <= atol + rtol * @abs(want);
     }
 
-    /// The runner's column for an oracle column: `v(node)` is that node's
-    /// unknown, `onoise_spectrum` the noise row's `onoise`.
-    fn columnOf(t: Table, name: []const u8) ?[]const f64 {
-        if (std.mem.eql(u8, name, "onoise_spectrum")) return t.column("onoise");
-        if (std.mem.startsWith(u8, name, "v(") and std.mem.endsWith(u8, name, ")")) return t.column(name[2 .. name.len - 1]);
-        return null;
-    }
-
     /// Linear interpolation of `col` over `axis` at `a`, inside the run only.
     fn sampleAt(axis: []const f64, col: []const f64, a: f64) ?f64 {
         if (axis.len == 0 or a < axis[0] or a > axis[axis.len - 1]) return null;
@@ -5911,17 +5756,21 @@ const SpiceDecks = struct {
         return col[col.len - 1];
     }
 
-    /// Holds the runner's rows to the oracle. Reads `analysis`, `expect.status`,
-    /// `expect.plots` (`match` `exact`: the same rows, or `samples`: each column
-    /// interpolated at the axis values), `expect.checks` (`selected_values`: a row
-    /// at exactly each coordinate) and `finite_values_required`. Anything else in
-    /// `expect` it does not know is a FAIL, never a skip.
-    fn grade(arena: Allocator, deck: Deck, out: []const u8, oracle_text: []const u8) !Verdict {
+    /// Holds espice's CSV at `out` to the oracle. CSV holds one plot per file, so
+    /// a run's second plot is `out.2`, its third `out.3`, and a graded column is
+    /// found by name across them (`column`). Reads `analysis`,
+    /// `expect.status`, `expect.plots` (`match` `exact`: that column's table has
+    /// the same rows, or `samples`: each column interpolated at the axis values),
+    /// `expect.checks` (`selected_values`: a row at exactly each coordinate) and
+    /// `finite_values_required`. Anything else in `expect` it does not know is a
+    /// FAIL, never a skip.
+    fn grade(arena: Allocator, io: Io, analysis: ?[]const u8, out: []const u8, oracle_text: []const u8) !Verdict {
         const oracle = std.json.parseFromSliceLeaky(std.json.Value, arena, oracle_text, .{}) catch
             return .{ .fail = "the oracle is not JSON" };
+        const runs = analysis orelse return .{ .fail = "the deck has no .tran, .noise, .ac, .dc or .op card" };
         const want_analysis = field(oracle, "analysis") orelse return .{ .fail = "the oracle names no analysis" };
-        if (want_analysis != .string or !std.mem.eql(u8, want_analysis.string, deck.analysis))
-            return .{ .fail = try arena.print("the oracle is a {s} analysis and the deck runs {s}", .{ if (want_analysis == .string) want_analysis.string else "?", deck.analysis }) };
+        if (want_analysis != .string or !std.mem.eql(u8, want_analysis.string, runs))
+            return .{ .fail = try arena.print("the oracle is a {s} analysis and the deck runs {s}", .{ if (want_analysis == .string) want_analysis.string else "?", runs }) };
         const expect = field(oracle, "expect") orelse return .{ .fail = "the oracle has no expect" };
         var it = expect.object.iterator();
         while (it.next()) |e| {
@@ -5933,10 +5782,25 @@ const SpiceDecks = struct {
         if (field(expect, "status")) |s| if (s != .string or !std.mem.eql(u8, s.string, "success"))
             return .{ .fail = "the oracle expects a status other than success" };
 
-        const t = parseRows(arena, out, deck.analysis) catch return .{ .fail = try arena.print("the runner printed a malformed row:\n{s}", .{out}) };
-        if (t.axis.len == 0) return .{ .fail = try arena.print("the runner printed no {s} rows:\n{s}", .{ deck.analysis, out }) };
+        var tables: std.ArrayList(Table) = .empty;
+        var read: std.ArrayList(u8) = .empty; // the files, for the FAIL line
+        var path = out;
+        while (true) {
+            const text = Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |e| switch (e) {
+                error.FileNotFound => break,
+                else => return .{ .fail = try arena.print("cannot read {s}: {s}", .{ path, @errorName(e) }) },
+            };
+            const table = parseCsv(arena, text) catch
+                return .{ .fail = try arena.print("espice wrote a malformed line in {s}", .{path}) };
+            try tables.append(arena, table);
+            try read.print(arena, " {s}", .{path});
+            path = try arena.print("{s}.{d}", .{ out, tables.items.len + 1 });
+        }
+        var rows: usize = 0;
+        for (tables.items) |t| rows += t.cols[0].len;
+        if (rows == 0) return .{ .fail = try arena.print("espice wrote no {s} plot; files read:{s}", .{ runs, if (read.items.len == 0) " none" else read.items }) };
         if (field(expect, "finite_values_required")) |f| if (f == .bool and f.bool) {
-            for (t.cols) |c| for (c) |v| if (!std.math.isFinite(v)) return .{ .fail = "a value is not finite" };
+            for (tables.items) |t| for (t.cols) |c| for (c) |v| if (!std.math.isFinite(v)) return .{ .fail = "a value is not finite" };
         };
 
         var checked: usize = 0;
@@ -5946,23 +5810,23 @@ const SpiceDecks = struct {
             const want_axis = try numbers(arena, field(ax, "values"));
             const exact = std.mem.eql(u8, match, "exact");
             if (!exact and !std.mem.eql(u8, match, "samples")) return .{ .fail = try arena.print("plot match `{s}` is not graded", .{match}) };
-            if (exact) {
-                const rc = fieldNum(p, "row_count", @floatFromInt(want_axis.len));
-                if (t.axis.len != want_axis.len or rc != @as(f64, @floatFromInt(t.axis.len)))
-                    return .{ .fail = try arena.print("{d} rows, the oracle wants {d}", .{ t.axis.len, want_axis.len }) };
-                for (t.axis, want_axis) |g, wv| if (!within(g, wv, fieldNum(ax, "rtol", 0), fieldNum(ax, "atol", 0)))
-                    return .{ .fail = try arena.print("axis value {e}, the oracle wants {e}", .{ g, wv }) };
-            }
             const columns = field(p, "columns") orelse return .{ .fail = "a plot without columns" };
             var ci = columns.object.iterator();
             while (ci.next()) |c| {
-                const col = columnOf(t, c.key_ptr.*) orelse return .{ .fail = try arena.print("the runner has no column for `{s}`", .{c.key_ptr.*}) };
+                const t = column(tables.items, runs, c.key_ptr.*) orelse return .{ .fail = try arena.print("espice wrote no column `{s}`", .{c.key_ptr.*}) };
+                if (exact) {
+                    const rc = fieldNum(p, "row_count", @floatFromInt(want_axis.len));
+                    if (t.axis.len != want_axis.len or rc != @as(f64, @floatFromInt(t.axis.len)))
+                        return .{ .fail = try arena.print("{d} rows, the oracle wants {d}", .{ t.axis.len, want_axis.len }) };
+                    for (t.axis, want_axis) |g, wv| if (!within(g, wv, fieldNum(ax, "rtol", 0), fieldNum(ax, "atol", 0)))
+                        return .{ .fail = try arena.print("axis value {e}, the oracle wants {e}", .{ g, wv }) };
+                }
                 const want = try numbers(arena, field(c.value_ptr.*, "values"));
                 if (want.len != want_axis.len) return .{ .fail = "an oracle column's length differs from its axis" };
                 const rtol = fieldNum(c.value_ptr.*, "rtol", 0);
                 const atol = fieldNum(c.value_ptr.*, "atol", 0);
                 for (want_axis, want, 0..) |a, wv, i| {
-                    const g = if (exact) col[i] else sampleAt(t.axis, col, a) orelse
+                    const g = if (exact) t.col[i] else sampleAt(t.axis, t.col, a) orelse
                         return .{ .fail = try arena.print("{s} at {e} is outside the run", .{ c.key_ptr.*, a }) };
                     if (!within(g, wv, rtol, atol))
                         return .{ .fail = try arena.print("{s} at {e} = {e}, the oracle wants {e} (rtol {e}, atol {e})", .{ c.key_ptr.*, a, g, wv, rtol, atol }) };
@@ -5976,7 +5840,7 @@ const SpiceDecks = struct {
             // ponytail: `period` folds a coordinate into one period of a periodic
             // run. Every deck's period exceeds its run, so it is not applied.
             const cname = (field(ck, "column") orelse return .{ .fail = "a check without column" }).string;
-            const col = columnOf(t, cname) orelse return .{ .fail = try arena.print("the runner has no column for `{s}`", .{cname}) };
+            const t = column(tables.items, runs, cname) orelse return .{ .fail = try arena.print("espice wrote no column `{s}`", .{cname}) };
             const coords = try numbers(arena, field(ck, "coordinates"));
             const want = try numbers(arena, field(ck, "values"));
             if (coords.len != want.len) return .{ .fail = "a check's coordinates and values differ in length" };
@@ -5985,57 +5849,41 @@ const SpiceDecks = struct {
                 // across it would hide a missing timepoint.
                 const i = std.mem.findScalar(f64, t.axis, cv) orelse
                     return .{ .fail = try arena.print("MissingCoordinate: no accepted point at {e}", .{cv}) };
-                if (!within(col[i], wv, fieldNum(ck, "rtol", 0), fieldNum(ck, "atol", 0)))
-                    return .{ .fail = try arena.print("{s} at {e} = {e}, the oracle wants {e}", .{ cname, cv, col[i], wv }) };
+                if (!within(t.col[i], wv, fieldNum(ck, "rtol", 0), fieldNum(ck, "atol", 0)))
+                    return .{ .fail = try arena.print("{s} at {e} = {e}, the oracle wants {e}", .{ cname, cv, t.col[i], wv }) };
                 checked += 1;
             }
         };
         if (checked == 0) return .{ .fail = "the oracle states no value, so nothing was graded" };
-        return .{ .pass = try arena.print("{s}, {d} values within the oracle over {d} rows", .{ deck.analysis, checked, t.axis.len }) };
+        return .{ .pass = try arena.print("{s}, {d} values within the oracle over {d} rows", .{ runs, checked, rows }) };
     }
 
-    test "spiceNumber reads SPICE scale suffixes" {
-        try std.testing.expectEqual(@as(?f64, 1e3), spiceNumber("1k"));
-        try std.testing.expectEqual(@as(?f64, 2e6), spiceNumber("2meg"));
-        try std.testing.expectEqual(@as(?f64, 1e-3), spiceNumber("1m"));
-        try std.testing.expectEqual(@as(?f64, 1e-4), spiceNumber("1e-4"));
-        try std.testing.expectEqual(@as(?f64, 90000), spiceNumber("90000"));
-        try std.testing.expectEqual(@as(?f64, null), spiceNumber("pwl"));
-    }
-
-    test "the .noise grids: lin keeps both ends, dec and oct step by a fixed ratio to fstop and no further" {
+    test "parseCsv reads espice's CSV, and column prefers the analysis's own axis" {
         var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
-        const lin = (try noiseGrid(a, .lin, 9, 1000, 9000)).?;
-        try std.testing.expectEqual(@as(usize, 9), lin.len);
-        try std.testing.expectEqual(@as(f64, 2000), lin[1]);
-        // dec 2 from 1k to 100k: 1k, 3.16k, 10k, 31.6k, 100k.
-        const dec = (try noiseGrid(a, .dec, 2, 1e3, 1e5)).?;
-        try std.testing.expectEqual(@as(usize, 5), dec.len);
-        try std.testing.expectEqual(@as(f64, 1e4), dec[2]);
-        try std.testing.expectEqual(@as(f64, 1e5), dec[4]);
-        try std.testing.expectApproxEqRel(@as(f64, 3162.2776601683795), dec[1], 1e-15);
-        // A stop just under a grid point still reaches it (the reltol margin)...
-        try std.testing.expectEqual(@as(usize, 2), (try noiseGrid(a, .dec, 1, 1, 9.999)).?.len);
-        // ...and one well under it stops short.
-        try std.testing.expectEqual(@as(usize, 1), (try noiseGrid(a, .dec, 1, 1e3, 5e3)).?.len);
-        const oct = (try noiseGrid(a, .oct, 1, 1e3, 8e3)).?;
-        try std.testing.expectEqual(@as(usize, 4), oct.len);
-        try std.testing.expectEqual(@as(f64, 8e3), oct[3]);
-        const r = try translate(a, "R1 a 0 1k\n.noise v(a) v1 dec 2 1k 100k\n", &.{});
-        try std.testing.expect(std.mem.find(u8, r.deck.va, "//! onoise V(a) = 1e3,") != null);
-        try std.testing.expect(std.mem.endsWith(u8, std.mem.sliceTo(r.deck.va[std.mem.find(u8, r.deck.va, "//! onoise").?..], '\n'), ", 1e5"));
+        // f64, as espice prints them: a `comptime_float` prints at f128 precision.
+        const third: f64 = 1.0 / 3.0;
+        const t = try parseCsv(a, try a.print("time,\"v(a,\"\"b\"\")\"\n0e0,{e}\n{e},-inf\n", .{ third, @as(f64, 1e-4) }));
+        try std.testing.expectEqualStrings("time", t.names[0]);
+        try std.testing.expectEqualStrings("v(a,\"b\")", t.names[1]);
+        try std.testing.expectEqualSlices(f64, &.{ 0, 1e-4 }, t.cols[0]);
+        try std.testing.expectEqualSlices(f64, &.{ third, -std.math.inf(f64) }, t.cols[1]);
+        try std.testing.expectError(error.BadCsv, parseCsv(a, "time,v(out)\n0e0,1e0\n1e-4\n"));
+
+        // An operating point written first holds `v(out)` too: the time-axis
+        // table's wins, and `v(in)`, on no time axis, falls back to the first.
+        const tables = [_]Table{
+            try parseCsv(a, "v(in),v(out)\n1e0,5e-1\n"),
+            try parseCsv(a, "Time,v(out)\n0e0,5e-1\n1e-3,7.5e-1\n"),
+        };
+        try std.testing.expectEqualSlices(f64, &.{ 5e-1, 7.5e-1 }, column(&tables, "tran", "V(OUT)").?.col);
+        try std.testing.expectEqualSlices(f64, &.{1e0}, column(&tables, "tran", "v(in)").?.col);
     }
 
-    test "a deck with a card the runner lacks is NOT RUN, naming it" {
-        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-        defer arena.deinit();
-        const r = try translate(arena.allocator(), "Q1 c b e qmod\n.tran 1 2\n", &.{});
-        try std.testing.expectEqualStrings("the Q device card (q1)", r.missing);
-        const ok = try translate(arena.allocator(), "R1 a 0 1k\nV1 a 0 PWL(0 0 1m 1)\n.tran 1e-4 1e-3\n", &.{});
-        try std.testing.expect(std.mem.find(u8, ok.deck.va, "resistor #(.r(1e3)) r1(a, gnd);") != null);
-        try std.testing.expect(std.mem.find(u8, ok.deck.va, "//! tran 1e-4, 1e-3") != null);
+    test "analysisOf names the deck's first analysis card, past comments and .hdl" {
+        try std.testing.expectEqualStrings("noise", analysisOf("* a .tran in a comment\n.hdl \"m.va\"\n.NOISE v(out) v1 dec 1 1 10\n.tran 1 2\n").?);
+        try std.testing.expect(analysisOf("R1 a 0 1k\n.options reltol=1e-4\n.end\n") == null);
     }
 };
 

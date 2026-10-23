@@ -11,8 +11,8 @@
 // 3.00002, so V(p) = 3. From a cold 0 (no nodeset used) it lands on 1; a
 // clamped nodeset would hold 2.75. The 1e-9 band separates all three.
 //
-// This file checks the testbench host; the deck checks src/sim/spice on the
-// same device, so both hosts must start Newton from the same nodeset.
+// This file checks the testbench host; the deck checks ESPice on the same
+// device, so both hosts must start Newton from the same nodeset.
 //
 //! lrm 3.6.3.2
 //! lrm 3.6.3.2:1

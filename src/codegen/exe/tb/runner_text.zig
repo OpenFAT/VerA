@@ -400,8 +400,7 @@ pub const runner_body =
     \\/// (Table 4-21: "the initial-condition analysis which precedes a
     \\/// transient analysis"), where "static", "ic" and "tran" are 1 and "dc" 0;
     \\/// every later point is the Tran column. Any other analysis is itself at
-    \\/// every point. `lib/sim/spice/tran.zig`'s `runTran` solves the same
-    \\/// point as `.ic`. Every host here sets t, dt and kind only through this.
+    \\/// every point. Every host here sets t, dt and kind only through this.
     \\fn atPoint(t: f64, dt: f64) void {
     \\    sim_state.t = t;
     \\    sim_state.dt = dt;

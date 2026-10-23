@@ -17504,8 +17504,6 @@ pub const exe_tests = struct {
             "//! limit V(b) = 0 -> V(b) = 0.1, converged = 0",
             "//! limit -> V(a) = 1.5",
             "//! print none",
-            "//! tran 1n, 10n",
-            "//! onoise V(out) = 1, 10",
         };
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
@@ -17526,7 +17524,7 @@ pub const exe_tests = struct {
             d.certify = r.boolean();
             d.finite_proved = r.boolean();
             const fixed = tb.renderRunner(arena, "gen \"t\" \\", d) catch |e| switch (e) {
-                error.BadSyntax, error.TooManyPoints => continue,
+                error.TooManyPoints => continue,
                 else => return e,
             };
             try expectAstGen(fixed);
@@ -17563,7 +17561,6 @@ pub const exe_tests = struct {
             try tb.renderRunner(arena, "dep", d),
             try tb.renderRunner(arena, "dep", dm),
             try tb.renderVpiLib(arena, "dep", d),
-            try tb.renderRunner(arena, "dep", try tb.parse(arena, "//! solve\n//! onoise V(out) = 1\n")),
         };
         for (texts) |src| for (deprecated) |name| {
             if (std.mem.find(u8, src, name)) |at| {
@@ -17586,7 +17583,7 @@ pub const exe_tests = struct {
         try testing.expectEqual(@as(usize, 3), (try tb.parse(arena, "//! time 0, 1n, 1.5n\n")).times.len);
     }
 
-    test "a time, a temperature and a .tran step are finite" {
+    test "a time and a temperature are finite" {
         // `std.fmt.parseFloat` reads `NaN` and `infinity` (`nan` and `inf` end in
         // a §2.6 scale letter and fail as numbers). None is a §9.10 `$abstime`
         // or `$temperature`, and a NaN time also slips past the order check.
@@ -17597,8 +17594,6 @@ pub const exe_tests = struct {
             "//! time NaN\n",
             "//! time infinity\n",
             "//! time 0, infinity\n",
-            "//! tran 1n, infinity\n",
-            "//! tran infinity, 1n\n",
         }) |line| try testing.expectError(error.BadSyntax, tb.parse(arena, line));
         for ([_][]const u8{ "//! temp NaN\n", "//! temp infinity\n", "//! temp -infinity\n" }) |line|
             try testing.expectError(error.BadNumber, tb.parse(arena, line));
@@ -17677,27 +17672,6 @@ pub const exe_tests = struct {
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "        if (comptime @hasDecl(D, \"derive\")) D.derive(Val, &pm);\n"));
         try testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "        pm.r = cardValue(@TypeOf(pm.r), \"r\", 3);\n"));
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "solve(&x, &forced, &pm, &inst);"));
-    }
-
-    test "a SPICE deck renders one sim.spice call and leaves every unknown to it" {
-        var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const tran = try tb.renderRunner(arena, "deck", try tb.parse(arena, "//! solve\n//! tran 1n, 10n\n"));
-        try expectAstGen(tran);
-        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, tran, "    @import(\"sim\").spice.deck.runTran(D, title, &model, &inst, 0.000000001, 0.00000001);\n"));
-        try testing.expectEqual(@as(usize, 0), std.mem.count(u8, tran, "        point("));
-        const noise = try tb.renderRunner(arena, "deck", try tb.parse(arena, "//! solve\n//! onoise V(out) = 1, 1k\n"));
-        try expectAstGen(noise);
-        try testing.expect(std.mem.find(u8, noise, "ix(\"out\")") != null);
-        try testing.expect(std.mem.find(u8, noise, "&.{ 1, 1000 });\n") != null);
-        // `sim.spice` solves every unknown, so a deck pins, sweeps and frees none.
-        for ([_][]const u8{
-            "//! tran 1n, 10n\n",
-            "//! solve\n//! tran 1n, 10n\n//! bias V(a) = 1\n",
-            "//! solve\n//! tran 1n, 10n\n//! psweep r = 1\n",
-            "//! solve\n//! tran 1n, 10n\n//! onoise V(out) = 1\n",
-        }) |deck| try testing.expectError(error.BadSyntax, tb.renderRunner(arena, "deck", try tb.parse(arena, deck)));
     }
 
     test "the mixed runner hands each point to sim.mixed and refuses the device-table checks" {

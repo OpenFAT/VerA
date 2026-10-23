@@ -2118,7 +2118,6 @@ pass	ch09_system_tasks/binding_unused_parent_port.va
 pass	ch09_system_tasks/bitstoreal.va
 pass	ch09_system_tasks/bound_step.va
 pass	ch09_system_tasks/bound_step_arity_rejected.va
-pass	ch09_system_tasks/bound_step_below_minimum_step.va
 pass	ch09_system_tasks/bound_step_infinite_is_no_bound.va
 pass	ch09_system_tasks/bound_step_negative_rejected.va
 pass	ch09_system_tasks/bound_step_smallest_active_wins.va

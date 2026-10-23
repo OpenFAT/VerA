@@ -1,5 +1,7 @@
 .zig-cache
 zig-out/
+# Fetched packages (ESPice and its closure, for `zig build test-spice`).
+/zig-pkg/
 
 # Local agent config and worktrees
 .claude/

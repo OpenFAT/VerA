@@ -493,7 +493,8 @@ def run_suites(argv):
                                   f"--verdicts={run_dir / 'ams-perturbed.tsv'}"]),
         ("digital", build + ["test-devices", f"-j{args.jobs}", "--", f"--verdicts={run_dir / 'digital.tsv'}"]),
         ("vpi-abi", build + ["test-vpi-fixtures", f"-j{args.jobs}"]),
-        ("spice", build + ["test-spice", f"-j{args.jobs}", "--",
+        # The decks run on ESPice built against the tree under test.
+        ("spice", build + ["test-spice", "--fork", ".", f"-j{args.jobs}", "--",
                           f"--results={run_dir / 'tests/spice.tsv'}"]),
         ("observations", build + ["test-observations", f"-j{args.jobs}",
                                  f"-Dtest-results={run_dir / 'tests'}"]),

@@ -60,8 +60,6 @@ const Keyword = enum {
     inherited,
     xfail,
     print,
-    tran,
-    onoise,
     @"discipline-resolution",
     display,
     @"fd-exempt",
@@ -285,18 +283,6 @@ pub fn parse(arena: Allocator, source: []const u8) Error!Directives {
                 // The whole rest of the line is the reason: prose for a human.
                 if (rest.len == 0) return error.BadSyntax;
                 d.xfail = try arena.dupe(u8, rest);
-            },
-            .tran => {
-                const v = try parseNumbers(arena, rest);
-                if (v.len != 2) return error.BadSyntax;
-                for (v) |e| if (!(e > 0) or !std.math.isFinite(e)) return error.BadSyntax;
-                d.tran = .{ v[0], v[1] };
-            },
-            .onoise => {
-                const at = std.mem.findScalar(u8, rest, '=') orelse return error.BadSyntax;
-                const name = try unknownName(arena, std.mem.trim(u8, rest[0..at], " \t"));
-                if (name.len == 0) return error.BadSyntax;
-                d.onoise = .{ .name = try arena.dupe(u8, name), .values = try parseNumbers(arena, rest[at + 1 ..]) };
             },
             // §7.4.4's mode, as `vera --discipline-resolution=` selects it.
             .@"discipline-resolution" => d.discipline_resolution = std.meta.stringToEnum(@TypeOf(d.discipline_resolution), rest) orelse return error.BadSyntax,
@@ -743,8 +729,6 @@ test "every keyword has a well-formed line, and its empty operand is a flag or r
             .inherited => .{ .good = "//! inherited IEEE 1364-2005 18.1", .empty = error.BadLrmSection },
             .xfail => .{ .good = "//! xfail reason", .empty = error.BadSyntax },
             .print => .{ .good = "//! print none", .empty = error.BadSyntax },
-            .tran => .{ .good = "//! tran 1n, 10n", .empty = error.BadSyntax },
-            .onoise => .{ .good = "//! onoise V(out) = 1, 10", .empty = error.BadSyntax },
             .@"discipline-resolution" => .{ .good = "//! discipline-resolution detail", .empty = error.BadSyntax },
             .display => .{ .good = "//! display record", .empty = error.BadSyntax },
             .@"fd-exempt" => .{ .good = "//! fd-exempt a vera_nodiff region", .empty = error.BadSyntax },

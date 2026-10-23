@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **`zig build test-spice`** runs the `.sp` decks on ESPice and grades its
+  CSV against each deck's oracle. ESPice is `build.zig.zon`'s lazy `espice`
+  dependency, built with `--fork .` so that its devices are compiled by this
+  tree's compiler, or an installed espice with `-Despice=PATH`, CPU or GPU.
+  Unknown `--` arguments reach espice (`-- --backend=cuda`). The pin is
+  ESPice ec53a724; the decks also need what ESPice is adding for them (a
+  repeatable `-I DIR` for `.hdl` includes, the operating-point cold start
+  seeded from a device's `u_nodeset`, and `noise_table`/`noise_table_log`
+  PSDs, `PsdTerm.coeff` and §4.6.4.6 correlation in its noise analysis), so
+  `test-spice` passes on the first ESPice commit that carries them, which the
+  next release pins.
+- `lib/sim/spice/` (the one-device copy of ESPice's CPU solver) and the
+  `//! tran` / `//! onoise` testbench directives are gone: a testbench drives
+  one device, and a circuit is a deck ESPice runs.
+  `ch09_system_tasks/bound_step_below_minimum_step.va` went with them
+  (§9.17.2's minimum-step floor is the simulator's).
 - `Instance.systf` exists only in a device that declares `systf_calls`: 8 bytes
   fewer per instance of every other device (`Lowered.Uses.systf`).
 - `Setup` holds a copy of every card value `eval` reads, beside the derived
