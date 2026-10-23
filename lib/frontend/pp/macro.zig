@@ -326,7 +326,7 @@ const MacroArgs = struct { args: []const []const u8, end: usize };
 /// string literals and escaped identifiers are opaque. A closer that does not
 /// match its opener, or a missing `)`, is E0120. The arguments slice `text`;
 /// the list is on `pp.scratch`. Asserts that `text[lparen]` is `(`.
-pub fn macroArgs(pp: *Pp, text: []const u8, lparen: usize, at: usize, name: []const u8) Error!MacroArgs {
+fn macroArgs(pp: *Pp, text: []const u8, lparen: usize, at: usize, name: []const u8) Error!MacroArgs {
     std.debug.assert(text[lparen] == '(');
     var args: std.ArrayList([]const u8) = .empty;
     var opens: std.ArrayList(u8) = .empty;
@@ -391,7 +391,7 @@ fn oneLine(pp: *Pp, arg: []const u8) Error![]const u8 {
 /// Returns `body` with each whole-identifier formal replaced by its actual,
 /// on `pp.scratch`. Strings, escaped identifiers, numbers and the name after a
 /// '`' are never substituted into. Asserts one actual per formal.
-pub fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []const []const u8) Error![]const u8 {
+fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []const []const u8) Error![]const u8 {
     std.debug.assert(params.len == args.len);
     var out: std.ArrayList(u8) = .empty;
     try out.ensureTotalCapacity(pp.scratch, body.len);

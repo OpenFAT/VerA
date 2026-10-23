@@ -78,11 +78,17 @@ pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
         }
         if (c == '/' and i + 1 < src.len and src[i + 1] == '*') {
             const start = i;
-            i += 2;
-            while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) i += 1;
-            // Offsets here index `src`, which runFile registered before this
-            // call precisely so this span resolves.
-            if (i + 1 >= src.len) return pp.fail(pp.spanAt(start, start + 2), .E0102, "", .{});
+            // The `*` of the first `*/` past the opener: each `/` from the
+            // vectorized single-needle search, kept when a `*` precedes it.
+            var k = start + 2;
+            i = while (std.mem.findScalarPos(u8, src, k + 1, '/')) |slash| {
+                if (src[slash - 1] == '*') break slash - 1;
+                k = slash;
+            } else {
+                // Offsets here index `src`, which runFile registered before
+                // this call precisely so this span resolves.
+                return pp.fail(pp.spanAt(start, start + 2), .E0102, "", .{});
+            };
             // §2.2 makes a comment a token separator. A multi-line comment
             // separates through its newlines; a single-line one leaves a space,
             // or `1/*c*/2` would lex as 12. It fits: `/**/` is four bytes.
