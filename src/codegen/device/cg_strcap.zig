@@ -93,7 +93,7 @@ fn callCap(g: *Gen, c: Mir.Callee, args: []const Mir.Value) Error!u64 {
         .@"$str$repeat" => {
             assert(args.len == 2); // analog/expr.zig mints (copies, string)
             const k = g.an.foldConst(args[0], false) orelse return row;
-            const copies = std.math.lossyCast(u64, @max(k.f, 0));
+            const copies = std.math.lossyCast(u64, @max(k, 0));
             return @max(copies *| try cap(g, args[1]), row);
         },
         .@"$held_str" => return heldCap(g, gen_call.heldIdx(g, args)),

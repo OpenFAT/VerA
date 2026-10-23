@@ -106,7 +106,7 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
         var qv: std.ArrayList(Mir.Value) = .empty;
         var ql: std.ArrayList(u32) = .empty;
         // Two columns, not `insts.get` per row: the scan reads op and operand
-        // only, and a whole row is 29 bytes.
+        // only, and a whole row is 25 bytes.
         for (in.mir.insts.items(.op), in.mir.insts.items(.a)) |op, operand| {
             if (op != .path_prev and op != .path_acc) continue;
             const fam_v = if (op == .path_prev) &pv else &qv;

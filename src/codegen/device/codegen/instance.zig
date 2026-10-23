@@ -52,7 +52,7 @@ const hist_max: usize = 16384;
 fn histLen(self: *const Gen, i: usize) usize {
     const args = self.names.opArgs(self.mir, i);
     if (args.len < 3) return hist_len;
-    const md = (self.an.foldConst(args[2], true) orelse return hist_len).f;
+    const md = self.an.foldConst(args[2], true) orelse return hist_len;
     const want = md / hist_min_step + 2.0;
     if (!(want > @as(f64, @floatFromInt(hist_len)))) return hist_len;
     if (!(want < @as(f64, @floatFromInt(hist_max)))) return hist_max;
@@ -305,7 +305,7 @@ pub fn emitInstance(self: *Gen) Error!void {
             continue;
         }
         const init = self.an.foldConst(self.an.rv(h.init), true);
-        const v: f64 = if (init) |c| c.f else 0.0;
+        const v: f64 = init orelse 0.0;
         if (h.ty == .integer) {
             try self.w("    {s}: i64 = {d}, {s}\n", .{
                 // Saturating like every other fold-side real -> int cast: an
@@ -351,7 +351,7 @@ pub fn hasStatus(self: *const Gen) bool {
 /// constant, or 0 for an argument the site never set.
 fn statusVal(self: *Gen, v: Mir.Value) Error![]const u8 {
     if (v == .undef) return "0.0";
-    if (self.an.foldConst(v, false)) |c| return gen_file.fmtF64(self, c.f);
+    if (self.an.foldConst(v, false)) |c| return gen_file.fmtF64(self, c);
     const k = gen_dispatch.coreIdx(self, self.an.rv(v)).?;
     return self.arena.print("m.f{d}.val()", .{k});
 }
@@ -621,13 +621,13 @@ fn emitHeldArrayField(self: *Gen, h: Lowered.HeldVar, name: []const u8, comment:
     var all_zero = true;
     for (h.inits) |iv| {
         const c = self.an.foldConst(self.an.rv(iv), true) orelse continue;
-        if (c.f != 0.0) all_zero = false;
+        if (c != 0.0) all_zero = false;
     }
     if (all_zero) return self.w("    {s}: [{d}]{s} = @splat(0), {s}\n", .{ name, m.len, ty, comment });
     try self.w("    {s}: [{d}]{s} = .{{", .{ name, m.len, ty });
     for (0..m.len) |k| {
         const c = if (k < h.inits.len) self.an.foldConst(self.an.rv(h.inits[k]), true) else null;
-        const v: f64 = if (c) |x| x.f else 0.0;
+        const v: f64 = c orelse 0.0;
         if (k != 0) try self.w(", ", .{});
         if (m.ty == .integer) try self.w("{d}", .{std.math.lossyCast(i64, @round(v))}) else try self.w("{s}", .{try gen_file.fmtF64(self, v)});
     }

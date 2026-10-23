@@ -910,7 +910,7 @@ pub fn emitNextBreakpoint(self: *Gen) Error!void {
         if (@import("ir").op.enableArg(.timer)) |ei| {
             if (ei < args.len) {
                 if (self.an.foldConst(args[ei], false)) |c| {
-                    if (c.f == 0.0) continue;
+                    if (c == 0.0) continue;
                 } else if (try gen_host.f64Const(self, args[ei], 0, false)) |e| {
                     guard = e;
                 }

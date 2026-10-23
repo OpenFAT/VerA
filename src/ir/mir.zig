@@ -167,7 +167,7 @@ pub const Opcode = enum(u8) {
     /// `runtimeArrayIndex` encodes an invalid subscript as -1).
     fload,
     iload,
-    /// Array version `a` with element `b` set to `c`: a new version. An index
+    /// Array version `arr` with element `index` set to `value`: a new version. An index
     /// outside `0..len` writes nothing. Every version of one array shares one
     /// storage, so a version is dead once a store has been made from it; no
     /// pass may make one live again (if-conversion keeps any arm that stores).
@@ -193,28 +193,29 @@ pub fn opIsInteger(op: Opcode) bool {
     return opcode.get(op).int;
 }
 
-/// One instruction row. Fixed width; operands are Value/Block/StrId handles
-/// packed into a/b/c; `result` is the produced Value; `next` links within a block.
+/// One instruction row, 25 bytes across its SoA columns. Two operand words
+/// `a`/`b` hold Value/Block/StrId handles; a class with a third operand keeps
+/// its last two in `extra` at `b`, so the common unary/binary/phi row carries
+/// no dead word. `result` is the produced Value; `next` links within a block.
 ///
 /// Operand encoding per class (see `instData` for the decoded view):
 ///   unary   a = operand
 ///   binary  a = lhs, b = rhs
-///   ternary a = cond, b = then value, c = else value        (§4.2.12)
-///   phi     b = extra start, c = pair count (2 u32 per pair: block, value)
-///   branch  a = cond, b = then Block, c = else Block        (§5.8)
-///   jump    a = target Block                                (§5.9)
-///   call    a = Callee, b = extra start (the raw name's StrId, then the
-///           args), c = arg count
+///   ternary a = cond, b = extra start (then value, else value)   (§4.2.12)
+///   phi     a = pair count, b = extra start (2 u32 per pair: block, value)
+///   branch  a = cond, b = extra start (then Block, else Block)   (§5.8)
+///   jump    a = target Block                                     (§5.9)
+///   call    a = Callee | arg count << `callee_bits`, b = extra start (the
+///           raw name's StrId, then the args)
 ///   anew    a = array id (`Lowered.mem_arrays` index)                (§3.2.2)
-///           b = 0, or 1 + the `Lowered.timepoints` row whose cache fills
-///           it, c = that row's slot (VerA's `vera_timepoint`, §2.9)
+///           b = 0, or 1 + extra start (the `Lowered.timepoints` row whose
+///           cache fills it, then that row's slot; VerA's `vera_timepoint`, §2.9)
 ///   load    a = array version, b = flat index
-///   store   a = array version, b = flat index, c = value
+///   store   a = array version, b = extra start (flat index, value)
 pub const InstRow = struct {
     op: Opcode,
     a: u32 = 0,
     b: u32 = 0,
-    c: u32 = 0,
     result: Value = .undef,
     next: Inst = .none,
     /// The block whose `next` chain links this row. Never set by a caller:
@@ -225,6 +226,9 @@ pub const InstRow = struct {
     /// A cold column; `instData` does not read it.
     tok: u32 = no_tok,
 };
+
+/// Width of a call row's `Callee` field in `a`; the arg count sits above it.
+pub const callee_bits = @bitSizeOf(Callee);
 
 /// "This instruction has no AST origin", such as a constant the SSA builder
 /// materialised. Not 0, because token 0 is the first real token of the file.
@@ -283,9 +287,9 @@ pub const PhiPair = struct { block: Block, value: Value };
 // Row budgets, in bytes per row of each SoA table (psp103: 27,760
 // instructions, 23,859 values, 4,234 blocks). A new column has to move one of
 // these on purpose; docs/seams/s1-ircore.md at 2c3f565d has the narrower
-// shapes proposed.
+// shapes proposed (the `block` column and a 5-byte ValueRow are still open).
 comptime {
-    assert(std.MultiArrayList(InstRow).capacityInBytes(1) == 29);
+    assert(std.MultiArrayList(InstRow).capacityInBytes(1) == 25);
     assert(std.MultiArrayList(ValueRow).capacityInBytes(1) == 9);
     assert(std.MultiArrayList(BlockRow).capacityInBytes(1) == 8);
     assert(@sizeOf(PhiPair) == 8); // two `extra` words
@@ -736,7 +740,8 @@ fn addResultInst(self: *Mir, gpa: std.mem.Allocator, block: Block, row: InstRow)
 }
 
 /// Appends a value-producing instruction to `block` and returns its result.
-/// Invalidates every `InstIterator` (each `emit*` appends to `insts`).
+/// Invalidates every `InstIterator` (each `emit*` appends to `insts`) and,
+/// for a ternary or store, the `args` of every earlier `instData` call view.
 /// Asserts that `ops` matches `op`'s class (see `InstRow`'s encoding table);
 /// phi, branch, jump, call and anew have their own builders.
 pub fn emit(self: *Mir, gpa: std.mem.Allocator, block: Block, op: Opcode, ops: []const Value) !Value {
@@ -749,12 +754,12 @@ pub fn emit(self: *Mir, gpa: std.mem.Allocator, block: Block, op: Opcode, ops: [
         .load => ops.len == 2,
         .phi, .branch, .jump, .call, .anew => false, // dedicated builders
     });
-    return self.addResultInst(gpa, block, .{
-        .op = op,
-        .a = @backingInt(ops[0]),
-        .b = if (ops.len > 1) @backingInt(ops[1]) else 0,
-        .c = if (ops.len > 2) @backingInt(ops[2]) else 0,
-    });
+    const b: u32 = switch (ops.len) {
+        1 => 0,
+        2 => @backingInt(ops[1]),
+        else => try self.addExtra(gpa, &.{ @backingInt(ops[1]), @backingInt(ops[2]) }),
+    };
+    return self.addResultInst(gpa, block, .{ .op = op, .a = @backingInt(ops[0]), .b = b });
 }
 
 /// Returns a fresh version of §3.2.2 memory-backed array `array` (see `Opcode.anew`).
@@ -763,22 +768,20 @@ pub fn emitAnew(self: *Mir, gpa: std.mem.Allocator, block: Block, array: u32) !V
 }
 
 /// Returns a version of `array` filled from slot `slot` of `vera_timepoint`
-/// statement `tp`'s cache (`Lowered.TpBlock`).
+/// statement `tp`'s cache (`Lowered.TpBlock`). Invalidates earlier `instData`
+/// call `args`.
 pub fn emitAnewCached(self: *Mir, gpa: std.mem.Allocator, block: Block, array: u32, tp: u32, slot: u32) !Value {
-    return self.addResultInst(gpa, block, .{ .op = .anew, .a = array, .b = tp + 1, .c = slot });
+    const start = try self.addExtra(gpa, &.{ tp, slot });
+    return self.addResultInst(gpa, block, .{ .op = .anew, .a = array, .b = start + 1 });
 }
 
 /// Appends a §5.8 two-way branch, the block's terminator. Asserts that both
-/// targets are blocks of this Mir.
+/// targets are blocks of this Mir. Invalidates earlier `instData` call `args`.
 pub fn emitBranch(self: *Mir, gpa: std.mem.Allocator, block: Block, cond: Value, then_block: Block, else_block: Block) !Inst {
     assert(@backingInt(then_block) < self.blockCount());
     assert(@backingInt(else_block) < self.blockCount());
-    return self.addInst(gpa, block, .{
-        .op = .branch,
-        .a = @backingInt(cond),
-        .b = @backingInt(then_block),
-        .c = @backingInt(else_block),
-    });
+    const start = try self.addExtra(gpa, &.{ @backingInt(then_block), @backingInt(else_block) });
+    return self.addInst(gpa, block, .{ .op = .branch, .a = @backingInt(cond), .b = start });
 }
 
 /// Appends a §5.9 unconditional jump, the block's terminator. Asserts that
@@ -792,14 +795,16 @@ pub fn emitJump(self: *Mir, gpa: std.mem.Allocator, block: Block, target: Block)
 /// ch9 system function) and returns its result. The one place a name becomes
 /// a `Callee`; the raw name is kept for `.systf`. Invalidates every
 /// `InstIterator` and the `args` of every earlier `instData` call view.
+/// Asserts that `args` fits the count field (`callee_bits` below 32).
 pub fn emitCall(self: *Mir, gpa: std.mem.Allocator, block: Block, name: StrId, args: []const Value) !Value {
+    assert(args.len < 1 << (32 - callee_bits));
     const start = try self.addExtra(gpa, &.{@backingInt(name)});
     _ = try self.addExtra(gpa, @ptrCast(args));
+    const tag: u32 = @backingInt(Callee.fromName(self.strings.get(name)));
     return self.addResultInst(gpa, block, .{
         .op = .call,
-        .a = @backingInt(Callee.fromName(self.strings.get(name))),
+        .a = tag | @as(u32, @intCast(args.len)) << callee_bits,
         .b = start,
-        .c = @intCast(args.len),
     });
 }
 
@@ -808,7 +813,7 @@ pub fn emitCall(self: *Mir, gpa: std.mem.Allocator, block: Block, name: StrId, a
 /// Invalidates every `InstIterator` and earlier `instData` call `args`.
 pub fn emitPhi(self: *Mir, gpa: std.mem.Allocator, block: Block, pairs: []const PhiPair) !Value {
     const start = try self.addExtraPairs(gpa, pairs);
-    return self.addResultInst(gpa, block, .{ .op = .phi, .b = start, .c = @intCast(pairs.len) });
+    return self.addResultInst(gpa, block, .{ .op = .phi, .a = @intCast(pairs.len), .b = start });
 }
 
 /// Replaces a phi's operand list (`sealBlock` fills incomplete phis).
@@ -819,8 +824,8 @@ pub fn setPhiPairs(self: *Mir, gpa: std.mem.Allocator, inst: Inst, pairs: []cons
     // u32s per filled phi. Compact the pool only if `extra` shows in a profile.
     assert(self.insts.items(.op)[@backingInt(inst)] == .phi);
     const start = try self.addExtraPairs(gpa, pairs);
+    self.insts.items(.a)[@backingInt(inst)] = @intCast(pairs.len);
     self.insts.items(.b)[@backingInt(inst)] = start;
-    self.insts.items(.c)[@backingInt(inst)] = @intCast(pairs.len);
 }
 
 /// Returns every column of `inst`, the cold `tok` and `next` included; a hot
@@ -851,17 +856,17 @@ pub fn instResult(self: *const Mir, inst: Inst) Value {
 }
 
 /// Returns the decoded view of `inst`. A call's `args` borrows `extra` and is
-/// invalidated by any later append to the pool. Reads only the `op`/`a`/`b`/`c`
-/// columns.
+/// invalidated by any later append to the pool. Reads only the `op`/`a`/`b`
+/// columns and `extra`.
 pub fn instData(self: *const Mir, inst: Inst) InstData {
     const i = @backingInt(inst);
     const cols = self.insts.slice();
-    const row: struct { op: Opcode, a: u32, b: u32, c: u32 } = .{
+    const row: struct { op: Opcode, a: u32, b: u32 } = .{
         .op = cols.items(.op)[i],
         .a = cols.items(.a)[i],
         .b = cols.items(.b)[i],
-        .c = cols.items(.c)[i],
     };
+    const x = self.extra.items;
     return switch (opClass(row.op)) {
         .unary => .{ .unary = .{ .op = row.op, .operand = @fromBackingInt(@intCast(row.a)) } },
         .binary => .{ .binary = .{
@@ -871,30 +876,30 @@ pub fn instData(self: *const Mir, inst: Inst) InstData {
         } },
         .ternary => .{ .ternary = .{
             .cond = @fromBackingInt(@intCast(row.a)),
-            .then_val = @fromBackingInt(@intCast(row.b)),
-            .else_val = @fromBackingInt(@intCast(row.c)),
+            .then_val = @fromBackingInt(@intCast(x[row.b])),
+            .else_val = @fromBackingInt(@intCast(x[row.b + 1])),
         } },
-        .phi => .{ .phi = .{ .start = row.b, .count = row.c } },
+        .phi => .{ .phi = .{ .start = row.b, .count = row.a } },
         .branch => .{ .branch = .{
             .cond = @fromBackingInt(@intCast(row.a)),
-            .then_block = @fromBackingInt(@intCast(row.b)),
-            .else_block = @fromBackingInt(@intCast(row.c)),
+            .then_block = @fromBackingInt(@intCast(x[row.b])),
+            .else_block = @fromBackingInt(@intCast(x[row.b + 1])),
         } },
         .jump => .{ .jump = .{ .target = @fromBackingInt(@intCast(row.a)) } },
         .call => .{
             .call = .{
-                .callee = @fromBackingInt(@intCast(row.a)),
-                .name = self.strings.get(@fromBackingInt(@intCast(self.extra.items[row.b]))),
+                .callee = @fromBackingInt(@as(u8, @truncate(row.a))),
+                .name = self.strings.get(@fromBackingInt(@intCast(x[row.b]))),
                 // Borrowed slice into the payload pool; invalidated by further appends.
-                .args = @ptrCast(self.extra.items[row.b + 1 ..][0..row.c]),
+                .args = @ptrCast(x[row.b + 1 ..][0 .. row.a >> callee_bits]),
             },
         },
-        .anew => .{ .anew = .{ .array = row.a, .tp = if (row.b == 0) null else .{ .block = row.b - 1, .slot = row.c } } },
+        .anew => .{ .anew = .{ .array = row.a, .tp = if (row.b == 0) null else .{ .block = x[row.b - 1], .slot = x[row.b] } } },
         .load => .{ .load = .{ .op = row.op, .arr = @fromBackingInt(@intCast(row.a)), .index = @fromBackingInt(@intCast(row.b)) } },
         .store => .{ .store = .{
             .arr = @fromBackingInt(@intCast(row.a)),
-            .index = @fromBackingInt(@intCast(row.b)),
-            .value = @fromBackingInt(@intCast(row.c)),
+            .index = @fromBackingInt(@intCast(x[row.b])),
+            .value = @fromBackingInt(@intCast(x[row.b + 1])),
         } },
     };
 }
@@ -904,7 +909,7 @@ pub fn instData(self: *const Mir, inst: Inst) InstData {
 pub fn phiPair(self: *const Mir, inst: Inst, i: u32) PhiPair {
     const n = @backingInt(inst);
     assert(self.insts.items(.op)[n] == .phi);
-    assert(i < self.insts.items(.c)[n]);
+    assert(i < self.insts.items(.a)[n]);
     const at = self.insts.items(.b)[n] + i * 2;
     return .{
         .block = @fromBackingInt(@intCast(self.extra.items[at])),

@@ -313,10 +313,10 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
         }
         // A planner literal (`UnitPlan.literal`) is a leaf whose operands the
         // unit never planned: its number, whatever they would name.
-        if (v != .undef and self.plan.literal(v)) return try gen_file.fmtF64(self, self.an.foldConst(v, false).?.f);
+        if (v != .undef and self.plan.literal(v)) return try gen_file.fmtF64(self, self.an.foldConst(v, false).?);
         // Fold a literal chain to one number unless it would swallow a slot.
         if (!gen_render.foldHidesSlot(self, v, 0)) {
-            if (self.an.foldConst(v, false)) |k| return try gen_file.fmtF64(self, k.f);
+            if (self.an.foldConst(v, false)) |k| return try gen_file.fmtF64(self, k);
         }
     } else {
         // A real parameter may depend on integer arithmetic. Evaluate that
@@ -325,7 +325,7 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
             const integer = try i64Const(self, v, depth + 1) orelse return null;
             return try self.arena.print("@as(f64, @floatFromInt({s}))", .{integer});
         }
-        if (self.an.foldConst(v0, false)) |k| return try gen_file.fmtF64(self, k.f);
+        if (self.an.foldConst(v0, false)) |k| return try gen_file.fmtF64(self, k);
     }
     switch (self.mir.valueDef(v)) {
         .param_ref => |p| {

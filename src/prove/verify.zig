@@ -185,18 +185,23 @@ fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
             switch (class) {
                 .unary => if (row.a >= nv) return bad(.handle, b, inst, "an operand names no Value"),
                 .binary, .load => if (row.a >= nv or row.b >= nv) return bad(.handle, b, inst, "an operand names no Value"),
-                .ternary, .store => if (row.a >= nv or row.b >= nv or row.c >= nv) return bad(.handle, b, inst, "an operand names no Value"),
+                .ternary, .store => {
+                    if (@as(u64, row.b) + 2 > extra.len) return bad(.handle, b, inst, "the operands run past `extra`");
+                    if (row.a >= nv or extra[row.b] >= nv or extra[row.b + 1] >= nv) return bad(.handle, b, inst, "an operand names no Value");
+                },
                 .anew => {
                     if (row.a >= lowered.mem_arrays.items.len) return bad(.table, b, inst, "`anew` names no `mem_arrays` row");
                     if (row.b != 0) {
+                        if (@as(u64, row.b) + 1 > extra.len) return bad(.handle, b, inst, "the `anew` slot runs past `extra`");
+                        const tp = extra[row.b - 1];
                         const tps = lowered.timepoints.items;
-                        if (row.b - 1 >= tps.len or row.c >= tps[row.b - 1].slots.len)
+                        if (tp >= tps.len or extra[row.b] >= tps[tp].slots.len)
                             return bad(.table, b, inst, "`anew` names no `timepoints` slot");
                     }
                 },
                 .phi => {
-                    if (@as(u64, row.b) + 2 * @as(u64, row.c) > extra.len) return bad(.handle, b, inst, "the phi's pairs run past `extra`");
-                    for (0..row.c) |k| {
+                    if (@as(u64, row.b) + 2 * @as(u64, row.a) > extra.len) return bad(.handle, b, inst, "the phi's pairs run past `extra`");
+                    for (0..row.a) |k| {
                         const p = mir.phiPair(inst, @intCast(k));
                         if (@backingInt(p.block) >= nb) return bad(.handle, b, inst, "a phi pair names no block");
                         if (@backingInt(p.value) >= nv) return bad(.handle, b, inst, "a phi pair names no Value");
@@ -204,18 +209,22 @@ fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
                 },
                 .branch => {
                     if (row.a >= nv) return bad(.handle, b, inst, "the condition names no Value");
-                    if (row.b >= nb or row.c >= nb) return bad(.handle, b, inst, "a branch target names no block");
-                    if (row.b == 0 or row.c == 0) return bad(.terminator, b, inst, "an edge into the entry block");
+                    if (@as(u64, row.b) + 2 > extra.len) return bad(.handle, b, inst, "the branch targets run past `extra`");
+                    const then_b = extra[row.b];
+                    const else_b = extra[row.b + 1];
+                    if (then_b >= nb or else_b >= nb) return bad(.handle, b, inst, "a branch target names no block");
+                    if (then_b == 0 or else_b == 0) return bad(.terminator, b, inst, "an edge into the entry block");
                 },
                 .jump => {
                     if (row.a >= nb) return bad(.handle, b, inst, "the jump target names no block");
                     if (row.a == 0) return bad(.terminator, b, inst, "an edge into the entry block");
                 },
                 .call => {
-                    if (row.a >= n_callees) return bad(.handle, b, inst, "not a `Callee` tag");
-                    if (@as(u64, row.b) + 1 + row.c > extra.len) return bad(.handle, b, inst, "the call's payload runs past `extra`");
+                    const n_args = row.a >> Mir.callee_bits;
+                    if (@as(u8, @truncate(row.a)) >= n_callees) return bad(.handle, b, inst, "not a `Callee` tag");
+                    if (@as(u64, row.b) + 1 + n_args > extra.len) return bad(.handle, b, inst, "the call's payload runs past `extra`");
                     if (extra[row.b] >= mir.strings.strings.items.len) return bad(.handle, b, inst, "the call's name is not an interned string");
-                    for (extra[row.b + 1 ..][0..row.c]) |arg| if (arg >= nv) return bad(.handle, b, inst, "an argument names no Value");
+                    for (extra[row.b + 1 ..][0..n_args]) |arg| if (arg >= nv) return bad(.handle, b, inst, "an argument names no Value");
                     const d = mir.instData(inst).call;
                     if (Mir.Callee.fromName(d.name) != d.callee) return bad(.callee, b, inst, "the `Callee` is not the one the call's name resolves to");
                 },
@@ -498,7 +507,8 @@ const cases = [_]struct { want: ?Invariant, name: []const u8, f: Breaker }{
     }.f },
     .{ .want = .callee, .name = "a callee its name does not resolve to", .f = struct {
         fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.a)[@backingInt(s.ddx)] = @backingInt(Mir.Callee.limexp);
+            const a = &mir.insts.items(.a)[@backingInt(s.ddx)];
+            a.* = a.* >> Mir.callee_bits << Mir.callee_bits | @backingInt(Mir.Callee.limexp);
         }
     }.f },
     .{
@@ -577,7 +587,7 @@ const cases = [_]struct { want: ?Invariant, name: []const u8, f: Breaker }{
     }.f },
     .{ .want = .handle, .name = "a branch target names no block", .f = struct {
         fn f(_: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
-            mir.insts.items(.c)[@backingInt(mir.blockLast(.entry))] = 99;
+            mir.extra.items[mir.insts.items(.b)[@backingInt(mir.blockLast(.entry))] + 1] = 99;
         }
     }.f },
     .{ .want = .handle, .name = "a call's callee is not a `Callee` tag", .f = struct {
@@ -648,7 +658,8 @@ const cases = [_]struct { want: ?Invariant, name: []const u8, f: Breaker }{
     }.f },
     .{ .want = .unknown, .name = "a ddx with no lane argument", .f = struct {
         fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.c)[@backingInt(s.ddx)] = 1;
+            const a = &mir.insts.items(.a)[@backingInt(s.ddx)];
+            a.* = @as(u8, @truncate(a.*)) | @as(u32, 1) << Mir.callee_bits;
         }
     }.f },
     // What the header leaves out on purpose: an unreachable block is never

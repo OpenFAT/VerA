@@ -712,7 +712,7 @@ pub const Prover = struct {
                     const taken = @backingInt(br.then_block) == b;
                     if (taken or @backingInt(br.else_block) == b) {
                         if (self.an.foldConst(br.cond, false)) |c| {
-                            if ((c.f != 0) != taken) self.domain_active = false;
+                            if ((c != 0) != taken) self.domain_active = false;
                         }
                         var raw: [2]Fact = undefined;
                         try self.pushFacts(self.condFacts(br.cond, taken, &raw));
