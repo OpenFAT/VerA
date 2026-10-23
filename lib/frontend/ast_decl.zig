@@ -622,6 +622,9 @@ pub const PrimTerm = struct {
 /// parse hoisted out of a generate block is not counted, so the numbers match
 /// a digital parse's, which keeps it on its block; it is listed with its
 /// type name alone.
+///
+/// The result, every generated name and the scratch map all live in `a`,
+/// and nothing is freed: pass an arena.
 pub fn primTerms(a: std.mem.Allocator, file: *const SourceFile, m: *const ModuleDecl) std.mem.Allocator.Error![]PrimTerm {
     var out: std.ArrayList(PrimTerm) = .empty;
     // Unnamed instances seen per type name, for `<gatetype>$<n>`.
@@ -678,6 +681,8 @@ pub fn primTerms(a: std.mem.Allocator, file: *const SourceFile, m: *const Module
 /// out like the module's lists `primTerms` read (`row` is `t.row`, or the
 /// same row of a flattened list). A `buf`/`not` input re-points every output
 /// row of its instance (one `main_tok`), since `primTerms` lists it once.
+/// A changed `ins` or `terms` list is a fresh copy in `a` (the old one may
+/// be shared and is never written or freed); `out` is written in place.
 pub fn setPrimTerm(a: std.mem.Allocator, gates: []GateInst, pulls: []PullInst, switches: []SwitchInst, t: PrimTerm, row: usize, x: ExprId) std.mem.Allocator.Error!void {
     switch (t.list) {
         .gate => {
@@ -907,6 +912,8 @@ pub const DisciplineDecl = struct {
 
     /// §3.6.2.2 the written domain; `.unspecified` when none was written.
     pub const Domain = enum(u8) { unspecified, continuous, discrete };
+    /// One §3.6.2.3 `potential.attr = expr;` / `flow.attr = expr;`: the half
+    /// whose nature it overrides, and the attribute.
     pub const Override = struct {
         which: PotentialOrFlow,
         attr: NatureAttr,
@@ -980,6 +987,7 @@ pub const ConnectInsertion = struct {
     overrides: ?PortOverrides = null,
     main_tok: u32 = 0,
 
+    /// §7.7.4 `connect_mode`; see `mode`.
     pub const Mode = enum(u8) { unspecified, merged, split };
     /// A.1.8 connect_port_overrides: two disciplines, each optionally
     /// directed. The grammar fixes the legal direction pairings
