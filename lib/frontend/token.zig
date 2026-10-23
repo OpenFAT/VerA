@@ -93,9 +93,10 @@ pub const Tag = enum(u8) {
     /// IEEE 1364 §19.6 `resetall, passed through so the parser can refuse one
     /// "within a module or UDP declaration".
     dir_resetall, // '`resetall'
-    /// IEEE 1364 §19.2 `default_nettype and §19.9 `unconnected_drive and
-    /// `nounconnected_drive, applied by the preprocessor and passed through
-    /// (word alone) so the parser can refuse one inside a module.
+    /// IEEE 1364 §19.2 `default_nettype, §19.9 `unconnected_drive and
+    /// `nounconnected_drive, and LRM §10.3 `default_transition: applied by the
+    /// preprocessor and passed through (word alone) so the parser can refuse
+    /// one inside a module.
     dir_outside_module,
 
     // ---- keywords: §2.8.2, annex B -------------------------------------------
@@ -325,7 +326,7 @@ pub const Tag = enum(u8) {
 
     /// Returns the source spelling, for diagnostics. `null` when the tag does not
     /// imply the text (identifiers, literals, `kw_reserved`); slice the source then.
-    /// `.dir_outside_module` stands for three directives and returns a
+    /// `.dir_outside_module` stands for four directives and returns a
     /// description instead of one spelling.
     pub fn lexeme(tag: Tag) ?[]const u8 {
         return switch (tag) {
