@@ -27,6 +27,7 @@ const lower_expr = @import("expr.zig");
 const lower_hier_name = @import("hier_name.zig");
 const lower_node = @import("node.zig");
 const lower_shape = @import("shape.zig");
+const Ssa = @import("ssa.zig");
 const Ast = @import("frontend").Ast;
 const Elaborate = @import("elab").Elaborate;
 const Const = Lower.Const;
@@ -178,17 +179,12 @@ pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void 
     // reversed spelling accumulates into the same source with the sign flipped.
     // Checked AFTER §7.3.2.1, which is about the value the source names and
     // does not care which way the branch was written.
-    if (split.resist) |v0| {
-        const v = if (target.neg) try self.emit(.fneg, &.{v0}) else v0;
-        const old = try self.builder.readVariable(acc.resist, self.cur);
-        try self.builder.writeVariable(acc.resist, self.cur, try self.emit(.fadd, &.{ old, v }));
-        if (part) |pa| try self.builder.writeVariable(pa.resist, self.cur, try self.emit(.fadd, &.{ try self.builder.readVariable(pa.resist, self.cur), v }));
-    }
-    if (split.react) |v0| {
-        const v = if (target.neg) try self.emit(.fneg, &.{v0}) else v0;
-        const old = try self.builder.readVariable(acc.react, self.cur);
-        try self.builder.writeVariable(acc.react, self.cur, try self.emit(.fadd, &.{ old, v }));
-        if (part) |pa| try self.builder.writeVariable(pa.react, self.cur, try self.emit(.fadd, &.{ try self.builder.readVariable(pa.react, self.cur), v }));
+    inline for (.{ "resist", "react" }) |half| {
+        if (@field(split, half)) |v0| {
+            const v = if (target.neg) try self.emit(.fneg, &.{v0}) else v0;
+            try addInto(self, @field(acc, half), v);
+            if (part) |pa| try addInto(self, @field(pa, half), v);
+        }
     }
     // §5.6.1.2 each reactive term is also a charge SITE of its own, so the
     // host can tape it apart from the others on the same row.
@@ -239,6 +235,12 @@ pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void 
         }
         self.out.contributions.items[idx].noise_srcs = srcs.items;
     }
+}
+
+/// `place += v` in the current block.
+fn addInto(self: *Lower, place: Ssa.Place, v: Mir.Value) Oom!void {
+    const old = try self.builder.readVariable(place, self.cur);
+    try self.builder.writeVariable(place, self.cur, try self.emit(.fadd, &.{ old, v }));
 }
 
 /// §6.3.6 the double-scaling misuse: "The first example, badres, misuses the
@@ -1089,17 +1091,24 @@ pub fn unitAccum(self: *Lower, row: u32, unit: u32) Oom!Accum {
 
 fn unitAccumSeeded(self: *Lower, row: u32, unit: u32) Oom!Accum {
     const gop = try self.unit_accum.getOrPut(self.arena, .{ .row = row, .unit = unit });
-    if (!gop.found_existing) {
-        gop.value_ptr.* = .{
-            .resist = self.builder.newPlace(),
-            .react = self.builder.newPlace(),
-            .wrote = self.builder.newPlace(),
-        };
-        try self.builder.writeVariable(gop.value_ptr.resist, .entry, .f_zero);
-        try self.builder.writeVariable(gop.value_ptr.react, .entry, .f_zero);
-        try self.builder.writeVariable(gop.value_ptr.wrote, .entry, .f_zero);
-    }
+    if (!gop.found_existing) gop.value_ptr.* = try newAccum(self);
     return gop.value_ptr.*;
+}
+
+/// Three fresh places, each seeded 0 in the entry block, which dominates
+/// everything: a contribution that only happens on one arm of an `if` reads 0
+/// on the other (§5.8), and per §5.6.1.3 retains nothing there, which is what
+/// `wrote` starts as.
+fn newAccum(self: *Lower) Oom!Accum {
+    const acc: Accum = .{
+        .resist = self.builder.newPlace(),
+        .react = self.builder.newPlace(),
+        .wrote = self.builder.newPlace(),
+    };
+    try self.builder.writeVariable(acc.resist, .entry, .f_zero);
+    try self.builder.writeVariable(acc.react, .entry, .f_zero);
+    try self.builder.writeVariable(acc.wrote, .entry, .f_zero);
+    return acc;
 }
 
 /// Appends a contribution and its accumulator; the two lists stay parallel, so
@@ -1118,18 +1127,7 @@ fn newContrib(self: *Lower, kind: Kind, t: Target, tok: u32) Oom!u32 {
         .unit = self.cur_unit,
     });
     if (kind == .indirect) try self.contrib_state.indirect.put(self.arena, pairKey(t.hi, t.lo), {});
-    const acc: Accum = .{
-        .resist = self.builder.newPlace(),
-        .react = self.builder.newPlace(),
-        .wrote = self.builder.newPlace(),
-    };
-    // Seeded in the entry block, which dominates everything: a contribution
-    // that only happens on one arm of an `if` reads 0 on the other (§5.8) —
-    // and per §5.6.1.3 retains nothing there, which is what `wrote` starts as.
-    try self.builder.writeVariable(acc.resist, .entry, .f_zero);
-    try self.builder.writeVariable(acc.react, .entry, .f_zero);
-    try self.builder.writeVariable(acc.wrote, .entry, .f_zero);
-    try self.accum.append(self.arena, acc);
+    try self.accum.append(self.arena, try newAccum(self));
     assert(self.accum.items.len == idx + 1);
     assert(self.out.contributions.items.len == idx + 1);
     return idx;
@@ -1345,12 +1343,7 @@ pub fn lteValue(self: *Lower, a: Ast.LteAttr) Oom!bool {
 /// Does this subtree contain a `ddt` (§4.5.3)? Every child edge is searched
 /// (`ExprStore.children`), assignment-pattern elements included.
 fn containsDdt(self: *const Lower, e: Ast.ExprId) bool {
-    if (e == .none) return false;
-    const ex = &self.file.exprs;
-    if (ex.tag(e) == .filter_call and self.file.strings.eql(ex.strOf(e), "ddt")) return true;
-    var buf: [3]Ast.ExprId = undefined;
-    for (ex.children(e, &buf)) |c| if (containsDdt(self, c)) return true;
-    return false;
+    return firstDdt(self, e) != .none;
 }
 
 /// Is `e` a ddt on the linear spine `lowerReactive` strips: one `ddt` under

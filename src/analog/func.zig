@@ -89,11 +89,9 @@ pub fn scanCallSites(
         l: *Lower,
         fns: if (limits) void else []const Ast.FuncDecl,
         out: if (limits) void else *std.ArrayList(u32),
-        /// Visits one expression edge.
         pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {
             try scanCallSitesExpr(w.l, e, limits, w.fns, w.out);
         }
-        /// Visits one nested statement.
         pub fn stmt(w: @This(), s: Ast.StmtId) Oom!void {
             try scanCallSites(w.l, s, limits, w.fns, w.out);
         }
