@@ -209,9 +209,12 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
         if (try gen_host.f64Const(self, res, 0, true)) |s| return self.b("S.con({s})", .{s});
     }
 
+    // Only unary, binary and select rows get here; a select's arms sit in
+    // `extra` (`Mir.InstRow`), and any other row has no third operand.
     const a: Mir.Value = @fromBackingInt(@intCast(row.a));
-    const b2: Mir.Value = @fromBackingInt(@intCast(row.b));
-    const c: Mir.Value = @fromBackingInt(@intCast(row.c));
+    const arms = if (op == .select) self.mir.instData(inst).ternary else null;
+    const b2: Mir.Value = if (arms) |t| t.then_val else @fromBackingInt(@intCast(row.b));
+    const c: Mir.Value = if (arms) |t| t.else_val else .undef;
 
     // §4.2.12 the conditional stays lazy by default: the prover treats the
     // condition as a guard, so `x > 0 ? ln(x) : 0` is accepted, and running

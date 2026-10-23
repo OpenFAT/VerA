@@ -282,9 +282,12 @@ fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool, budget: *u32) bo
                 .unary => return constFree(self, @fromBackingInt(@intCast(row.a)), depth + 1, env, budget),
                 .binary => return constFree(self, @fromBackingInt(@intCast(row.a)), depth + 1, env, budget) and
                     constFree(self, @fromBackingInt(@intCast(row.b)), depth + 1, env, budget),
-                .ternary => return constFree(self, @fromBackingInt(@intCast(row.a)), depth + 1, env, budget) and
-                    constFree(self, @fromBackingInt(@intCast(row.b)), depth + 1, env, budget) and
-                    constFree(self, @fromBackingInt(@intCast(row.c)), depth + 1, env, budget),
+                .ternary => {
+                    const d = self.mir.instData(inst).ternary;
+                    return constFree(self, d.cond, depth + 1, env, budget) and
+                        constFree(self, d.then_val, depth + 1, env, budget) and
+                        constFree(self, d.else_val, depth + 1, env, budget);
+                },
                 .call => {
                     const d = self.mir.instData(inst).call;
                     switch (d.callee) {

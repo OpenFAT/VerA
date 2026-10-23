@@ -198,9 +198,10 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
                 key.b = opnd(self, same, row.b) orelse continue;
             },
             .ternary => {
-                key.a = opnd(self, same, row.a) orelse continue;
-                key.b = opnd(self, same, row.b) orelse continue;
-                key.c = opnd(self, same, row.c) orelse continue;
+                const d = self.mir.instData(inst).ternary;
+                key.a = opnd(self, same, @backingInt(d.cond)) orelse continue;
+                key.b = opnd(self, same, @backingInt(d.then_val)) orelse continue;
+                key.c = opnd(self, same, @backingInt(d.else_val)) orelse continue;
             },
             .phi, .branch, .jump, .call, .anew, .load, .store => continue,
         }

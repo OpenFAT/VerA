@@ -37,9 +37,12 @@ pub fn eagerCostly(self: *Gen, v0: Mir.Value, depth: u32) bool {
         .unary => eagerCostly(self, @fromBackingInt(@intCast(row.a)), depth + 1),
         .binary => eagerCostly(self, @fromBackingInt(@intCast(row.a)), depth + 1) or
             eagerCostly(self, @fromBackingInt(@intCast(row.b)), depth + 1),
-        .ternary => eagerCostly(self, @fromBackingInt(@intCast(row.a)), depth + 1) or
-            eagerCostly(self, @fromBackingInt(@intCast(row.b)), depth + 1) or
-            eagerCostly(self, @fromBackingInt(@intCast(row.c)), depth + 1),
+        .ternary => blk: {
+            const d = self.mir.instData(def.inst_result).ternary;
+            break :blk eagerCostly(self, d.cond, depth + 1) or
+                eagerCostly(self, d.then_val, depth + 1) or
+                eagerCostly(self, d.else_val, depth + 1);
+        },
         // §3.2.2 a load is one bounds-checked memory read; its index is the
         // only inline operand.
         .load => eagerCostly(self, @fromBackingInt(@intCast(row.b)), depth + 1),
@@ -69,9 +72,12 @@ pub fn eagerSafe(self: *Gen, v0: Mir.Value, depth: u32) bool {
         .unary => eagerSafe(self, @fromBackingInt(@intCast(row.a)), depth + 1),
         .binary => eagerSafe(self, @fromBackingInt(@intCast(row.a)), depth + 1) and
             eagerSafe(self, @fromBackingInt(@intCast(row.b)), depth + 1),
-        .ternary => eagerSafe(self, @fromBackingInt(@intCast(row.a)), depth + 1) and
-            eagerSafe(self, @fromBackingInt(@intCast(row.b)), depth + 1) and
-            eagerSafe(self, @fromBackingInt(@intCast(row.c)), depth + 1),
+        .ternary => blk: {
+            const d = self.mir.instData(inst).ternary;
+            break :blk eagerSafe(self, d.cond, depth + 1) and
+                eagerSafe(self, d.then_val, depth + 1) and
+                eagerSafe(self, d.else_val, depth + 1);
+        },
         // §3.2.2 total: an index outside the array reads zero.
         .load => eagerSafe(self, @fromBackingInt(@intCast(row.b)), depth + 1),
         .branch, .jump, .call, .anew, .store => false,

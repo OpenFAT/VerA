@@ -319,7 +319,7 @@ const Scan = struct {
             else => return switch (Mir.opClass(row.op)) { // else: every other opcode is pure; its class names the operands
                 .unary => s.sv(@fromBackingInt(@intCast(row.a))),
                 .binary => s.sv(@fromBackingInt(@intCast(row.a))) and s.sv(@fromBackingInt(@intCast(row.b))),
-                .ternary => s.sv(@fromBackingInt(@intCast(row.a))) and s.sv(@fromBackingInt(@intCast(row.b))) and s.sv(@fromBackingInt(@intCast(row.c))),
+                .ternary => unreachable, // `.select`, the one ternary opcode, returned above
                 .phi, .branch, .jump, .call => false,
                 // §3.2.2 array storage is per evaluation: a setup root is one
                 // `Setup` scalar, and an array version is not one.
