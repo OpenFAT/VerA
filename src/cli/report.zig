@@ -1,6 +1,7 @@
 //! `vera`'s stderr report shared by `main.zig` and `cli/digital.zig`: a
 //! diagnostic bag -> rendered text or JSON. A source that could not be read
-//! is `vera.readFailed`'s. The messages are user-visible and frozen.
+//! is `vera.readFailed`'s. The messages are user-visible and frozen. No LRM
+//! clause: the format is `diag`'s.
 
 const std = @import("std");
 const vera = @import("vera");

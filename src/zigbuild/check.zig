@@ -1,7 +1,7 @@
 //! `--check`: generated device text in, a `zig build-obj -fno-emit-bin` of it
 //! beside the `contract` module out, as a verdict (null, or an exit status
-//! with its message on `err`). Moved from `src/main.zig` with the spine;
-//! the messages are user-visible and frozen.
+//! with its message on `err`). The messages are user-visible and frozen.
+//! No LRM clause: this checks VerA's own output against its own contract.
 
 const std = @import("std");
 const Io = std.Io;
@@ -49,22 +49,22 @@ pub fn typeCheck(
     var tmp = try cwd.openDir(io, ".zig-cache/vera-check", .{});
     defer tmp.close(io);
 
+    // Every name and argv string lives for this call only.
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
     const stem = std.fs.path.stem(in_path);
-    const dev_name = try gpa.print("{s}.device.zig", .{stem});
-    defer gpa.free(dev_name);
+    const dev_name = try arena.print("{s}.device.zig", .{stem});
     try tmp.writeFile(io, .{ .sub_path = dev_name, .data = device_zig });
 
     // The device is not the root: the root turns the contract's checks on
     // (`contract.validating`), which `--check` is for.
-    const root_name = try gpa.print("{s}.check.zig", .{stem});
-    defer gpa.free(root_name);
+    const root_name = try arena.print("{s}.check.zig", .{stem});
     try tmp.writeFile(io, .{ .sub_path = root_name, .data = check_root });
-    const contract_arg = try gpa.print("-Mcontract={s}", .{contract});
-    defer gpa.free(contract_arg);
-    const root_arg = try gpa.print("-Mroot=.zig-cache/vera-check/{s}", .{root_name});
-    defer gpa.free(root_arg);
-    const device_arg = try gpa.print("-Mdevice=.zig-cache/vera-check/{s}", .{dev_name});
-    defer gpa.free(device_arg);
+    const contract_arg = try arena.print("-Mcontract={s}", .{contract});
+    const root_arg = try arena.print("-Mroot=.zig-cache/vera-check/{s}", .{root_name});
+    const device_arg = try arena.print("-Mdevice=.zig-cache/vera-check/{s}", .{dev_name});
 
     // `--dep` applies to the NEXT `-M`, and the FIRST `-M` is the root module —
     // the ordering rule `buildArgv` in orchestrator.zig follows.
@@ -91,8 +91,7 @@ pub fn typeCheck(
 
     var buf: [1 << 16]u8 = undefined;
     var reader = child.stderr.?.readerStreaming(io, &buf);
-    var aw: Io.Writer.Allocating = .init(gpa);
-    defer aw.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
     _ = reader.interface.streamRemaining(&aw.writer) catch {};
 
     // Retired BEFORE `wait` reaps, because after the reap this pid belongs to

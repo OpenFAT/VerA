@@ -80,15 +80,15 @@ pub fn main(init: std.process.Init) !u8 {
 
     // Digital Verilog uses the shared frontend below. Other language families
     // need their own standard-conforming frontend and remain explicit refusals.
-    if (std.mem.eql(u8, std.fs.path.extension(in_path), ".sv")) {
+    const ext = std.fs.path.extension(in_path);
+    if (std.mem.eql(u8, ext, ".sv")) {
         var sv: diag.Bag = .init(gpa);
         defer sv.deinit(gpa);
         try sv.add(.parse, .E1104, .none, "`{s}` is an IEEE 1800 source", .{in_path});
         try report(&sv, err, cli.json, use_color);
         return 2;
     }
-    for ([_][]const u8{ ".vhd", ".vhdl" }) |ext| {
-        if (!std.mem.eql(u8, std.fs.path.extension(in_path), ext)) continue;
+    if (std.mem.eql(u8, ext, ".vhd") or std.mem.eql(u8, ext, ".vhdl")) {
         try err.print(
             "error: {s}: this language extension has no enabled compilation path\n",
             .{in_path},
@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
     defer gpa.free(source);
 
-    const digital_source = std.mem.eql(u8, std.fs.path.extension(in_path), ".v");
+    const digital_source = std.mem.eql(u8, ext, ".v");
     // `--sim=` names a language family, and the extension says which one the file is.
     if (cli.sim == .verilog and !digital_source) {
         try err.print("error: --sim=verilog compiles IEEE 1364 designs (.v); `{s}` is not one\n", .{in_path});

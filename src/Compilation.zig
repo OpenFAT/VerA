@@ -29,8 +29,8 @@ const Allocator = std.mem.Allocator;
 /// The VerA release (`contract.vera_version`), which every generated device
 /// carries and `vera --version` prints.
 pub const version = @import("kernels").vera_version;
-/// The compilation arena (`CompileResult.arena`); `src/main.zig` also keeps a
-/// `.v` design's tables in one.
+/// The compilation arena (`CompileResult.arena`); `src/cli/digital.zig` also
+/// keeps a `.v` design's tables in one.
 pub const BigArena = @import("base").BigArena;
 /// §10 preprocessing (`Preprocessor.process`), for callers that need the
 /// text without a compilation.

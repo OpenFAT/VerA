@@ -14,9 +14,7 @@ const assert = std.debug.assert;
 /// Asserts that `piece` is not empty.
 pub fn fileName(arena: Allocator, piece: []const u8) ![]const u8 {
     assert(piece.len > 0);
-    const name = try arena.print("shim_{s}.zig", .{piece});
-    assert(name.len == "shim_".len + piece.len + ".zig".len);
-    return name;
+    return arena.print("shim_{s}.zig", .{piece});
 }
 
 /// Returns the dyn-ABI export shim, which re-exports the device under the
