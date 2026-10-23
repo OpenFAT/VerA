@@ -199,8 +199,12 @@ pub const math_txt =
     \\    else => false, // else: every other target is a host CPU
     \\};
     \\const zSpecCc: std.builtin.CallingConvention = if (zSpec) .@"inline" else .auto;
-    \\/// `a` when `c`, else `b`. Both are arguments, so both are evaluated.
-    \\inline fn zPick(c: bool, a: anytype, b: @TypeOf(a)) @TypeOf(a) {
+    \\/// `a` when `c`, else `b`. Both are arguments, so both are evaluated. A
+    \\/// GPU picks with `S.sel`'s lane select: an `if` over two struct values
+    \\/// joins them through a pointer phi, which pins both arms' copies in
+    \\/// local memory (SROA cannot split them).
+    \\inline fn zPick(comptime S: type, c: bool, a: anytype, b: @TypeOf(a)) @TypeOf(a) {
+    \\    if (comptime zSpec) return S.sel(S.con(if (c) 1.0 else 0.0), a, b);
     \\    return if (c) a else b;
     \\}
     \\// §4.3.2 "Input values outside of the valid range for the operator shall

@@ -230,10 +230,10 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
             float_lanes.eagerSafe(self, b2, 0) and float_lanes.eagerSafe(self, c, 0))
         {
             if (!float_lanes.eagerCostly(self, b2, 0) and !float_lanes.eagerCostly(self, c, 0))
-                return renderSelEager(self, a, b2, c, res, false);
+                return renderSelEager(self, a, b2, c, res);
             if (float_lanes.perPoint(self, a)) {
                 try self.b("(if (comptime zSpec) ", .{});
-                try renderSelEager(self, a, b2, c, res, true);
+                try renderSelEager(self, a, b2, c, res);
                 try self.b(" else ", .{});
                 try renderSelLazy(self, a, b2, c, want, res);
                 return self.b(")", .{});
@@ -254,10 +254,10 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
     return renderOp(self, op, a, b2, self.an.vty[@backingInt(self.mir.instResult(inst))]);
 }
 
-/// A real select that runs both arms and picks. `force` (the GPU branch of a
-/// costly select) picks an integer-condition `S` arm with `zPick`, whose
-/// arguments both run, where the cheap form keeps the lazy `if`.
-fn renderSelEager(self: *Gen, a: Mir.Value, b2: Mir.Value, c: Mir.Value, res: Mir.Value, force: bool) Error!void {
+/// A real select that runs both arms and picks. An integer-condition `S`
+/// pick is `zPick`, whose arguments both run: a lazy `if` over two `S` values
+/// joins them through a pointer phi (`zPick`'s doc).
+fn renderSelEager(self: *Gen, a: Mir.Value, b2: Mir.Value, c: Mir.Value, res: Mir.Value) Error!void {
     // Best mask first: an inline real comparison renders as
     // `lt`/`le`/`eq`, true per lane. gt/ge swap operands; ne swaps
     // the arms. Otherwise the predicate is a 0/1 i64 (lane-uniform,
@@ -286,9 +286,9 @@ fn renderSelEager(self: *Gen, a: Mir.Value, b2: Mir.Value, c: Mir.Value, res: Mi
         float_lanes.pinLanes(self, a);
         const fb = try gen_host.f64Const(self, b2, 1, true);
         const fc = if (fb != null) try gen_host.f64Const(self, c, 1, true) else null;
-        if (force and fc == null) {
+        if (fc == null) {
             const m = family.mask(self, res);
-            try self.b("zPick((", .{});
+            try self.b("zPick(S, (", .{});
             try renderVal(self, a, .int);
             try self.b(") != 0, ", .{});
             for ([_]Mir.Value{ b2, c }, 0..) |v, k| {
@@ -299,11 +299,9 @@ fn renderSelEager(self: *Gen, a: Mir.Value, b2: Mir.Value, c: Mir.Value, res: Mi
             }
             return self.b(")", .{});
         }
-        try self.b("{s}(if ((", .{if (fc != null) "S.con" else ""});
+        try self.b("S.con(if ((", .{});
         try renderVal(self, a, .int);
-        try self.b(") != 0) ", .{});
-        if (fc) |f| return self.b("{s} else {s})", .{ fb.?, f });
-        return renderArms(self, b2, c, family.mask(self, res));
+        return self.b(") != 0) {s} else {s})", .{ fb.?, fc.? });
     } else {
         try self.b("S.sel(", .{});
         try renderVal(self, a, .real);
@@ -368,7 +366,7 @@ fn renderSubst(self: *Gen, s: Subst, want: VTy) Error!void {
     switch (want) {
         .real => {
             const m = family.mask(self, s.v);
-            try self.b("zPick(", .{});
+            try self.b("zPick(S, ", .{});
             try renderGuard(self, s.lit);
             try self.b(", ", .{});
             try family.openTo(self, m);

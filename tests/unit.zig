@@ -12535,7 +12535,7 @@ pub const codegen_tests = struct {
         const src = try h.gen(std.testing.allocator);
         const unit = src[std.mem.find(u8, src, "fn ml__").?..];
         const body = unit[0..std.mem.find(u8, unit, "\n}\n").?];
-        const lg = std.mem.find(u8, body, "zLnD(S, zPick(").?;
+        const lg = std.mem.find(u8, body, "zLnD(S, zPick(S, ").?;
         // The guard is the branch's condition, and the fallback is `S.con(1.0)`.
         const guard_end = std.mem.find(u8, body[lg..], "S.con(1.0)").?;
         try std.testing.expect(std.mem.find(u8, body[lg..][0..guard_end], "zCmp(S, .lt, S.con(0.0)") != null or
