@@ -933,7 +933,7 @@ test "the top is the module nothing instantiates, whatever the source order" {
     defer f.deinit();
 
     // The CHILD is declared first, which is the shape
-    // tests/fixtures/ch03_data_types/implicit_nets.va has.
+    // tests/conformance/tests/verilog-a/ch03_data_types/implicit_nets.va has.
     try parse(&f,
         \\module kid(a, b); inout a, b; electrical a, b;
         \\  parameter real g = 3.0;

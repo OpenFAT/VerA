@@ -521,7 +521,7 @@ test "libraries: a file that cannot be read is refused by path" {
 /// `vera --emit-zig [--deny=W1155] v_seconds.v`, in process: the exit status
 /// and what it printed on each stream.
 fn emitSeconds(arena: std.mem.Allocator, deny: bool) !struct { code: u8, out: []const u8, err: []const u8 } {
-    // tests/fixtures/ch07_mixed_signal/v_seconds.v: no `timescale, so the
+    // tests/conformance/tests/verilog-ams/ch07_mixed_signal/v_seconds.v: no `timescale, so the
     // device's tick is 1 s and the emit warns W1155.
     const src = "module v_seconds(a, y);\n  input a;\n  output y;\n  assign y = a;\nendmodule\n";
     var t: Tree = try .init(arena, &.{.{ "v_seconds.v", src }});

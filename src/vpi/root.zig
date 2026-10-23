@@ -90,7 +90,7 @@ pub const no_obj: u32 = std.math.maxInt(u32);
 //
 // These must agree with src/vpi/vpi_user.h (IEEE 1364-2005 Annex G's
 // numbering, which §12.2 and §12.31 defer to). Nothing shares a source of
-// truth between the two; tests/fixtures/ch11_vpi/vpi_app.c, compiled against the header,
+// truth between the two; tests/conformance/tests/verilog-ams/ch11_vpi/vpi_app.c, compiled against the header,
 // asserts every constant it names (e.g. `vpi_get(vpiType, m) == vpiModule`).
 // ---------------------------------------------------------------------------
 

@@ -373,7 +373,7 @@ fn scanFinite(self: *Lower, v0: Mir.Value, bad: *?f64) Oom!?Const {
     if (!self.finite_scan.contains(root)) {
         // Post-order with an explicit stack: a model's dependency chain is
         // as long as its statement list, and recursion along it overflowed
-        // the native stack at 2e4 chained statements (tests/fixtures/conformance/ADVERSARIAL.tsv).
+        // the native stack at 2e4 chained statements (tests/conformance/vera/ledger/ADVERSARIAL.tsv).
         var stack: std.ArrayList(Mir.Value) = .empty;
         try stack.append(self.arena, root);
         while (stack.items.len != 0) {

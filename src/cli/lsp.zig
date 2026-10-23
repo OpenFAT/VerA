@@ -669,11 +669,11 @@ test "parity: the server's diagnostics are `--diagnostics=json`'s, on every fixt
     if (!ams) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const io = std.testing.io;
-    var root = Io.Dir.cwd().openDir(io, "tests/fixtures", .{ .iterate = true }) catch return error.SkipZigTest;
+    var root = Io.Dir.cwd().openDir(io, "tests/conformance/tests", .{ .iterate = true }) catch return error.SkipZigTest;
     defer root.close(io);
     const cwd = try std.process.currentPathAlloc(io, gpa);
     defer gpa.free(cwd);
-    const inc = try std.fs.path.join(gpa, &.{ cwd, "tests/fixtures" });
+    const inc = try std.fs.path.join(gpa, &.{ cwd, "tests/conformance/tests" });
     defer gpa.free(inc);
 
     var walker = try root.walk(gpa);

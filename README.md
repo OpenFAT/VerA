@@ -110,7 +110,7 @@ builds a host step by step.
 - **Languages:** Verilog-AMS and IEEE 1364-2005 Verilog. SystemVerilog (E1104)
   and VHDL are out of scope.
 - **Open bugs** are `//! xfail` fixtures, each naming its clause; CI's verdict
-  ratchet ([`tests/fixtures/conformance/VERDICTS.tsv`](tests/fixtures/conformance/VERDICTS.tsv)) fails
+  ratchet ([`tests/conformance/vera/ledger/VERDICTS.tsv`](tests/conformance/vera/ledger/VERDICTS.tsv)) fails
   on any verdict change. Operating-point variables are not exported to OSDI yet.
 
 ## Conformance

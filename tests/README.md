@@ -65,7 +65,7 @@ Name a rejection's forbidden behavior and use `_rejected` for new cases.
 Keep a digital case's `.expected.txt` or `.expected.vcd` beside its source with
 the same stem. Keep supporting includes, tables and designs near their users.
 `//! neighbour` paths are relative to the referring fixture.
-`//! design` and host `//! device` paths are relative to `tests/fixtures/`.
+`//! design` and host `//! device` paths are relative to `tests/conformance/tests/`.
 Rename these references and golden-output paths together. SPICE `.hdl` paths
 must name real files relative to the deck; the harness does not guess filenames.
 

@@ -196,7 +196,7 @@ pub const Directives = struct {
     /// `//! lrm <section>`, one per line: the clauses this fixture pins. No
     /// verdict depends on it; failure reports and `--coverage` read it.
     /// `<section>:<n>` pins the n-th normative sentence of the clause, a row
-    /// of `tests/fixtures/conformance/OBLIGATIONS.tsv`.
+    /// of `tests/conformance/vera/ledger/OBLIGATIONS.tsv`.
     lrm: []const []const u8 = &.{},
     /// `//! xfail <reason>`: the fixture states an LRM requirement VerA does
     /// not meet yet. With `reject`, VerA wrongly accepts the construct;

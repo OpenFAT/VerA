@@ -67,8 +67,8 @@ const Windows = struct {
     }
 };
 
-// The positive path on every target is `tests/fixtures/ch07_mixed_signal/vdev_so_host.zig` and
-// `tests/fixtures/ch11_vpi/vpi_host.zig`, which load a `.so` VerA built. These pin the
+// The positive path on every target is `tests/conformance/vera/host/vdev_so_host.zig` and
+// `tests/conformance/vera/host/vpi_host.zig`, which load a `.so` VerA built. These pin the
 // refusals, which those hosts never reach.
 
 test "a library that does not exist is FileNotFound on every target" {

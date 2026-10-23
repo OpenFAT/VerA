@@ -1363,7 +1363,7 @@ fn renderPrintArg(g: *Gen, p: PrintArg, i: usize) Error!void {
 
 // ---------------------------------------------------------------------------
 // Tests: the emitted translation, pinned as text. The printed transcripts are
-// pinned by tests/fixtures/ch09_system_tasks/display_argument_runs.va and
+// pinned by tests/conformance/tests/verilog-a/ch09_system_tasks/display_argument_runs.va and
 // display_c_format_flags.va.
 // ---------------------------------------------------------------------------
 

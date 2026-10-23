@@ -32,7 +32,7 @@ from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "tests/fixtures"
+FIXTURES = ROOT / "tests/conformance/tests"
 # The `--vera` runners' compiler and the profiles' adapter, set by `main`.
 VERA = None
 ADAPTER = None
@@ -412,9 +412,9 @@ class PairedCompilerObservations(unittest.TestCase):
 # report_observations: operating-point, parameter-report and model-help pages.
 # ---------------------------------------------------------------------------
 
-REPORT_SOURCE = "tests/fixtures/ch02_lexical/operating_point_report_attributes.va"
-HELP_SOURCE = "tests/fixtures/ch06_hierarchy/model_help_descriptions.va"
-OUTPUT_VARIABLE_SOURCE = "tests/fixtures/ch03_data_types/desc_units_output_variable_rows.va"
+REPORT_SOURCE = "tests/conformance/tests/verilog-a/ch02_lexical/operating_point_report_attributes.va"
+HELP_SOURCE = "tests/conformance/tests/verilog-a/ch06_hierarchy/model_help_descriptions.va"
+OUTPUT_VARIABLE_SOURCE = "tests/conformance/tests/verilog-a/ch03_data_types/desc_units_output_variable_rows.va"
 NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eEdD][+-]?\d+)?")
 NAME = re.compile(r"[A-Za-z_$][A-Za-z_0-9$]*(?:\.[A-Za-z_$][A-Za-z_0-9$]*)*")
 
@@ -606,7 +606,7 @@ class ReportObservations(HostProfileCase):
     def test_noise_summary_combines_same_instance_source_names(self):
         observed = self.observe(
             "noise_contribution_report",
-            "tests/fixtures/ch04_expressions/noise_source_name.va",
+            "tests/conformance/tests/verilog-a/ch04_expressions/noise_source_name.va",
             {"report": "single_instance_noise_contribution_summary",
              "analysis": "noise", "frequency_hz": 1000,
              "bias": {"p": 1, "n": 0},
@@ -626,7 +626,7 @@ class ReportObservations(HostProfileCase):
 # indirect_equation_observations: the §5.6.7:1002 equality-row tolerance.
 # ---------------------------------------------------------------------------
 
-INDIRECT_SOURCE = "tests/fixtures/ch05_analog_behavior/indirect_equation_lhs_tolerance.va"
+INDIRECT_SOURCE = "tests/conformance/tests/verilog-a/ch05_analog_behavior/indirect_equation_lhs_tolerance.va"
 TRIAL_RESIDUALS = (0.5e-9, -0.5e-9, 2e-9, -2e-9)
 
 
@@ -897,7 +897,7 @@ class DirectiveDocumentationObservations(unittest.TestCase):
 # a rejected step.
 # ---------------------------------------------------------------------------
 
-ABSDELTA_SOURCE = "tests/fixtures/ch08_scheduling/absdelta_unconsumed_events_rejected.va"
+ABSDELTA_SOURCE = "tests/conformance/tests/verilog-a/ch08_scheduling/absdelta_unconsumed_events_rejected.va"
 
 
 class AbsdeltaRejectionObservations(HostProfileCase):
@@ -1113,7 +1113,7 @@ class AbsdeltaRejectionObservations(HostProfileCase):
     def test_absdelta_d2a_discards_pending(self):
         observed = self.observe(
             "absdelta_d2a_discards_pending",
-            "tests/fixtures/ch08_scheduling/absdelta_d2a_discards_pending.va",
+            "tests/conformance/tests/verilog-a/ch08_scheduling/absdelta_d2a_discards_pending.va",
             {"top": "absdelta_d2a_discards_pending", "analysis": "tran",
              "initial_time": 0.0, "lookahead_time": 12e-9,
              "pause_digital_after_initialization": True,
@@ -1142,7 +1142,7 @@ class AbsdeltaRejectionObservations(HostProfileCase):
 # scheduling_observations: mixed-kernel timing.
 # ---------------------------------------------------------------------------
 
-CROSS = "tests/fixtures/ch08_scheduling/cross_pending_host_observations.va"
+CROSS = "tests/conformance/tests/verilog-a/ch08_scheduling/cross_pending_host_observations.va"
 
 
 class SchedulingObservations(HostProfileCase):
@@ -1243,7 +1243,7 @@ class SchedulingObservations(HostProfileCase):
 
     def test_continuous_variable_interpolates_unless_event_assigned(self):
         observed = self.observe("continuous_variable_interpolation",
-            "tests/fixtures/ch08_scheduling/continuous_variable_interpolation_host.va",
+            "tests/conformance/tests/verilog-a/ch08_scheduling/continuous_variable_interpolation_host.va",
             {"top": "continuous_variable_interpolation_host", "analysis": "tran",
              "accepted_analog_times": [0.0, 10e-9, 18e-9],
              "digital_read_time": 15e-9, "observe_kernel_times_at_read": True})
@@ -1267,7 +1267,7 @@ class SchedulingObservations(HostProfileCase):
 # ---------------------------------------------------------------------------
 
 LANGUAGE_FIXTURES = "tests/fixtures/ch03_data_types/"
-MODELS = {name: f"tests/fixtures/{chapter}/{name}.va" for chapter, names in (
+MODELS = {name: f"tests/conformance/tests/{chapter}/{name}.va" for chapter, names in (
     ("ch03_data_types", ("operator_equation_tolerances", "structural_unknown_domain")),
     ("ch04_expressions", ("transition_resolution", "transition_simulator_default", "slew_small_signal")),
 ) for name in names}
@@ -1485,7 +1485,7 @@ class LanguageSemanticsObservations(HostProfileCase):
 # independently observed capability set.
 # ---------------------------------------------------------------------------
 
-COMPACT_SOURCE = "tests/fixtures/ch10_directives/compact_modeling_macro.va"
+COMPACT_SOURCE = "tests/conformance/tests/verilog-a/ch10_directives/compact_modeling_macro.va"
 
 # Each row of Annex G.3 is represented, including all subfeatures in compound
 # entries. Related capabilities are reused by repeated change-history

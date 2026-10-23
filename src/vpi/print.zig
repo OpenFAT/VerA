@@ -48,7 +48,7 @@ var log_file: ?Io.File = null;
 
 /// Names the product log file channel 3 writes, in the working directory
 /// unless `path` says otherwise. The LRM names no file; a host picks one
-/// (tests/fixtures/ch11_vpi/vpi_host.zig: the application's name with `.log`).
+/// (tests/conformance/vera/host/vpi_host.zig: the application's name with `.log`).
 pub fn setLogFile(path: []const u8) error{OutOfMemory}!void {
     // The copy first: on failure the old name stays named.
     const name = try gpa.dupeSentinel(u8, path, 0);

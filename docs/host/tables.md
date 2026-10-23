@@ -150,6 +150,6 @@ frequency, `.op`) once per point, before the calls, for every library:
 `vpi_get_analog_time`, `vpi_get_analog_delta`, `vpi_get_analog_freq` and
 `vpi_get_real`'s analysis bounds then read your point. Such a library holds
 no solution, so `vpi_get_analog_value` refuses every quantity that needs one
-with error code `NOSOLUTION`; `tests/fixtures/ch11_vpi/vpi_host.zig`'s `External` is this host
+with error code `NOSOLUTION`; `tests/conformance/vera/host/vpi_host.zig`'s `External` is this host
 in miniature, with two libraries and two instances in
-`tests/fixtures/ch12_vpi_routines/two_libraries_two_instances.c`.
+`tests/conformance/tests/verilog-ams/ch12_vpi_routines/two_libraries_two_instances.c`.

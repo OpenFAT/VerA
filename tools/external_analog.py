@@ -777,7 +777,7 @@ def models_of(suite):
 
 
 def suite_va_models(ctx):
-    """VerA against openvaf-r on our own qaSpec per model (tests/fixtures/
+    """VerA against openvaf-r on our own qaSpec per model (tests/conformance/tests/
     external/va-models/<model>.qa), over the fetched Verilog-A."""
     src = fetch_git(ctx.cache, "va-models")
     for name, va, spec, *mod in models_of("va-models"):

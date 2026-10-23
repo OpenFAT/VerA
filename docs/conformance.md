@@ -51,7 +51,7 @@ conformance. Declared expected failures remain visible in the report; unexpected
 failures or incomplete execution records fail the command.
 
 Clause coverage does not establish that every rule or possible language program
-conforms. The [AMS requirement ledger](https://github.com/OmarSiwy/VerA/blob/main/tests/fixtures/conformance/OBLIGATIONS.tsv)
+conforms. The [AMS requirement ledger](https://github.com/OmarSiwy/VerA/blob/main/tests/conformance/vera/ledger/OBLIGATIONS.tsv)
 tracks individual normative sentences, with stronger evidence levels. A bare
 clause citation cannot cover every sentence it contains. IEEE 1364 currently
 has a clause inventory rather than a sentence ledger.
@@ -64,7 +64,7 @@ has a clause inventory rather than a sentence ledger.
 The `--coverage` flags also print these static inventories without running
 fixtures. Release entries in `CHANGELOG.md` keep their original meaning.
 
-The [verdict baseline](https://github.com/OmarSiwy/VerA/blob/main/tests/fixtures/conformance/VERDICTS.tsv)
+The [verdict baseline](https://github.com/OmarSiwy/VerA/blob/main/tests/conformance/vera/ledger/VERDICTS.tsv)
 is compared by fixture name in CI. A change in verdict must be investigated
 and recorded explicitly. The stricter nightly checks still perturb assertions,
 check derivatives, and track sentence-level evidence.

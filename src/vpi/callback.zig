@@ -102,7 +102,7 @@ pub const cbPLIError: c_int = 28;
 
 // §12.31.3 the analog reasons. Verilog-AMS names them and numbers none; the
 // numbers are VerA's, shared by vpi_user.h and
-// tests/fixtures/ch12_vpi_routines/p03_vpi_analog.h.
+// tests/conformance/tests/verilog-ams/ch12_vpi_routines/p03_vpi_analog.h.
 pub const acbInitialStep: c_int = 701;
 pub const acbFinalStep: c_int = 702;
 pub const acbAbsTime: c_int = 703;

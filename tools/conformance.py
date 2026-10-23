@@ -26,7 +26,7 @@ none of them changes the block or CHANGELOG.md:
     verilator       Verilator as a second engine on the same .v designs
     adversarial     L10 sizes through `vera --check` under a time and memory cap
     determinism     L11: `--emit-zig` device text across runs, cwds and binaries
-    grammar         the R3 oracle: Syntax boxes to BNF (tests/fixtures/conformance/GRAMMAR.tsv), an Earley
+    grammar         the R3 oracle: Syntax boxes to BNF (tests/conformance/vera/ledger/GRAMMAR.tsv), an Earley
                     recognizer, R3 coverage, and VerA's parse vs the recognizer
     selftest        regression checks: the subcommands, the LRM text, `run`'s
                     accounting and the fixture layout
@@ -57,7 +57,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "tests/fixtures"
+FIXTURES = ROOT / "tests/conformance/tests"
 
 
 def fixture_files(*patterns):
@@ -132,7 +132,7 @@ def assertion_validation(run_dir, normal):
 
 def read_specialized(root, clauses, ledger):
     rows, ids, checks = [], set(), {}
-    path = root / "tests/fixtures/conformance/SPECIALIZED.tsv"
+    path = root / "tests/conformance/vera/ledger/SPECIALIZED.tsv"
     for number, line in enumerate(path.read_text().splitlines(), 1):
         if not line or line.startswith("#"):
             continue
@@ -154,7 +154,7 @@ def read_specialized(root, clauses, ledger):
         # Exact test name, not a file-level claim or a substring of another test.
         if source.suffix == ".sp":
             declared = (row["artifact"] == "spice" and
-                        row["test"] == row["source"].removeprefix("tests/fixtures/") and
+                        row["test"] == row["source"].removeprefix("tests/conformance/tests/") and
                         source.with_suffix(".expected.json").is_file())
         elif source.suffix == ".py":
             declared = any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == row["test"]
@@ -204,7 +204,7 @@ def read_dispositions(root):
 
     Only whole-clause rows are useful here. Sentence rows (`3.4.1:1`) are a
     different worklist and never make a clause not-applicable."""
-    path = root / "tests/fixtures/conformance/GAPS.tsv"
+    path = root / "tests/conformance/vera/ledger/GAPS.tsv"
     out = {}
     for number, line in enumerate(path.read_text().splitlines(), 1):
         if not line or line.startswith("#"):
@@ -336,7 +336,7 @@ def collect_report(run_dir, suites):
             raise ValueError(f"unknown fixture citation: {standard} {citation}")
         for polarity, paths in polarities.items():
             for path in paths:
-                test = path.removeprefix("tests/fixtures/")
+                test = path.removeprefix("tests/conformance/tests/")
                 item = {"test": test, "kind": "specialized" if test.endswith(".c") else "fixture",
                         "polarity": polarity}
                 items = citations.setdefault((standard, clause), [])
@@ -378,7 +378,7 @@ def collect_report(run_dir, suites):
         "unit_execution_counts": dict(Counter(v for k, table in artifacts.items()
                                                if not k.startswith("vpi--") and k != "spice"
                                                for v in table.values())),
-        "feature_groups": feature_groups(ROOT / "tests/fixtures/conformance/FEATURE_GAPS.tsv",
+        "feature_groups": feature_groups(ROOT / "tests/conformance/vera/ledger/FEATURE_GAPS.tsv",
                                          tags.keys() | special_results.keys(), results),
         "clauses": clause_results(clauses, citations, results, read_dispositions(ROOT)),
         "ams_obligations": {"total": len(ledger), "mandatory": len(mandatory),
@@ -435,7 +435,7 @@ def markdown(report):
     states = Counter(row["status"] for row in groups)
     lines += ["", f"Tracked behavior groups: {states['failing']} failing, {states['covered']} covered, "
               f"{states['not-run']} not run.",
-              "These groups are defined in tests/fixtures/conformance/FEATURE_GAPS.tsv, not an exhaustive",
+              "These groups are defined in tests/conformance/vera/ledger/FEATURE_GAPS.tsv, not an exhaustive",
               "language feature count. A group is covered only when every registered check passes.",
               "Pending host profiles and unmeasured requirements remain in GAPS.tsv.", "",
               "| Behavior group | Status | Checks |", "|---|---|---:|"]
@@ -1182,7 +1182,7 @@ def ieee1364_audit(argv):
 
     No source body text is written. Requires the user's local IEEE PDF and
     Poppler. The table of contents locates headings; it does not enumerate
-    atomic rules. `tests/fixtures/ieee1364/CLAUSES.tsv` was cut from this
+    atomic rules. `tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv` was cut from this
     output and is reviewed, never regenerated.
     """
     parser = argparse.ArgumentParser(prog="conformance.py ieee1364-audit", description=ieee1364_audit.__doc__)
@@ -1506,7 +1506,7 @@ def fixture_cites():
     use: a file with a `//! reject` (or `// digital-runner: reject`) cites
     negatively; a `.c` application counts only if `build.zig` runs it (its
     `//! design` line), and polarity is per line (`lrm-reject`, `inherited-reject`)."""
-    runs = {f"tests/fixtures/{c}" for c in vpi_runs()}
+    runs = {f"tests/conformance/tests/{c}" for c in vpi_runs()}
     cites = {}
 
     def add(std, clause, side, path):
@@ -1565,7 +1565,7 @@ def clause_kinds():
     """{(standard, clause): kind} from every CLAUSES.tsv: the CLAUSE-AUDIT.md
     §5 classifications (`-` is an ordinary clause in the IEEE list)."""
     out = {}
-    for path in sorted((ROOT / "tests/fixtures").rglob("CLAUSES.tsv")):
+    for path in sorted((ROOT / "tests/conformance/tests").rglob("CLAUSES.tsv")):
         std = "ieee" if "ieee1364" in path.parts else "ams"
         for line in path.read_text().split("\n"):
             if not line.strip() or line.startswith("#"):
@@ -1591,7 +1591,7 @@ def comments(argv):
     counts_only = "--counts" in argv
     ams_known = set(html_sections(ROOT)[0])
     ieee_known = set()
-    for line in (ROOT / "tests/fixtures/ieee1364/CLAUSES.tsv").read_text().split("\n"):
+    for line in (ROOT / "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv").read_text().split("\n"):
         if line.strip() and not line.startswith("#"):
             ieee_known.add(line.split("\t")[0].strip())
     known = {"ams": ams_known, "ieee": ieee_known}
@@ -1752,7 +1752,7 @@ def without_report(data):
 
 def verilator_oracle(work):
     """Verilator over every tests/fixtures/ieee1364 .v, one row each, into
-    tests/fixtures/ieee1364/VERILATOR.tsv. VerA is not run; its answer is the
+    tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv. VerA is not run; its answer is the
     committed transcript `zig build test-1364` already holds it to. A row that
     disagrees is data for a reader, never a reason to edit the fixture."""
     import concurrent.futures
@@ -1814,7 +1814,7 @@ def verilator_oracle(work):
     # `sort`, not `sorted`: the committed file is in the locale's collation.
     rows = subprocess.run(["sort"], input="".join(rows), capture_output=True, text=True).stdout
     version = subprocess.run(["verilator", "--version"], capture_output=True, text=True).stdout.rstrip("\n")
-    out = ROOT / "tests/fixtures/ieee1364/VERILATOR.tsv"
+    out = ROOT / "tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv"
     out.write_text(
         f"# {version} — `verilator --binary --timing -Wno-fatal -Wno-lint -Wno-style`,\n"
         "# written by `tools/conformance.py verilator --oracle`. agrees: a transcript fixture's stdout\n"
@@ -1832,7 +1832,7 @@ def verilator_oracle(work):
 def icarus(argv):
     """`icarus [--work=DIR]`: Icarus Verilog (4-state, event-driven) over every
     .v with a committed transcript or a refusal under tests/fixtures/ieee1364
-    and tests/fixtures/digital -> tests/fixtures/conformance/ICARUS.tsv, one row each, in
+    and tests/conformance/tests/verilog-ams/ch05_analog_behavior -> tests/conformance/vera/ledger/ICARUS.tsv, one row each, in
     VERILATOR.tsv's columns. The second engine:
     Verilator is 2-state, so its x/z disagreements are expected; Icarus's are
     not. A disagreement is data for a reader (VerA bug, Icarus bug, or a
@@ -1860,7 +1860,7 @@ def icarus(argv):
     noise = re.compile(rb"^(VCD info:|VCD warning:|WARNING: .*: \$readmem|.*: \$finish called at |.*: \$stop called at ).*\n?", re.M)
 
     def oracle(f):
-        rel = f.removeprefix("tests/fixtures/")
+        rel = f.removeprefix("tests/conformance/tests/")
         d = work / rel.replace("/", "_")
         expected = ROOT / (f[:-2] + ".expected.txt")
         shutil.copytree(ROOT / os.path.dirname(f), d, dirs_exist_ok=True)  # `$readmem`/`$fopen` paths are relative
@@ -1901,12 +1901,12 @@ def icarus(argv):
         shutil.rmtree(d, ignore_errors=True)  # the row is the result; the work dir is not kept
         return f"{rel}\t{expect}\t{acc}\t{rc}\t{agrees}\t{note}\n"
 
-    fixtures = sorted(str(p.relative_to(ROOT)) for d in ("ieee1364", "digital") for p in (ROOT / "tests/fixtures" / d).rglob("*.v"))
+    fixtures = sorted(str(p.relative_to(ROOT)) for d in ("ieee1364", "digital") for p in (ROOT / "tests/conformance/tests" / d).rglob("*.v"))
     with concurrent.futures.ThreadPoolExecutor(JOBS) as pool:
         rows = [r for r in pool.map(oracle, fixtures) if r]
     rows = "".join(sorted(rows))
     version = subprocess.run(["iverilog", "-V"], capture_output=True, text=True).stdout.split("\n")[0]
-    out = ROOT / "tests/fixtures/conformance/ICARUS.tsv"
+    out = ROOT / "tests/conformance/vera/ledger/ICARUS.tsv"
     out.write_text(
         f"# {version} — `iverilog -g2005`, `vvp -n`; written by `tools/conformance.py icarus`.\n"
         "# agrees: a transcript fixture's stdout (vvp's own VCD/$finish notices dropped) equals its\n"
@@ -2027,7 +2027,7 @@ def verilator(argv):
 
         tools/conformance.py verilator [VERA]    # the three-engine table; VERA
                                                  # defaults to zig-out/bin/vera
-        tools/conformance.py verilator --oracle  # tests/fixtures/ieee1364/VERILATOR.tsv
+        tools/conformance.py verilator --oracle  # tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv
     """
     import tempfile
     # Resolved once: `nix shell` per call would add its start-up to every build.
@@ -2473,7 +2473,7 @@ class LrmSource(unittest.TestCase):
         self.assertEqual(page.count("Editorial source note (not LRM text)."), 5)
 
     def test_ch12_no_numbered_hdl_fixture_claims_vpi_execution(self):
-        fixtures = ROOT / "tests/fixtures/ch12_vpi_routines"
+        fixtures = ROOT / "tests/conformance/vera/clauses/ch12_vpi_routines"
         for path in fixtures.glob("[0-9]*.va"):
             with self.subTest(path=path.name):
                 self.assertNotRegex(path.read_text(), r"(?m)^//! lrm 12(?:\.|$)")
@@ -2561,7 +2561,7 @@ class InformativeSource(unittest.TestCase):
 # the fixtures' cites and one strict run's verdicts.
 # ---------------------------------------------------------------------------
 
-LEDGER = ROOT / "tests/fixtures/conformance/OBLIGATIONS.tsv"
+LEDGER = ROOT / "tests/conformance/vera/ledger/OBLIGATIONS.tsv"
 LEDGER_HEAD = (
     "# The AMS LRM's normative sentences: the requirement ledger.\n"
     "# Rows are extracted by `tools/conformance.py obligations --update`; a reader\n"
@@ -2749,14 +2749,14 @@ def fixture_tags(path):
         elif word == "neighbour":
             # Normalise `..` so a legal twin in another chapter resolves to the
             # same root-relative key the verdicts file uses.
-            tags["neighbours"].append(os.path.relpath(os.path.normpath(path.parent / rest), ROOT / "tests/fixtures"))
+            tags["neighbours"].append(os.path.relpath(os.path.normpath(path.parent / rest), ROOT / "tests/conformance/tests"))
         elif word == "xfail":
             tags["xfail"] = True
     return tags
 
 
 def vpi_runs():
-    """{c path under tests/fixtures: 'pass' | 'xfail'} for build.zig's
+    """{c path under tests/conformance/tests: 'pass' | 'xfail'} for build.zig's
     `vpiRuns`, the `.c` fixtures `zig build test` runs in-process: those with
     a `//! design` line. A `.c` that only compiles is not evidence
     and is absent here."""
@@ -2852,23 +2852,23 @@ def levels(ledger, fixtures, verdicts, perturbed, killed, oracles=None):
 
 def read_oracles():
     """{fixture: [engine]} from the independent engines' agreement tables:
-    tests/fixtures/ieee1364/VERILATOR.tsv (`agrees` = yes) and any
-    tests/fixtures/conformance/ORACLES.tsv rows `<fixture>\t<engine>` (iverilog, ngspice,
+    tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv (`agrees` = yes) and any
+    tests/conformance/vera/ledger/ORACLES.tsv rows `<fixture>\t<engine>` (iverilog, ngspice,
     ...). Agreement is evidence, not authority."""
     out = {}
-    ver = ROOT / "tests/fixtures/ieee1364/VERILATOR.tsv"
+    ver = ROOT / "tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv"
     if ver.exists():
         for line in ver.read_text().split("\n"):
             c = line.split("\t")
             if len(c) > 4 and not line.startswith("#") and c[4] == "yes":
                 out.setdefault("ieee1364/" + c[0], []).append("verilator")
-    ica = ROOT / "tests/fixtures/conformance/ICARUS.tsv"
+    ica = ROOT / "tests/conformance/vera/ledger/ICARUS.tsv"
     if ica.exists():
         for line in ica.read_text().split("\n"):
             c = line.split("\t")
             if len(c) > 4 and not line.startswith("#") and c[4] == "yes":
                 out.setdefault(c[0], []).append("icarus")
-    extra = ROOT / "tests/fixtures/conformance/ORACLES.tsv"
+    extra = ROOT / "tests/conformance/vera/ledger/ORACLES.tsv"
     if extra.exists():
         for line in extra.read_text().split("\n"):
             c = line.split("\t")
@@ -2965,15 +2965,15 @@ def row_line(name, t, order):
 SUBCOMMANDS["metric"] = metric
 
 
-VERDICTS = ROOT / "tests/fixtures/conformance/VERDICTS.tsv"
-LEVELS = ROOT / "tests/fixtures/conformance/LEVELS.tsv"
-STEPS = ROOT / "tests/fixtures/conformance/STEPS.txt"
+VERDICTS = ROOT / "tests/conformance/vera/ledger/VERDICTS.tsv"
+LEVELS = ROOT / "tests/conformance/vera/ledger/LEVELS.tsv"
+STEPS = ROOT / "tests/conformance/vera/ledger/STEPS.txt"
 
 
 def ratchet(argv):
     """`ratchet --verdicts=F [--levels=F] [--update]`: the run's per-fixture
-    verdicts (and per-row levels) against the committed tests/fixtures/conformance/VERDICTS.tsv and
-    tests/fixtures/conformance/LEVELS.tsv. Any difference fails, a fix as much as a regression, so the
+    verdicts (and per-row levels) against the committed tests/conformance/vera/ledger/VERDICTS.tsv and
+    tests/conformance/vera/ledger/LEVELS.tsv. Any difference fails, a fix as much as a regression, so the
     committed files are always this tree's truth and every change to them is
     reviewed by name.
     `--update` writes the run's files over the committed ones."""
@@ -3009,7 +3009,7 @@ SUBCOMMANDS["ratchet"] = ratchet
 
 
 def steps(argv):
-    """`steps [--update]`: `zig build -l`'s step names against tests/fixtures/conformance/STEPS.txt.
+    """`steps [--update]`: `zig build -l`'s step names against tests/conformance/vera/ledger/STEPS.txt.
     A step that disappears takes its tests with it and says nothing, which is
     how `2cc1c08` lost twelve (CLAUSE-AUDIT.md, provenance)."""
     out, code = run("zig", "build", "-l")
@@ -3028,7 +3028,7 @@ def steps(argv):
     for n in new:
         print(f"steps: new {n}")
     if gone or new:
-        print("steps: commit tests/fixtures/conformance/STEPS.txt with `steps --update` once the change is intended")
+        print("steps: commit tests/conformance/vera/ledger/STEPS.txt with `steps --update` once the change is intended")
         return 1
     print(f"steps: {len(names)} build steps, as committed")
     return 0
@@ -3076,7 +3076,7 @@ def promote_reject_only(argv):
         if not line.startswith("ONLY-OK "):
             continue
         path = Path(line[len("ONLY-OK "):].strip())
-        path = FIXTURES / str(path).split("/tests/fixtures/", 1)[-1]
+        path = FIXTURES / str(path).split("/tests/conformance/tests/", 1)[-1]
         text = path.read_text()
         new, n = re.subn(r"(?m)^(\s*//!\s*)reject(\s)", r"\1reject-only\2", text, count=1)
         if n:
@@ -3191,7 +3191,7 @@ class FixtureLinking(unittest.TestCase):
         self.assertEqual(out[1], "//! lrm 5.1:2")
 
 
-MUTANTS = ROOT / "tests/fixtures/conformance/MUTANTS.tsv"
+MUTANTS = ROOT / "tests/conformance/vera/ledger/MUTANTS.tsv"
 MUT_TREE = ROOT.parent / "vera-mut"
 VQ = ROOT.parent / ".build-queue/vq"
 # One mutation per site: (name, pattern, replacement). Spaces around the
@@ -3269,7 +3269,7 @@ def mutate(argv):
     fixtures that cite the file's header clauses (at most K). A mutant some
     fixture fails is KILLED: that fixture's evidence can fail when the code
     is wrong (the metric's E5). A survivor names a check that cannot see
-    that change. Results are appended to tests/fixtures/conformance/MUTANTS.tsv with the
+    that change. Results are appended to tests/conformance/vera/ledger/MUTANTS.tsv with the
     file's hash, so a kill stops counting once the file changes."""
     import random
     opts = dict(a[2:].split("=", 1) for a in argv if a.startswith("--") and "=" in a)
@@ -3355,7 +3355,7 @@ SUBCOMMANDS["mutate"] = mutate
 def killed_rows(ledger):
     """Row ids with E5 evidence: a passing fixture that cites the row and that
     killed a mutant of a file whose header names the row's clause, recorded
-    against the file as it is now (tests/fixtures/conformance/MUTANTS.tsv's hash)."""
+    against the file as it is now (tests/conformance/vera/ledger/MUTANTS.tsv's hash)."""
     if not MUTANTS.exists():
         return set()
     out = set()
@@ -3389,7 +3389,7 @@ def killed_rows(ledger):
 # adversarial, determinism: input-size limits and device-text determinism
 # ---------------------------------------------------------------------------
 
-ADVERSARIAL = ROOT / "tests/fixtures/conformance/ADVERSARIAL.tsv"
+ADVERSARIAL = ROOT / "tests/conformance/vera/ledger/ADVERSARIAL.tsv"
 
 
 def binaries(argv):
@@ -3477,7 +3477,7 @@ def adversarial(argv):
     """`adversarial [[NAME=]VERA ...]`: L10's adversarial sizes (deep
     expressions, `begin` and macro nesting, huge statement, generate, module
     and hierarchy counts, a 64k-bit literal) through `vera --check` under
-    `ulimit -v 4194304` and a wall-clock budget -> tests/fixtures/conformance/ADVERSARIAL.tsv.
+    `ulimit -v 4194304` and a wall-clock budget -> tests/conformance/vera/ledger/ADVERSARIAL.tsv.
     Oracle: exit 0 or a named diagnostic; never a signal, a timeout, or an
     unnamed failure. Exit 1 when any row breaks it."""
     import concurrent.futures
@@ -3545,7 +3545,7 @@ def determinism(argv):
         """The fixture's differences from the first run, compared here so a
         worker holds one fixture's devices at a time."""
         d = os.path.dirname(f)
-        rel = ["--emit-zig", "-I", "tests/fixtures", "-I", d, f]
+        rel = ["--emit-zig", "-I", "tests/conformance/tests", "-I", d, f]
         abs_ = ["--emit-zig", "-I", str(FIXTURES), "-I", str(ROOT / d), str(ROOT / f)]
         ref, diffs = None, []
         for bname, vera in bins:
@@ -3784,8 +3784,8 @@ class ObligationLedger(unittest.TestCase):
 # None of it reads VerA's parser: the oracle is the LRM's text.
 # ---------------------------------------------------------------------------
 
-GRAMMAR_TSV = ROOT / "tests/fixtures/conformance/GRAMMAR.tsv"
-GRAMMAR_DIFF_TSV = ROOT / "tests/fixtures/conformance/GRAMMAR-DIFF.tsv"
+GRAMMAR_TSV = ROOT / "tests/conformance/vera/ledger/GRAMMAR.tsv"
+GRAMMAR_DIFF_TSV = ROOT / "tests/conformance/vera/ledger/GRAMMAR-DIFF.tsv"
 # Boxes that are not grammar: 1.4's notation examples, and Annex G's history.
 GRAMMAR_SKIP_FILES = ("ch1-intro.html", "annex-g-changes.html")
 
@@ -4042,7 +4042,7 @@ def write_grammar_tsv(alts, path=None):
 
 
 def grammar_extract(argv):
-    """`extract`: every Syntax box into tests/fixtures/conformance/GRAMMAR.tsv, with the extraction's
+    """`extract`: every Syntax box into tests/conformance/vera/ledger/GRAMMAR.tsv, with the extraction's
     notes and every name no box defines (a transcription finding, or a
     chapter box's argument placeholder)."""
     alts, notes = read_syntax()
@@ -4185,7 +4185,7 @@ def grammar_undefined(alts):
     return out
 
 
-# Readings of Annex A's undefined names, for the recognizer only (tests/fixtures/conformance/GRAMMAR.tsv
+# Readings of Annex A's undefined names, for the recognizer only (tests/conformance/vera/ledger/GRAMMAR.tsv
 # keeps the text as printed). Each is the evident intent of a defect the
 # annex's own editorial note lists or the chapters resolve. Without the first
 # three no analog assignment derives at all. A derivation that needs one of
@@ -4211,7 +4211,7 @@ PLACEHOLDER = "analog_expression | expression | constant_assignment_pattern"
 class BNF:
     """A grammar over integer symbols. A symbol's key is ("n", name) for a
     nonterminal, ("t", text) for a token's exact text, ("c", class) for a
-    lexical class. `rules[r] = (lhs, rhs)`; `alt[r]` is the tests/fixtures/conformance/GRAMMAR.tsv id the
+    lexical class. `rules[r] = (lhs, rhs)`; `alt[r]` is the tests/conformance/vera/ledger/GRAMMAR.tsv id the
     rule is an alternative of (None for a [ ] or { } helper or a reading)."""
 
     def __init__(self, terminal, classes=()):
@@ -4866,7 +4866,7 @@ def verdicts_file(opts):
         return Path(opts["verdicts"])
     if VERDICTS.exists():
         return VERDICTS
-    print("grammar: --verdicts=<file> from a strict run is required (no tests/fixtures/conformance/VERDICTS.tsv)", file=sys.stderr)
+    print("grammar: --verdicts=<file> from a strict run is required (no tests/conformance/vera/ledger/VERDICTS.tsv)", file=sys.stderr)
     return None
 
 
@@ -4924,7 +4924,7 @@ GRAMMAR_COMMANDS["coverage"] = grammar_coverage
 
 def grammar_earley(argv):
     """`earley [--start=NAME] [--derive] FILE...`: the recognizer on each file
-    (preprocessed with tests/fixtures and the file's directory on the include
+    (preprocessed with tests/conformance/tests and the file's directory on the include
     path): `accept`, or `refuse` at the first token no Earley item can read.
     `--derive` lists the alternatives an accepted file derives."""
     opts = grammar_opts(argv)
@@ -4963,7 +4963,7 @@ GRAMMAR_COMMANDS["earley"] = grammar_earley
 GENERATOR_AVOID = ("paramset", "primitive", "config", "connectmodule", "macromodule", "connectrules", "(*")
 # A.1.2's first module form needs a port list, whose shortest port is empty,
 # and A.4.2's loop generate an undeclared genvar: fillers VerA refuses for
-# their own reasons (tests/fixtures/conformance/GRAMMAR-DIFF.tsv), which would hide every target.
+# their own reasons (tests/conformance/vera/ledger/GRAMMAR-DIFF.tsv), which would hide every target.
 GENERATOR_AVOID_ALTS = ("A.1.2/9", "A.4.2/5")
 
 
@@ -5241,7 +5241,7 @@ def grammar_diff(argv):
     at most four at once, each under `ulimit -v 4 GiB`) judge the same text:
     every .va fixture, one-token mutants of the positive ones the recognizer
     derives, and k sentences generated for each alternative. Each
-    disagreement is classified and written to tests/fixtures/conformance/GRAMMAR-DIFF.tsv."""
+    disagreement is classified and written to tests/conformance/vera/ledger/GRAMMAR-DIFF.tsv."""
     import shutil
     from concurrent.futures import ThreadPoolExecutor
     opts = grammar_opts(argv)
@@ -5594,7 +5594,7 @@ class GrammarOracle(unittest.TestCase):
         head = "".join(ln + "\n" for ln in GRAMMAR_TSV.read_text().split("\n") if ln.startswith("#"))
         rows = [ln for ln in GRAMMAR_TSV.read_text().split("\n") if ln and not ln.startswith("#")]
         self.assertEqual(rows, [f"{a.id}\t{a.lhs}\t{a.text}\t{a.note}" for a in alts],
-                         "tests/fixtures/conformance/GRAMMAR.tsv drifted from docs/: run `grammar extract`")
+                         "tests/conformance/vera/ledger/GRAMMAR.tsv drifted from docs/: run `grammar extract`")
         self.assertIn("grammar-coverage denominator", head)
 
     def test_tokens(self):
@@ -5745,7 +5745,7 @@ class EvidenceTests(unittest.TestCase):
     def test_dispositions_only_name_whole_clauses(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            path = root / "tests/fixtures/conformance/GAPS.tsv"
+            path = root / "tests/conformance/vera/ledger/GAPS.tsv"
             path.parent.mkdir(parents=True)
             path.write_text("standard\tcitation\tbaseline\tdisposition\tsources\treason\n"
                             "ams\t1.4\tuncovered\tno-fixed-oracle\t-\tnon-normative\n"

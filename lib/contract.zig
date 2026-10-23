@@ -5238,7 +5238,7 @@ test "validateHost: a systf is the host's to bind, and only when there is one" {
 }
 
 /// §6.2's optional port list, in device form: no terminals, one internal
-/// unknown, as tests/fixtures/ch06_hierarchy/module_definition.va lowers
+/// unknown, as tests/conformance/tests/verilog-a/ch06_hierarchy/module_definition.va lowers
 /// (`module m; electrical p; analog I(p) <+ V(p); endmodule`).
 const MockNoPorts = struct {
     pub const U = enum(u8) { p };

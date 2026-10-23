@@ -172,7 +172,7 @@ def classifications():
     """{(std, clause): (kind, evidence)} from every CLAUSES.tsv: the
     CLAUSE-AUDIT.md §5 kind and the quote that justifies it."""
     out = {}
-    for path in sorted((ROOT / "tests/fixtures").rglob("CLAUSES.tsv")):
+    for path in sorted((ROOT / "tests/conformance/tests").rglob("CLAUSES.tsv")):
         ieee = "ieee1364" in path.parts
         for line in path.read_text().split("\n"):
             if not line.strip() or line.startswith("#"):
@@ -186,7 +186,7 @@ def classifications():
 
 def ieee_titles():
     out = {}
-    for line in (ROOT / "tests/fixtures/ieee1364/CLAUSES.tsv").read_text().split("\n"):
+    for line in (ROOT / "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv").read_text().split("\n"):
         cells = line.split("\t")
         if line.startswith("#") or len(cells) < 3:
             continue
@@ -265,8 +265,8 @@ def clause_rows(cov, cov1364):
         if cid not in bk and cid not in titles:
             continue  # unresolved cite: reported by the suite itself
         cites = listing.get(cid, [])
-        pos = ["tests/fixtures/" + p if not p.startswith("tests/") else p for s, p in cites if s == "+"]
-        neg = ["tests/fixtures/" + p if not p.startswith("tests/") else p for s, p in cites if s == "-"]
+        pos = ["tests/conformance/tests/" + p if not p.startswith("tests/") else p for s, p in cites if s == "+"]
+        neg = ["tests/conformance/tests/" + p if not p.startswith("tests/") else p for s, p in cites if s == "-"]
         bucket, title = bk.get(cid, ("both", titles.get(cid, "")))
         entry("ams", cid, bucket, title, pos, neg)
 
@@ -324,7 +324,7 @@ def open_defects():
 
 def vpi_xfails():
     """`.c` fixtures build.zig runs (`//! design`) carrying `//! xfail`: a known gap that must exit 1 saying so."""
-    root = ROOT / "tests/fixtures"
+    root = ROOT / "tests/conformance/tests"
     out = []
     for path in sorted(root.rglob("*.c")):
         text = path.read_text(errors="replace")

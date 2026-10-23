@@ -691,7 +691,7 @@ fn packedWidth(file: *const Ast.SourceFile, v: Ast.VarDecl) u32 {
 /// unroll inside a body, not into the declaration space), and `parser.internTok`
 /// substitutes a space for a period inside a §2.8.1 escaped identifier — so a
 /// period in a flattened name IS a join.
-/// `tests/fixtures/ch06_hierarchy/escaped_period_is_not_a_path.va` is the
+/// `tests/conformance/tests/verilog-a/ch06_hierarchy/escaped_period_is_not_a_path.va` is the
 /// fixture on that substitution.
 fn splitPath(
     arena: std.mem.Allocator,

@@ -7631,7 +7631,7 @@ pub const lower_tests = struct {
     }
 
     test "lower: a 60000-statement dependency chain lowers without exhausting the stack" {
-        // tests/fixtures/conformance/ADVERSARIAL.tsv: `scanFinite` recursed along the whole
+        // tests/conformance/vera/ledger/ADVERSARIAL.tsv: `scanFinite` recursed along the whole
         // chain and overflowed the native stack at 2e4 chained statements.
         const gpa = std.testing.allocator;
         var src: std.ArrayList(u8) = .empty;
@@ -17814,7 +17814,7 @@ pub const vpi_tests = struct {
     //! The model's and the routines' unit tests: a design compiled with
     //! `vera.compileSource` (or the digital `run.Harness`), opened, and its rows
     //! and failure paths checked. The ABI, the header's constants and C object
-    //! lifetimes are `zig build test-vpi` (tests/fixtures/ch11_vpi/vpi_app.c against
+    //! lifetimes are `zig build test-vpi` (tests/conformance/tests/verilog-ams/ch11_vpi/vpi_app.c against
     //! src/vpi/vpi_user.h); the last test here checks every Zig copy of a header
     //! constant against the header text.
 
@@ -19174,7 +19174,7 @@ pub const vpi_tests = struct {
         // reflection sees `pub` decls only). A `vpi*`/`cb*` name the header does
         // not define is an error too: VerA's own numbers in that namespace
         // (`vpiQuantity`, `vpiExpStrVal`) are in the header. The `acb*` analog
-        // reasons are not: tests/fixtures/ch12_vpi_routines/p03_vpi_analog.h
+        // reasons are not: tests/conformance/tests/verilog-ams/ch12_vpi_routines/p03_vpi_analog.h
         // defines them, outside this module's directory.
         @setEvalBranchQuota(100_000);
         var checked: usize = 0;
@@ -19516,7 +19516,7 @@ pub const exhaustive_tests = struct {
 pub const citations_tests = struct {
     //! Every diagnostic's `.lrm` citation against the clauses that exist: the
     //! headings of `specification/*.html` (the Verilog-AMS LRM 2023) and the rows of
-    //! `tests/fixtures/ieee1364/CLAUSES.tsv` (IEEE 1364-2005, whose PDF is not in
+    //! `tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv` (IEEE 1364-2005, whose PDF is not in
     //! git), both read at test time from `repo_options.repo_root` as
     //! `exhaustive.zig` reads source. In: `diag.info(c).lrm` for every code. Out:
     //! pass, or one line per citation that names no clause.
@@ -19586,7 +19586,7 @@ pub const citations_tests = struct {
         try std.testing.expect(lrm.contains("3.6.1.2") and lrm.contains("A.1.2"));
 
         var ieee: Clauses = .empty;
-        const tsv = try root.readFileAlloc(io, "tests/fixtures/ieee1364/CLAUSES.tsv", arena, .limited(1 << 24));
+        const tsv = try root.readFileAlloc(io, "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv", arena, .limited(1 << 24));
         var lines = std.mem.splitScalar(u8, tsv, '\n');
         while (lines.next()) |line| {
             if (line.len == 0 or line[0] == '#') continue;
@@ -19634,7 +19634,7 @@ pub const oom_tests = struct {
 
     /// `check.vh` lives here; every fixture below includes nothing else but the
     /// built-in annex D files.
-    const include_dirs: []const []const u8 = &.{@import("repo_options").repo_root ++ "/tests/fixtures"};
+    const include_dirs: []const []const u8 = &.{@import("repo_options").repo_root ++ "/tests/conformance/tests"};
 
     fn compileOne(gpa: std.mem.Allocator, src: []const u8, target: vera.Target) !void {
         var bag: vera.diag.Bag = .init(gpa);
