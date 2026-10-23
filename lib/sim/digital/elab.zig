@@ -13,6 +13,10 @@
 const std = @import("std");
 const Front = @import("frontend");
 const Ast = Front.Ast;
+
+/// `declare`'s caps on the instance tree: levels, and instances in all.
+const max_depth: u32 = 256;
+const max_insts: usize = 1 << 18;
 const Int = @import("kernels").Integer;
 const diag = @import("diag");
 const root = @import("root.zig");
@@ -302,6 +306,13 @@ pub fn defOf(r: *const Run, m: *const Ast.ModuleDecl) u32 {
 pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, over: []const Ast.ParamOverride, depth: u32) Error!void {
     const arena = r.arena;
     if (deep.exhausted()) return r.deepFail(m.main_tok);
+    // §12.1.3: a module may instantiate itself only under a generate that
+    // terminates; one that does not grows the tree without end, and long
+    // before the stack is deep the storage is (ivtest pr2728812c, a binary
+    // tree of `sum` at n = 1, reached 25 GB). ponytail: caps, not a cycle
+    // proof; no design this interpreter runs is this deep or this wide.
+    if (depth >= max_depth or e.insts.items.len >= max_insts)
+        return r.fail(m.main_tok, "instantiation past {d} levels or {d} instances: a module instantiates itself without a terminating generate (IEEE 1364-2005 §12.1.3)", .{ max_depth, max_insts });
     if (!r.mixed and (m.aliasparams.len != 0 or m.branches.len != 0 or m.functions.len != 0))
         return r.fail(m.main_tok, "digital execution currently requires a module with only variables, nets, events, instances and processes", .{});
     // A digital parse makes each generate construct an `analog` block over
@@ -2339,6 +2350,23 @@ test "§12.1.2 an instance array is one instance per element, each connected" {
         \\leaf u[1:0](r);
         \\endmodule
     , "across an instance array");
+}
+
+test "§12.1.3 a module instantiating itself outside a terminating generate is refused, not elaborated without end" {
+    // ivtest pr2728812c's shape: `sum` at n = 1 makes two more at n = 1.
+    try expectRejected(
+        \\module sum #(parameter n = 4) (input c, output s);
+        \\wire a1, a2;
+        \\sum #(n/2) s0 (c, a1);
+        \\sum #(n-n/2) s1 (c, a2);
+        \\assign s = a1 ^ a2;
+        \\endmodule
+        \\module top;
+        \\reg c;
+        \\wire s;
+        \\sum #(5) u (c, s);
+        \\endmodule
+    , "instantiates itself without a terminating generate");
 }
 
 test "§10.4.5 a constant function call in a parameter's value runs at elaboration" {
