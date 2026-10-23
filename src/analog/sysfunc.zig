@@ -38,7 +38,6 @@ const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
-const call = Lower.call;
 
 // ---- ch9 system functions ---------------------------------------------------
 

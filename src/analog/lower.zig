@@ -1209,11 +1209,10 @@ pub const Harness = struct {
     /// Lowers the file: the tables, or null when an error was reported.
     /// Any other error (`NoModule`, OOM) is returned.
     pub fn lower(h: *Harness) Error!?Lowered {
-        const out = h.low.lowerFile() catch |e| switch (e) {
+        return h.low.lowerFile() catch |e| switch (e) {
             error.DiagnosticsReported => return null,
             else => |other| return other, // else: anything but a verdict fails the test
         };
-        return out;
     }
 
     /// Returns how many diagnostics of `code` were recorded.

@@ -208,14 +208,16 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
         name;
     try addParam(self, card_name, ty, default, folded, try paramRanges(self, decl.ranges), decl.is_local, decl.main_tok);
     if (card_name.ptr != name.ptr) try self.param_index.put(self.arena, name, @intCast(self.out.params.items.len - 1));
-    self.out.params.items[self.out.params.items.len - 1].integer32 = decl.ty == .integer;
-    self.out.params.items[self.out.params.items.len - 1].source_width = if (decl.packed_range) |range|
+    // Stable below: the folds that follow mark rows (`shapeEval`), never append them.
+    const row = &self.out.params.items[self.out.params.items.len - 1];
+    row.integer32 = decl.ty == .integer;
+    row.source_width = if (decl.packed_range) |range|
         lower_shape.packedShapeWidth(self, range)
     else if (decl.ty == .integer)
         32
     else
         lower_constfold.clog2Width(self, decl.default);
-    self.out.params.items[self.out.params.items.len - 1].source_signed = if (decl.ty == .integer)
+    row.source_signed = if (decl.ty == .integer)
         true
     else if (decl.packed_range != null or decl.is_signed)
         decl.is_signed
