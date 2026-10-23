@@ -79,7 +79,7 @@ pub fn build(b: *Build) void {
     // own directories), so the step depends on the compile, not on `install`.
     const conformance = b.addSystemCommand(&.{
         "sh", "-c",
-        \\VERA="$1" conform -t tests/conformance/tools/vera.conf -x tools/vera.xfail -j "$(nproc)" -T 300 \
+        \\mkdir -p zig-out && VERA="$1" conform -t tests/conformance/tools/vera.conf -x tools/vera.xfail -j "${CONFORM_JOBS:-$(nproc)}" -T 300 \
         \\  -o zig-out/conformance.tsv tests/conformance/tests tests/conformance/external/*.manifest
         ,
         "sh",
