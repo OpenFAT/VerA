@@ -903,8 +903,7 @@ fn argPosition(obj: u32, o: *const root.Obj) ?usize {
 pub fn argValue(o: *const root.Obj) ?f64 {
     const b = bound() orelse return null;
     const d = &(root.design orelse return null);
-    const i = (@intFromPtr(o) - @intFromPtr(d.objects.ptr)) / @sizeOf(root.Obj);
-    return b.arg_values.get(@intCast(i));
+    return b.arg_values.get(d.indexOf(o));
 }
 
 /// §12.30 onto the call calltf is running for: its returned value. False

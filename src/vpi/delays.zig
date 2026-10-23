@@ -34,7 +34,7 @@ const vpiUdp = code.vpiUdp;
 /// itself, which therefore follows a delay put. Slices live in the design's
 /// arena; `reset` drops the table with the design.
 const Limits = struct { reject: []const f64, err: []const f64 };
-var limits: std.AutoHashMapUnmanaged(usize, Limits) = .empty;
+var limits: std.AutoHashMapUnmanaged(u32, Limits) = .empty;
 
 /// Forgets every path's pulse limits and every inter-module path
 /// (`root.close`).
@@ -42,10 +42,6 @@ pub fn reset() void {
     limits.clearAndFree(std.heap.smp_allocator);
     for (paths.items) |m| std.heap.smp_allocator.destroy(m);
     paths.clearAndFree(std.heap.smp_allocator);
-}
-
-fn objIndex(o: *const root.Obj) usize {
-    return (@intFromPtr(o) - @intFromPtr(root.design.?.objects.ptr)) / @sizeOf(root.Obj);
 }
 
 /// Figure 12-4, laid out as Annex G does (its `bool`s are PLI_INT32).
@@ -128,7 +124,7 @@ pub export fn vpi_get_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
     // A path's put limits, spread over its transitions as its delays are.
     var reject_buf: [12]f64 = undefined;
     var err_buf: [12]f64 = undefined;
-    const lim = if (o.vtype == vpiModPath) limits.get(objIndex(o)) else null;
+    const lim = if (o.vtype == vpiModPath) limits.get(root.design.?.indexOf(o)) else null;
     const rejects: []const f64 = if (lim) |l| pathDelays(l.reject, &reject_buf) else values;
     const errs: []const f64 = if (lim) |l| pathDelays(l.err, &err_buf) else values;
     fill(d, values, rejects, errs, obj);
@@ -274,7 +270,7 @@ pub export fn vpi_put_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
     // What vpi_get_delays reads back: the written delays, in the module's
     // unit however they were given.
     const design = &root.design.?;
-    design.objects[objIndex(o)].delays = design.arena.allocator().dupe(f64, units[0..n]) catch {
+    design.objects[design.indexOf(o)].delays = design.arena.allocator().dupe(f64, units[0..n]) catch {
         root.fail("NOMEM", "vpi_put_delays: out of memory", .{});
         return;
     };
@@ -346,7 +342,7 @@ fn putModelDelays(o: *const root.Obj, d: *const Delay) bool {
     const out = design.arena.allocator().alloc(f64, n) catch return noMem();
     for (out, 0..) |*v, k| v.* = part(d, k, 0).real;
     for (out) |v| if (!isDelay(v)) return notDelay(v);
-    const idx = objIndex(o);
+    const idx = design.indexOf(o);
     // §12.29: a put with pulsere_flag sets a path's limits; one without
     // leaves them.
     if (d.pulsere_flag != 0 and o.vtype == vpiModPath) {
@@ -454,7 +450,7 @@ pub fn interModPath(ref1: root.vpiHandle, ref2: root.vpiHandle) root.vpiHandle {
         root.fail("BADPORT", who ++ ": `{s}` and `{s}` are not of the same size", .{ from.full, to.full });
         return null;
     }
-    const key = [2]u32{ @intCast(objIndex(from)), @intCast(objIndex(to)) };
+    const key = [2]u32{ root.design.?.indexOf(from), root.design.?.indexOf(to) };
     for (paths.items) |m| if (std.mem.eql(u32, &m.ports, &key)) return @ptrCast(m);
     const gpa = std.heap.smp_allocator;
     const m = gpa.create(InterModPath) catch {
