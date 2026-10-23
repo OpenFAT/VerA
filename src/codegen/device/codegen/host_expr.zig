@@ -30,7 +30,8 @@ const opcode_zig = codegen.opcode_zig;
 /// LLVM lowers to one PTX instruction qualifies; everything else keeps its S
 /// form. Real opcodes only: `f64Const` renders integer opcodes in f64, which
 /// drops §3.2's 32-bit wraparound, so an integer residual goes through
-/// `intBin32` instead. Only `f64Const`'s `in_unit` path consults this.
+/// `intBin32` instead. Only `f64Const`'s `in_unit` path consults this, and
+/// the emitted `zPow` comment cites it by name.
 fn devSafe(op: Mir.Opcode) bool {
     // The `dev_safe` column: sqrt/floor/ceil are there because they are
     // sqrt.rn.f64 and cvt.rmi/rpi.f64.f64, single instructions.
@@ -394,10 +395,7 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
 /// expression. Otherwise reports E0515 at the source, marks the build fatal
 /// and returns "0.0".
 pub fn f64Expr(self: *Gen, v0: Mir.Value) Error![]const u8 {
-    if (try f64Const(self, v0, 0, false)) |s| {
-        assert(s.len > 0);
-        return s;
-    }
+    if (try f64Const(self, v0, 0, false)) |s| return s;
     // Point at the argument's defining expression, else the operator call.
     const v = self.an.rv(v0);
     const def = self.mir.valueDef(v);

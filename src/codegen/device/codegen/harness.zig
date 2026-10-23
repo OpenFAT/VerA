@@ -63,49 +63,51 @@ pub const Harness = struct {
         })).lowered;
     }
 
+    /// `genOut`'s device text.
     pub fn gen(self: *Harness, gpa: std.mem.Allocator) ![]const u8 {
         return (try self.genOut(gpa)).text;
     }
 
-    /// `gen` with §9.4 display tasks emitted: the printing artifact.
+    /// `gen` with §9.4 display tasks emitted: the printing artifact. Reports
+    /// to no bag.
     pub fn genDisplay(self: *Harness, gpa: std.mem.Allocator) ![]const u8 {
-        const v = try proof.proveOpts(gpa, &self.mir, &self.lowered, .{}, &self.bag);
-        defer v.deinit(gpa);
         var fatal = false;
-        const a = self.arena_state.allocator();
-        return (try generate(a, a, &self.mir, &self.lowered, v, &fatal, .{ .display = .emit })).text;
+        return (try self.proveAndGenerate(gpa, .{ .display = .emit }, &fatal)).text;
     }
 
+    /// Proves with `gpa` and generates with the default options into the
+    /// harness bag; a fatal generation still returns its output.
     pub fn genOut(self: *Harness, gpa: std.mem.Allocator) !Output {
-        const v = try proof.proveOpts(gpa, &self.mir, &self.lowered, .{}, &self.bag);
-        defer v.deinit(gpa);
         var fatal = false;
-        // ponytail: the harness hands `generate` its arena as the output gpa, so
-        // `deinit` reclaims the result with everything else and no test needs a
-        // matching free. Ceiling: these fixtures are kilobytes; the arena regrow
-        // cost `generate`'s gpa parameter exists to avoid only bites at MB scale.
-        const a = self.arena_state.allocator();
-        // The harness bag is arena-lived and never detached, so unlike the
-        // driver's it is still the right one to hand codegen.
-        return generate(a, a, &self.mir, &self.lowered, v, &fatal, .{ .diags = &self.bag });
+        return self.proveAndGenerate(gpa, .{ .diags = &self.bag }, &fatal);
     }
 
     /// Proves and generates with `opts`, `.diags` set to the harness bag.
     /// Fails the test with the bag's count when generation is fatal: every
     /// caller asserts on a device that was meant to compile.
     pub fn genWith(self: *Harness, opts: codegen.Options) !Output {
-        const gpa = std.testing.allocator;
-        const v = try proof.proveOpts(gpa, &self.mir, &self.lowered, .{}, &self.bag);
-        defer v.deinit(gpa);
-        var fatal = false;
-        const a = self.arena_state.allocator();
         var o = opts;
         o.diags = &self.bag;
-        const out = try generate(a, a, &self.mir, &self.lowered, v, &fatal, o);
+        var fatal = false;
+        const out = try self.proveAndGenerate(std.testing.allocator, o, &fatal);
         if (fatal) return error.GenerationWasFatal;
         return out;
     }
 
+    // ponytail: the harness hands `generate` its arena as the output gpa, so
+    // `deinit` reclaims the result with everything else and no test needs a
+    // matching free. Ceiling: these fixtures are kilobytes; the arena regrow
+    // cost `generate`'s gpa parameter exists to avoid only bites at MB scale.
+    // The harness bag is arena-lived and never detached, so unlike the
+    // driver's it is still the right one to hand codegen.
+    fn proveAndGenerate(self: *Harness, gpa: std.mem.Allocator, opts: codegen.Options, fatal: *bool) !Output {
+        const v = try proof.proveOpts(gpa, &self.mir, &self.lowered, .{}, &self.bag);
+        defer v.deinit(gpa);
+        const a = self.arena_state.allocator();
+        return generate(a, a, &self.mir, &self.lowered, v, fatal, opts);
+    }
+
+    /// Frees everything `run` lowered and every output generated since.
     pub fn deinit(self: *Harness) void {
         self.arena_state.deinit();
     }

@@ -90,7 +90,7 @@ pub fn planSetup(self: *Gen) Error!void {
     if (self.lowered.table_samples.items.len != 0) return;
     if (self.core.lo_vals.len == 0 and self.jobs.display_name.len == 0) return;
     for (0..nv) |i| {
-        if (plan_setup.candidate(self.input(), self.sinv.val, @fromBackingInt(@intCast(@as(u32, @intCast(i)))))) self.su.idx[i] = 0;
+        if (plan_setup.candidate(self.input(), self.sinv.val, @fromBackingInt(@intCast(i)))) self.su.idx[i] = 0;
     }
     self.plan.su_idx = self.su.idx;
     self.plan.su_on = true;
@@ -117,7 +117,7 @@ pub fn planSetup(self: *Gen) Error!void {
     // A card copied beside nothing is a slower read: without a derived root
     // there is no `Setup` to pack it into, and the bodies keep reading the card.
     const derived = for (0..nv) |i| {
-        if (root[i] and self.mir.valueDef(@fromBackingInt(@intCast(@as(u32, @intCast(i))))) == .inst_result) break true;
+        if (root[i] and self.mir.valueDef(@fromBackingInt(@intCast(i))) == .inst_result) break true;
     } else false;
     if (!derived) @memset(root, false);
     @memset(self.su.idx, none_u32);
@@ -127,7 +127,7 @@ pub fn planSetup(self: *Gen) Error!void {
     var n: [3]u32 = @splat(0);
     for (0..3) |group| {
         for (0..nv) |i| {
-            if (!root[i] or rootGroup(self, @fromBackingInt(@intCast(@as(u32, @intCast(i))))) != group) continue;
+            if (!root[i] or rootGroup(self, @fromBackingInt(@intCast(i))) != group) continue;
             const r = @backingInt(same[i]);
             if (self.su.idx[r] == none_u32) {
                 self.su.idx[r] = n[group];
@@ -163,7 +163,7 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
     const nv = self.an.nv;
     const same = try self.gpa.alloc(Mir.Value, nv);
     errdefer self.gpa.free(same);
-    for (same, 0..) |*r, i| r.* = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+    for (same, 0..) |*r, i| r.* = @fromBackingInt(@intCast(i));
     // Scratch for this pass alone: on the gpa and freed on return, so its
     // doublings do not stay in the compilation arena.
     var seen: std.AutoHashMapUnmanaged(Key, Mir.Value) = .empty;
@@ -181,7 +181,7 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
         }
     }.f;
     for (Mir.Value.first_dynamic..nv) |i| {
-        const v: Mir.Value = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+        const v: Mir.Value = @fromBackingInt(@intCast(i));
         if (!plan_setup.candidate(self.input(), self.sinv.val, v) or self.an.rv(v) != v) continue;
         // A parameter leaf is one value per parameter (`param_values`), so
         // it is its own number.
@@ -205,7 +205,7 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
             .phi, .branch, .jump, .call, .anew, .load, .store => continue,
         }
         if (row.op == .ine and key.b.tag == .i and key.b.x == 0 and key.a.tag == .val) {
-            const x: Mir.Value = @fromBackingInt(@intCast(@as(u32, @intCast(key.a.x))));
+            const x: Mir.Value = @fromBackingInt(@intCast(key.a.x));
             if (rootGroup(self, x) == 2 and plan_setup.candidate(self.input(), self.sinv.val, x) and placedOver(self, x, v)) {
                 same[i] = x;
                 continue;

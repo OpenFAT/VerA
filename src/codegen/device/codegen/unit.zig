@@ -888,7 +888,7 @@ test scanSimReads {
         .{ .body = "g = $simparam(\"dt\");", .want = ".{ .t = false, .dt = true, .iteration = false }" },
         .{ .body = "g = 1.0;", .want = ".{ .t = false, .dt = false, .iteration = false }" },
     }) |c| {
-        const src = try std.fmt.allocPrint(a,
+        const src = try a.print(
             \\module t(p, n);
             \\  inout p, n;
             \\  electrical p, n;
@@ -903,7 +903,7 @@ test scanSimReads {
         var h: Harness = undefined;
         try Harness.run(a, src, &h);
         const out = try h.gen(a);
-        const want = try std.fmt.allocPrint(a, "pub const sim_reads: contract.SimReads = {s};", .{c.want});
+        const want = try a.print("pub const sim_reads: contract.SimReads = {s};", .{c.want});
         if (std.mem.find(u8, out, want) == null) {
             std.debug.print("{s}\nwant: {s}\n", .{ c.body, want });
             return error.TestUnexpectedResult;

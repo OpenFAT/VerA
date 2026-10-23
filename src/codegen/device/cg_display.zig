@@ -27,7 +27,7 @@ const str_k = @import("kernels").str_kernels;
 /// available in the C language", so C11 7.21.6.1 defines each flag; the
 /// integer conversions share the grammar. Width and precision are numbers
 /// because the composed C-style fields need them as arithmetic.
-pub const Spec = struct {
+const Spec = struct {
     /// '-' left-justify; C makes it override '0'.
     left: bool = false,
     /// '+' always spell the sign.
@@ -105,7 +105,7 @@ const PrintArg = struct {
     /// (E0828, #45); the sums saturate besides, so no spec can overflow
     /// them, and a saturated row is E1011's (`fits`).
     fn scratch(self: PrintArg) ?usize {
-        const n: ?usize = switch (self.how) {
+        return switch (self.how) {
             .ascii => @sizeOf(i64),
             .pad => 24, // i64's widest decimal (20 chars) plus slack
             .cint => @max(24, self.spec.width +| 2), // the full zero-filled field
@@ -114,8 +114,6 @@ const PrintArg = struct {
             .creal => @max(self.spec.width, self.spec.p(6) +| 320) +| 8,
             else => null,
         };
-        if (n) |bytes| assert(bytes > 0);
-        return n;
     }
 
     /// Whether the scratch is a stack array (`max_stack`) or a static row,
@@ -123,7 +121,7 @@ const PrintArg = struct {
     fn onStack(self: PrintArg) bool {
         // The widest scratch a field of `max_stack` width and precision
         // takes: `.creal`'s.
-        const most = @max(Spec.max_stack, Spec.max_stack + 320) + 8;
+        const most = Spec.max_stack + 320 + 8;
         return (self.scratch() orelse 0) <= most;
     }
 
@@ -175,7 +173,6 @@ pub fn buildArgs(
     const ops_before = ops.items.len;
     var i: usize = 0;
     while (i < args.len) {
-        const i_before = i;
         if (g.strArg(args, i)) |s| {
             i += 1;
             i += try translateFormat(g, s, args[i..], fmt, ops);
@@ -183,9 +180,7 @@ pub fn buildArgs(
             try appendConv(g, fmt, ops, args[i], 0, .{});
             i += 1;
         }
-        assert(i > i_before);
     }
-    assert(i == args.len);
     // `chunkText` splits the text at the operands' starts, so they ascend
     // and lie inside it.
     var at_prev: usize = 0;
@@ -213,9 +208,7 @@ comptime {
 pub fn siteCap(g: *Gen, fmt: []const u8, ops: []const PrintArg) Error!u64 {
     var n: u64 = fmt.len;
     for (ops) |p| n +|= try p.textMax(g);
-    const c = @max(n, strcap.row);
-    assert(c >= strcap.row);
-    return c;
+    return @max(n, strcap.row);
 }
 
 /// Call `site`'s formatted-text row: `zSBuf` for the 4096-byte row, else a
@@ -325,7 +318,6 @@ pub fn emitDisplayTask(g: *Gen, c: Mir.Callee, args: []const Mir.Value, inst: Mi
     // so a (nonconforming but unambiguous) `$fatal("bye")` keeps its text.
     // §9.4.1 a monitor report carries its site key first (`Lower.armMonitor`).
     const mon = c == .@"$monitor";
-    // `Lower.armMonitor` puts the site key first.
     if (mon) assert(args.len > 0);
     const body = if (mon or (c == .@"$fatal" and args.len > 0 and g.strArg(args, 0) == null))
         args[1..]
@@ -344,7 +336,8 @@ pub fn emitDisplayTask(g: *Gen, c: Mir.Callee, args: []const Mir.Value, inst: Mi
     // reader cannot recover it from the text; "these tasks shall also report
     // the simulation run time", at the Table 9-25 level `$fatal`'s
     // finish_number sets.
-    if (severityWord(c)) |word| try emitWhen(g, word, inst, if (c == .@"$fatal") finishLevel(g, args) else 1);
+    const level = if (c == .@"$fatal") finishLevel(g, args) else 1;
+    if (severityWord(c)) |word| try emitWhen(g, word, inst, level);
     if (mon) {
         // §9.4.1's mechanism: format into this site's scratch row, then report
         // only when a watched argument VALUE differs from the step this site
@@ -361,10 +354,7 @@ pub fn emitDisplayTask(g: *Gen, c: Mir.Callee, args: []const Mir.Value, inst: Mi
     // it is the exit status, floored at 1 so a `$fatal` never reads as success
     // to a shell. `zHalt` is f64-typed so the dead code after it still
     // compiles; `break :zd` is statically reachable, never taken.
-    if (c == .@"$fatal") {
-        const lvl = finishLevel(g, args);
-        try g.b("_ = zHalt({d}); ", .{std.math.clamp(lvl, 1, 255)});
-    }
+    if (c == .@"$fatal") try g.b("_ = zHalt({d}); ", .{std.math.clamp(level, 1, 255)});
     try g.b("break :zd S.con(0.0); }}", .{});
 }
 
@@ -419,7 +409,6 @@ pub fn planSay(g: *Gen) Error![]const SaySite {
         if (endsLine(c)) try fmt.append(g.arena, '\n');
         try out.append(g.arena, .{ .call = call, .fmt = fmt.items, .tok = d.tok, .vals = vals.items, .debug = c == .@"$debug" });
     }
-    assert(out.items.len <= g.lowered.displays.items.len);
     return out.items;
 }
 
@@ -447,7 +436,6 @@ pub fn planPasses(g: *Gen) Error!void {
         }
         try init.append(g.arena, def.inst_result);
     }
-    assert(init.items.len <= g.lowered.displays.items.len);
     g.init_calls = init.items;
 }
 
@@ -468,7 +456,6 @@ pub fn sayRecords(c: Mir.Callee) bool {
 /// arguments to `vals`. False when one has no numeric record: a string that
 /// is not a constant, or a number under `%s` (§9.4.5's bytes).
 fn sayFormat(g: *Gen, args: []const Mir.Value, fmt: *std.ArrayList(u8), vals: *std.ArrayList(Mir.Value)) Error!bool {
-    const vals_before = vals.items.len;
     var i: usize = 0;
     while (i < args.len) {
         const s = g.strArg(args, i) orelse {
@@ -522,8 +509,6 @@ fn sayFormat(g: *Gen, args: []const Mir.Value, fmt: *std.ArrayList(u8), vals: *s
             try vals.append(g.arena, a);
         }
     }
-    assert(i == args.len);
-    assert(vals.items.len - vals_before <= args.len);
     return true;
 }
 
@@ -536,12 +521,10 @@ fn sayDecimal(g: *Gen, fmt: *std.ArrayList(u8), v: Mir.Value) Error!void {
 
 /// `text` into a format as itself: each `%` doubled.
 fn appendLiteral(g: *Gen, fmt: *std.ArrayList(u8), text: []const u8) Error!void {
-    const len_before = fmt.items.len;
     for (text) |ch| {
         if (ch == '%') try fmt.append(g.arena, '%');
         try fmt.append(g.arena, ch);
     }
-    assert(fmt.items.len >= len_before + text.len);
 }
 
 /// Emits a `.record` display unit's task (`planSay`) as a labeled block that
@@ -1315,10 +1298,8 @@ fn renderPrintArg(g: *Gen, p: PrintArg, i: usize) Error!void {
             // Without zero-fill the outer `{s:>W}` does any padding.
             const sign: []const u8 = if (p.spec.plus) "+" else if (p.spec.space) " " else "";
             const w = p.spec.width;
-            const zero_fill = p.spec.zero and !p.spec.left and p.spec.width > 0;
-            // The zero-filled field leaves room for its sign.
-            if (zero_fill) assert(w >= 1);
-            if (zero_fill) assert(w >= sign.len);
+            // A zero-filled field has a width, so `w - 1` leaves room for the sign.
+            const zero_fill = p.spec.zero and !p.spec.left and w > 0;
             try g.b("zi{d}: {{ const zv: i64 = ", .{i});
             try g.renderVal(p.v, .int);
             if (zero_fill) {
