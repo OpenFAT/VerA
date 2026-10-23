@@ -1,7 +1,7 @@
 //! §4.5.7 absdelay history -> the delayed value a residual reads, and the
 //! fixed ring of accepted samples it reads from. Embedded into every device
 //! with an absdelay (`kernel_text.hist_txt` drops this paragraph: it cuts at
-//! the first blank line) and imported by `kernels/test.zig`, so the ring the
+//! the first blank line) and tested by `tests/unit.zig`, so the ring the
 //! tests check is the ring the device runs. LRM: §4.5.7, §4.5.15.
 
 // `std` is `zhs` here for the reason `str_kernels.zig` spells it `zstd`: the
@@ -79,16 +79,22 @@ pub fn zHistAt(ts: []const f64, vs: []const f64, head: u64, t: f64) f64 {
     var hi: usize = count;
     while (hi - lo > 1) {
         const mid = lo + (hi - lo) / 2;
-        if (ts[(oldest + mid) % n] <= t) lo = mid else hi = mid;
+        if (ts[zhSlot(oldest + mid, n)] <= t) lo = mid else hi = mid;
     }
     const c = @min(lo + 1, count - 1);
-    const older = (oldest + c - 1) % n;
-    const newer = (oldest + c) % n;
+    const older = zhSlot(oldest + c - 1, n);
+    const newer = zhSlot(oldest + c, n);
     const span = ts[newer] - ts[older];
     if (span <= 0.0) return vs[newer];
     const f = (t - ts[older]) / span;
     return vs[older] + (vs[newer] - vs[older]) * f;
 }
+/// Ring slot of age-order position `i` past `oldest`, for `i < 2 n`: a
+/// subtraction, where `%` is a division per probe of `zHistAt`'s search.
+fn zhSlot(i: usize, n: usize) usize {
+    return i - n * @intFromBool(i >= n);
+}
+
 /// §4.5.7 a full ring keeps its window. Called by `updateState` before it
 /// pushes the sample at `now`. A plain ring would overwrite its oldest
 /// sample; that is safe once the sample after it is at or before `now - w`
@@ -200,6 +206,8 @@ fn zhUnthin(ts: []f64, vs: []f64, o: usize) void {
     }
     zhRot(ts, vs, 0, n, (n - o) % n);
 }
+/// Records the accepted sample (`t`, `v`) in slot `head % n`, overwriting the
+/// oldest once the ring is full, and counts it in `head`.
 pub fn zHistPush(ts: []f64, vs: []f64, head: *u64, t: f64, v: f64) void {
     const at: usize = @intCast(head.* % ts.len);
     ts[at] = t;
