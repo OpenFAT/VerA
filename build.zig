@@ -65,6 +65,19 @@ pub fn build(b: *Build) void {
     run_cmd.addPassthruArgs();
     b.step("run", "Run the vera CLI").dependOn(&run_cmd.step);
 
+    // The VAMS Conformance Suite (`git submodule update --init --recursive
+    // tests/conformance`) through its harness, `conform` from `nix develop
+    // .#external`: its own tests and every external manifest, against the
+    // installed vera. A known failure is a line of tools/vera.xfail.
+    const conformance = b.addSystemCommand(&.{ "sh", "-c",
+        \conform -t tests/conformance/tools/vera.conf -x tools/vera.xfail -j "$(nproc)" -T 300 \
+        \  -o zig-out/conformance.tsv tests/conformance/tests tests/conformance/external/*.manifest
+    });
+    conformance.setEnvironmentVariable("VERA", b.getInstallPath(.bin, "vera"));
+    conformance.step.dependOn(b.getInstallStep());
+    conformance.has_side_effects = true;
+    b.step("conformance", "Run the conformance suite (tests/conformance) against the installed vera").dependOn(&conformance.step);
+
     const test_step = b.step("test", "Run unit, host, reference and harness tests (language fixtures: test-ams and test-devices)");
     const all_step = b.step("build-all", "Compile every artifact for -Dtarget without running one");
     all_step.dependOn(&exe.step);

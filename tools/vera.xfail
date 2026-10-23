@@ -1,0 +1,6 @@
+# Conformance tests vera is known to fail, one test name per line as conform
+# prints it (`verilog-a/ch05_analog_behavior/x.va`, `ivtest/ivltests/y.v`),
+# with a reason after `#`. `zig build conformance` fails on any FAIL not
+# listed here and on any listed test that passes (XPASS): delete its line.
+# Seed or refresh it from a run:
+#   grep '^FAIL' zig-out/conformance.tsv | cut -f2 > tools/vera.xfail

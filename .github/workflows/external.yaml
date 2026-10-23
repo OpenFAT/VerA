@@ -2,6 +2,7 @@
 # (the reference tools of `.#benchmarking`, without its GPU toolchains).
 # Each gates by NAME: a disagreement passes only when
 # a row of its suite's TRIAGE.md (tests/fixtures/external/<suite>/) names it
+# (the conformance job: a line of tools/vera.xfail)
 # with a verdict, and a row that names nothing is STALE and fails too, as an
 # XPASS does. Upstream sources are fetched at their pinned commits into
 # .zig-cache/external, never committed.
@@ -82,47 +83,31 @@ jobs:
             echo '```'; grep -E '^(FAIL|STALE) ' vampyre.txt || true; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Digital (tools/external_digital.py): ivtest and the Verilog-2005 subset
-  # of sv-tests by their own verdicts, and iverilog + vvp against `vera --run`
-  # transcript for transcript.
-  external-digital:
+  # The VAMS Conformance Suite (tests/conformance): its Verilog, Verilog-A,
+  # Verilog-AMS and Annex E tests and its external manifests (ivtest,
+  # sv-tests, ISP RAS, OpenVAF, gnucap-modelgen, VA-Models), judged by its
+  # `conform` harness. A known failure is a line of tools/vera.xfail.
+  conformance:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: cachix/install-nix-action@v31
-      - name: Build vera
-        run: nix develop .#external -c zig build -Doptimize=ReleaseFast install
-      # Every tool call is capped (address space, file size), so a runaway
-      # case fails by name instead of taking the runner down; the monitor
-      # says what was using the machine if it goes down anyway.
-      - name: External digital suites (ivtest, sv-tests, iverilog-diff)
-        env:
-          EXT_WRAP: prlimit --as=6442450944 --fsize=1073741824 --
-        run: |
-          (while sleep 10; do
-             echo "monitor $(date +%T): $(free -m | awk 'NR==2 { print $3 "M used, " $7 "M available" }'), disk $(df -h --output=avail / | tail -1)"
-             ps -eo rss=,etime=,args= --sort=-rss | head -3 | cut -c1-160
-           done) &
-          status=0
-          nix develop .#external -c python3 tools/external_digital.py zig-out/bin/vera --names external-digital-names.txt > external-digital.tsv 2> external-digital.txt || status=$?
-          cat external-digital.tsv
-          exit "$status"
+      - name: Conformance suite
+        run: nix develop .#external -c zig build -Doptimize=ReleaseFast conformance
       - name: Job summary
         if: always()
         run: |
           {
-            echo '## External digital suites'
-            echo '```'; cat external-digital.tsv; echo '```'
-            echo '### FAIL and STALE names'
-            echo '```'; grep -E '^(FAIL|STALE) ' external-digital.txt || true; echo '```'
+            echo '## Conformance suite'
+            echo '```'; cut -f1 zig-out/conformance.tsv | sort | uniq -c; echo '```'
+            echo '### FAIL and XPASS'
+            echo '```'; grep -E '^(FAIL|XPASS)' zig-out/conformance.tsv || true; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: external-digital
-          path: |
-            external-digital.tsv
-            external-digital.txt
-            external-digital-names.txt
-
+          name: conformance
+          path: zig-out/conformance.tsv
