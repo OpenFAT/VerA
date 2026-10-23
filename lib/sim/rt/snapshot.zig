@@ -113,7 +113,7 @@ pub fn bound(comptime d: *const root.Design) usize {
         .repeats = d.repeats,
         .joins = d.joins,
         .monitored = d.slots,
-        .layers = if (@hasDecl(@import("root"), "vera_overrides")) d.slots else 0,
+        .layers = if (root.overrides) d.slots else 0,
         .parts = if (d.part_start.len == 0) 0 else d.part_start[d.part_start.len - 1],
         .cur = drv_words,
         .tgt = drv_words,
