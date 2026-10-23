@@ -24,6 +24,20 @@ const none_u32 = codegen.none_u32;
 const VTy = codegen.VTy;
 const opcode_zig = codegen.opcode_zig;
 
+/// Returns whether `op` has a plain-f64 spelling a GPU can execute.
+///
+/// Unit bodies also compile for nvptx, which has no libm, so only arithmetic
+/// LLVM lowers to one PTX instruction qualifies; everything else keeps its S
+/// form. Real opcodes only: `f64Const` renders integer opcodes in f64, which
+/// drops §3.2's 32-bit wraparound, so an integer residual goes through
+/// `intBin32` instead. Only `f64Const`'s `in_unit` path consults this, and
+/// the emitted `zPow` comment cites it by name.
+fn devSafe(op: Mir.Opcode) bool {
+    // The `dev_safe` column: sqrt/floor/ceil are there because they are
+    // sqrt.rn.f64 and cvt.rmi/rpi.f64.f64, single instructions.
+    return opcode_zig.get(op).dev_safe;
+}
+
 /// Returns `inst` as a ternary: the optimizer's select, or a pure two-way CFG
 /// merge rebuilt from its phi. Null for loop-carried or multiway phis and
 /// for arms containing a call.
@@ -76,20 +90,6 @@ fn hostConditionalExpr(self: *Gen, inst: Mir.Inst, depth: u32, ty: VTy) Error!?[
     const yes = (if (ty == .int) try i64Const(self, d.then_val, depth + 1) else try f64Const(self, d.then_val, depth + 1, false)) orelse return null;
     const no = (if (ty == .int) try i64Const(self, d.else_val, depth + 1) else try f64Const(self, d.else_val, depth + 1, false)) orelse return null;
     return try self.arena.print("@as({s}, if (({s}) != 0) ({s}) else ({s}))", .{ if (ty == .int) "i64" else "f64", condition, yes, no });
-}
-
-/// Returns whether `op` has a plain-f64 spelling a GPU can execute.
-///
-/// Unit bodies also compile for nvptx, which has no libm, so only arithmetic
-/// LLVM lowers to one PTX instruction qualifies; everything else keeps its S
-/// form. Real opcodes only: `f64Const` renders integer opcodes in f64, which
-/// drops §3.2's 32-bit wraparound, so an integer residual goes through
-/// `intBin32` instead. Only `f64Const`'s `in_unit` path consults this, and
-/// the emitted `zPow` comment cites it by name.
-fn devSafe(op: Mir.Opcode) bool {
-    // The `dev_safe` column: sqrt/floor/ceil are there because they are
-    // sqrt.rn.f64 and cvt.rmi/rpi.f64.f64, single instructions.
-    return opcode_zig.get(op).dev_safe;
 }
 
 /// Returns a host-side `[]const u8` for a string operand: the literal, or the
