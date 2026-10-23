@@ -9,6 +9,7 @@ const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
 const waiters = @import("waiters.zig");
 const evaluate = @import("evaluate.zig");
+const display = @import("display.zig");
 const Error = @import("root.zig").Error;
 const Run = @import("root.zig").Run;
 const expectRun = @import("root.zig").expectRun;
@@ -297,7 +298,7 @@ pub fn fileCall(self: *Run, a: std.mem.Allocator, f: FileFn, args: []const Ast.E
         // §17.2.7: the code, and its description in `str`, cleared when 0.
         .ferror => {
             const code = if (t.err) |err| err((try descriptor(self, a, args[0])) orelse 0) else 0;
-            try evaluate.assign(self, a, args[1], try stringValue(a, fk.zFErrorStr(code, 0)));
+            try evaluate.assign(self, a, args[1], try evaluate.stringLiteral(a, fk.zFErrorStr(code, 0)));
             return code;
         },
         else => {}, // else: `fileOp`'s
@@ -362,7 +363,7 @@ fn fgets(self: *Run, a: std.mem.Allocator, t: contract.FileIo, args: []const Ast
     const d = (try descriptor(self, a, args[1])) orelse return 0;
     const room = (try evaluate.targetType(self, args[0])).width / 8;
     const line = try readLine(a, t, d, room);
-    if (line.len != 0) try evaluate.assign(self, a, args[0], try stringValue(a, line));
+    if (line.len != 0) try evaluate.assign(self, a, args[0], try evaluate.stringLiteral(a, line));
     return @intCast(line.len);
 }
 
@@ -498,26 +499,26 @@ pub fn readWord(a: std.mem.Allocator, t: contract.FileIo, d: i64, width: u32) Er
 /// descriptor's bits name.
 pub fn fclose(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId) Error!void {
     const d = (try descriptor(self, a, args[0])) orelse return;
-    @import("display.zig").cancelFile(self, d);
+    display.cancelFile(self, d);
     if (table(self)) |t| _ = t.close(d);
 }
 
 /// §17.2.2 `$fdisplay`/`$fwrite` and their radix forms: the `$display` text
 /// of the arguments after the descriptor, to every channel it names.
-pub fn fdisplay(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show: @import("display.zig").Show) Error!void {
+pub fn fdisplay(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show: display.Show) Error!void {
     const d = (try descriptor(self, a, args[0])) orelse return;
     return fdisplayTo(self, a, d, args, show);
 }
 
 /// `fdisplay` to descriptor `d`, already read from `args[0]`.
-pub fn fdisplayTo(self: *Run, a: std.mem.Allocator, d: i64, args: []const Ast.ExprId, show: @import("display.zig").Show) Error!void {
+pub fn fdisplayTo(self: *Run, a: std.mem.Allocator, d: i64, args: []const Ast.ExprId, show: display.Show) Error!void {
     var sh = show;
     sh.file = false;
     var buf: std.Io.Writer.Allocating = .init(a);
     const saved = self.out;
     self.out = &buf.writer;
     defer self.out = saved;
-    try @import("display.zig").display(self, args[1..], a, sh);
+    try display.display(self, args[1..], a, sh);
     self.out = saved;
     if (try channels(table(self), self.io, self.out, d, buf.written())) {
         const start = self.starts[@min(self.file.exprs.mainTok(args[0]), self.starts.len - 1)];
@@ -570,7 +571,7 @@ fn scanAssign(self: *Run, a: std.mem.Allocator, sc: *Scan, outs: []const Ast.Exp
             v.unknowns()[0] = b[1];
             try evaluate.assign(self, a, outs[x.arg], v);
         },
-        .chars => |c| try evaluate.assign(self, a, outs[x.arg], try stringValue(a, c)),
+        .chars => |c| try evaluate.assign(self, a, outs[x.arg], try evaluate.stringLiteral(a, c)),
         .real => |r| try evaluate.assignReal(self, a, outs[x.arg], r),
     };
 }
@@ -806,28 +807,17 @@ pub const Scan = struct {
     }
 };
 
-/// IEEE 1364-2005 §4.2.3 a string as a value: 8 bits a character, the last
-/// character in the low byte. Assigning it pads or truncates on the left.
-fn stringValue(a: std.mem.Allocator, s: []const u8) Error!Int.Literal {
-    const v = try filled(a, @intCast(@max(1, s.len) * 8), false, .zero);
-    for (s, 0..) |ch, k| {
-        const at = s.len - 1 - k;
-        v.values()[at / 8] |= @as(u64, ch) << @intCast(at % 8 * 8);
-    }
-    return v;
-}
-
 /// §17.2.3 `$swrite` (`show` set: `$fwrite`'s text) / `$sformat` (null:
 /// `display.sformat`'s) of the arguments after the first, assigned to the
 /// first "using the string assignment to variable rules".
-pub fn sformat(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show: ?@import("display.zig").Show) Error!void {
+pub fn sformat(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show: ?display.Show) Error!void {
     var buf: std.Io.Writer.Allocating = .init(a);
     const saved = self.out;
     self.out = &buf.writer;
     defer self.out = saved;
-    if (show) |sh| try @import("display.zig").display(self, args[1..], a, sh) else try @import("display.zig").sformat(self, args[1..], a);
+    if (show) |sh| try display.display(self, args[1..], a, sh) else try display.sformat(self, args[1..], a);
     self.out = saved;
-    try evaluate.assign(self, a, args[0], try stringValue(a, buf.written()));
+    try evaluate.assign(self, a, args[0], try evaluate.stringLiteral(a, buf.written()));
 }
 
 // ---- §17.5 programmable logic arrays ----------------------------------------
@@ -1066,16 +1056,16 @@ test fileType {
     for ([_][]const u8{ "", "R", "rw", "rb+b", "x", "r +" }) |ty| try std.testing.expect(!fileType(ty));
 }
 
-test stringValue {
+test "§4.2.3 a string as a value: the last character in the low byte, an empty one a NUL" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     // §4.2.3: the last character in the low byte.
-    const ab = try stringValue(a, "AB");
+    const ab = try evaluate.stringLiteral(a, "AB");
     try std.testing.expectEqual(@as(u32, 16), ab.width);
     try std.testing.expectEqual(@as(?i64, 0x4142), ab.asInt());
     // An empty string is one NUL character.
-    const none = try stringValue(a, "");
+    const none = try evaluate.stringLiteral(a, "");
     try std.testing.expectEqual(@as(u32, 8), none.width);
     try std.testing.expectEqual(@as(?i64, 0), none.asInt());
 }
