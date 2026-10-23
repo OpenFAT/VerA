@@ -682,7 +682,7 @@ pub fn nextDue(after: u64, inclusive: bool) ?u64 {
     for (cbs.items) |cb| {
         if (cb.dead or !isTimeReason(cb.reason) or cb.reason == cbNextSimTime) continue;
         if (cb.due < after or (!inclusive and cb.due == after)) continue;
-        if (best == null or cb.due < best.?) best = cb.due;
+        best = @min(best orelse cb.due, cb.due);
     }
     return best;
 }
@@ -699,9 +699,6 @@ pub fn pendingTimes(out: *std.ArrayList(u64), a: std.mem.Allocator, now: u64) !v
     }
 }
 
-/// Fire the callbacks of `reason` due at `now`, each at most once: a time
-/// callback is one-shot (§12.31.2 "shall occur ... a specified time"), so it
-/// is removed as it fires and its handle stops being valid.
 /// Whether a live `reason` callback is due at `now` (what `fireDue` would run).
 pub fn isDue(reason: c_int, now: u64) bool {
     for (cbs.items) |cb| {
@@ -710,6 +707,9 @@ pub fn isDue(reason: c_int, now: u64) bool {
     return false;
 }
 
+/// Fires the callbacks of `reason` due at `now`, each at most once: a time
+/// callback is one-shot (§12.31.2 "shall occur ... a specified time"), so it
+/// is removed as it fires and its handle stops being valid.
 pub fn fireDue(reason: c_int, now: u64) void {
     const n = cbs.items.len;
     for (0..n) |i| {
@@ -983,7 +983,7 @@ pub fn nextForced(after: f64, until: f64) ?f64 {
     for (cbs.items) |cb| {
         if (cb.dead or (cb.reason != acbAbsTime and cb.reason != acbElapsedTime)) continue;
         if (cb.due_real <= after or analog.sameTime(cb.due_real, after) or cb.due_real > until) continue;
-        if (best == null or cb.due_real < best.?) best = cb.due_real;
+        best = @min(best orelse cb.due_real, cb.due_real);
     }
     return best;
 }
