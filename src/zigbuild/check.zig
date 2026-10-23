@@ -143,11 +143,7 @@ test typeCheck {
     var err: Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
 
-    const good = typeCheck(gpa, io, &err.writer, "zig", contract, "pub fn eval() void {}\n", "dir/good.va") catch |e| switch (e) {
-        // No `zig` on PATH in this environment: nothing to assert.
-        error.FileNotFound => return error.SkipZigTest,
-        else => return e,
-    };
+    const good = try typeCheck(gpa, io, &err.writer, "zig", contract, "pub fn eval() void {}\n", "dir/good.va");
     try std.testing.expectEqual(@as(?u8, null), good);
     try std.testing.expectEqual(@as(usize, 0), err.written().len);
 

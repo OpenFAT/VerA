@@ -769,10 +769,7 @@ test "a chunked setup builds one object per chunk into a library that runs" {
         };
         defer for (mods) |m| gpa.free(m.root);
         const o: zigbuild.Options = .{ .work_dir = work, .name = "sudev", .optimize = .fast, .backend = .llvm, .modules = &mods, .split = true };
-        var r = zigbuild.compileRelease(gpa, io, o, .{ .text = su_dev, .setup_chunks = chunked.n }, 9) catch |err| switch (err) {
-            error.CompilerGone => return error.SkipZigTest,
-            else => return err,
-        };
+        var r = try zigbuild.compileRelease(gpa, io, o, .{ .text = su_dev, .setup_chunks = chunked.n }, 9);
         defer r.deinit(gpa);
         const so = switch (r) {
             .failed => |b| {

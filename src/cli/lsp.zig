@@ -684,7 +684,9 @@ test "parity: the server's diagnostics are `--diagnostics=json`'s, on every fixt
     for ([_][]const u8{ "verilog-a", "verilog-ams", "spice", "verilog" }) |lang| {
         const dir = try std.fs.path.join(gpa, &.{ tests, lang });
         defer gpa.free(dir);
-        var root = Io.Dir.cwd().openDir(io, dir, .{ .iterate = true }) catch return error.SkipZigTest;
+        // A missing corpus is a failure, not a skip: AGENTS.md's clone step
+        // initializes `tests/conformance`, and a skip would pass the oracle silently.
+        var root = try Io.Dir.cwd().openDir(io, dir, .{ .iterate = true });
         defer root.close(io);
         var walker = try root.walk(gpa);
         defer walker.deinit();

@@ -372,11 +372,7 @@ test "buildExe hands back zig's stderr for a testbench that does not compile" {
     const opts: BuildOptions = .{ .work_dir = work, .contract = contract, .name = "broken" };
 
     // `std.testing.allocator` fails the test if `bin` or the report leaks.
-    const r = buildExe(gpa, io, "pub const x = 1;\n", "pub fn main() void { _ = @import(\"device\").y; }\n", opts) catch |e| switch (e) {
-        // No `zig` on PATH in this environment: nothing to assert.
-        error.FileNotFound => return error.SkipZigTest,
-        else => return e,
-    };
+    const r = try buildExe(gpa, io, "pub const x = 1;\n", "pub fn main() void { _ = @import(\"device\").y; }\n", opts);
     defer r.deinit(gpa);
     try std.testing.expect(r == .failed);
     try std.testing.expect(std.mem.find(u8, r.failed, "no member named 'y'") != null);

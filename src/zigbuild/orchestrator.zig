@@ -899,11 +899,7 @@ test "compileRelease builds and versions a device" {
         \\pub fn eval(x: f64) callconv(.c) f64 { return x * contract.k; }
         \\
     ;
-    var r1 = compileRelease(gpa, io, o, .{ .text = dev_v1 }, 1) catch |err| switch (err) {
-        // No `zig` on PATH in this environment: nothing to assert.
-        error.CompilerGone => return error.SkipZigTest,
-        else => return err,
-    };
+    var r1 = try compileRelease(gpa, io, o, .{ .text = dev_v1 }, 1);
     defer r1.deinit(gpa);
     switch (r1) {
         .failed => |b| {
@@ -999,11 +995,7 @@ test "buildEngine reuses its object only while every key component is unchanged"
             }
         }
     };
-    const first = Build.path(o, cache) catch |err| switch (err) {
-        // No `zig` on PATH in this environment: nothing to assert.
-        error.CompilerGone => return error.SkipZigTest,
-        else => return err,
-    };
+    const first = try Build.path(o, cache);
     defer gpa.free(first);
 
     // Unchanged: the same object.
@@ -1088,10 +1080,7 @@ test "a split build links one object per part into a library that runs" {
             .split = true,
         };
         try std.testing.expect(splits(o, .{ .text = dev }));
-        var r = compileRelease(gpa, io, o, .{ .text = dev }, @intCast(gen)) catch |err| switch (err) {
-            error.CompilerGone => return error.SkipZigTest,
-            else => return err,
-        };
+        var r = try compileRelease(gpa, io, o, .{ .text = dev }, @intCast(gen));
         defer r.deinit(gpa);
         const so = switch (r) {
             .failed => |b| {
@@ -1405,10 +1394,7 @@ test "a split build that fails returns one report and leaks the others' none" {
     defer for (mods) |m| gpa.free(m.root);
     const o: Options = .{ .work_dir = work, .name = "faildev", .optimize = .fast, .backend = .llvm, .modules = &mods, .split = true };
     const dev = "pub fn eval() callconv(.c) void { @compileError(\"boom\"); }\n";
-    var r = compileRelease(gpa, io, o, .{ .text = dev }, 1) catch |err| switch (err) {
-        error.CompilerGone => return error.SkipZigTest,
-        else => return err,
-    };
+    var r = try compileRelease(gpa, io, o, .{ .text = dev }, 1);
     defer r.deinit(gpa);
     try std.testing.expect(r == .failed);
     try std.testing.expect(r.failed.errorMessageCount() > 0);
@@ -1496,10 +1482,7 @@ test "artifact_cache: a second work directory reuses the first's library, and a 
         const wd = try std.fs.path.join(gpa, &.{ base, w });
         defer gpa.free(wd);
         const o: Options = .{ .work_dir = wd, .name = "cachedev", .optimize = .debug, .backend = .self_hosted, .modules = &mods, .artifact_cache = cache };
-        var r = compileRelease(gpa, io, o, .{ .text = if (i == 2) dev ++ "pub const z = 1;\n" else dev }, 1) catch |err| switch (err) {
-            error.CompilerGone => return error.SkipZigTest,
-            else => return err,
-        };
+        var r = try compileRelease(gpa, io, o, .{ .text = if (i == 2) dev ++ "pub const z = 1;\n" else dev }, 1);
         defer r.deinit(gpa);
         try std.testing.expect(r == .ok);
         const bytes = try Io.Dir.cwd().readFileAlloc(io, r.ok.so_path, gpa, .unlimited);
