@@ -301,13 +301,15 @@ fn checkName(who: []const u8, tfname: [*c]const u8, domain: Domain) ?[]const u8 
         root.fail("BADNAME", "{s}: `{s}` does not begin with `$` and a name", .{ who, name });
         return null;
     }
-    for (regs.items) |s| if (s.domain == domain and std.mem.eql(u8, s.name, name)) {
+    if (find(name, domain) != null) {
         root.fail("DUPSYSTF", "{s}: `{s}` is already registered in the {t} domain", .{ who, name, domain });
         return null;
-    };
+    }
     return name;
 }
 
+/// Registers `s`; null, with the error recorded, when out of memory, and
+/// `s.name` is then still the caller's.
 fn add(s: Systf) vpiHandle {
     const p = gpa.create(Systf) catch return oom();
     p.* = s;
@@ -437,7 +439,7 @@ fn callIndex(comptime who: []const u8, obj: vpiHandle) ?u32 {
         root.fail("NOTCALL", who ++ ": `{s}` is not a system task or function call", .{o.name});
         return null;
     }
-    return @intCast((@intFromPtr(o) - @intFromPtr(d.objects.ptr)) / @sizeOf(root.Obj));
+    return d.indexOf(o);
 }
 
 /// IEEE 1364-2005 §27.31: "The routine will return a value of 1 on success or
@@ -678,7 +680,7 @@ test "§12.32/§12.33: registrations refused, and vpi_handle_multi's refusals" {
 /// `root.close` frees it (and `objects`, from `std.testing.allocator`).
 fn testDesign(objects: []root.Obj) root.Design {
     const a = std.testing.allocator;
-    return .{ .gpa = a, .arena = .init(a), .objects = objects, .scopes = &.{}, .top_modules = &.{}, .by_name = .empty, .iters = .empty };
+    return .{ .gpa = a, .arena = .init(a), .objects = objects };
 }
 
 test "§12.32.2: declared partials are copied, and a negative count declares none" {

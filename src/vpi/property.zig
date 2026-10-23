@@ -270,8 +270,8 @@ pub const vpiEndFrequency: c_int = 746;
 /// (`analog_run.analysis`), asked of a NULL object; with no analysis, or for
 /// the AC-only frequencies outside an AC sweep, the answer is the error.
 pub export fn vpi_get_real(prop: c_int, obj: vpiHandle) f64 {
-    if (refused("vpi_get_real")) return @floatFromInt(vpiUndefined);
     const undef: f64 = @floatFromInt(vpiUndefined);
+    if (refused("vpi_get_real")) return undef;
     const at = systf.active orelse {
         fail("NOTANALOG", "vpi_get_real: available to analog tasks and functions only, and none is running", .{});
         return undef;
@@ -339,14 +339,7 @@ fn location(o: *const Obj) ?root.Loc {
     if (root.coldOf(o).loc) |l| return l;
     if (o.src_tok == 0) return null;
     const r = run.attached() orelse return null;
-    const start = r.starts[o.src_tok];
-    const at = r.bag.locate(.{ .start = start, .end = start }, null);
-    const off = r.bag.toSourceOffset(at.file, at.offset);
-    const text = r.bag.sourceText(at.file);
-    return .{
-        .line = @intCast(1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n")),
-        .file = r.bag.fileName(at.file),
-    };
+    return root.locate(r.bag, r.starts[o.src_tok]);
 }
 
 fn propFail(prop: c_int, o: *const Obj) c_int {

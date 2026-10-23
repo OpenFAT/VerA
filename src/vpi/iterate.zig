@@ -24,6 +24,7 @@ const asIter = root.asIter;
 const asObj = root.asObj;
 const codeProp = property.codeProp;
 const describe = root.describe;
+const edgeTo = root.edgeTo;
 const enter = root.enter;
 const fail = root.fail;
 const handleOf = root.handleOf;
@@ -207,7 +208,7 @@ fn uses(d: *Design, o: *const Obj) vpiHandle {
         .code => if (o.vtype != code.vpiNetBit and o.vtype != code.vpiRegBit) return useFail(o),
         .module, .port, .reg_array, .var_array, .net_array, .module_array, .constant, .discipline, .nature, .node, .branch, .quantity => return useFail(o),
     }
-    const target: u32 = @intCast((@intFromPtr(o) - @intFromPtr(d.objects.ptr)) / @sizeOf(Obj));
+    const target = d.indexOf(o);
     const rel = relationsOf(d) orelse return null;
     // At most one handle per user row.
     var out = std.ArrayList(vpiHandle).initCapacity(d.gpa, rel.users.of(target).len) catch return oomIter();
@@ -217,10 +218,7 @@ fn uses(d: *Design, o: *const Obj) vpiHandle {
         last = u;
         out.appendAssumeCapacity(handleOf(&d.objects[u]));
     }
-    return newHandleIter(d, out.toOwnedSlice(d.gpa) catch {
-        out.deinit(d.gpa);
-        return oomIter();
-    });
+    return ownedIter(d, &out);
 }
 
 fn useFail(o: *const Obj) vpiHandle {
@@ -238,10 +236,7 @@ fn lowConnPorts(d: *Design, o: *const Obj) vpiHandle {
     const ports = d.scopes[owner].ports;
     var out = std.ArrayList(vpiHandle).initCapacity(d.gpa, ports.len) catch return oomIter();
     for (ports) |p| if (std.mem.eql(u8, d.objects[p].name, o.name)) out.appendAssumeCapacity(handleOf(&d.objects[p]));
-    return newHandleIter(d, out.toOwnedSlice(d.gpa) catch {
-        out.deinit(d.gpa);
-        return oomIter();
-    });
+    return ownedIter(d, &out);
 }
 
 /// IEEE 1364-2005 §26.6.22/§26.6.23: the drivers (`drivers`) or loads of net
@@ -263,7 +258,7 @@ fn lowConnPorts(d: *Design, o: *const Obj) vpiHandle {
 /// are not listed. Each needs its own relation.
 fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) vpiHandle {
     const rel = relationsOf(d) orelse return null;
-    const target: u32 = @intCast((@intFromPtr(o) - @intFromPtr(d.objects.ptr)) / @sizeOf(Obj));
+    const target = d.indexOf(o);
     const by_obj = rel.by_obj.of(target);
     const by_slot: []const u32 = if (o.slot.get()) |slot| rel.by_slot.of(slot) else &.{};
     const ports: []const u32 = if (o.kind == .net) if (o.owner.get()) |owner| rel.ports.of(owner) else &.{} else &.{};
@@ -302,10 +297,7 @@ fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) vpiHandle
         };
         if (hit) out.appendAssumeCapacity(handleOf(&d.objects[i]));
     }
-    return newHandleIter(d, out.toOwnedSlice(d.gpa) catch {
-        out.deinit(d.gpa);
-        return oomIter();
-    });
+    return ownedIter(d, &out);
 }
 
 fn oomIter() vpiHandle {
@@ -405,10 +397,8 @@ fn addReach(gpa: std.mem.Allocator, d: *const Design, out: *std.ArrayList([2]u32
         code.vpiPartSelect, code.vpiIndexedPartSelect, code.vpiNetBit, code.vpiRegBit => {},
         else => return, // else: only a select names a part of another object
     }
-    for (x.edges) |e| if (e.tag == vpiParent) {
-        if (e.to != no_obj) try out.append(gpa, .{ e.to, u });
-        return;
-    };
+    const parent = edgeTo(x, vpiParent);
+    if (parent != no_obj) try out.append(gpa, .{ parent, u });
 }
 
 /// `mentions`' walk from `e`, inverted: every row it visits, and the slot of
@@ -457,12 +447,6 @@ fn overrideRange(d: *const Design, o: *const Obj, r: *const sim.digital.Run, ran
     };
 }
 
-/// `x`'s single arrow `tag`, or `no_obj`.
-fn edgeTo(x: *const Obj, tag: c_int) u32 {
-    for (x.edges) |e| if (e.tag == tag) return e.to;
-    return no_obj;
-}
-
 /// Does expression `e` read `target`'s storage: is it the same slot (or the
 /// same object), a select of it, or an operation or call with such an
 /// operand?
@@ -492,6 +476,16 @@ fn newHandleIter(d: *Design, handles: []vpiHandle) vpiHandle {
     const h = newIter(d, &.{});
     if (asIter(h)) |it| it.handles = handles else d.gpa.free(handles);
     return h;
+}
+
+/// `newHandleIter` over `out`'s handles, which it takes: `out` is left
+/// empty, or freed when the slice cannot be made.
+fn ownedIter(d: *Design, out: *std.ArrayList(vpiHandle)) vpiHandle {
+    const handles = out.toOwnedSlice(d.gpa) catch {
+        out.deinit(d.gpa);
+        return oomIter();
+    };
+    return newHandleIter(d, handles);
 }
 
 fn newIter(d: *Design, items: []const u32) vpiHandle {

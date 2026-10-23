@@ -31,7 +31,6 @@ const joinPath = model.joinPath;
 const lastComponent = model.lastComponent;
 const nameTable = model.nameTable;
 const vpiArray = root.vpiArray;
-const vpiIndex = root.vpiIndex;
 const vpiNet = root.vpiNet;
 const vpiScope = root.vpiScope;
 const vpiSize = root.vpiSize;
@@ -42,15 +41,7 @@ const vpiSize = root.vpiSize;
 /// one `Design` cannot name. Caller owns the result and frees it with
 /// `Design.deinit`. `model_gpa` holds the `Design`'s tables.
 pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Design {
-    var d: Design = .{
-        .gpa = model_gpa,
-        .arena = .init(model_gpa),
-        .objects = &.{},
-        .scopes = &.{},
-        .top_modules = &.{},
-        .by_name = .empty,
-        .iters = .empty,
-    };
+    var d: Design = .{ .gpa = model_gpa, .arena = .init(model_gpa) };
     errdefer d.deinit();
     const arena = d.arena.allocator();
     // Everything below but the rows and the `Design` is scratch: many small

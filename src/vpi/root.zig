@@ -43,9 +43,13 @@ pub const systf = @import("systf.zig");
 pub const code = @import("code.zig");
 /// The analog analysis a host attaches a device library to and runs.
 pub const analog_run = @import("analog.zig");
+/// §12.19-§12.22: one-to-one traversal and lookup by name or index.
 pub const handle = @import("handle.zig");
+/// §12.23/§12.35 one-to-many traversal and its reverse indexes.
 pub const iterate = @import("iterate.zig");
+/// §12.5/§12.12/§12.18 property reads.
 pub const property = @import("property.zig");
+/// §12.11/§12.29 delays, and IEEE 1364-2005 §26.6.16's inter-module paths.
 pub const delays = @import("delays.zig");
 const analog_model = @import("model_analog.zig");
 const digital_model = @import("model_digital.zig");
@@ -544,6 +548,25 @@ pub const Cold = struct {
 /// written (no §19.7 `line renumbering).
 pub const Loc = struct { line: c_int, file: []const u8 };
 
+/// Where span-currency offset `start` lands through `bag`'s source map (an
+/// `include`d file names itself, a macro expansion its invocation): the
+/// physical line, and the file name, borrowed from `bag`.
+pub fn locate(bag: *const @import("vera").diag.Bag, start: u32) Loc {
+    const at = bag.locate(.{ .start = start, .end = start }, null);
+    const off = bag.toSourceOffset(at.file, at.offset);
+    const text = bag.sourceText(at.file);
+    return .{
+        .line = @intCast(1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n")),
+        .file = bag.fileName(at.file),
+    };
+}
+
+/// `x`'s first single arrow `tag`, or `no_obj`.
+pub fn edgeTo(x: *const Obj, tag: c_int) u32 {
+    for (x.edges) |e| if (e.tag == tag) return e.to;
+    return no_obj;
+}
+
 const empty_cold: Cold = .{};
 
 /// The cold fields of `o`, a row of the installed design.
@@ -625,13 +648,13 @@ pub const Design = struct {
     /// and `object` accepts a pointer only if it lands here on an element
     /// boundary. One object always yields one pointer, but applications must
     /// still compare with `vpi_compare_objects` (§12.3).
-    objects: []Obj,
+    objects: []Obj = &.{},
     /// The `Cold` rows `Obj.cold` indexes, in no particular order.
     cold: []Cold = &.{},
-    scopes: []Scope,
+    scopes: []Scope = &.{},
     /// §11.6.1 NOTE 1 — what `vpi_iterate(vpiModule, NULL)` walks. One entry:
     /// `Elaborate.pickTop` elaborates exactly one design root.
-    top_modules: []const u32,
+    top_modules: []const u32 = &.{},
     /// §11.6.2's two top-level sets: `vpi_iterate(vpiDiscipline, NULL)` and
     /// `vpi_iterate(vpiNature, NULL)`, in declaration order. Empty for a
     /// digital design, which declares neither.
@@ -654,9 +677,9 @@ pub const Design = struct {
     file: ?*const Ast.SourceFile = null,
     /// §11.6 `vpiFullName` → object index. Every object has one and they are
     /// unique, which is what makes §12.21 a lookup rather than a tree walk.
-    by_name: std.StringHashMapUnmanaged(u32),
+    by_name: std.StringHashMapUnmanaged(u32) = .empty,
     /// The live iterators, keyed by handle value.
-    iters: std.AutoHashMapUnmanaged(usize, *Iter),
+    iters: std.AutoHashMapUnmanaged(usize, *Iter) = .empty,
     /// iterate.zig's reverse indexes, built on first use; owned (`gpa`).
     relations: ?iterate.Relations = null,
     /// §12.32.2 the partials each analog call's derivtf declared, by call
@@ -665,6 +688,13 @@ pub const Design = struct {
     /// IEEE 1364-2005 §27.31 user data, by call object index and the host
     /// instance whose calltf was running (`systf.active_inst`).
     userdata: std.AutoHashMapUnmanaged(systf.UserKey, ?*anyopaque) = .empty,
+
+    /// The index of row `o`, which must point into `objects` (a pointer
+    /// `asObj` returned, or `&objects[i]`); any other pointer is a wrong
+    /// index or a safety panic.
+    pub fn indexOf(d: *const Design, o: *const Obj) u32 {
+        return @intCast((@intFromPtr(o) - @intFromPtr(d.objects.ptr)) / @sizeOf(Obj));
+    }
 
     /// Frees the model and every live iterator; all handles become invalid.
     pub fn deinit(self: *Design) void {
