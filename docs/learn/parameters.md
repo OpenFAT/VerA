@@ -79,8 +79,9 @@ flattens its children into it: the two branches between `p` and `n` add, and
 For the top module, VerA takes overrides from the command line and from
 the testbench:
 
-- `--param NAME=VALUE` sets a numeric top-level parameter for one run. A
-  local parameter cannot be set, and VerA says so:
+- `--param NAME=VALUE` sets a top-level parameter for one run: a number, or
+  a string parameter's text (`--param topology=parallel`). A local parameter
+  cannot be set, and VerA says so:
 
 ```console
 {{#include ../examples/parameters/params_cli.out}}

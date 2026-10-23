@@ -319,6 +319,11 @@ pub fn handleInclude(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!voi
     }
     try pp.includes.append(pp.scratch, opened);
     defer _ = pp.includes.pop();
+    // `Options.require_std_includes`: the source asked for annex D, from an
+    // include directory or built in (a guarded copy is then a no-op).
+    const base = std.fs.path.basename(path);
+    if (std.mem.eql(u8, base, "constants.vams") or std.mem.eql(u8, base, "constants.h")) pp.constants_included = true;
+    if (std.mem.eql(u8, base, "disciplines.vams") or std.mem.eql(u8, base, "discipline.h")) pp.disciplines_included = true;
     // Registered under the opened path, so `__FILE__` and every diagnostic
     // inside the file name the file that was read (§10.7).
     try pp.nested(name_span, Pp.runFile, .{ pp, inc.text, inc.path, null });

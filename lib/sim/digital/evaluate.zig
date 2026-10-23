@@ -265,15 +265,7 @@ fn leaf(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!Int.Literal {
         },
         .logic_literal => ex.logicValue(e),
         // §3.6 packed ASCII, the first character most significant.
-        .str_literal => blk: {
-            const text = self.file.str(ex.strOf(e));
-            const value = try filled(a, compile.stringWidth(text), false, .zero);
-            for (text, 0..) |c, i| {
-                const shift: u32 = @intCast((text.len - 1 - i) * 8);
-                value.values()[shift / 64] |= @as(u64, c) << @intCast(shift % 64);
-            }
-            break :blk value;
-        },
+        .str_literal => try stringLiteral(a, self.file.str(ex.strOf(e))),
         .int_literal => blk: {
             const n = ex.intLiteral(e);
             const planes = try a.alloc(u64, 2);
@@ -340,6 +332,16 @@ pub fn eval(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, width: u32) Error!I
 // ---- reals (IEEE 1364-2005 §4.8, §17.8, §17.11.2) ---------------------------
 
 /// A real as the 64-bit slot value that holds it.
+/// §3.6 `text` as packed ASCII, the first character most significant.
+pub fn stringLiteral(a: std.mem.Allocator, text: []const u8) Error!Int.Literal {
+    const value = try filled(a, compile.stringWidth(text), false, .zero);
+    for (text, 0..) |c, i| {
+        const shift: u32 = @intCast((text.len - 1 - i) * 8);
+        value.values()[shift / 64] |= @as(u64, c) << @intCast(shift % 64);
+    }
+    return value;
+}
+
 pub fn realLiteral(a: std.mem.Allocator, r: f64) Error!Int.Literal {
     const out = try filled(a, 64, true, .zero);
     out.values()[0] = @bitCast(r);

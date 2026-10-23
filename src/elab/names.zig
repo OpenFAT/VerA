@@ -793,7 +793,7 @@ const ParamEnv = struct {
         const self = env.self;
         const p = self.params.items[i];
         if (!p.is_local and p.ty != .string) for (self.ctx.param_overrides) |o| {
-            if (!std.mem.eql(u8, o.name, self.ctx.file.str(p.name))) continue;
+            if (!std.mem.eql(u8, o.name, self.ctx.file.str(p.name)) or std.math.isNan(o.value)) continue;
             // The replaced default supplies an inferred TYPE only. Its
             // former value dependencies cannot change this card binding
             // and must not freeze unrelated host fields as shape inputs.

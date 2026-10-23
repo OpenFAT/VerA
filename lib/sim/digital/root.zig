@@ -75,6 +75,12 @@ const TimeFormat = display.TimeFormat;
 pub const Error = error{DigitalFailed} || std.mem.Allocator.Error || std.Io.Writer.Error;
 
 /// How `run`, `elaborate` and `digital.emitDevice` read the source.
+/// Does top-level module `m` declare a parameter `--param` may set, `name`?
+fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool {
+    for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) return true;
+    return false;
+}
+
 pub const Options = struct {
     file_name: []const u8 = "<digital>",
     include_dirs: []const []const u8 = &.{},
@@ -104,6 +110,10 @@ pub const Options = struct {
     /// Record where each statement starts (`Run.stmt_sites`), for a host's
     /// statement callbacks (IEEE 1364-2005 §27.33.1.1).
     stmt_sites: bool = false,
+    /// `vera --param NAME=VALUE`: a top-level module's parameter set as an
+    /// instance's `#( … )` would set it. A number's text reads as one, any
+    /// other as a §3.6 string.
+    params: []const @import("base").ParamOverride = &.{},
 };
 
 /// Where statement `stmt` of instance `scope` is reached: its first
@@ -1667,6 +1677,14 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     try elab.declare(&r, &e, m, 0, &.{}, &.{}, 0);
     if (tops.len > 1) for (r.roots[1..], tops[1..]) |s, d| try elab.declare(&r, &e, &file.modules[d], s, &.{}, &.{}, 0);
     try elab.checkDefparams(&r);
+    // A misspelt `--param` would otherwise run the default design.
+    for (opts.params) |o| {
+        var known = topDeclares(file, m, o.name);
+        if (tops.len > 1) for (tops[1..]) |d| {
+            known = known or topDeclares(file, &file.modules[d], o.name);
+        };
+        if (!known) return r.fail(m.main_tok, "--param {s}: no top-level module declares a parameter `{s}`", .{ o.name, o.name });
+    }
     try driver.segregate(&r, &e);
     r.values = e.values.items;
     r.nets = e.nets.items;

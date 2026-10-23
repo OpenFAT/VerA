@@ -29,6 +29,23 @@ const diag = @import("diag");
 /// `self.file` with every description appended after any seeded ones.
 /// Returns `error.ParseError` if any diagnostic was an error; the
 /// diagnostics are in `self.bag`.
+/// Annex C.4 "the domain binding type discrete shall be an error in
+/// Verilog-A": E0250 at each port, net or `reg` naming a discipline of
+/// domain discrete. The definition itself is ignored (C.17).
+fn refuseDiscreteUses(self: *Parser, disciplines: []const Ast.DisciplineDecl, modules: []const Ast.ModuleDecl) error{OutOfMemory}!void {
+    for (modules) |m| {
+        for (m.ports) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+        for (m.nets) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+        for (m.vars) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+    }
+}
+
+fn refuseDiscreteUse(self: *Parser, disciplines: []const Ast.DisciplineDecl, name: Ast.StrId, tok: u32) error{OutOfMemory}!void {
+    if (name == .none) return;
+    for (disciplines) |d| if (d.name == name and d.domain == .discrete)
+        return self.refuseDigital(tok, "domain discrete");
+}
+
 pub fn parseSourceFile(self: *Parser) Error!Ast.SourceFile {
     try self.access_names.put(self.arena, "V", {});
     try self.access_names.put(self.arena, "I", {});
@@ -127,6 +144,7 @@ pub fn parseSourceFile(self: *Parser) Error!Ast.SourceFile {
     // open at end of file is not an error
     // (ch10_directives/begin_keywords_unterminated.va).
 
+    if (self.verilog_a) try refuseDiscreteUses(self, disciplines.items, modules.items);
     self.file.modules = modules.items;
     self.file.disciplines = disciplines.items;
     self.file.natures = natures.items;

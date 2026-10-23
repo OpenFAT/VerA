@@ -195,6 +195,14 @@ pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []c
         try b.emit();
         return error.PreprocessFailed;
     };
+    // `require_std_includes`: annex D.2's macros reach only a source that includes it.
+    if (m.annex_d2 and pp.opts.require_std_includes and !pp.constants_included and !pp.in_std_defs) {
+        var b = pp.failWith(sp, .E0115);
+        b.msg("`{s}", .{name});
+        b.note("`{s} is annex D.2's: add `include \"constants.vams\"", .{name});
+        try b.emit();
+        return error.PreprocessFailed;
+    }
 
     var end = after_name;
     var args: []const []const u8 = &.{};

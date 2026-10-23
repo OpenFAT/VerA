@@ -432,8 +432,10 @@ pub const parser_tests = struct {
         };
         // Annex C.2 through C.8: disciplined nets (`wire` with a discipline is
         // clause 3's, C.4), named branches and events, analog blocks and
-        // functions, ranged parameters, instances.
+        // functions, ranged parameters, instances. C.17: an unused discrete
+        // discipline (annex D's `logic`) is silently ignored.
         const subset =
+            \\discipline logic; domain discrete; enddiscipline
             \\nature Charge; abstol = 1e-14; access = Q; units = "C"; endnature
             \\discipline elec; domain continuous; potential Charge; enddiscipline
             \\module r(p, n); inout p, n; elec p, n; wire elec w; event e;
@@ -452,7 +454,7 @@ pub const parser_tests = struct {
         const digital = try Case.parse(arena,
             \\discipline d; domain discrete; enddiscipline
             \\connectrules cr; endconnectrules
-            \\module m(a); input a; elec a; reg q; wire w; wreal r;
+            \\module m(a); input a; elec a; reg q; wire w; wreal r; d x;
             \\  assign w = a; and g(w, a, a); task t; ; endtask
             \\  initial q = 1; always @(a) q = a;
             \\  analog begin if (a === 1) ; casex (a) 1: ; endcase end
@@ -460,7 +462,8 @@ pub const parser_tests = struct {
             \\
         );
         // The W0252 an analog parse puts on a gate primitive is not the subset's.
-        const want = [_][]const u8{ "domain discrete", "connectrules", "reg", "wreal", "assign", "and", "task", "initial", "always", "===", "casex" };
+        // C.4's `domain discrete` is the use `d x`, judged once the file is read.
+        const want = [_][]const u8{ "connectrules", "reg", "wreal", "assign", "and", "task", "initial", "always", "===", "casex", "domain discrete" };
         var k: usize = 0;
         for (0..digital.count()) |i| {
             if (digital.code(i) != .E0250) continue;
@@ -11360,6 +11363,28 @@ pub const sim_digital_tests = struct {
     const system = root.system;
     const filled = root.for_emitter.net.filled;
     const expectRun = root.expectRun;
+
+    test "vera --param sets a top-level parameter: integer, real, string, and a misspelling refused" {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const src =
+            \\module m; parameter N = 1; parameter S = "hi"; parameter R = 1.5; parameter T = 0;
+            \\initial $display("%0d %s %0.2f %s", N, S, R, T); endmodule
+        ;
+        var bag = diag.Bag.init(a);
+        var out = std.Io.Writer.Allocating.init(a);
+        try root.run(a, src, .{
+            .params = &.{
+                .{ .name = "N", .value = 5, .text = "5" },
+                .{ .name = "S", .value = 12, .text = "12" }, // a string default keeps the text
+                .{ .name = "R", .value = 2.25, .text = "2.25" },
+                .{ .name = "T", .value = std.math.nan(f64), .text = "yo" },
+            },
+        }, &bag, &out.writer);
+        try std.testing.expectEqualStrings("5 12 2.25 yo\n", out.written());
+        try std.testing.expectError(error.DigitalFailed, root.run(a, src, .{ .params = &.{.{ .name = "Q", .value = 1, .text = "1" }} }, &bag, &out.writer));
+    }
 
     test "§17.8 $rtoi takes -2^31 exactly and refuses one past it as x" {
         try expectRun(

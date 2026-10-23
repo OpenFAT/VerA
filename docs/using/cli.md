@@ -10,7 +10,7 @@ vera [options] FILE.va
 vera --run|--emit-exe [options] FILE.v [MORE.v ...]
 vera --emit-zig|--check|--emit-so|--emit-osdi|--emit-rtlil [options] FILE.v [MORE.v ...]
 vera --explain CODE
-vera --version
+vera --version | -v | -V
 ```
 
 ## Exit status

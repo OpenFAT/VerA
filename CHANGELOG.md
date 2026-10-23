@@ -78,6 +78,12 @@ can contain multiple untested rules. See `specification/CLAUSE-AUDIT.md`.
   `Model.given_params` naming the bits and `model.setGiven(name)` raising one:
   the `<name>__given` fields are gone (bsimcmg: 514 bytes to 65). A host that
   set them by name calls `setGiven` instead; VerA's OSDI dyn and testbench do.
+- `--param` sets a string parameter (`--param topology=parallel`); a numeric
+  one still refuses text that is no number.
+- `--param` reaches a `.v` design's top-level parameters (integer, real or
+  string); it was ignored, and a misspelt name is now refused.
+- `-v` and `-V` print the version, as `--version` does.
+- The VS Code extension colors comments and strings (`syntaxes/`).
 
 ## v0.12.1 — 2026-10-22
 

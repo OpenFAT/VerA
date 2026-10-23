@@ -168,6 +168,10 @@ pub const SourceFile = struct {
     /// so the `builtin_natures` take part in §3.13.2's uniqueness rule
     /// (specification/Vague_Decisions.md VD-096). Set by the caller.
     annex_d_included: bool = false,
+    /// How many leading entries of `disciplines` (the prelude's annex D.1
+    /// ones) the source may not name, because it did not include
+    /// `disciplines.vams` under `require_std_includes`. Set by the caller.
+    hidden_disciplines: u32 = 0,
 
     /// How many of the last `builtin_modules` entries were synthesized from
     /// SPICE `.MODEL`/`.SUBCKT` cards (`spice_cards.synthesize`) rather than
@@ -259,6 +263,7 @@ pub const SourceFile = struct {
         builtin_modules: u32 = 0,
         builtin_natures: u32 = 0,
         annex_d_included: bool = false,
+        hidden_disciplines: u32 = 0,
         netlist_modules: u32 = 0,
         netlist_unsupported: []const []const u8 = &.{},
     };
@@ -284,6 +289,7 @@ pub const SourceFile = struct {
             .builtin_modules = c.builtin_modules,
             .builtin_natures = c.builtin_natures,
             .annex_d_included = c.annex_d_included,
+            .hidden_disciplines = c.hidden_disciplines,
             .netlist_modules = c.netlist_modules,
             .netlist_unsupported = c.netlist_unsupported,
             .lte_attrs = base.lte_attrs,

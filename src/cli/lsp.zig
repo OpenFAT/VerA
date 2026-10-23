@@ -323,6 +323,7 @@ fn lintAndPublish(s: *Server, arena: Allocator, uri: []const u8, doc: *Doc) !voi
             .file_name = path orelse "<untitled>",
             .include_dirs = cli.include_dirs.items,
             .std_defs = cli.std_defs,
+            .require_std_includes = true, // the source includes the annex D files it uses
             .language = cli.language,
             .sim = cli.sim,
             .diags = &bag,

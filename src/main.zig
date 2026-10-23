@@ -177,6 +177,7 @@ pub fn main(init: std.process.Init) !u8 {
             .file_name = in_path,
             .include_dirs = cli.include_dirs.items,
             .std_defs = cli.std_defs,
+            .require_std_includes = true, // the source includes the annex D files it uses
             .language = cli.language,
             .sim = cli.sim,
             .lint = cli.levels,

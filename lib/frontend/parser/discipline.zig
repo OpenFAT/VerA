@@ -116,8 +116,10 @@ pub fn parseDiscipline(self: *Parser) Error!Ast.DisciplineDecl {
                     .kw_discrete => .discrete,
                     else => return self.failAt(self.pos, .E0212, "found {s}", .{self.found(self.pos)}), // else: A.1.7 names `continuous` or `discrete` and nothing else: E0212
                 };
-                // Annex C.4: "the domain binding type discrete shall be an error in Verilog-A".
-                if (self.verilog_a and d.domain == .discrete) try self.refuseDigital(self.pos, "domain discrete");
+                // Annex C.17: a Verilog-A implementation "shall silently ignore
+                // any definition of a discipline with a domain of discrete", so
+                // annex D's `logic` parses; C.4's error is a use of one
+                // (`source.refuseDiscreteUses`).
                 self.pos += 1;
                 _ = try self.expect(.semicolon);
             },

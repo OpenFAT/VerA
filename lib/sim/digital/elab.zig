@@ -1517,6 +1517,20 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
     if (!p.is_spec and readsSpecparam(r, src.e))
         return r.exprFail(src.e, "§4.10.3: a module parameter cannot be assigned an expression that includes a specify parameter");
     if (r.mixed and compile.typeOf(r, src.e).real) return null;
+    if (isRoot(r, scope) and !p.is_local) for (r.opts.params) |o| if (std.mem.eql(u8, o.name, r.file.str(p.name))) {
+        // `vera --param`: a string-defaulted parameter takes the text as a
+        // §3.6 string; otherwise an integer's text is an integer, a real's a
+        // real and any other text a string, as the literal would be.
+        if (r.file.exprs.tag(p.default) == .str_literal) return .{ .v = try evaluate.stringLiteral(r.arena, o.text) };
+        if (std.fmt.parseInt(i64, o.text, 10)) |n| {
+            const w = try filled(r.arena, 64, true, .zero);
+            w.values()[0] = @bitCast(n);
+            const fits = std.math.cast(i32, n) != null;
+            return .{ .v = try evaluate.normalize(r.arena, w, .{ .width = if (fits) 32 else 64, .signed = true }) };
+        } else |_| {}
+        if (!std.math.isNan(o.value)) return .{ .v = try evaluate.realLiteral(r.arena, o.value), .real = true };
+        return .{ .v = try evaluate.stringLiteral(r.arena, o.text) };
+    };
     if (scope == 0 and !p.is_local) for (r.card) |c| if (std.mem.eql(u8, c.name, r.file.str(p.name))) {
         // VAMS §6.3: the card sets the root's parameter as a `#( … )` would;
         // an integer one takes the value rounded, as the device's does.

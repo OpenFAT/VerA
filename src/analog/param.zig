@@ -152,9 +152,12 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     // which are different from those specified in the declaration assignment":
     // a `--param` replaces the declaration value before anything reads it. In
     // the declared type, or — §3.4.1's inference — the declared default's.
-    const over: ?Const = if (decl.is_local or decl.ty == .string) null else for (self.param_overrides) |o| {
-        if (std.mem.eql(u8, o.name, name))
-            break constfold.parameterCardValue(decl.ty, declared, o.value);
+    // A string parameter takes the text as typed; a numeric one a text that
+    // is no number is refused once lowering is done (Compilation's check).
+    const over: ?Const = if (decl.is_local) null else for (self.param_overrides) |o| {
+        if (!std.mem.eql(u8, o.name, name)) continue;
+        if (decl.ty == .string or (declared != null and declared.? == .str)) break .{ .str = o.text };
+        if (!std.math.isNan(o.value)) break constfold.parameterCardValue(decl.ty, declared, o.value);
     } else null;
     const folded = over orelse declared;
     // §4.2.1.1 converts by "rounding the real number to the nearest integer",
@@ -192,7 +195,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     const default = if (over) |c| switch (c) {
         .int => |n| try self.mir.addIntConst(self.arena, n),
         .real => |n| try self.mir.addFloatConst(self.arena, n),
-        .str => unreachable, // a card value is a real
+        .str => |t| try self.mir.addStrConst(self.arena, t),
     } else try parameterDefault(self, decl.default, decl.ty);
 
     // §6.6 / §5.3.2: a generate (or named) block is a scope, so two blocks

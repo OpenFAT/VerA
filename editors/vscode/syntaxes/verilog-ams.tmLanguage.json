@@ -1,0 +1,15 @@
+{
+  "scopeName": "source.verilog-ams",
+  "name": "Verilog-AMS",
+  "comment": "LRM 2.4 comments and 2.7 strings only; diagnostics come from `vera --lsp`.",
+  "patterns": [
+    { "name": "comment.line.double-slash.verilog-ams", "begin": "//", "end": "$" },
+    { "name": "comment.block.verilog-ams", "begin": "/\\*", "end": "\\*/" },
+    {
+      "name": "string.quoted.double.verilog-ams",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.verilog-ams", "match": "\\\\." }]
+    }
+  ]
+}

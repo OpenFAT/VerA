@@ -62,6 +62,21 @@ Nix packages bring their own. Every install also ships the device contract,
 `share/vera/contract.zig`, and every device declares the VerA release that
 generated it (`vera_version`), which the contract checks at compile time.
 
+## Dependencies
+
+On Ubuntu and Linux Mint:
+
+```sh
+sudo apt install git xz-utils                              # build
+sudo apt install python3 ngspice iverilog yosys verilator  # tests (optional)
+```
+
+Zig master is not in apt: take the Linux tarball from
+<https://ziglang.org/download/> (at least `0.18.0-dev.349+d924f83bf`), unpack
+it and put it on `PATH`. Zig bundles libc and a linker, so nothing else is
+needed. Xyce and mdbook (also used by tests and docs) are not in apt;
+`nix develop` brings everything.
+
 ## Usage
 
 ```sh

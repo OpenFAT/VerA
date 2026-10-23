@@ -18,6 +18,9 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "grammars": [
+      { "language": "verilog-ams", "scopeName": "source.verilog-ams", "path": "./syntaxes/verilog-ams.tmLanguage.json" }
+    ],
     "configuration": {
       "title": "VerA",
       "properties": {

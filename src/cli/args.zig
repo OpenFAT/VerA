@@ -36,7 +36,7 @@ pub const usage_text =
     \\       vera --run|--emit-exe [options] FILE.v [MORE.v ...]
     \\       vera --emit-zig|--check|--emit-so|--emit-osdi|--emit-rtlil [options] FILE.v [MORE.v ...]
     \\       vera --explain CODE
-    \\       vera --version
+    \\       vera --version | -v | -V
     \\       vera --lsp [options]
     \\
     \\  --lint                  frontend only (parse, lower, prove); no codegen
@@ -109,7 +109,8 @@ pub const usage_text =
     \\                          code, about half the LLVM time of a large device)
     \\  -I DIR                  add an `include search directory
     \\  --param NAME=VALUE      compile with the top module's parameter NAME set
-    \\                          to VALUE (LRM 3.4). A parameter that sizes an
+    \\                          to VALUE (LRM 3.4): a number, or a string parameter's
+    \\                          text (`--param mode=fast`). A parameter that sizes an
     \\                          array, vector or replication, or bounds a genvar
     \\                          loop or selects a generate arm, is fixed at VALUE and
     \\                          the device refuses a card that moves it
@@ -249,7 +250,7 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try out.writeAll(usage_text);
             return 0;
-        } else if (std.mem.eql(u8, arg, "--version")) {
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "-V")) {
             try out.writeAll("vera " ++ vera_version ++ "\n");
             return 0;
         } else if (std.mem.eql(u8, arg, "--explain")) {
@@ -324,12 +325,11 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
         } else if (std.mem.eql(u8, arg, "--param")) {
             const kv = args.next() orelse return try missing(err, "--param", "NAME=VALUE");
             const eq = std.mem.findScalar(u8, kv, '=') orelse return try missing(err, "--param", "NAME=VALUE");
-            const value = std.fmt.parseFloat(f64, kv[eq + 1 ..]) catch std.math.nan(f64);
-            if (std.math.isNan(value)) {
-                try err.print("error: --param {s}: `{s}` is not a number\n", .{ kv, kv[eq + 1 ..] });
-                return 2;
-            }
-            try cli.overrides.append(gpa, .{ .name = kv[0..eq], .value = value });
+            // A string parameter takes the text; a numeric one refuses a NaN
+            // once its type is known (Compilation, the digital elaboration).
+            const text = kv[eq + 1 ..];
+            const value = std.fmt.parseFloat(f64, text) catch std.math.nan(f64);
+            try cli.overrides.append(gpa, .{ .name = kv[0..eq], .value = value, .text = text });
         } else if (std.mem.eql(u8, arg, "--dyn")) {
             cli.dyn_path = try pathValue(args, err, "--dyn", "a path") orelse return 2;
         } else if (std.mem.eql(u8, arg, "--work-dir")) {
@@ -645,6 +645,12 @@ test "parse: --version prints contract.vera_version, which is build.zig.zon's .v
     defer l.deinit();
     try testing.expectEqual(@as(?u8, 0), try l.read(&.{ "--version", "--no-such-flag" }));
     try testing.expectEqualStrings("vera " ++ vera_version ++ "\n", l.out.written());
+    for ([_][]const u8{ "-v", "-V" }) |flag| {
+        var short: Line = .init();
+        defer short.deinit();
+        try testing.expectEqual(@as(?u8, 0), try short.read(&.{flag}));
+        try testing.expectEqualStrings("vera " ++ vera_version ++ "\n", short.out.written());
+    }
     try testing.expectEqualStrings("", l.err.written());
 }
 
@@ -754,25 +760,23 @@ test "parse: --vdd is a positive finite number" {
     try testing.expectEqual(@as(f64, 3.3), l.cli.vdd);
 }
 
-test "parse: --param splits at the first `=` and reads a number" {
+test "parse: --param splits at the first `=` and keeps the text beside the number" {
     var l: Line = .init();
     defer l.deinit();
-    _ = try l.read(&.{ "--param", "r=1e3", "--param", "w=-0.5" });
-    try testing.expectEqual(@as(usize, 2), l.cli.overrides.items.len);
+    _ = try l.read(&.{ "--param", "r=1e3", "--param", "w=-0.5", "--param", "s=1=2" });
+    try testing.expectEqual(@as(usize, 3), l.cli.overrides.items.len);
     try testing.expectEqualStrings("r", l.cli.overrides.items[0].name);
     try testing.expectEqual(@as(f64, 1000), l.cli.overrides.items[0].value);
     try testing.expectEqual(@as(f64, -0.5), l.cli.overrides.items[1].value);
+    // The first `=` splits, so the value is `1=2`: a string, not a number.
+    try testing.expectEqualStrings("1=2", l.cli.overrides.items[2].text);
+    try testing.expect(std.math.isNan(l.cli.overrides.items[2].value));
     try expectRefused(&.{ "--param", "r" }, "error: --param needs NAME=VALUE\n");
-    try expectRefused(&.{ "--param", "r=2k" }, "error: --param r=2k: `2k` is not a number\n");
-    // The first `=` splits, so the value is `1=2`.
-    try expectRefused(&.{ "--param", "r=1=2" }, "error: --param r=1=2: `1=2` is not a number\n");
 }
 
-test "parse: a NaN --param or --unknown-bound is not a number" {
-    // §3.4 a parameter's value is a number, and a NaN card makes every
-    // residual NaN; a NaN compliance limit makes `[-|B|, |B|]` an interval
+test "parse: a NaN --unknown-bound is not a number" {
+    // A NaN compliance limit makes `[-|B|, |B|]` an interval
     // no comparison holds in, so the W0650 proof would rest on nothing.
-    try expectRefused(&.{ "--param", "r=nan" }, "error: --param r=nan: `nan` is not a number\n");
     try expectRefused(&.{"--unknown-bound=nan"}, "error: `--unknown-bound=nan` is not a number\n");
     var l: Line = .init();
     defer l.deinit();
