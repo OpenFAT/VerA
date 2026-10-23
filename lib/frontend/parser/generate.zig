@@ -197,15 +197,15 @@ pub fn parseGenerateBlock(self: *Parser, b: *parse_module.Body) Error!Ast.StmtId
         try parse_module.parseModuleItem(self, &gb);
     }
 
-    var body: std.ArrayList(Ast.StmtId) = .empty;
     // ponytail: `analog initial` (§5.2.1) inside a generate block is spliced
     // onto the ordinary spine like any other analog construct, so it loses its
     // initialization-only scheduling. Give `Ast.SeqBlock` an is_initial flag,
     // or hand the block back to `b.analog`, when a model needs one.
-    for (gb.analog.items) |ab| try body.append(self.arena, ab.body);
+    const body = try self.arena.alloc(Ast.StmtId, gb.analog.items.len);
+    for (gb.analog.items, body) |ab, *s| s.* = ab.body;
     blk.params = gb.params.items;
     blk.vars = gb.vars.items;
-    blk.body = body.items;
+    blk.body = body;
 
     for (gb.ports.items) |p| try parse_module.addPort(self, b, p);
     try b.aliasparams.appendSlice(self.arena, gb.aliasparams.items);

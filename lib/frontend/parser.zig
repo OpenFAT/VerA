@@ -605,7 +605,7 @@ pub const Parser = struct {
                 return std.math.order(want, at);
             }
         }.f;
-        return std.sort.lowerBound(u32, self.attr_at.items, tok, order);
+        return std.sort.lowerBound(u32, rows, tok, order);
     }
 
     /// `skipAttributes`, then binds what it read to `owner` (an operator or
@@ -811,7 +811,8 @@ pub const Parser = struct {
 
     /// Calls the grammar function `f(args)` as one more native level: on a
     /// fresh segment when this one is full. For a recursion that reaches no
-    /// `enter` site (the right-associative `?:` arm).
+    /// `enter` site (the right-associative `?:` arm, a nested generate
+    /// region).
     pub fn descend(self: *Parser, comptime f: anytype, args: anytype) @typeInfo(@TypeOf(f)).@"fn".return_type.? {
         if (self.segmentDue()) return self.segment(f, args);
         self.seg.frames += 1;
@@ -929,14 +930,19 @@ pub const TestResult = struct {
     file: Ast.SourceFile,
     bag: *diag.Bag,
 
+    /// Diagnostics the bag kept, warnings included: its cap and dedupe
+    /// have already dropped the rest.
     pub fn count(self: TestResult) usize {
         return self.bag.count();
     }
 
+    /// The `i`th diagnostic's code, in report order. `i` must be below `count`.
     pub fn code(self: TestResult, i: usize) diag.Code {
         return self.bag.at(i).code;
     }
 
+    /// The `i`th diagnostic's message, the headline under its code's title.
+    /// `i` must be below `count`.
     pub fn msg(self: TestResult, i: usize) []const u8 {
         return self.bag.at(i).message;
     }

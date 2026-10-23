@@ -66,7 +66,9 @@ pub const Refusal = struct {
     code: enum { E0928, E0953 } = .E0928,
 };
 
-/// A logical card (continuations joined) and where its first line starts.
+/// A logical card (continuations joined) and where its first line starts;
+/// also one physical line of it (`Reader.lines`), comments stripped and
+/// lower-cased.
 const Card = struct {
     text: []const u8,
     file: u32 = 0,
@@ -161,6 +163,7 @@ pub fn synthesize(arena: Allocator, netlist: []const u8, path: []const u8) Alloc
     // assembled first and read second.
     var cards: std.ArrayList(Card) = .empty;
     var logical: std.ArrayList(u8) = .empty;
+    // The card's first line, whose place in its file the card keeps.
     var first: Card = undefined;
     for (r.lines.items) |line| {
         assert(line.text.len != 0); // `read` keeps no blank line
@@ -173,12 +176,18 @@ pub fn synthesize(arena: Allocator, netlist: []const u8, path: []const u8) Alloc
             }
             continue;
         }
-        if (logical.items.len != 0) try cards.append(scratch, .{ .text = try tightEquals(scratch, logical.items), .file = first.file, .at = first.at, .len = first.len });
+        if (logical.items.len != 0) {
+            first.text = try tightEquals(scratch, logical.items);
+            try cards.append(scratch, first);
+        }
         logical.clearRetainingCapacity();
         try logical.appendSlice(scratch, line.text);
-        first = .{ .text = "", .file = line.file, .at = line.at, .len = line.len };
+        first = line;
     }
-    if (logical.items.len != 0) try cards.append(scratch, .{ .text = try tightEquals(scratch, logical.items), .file = first.file, .at = first.at, .len = first.len });
+    if (logical.items.len != 0) {
+        first.text = try tightEquals(scratch, logical.items);
+        try cards.append(scratch, first);
+    }
 
     // A body card may name a model declared after it, or in another file.
     var models: std.ArrayList(ModelCard) = .empty;
@@ -214,10 +223,6 @@ pub fn synthesize(arena: Allocator, netlist: []const u8, path: []const u8) Alloc
     return done;
 }
 
-/// One physical line of a netlist file, comments stripped and lower-cased,
-/// and where it is in `Reader.files[file]`.
-const Line = struct { text: []const u8, file: u32, at: u32, len: u32 };
-
 /// Reads netlist files into `lines`, the way SPICE reads them: a `.INCLUDE
 /// file` card is replaced by the file's lines, a `.LIB file entry` card by
 /// the lines between `.LIB entry` and `.ENDL` in that file, and a `.LIB
@@ -232,7 +237,8 @@ const Reader = struct {
     arena: Allocator,
     scratch: Allocator,
     refusals: *Refusals,
-    lines: std.ArrayList(Line) = .empty,
+    /// Every physical line read, one `Card` each, in reading order.
+    lines: std.ArrayList(Card) = .empty,
     files: std.ArrayList(File) = .empty,
     hdl: std.ArrayList([]const u8) = .empty,
     /// The files being read now, outermost first: each one's path with `.`
@@ -316,7 +322,9 @@ const Reader = struct {
                 } else try r.hdl.append(r.arena, full);
                 continue;
             }
-            try r.lines.append(r.scratch, .{ .text = try std.ascii.allocLowerString(r.scratch, line), .file = fi, .at = at, .len = card.len });
+            var lowered = card;
+            lowered.text = try std.ascii.allocLowerString(r.scratch, line);
+            try r.lines.append(r.scratch, lowered);
         }
         if (in_lib != null) try r.refusals.add(header, "`.lib` entry has no `.endl`; the cards after it are not read", .{});
     }

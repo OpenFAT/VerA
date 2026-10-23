@@ -1775,6 +1775,23 @@ pub const parser_tests = struct {
         try std.testing.expectEqualStrings("u[100001].p", r.file.str(r.file.modules[0].defparams[0].path));
     }
 
+    test "§6.6 generate regions nested 10^5 deep are E0228, not a stack overflow" {
+        // "Generate regions do not nest": each inner one is reported and read
+        // on, a recursion through the module-item loop that no `enter` counts.
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const n = 100_000;
+        var src: std.ArrayList(u8) = .empty;
+        try src.appendSlice(arena, "module m; ");
+        for (0..n) |_| try src.appendSlice(arena, "generate ");
+        for (0..n) |_| try src.appendSlice(arena, "endgenerate ");
+        try src.appendSlice(arena, "endmodule");
+        const r = try parseForTest(arena, src.items);
+        try std.testing.expect(r.count() != 0);
+        try std.testing.expectEqual(diag.Code.E0228, r.code(0));
+    }
+
     test "a stack segment that cannot be reserved is E0241, naming the depth" {
         if (@import("builtin").single_threaded) return error.SkipZigTest;
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

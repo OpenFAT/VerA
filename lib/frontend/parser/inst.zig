@@ -237,13 +237,11 @@ pub fn parseGates(self: *Parser, b: *parse_module.Body) Error!void {
             // every terminal but the last is an output, each a separate driver.
             .g_buf, .g_not => {
                 if (terms.items.len < 2) return self.failAt(tok, .E0209, "a buf/not gate needs at least one output and one input", .{});
-                const input = terms.items[terms.items.len - 1];
+                // The outputs share the one-input slice: `Ast.setPrimTerm`
+                // copies a gate's `ins` before it rewrites one.
+                const input = terms.items[terms.items.len - 1 ..];
                 for (terms.items[0 .. terms.items.len - 1]) |out|
-                    try b.gates.append(self.arena, .{ .kind = kind, .out = out, .ins = input_only: {
-                        const one = try self.arena.alloc(Ast.ExprId, 1);
-                        one[0] = input;
-                        break :input_only one;
-                    }, .strength0 = s0, .strength1 = s1, .delay = delay, .range = range, .name = name, .main_tok = tok });
+                    try b.gates.append(self.arena, .{ .kind = kind, .out = out, .ins = input, .strength0 = s0, .strength1 = s1, .delay = delay, .range = range, .name = name, .main_tok = tok });
             },
             // A.3.1 `( output_terminal , input_terminal , enable_terminal )`
             .g_bufif0, .g_bufif1, .g_notif0, .g_notif1 => {
