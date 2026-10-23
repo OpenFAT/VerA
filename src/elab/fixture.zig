@@ -1,7 +1,7 @@
 //! Test fixtures for the elaboration unit: source text → a parsed
 //! `Ast.SourceFile` plus the `Ctx` `elaborate` takes, through the lexer,
 //! parser and (for Annex E's prelude) preprocessor the compiler runs, so a
-//! test of any `elaborate/` file starts from Verilog-AMS text. Test-only:
+//! test of any `elab/` file starts from Verilog-AMS text. Test-only:
 //! only `test` blocks reach it. LRM Annex E (the prelude).
 
 const std = @import("std");

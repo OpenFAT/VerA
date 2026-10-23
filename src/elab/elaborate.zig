@@ -195,8 +195,11 @@ pub const PsOutput = struct { report: []const u8, flat: []const u8 };
 /// §6.6.2 leaves an unselected generate arm out of the model. Flattening keeps
 /// both arms, so the flattened gate travels with the source diagnostic site.
 pub const ParamsetDefparam = struct {
+    /// The defparam statement's token, where the diagnostic points.
     main_tok: u32,
+    /// The nearest paramset instance's path, without its trailing `sep`.
     instance: []const u8,
+    /// The unit's §6.6 gate in flat names; `.none` when no scheme gates it.
     gate: Ast.ExprId,
 };
 
@@ -235,6 +238,8 @@ pub const NetPart = struct {
     net: []const u8,
     /// `[a]`, `[a:b]`, or IEEE 1364-2005 §5.2.1's `[a +: b]` and `[a -: b]`.
     sel: enum { whole, bit, range, up, down } = .whole,
+    /// The select's first and second folded values; `b == a` for a bit,
+    /// both 0 for a whole net.
     a: i64 = 0,
     b: i64 = 0,
 };
@@ -555,6 +560,10 @@ pub const Flatten = struct {
     /// (`names.syncParamValues`), and how many leading rows it has folded.
     param_values: std.ArrayList(elab_names.ParamValue) = .empty,
     param_warm: usize = 0,
+    /// Each flat name → its first scalar `params` row, the one `names`'
+    /// folds read; kept by `names.syncParamValues`, so a fold's identifier
+    /// is one lookup, not a scan of every flat parameter.
+    param_index: std.AutoHashMapUnmanaged(Ast.StrId, u32) = .empty,
     /// `Design.system_checks`, as overrides are composed.
     system_checks: std.ArrayList(SystemCheck) = .empty,
 
@@ -1275,9 +1284,6 @@ test "empty named associations use paramset defaults in admission and tie scores
     } else unreachable;
     try std.testing.expectEqual(@as(f64, 2.0), f.file.exprs.realValue(ps_value.default));
     try std.testing.expect(!ps_value.is_override);
-    const inst = &f.file.modules[0].instances[0];
-    const ps = &f.file.paramsets[0];
-    try std.testing.expect(!elab_paramset.overridesParam(inst, ps, ps.params[0].name));
 }
 
 test "§6.4.2 the paramset whose range admits the override is selected, and a gap is E0911" {

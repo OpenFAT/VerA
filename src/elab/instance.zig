@@ -543,8 +543,8 @@ fn enterLevel(self: *Flatten, source_module: *const Ast.ModuleDecl, path: []cons
     }
     // Read only by `startInstance`, so a unit with no children skips it.
     var declared: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty;
-    if (src.items.len != 0) try declared.ensureTotalCapacity(self.ctx.arena, @intCast(module.ports.len + module.nets.len));
     if (src.items.len != 0) {
+        try declared.ensureTotalCapacity(self.ctx.arena, @intCast(module.ports.len + module.nets.len));
         for (module.ports) |p| declared.putAssumeCapacity(p.name, {});
         for (module.nets) |n| declared.putAssumeCapacity(n.name, {});
     }
@@ -623,7 +623,7 @@ fn startInstance(self: *Flatten, lv: *Level) Error!bool {
     // Collected here, not in `inlineInstance`, because only this loop
     // still has `module` in hand; one level down the names are flat.
     // Reads the source's own connections, not `plan`'s segments.
-    if (!auto and idx < module.instances.len) try checkVariableActuals(self, module, &lv.declared, &module.instances[idx]);
+    if (idx < module.instances.len) try checkVariableActuals(self, module, &lv.declared, &module.instances[idx]);
     if (!auto) for (lv.src[idx].ports) |c| {
         const n = elab_names.netRefName(self, c.expr) orelse continue;
         if (lv.declared.contains(n)) continue;

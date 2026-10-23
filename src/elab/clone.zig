@@ -187,7 +187,7 @@ comptime {
 /// Removes `name` from the unit's rename map for a local scope and records
 /// the old binding in `list`, which the caller sized for every local it hides.
 /// The caller restores the whole list with `unhide`, in reverse order.
-pub fn hide(self: *Flatten, list: *std.ArrayList(HiddenName), name: Ast.StrId) void {
+fn hide(self: *Flatten, list: *std.ArrayList(HiddenName), name: Ast.StrId) void {
     list.appendAssumeCapacity(.{ .name = name, .was = self.unit.rename.get(name) });
     _ = self.unit.rename.remove(name);
 }
