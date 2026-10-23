@@ -595,8 +595,9 @@ pub fn zFSeek(d: i64, off: i64, op: i64) i64 {
     const s = &zf_slots.items[k];
     const base: i64 = switch (op) {
         1 => @intCast(s.pos),
-        2 => @intCast(s.f.length(zfIo()) catch {
-            s.err = 5;
+        2 => @intCast(s.f.length(zfIo()) catch |e| {
+            s.err = zfErrno(e);
+            zf_last_err = s.err;
             return -1;
         }),
         else => 0,
