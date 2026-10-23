@@ -183,8 +183,13 @@ var fds: FileIo = digital.own_files;
 /// Each open fd's name, by its channel number (§27.24).
 var fd_names: [64]?[:0]u8 = @splat(null);
 
+/// An fd's channel number: `d` without `fd_bit`.
+fn fdChannel(d: i64) usize {
+    return @intCast(d & 0x7fff_ffff);
+}
+
 fn fdName(d: i64) ?[:0]const u8 {
-    const ch: usize = @intCast(d & 0x7fff_ffff);
+    const ch = fdChannel(d);
     return if (ch < fd_names.len) fd_names[ch] else null;
 }
 
@@ -202,7 +207,7 @@ pub fn share(r: *digital.Run) void {
 fn hdlOpen(path: []const u8, ty: []const u8, mcd: bool) i64 {
     if (mcd) return openChannel(path) catch 0;
     const d = fds.open(path, ty, false);
-    const ch: usize = @intCast(d & 0x7fff_ffff);
+    const ch = fdChannel(d);
     if (d != 0 and ch < fd_names.len) {
         if (fd_names[ch]) |old| gpa.free(old);
         fd_names[ch] = gpa.dupeSentinel(u8, path, 0) catch null;
@@ -215,7 +220,7 @@ fn hdlClose(d: i64) i64 {
         _ = closeChannels(@truncate(@as(u64, @bitCast(d))));
         return 0;
     }
-    const ch: usize = @intCast(d & 0x7fff_ffff);
+    const ch = fdChannel(d);
     if (ch < fd_names.len) if (fd_names[ch]) |old| {
         gpa.free(old);
         fd_names[ch] = null;
@@ -439,41 +444,23 @@ fn expand(w: *Io.Writer, fmt: []const u8, ap: *va.List) Io.Writer.Error!void {
             }
         }
         var len: Length = .none;
-        if (i < fmt.len) switch (fmt[i]) {
-            'h' => {
+        if (i < fmt.len) {
+            len = switch (fmt[i]) {
+                'h' => .h,
+                'l' => .l,
+                'j' => .j,
+                'z' => .z,
+                't' => .t,
+                'L' => .L,
+                else => .none,
+            };
+            if (len != .none) i += 1;
+            // `hh` and `ll`: the letter doubled.
+            if ((len == .h or len == .l) and i < fmt.len and fmt[i] == fmt[i - 1]) {
                 i += 1;
-                len = .h;
-                if (i < fmt.len and fmt[i] == 'h') {
-                    i += 1;
-                    len = .hh;
-                }
-            },
-            'l' => {
-                i += 1;
-                len = .l;
-                if (i < fmt.len and fmt[i] == 'l') {
-                    i += 1;
-                    len = .ll;
-                }
-            },
-            'j' => {
-                i += 1;
-                len = .j;
-            },
-            'z' => {
-                i += 1;
-                len = .z;
-            },
-            't' => {
-                i += 1;
-                len = .t;
-            },
-            'L' => {
-                i += 1;
-                len = .L;
-            },
-            else => {},
-        };
+                len = if (len == .h) .hh else .ll;
+            }
+        }
         if (i >= fmt.len) {
             try w.writeAll(fmt[start..]);
             break;
