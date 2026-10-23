@@ -64,7 +64,7 @@ pub const Map = struct {
             } else if (c == best.? and tie == null) tie = l.name;
         }
         // A tie is only ever recorded against a best match.
-        if (best == null) std.debug.assert(tie == null);
+        std.debug.assert(best != null or tie == null);
         if (tie) |t| return .{ .ambiguous = .{ lib, t } };
         return .{ .lib = lib };
     }
@@ -121,8 +121,7 @@ const Loader = struct {
     /// file cannot be read. Asserts that `at` is null exactly when no map
     /// file is open: `load` reads the outermost ones, an `include` the rest.
     fn read(l: *Loader, path: []const u8, at: ?Site) Error!void {
-        if (at == null) std.debug.assert(l.open.items.len == 0);
-        if (at != null) std.debug.assert(l.open.items.len != 0);
+        std.debug.assert((at == null) == (l.open.items.len == 0));
         const text = Preprocessor.readText(l.io, .cwd(), path, l.arena) catch |e|
             return l.fail(at, "cannot read library map `{s}`: {t}", .{ path, e });
         const real = Io.Dir.cwd().realPathFileAlloc(l.io, path, l.arena) catch |e|

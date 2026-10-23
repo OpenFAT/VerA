@@ -261,16 +261,31 @@ pub const ExprStore = struct {
         return @fromBackingInt(@intCast(id));
     }
 
+    /// Appends a row tagged `t` whose `extra` indexes `value` in side table
+    /// `column`. On OOM neither table grows.
+    fn addSide(self: *ExprStore, gpa: std.mem.Allocator, comptime column: Column, t: ExprTag, main_tok: u32, value: anytype) !ExprId {
+        const table = &@field(self, @tagName(column));
+        // Room for the value first, then the row: a failure at either step
+        // leaves both tables as they were.
+        try table.ensureUnusedCapacity(gpa, 1);
+        const idx: u32 = self.baseLen(column) + @as(u32, @intCast(table.items.len));
+        const id = try self.add(gpa, .{ .tag = t, .main_tok = main_tok, .extra = idx });
+        table.appendAssumeCapacity(value);
+        return id;
+    }
+
+    /// Returns entry `k` of side table `column`, numbered from the base's
+    /// first entry (see `ExprStore`).
+    fn side(self: *const ExprStore, comptime column: Column, comptime T: type, k: u32) T {
+        const o = self.baseLen(column);
+        if (k < o) return @field(self.base.?, @tagName(column)).items[k];
+        return @field(self, @tagName(column)).items[k - o];
+    }
+
     /// Appends a `.real_literal` row whose value lives in `reals`. On OOM
     /// neither table grows.
     pub fn addReal(self: *ExprStore, gpa: std.mem.Allocator, main_tok: u32, value: f64) !ExprId {
-        // Room for the value first, then the row: a failure at either step
-        // leaves both tables as they were.
-        try self.reals.ensureUnusedCapacity(gpa, 1);
-        const idx: u32 = self.baseLen(.reals) + @as(u32, @intCast(self.reals.items.len));
-        const id = try self.add(gpa, .{ .tag = .real_literal, .main_tok = main_tok, .extra = idx });
-        self.reals.appendAssumeCapacity(value);
-        return id;
+        return self.addSide(gpa, .reals, .real_literal, main_tok, value);
     }
 
     /// Appends a synthetic unsized, signed `.int_literal` (the implementation
@@ -282,35 +297,21 @@ pub const ExprStore = struct {
     /// Appends an `.int_literal` row whose value lives in `ints`, keeping its
     /// width, sign and radix. On OOM neither table grows.
     pub fn addIntLiteral(self: *ExprStore, gpa: std.mem.Allocator, main_tok: u32, literal: IntLiteral) !ExprId {
-        // Room for the value first, then the row: a failure at either step
-        // leaves both tables as they were.
-        try self.ints.ensureUnusedCapacity(gpa, 1);
-        const idx: u32 = self.baseLen(.ints) + @as(u32, @intCast(self.ints.items.len));
-        const id = try self.add(gpa, .{ .tag = .int_literal, .main_tok = main_tok, .extra = idx });
-        self.ints.appendAssumeCapacity(literal);
-        return id;
+        return self.addSide(gpa, .ints, .int_literal, main_tok, literal);
     }
 
     /// Appends a `.logic_literal` row. On success the store owns
     /// `literal.planes`, which must be allocated with `gpa`; `deinit` frees
     /// it. On OOM nothing is stored and the planes stay the caller's.
     pub fn addLogic(self: *ExprStore, gpa: std.mem.Allocator, main_tok: u32, literal: Integer.Literal) !ExprId {
-        // Room for the value first, then the row: a failure at either step
-        // leaves both tables as they were.
-        try self.logic.ensureUnusedCapacity(gpa, 1);
-        const idx: u32 = self.baseLen(.logic) + @as(u32, @intCast(self.logic.items.len));
-        const id = try self.add(gpa, .{ .tag = .logic_literal, .main_tok = main_tok, .extra = idx });
-        self.logic.appendAssumeCapacity(literal);
-        return id;
+        return self.addSide(gpa, .logic, .logic_literal, main_tok, literal);
     }
 
     /// Returns a `.logic_literal`'s value; asserts the tag. `planes` stays owned
     /// by the store.
     pub fn logicValue(self: *const ExprStore, id: ExprId) Integer.Literal {
         std.debug.assert(self.tag(id) == .logic_literal);
-        const k = self.extraOf(id);
-        const o = self.baseLen(.logic);
-        return if (k < o) self.base.?.logic.items[k] else self.logic.items[k - o];
+        return self.side(.logic, Integer.Literal, self.extraOf(id));
     }
 
     /// Returns every column of row `id`. A walk that needs one field reads
@@ -376,16 +377,12 @@ pub const ExprStore = struct {
     /// Returns a `.int_literal` with its width and sign; asserts the tag.
     pub fn intLiteral(self: *const ExprStore, id: ExprId) IntLiteral {
         std.debug.assert(self.tag(id) == .int_literal);
-        const k = self.extraOf(id);
-        const o = self.baseLen(.ints);
-        return if (k < o) self.base.?.ints.items[k] else self.ints.items[k - o];
+        return self.side(.ints, IntLiteral, self.extraOf(id));
     }
     /// Returns a §2.6.2 `.real_literal`'s value; asserts the tag.
     pub fn realValue(self: *const ExprStore, id: ExprId) f64 {
         std.debug.assert(self.tag(id) == .real_literal);
-        const k = self.extraOf(id);
-        const o = self.baseLen(.reals);
-        return if (k < o) self.base.?.reals.items[k] else self.reals.items[k - o];
+        return self.side(.reals, f64, self.extraOf(id));
     }
 
     /// Stores a variable-arity list; returns the offset to put in a row's

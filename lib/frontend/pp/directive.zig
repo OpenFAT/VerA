@@ -160,14 +160,13 @@ pub fn directive(pp: *Pp, text: []const u8, at: usize) Error!usize {
     return end;
 }
 
-/// `ifdef / `ifndef / `elsif / `else / `endif (IEEE 1364 §19.4).
 /// `ifdef's view of a macro. Under `Options.require_std_includes` the
 /// prelude's annex D macros (D.2's constants, D.1's guard `DISCIPLINES_VAMS`)
 /// are hidden with the definitions they belong to until the source includes
 /// that file, so `` `ifndef DISCIPLINES_VAMS `include ... `` includes it here
 /// exactly as in a tool without a prelude. A source's own `define of a guard
 /// is its own macro, and defined.
-fn isDefined(pp: *Pp, name: []const u8) bool {
+fn isDefined(pp: *const Pp, name: []const u8) bool {
     const m = pp.macros.get(name) orelse return false;
     if (!pp.opts.require_std_includes or pp.in_std_defs) return true;
     if (m.annex_d2) return pp.constants_included;
@@ -175,6 +174,7 @@ fn isDefined(pp: *Pp, name: []const u8) bool {
     return true;
 }
 
+/// `ifdef / `ifndef / `elsif / `else / `endif (IEEE 1364 §19.4).
 fn conditional(pp: *Pp, text: []const u8, at: usize, after_name: usize, kind: Directive) Error!usize {
     std.debug.assert(after_name > at); // past the '`' and the word
     std.debug.assert(after_name <= text.len);
@@ -268,7 +268,7 @@ fn logicalLineEnd(text: []const u8, i: usize) usize {
 /// line after the word, starting at offset `off`; `at` is the '`'. Fails with
 /// E0121-E0124 (the name), E0144 (text after it), E0125 (an include cycle),
 /// E0126 (not found) or E1013 (larger than `Preprocessor.max_text_bytes`).
-pub fn handleInclude(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void {
+fn handleInclude(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void {
     // The open-includes stack is the cycle check's: it leaves as it came.
     const depth = pp.includes.items.len;
     defer std.debug.assert(pp.includes.items.len == depth);
@@ -280,10 +280,9 @@ pub fn handleInclude(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!voi
     // IEEE 1364-2005 §19.5 Syntax 19-6 has one form, `include "filename". C's
     // `<file>` is not in it, so `<` is E0122 like any other opener.
     if (open != '"') return pp.fail(pp.spanAt(off + r.i, off + r.i + 1), .E0122, "found `{c}`", .{open});
-    const close: u8 = '"';
     r.i += 1;
     const start = r.i;
-    while (r.i < r.s.len and r.s[r.i] != close) r.i += 1;
+    r.i = std.mem.findScalarPos(u8, r.s, start, '"') orelse r.s.len;
     if (r.i >= r.s.len) return pp.fail(pp.spanAt(off + start - 1, off + r.i), .E0123, "", .{});
     const path = r.s[start..r.i];
     if (path.len == 0) return pp.fail(pp.spanAt(off + start - 1, off + r.i + 1), .E0124, "", .{});
@@ -357,7 +356,7 @@ const Included = struct { text: []const u8, path: []const u8 };
 /// counts as no match. The bytes and the path are on `pp.arena`, since the
 /// bag keeps both. Fails with E1013 for a file past
 /// `Preprocessor.max_text_bytes`.
-pub fn readInclude(pp: *Pp, path: []const u8, span: diag.Span) Error!?Included {
+fn readInclude(pp: *Pp, path: []const u8, span: diag.Span) Error!?Included {
     // IEEE 1364 §19.5: a full path name is opened as written; `join` skips
     // the empty base.
     if (std.fs.path.isAbsolute(path)) return (try readAt(pp, "", path, span)) orelse builtin(pp, path);
@@ -653,8 +652,7 @@ fn handleLine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void {
     r.skipSpace();
     if (r.peek() != '"') return pp.fail(pp.spanAt(off + r.i, off + r.s.len), .E0128, "the file name is missing", .{});
     const q = r.i + 1;
-    r.i = q;
-    while (r.i < r.s.len and r.s[r.i] != '"') r.i += 1;
+    r.i = std.mem.findScalarPos(u8, r.s, q, '"') orelse r.s.len;
     if (r.i >= r.s.len)
         return pp.fail(pp.spanAt(off + q - 1, off + r.i), .E0128, "unterminated file name", .{});
     const file = r.s[q..r.i];

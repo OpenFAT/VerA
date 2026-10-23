@@ -94,7 +94,7 @@ pub const Lexer = struct {
             '$' => self.lexSystemIdentifier(), // §2.8.3
             '"' => self.lexString(), // §2.7
             '\'' => self.lexApostrophe(), // §2.6.1 based constant / §4.2.14 '{
-            '`' => self.lexDirective(), // §10.6 (the only directives left here)
+            '`' => self.lexDirective(), // the directives the preprocessor passes through
             else => self.lexOperator(), // §2.5, §2.9
         };
         std.debug.assert(self.pos > start);
@@ -239,22 +239,19 @@ pub const Lexer = struct {
         return token.lookupKeyword(self.src[start..self.pos]) orelse .identifier;
     }
 
-    /// LRM §10.6 `begin_keywords / `end_keywords, and IEEE 1364 §19.6 `resetall:
-    /// the directives the preprocessor passes through because only the parser
-    /// can check where they sit. Any other backtick is `.invalid`.
+    /// LRM §10.6 `begin_keywords / `end_keywords, §10.3 `default_transition,
+    /// and IEEE 1364 §19.2, §19.6 and §19.9's directives: the ones the
+    /// preprocessor passes through because only the parser can check where
+    /// they sit (`passed_directives`). Any other backtick is one `.invalid` byte.
     fn lexDirective(self: *Lexer) token.Tag {
-        const start = self.pos;
-        self.pos += 1; // '`'
-        const name = self.pos;
-        self.pos = @intCast(identEnd(self.src, self.pos));
-        const text = self.src[name..self.pos];
-        if (std.mem.eql(u8, text, "begin_keywords")) return .dir_begin_keywords;
-        if (std.mem.eql(u8, text, "end_keywords")) return .dir_end_keywords;
-        if (std.mem.eql(u8, text, "resetall")) return .dir_resetall;
-        if (std.mem.eql(u8, text, "default_nettype") or std.mem.eql(u8, text, "unconnected_drive") or
-            std.mem.eql(u8, text, "nounconnected_drive") or std.mem.eql(u8, text, "default_transition")) return .dir_outside_module;
-        self.pos = start + 1;
-        return .invalid;
+        const name = self.pos + 1; // past the '`'
+        const end: u32 = @intCast(identEnd(self.src, name));
+        const tag = passed_directives.get(self.src[name..end]) orelse {
+            self.pos = name;
+            return .invalid;
+        };
+        self.pos = end;
+        return tag;
     }
 
     /// LRM §2.8.1: `\` then printable ASCII 33 to 126, terminated by white space.
@@ -368,6 +365,18 @@ pub const Lexer = struct {
         return false;
     }
 };
+
+/// The directives the preprocessor passes through as words (`lexDirective`),
+/// without their backtick.
+const passed_directives = std.StaticStringMap(token.Tag).initComptime(.{
+    .{ "begin_keywords", .dir_begin_keywords },
+    .{ "end_keywords", .dir_end_keywords },
+    .{ "resetall", .dir_resetall },
+    .{ "default_nettype", .dir_outside_module },
+    .{ "unconnected_drive", .dir_outside_module },
+    .{ "nounconnected_drive", .dir_outside_module },
+    .{ "default_transition", .dir_outside_module },
+});
 
 /// §2.3: "White space shall contain the characters for spaces, tabs,
 /// newlines, and formfeeds." Carriage return is added so CRLF source reads as
@@ -923,7 +932,7 @@ test "every tag with a spelling lexes back to itself, whole (§2.5, §2.8.2)" {
     // is the other's oracle. A keyword read back as an identifier, or an
     // operator split in two, fails here.
     for (std.enums.values(token.Tag)) |t| {
-        if (t == .dir_outside_module) continue; // three directives, described in prose
+        if (t == .dir_outside_module) continue; // four directives, described in prose
         const l = token.Tag.lexeme(t) orelse continue;
         var lx: Lexer = .{ .src = l };
         try testing.expectEqual(token.Stored{ .tag = t, .start = 0 }, lx.next());

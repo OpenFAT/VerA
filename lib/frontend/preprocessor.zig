@@ -1043,7 +1043,7 @@ pub const Rest = struct {
         r.skipSpace();
         if (r.i >= r.s.len or !isIdentStart(r.s[r.i])) return null;
         const start = r.i;
-        while (r.i < r.s.len and isIdentChar(r.s[r.i])) r.i += 1;
+        r.i = identEnd(r.s, start);
         return r.s[start..r.i];
     }
 };
