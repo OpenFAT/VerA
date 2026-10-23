@@ -179,23 +179,16 @@ fn autoWidth(v: Int.Literal, radix: Radix) u32 {
 /// which is what makes an all-x 8-bit operand print "xxx" in octal rather
 /// than "Xxx": the top group holds two x bits and no third bit at all.
 fn groupDigit(v: Int.Literal, radix: Radix, d: u32) u8 {
-    const per = radix.perDigit();
-    var val: u32 = 0;
-    var xs: u32 = 0;
-    var zs: u32 = 0;
-    var present: u32 = 0;
-    var k: u32 = 0;
-    while (k < per) : (k += 1) {
-        const index = d * per + k;
-        if (index >= v.width) continue;
-        present += 1;
-        switch (v.bit(index)) {
-            .zero => {},
-            .one => val |= @as(u32, 1) << @intCast(k),
-            .x => xs += 1,
-            .z => zs += 1,
-        }
-    }
+    // Both planes' bits of the group at once, cut at the width: one or two
+    // word reads per digit instead of one `bit` call per bit.
+    const lo = d * radix.perDigit();
+    const present: u6 = @intCast(@min(radix.perDigit(), v.width - lo));
+    const live = (@as(u64, 1) << present) - 1;
+    const val = groupBits(v.values(), lo) & live;
+    const unk = groupBits(v.unknowns(), lo) & live;
+    // An x bit is value and unknown set, a z bit unknown alone.
+    const xs = @popCount(val & unk);
+    const zs = @popCount(~val & unk);
     // §17.1.1.4: all unknown prints lowercase, partly unknown prints
     // uppercase; the case is the only sign that the digit's known bits
     // were thrown away.
@@ -203,7 +196,18 @@ fn groupDigit(v: Int.Literal, radix: Radix, d: u32) u8 {
     else if (zs == present) 'z' //
     else if (xs != 0) 'X' //
     else if (zs != 0) 'Z' //
-    else "0123456789abcdef"[val];
+    else "0123456789abcdef"[@intCast(val)];
+}
+
+/// The bits of `plane` from bit `lo` up, as many as one word holds: a group
+/// of a power-of-two radix that straddles a word takes the next word's low
+/// bits. Asserts `lo` is inside `plane`.
+fn groupBits(plane: []const u64, lo: u32) u64 {
+    const w = lo / 64;
+    const off: u6 = @truncate(lo);
+    var bits = plane[w] >> off;
+    if (off != 0 and w + 1 < plane.len) bits |= plane[w + 1] << @intCast(64 - @as(u7, off));
+    return bits;
 }
 
 /// Decimal, where one unknown bit poisons the whole number (§17.1.1.4), as
