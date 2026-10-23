@@ -69,9 +69,28 @@ pub const Susp = struct {
 pub const Term = struct {
     susp: u32,
     gen: u32,
+    /// Its row of `Run.term_exts` (`watchExt`), or `no_ext` for a term that
+    /// watches its whole slot with no event select.
+    ext: u32 = no_ext,
     edge: Edge,
+
+    // Budget: one row per waiting term, walked by every `wake` of its slot.
+    // The rare select and event fields live out of line (`TermExt`), so the
+    // walk reads 16 bytes a term and the side row only for a term that has one.
+    comptime {
+        std.debug.assert(@sizeOf(Term) == 16);
+    }
+};
+
+/// `Term.ext` of a plain term.
+pub const no_ext = std.math.maxInt(u32);
+
+/// The out-of-line part of a `Term` (`Run.term_exts`): an event select or a
+/// bit select, never both.
+pub const TermExt = struct {
     /// §9.7.3: an event array index selects which occurrence wakes this
-    /// waiter. Changing the index itself does not cause an occurrence.
+    /// waiter, evaluated in `scope`. Changing the index itself does not
+    /// cause an occurrence.
     event_select: Ast.ExprId = .none,
     scope: u32 = 0,
     /// §9.7.2 a constant select term (`compile.selectTerm`): bits
@@ -81,13 +100,6 @@ pub const Term = struct {
     width: u32 = 0,
     v: u64 = 0,
     x: u64 = 0,
-
-    // Budget: one row per waiting term, walked by every `wake` of its slot.
-    // The select-term fields (`lo` .. `x`) are 24 of these bytes and rare;
-    // `rt` keeps them out of line (`rt.Rec`), which this row could too.
-    comptime {
-        std.debug.assert(@sizeOf(Term) == 48);
-    }
 };
 
 /// Bits `[lo, lo + width)` of `value`, `width` at most 64, as (values,
@@ -104,16 +116,29 @@ pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64 {
     return out;
 }
 
-/// A change of a select term's bits: whether it matches `t.edge` (of the
-/// select's least significant bit) and, either way, `t` now remembers them.
-fn selectChanged(t: *Term, value: Int.Literal) bool {
-    const now = termBits(value, t.lo, t.width);
-    if (now[0] == t.v and now[1] == t.x) return false;
-    const before = planeBit(t.v, t.x);
+/// A change of a select term's bits: whether it matches `edge` (of the
+/// select's least significant bit) and, either way, `e` now remembers them.
+fn selectChanged(e: *TermExt, edge: Edge, value: Int.Literal) bool {
+    const now = termBits(value, e.lo, e.width);
+    if (now[0] == e.v and now[1] == e.x) return false;
+    const before = planeBit(e.v, e.x);
     const after = planeBit(now[0], now[1]);
-    t.v = now[0];
-    t.x = now[1];
-    return t.edge.matches(before, after);
+    e.v = now[0];
+    e.x = now[1];
+    return edge.matches(before, after);
+}
+
+/// Whether a change of `target` from `before` to `after` resumes term `t`,
+/// which has a `TermExt`.
+fn extHit(self: *Run, t: Term, target: u32, before: Int.Bit, after: Int.Bit) Error!bool {
+    const e = &self.term_exts.items[t.ext];
+    if (e.width != 0) return selectChanged(e, t.edge, self.values[target]);
+    return t.edge.matches(before, after) and try selectedEvent(self, e.*, t.susp, target);
+}
+
+/// A term leaves its list: its `TermExt` row, if any, is free.
+fn dropExt(self: *Run, t: Term) void {
+    if (t.ext != no_ext) self.free_term_exts.appendAssumeCapacity(t.ext);
 }
 
 // ---- the write path (§5.10.1, §9.3, VAMS §8.5) ------------------------------
@@ -359,16 +384,20 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
     // stale one (its suspension resumed through another slot, or was
     // disabled) is dropped.
     var keep: usize = 0;
-    for (list.items) |t0| {
-        var t = t0;
+    for (list.items) |t| {
         const s = &self.susps.items[t.susp];
-        if (s.gen != t.gen) continue;
+        if (s.gen != t.gen) {
+            dropExt(self, t);
+            continue;
+        }
         const selected = (if (event) |e| event_ctx == eventContext(self, e.scope, s.ctx) else true) and
-            (if (t.width == 0) t.edge.matches(before, after) else selectChanged(&t, self.values[target])) and
-            try selectedEvent(self, t, target);
+            if (t.ext == no_ext) t.edge.matches(before, after) else try extHit(self, t, target, before, after);
         // An index function's blocking write can satisfy another term of
         // this event-or suspension while selectedEvent evaluates it.
-        if (s.gen != t.gen) continue;
+        if (s.gen != t.gen) {
+            dropExt(self, t);
+            continue;
+        }
         if (!selected) {
             list.items[keep] = t;
             keep += 1;
@@ -376,6 +405,7 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
         }
         const pc = s.pc;
         const ctx = s.ctx;
+        dropExt(self, t);
         retire(self, t.susp);
         _ = try exec.enqueue(self, exec.resumption(pc, ctx), null, false);
     }
@@ -410,18 +440,18 @@ fn eventContext(self: *const Run, declared: u32, from: u32) u32 {
 /// §§9.7.2–9.7.3: the event expression selects an occurrence; changing
 /// its index alone is not an occurrence. Test the current select only when
 /// an element occurs, in the suspended reader's automatic activation.
-fn selectedEvent(self: *Run, t: Term, target: u32) Error!bool {
-    if (t.event_select == .none) return true;
+fn selectedEvent(self: *Run, e: TermExt, susp: u32, target: u32) Error!bool {
+    if (e.event_select == .none) return true;
     var scratch = std.heap.ArenaAllocator.init(self.arena);
     defer scratch.deinit();
     const scope = self.scope;
     const ctx = self.ctx;
     defer self.scope = scope;
     defer self.ctx = ctx;
-    self.scope = t.scope;
-    self.ctx = self.susps.items[t.susp].ctx;
+    self.scope = e.scope;
+    self.ctx = self.susps.items[susp].ctx;
     try exec.makeResident(self, self.ctx);
-    const selected = try evaluate.address(self, scratch.allocator(), t.event_select);
+    const selected = try evaluate.address(self, scratch.allocator(), e.event_select);
     try exec.makeResident(self, ctx);
     return selected != null and selected.? == target;
 }
@@ -455,6 +485,22 @@ pub fn park(self: *Run, pc: u32) Error!u32 {
 /// beyond `Run.terms` adds a `Run.far_terms` row, which invalidates
 /// pointers to the other far lists (`termsOf`).
 pub fn watch(self: *Run, id: u32, slot: u32, edge: Edge) Error!void {
+    return fileTerm(self, id, slot, edge, no_ext);
+}
+
+/// `watch` of a term with an event select or a bit select (`TermExt`).
+pub fn watchExt(self: *Run, id: u32, slot: u32, edge: Edge, ext: TermExt) Error!void {
+    const k = self.free_term_exts.pop() orelse blk: {
+        try self.term_exts.append(self.arena, undefined);
+        break :blk @as(u32, @intCast(self.term_exts.items.len - 1));
+    };
+    // Room for every row on the free list, so `dropExt` cannot fail.
+    try self.free_term_exts.ensureTotalCapacity(self.arena, self.term_exts.items.len);
+    self.term_exts.items[k] = ext;
+    try fileTerm(self, id, slot, edge, k);
+}
+
+fn fileTerm(self: *Run, id: u32, slot: u32, edge: Edge, ext: u32) Error!void {
     const list = termsOf(self, slot) orelse if (slot < self.terms.len) blk: {
         // Made on the slot's first wait, at an address that stays put.
         const l = try self.arena.create(std.ArrayList(Term));
@@ -474,11 +520,11 @@ pub fn watch(self: *Run, id: u32, slot: u32, edge: Edge) Error!void {
         for (list.items) |t| if (self.susps.items[t.susp].gen == t.gen) {
             list.items[keep] = t;
             keep += 1;
-        };
+        } else dropExt(self, t);
         list.shrinkRetainingCapacity(keep);
         if (keep > list.capacity / 2) try list.ensureTotalCapacity(self.arena, list.capacity * 2);
     }
-    try list.append(self.arena, .{ .susp = id, .gen = self.susps.items[id].gen, .edge = edge });
+    try list.append(self.arena, .{ .susp = id, .gen = self.susps.items[id].gen, .ext = ext, .edge = edge });
 }
 
 /// The process at suspension `id` is no longer waiting: every term it filed
