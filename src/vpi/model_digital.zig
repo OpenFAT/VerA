@@ -453,7 +453,7 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
                 if (r.arrays.contains(slot)) continue;
                 const net_name = try arena.dupe(u8, r.file.str(n.name));
                 nets.appendAssumeCapacity(@intCast(objects.hot.items.len));
-                try objects.append(.{
+                try objects.appendCold(.{
                     .kind = .net,
                     .owner = .of(k.scope),
                     .name = net_name,
@@ -462,9 +462,8 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
                     .slot = .of(slot),
                     .net_type = n.kind,
                     .src_tok = n.main_tok,
-                    .src_engine = .of(e),
                     .edges = try arena.dupe(code.Edge, &.{.{ .tag = vpiScope, .to = m.* }}),
-                });
+                }, .{ .src_engine = e });
                 try addBits(arena, objects, r, code.vpiNetBit);
             }
             objects.hot.items[m.*].lists = try arena.dupe(code.List, &.{.{ .tag = vpiNet, .items = nets.items }});

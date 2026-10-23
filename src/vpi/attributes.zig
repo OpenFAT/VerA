@@ -130,7 +130,7 @@ pub fn attach(b: *code.Builder, parent: u32, owner: Ast.AttributeOwner, definiti
             } else if (b.file.exprs.tag(spec.value) == .str_literal) {
                 value = .{ .str = try b.arena.dupe(u8, b.file.str(b.file.exprs.strOf(spec.value))) };
             } else if (b.run) |r| {
-                const scope = b.objects.hot.items[parent].src_engine.get() orelse b.engine;
+                const scope = b.objects.coldOf(parent).src_engine orelse b.engine;
                 const v = r.vpiAttributeValue(b.arena, scope, spec.value) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.NotElaborated;
                 switch (v) {
                     .bits => |lit| bits = lit,
