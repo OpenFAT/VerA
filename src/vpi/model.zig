@@ -110,21 +110,13 @@ pub const Building = struct {
     /// Frees the growable lists, which live in `gpa`; the strings they index
     /// are the arena's and stay.
     pub fn deinit(s: *Building, gpa: std.mem.Allocator) void {
-        s.children.deinit(gpa);
-        s.ports.deinit(gpa);
-        s.nets.deinit(gpa);
-        s.regs.deinit(gpa);
-        s.params.deinit(gpa);
-        s.integers.deinit(gpa);
-        s.reals.deinit(gpa);
-        s.reg_arrays.deinit(gpa);
-        s.net_arrays.deinit(gpa);
-        s.variables.deinit(gpa);
-        s.module_arrays.deinit(gpa);
-        s.nodes.deinit(gpa);
-        s.branches.deinit(gpa);
+        inline for (id_lists) |f| @field(s, f).deinit(gpa);
         s.code.deinit(gpa);
     }
+
+    /// The object-index lists a `Scope` carries under the same names, which
+    /// `freeze` copies one for one.
+    const id_lists = .{ "children", "ports", "nets", "regs", "params", "integers", "reals", "reg_arrays", "net_arrays", "variables", "module_arrays", "nodes", "branches" };
 };
 
 /// The model's fixed arrays, from what a builder accumulated. `rows` must
@@ -137,39 +129,29 @@ pub fn freeze(d: *Design, rows: *Rows, scopes: []const Building) Error!void {
     d.cold = try rows.cold.toOwnedSlice(rows.gpa);
     const objects = d.objects;
     d.scopes = try gpa.alloc(Scope, scopes.len);
-    for (scopes, 0..) |*s, i| d.scopes[i] = .{
-        .parent = s.parent,
-        .def_name = s.def_name,
-        .library = s.library,
-        .config = s.config,
-        .path = s.path,
-        .time_unit = s.time_unit,
-        .time_precision = s.time_precision,
-        .children = try arena.dupe(u32, s.children.items),
-        .internal = blk: {
-            var n = s.children.items.len + s.code.internal.items.len;
-            for (s.code.gen_arrays.items) |g| n += objects[g].lists[0].items.len;
-            var all: std.ArrayList(u32) = try .initCapacity(arena, n);
-            all.appendSliceAssumeCapacity(s.children.items);
-            for (s.code.gen_arrays.items) |g| all.appendSliceAssumeCapacity(objects[g].lists[0].items);
-            all.appendSliceAssumeCapacity(s.code.internal.items);
-            break :blk all.items;
-        },
-        .ports = try arena.dupe(u32, s.ports.items),
-        .nets = try arena.dupe(u32, s.nets.items),
-        .regs = try arena.dupe(u32, s.regs.items),
-        .params = try arena.dupe(u32, s.params.items),
-        .integers = try arena.dupe(u32, s.integers.items),
-        .reals = try arena.dupe(u32, s.reals.items),
-        .reg_arrays = try arena.dupe(u32, s.reg_arrays.items),
-        .net_arrays = try arena.dupe(u32, s.net_arrays.items),
-        .variables = try arena.dupe(u32, s.variables.items),
-        .module_arrays = try arena.dupe(u32, s.module_arrays.items),
-        .nodes = try arena.dupe(u32, s.nodes.items),
-        .branches = try arena.dupe(u32, s.branches.items),
-        .lists = try s.code.freeze(arena),
-        .engine = s.engine,
-    };
+    for (scopes, d.scopes) |*s, *sc| {
+        sc.* = .{
+            .parent = s.parent,
+            .def_name = s.def_name,
+            .library = s.library,
+            .config = s.config,
+            .path = s.path,
+            .time_unit = s.time_unit,
+            .time_precision = s.time_precision,
+            .internal = blk: {
+                var n = s.children.items.len + s.code.internal.items.len;
+                for (s.code.gen_arrays.items) |g| n += objects[g].lists[0].items.len;
+                var all: std.ArrayList(u32) = try .initCapacity(arena, n);
+                all.appendSliceAssumeCapacity(s.children.items);
+                for (s.code.gen_arrays.items) |g| all.appendSliceAssumeCapacity(objects[g].lists[0].items);
+                all.appendSliceAssumeCapacity(s.code.internal.items);
+                break :blk all.items;
+            },
+            .lists = try s.code.freeze(arena),
+            .engine = s.engine,
+        };
+        inline for (Building.id_lists) |f| @field(sc, f) = try arena.dupe(u32, @field(s, f).items);
+    }
     d.top_modules = try arena.dupe(u32, &[_]u32{0});
     // A constant and a quantity have no name to be found by (§11.6.7 lists
     // none), and a node shares its net's name — the NET is what a name
@@ -377,10 +359,8 @@ fn scopeIndex(scopes: []Building, m: u32) i64 {
 
 /// `u` of `u[3]`, or null when the name is not an array element's.
 fn arrayBase(local: []const u8) ?[]const u8 {
-    if (local.len < 3 or local[local.len - 1] != ']') return null;
-    const open_at = std.mem.findScalarLast(u8, local, '[') orelse return null;
     _ = arrayIndex(local) orelse return null;
-    return local[0..open_at];
+    return local[0..std.mem.findScalarLast(u8, local, '[').?];
 }
 
 fn arrayIndex(local: []const u8) ?i64 {
