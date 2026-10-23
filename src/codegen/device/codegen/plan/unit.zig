@@ -6,9 +6,9 @@
 const std = @import("std");
 const Mir = @import("ir").Mir;
 const Analysis = @import("prove").Analysis;
-// Shared with the emitter: `Display` is the §9.4 mode, and the `op*`/`call*`
-// helpers classify a call the same way for the plan and for the text. They
-// live in `args.zig` so this file imports no emitter.
+// Shared with the emitter: `Display` is the §9.4 mode, and `callArgIsValue`
+// classifies a call's arguments the same way for the plan and for the text.
+// They live in `args.zig` so this file imports no emitter.
 const cg = @import("args.zig");
 const Display = cg.Display;
 const assert = std.debug.assert;
@@ -405,7 +405,7 @@ fn analyzeUnitOnce(self: *UnitPlan, target: Mir.Value) Error!void {
             .unary, .binary, .ternary, .phi, .branch, .jump, .call => {},
         }
         self.inlined.set(v);
-        // ponytail: addUses already moves eager operands into lazy-arm counts.
+        // Its own operands are read lazily now too.
         self.addUses(def.inst_result, true);
     }
 

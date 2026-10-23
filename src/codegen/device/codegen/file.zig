@@ -64,12 +64,14 @@ const Features = struct {
 /// been emitted yet.
 pub fn emitFile(self: *Gen) Error!void {
     assert(self.out.items.len == 0 and self.files.len == 0);
+    const hist = usesOp(self, .absdelay);
+    const filt = usesOp(self, .laplace) or usesOp(self, .zi);
     const f: Features = .{
         .stateful = hasStatefulOps(self),
-        .hist = usesOp(self, .absdelay),
+        .hist = hist,
         .hist_quad = usesQuad(self),
-        .filt = usesOp(self, .laplace) or usesOp(self, .zi),
-        .ac = usesOp(self, .absdelay) or usesOp(self, .laplace) or usesOp(self, .zi),
+        .filt = filt,
+        .ac = hist or filt,
         .timer = usesOp(self, .timer),
         // §9.5.3/§9.5.4.2. Set at the call in lowering, because once the MIR
         // is sliced the formatter's call may sit in any unit. A printing
@@ -248,7 +250,7 @@ fn buildPrelude(self: *Gen, f: Features) Error!void {
     if (f.tp_arr) try alias(&p, self.arena, kt.tp_arr_txt);
     if (f.filt) try alias(&p, self.arena, kt.filt_txt);
     if (f.ac) try alias(&p, self.arena, kt.ac_txt);
-    if (self.display == .emit or f.strs) try alias(&p, self.arena, kt.display_txt);
+    if (f.strs) try alias(&p, self.arena, kt.display_txt);
     if (f.strs) try alias(&p, self.arena, kt.str_txt);
     if (f.files) try alias(&p, self.arena, kt.file_txt);
     if (f.tbl) try alias(&p, self.arena, kt.table_txt);
@@ -283,7 +285,7 @@ fn buildPrelude(self: *Gen, f: Features) Error!void {
     if (f.tp_arr) try publish(self.arena, &hz, kt.tp_arr_txt);
     if (f.filt) try publish(self.arena, &hz, kt.filt_txt);
     if (f.ac) try publish(self.arena, &hz, kt.ac_txt);
-    if (self.display == .emit or f.strs) try publish(self.arena, &hz, kt.display_txt);
+    if (f.strs) try publish(self.arena, &hz, kt.display_txt);
     if (f.strs) try publish(self.arena, &hz, kt.str_txt);
     if (f.files) try publish(self.arena, &hz, kt.file_txt);
     if (f.tbl) try publish(self.arena, &hz, kt.table_txt);
@@ -542,6 +544,17 @@ fn abstolOf(self: *const Gen, i: u32) f64 {
     return if (flow) info.flow_abstol else info.potential_abstol;
 }
 
+/// Returns the `Model` field type of parameter `p` (an alias's is its
+/// original's).
+fn paramFieldType(self: *Gen, p: Lower.ParamInfo) []const u8 {
+    return switch (Analysis.tyOfParam(p.ty)) {
+        .real => "f64",
+        .int => intFieldType(self, p),
+        .str => "[]const u8",
+        .wide => unreachable, // `tyOfParam` types no parameter wide
+    };
+}
+
 /// Returns the `Model` field type of a §3.4 integer parameter: the `i64`
 /// carrier (an inferred integral one keeps its initializer's bit pattern;
 /// an explicit `integer` holds §3.4.1's 32-bit value, and `derive` keeps the
@@ -628,14 +641,8 @@ fn emitGiven(self: *Gen) Error!void {
 fn emitModel(self: *Gen) Error!void {
     try self.w("/// §3.4 module parameters (spec defaults folded at compile time).\npub const Model = struct {{\n", .{});
     for (self.lowered.params.items, 0..) |p, i| {
-        const ty: []const u8 = switch (Analysis.tyOfParam(p.ty)) {
-            .real => "f64",
-            .int => intFieldType(self, p),
-            .str => "[]const u8",
-            .wide => unreachable, // `tyOfParam` types no parameter wide
-        };
         try checkParamDefault(self, p);
-        try self.w("    {s}: {s} = {s},\n", .{ self.names.p_names[i], ty, try paramDefault(self, p, Analysis.tyOfParam(p.ty)) });
+        try self.w("    {s}: {s} = {s},\n", .{ self.names.p_names[i], paramFieldType(self, p), try paramDefault(self, p, Analysis.tyOfParam(p.ty)) });
     }
     // §3.4.7 aliasparam: "The aliasparam declaration creates an alternate
     // name ... which can be used to override the value of the parameter", so
@@ -648,12 +655,7 @@ fn emitModel(self: *Gen) Error!void {
         const ty = Analysis.tyOfParam(p.ty);
         try self.w("    {s}: {s} = {s}, // §3.4.7 alias of `{s}`\n", .{
             self.names.a_names[i],
-            switch (ty) {
-                .real => "f64",
-                .int => intFieldType(self, p),
-                .str => "[]const u8",
-                .wide => unreachable, // `tyOfParam` types no parameter wide
-            },
+            paramFieldType(self, p),
             try paramDefault(self, p, ty),
             p.name,
         });
@@ -755,7 +757,7 @@ fn emitDerive(self: *Gen) Error!void {
     // §3.4.7 first: an override written through the alias must be the
     // original's value before a §6.3.4 dependent parameter reads it. The
     // write sets the original too (#76): "the value of the parameter dtemp
-    // ... is 5" after `.trise(5)`, so its own `__given` (§9.19 `$param_given`,
+    // ... is 5" after `.trise(5)`, so its own given bit (§9.19 `$param_given`,
     // and the §6.3.4 guard below that keeps a default from erasing it) is raised.
     for (self.lowered.aliases.items, 0..) |al, i| {
         const a = self.names.a_names[i];
@@ -795,8 +797,8 @@ fn emitDerive(self: *Gen) Error!void {
         };
         // §6.3.4 gives the default; an explicit host write wins (else a card's
         // `VTH0` over `VTH0 = VTHO` would be erased). Only a localparam is
-        // overwritten unconditionally. `plan/names.zig` raised the `__given`
-        // companion for every non-local derived parameter.
+        // overwritten unconditionally. `plan/names.zig` gave a given bit
+        // to every non-local derived parameter.
         if (!p.is_local)
             try self.w("    if (!model.given__.isSet({d})) ", .{self.names.given_bit[i]})
         else
@@ -1062,7 +1064,6 @@ pub fn fmtF64(self: *Gen, x: f64) Error![]const u8 {
     // most ~24 bytes.
     var buf: [512]u8 = undefined;
     const s = std.mem.print(&buf, "{d}", .{x}) catch unreachable;
-    // ponytail: use the stdlib byte-set search; formatting stays unchanged.
     const has_point = std.mem.findAny(u8, s, ".eE") != null;
     gop.value_ptr.* = if (has_point)
         try self.arena.dupe(u8, s)

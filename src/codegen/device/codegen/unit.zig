@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const plan_core = @import("plan/core.zig");
+const plan_jobs = @import("plan/jobs.zig");
 const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_noise = @import("noise.zig");
@@ -167,8 +168,8 @@ pub fn emitUnits(self: *Gen) Error!void {
         self.emitting_display = true;
         defer self.emitting_display = false;
         const lo = self.out.items.len;
-        const at = try emitUnit(self, job.name, job.target, job.mode, job.comment);
-        try gen_file.recordUnitFile(self, job.name, lo, at);
+        const at = try emitUnit(self, self.jobs.display_name, job.target, job.mode, plan_jobs.display_comment);
+        try gen_file.recordUnitFile(self, self.jobs.display_name, lo, at);
     }
 }
 

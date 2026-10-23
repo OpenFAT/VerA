@@ -29,18 +29,17 @@ pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void {
         try self.b("return ", .{});
         try family.openTo(self, family.mask(self, target));
         try gen_render.renderVal(self, target, .real);
-        try self.b(")", .{});
-        try self.b(";\n", .{});
-        return;
+        return self.b(");\n", .{});
     }
     try self.b("return .{{\n", .{});
     for (self.core.lo_vals, 0..) |v, k| {
-        if (self.an.arrOf(v)) |id| if (gen_render.inPlace(self, id)) continue;
+        const arr = self.an.arrOf(v);
+        if (arr) |id| if (gen_render.inPlace(self, id)) continue;
         try self.ind(depth + 1);
         try self.b(".f{d} = ", .{k});
-        const wrap = self.an.arrOf(v) == null and self.an.vty[@backingInt(v)] == .real;
+        const wrap = arr == null and self.an.vty[@backingInt(v)] == .real;
         if (wrap) try family.openTo(self, family.mask(self, v));
-        if (self.an.arrOf(v) != null)
+        if (arr != null)
             try gen_render.renderArrayOut(self, v)
         else
             try gen_render.renderVal(self, v, self.an.vty[@backingInt(v)]);

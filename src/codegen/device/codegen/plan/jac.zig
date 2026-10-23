@@ -46,8 +46,9 @@ pub const JacConst = struct {
 /// (row, col) unique.
 ///
 /// Asserts that both `lin` halves hold `n_u` rows and that every guarded
-/// entry lies inside the matrix. Each row costs its terms, sorted, so the
-/// whole is O(terms · log terms + guarded²).
+/// entry lies inside the matrix. Each row costs its terms, sorted, and a
+/// scan of `guarded`, so the whole is O(terms · log terms + n_u · guarded +
+/// guarded²).
 pub fn plan(
     arena: std.mem.Allocator,
     n_u: u32,

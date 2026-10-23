@@ -112,7 +112,8 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
             const fam_v = if (op == .path_prev) &pv else &qv;
             const fam_l = if (op == .path_prev) &pl else &ql;
             const v = in.an.rv(@fromBackingInt(@intCast(operand)));
-            // ponytail: keep first-seen order with the stdlib membership scan.
+            // ponytail: first-seen order by a linear membership scan, O(latches²)
+            // per family; a bitset over `nv` if a model carries thousands.
             if (std.mem.findScalar(Mir.Value, fam_v.items, v) != null) continue;
             if (self.lo_idx[@backingInt(v)] == none_u32) {
                 self.lo_idx[@backingInt(v)] = @intCast(vals.items.len);
@@ -225,6 +226,8 @@ const Mark = struct {
     need: []bool,
     blk: []bool,
     work: std.ArrayList(Mir.Value) = .empty,
+    /// Blocks marked by `block` whose controlling branches are not yet.
+    blk_work: std.ArrayList(u32) = .empty,
 
     fn mark(m: *Mark, v0: Mir.Value) Error!void {
         const v = m.in.an.rv(v0);
@@ -234,13 +237,20 @@ const Mark = struct {
     }
 
     /// Block `b` runs only as the branches it is control-dependent on say.
+    /// A worklist, not a recursion: a chain of control dependences is as
+    /// deep as the source nests its `if`s, which has no bound.
     fn block(m: *Mark, b: u32) Error!void {
+        try m.pushBlock(b);
+        while (m.blk_work.pop()) |bb| for (m.cds.cd[m.cds.off[bb]..m.cds.off[bb + 1]]) |c| {
+            try m.mark(plan_setup.branchCond(m.in, c.a).?);
+            try m.pushBlock(c.a);
+        };
+    }
+
+    fn pushBlock(m: *Mark, b: u32) Error!void {
         if (b >= m.blk.len or m.blk[b]) return;
         m.blk[b] = true;
-        for (m.cds.cd[m.cds.off[b]..m.cds.off[b + 1]]) |c| {
-            try m.mark(plan_setup.branchCond(m.in, c.a).?);
-            try m.block(c.a);
-        }
+        try m.blk_work.append(m.in.arena, b);
     }
 
     fn visit(m: *Mark, v: Mir.Value) Error!void {
@@ -295,10 +305,10 @@ test "live-outs are deduplicated in job order; display stays out; held values in
     try f.lowered.held_vars.append(a, .{ .name = "h", .ty = .real, .init = .f_zero, .seed = .f_zero, .final = vb });
     const an = try f.analysis();
     const jobs = [_]Job{
-        .{ .kind = .resist, .target = vb, .mode = .optimized, .comment = "" },
-        .{ .kind = .react, .target = va, .mode = .optimized, .comment = "" },
-        .{ .kind = .held, .target = vb, .mode = .strict, .comment = "" }, // shared with job 0
-        .{ .kind = .display, .target = va, .mode = .strict, .comment = "" },
+        .{ .kind = .resist, .target = vb, .mode = .optimized },
+        .{ .kind = .react, .target = va, .mode = .optimized },
+        .{ .kind = .held, .target = vb, .mode = .strict }, // shared with job 0
+        .{ .kind = .display, .target = va, .mode = .strict },
     };
 
     const c = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &jobs);
@@ -318,7 +328,7 @@ test "no targets: an empty core with no name; a zero target stays out" {
     const a = f.alloc();
     const an = try f.analysis();
     // An operator with no input queues `.f_zero`, which renders inline.
-    const jobs = [_]Job{.{ .kind = .op_input, .target = .f_zero, .mode = .strict, .comment = "" }};
+    const jobs = [_]Job{.{ .kind = .op_input, .target = .f_zero, .mode = .strict }};
     const c = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &jobs);
     try std.testing.expectEqual(@as(usize, 0), c.lo_vals.len);
     try std.testing.expectEqualStrings("", c.name);
@@ -337,7 +347,7 @@ test "§5.6.1.2 path latches: one latch per operand, a target's slot reused, a n
     _ = try f.mir.emit(a, .entry, .path_prev, &.{x}); // CSE-shared: the same latch
     _ = try f.mir.emit(a, .entry, .path_acc, &.{y});
     const an = try f.analysis();
-    const jobs = [_]Job{.{ .kind = .resist, .target = x, .mode = .strict, .comment = "" }};
+    const jobs = [_]Job{.{ .kind = .resist, .target = x, .mode = .strict }};
 
     const c = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &jobs);
     try std.testing.expectEqualSlices(Mir.Value, &.{ x, y }, c.lo_vals);
@@ -363,8 +373,8 @@ test "§5.10 a held-array store only updateState reads is held-only; one eval lo
         const ld = try f.mir.emit(a, .entry, .fload, &.{ st, .zero });
         const an = try f.analysis();
         const jobs = [_]Job{
-            .{ .kind = .resist, .target = if (eval_loads) ld else vb, .mode = .strict, .comment = "" },
-            .{ .kind = .held, .target = st, .mode = .strict, .comment = "" },
+            .{ .kind = .resist, .target = if (eval_loads) ld else vb, .mode = .strict },
+            .{ .kind = .held, .target = st, .mode = .strict },
         };
 
         const c = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &jobs);

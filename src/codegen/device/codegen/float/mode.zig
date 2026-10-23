@@ -63,7 +63,7 @@ pub fn coreMode(jobs: []const Job) proof.FloatMode {
 test "the core is strict if any served job is; the f32 knob normalises host ⇒ permit" {
     const j = struct {
         fn of(kind: Job.Kind, mode: proof.FloatMode) Job {
-            return .{ .kind = kind, .target = .f_zero, .mode = mode, .comment = "" };
+            return .{ .kind = kind, .target = .f_zero, .mode = mode };
         }
     }.of;
     try std.testing.expectEqual(proof.FloatMode.optimized, coreMode(&.{ j(.resist, .optimized), j(.display, .strict) }));

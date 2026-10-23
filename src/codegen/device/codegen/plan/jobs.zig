@@ -5,7 +5,6 @@
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
-const Lower = @import("ir").Lowered;
 const proof = @import("prove").proof;
 const OpKind = @import("ir").op.OpKind;
 const naming = @import("ir").names;
@@ -14,6 +13,9 @@ const Names = @import("names.zig").Names;
 const LimitCall = @import("limit.zig").LimitCall;
 const plan_noise = @import("noise.zig");
 const plan_topo = @import("topology.zig");
+
+/// The doc line of the §9.4 display unit's declaration.
+pub const display_comment = "§9.4 display tasks, in source order";
 
 /// The planned core targets.
 pub const Jobs = struct {
@@ -48,21 +50,18 @@ const From = struct {
     vpi: bool = false,
 };
 
-/// One emitted unit function, resolved before anything is written.
+/// One core target, resolved before anything is written.
 ///
 /// `plan_core.plan` counts how many units share a value, and `emitUnits`
 /// must emit exactly that set: a disagreement would leave a value rendered as
 /// a cache read in a unit whose slice was never counted. One list, built
-/// once, walked twice.
+/// once, walked twice. Only the §9.4 display job is emitted as a declaration
+/// of its own, named `Jobs.display_name` (`emitUnits`); every other job
+/// exists to put its target in the core, so a row carries no name or text.
 pub const Job = struct {
     kind: Kind,
-    /// The declaration name. Only the §9.4 display job is emitted as a
-    /// declaration of its own (`emitUnits`); every other job exists to put
-    /// its target in the core, so it has none.
-    name: []const u8 = "",
     target: Mir.Value,
     mode: proof.FloatMode,
-    comment: []const u8,
 
     /// Why the target is in the core. `plan` queues the kinds in this order,
     /// which is the order of the core's fields: a model that gains a target
@@ -128,7 +127,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
             .kind = .resist,
             .target = resist,
             .mode = mode,
-            .comment = unitComment(c, false),
         });
         // §5.6.1.2 its charges, one per site, beside it.
         for (from.q_sites) |k| {
@@ -138,7 +136,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
                 .kind = .react,
                 .target = self.an.rv(s.final),
                 .mode = mode,
-                .comment = unitComment(c, true),
             });
         }
     }
@@ -146,15 +143,10 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
         if (u.role != .analog_op) continue;
         const inst = from.names.opInstOf(@intCast(i)) orelse continue;
         const args = self.mir.instData(inst).call.args;
-        const k = u.op;
         try jobs.append(self.arena, .{
             .kind = .op_input,
             .target = if (args.len == 0) Mir.Value.f_zero else self.an.rv(args[0]),
             .mode = unitMode(from.unit_modes, i),
-            .comment = switch (k) {
-                .bound_step, .discontinuity => "§9.17 analog kernel control request",
-                .none, .idt_hold, .idtmod, .absdelay, .transition, .slew, .last_crossing, .laplace, .zi, .cross, .above, .timer => "§4.5 analog operator input",
-            },
         });
     }
     // §4.5 Table 4-20's dynamic control arguments: `updateState` has one core
@@ -176,7 +168,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
                 .kind = .ctrl,
                 .target = v,
                 .mode = unitMode(from.unit_modes, i),
-                .comment = "§4.5 Table 4-20 dynamic operator control argument",
             });
         }
     }
@@ -188,7 +179,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
             .kind = .held,
             .target = self.an.rv(h.final),
             .mode = .strict,
-            .comment = "§5.10 event-assigned variable, held across evaluations",
         });
     }
     // §4.5.15 the arguments of every honoured `$limit`, so `limit` reads them
@@ -206,7 +196,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
                 .kind = .limit_arg,
                 .target = v,
                 .mode = .strict,
-                .comment = "§4.5.15 $limit algorithm argument",
             });
         }
     }
@@ -214,13 +203,11 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
         .kind = .limit_old,
         .target = self.an.rv(slot.final),
         .mode = .strict,
-        .comment = "§9.17.3 next-iteration limiter value",
     });
     if (self.lowered.uses.contains(.reject_iteration)) try jobs.append(self.arena, .{
         .kind = .reject_iteration,
         .target = self.an.rv(self.lowered.reject_iteration),
         .mode = .strict,
-        .comment = "§9.17.1 iteration rejection",
     });
     // §5.6.1.3 the retention flags of every runtime-selected branch row
     // (`Retention.runtime`), read by `emitEval`'s `zResidual` as core fields. A module
@@ -233,7 +220,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
             .kind = .retained,
             .target = ret.runtime,
             .mode = unitMode(from.unit_modes, i),
-            .comment = "§5.6.1.3 retention flag",
         });
         if (plan_topo.switchFlowOf(self, i)) |j| {
             const fret = plan_topo.retention(self, self.lowered.contributions.items[j]);
@@ -241,7 +227,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
                 .kind = .retained,
                 .target = fret.runtime,
                 .mode = unitMode(from.unit_modes, j),
-                .comment = "§5.6.1.3 retention flag",
             });
         }
     }
@@ -265,7 +250,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
                 .kind = .noise,
                 .target = v,
                 .mode = .strict,
-                .comment = "§4.6.4 noise PSD",
             });
         }
     }
@@ -281,7 +265,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
                 .kind = .ac_stim,
                 .target = v,
                 .mode = .strict,
-                .comment = "§4.6.3 AC stimulus magnitude or phase",
             });
         }
     }
@@ -302,7 +285,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
                     .kind = .timer_period,
                     .target = v,
                     .mode = .strict,
-                    .comment = "§5.10.3.3 end-of-evaluation timer control",
                 });
             }
         }
@@ -315,14 +297,12 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
             .kind = .timer_period,
             .target = v,
             .mode = .strict,
-            .comment = "§5.10.3.3 the latest period, read by the schedule",
         });
     }
     if (self.lowered.table_effect != .f_zero) try jobs.append(self.arena, .{
         .kind = .table_effect,
         .target = self.an.rv(self.lowered.table_effect),
         .mode = .strict,
-        .comment = "§9.21.1 captures and §4.2.4/§9.13 runtime checks in source order",
     });
     // VerA's `vera_timepoint` (§2.9): each statement's mark, then the slots
     // something reads after it. A scratch variable no later statement reads
@@ -333,20 +313,17 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
             .kind = .timepoint,
             .target = self.an.rv(t.mark),
             .mode = .strict,
-            .comment = "vera_timepoint statement ran",
         });
         for (t.slots) |sl| if (read[@backingInt(self.an.rv(sl.final))]) try jobs.append(self.arena, .{
             .kind = .timepoint,
             .target = self.an.rv(sl.final),
             .mode = .strict,
-            .comment = "vera_timepoint cached value",
         });
     }
     if (self.lowered.reject_step != .undef) try jobs.append(self.arena, .{
         .kind = .reject_step,
         .target = self.an.rv(self.lowered.reject_step),
         .mode = .strict,
-        .comment = "$vera_reject_step retry time",
     });
     // §9.7.3 a device reports `$fatal`/`$error` as a status (a printing
     // artifact runs the display chain instead). Values that fold are written
@@ -359,7 +336,6 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
                 .kind = .status,
                 .target = self.an.rv(v),
                 .mode = .strict,
-                .comment = "§9.7.3 the device status and its arguments",
             });
         }
     }
@@ -386,10 +362,8 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
         });
         try jobs.append(self.arena, .{
             .kind = .display,
-            .name = out.display_name,
             .target = root,
             .mode = .strict,
-            .comment = "§9.4 display tasks, in source order",
         });
     }
     out.list = jobs.items;
@@ -404,7 +378,6 @@ fn queueVpi(self: Input, jobs: *std.ArrayList(Job), from: From, v: Mir.Value, ro
         .kind = .vpi,
         .target = t,
         .mode = unitMode(from.unit_modes, row),
-        .comment = "Clause 12 a value vpiContribs or vpiShares reports",
     });
 }
 
@@ -473,16 +446,6 @@ fn isDynCtrlArg(k: OpKind, ai: usize) bool {
         // zi_* period, τ or t0 is queued and then refused by the plan.
         .laplace, .zi => ai >= 1,
         .none, .transition, .slew, .last_crossing, .cross, .above, .timer, .bound_step, .discontinuity => false,
-    };
-}
-
-fn unitComment(c: Lower.Contribution, react: bool) []const u8 {
-    if (react) return "§5.6.1.2 reactive part (charge/flux; q() differentiates it)";
-    if (c.kind == .indirect)
-        return "§5.6.7 indirect contribution — the constraint `<probe> − <equation>`";
-    return switch (c.access) {
-        .flow => "§5.6 flow contribution — current into `hi`, out of `lo` (§1.3.1.2)",
-        .potential => "§5.6 potential contribution — the branch constitutive relation",
     };
 }
 
@@ -618,7 +581,6 @@ test "limit arguments, noise PSDs, the retry time, the status and the display un
     try std.testing.expectEqualSlices(Job.Kind, &.{ .limit_arg, .limit_arg, .limit_arg, .noise, .noise, .reject_step, .status, .display }, kinds);
     try std.testing.expectEqualSlices(Mir.Value, &.{ vt, vt, vb, pwr, vb, retry, vb, va }, targets);
     try std.testing.expectEqualStrings("mymod__display__tasks", jobs.display_name);
-    try std.testing.expectEqualStrings(jobs.display_name, jobs.list[jobs.list.len - 1].name);
     // Every job but the contributions' is `.strict`: proof rates contributions only.
     for (jobs.list) |j| try std.testing.expectEqual(proof.FloatMode.strict, j.mode);
 }
