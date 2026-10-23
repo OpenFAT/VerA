@@ -301,9 +301,10 @@ pub export fn vpi_handle_by_index(obj: vpiHandle, index: c_int) vpiHandle {
         return null;
     }
     if (o.kind != .code) for (o.lists) |l| if (l.tag == vpiBit) {
-        for (l.items) |bit| for (d.objects[bit].edges) |e| {
-            if (e.tag == vpiIndex and d.objects[e.to].value.?.int == index) return handleOf(&d.objects[bit]);
-        };
+        for (l.items) |bit| {
+            const ix = root.edgeTo(&d.objects[bit], vpiIndex);
+            if (ix != no_obj and d.objects[ix].value.?.int == index) return handleOf(&d.objects[bit]);
+        }
         fail("NOINDEX", "vpi_handle_by_index: `{s}` has no bit {d}", .{ o.full, index });
         return null;
     };

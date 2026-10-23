@@ -438,12 +438,6 @@ pub const Obj = struct {
     expr_scope: OptU32 = .none,
     /// `.net` only: its A.2.2.1 net type, IEEE 1364-2005 §26.6.6 vpiNetType.
     net_type: Ast.NetKind = .wire,
-    /// `.code` only: §11.6.13/§11.6.14's vpiDefName of a primitive or UDP
-    /// definition.
-    def_name: []const u8 = "",
-    /// A declaration inside a generated digital scope evaluates its source
-    /// attribute expressions there, including the iteration's localparam.
-    src_engine: OptU32 = .none,
     /// A continuous assignment's literal delays, in its module's time unit
     /// (IEEE 1364 §7.14: rise, fall, turn-off), for §12.11. Hot, not in
     /// `Cold`: §12.29's vpi_put_delays may give one to any gate or
@@ -455,9 +449,10 @@ pub const Obj = struct {
 };
 
 // Budget: the row every handle points at and every scan walks. 472 bytes
-// before the cold split; a new field that is not on most rows goes in `Cold`.
+// before the cold split, 224 before `def_name` and `src_engine` left it; a
+// new field that is not on most rows goes in `Cold`.
 comptime {
-    std.debug.assert(@sizeOf(Obj) == 224);
+    std.debug.assert(@sizeOf(Obj) == 200);
 }
 
 /// `Obj.cold` of a row with no `Cold` entry.
@@ -537,6 +532,13 @@ pub const Cold = struct {
     /// override ranges retain this identity, so traversal can distinguish
     /// two source statements that write the same target (§26.6.6 i, j).
     override_expr: Ast.ExprId = .none,
+    /// A vpiUdpDefn: its §11.6.14 vpiDefName. A primitive's is derived
+    /// (`code.defName`).
+    def_name: []const u8 = "",
+    /// A net of a generated digital scope: that scope's engine index, where
+    /// its source attribute expressions evaluate (the iteration's localparam
+    /// included).
+    src_engine: ?u32 = null,
     /// IEEE 1364-2005 §26.3.3 vpiLineNo and vpiFile, resolved when the model
     /// was built: the analog model's instances (model/analog.zig), whose
     /// compilation is freed after `open`. The digital model resolves its

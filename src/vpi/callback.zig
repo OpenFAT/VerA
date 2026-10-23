@@ -580,8 +580,8 @@ fn call(cb: *Cb, index: c_int, from: ?*const root.Obj) c_int {
 fn lhsOf(from: ?*const root.Obj) ?*const root.Obj {
     const o = from orelse return null;
     if (o.stmt == .none) return o;
-    for (o.edges) |e| if (e.tag == code.vpiLhs and e.to != root.no_obj) return &root.design.?.objects[e.to];
-    return null;
+    const lhs = root.edgeTo(o, code.vpiLhs);
+    return if (lhs == root.no_obj) null else &root.design.?.objects[lhs];
 }
 
 /// Every live callback of `reason`, in registration order, with `from` as
@@ -864,7 +864,7 @@ fn stmtSites(obj: vpiHandle) ?[]const Site {
     var covered: std.AutoHashMapUnmanaged(@import("frontend").Ast.StmtId, u32) = .empty;
     defer covered.deinit(gpa);
     if (one) {
-        covered.put(gpa, o.stmt, @intCast(o - d.objects.ptr)) catch return oomSites();
+        covered.put(gpa, o.stmt, d.indexOf(o)) catch return oomSites();
     } else for (d.objects, 0..) |s, i| {
         if (s.kind != .code or s.owner.get() != scope or s.stmt == .none or s.vtype == code.vpiNullStmt) continue;
         covered.put(gpa, s.stmt, @intCast(i)) catch return oomSites();

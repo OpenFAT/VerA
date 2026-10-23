@@ -388,7 +388,7 @@ pub export fn vpi_get_str(prop: c_int, obj: vpiHandle) [*c]u8 {
         // §11.6.1 — a module property and only a module's. A net has no
         // definition to name.
         vpiDefName => blk: {
-            if (o.kind == .code and o.def_name.len != 0) break :blk o.def_name;
+            if (o.kind == .code) if (code.defName(o)) |n| break :blk n;
             if (o.kind != .module) {
                 fail("NOPROP", "vpi_get_str: a {s} has no vpiDefName", .{@tagName(o.kind)});
                 return null;
