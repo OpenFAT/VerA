@@ -878,6 +878,13 @@ pub fn planeBit(v: u64, x: u64) Int.Bit {
     return @fromBackingInt(@as(u2, @truncate(v & 1)) | @as(u2, @truncate(x & 1)) << 1);
 }
 
+/// `b` as the character §18.2.1 and §15.4's edge descriptors write it: `0`, `1`, `z`
+/// or `x`. A table load indexed by the encoding, so a vector's digits are
+/// written without a branch per bit.
+pub fn bitChar(b: Int.Bit) u8 {
+    return "01zx"[@backingInt(b)];
+}
+
 /// The bits of plane word `w` that lie inside a `width`-bit value; the ones
 /// above it carry nothing and may hold anything. `w * 64` must not exceed
 /// `width`.
