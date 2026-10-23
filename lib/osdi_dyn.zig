@@ -78,7 +78,9 @@
 //! §9.15 (`$simparam`), §9.17.3 (limiting and seeds), §9.19
 //! (`$port_connected`).
 
-/// Opt into the contract's conformance checks.
+/// Turns on the contract's conformance checks (`contract.validating`) for
+/// every library built under this host: the build's root is `zigbuild`'s
+/// shim, which forwards this flag from `dyn`.
 pub const vera_validate_contract = true;
 
 const std = @import("std");
@@ -328,11 +330,9 @@ fn exportDescriptor(comptime D: type, comptime name: []const u8, comptime split:
     @export(&osdi_log, .{ .name = "osdi_log" });
 }
 
-/// `name` as a C string, VerA's identifier escape undone (`naming.sanitize`:
-/// `Z<hex><hex>` is one byte, a trailing lone `Z` marks a Zig keyword).
-// A source name as written, NUL-terminated: the module name a `.model` card
-// names and a noise generator's label are not sanitized identifiers, so
-// `cName` would misread a `Z` in them as an escape.
+/// A source name as written, NUL-terminated: the module name a `.model` card
+/// names and a noise generator's label are not sanitized identifiers, so
+/// `cName` would misread a `Z` in them as an escape.
 fn zStr(comptime s: []const u8) [:0]const u8 {
     // Built in a comptime block and returned outside it, so a runtime call
     // (a test) gets the comptime constant too.
@@ -340,6 +340,8 @@ fn zStr(comptime s: []const u8) [:0]const u8 {
     return z[0..s.len :0];
 }
 
+/// `s` as a C string, VerA's identifier escape undone (`naming.sanitize`:
+/// `Z<hex><hex>` is one byte, a trailing lone `Z` marks a Zig keyword).
 fn cName(comptime s: []const u8) [:0]const u8 {
     // Computed in a comptime block and returned outside it, as `zStr`.
     const z = comptime blk: {
@@ -513,6 +515,17 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
             .{ "sourceScaleFactor", "source_scale__" },
         };
 
+        /// The length of the host's NULL-terminated `$simparam` names list,
+        /// which OSDI does not count: an error when no NULL is among its
+        /// first `max_sim_paras + 1` entries, which are all it reads.
+        fn parasLen(names: [*]const Str) error{SimParasUnterminated}!usize {
+            const len = for (0..max_sim_paras + 1) |i| {
+                if (names[i] == null) break i;
+            } else return error.SimParasUnterminated;
+            assert(len <= max_sim_paras);
+            return len;
+        }
+
         /// Copies the simulator's `$simparam` values into `m`'s host fields;
         /// returns whether one changed. `names` is the host's NULL-terminated
         /// list, which OSDI does not count: one with no NULL among its first
@@ -522,10 +535,7 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
             @setEvalBranchQuota(10_000_000);
             const names = p.names orelse return false;
             const vals = p.vals orelse return false;
-            const len = for (0..max_sim_paras + 1) |i| {
-                if (names[i] == null) break i;
-            } else return error.SimParasUnterminated;
-            assert(len <= max_sim_paras);
+            const len = try parasLen(names);
             var changed = false;
             for (names[0..len], vals[0..len]) |nm, v| {
                 inline for (host_fields) |h| if (@hasField(D.Model, h[1]) and eqlZ(nm.?, h[0])) {
@@ -547,10 +557,7 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
             const vals = p.vals orelse return false;
             if (self.paras_names != names) {
                 self.paras_names = null;
-                const len = for (0..max_sim_paras + 1) |i| {
-                    if (names[i] == null) break i;
-                } else return error.SimParasUnterminated;
-                assert(len <= max_sim_paras);
+                const len = try parasLen(names);
                 inline for (host_fields, 0..) |h, j| {
                     self.paras_at[j] = no_off;
                     for (names[0..len], 0..) |nm, i| if (eqlZ(nm.?, h[0])) {
@@ -772,7 +779,7 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
         }
 
         fn givenInstance(ip: *anyopaque, id: u32) callconv(.c) u32 {
-            const self: *Instance = @ptrCast(@alignCast(ip));
+            const self = inst(ip);
             if (has_mf and id == ni) return @intFromBool(self.mfactor_given);
             return if (id < ni) @intFromBool(self.given[id]) else 0;
         }
@@ -818,7 +825,7 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
 
         fn setupInstance(handle: ?*anyopaque, ip: *anyopaque, mp: *anyopaque, temperature: f64, connected: u32, paras: *const SimParas, res: *InitInfo) callconv(.c) void {
             @setEvalBranchQuota(10_000_000);
-            const self: *Instance = @ptrCast(@alignCast(ip));
+            const self = inst(ip);
             const m: *Model = @ptrCast(@alignCast(mp));
             res.* = .{ .flags = 0, .num_errors = 0, .errors = null };
             // Fallible first: both refusals return before the instance is
@@ -914,7 +921,7 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
 
         fn eval(handle: ?*anyopaque, ip: *anyopaque, _: *const anyopaque, info: *const SimInfo) callconv(.c) u32 {
             @setEvalBranchQuota(10_000_000);
-            const self: *Instance = @ptrCast(@alignCast(ip));
+            const self = inst(ip);
             var ret: u32 = 0;
             // Gmin and source stepping move a `$simparam` mid-solve.
             if (hostParamsAt(self, info.paras) catch {
@@ -1056,6 +1063,7 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
             if (b > 0) self.bound = @min(self.bound, b);
         }
 
+        /// The simulator's instance blob as this device's `Instance`.
         fn inst(ip: *anyopaque) *Instance {
             return @ptrCast(@alignCast(ip));
         }
@@ -1191,7 +1199,7 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
             @setEvalBranchQuota(10_000_000);
             var a: [n]Node = undefined;
             for (&a, @typeInfo(D.U).@"enum".field_names, 0..) |*nd, f, i| {
-                const flow = @hasDecl(D, "u_kinds") and D.u_kinds[i] != .voltage;
+                const flow = isFlow(i);
                 nd.* = .{
                     .name = cName(f),
                     .units = if (flow) "A" else "V",
@@ -1313,6 +1321,9 @@ fn OsdiAs(comptime D: type, comptime name: []const u8, comptime split: bool) typ
             return if (split) @extern(@TypeOf(f), .{ .name = sym(field), .visibility = .hidden }) else f;
         }
 
+        /// `OSDI_DESCRIPTORS`: one descriptor, as `OSDI_NUM_DESCRIPTORS` says.
+        /// Its offsets are into `Instance`, the blob of `instance_size` bytes
+        /// the simulator allocates zeroed and indexes by them.
         pub const descriptors = [1]Descriptor{.{
             .name = zStr(name),
             .num_nodes = n,
