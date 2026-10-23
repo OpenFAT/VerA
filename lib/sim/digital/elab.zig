@@ -1240,10 +1240,11 @@ fn genvarOf(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, f: anytype) ?
 /// A block's events, drivers and processes are declared in the scope it is
 /// elaborated in (`Ast.GenItems`), which is the block's own (`armScope`).
 fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.StmtId, depth: u32) Error!void {
-    // ponytail: the parser hoists a generate block's nets to the module, so
-    // they are the enclosing instance's names. A part-select bound written
-    // with a genvar is folded once, with the first iteration's value; a
-    // bit-select is read per iteration.
+    // A digital parse keeps a generate block's nets on the block
+    // (`parseGenerateBlock`), so the `.block` arm declares one set per loop
+    // iteration, in that iteration's scope. ponytail: a part-select bound
+    // written with a genvar is folded once, with the first iteration's value;
+    // a bit-select is read per iteration.
     if (s == .none) return;
     const tok = r.file.stmtTok(s);
     switch (r.file.stmt(s)) {
