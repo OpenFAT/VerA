@@ -61,12 +61,7 @@ pub const SystemParam = enum {
     /// Returns the source spelling, `$` included.
     pub fn name(self: SystemParam) []const u8 {
         return switch (self) {
-            .angle => "$angle",
-            .hflip => "$hflip",
-            .mfactor => "$mfactor",
-            .vflip => "$vflip",
-            .xposition => "$xposition",
-            .yposition => "$yposition",
+            inline else => |k| "$" ++ @tagName(k),
         };
     }
 
