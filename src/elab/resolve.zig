@@ -586,14 +586,14 @@ pub fn checkConnectRules(self: *Flatten) Error!void {
     }
 }
 
-// ponytail: nets declared inside a generate block are not visited; add them
-// when a fixture declares one with a bad discipline.
 /// Checks that every net declaration in every user module names a declared
 /// discipline (A.2.1.3, §3.6.2; E0371), once per compilation. Every module,
 /// because the common form of this error, `child c1;` (an instance missing
 /// its parentheses, parsed as a net of discipline `child`), leaves `child`
 /// an uninstantiated module that is never lowered.
 pub fn checkNetDisciplines(self: *Flatten) Error!void {
+    // ponytail: nets declared inside a generate block are not visited; add
+    // them when a fixture declares one with a bad discipline.
     const file = self.ctx.file;
     // `require_std_includes`: annex D.1's disciplines reach
     // only a source that includes disciplines.vams. A user discipline of the
