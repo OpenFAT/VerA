@@ -226,7 +226,7 @@ pub fn buildStructure(
     var self: Analysis = .{ .arena = arena, .mir = mir, .lowered = lowered };
     self.nv = @intCast(mir.defs.len + Mir.Value.first_dynamic);
     self.alias = try arena.alloc(Mir.Value, self.nv);
-    for (self.alias, 0..) |*p, v| p.* = mir.resolveAlias(@fromBackingInt(@intCast(@as(u32, @intCast(v)))));
+    for (self.alias, 0..) |*p, v| p.* = mir.resolveAlias(@fromBackingInt(@intCast(v)));
     try self.buildCfg();
     return self;
 }
@@ -275,14 +275,14 @@ fn buildCfg(self: *Analysis) Error!void {
     var n_insts: u32 = 0;
     for (0..nb) |bi| {
         self.inst_off[bi] = n_insts;
-        var it = self.mir.blockInsts(@fromBackingInt(@intCast(@as(u32, @intCast(bi)))));
+        var it = self.mir.blockInsts(@fromBackingInt(@intCast(bi)));
         while (it.next()) |_| n_insts += 1;
     }
     self.inst_off[nb] = n_insts;
     self.inst_pool = try a.alloc(Mir.Inst, n_insts);
     var ki: u32 = 0;
     for (0..nb) |bi| {
-        var it = self.mir.blockInsts(@fromBackingInt(@intCast(@as(u32, @intCast(bi)))));
+        var it = self.mir.blockInsts(@fromBackingInt(@intCast(bi)));
         while (it.next()) |inst| {
             self.inst_pool[ki] = inst;
             ki += 1;
@@ -1048,13 +1048,13 @@ fn buildDeps(self: *Analysis) Error!void {
     self.xdeps = try self.fixDeps(g, .value);
     self.pdeps = self.xdeps;
     for (0..self.mir.insts.len) |i| {
-        if (!readsInstance(self, @fromBackingInt(@intCast(@as(u32, @intCast(i)))))) continue;
+        if (!readsInstance(self, @fromBackingInt(@intCast(i)))) continue;
         self.pdeps = try self.fixDeps(g, .point);
         break;
     }
     // After `deps`, which an operator's `acdyn` reads.
     for (0..self.mir.insts.len) |i| {
-        const inst: Mir.Inst = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+        const inst: Mir.Inst = @fromBackingInt(@intCast(i));
         if (self.mir.instOp(inst) != .call or !op_kind.acDynamic(Mir.callee.opKind(self.mir.instData(inst).call.callee))) continue;
         self.acdyn = try self.fixDeps(g, .ac_dyn);
         break;
@@ -1479,7 +1479,7 @@ fn buildFoldColumn(self: *Analysis, resolve_params: bool) Error!FoldColumn {
         changed = false;
         for (0..self.nv) |v| {
             if (col.kind[v] != .none) continue;
-            const c = self.foldStep(@fromBackingInt(@intCast(@as(u32, @intCast(v)))), &col, resolve_params) orelse continue;
+            const c = self.foldStep(@fromBackingInt(@intCast(v)), &col, resolve_params) orelse continue;
             try col.set(self.arena, v, c);
             changed = true;
         }

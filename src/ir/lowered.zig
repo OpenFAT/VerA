@@ -728,7 +728,7 @@ pub const TimescaleEvent = base.Region(?Timescale);
 // Row budgets on a 64-bit host. Every table here is per module and short
 // (psp103: 847 params, 12 nodes, 18 contributions), so these pin today's
 // sizes against a silent bloat rather than claim a tight layout;
-// docs/seams/s1-lower.md has the narrower shapes the readers outside
+// docs/seams/s1-lower.md at 2c3f565d has the narrower shapes the readers outside
 // lowering would have to accept.
 comptime {
     std.debug.assert(@sizeOf(ParamInfo) <= 88); // ~850 rows on a compact model
