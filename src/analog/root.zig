@@ -4,9 +4,10 @@
 //! not this module; the spine (`vera`) and the
 //! tests that lower source import it.
 
-/// AST → MIR lowering.
+/// The pass: `Lower.lower` runs it whole, `Lower.Harness` is its test support.
 pub const Lower = @import("lower.zig");
-/// SSA construction used while lowering.
+/// Braun et al.'s SSA builder, one per `Lower` pass; exported for the unit
+/// tests and `vera`'s per-stage checks.
 pub const Ssa = @import("ssa.zig");
 
 test {
