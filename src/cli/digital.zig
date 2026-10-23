@@ -15,9 +15,7 @@ const native = @import("digital");
 const diag = vera.diag;
 const Io = std.Io;
 const args = @import("args.zig");
-const cli_report = @import("report.zig");
-
-const report = cli_report.report;
+const report = @import("report.zig").report;
 const missing = args.missing;
 
 /// The `.v` half of `main`. `opt` and `backend` are the derived build mode;
@@ -419,10 +417,8 @@ fn libraries(
 }
 
 /// The compiler cache the prebuilt digital engine lives in, shared by every
-/// work directory: `vera-engine` in Zig's global cache directory
-/// (`ZIG_GLOBAL_CACHE_DIR`, else `XDG_CACHE_HOME/zig`, else
-/// `HOME/.cache/zig`, else Windows' `LOCALAPPDATA/zig`), else the work
-/// directory's own cache.
+/// work directory: `globalCache`'s `vera-engine`, else the work directory's
+/// own `.zig-cache`.
 fn engineCache(arena: std.mem.Allocator, env: *const std.process.Environ.Map, work_dir: ?[]const u8) ![]const u8 {
     return try globalCache(arena, env, "vera-engine") orelse std.fs.path.join(arena, &.{ work_dir orelse ".", ".zig-cache" });
 }

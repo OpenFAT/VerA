@@ -19,6 +19,7 @@ const native = @import("digital");
 /// carries (`contract.vera_version`).
 const vera_version = @import("contract").vera_version;
 const diag = vera.diag;
+const Display = vera.codegen.Display;
 const Io = std.Io;
 
 /// `--optimize=` names. Zig 0.17 renamed `std.lang.Optimize`'s tags
@@ -148,8 +149,8 @@ pub const Cli = struct {
     levels: diag.Levels = .empty,
     /// `-I`, in order.
     include_dirs: std.ArrayList([]const u8) = .empty,
-    /// `--param`, in order. `main` appends the testbench's shape cards after
-    /// these, so only `[0..n_typed]` of it is what was typed.
+    /// `--param`, in order: each keeps its text (a string parameter's value)
+    /// beside the number, NaN when the text is not one.
     overrides: std.ArrayList(vera.ParamOverride) = .empty,
     /// The input files; `paths[0]` is the one compiled, the rest are `.v`
     /// library units.
@@ -189,7 +190,7 @@ pub const Cli = struct {
     emit_zig_typed: bool = false,
     /// `--run`; `exe_flag` is set too.
     run_exe: bool = false,
-    display: vera.codegen.Display = .record,
+    display: Display = .record,
     jac_f32: bool = false,
     jac_f32_host: bool = false,
     // What the user typed, kept apart from the derived state above so
@@ -198,10 +199,10 @@ pub const Cli = struct {
     lint_flag: bool = false,
     /// `--lsp`: serve, and take no input file.
     lsp: bool = false,
-    display_drop_flag: bool = false,
-    /// `--display=record`: with `--emit-exe`, the testbench prints what the
-    /// device's `say` records instead of printing in the device.
-    display_record_flag: bool = false,
+    /// The last `--display=` typed. `.drop` conflicts with a testbench, and
+    /// `.record` makes one print what the device's `say` records instead of
+    /// printing in the device.
+    display_flag: ?Display = null,
     /// The last flag that implies codegen.
     codegen_flag: ?[]const u8 = null,
     /// `--emit-exe` or `--run`, whichever was typed last.
@@ -302,18 +303,13 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
             cli.display = .emit;
             cli.codegen_flag = arg;
             cli.exe_flag = arg;
-        } else if (std.mem.eql(u8, arg, "--display=emit")) {
-            cli.display = .emit;
-            cli.display_drop_flag = false;
-            cli.display_record_flag = false;
-        } else if (std.mem.eql(u8, arg, "--display=drop")) {
-            cli.display = .drop;
-            cli.display_drop_flag = true;
-            cli.display_record_flag = false;
-        } else if (std.mem.eql(u8, arg, "--display=record")) {
-            cli.display = .record;
-            cli.display_drop_flag = false;
-            cli.display_record_flag = true;
+        } else if (std.mem.startsWith(u8, arg, "--display=")) {
+            const d = std.meta.stringToEnum(Display, arg["--display=".len..]) orelse {
+                try err.print("error: unknown option `{s}`\n", .{arg});
+                return 2;
+            };
+            cli.display = d;
+            cli.display_flag = d;
         } else if (std.mem.eql(u8, arg, "--validate-contract")) {
             cli.validate_contract = true;
         } else if (std.mem.eql(u8, arg, "--jac-f32")) {
@@ -471,7 +467,7 @@ pub fn resolve(cli: *Cli, err: *Io.Writer) !?u8 {
         };
         if (cli.sim == .verilog and cli.std_flag == null) cli.language = .v1364_2005;
     }
-    if (cli.exe_flag) |f| if (cli.display_drop_flag) {
+    if (cli.exe_flag) |f| if (cli.display_flag == Display.drop) {
         try err.print(
             "error: `{s}` and `--display=drop` conflict: the testbench IS the display " ++
                 "output, and `--display=drop` discards every print\n",
@@ -481,7 +477,7 @@ pub fn resolve(cli: *Cli, err: *Io.Writer) !?u8 {
     };
     // §9.4 a testbench over the device a host gets: it prints the records
     // the device's `say` makes, whichever flag came first.
-    if (cli.exe_flag != null and cli.display_record_flag) cli.display = .record;
+    if (cli.exe_flag != null and cli.display_flag == Display.record) cli.display = .record;
     if (cli.validate_contract and cli.exe_flag == null) {
         try err.writeAll("error: `--validate-contract` turns the checks on in an --emit-exe or --run " ++
             "testbench; --check always runs them\n");
@@ -729,7 +725,7 @@ test "parse: --run sticks once typed; the last of --emit-exe/--run names the tes
     _ = try l.read(&.{ "--run", "--emit-exe" });
     try testing.expect(l.cli.run_exe);
     try testing.expectEqualStrings("--emit-exe", l.cli.exe_flag.?);
-    try testing.expectEqual(vera.codegen.Display.emit, l.cli.display);
+    try testing.expectEqual(Display.emit, l.cli.display);
 
     var e: Line = .init();
     defer e.deinit();
@@ -737,16 +733,19 @@ test "parse: --run sticks once typed; the last of --emit-exe/--run names the tes
     try testing.expect(!e.cli.run_exe);
 }
 
-test "parse: the last --display wins, and only drop and record are remembered as typed" {
+test "parse: the last --display wins, as typed; any other mode is an unknown option" {
     var l: Line = .init();
     defer l.deinit();
     _ = try l.read(&.{ "--display=drop", "--display=emit" });
-    try testing.expectEqual(vera.codegen.Display.emit, l.cli.display);
-    try testing.expect(!l.cli.display_drop_flag and !l.cli.display_record_flag);
+    try testing.expectEqual(Display.emit, l.cli.display);
+    try testing.expectEqual(@as(?Display, .emit), l.cli.display_flag);
     _ = try l.read(&.{"--display=record"});
-    try testing.expect(l.cli.display_record_flag and !l.cli.display_drop_flag);
+    try testing.expectEqual(@as(?Display, .record), l.cli.display_flag);
     _ = try l.read(&.{"--display=drop"});
-    try testing.expect(l.cli.display_drop_flag and !l.cli.display_record_flag);
+    try testing.expectEqual(Display.drop, l.cli.display);
+    try testing.expectEqual(@as(?Display, .drop), l.cli.display_flag);
+    try expectRefused(&.{"--display=say"}, "error: unknown option `--display=say`\n");
+    try expectRefused(&.{"--display="}, "error: unknown option `--display=`\n");
 }
 
 test "parse: --vdd is a positive finite number" {
@@ -945,7 +944,7 @@ test "resolve: a testbench prints the device's records under --display=record, w
         var l: Line = .init();
         defer l.deinit();
         try testing.expectEqual(@as(?u8, null), try l.settle(&.{ pair[0], pair[1], "m.va" }));
-        try testing.expectEqual(vera.codegen.Display.record, l.cli.display);
+        try testing.expectEqual(Display.record, l.cli.display);
     }
     // --validate-contract is legal beside a testbench.
     try expectSettled(&.{ "--run", "--validate-contract", "m.va" }, null, "");

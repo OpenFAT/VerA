@@ -477,8 +477,8 @@ fn position(text: []const u8, index: diag.LineIndex, off: u32, utf16: bool) Posi
     if (!utf16) return .{ .line = loc.line - 1, .character = off - line_start };
     var units: u32 = 0;
     for (text[line_start..off]) |c| {
-        if (c & 0xc0 != 0x80) units += 1; // a lead byte starts a code point
-        if (c >= 0xf0) units += 1; // a 4-byte sequence is a surrogate pair
+        units += @intFromBool(c & 0xc0 != 0x80); // a lead byte starts a code point
+        units += @intFromBool(c >= 0xf0); // a 4-byte sequence is a surrogate pair
     }
     return .{ .line = loc.line - 1, .character = units };
 }
