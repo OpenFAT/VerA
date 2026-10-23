@@ -40,8 +40,9 @@ pub const for_emitter = struct {
 /// process does (`waiters.store` now, `exec.enqueue` of a `.write` later), so a
 /// §12.30 put wakes waiters and value-change watchers like any other write.
 pub const exec = @import("exec.zig");
-/// §17 system tasks; `own` is the descriptor table a `Run` with no `file_io` opens files through.
+/// §17 system tasks.
 pub const system = @import("system.zig");
+/// The descriptor table a `Run` with no `file_io` opens files through.
 pub const own_files = system.own;
 const driver = @import("driver.zig");
 const binding = @import("bind.zig");
@@ -75,12 +76,6 @@ const TimeFormat = display.TimeFormat;
 pub const Error = error{DigitalFailed} || std.mem.Allocator.Error || std.Io.Writer.Error;
 
 /// How `run`, `elaborate` and `digital.emitDevice` read the source.
-/// Does top-level module `m` declare a parameter `--param` may set, `name`?
-fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool {
-    for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) return true;
-    return false;
-}
-
 pub const Options = struct {
     file_name: []const u8 = "<digital>",
     include_dirs: []const []const u8 = &.{},
@@ -244,17 +239,6 @@ pub const VecRange = struct {
     }
 };
 
-/// Who is told when a slot's value changes. `analog` is VAMS §8.5's implicit
-/// D2A: the slot is read by an analog block, so a change posts a region-3b
-/// macro-process event (see `watchAnalog`).
-/// `vpi` is VAMS §12.31.1's cbValueChange: an application watches the slot,
-/// and a change calls `Run.vpi_change` (see `store`).
-/// `vcd` is IEEE 1364-2005 §18's value change dump: the slot is dumped, so a
-/// change asks for the end-of-step section (`vcd.zig`).
-/// `d2a` is VAMS §8.5's explicit D2A: the slot is the operand of a digital
-/// event term in an analog event control (see `watchEvent`).
-/// `tchk` is IEEE 1364-2005 §15: a timing check's event names the slot
-/// (`tchk.changed`).
 /// §17.1.3 a standing `$monitor`, or a §17.2.2 `$fmonitor`, whose
 /// arguments start after its descriptor `fd`. `values` is what each argument
 /// read when last evaluated (`display.monitorChanged`), null for one that
@@ -276,7 +260,37 @@ pub const Standing = struct {
     fd: i64 = 0,
 };
 
-pub const Watcher = enum { monitor, analog, vpi, vcd, d2a, driver_update, ports, tchk, path };
+/// Who is told when a slot's value changes: one member of a slot's
+/// `Run.watch` set each.
+pub const Watcher = enum {
+    /// IEEE 1364-2005 §17.1.3: the standing `$monitor` or an `$fmonitor`
+    /// reads the slot.
+    monitor,
+    /// VAMS §8.5's implicit D2A: the slot is read by an analog block, so a
+    /// change posts a region-3b macro-process event (`Run.watchAnalog`).
+    analog,
+    /// VAMS §12.31.1's cbValueChange: an application watches the slot, and a
+    /// change calls `Run.vpi_change`.
+    vpi,
+    /// IEEE 1364-2005 §18's value change dump: the slot is dumped, so a
+    /// change asks for the end-of-step section (`vcd.zig`).
+    vcd,
+    /// VAMS §8.5's explicit D2A: the slot is the operand of a digital event
+    /// term in an analog event control (`Run.watchEvent`).
+    d2a,
+    /// VAMS §9.22.5: the slot feeds a driver some `@(driver_update …)`
+    /// watches (`driver.arm`).
+    driver_update,
+    /// IEEE 1364-2005 §18.3: the slot is a port `$dumpports` dumps
+    /// (`evcd.zig`).
+    ports,
+    /// IEEE 1364-2005 §15: a timing check's event names the slot
+    /// (`tchk.changed`).
+    tchk,
+    /// IEEE 1364-2005 §14.3.3: the slot is a module path's source, whose last
+    /// transition picks the path delay (`Run.path_changed`).
+    path,
+};
 
 /// Why `runUntil` returned. `analog` is a region-3b event (VAMS §8.5.1): every
 /// active, explicit D2A, inactive and nonblocking event of the current tick has
@@ -1170,8 +1184,12 @@ pub const Run = struct {
     pub const vpiConstantIndex = vpi.vpiConstantIndex;
     pub const vpiPutUdp = vpi.vpiPutUdp;
     pub const vpiAttributeValue = vpi.vpiAttributeValue;
-    pub const tchkLimits = vpi.tchkLimits;
     pub const tchkSite = vpi.tchkSite;
+    /// IEEE 1364-2005 §27.31 / VAMS §12.29 vpi_put_delays on the timing check
+    /// whose command token is `tok` in instance `scope`: `ticks` are its
+    /// limits in A.7.5.1's written order, from the next event it judges.
+    /// False when the run holds no such check.
+    pub const tchkLimits = tchk.putLimits;
 
     /// IEEE 1364-2005 C.7 `$reset`: "return the processing of the design to
     /// its logical state at time 0": every process, override and scheduled
@@ -1182,9 +1200,9 @@ pub const Run = struct {
     /// keeps its number and what a host holds by number stays valid. What a
     /// host installed over the run is kept (docs/specification/Vague_Decisions.md VD-106):
     /// its hooks, its value-change watches, and the delays and timing check
-    /// limits it put. ponytail: each reset leaves the old run's memory in
-    /// the arena; a long run of resets wants the run in an arena of its own.
+    /// limits it put. Each reset leaves the old run's memory in the arena.
     pub fn reset(self: *Run) Error!void {
+        // ponytail: a long run of resets wants the run in an arena of its own.
         // Its warnings are the first elaboration's again.
         var quiet = diag.Bag.init(self.arena);
         var fresh = elaborate(self.arena, self.source, self.opts, &quiet, self.out) catch |e| switch (e) {
@@ -1679,10 +1697,10 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     try elab.checkDefparams(&r);
     // A misspelt `--param` would otherwise run the default design.
     for (opts.params) |o| {
-        var known = topDeclares(file, m, o.name);
-        if (tops.len > 1) for (tops[1..]) |d| {
-            known = known or topDeclares(file, &file.modules[d], o.name);
-        };
+        // `tops[0]`, when there are tops, is `m`.
+        const known = topDeclares(file, m, o.name) or for (tops) |d| {
+            if (topDeclares(file, &file.modules[d], o.name)) break true;
+        } else false;
         if (!known) return r.fail(m.main_tok, "--param {s}: no top-level module declares a parameter `{s}`", .{ o.name, o.name });
     }
     try driver.segregate(&r, &e);
@@ -1933,9 +1951,16 @@ fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
     return true;
 }
 
+/// Whether top-level module `m` declares a parameter `--param` may set,
+/// `name`: one that is not a localparam.
+fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool {
+    for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) return true;
+    return false;
+}
+
 /// The bits [lo, hi) of its `width`-bit net that driver `d` drives: a port
 /// window's, or an instance-array member's one output bit; else all of them.
-fn driverBits(d: @import("net.zig").Driver, width: u32) [2]u32 {
+fn driverBits(d: Driver, width: u32) [2]u32 {
     const bit: ?u32 = switch (d.source) {
         .bridge => |b| return .{ b.dst_lo, b.dst_lo + b.width },
         .gate => |g| g.out_bit,

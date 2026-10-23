@@ -59,10 +59,10 @@ pub fn key(net: u32) u32 {
 /// So a segment an inserted connect module drives becomes two nets: the
 /// segment keeps the ordinary drivers (and the connect module's reads), and a
 /// fresh net takes the connect module's drivers and every ordinary INPUT port
-/// bound to the segment.
-/// ponytail: an ordinary `inout` port stays on the drivers' net; §7.9's
-/// Figure 7-11 bidirectional split is the upgrade.
+/// bound to the segment. An ordinary `inout` port stays on the drivers' net.
 pub fn segregate(r: *Run, e: *elab.Elab) Error!void {
+    // ponytail: §7.9's Figure 7-11 bidirectional split is the upgrade for an
+    // ordinary `inout` port.
     // VAMS §7.8.5.1 a primitive's terminal reads the segment by its name in the
     // parent, so a primitive's input is one more receiver. Re-pointed after the
     // loop, which finds each segment by that name.
@@ -142,9 +142,9 @@ pub fn checkUpdate(r: *Run, e: Ast.ExprId) Error!void {
 /// `segregate`, so both halves are read.
 pub fn arm(r: *Run) Error!void {
     for (r.drv.watched.items) |net| {
-        const halves = [2]u32{ net, r.drv.receivers.get(net) orelse net };
-        for (halves, 0..) |half, k| {
-            if (k == 1 and half == net) break;
+        const rx = r.drv.receivers.get(net);
+        const halves = [2]u32{ net, rx orelse net };
+        for (halves[0 .. @as(usize, 1) + @intFromBool(rx != null)]) |half| {
             for (r.netDrivers(half)) |di| {
                 const dr = r.drivers[di];
                 // `driver_update` does not fire for a connect module's own

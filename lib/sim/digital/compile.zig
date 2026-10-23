@@ -288,11 +288,11 @@ pub const SysFn = enum {
     }
 };
 
+// ponytail: each row is one `SysFn` and its two evaluators (interpreter,
+// `src/codegen/digital/emit_expr.zig`) away from running.
 /// VAMS §9.2's functions whose "Supported in digital context" cell is Yes
 /// and that the digital engine does not run, each with its table: refused by
-/// name (E0829), never as an unknown form. ponytail: each row is one
-/// `SysFn` and its two evaluators (interpreter, `src/codegen/digital/emit_expr.zig`)
-/// away from running.
+/// name (E0829), never as an unknown form.
 const vams_digital_unrun = std.StaticStringMap([]const u8).initComptime(.{
     .{ "$arandom", "9-10" },
     .{ "$rdist_chi_square", "9-10" },
@@ -1665,12 +1665,6 @@ fn checkArgs(self: *Run, decl: *const Ast.Subroutine, args: []const Ast.ExprId, 
     }
 }
 
-/// §10.2.2 a task enable. An untimed task is one `.call`; a timed one is
-/// inlined here (copy in, the body in the task's frame, copy out), so its
-/// suspensions are this process's own. A static task shares one frame
-/// between every such copy (§10.2.3); an automatic one gets a frame per call
-/// site, which is per activation because a site cannot be re-entered while
-/// its process is suspended inside it.
 /// The task an enable of `name` in `scope` names. IEEE 1364-2005 A.6.9
 /// `hierarchical_task_identifier`: the parts before the last dot name
 /// instances as a §12.5 reference's do, and the task is the last part,
@@ -1725,6 +1719,12 @@ pub fn element(self: *const Run, parent: u32, name: Ast.StrId, v: i64) ?u32 {
     return null;
 }
 
+/// §10.2.2 a task enable. An untimed task is one `.call`; a timed one is
+/// inlined here (copy in, the body in the task's frame, copy out), so its
+/// suspensions are this process's own. A static task shares one frame
+/// between every such copy (§10.2.3); an automatic one gets a frame per call
+/// site, which is per activation because a site cannot be re-entered while
+/// its process is suspended inside it.
 fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok: u32, depth: u32) Error!void {
     if (self.in_function) return self.fail(tok, "§10.4.4: a function cannot enable a task", .{});
     const idx = (try enabledTask(self, self.scope, name, tok, true)).?;

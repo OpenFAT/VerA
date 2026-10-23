@@ -7,16 +7,13 @@
 //! Clauses: IEEE 1364-2005 §4.5 implicit nets, §4.9 arrays, §4.10 and §12.2
 //! parameters and defparams, §6.5/§6.5.7.1 ports, §7.1, §7.6 and §7.8 gates,
 //! switches and pulls, §8 UDPs, §10 subroutine frames, §12.1.2 instance
-//! arrays, §12.3 port connections, §12.4 generate, §12.5 named blocks,
-//! §12.8.2, §19.9 unconnected_drive; VAMS §3.7 wreal, §6.3 the host's
-//! parameters, §7.2 continuous and discrete, §7.8.4 inserted connect modules.
+//! arrays, §12.1.3 recursive instantiation, §12.3 port connections, §12.4
+//! generate, §12.5 named blocks, §12.8.2, §19.9 unconnected_drive; VAMS §3.7
+//! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
+//! inserted connect modules.
 const std = @import("std");
 const Front = @import("frontend");
 const Ast = Front.Ast;
-
-/// `declare`'s caps on the instance tree: levels, and instances in all.
-const max_depth: u32 = 256;
-const max_insts: usize = 1 << 18;
 const Int = @import("kernels").Integer;
 const diag = @import("diag");
 const root = @import("root.zig");
@@ -43,6 +40,11 @@ const Signal = net_mod.Signal;
 const Source = net_mod.Source;
 const filled = net_mod.filled;
 const undriven = net_mod.undriven;
+
+/// `declare`'s cap on the instance tree's depth, in levels (§12.1.3).
+const max_depth: u32 = 256;
+/// `declare`'s cap on the instances of the whole tree (§12.1.3).
+const max_insts: usize = 1 << 18;
 
 /// A.2.4 `net_assignment` and everything else that ends up as one driver of one
 /// net: the module's own `assign`s, a `net_decl_assignment`, and the two halves
@@ -80,9 +82,9 @@ const PortBind = union(enum) {
     send: Sinks,
     /// An inout port whose parent side is not one whole net: each port bit
     /// joined to its parent bit by an always-on pass switch, operands as
-    /// `send`'s.
-    /// ponytail: a supply strength crossing it drops to strong (§7.11's
+    /// `send`'s. A supply strength crossing it drops to strong (§7.11's
     /// switch rule), which a real port does not do.
+    // ponytail: a strength-preserving join is the upgrade.
     join: Sinks,
     /// One external port of a module with port expressions (`groupPorts`),
     /// at its first reference: the connection, made in `scope`.
@@ -398,8 +400,7 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
         if (p.direction == .unspecified) return r.fail(p.main_tok, "§12.3.3: port `{s}` has no direction declaration", .{r.file.str(p.name)});
         // §12.3.3: "the range specification between the two declarations of
         // a port shall be identical".
-        if (p.range) |a| if (p.type_range) |b| if (try r.declaredBound(a.msb, p.main_tok) != try r.declaredBound(b.msb, p.main_tok) or
-            try r.declaredBound(a.lsb, p.main_tok) != try r.declaredBound(b.lsb, p.main_tok))
+        if (p.range) |a| if (p.type_range) |b| if (!try sameRange(r, a, b, p.main_tok))
             return r.fail(p.main_tok, "§12.3.3: the net declaration's range differs from its port declaration's: `{s}`", .{r.file.str(p.name)});
         // The same for a variable redeclaring the port. `integer` and `time`
         // write no range, so a port that writes one differs; a combined
@@ -408,8 +409,7 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
         // ponytail: `output q; integer q;` reads as the combined form.
         for (m.vars) |v| if (v.name == p.name and v.ty == .integer) {
             const differs = if (v.storage != .reg) p.range != null else if (p.range) |a| if (v.packed_range) |b|
-                try r.declaredBound(a.msb, p.main_tok) != try r.declaredBound(b.msb, p.main_tok) or
-                    try r.declaredBound(a.lsb, p.main_tok) != try r.declaredBound(b.lsb, p.main_tok)
+                !try sameRange(r, a, b, p.main_tok)
             else
                 true else v.packed_range != null;
             if (differs) return r.fail(v.main_tok, "§12.3.3: the variable declaration's range differs from its port declaration's: `{s}`", .{r.file.str(p.name)});
@@ -556,6 +556,13 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
     try pathDelays(r, e, m, scope);
     for (b.instances) |*inst| try instantiate(r, e, scope, inst, depth);
     for (m.analog) |ab| if (isGenerate(r.file, m, ab.body)) try generate(r, e, m, scope, ab.body, depth);
+}
+
+/// Whether two declared `[msb:lsb]` ranges fold to the same bounds, as
+/// §12.3.3 asks of a port's two declarations.
+fn sameRange(r: *Run, a: Ast.Dim, b: Ast.Dim, tok: u32) Error!bool {
+    return try r.declaredBound(a.msb, tok) == try r.declaredBound(b.msb, tok) and
+        try r.declaredBound(a.lsb, tok) == try r.declaredBound(b.lsb, tok);
 }
 
 const size_mismatch = "§6.5.7.1: the sizes of the port and the net connected to it shall match";
@@ -966,10 +973,10 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
 /// `net.Path` row per source on each destination net: which path's delay
 /// times a transition is decided when it is scheduled (§14.3.3,
 /// `resolution.pathDelay`). A destination's select is read as its whole
-/// net, and a parallel path as a full one.
-/// ponytail: per-bit destinations would time each bit on its own; the net
-/// takes the smallest delay its changed bits select.
+/// net, and a parallel path as a full one: the net takes the smallest delay
+/// its changed bits select.
 fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!void {
+    // ponytail: per-bit destinations would time each bit on its own.
     const ex = &r.file.exprs;
     r.scope = scope;
     for (m.paths) |p| {
@@ -1232,10 +1239,11 @@ fn genvarOf(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, f: anytype) ?
 /// top-level one).
 /// A block's events, drivers and processes are declared in the scope it is
 /// elaborated in (`Ast.GenItems`), which is the block's own (`armScope`).
-/// ponytail: the parser hoists a generate block's nets to the module, so they
-/// are the enclosing instance's names. A part-select bound written with a genvar is folded once, with
-/// the first iteration's value; a bit-select is read per iteration.
 fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.StmtId, depth: u32) Error!void {
+    // ponytail: the parser hoists a generate block's nets to the module, so
+    // they are the enclosing instance's names. A part-select bound written
+    // with a genvar is folded once, with the first iteration's value; a
+    // bit-select is read per iteration.
     if (s == .none) return;
     const tok = r.file.stmtTok(s);
     switch (r.file.stmt(s)) {
@@ -1926,7 +1934,9 @@ fn promoteWreal(r: *Run, e: *Elab, net: u32) Error!void {
     try r.reals.put(r.arena, n.slot, {});
 }
 
-/// Allocate one net and its slot, and bind `name` (unless `.none`) to it in the current scope.
+/// One new net and its slot, `name` (unless `.none`) bound to it in the
+/// current scope; returns the net's index. Invalidates pointers into
+/// `e.values`, `e.nets` and `e.signals`.
 pub fn mintNet(r: *Run, e: *Elab, kind: Ast.NetKind, width: u32, signed: bool, name: Ast.StrId, tok: u32) Error!u32 {
     if (e.values.items.len == std.math.maxInt(u32)) return r.fail(tok, "too many digital storage slots", .{});
     const slot: u32 = @intCast(e.values.items.len);
@@ -2197,10 +2207,11 @@ fn putRange(r: *Run, slot: u32, range: Ast.Dim, tok: u32) Error!void {
     try r.vec_ranges.put(r.arena, slot, .{ .msb = try r.declaredBound(range.msb, tok), .lsb = try r.declaredBound(range.lsb, tok) });
 }
 
-/// A port's declared width, evaluated in the scope being elaborated.
-/// ponytail: a child port whose range names the child's parameters is sized
-/// before the child exists; the literal ranges every fixture writes are fine.
+/// A port's declared width, evaluated in the scope being elaborated: a
+/// child port's range is read before the child's parameters exist.
 fn portWidth(r: *Run, p: Ast.Port) Error!u32 {
+    // ponytail: a range naming the child's parameters is sized too early;
+    // the literal ranges every fixture writes are fine.
     if (p.kind == .wreal) return 64;
     return if (p.range orelse p.type_range) |range| r.declaredWidth(range, p.main_tok) else 1;
 }
