@@ -75,12 +75,16 @@ pub fn build(b: *Build) void {
     // tests/conformance`) through its harness, `conform` from `nix develop
     // .#external`: its own tests and every external manifest, against the
     // installed vera. A known failure is a line of tools/vera.xfail.
-    const conformance = b.addSystemCommand(&.{ "sh", "-c",
-        \conform -t tests/conformance/tools/vera.conf -x tools/vera.xfail -j "$(nproc)" -T 300 \
-        \  -o zig-out/conformance.tsv tests/conformance/tests tests/conformance/external/*.manifest
+    // `$1` is this build's vera (absolute: the harness runs tests from their
+    // own directories), so the step depends on the compile, not on `install`.
+    const conformance = b.addSystemCommand(&.{
+        "sh", "-c",
+        \\VERA="$1" conform -t tests/conformance/tools/vera.conf -x tools/vera.xfail -j "$(nproc)" -T 300 \
+        \\  -o zig-out/conformance.tsv tests/conformance/tests tests/conformance/external/*.manifest
+        ,
+        "sh",
     });
-    conformance.setEnvironmentVariable("VERA", b.getInstallPath(.bin, "vera"));
-    conformance.step.dependOn(b.getInstallStep());
+    conformance.addArtifactArg2(exe, .{ .make_absolute = true });
     conformance.has_side_effects = true;
     b.step("conformance", "Run the conformance suite (tests/conformance) against the installed vera").dependOn(&conformance.step);
 
