@@ -635,7 +635,6 @@ pub const Gen = struct {
 
 /// Fixed emitted text: the runtime kernels every device carries (§4.3 math, §4.5 operators, Clause 9), codegen/kernel_text.zig
 pub const kernel_text = @import("codegen/kernel_text.zig");
-const gen_kernel_text = kernel_text;
 
 /// `setup`'s text as chunks a split build compiles in parallel (its test builds and runs them).
 const setup_chunk = @import("codegen/setup_chunk.zig");
@@ -668,6 +667,6 @@ test {
     _ = Gen.gen_dispatch;
     _ = Gen.gen_noise;
     _ = Gen.gen_state;
-    _ = gen_kernel_text;
+    _ = kernel_text;
     _ = opcode_zig;
 }

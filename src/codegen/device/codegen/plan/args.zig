@@ -7,7 +7,6 @@
 const std = @import("std");
 const Mir = @import("ir").Mir;
 const op = @import("ir").op;
-const OpKind = op.OpKind;
 
 /// What to do with the §9.4 display tasks a model contains.
 ///
