@@ -46,7 +46,7 @@ pub const Unit = struct {
     // Budget: the 16-byte slice, two 4-byte columns and two one-byte tags,
     // padded to the slice's 8-byte alignment.
     comptime {
-        std.debug.assert(@sizeOf(Unit) == 32);
+        std.debug.assert(@sizeOf(Unit) <= 32);
     }
 };
 

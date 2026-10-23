@@ -276,7 +276,7 @@ pub fn parse(arena: Allocator, source: []const u8) Error!Directives {
                 // `IEEE 1364-2005 18.1 (...)`: a clause §1.1 inherits whole. Not
                 // an `lrm` cite, since `--coverage` counts this LRM's clauses only.
                 // Checked here, then dropped: tests/suite.zig reads these lines
-                // from raw source for measure B (`zig build test-1364 -- --coverage`).
+                // from raw source for measure B (`zig build suite -- ieee1364 --coverage`).
                 if (!validInherited(rest)) return error.BadLrmSection;
             },
             .xfail => {

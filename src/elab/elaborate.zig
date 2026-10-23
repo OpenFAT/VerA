@@ -255,7 +255,7 @@ pub const TreeKid = struct {
     comptime {
         // One row per instance of the dry walk: two pointers and a slice,
         // not a 72 B copy of the instance.
-        std.debug.assert(@sizeOf(TreeKid) == 32);
+        std.debug.assert(@sizeOf(TreeKid) <= 32);
     }
 };
 

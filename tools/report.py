@@ -12,12 +12,12 @@ there (CI has already run the suites and kept them) and otherwise produced by
 running its command and saving it into DIR, so a second run re-renders without
 re-measuring. The logs and the commands:
 
-    strict.txt       zig build benchmark -- --strict     (stdout and stderr, merged)
-    coverage.txt     zig build benchmark -- --coverage
-    coverage1364.txt zig build test-1364 -- --coverage
-    devices.txt      zig build test-devices
-    vpi.txt          zig build test-vpi-fixtures
-    sweep.txt        zig build benchmark -- --sweep
+    strict.txt       zig build suite -- --strict     (stdout and stderr, merged)
+    coverage.txt     zig build suite -- --coverage
+    coverage1364.txt zig build suite -- ieee1364 --coverage
+    devices.txt      zig build suite -- devices
+    vpi.txt          zig build suite -- vpi
+    sweep.txt        zig build suite -- --sweep
     models.json      `vera --emit-so` per model, this script (--models)
 
 Everything is built ReleaseFast: the suite's timing table says Debug is "NOT
@@ -46,12 +46,12 @@ import conformance as C  # noqa: E402
 ROOT = C.ROOT
 OPT = "-Doptimize=ReleaseFast"
 SUITES = {
-    "strict": ["zig", "build", OPT, "benchmark", "--", "--strict"],
-    "coverage": ["zig", "build", OPT, "benchmark", "--", "--coverage"],
-    "coverage1364": ["zig", "build", OPT, "test-1364", "--", "--coverage"],
-    "devices": ["zig", "build", OPT, "test-devices"],
-    "vpi": ["zig", "build", OPT, "test-vpi-fixtures"],
-    "sweep": ["zig", "build", OPT, "benchmark", "--", "--sweep"],
+    "strict": ["zig", "build", OPT, "suite", "--", "--strict"],
+    "coverage": ["zig", "build", OPT, "suite", "--", "--coverage"],
+    "coverage1364": ["zig", "build", OPT, "suite", "--", "ieee1364", "--coverage"],
+    "devices": ["zig", "build", OPT, "suite", "--", "devices"],
+    "vpi": ["zig", "build", OPT, "suite", "--", "vpi"],
+    "sweep": ["zig", "build", OPT, "suite", "--", "--sweep"],
 }
 MODELS = ["diode", "mos1", "bsim4va", "psp103", "psp103_nqs", "vbic13_4t"]
 # The `--dyn` host the model timing builds under. NOT a no-op one (`NOOP_DYN`):
@@ -641,8 +641,8 @@ def render(d):
         o.append(tile(f"{x['both']} / {x['clauses']} both ways", f"{key} — {name} · classified {x['classified']} · "
                       f"positive-only {x['pos']} · rejection-only {x['neg']} · uncited {x['unc']}"))
     o.append(tile("hand-entered", "D — ARCHITECTURE.md §6 phases; not measured by any command"))
-    o.append(tile(m["devices"] or "(no summary line)", "zig build test-devices"))
-    o.append(tile(m["vpi"] or "(no summary line)", "zig build test-vpi-fixtures"))
+    o.append(tile(m["devices"] or "(no summary line)", "zig build suite -- devices"))
+    o.append(tile(m["vpi"] or "(no summary line)", "zig build suite -- vpi"))
     o.append("</div>")
     keys = ["both", "classified", "one-way", "uncited"]
     names = ["cited both ways", "classified (CLAUSE-AUDIT §5)", "one-way", "uncited"]

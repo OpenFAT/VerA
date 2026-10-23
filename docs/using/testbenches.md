@@ -138,7 +138,7 @@ Their exact syntax is in the header of
 
 ## Directives the fixture suite grades
 
-VerA's own test suite (`zig build benchmark -- --strict`) runs every fixture
+VerA's own test suite (`zig build suite -- --strict`) runs every fixture
 under `tests/fixtures/` through the same testbench and grades it by these.
 `vera --run` ignores them; you need them only to contribute a fixture.
 

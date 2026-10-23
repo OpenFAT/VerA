@@ -49,7 +49,7 @@
 // operating point and is unaffected.
 
 `ifdef VERA_PERTURB
-// `zig build benchmark -- --perturb[=d]` defines
+// `zig build suite -- --perturb[=d]` defines
 // VERA_PERTURB to d and asks whether each check can FAIL: every want is moved
 // by a relative d (by d itself at zero; by one for CHECKI), so a check that
 // still prints ok=1 cannot see an error of that size in its own expectation.

@@ -88,22 +88,20 @@ pub fn build(b: *Build) void {
     conformance.has_side_effects = true;
     b.step("conformance", "Run the conformance suite (tests/conformance) against the installed vera").dependOn(&conformance.step);
 
-    const test_step = b.step("test", "Run unit, host, reference and harness tests (language fixtures: test-ams and test-devices)");
+    const test_step = b.step("test", "The merge tier's fast part: unit, host, reference and harness tests (the fixtures: `suite -- ams`, `suite -- devices`)");
     const all_step = b.step("build-all", "Compile every artifact for -Dtarget without running one");
     all_step.dependOn(&exe.step);
     const gen_exe = if (target.query.isNative()) exe else cliExe(b, b.graph.host, optimize, defineModules(b, b.graph.host, false), "vera-gen", true);
     const va_gen: Gen = .{ .exe = gen_exe, .cached = b.option(bool, "va-cache", "Regenerate a test device's Zig only when its source, its `include`s or its arguments change, not when vera does (default true; false: every vera change regenerates)") orelse true };
 
     const fmt = b.addFmt(.{ .paths = b.pathList(&.{ "lib", "src", "tests", "tools", "build.zig" }), .check = true });
-    b.step("fmt-check", "Fail on any file `zig fmt` would change").dependOn(&fmt.step);
     test_step.dependOn(&fmt.step);
 
     const runner: Build.Step.Compile.TestRunner = .{ .path = b.path("tools/zrunner.zig"), .mode = .simple };
-    const test_vpi = b.step("test-vpi", "Run the vpi module tests and the C VPI applications");
     for (mods) |mod| {
         const r = testRun(b, mod.name, mod.module, runner, results_dir);
         test_step.dependOn(&r.step);
-        if (std.mem.eql(u8, mod.name, "vpi")) test_vpi.dependOn(&r.step) else b.step(b.fmt("test-{s}", .{mod.name}), b.fmt("Run the {s} module tests only", .{mod.name})).dependOn(&r.step);
+        b.step(b.fmt("test-{s}", .{mod.name}), b.fmt("Run the {s} module tests only", .{mod.name})).dependOn(&r.step);
     }
     test_step.dependOn(&exe.step);
     const cli_run = testRun(b, "cli", exe.root_module, runner, results_dir);
@@ -113,15 +111,11 @@ pub fn build(b: *Build) void {
     b.step("test-cli", "Run the CLI's tests (src/main.zig, src/cli/) only").dependOn(&cli_run.step);
 
     const osdi_mod = m.make("lib/osdi_dyn.zig", &.{.{ .name = "contract", .module = contract }});
-    const osdi_run = testRun(b, "osdi_dyn", osdi_mod, runner, results_dir);
-    b.step("test-osdi-dyn", "Run lib/osdi_dyn.zig's tests only").dependOn(&osdi_run.step);
-    test_step.dependOn(&osdi_run.step);
+    test_step.dependOn(&testRun(b, "osdi_dyn", osdi_mod, runner, results_dir).step);
     // zrunner cannot be its own runner's root: stock runner.
     const zrunner_test = b.addTest(.{ .name = "zrunner", .root_module = m.make("tools/zrunner.zig", &.{}) });
     all_step.dependOn(&zrunner_test.step);
-    const zrunner_run = b.addRunArtifact(zrunner_test);
-    b.step("test-tools", "Run tools/zrunner.zig's tests only").dependOn(&zrunner_run.step);
-    test_step.dependOn(&zrunner_run.step);
+    test_step.dependOn(&b.addRunArtifact(zrunner_test).step);
     const other_exe = cliExe(b, target, optimize, mods, if (language == .ams) "vera-verilog" else "vera-ams", language != .ams);
     test_step.dependOn(&other_exe.step);
     all_step.dependOn(&other_exe.step);
@@ -139,7 +133,7 @@ pub fn build(b: *Build) void {
     all_run.addFileInput(b.path("build.zig"));
     all_run.addFileInput(b.path("build.zig.zon"));
     test_step.dependOn(&all_run.step);
-    b.step("test-all", "Run tests/unit.zig, the cross-module claims, only").dependOn(&all_run.step);
+    b.step("test-unit", "Run tests/unit.zig, the cross-module claims, only").dependOn(&all_run.step);
 
     // LLVM: the self-hosted backend emits no coverage, so the fuzzer sees no PCs.
     const fuzz_test = b.addTest(.{ .name = "fuzz", .root_module = m.make("tests/fuzz.zig", &.{.{ .name = "vera", .module = vera }}), .use_llvm = true });
@@ -149,8 +143,6 @@ pub fn build(b: *Build) void {
     rng_ref.link_libc = true;
     rng_ref.addCSourceFile(.{ .file = b.path("tests/rng_reference.c"), .flags = &.{"-ffp-contract=off"} });
     const rng_run = testRun(b, "rng_reference", rng_ref, runner, results_dir);
-    const rng_step = b.step("test-rng-reference", "Compare rng_kernels with the IEEE 1364 §17.9.3 C listing, and run its domain refusals");
-    rng_step.dependOn(&rng_run.step);
     test_step.dependOn(&rng_run.step);
     const rng_domains = b.addExecutable(.{ .name = "rng-domains", .root_module = m.make("tests/rng_reference.zig", &.{.{ .name = "kernels", .module = kernels }}) });
     for (0..46) |case| {
@@ -162,11 +154,9 @@ pub fn build(b: *Build) void {
             17, 18, 19, 22 => "error[E0816]: LRM 9.13.2: random uniform start shall be smaller than end",
             else => "error[E0816]: LRM 9.13.2: random distribution mean/df/stages shall be greater than zero",
         });
-        rng_step.dependOn(&r.step);
         test_step.dependOn(&r.step);
     }
     // ReleaseSafe: 10^5 exact expansions take minutes in Debug. glibc: the oracle must conform.
-    const printf_step = b.step("test-printf-reference", "Compare str_kernels.zCReal's %e/%f/%g with glibc's snprintf");
     if (target.result.isGnuLibC()) {
         const printf_ref = b.createModule(.{
             .root_source_file = b.path("tests/printf_reference.zig"),
@@ -175,9 +165,7 @@ pub fn build(b: *Build) void {
             .link_libc = true,
             .imports = &.{.{ .name = "kernels", .module = kernels }},
         });
-        const printf_run = testRun(b, "printf_reference", printf_ref, runner, results_dir);
-        printf_step.dependOn(&printf_run.step);
-        test_step.dependOn(&printf_run.step);
+        test_step.dependOn(&testRun(b, "printf_reference", printf_ref, runner, results_dir).step);
     }
 
     const vpi_runs = vpiRuns(b);
@@ -203,10 +191,9 @@ pub fn build(b: *Build) void {
     const suite_run = testRun(b, "suite", suite_mod, runner, results_dir);
     suite_run.has_side_effects = true; // reads tests/fixtures at test time
     test_step.dependOn(&suite_run.step);
-    b.step("test-suite", "Run the suite runner's own unit tests only").dependOn(&suite_run.step);
-    b.step("suite-exe", "Build the suite runner (tests/suite.zig)").dependOn(&suite_exe.step);
 
-    const check = b.step("check", "Type-check every root without emitting a binary (`--watch -fincremental`: the edit loop)");
+    const check = b.step("check", "The pre-commit tier: type-check every root without emitting a binary, and `zig fmt --check` (`--watch -fincremental`: the edit loop)");
+    check.dependOn(&fmt.step);
     for ([_]*Module{ exe.root_module, other_exe.root_module, suite_mod }) |r| {
         check.dependOn(&b.addExecutable(.{ .name = "check", .root_module = r, .use_llvm = false }).step);
     }
@@ -216,20 +203,10 @@ pub fn build(b: *Build) void {
     }
 
     // No expectExitCode: a stdio check makes a Run cacheable, and the inputs are read at run time.
-    for ([_]struct { []const u8, ?[]const u8, []const u8 }{
-        .{ "benchmark", null, "Run every fixture through VerA — compile, build, run, judge — and time it (use -Doptimize=ReleaseFast)" },
-        .{ "test-devices", "devices", "Run `vera --run` over ieee1364/ and digital/ and diff their transcripts" },
-        .{ "test-1364", "ieee1364", "Run the IEEE 1364-2005 transcript suite (`-- --coverage`: its clause inventory; `-- --native`: through `vera --emit-exe`)" },
-        .{ "test-ams", "ams", "Run the Verilog-AMS fixture suite strictly, without the benchmark timing pass" },
-        .{ "test-vpi-fixtures", "vpi", "Compile the .c VPI fixtures against src/vpi/vpi_user.h" },
-        .{ "golden", "golden", "Snapshot `vera --emit-zig`, the testbench runner, the `--emit-so` tree and the `.v` program text of every fixture (`-- <tag>`), or compare two (`-- diff [a b]`)" },
-    }) |s| {
-        const run = b.addRunArtifact(suite_exe);
-        run.addArtifactArg2(exe, .{});
-        if (s[1]) |mode| run.addArg(mode);
-        run.addPassthruArgs();
-        b.step(s[0], s[2]).dependOn(&run.step);
-    }
+    const suite_run_all = b.addRunArtifact(suite_exe);
+    suite_run_all.addArtifactArg2(exe, .{});
+    suite_run_all.addPassthruArgs();
+    b.step("suite", "The fixture runner: `-- ams` (strict AMS), `-- devices` (digital transcripts), `-- ieee1364`, `-- vpi` (C fixtures, compile only), `-- golden <tag>|diff [a b]`; no mode: every fixture, timed (-Doptimize=ReleaseFast)").dependOn(&suite_run_all.step);
 
     // ESPice depends on VerA, so VerA runs `espice` as a process and never
     // imports it. `dependencyStep` fetches ESPice (with Gompute and its model
@@ -282,9 +259,8 @@ pub fn build(b: *Build) void {
     observations.addArg("--vera");
     observations.addArtifactArg2(exe, .{});
     if (results_dir) |dir| observations.addArgs(&.{ "--results", b.fmt("{s}/diagnostic_observations.tsv", .{dir}) });
-    observations.addPassthruArgs();
     observations.has_side_effects = true;
-    b.step("test-observations", "Check analog diagnostic output, retaining expected conformance failures").dependOn(&observations.step);
+    test_step.dependOn(&observations.step);
 
     const paired = b.addSystemCommand(&.{"python3"});
     paired.addFileArg(b.path("tests/host.py"));
@@ -293,19 +269,16 @@ pub fn build(b: *Build) void {
     paired.addArtifactArg2(exe, .{});
     if (results_dir) |dir| paired.addArgs(&.{ "--results", b.fmt("{s}/paired_compiler_observations.tsv", .{dir}) });
     paired.has_side_effects = true;
-    b.step("test-paired-compiler", "Check exact compiler refusals and their behavioral controls").dependOn(&paired.step);
     test_step.dependOn(&paired.step);
 
     // Conditional host capabilities are explicit skips until bound through
     // VERA_HOST_PROFILE_ADAPTER. Oracle self-tests never supply these results.
-    const profiles = b.step("test-host-profiles", "Check conditional host observations with an explicitly configured adapter");
     for ([_][]const u8{ "report_observations", "indirect_equation_observations", "conditional_observations", "absdelta_rejection_observations", "scheduling_observations", "language_semantics_observations", "compact_modeling_observations", "directive_documentation" }) |name| {
         const profile = b.addSystemCommand(&.{"python3"});
         profile.addFileArg(b.path("tests/host.py"));
         profile.addArg(name);
         if (results_dir) |dir| profile.addArgs(&.{ "--results", b.fmt("{s}/{s}.tsv", .{ dir, name }) });
         profile.has_side_effects = true;
-        profiles.dependOn(&profile.step);
         test_step.dependOn(&profile.step);
     }
 
@@ -314,7 +287,6 @@ pub fn build(b: *Build) void {
     canary.addArg("canary");
     canary.expectExitCode(0);
     canary.has_side_effects = true;
-    b.step("test-canary", "Check the harness FAILs every wrong-on-purpose fixture in tests/fixtures/canary/").dependOn(&canary.step);
     test_step.dependOn(&canary.step);
 
     const host_opts = b.addOptions();
@@ -336,7 +308,6 @@ pub fn build(b: *Build) void {
     vpi_app.expectExitCode(0);
     vpi_app.expectStdOutEqual("vpi: scopes=5 ports=11 nets=6 regs=2 params=8 checks=702\n");
     test_step.dependOn(&vpi_app.step);
-    test_vpi.dependOn(&vpi_app.step);
     if (results_dir) |dir| {
         // This acceptance application contains named expected failures as
         // well as ordinary checks. Its XPASS guards make a resolved gap fail
@@ -355,7 +326,6 @@ pub fn build(b: *Build) void {
         }
         const record = recordResults(b, vpi_app, dir, "vpi_acceptance.tsv", rows.items);
         test_step.dependOn(record);
-        test_vpi.dependOn(record);
     }
     for (vpi_runs) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
@@ -372,7 +342,6 @@ pub fn build(b: *Build) void {
             if (f.stderr) |e| r.expectStdErrEqual(e);
         }
         test_step.dependOn(&r.step);
-        test_vpi.dependOn(&r.step);
         if (results_dir) |dir| {
             // A marker can only be written after the application's exit,
             // stdout and stderr checks succeed. Missing markers earn no credit.
@@ -384,13 +353,10 @@ pub fn build(b: *Build) void {
                 f.c["tests/fixtures/".len..],
             }));
             test_step.dependOn(record);
-            test_vpi.dependOn(record);
         }
     }
 
     if (language != .ams) return;
-    const test_timers = b.step("test-timers", "Run emitted-device timer scheduling tests");
-    const test_paramsets = b.step("test-paramsets", "Run emitted-device paramset binding and host shape tests");
     for (hostTests(b)) |h| {
         const gen = genRun(b, va_gen, h.va);
         gen.addArgs(&.{ "--emit-zig", "-I" });
@@ -407,8 +373,6 @@ pub fn build(b: *Build) void {
         if (ptx_opts) |po| host.addOptions("ptx", po);
         const run_host = testRun(b, b.fmt("{s}--{s}", .{ std.fs.path.stem(h.host), std.fs.path.stem(h.va) }), host, runner, results_dir);
         test_step.dependOn(&run_host.step);
-        if (std.mem.eql(u8, h.host, "tests/fixtures/ch05_analog_behavior/timer_host.zig")) test_timers.dependOn(&run_host.step);
-        if (std.mem.eql(u8, h.host, "tests/fixtures/ch06_hierarchy/paramset_host.zig")) test_paramsets.dependOn(&run_host.step);
 
         // `<x>_gpu.zig` must export `<x>_ops_kernel`. NVPTX goes to LLVM IR, since the
         // backend refuses an @export alias of a kernel; `wide` and ptx hosts check its PTX.
@@ -509,8 +473,6 @@ pub fn build(b: *Build) void {
         test_step.dependOn(&run.step);
     }
 
-    const grid_events = b.step("test-grid-events", "Check fixed-grid testbench diagnostics and execution");
-    test_step.dependOn(grid_events);
     for ([_][]const u8{ "--run", "--emit-exe" }) |mode| for ([_][]const u8{ "allow", "warn", "deny", "forbid" }) |level| {
         const rejected = std.mem.eql(u8, level, "deny") or std.mem.eql(u8, level, "forbid");
         const run = b.addRunArtifact(exe);
@@ -531,10 +493,11 @@ pub fn build(b: *Build) void {
             else if (std.mem.eql(u8, mode, "--emit-exe"))
                 run.expectStdErrEqual("");
         }
-        grid_events.dependOn(&run.step);
+        test_step.dependOn(&run.step);
     };
 
-    const beh_step = b.step("test-beh-verilog", "Simulate --emit-verilog modules in iverilog and lint them in verilator");
+    // The reference tools of `nix develop .#external`: verilator, iverilog, yosys, VAMPyRE.
+    const external = b.step("test-external", "Reference tools on VerA's output (`nix develop .#external`): --emit-verilog in verilator and iverilog, --emit-rtlil in yosys, VAMPyRE on the compact models");
     const vdd_vss = "`ifdef USE_POWER_PINS\n    , vdd\n    , vss\n`endif\n);";
     for ([_]struct { va: []const u8, args: []const []const u8, says: []const u8, supplies: []const u8 = vdd_vss }{
         .{ .va = "strongarm", .args = &.{ "--digital-pins", "clk,outp,outn" }, .says = "parameter real vera_fall_fp = 0.500000; // ns" },
@@ -563,7 +526,7 @@ pub fn build(b: *Build) void {
             lint.addArgs(def);
             lint.addFileArg(v);
             lint.expectExitCode(0);
-            beh_step.dependOn(&lint.step);
+            external.dependOn(&lint.step);
             const comp = b.addSystemCommand(&.{ "iverilog", "-Wall" });
             comp.addArgs(def);
             comp.addArg("-o");
@@ -574,7 +537,7 @@ pub fn build(b: *Build) void {
             const sim_run = b.addSystemCommand(&.{ "vvp", "-n" });
             sim_run.addFileArg(vvp);
             sim_run.addCheck(.{ .expect_stdout_match = b.fmt("PASS tb_{s}", .{f.va}) });
-            beh_step.dependOn(&sim_run.step);
+            external.dependOn(&sim_run.step);
         }
     }
     {
@@ -597,7 +560,6 @@ pub fn build(b: *Build) void {
 
     // `--emit-rtlil` read back by Yosys itself: `proc` lowers the processes
     // and `check -assert` finds a wire with no driver or two of them.
-    const rtlil_step = b.step("test-rtlil", "Emit tests/fixtures/rtlil/*.v as RTLIL and have yosys read, proc and check it");
     for (globFiles(b, "tests/fixtures/rtlil", ".v")) |v| {
         const gen = b.addRunArtifact(exe);
         gen.addArg("--emit-rtlil");
@@ -608,7 +570,7 @@ pub fn build(b: *Build) void {
         const yosys = b.addSystemCommand(&.{ "yosys", "-q", "-p", "hierarchy -check -top top; proc; opt_clean; check -assert; stat" });
         yosys.addFileArg(il);
         yosys.expectExitCode(0);
-        rtlil_step.dependOn(&yosys.step);
+        external.dependOn(&yosys.step);
     }
 
     const vampyre = b.addSystemCommand(&.{ "python3", "tools/external_vampyre.py", "--vera" });
@@ -616,7 +578,7 @@ pub fn build(b: *Build) void {
     vampyre.setCwd(b.path("."));
     vampyre.has_side_effects = true;
     vampyre.expectExitCode(0);
-    b.step("test-vampyre", "VAMPyRE and VerA on the same compact models, every disagreement triaged by name").dependOn(&vampyre.step);
+    external.dependOn(&vampyre.step);
 
     // --emit-so must still name the .va when the device fails to compile.
     {

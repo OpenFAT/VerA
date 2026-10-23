@@ -553,12 +553,12 @@ pub fn real(out: *std.Io.Writer, gpa: std.mem.Allocator, r: f64, conv: u8, flags
     const pad = (width orelse 0) -| text.len;
     if (flags & str_k.zc_left != 0) {
         try out.writeAll(text);
-        return out.splatByteAll(' ', pad);
+        return out.splatByteAll(' ', @intCast(pad));
     }
     const zero = flags & str_k.zc_zero != 0 and std.math.isFinite(r);
     const sign: usize = if (zero and text.len != 0 and (text[0] == '-' or text[0] == '+' or text[0] == ' ')) 1 else 0;
     try out.writeAll(text[0..sign]);
-    try out.splatByteAll(if (zero) '0' else ' ', pad);
+    try out.splatByteAll(if (zero) '0' else ' ', @intCast(pad));
     try out.writeAll(text[sign..]);
 }
 

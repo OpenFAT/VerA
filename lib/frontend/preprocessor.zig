@@ -125,7 +125,7 @@ pub fn readText(io: std.Io, dir: std.Io.Dir, path: []const u8, gpa: Allocator) !
     const st = try file.stat(io);
     if (st.kind == .file and st.size > max_text_bytes) return error.StreamTooLong;
     var r = file.reader(io, &.{});
-    return r.interface.allocRemaining(gpa, .limited(max_text_bytes + 1)) catch |e| switch (e) {
+    return r.interface.allocRemaining(gpa, .limited(max_text_bytes +| 1)) catch |e| switch (e) {
         error.ReadFailed => return r.err.?,
         else => |other| return other,
     };
@@ -501,7 +501,7 @@ pub const Macro = struct {
     // holds 204: 45 prelude, 156 its own, 3 predefined), so packing the slices
     // into pool offsets would save under 4 KB of scratch.
     comptime {
-        std.debug.assert(@sizeOf(Macro) == 40);
+        std.debug.assert(@sizeOf(Macro) <= 40);
     }
 };
 

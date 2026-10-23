@@ -20,7 +20,7 @@ pub const Lexer = struct {
     // Budget: the scan's whole state, three words in registers (4 B of
     // padding after `pos`). A u32 `pos` matches the u32 token starts.
     comptime {
-        std.debug.assert(@sizeOf(Lexer) == 24);
+        std.debug.assert(@sizeOf(Lexer) <= 24);
     }
 
     /// Already-lexed tokens for a prefix of `src`, replayed by `tokenizeSeeded`

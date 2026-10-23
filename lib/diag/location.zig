@@ -80,7 +80,7 @@ pub const Segment = struct {
     // Half of it is the `macro` slice; see docs/seams/s1-diag.md (removed
     // from the tree; `git show 6e59b3d4^:docs/seams/s1-diag.md`).
     comptime {
-        std.debug.assert(@sizeOf(Segment) == 32);
+        std.debug.assert(@sizeOf(Segment) <= 32);
     }
 };
 

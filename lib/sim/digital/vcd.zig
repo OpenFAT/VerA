@@ -60,8 +60,8 @@ const Code = struct {
 
     // Budget: `changes` walks every code each dumped step.
     comptime {
-        std.debug.assert(@sizeOf(Code) == 24);
-        std.debug.assert(@sizeOf(Var) == 48);
+        std.debug.assert(@sizeOf(Code) <= 24);
+        std.debug.assert(@sizeOf(Var) <= 48);
     }
 };
 

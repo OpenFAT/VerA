@@ -7743,7 +7743,7 @@ pub const lower_tests = struct {
 pub const rtlil_tests = struct {
     //! `digital.rtlil` over the designs `tests/fixtures/rtlil/` holds: the RTLIL text a
     //! module, a process, a cell and a refusal come out as. Yosys's own reading of
-    //! the same text is `zig build test-rtlil`.
+    //! the same text is `zig build test-external`.
 
     const std = @import("std");
     const digital = @import("digital");
@@ -16406,7 +16406,7 @@ pub const digital_tests = struct {
     //! The emitter's tests: Verilog source -> `program`/`device`/`emitDevice`
     //! text, checked for the rows, calls and refusals a construct must produce.
     //! The oracle is the clause each test names; that the text runs as
-    //! `vera --run` does is the corpus's job (`zig build test-1364 -- --native`).
+    //! `vera --run` does is the corpus's job (`zig build suite -- ieee1364 --native`).
     //! Clauses: IEEE 1364-2005 §5.2.1, §7.3, §9.7.1, §9.7.5, §10.3, §11.4.2, §15.
     const std = @import("std");
     const testing = std.testing;

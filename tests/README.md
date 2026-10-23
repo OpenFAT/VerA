@@ -5,26 +5,25 @@ Run commands from the repository root through `nix develop -c`. Keep one
 
 | Command | Purpose |
 |---|---|
-| `nix develop -c zig build test` | Unit, host, reference, generated-code and harness checks |
-| `nix develop -c zig build test-ams` | Strict AMS fixtures: compile, execute and judge |
-| `nix develop -c zig build test-devices` | Digital transcripts and diagnostic cases |
-| `nix develop -c zig build test-1364` | Only the IEEE 1364 digital cases |
+| `nix develop -c zig build check` | The pre-commit tier: type-check every root and `zig fmt --check` |
+| `nix develop -c zig build test` | Unit, host, reference, generated-code and harness checks, the canary, host observations, paired refusals and host profiles |
+| `nix develop -c zig build test-<module>` | One module's tests (`test-cli`, `test-unit`, …); the edit loop |
+| `nix develop -c zig build suite -- ams` | Strict AMS fixtures: compile, execute and judge |
+| `nix develop -c zig build suite -- devices` | Digital transcripts and diagnostic cases |
+| `nix develop -c zig build suite -- ieee1364` | Only the IEEE 1364 digital cases |
 | `nix develop -c zig build test-vpi` | VPI module tests and C applications |
-| `nix develop -c zig build test-vpi-fixtures` | C header compatibility; compile only |
+| `nix develop -c zig build suite -- vpi` | C header compatibility; compile only |
 | `nix develop -c zig build test-spice --fork .` | The `.sp` decks on ESPice (built against this tree), graded against their oracles |
-| `nix develop -c zig build test-canary` | The harness FAILs every wrong-on-purpose fixture in `fixtures/canary/` |
-| `nix develop -c zig build test-observations` | Host assertions about analog diagnostic output |
-| `nix develop -c zig build test-paired-compiler` | Exact compiler refusals paired with behavioral controls |
-| `nix develop -c zig build test-host-profiles` | Conditional host assertions; unavailable adapters record skips |
-| `nix develop .#external -c zig build test-rtlil` | `--emit-rtlil` of `fixtures/rtlil/*.v` read, `proc`ed and checked by Yosys |
-| `nix develop -c zig build benchmark` | Fixture checks plus a separate compiler timing pass |
+| `nix develop .#external -c zig build test-external` | `--emit-verilog` in verilator and iverilog, `--emit-rtlil` in Yosys, VAMPyRE on the compact models |
+| `nix develop -c zig build suite` | Every fixture plus a separate compiler timing pass |
+| `nix develop -c zig build suite -- golden <tag>` | Snapshot every fixture's generated code; `-- golden diff [a b]` compares two |
 | `nix develop -c python3 tools/conformance.py run` | Execute the principal suites and write a unified evidence report |
 | `python3 tests/host.py selftest` | The host oracles fed wrong observations; never evidence |
 | `python3 tools/conformance.py selftest` | Regression checks: the subcommands, `run`'s accounting, the fixture layout |
 
 `test` is the development gate; it does not run all language fixtures.
-`test-ams` fails on failures, unasserted fixtures and expected failures.
-`test-devices` allows declared expected failures and reports them separately.
+`suite -- ams` fails on failures, unasserted fixtures and expected failures.
+`suite -- devices` allows declared expected failures and reports them separately.
 The conformance report preserves those distinctions, including each suite's
 exit status. An expected AMS failure therefore fails the combined command.
 Unexpected failures, missing execution records and unasserted fixtures also
@@ -37,14 +36,14 @@ one root the build compiles or runs.
 
 | File | Contents |
 |---|---|
-| `suite.zig` | The fixture runner (`vera-suite`) behind `benchmark`, `test-ams`, `test-devices`, `test-1364`, `test-vpi-fixtures`, `test-spice`, `golden` and `test-canary`. One namespace per mode (`Suite`, `Devices`, `Native`, `Fuzz`, `Ieee1364`, `CFixtures`, `SpiceDecks`, `Golden`, `Canary`, `SizeSweep`) over the harness they share: `Fixtures` (collection, the verdict algebra, the parallel run), `Analog` (VerA plugged in as the compiler), `Lint`, `Coverage`, `Digital` and `Child` |
+| `suite.zig` | The fixture runner (`vera-suite`) behind `suite` (every mode), `test-spice` and the canary in `test`. One namespace per mode (`Suite`, `Devices`, `Native`, `Fuzz`, `Ieee1364`, `CFixtures`, `SpiceDecks`, `Golden`, `Canary`, `SizeSweep`) over the harness they share: `Fixtures` (collection, the verdict algebra, the parallel run), `Analog` (VerA plugged in as the compiler), `Lint`, `Coverage`, `Digital` and `Child` |
 | `unit.zig` | The one test compilation that imports every module: each module's public-API tests as a namespace (`parser_tests` … `vpi_tests`, `ulp_tests`), the stage-boundary guard (`exhaustive_tests`), the citation check (`citations_tests`), the allocation-failure sweep (`oom_tests`) and the contract-name claim (`contract_names`) |
 | `fuzz.zig` | In-process fuzz targets: `zig build fuzz --fuzz` coverage-guided, replayed seeded under `test` |
 | `rng_reference.zig`, `rng_reference.c` | The RNG oracle (`rng_kernels` against the IEEE 1364 §17.9.3 C listing) and, as an executable, its domain refusals, one case per run |
 | `printf_reference.zig` | The formatting oracle: `zCReal` against glibc's `snprintf` |
 | `codegen_probe.zig` | Hand-built vectorisation probes (`zig build-obj … -femit-asm`); nothing in the build runs it |
 | `host.py` | Host observations: `diagnostic_observations` and `paired_compiler_observations` drive the build's `vera`; the profiles bind a real host through an adapter (below); `selftest` |
-| `fixtures/` | HDL, C, SPICE and their expected outputs and support inputs, by specification chapter, with the host that drives a device (`*_host.zig`, its `*_gpu.zig` twin, `*_dyn.zig`) beside the device. `canary/`: the wrong-on-purpose fixtures `test-canary` judges, with their `EXPECT.tsv`; `beh_verilog/` and `rtlil/`: the `--emit-verilog` and `--emit-rtlil` inputs; `conformance/`: the requirement ledger, baselines and registries; `external/`: the external suites' triage |
+| `fixtures/` | HDL, C, SPICE and their expected outputs and support inputs, by specification chapter, with the host that drives a device (`*_host.zig`, its `*_gpu.zig` twin, `*_dyn.zig`) beside the device. `canary/`: the wrong-on-purpose fixtures the canary in `test` judges, with their `EXPECT.tsv`; `beh_verilog/` and `rtlil/`: the `--emit-verilog` and `--emit-rtlil` inputs; `conformance/`: the requirement ledger, baselines and registries; `external/`: the external suites' triage |
 
 A dedicated test file is a namespace of `unit.zig`. A `test` block that
 checks a file's private declarations stays beside that declaration in `lib/`
@@ -164,11 +163,11 @@ New regression cases assert the required result. `//! xfail` and Python's
 suite so the marker must be removed after implementation. No engine behavior
 is changed by adding a case.
 
-`test-observations` builds and runs the exact CLI artifact, then checks the
+`test`'s diagnostic observations build and run the exact CLI artifact, then check the
 diagnostics around `$finish` and `$info`. It excludes testbench progress labels
 from its oracle: a runner timestamp is not a timestamp in a task diagnostic.
 Compilation/setup errors fail normally. Use
-`nix develop -c zig build test-observations -- --strict` to return nonzero
+`python3 tests/host.py diagnostic_observations --vera zig-out/bin/vera --strict` to return nonzero
 for the known failures too. The unified conformance run records its exact
 named assertions alongside the other specialized tests.
 
@@ -193,7 +192,7 @@ as XFAIL; it is not evidence of a cryptographic comparison.
 
 ## Host profile adapters
 
-`nix develop -c zig build test-host-profiles` runs the registered conditional
+`nix develop -c zig build test` also runs the registered conditional
 assertions (`host.py`'s `PROFILES`). Without a real adapter they record
 **skip**, not pass. These tests also belong to `zig build test`, and their
 named results enter the unified report. Compiling a support model or passing

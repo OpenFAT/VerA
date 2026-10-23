@@ -221,12 +221,12 @@ summary and has a **Status** line naming what landed.
 ### VD-006: May `.v` transcript evidence support `verified`?
 - **Source**: CLAUSE-AUDIT §7.5 item 6.
 - **Rule**: not an LRM reading. House rule: AGENTS.md §2 (an obligation needs a positive behavioural test, an invalid-input test and a recorded result) and CLAUSE-AUDIT §2.
-- **Why vague**: four verdicts (17.3-01, 17.7-01, the digital half of 17.11-01, 17.11-24) rest on `zig build test-devices`. That step is outside measure A, and CLAUSE-AUDIT recorded it as failing at 47/66.
+- **Why vague**: four verdicts (17.3-01, 17.7-01, the digital half of 17.11-01, 17.11-24) rest on `zig build suite -- devices`. That step is outside measure A, and CLAUSE-AUDIT recorded it as failing at 47/66.
 - **Options**: (a) only evidence inside `zig build test` counts; (b) any executed transcript suite with a recorded result counts.
-- **Decision**: `DECIDED:` (b). A `.v` transcript is the compiler's output run in a host, with its result diffed against a recorded `.expected.txt`. That is exactly the runtime evidence AGENTS.md §2 asks for. Measure B (`zig build test-1364 -- --coverage`) is itself built from these transcripts. The condition is that the step passes: a verdict rests on a transcript only while its step is green, and the name-list diff in AGENTS.md §0 rule 3 applies to it as well.
-- **VerA today**: AGENTS.md §0 records every `test-devices` case passing as of 2026-09-24, so the "47/66" in CLAUSE-AUDIT §7.5 item 6 is stale. CHANGE NEEDED: update CLAUSE-AUDIT §7.5 item 6 (documentation only). No verdict changes.
+- **Decision**: `DECIDED:` (b). A `.v` transcript is the compiler's output run in a host, with its result diffed against a recorded `.expected.txt`. That is exactly the runtime evidence AGENTS.md §2 asks for. Measure B (`zig build suite -- ieee1364 --coverage`) is itself built from these transcripts. The condition is that the step passes: a verdict rests on a transcript only while its step is green, and the name-list diff in AGENTS.md §0 rule 3 applies to it as well.
+- **VerA today**: AGENTS.md §0 records every `zig build suite -- devices` case passing as of 2026-09-24, so the "47/66" in CLAUSE-AUDIT §7.5 item 6 is stale. CHANGE NEEDED: update CLAUSE-AUDIT §7.5 item 6 (documentation only). No verdict changes.
 - **Measure impact**: none (confirms B's basis).
-- **Status**: DONE (4ef087d6). CLAUSE-AUDIT §7.5 item 6 closed; `zig build test-devices` passes at `ae9633f1` (`tools/conformance.py`).
+- **Status**: DONE (4ef087d6). CLAUSE-AUDIT §7.5 item 6 closed; `zig build suite -- devices` passes at `ae9633f1` (`tools/conformance.py`).
 
 ### VD-007: Discrete and electrical ports on one undeclared net with no connect statement
 - **Source**: `docs/conformance-mixed-signal.md:211-215` at 8b1514d4.
@@ -480,7 +480,7 @@ summary and has a **Status** line naming what landed.
 - **Options**: (a) IEEE 754 `!=`: ±0 is no change, and a NaN written over a NaN is a change; (b) a bit compare.
 - **Decision**: `DECIDED:` (a). It is the language's own real `!=` (1364 4.1.7), so `@(w)` fires exactly when `w != old` would be true in source. "Not a change" governs events only. The variable or net still holds the new bit pattern, so `1.0/w` after writing `-0.0` is `-inf`.
 - **VerA today**: events follow (a) (`lib/sim/digital/waiters.zig:134-137`; `tests/fixtures/digital/wreal_event_on_change.v`). The new bits are copied only `if (changed)` (waiters.zig:140), so writing `-0.0` over `+0.0` leaves `+0.0` stored. CHANGE NEEDED: store the planes whenever they differ bitwise, and suppress only the event. Add a `.v` fixture: `r = 0.0; r = -0.0; $display("%g", 1.0/r)` prints `-inf`, and `@(r)` stays silent. Semver: patch (runtime value fix; no accepted/refused source or device text changes).
-- **Measure impact**: B (1364 9.7.2 / 4.1.7 evidence); `test-devices` +1 case.
+- **Measure impact**: B (1364 9.7.2 / 4.1.7 evidence); `zig build suite -- devices` +1 case.
 - **Status**: DONE (0db0a690; native_real_events corrected in d9ee5d65).
 
 ### VD-033: `m04_01` samples a declaration-assigned wreal at time 0
@@ -491,7 +491,7 @@ summary and has a **Status** line naming what landed.
 - **Decision**: `DECIDED:` (b). The fixture as written fails a conforming tool that runs the `initial` first and prints `0`. The undriven-wreal and plain-wire lines have no race and stay at time 0.
 - **VerA today**: `tests/fixtures/digital/wreal_undriven_zero.v` prints `decl_assigned_wreal_at_time_zero 2.5` from the first statement of the `initial`, with no delay, and VerA happens to order it after the assignment. CHANGE NEEDED (fixture only): put `#0;` before the `seeded` time-0 display (the two race-free lines may stay before it), and record the race in the header. Semver: patch (test only).
 - **Status**: DONE (4b6c96d8). `#0;` precedes the `seeded` display in `tests/fixtures/digital/wreal_undriven_zero.v`; header records the race. Transcript unchanged.
-- **Measure impact**: none (a `test-devices` transcript; the expected output text is unchanged).
+- **Measure impact**: none (a `zig build suite -- devices` transcript; the expected output text is unchanged).
 
 ### VD-034: `posedge V(p)` in an analog event control
 - **Source**: `annex_c_analog_subset/COVERAGE.md:192-196`.

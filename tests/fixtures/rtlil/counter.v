@@ -1,6 +1,6 @@
 // What `vera --emit-rtlil` carries to Yosys: a parameterized counter with a
 // synchronous load and an asynchronous reset, a combinational case, named
-// instance connections, and the value gates. `zig build test-rtlil` has
+// instance connections, and the value gates. `zig build test-external` has
 // Yosys read, `proc` and `check -assert` the result; `tests/unit.zig`
 // pins the text.
 module counter #(parameter W = 4) (input clk, input rst_n, input load, input [W-1:0] d, output reg [W-1:0] q, output tc);

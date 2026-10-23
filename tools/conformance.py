@@ -62,7 +62,7 @@ FIXTURES = ROOT / "tests/fixtures"
 
 def fixture_files(*patterns):
     """Every fixture matching one of `patterns`, sorted. `canary/` holds the
-    wrong-on-purpose fixtures `zig build test-canary` judges on their own;
+    wrong-on-purpose fixtures the canary in `zig build test` judges on their own;
     they are evidence of nothing, so no walk sees them."""
     return sorted(p for pattern in patterns for p in FIXTURES.rglob(pattern)
                   if p.is_file() and "canary" not in p.relative_to(FIXTURES).parts)
@@ -488,16 +488,14 @@ def run_suites(argv):
         ("accounting", [sys.executable, "tools/conformance.py", "selftest",
                         "EvidenceTests", "GapInventoryTests", "FixtureLayoutTests"]),
         ("unit", build + ["test", f"-j{args.jobs}", f"-Dtest-results={run_dir / 'tests'}", "--summary", "all"]),
-        ("ams", build + ["test-ams", f"-j{args.jobs}", "--", f"--jobs={args.jobs}", f"--verdicts={run_dir / 'ams.tsv'}"]),
-        ("ams-perturbed", build + ["test-ams", f"-j{args.jobs}", "--", f"--jobs={args.jobs}", "--perturb",
+        ("ams", build + ["suite", f"-j{args.jobs}", "--", "ams", f"--jobs={args.jobs}", f"--verdicts={run_dir / 'ams.tsv'}"]),
+        ("ams-perturbed", build + ["suite", f"-j{args.jobs}", "--", "ams", f"--jobs={args.jobs}", "--perturb",
                                   f"--verdicts={run_dir / 'ams-perturbed.tsv'}"]),
-        ("digital", build + ["test-devices", f"-j{args.jobs}", "--", f"--verdicts={run_dir / 'digital.tsv'}"]),
-        ("vpi-abi", build + ["test-vpi-fixtures", f"-j{args.jobs}"]),
+        ("digital", build + ["suite", f"-j{args.jobs}", "--", "devices", f"--verdicts={run_dir / 'digital.tsv'}"]),
+        ("vpi-abi", build + ["suite", f"-j{args.jobs}", "--", "vpi"]),
         # The decks run on ESPice built against the tree under test.
         ("spice", build + ["test-spice", "--fork", ".", f"-j{args.jobs}", "--",
                           f"--results={run_dir / 'tests/spice.tsv'}"]),
-        ("observations", build + ["test-observations", f"-j{args.jobs}",
-                                 f"-Dtest-results={run_dir / 'tests'}"]),
     ]
     suites = []
     for name, command in commands:
@@ -530,7 +528,8 @@ def run_suites(argv):
                         for p in FIXTURES.rglob("*.sp")
                         if not p.is_relative_to(FIXTURES / "external")}
             require_results(read_results(path) if path.exists() else {}, expected, "SPICE decks")
-        if name == "observations" and completed.returncode == 0:
+        # `test` runs the diagnostic observations too, into the same results directory.
+        if name == "unit" and completed.returncode == 0:
             path = run_dir / "tests/diagnostic_observations.tsv"
             require_specialized_results(
                 [row for row in special if row["artifact"] == "diagnostic_observations"],
@@ -589,111 +588,54 @@ def pct(n, d):
     return "n/a" if d == 0 else "%.1f%%" % (100 * n / d)
 
 
+SUITE = ROOT / "tests" / "conformance"
+SCORED = (("verilog-a", "Verilog-A"), ("verilog", "Verilog"), ("verilog-ams", "Verilog-AMS"))
+
+
+def suite_scores(rows):
+    """`zig-out/conformance.tsv` rows (status, test name, ...) -> {category:
+    (passed, total)}, by the suite's own categories (its tools/report.py): a
+    test's language is its directory under tests/ or its manifest row's first
+    column. XFAIL counts as a fail and XPASS as a pass; a skip counts against."""
+    sys.path.insert(0, str(SUITE / "tools"))
+    import report as suite_report
+    langs = suite_report.languages()
+    out = {}
+    for row in rows:
+        status, name = row[0], row[1]
+        cat = suite_report.category(name, langs)
+        if cat is None:
+            continue
+        p, t = out.get(cat, (0, 0))
+        out[cat] = (p + (status in ("PASS", "XPASS")), t + 1)
+    return out
+
+
 def measure():
-    """The measures block, and the numbers its status lines quote."""
-    # CI has already run these suites and kept the logs; re-running them costs
-    # half an hour and cannot produce a different answer. Locally both are
-    # unset and this script runs them itself.
-    #   STRICT_LOG=… COVERAGE_LOG=… tools/conformance.py
-    strict_log = os.environ.get("STRICT_LOG", "")
-    coverage_log = os.environ.get("COVERAGE_LOG", "")
-    if not (strict_log or coverage_log):
-        if subprocess.run(["zig", "build", "-Doptimize=ReleaseFast", "install"], cwd=ROOT, stdout=sys.stderr).returncode:
-            sys.exit(2)
-
-    # --- Measure A: the fixture suite ---------------------------------------
-    # suite.zig prints a TSV header `pass fail unasserted xfail` and one row
-    # under it. --strict decides the exit code on it; the counts print either way.
-    if strict_log:
-        try:
-            strict = Path(strict_log).read_text(errors="replace").rstrip("\n")
-        except OSError as e:
-            print(f"cat: {strict_log}: {e.strerror}", file=sys.stderr)
-            strict = ""
-        rcs = re.findall(r"^(?:strict exit: |exit=)(\d+)", strict, re.M)
-        strict_rc = rcs[-1] if rcs else "?"
-    else:
-        strict, strict_rc = run("zig", "build", "benchmark", "--", "--strict")
-    lines = strict.split("\n")
-    heads = [i for i, l in enumerate(lines) if l == "pass\tfail\tunasserted\txfail"]
-    row = (lines[heads[-1] + 1] if heads[-1] + 1 < len(lines) else lines[heads[-1]]).split(None, 3) if heads else []
-    passed, fail, unas, xfail = (row + ["", "", "", ""])[:4]
-    if not is_num(passed):
-        print("\n".join(lines[-30:]), file=sys.stderr)
-        die("could not parse the verdict row. suite.zig changed?")
+    """The VAMS Conformance Suite's score per language, the one line a release
+    carries. CONFORMANCE_TSV reuses a finished run (CI's); locally this runs
+    `zig build conformance` itself."""
+    tsv = Path(os.environ.get("CONFORMANCE_TSV", "") or ROOT / "zig-out" / "conformance.tsv")
+    if not os.environ.get("CONFORMANCE_TSV"):
+        if subprocess.run(["zig", "build", "-Doptimize=ReleaseFast", "conformance"], cwd=ROOT, stdout=sys.stderr).returncode:
+            die("zig build conformance failed")
     try:
-        total = sum(int(v or 0) for v in (passed, fail, unas, xfail))
-    except ValueError:
-        die("could not parse the verdict row. suite.zig changed?")
-    p = int(passed)
-
-    # --- Measure C: static clause citations, not verified rule coverage -------
-    if coverage_log:
-        try:
-            cov = Path(coverage_log).read_text(errors="replace").rstrip("\n")
-        except OSError:
-            die("could not read COVERAGE_LOG")
-    else:
-        cov, rc = run("zig", "build", "benchmark", "--", "--coverage")
-        if rc:
-            die("coverage command failed")
-    both, acc, ref, unc = polarity(cov)
-    # CLAUSE-AUDIT §5 classifications (`CLAUSES.tsv`), counted apart from both
-    # ways: a reviewed claim that a clause carries nothing to reject, not evidence.
-    classified = first(r"(\d+)(?= classified$)", cov)
-    clauses = first(r"^\d+ of (\d+)(?= LRM clauses cited)", cov)
-    if not is_num(clauses):
-        die("could not parse the coverage tally. harness/coverage.zig changed?")
-    if not all(is_num(v) for v in (both, acc, ref, unc, classified)):
-        die("incomplete coverage polarity tally")
-    if sum(int(v) for v in (both, acc, ref, unc, classified)) != int(clauses):
-        die("coverage tally does not sum to clause denominator")
-
-    # --- Measure B: IEEE 1364-2005 clauses, the same static inventory ---------
-    cov1364, rc = run("zig", "build", "test-1364", "--", "--coverage")
-    if rc:
-        die("1364 coverage command failed")
-    b_both, b_acc, b_ref, b_unc = polarity(cov1364)
-    b_classified = first(r"(\d+)(?= classified$)", cov1364)
-    b_clauses = first(r"^\d+ of (\d+)(?= IEEE 1364-2005 clauses cited)", cov1364)
-    if not all(is_num(v) for v in (b_clauses, b_both, b_acc, b_ref, b_unc, b_classified)):
-        die("could not parse the 1364 coverage tally. tests/suite.zig's Ieee1364 changed?")
-    if sum(int(v) for v in (b_both, b_acc, b_ref, b_unc, b_classified)) != int(b_clauses):
-        die("1364 tally does not sum to its clause denominator")
-
-    # --- The two gates that are pass/fail, not a percentage --------------------
-    unit = quiet("zig", "build", "test")
-    devices = quiet("zig", "build", "test-devices")
-
-    n_both, n_clauses, n_classified = int(both), int(clauses), int(classified)
-    nb_both, nb_clauses, nb_classified = int(b_both), int(b_clauses), int(b_classified)
-    block = f"""| Measure | Number | Remaining to v1.0.0 | Command |
-|---|---|---|---|
-| **A** — fixtures behaving as stated | **{passed} / {total} — {pct(p, total)}** | {total - p} rows | `zig build benchmark -- --strict` |
-| &nbsp;&nbsp;↳ FAIL · unasserted · XFAIL | {fail} · {unas} · {xfail} | all three to 0 | same run |
-| **C** — clauses with both citation polarities (static) | **{both} / {clauses} — {pct(n_both, n_clauses)}** | {n_clauses - n_both - n_classified} clauses | `zig build benchmark -- --coverage` |
-| &nbsp;&nbsp;↳ positive-only · rejection-only · uncited | {acc} · {ref} · {unc} | requires rule-level review | same run |
-| &nbsp;&nbsp;↳ classified under `CLAUSE-AUDIT.md` §5 (`CLAUSES.tsv`) | {classified} | reviewed claims, not evidence | same run |
-| **B** — IEEE 1364-2005 clauses with both citation polarities (static) | **{b_both} / {b_clauses} — {pct(nb_both, nb_clauses)}** | {nb_clauses - nb_both - nb_classified} clauses | `zig build test-1364 -- --coverage` |
-| &nbsp;&nbsp;↳ positive-only · rejection-only · uncited · classified | {b_acc} · {b_ref} · {b_unc} · {b_classified} | §§17–18 obligation detail: `specification/CLAUSE-AUDIT.md` §7.1 | same run |
-| `zig build test` | **{unit}** | pass | `zig build test` |
-| `zig build test-devices` | **{devices}** | pass | `zig build test-devices` |
-
-`--strict` exit code **{strict_rc}** — 0 only when FAIL, unasserted and XFAIL are all 0.
-A, B and C are measured by this script and nothing else may write them.
-
-B and C count citations without executing fixtures. It is not a conformance score:
-XFAILs and implementation-limit rejections can supply citations, and a clause
-can contain multiple untested rules. See `specification/CLAUSE-AUDIT.md`."""
-    return block, f"{passed}/{total} fixtures, {both}/{clauses} clauses"
+        rows = [l.split("\t") for l in tsv.read_text().splitlines() if l.strip()]
+    except OSError:
+        die(f"no suite results at {tsv}")
+    scores = suite_scores(rows)
+    if any(c not in scores for c, _ in SCORED):
+        die(f"{tsv}: no tests in {', '.join(t for c, t in SCORED if c not in scores)}")
+    passed = sum(scores[c][0] for c, _ in SCORED)
+    total = sum(scores[c][1] for c, _ in SCORED)
+    parts = ", ".join(f"{title} {scores[c][0]}/{scores[c][1]}" for c, title in SCORED)
+    line = f"On Suite VAMS-CONFORMANCE, we score {parts}, Cumulative: {passed}/{total}."
+    return line, f"{passed}/{total} suite tests"
 
 
 def measured(lines):
-    """Only the rows this script computes are verifiable. D is hand-entered
-    against a document no command reads, so `--check` must not hold it to the
-    placeholder text `--changelog` wrote: it would force every release to
-    either leave them blank or fail."""
-    return [l for l in lines if l.startswith("|") and "hand-entered" not in l]
+    """The one line `--check` holds a release to."""
+    return [l for l in lines if l.startswith("On Suite VAMS-CONFORMANCE")]
 
 
 def section(text, version):
@@ -1502,7 +1444,7 @@ def under(child, parent):
 
 def fixture_cites():
     """{(standard, clause): {"pos": [paths], "neg": [paths]}} from the
-    fixtures' tags, the polarity rules `--coverage` and `test-1364 --coverage`
+    fixtures' tags, the polarity rules `--coverage` and `suite -- ieee1364 --coverage`
     use: a file with a `//! reject` (or `// digital-runner: reject`) cites
     negatively; a `.c` application counts only if `build.zig` runs it (its
     `//! design` line), and polarity is per line (`lrm-reject`, `inherited-reject`)."""
@@ -1753,7 +1695,7 @@ def without_report(data):
 def verilator_oracle(work):
     """Verilator over every tests/fixtures/ieee1364 .v, one row each, into
     tests/fixtures/ieee1364/VERILATOR.tsv. VerA is not run; its answer is the
-    committed transcript `zig build test-1364` already holds it to. A row that
+    committed transcript `zig build suite -- ieee1364` already holds it to. A row that
     disagrees is data for a reader, never a reason to edit the fixture."""
     import concurrent.futures
     import shutil
@@ -2077,6 +2019,17 @@ class ReleaseVersionTests(unittest.TestCase):
                 release_version("--check", "v0.10.0")
             self.assertIn('.minimum_zig_version = "0.17.0"', zon.read_text())
             self.assertIn('pub const vera_version = "0.10.0";', con.read_text())
+
+
+class SuiteScoreTests(unittest.TestCase):
+    """The release line: XFAIL fails, XPASS passes, a skip counts against, SPICE is not scored."""
+
+    def test_scores_by_language(self):
+        rows = [("PASS", "verilog-a/a.va"), ("XFAIL", "verilog-a/b.va"), ("XPASS", "verilog/c.v"),
+                ("SKIP", "verilog/d.v"), ("PASS", "verilog-ams/e.vams"), ("PASS", "netlist/f.sp")]
+        self.assertEqual(suite_scores(rows), {"verilog-a": (1, 2), "verilog": (1, 2), "verilog-ams": (1, 1), "spice": (1, 1)})
+        self.assertEqual(measured(["x", "On Suite VAMS-CONFORMANCE, we score Verilog-A 1/2"]),
+                         ["On Suite VAMS-CONFORMANCE, we score Verilog-A 1/2"])
 
 
 class WorklistTests(unittest.TestCase):
@@ -2884,9 +2837,9 @@ def chapter_of(clause):
 
 def metric(argv):
     """`metric --verdicts=F [--digital=F] [--perturbed=F] [--killed=F]
-    [--levels=OUT]`: the evidence-level table. F files are `zig build benchmark
+    [--levels=OUT]`: the evidence-level table. F files are `zig build suite
     -- --strict --verdicts=F` (and `--perturb --verdicts=F`) outputs;
-    `--digital` is `zig build test-devices -- --verdicts=F`'s, the digital
+    `--digital` is `zig build suite -- devices --verdicts=F`'s, the digital
     runner's cases (`.v` with a golden or `// digital-runner: reject`), which
     the .va suite never collects. `--killed` is one row id per line.
     `--levels` writes `<id>\t<level>`, the ratchet file."""

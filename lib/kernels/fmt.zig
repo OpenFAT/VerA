@@ -68,7 +68,7 @@ pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io
     if (!char) while (n != 0 and byteAt(v, n - 1) == 0) {
         n -= 1;
     };
-    if (width) |w| if (n < w) try out.splatByteAll(' ', w - n);
+    if (width) |w| if (n < w) try out.splatByteAll(' ', @intCast(w - n));
     while (n != 0) {
         n -= 1;
         try out.writeByte(byteAt(v, n));
@@ -90,7 +90,7 @@ pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io
 pub fn time(out: *std.Io.Writer, t: f64, f: TimeFormat, unit_exp: i32) std.Io.Writer.Error!void {
     const scaled = t * std.math.pow(f64, 10, @floatFromInt(unit_exp - f.units));
     const len = std.fmt.count("{d:.[1]}", .{ scaled, f.precision }) + f.suffix.len;
-    if (len < f.width) try out.splatByteAll(' ', f.width - len);
+    if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
     try out.print("{d:.[1]}", .{ scaled, f.precision });
     try out.writeAll(f.suffix);
 }
@@ -129,7 +129,7 @@ pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix:
         if (v.width > 64 and !v.hasUnknown()) return wideDecimal(out, gpa, v, field);
         var buf: [24]u8 = undefined;
         const t = decimalText(&buf, v);
-        if (t.len < field) try out.splatByteAll(' ', field - t.len);
+        if (t.len < field) try out.splatByteAll(' ', @intCast(field - t.len));
         return out.writeAll(t);
     }
     // §17.1.1.3: a zero width overrides the automatic size, so a group radix
@@ -142,7 +142,7 @@ pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix:
     // zeros: `%d` of an 8-bit 7 is "  7" and not "007". A group radix is
     // already exactly its own width, so padding only ever shows up under
     // decimal or an explicit format width.
-    if (d < field) try out.splatByteAll(' ', field - d);
+    if (d < field) try out.splatByteAll(' ', @intCast(field - d));
     while (d != 0) {
         d -= 1;
         try out.writeByte(groupDigit(v, radix, d));
@@ -276,7 +276,7 @@ fn wideDecimal(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, fiel
         n += 1;
     }
     const len = std.fmt.count("{d}", .{groups[n - 1]}) + 19 * (n - 1) + @intFromBool(negative);
-    if (len < field) try out.splatByteAll(' ', field - len);
+    if (len < field) try out.splatByteAll(' ', @intCast(field - len));
     if (negative) try out.writeByte('-');
     try out.print("{d}", .{groups[n - 1]});
     var k = n - 1;

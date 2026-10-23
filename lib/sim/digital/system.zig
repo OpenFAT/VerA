@@ -669,7 +669,7 @@ pub const Scan = struct {
                 const arg: usize = @intCast(self.result);
                 if (arg >= self.widths.len or arg >= self.outs) return self.stop(false);
                 const bits = unformatted(input[self.at..], self.widths[arg], conv == 'z') orelse return self.stop(true);
-                self.at += bits[2];
+                self.at += @intCast(bits[2]);
                 self.i += 1;
                 self.result += 1;
                 return .{ .arg = arg, .value = .{ .bits = .{ bits[0], bits[1] } } };

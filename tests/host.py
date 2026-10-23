@@ -8,8 +8,7 @@ model cannot assert about itself.
     tests/host.py selftest [-v]
 
 The first two take the exact `vera` the build made (`zig build
-test-observations`, `test-paired-compiler`). The profiles (`PROFILES` below,
-`zig build test-host-profiles`) need a real host bound through an adapter
+test`). The profiles (`PROFILES` below, also under `zig build test`) need a real host bound through an adapter
 (`--adapter`, or `VERA_HOST_PROFILE_ADAPTER`); without one every assertion
 records a skip, never a pass. `tests/README.md` has the adapter protocol.
 `selftest` feeds the oracles wrong observations and checks they refuse; it
@@ -1623,7 +1622,7 @@ class CompactModelingObservations(HostProfileCase):
         )
 
 
-# The profile runners, by artifact name (`zig build test-host-profiles`).
+# The profile runners, by artifact name (`zig build test`).
 PROFILES = {
     "report_observations": ReportObservations,
     "indirect_equation_observations": IndirectEquationObservations,
