@@ -275,6 +275,7 @@ pub fn unitsOf(ticks: u64, obj: vpiHandle) f64 {
 // §12.15 vpi_get_time
 // ---------------------------------------------------------------------------
 
+/// §11.6.25's object type, Annex G numbering.
 pub const vpiTimeQueue: c_int = 64;
 
 /// "shall retrieve the current simulation time, using the time scale of the
@@ -309,6 +310,7 @@ pub export fn vpi_get_time(obj: vpiHandle, time_p: ?*Time) void {
 // §12.36 vpi_sim_control
 // ---------------------------------------------------------------------------
 
+// §12.36 operations, Annex G numbering.
 pub const vpiStop: c_int = 66;
 pub const vpiFinish: c_int = 67;
 pub const vpiReset: c_int = 68;

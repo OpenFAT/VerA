@@ -37,15 +37,7 @@ const nameTable = model.nameTable;
 /// `Design.deinit`. `model_gpa` holds the `Design`'s tables.
 pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Design {
     const lowered = res.lowered;
-    var d: Design = .{
-        .gpa = model_gpa,
-        .arena = .init(model_gpa),
-        .objects = &.{},
-        .scopes = &.{},
-        .top_modules = &.{},
-        .by_name = .empty,
-        .iters = .empty,
-    };
+    var d: Design = .{ .gpa = model_gpa, .arena = .init(model_gpa) };
     errdefer d.deinit();
     const arena = d.arena.allocator();
     // Everything below but the rows and the `Design` is scratch: many small
@@ -310,11 +302,9 @@ fn addAnalog(
         for (disciplines) |di| n_users += @intFromBool(binds(objects.coldOf(di), at));
         var users: std.ArrayList(u32) = try .initCapacity(arena, n_users);
         for (disciplines) |di| if (binds(objects.coldOf(di), at)) users.appendAssumeCapacity(di);
-        const children = kids.items;
-        const users_of = users.items;
         const c = try objects.coldFor(at);
-        c.children = children;
-        c.users = users_of;
+        c.children = kids.items;
+        c.users = users.items;
     }
 
     // --- nodes: one per net of a continuous discipline (§3.6.2.2: a
@@ -639,14 +629,9 @@ fn addAnalogCode(
 fn srcLoc(arena: std.mem.Allocator, res: *const CompileResult, tok: u32) Error!?root.Loc {
     const starts = res.lowered.tok_starts;
     if (tok >= starts.len) return null;
-    const bag = res.diags;
-    const at = bag.locate(.{ .start = starts[tok], .end = starts[tok] }, null);
-    const off = bag.toSourceOffset(at.file, at.offset);
-    const text = bag.sourceText(at.file);
-    return .{
-        .line = @intCast(1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n")),
-        .file = try arena.dupe(u8, bag.fileName(at.file)),
-    };
+    var at = root.locate(res.diags, starts[tok]);
+    at.file = try arena.dupe(u8, at.file);
+    return at;
 }
 
 /// §3.4.5 as the SOURCE wrote it: is `name` a `localparam` of `decl`? `null`
@@ -664,8 +649,7 @@ fn declaredLocal(decl: *const Ast.ModuleDecl, file: *const Ast.SourceFile, name:
 /// fold lowering scalarised the net with, so this cannot disagree with the
 /// device's terminal count. A name absent from it is a scalar.
 fn vectorSize(lowered: *const Lowered, flat_name: []const u8) u32 {
-    const r = lowered.vectors.get(flat_name) orelse return 1;
-    return @intCast(@abs(r.msb - r.lsb) + 1);
+    return if (lowered.vectors.get(flat_name)) |r| r.size() else 1;
 }
 
 /// §11.6.9's `vpiSize` for a `reg [msb:lsb]`.
