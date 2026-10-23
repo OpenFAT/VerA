@@ -265,21 +265,14 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
             const arr = self.arrays.get(base).?;
             for (0..arr.count) |k| {
                 const slot = base + @as(u32, @intCast(k));
-                try waiters.watch(self, id, slot, .any);
-                const term = &waiters.termsOf(self, slot).?.items[waiters.termsOf(self, slot).?.items.len - 1];
-                term.event_select = watched;
-                term.scope = self.scope;
+                try waiters.watchExt(self, id, slot, .any, .{ .event_select = watched, .scope = self.scope });
             }
             return;
         }
     }
     if (try compile.selectTerm(self, watched)) |sel| {
-        try waiters.watch(self, id, sel.slot, edge);
-        const list = waiters.termsOf(self, sel.slot).?;
-        const term = &list.items[list.items.len - 1];
         const now = waiters.termBits(self.values[sel.slot], sel.first, sel.count);
-        term.* = .{ .susp = term.susp, .gen = term.gen, .edge = edge, .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] };
-        return;
+        return waiters.watchExt(self, id, sel.slot, edge, .{ .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] });
     }
     try waiters.watch(self, id, try self.termSlot(watched), edge);
 }

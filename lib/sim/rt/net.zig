@@ -302,12 +302,9 @@ fn bitAt(planes: []const u64, i: u32) Int.Bit {
     return bitOf(planes[0..n], planes[n..], i);
 }
 
+/// `dnet.setBit` of bit `i` of `planes`, values then unknowns.
 fn setBit(planes: []u64, i: u32, b: Int.Bit) void {
-    const n = planes.len / 2;
-    const at = @as(u64, 1) << @intCast(i % 64);
-    const e = @backingInt(b);
-    planes[i / 64] = (planes[i / 64] & ~at) | (if (e & 1 != 0) at else 0);
-    planes[n + i / 64] = (planes[n + i / 64] & ~at) | (if (e >> 1 != 0) at else 0);
+    dnet.setBit(literal(planes, 0), i, b);
 }
 
 fn literal(planes: []const u64, w: u32) Int.Literal {
@@ -468,9 +465,8 @@ fn pathFired(s: *const State, p: Path, at: u64) bool {
 
 /// Bit `i` of the value whose planes are `v` and `x`.
 fn bitOf(v: []const u64, x: []const u64, i: u32) Int.Bit {
-    const w = i / 64;
     const sh: u6 = @intCast(i % 64);
-    return @fromBackingInt(@intCast(@as(u2, @intCast(v[w] >> sh & 1)) | @as(u2, @intCast(x[w] >> sh & 1)) << 1));
+    return dnet.planeBit(v[i / 64] >> sh, x[i / 64] >> sh);
 }
 
 /// §14.3.3 slot `slot` changed: when a module path source transitions, its

@@ -512,6 +512,10 @@ pub const Run = struct {
     /// `registerMonitor`) is in `far_terms`.
     terms: []?*std.ArrayList(waiters.Term) = &.{},
     far_terms: std.AutoHashMapUnmanaged(u32, std.ArrayList(waiters.Term)) = .empty,
+    /// The select and event fields of the terms that have them
+    /// (`waiters.Term.ext`), and the rows free.
+    term_exts: std.ArrayList(waiters.TermExt) = .empty,
+    free_term_exts: std.ArrayList(u32) = .empty,
     /// §6.1 / §7.6 the static fan-out (`waiters.buildFanout`): per slot
     /// `fan[fan_start[slot]..fan_start[slot + 1]]` are the pcs of the
     /// continuous drivers and controlled switches reading it, and `armed[pc]`
