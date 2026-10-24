@@ -236,7 +236,7 @@ pub fn inlineUserFuncPre(
             // shape rule binds an `output` all the same: nothing is copied in,
             // but `funcArrayOut` copies n values back into the actual.
             const shaped = if (formal.direction == .output) blk: {
-                @memset(vals, lower_var.zeroOf(ty));
+                @memset(vals, try startOf(self, ty));
                 break :blk try arrayActualCells(self, actual) == n;
             } else try funcArrayIn(self, actual, ty, vals);
             if (!shaped) {
@@ -249,7 +249,7 @@ pub fn inlineUserFuncPre(
             continue;
         }
         if (formal.direction == .output) {
-            try actuals.append(self.arena, try self.arena.dupe(Mir.Value, &.{lower_var.zeroOf(ty)}));
+            try actuals.append(self.arena, try self.arena.dupe(Mir.Value, &.{try startOf(self, ty)}));
             continue;
         }
         const tv = try lower_expr.lowerExpr(self, actual);
@@ -307,7 +307,7 @@ pub fn inlineUserFuncPre(
 
     const ret_ty = astTy(fd.ret_ty);
     const ret_slot = try lower_var.declareVar(self, name, ret_ty); // §4.7.1 return variable
-    try self.builder.writeVariable(ret_slot.place, self.cur, lower_var.zeroOf(ret_ty));
+    try self.builder.writeVariable(ret_slot.place, self.cur, try startOf(self, ret_ty));
 
     var arg_slots: std.ArrayList([]const VarSlot) = .empty;
     defer arg_slots.deinit(self.arena);
@@ -427,6 +427,14 @@ pub fn inlineUserFuncPre(
     }
     std.debug.assert(w == writeback.items.len); // one writeback per output/inout formal
     return result;
+}
+
+/// The value an `output` formal and the return variable start from: §4.7.1
+/// and §4.7.2.3 "zero (0) if numeric, empty string ("") if a string". A
+/// string's start is a real `""`, never `zeroOf`'s `.undef`: an unwritten
+/// output is copied back and read like any other string.
+fn startOf(self: *Lower, ty: Ty) Oom!Mir.Value {
+    return if (ty == .string) try self.mir.addStrConst(self.arena, "") else lower_var.zeroOf(ty);
 }
 
 // One `consts` entry a function scope replaced or removed, and what it held.
