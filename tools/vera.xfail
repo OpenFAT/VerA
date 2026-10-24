@@ -597,7 +597,6 @@ spice/vsine_dc_is_the_operating_point_value.va
 sv-tests/chapter-12/12.7.6--forever.sv
 sv-tests/chapter-5/5.6.4--compiler-directives-pragma.sv
 va-models/bsim4/vacode/bsim4.va
-va-models/ekv3/vacode/ekv3.va
 va-models/EPFL-HEMT/vacode/epfl_hemt.va
 va-models/fbh_hbt/vacode/fbh_hbt-2_3.va
 va-models/hisim2/vacode311/hisim2.va

@@ -262,6 +262,10 @@ bag: *diag.Bag = undefined,
 had_error: bool = false,
 /// §3.6.1.2 access identifier → which half of the discipline it reads.
 access_kind: std.StringHashMapUnmanaged(Access) = .empty,
+/// Access names one discipline binds to its potential and another to its flow
+/// (annex D's `I` is `current`'s potential in some libraries). For these the
+/// net's discipline decides the half, never `access_kind` (`accessOn`).
+access_both: std.StringHashMapUnmanaged(void) = .empty,
 /// Visible variables (§3.2) — locals, function args, scalarized array elements.
 vars: std.StringHashMapUnmanaged(VarSlot) = .empty,
 /// §5.4.1 each instance's share of an unnamed-branch contribution row

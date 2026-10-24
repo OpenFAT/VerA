@@ -1135,10 +1135,11 @@ fn scanContextExpr(self: *Lower, e: Ast.ExprId, comptime discrete: bool, is_init
         // the net's discipline in either context (§4.4, E0501/E0337). Only a
         // declared net that is an analog node is judged; a digital-owned
         // name never became one (`declareDiscreteInputs`).
-        if (tag == .branch_access) if (self.access_kind.get(self.file.str(ex.strOf(e)))) |access| {
+        if (tag == .branch_access) if (self.access_kind.get(self.file.str(ex.strOf(e)))) |global| {
             for ([_]Ast.ExprId{ ex.lhs(e), ex.rhs(e) }) |arg| {
                 if (arg == .none or ex.tag(arg) != .ident) continue;
                 const node = self.node_voltages.get(self.file.str(ex.strOf(arg))) orelse continue;
+                const access = try lower_contrib.accessOn(self, e, self.file.str(ex.strOf(e)), global, node, Lower.ground);
                 try lower_contrib.checkAccessMatch(self, e, self.file.str(ex.strOf(e)), access, node);
             }
         };

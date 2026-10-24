@@ -72,7 +72,11 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
                 if (n.abstol) |a| @field(info, @tagName(half) ++ "_abstol") = a;
                 if (n.access) |acc| {
                     @field(info, @tagName(half) ++ "_access") = acc;
-                    try self.access_kind.put(self.arena, acc, half);
+                    const gop = try self.access_kind.getOrPut(self.arena, acc);
+                    if (gop.found_existing and gop.value_ptr.* != half)
+                        try self.access_both.put(self.arena, acc, {})
+                    else
+                        gop.value_ptr.* = half;
                 }
             }
         }
