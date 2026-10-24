@@ -2231,7 +2231,9 @@ const Canary = struct {
     fn parse(arena: std.mem.Allocator, table: []const u8) ![]const Row {
         var rows: std.ArrayList(Row) = .empty;
         var lines = std.mem.splitScalar(u8, table, '\n');
-        while (lines.next()) |line| {
+        while (lines.next()) |raw| {
+            // The submodule has no `eol=lf`, so a Windows checkout ends each row in CRLF.
+            const line = std.mem.trimEnd(u8, raw, "\r");
             if (line.len == 0 or line[0] == '#') continue;
             var cols = std.mem.splitScalar(u8, line, '\t');
             const file = cols.next() orelse return error.BadExpectRow;
@@ -2250,6 +2252,9 @@ const Canary = struct {
         try std.testing.expectEqual(@as(usize, 2), rows.len);
         try std.testing.expect(rows[1].perturb);
         try std.testing.expectEqualStrings("LOOSE b", rows[1].want);
+        // A CRLF checkout (Windows) reads the same want, with no `\r` left on it.
+        const crlf = try parse(arena_state.allocator(), "a.va\tnormal\tpass\r\nb.va\tperturb\tLOOSE b\r\n");
+        try std.testing.expectEqualStrings("LOOSE b", crlf[1].want);
         try std.testing.expectError(error.BadExpectRow, parse(arena_state.allocator(), "a.va\tsideways\tpass\n"));
         try std.testing.expectError(error.BadExpectRow, parse(arena_state.allocator(), "a.va\tnormal\n"));
     }
