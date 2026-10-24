@@ -3,7 +3,7 @@ usage: vera [options] FILE.va
        vera --run|--emit-exe [options] FILE.v [MORE.v ...]
        vera --emit-zig|--check|--emit-so|--emit-osdi|--emit-rtlil [options] FILE.v [MORE.v ...]
        vera --explain CODE
-       vera --version
+       vera --version | -v | -V
        vera --lsp [options]
 
   --lint                  frontend only (parse, lower, prove); no codegen
@@ -76,7 +76,8 @@ usage: vera [options] FILE.va
                           code, about half the LLVM time of a large device)
   -I DIR                  add an `include search directory
   --param NAME=VALUE      compile with the top module's parameter NAME set
-                          to VALUE (LRM 3.4). A parameter that sizes an
+                          to VALUE (LRM 3.4): a number, or a string parameter's
+                          text (`--param mode=fast`). A parameter that sizes an
                           array, vector or replication, or bounds a genvar
                           loop or selects a generate arm, is fixed at VALUE and
                           the device refuses a card that moves it
