@@ -29,7 +29,7 @@ names the clause behind it.
 | Kernels (`lib/kernels`) | wrong RNG stream | the IEEE 1364 §17.9.3 C listing | `tests/rng_reference.zig` (in `test`) |
 | | wrong `%e/%f/%g` | glibc `snprintf` | `tests/printf_reference.zig` (in `test`) |
 | VPI (`src/vpi`) | ABI or behaviour drift | the C applications' expected stdout and exit | `tests/conformance/tests/**/*.c` (`test`; `suite -- vpi` compiles only) |
-| Downstream (ESPice) | a VerA change breaks a consumer | ESPice's decks and their oracle records | `zig build test-spice -Despice=PATH` against an ESPice release (not in the merge gate: VerA does not depend on ESPice); `pages.yaml` compiles ESPice's models |
+| Downstream (ESPice) | a VerA change breaks a consumer | ESPice's decks and their oracle records | `spice.yaml` imports a pinned ESPice release and runs `zig build test-spice -Despice=PATH` (disabled until a release exists; not in the merge gate: VerA's build does not depend on ESPice); `pages.yaml` compiles ESPice's models |
 | Every module | an allocation failure swallowed or leaked | `checkAllAllocationFailures` | `tests/unit.zig`'s `oom_tests` |
 | The harness itself | a judge that passes everything | wrong-on-purpose fixtures must FAIL | `tests/conformance/vera/canary/` (in `test`), `host.py selftest`, `conformance.py selftest` |
 | The tests | a test that cannot fail | a mutant of the code must be killed | `conformance.py mutate` (by hand, needs `vq`) |
