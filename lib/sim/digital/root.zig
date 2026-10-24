@@ -1948,11 +1948,14 @@ fn netRuns(
 /// `delay_value` and the `mintypmax_expression` in `delay3`'s parentheses may
 /// read a variable too (`Run.driver_delays`).
 fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
+    // Every value is checked, not only those before the first variable one:
+    // `exec.variableDelay` types each of them at run time.
+    var constant = true;
     for ([_]Ast.ExprId{ d.rise, d.fall, d.off }) |x| if (x != .none) {
         try compile.checkExpr(r, x);
-        if (!compile.constantExpression(r, x)) return false;
+        constant = constant and compile.constantExpression(r, x);
     };
-    return true;
+    return constant;
 }
 
 /// Whether top-level module `m` declares a parameter `--param` may set,

@@ -1596,18 +1596,15 @@ fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, depth: 
 /// whole). One as wide as the port times the element count is split: IEEE
 /// 1364-2005 §7.1.6, "each instance shall get a part-select of the port
 /// expression as specified in the range, starting with the right-hand index".
-// ponytail: only a whole identifier is sized and split here; general
-// expressions wait for a design that needs them.
 fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, port: Ast.Port, conn: Ast.PortConn, k: i64) Error!?PortBind {
-    const refused = "§12.1.2: only a whole net or variable, as wide as the port or as the port times the array size, is connected across an instance array by digital execution";
+    const refused = "§12.1.2: only an expression as wide as the port or as the port times the array size is connected across an instance array";
     const w = try portWidth(r, port);
+    // `typeOf` reads the slots elaborated so far, as `sink` does.
+    r.values = e.values.items;
+    try compile.checkExpr(r, conn.expr);
+    const whole = compile.typeOf(r, conn.expr).width;
     // §12.1.2: "If the bit length of a port expression is the same as the
     // port, the expression is connected to each instance", whatever it is.
-    if (r.file.exprs.tag(conn.expr) != .ident) {
-        try compile.checkExpr(r, conn.expr);
-        return if (compile.typeOf(r, conn.expr).width == w) null else r.fail(conn.main_tok, refused, .{});
-    }
-    const whole = e.values.items[try r.scalarSlot(conn.expr)].width;
     if (whole == w) return null;
     const range = inst.range.?;
     const left = try r.declaredBound(range.msb, inst.main_tok);
@@ -1620,10 +1617,24 @@ fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, port: Ast.Port, conn:
     const lo: u32 = @intCast(@abs(@as(i128, k) - right) * w);
     return switch (port.direction) {
         .input => .{ .receive = .{ .expr = conn.expr, .scope = r.scope, .tok = conn.main_tok, .slice = .{ .lo = lo, .total = whole } } },
+        // The instance's bits [lo, lo + w) of the expression, which may be
+        // a concatenation (the LRM's own `.out({bushigh, buslow})`): each
+        // operand's share, rightmost operand the lowest bits.
         .output => blk: {
-            const s = try sink(r, e, conn.expr, conn.main_tok, .port);
-            const operands = try r.arena.dupe(Sink, &.{.{ .net = s.net, .lo = s.lo + lo, .width = w }});
-            break :blk .{ .send = .{ .operands = operands, .tok = conn.main_tok } };
+            var leaves: std.ArrayList(Ast.ExprId) = .empty;
+            try concatLeaves(r, conn.expr, &leaves);
+            var picked: std.ArrayList(Sink) = .empty;
+            var at: u32 = 0;
+            var i = leaves.items.len;
+            while (i != 0) {
+                i -= 1;
+                const s = try sink(r, e, leaves.items[i], conn.main_tok, .port);
+                const a = @max(at, lo);
+                const b = @min(at + s.width, lo + w);
+                if (a < b) try picked.insert(r.arena, 0, .{ .net = s.net, .lo = s.lo + (a - at), .width = b - a });
+                at += s.width;
+            }
+            break :blk .{ .send = .{ .operands = picked.items, .tok = conn.main_tok } };
         },
         .inout, .unspecified => r.fail(conn.main_tok, refused, .{}),
     };

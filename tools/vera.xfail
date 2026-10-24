@@ -161,7 +161,6 @@ gnucap-modelgen/dump_unary.0.vams
 gnucap-modelgen/dump_var_def.0.vams
 gnucap-modelgen/dump_var_def.1.vams
 gnucap-modelgen/dump_warn.ps0.vams
-ispras-1364/test_07_01_06_3.v
 ispras-1364/test_07_01_06_4.v
 ispras-1364/test_07_14_01_2.v
 ispras-1364/test_08_06_00_1.v
@@ -378,7 +377,6 @@ ivtest/ivltests/pr2350934.v
 ivtest/ivltests/pr2350988.v
 ivtest/ivltests/pr243.v
 ivtest/ivltests/pr2453002.v
-ivtest/ivltests/pr2728032.v
 ivtest/ivltests/pr2728812a.v
 ivtest/ivltests/pr2792897.v
 ivtest/ivltests/pr2801662.v
@@ -431,10 +429,7 @@ ivtest/ivltests/real_unary_minus_zero.v
 ivtest/ivltests/recursive_task.v
 ivtest/ivltests/repeat_signed_one_bit.v
 ivtest/ivltests/resetall.v
-ivtest/ivltests/rise_fall_decay1.v
 ivtest/ivltests/rise_fall_decay2.v
-ivtest/ivltests/rise_fall_delay1.v
-ivtest/ivltests/rise_fall_delay2.v
 ivtest/ivltests/rise_fall_delay3.v
 ivtest/ivltests/scanf4.v
 ivtest/ivltests/scope2b.v
@@ -494,7 +489,6 @@ ivtest/ivltests/undef.v
 ivtest/ivltests/uwire_fail.v
 ivtest/ivltests/vardly_undefined_vec.v
 ivtest/ivltests/vcd-dup.v
-ivtest/ivltests/verify_two_var_delays.v
 ivtest/ivltests/vpi_net_array_word_select_signedness.v
 ivtest/ivltests/vvp_quiet_mode.v
 ivtest/ivltests/wait_condition_real.v

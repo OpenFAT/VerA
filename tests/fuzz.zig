@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const vera = @import("vera");
+const sim = @import("sim");
 
 const Smith = std.testing.Smith;
 
@@ -106,6 +107,74 @@ fn directivesOne(_: void, s: *Smith) anyerror!void {
     };
 }
 
+/// A structural 1364 design, elaborated and run by the digital engine. Its
+/// first top module has continuous assignments and gates whose `delay3`
+/// values are constants, variables, nets or expressions of them (G7: a
+/// variable first value left the later ones untyped, `unreachable` at run
+/// time). A second top module, elaborated after it, connects an instance
+/// array through whole nets, selects and concatenations as wide as the port
+/// or the port times the element count (G7: `arrayConn` typed one against
+/// the first module's slots, out of bounds). Same oracle as `lint`: no
+/// panic, and a refusal is diagnosed.
+fn digitalOne(_: void, s: *Smith) anyerror!void {
+    const delays = [_][]const u8{ "d", "w0", "r0", "d + 1", "r0[1:0]", "w1[0]", "1", "2.5", "1:2:3", "0" };
+    const values = [_][]const u8{ "r0", "r1", "~r0", "r0 & r1", "w0", "{r0, r1}", "1'bz", "8'hx5", "w1 ^ r1" };
+    const lhs = [_][]const u8{ "w0", "w1", "w2", "w1[0]", "{w0, w1}" };
+    // Each `cw` or `2 * cw` bits wide, for a port of `cw` bits on two
+    // elements; `pick` spells `{h}` and `{l}`. The outputs are nets.
+    const ins = [_][]const u8{ "a", "q", "{a, b}", "{ra, b}", "q[{h}:0]", "ra", "{b[{l}:0], a[{l}:0]}" };
+    const outs = [_][]const u8{ "o", "{a, b}", "q", "{b, o[{l}:0], a[{l}:0]}" };
+    var buf: [8192]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const cws = [_]u32{ 2, 4, 8 };
+    const cw = cws[choose(s, cws.len)];
+    const own = [_][]const u8{ "1", "i", "i[0] + 1" };
+    w.print("module c(i, o); input [{d}:0] i; output [{d}:0] o; assign #({s}) o = i; endmodule\n", .{ cw - 1, cw - 1, own[choose(s, own.len)] }) catch return;
+    w.writeAll("module m; reg [3:0] r0; reg [3:0] r1; integer d; wire [3:0] w0; wire [3:0] w1; wire [7:0] w2;\n") catch return;
+    var n: usize = 0;
+    while (n == 0 or (n < 6 and !s.eos())) : (n += 1) switch (choose(s, 3)) {
+        0 => w.print("assign #({s}) {s} = {s};\n", .{ delays[choose(s, delays.len)], lhs[choose(s, lhs.len)], values[choose(s, values.len)] }) catch return,
+        1 => w.print("assign #({s}, {s}) {s} = {s};\n", .{ delays[choose(s, delays.len)], delays[choose(s, delays.len)], lhs[choose(s, lhs.len)], values[choose(s, values.len)] }) catch return,
+        else => w.print("buf #({s}, {s}, {s}) g{d}(w1[0], r0[0]);\n", .{ delays[choose(s, delays.len)], delays[choose(s, delays.len)], delays[choose(s, delays.len)], n }) catch return,
+    };
+    w.writeAll("initial begin d = 2; r0 = 0; r1 = 1; #3 r0 = 4'b1x0z; d = 0; #2 r1 = r0 + 1; #4 $display(\"%b %b %b\", w0, w1, w2); end\nendmodule\n") catch return;
+    // A second top module: its slots come after every one of `m`'s.
+    w.print("module n; wire [{d}:0] a, b; reg [{d}:0] ra; wire [{d}:0] q, o;\nassign a = ra + 1; assign b = ~ra;\nc u[1:0](.i(", .{ cw - 1, cw - 1, 2 * cw - 1 }) catch return;
+    pick(&w, ins[choose(s, ins.len)], cw);
+    w.writeAll("), .o(") catch return;
+    pick(&w, outs[choose(s, outs.len)], cw);
+    w.writeAll("));\ninitial begin ra = 1; #20 $display(\"%b %b\", q, o); end\nendmodule\n") catch return;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var bag: vera.diag.Bag = .init(arena.allocator());
+    var out: std.Io.Writer.Discarding = .init(&.{});
+    sim.digital.run(arena.allocator(), w.buffered(), .{ .event_budget = 10_000 }, &bag, &out.writer) catch |err| switch (err) {
+        error.DigitalFailed => return checkDiagnostics(&bag, true),
+        else => |e| return e,
+    };
+}
+
+/// One of `len` choices, from one input byte. Not `Smith.index` or
+/// `value`: on a plain run's random input they read a whole u64 and keep it
+/// only when it lies in range, which it almost never does, so every choice
+/// falls back to the first.
+fn choose(s: *Smith, len: usize) usize {
+    var b: [1]u8 = undefined;
+    s.bytes(&b);
+    return b[0] % len;
+}
+
+/// `t` with `{h}` spelled `2 * cw - 1` and `{l}` spelled `cw / 2 - 1`.
+fn pick(w: *std.Io.Writer, t: []const u8, cw: u32) void {
+    var i: usize = 0;
+    while (i < t.len) : (i += 1) {
+        if (t[i] == '{' and i + 2 < t.len and t[i + 2] == '}' and (t[i + 1] == 'h' or t[i + 1] == 'l')) {
+            w.print("{d}", .{if (t[i + 1] == 'h') 2 * cw - 1 else cw / 2 - 1}) catch return;
+            i += 2;
+        } else w.writeByte(t[i]) catch return;
+    }
+}
+
 /// Real fixtures, so the replay starts from inputs that reach every stage.
 const corpus = [_][]const u8{
     @embedFile("conformance/tests/verilog-a/ch05_analog_behavior/resistor.va"),
@@ -123,6 +192,10 @@ test "fuzz: .lint over raw bytes never panics, and every refusal is diagnosed" {
 
 test "fuzz: .lint over generated token sequences never panics, and every refusal is diagnosed" {
     try std.testing.fuzz({}, tokensOne, .{});
+}
+
+test "fuzz: generated structural designs with variable delays and instance arrays run or refuse by name" {
+    try std.testing.fuzz({}, digitalOne, .{});
 }
 
 test "fuzz: `//!` directive lines refuse by name and never panic" {
