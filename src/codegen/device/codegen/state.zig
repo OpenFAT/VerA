@@ -499,7 +499,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
                 \\        if (dt > 0.0 and ({1s})) inst.{0s}__t_last = {2s};
                 \\        inst.{0s}__prev = in;
                 \\
-            , .{ n, try gen_call.crossTest(self, n, args, "in"), try gen_call.lastCrossTime(self, n, "in") }),
+            , .{ n, try gen_call.crossTest(self, n, args, "in", true), try gen_call.lastCrossTime(self, n, "in") }),
             // §5.10.3 only the history moves here; `eval` raises the event,
             // so nothing is observed one timepoint late. `enable` gates the
             // event, not the record, so a re-enabled operator never compares
@@ -515,7 +515,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
                     \\
                 , .{
                     n,
-                    try gen_call.crossTest(self, n, args, "in"),
+                    try gen_call.crossTest(self, n, args, "in", true),
                     try gen_call.ctrlStep(self, args, 2, "0.0"),
                     try gen_call.ctrlStep(self, args, 3, "0.0"),
                 });

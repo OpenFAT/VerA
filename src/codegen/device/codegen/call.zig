@@ -144,10 +144,12 @@ pub fn timerPeriod(self: *Gen, args: []const Mir.Value) Error![]const u8 {
 /// either), shared by §4.5.10 `last_crossing` and §5.10.3 `cross`. `in` is
 /// the current input as a plain f64 expression, compared against `__prev`.
 ///
-/// A direction that folds without parameters picks its comparison here; a
-/// parameter one becomes `zCrossDir` on the card's value; a solve-time one
-/// is E0515 (§4.5.14).
-pub fn crossTest(self: *Gen, n: []const u8, args: []const Mir.Value, in: []const u8) Error![]const u8 {
+/// A direction that folds without parameters picks its comparison here;
+/// any other becomes `zCrossDir` on its value. §5.10.3.1 and Table 4-20 make
+/// `dir` an `analog_expression`, so a solve-time one is read where the caller
+/// is (`step`: `updateState`'s core field, `buildJobs` queues it; else the
+/// residual's own value), never refused.
+pub fn crossTest(self: *Gen, n: []const u8, args: []const Mir.Value, in: []const u8, step: bool) Error![]const u8 {
     const arg: Mir.Value = if (args.len > 1) args[1] else .zero;
     if (self.an.foldConst(arg, false)) |c| {
         // §5.10.3.1 "For any other values of dir, the cross() function does
@@ -161,9 +163,8 @@ pub fn crossTest(self: *Gen, n: []const u8, args: []const Mir.Value, in: []const
             .{ n, in },
         );
     }
-    return self.arena.print("zCrossDir({s}, inst.{s}__prev, {s})", .{
-        try gen_host.f64Expr(self, arg), n, in,
-    });
+    const dir = if (args.len < 2) "0.0" else if (step) try ctrlStep(self, args, 1, "0.0") else try ctrlEval(self, args, 1, "0.0");
+    return self.arena.print("zCrossDir({s}, inst.{s}__prev, {s})", .{ dir, n, in });
 }
 
 /// Returns the §4.5.10 crossing time inside the step ending at `sim.t`: the
@@ -1416,7 +1417,7 @@ fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) 
             const v = try self.arena.print("({s}).val()", .{in0});
             try opOpen(self, fm);
             try self.b("zLastCross({s}, {s}, inst.{s}__prev, sim.t, sim.dt, inst.{s}__t_last, sim.dt > 0.0 and ({s}))", .{
-                kS, in, n, n, try crossTest(self, n, args, v),
+                kS, in, n, n, try crossTest(self, n, args, v, false),
             });
             try opClose(self);
         },
@@ -1426,7 +1427,7 @@ fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) 
         // an event after the simulation time has advanced from zero": a
         // transient and a positive `dt`.
         .cross => try self.b("S.con(if (sim.kind == .tran and sim.dt > 0.0 and ({s}) and ({s})) 1.0 else 0.0)", .{
-            try crossTest(self, n, args, try self.arena.print("({s}).val()", .{in0})),
+            try crossTest(self, n, args, try self.arena.print("({s}).val()", .{in0}), false),
             try enableTest(self, .cross, args),
         }),
         // §5.10.3.3 a change BEFORE the event test replaces its pending
