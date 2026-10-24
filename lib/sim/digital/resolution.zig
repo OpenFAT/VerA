@@ -100,6 +100,30 @@ pub fn resolve(self: *Run, net: u32) Error!void {
     if (moved) try waiters.wakeSwitches(self, n.slot);
 }
 
+/// IEEE 1364-2005 §4.2.1 a driven net's value before any event: "Nets with
+/// drivers shall assume the output value of their drivers", and a driver
+/// that has produced no value yet asserts the unknown it starts at
+/// (`Driver.current`). Bits no driver covers keep the default z. Stored
+/// without an event, since nothing has changed; a `trireg` (x already), a
+/// wreal and a switch-joined net are left to their first resolution.
+pub fn initial(self: *Run, net: u32) void {
+    const n = self.nets[net];
+    if (n.kind == .wreal or n.kind == .trireg or self.netDrivers(net).len == 0 or self.netCold(n).trans.len != 0) return;
+    const tables = wiredLogic(n.kind);
+    for (0..n.resolved.width) |i| {
+        const at: u32 = @intCast(i);
+        var acc: Signal = .{};
+        for (self.netDrivers(net)) |d| {
+            const c = contribution(self.drivers[d], at);
+            acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
+        }
+        acc = acc.combine(netPull(n.kind));
+        self.signals[n.signal + at] = acc;
+        setBit(n.resolved, at, acc.collapse());
+    }
+    @memcpy(self.values[n.slot].planes, n.resolved.planes);
+}
+
 /// The delay of net `c`'s transition from `from` to `to`, in ticks from
 /// now: its own `delay3` (§6.1.3), its module paths' (`pathDelay`), or of
 /// the two "the larger" (IEEE 1364-2005 §14.4); null when neither applies.
@@ -773,10 +797,10 @@ test "§14.4 Figures 14-3 and 14-4: a path delay and the distributed delays alon
 }
 
 test "§14.3.3 a path delay times a destination driven through a procedural block" {
-    // `q` starts at z (§4.2.1: "The default initialization value for a net
-    // shall be the value z") and takes `r`'s x at time 0, when `clk` too
-    // first transitions: that z -> x lands after Table 14-3's
-    // min(tz1, tz0) = 3. (iverilog starts the net at x and prints no line.)
+    // `q` is driven, so it starts at its driver's unknown (§4.2.1: "Nets
+    // with drivers shall assume the output value of their drivers") and
+    // `r`'s x at time 0 is no change; the first line is the x -> 1 Table
+    // 14-3 delays by 3 after `clk` rises. iverilog prints the same.
     try expectRun(
         \\`timescale 1ns/1ns
         \\module dut(input clk, input d, output q);
@@ -795,7 +819,7 @@ test "§14.3.3 a path delay times a destination driven through a procedural bloc
         \\    #10 clk = 1;
         \\  end
         \\endmodule
-    , "3 q=x\n13 q=1\n");
+    , "13 q=1\n");
 }
 
 test "§14.3.3 a destination change no path source caused takes no path delay" {

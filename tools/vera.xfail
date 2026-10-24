@@ -200,7 +200,6 @@ ivtest/ivltests/br1029b.v
 ivtest/ivltests/br1029c.v
 ivtest/ivltests/br916a.v
 ivtest/ivltests/br916b.v
-ivtest/ivltests/br947.v
 ivtest/ivltests/br960a.v
 ivtest/ivltests/br960b.v
 ivtest/ivltests/br960c.v
@@ -240,7 +239,6 @@ ivtest/ivltests/br_gh497c.v
 ivtest/ivltests/br_gh497e.v
 ivtest/ivltests/br_gh531.v
 ivtest/ivltests/br_gh62.v
-ivtest/ivltests/br_gh732.v
 ivtest/ivltests/br_gh79.v
 ivtest/ivltests/br_gh827.v
 ivtest/ivltests/br_gh889.v
@@ -298,8 +296,6 @@ ivtest/ivltests/include2.v
 ivtest/ivltests/include3.v
 ivtest/ivltests/indef_width_concat.v
 ivtest/ivltests/itor_rtoi.v
-ivtest/ivltests/ldelay1.v
-ivtest/ivltests/ldelay3.v
 ivtest/ivltests/localparam_type.v
 ivtest/ivltests/macro_comment_multiline.v
 ivtest/ivltests/macro_str_esc.v
@@ -308,7 +304,6 @@ ivtest/ivltests/module_output_port_list_def.v
 ivtest/ivltests/module_output_port_var2.v
 ivtest/ivltests/monitor4.v
 ivtest/ivltests/multi_bit_strength.v
-ivtest/ivltests/multi_driver_delay.v
 ivtest/ivltests/nba_repeat_wide_count_real_array.v
 ivtest/ivltests/nba_repeat_wide_count.v
 ivtest/ivltests/nb_ec_concat.v
@@ -325,10 +320,8 @@ ivtest/ivltests/partsel_outside_expr.v
 ivtest/ivltests/pr1002a.v
 ivtest/ivltests/pr1026.v
 ivtest/ivltests/pr1403406.v
-ivtest/ivltests/pr1587669.v
 ivtest/ivltests/pr1603313.v
 ivtest/ivltests/pr1628300.v
-ivtest/ivltests/pr1645518.v
 ivtest/ivltests/pr1701855b.v
 ivtest/ivltests/pr1701855.v
 ivtest/ivltests/pr1701890.v
@@ -353,8 +346,6 @@ ivtest/ivltests/pr1866215b.v
 ivtest/ivltests/pr1866215.v
 ivtest/ivltests/pr1876798.v
 ivtest/ivltests/pr1877743.v
-ivtest/ivltests/pr1883052b.v
-ivtest/ivltests/pr1883052.v
 ivtest/ivltests/pr1903343.v
 ivtest/ivltests/pr1938138.v
 ivtest/ivltests/pr1956211.v
@@ -379,7 +370,6 @@ ivtest/ivltests/pr243.v
 ivtest/ivltests/pr2453002.v
 ivtest/ivltests/pr2728812a.v
 ivtest/ivltests/pr2792897.v
-ivtest/ivltests/pr2801662.v
 ivtest/ivltests/pr2809288.v
 ivtest/ivltests/pr2815398a_std.v
 ivtest/ivltests/pr2815398a.v
@@ -405,8 +395,6 @@ ivtest/ivltests/pr3587570.v
 ivtest/ivltests/pr434.v
 ivtest/ivltests/pr478.v
 ivtest/ivltests/pr498b.v
-ivtest/ivltests/pr528b.v
-ivtest/ivltests/pr528.v
 ivtest/ivltests/pr584.v
 ivtest/ivltests/pr690.v
 ivtest/ivltests/pr704.v
@@ -454,7 +442,6 @@ ivtest/ivltests/signed_a.v
 ivtest/ivltests/specify_01.v
 ivtest/ivltests/specparam_specify_reference_order.v
 ivtest/ivltests/sqrt32.v
-ivtest/ivltests/strength_feedback_delay.v
 ivtest/ivltests/strength_net_change.v
 ivtest/ivltests/strength_net_release.v
 ivtest/ivltests/string12.v

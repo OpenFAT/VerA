@@ -1759,8 +1759,13 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
             .source = a.source,
             .scope = a.scope,
             .sensitivity = watched.items,
-            // A sequential UDP's output is its state from the start (§8.5).
-            .current = try filled(arena, r.nets[a.net].resolved.width, false, .z),
+            // A driver's output is unknown until its first value lands
+            // (§4.2.1: "Nets with drivers shall assume the output value of
+            // their drivers"; §8.5 Figure 8-1 draws q and qb, behind `buf #3`
+            // and `not #5`, unknown until 3 and 5). Only a net with no driver
+            // keeps §4.2.1's default z. A sequential UDP's output is its state
+            // from the start (§8.5), set below.
+            .current = try filled(arena, r.nets[a.net].resolved.width, false, .x),
             .s0 = a.s0,
             .s1 = a.s1,
             .delay = if (try constantDelay(&r, a.delay)) try r.declaredDelay3(a.delay, a.tok) else blk: {
@@ -1813,6 +1818,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         r.net_driver_start = at.start;
         r.net_drivers = at.items;
         for (r.nets, 0..) |n, net| {
+            resolution.initial(&r, @intCast(net));
             // §7.9 `uwire` is the UNRESOLVED net type: a second driver is not a
             // resolution question there, it is an error. §4.6.5's "more than
             // one driver" is per bit: drivers of disjoint selects are legal.
@@ -2289,7 +2295,7 @@ pub fn expectRejected(source: []const u8, message: []const u8) !void {
 test "§19.8 no timescale is the simulator's own unit, not an error" {
     // "If there is no `timescale specified or it has been reset by a
     // `resetall directive, the time unit and precision are simulator-specific."
-    try expectRun("module m; wire w; reg a; assign #3 w = a; initial begin a = 1; #2 $display(\"%b %0d\", w, $time); #1 $display(\"%b %t\", w, $time); end endmodule", "z 2\n1                    3\n");
+    try expectRun("module m; wire w; reg a; assign #3 w = a; initial begin a = 1; #2 $display(\"%b %0d\", w, $time); #1 $display(\"%b %t\", w, $time); end endmodule", "x 2\n1                    3\n");
     try expectRun("`timescale 1ns/1ps\n`resetall\nmodule m; initial #1 $display(\"%0d %g\", $time, $realtime); endmodule", "1 1\n");
 }
 
@@ -2484,7 +2490,7 @@ test "A.2.2.3 a driver's variable delay is read when the driver schedules" {
         \\  $finish(0);
         \\end
         \\endmodule
-    , "z\n0\n1\n");
+    , "x\n0\n1\n");
 }
 
 test "§12.4.1 a genvar-indexed hierarchical name finds its iteration's scope unspelled" {

@@ -2502,7 +2502,7 @@ test "§12.2 parameters fold into bounds, delays and expressions" {
         \\  #2 $display("%b", late);
         \\end
         \\endmodule
-    , "1111 7 -4 0001 z 1\n1\n");
+    , "1111 7 -4 0001 x 1\n1\n");
 }
 
 test "§12.2 a parameter takes a defparam over a named or positional override over its default" {
