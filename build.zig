@@ -315,6 +315,19 @@ pub fn build(b: *Build) void {
             if (f.stderr) |e| r.expectStdErrEqual(e);
         }
         test_step.dependOn(&r.step);
+        // The same run with stdout a file, as conform runs it: the application's
+        // printf and the host's writer share one offset only if both stream.
+        if (f.xfail == null and f.refuse == null and !std.mem.endsWith(u8, f.design, ".va")) {
+            const filed = b.addSystemCommand(&.{ "sh", "-c", "\"$1\" \"$2\" > \"$3\" && cat \"$3\"", "sh" });
+            filed.addArtifactArg2(r.producer.?, .{ .make_absolute = true });
+            filed.addFileArg(b.path(f.design));
+            _ = filed.addOutputFileArg2(b.fmt("{s}.stdout", .{std.fs.path.stem(f.c)}), .{});
+            filed.setCwd(b.path(".zig-cache"));
+            filed.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
+            filed.expectExitCode(0);
+            filed.expectStdOutEqual(f.stdout);
+            test_step.dependOn(&filed.step);
+        }
         if (results_dir) |dir| {
             // A marker can only be written after the application's exit,
             // stdout and stderr checks succeed. Missing markers earn no credit.

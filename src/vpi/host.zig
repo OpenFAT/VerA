@@ -27,10 +27,10 @@ const Io = std.Io;
 /// Zig executable per application would recompile the whole engine per one.
 /// The C runtime's, on Windows: `_O_BINARY` keeps an application's `printf`
 /// from writing `\r\n`, so its stdout is the bytes a test expects.
-extern "c" fn _setmode(fd: c_int, mode: c_int) c_int;
+extern "c" fn _setmode(fd: c_int, mode: c_int) c_int; // os: the C runtime's, declared on every target and called only on Windows
 
 export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
-    if (builtin.os.tag == .windows) {
+    if (builtin.os.tag == .windows) { // os: binary stdio is a Windows-only C runtime mode
         _ = _setmode(1, 0x8000);
         _ = _setmode(2, 0x8000);
     }
@@ -106,9 +106,9 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
         // process's own environment.
         var threaded: Io.Threaded = .init(gpa, .{
             .environ = .{
-                .block = switch (builtin.os.tag) {
+                .block = switch (builtin.os.tag) { // os: std reads the environment block differently on Windows
                     .windows => .global, // the process's own block, read by std
-                    else => .{ .slice = std.mem.span(@as([*:null]const ?[*:0]const u8, @ptrCast(std.c.environ))) },
+                    else => .{ .slice = std.mem.span(@as([*:null]const ?[*:0]const u8, @ptrCast(std.c.environ))) }, // os: the host links libc on every target
                 },
             },
         });
@@ -296,7 +296,7 @@ fn buildAnalogLib(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, path
     var d = try vera.tb.parse(arena, source);
     d.validate_contract = true;
     const runner = try vera.tb.renderVpiLib(arena, stem, d);
-    const work_root = if (std.c.getenv("VERA_VPI_WORK")) |w| std.mem.span(w) else ".zig-cache/vera-vpi";
+    const work_root = if (std.c.getenv("VERA_VPI_WORK")) |w| std.mem.span(w) else ".zig-cache/vera-vpi"; // os: the host links libc on every target
     const work = try std.fs.path.join(arena, &.{ work_root, app_stem });
     // The contract this library speaks, beside the device it is built against.
     const contract = try std.fs.path.join(arena, &.{ work, "contract.zig" });
@@ -309,7 +309,7 @@ fn buildAnalogLib(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, path
         .contract = contract,
         .name = res.mir.name,
         .out_path = out,
-        .zig_exe = if (std.c.getenv("VERA_ZIG")) |z| std.mem.span(z) else "zig",
+        .zig_exe = if (std.c.getenv("VERA_ZIG")) |z| std.mem.span(z) else "zig", // os: the host links libc on every target
         .shared_lib = true,
     });
     defer built.deinit(gpa);
