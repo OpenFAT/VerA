@@ -171,7 +171,7 @@ fn scanSpec(self: *State, f: *Format, scope: []const u8, lib: []const u8) Error!
             '%' => return self.fail("§9.4.2 (E0826): a flag, width or precision before the second `%` of `%%`", .{}),
             'm', 'M' => try self.out.writeAll(scope),
             'l', 'L' => try self.out.writeAll(lib),
-            'b', 'B', 'o', 'O', 'h', 'H', 'd', 'D', 'e', 'E', 'f', 'F', 'g', 'G', 'r', 'R', 't', 'T', 's', 'S', 'c', 'C', 'v', 'V' => return .{ .conv = conv, .flags = sp.flags, .width = sp.width, .precision = sp.precision },
+            'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D', 'e', 'E', 'f', 'F', 'g', 'G', 'r', 'R', 't', 'T', 's', 'S', 'c', 'C', 'v', 'V' => return .{ .conv = conv, .flags = sp.flags, .width = sp.width, .precision = sp.precision },
             else => return self.fail("only the §9.4.3 Table 9-22 conversions (%b, %o, %h, %d, %e, %f, %g, §9.4.7 %r and %%) and %c %s %m %l %t %v are implemented", .{}),
         }
     }

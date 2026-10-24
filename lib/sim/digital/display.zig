@@ -629,7 +629,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 '%' => return self.failWith(.E0826, ex.mainTok(e), "a flag, width or precision before the second `%` of `%%`", .{}),
                 'b', 'B' => .binary,
                 'o', 'O' => .octal,
-                'h', 'H' => .hex,
+                'h', 'H', 'x', 'X' => .hex,
                 'd', 'D' => .decimal,
                 // §9.4.3 Table 9-23's real conversions, which "have the full
                 // formatting capabilities available in the C language".

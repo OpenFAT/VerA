@@ -188,7 +188,6 @@ ivtest/ivltests/always3.1.3A.v
 ivtest/ivltests/always3.1.3B.v
 ivtest/ivltests/always3.1.3C.v
 ivtest/ivltests/array_index_real_fail.v
-ivtest/ivltests/array_lval_select6.v
 ivtest/ivltests/array_packed_2d.v
 ivtest/ivltests/array_word_check.v
 ivtest/ivltests/assign3.2E.v
@@ -305,7 +304,6 @@ ivtest/ivltests/ldelay3.v
 ivtest/ivltests/localparam_type.v
 ivtest/ivltests/macro_comment_multiline.v
 ivtest/ivltests/macro_str_esc.v
-ivtest/ivltests/mem1.v
 ivtest/ivltests/module_no_port_mixed_instances.v
 ivtest/ivltests/module_output_port_list_def.v
 ivtest/ivltests/module_output_port_var2.v
@@ -327,14 +325,11 @@ ivtest/ivltests/partsel_outside_const.v
 ivtest/ivltests/partsel_outside_expr.v
 ivtest/ivltests/pr1002a.v
 ivtest/ivltests/pr1026.v
-ivtest/ivltests/pr1033.v
 ivtest/ivltests/pr1403406.v
 ivtest/ivltests/pr1587669.v
 ivtest/ivltests/pr1603313.v
 ivtest/ivltests/pr1628300.v
 ivtest/ivltests/pr1645518.v
-ivtest/ivltests/pr1661640.v
-ivtest/ivltests/pr1699519.v
 ivtest/ivltests/pr1701855b.v
 ivtest/ivltests/pr1701855.v
 ivtest/ivltests/pr1701890.v
@@ -346,7 +341,6 @@ ivtest/ivltests/pr1752823b.v
 ivtest/ivltests/pr1755629.v
 ivtest/ivltests/pr1787423b.v
 ivtest/ivltests/pr1787423.v
-ivtest/ivltests/pr1799904.v
 ivtest/ivltests/pr1804877.v
 ivtest/ivltests/pr1830834.v
 ivtest/ivltests/pr1832097b.v
@@ -369,7 +363,6 @@ ivtest/ivltests/pr1960633.v
 ivtest/ivltests/pr1963960.v
 ivtest/ivltests/pr1963962.v
 ivtest/ivltests/pr1985582.v
-ivtest/ivltests/pr2014673.v
 ivtest/ivltests/pr2029336.v
 ivtest/ivltests/pr2043585.v
 ivtest/ivltests/pr2121536b.v
@@ -385,11 +378,8 @@ ivtest/ivltests/pr2350934.v
 ivtest/ivltests/pr2350988.v
 ivtest/ivltests/pr243.v
 ivtest/ivltests/pr2453002.v
-ivtest/ivltests/pr245_std.v
-ivtest/ivltests/pr245.v
 ivtest/ivltests/pr2728032.v
 ivtest/ivltests/pr2728812a.v
-ivtest/ivltests/pr273.v
 ivtest/ivltests/pr2792897.v
 ivtest/ivltests/pr2801662.v
 ivtest/ivltests/pr2809288.v
@@ -416,7 +406,6 @@ ivtest/ivltests/pr3296466d.v
 ivtest/ivltests/pr3587570.v
 ivtest/ivltests/pr434.v
 ivtest/ivltests/pr478.v
-ivtest/ivltests/pr492.v
 ivtest/ivltests/pr498b.v
 ivtest/ivltests/pr528b.v
 ivtest/ivltests/pr528.v
@@ -428,7 +417,6 @@ ivtest/ivltests/pr812.v
 ivtest/ivltests/pr903.v
 ivtest/ivltests/pr938b.v
 ivtest/ivltests/pr985.v
-ivtest/ivltests/prng.v
 ivtest/ivltests/pv_wr_vec4a_nb_ec.v
 ivtest/ivltests/pv_wr_vec4_nb_ec.v
 ivtest/ivltests/queue_stat.v
@@ -500,7 +488,6 @@ ivtest/ivltests/test_extended.v
 ivtest/ivltests/test_width.v
 ivtest/ivltests/timing_check_delayed_signals.v
 ivtest/ivltests/timing_check_syntax.v
-ivtest/ivltests/tri2.v
 ivtest/ivltests/udp_dff.v
 ivtest/ivltests/udp_instance_shadow_fail.v
 ivtest/ivltests/undef.v

@@ -2278,13 +2278,13 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
             const width = sp.width;
             const precision = sp.precision;
             switch (format[i]) {
-                'b', 'B', 'o', 'O', 'h', 'H', 'd', 'D' => {
+                'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D' => {
                     arg += 1;
                     try flush(self, &text);
                     try operand(self, args[arg], switch (format[i]) {
                         'b', 'B' => .binary,
                         'o', 'O' => .octal,
-                        'h', 'H' => .hex,
+                        'h', 'H', 'x', 'X' => .hex,
                         else => .decimal,
                     }, width);
                 },
@@ -2380,9 +2380,9 @@ fn dynamicFormat(self: *Emitter, args: []const Ast.ExprId) Error!void {
     try self.print(", {d});\n            b{d}: {{\n", .{ ft.width, lb });
     for (args[1..], 1..) |a, k| {
         try self.print("            const c{d}_{d} = (try s.nextSpec(&f{d}, \"{f}\", \"{f}\")) orelse break :b{d};\n", .{ lb, k, lb, scope, lib, lb });
-        try self.print("            switch (c{d}_{d}.conv) {{\n                'b', 'B', 'o', 'O', 'h', 'H', 'd', 'D' => try s.value(", .{ lb, k });
+        try self.print("            switch (c{d}_{d}.conv) {{\n                'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D' => try s.value(", .{ lb, k });
         var t = try expr.selfDetermined(self, a);
-        try self.print(", {d}, {}, switch (c{d}_{d}.conv) {{\n                    'b', 'B' => .binary,\n                    'o', 'O' => .octal,\n                    'h', 'H' => .hex,\n                    else => .decimal,\n                }}, c{d}_{d}.width),\n", .{ t.width, t.signed, lb, k, lb, k });
+        try self.print(", {d}, {}, switch (c{d}_{d}.conv) {{\n                    'b', 'B' => .binary,\n                    'o', 'O' => .octal,\n                    'h', 'H', 'x', 'X' => .hex,\n                    else => .decimal,\n                }}, c{d}_{d}.width),\n", .{ t.width, t.signed, lb, k, lb, k });
         if (compile.typeOf(r, a).real) {
             try self.print("                't', 'T' => try s.timeReal(", .{});
             try expr.real(self, a);
