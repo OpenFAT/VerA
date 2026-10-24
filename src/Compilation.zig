@@ -93,6 +93,9 @@ pub const Error = codegen.Error || error{
     CompileFailed,
     /// The source declared no `module` (LRM §6.2).
     NoModule,
+    /// `Options.empty_unit_ok`: the source parsed and was checked, and holds
+    /// no module to elaborate (A.1.2 admits that source_text).
+    NothingToElaborate,
     /// `.lint` produces no artifact by definition.
     NoArtifact,
 };
@@ -118,6 +121,12 @@ pub const Options = struct {
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams (§3.6.2).
     /// The Table E.1 primitives are prepended either way (annex E.2).
     std_defs: bool = true,
+    /// A source with no module of its own to elaborate (A.1.2's
+    /// `source_text ::= { description }`: none, or only connect modules, UDPs,
+    /// disciplines, pragmas) is `error.NothingToElaborate`, not E1001. A
+    /// check that builds nothing sets it (`vera --lint`, `--check`); a request
+    /// for a device has none to build (§6.2, E1001).
+    empty_unit_ok: bool = false,
     /// The source must `include` the annex D files it uses
     /// (`Preprocessor.Options.require_std_includes`): a D.2 macro without
     /// constants.vams is E0115, a D.1 discipline without disciplines.vams is
@@ -427,6 +436,13 @@ fn compileInArena(
             return error.CompileFailed;
         },
     };
+    // IEEE 1364-2005 §8.1.1 on every UDP declaration, as the digital route
+    // checks it (`lib/sim/digital/elab.zig` `checkUdp`): one output, and it
+    // is the first port.
+    for (parse.udps) |u| if (u.outputs != 1 or u.ports.len == 0 or u.output != u.ports[0]) {
+        const at = starts[u.main_tok];
+        try bag.add(.parse, .E1100, .{ .start = at, .end = at }, "§8.1.1: a UDP has exactly one output port, and it is the first port", .{});
+    };
     if (bag.failed()) return error.CompileFailed;
     // Every later stage reads, and elaboration writes, an overlay of the
     // parse: the parse itself is never written, and its
@@ -488,6 +504,9 @@ fn lowerAndProve(
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.NoModule => {
+            // Connect modules are placed by §7.6 insertion, never a root, so
+            // a unit of them alone has no top either.
+            if (opts.empty_unit_ok) return error.NothingToElaborate;
             try bag.add(.lower, .E1001, .{}, "", .{});
             return error.NoModule;
         },
@@ -779,12 +798,20 @@ pub fn compile(
     opts.spice_netlist = netlist;
     opts.spice_path = req.spice_path orelse if (directives.spice.len != 0) in_path else "";
     opts.diags = bag;
+    // A check accepts a source_text with no module (`connectmodule_is_not_a_device.va`
+    // pins E1001 only where a device is asked for).
+    opts.empty_unit_ok = req.check or (req.verilog == null and req.exe == null and !req.so and !req.zig);
     // `//! display record` asks a testbench for the device a host gets.
     if (directives.display_record) opts.display = .record;
     const target: Target = if (req.verilog == null and !req.check and req.exe == null and !req.so and !req.zig) .lint else .build;
     // `//! discipline-resolution detail` asks for §7.4.4.2's mode.
     if (directives.discipline_resolution == .detail) opts.discipline_resolution = .detail;
     o.result = compileSourceOpts(gpa, source, target, opts) catch |e| {
+        // Checked, and nothing to build: what the bag holds are warnings.
+        if (e == error.NothingToElaborate) {
+            o.report = .after;
+            return o.done(0);
+        }
         o.report = .{ .failed = e };
         return o.done(1);
     };
@@ -1524,6 +1551,29 @@ test "without the prelude, the Table E.1 primitives are still built in" {
     var res = try compileSourceOpts(gpa, src, .lint, .{ .std_defs = false, .require_std_includes = true });
     defer res.deinit();
     try std.testing.expectEqualStrings("top", res.mir.name);
+}
+
+test "a check of a unit of only connect modules or UDPs elaborates nothing and is not E1001" {
+    // Oracle: A.1.2 `description` admits a udp_declaration and a
+    // `connectmodule` module_declaration; neither is a §6.2.2 root (§7.6).
+    const gpa = std.testing.allocator;
+    const units = [_][]const u8{
+        "",
+        "primitive inv(o, a); output o; input a; table 0 : 1; 1 : 0; endtable endprimitive\n",
+        "`include \"disciplines.vams\"\nconnectmodule c(a, b); input a; output b; electrical a, b; analog V(b) <+ V(a); endmodule\n",
+    };
+    for (units) |src| {
+        var bag: diag.Bag = .init(gpa);
+        defer bag.deinit(gpa);
+        try std.testing.expectError(error.NothingToElaborate, compileSourceOpts(gpa, src, .lint, .{ .diags = &bag, .empty_unit_ok = true }));
+        try std.testing.expect(!bag.failed());
+    }
+    // IEEE 1364-2005 §8.1.1: the output is the first port. Without this the
+    // unit above would accept `dump_mux4to1`'s undeclared output.
+    var bag: diag.Bag = .init(gpa);
+    defer bag.deinit(gpa);
+    try std.testing.expectError(error.CompileFailed, compileSourceOpts(gpa, "primitive p(o, a); output q; input a; table 0 : 1; endtable endprimitive\n", .lint, .{ .diags = &bag }));
+    try std.testing.expectEqual(diag.Code.E1100, bag.at(0).code);
 }
 
 const test_netlist =
