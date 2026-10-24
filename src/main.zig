@@ -236,7 +236,10 @@ pub fn main(init: std.process.Init) !u8 {
     }
     // --run: the transcript is the point, so inherit both streams and let
     // the testbench's exit status be ours.
-    var child = try std.process.spawn(io, .{ .argv = &.{bin} });
+    const tb_argv = try arena.allocator().alloc([]const u8, 1 + o.plusargs.len);
+    tb_argv[0] = bin;
+    @memcpy(tb_argv[1..], o.plusargs);
+    var child = try std.process.spawn(io, .{ .argv = tb_argv });
     return switch (try child.wait(io)) {
         .exited => |c| c,
         else => 1,

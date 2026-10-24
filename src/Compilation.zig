@@ -697,6 +697,9 @@ pub const Outcome = struct {
     text: []const u8 = "",
     /// The testbench `exe` built.
     exe: ?[]const u8 = null,
+    /// The testbench's `//! plusargs` (IEEE 1364 §17.10), the argv `--run`
+    /// gives `exe` after its path.
+    plusargs: []const []const u8 = &.{},
     /// The refusal; empty when there is none.
     err: []const u8 = "",
     /// Whether the bag's diagnostics are printed, and where.
@@ -749,20 +752,6 @@ pub fn compile(
     const in_path = req.options.file_name;
     const b = req.build;
 
-    // E.1.1's antecedent, made true from the command line: "if a simulator which
-    // supports Verilog-AMS HDL is also able to read SPICE netlists ... certain
-    // objects defined in that flavor of SPICE netlist can be referenced from
-    // within a Verilog-AMS HDL structural description". Read whole, because
-    // `spice_cards.synthesize` works on the text and a `+` continuation makes a
-    // card longer than a line.
-    const netlist: []const u8 = if (req.spice_path) |p|
-        Preprocessor.readText(io, .cwd(), p, arena) catch |e| {
-            try readFailed(err, p, e);
-            return o.done(2);
-        }
-    else
-        "";
-
     // --emit-exe's `//!` directives, read up front: a `//! param` card value
     // for a SHAPE parameter is a compile-time value (below). The directive
     // tables and the runner text are a web of small slices with one lifetime;
@@ -772,13 +761,29 @@ pub fn compile(
         return o.done(2);
     };
 
+    // E.1.1's antecedent, made true from the command line: "if a simulator which
+    // supports Verilog-AMS HDL is also able to read SPICE netlists ... certain
+    // objects defined in that flavor of SPICE netlist can be referenced from
+    // within a Verilog-AMS HDL structural description". Read whole, because
+    // `spice_cards.synthesize` works on the text and a `+` continuation makes a
+    // card longer than a line. Without `--spice`, a testbench's own `//! spice`
+    // cards are the netlist, read beside the source as the fixture runner reads them.
+    const netlist: []const u8 = if (req.spice_path) |p|
+        Preprocessor.readText(io, .cwd(), p, arena) catch |e| {
+            try readFailed(err, p, e);
+            return o.done(2);
+        }
+    else
+        directives.spice;
     var opts = req.options;
     opts.spice_netlist = netlist;
-    opts.spice_path = req.spice_path orelse "";
+    opts.spice_path = req.spice_path orelse if (directives.spice.len != 0) in_path else "";
     opts.diags = bag;
     // `//! display record` asks a testbench for the device a host gets.
     if (directives.display_record) opts.display = .record;
     const target: Target = if (req.verilog == null and !req.check and req.exe == null and !req.so and !req.zig) .lint else .build;
+    // `//! discipline-resolution detail` asks for §7.4.4.2's mode.
+    if (directives.discipline_resolution == .detail) opts.discipline_resolution = .detail;
     o.result = compileSourceOpts(gpa, source, target, opts) catch |e| {
         o.report = .{ .failed = e };
         return o.done(1);
@@ -921,7 +926,10 @@ pub fn compile(
                 try err.writeAll(text);
                 return o.done(1);
             },
-            .ok => |p| o.exe = try arena.dupe(u8, p),
+            .ok => |p| {
+                o.exe = try arena.dupe(u8, p);
+                o.plusargs = directives.plusargs;
+            },
         }
         return;
     }
