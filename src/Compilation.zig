@@ -121,6 +121,8 @@ pub const Options = struct {
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams (§3.6.2).
     /// The Table E.1 primitives are prepended either way (annex E.2).
     std_defs: bool = true,
+    /// `vera -D`: `NAME` or `NAME=TEXT` macros (`Preprocessor.Options.defines`).
+    defines: []const []const u8 = &.{},
     /// A source with no module of its own to elaborate (A.1.2's
     /// `source_text ::= { description }`: none, or only connect modules, UDPs,
     /// disciplines, pragmas) is `error.NothingToElaborate`, not E1001. A
@@ -376,6 +378,7 @@ fn compileInArena(
     const arena = arena_state.allocator();
     const pp = Preprocessor.process(arena, source, .{
         .include_dirs = opts.include_dirs,
+        .defines = opts.defines,
         .file_name = opts.file_name,
         .std_defs = opts.std_defs,
         // Annex E.2: Table E.1 is built in, with or without annex D.
@@ -1574,6 +1577,16 @@ test "a check of a unit of only connect modules or UDPs elaborates nothing and i
     defer bag.deinit(gpa);
     try std.testing.expectError(error.CompileFailed, compileSourceOpts(gpa, "primitive p(o, a); output q; input a; table 0 : 1; endtable endprimitive\n", .lint, .{ .diags = &bag }));
     try std.testing.expectEqual(diag.Code.E1100, bag.at(0).code);
+}
+
+test "-D: a command-line macro is defined before the source; a bare name is 1" {
+    // Oracle: §10.4 `define NAME TEXT, the meaning iverilog gives -D.
+    const gpa = std.testing.allocator;
+    const src = "`ifdef ON\n`include \"disciplines.vams\"\nmodule res(p, n); inout p, n; electrical p, n; parameter real r = `R; analog I(p, n) <+ V(p, n) / r * `ON; endmodule\n`endif\n";
+    try std.testing.expectError(error.NoModule, compileSourceOpts(gpa, src, .lint, .{ .defines = &.{"R=2.0"} }));
+    var res = try compileSourceOpts(gpa, src, .lint, .{ .defines = &.{ "ON", "R=2.0" } });
+    defer res.deinit();
+    try std.testing.expectEqualStrings("res", res.mir.name);
 }
 
 const test_netlist =

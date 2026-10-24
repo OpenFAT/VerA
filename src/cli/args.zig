@@ -109,6 +109,8 @@ pub const usage_text =
     \\                          --emit-exe artifact (default: stripped; same machine
     \\                          code, about half the LLVM time of a large device)
     \\  -I DIR                  add an `include search directory
+    \\  -D NAME[=TEXT]          `define NAME TEXT before the source (bare: 1);
+    \\                          also -DNAME[=TEXT]; repeatable
     \\  --param NAME=VALUE      compile with the top module's parameter NAME set
     \\                          to VALUE (LRM 3.4): a number, or a string parameter's
     \\                          text (`--param mode=fast`). A parameter that sizes an
@@ -149,6 +151,8 @@ pub const Cli = struct {
     levels: diag.Levels = .empty,
     /// `-I`, in order.
     include_dirs: std.ArrayList([]const u8) = .empty,
+    /// `-D`, in order, each `NAME` or `NAME=TEXT` as typed.
+    defines: std.ArrayList([]const u8) = .empty,
     /// `--param`, in order: each keeps its text (a string parameter's value)
     /// beside the number, NaN when the text is not one.
     overrides: std.ArrayList(vera.ParamOverride) = .empty,
@@ -228,6 +232,7 @@ pub const Cli = struct {
     pub fn deinit(cli: *Cli, gpa: std.mem.Allocator) void {
         cli.levels.deinit(gpa);
         cli.include_dirs.deinit(gpa);
+        cli.defines.deinit(gpa);
         cli.overrides.deinit(gpa);
         cli.paths.deinit(gpa);
         cli.libmaps.deinit(gpa);
@@ -380,6 +385,14 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
             try cli.search.append(gpa, args.next() orelse return try missing(err, "-L", "a library name"));
         } else if (std.mem.eql(u8, arg, "-I")) {
             try cli.include_dirs.append(gpa, try pathValue(args, err, "-I", "a directory") orelse return 2);
+        } else if (std.mem.startsWith(u8, arg, "-D")) {
+            const d = if (arg.len > 2) arg[2..] else args.next() orelse return try missing(err, "-D", "NAME[=TEXT]");
+            const name = d[0 .. std.mem.findScalar(u8, d, '=') orelse d.len];
+            if (!isMacroName(name)) {
+                try err.print("error: -D {s}: `{s}` is not a macro name (a simple identifier, IEEE 1364-2005 3.7.1)\n", .{ d, name });
+                return 2;
+            }
+            try cli.defines.append(gpa, d);
         } else if (std.mem.startsWith(u8, arg, "--std=")) {
             const set = vera.KeywordSet.fromSpecifier(arg["--std=".len..]) orelse {
                 try err.print("error: `{s}`: not a `begin_keywords version specifier\n", .{arg});
@@ -544,6 +557,13 @@ pub fn resolve(cli: *Cli, err: *Io.Writer) !?u8 {
 /// `error: <flag> needs <what>`: the line ended there, or the value is empty,
 /// which names no file. Every path flag reads its value here, so an empty
 /// one is refused before anything opens or spawns it (#47).
+/// A simple identifier (IEEE 1364-2005 §3.7.1), what `define names.
+fn isMacroName(name: []const u8) bool {
+    if (name.len == 0 or !(std.ascii.isAlphabetic(name[0]) or name[0] == '_')) return false;
+    for (name[1..]) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '$')) return false;
+    return true;
+}
+
 fn pathValue(args: anytype, err: *Io.Writer, flag: []const u8, what: []const u8) !?[]const u8 {
     const v = args.next() orelse "";
     if (v.len != 0) return v;
@@ -674,6 +694,7 @@ test "parse: a flag that takes a value refuses a line that ends before it" {
         .{ "--libmap", "error: --libmap needs a library map file\n" },
         .{ "-L", "error: -L needs a library name\n" },
         .{ "-I", "error: -I needs a directory\n" },
+        .{ "-D", "error: -D needs NAME[=TEXT]\n" },
     };
     for (cases) |c| try expectRefused(&.{c[0]}, c[1]);
 }

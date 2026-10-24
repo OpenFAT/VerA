@@ -155,6 +155,12 @@ pub fn main(init: std.process.Init) !u8 {
         try err.print("error: {s}: --emit-rtlil takes an IEEE 1364 design (.v)\n", .{in_path});
         return 2;
     }
+    // ponytail: the digital runner's preprocessor takes no -D yet; refused,
+    // not ignored. Pass `cli.defines` through `digital.Options` to lift it.
+    if (digital_source and cli.defines.items.len != 0) {
+        try err.print("error: {s}: -D takes a Verilog-A/AMS source; a .v design defines its macros in the source\n", .{in_path});
+        return 2;
+    }
     if (digital_source and cli.emit_verilog) {
         try err.print("error: {s}: --emit-verilog takes a Verilog-A model (.va)\n", .{in_path});
         return 2;
@@ -176,6 +182,7 @@ pub fn main(init: std.process.Init) !u8 {
         .options = .{
             .file_name = in_path,
             .include_dirs = cli.include_dirs.items,
+            .defines = cli.defines.items,
             .std_defs = cli.std_defs,
             .require_std_includes = true, // the source includes the annex D files it uses
             .language = cli.language,

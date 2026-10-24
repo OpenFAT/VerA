@@ -16,6 +16,10 @@ const spice_cards = @import("spice_cards.zig");
 pub const Options = struct {
     /// Searched in order for `include, before the built-in annex D files.
     include_dirs: []const []const u8 = &.{},
+    /// Command-line macros (`vera -D`), each `NAME` or `NAME=TEXT`: defined
+    /// after the prelude and before the compilation unit, as `define NAME TEXT
+    /// would be; a bare `NAME` is `1`, as iverilog's `-D` defines it.
+    defines: []const []const u8 = &.{},
     /// Name the compilation unit is registered under; `__FILE__` expands to it.
     file_name: []const u8 = "<source>",
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams.
@@ -420,6 +424,11 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
             netlist_modules = cards.modules;
         }
         netlist_unsupported = cards.unsupported;
+    }
+
+    for (opts.defines) |d| {
+        const eq = std.mem.findScalar(u8, d, '=');
+        try pp.putMacro(d[0 .. eq orelse d.len], .{ .body = if (eq) |i| d[i + 1 ..] else "1" });
     }
 
     // The compilation unit's output is about its own length (comments out,
