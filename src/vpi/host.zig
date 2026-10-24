@@ -327,7 +327,7 @@ fn stderrWriter() *Io.Writer {
         var buf: [4096]u8 = undefined;
         var w: ?Io.File.Writer = null;
     };
-    if (S.w == null) S.w = Io.File.stderr().writer(Io.Threaded.global_single_threaded.io(), &S.buf);
+    if (S.w == null) S.w = Io.File.stderr().writerStreaming(Io.Threaded.global_single_threaded.io(), &S.buf);
     return &S.w.?.interface;
 }
 
@@ -347,10 +347,10 @@ fn digitalHost(path: []const u8) !u8 {
     const arena = arena_state.allocator();
 
     var ebuf: [4096]u8 = undefined;
-    var ew = Io.File.stderr().writer(io, &ebuf);
+    var ew = Io.File.stderr().writerStreaming(io, &ebuf);
     const err = &ew.interface;
     var obuf: [4096]u8 = undefined;
-    var ow = Io.File.stdout().writer(io, &obuf);
+    var ow = Io.File.stdout().writerStreaming(io, &obuf);
     const out = &ow.interface;
 
     const source = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 * 1024 * 1024)) catch |e| {
