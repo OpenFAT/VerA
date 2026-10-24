@@ -20,6 +20,13 @@ pub const Options = struct {
     file_name: []const u8 = "<source>",
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams.
     std_defs: bool = true,
+    /// With `std_defs` off, still prepend the Table E.1 primitives (and read
+    /// `spice_netlist`): E.2 makes them built-ins "in the same manner ... as
+    /// built-in primitives of gate- and switch-level modeling", not part of
+    /// the annex D prelude. Their `electrical` ports bind to the source's
+    /// own discipline of that name. The Verilog-AMS spine sets it; a 1364
+    /// design has no use for them.
+    spice_primitives: bool = false,
     /// The prepended annex D files serve only a source that `include`s them:
     /// a D.2 macro without `include "constants.vams"` is
     /// E0115, and elaboration hides the D.1 disciplines without
@@ -28,8 +35,8 @@ pub const Options = struct {
     require_std_includes: bool = false,
     /// Annex E.2 SPICE netlist text, one card per line. Each `.MODEL` and
     /// `.SUBCKT` becomes a module appended after the Table E.1 prelude; empty
-    /// appends nothing. Read only with `std_defs`, because a model card's
-    /// interface comes from a Table E.1 primitive.
+    /// appends nothing. Read only with `std_defs` or `spice_primitives`, because a
+    /// model card's interface comes from a Table E.1 primitive.
     spice_netlist: []const u8 = "",
     /// The file `spice_netlist` was read from, or "": its `.INCLUDE`, `.LIB`
     /// and `.HDL` names are looked for beside it (`spice_cards.Reader`).
@@ -380,10 +387,10 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
     var netlist_modules: u32 = 0;
     var netlist_unsupported: []const []const u8 = &.{};
     var hdl: []const []const u8 = &.{};
-    if (opts.std_defs) {
+    if (opts.std_defs or opts.spice_primitives) {
         // Replayed from the process-lifetime snapshot (`Prelude`), which
         // pp/test.zig checks against a fresh `runStdDefs`.
-        try pp.replayStdDefs();
+        if (opts.std_defs) try pp.replayStdDefs() else try pp.runSpicePrimitives();
         // Annex E.2 after Table E.1: a `.MODEL` wrapper instantiates the
         // primitive its type names, so the primitive has to be declared first.
         const cards = try spice_cards.synthesize(arena, opts.spice_netlist, opts.spice_path);
@@ -786,6 +793,17 @@ pub const Pp = struct {
         // disciplines.vams declares, and the source rows read `M_TWO_PI, which
         // constants.vams defines. Before the user's source, so nothing the user
         // `defines can reach into a shipped standard file.
+        try pp.runFile(pp_annex_e.spice_primitives, "spice_primitives.vams", null);
+    }
+
+    /// Table E.1 alone (`Options.spice_primitives`): its source rows read
+    /// annex D.2's `M_TWO_PI, defined for this file only, so no annex D macro
+    /// reaches the source.
+    fn runSpicePrimitives(pp: *Pp) Error!void {
+        pp.in_std_defs = true;
+        defer pp.in_std_defs = false;
+        try pp.putMacro("M_TWO_PI", .{ .body = "6.28318530717958647693" });
+        defer pp.removeMacro("M_TWO_PI");
         try pp.runFile(pp_annex_e.spice_primitives, "spice_primitives.vams", null);
     }
 

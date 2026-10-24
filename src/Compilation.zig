@@ -116,6 +116,7 @@ pub const Options = struct {
     /// (`--discipline-resolution=`); see `Elaborate.DisciplineResolution`.
     discipline_resolution: Elaborate.DisciplineResolution = .basic,
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams (§3.6.2).
+    /// The Table E.1 primitives are prepended either way (annex E.2).
     std_defs: bool = true,
     /// The source must `include` the annex D files it uses
     /// (`Preprocessor.Options.require_std_includes`): a D.2 macro without
@@ -368,6 +369,8 @@ fn compileInArena(
         .include_dirs = opts.include_dirs,
         .file_name = opts.file_name,
         .std_defs = opts.std_defs,
+        // Annex E.2: Table E.1 is built in, with or without annex D.
+        .spice_primitives = true,
         .require_std_includes = opts.require_std_includes,
         .spice_netlist = opts.spice_netlist,
         .spice_path = opts.spice_path,
@@ -406,8 +409,8 @@ fn compileInArena(
     // The Table E.1 primitives (annex E) are the first declarations in `text`,
     // and the annex E.2 netlist modules follow them before the user's source,
     // so together they lead `file.modules`. This is the one place that knows
-    // whether the prelude was prepended; see `Ast.SourceFile.builtin_modules`.
-    const builtins: u32 = if (opts.std_defs) Preprocessor.spice_module_count + netlist_modules else 0;
+    // how many the netlist added; see `Ast.SourceFile.builtin_modules`.
+    const builtins: u32 = Preprocessor.spice_module_count + netlist_modules;
     parse.* = p.parseSourceFile() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseError => {
@@ -1487,14 +1490,32 @@ test "a parse error is NoModule only when no module of the source's own was pars
 }
 
 test "without the prelude, a source that includes the annex D files itself compiles" {
-    // `std_defs = false` drops the prepended annex D.1/D.2 text and the
-    // Table E.1 primitives with it, so nothing is a builtin module and the
-    // user's `res` is the top.
+    // `std_defs = false` drops the prepended annex D.1/D.2 text but keeps
+    // the Table E.1 primitives (E.2: built-ins), which are never the top: the
+    // user's `res` is.
     const gpa = std.testing.allocator;
     var res = try compileSourceOpts(gpa, "`include \"disciplines.vams\"\n" ++ test_resistor, .lint, .{ .std_defs = false });
     defer res.deinit();
     try std.testing.expectEqualStrings("res", res.mir.name);
     try std.testing.expect(res.verdict.ok());
+}
+
+test "without the prelude, the Table E.1 primitives are still built in" {
+    // Oracle: annex E.2, the primitives are built-ins "in the same manner
+    // ... as built-in primitives of gate- and switch-level modeling", not
+    // annex D text. Their `electrical` ports bind to the source's own.
+    const gpa = std.testing.allocator;
+    const src =
+        \\`include "disciplines.vams"
+        \\module top(a, b);
+        \\  inout a, b;
+        \\  electrical a, b;
+        \\  resistor #(.r(2.0)) r1(a, b);
+        \\endmodule
+    ;
+    var res = try compileSourceOpts(gpa, src, .lint, .{ .std_defs = false, .require_std_includes = true });
+    defer res.deinit();
+    try std.testing.expectEqualStrings("top", res.mir.name);
 }
 
 const test_netlist =
