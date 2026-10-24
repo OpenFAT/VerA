@@ -687,7 +687,7 @@ pub fn checkFormatPairing(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!
 const Conv = struct { letter: u8, alt: bool, prefixed: bool = false, field: u64 = 0 };
 
 /// The largest field width or precision an analog-context format may
-/// write (#45; `specification/Vague_Decisions.md` §7): 2^30. The device
+/// write (#45; `docs/specification/Vague_Decisions.md` §7): 2^30. The device
 /// kernel `str_kernels.zCReal` indexes digits as i32, the precision plus
 /// f64's 309 integer digits and its rounding position, and `cg_display`
 /// sizes each field's scratch as width + precision + 328 bytes in a u64;
@@ -1093,17 +1093,8 @@ pub fn lowerScan(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!Mir.Value
     for (args[2..]) |a| {
         if (a == .none) continue;
         const slot = try lower_stmt.resolveLvalue(self, a) orelse continue;
-        // The destination's declared type picks the callee, exactly as §5.10's
-        // `holdSlot` does: the name IS the type, so `callee.ty` and
-        // `sysFuncTy` cannot disagree about it.
-        const callee: []const u8 = switch (slot.ty) {
-            .integer => "$sscanf$int",
-            .string => "$sscanf$str",
-            .real => "$sscanf$real",
-            .wide => unreachable, // `resolveLvalue` types a wide `reg` `.integer` (`Lvalue.at.wide`)
-        };
         const index = try self.mir.addIntConst(self.arena, item);
-        const v = try self.call(callee, &.{ src, fmt, index });
+        const v = try self.call(sscanfCallee(slot.ty), &.{ src, fmt, index });
         // Read the current SSA value per assignment: if a destination occurs
         // twice, a failed later conversion retains the earlier successful one.
         const old = try lower_stmt.readLvalue(self, slot);
@@ -1112,6 +1103,18 @@ pub fn lowerScan(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!Mir.Value
         item += 1;
     }
     return count;
+}
+
+/// The `$sscanf` reader for a destination of type `ty`. The destination's
+/// declared type picks the callee, exactly as §5.10's `holdSlot` does: the
+/// name IS the type, so `callee.ty` and `sysFuncTy` cannot disagree about it.
+fn sscanfCallee(ty: Ty) []const u8 {
+    return switch (ty) {
+        .integer => "$sscanf$int",
+        .string => "$sscanf$str",
+        .real => "$sscanf$real",
+        .wide => unreachable, // `resolveLvalue` types a wide `reg` `.integer` (`Lvalue.at.wide`)
+    };
 }
 
 /// §9.12 / IEEE 1364 §17.10.2 `found = $value$plusargs(user_string, variable)`:
@@ -1127,14 +1130,8 @@ pub fn lowerValuePlusargs(self: *Lower, args: []const Ast.ExprId) Oom!Mir.Value 
     const found = try self.call("$value$plusargs", &.{user});
     const slot = try lower_stmt.resolveLvalue(self, args[1]) orelse return found;
     self.out.uses.insert(.str_tasks);
-    const callee: []const u8 = switch (slot.ty) {
-        .integer => "$sscanf$int",
-        .string => "$sscanf$str",
-        .real => "$sscanf$real",
-        .wide => unreachable, // `resolveLvalue` types a wide `reg` `.integer` (`Lvalue.at.wide`)
-    };
     const zero = try self.mir.addIntConst(self.arena, 0);
-    const v = try self.call(callee, &.{ try self.call("$plusarg$str", &.{user}), user, zero });
+    const v = try self.call(sscanfCallee(slot.ty), &.{ try self.call("$plusarg$str", &.{user}), user, zero });
     const old = try lower_stmt.readLvalue(self, slot);
     const hit = try self.emit(.igt, &.{ found, zero });
     try lower_stmt.writeLvalue(self, slot, try self.emit(.select, &.{ hit, v, old }));

@@ -1,5 +1,0 @@
-t=1 ntfr=0
-t=10 ntfr=1
-t=20 ntfr=0
-t=21 ntfr=1
-t=28 n0=0

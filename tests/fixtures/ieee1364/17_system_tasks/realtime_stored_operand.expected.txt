@@ -1,2 +1,0 @@
-first saved=0.25 product=1.00
-later saved=0.25 current=3.00

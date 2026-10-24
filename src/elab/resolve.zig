@@ -586,15 +586,23 @@ pub fn checkConnectRules(self: *Flatten) Error!void {
     }
 }
 
-// ponytail: nets declared inside a generate block are not visited; add them
-// when a fixture declares one with a bad discipline.
 /// Checks that every net declaration in every user module names a declared
 /// discipline (A.2.1.3, §3.6.2; E0371), once per compilation. Every module,
 /// because the common form of this error, `child c1;` (an instance missing
 /// its parentheses, parsed as a net of discipline `child`), leaves `child`
 /// an uninstantiated module that is never lowered.
 pub fn checkNetDisciplines(self: *Flatten) Error!void {
+    // ponytail: nets declared inside a generate block are not visited; add
+    // them when a fixture declares one with a bad discipline.
     const file = self.ctx.file;
+    // `require_std_includes`: annex D.1's disciplines reach
+    // only a source that includes disciplines.vams. A user discipline of the
+    // same name comes later in `disciplines`, so `declOf` finds it first.
+    if (file.hidden_disciplines != 0) for (file.userModules()) |*m| {
+        for (m.ports) |x| try hiddenDiscipline(self, x.discipline, x.name, x.main_tok);
+        for (m.nets) |x| try hiddenDiscipline(self, x.discipline, x.name, x.main_tok);
+        for (m.vars) |x| try hiddenDiscipline(self, x.discipline, x.name, x.main_tok);
+    };
     for (file.userModules()) |*m| for (m.nets) |n| {
         if (n.discipline == .none or discipline.declOf(file, n.discipline) != null) continue;
         if (elab_names.findModule(self, n.discipline) != null)
@@ -609,6 +617,17 @@ pub fn checkNetDisciplines(self: *Flatten) Error!void {
         if (v.discipline == .none or discipline.declOf(file, v.discipline) != null) continue;
         try self.err(v.main_tok, .E0371, "`{s}` in the declaration of the reg `{s}`", .{ file.str(v.discipline), file.str(v.name) });
     };
+}
+
+/// E0371 when `name` resolves only to a prelude annex D.1 discipline the
+/// source did not include.
+fn hiddenDiscipline(self: *Flatten, name: Ast.StrId, decl_name: Ast.StrId, tok: u32) Error!void {
+    if (name == .none) return;
+    const file = self.ctx.file;
+    const d = discipline.declOf(file, name) orelse return;
+    const index = (@intFromPtr(d) - @intFromPtr(file.disciplines.ptr)) / @sizeOf(Ast.DisciplineDecl);
+    if (index >= file.hidden_disciplines) return;
+    try self.err(tok, .E0371, "`{s}` in the declaration of `{s}` is annex D.1's: add `include \"disciplines.vams\"", .{ file.str(name), file.str(decl_name) });
 }
 
 // ---------------------------------------------------------------------------

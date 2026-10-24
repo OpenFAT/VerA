@@ -1,8 +1,0 @@
-binary-x xxxxx
-octal-z zzzzzz
-hex-x xxxx0001
-hex-question zzzz0010
-mixed-case 10xzz
-truncate-left xz01
-signed-extend fff
-unsigned-extend 00f

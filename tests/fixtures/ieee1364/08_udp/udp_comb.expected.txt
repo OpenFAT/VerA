@@ -1,9 +1,0 @@
-sel=0 a=1 b=x got out=1 want 1
-sel=0 a=0 b=z got out=0 want 0
-sel=1 a=x b=1 got out=1 want 1
-sel=1 a=z b=0 got out=0 want 0
-sel=x a=0 b=0 got out=0 want 0
-sel=x a=1 b=1 got out=1 want 1
-sel=x a=0 b=1 got out=x want x
-sel=z a=1 b=1 got out=1 want 1
-sel=z a=0 b=1 got out=x want x

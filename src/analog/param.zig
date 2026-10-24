@@ -152,9 +152,12 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     // which are different from those specified in the declaration assignment":
     // a `--param` replaces the declaration value before anything reads it. In
     // the declared type, or — §3.4.1's inference — the declared default's.
-    const over: ?Const = if (decl.is_local or decl.ty == .string) null else for (self.param_overrides) |o| {
-        if (std.mem.eql(u8, o.name, name))
-            break constfold.parameterCardValue(decl.ty, declared, o.value);
+    // A string parameter takes the text as typed; a numeric one a text that
+    // is no number is refused once lowering is done (Compilation's check).
+    const over: ?Const = if (decl.is_local) null else for (self.param_overrides) |o| {
+        if (!std.mem.eql(u8, o.name, name)) continue;
+        if (decl.ty == .string or (declared != null and declared.? == .str)) break .{ .str = o.text };
+        if (!std.math.isNan(o.value)) break constfold.parameterCardValue(decl.ty, declared, o.value);
     } else null;
     const folded = over orelse declared;
     // §4.2.1.1 converts by "rounding the real number to the nearest integer",
@@ -192,7 +195,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     const default = if (over) |c| switch (c) {
         .int => |n| try self.mir.addIntConst(self.arena, n),
         .real => |n| try self.mir.addFloatConst(self.arena, n),
-        .str => unreachable, // a card value is a real
+        .str => |t| try self.mir.addStrConst(self.arena, t),
     } else try parameterDefault(self, decl.default, decl.ty);
 
     // §6.6 / §5.3.2: a generate (or named) block is a scope, so two blocks
@@ -205,14 +208,16 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
         name;
     try addParam(self, card_name, ty, default, folded, try paramRanges(self, decl.ranges), decl.is_local, decl.main_tok);
     if (card_name.ptr != name.ptr) try self.param_index.put(self.arena, name, @intCast(self.out.params.items.len - 1));
-    self.out.params.items[self.out.params.items.len - 1].integer32 = decl.ty == .integer;
-    self.out.params.items[self.out.params.items.len - 1].source_width = if (decl.packed_range) |range|
+    // Stable below: the folds that follow mark rows (`shapeEval`), never append them.
+    const row = &self.out.params.items[self.out.params.items.len - 1];
+    row.integer32 = decl.ty == .integer;
+    row.source_width = if (decl.packed_range) |range|
         lower_shape.packedShapeWidth(self, range)
     else if (decl.ty == .integer)
         32
     else
         lower_constfold.clog2Width(self, decl.default);
-    self.out.params.items[self.out.params.items.len - 1].source_signed = if (decl.ty == .integer)
+    row.source_signed = if (decl.ty == .integer)
         true
     else if (decl.packed_range != null or decl.is_signed)
         decl.is_signed

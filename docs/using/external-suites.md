@@ -9,7 +9,7 @@ suite prints the case by name so someone can find out which.
 
 None of the external code is stored in the repository. Each suite is a
 folder under
-[`tests/fixtures/external/`](https://github.com/OmarSiwy/VerA/tree/main/tests/fixtures/external)
+`tests/conformance/vera/external/` (the VAMS Conformance Suite submodule)
 holding a manifest that pins what is fetched (a URL and a commit, or a file
 and its SHA-256) and states its license. The scripts fetch it at run time
 into `.zig-cache/external/`, which git ignores.
@@ -58,21 +58,24 @@ that never converges is one FAIL, not a hung job. CI runs it in the
 `external-analog` jobs, one per suite, on every push to `main` and every
 pull request.
 
-## Digital: `tools/external_digital.py`
+## The conformance suite: `zig build conformance`
+
+The digital suites (ivtest, sv-tests' IEEE 1364-2005 subset, the ISP RAS
+examples of the standard) moved to the
+[VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+checked out at `tests/conformance`, with VerA's own Verilog, Verilog-A,
+Verilog-AMS and Annex E tests and the OpenVAF, gnucap-modelgen and VA-Models
+corpora:
 
 ```sh
-python3 tools/external_digital.py zig-out/bin/vera
-python3 tools/external_digital.py zig-out/bin/vera --only ivtest
+git submodule update --init --recursive tests/conformance
+nix develop .#external -c zig build -Doptimize=ReleaseFast conformance
 ```
 
-| Suite | What it compares |
-|---|---|
-| `ivtest` | the Icarus Verilog regression suite, with its own gold files and PASSED convention |
-| `sv-tests` | the Verilog-2005 subset of [chipsalliance/sv-tests](https://github.com/chipsalliance/sv-tests) |
-| `iverilog-diff` | `iverilog -g2005` and `vvp` against `vera --run`, transcript for transcript, over VerA's own `.v` fixtures and the two selections above. Where the two disagree on whether a source is legal, Verilator and Yosys are asked as a second opinion; their answers are printed, never scored |
-
-Every disagreement prints as `FAIL <suite>/<name>: why`. A suite whose tool
-is missing is reported as skipped.
+Its harness, `conform`, judges each test by the suite's own rules and writes
+every verdict to `zig-out/conformance.tsv`. A failure is untriaged until a
+line of `tools/vera.xfail` names it; a listed test that passes is an XPASS and
+fails too. CI runs it in the `conformance` job.
 
 ## Reading a FAIL
 

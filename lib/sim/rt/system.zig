@@ -62,7 +62,7 @@ pub fn fileError(self: *const State, d: ?i64) struct { code: i64, text: []const 
     return .{ .code = code, .text = @import("kernels").file_kernels.zFErrorStr(code, 0) };
 }
 
-/// §17.2.7 `$fclose`.
+/// §17.2.1 `$fclose`.
 pub fn fclose(self: *const State, d: ?i64) void {
     if (self.quiet) return;
     _ = system.own.close((d orelse return) & 0xffff_ffff);
@@ -192,7 +192,7 @@ test "formatOf: a held format's characters, leading zero bytes dropped, none wit
 test "§17.2.3 a held format: text, %% and %m print, a conversion is returned, a broken one refused" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try root.testState(arena.allocator(), &root.one_slot);
+    const s = try root.quietState(arena.allocator(), &root.one_slot, -9);
     var f: State.Format = .{ .text = "a%%b%5.2fc%m%" };
     const sp = (try s.nextSpec(&f, "top.u", "work")).?;
     try testing.expectEqual(@as(u8, 'f'), sp.conv);

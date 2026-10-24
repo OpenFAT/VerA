@@ -1,13 +1,0 @@
-// LRM 2.3: "White space shall contain the characters for spaces, tabs,
-// newlines, and formfeeds." Every separator in the module header below is a
-// FORM FEED (U+000C), so the file only lexes if a formfeed is ordinary white
-// space. The bias holds V(p) at 0.75 (exact in binary), so V(p)*4 is exactly 3.
-//! lrm 2.3
-//! lrm 2.3:1
-//! lrm 2.3:2
-`include "check.vh"
-//! bias V(p) = 0.75
-modulech2_form_feed(p);inoutp;electricalp;analogbegin
-    I(p) <+ V(p);
-    `CHECKX("formfeed_separated_tokens", V(p)*4.0, 3.0);
-endendmodule

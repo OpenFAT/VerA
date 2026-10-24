@@ -1,4 +1,0 @@
-ext=110
-xz=x01x
-case=1010
-real=1 prec=1

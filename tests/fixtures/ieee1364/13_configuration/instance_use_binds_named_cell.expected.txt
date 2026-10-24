@@ -1,2 +1,0 @@
-rtl top.u1 work.rtl
-gate top.u2 work.gate

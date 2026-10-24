@@ -35,7 +35,9 @@ pub const DisciplineResolution = enum { basic, detail };
 
 /// §3.4 compile-time overrides, shared with Lower.Options. Elaboration needs
 /// their final values when a §6.4.2 overload choice depends on a top parameter.
-pub const ParamOverride = struct { name: []const u8, value: f64 };
+/// `text` is the value as typed: a string parameter takes it verbatim. `value`
+/// is that text read as a number, NaN when it is not one.
+pub const ParamOverride = struct { name: []const u8, value: f64, text: []const u8 = "" };
 
 /// One §9.18 Table 9-29 hierarchical system parameter. The tag is the
 /// spelling without its `$`.
@@ -59,12 +61,7 @@ pub const SystemParam = enum {
     /// Returns the source spelling, `$` included.
     pub fn name(self: SystemParam) []const u8 {
         return switch (self) {
-            .angle => "$angle",
-            .hflip => "$hflip",
-            .mfactor => "$mfactor",
-            .vflip => "$vflip",
-            .xposition => "$xposition",
-            .yposition => "$yposition",
+            inline else => |k| "$" ++ @tagName(k),
         };
     }
 

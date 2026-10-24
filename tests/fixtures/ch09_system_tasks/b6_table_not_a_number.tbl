@@ -1,6 +1,0 @@
-# §9.21.1: "The numbers shall be real or integer." One column x, one column f.
-# The first data row's dependent is `abc`, which is neither, so this data set
-# is in error. table_non_numeric_entry_errors_at_first_call.va reads it.
-0.0   abc
-1.0   2.0
-2.0   4.0

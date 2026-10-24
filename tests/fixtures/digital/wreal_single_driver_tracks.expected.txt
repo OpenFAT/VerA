@@ -1,4 +1,0 @@
-net_follows_driver 1.5 3
-net_follows_negative_fraction -0.25 -0.5
-unchanged_driver_leaves_net_alone -0.25 -1
-full_double_precision 0.333333 1.33333

@@ -1,10 +1,11 @@
 //! What a VPI application (`src/vpi`) asks of a running interpreter: a
 //! retained expression's value, a constant select's index, an attribute's
-//! value, a sequential UDP's state put, and a timing check's limits and
-//! site. Free functions over `*Run`, aliased on `Run` because `src/vpi`
-//! calls them as methods.
-//! Clauses: IEEE 1364-2005 §3.8, §15, §26.6.11, §26.6.19, §27.31, §27.32;
-//! VAMS §2.9, §12.29, §12.30.
+//! value, a sequential UDP's state put, and a timing check's site (its
+//! limits are `tchk.putLimits`, aliased on `Run` beside these). Free
+//! functions over `*Run`, aliased on `Run` because `src/vpi` calls them as
+//! methods.
+//! Clauses: IEEE 1364-2005 §3.8, §15, §26.6.11, §26.6.19, §27.32;
+//! VAMS §2.9, §12.30.
 const std = @import("std");
 const Front = @import("frontend");
 const Ast = Front.Ast;
@@ -16,7 +17,6 @@ const compile = @import("compile.zig");
 const evaluate = @import("evaluate.zig");
 const exec = @import("exec.zig");
 const resolution = @import("resolution.zig");
-const tchk = @import("tchk.zig");
 const no_transition = @import("net.zig").no_transition;
 const setBit = @import("net.zig").setBit;
 
@@ -86,12 +86,6 @@ pub fn vpiAttributeValue(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprI
     defer r.folding_constant = folding;
     return vpiEval(r, a, scope, e);
 }
-
-/// IEEE 1364-2005 §27.31 / VAMS 12.29 vpi_put_delays on the timing check
-/// whose command token is `tok` in instance `scope`: `ticks` are its
-/// limits in A.7.5.1's written order, from the next event it judges.
-/// False when the run holds no such check.
-pub const tchkLimits = tchk.putLimits;
 
 /// The instance scope and command token of timing check `check` (a
 /// `Run.tchk_hook` argument), which a host's object for it carries.

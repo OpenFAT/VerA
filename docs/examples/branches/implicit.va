@@ -1,6 +1,6 @@
 // An implicit contribution (LRM 5.6.6): I(b) appears on both sides, and the
-// solver finds the value that satisfies the equation. After tests/fixtures'
-// a02_01_implicit_flow_equation_is_solved:
+// solver finds the value that satisfies the equation. After the conformance
+// suite's verilog-a/ch05_analog_behavior/implicit_flow_equation_is_solved:
 //   s --[ b: I = gm*(V(b) - rs*I) ]-- m --[ rl ]-- ground
 //   I = gm*(1 - V(m) - rs*I) with gm*rs = 0.5*2 = 1:  2*I = 0.5*(1 - V(m))
 //   I = V(m)/rl = V(m)/4                          :  V(m) = 4*I

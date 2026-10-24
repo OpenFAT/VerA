@@ -318,18 +318,7 @@ pub const ScopeLists = struct {
 
     /// Frees the lists (owned by `gpa`); the rows they index stay.
     pub fn deinit(s: *ScopeLists, gpa: std.mem.Allocator) void {
-        s.internal.deinit(gpa);
-        s.gen_arrays.deinit(gpa);
-        s.param_assigns.deinit(gpa);
-        s.mod_paths.deinit(gpa);
-        s.tchks.deinit(gpa);
-        s.cont_assigns.deinit(gpa);
-        s.processes.deinit(gpa);
-        s.tasks.deinit(gpa);
-        s.functions.deinit(gpa);
-        s.events.deinit(gpa);
-        s.event_arrays.deinit(gpa);
-        s.primitives.deinit(gpa);
+        inline for (@typeInfo(ScopeLists).@"struct".field_names) |name| @field(s, name).deinit(gpa);
     }
 
     /// Frozen as tagged rows, the shape `vpi_iterate(tag, module)` reads.
@@ -716,7 +705,7 @@ pub const Builder = struct {
             const terms = try b.arena.alloc(Ast.ExprId, 1 + g.ins.len);
             terms[0] = g.out;
             @memcpy(terms[1..], g.ins);
-            const at = try b.primitive(vpiGate, gateType(g.kind), @tagName(g.kind)["g_".len..], terms, &.{}, &.{
+            const at = try b.primitive(vpiGate, gateType(g.kind), terms, &.{}, &.{
                 .{ .prop = root.vpiArray, .value = @intFromBool(g.range != null) },
                 .{ .prop = vpiStrength0, .value = drive(g.strength0) },
                 .{ .prop = vpiStrength1, .value = drive(g.strength1) },
@@ -732,7 +721,7 @@ pub const Builder = struct {
         // strength on its own side (the other "shall be ignored").
         for (m.pulls) |p| {
             const side: c_int = if (p.one) vpiStrength1 else vpiStrength0;
-            const at = try b.primitive(vpiGate, if (p.one) vpiPullupPrim else vpiPulldownPrim, if (p.one) "pullup" else "pulldown", &.{p.out}, &.{}, &.{
+            const at = try b.primitive(vpiGate, if (p.one) vpiPullupPrim else vpiPulldownPrim, &.{p.out}, &.{}, &.{
                 .{ .prop = root.vpiArray, .value = 0 },
                 .{ .prop = side, .value = drive(p.strength) },
             });
@@ -747,7 +736,7 @@ pub const Builder = struct {
             };
             const dirs = try b.arena.alloc(c_int, sw.terms.len);
             for (dirs, 0..) |*dir, k| dir.* = (if (k == 0) (if (pass) root.vpiInout else root.vpiOutput) else if (pass and k == 1) root.vpiInout else root.vpiInput);
-            const at = try b.primitive(vpiSwitch, switchType(sw.kind), @tagName(sw.kind), sw.terms, dirs, &.{.{ .prop = root.vpiArray, .value = 0 }});
+            const at = try b.primitive(vpiSwitch, switchType(sw.kind), sw.terms, dirs, &.{.{ .prop = root.vpiArray, .value = 0 }});
             try b.attributes(at, .{ .kind = .declaration, .tok = sw.main_tok }, false);
         }
         if (b.udps) |udps| for (m.instances) |inst| {
@@ -755,7 +744,7 @@ pub const Builder = struct {
             const terms = try b.arena.alloc(Ast.ExprId, inst.ports.len);
             for (inst.ports, terms) |c, *t| t.* = c.expr;
             const d = b.objects.hot.items[defn];
-            const at = try b.primitive(vpiUdp, d.props[1].value, d.def_name, terms, &.{}, &.{
+            const at = try b.primitive(vpiUdp, d.props[1].value, terms, &.{}, &.{
                 .{ .prop = root.vpiArray, .value = @intFromBool(inst.range != null) },
                 .{ .prop = vpiStrength0, .value = drive(inst.strength0) },
                 .{ .prop = vpiStrength1, .value = drive(inst.strength1) },
@@ -828,7 +817,7 @@ pub const Builder = struct {
     /// ponytail: an array of instances (IEEE 1364-2005 §7.1.5) is this one
     /// object with vpiArray set, not one per index with a vpiIndex; splitting
     /// it needs §7.1.6's terminal split.
-    fn primitive(b: *Builder, vtype: c_int, prim_type: c_int, def_name: []const u8, terms: []const Ast.ExprId, dirs: []const c_int, props: []const Prop) Error!u32 {
+    fn primitive(b: *Builder, vtype: c_int, prim_type: c_int, terms: []const Ast.ExprId, dirs: []const c_int, props: []const Prop) Error!u32 {
         const dir = struct {
             fn at(ds: []const c_int, k: usize) c_int {
                 return if (ds.len != 0) ds[k] else if (k == 0) root.vpiOutput else root.vpiInput;
@@ -845,7 +834,6 @@ pub const Builder = struct {
             props,
         });
         const at = try b.code(vtype, &.{}, &.{}, all);
-        b.objects.hot.items[at].def_name = def_name;
         const items = try b.arena.alloc(u32, terms.len);
         for (terms, items, 0..) |t, *item, k| {
             const e = try b.expr(t);
@@ -1505,6 +1493,26 @@ fn gateType(k: Ast.GateKind) c_int {
     };
 }
 
+/// §11.6.13/§11.6.14's vpiDefName of `.code` row `o` of the installed
+/// design, or null when its class has none. A gate's or switch's is its
+/// keyword, read back from its vpiPrimType; a UDP instance's is its
+/// definition's.
+pub fn defName(o: *const Obj) ?[]const u8 {
+    switch (o.vtype) {
+        vpiUdpDefn => return root.coldOf(o).def_name,
+        vpiUdp => return root.coldOf(&root.design.?.objects[root.edgeTo(o, vpiUdpDefn)]).def_name,
+        vpiGate, vpiSwitch => {},
+        else => return null,
+    }
+    std.debug.assert(o.props[0].prop == vpiPrimType);
+    const t = o.props[0].value;
+    if (t == vpiPullupPrim) return "pullup";
+    if (t == vpiPulldownPrim) return "pulldown";
+    inline for (comptime std.enums.values(Ast.GateKind)) |k| if (gateType(k) == t) return @tagName(k)["g_".len..];
+    inline for (comptime std.enums.values(Ast.SwitchKind)) |k| if (switchType(k) == t) return @tagName(k);
+    unreachable;
+}
+
 /// Annex G's vpiPrimType for a §7.1 switch.
 fn switchType(k: Ast.SwitchKind) c_int {
     return switch (k) {
@@ -1591,13 +1599,12 @@ pub fn udpDefns(
             try objects.append(.{ .kind = .code, .owner = .none, .name = "", .full = "", .vtype = vpiInitial, .edges = try arena.dupe(Edge, &.{.{ .tag = vpiStmt, .to = assign }}) });
         }
         at.* = @intCast(objects.hot.items.len);
-        try objects.append(.{
+        try objects.appendCold(.{
             .kind = .code,
             .owner = .none,
             .name = "",
             .full = "",
             .vtype = vpiUdpDefn,
-            .def_name = try arena.dupe(u8, file.str(u.name)),
             .props = try arena.dupe(Prop, &.{
                 .{ .prop = vpiSize, .value = @intCast(u.ports.len - 1) },
                 .{ .prop = vpiPrimType, .value = if (u.is_sequential) vpiSeqPrim else vpiCombPrim },
@@ -1607,7 +1614,7 @@ pub fn udpDefns(
                 .{ .tag = vpiIODecl, .items = ios },
                 .{ .tag = vpiTableEntry, .items = rows },
             }),
-        });
+        }, .{ .def_name = try arena.dupe(u8, file.str(u.name)) });
         try out.put(gpa, u.name, at.*);
     }
     return defns;
@@ -1739,7 +1746,8 @@ const tchk_kinds = std.StaticStringMap(TchkKind).initComptime(.{
 });
 
 // ---------------------------------------------------------------------------
-// Tests: the tables. The rows themselves are test.zig's, over designs.
+// Tests: the tables. The rows themselves are tests/unit.zig's `vpi_tests`,
+// over designs.
 // ---------------------------------------------------------------------------
 
 test "typeName spells every behavioural type the builders make, as its constant is named" {

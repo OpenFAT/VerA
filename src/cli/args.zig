@@ -19,6 +19,7 @@ const native = @import("digital");
 /// carries (`contract.vera_version`).
 const vera_version = @import("contract").vera_version;
 const diag = vera.diag;
+const Display = vera.codegen.Display;
 const Io = std.Io;
 
 /// `--optimize=` names. Zig 0.17 renamed `std.lang.Optimize`'s tags
@@ -36,7 +37,7 @@ pub const usage_text =
     \\       vera --run|--emit-exe [options] FILE.v [MORE.v ...]
     \\       vera --emit-zig|--check|--emit-so|--emit-osdi|--emit-rtlil [options] FILE.v [MORE.v ...]
     \\       vera --explain CODE
-    \\       vera --version
+    \\       vera --version | -v | -V
     \\       vera --lsp [options]
     \\
     \\  --lint                  frontend only (parse, lower, prove); no codegen
@@ -109,7 +110,8 @@ pub const usage_text =
     \\                          code, about half the LLVM time of a large device)
     \\  -I DIR                  add an `include search directory
     \\  --param NAME=VALUE      compile with the top module's parameter NAME set
-    \\                          to VALUE (LRM 3.4). A parameter that sizes an
+    \\                          to VALUE (LRM 3.4): a number, or a string parameter's
+    \\                          text (`--param mode=fast`). A parameter that sizes an
     \\                          array, vector or replication, or bounds a genvar
     \\                          loop or selects a generate arm, is fixed at VALUE and
     \\                          the device refuses a card that moves it
@@ -147,8 +149,8 @@ pub const Cli = struct {
     levels: diag.Levels = .empty,
     /// `-I`, in order.
     include_dirs: std.ArrayList([]const u8) = .empty,
-    /// `--param`, in order. `main` appends the testbench's shape cards after
-    /// these, so only `[0..n_typed]` of it is what was typed.
+    /// `--param`, in order: each keeps its text (a string parameter's value)
+    /// beside the number, NaN when the text is not one.
     overrides: std.ArrayList(vera.ParamOverride) = .empty,
     /// The input files; `paths[0]` is the one compiled, the rest are `.v`
     /// library units.
@@ -188,7 +190,7 @@ pub const Cli = struct {
     emit_zig_typed: bool = false,
     /// `--run`; `exe_flag` is set too.
     run_exe: bool = false,
-    display: vera.codegen.Display = .record,
+    display: Display = .record,
     jac_f32: bool = false,
     jac_f32_host: bool = false,
     // What the user typed, kept apart from the derived state above so
@@ -197,10 +199,10 @@ pub const Cli = struct {
     lint_flag: bool = false,
     /// `--lsp`: serve, and take no input file.
     lsp: bool = false,
-    display_drop_flag: bool = false,
-    /// `--display=record`: with `--emit-exe`, the testbench prints what the
-    /// device's `say` records instead of printing in the device.
-    display_record_flag: bool = false,
+    /// The last `--display=` typed. `.drop` conflicts with a testbench, and
+    /// `.record` makes one print what the device's `say` records instead of
+    /// printing in the device.
+    display_flag: ?Display = null,
     /// The last flag that implies codegen.
     codegen_flag: ?[]const u8 = null,
     /// `--emit-exe` or `--run`, whichever was typed last.
@@ -249,7 +251,7 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try out.writeAll(usage_text);
             return 0;
-        } else if (std.mem.eql(u8, arg, "--version")) {
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "-V")) {
             try out.writeAll("vera " ++ vera_version ++ "\n");
             return 0;
         } else if (std.mem.eql(u8, arg, "--explain")) {
@@ -301,18 +303,13 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
             cli.display = .emit;
             cli.codegen_flag = arg;
             cli.exe_flag = arg;
-        } else if (std.mem.eql(u8, arg, "--display=emit")) {
-            cli.display = .emit;
-            cli.display_drop_flag = false;
-            cli.display_record_flag = false;
-        } else if (std.mem.eql(u8, arg, "--display=drop")) {
-            cli.display = .drop;
-            cli.display_drop_flag = true;
-            cli.display_record_flag = false;
-        } else if (std.mem.eql(u8, arg, "--display=record")) {
-            cli.display = .record;
-            cli.display_drop_flag = false;
-            cli.display_record_flag = true;
+        } else if (std.mem.startsWith(u8, arg, "--display=")) {
+            const d = std.meta.stringToEnum(Display, arg["--display=".len..]) orelse {
+                try err.print("error: unknown option `{s}`\n", .{arg});
+                return 2;
+            };
+            cli.display = d;
+            cli.display_flag = d;
         } else if (std.mem.eql(u8, arg, "--validate-contract")) {
             cli.validate_contract = true;
         } else if (std.mem.eql(u8, arg, "--jac-f32")) {
@@ -324,12 +321,11 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
         } else if (std.mem.eql(u8, arg, "--param")) {
             const kv = args.next() orelse return try missing(err, "--param", "NAME=VALUE");
             const eq = std.mem.findScalar(u8, kv, '=') orelse return try missing(err, "--param", "NAME=VALUE");
-            const value = std.fmt.parseFloat(f64, kv[eq + 1 ..]) catch std.math.nan(f64);
-            if (std.math.isNan(value)) {
-                try err.print("error: --param {s}: `{s}` is not a number\n", .{ kv, kv[eq + 1 ..] });
-                return 2;
-            }
-            try cli.overrides.append(gpa, .{ .name = kv[0..eq], .value = value });
+            // A string parameter takes the text; a numeric one refuses a NaN
+            // once its type is known (Compilation, the digital elaboration).
+            const text = kv[eq + 1 ..];
+            const value = std.fmt.parseFloat(f64, text) catch std.math.nan(f64);
+            try cli.overrides.append(gpa, .{ .name = kv[0..eq], .value = value, .text = text });
         } else if (std.mem.eql(u8, arg, "--dyn")) {
             cli.dyn_path = try pathValue(args, err, "--dyn", "a path") orelse return 2;
         } else if (std.mem.eql(u8, arg, "--work-dir")) {
@@ -471,7 +467,7 @@ pub fn resolve(cli: *Cli, err: *Io.Writer) !?u8 {
         };
         if (cli.sim == .verilog and cli.std_flag == null) cli.language = .v1364_2005;
     }
-    if (cli.exe_flag) |f| if (cli.display_drop_flag) {
+    if (cli.exe_flag) |f| if (cli.display_flag == Display.drop) {
         try err.print(
             "error: `{s}` and `--display=drop` conflict: the testbench IS the display " ++
                 "output, and `--display=drop` discards every print\n",
@@ -481,7 +477,7 @@ pub fn resolve(cli: *Cli, err: *Io.Writer) !?u8 {
     };
     // §9.4 a testbench over the device a host gets: it prints the records
     // the device's `say` makes, whichever flag came first.
-    if (cli.exe_flag != null and cli.display_record_flag) cli.display = .record;
+    if (cli.exe_flag != null and cli.display_flag == Display.record) cli.display = .record;
     if (cli.validate_contract and cli.exe_flag == null) {
         try err.writeAll("error: `--validate-contract` turns the checks on in an --emit-exe or --run " ++
             "testbench; --check always runs them\n");
@@ -645,6 +641,12 @@ test "parse: --version prints contract.vera_version, which is build.zig.zon's .v
     defer l.deinit();
     try testing.expectEqual(@as(?u8, 0), try l.read(&.{ "--version", "--no-such-flag" }));
     try testing.expectEqualStrings("vera " ++ vera_version ++ "\n", l.out.written());
+    for ([_][]const u8{ "-v", "-V" }) |flag| {
+        var short: Line = .init();
+        defer short.deinit();
+        try testing.expectEqual(@as(?u8, 0), try short.read(&.{flag}));
+        try testing.expectEqualStrings("vera " ++ vera_version ++ "\n", short.out.written());
+    }
     try testing.expectEqualStrings("", l.err.written());
 }
 
@@ -723,7 +725,7 @@ test "parse: --run sticks once typed; the last of --emit-exe/--run names the tes
     _ = try l.read(&.{ "--run", "--emit-exe" });
     try testing.expect(l.cli.run_exe);
     try testing.expectEqualStrings("--emit-exe", l.cli.exe_flag.?);
-    try testing.expectEqual(vera.codegen.Display.emit, l.cli.display);
+    try testing.expectEqual(Display.emit, l.cli.display);
 
     var e: Line = .init();
     defer e.deinit();
@@ -731,16 +733,19 @@ test "parse: --run sticks once typed; the last of --emit-exe/--run names the tes
     try testing.expect(!e.cli.run_exe);
 }
 
-test "parse: the last --display wins, and only drop and record are remembered as typed" {
+test "parse: the last --display wins, as typed; any other mode is an unknown option" {
     var l: Line = .init();
     defer l.deinit();
     _ = try l.read(&.{ "--display=drop", "--display=emit" });
-    try testing.expectEqual(vera.codegen.Display.emit, l.cli.display);
-    try testing.expect(!l.cli.display_drop_flag and !l.cli.display_record_flag);
+    try testing.expectEqual(Display.emit, l.cli.display);
+    try testing.expectEqual(@as(?Display, .emit), l.cli.display_flag);
     _ = try l.read(&.{"--display=record"});
-    try testing.expect(l.cli.display_record_flag and !l.cli.display_drop_flag);
+    try testing.expectEqual(@as(?Display, .record), l.cli.display_flag);
     _ = try l.read(&.{"--display=drop"});
-    try testing.expect(l.cli.display_drop_flag and !l.cli.display_record_flag);
+    try testing.expectEqual(Display.drop, l.cli.display);
+    try testing.expectEqual(@as(?Display, .drop), l.cli.display_flag);
+    try expectRefused(&.{"--display=say"}, "error: unknown option `--display=say`\n");
+    try expectRefused(&.{"--display="}, "error: unknown option `--display=`\n");
 }
 
 test "parse: --vdd is a positive finite number" {
@@ -754,25 +759,23 @@ test "parse: --vdd is a positive finite number" {
     try testing.expectEqual(@as(f64, 3.3), l.cli.vdd);
 }
 
-test "parse: --param splits at the first `=` and reads a number" {
+test "parse: --param splits at the first `=` and keeps the text beside the number" {
     var l: Line = .init();
     defer l.deinit();
-    _ = try l.read(&.{ "--param", "r=1e3", "--param", "w=-0.5" });
-    try testing.expectEqual(@as(usize, 2), l.cli.overrides.items.len);
+    _ = try l.read(&.{ "--param", "r=1e3", "--param", "w=-0.5", "--param", "s=1=2" });
+    try testing.expectEqual(@as(usize, 3), l.cli.overrides.items.len);
     try testing.expectEqualStrings("r", l.cli.overrides.items[0].name);
     try testing.expectEqual(@as(f64, 1000), l.cli.overrides.items[0].value);
     try testing.expectEqual(@as(f64, -0.5), l.cli.overrides.items[1].value);
+    // The first `=` splits, so the value is `1=2`: a string, not a number.
+    try testing.expectEqualStrings("1=2", l.cli.overrides.items[2].text);
+    try testing.expect(std.math.isNan(l.cli.overrides.items[2].value));
     try expectRefused(&.{ "--param", "r" }, "error: --param needs NAME=VALUE\n");
-    try expectRefused(&.{ "--param", "r=2k" }, "error: --param r=2k: `2k` is not a number\n");
-    // The first `=` splits, so the value is `1=2`.
-    try expectRefused(&.{ "--param", "r=1=2" }, "error: --param r=1=2: `1=2` is not a number\n");
 }
 
-test "parse: a NaN --param or --unknown-bound is not a number" {
-    // §3.4 a parameter's value is a number, and a NaN card makes every
-    // residual NaN; a NaN compliance limit makes `[-|B|, |B|]` an interval
+test "parse: a NaN --unknown-bound is not a number" {
+    // A NaN compliance limit makes `[-|B|, |B|]` an interval
     // no comparison holds in, so the W0650 proof would rest on nothing.
-    try expectRefused(&.{ "--param", "r=nan" }, "error: --param r=nan: `nan` is not a number\n");
     try expectRefused(&.{"--unknown-bound=nan"}, "error: `--unknown-bound=nan` is not a number\n");
     var l: Line = .init();
     defer l.deinit();
@@ -941,7 +944,7 @@ test "resolve: a testbench prints the device's records under --display=record, w
         var l: Line = .init();
         defer l.deinit();
         try testing.expectEqual(@as(?u8, null), try l.settle(&.{ pair[0], pair[1], "m.va" }));
-        try testing.expectEqual(vera.codegen.Display.record, l.cli.display);
+        try testing.expectEqual(Display.record, l.cli.display);
     }
     // --validate-contract is legal beside a testbench.
     try expectSettled(&.{ "--run", "--validate-contract", "m.va" }, null, "");

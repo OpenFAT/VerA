@@ -34,10 +34,15 @@ pub const Names = struct {
     a_names: [][]const u8 = &.{},
     /// §5.10 `Instance` field name per `Lowered.held_vars` entry.
     held_names: [][]const u8 = &.{},
-    /// Per `Lowered.params` entry: the parameter gains a `__given` flag,
-    /// because §9.19 `$param_given` queries it or because it is a `derive()`
-    /// target (a card parameter whose default does not fold).
+    /// Per `Lowered.params` entry: the parameter gains a §9.19 given bit
+    /// (`given_bit`), because `$param_given` queries it or because it is a
+    /// `derive()` target (a card parameter whose default does not fold).
     p_given: []bool = &.{},
+    /// Per `Lowered.params` entry: the parameter's bit in `Model.given__`, or
+    /// `none_u32` without a flag. An alias's bit is `n_given` + its index.
+    given_bit: []u32 = &.{},
+    /// How many parameters have a bit; the aliases' bits follow them.
+    n_given: u32 = 0,
 
     /// The operator `call` unit `unit` was enumerated from (`naming` records
     /// it), or null for a contribution unit. Asserts `unit` indexes `units`.
@@ -94,7 +99,9 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
         // `flow(hi,lo)` spelling (a plain net named `gnd` would collide with
         // §1.3.1.1's reference node).
         var found: u32 = if (lowered.flow_unknowns.get(.{ .hi = c.hi, .lo = c.lo })) |u| u else none_u32;
-        if (found != none_u32 and uIsDriven(self.branch_u, found, i)) found = none_u32;
+        // Already the current of an earlier source: two sources in one branch
+        // need two currents. ponytail: a prefix scan, O(contributions²) worst.
+        if (found != none_u32 and std.mem.findScalar(u32, self.branch_u[0..i], found) != null) found = none_u32;
         if (found == none_u32) {
             const nm = try a.print("flow({s},{s})", .{
                 lowered.nodeName(c.hi), lowered.nodeName(c.lo),
@@ -129,14 +136,14 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
     self.p_given = try a.alloc(bool, lowered.params.items.len);
     @memset(self.p_given, false);
     // A non-local parameter whose default reads another parameter is a
-    // `derive()` target, and its guard (`if (!model.X__given)`) needs the
-    // flag whether or not the model ever queries §9.19 (the same fold
+    // `derive()` target, and its guard (`if (!model.given__.isSet(k))`) needs
+    // the bit whether or not the model ever queries §9.19 (the same fold
     // condition `emitDerive` selects assignments on).
     for (lowered.params.items, 0..) |p, i| {
         if (p.is_local or Analysis.tyOfParam(p.ty) == .str) continue;
         if (an.foldConst(p.default, false) == null) self.p_given[i] = true;
     }
-    // §9.19 $param_given(p): the flag lives in Model, but only for the
+    // §9.19 $param_given(p): the bit lives in Model, but only for the
     // parameters actually asked about.
     for (0..an.nb) |bi| {
         for (an.blockInstsFlat(@intCast(bi))) |inst| {
@@ -148,14 +155,13 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
             if (def == .param_ref) self.p_given[def.param_ref] = true;
         }
     }
+    self.given_bit = try a.alloc(u32, lowered.params.items.len);
+    self.n_given = 0;
+    for (self.p_given, self.given_bit) |g, *b| {
+        b.* = if (g) self.n_given else none_u32;
+        if (g) self.n_given += 1;
+    }
     return self;
-}
-
-/// Is unknown `u` already the current of a source from a contribution
-/// before `i`? Two sources in one branch need two currents.
-fn uIsDriven(branch_u: []const u32, u: u32, i: usize) bool {
-    // ponytail: stdlib scans the same bounded prefix; no membership table needed.
-    return std.mem.findScalar(u32, branch_u[0..i], u) != null;
 }
 
 /// `nm`, or `nm#k` for the first `k` that no unknown claims yet. `sanitize`
@@ -182,7 +188,6 @@ fn uNameTaken(lowered: *const Lowered, nm: []const u8, extra: []const []const u8
 }
 
 const Fixture = @import("prove").Fixture;
-const Lower = @import("ir").Lowered;
 
 test "a potential source gets a branch current; two on one branch get two" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -193,7 +198,7 @@ test "a potential source gets a branch current; two on one branch get two" {
     try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1 });
     try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 0, .lo = 1 });
     try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 0, .lo = 1 });
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = Lower.ground });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = Lowered.ground });
     const an = try f.analysis();
 
     const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, 4);

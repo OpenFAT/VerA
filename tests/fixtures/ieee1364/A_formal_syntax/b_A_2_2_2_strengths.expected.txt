@@ -1,1 +1,0 @@
-a=0 b=1 c=z d=1 e=z f=0 ts=1 tm=0 tl=1

@@ -1,3 +1,0 @@
-detect=0,x
-event=x,x
-settled=0,0

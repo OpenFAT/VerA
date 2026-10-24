@@ -78,7 +78,8 @@ needs: lanes on the `deriv_reads` columns, constants on the rest.
 ## The reference family
 
 `contract.RefFamily(L, lane, opts)` is the family VerA's own testbenches,
-the SPICE deck runner (`lib/sim/spice/`) and the examples use:
+[ESPice](https://github.com/OmarSiwy/ESPice) (`src/device/eval.zig`) and
+the examples use:
 
 ```zig
 pub fn RefFamily(comptime L: type, comptime lane: anytype, comptime opts: RefOptions) type

@@ -1,4 +1,0 @@
-wire_merged_with_wreal_carries_a_real 2.5
-tri_merged_with_wreal_carries_a_real 2.5
-promotion_reaches_the_third_connection 5
-merged_net_with_no_driver_is_zero_not_z 0

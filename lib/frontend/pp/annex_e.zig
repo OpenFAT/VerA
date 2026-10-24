@@ -35,9 +35,9 @@ const std = @import("std");
 /// Every independent source (the i* and v* rows) multiplies its value by
 /// §9.15's `$simparam("sourceScaleFactor")`, Table 9-27's "Multiplicative
 /// factor for independent sources for source stepping homotopy": 1 unless a
-/// host steps it (`lib/sim/spice/op.zig`), and then the factor SPICE's
-/// source stepping applies to every source (ngspice CKTsrcFact). E.2 makes
-/// "all aspects of SPICE primitives" implementation dependent.
+/// host steps it (ESPice's operating-point ladder), and then the factor
+/// SPICE's source stepping applies to every source (ngspice CKTsrcFact). E.2
+/// makes "all aspects of SPICE primitives" implementation dependent.
 ///
 /// E.3.1's ccvs, cccs and mutual inductor are absent: they take an instance
 /// name as a parameter, which E.3.1 says is "not supported" (E0904).

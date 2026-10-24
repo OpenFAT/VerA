@@ -1,5 +1,0 @@
-display 0001
-after 0100
-strobe 0010
-repeat 1001
-repeat 1001

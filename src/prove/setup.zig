@@ -195,7 +195,7 @@ const Scan = struct {
         if (held.len == 0) return false;
         // The `held_vars` index is the call's literal argument (`gen_call.heldIdx`).
         const c = in.an.foldConst(if (d.args.len != 0) d.args[0] else .zero, false) orelse return false;
-        const i: usize = @intFromFloat(c.f);
+        const i: usize = @intFromFloat(c);
         return in.an.rv(held[@min(i, held.len - 1)].final) == phi;
     }
 
@@ -319,7 +319,7 @@ const Scan = struct {
             else => return switch (Mir.opClass(row.op)) { // else: every other opcode is pure; its class names the operands
                 .unary => s.sv(@fromBackingInt(@intCast(row.a))),
                 .binary => s.sv(@fromBackingInt(@intCast(row.a))) and s.sv(@fromBackingInt(@intCast(row.b))),
-                .ternary => s.sv(@fromBackingInt(@intCast(row.a))) and s.sv(@fromBackingInt(@intCast(row.b))) and s.sv(@fromBackingInt(@intCast(row.c))),
+                .ternary => unreachable, // `.select`, the one ternary opcode, returned above
                 .phi, .branch, .jump, .call => false,
                 // §3.2.2 array storage is per evaluation: a setup root is one
                 // `Setup` scalar, and an array version is not one.
@@ -481,9 +481,13 @@ fn solve(in: Input, placing: bool) Error!Sinv {
 pub fn candidate(in: Input, sinv: []const bool, v: Mir.Value) bool {
     const i = @backingInt(v);
     if (i < Mir.Value.first_dynamic or !sinv[i]) return false;
-    if (in.mir.valueDef(v) != .inst_result) return false;
     // A string or a wide integer has no `Setup` field type.
     if (in.an.vty[i] == .str or in.an.vty[i] == .wide) return false;
+    // A §3.4 parameter a per-eval body reads is copied beside the derived
+    // values, so `eval` reads one dense block and not the card's own lines
+    // (bsimcmg: 171 of 1,901 fields, spread over 74 cache lines).
+    if (in.mir.valueDef(v) == .param_ref) return true;
+    if (in.mir.valueDef(v) != .inst_result) return false;
     const b = in.an.def_block[i];
     if (b == none_u32 or in.an.loop_of[b] != none_u32) return false;
     return in.an.foldConst(v, false) == null;
@@ -774,6 +778,8 @@ test "a pure op of parameters under a bias-dependent branch is invariant and com
     try std.testing.expectEqual(@as(u32, 0), s.home[@backingInt(p)]);
     try std.testing.expectEqualSlices(Mir.Value, &.{p}, s.movedTo(0));
     try std.testing.expect(candidate(in, s.val, p));
+    // A parameter leaf is a candidate too: `setup` copies it beside `p`.
+    try std.testing.expect(candidate(in, s.val, mj));
     // An integer divide by zero traps, so it stays under its guard.
     try std.testing.expect(!s.val[@backingInt(d)]);
 }

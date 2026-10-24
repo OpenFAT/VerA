@@ -1,9 +1,0 @@
-// §5.9.1 the boundary case of the same rule: `repeat(1)` runs its body once, so
-// x ends at V(p) — not at 0 (body skipped) and not at 2*V(p) (loop off by one).
-// At V(p) = 0.5 the three candidate answers are 0.0, 0.5 and 1.0, all exact, so
-// the assertion separates them.
-//
-//! lrm 5.9.1
-//! bias V(p) = 0.5
-`include "check.vh"
-module ch5_repeat_one(p); inout p; electrical p; real x; analog begin x=0.0; repeat(1) x=x+V(p); `CHECKX("repeat(1) runs its body exactly once", x, 0.5); I(p)<+x; end endmodule

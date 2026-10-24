@@ -1,3 +1,0 @@
-Printing with maximum size - :  10: :00a:
-Printing with minimum size - :10: :a:
-1 1

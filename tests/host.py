@@ -8,8 +8,7 @@ model cannot assert about itself.
     tests/host.py selftest [-v]
 
 The first two take the exact `vera` the build made (`zig build
-test-observations`, `test-paired-compiler`). The profiles (`PROFILES` below,
-`zig build test-host-profiles`) need a real host bound through an adapter
+test`). The profiles (`PROFILES` below, also under `zig build test`) need a real host bound through an adapter
 (`--adapter`, or `VERA_HOST_PROFILE_ADAPTER`); without one every assertion
 records a skip, never a pass. `tests/README.md` has the adapter protocol.
 `selftest` feeds the oracles wrong observations and checks they refuse; it
@@ -32,7 +31,7 @@ from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "tests/fixtures"
+FIXTURES = ROOT / "tests/conformance/tests"
 # The `--vera` runners' compiler and the profiles' adapter, set by `main`.
 VERA = None
 ADAPTER = None
@@ -172,7 +171,7 @@ def run_vera_cases(case_class, artifact, argv=None):
 # diagnostic_observations: simulator diagnostics an HDL model cannot observe.
 # ---------------------------------------------------------------------------
 
-DIAGNOSTIC_FIXTURES = FIXTURES / "ch09_system_tasks"
+DIAGNOSTIC_FIXTURES = FIXTURES / "verilog-a/ch09_system_tasks"
 
 
 class DiagnosticObservations(unittest.TestCase):
@@ -349,7 +348,7 @@ class PairedCompilerObservations(unittest.TestCase):
         command = [
             str(VERA), "--lint" if reject else "--run",
             "--diagnostics=json" if reject else "--diagnostics=text",
-            "--color=never", "-I", str(FIXTURES),
+            "--color=never", "-I", str(FIXTURES / "include"),
             "--work-dir", str(self.work / source.stem), str(source),
         ]
         return subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=180)
@@ -358,11 +357,11 @@ class PairedCompilerObservations(unittest.TestCase):
         # Both candidates admit l=1. A has no un-overridden parameter and wins.
         # Looking at the module's range too early would wrongly fall back to B.
         assert_exclusive_refusal(
-            self.invoke("ch06_hierarchy/paramset_selection_ignores_module_ranges_rejected.va",
+            self.invoke("verilog-a/ch06_hierarchy/paramset_selection_ignores_module_ranges_rejected.va",
                         reject=True), "E0361"
         )
         assert_numeric_control(
-            self.invoke("ch06_hierarchy/paramset_selection_by_paramset_ranges.va"),
+            self.invoke("verilog-a/ch06_hierarchy/paramset_selection_by_paramset_ranges.va"),
             {
                 "the paramset with fewer un-overridden parameters is selected": (2.0, 0.0),
                 "so the resistor stamps 0.5 / 2.0": (0.25, 0.0),
@@ -371,21 +370,21 @@ class PairedCompilerObservations(unittest.TestCase):
 
     def test_bare_default_discipline_withdraws_the_default(self):
         assert_exclusive_refusal(
-            self.invoke("ch10_directives/default_discipline_reset_leaves_no_default.va",
+            self.invoke("verilog-ams/ch10_directives/default_discipline_reset_leaves_no_default.va",
                         reject=True), "E0337"
         )
         assert_numeric_control(
-            self.invoke("ch10_directives/default_discipline_undeclared_net.va"),
+            self.invoke("verilog-ams/ch10_directives/default_discipline_undeclared_net.va"),
             {"the defaulted net has the electrical potential access": (0.5, 0.0)},
         )
 
     def test_standalone_hierarchy_accepts_instances_and_parameter_overrides(self):
         assert_exclusive_refusal(
-            self.invoke("ch06_hierarchy/nested_module_definition_rejected.va", reject=True),
+            self.invoke("verilog-a/ch06_hierarchy/nested_module_definition_rejected.va", reject=True),
             "E0240",
         )
         assert_numeric_control(
-            self.invoke("ch06_hierarchy/hierarchy_overview_instances_and_overrides.va"),
+            self.invoke("verilog-a/ch06_hierarchy/hierarchy_overview_instances_and_overrides.va"),
             {
                 "a parameter overridden by order": (2.0, 0.0),
                 "a parameter overridden by name": (3.0, 0.0),
@@ -396,7 +395,7 @@ class PairedCompilerObservations(unittest.TestCase):
             },
         )
         assert_numeric_control(
-            self.invoke("ch06_hierarchy/defparam_precedence_over_instance_override.va"),
+            self.invoke("verilog-a/ch06_hierarchy/defparam_precedence_over_instance_override.va"),
             {
                 "the defparam wins a conflict with the instance assignment": (5.0, 0.0),
                 "a defparam alone replaces the default": (7.0, 0.0),
@@ -412,9 +411,9 @@ class PairedCompilerObservations(unittest.TestCase):
 # report_observations: operating-point, parameter-report and model-help pages.
 # ---------------------------------------------------------------------------
 
-REPORT_SOURCE = "tests/fixtures/ch02_lexical/operating_point_report_attributes.va"
-HELP_SOURCE = "tests/fixtures/ch06_hierarchy/model_help_descriptions.va"
-OUTPUT_VARIABLE_SOURCE = "tests/fixtures/ch03_data_types/desc_units_output_variable_rows.va"
+REPORT_SOURCE = "tests/conformance/tests/verilog-a/ch02_lexical/operating_point_report_attributes.va"
+HELP_SOURCE = "tests/conformance/tests/verilog-a/ch06_hierarchy/model_help_descriptions.va"
+OUTPUT_VARIABLE_SOURCE = "tests/conformance/tests/verilog-a/ch03_data_types/desc_units_output_variable_rows.va"
 NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eEdD][+-]?\d+)?")
 NAME = re.compile(r"[A-Za-z_$][A-Za-z_0-9$]*(?:\.[A-Za-z_$][A-Za-z_0-9$]*)*")
 
@@ -606,7 +605,7 @@ class ReportObservations(HostProfileCase):
     def test_noise_summary_combines_same_instance_source_names(self):
         observed = self.observe(
             "noise_contribution_report",
-            "tests/fixtures/ch04_expressions/noise_source_name.va",
+            "tests/conformance/tests/verilog-a/ch04_expressions/noise_source_name.va",
             {"report": "single_instance_noise_contribution_summary",
              "analysis": "noise", "frequency_hz": 1000,
              "bias": {"p": 1, "n": 0},
@@ -626,7 +625,7 @@ class ReportObservations(HostProfileCase):
 # indirect_equation_observations: the §5.6.7:1002 equality-row tolerance.
 # ---------------------------------------------------------------------------
 
-INDIRECT_SOURCE = "tests/fixtures/ch05_analog_behavior/indirect_equation_lhs_tolerance.va"
+INDIRECT_SOURCE = "tests/conformance/tests/verilog-a/ch05_analog_behavior/indirect_equation_lhs_tolerance.va"
 TRIAL_RESIDUALS = (0.5e-9, -0.5e-9, 2e-9, -2e-9)
 
 
@@ -729,9 +728,9 @@ class IndirectEquationObservations(HostProfileCase):
 # opaque driver). None is assumed for VerA; the adapter must establish it.
 # ---------------------------------------------------------------------------
 
-IDENTIFIER = FIXTURES / "ch02_lexical/identifier_length_limit.va.in"
-INPUT = FIXTURES / "ch09_system_tasks/input_position_restore_failure.va"
-DRIVER = FIXTURES / "ch09_system_tasks/driver_type_unavailable.va"
+IDENTIFIER = FIXTURES / "verilog-a/ch02_lexical/identifier_length_limit.va.in"
+INPUT = FIXTURES / "verilog-a/ch09_system_tasks/input_position_restore_failure.va"
+DRIVER = FIXTURES / "verilog-a/ch09_system_tasks/driver_type_unavailable.va"
 
 
 def compile_result(case, observation, accepted, diagnostic=None):
@@ -897,7 +896,7 @@ class DirectiveDocumentationObservations(unittest.TestCase):
 # a rejected step.
 # ---------------------------------------------------------------------------
 
-ABSDELTA_SOURCE = "tests/fixtures/ch08_scheduling/absdelta_unconsumed_events_rejected.va"
+ABSDELTA_SOURCE = "tests/conformance/tests/verilog-a/ch08_scheduling/absdelta_unconsumed_events_rejected.va"
 
 
 class AbsdeltaRejectionObservations(HostProfileCase):
@@ -1113,7 +1112,7 @@ class AbsdeltaRejectionObservations(HostProfileCase):
     def test_absdelta_d2a_discards_pending(self):
         observed = self.observe(
             "absdelta_d2a_discards_pending",
-            "tests/fixtures/ch08_scheduling/absdelta_d2a_discards_pending.va",
+            "tests/conformance/tests/verilog-a/ch08_scheduling/absdelta_d2a_discards_pending.va",
             {"top": "absdelta_d2a_discards_pending", "analysis": "tran",
              "initial_time": 0.0, "lookahead_time": 12e-9,
              "pause_digital_after_initialization": True,
@@ -1142,7 +1141,7 @@ class AbsdeltaRejectionObservations(HostProfileCase):
 # scheduling_observations: mixed-kernel timing.
 # ---------------------------------------------------------------------------
 
-CROSS = "tests/fixtures/ch08_scheduling/cross_pending_host_observations.va"
+CROSS = "tests/conformance/tests/verilog-a/ch08_scheduling/cross_pending_host_observations.va"
 
 
 class SchedulingObservations(HostProfileCase):
@@ -1243,7 +1242,7 @@ class SchedulingObservations(HostProfileCase):
 
     def test_continuous_variable_interpolates_unless_event_assigned(self):
         observed = self.observe("continuous_variable_interpolation",
-            "tests/fixtures/ch08_scheduling/continuous_variable_interpolation_host.va",
+            "tests/conformance/tests/verilog-a/ch08_scheduling/continuous_variable_interpolation_host.va",
             {"top": "continuous_variable_interpolation_host", "analysis": "tran",
              "accepted_analog_times": [0.0, 10e-9, 18e-9],
              "digital_read_time": 15e-9, "observe_kernel_times_at_read": True})
@@ -1266,8 +1265,8 @@ class SchedulingObservations(HostProfileCase):
 # them) sit in the chapter directories of the clauses they observe.
 # ---------------------------------------------------------------------------
 
-LANGUAGE_FIXTURES = "tests/fixtures/ch03_data_types/"
-MODELS = {name: f"tests/fixtures/{chapter}/{name}.va" for chapter, names in (
+LANGUAGE_FIXTURES = "tests/conformance/tests/verilog-a/ch03_data_types/"
+MODELS = {name: f"tests/conformance/tests/verilog-a/{chapter}/{name}.va" for chapter, names in (
     ("ch03_data_types", ("operator_equation_tolerances", "structural_unknown_domain")),
     ("ch04_expressions", ("transition_resolution", "transition_simulator_default", "slew_small_signal")),
 ) for name in names}
@@ -1485,7 +1484,7 @@ class LanguageSemanticsObservations(HostProfileCase):
 # independently observed capability set.
 # ---------------------------------------------------------------------------
 
-COMPACT_SOURCE = "tests/fixtures/ch10_directives/compact_modeling_macro.va"
+COMPACT_SOURCE = "tests/conformance/tests/verilog-a/ch10_directives/compact_modeling_macro.va"
 
 # Each row of Annex G.3 is represented, including all subfeatures in compound
 # entries. Related capabilities are reused by repeated change-history
@@ -1623,7 +1622,7 @@ class CompactModelingObservations(HostProfileCase):
         )
 
 
-# The profile runners, by artifact name (`zig build test-host-profiles`).
+# The profile runners, by artifact name (`zig build test`).
 PROFILES = {
     "report_observations": ReportObservations,
     "indirect_equation_observations": IndirectEquationObservations,

@@ -1,4 +1,0 @@
-first 1110 0001 0111
-second 1110 0001 0111
-ticks 2
-half 3

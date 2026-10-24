@@ -31,7 +31,6 @@ const joinPath = model.joinPath;
 const lastComponent = model.lastComponent;
 const nameTable = model.nameTable;
 const vpiArray = root.vpiArray;
-const vpiIndex = root.vpiIndex;
 const vpiNet = root.vpiNet;
 const vpiScope = root.vpiScope;
 const vpiSize = root.vpiSize;
@@ -42,15 +41,7 @@ const vpiSize = root.vpiSize;
 /// one `Design` cannot name. Caller owns the result and frees it with
 /// `Design.deinit`. `model_gpa` holds the `Design`'s tables.
 pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Design {
-    var d: Design = .{
-        .gpa = model_gpa,
-        .arena = .init(model_gpa),
-        .objects = &.{},
-        .scopes = &.{},
-        .top_modules = &.{},
-        .by_name = .empty,
-        .iters = .empty,
-    };
+    var d: Design = .{ .gpa = model_gpa, .arena = .init(model_gpa) };
     errdefer d.deinit();
     const arena = d.arena.allocator();
     // Everything below but the rows and the `Design` is scratch: many small
@@ -462,7 +453,7 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
                 if (r.arrays.contains(slot)) continue;
                 const net_name = try arena.dupe(u8, r.file.str(n.name));
                 nets.appendAssumeCapacity(@intCast(objects.hot.items.len));
-                try objects.append(.{
+                try objects.appendCold(.{
                     .kind = .net,
                     .owner = .of(k.scope),
                     .name = net_name,
@@ -471,9 +462,8 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
                     .slot = .of(slot),
                     .net_type = n.kind,
                     .src_tok = n.main_tok,
-                    .src_engine = .of(e),
                     .edges = try arena.dupe(code.Edge, &.{.{ .tag = vpiScope, .to = m.* }}),
-                });
+                }, .{ .src_engine = e });
                 try addBits(arena, objects, r, code.vpiNetBit);
             }
             objects.hot.items[m.*].lists = try arena.dupe(code.List, &.{.{ .tag = vpiNet, .items = nets.items }});

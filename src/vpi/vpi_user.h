@@ -134,7 +134,7 @@ typedef PLI_UINT32 *vpiHandle;
 /* --------------------------------------------------------------------------
  * The analog classes — §11.6.2, §11.6.5–§11.6.7. Verilog-AMS names these and
  * numbers none; the numbers are VerA's, and agree with the P03 draft header
- * (tests/fixtures/ch12_vpi_routines/p03_vpi_analog.h) on every name the two
+ * (tests/conformance/tests/verilog-ams/ch12_vpi_routines/p03_vpi_analog.h) on every name the two
  * share, so a plugin including both sees one value per name.
  *
  *   vpi_iterate(vpiDiscipline, NULL)          every discipline declared
@@ -711,7 +711,7 @@ typedef struct t_cb_data {
  * Defined with Annex G's values so an application written against the
  * standard header compiles; asking one is refused by name (vpiError, and
  * the message names the constant and why). The values are IEEE 1364-2005
- * Annex G's, as tests/fixtures/ieee_pli/b_G_vpi_user.c transcribes them
+ * Annex G's, as tests/conformance/tests/verilog/pli/b_G_vpi_user.c transcribes them
  * (VAMS 2023 prints no vpi_user.h listing; §11.6.1, §11.6.4 and §11.6.8
  * name the module, port and net properties among them and §12.31.4 the
  * callback reasons, with no numbers).
@@ -1036,7 +1036,7 @@ extern vpiHandle  vpi_handle_multi(PLI_INT32 type, vpiHandle refHandle1, vpiHand
  * and are put as vpiScaledRealTime in the first port's time unit; like a
  * module path's they are the model's, and no simulation applies one. A put
  * needs a digital run and warns W0251 there, so the design's diagnostics
- * say so (specification/Vague_Decisions.md VD-114).
+ * say so (docs/specification/Vague_Decisions.md VD-114).
  * -------------------------------------------------------------------------- */
 #define vpiInterModPath        26
 #define vpiModPath             31

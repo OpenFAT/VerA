@@ -1,7 +1,0 @@
-default 0.00 0.00 0.00
-convert 3 -3 9.00 -3.00
-nba 6.25 -2.50
-outside 0.00
-unknown 0.00
-unchanged 2 6.25 -2.50
-real-bits 7ff8000000000001

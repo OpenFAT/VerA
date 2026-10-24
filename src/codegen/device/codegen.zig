@@ -269,6 +269,12 @@ pub const Gen = struct {
     plan: UnitPlan = undefined,
     /// Which uniform parameters the body read (`unit.Uses`).
     uses: gen_unit.Uses = .{},
+    /// `out` ranges of the final emission's `then` arms of a §5.10.2
+    /// `initial_step` branch (`cfg.emitTerm`), for `unit.scanSimReads`.
+    init_arms: std.ArrayList([2]usize) = .empty,
+    /// What the shared core reads of `SimState` (`unit.scanSimReads`),
+    /// written out as `sim_reads`. All false when there is no core.
+    sim_reads: gen_unit.SimReads = .{},
     /// Set when the unit asks for a value the LRM fixes and this backend
     /// cannot produce (§4.5's non-constant control argument, E0515; a §3.6.2.2
     /// signal-flow contribution). The whole body collapses to one
@@ -497,8 +503,9 @@ pub const Gen = struct {
         // `$limit` become core live-outs, and `buildJobs` is what queues them.
         self.limits = try plan_limit.plan(self.input(), self.names.u_names);
         // Before `buildJobs`: §4.6.4 the PSD arguments become core live-outs
-        // too, and `buildJobs` is what queues them.
-        self.noise = try plan_noise.plan(self.input());
+        // too, and `buildJobs` is what queues them. After `plan_names.plan`:
+        // a generator in a potential contribution sits on its branch current.
+        self.noise = try plan_noise.plan(self.input(), self.names.branch_u);
         for (self.noise.refusals.items) |r| {
             if (self.diags) |bag| try bag.add(.codegen, r.code, self.lowered.tokenSpan(r.tok), "{s}", .{r.msg});
             self.any_fatal = true;
@@ -628,7 +635,6 @@ pub const Gen = struct {
 
 /// Fixed emitted text: the runtime kernels every device carries (§4.3 math, §4.5 operators, Clause 9), codegen/kernel_text.zig
 pub const kernel_text = @import("codegen/kernel_text.zig");
-const gen_kernel_text = kernel_text;
 
 /// `setup`'s text as chunks a split build compiles in parallel (its test builds and runs them).
 const setup_chunk = @import("codegen/setup_chunk.zig");
@@ -661,6 +667,6 @@ test {
     _ = Gen.gen_dispatch;
     _ = Gen.gen_noise;
     _ = Gen.gen_state;
-    _ = gen_kernel_text;
+    _ = kernel_text;
     _ = opcode_zig;
 }

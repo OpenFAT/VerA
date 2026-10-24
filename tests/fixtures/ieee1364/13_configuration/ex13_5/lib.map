@@ -1,5 +1,0 @@
-// IEEE 1364-2005 §13.5, p. 206: the lib.map the §13.5.x examples assume.
-library rtlLib top.v;
-library aLib adder.*;
-library gateLib
-        adder.vg;

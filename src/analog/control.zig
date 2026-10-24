@@ -757,7 +757,7 @@ test "lowerCase: §5.8.3 one default at most (E0427)" {
 
 test "tryUnrollFor: §6.6.1 a genvar loop's scheme folds, assigns one genvar, holds no x" {
     const decls = "  genvar i;\n  integer m;\n  real y;";
-    const cases = [_]struct { body: []const u8, want: ?@import("diag").Code }{
+    const cases = [_]struct { body: []const u8, want: ?diag.Code }{
         .{ .body = "    for (i = 0; i < 3; i = i + 1) y = y + i;", .want = null },
         .{ .body = "    m = 2;\n    for (i = m; i < 2; i = i + 1) y = y + 1.0;", .want = .E0417 },
         .{ .body = "    m = 2;\n    for (i = 0; i < m; i = i + 1) y = y + 1.0;", .want = .E0418 },

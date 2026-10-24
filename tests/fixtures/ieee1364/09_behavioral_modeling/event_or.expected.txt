@@ -1,7 +1,0 @@
-abc 1
-abc 2
-abc 3
-edge 4
-edge 5
-te 8
-te 9

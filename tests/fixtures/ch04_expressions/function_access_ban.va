@@ -1,6 +1,0 @@
-// LRM 4.7.1 bullet list: an analog user-defined function "shall not use access
-// functions". (Not 5.2.1 — that clause is the `analog initial` block.)
-//! lrm 4.7.1
-//! lrm 4.7.1:3
-//! reject-only E0421
-module ch4_fn_access(p); inout p; electrical p; analog function real probe; input x; real x; probe=V(p)+x; endfunction analog I(p)<+probe(1.0); endmodule

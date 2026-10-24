@@ -1,5 +1,0 @@
-all-x [   x][x]
-all-z [   z][z]
-mixed-x [   X][X]
-mixed-z [   Z][Z]
-both [   X][X]

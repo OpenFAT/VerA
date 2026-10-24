@@ -255,6 +255,11 @@ pub const Emitter = struct {
     /// `forcedParts`.
     parts: std.AutoHashMapUnmanaged(struct { slot: u32, bits: compile.Bits }, u32) = .empty,
     part_start: []const u32 = &.{},
+    /// Per slot: some `force` holds a select of it (§9.3.2), so its net
+    /// resolves in `rt.net`, whose `store` keeps the forced bits.
+    select_forced: []const bool = &.{},
+    /// Per settle node: `pureNode` of its pc.
+    pure_nodes: []const bool = &.{},
 
     /// Appends formatted Zig text to `out`; a writer failure is OOM.
     pub fn print(self: *Emitter, comptime f: []const u8, args: anytype) Error!void {
@@ -293,7 +298,7 @@ pub const Emitter = struct {
         return self.labels;
     }
 
-    /// Refuse a type a `logic.T` cannot hold.
+    /// Refuses a real: a `logic.T` holds only integral values.
     pub fn fits(self: *Emitter, t: Type) Error!void {
         if (t.real) return self.refuse("a real value");
     }
@@ -544,6 +549,12 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     self.total = total;
     self.sub_done = try self.arena.alloc(bool, r.subs.items.len);
     @memset(self.sub_done, false);
+    const forced = try self.arena.alloc(bool, r.values.len);
+    @memset(forced, false);
+    for (r.code.items) |ins| if (ins == .override_on) if (ins.override_on.bits != null) {
+        forced[ins.override_on.slot] = true;
+    };
+    self.select_forced = forced;
     for (r.code.items) |ins| switch (ins) {
         .disable_block => |b| try blockEnd(self, b.start, b.end),
         .disable_task => |idx| for (r.subs.items[idx].ranges.items) |rg| try blockEnd(self, rg.start, rg.end),
@@ -601,6 +612,9 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     const p = try plan.build(self, procs.items, schedule);
     self.watched = p.watched;
     self.reach = p.reach;
+    const pure_nodes = try self.arena.alloc(bool, p.node_pc.len);
+    for (pure_nodes, p.node_pc) |*x, pc| x.* = pureNode(self, pc);
+    self.pure_nodes = pure_nodes;
     // `fn proc<pc>` of every pc, so a dispatch is one indexed call.
     const entry_of = try self.arena.alloc(?u32, r.code.items.len);
     @memset(entry_of, null);
@@ -645,7 +659,7 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     // 2-state phase never sees (`rt.auto`): that phase leaves it uncompiled.
     const time0 = try self.arena.alloc(bool, r.code.items.len);
     @memset(time0, false);
-    if (self.auto) for (procs.items) |pr| if (pr.role == .comb and pureNode(self, pr.entry)) {
+    if (self.auto) for (procs.items) |pr| if (pr.role == .comb and r.code.items[pr.entry] == .continuous and self.pure_nodes[pr.role.comb]) {
         time0[pr.entry] = true;
     };
     try self.print("const procs = [_]*const fn (*S, u32) rt.Error!void{{", .{});
@@ -680,7 +694,7 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
             for (p.node_pc[lo..@min(lo + 64, p.node_pc.len)], lo..) |pc, n| try settleNode(self, p, pc, @intCast(n), entry_of[pc].?);
             try self.print("    s.dirty[{d}] = 0;\n}}\n\n", .{lo / 64});
         }
-        for (p.node_pc, 0..) |pc, n| if (pureNode(self, pc)) try nodeValue(self, pc, @intCast(n));
+        for (p.node_pc, self.pure_nodes, 0..) |pc, pure_node, n| if (pure_node) try nodeValue(self, pc, @intCast(n));
     }
 
     try self.print("}};\n}}\n\n", .{});
@@ -782,14 +796,14 @@ fn advances(r: *const Run) bool {
 /// tested. Any other node runs when its bit says an input changed.
 fn settleNode(self: *Emitter, p: plan.Plan, pc: u32, n: u32, entry: u32) Error!void {
     const r = self.r;
-    if (!pureNode(self, pc)) return self.print("    if (s.take({d})) try proc{d}(s.s, {d});\n", .{ n, entry, pc });
+    if (!self.pure_nodes[n]) return self.print("    if (s.take({d})) try proc{d}(s.s, {d});\n", .{ n, entry, pc });
     const slot = r.nets[r.drivers[r.code.items[pc].continuous].net].slot;
     if (!self.watched[slot]) return self.print("    try M.set(s, {d}, val{d}(s), {f});\n", .{ self.off[slot], n, full(self.slotWidth(slot)) });
     var wakes = self.reach[slot];
     wakes.comb = false;
     try self.print("    try M.putNode(s, {f}, {d}, {d}, val{d}(s), &.{{", .{ fmtReach(wakes), slot, self.off[slot], n });
     // A pure reader in this node's own dirty word runs after it anyway.
-    for (p.comb[p.comb_start[slot]..p.comb_start[slot + 1]]) |e| if (e.node / 64 != n / 64 or !pureNode(self, p.node_pc[e.node]))
+    for (p.comb[p.comb_start[slot]..p.comb_start[slot + 1]]) |e| if (e.node / 64 != n / 64 or !self.pure_nodes[e.node])
         try self.print(" .{{ .node = {d}, .word = {d}, .mask = 0x{x} }},", .{ e.node, e.word - self.off[slot], e.mask });
     try self.print(" }});\n", .{});
 }
@@ -1696,7 +1710,9 @@ fn delay(self: *Emitter, amount: Ast.ExprId) Error!void {
 /// Is driver `i` its net's value as is (`resolution.plainCopy`, with no delay)?
 /// It stores the net itself; every other driver resolves in `rt.net`. A
 /// logic gate is one on a scalar net: it never asserts §7.10.2's H/L.
-pub fn plainDriver(r: *const Run, i: u32) bool {
+/// Reads `select_forced`, which `native` fills before anything asks.
+pub fn plainDriver(self: *const Emitter, i: u32) bool {
+    const r = self.r;
     const d = r.drivers[i];
     const n = r.nets[d.net];
     const plain = switch (n.kind) {
@@ -1708,7 +1724,7 @@ pub fn plainDriver(r: *const Run, i: u32) bool {
         .gate => |g| r.values[n.slot].width == 1 and logicGate(g.kind),
         .bridge, .udp, .mos, .pull => false,
     };
-    return plain and source and r.netDrivers(d.net).len == 1 and !n.strength_read and n.cold == no_cold and !selectForced(r, n.slot) and
+    return plain and source and r.netDrivers(d.net).len == 1 and !n.strength_read and n.cold == no_cold and !self.select_forced[n.slot] and
         d.s0 == .strong and d.s1 == .strong and !d.delay.present;
 }
 
@@ -1734,8 +1750,8 @@ fn resolvedNets(self: *Emitter) Error!void {
     try self.rt_drivers.ensureTotalCapacityPrecise(self.arena, r.drivers.len);
     for (r.nets, 0..) |n, k| {
         // §7.6 a switch terminal resolves with the nets it is joined to.
-        const resolved = n.strength_read or r.netCold(n).trans.len != 0 or selectForced(r, n.slot) or for (r.netDrivers(@intCast(k))) |di| {
-            if (!plainDriver(r, di)) break true;
+        const resolved = n.strength_read or r.netCold(n).trans.len != 0 or self.select_forced[n.slot] or for (r.netDrivers(@intCast(k))) |di| {
+            if (!plainDriver(self, di)) break true;
         } else false;
         if (!resolved) continue;
         if (n.kind == .wreal) return self.refuse("a VAMS wreal net");
@@ -1892,13 +1908,6 @@ fn partOf(self: *Emitter, slot: u32, sel: compile.Bits) ?u32 {
     return self.parts.get(.{ .slot = slot, .bits = sel });
 }
 
-/// Does some `force` hold a select of `slot` (§9.3.2)? Its net then
-/// resolves in `rt.net`, whose `store` keeps the forced bits.
-fn selectForced(r: *const Run, slot: u32) bool {
-    for (r.code.items) |ins| if (ins == .override_on) if (ins.override_on.bits != null and ins.override_on.slot == slot) return true;
-    return false;
-}
-
 /// `rt.Design.nets`/`drivers`/`udps`: `Run.nets` and `Run.drivers` of the
 /// `resolvedNets` rows, as `rt.net` reads them.
 fn netTables(self: *Emitter) Error!void {
@@ -2009,8 +2018,8 @@ fn continuous(self: *Emitter, pc: u32, i: u32) Error!void {
     const n = r.nets[d.net];
     r.scope = d.scope;
     const nw = self.slotWidth(n.slot);
-    if (plainDriver(r, i)) {
-        if (self.role == .comb and pureNode(self, pc)) {
+    if (plainDriver(self, i)) {
+        if (self.role == .comb and self.pure_nodes[self.role.comb]) {
             // Only the time-0 queue runs this process (`plan.Role.comb`):
             // one out-of-line store serves every node of its width.
             if (self.watched[n.slot])

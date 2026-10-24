@@ -1,1 +1,0 @@
-pli-array-kinds reg-words=2 real-selects=2

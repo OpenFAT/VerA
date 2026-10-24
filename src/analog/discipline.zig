@@ -65,20 +65,15 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
             try self.err(d.main_tok, .E0339, "`{s}` declares `domain discrete` and binds a nature", .{
                 self.file.str(d.name),
             });
-        if (d.potential != .none) {
-            const n = natureOf(self, d.potential);
-            if (n.abstol) |a| info.potential_abstol = a;
-            if (n.access) |acc| {
-                info.potential_access = acc;
-                try self.access_kind.put(self.arena, acc, .potential);
-            }
-        }
-        if (d.flow != .none) {
-            const n = natureOf(self, d.flow);
-            if (n.abstol) |a| info.flow_abstol = a;
-            if (n.access) |acc| {
-                info.flow_access = acc;
-                try self.access_kind.put(self.arena, acc, .flow);
+        inline for (.{ Lower.Access.potential, Lower.Access.flow }) |half| {
+            const bound = @field(d, @tagName(half));
+            if (bound != .none) {
+                const n = natureOf(self, bound);
+                if (n.abstol) |a| @field(info, @tagName(half) ++ "_abstol") = a;
+                if (n.access) |acc| {
+                    @field(info, @tagName(half) ++ "_access") = acc;
+                    try self.access_kind.put(self.arena, acc, half);
+                }
             }
         }
         // §3.6.2.3 discipline-level attribute overrides win over the nature's.
@@ -116,7 +111,7 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
 /// annex D's `disciplines.vams` to every compilation, so comparing across that
 /// prelude would reject a declaration its author did not write. §3.13.2's
 /// access rule (E0335) compares globally, with the prelude's natures in only
-/// when the source includes annex D.1 (specification/Vague_Decisions.md VD-096).
+/// when the source includes annex D.1 (docs/specification/Vague_Decisions.md VD-096).
 pub fn checkNatureTable(self: *Lower) Oom!void {
     const natures = self.file.natures;
     // §3.6.1.2 access identifier per nature, `.none` when it declares no
@@ -217,7 +212,7 @@ pub fn checkNatureTable(self: *Lower) Oom!void {
     // declared twice (annex D's own headers arrive that way when a fixture
     // restates them) is one claim, not two. The preloaded annex D natures
     // (the first `builtin_natures`) count only when the source includes D.1
-    // itself (specification/Vague_Decisions.md VD-096): VerA supplies them to every
+    // itself (docs/specification/Vague_Decisions.md VD-096): VerA supplies them to every
     // compilation, and a model that never asked for them may declare its own
     // `access = V` nature.
     const builtin = if (self.file.annex_d_included) 0 else @min(self.file.builtin_natures, natures.len);

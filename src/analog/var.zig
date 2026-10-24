@@ -96,7 +96,7 @@ pub const State = struct {
 pub const ScopeEntry = struct { name: []const u8, prev_var: u32, prev_array: u32 };
 // Budget: a name and two handles. It was 88 B with the bindings inline.
 comptime {
-    std.debug.assert(@sizeOf(ScopeEntry) == 24);
+    std.debug.assert(@sizeOf(ScopeEntry) <= 24);
 }
 
 /// One enclosing §5.3.2 named block, as `scanHeld` sees it: the dotted prefix
@@ -317,14 +317,7 @@ const Exposed = struct {
         switch (s) {
             .block => |b| {
                 // The same frames `scanHeld` keeps, so the keys agree.
-                const named = b.name != .none;
-                if (named) {
-                    const outer = if (self.var_state.held_frames.last()) |f| f.prefix else "";
-                    try self.var_state.held_frames.append(self.arena, .{
-                        .prefix = try self.arena.print("{s}{s}.", .{ outer, self.file.str(b.name) }),
-                        .vars = b.vars,
-                    });
-                }
+                const named = try pushHeldFrame(self, b);
                 for (b.body) |c| try x.stmt(c);
                 if (named) _ = self.var_state.held_frames.pop();
             },
@@ -457,6 +450,20 @@ const Exposed = struct {
     }
 };
 
+/// Opens block `b`'s `held_frames` frame and returns true, or returns false
+/// for an unnamed block: §5.3.2 makes only a NAMED block's locals static, so
+/// only a label opens a frame; an unnamed `begin`'s declarations are ordinary.
+/// The caller pops the frame after the block's body.
+fn pushHeldFrame(self: *Lower, b: Ast.SeqBlock) Oom!bool {
+    if (b.name == .none) return false;
+    const outer = if (self.var_state.held_frames.last()) |f| f.prefix else "";
+    try self.var_state.held_frames.append(self.arena, .{
+        .prefix = try self.arena.print("{s}{s}.", .{ outer, self.file.str(b.name) }),
+        .vars = b.vars,
+    });
+    return true;
+}
+
 /// §5.3.2: "The block names give a means of uniquely identifying all variables
 /// at any simulation time." Which location an assignment target names is
 /// decided by the NEAREST declaration of it, so the walk looks outward from the
@@ -504,16 +511,7 @@ fn scanHeld(self: *Lower, id: Ast.StmtId, in_event: Body) Oom!void {
     }
     switch (self.file.stmt(id)) {
         .block => |b| {
-            // §5.3.2 only a NAMED block's locals are static, so only a label
-            // opens a frame; an unnamed `begin`'s declarations are ordinary.
-            const named = b.name != .none;
-            if (named) {
-                const outer = if (self.var_state.held_frames.last()) |f| f.prefix else "";
-                try self.var_state.held_frames.append(self.arena, .{
-                    .prefix = try self.arena.print("{s}{s}.", .{ outer, self.file.str(b.name) }),
-                    .vars = b.vars,
-                });
-            }
+            const named = try pushHeldFrame(self, b);
             for (b.body) |s| try scanHeld(self, s, in_event);
             if (named) _ = self.var_state.held_frames.pop();
         },

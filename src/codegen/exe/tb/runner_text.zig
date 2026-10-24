@@ -116,12 +116,17 @@ pub const runner_body =
     \\/// §4.2.1.1: "Real numbers are converted to integers by rounding the real
     \\/// number to the nearest integer, rather than by truncating it ... If the
     \\/// fractional part of the real number is exactly 0.5, it shall be rounded
-    \\/// away from zero." `@round` is exactly that tie rule; `lossyCast` then
-    \\/// saturates rather than trapping, which is the model card's own guard
-    \\/// against a number outside the field's width.
-    \\fn cardValue(comptime T: type, v: f64) T {
+    \\/// away from zero." `@round` is exactly that tie rule. §3.4.1's explicit
+    \\/// integer keeps the low 32 bits of a wider value (VD-089), an inferred
+    \\/// integral one its 64-bit saturation; a field the §3.4.2 range sized
+    \\/// narrower refuses a value it cannot hold, as `checkRange` refuses one
+    \\/// inside the width.
+    \\fn cardValue(comptime T: type, name: []const u8, v: f64) T {
     \\    return switch (@typeInfo(T)) {
-    \\        .int => std.math.lossyCast(T, @round(v)),
+    \\        .int => |info| if (info.bits >= 64) std.math.lossyCast(T, @round(v)) else std.math.cast(T, @as(i32, @truncate(std.math.lossyCast(i64, @round(v))))) orelse {
+    \\            std.debug.print("error[E0377]: LRM 3.4.2: the model card puts parameter `{s}` outside its declared range\n", .{name});
+    \\            std.process.exit(1);
+    \\        },
     \\        else => v,
     \\    };
     \\}
@@ -395,8 +400,7 @@ pub const runner_body =
     \\/// (Table 4-21: "the initial-condition analysis which precedes a
     \\/// transient analysis"), where "static", "ic" and "tran" are 1 and "dc" 0;
     \\/// every later point is the Tran column. Any other analysis is itself at
-    \\/// every point. `lib/sim/spice/tran.zig`'s `runTran` solves the same
-    \\/// point as `.ic`. Every host here sets t, dt and kind only through this.
+    \\/// every point. Every host here sets t, dt and kind only through this.
     \\fn atPoint(t: f64, dt: f64) void {
     \\    sim_state.t = t;
     \\    sim_state.dt = dt;

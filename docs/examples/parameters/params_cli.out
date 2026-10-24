@@ -19,6 +19,27 @@ warning[W0650]: unit is not provably finite, so it compiles in strict float mode
    = help: run `vera --explain W0650` for a detailed explanation
 
 warning: 1 warning(s) emitted
+$ vera --run --param topology=parallel params.va
+=== params ===
+--- point 0 ---
+  x[p] = 1.000000e0
+  x[n] = 0.000000e0
+r = 2000 (given: 1), stages = 2, g = 0.0005 S, topology = parallel
+I(p,n) = 0.001 A
+warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(p,n) — compiles with @setFloatMode(.strict)
+  --> params.va:22:7
+   |
+21 |     if (topology == "series")
+   |     -- an expression of parameter `rparallel` is not provably finite
+22 |       I(p, n) <+ V(p, n) / rseries;
+   |       ^
+   |
+   = note: LRM 4.3
+   = help: constrain the operands with a range or a guard the prover can see
+   = note: `.strict` is correct and spec-legal — this warning is about speed, not correctness
+   = help: run `vera --explain W0650` for a detailed explanation
+
+warning: 1 warning(s) emitted
 $ vera --run --param rseries=1 params.va
-error: --param rseries: `params` declares no numeric parameter `rseries` that a card may set
+error: --param rseries: `params` declares no parameter `rseries` that --param may set
 (exit 2)

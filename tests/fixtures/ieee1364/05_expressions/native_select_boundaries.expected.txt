@@ -1,7 +1,0 @@
-min xxxxxxxx x
-decl-min 1xxx
-max xxxxxxxx x
-decl-max 1xxx
-kept a5
-unsigned x xxxx xxxx
-signed 1 a c

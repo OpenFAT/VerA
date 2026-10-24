@@ -1,3 +1,0 @@
-display a message
-0 -1
-a b

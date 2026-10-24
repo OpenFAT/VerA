@@ -159,8 +159,9 @@ pub fn lowerTableModel(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // §9.21: "The minimum data requirement is to have the product of at least
     // two points per dimension (2ᴺ for N dimensions)." `np == 0` is the absent
     // file above, whose whole point is that it has no data set to measure.
-    if (np != 0 and np < std.math.pow(usize, 2, @min(nd, 30))) {
-        try self.err(self.file.exprs.mainTok(e), .E0815, "a {d}-dimensional table needs at least {d} samples, got {d}", .{ nd, std.math.pow(usize, 2, @min(nd, 30)), np });
+    const min_samples = std.math.pow(usize, 2, @min(nd, 30));
+    if (np != 0 and np < min_samples) {
+        try self.err(self.file.exprs.mainTok(e), .E0815, "a {d}-dimensional table needs at least {d} samples, got {d}", .{ nd, min_samples, np });
         return poison;
     }
 

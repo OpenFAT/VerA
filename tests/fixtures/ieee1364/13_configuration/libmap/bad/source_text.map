@@ -1,3 +1,0 @@
-// IEEE 1364-2005 §13.2.2: a map holds library and include statements only.
-library lib1 ../../proj/lib1/;
-module m; endmodule

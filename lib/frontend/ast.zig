@@ -168,6 +168,10 @@ pub const SourceFile = struct {
     /// so the `builtin_natures` take part in §3.13.2's uniqueness rule
     /// (specification/Vague_Decisions.md VD-096). Set by the caller.
     annex_d_included: bool = false,
+    /// How many leading entries of `disciplines` (the prelude's annex D.1
+    /// ones) the source may not name, because it did not include
+    /// `disciplines.vams` under `require_std_includes`. Set by the caller.
+    hidden_disciplines: u32 = 0,
 
     /// How many of the last `builtin_modules` entries were synthesized from
     /// SPICE `.MODEL`/`.SUBCKT` cards (`spice_cards.synthesize`) rather than
@@ -259,14 +263,15 @@ pub const SourceFile = struct {
         builtin_modules: u32 = 0,
         builtin_natures: u32 = 0,
         annex_d_included: bool = false,
+        hidden_disciplines: u32 = 0,
         netlist_modules: u32 = 0,
         netlist_unsupported: []const []const u8 = &.{},
     };
 
     /// Returns an overlay of `base` (see `SourceFile`), with the caller-set
     /// fields from `c`. Its interner, expressions and statements continue
-    /// `base`'s; the decl slices, `attributes` and `lte_attrs` are borrowed
-    /// from `base` (never appended to). `base` must outlive the overlay and
+    /// `base`'s; the decl slices, `attributes`, `lte_attrs` and
+    /// `hier_indices` are borrowed from `base` (never appended to). `base` must outlive the overlay and
     /// must not change while it lives. Asserts `base` is a parse.
     pub fn overlay(base: *const SourceFile, c: Compilation) SourceFile {
         std.debug.assert(base.base == null);
@@ -284,6 +289,7 @@ pub const SourceFile = struct {
             .builtin_modules = c.builtin_modules,
             .builtin_natures = c.builtin_natures,
             .annex_d_included = c.annex_d_included,
+            .hidden_disciplines = c.hidden_disciplines,
             .netlist_modules = c.netlist_modules,
             .netlist_unsupported = c.netlist_unsupported,
             .lte_attrs = base.lte_attrs,
@@ -303,10 +309,10 @@ pub const SourceFile = struct {
     }
 
     /// Frees the append-only stores (strings, expressions, statements, blocks,
-    /// the token column, `attributes` and `lte_attrs`) so an AST built on a
-    /// gpa is leak-free; an overlay frees only its own, never the base's or
-    /// the borrowed `attributes` and `lte_attrs`. The decl slices are not
-    /// freed; they belong to the arena or caller.
+    /// the token column, `attributes`, `lte_attrs` and `hier_indices`' rows)
+    /// so an AST built on a gpa is leak-free; an overlay frees only its own,
+    /// never the base's or the three lists it borrows from it. The decl
+    /// slices are not freed; they belong to the arena or caller.
     pub fn deinit(self: *SourceFile, gpa: std.mem.Allocator) void {
         self.strings.deinit(gpa);
         self.exprs.deinit(gpa);
@@ -324,8 +330,8 @@ pub const SourceFile = struct {
     /// Starts this file from `src`, a parse of a prefix of its source (see
     /// `parser.Seed`). Asserts `self` is empty.
     ///
-    /// The strings, expressions, statements, `attributes` and `lte_attrs` are
-    /// copied with `gpa`, because later stages append to them; ids stay valid
+    /// The strings, expressions, statements, `attributes`, `lte_attrs` and
+    /// `hier_indices`' rows are copied with `gpa`, because later stages append to them; ids stay valid
     /// since every column is append-only. The module, discipline, nature,
     /// paramset, connectrules, UDP and config slices are borrowed: no later
     /// stage writes a decl, so `src` must outlive `self`. The caller-set

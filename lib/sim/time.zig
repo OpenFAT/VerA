@@ -57,8 +57,9 @@ pub const Quantum = enum(i5) {
     }
 };
 
-/// Both factors are read together per delay conversion, and are at most 10^17.
-/// Caller-owned immutable scope data; no allocation or timestamp storage here.
+/// A module's §19.8 time scale as two exact powers of ten: precision steps
+/// per time unit, and global ticks per precision step. Each is at most
+/// 10^17 (all 18 operands apart), so `u57` holds it.
 pub const Scale = struct {
     local_per_unit: u57,
     global_per_local: u57,
@@ -86,13 +87,15 @@ pub const Scale = struct {
     }
 
     /// Procedural delay: negative integral values are unsigned 64-bit time values
-    /// (§9.7.1), not zero. Scaling overflow is a diagnosed resource limit.
+    /// (§9.7.1), not zero. `DelayOverflow` past 2^64 - 1 ticks.
     pub fn signedDelay(self: Scale, value: i64) Error!u64 {
         return self.unsignedDelay(@bitCast(value));
     }
 
-    /// Scale the evaluated binary64 value and round to local precision, then scale
-    /// exactly to global ticks.
+    /// `value` time units rounded half away from zero to the module's
+    /// precision, then scaled exactly to global ticks. `NonFiniteDelay` for
+    /// an infinity or NaN, `NegativeRealDelay` below 0 (-0.0 is 0),
+    /// `DelayOverflow` past 2^64 - 1 ticks.
     pub fn realDelay(self: Scale, value: f64) Error!u64 {
         if (!std.math.isFinite(value)) return error.NonFiniteDelay;
         if (value < 0) return error.NegativeRealDelay;

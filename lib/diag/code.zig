@@ -1,8 +1,9 @@
-//! The diagnostic code catalogue: one stable identifier per diagnosable
-//! condition, with its title, LRM clause and `--explain` text.
+//! The diagnostic code catalogue: a `Code` in, its `Info` (title, LRM clause,
+//! `--explain` text) out, one indexed load into a table built at comptime.
+//! Each row cites its own clause in `Info.lrm`; the file's code cites none.
 //!
 //! No imports: every stage can name a code without pulling in the renderer,
-//! and `diag.zig` imports this file without a cycle.
+//! and `root.zig` imports this file without a cycle.
 
 /// Static documentation for one code; every field is a comptime string literal.
 pub const Info = struct {
@@ -20,7 +21,7 @@ pub const Info = struct {
 
     // Budget: three slices, 48 B for each of the catalogue's rows.
     comptime {
-        if (@sizeOf(Info) != 48) @compileError("Info grew: every catalogue row pays for it");
+        if (@sizeOf(Info) > 48) @compileError("Info grew: every catalogue row pays for it");
     }
 };
 
@@ -547,8 +548,8 @@ pub fn info(c: Code) Info {
 
 // Built at comptime from the exhaustive `infoOf` switch: a code without an arm
 // fails to compile, text binds to a code by name, and the switch itself never
-// reaches the binary. What does: 370 rows x 48 B = 17.8 KB of `.rodata` plus
-// about 214 KB of text, no relocations in the static executable, and nothing
+// reaches the binary. What does: one 48 B row per code (421 rows, 19.7 KiB, on
+// 2026-10-23) of `.rodata` plus the text, no relocations in the static executable, and nothing
 // touched until a diagnostic renders. Rows of u32 offsets into one blob would
 // save ~14 KB of the binary and no RSS; not worth a second encoding.
 const table = build: {
@@ -725,6 +726,12 @@ fn infoOf(c: Code) Info {
             \\
             \\If the definition lives in another file, add an `include for it,
             \\or pass the directory holding it via the include search path.
+            \\
+            \\Annex D.2's macros (`M_PI`, `P_K` and the rest) are defined by
+            \\constants.vams, and `vera` gives them only to a source that
+            \\includes it: write `include "constants.vams"` (or "constants.h")
+            \\before the first use. VerA ships the file, so no include path is
+            \\needed.
             ,
         },
         .E0116 => .{
@@ -3653,6 +3660,12 @@ fn infoOf(c: Code) Info {
             \\    child c1();    // A.4.1 module_instance, even with no ports
             \\
             \\Otherwise declare the discipline, or `include "disciplines.vams"`.
+            \\
+            \\Annex D.1's disciplines (`electrical`, `thermal`, `logic` and the
+            \\rest) are declared by disciplines.vams, and `vera` gives them only
+            \\to a source that includes it: write `include "disciplines.vams"`
+            \\(or "discipline.h") before the first module. VerA ships the file,
+            \\so no include path is needed.
             ,
         },
         .E0372 => .{

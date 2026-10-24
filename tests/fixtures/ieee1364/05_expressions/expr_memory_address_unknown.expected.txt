@@ -1,4 +1,0 @@
-indirect=1010
-outside=xxxx
-unknown=xxxx
-highz=xxxx

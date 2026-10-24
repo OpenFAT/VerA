@@ -323,6 +323,7 @@ fn lintAndPublish(s: *Server, arena: Allocator, uri: []const u8, doc: *Doc) !voi
             .file_name = path orelse "<untitled>",
             .include_dirs = cli.include_dirs.items,
             .std_defs = cli.std_defs,
+            .require_std_includes = true, // the source includes the annex D files it uses
             .language = cli.language,
             .sim = cli.sim,
             .diags = &bag,
@@ -476,8 +477,8 @@ fn position(text: []const u8, index: diag.LineIndex, off: u32, utf16: bool) Posi
     if (!utf16) return .{ .line = loc.line - 1, .character = off - line_start };
     var units: u32 = 0;
     for (text[line_start..off]) |c| {
-        if (c & 0xc0 != 0x80) units += 1; // a lead byte starts a code point
-        if (c >= 0xf0) units += 1; // a 4-byte sequence is a surrogate pair
+        units += @intFromBool(c & 0xc0 != 0x80); // a lead byte starts a code point
+        units += @intFromBool(c >= 0xf0); // a 4-byte sequence is a surrogate pair
     }
     return .{ .line = loc.line - 1, .character = units };
 }
@@ -668,78 +669,90 @@ test "parity: the server's diagnostics are `--diagnostics=json`'s, on every fixt
     if (!ams) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const io = std.testing.io;
-    var root = Io.Dir.cwd().openDir(io, "tests/fixtures", .{ .iterate = true }) catch return error.SkipZigTest;
-    defer root.close(io);
     const cwd = try std.process.currentPathAlloc(io, gpa);
     defer gpa.free(cwd);
-    const inc = try std.fs.path.join(gpa, &.{ cwd, "tests/fixtures" });
+    // The conformance suite's corpus. Its sources include the annex D files
+    // themselves, and `include "check.vh"` finds `include/`.
+    const tests = try std.fs.path.join(gpa, &.{ cwd, "tests/conformance/tests" });
+    defer gpa.free(tests);
+    const inc = try std.fs.path.join(gpa, &.{ tests, "include" });
     defer gpa.free(inc);
 
-    var walker = try root.walk(gpa);
-    defer walker.deinit();
     var n: usize = 0;
     var compared: usize = 0;
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        const ext = std.fs.path.extension(entry.basename);
-        if (!std.mem.eql(u8, ext, ".va") and !std.mem.eql(u8, ext, ".vams")) continue;
-        var arena_state: std.heap.ArenaAllocator = .init(gpa);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const path = try std.fs.path.join(arena, &.{ inc, entry.path });
-        const text = vera.Preprocessor.readText(io, .cwd(), path, arena) catch continue;
+    // `netlist/` is ESPice's decks, not VerA's sources.
+    for ([_][]const u8{ "verilog-a", "verilog-ams", "spice", "verilog" }) |lang| {
+        const dir = try std.fs.path.join(gpa, &.{ tests, lang });
+        defer gpa.free(dir);
+        // A missing corpus is a failure, not a skip: AGENTS.md's clone step
+        // initializes `tests/conformance`, and a skip would pass the oracle silently.
+        var root = try Io.Dir.cwd().openDir(io, dir, .{ .iterate = true });
+        defer root.close(io);
+        var walker = try root.walk(gpa);
+        defer walker.deinit();
+        while (try walker.next(io)) |entry| {
+            if (entry.kind != .file) continue;
+            const ext = std.fs.path.extension(entry.basename);
+            if (!std.mem.eql(u8, ext, ".va") and !std.mem.eql(u8, ext, ".vams")) continue;
+            var arena_state: std.heap.ArenaAllocator = .init(gpa);
+            defer arena_state.deinit();
+            const arena = arena_state.allocator();
+            const path = try std.fs.path.join(arena, &.{ dir, entry.path });
+            const text = vera.Preprocessor.readText(io, .cwd(), path, arena) catch continue;
 
-        var bag: diag.Bag = .init(gpa);
-        defer bag.deinit(gpa);
-        if (vera.compileSourceOpts(gpa, text, .lint, .{
-            .file_name = path,
-            .include_dirs = &.{inc},
-            .diags = &bag,
-        })) |r| {
-            var ok = r;
-            ok.deinit();
-        } else |_| {}
+            var bag: diag.Bag = .init(gpa);
+            defer bag.deinit(gpa);
+            if (vera.compileSourceOpts(gpa, text, .lint, .{
+                .file_name = path,
+                .include_dirs = &.{inc},
+                .require_std_includes = true, // as `serve` compiles a document
+                .diags = &bag,
+            })) |r| {
+                var ok = r;
+                ok.deinit();
+            } else |_| {}
 
-        var json: Io.Writer.Allocating = .init(arena);
-        try diag.renderJson(&bag, &json.writer);
-        var want: std.ArrayList([]const u8) = .empty;
-        var lines = std.mem.tokenizeScalar(u8, json.written(), '\n');
-        while (lines.next()) |l| {
-            const d = try std.json.parseFromSliceLeaky(struct {
-                code: []const u8,
-                span: ?struct { file: []const u8, line: u32, col: u32 },
-            }, arena, l, parse_opts);
-            const sp = d.span orelse continue;
-            if (!std.fs.path.isAbsolute(sp.file)) continue;
-            try want.append(arena, try slashed(arena, "{s} {s}:{d}:{d}", .{ d.code, sp.file, sp.line, sp.col }));
+            var json: Io.Writer.Allocating = .init(arena);
+            try diag.renderJson(&bag, &json.writer);
+            var want: std.ArrayList([]const u8) = .empty;
+            var lines = std.mem.tokenizeScalar(u8, json.written(), '\n');
+            while (lines.next()) |l| {
+                const d = try std.json.parseFromSliceLeaky(struct {
+                    code: []const u8,
+                    span: ?struct { file: []const u8, line: u32, col: u32 },
+                }, arena, l, parse_opts);
+                const sp = d.span orelse continue;
+                if (!std.fs.path.isAbsolute(sp.file)) continue;
+                try want.append(arena, try slashed(arena, "{s} {s}:{d}:{d}", .{ d.code, sp.file, sp.line, sp.col }));
+            }
+
+            const doc_uri = try pathToUri(arena, path);
+            const by_uri = try diagnostics(arena, &bag, doc_uri, false);
+            var got: std.ArrayList([]const u8) = .empty;
+            var it = by_uri.iterator();
+            while (it.next()) |e| for (e.value_ptr.items) |d| {
+                const code = d.code orelse continue;
+                const file = (try uriToPath(arena, e.key_ptr.*)).?;
+                try got.append(arena, try slashed(arena, "{s} {s}:{d}:{d}", .{ code, file, d.range.start.line + 1, d.range.start.character + 1 }));
+            };
+            // The JSON's spanless rows and prelude rows are not in `want`; the
+            // server puts both at 0:0.
+            var kept: std.ArrayList([]const u8) = .empty;
+            for (got.items) |g| if (!std.mem.endsWith(u8, g, ":1:1") or containsStr(want.items, g)) try kept.append(arena, g);
+
+            std.mem.sort([]const u8, want.items, {}, lessStr);
+            std.mem.sort([]const u8, kept.items, {}, lessStr);
+            if (want.items.len != kept.items.len or for (want.items, kept.items) |x, y| {
+                if (!std.mem.eql(u8, x, y)) break true;
+            } else false) {
+                std.debug.print("{s}:\n", .{path});
+                for (want.items) |x| std.debug.print("  json: {s}\n", .{x});
+                for (kept.items) |x| std.debug.print("  lsp:  {s}\n", .{x});
+                return error.TestUnexpectedResult;
+            }
+            n += 1;
+            compared += want.items.len;
         }
-
-        const doc_uri = try pathToUri(arena, path);
-        const by_uri = try diagnostics(arena, &bag, doc_uri, false);
-        var got: std.ArrayList([]const u8) = .empty;
-        var it = by_uri.iterator();
-        while (it.next()) |e| for (e.value_ptr.items) |d| {
-            const code = d.code orelse continue;
-            const file = (try uriToPath(arena, e.key_ptr.*)).?;
-            try got.append(arena, try slashed(arena, "{s} {s}:{d}:{d}", .{ code, file, d.range.start.line + 1, d.range.start.character + 1 }));
-        };
-        // The JSON's spanless rows and prelude rows are not in `want`; the
-        // server puts both at 0:0.
-        var kept: std.ArrayList([]const u8) = .empty;
-        for (got.items) |g| if (!std.mem.endsWith(u8, g, ":1:1") or containsStr(want.items, g)) try kept.append(arena, g);
-
-        std.mem.sort([]const u8, want.items, {}, lessStr);
-        std.mem.sort([]const u8, kept.items, {}, lessStr);
-        if (want.items.len != kept.items.len or for (want.items, kept.items) |x, y| {
-            if (!std.mem.eql(u8, x, y)) break true;
-        } else false) {
-            std.debug.print("{s}:\n", .{path});
-            for (want.items) |x| std.debug.print("  json: {s}\n", .{x});
-            for (kept.items) |x| std.debug.print("  lsp:  {s}\n", .{x});
-            return error.TestUnexpectedResult;
-        }
-        n += 1;
-        compared += want.items.len;
     }
     // Fixtures that diagnose nothing would make the comparison vacuous.
     try std.testing.expect(n > 1000 and compared > 500);

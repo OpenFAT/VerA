@@ -1,7 +1,0 @@
-top rtlLib.top
-top.a1 aLib.adder
-top.a2 aLib.adder
-top.a1.f1 aLib.foo
-top.a1.f2 aLib.foo
-top.a2.f1 rtlLib.foo
-top.a2.f2 gateLib.foo

@@ -21,7 +21,6 @@ const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
-const call = Lower.call;
 const astTy = Lower.astTy;
 
 /// This file's private state on `Lower` (`Lower.hier_name_state`).

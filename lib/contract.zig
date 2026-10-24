@@ -39,7 +39,7 @@ const std = @import("std");
 /// An additive optional declaration stays optional for a host that checks
 /// it with `@hasDecl`. Replaces the integer `abi_version` (last 6) and the
 /// device's `contract_abi`, 2026-10-18.
-pub const vera_version = "0.12.1";
+pub const vera_version = "0.13.0";
 
 /// Whether this program asked for the contract's conformance checks: its root
 /// module declares `pub const vera_validate_contract = true`. Off by default:
@@ -530,7 +530,7 @@ pub const gm = struct {
     const log2e = 1.44269504088896338700;
 
     /// exp, log and pow are VerA's own, one implementation on every target
-    /// (host, NVPTX, AMDGCN): faithful (< 1 ulp; specification/Vague_Decisions.md, "Host
+    /// (host, NVPTX, AMDGCN): faithful (< 1 ulp; docs/specification/Vague_Decisions.md, "Host
     /// math"), fma-free so every target rounds alike (`exact_everywhere`).
     /// `exp`/`log` take `f64` or `@Vector(n, f64)`; `powV` is pow's vector
     /// form.
@@ -625,7 +625,7 @@ pub const gm = struct {
     // `atan`, so they need no libm (NVPTX, AMDGCN) and one function serves the
     // compiler's folds (`kernels/fold.zig`), the prover's bounds
     // (`prove/transfer.zig`) and a device's value (`kernel_text.zig`).
-    // An exact f64 model against mpmath (specification/Vague_Decisions.md
+    // An exact f64 model against mpmath (docs/specification/Vague_Decisions.md
     // VD-123): under 2 ulp (acosh near 1 the worst, 1.94); log10 0.67 ulp
     // and exact at every power of ten. `tests/unit.zig` holds the bounds.
 
@@ -1912,7 +1912,7 @@ pub const gm = struct {
     }
 
     test "exp/log/pow stay within the documented bound of an f128 oracle" {
-        // specification/Vague_Decisions.md: exp <= 0.52, log <= 0.52, pow <= 0.55 ulp
+        // docs/specification/Vague_Decisions.md: exp <= 0.52, log <= 0.52, pow <= 0.55 ulp
         // (measured maxima 0.507, 0.500, 0.505; the margin is the bound ARM
         // proves). A fixed sample, so the test is reproducible.
         var prng = std.Random.DefaultPrng.init(0x7a11);
@@ -2178,6 +2178,21 @@ comptime {
     std.debug.assert(@sizeOf(SimState) == 24 and @offsetOf(SimState, "iteration") == 20);
 }
 
+/// Which `SimState` fields `eval`, `q` and `evalQ` read (`D.sim_reads`).
+///   t, dt: read outside the `then` arm of a §5.10.2 `initial_step` event,
+///     whose evaluations a host tells apart by `initial_step` itself. False
+///     means every evaluation off the initial step is a function of the time
+///     only through `kind`, `initial_step`, `final_step` and
+///     `analog_initial`, so a host may reuse one across timepoints.
+///   iteration: read anywhere.
+/// `kind`, `initial_step`, `final_step` and `analog_initial` are not listed.
+pub const SimReads = struct { t: bool = true, dt: bool = true, iteration: bool = true };
+
+/// Returns `D.sim_reads`, or every field read when undeclared. A superset.
+pub fn simReads(comptime D: type) SimReads {
+    return if (@hasDecl(D, "sim_reads")) D.sim_reads else .{};
+}
+
 /// What an unknown is, per position of the optional `u_kinds` table.
 pub const UnknownKind = enum {
     voltage,
@@ -2260,7 +2275,15 @@ const host_model_fields = [_][]const u8{
 
 /// §4.6.4 one noise generator: position k of `noise_gens` is a generator of
 /// `kind` on the (row, col) branch, and position k of `noisePsd`'s result is
-/// its PSD. A `.table` generator's PSD is its table at the card,
+/// its PSD. A current generator (a noise function in a flow contribution)
+/// has `row` and `col` as its nodes, or `row == col` for one to the
+/// reference. A voltage generator (§4.6.4.1, a noise function in a potential
+/// contribution) is in series with its branch: `row == col` is the branch's
+/// current unknown (`U.@"flow(a,b)"`), and the generator enters that
+/// unknown's own equation row, `V(a,b) − <value>`, with the row's sign
+/// already in `PsdTerm.coeff`. A host adds `coeff·n` to row `row` and, when
+/// `col` differs, subtracts it from `col`, whichever kind the unknown is.
+/// A `.table` generator's PSD is its table at the card,
 /// `noiseTable(D, &model, table.?)`; its `noisePsd` entry reads zero. The per-use scale factor is
 /// `PsdTerm.coeff`, because it may depend on the bias.
 pub fn NoiseGen(comptime D: type) type {
@@ -2496,7 +2519,10 @@ pub fn fileIo(comptime D: type) ?FileIo {
 }
 
 /// §4.6.3 one AC stimulus: position k of `ac_gens` is an `ac_stim` call on the
-/// (row, col) branch, and position k of `acStim`'s result is its phasor.
+/// (row, col) branch, and position k of `acStim`'s result is its phasor. The
+/// (row, col) rule is `NoiseGen`'s: a stimulus in a potential contribution is
+/// a voltage source in series with its branch, `row == col` on the branch's
+/// current unknown, its phasor carrying that row's sign (a negative `mag`).
 /// The residual carries only the phasor's real part, `mag·cos(phase)`. A host
 /// that solves a complex small-signal system reads this table instead of that
 /// residual term; adding both counts the real part twice.
@@ -3689,7 +3715,7 @@ pub fn InstancePtr(comptime D: type) type {
 ///   initState(&model, &inst)     once per instance, before the first solve, and
 ///                                at the start of each later analysis: it resets
 ///                                what `updateState` advances in `inst` (§4.6.2)
-///   seed(S, ...)               once before Newton iteration 1
+///   seed(S, ...)                 once before Newton iteration 1
 ///   eval / q / evalQ             every iterate; `q` returns one charge per site
 ///                                (`Sites`), `evalQ` both from one evaluation
 ///   limit(S, ..., cur, old, sim) every iterate, on the instance's private limited
@@ -3935,6 +3961,8 @@ pub fn validate(comptime D: type) void {
     // overrides included): the absolute half of a Newton stopping test.
     if (@hasDecl(D, "u_abstol") and @TypeOf(D.u_abstol) != [n]f64)
         @compileError(name ++ ".u_abstol must be [|U|]f64");
+    if (@hasDecl(D, "sim_reads") and @TypeOf(D.sim_reads) != SimReads)
+        @compileError(name ++ ".sim_reads must be contract.SimReads");
 
     // §3.6.3.2 a net initializer (`electrical n = 5.0;`) is a nodeset: a
     // starting guess for that unknown, null where none is given. It is not an
@@ -4191,6 +4219,7 @@ const AllowedPubDecl = enum {
     limit,
     limit_reads,
     limit_writes,
+    sim_reads,
     deriv_reads,
     ddx_reads,
     jac_const,
@@ -4903,6 +4932,8 @@ const MockAll = struct {
         return .{ .{ 0.25 * g, 0.0 }, .{ 0.75 * g, 0.0 } };
     }
     pub const lane_masks = [_]LaneUse{.{ .mask = 0b11, .uses = 1 }};
+    /// A resistor reads no time.
+    pub const sim_reads: SimReads = .{ .t = false, .dt = false, .iteration = false };
 };
 
 test "validate: minimal resistor" {
@@ -5207,7 +5238,7 @@ test "validateHost: a systf is the host's to bind, and only when there is one" {
 }
 
 /// §6.2's optional port list, in device form: no terminals, one internal
-/// unknown, as tests/fixtures/ch06_hierarchy/module_definition.va lowers
+/// unknown, as tests/conformance/tests/verilog-a/ch06_hierarchy/module_definition.va lowers
 /// (`module m; electrical p; analog I(p) <+ V(p); endmodule`).
 const MockNoPorts = struct {
     pub const U = enum(u8) { p };

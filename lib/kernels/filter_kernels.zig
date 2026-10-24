@@ -1,6 +1,6 @@
 // §4.5.11 / §4.5.12 filter kernels — EMITTED VERBATIM into every device that
 // uses a `laplace_*` or `zi_*` operator (`kernel_text.filt_txt` is `@embedFile` of
-// this file) and `@import`ed by codegen's tests and `kernels/test.zig`. One
+// this file) and `@import`ed by codegen's tests and `tests/unit.zig`. One
 // source, so the numerics the tests check are the numerics the device runs.
 //
 // A filter is a CASCADE of sections, `H = ∏ num[i]/den[i]`, each section a
@@ -99,7 +99,7 @@ pub fn zPush(uh: []f64, yh: []f64, u: f64, y: f64) void {
 /// §4.5.11 does not say what a filter with a pole at s = 0 returns in a DC
 /// analysis. VerA answers 0, the choice it makes for §4.5.4's `idt` with no
 /// loop to force its argument: the integrator state starts at 0. A transient
-/// then integrates from there (`zLaplaceStep`). specification/Vague_Decisions.md §6.
+/// then integrates from there (`zLaplaceStep`). docs/specification/Vague_Decisions.md §6.
 pub fn zH0(comptime D: usize, sec: [2][D + 1]f64) [2]f64 {
     if (sec[1][0] != 0.0) return .{ sec[0][0], sec[1][0] };
     var n: usize = 1;

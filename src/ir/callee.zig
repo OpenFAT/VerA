@@ -402,7 +402,7 @@ pub const table = std.EnumArray(Callee, Info).initDefault(.{}, .{
     .@"$fflush" = .{ .args = .{ .max = 1 }, .fd = 0, .family = .file_out },
     // §9.11 Table 9-8: `$realtobits` yields the bit PATTERN (an integer),
     // `$bitstoreal` the real that pattern stands for (see
-    // tests/fixtures/exhaustive/bit_conversions.va).
+    // tests/conformance/tests/verilog-a/exhaustive/bit_conversions.va).
     .@"$realtobits" = .{ .ty = .int, .args = one },
     .@"$analog_node_alias" = .{ .ty = .int },
     .@"$analog_port_alias" = .{ .ty = .int },

@@ -86,11 +86,8 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
             .potential => {
                 const u = branch_u[i];
                 if (u == none_u32) continue;
-                if (plan_topo.retention(in, c) != .runtime) {
-                    try Rows.assign(a, &rows, u, .{ .sign = -1, .contrib = i });
-                    continue;
-                }
                 try Rows.assign(a, &rows, u, .{ .sign = -1, .contrib = i });
+                if (plan_topo.retention(in, c) != .runtime) continue;
                 const j = plan_topo.switchFlowOf(in, i) orelse continue;
                 if (plan_topo.retention(in, lw.contributions.items[j]) == .off) continue;
                 const jj: u32 = @intCast(j);

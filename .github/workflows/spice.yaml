@@ -1,0 +1,55 @@
+# SPICE compatibility: the .sp decks on an ESPice release, graded against
+# their oracles. VerA's build does not depend on ESPice (ESPice depends on
+# VerA); this workflow imports a released espice binary, pinned by URL and
+# sha256 below, and runs `zig build test-spice -Despice=<it>`. That espice
+# compiles the decks' devices with its own VerA, so this checks compatibility
+# with the release, not this tree's compiler, until `espice --vera=PATH` lets
+# it use the vera built here.
+#
+# DISABLED until ESPice publishes a release: it runs only by hand. To enable,
+# set the pin and add `pull_request:` and `push: branches: [main]` to `on:`.
+name: spice
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "espice release asset (linux x86_64 tarball); default: the pin below"
+        required: false
+      sha256:
+        description: "its sha256; default: the pin below"
+        required: false
+
+env:
+  # The pinned ESPice release. Empty until one exists.
+  ESPICE_URL: ""
+  ESPICE_SHA256: ""
+
+jobs:
+  spice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: true  # tests/conformance: the .sp decks and their oracles
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
+      - name: Import the ESPice release
+        shell: bash
+        env:
+          URL: ${{ inputs.url || env.ESPICE_URL }}
+          SHA256: ${{ inputs.sha256 || env.ESPICE_SHA256 }}
+        run: |
+          set -euo pipefail
+          test -n "$URL" && test -n "$SHA256" || { echo "no ESPice release pinned: set ESPICE_URL/ESPICE_SHA256 or pass url/sha256"; exit 1; }
+          curl -fsSL "$URL" -o espice.tar.gz
+          echo "$SHA256  espice.tar.gz" | sha256sum -c -
+          mkdir espice && tar -xzf espice.tar.gz -C espice
+          exe=$(find "$PWD/espice" -type f -name espice -perm -u+x | head -1)
+          test -n "$exe" || { echo "the release holds no espice executable"; exit 1; }
+          echo "ESPICE=$exe" >> "$GITHUB_ENV"
+      - name: The decks on espice (gate)
+        shell: bash
+        run: |
+          nix develop -c zig build test-spice -Despice="$ESPICE" 2>&1 | tee spice.txt
+          exit "${PIPESTATUS[0]}"

@@ -1,9 +1,0 @@
-posedge v[2] 1
-change v[0] 2
-negedge v[1 +: 2] 4
-negedge v[3:2] 5
-posedge n[3] 6
-posedge u[0] 8
-posedge big[70] 10
-intra 7 11
-posedge v[2] 12

@@ -8,6 +8,10 @@
     flake-utils.url = "github:numtide/flake-utils";
     zig-overlay.url = "github:mitchellh/zig-overlay";
     zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
+    # The conformance suite: its `conform` harness and OpenVAF-Reloaded.
+    conformance.url = "github:OmarSiwy/VAMS-Conformance-Suite";
+    conformance.inputs.nixpkgs.follows = "nixpkgs";
+    conformance.inputs.flake-utils.follows = "flake-utils";
   };
 
   outputs =
@@ -17,6 +21,7 @@
       nixpkgs-x86_64-darwin,
       flake-utils,
       zig-overlay,
+      conformance,
     }:
     let
       lib = nixpkgs.lib;
@@ -146,6 +151,7 @@
           vera --help > /dev/null
           test -s ${vera}/share/vera/contract.zig
           cat > r.va <<'EOF'
+          `include "disciplines.vams"
           module r(p, n);
             inout p, n;
             electrical p, n;
@@ -180,24 +186,10 @@
         # Drop what this system cannot build (availableOn alone misses `broken`).
         available = lib.filter (p: lib.meta.availableOn pkgs.stdenv.hostPlatform p && !(p.meta.broken or false));
 
-        # OpenVAF-Reloaded: the reference Verilog-A compiler, not in nixpkgs.
-        openvaf = pkgs.stdenv.mkDerivation rec {
-          pname = "openvaf-reloaded";
-          version = "24.0.2mob";
-          src = pkgs.fetchurl {
-            url = "https://github.com/OpenVAF/OpenVAF-Reloaded/releases/download/v${version}/openvaf-r-v${version}-linux-x86_64.tar.gz";
-            hash = "sha256-sSt7FybRA+GMJYjDofkfhHXPA9+KO94U2Rl5fSIeMRA=";
-          };
-          nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-          buildInputs = [
-            pkgs.llvmPackages_18.libllvm
-            pkgs.stdenv.cc.cc.lib
-          ];
-          installPhase = ''
-            install -Dm755 bin/openvaf-r $out/bin/openvaf-r
-            ln -s openvaf-r $out/bin/openvaf
-          '';
-        };
+        # OpenVAF-Reloaded, the reference Verilog-A compiler, and the suite's
+        # harness, both from the conformance suite's flake.
+        openvaf = conformance.packages.${system}.openvaf-r or null;
+        conform = conformance.packages.${system}.conform;
 
         # yosys gated by hand: its check inputs hold iverilog, refused on 26.05's x86_64-darwin.
         referenceTools =
@@ -208,6 +200,7 @@
               pkgs.ngspice
               pkgs.xyce
               pkgs.python3
+              conform
             ]
             ++ lib.optional (system != "x86_64-darwin") pkgs.yosys
           )

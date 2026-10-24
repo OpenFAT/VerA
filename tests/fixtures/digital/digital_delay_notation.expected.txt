@@ -1,9 +1,0 @@
-decimal 2.500
-scientific 2.750
-parameter 3.000
-blocking 3.125 1
-nonblocking 3.375 0
-expression 3.500
-variable 3.625
-microseconds 5003.625
-scales 0.001 0.002 0.003

@@ -1,7 +1,8 @@
 //! Testbench build: device.zig and runner text in, one `zig build-exe` (or
 //! `build-lib`) out, as the binary's path or the compiler's stderr. The runner
 //! text is the caller's (`tb.renderRunner`); this file owns the argv, the
-//! module files on disk and the batch root.
+//! module files on disk and the batch root. No LRM clause: the argv is
+//! Zig's, and every clause the binary implements is in the text it builds.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -45,8 +46,7 @@ pub const BuildOptions = struct {
     optimize: std.lang.Optimize = .debug,
     /// Null is `Backend.auto(optimize, <this host>)`.
     backend: ?orchestrator.Backend = null,
-    /// The runner imports `sim` and `diag` (`renderMixed`'s, or a deck's
-    /// `//! tran`/`//! onoise`, which runs `sim.spice`), compiled from the
+    /// `renderMixed`'s runner imports `sim` and `diag`, compiled from the
     /// VerA tree `contract` sits in (`<root>/lib/contract.zig`).
     mixed: bool = false,
     /// Build `renderVpiLib`'s runner as a shared library for a Clause 12
@@ -175,15 +175,10 @@ fn argvHead(arena: Allocator, opts: BuildOptions, verb: []const u8, bin: []const
         // BadPathName on an absolute path).
         "-fno-emit-implib",
     });
-    try argv.appendSlice(arena, switch ((opts.backend orelse orchestrator.Backend.auto(opts.optimize, builtin.target.cpu.arch)).forHost()) {
-        .self_hosted => &.{ "-fno-llvm", "-fno-lld" },
-        .llvm => &.{"-fllvm"},
-    });
+    try argv.appendSlice(arena, (opts.backend orelse orchestrator.Backend.auto(opts.optimize, builtin.target.cpu.arch)).flags());
     // No debug info where there are no safety checks to trace: emitting it
     // is most of an unsafe build's LLVM time.
     if (opts.strip orelse orchestrator.strip(opts.optimize, opts.debug_info)) try argv.append(arena, "-fstrip");
-    // Compiler, verb, output, `-O`, the cache pair, implib, then a backend.
-    assert(argv.items.len >= 8);
     return argv;
 }
 
@@ -191,7 +186,6 @@ fn argvHead(arena: Allocator, opts: BuildOptions, verb: []const u8, bin: []const
 /// `.ok` payload; on a failed build it is freed and `zig`'s stderr becomes the
 /// `.failed` payload. On an error return `bin` is still the caller's.
 fn runZig(gpa: Allocator, io: Io, argv: []const []const u8, bin: []const u8) !BuildResult {
-    assert(argv.len >= 8); // `argvHead`'s floor.
     const r = try std.process.run(gpa, io, .{ .argv = argv });
     gpa.free(r.stdout);
     const failed = switch (r.term) {
@@ -378,11 +372,7 @@ test "buildExe hands back zig's stderr for a testbench that does not compile" {
     const opts: BuildOptions = .{ .work_dir = work, .contract = contract, .name = "broken" };
 
     // `std.testing.allocator` fails the test if `bin` or the report leaks.
-    const r = buildExe(gpa, io, "pub const x = 1;\n", "pub fn main() void { _ = @import(\"device\").y; }\n", opts) catch |e| switch (e) {
-        // No `zig` on PATH in this environment: nothing to assert.
-        error.FileNotFound => return error.SkipZigTest,
-        else => return e,
-    };
+    const r = try buildExe(gpa, io, "pub const x = 1;\n", "pub fn main() void { _ = @import(\"device\").y; }\n", opts);
     defer r.deinit(gpa);
     try std.testing.expect(r == .failed);
     try std.testing.expect(std.mem.find(u8, r.failed, "no member named 'y'") != null);

@@ -1,2 +1,0 @@
-Time scale of (b_19_8_no_timescale_is_1s_1s) is 1s / 1s
-t=2.0

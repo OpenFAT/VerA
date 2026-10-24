@@ -1,2 +1,0 @@
-index change: selected=1
-events: c0=2 c1=1 selected=2 matrix=1 child=1 scalar=1 block=1 task=1

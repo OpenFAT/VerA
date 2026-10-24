@@ -290,16 +290,19 @@ pub fn zScanS(src: []const u8, fmt: []const u8, k: i64) []const u8 {
     return zScan(src, fmt, k).s;
 }
 
-// `$sscanf`'s four entry points, over `zScanNul` (above).
+/// `zScanN` under `$sscanf`'s white space, which counts NUL (`zScanNul`).
 pub fn zScanNulN(src: []const u8, fmt: []const u8) i64 {
     return zScanNul(src, fmt, -1).n;
 }
+/// `zScanI` under `$sscanf`'s white space (`zScanNul`).
 pub fn zScanNulI(src: []const u8, fmt: []const u8, k: i64) i64 {
     return zScanNul(src, fmt, k).i;
 }
+/// `zScanR` under `$sscanf`'s white space (`zScanNul`).
 pub fn zScanNulR(src: []const u8, fmt: []const u8, k: i64) f64 {
     return zScanNul(src, fmt, k).r;
 }
+/// `zScanS` under `$sscanf`'s white space (`zScanNul`).
 pub fn zScanNulS(src: []const u8, fmt: []const u8, k: i64) []const u8 {
     return zScanNul(src, fmt, k).s;
 }
@@ -327,12 +330,17 @@ pub fn zScanNulS(src: []const u8, fmt: []const u8, k: i64) []const u8 {
 // notation" fixes the split — the exponent is a multiple of three and the
 // mantissa lies in [1, 1000), so 2e-13 is `200f` and never `0.2p`.
 
-/// The flag bits `zCReal` takes, in the order `cg_display.Spec` packs them.
-pub const zc_left: u8 = 1; // '-' left-justify; C makes it override '0'
-pub const zc_plus: u8 = 2; // '+' always spell the sign
-pub const zc_space: u8 = 4; // ' ' a space where the sign would be; '+' wins
-pub const zc_zero: u8 = 8; // '0' pad with zeros AFTER the sign
-pub const zc_alt: u8 = 16; // '#' C's alternative form: the point always prints
+// The flag bits `zCReal` takes, in the order `cg_display.Spec` packs them.
+/// '-' left-justify; C makes it override '0'.
+pub const zc_left: u8 = 1;
+/// '+' always spell the sign.
+pub const zc_plus: u8 = 2;
+/// ' ' a space where the sign would be; '+' wins.
+pub const zc_space: u8 = 4;
+/// '0' pad with zeros AFTER the sign.
+pub const zc_zero: u8 = 8;
+/// '#' C's alternative form: the point always prints.
+pub const zc_alt: u8 = 16;
 
 /// §9.4.3 `%[flags][width][.precision]conv`: C11 7.21.6.1p6's five flag
 /// characters, each as its `zc_*` bit, or null for any other byte. The one
@@ -355,7 +363,7 @@ pub fn zcFlag(c: u8) ?u8 {
 /// formatting capabilities available in the C language" to Table 9-23's real
 /// conversions only, so it is %e/%f/%g, either case. Table 9-22's rows,
 /// `%m`/`%l` and §2.6.2's `%r` have no '#' form (E0825;
-/// `specification/Vague_Decisions.md` §6).
+/// `docs/specification/Vague_Decisions.md` §6).
 pub fn zcAltOk(conv: u8) bool {
     return switch (conv | 0x20) {
         'e', 'f', 'g' => true,
@@ -728,7 +736,7 @@ pub fn zCReal(buf: []u8, v: f64, conv: u8, flags: u8, width: usize, prec: i64) [
             // digits. The two cannot both hold; with an explicit precision the
             // clause's printed example is what VerA follows, because a tool
             // that follows the LRM's own example is following the LRM. See
-            // tests/fixtures/ch09_system_tasks/s01_01_*.va, which withdraws the
+            // tests/conformance/tests/verilog-a/ch09_system_tasks/real_g_conversion_is_significant_digits.va, which withdraws the
             // explicit-precision rows for exactly this reason.
             zcFixed(&o, &z, if (prec < 0) 6 else @intCast(prec), alt);
         } else {
@@ -1010,16 +1018,17 @@ fn zMonitorVals(comptime site: usize, comptime len: usize) type {
     };
 }
 
-/// §3.3 string storage excludes NUL bytes. Compact the completed formatter
-/// output in its existing call-site scratch; padding counted the original bytes.
-/// ponytail: scalar compaction, one pass over the site's row; consider
-/// mask-based compaction if a model formats long text and it measures hot.
+/// §3.3 string storage excludes NUL bytes. Compacts the completed formatter
+/// output in place, in its call-site scratch, and returns the prefix of
+/// `bytes` that holds it; padding counted the original bytes.
 pub fn zStringStore(bytes: []u8) []const u8 {
-    var used: usize = 0;
-    for (bytes) |byte| {
-        if (byte == 0) continue;
+    // Text almost never holds a NUL: a vectorized search proves that and
+    // copies nothing. Past the first one, every byte is stored and only a
+    // nonzero one advances the cursor.
+    var used = zstd.mem.findScalar(u8, bytes, 0) orelse return bytes;
+    for (bytes[used + 1 ..]) |byte| {
         bytes[used] = byte;
-        used += 1;
+        used += @intFromBool(byte != 0);
     }
     return bytes[0..used];
 }

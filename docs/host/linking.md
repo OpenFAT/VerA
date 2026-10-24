@@ -69,7 +69,7 @@ default (`--optimize`, `--zig-backend`, `--debug-info` change that).
 
 `tools/report.py`'s `DYN` is a real `dyn` module: it exports one `evalQ` over
 the sparse reference family with every operand from the caller.
-`tests/fixtures/ch07_mixed_signal/vdev_dyn.zig` exports a digital device's transient as one C call.
+`tests/conformance/vera/host/vdev_dyn.zig` exports a digital device's transient as one C call.
 
 ### Large devices
 
@@ -161,9 +161,9 @@ builtins or `std.math`, so a GPU result may differ slightly from the CPU's
 `gm` too. So the same `device.zig` compiles for `nvptx64-cuda` and
 `amdgcn-amdhsa` with the LLVM backend.
 
-`tests/fixtures/ch09_system_tasks/status_gpu.zig` is the pattern: a `callconv(.kernel)` export that
+`tests/conformance/vera/host/status_gpu.zig` is the pattern: a `callconv(.kernel)` export that
 runs `evalQ` and `updateState` over a `RefFamily`
-(`tests/fixtures/ch09_system_tasks/say_gpu.zig` does the same for `say`). `zig build test` compiles both
+(`tests/conformance/vera/host/say_gpu.zig` does the same for `say`). `zig build test` compiles both
 for `nvptx64-cuda` (`sm_70`, to LLVM IR, because the NVPTX backend refuses
 the alias `@export` of a kernel makes; a host rewrites the IR) and for
 `amdgcn-amdhsa` (`gfx906`, to an object). No GPU runs them in CI.

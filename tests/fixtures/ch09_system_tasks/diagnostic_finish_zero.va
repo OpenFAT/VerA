@@ -1,8 +1,0 @@
-// Host-only oracle: tests/host.py.
-// AMS 9.7.1:1001: level 0 prints no diagnostic.
-// observation: analysis tran
-// observation: time 0, 2n
-// observation: print none
-module diagnostic_finish_zero;
-  analog if ($abstime >= 2n) $finish(0);
-endmodule

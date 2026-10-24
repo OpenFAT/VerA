@@ -7,7 +7,6 @@
 
 const std = @import("std");
 const float_lanes = @import("float/lanes.zig");
-const plan_args = @import("plan/args.zig");
 const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_dispatch = @import("dispatch.zig");
@@ -26,7 +25,8 @@ const cg_strcap = @import("../cg_strcap.zig");
 const Lower = @import("ir").Lowered;
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;
-const OpKind = @import("ir").op.OpKind;
+const ir_op = @import("ir").op;
+const OpKind = ir_op.OpKind;
 const diag = @import("diag");
 
 /// The analysis names `analysis()` recognises (LRM §4.6.1).
@@ -153,9 +153,9 @@ pub fn crossTest(self: *Gen, n: []const u8, args: []const Mir.Value, in: []const
         // §5.10.3.1 "For any other values of dir, the cross() function does
         // not generate an event". §4.5.10's direction is the same closed
         // set, so `last_crossing` reads it the same way.
-        if (c.f == 1.0) return self.arena.print("inst.{0s}__prev <= 0.0 and {1s} > 0.0", .{ n, in });
-        if (c.f == -1.0) return self.arena.print("inst.{0s}__prev >= 0.0 and {1s} < 0.0", .{ n, in });
-        if (c.f != 0.0) return "false";
+        if (c == 1.0) return self.arena.print("inst.{0s}__prev <= 0.0 and {1s} > 0.0", .{ n, in });
+        if (c == -1.0) return self.arena.print("inst.{0s}__prev >= 0.0 and {1s} < 0.0", .{ n, in });
+        if (c != 0.0) return "false";
         return self.arena.print(
             "(inst.{0s}__prev <= 0.0 and {1s} > 0.0) or (inst.{0s}__prev >= 0.0 and {1s} < 0.0)",
             .{ n, in },
@@ -188,7 +188,7 @@ pub fn crossLocated(self: *Gen, args: []const Mir.Value) Error!bool {
     for (args[2..@min(args.len, 4)]) |a| if (try gen_host.ctrlIsDynamic(self, a)) return false;
     if (args.len < 5) return true;
     const en = self.an.foldConst(args[4], false) orelse return false;
-    return en.f != 0.0;
+    return en != 0.0;
 }
 
 /// Returns whether any `cross` in the module is `crossLocated`.
@@ -206,7 +206,7 @@ pub fn anyCrossLocated(self: *Gen) Error!bool {
 /// `true` when absent. The enable is a live expression; `UnitPlan` gives it
 /// a slot (`callArgIsValue`).
 fn enableTest(self: *Gen, k: OpKind, args: []const Mir.Value) Error![]const u8 {
-    const i = @import("ir").op.enableArg(k) orelse return "true";
+    const i = ir_op.enableArg(k) orelse return "true";
     if (i >= args.len) return "true";
     const at = self.out.items.len;
     try gen_cfg.renderCond(self, args[i]);
@@ -219,14 +219,14 @@ fn enableTest(self: *Gen, k: OpKind, args: []const Mir.Value) Error![]const u8 {
 /// argument, a literal lowering emitted.
 pub fn heldIdx(self: *const Gen, args: []const Mir.Value) usize {
     const c = self.an.foldConst(if (args.len != 0) args[0] else .zero, false) orelse return 0;
-    const i: usize = @intFromFloat(c.f);
+    const i: usize = @intFromFloat(c);
     return @min(i, self.names.held_names.len -| 1);
 }
 
 /// The literal index at argument `i` of a lowering-minted call (`$tp_*`).
 fn litArg(self: *const Gen, args: []const Mir.Value, i: usize) u32 {
     const c = self.an.foldConst(if (i < args.len) args[i] else .zero, false) orelse return 0;
-    return @intFromFloat(c.f);
+    return @intFromFloat(c);
 }
 
 /// Returns whether this call, as `emitCall` renders it, reads state the host
@@ -473,7 +473,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // when the output of limexp() equals the exponential of the input".
         // `eval` sees one iterate and never the previous one, so the only
         // limiting it can do that still converges to exp is none: limexp is
-        // `exp`'s own text (specification/Vague_Decisions.md VD-121).
+        // `exp`'s own text (docs/specification/Vague_Decisions.md VD-121).
         .limexp => return gen_render.renderOp(self, .exp, if (args.len > 0) args[0] else .f_zero, .f_zero, .real),
 
         // §4.5.14 ddx(f, V(node)); the unknown index is an int literal. Pins:
@@ -481,13 +481,13 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .ddx => {
             if (args.len > 0) float_lanes.pinLanes(self, args[0]);
             const u = if (args.len > 1) self.an.foldConst(args[1], true) else null;
-            const lane = if (u) |x| std.math.lossyCast(i64, x.f) else 0;
+            // Saturating cast: bad MIR must not panic the compiler.
+            const lane = if (u) |x| std.math.lossyCast(i64, x) else 0;
             // The value reads a lane, so record it in `ddx_reads`.
             // An index outside the unknowns marks every lane: a superset.
             gen_mask.orIn(self.jac.ddx_reads, try gen_dispatch.bits(self, &.{if (lane >= 0 and lane < self.names.n_u) @intCast(lane) else none_u32}, &.{}));
             try self.b("S.con((", .{});
             try gen_render.renderVal(self, if (args.len > 0) args[0] else .f_zero, .real);
-            // Saturating cast: bad MIR must not panic the compiler.
             try self.b(").ddxAt({d}))", .{lane});
             return;
         },
@@ -779,9 +779,9 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // §9.19 $param_given / $port_connected.
         .@"$param_given" => {
             const def = if (args.len > 0) self.mir.valueDef(self.an.rv(args[0])) else Mir.Def.undef;
-            if (def == .param_ref) {
+            if (def == .param_ref and self.names.given_bit[def.param_ref] != none_u32) {
                 self.uses.model = true;
-                return self.b("@as(i64, @intFromBool(model.{s}__given))", .{self.names.p_names[def.param_ref]});
+                return self.b("@as(i64, @intFromBool(model.given__.isSet({d})))", .{self.names.given_bit[def.param_ref]});
             }
             return self.b("@as(i64, 0)", .{});
         },
@@ -793,7 +793,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             const port = if (args.len == 1) self.an.foldConst(args[0], false) else null;
             if (port) |ord| {
                 self.uses.model = true;
-                return self.b("@as(i64, @intFromBool((model.port_connected__ >> {d}) & 1 != 0))", .{std.math.lossyCast(u6, ord.f)});
+                return self.b("@as(i64, @intFromBool((model.port_connected__ >> {d}) & 1 != 0))", .{std.math.lossyCast(u6, ord)});
             }
             return self.b("@as(i64, 1)", .{});
         },
@@ -1164,10 +1164,9 @@ fn emitHostCall(self: *Gen, first: ?Mir.Value, args: []const Mir.Value, host: []
     const m = try gen_mask.zero(self.arena, self.mw);
     for (args) |a| gen_mask.orIn(m, family.mask(self, a));
     const to = try self.arena.print("zTo(S, 0x{f}, ", .{gen_mask.hex(m, false)});
-    const end = ")";
-    try self.b("        var zsr = {s}S.con({s}){s};\n", .{ to, host, end });
+    try self.b("        var zsr = {s}S.con({s}));\n", .{ to, host });
     for (args, 0..) |_, j|
-        try self.b("        zsr = {s}zsr.add(zs{d}a{d}.addC(-zsv[{d}]).scale(zsp[{d}])){s};\n", .{ to, label, j, j, j, end });
+        try self.b("        zsr = {s}zsr.add(zs{d}a{d}.addC(-zsv[{d}]).scale(zsp[{d}])));\n", .{ to, label, j, j, j });
     try self.b("        break :zs{d} zsr;\n    }}", .{label});
 }
 
@@ -1286,7 +1285,7 @@ fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) 
     const n = self.names.unit_names[unit];
     // Render the input only when the kernel reads it, or `uses.x` would keep
     // an unreferenced parameter named.
-    const needs_in = @import("ir").op.needsInput(k);
+    const needs_in = ir_op.needsInput(k);
     // Every operator input is a core field, so this renders a local in the
     // core and a cache read in the display unit.
     const in0 = if (needs_in)
@@ -1452,8 +1451,6 @@ fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) 
     }
 }
 
-/// Writes `zLu(S, m, ` around an operator kernel whose scalar is `zL(S, m)`;
-/// `opClose` writes its `)`.
 /// Opens a §4.5.7/§4.5.11/§4.5.12 kernel for both families: `ac`, the
 /// operator's small-signal response, when the family is `acDyn`'s `zAc`,
 /// else `zSs` around the kernel the caller writes next. `opClose` closes it.
@@ -1461,6 +1458,8 @@ fn acOpen(self: *Gen, kS: []const u8, ac: []const u8) Error!void {
     try self.b("if (comptime @hasDecl(S.Of(0), \"acMul\")) {s} else zSs({s}, sim.kind, ", .{ ac, kS });
 }
 
+/// Writes `zLu(S, m, ` around an operator kernel whose scalar is `zL(S, m)`;
+/// `opClose` writes its `)`.
 fn opOpen(self: *Gen, m: []const u64) Error!void {
     try self.b("zLu(S, 0x{f}, ", .{gen_mask.hex(m, false)});
 }
@@ -1488,7 +1487,7 @@ fn transitionTime(self: *Gen, args: []const Mir.Value, i: usize, dflt: []const u
     // `resolve_params = false`: only a time that is zero without parameters
     // is absent at compile time; a card may override a zero default.
     if (self.an.foldConst(args[i], false)) |c| {
-        if (c.f == 0.0) return dflt;
+        if (c == 0.0) return dflt;
         return gen_host.f64Expr(self, args[i]);
     }
     const e = try gen_host.f64Expr(self, args[i]);

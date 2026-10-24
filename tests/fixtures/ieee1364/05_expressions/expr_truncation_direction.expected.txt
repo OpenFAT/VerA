@@ -1,2 +1,0 @@
-truncated=01111,01111 signed=15,15
-retained=xz10

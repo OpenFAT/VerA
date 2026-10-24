@@ -29,8 +29,8 @@ const Allocator = std.mem.Allocator;
 /// The VerA release (`contract.vera_version`), which every generated device
 /// carries and `vera --version` prints.
 pub const version = @import("kernels").vera_version;
-/// The compilation arena (`CompileResult.arena`); `src/main.zig` also keeps a
-/// `.v` design's tables in one.
+/// The compilation arena (`CompileResult.arena`); `src/cli/digital.zig` also
+/// keeps a `.v` design's tables in one.
 pub const BigArena = @import("base").BigArena;
 /// §10 preprocessing (`Preprocessor.process`), for callers that need the
 /// text without a compilation.
@@ -117,6 +117,15 @@ pub const Options = struct {
     discipline_resolution: Elaborate.DisciplineResolution = .basic,
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams (§3.6.2).
     std_defs: bool = true,
+    /// The source must `include` the annex D files it uses
+    /// (`Preprocessor.Options.require_std_includes`): a D.2 macro without
+    /// constants.vams is E0115, a D.1 discipline without disciplines.vams is
+    /// E0371. The convention of the conformance suite and of `vera` (every
+    /// mode: `--check`, `--lint`, `--run`, the emitters, `--lsp`), all of
+    /// which set it, as does the suite's harness. Off by default, so a
+    /// library caller compiling text it generated (a testbench, a unit test)
+    /// keeps the implicit prelude.
+    require_std_includes: bool = false,
     /// The source language, `vera --std=`. See `Parser.setLanguage`.
     language: KeywordSet = token.default_keyword_set,
     /// `vera --sim=`: all of Verilog-AMS, or annex C's Verilog-A subset, in
@@ -359,6 +368,7 @@ fn compileInArena(
         .include_dirs = opts.include_dirs,
         .file_name = opts.file_name,
         .std_defs = opts.std_defs,
+        .require_std_includes = opts.require_std_includes,
         .spice_netlist = opts.spice_netlist,
         .spice_path = opts.spice_path,
         .bag = bag,
@@ -424,6 +434,9 @@ fn compileInArena(
         .builtin_modules = builtins,
         .builtin_natures = if (seed) |sd| @intCast(sd.file.natures.len) else 0,
         .annex_d_included = pp.annex_d_included,
+        // The prelude's D.1 disciplines lead `disciplines`; without the
+        // include a source may not name them (`resolve.checkNetDisciplines`).
+        .hidden_disciplines = if (opts.require_std_includes and !pp.disciplines_included) if (seed) |sd| @intCast(sd.file.disciplines.len) else 0 else 0,
         .netlist_modules = netlist_modules,
         .netlist_unsupported = pp.netlist_unsupported,
     });
@@ -791,13 +804,17 @@ pub fn compile(
         result.* = again;
     }
 
-    // `--param` names a parameter a card could set: a top-module, non-local,
-    // numeric scalar. A misspelling would otherwise compile the default shape.
+    // `--param` names a top-module, non-local scalar parameter, and gives a
+    // numeric one a number. A misspelling would otherwise compile the default shape.
     for (typed) |ov| {
-        for (result.lowered.params.items) |p| {
-            if (std.mem.eql(u8, p.name, ov.name) and !p.is_local and p.ty != .string) break;
+        const p = for (result.lowered.params.items) |p| {
+            if (std.mem.eql(u8, p.name, ov.name) and !p.is_local) break p;
         } else {
-            try err.print("error: --param {s}: `{s}` declares no numeric parameter `{s}` that a card may set\n", .{ ov.name, result.mir.name, ov.name });
+            try err.print("error: --param {s}: `{s}` declares no parameter `{s}` that --param may set\n", .{ ov.name, result.mir.name, ov.name });
+            return o.done(2);
+        };
+        if (p.ty != .string and (p.folded == null or p.folded.? != .str) and std.math.isNan(ov.value)) {
+            try err.print("error: --param {s}={s}: `{s}` is not a number\n", .{ ov.name, ov.text, ov.text });
             return o.done(2);
         }
     }
@@ -882,7 +899,7 @@ pub fn compile(
             .name = result.mir.name,
             .out_path = req.out_path,
             .zig_exe = b.zig_exe,
-            .mixed = dm.mixed != null or dm.tran != null or dm.onoise != null,
+            .mixed = dm.mixed != null,
             .optimize = b.optimize,
             .backend = b.backend,
             .debug_info = b.debug_info,
@@ -1085,7 +1102,7 @@ test compile {
             .status = 2,
             .report = .none,
             .text = false,
-            .err = "error: --param rr: `res` declares no numeric parameter `rr` that a card may set\n",
+            .err = "error: --param rr: `res` declares no parameter `rr` that --param may set\n",
         },
         .{ .src = "module bad(p); inout p; electrical p; analog I(p) <+ ;\nendmodule\n", .req = .{}, .status = 1, .report = .failed, .text = false, .err = "" },
         // Refused before any pipeline stage.

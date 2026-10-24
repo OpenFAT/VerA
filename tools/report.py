@@ -12,12 +12,11 @@ there (CI has already run the suites and kept them) and otherwise produced by
 running its command and saving it into DIR, so a second run re-renders without
 re-measuring. The logs and the commands:
 
-    strict.txt       zig build benchmark -- --strict     (stdout and stderr, merged)
-    coverage.txt     zig build benchmark -- --coverage
-    coverage1364.txt zig build test-1364 -- --coverage
-    devices.txt      zig build test-devices
-    vpi.txt          zig build test-vpi-fixtures
-    sweep.txt        zig build benchmark -- --sweep
+    strict.txt       zig build suite -- --strict     (stdout and stderr, merged)
+    coverage1364.txt zig build suite -- ieee1364 --coverage
+    devices.txt      zig build suite -- devices
+    vpi.txt          zig build suite -- vpi
+    sweep.txt        zig build suite -- --sweep
     models.json      `vera --emit-so` per model, this script (--models)
 
 Everything is built ReleaseFast: the suite's timing table says Debug is "NOT
@@ -46,12 +45,11 @@ import conformance as C  # noqa: E402
 ROOT = C.ROOT
 OPT = "-Doptimize=ReleaseFast"
 SUITES = {
-    "strict": ["zig", "build", OPT, "benchmark", "--", "--strict"],
-    "coverage": ["zig", "build", OPT, "benchmark", "--", "--coverage"],
-    "coverage1364": ["zig", "build", OPT, "test-1364", "--", "--coverage"],
-    "devices": ["zig", "build", OPT, "test-devices"],
-    "vpi": ["zig", "build", OPT, "test-vpi-fixtures"],
-    "sweep": ["zig", "build", OPT, "benchmark", "--", "--sweep"],
+    "strict": ["zig", "build", OPT, "suite", "--", "--strict"],
+    "coverage1364": ["zig", "build", OPT, "suite", "--", "ieee1364", "--coverage"],
+    "devices": ["zig", "build", OPT, "suite", "--", "devices"],
+    "vpi": ["zig", "build", OPT, "suite", "--", "vpi"],
+    "sweep": ["zig", "build", OPT, "suite", "--", "--sweep"],
 }
 MODELS = ["diode", "mos1", "bsim4va", "psp103", "psp103_nqs", "vbic13_4t"]
 # The `--dyn` host the model timing builds under. NOT a no-op one (`NOOP_DYN`):
@@ -169,10 +167,10 @@ def fixture_tags(rel):
 
 
 def classifications():
-    """{(std, clause): (kind, evidence)} from every CLAUSES.tsv: the
-    CLAUSE-AUDIT.md §5 kind and the quote that justifies it."""
+    """{(std, clause): (kind, evidence)} from every CLAUSES.tsv: the kind of a
+    clause that states no rule an input can break, and the quote that justifies it."""
     out = {}
-    for path in sorted((ROOT / "tests/fixtures").rglob("CLAUSES.tsv")):
+    for path in sorted(C.CLAUSES_DIR.rglob("CLAUSES.tsv")):
         ieee = "ieee1364" in path.parts
         for line in path.read_text().split("\n"):
             if not line.strip() or line.startswith("#"):
@@ -186,7 +184,7 @@ def classifications():
 
 def ieee_titles():
     out = {}
-    for line in (ROOT / "tests/fixtures/ieee1364/CLAUSES.tsv").read_text().split("\n"):
+    for line in (ROOT / "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv").read_text().split("\n"):
         cells = line.split("\t")
         if line.startswith("#") or len(cells) < 3:
             continue
@@ -220,28 +218,9 @@ def buckets(text):
     return out
 
 
-def lrm_listing(text):
-    """{clause: [(sign, path)]}: the cite listing at the head of `--coverage`."""
-    out, clause, started = {}, None, False
-    for line in text.split("\n"):
-        if not started:
-            started = line.startswith("§")
-            if not started:
-                continue
-        if not line.strip():
-            break
-        if line.startswith("§"):
-            clause = line[1:].strip()
-        elif clause and line.startswith("  "):
-            sign, _, path = line.strip().partition(" ")
-            out.setdefault(clause, []).append((sign, path))
-    return out
-
-
-def clause_rows(cov, cov1364):
+def clause_rows(cov1364):
     kinds = classifications()
     rows = []
-    titles = {k: html.unescape(re.sub(r"^\S+\s+", "", v["title"])) for k, v in C.html_sections(ROOT)[0].items()}
 
     def entry(std, cid, bucket, title, pos, neg):
         kind, why = kinds.get((std, cid), (None, ""))
@@ -259,24 +238,13 @@ def clause_rows(cov, cov1364):
                      "reason": why if bucket == "classified" else "",
                      "positive": sorted(set(pos)), "rejection": negs, "xfail": xf})
 
-    listing = lrm_listing(cov)
-    bk = buckets(cov)
-    for cid in sorted(set(listing) | set(bk), key=C.sort_key):
-        if cid not in bk and cid not in titles:
-            continue  # unresolved cite: reported by the suite itself
-        cites = listing.get(cid, [])
-        pos = ["tests/fixtures/" + p if not p.startswith("tests/") else p for s, p in cites if s == "+"]
-        neg = ["tests/fixtures/" + p if not p.startswith("tests/") else p for s, p in cites if s == "-"]
-        bucket, title = bk.get(cid, ("both", titles.get(cid, "")))
-        entry("ams", cid, bucket, title, pos, neg)
-
     cites = C.fixture_cites()
     bk = buckets(cov1364)
     for cid, title in sorted(ieee_titles().items(), key=lambda kv: C.sort_key(kv[0])):
-        # tests/suite.zig's Ieee1364 counts ieee1364/*.v and the `.c` VPI runs only.
+        # tests/suite.zig's Ieee1364 counts verilog/*.v and the `.c` VPI runs only.
         c = cites.get(("ieee", cid), {"pos": [], "neg": []})
-        keep = [p for p in c["pos"] if "/ieee1364/" in p or p.endswith(".c")]
-        keepn = [p for p in c["neg"] if "/ieee1364/" in p or p.endswith(".c")]
+        keep = [p for p in c["pos"] if "/tests/verilog/" in p or p.endswith(".c")]
+        keepn = [p for p in c["neg"] if "/tests/verilog/" in p or p.endswith(".c")]
         bucket, _ = bk.get(cid, ("both", title))
         entry("ieee", cid, bucket, title, keep, keepn)
     return rows
@@ -304,10 +272,10 @@ def chapter_table(rows, std):
 
 def open_defects():
     """The named open defects (a paragraph opening with a bold name) of the
-    "Open defects" section, in specification/Vague_Decisions.md or, once it is folded
-    in, specification/Vague_Decisions.md. Unnamed paragraphs there record what is gone."""
+    "Open defects" section of docs/specification/Vague_Decisions.md. Unnamed
+    paragraphs there record what is gone."""
     out = []
-    for name in ("specification/Vague_Decisions.md", "specification/Vague_Decisions.md"):
+    for name in ("docs/specification/Vague_Decisions.md",):
         path = ROOT / name
         if not path.exists():
             continue
@@ -324,7 +292,7 @@ def open_defects():
 
 def vpi_xfails():
     """`.c` fixtures build.zig runs (`//! design`) carrying `//! xfail`: a known gap that must exit 1 saying so."""
-    root = ROOT / "tests/fixtures"
+    root = ROOT / "tests/conformance/tests"
     out = []
     for path in sorted(root.rglob("*.c")):
         text = path.read_text(errors="replace")
@@ -335,8 +303,8 @@ def vpi_xfails():
 
 
 def vague_open():
-    """specification/Vague_Decisions.md entries that say CHANGE NEEDED and are not DONE."""
-    path = ROOT / "specification/Vague_Decisions.md"
+    """docs/specification/Vague_Decisions.md entries that say CHANGE NEEDED and are not DONE."""
+    path = ROOT / "docs/specification/Vague_Decisions.md"
     if not path.exists():
         return []
     out = []
@@ -626,8 +594,8 @@ def render(d):
              f"{E(meta['date'])} · Zig {E(meta['zig'])} · {E(meta['machine'])} · {E(meta['load'])}</p>")
     o.append("<p>Every number on this page was read from the logs of the commands below "
              "(<code>tools/report.py</code>; raw data in <a href=data.json>data.json</a>). "
-             "B and C are static citation inventories: a cite is not a passing test, "
-             "see <code>specification/CLAUSE-AUDIT.md</code>.</p><details><summary>Commands</summary><pre>"
+             "B and C are static citation inventories: a cite is not a passing test."
+             "</p><details><summary>Commands</summary><pre>"
              + E("\n".join(meta["commands"])) + "</pre></details>")
 
     o.append("<p><a href=#conf>Conformance</a> · <a href=#speed>Speed</a> · <a href=#gaps>Gaps</a> · "
@@ -636,19 +604,18 @@ def render(d):
     o.append("<h2 id=conf>Conformance</h2><div class=tiles>")
     o.append(tile(f"{a['pass']} / {a['total']}", f"A — fixtures behaving as stated · FAIL {a['fail']} · "
                   f"unasserted {a['unasserted']} · XFAIL {a['xfail']} · --strict exit {a['strict_rc']}"))
-    for key, name in (("C", "LRM clauses"), ("B", "IEEE 1364-2005 clauses")):
+    for key, name in (("B", "IEEE 1364-2005 clauses"),):
         x = m[key]
         o.append(tile(f"{x['both']} / {x['clauses']} both ways", f"{key} — {name} · classified {x['classified']} · "
                       f"positive-only {x['pos']} · rejection-only {x['neg']} · uncited {x['unc']}"))
     o.append(tile("hand-entered", "D — ARCHITECTURE.md §6 phases; not measured by any command"))
-    o.append(tile(m["devices"] or "(no summary line)", "zig build test-devices"))
-    o.append(tile(m["vpi"] or "(no summary line)", "zig build test-vpi-fixtures"))
+    o.append(tile(m["devices"] or "(no summary line)", "zig build suite -- devices"))
+    o.append(tile(m["vpi"] or "(no summary line)", "zig build suite -- vpi"))
     o.append("</div>")
     keys = ["both", "classified", "one-way", "uncited"]
-    names = ["cited both ways", "classified (CLAUSE-AUDIT §5)", "one-way", "uncited"]
+    names = ["cited both ways", "classified (CLAUSES.tsv)", "one-way", "uncited"]
     cols = SERIES[:4]
-    for std, title in (("ams", "Verilog-AMS LRM clauses by chapter (measure C)"),
-                       ("ieee", "IEEE 1364-2005 clauses by chapter (measure B)")):
+    for std, title in (("ieee", "IEEE 1364-2005 clauses by chapter (measure B)"),):
         chs = d["chapters"][std]
         o.append(f"<h3>{title}</h3>" + legend(names, cols)
                  + hstack(chs, "chapter", keys, names, cols, lambda r: f"  · {r['xfail']} xfail" if r["xfail"] else ""))
@@ -741,7 +708,7 @@ def render(d):
     o.append(f"<h3>Open defects ({len(g['defects'])})</h3>"
              + ("<ul>" + "".join(f"<li><b>{E(x['title'])}</b> {E(x['text'])} <span class=note>({E(x['source'])})</span></li>"
                                  for x in g["defects"]) + "</ul>" if g["defects"] else "<p>None named.</p>"))
-    o.append(f"<h3>specification/Vague_Decisions.md: CHANGE NEEDED, not DONE ({len(g['vague'])})</h3><details><summary>list</summary><ul>"
+    o.append(f"<h3>docs/specification/Vague_Decisions.md: CHANGE NEEDED, not DONE ({len(g['vague'])})</h3><details><summary>list</summary><ul>"
              + "".join(f"<li><b>{E(v['id'])}</b> {E(v['title'])}: {E(v['change'])}</li>" for v in g["vague"]) + "</ul></details>")
 
     # --- Rule map ----------------------------------------------------------
@@ -826,10 +793,9 @@ def load():
 
 def selftest():
     """The parsers against the frozen report shapes they read."""
-    cov = ("STATIC CITATION INVENTORY\n\n§1.2\n  + ch01/a.va\n  - ch01/b.va\n§2.1\n  ~ ch11/c.c\n\n"
-           "UNCITED — no fixture names these at all:\n§2.1 Lexical  (specification/ch2.html)  ~ compile-only .c cite\n\n"
-           "CLASSIFIED — CLAUSE-AUDIT §5: ...\n§3 Data types  [no_prohibition]  (x/CLAUSES.tsv)\n")
-    assert lrm_listing(cov) == {"1.2": [("+", "ch01/a.va"), ("-", "ch01/b.va")], "2.1": [("~", "ch11/c.c")]}
+    cov = ("STATIC CITATION INVENTORY\n\n§3.1\n  + verilog/03/a.v\n\n"
+           "UNCITED — no fixture names these at all:\n§2.1 Lexical  (x/CLAUSES.tsv)  ~ compile-only .c cite\n\n"
+           "CLASSIFIED — CLAUSES.tsv: ...\n§3 Data types  [no_prohibition]  (x/CLAUSES.tsv)\n")
     assert buckets(cov) == {"2.1": ("uncited", "Lexical"), "3": ("classified", "Data types")}
     assert buckets("POSITIVE CITATIONS ONLY — x:\n§17.1 Display tasks\n") == {"17.1": ("positive-only", "Display tasks")}
     assert tsv("a\tb\n1\t2\n3\t4\n\nx", "a\tb") == [{"a": "1", "b": "2"}, {"a": "3", "b": "4"}]
@@ -927,18 +893,17 @@ def export_svgs(d, out):
     sub = f"VerA {meta['sha'][:8]} · {meta['date'][:10]} · measured by tools/report.py"
     rows = [("A · fixtures", [("pass", int(a["pass"]), VAR[0]), ("known gap (XFAIL)", int(a["xfail"]), VAR[1]),
                               ("FAIL", int(a["fail"]) + int(a["unasserted"]), VAR[3])])]
-    for key, name in (("C", "C · LRM clauses"), ("B", "B · IEEE 1364 clauses")):
+    for key, name in (("B", "B · IEEE 1364 clauses"),):
         x = m[key]
         rows.append((name, [("tested both ways", int(x["both"]), VAR[0]),
                             ("one-way or uncited", int(x["pos"]) + int(x["neg"]) + int(x["unc"]), VAR[1]),
                             ("classified", int(x["classified"]), VAR[2])]))
-    files = {"conformance.svg": standalone(pct_rows(rows), "Conformance: measures A, B and C", sub,
+    files = {"conformance.svg": standalone(pct_rows(rows), "Conformance: measures A and B", sub,
                                            [("pass / tested both ways", VAR[0]), ("known gap", VAR[1]),
-                                            ("classified (CLAUSE-AUDIT §5)", VAR[2])])}
+                                            ("classified (CLAUSES.tsv)", VAR[2])])}
     keys = ["both", "classified", "one-way", "uncited"]
     names = ["tested both ways", "classified", "one-way", "uncited"]
-    for std, fname, title in (("ams", "lrm-chapters.svg", "Verilog-AMS LRM clauses by chapter (C)"),
-                              ("ieee", "ieee-chapters.svg", "IEEE 1364-2005 clauses by chapter (B)")):
+    for std, fname, title in (("ieee", "ieee-chapters.svg", "IEEE 1364-2005 clauses by chapter (B)"),):
         chs = d["chapters"][std]
         cols = [VAR[0], VAR[2], VAR[1], VAR[3]]  # the same roles as conformance.svg
         files[fname] = standalone(hstack(chs, "chapter", keys, names, cols), title, sub, list(zip(names, cols)))
@@ -984,25 +949,24 @@ def main(argv):
 
     if subprocess.run(["zig", "build", OPT, "install"], cwd=ROOT, stdout=sys.stderr).returncode:
         return 2
-    strict, cov, cov1364 = log(args.logs, "strict"), log(args.logs, "coverage"), log(args.logs, "coverage1364")
+    strict, cov1364 = log(args.logs, "strict"), log(args.logs, "coverage1364")
     devices, vpi, sweep = log(args.logs, "devices"), log(args.logs, "vpi"), log(args.logs, "sweep")
 
-    # Measure A, B and C, parsed the way conformance.py parses them.
+    # Measures A and B, parsed the way conformance.py parses them.
     head = [i for i, l in enumerate(strict.split("\n")) if l == "pass\tfail\tunasserted\txfail"]
     row = strict.split("\n")[head[-1] + 1].split("\t") if head else ["?"] * 4
     rcs = re.findall(r"^(?:strict exit: |exit=)(\d+)", strict, re.M)
     measures = {"A": dict(zip(("pass", "fail", "unasserted", "xfail"), row), strict_rc=rcs[-1] if rcs else "?")}
     measures["A"]["total"] = sum(int(v) for v in row if C.is_num(v))
-    for key, text, pat in (("C", cov, r"^\d+ of (\d+)(?= LRM clauses cited)"),
-                           ("B", cov1364, r"^\d+ of (\d+)(?= IEEE 1364-2005 clauses cited)")):
+    for key, text, pat in (("B", cov1364, r"^\d+ of (\d+)(?= IEEE 1364-2005 clauses cited)"),):
         both, pos, neg, unc = C.polarity(text)
         measures[key] = {"both": both, "pos": pos, "neg": neg, "unc": unc, "clauses": C.first(pat, text),
                          "classified": C.first(r"(\d+)(?= classified$)", text)}
     measures["devices"] = C.first(r"^devices: (.*)$", devices)
     measures["vpi"] = C.first(r"^vpi: (.*)$", vpi)
 
-    clauses = clause_rows(cov, cov1364)
-    for key, std in (("C", "ams"), ("B", "ieee")):
+    clauses = clause_rows(cov1364)
+    for key, std in (("B", "ieee"),):
         n = sum(r["std"] == std for r in clauses)
         if str(n) != measures[key]["clauses"]:
             print(f"report.py: {std} rule map has {n} rows, the tally says {measures[key]['clauses']}", file=sys.stderr)
@@ -1033,7 +997,7 @@ def main(argv):
                  + ([f"vera --emit-so --contract lib/contract.zig --dyn dyn.zig (report.py's DYN) -I {args.models} --work-dir out <model>.va"
                      f"  (x{args.reps}, median; and vera --emit-zig)"] if args.models else [])},
         "measures": measures,
-        "chapters": {"ams": chapter_table(clauses, "ams"), "ieee": chapter_table(clauses, "ieee")},
+        "chapters": {"ieee": chapter_table(clauses, "ieee")},
         "clauses": clauses,
         "gaps": {"classified_normative": [{k: r[k] for k in ("std", "id", "title", "kind")} for r in clauses
                                           if r["kind"] and r["kind"] != "non-normative"],

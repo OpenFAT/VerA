@@ -78,13 +78,6 @@ pub const Directives = struct {
     /// Per-timepoint values for an unknown: `//! wave V(in) = 0, 1, 1, 0`, one
     /// entry per `//! time`. A short list holds its last value.
     waves: []const Sweep = &.{},
-    /// `//! tran tstep, tstop`: a SPICE `.tran`, run on `sim.spice.tran`
-    /// (ESPice's transient) instead of over `times`. Set only by
-    /// `zig build test-spice`'s generated decks.
-    tran: ?[2]f64 = null,
-    /// `//! onoise V(out) = f, ...`: a SPICE `.noise` output spectrum at `out`
-    /// over these frequencies (`sim.spice.noise`). Set only by `zig build test-spice`.
-    onoise: ?Sweep = null,
     /// Swept parameters (§8.2 parametric sweep): each point gets its own model
     /// card and `derive` (§6.3.4). Varies fastest in the cartesian product.
     psweeps: []const Sweep = &.{},
@@ -203,7 +196,7 @@ pub const Directives = struct {
     /// `//! lrm <section>`, one per line: the clauses this fixture pins. No
     /// verdict depends on it; failure reports and `--coverage` read it.
     /// `<section>:<n>` pins the n-th normative sentence of the clause, a row
-    /// of `tests/fixtures/conformance/OBLIGATIONS.tsv`.
+    /// of `tests/conformance/vera/ledger/OBLIGATIONS.tsv`.
     lrm: []const []const u8 = &.{},
     /// `//! xfail <reason>`: the fixture states an LRM requirement VerA does
     /// not meet yet. With `reject`, VerA wrongly accepts the construct;

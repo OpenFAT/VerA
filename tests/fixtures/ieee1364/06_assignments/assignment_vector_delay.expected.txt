@@ -1,6 +1,0 @@
-nonzero=01
-nonzero_to_nonzero=10
-before_fall=10
-after_fall=00
-before_turnoff=00
-after_turnoff=zz

@@ -318,13 +318,10 @@ fn zfSlot(d: i64) ?usize {
     // An mcd: the LOWEST set bit above bit 0 names the channel a single-channel
     // operation acts on. §9.5.1 lets several bits be OR'd together, which is a
     // WRITE-side rule (`zFPut` honours it); everything else here is per-channel.
-    var b: u6 = 1;
-    while (b <= zf_max) : (b += 1) {
-        if (d & (@as(i64, 1) << b) == 0) continue;
-        const k: usize = b - 1;
-        return if (k < zf_slots.items.len and zf_slots.items[k].open) k else null;
-    }
-    return null;
+    const bits = d & 0x7fff_fffe; // bits 1..30: bit b is row b - 1
+    if (bits == 0) return null;
+    const k: usize = @ctz(bits) - 1;
+    return if (k < zf_slots.items.len and zf_slots.items[k].open) k else null;
 }
 
 /// §9.5.2's five output tasks, after the §9.4.3 formatter has produced the text.
@@ -598,8 +595,9 @@ pub fn zFSeek(d: i64, off: i64, op: i64) i64 {
     const s = &zf_slots.items[k];
     const base: i64 = switch (op) {
         1 => @intCast(s.pos),
-        2 => @intCast(s.f.length(zfIo()) catch {
-            s.err = 5;
+        2 => @intCast(s.f.length(zfIo()) catch |e| {
+            s.err = zfErrno(e);
+            zf_last_err = s.err;
             return -1;
         }),
         else => 0,

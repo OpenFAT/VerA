@@ -565,13 +565,17 @@ fn functionValue(self: *Emitter, e: Ast.ExprId) Error!void {
 fn calls(self: *Emitter, e: Ast.ExprId) bool {
     const ex = &self.r.file.exprs;
     if (ex.tag(e) == .call) return true;
-    if (effects(self, e)) return true;
+    // This node only: the walk below visits every child, as `effects` would
+    // again at every level.
+    if (ex.tag(e) == .sys_call) if (self.r.sys_calls[@backingInt(e)]) |f| if (f.effects()) return true;
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (c != .none and calls(self, c)) return true;
     return false;
 }
 
-/// Does `e` call a system function with an effect (`SysFn.effects`)?
+/// Does `e` or an operand of it call a system function with an effect
+/// (`SysFn.effects`: file I/O, a seeded draw, a PLI function)? A user
+/// function call alone is not one; `calls` covers those.
 pub fn effects(self: *Emitter, e: Ast.ExprId) bool {
     const ex = &self.r.file.exprs;
     if (ex.tag(e) == .sys_call) if (self.r.sys_calls[@backingInt(e)]) |f| if (f.effects()) return true;

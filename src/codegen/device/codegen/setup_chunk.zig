@@ -35,12 +35,9 @@ const Piece = struct {
     name: []const u8 = "",
     ty: []const u8 = "",
     head: usize = 0,
-
-    fn bytes(p: Piece) usize {
-        return bytesOf(p.lines);
-    }
 };
 
+/// `pieces`' output and the threshold it cuts at.
 const State = struct {
     a: Allocator,
     pieces: std.ArrayList(Piece) = .empty,
@@ -103,12 +100,12 @@ pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
     for (ps[0..last -| 1]) |p| for (p.lines) |l| if (std.mem.find(u8, l, "return;") != null) return null;
 
     var acc: usize = 0;
-    var sizes = try a.alloc(usize, n);
+    const sizes = try a.alloc(usize, n);
     @memset(sizes, 0);
     for (ps) |*p| {
         p.chunk = @intCast(@min(n - 1, acc * n / total));
-        acc += p.bytes();
-        sizes[p.chunk] += p.bytes();
+        acc += bytesOf(p.lines);
+        sizes[p.chunk] += bytesOf(p.lines);
         declOf(p);
     }
     // A cut no better than three quarters in one chunk is not worth a split.
@@ -772,10 +769,7 @@ test "a chunked setup builds one object per chunk into a library that runs" {
         };
         defer for (mods) |m| gpa.free(m.root);
         const o: zigbuild.Options = .{ .work_dir = work, .name = "sudev", .optimize = .fast, .backend = .llvm, .modules = &mods, .split = true };
-        var r = zigbuild.compileRelease(gpa, io, o, .{ .text = su_dev, .setup_chunks = chunked.n }, 9) catch |err| switch (err) {
-            error.CompilerGone => return error.SkipZigTest,
-            else => return err,
-        };
+        var r = try zigbuild.compileRelease(gpa, io, o, .{ .text = su_dev, .setup_chunks = chunked.n }, 9);
         defer r.deinit(gpa);
         const so = switch (r) {
             .failed => |b| {

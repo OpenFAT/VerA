@@ -1,9 +1,0 @@
-$enddefinitions
-$end
-#0
-$dumpvars
-0!
-$end
-#1
-1!
-date=1 version=1 timescale=1

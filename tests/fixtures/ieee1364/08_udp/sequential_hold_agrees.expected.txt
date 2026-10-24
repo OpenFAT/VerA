@@ -1,4 +1,0 @@
-load1 1
-hold1 1
-load0 0
-hold0 0

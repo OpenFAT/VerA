@@ -1,7 +1,0 @@
-mon a=0 b=0
-mon a=1 b=0
-mon a=2 b=2
-mon a=3 b=2
-mon a=4 b=2
-new a=4
-new a=5

@@ -1,7 +1,8 @@
 # The external suites, every reference tool from `nix develop .#external`
 # (the reference tools of `.#benchmarking`, without its GPU toolchains).
 # Each gates by NAME: a disagreement passes only when
-# a row of its suite's TRIAGE.md (tests/fixtures/external/<suite>/) names it
+# a row of its suite's TRIAGE.md (tests/conformance/vera/external/<suite>/) names it
+# (the conformance job: a line of tools/vera.xfail)
 # with a verdict, and a row that names nothing is STALE and fails too, as an
 # XPASS does. Upstream sources are fetched at their pinned commits into
 # .zig-cache/external, never committed.
@@ -11,7 +12,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
+
+# The merge tier: a newer push to a pull request cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Analog (tools/external_analog.py): VerA's `--emit-osdi` libraries in
@@ -31,8 +38,10 @@ jobs:
     env:
       VERA_EXTERNAL_TIMEOUT: "120"
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: true  # tests/conformance/vera: the decks, MANIFESTs and TRIAGE.md
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
       - name: Build vera
         run: nix develop .#external -c zig build -Doptimize=ReleaseFast install
       - name: External analog suite ${{ matrix.suite }}
@@ -48,7 +57,7 @@ jobs:
             echo '### FAIL and STALE names'
             echo '```'; grep -E '^(FAIL|STALE) ' external.txt || true; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: external-analog-${{ strategy.job-index }}
@@ -56,73 +65,60 @@ jobs:
             external.txt
             external-out/fail.txt
 
-  # VAMPyRE (tools/external_vampyre.py): the CMC's Verilog-A rule checker and
-  # VerA on the same compact models, on the findings both make (hidden state,
-  # integer division by a divisor that may be zero). Every disagreement is a
-  # row of tests/fixtures/external/vampyre/TRIAGE.md, gated by name.
-  external-vampyre:
+  # `zig build test-external`: VerA's output read by the reference tools.
+  # --emit-verilog's modules get a verilator -Wall lint and an iverilog
+  # testbench each (Ubuntu's verilator 5.020 has no rise/fall delays and
+  # rejects them; nixpkgs' 5.050 is the version they are linted against),
+  # --emit-rtlil is read, proc'ed and checked by yosys, and VAMPyRE
+  # (tools/external_vampyre.py) checks the compact models beside VerA, every
+  # disagreement a row of tests/conformance/vera/external/vampyre/TRIAGE.md, by name.
+  external-tools:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          version: 0.18.0-dev.349+d924f83bf
-      - name: VAMPyRE against VerA
+          submodules: true  # tests/conformance/vera: beh_verilog, rtlil and the VAMPyRE triage
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
+      - name: Reference tools on VerA's output
         run: |
-          zig build test-vampyre 2>&1 | tee vampyre.txt
+          nix develop .#external -c zig build test-external 2>&1 | tee external-tools.txt
           exit "${PIPESTATUS[0]}"
       - name: Job summary
         if: always()
         run: |
           {
-            echo '## VAMPyRE against VerA'
-            echo '```'; grep -E '^vampyre:' vampyre.txt || true; echo '```'
+            echo '## Reference tools on VerA output'
+            echo '```'; grep -E '^vampyre:' external-tools.txt || true; echo '```'
             echo '### FAIL and STALE names'
-            echo '```'; grep -E '^(FAIL|STALE) ' vampyre.txt || true; echo '```'
+            echo '```'; grep -E '^(FAIL|STALE) ' external-tools.txt || true; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Digital (tools/external_digital.py): ivtest and the Verilog-2005 subset
-  # of sv-tests by their own verdicts, and iverilog + vvp against `vera --run`
-  # transcript for transcript.
-  external-digital:
+  # The VAMS Conformance Suite (tests/conformance): its Verilog, Verilog-A,
+  # Verilog-AMS and Annex E tests and its external manifests (ivtest,
+  # sv-tests, ISP RAS, OpenVAF, gnucap-modelgen, VA-Models), judged by its
+  # `conform` harness. A known failure is a line of tools/vera.xfail.
+  conformance:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Build vera
-        run: nix develop .#external -c zig build -Doptimize=ReleaseFast install
-      # Every tool call is capped (address space, file size), so a runaway
-      # case fails by name instead of taking the runner down; the monitor
-      # says what was using the machine if it goes down anyway.
-      - name: External digital suites (ivtest, sv-tests, iverilog-diff)
-        env:
-          EXT_WRAP: prlimit --as=6442450944 --fsize=1073741824 --
-        run: |
-          (while sleep 10; do
-             echo "monitor $(date +%T): $(free -m | awk 'NR==2 { print $3 "M used, " $7 "M available" }'), disk $(df -h --output=avail / | tail -1)"
-             ps -eo rss=,etime=,args= --sort=-rss | head -3 | cut -c1-160
-           done) &
-          status=0
-          nix develop .#external -c python3 tools/external_digital.py zig-out/bin/vera --names external-digital-names.txt > external-digital.tsv 2> external-digital.txt || status=$?
-          cat external-digital.tsv
-          exit "$status"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
+      - name: Conformance suite
+        run: nix develop .#external -c zig build -Doptimize=ReleaseFast conformance
       - name: Job summary
         if: always()
         run: |
           {
-            echo '## External digital suites'
-            echo '```'; cat external-digital.tsv; echo '```'
-            echo '### FAIL and STALE names'
-            echo '```'; grep -E '^(FAIL|STALE) ' external-digital.txt || true; echo '```'
+            echo '## Conformance suite'
+            echo '```'; cut -f1 zig-out/conformance.tsv | sort | uniq -c; echo '```'
+            echo '### FAIL and XPASS'
+            echo '```'; grep -E '^(FAIL|XPASS)' zig-out/conformance.tsv || true; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: external-digital
-          path: |
-            external-digital.tsv
-            external-digital.txt
-            external-digital-names.txt
-
+          name: conformance
+          path: zig-out/conformance.tsv

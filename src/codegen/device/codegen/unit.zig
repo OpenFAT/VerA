@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const plan_core = @import("plan/core.zig");
+const plan_jobs = @import("plan/jobs.zig");
 const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_noise = @import("noise.zig");
@@ -48,6 +49,41 @@ pub const Uses = struct {
     /// (`contract.SayPass`, `Gen.passes`).
     pass: bool = false,
 };
+
+/// Which `SimState` fields a core reads (`contract.SimReads`, written out
+/// by `file.emitFile`).
+pub const SimReads = struct { t: bool = false, dt: bool = false, iteration: bool = false };
+
+/// Returns which `SimState` fields the text `out[start..]` reads: `sim.t`
+/// and `sim.dt` outside every `Gen.init_arms` range, `sim.iteration`
+/// anywhere, and every field when `sim` is passed whole. A text scan, so
+/// every renderer that spells a read is covered; a mention in a comment only
+/// over-reports.
+pub fn scanSimReads(self: *const Gen, start: usize) SimReads {
+    const text = self.out.items;
+    const ident = struct {
+        fn f(c: u8) bool {
+            return std.ascii.isAlphanumeric(c) or c == '_' or c == '@';
+        }
+    }.f;
+    var r: SimReads = .{};
+    var i = start;
+    while (std.mem.findPos(u8, text, i, "sim")) |k| {
+        i = k + "sim".len;
+        if (ident(text[k - 1]) or (i < text.len and ident(text[i]))) continue;
+        if (i == text.len or text[i] != '.') return .{ .t = true, .dt = true, .iteration = true };
+        var e = i + 1;
+        while (e < text.len and ident(text[e])) e += 1;
+        const field = text[i + 1 .. e];
+        const guarded = for (self.init_arms.items) |a| {
+            if (a[0] <= k and k < a[1]) break true;
+        } else false;
+        if (std.mem.eql(u8, field, "iteration")) r.iteration = true;
+        if (std.mem.eql(u8, field, "t") and !guarded) r.t = true;
+        if (std.mem.eql(u8, field, "dt") and !guarded) r.dt = true;
+    }
+    return r;
+}
 
 /// The dry run `probeBody` makes of a body, and what it learned (`Gen.probe`).
 /// Arena lists, cleared per run.
@@ -132,8 +168,8 @@ pub fn emitUnits(self: *Gen) Error!void {
         self.emitting_display = true;
         defer self.emitting_display = false;
         const lo = self.out.items.len;
-        const at = try emitUnit(self, job.name, job.target, job.mode, job.comment);
-        try gen_file.recordUnitFile(self, job.name, lo, at);
+        const at = try emitUnit(self, self.jobs.display_name, job.target, job.mode, plan_jobs.display_comment);
+        try gen_file.recordUnitFile(self, self.jobs.display_name, lo, at);
     }
 }
 
@@ -271,7 +307,9 @@ fn emitCoreDecl(self: *Gen, name: []const u8, doc: []const u8) Error!void {
         try self.w("    if (std.debug.runtime_safety and contract.validating) std.debug.assert(model.su_ok);\n", .{});
     }
     self.fatal = null;
+    self.init_arms.clearRetainingCapacity();
     try emitUnitBody(self, .undef);
+    if (std.mem.eql(u8, name, self.core.name)) self.sim_reads = scanSimReads(self, body_start);
     try tableReset(self, body_start);
     try closeSig(self, slots, body_start);
     if (self.core.held_only.len != 0 and !self.uses.held) patchParam(self, at_held, "held".len);
@@ -819,6 +857,8 @@ pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
         if (m != null) try self.b(")", .{});
         try self.b(";\n", .{});
     }
+    // The probes' arms were rewound with their text.
+    self.init_arms.clearRetainingCapacity();
     try gen_setup.emitRoot(self, target);
 }
 
@@ -833,4 +873,40 @@ test zeroOf {
     try std.testing.expectEqualStrings("S.con(0.0)", zeroOf(.real));
     try std.testing.expectEqualStrings("0", zeroOf(.int));
     try std.testing.expectEqualStrings("\"\"", zeroOf(.str));
+}
+
+test scanSimReads {
+    const Harness = @import("harness.zig").Harness;
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const Case = struct { body: []const u8, want: []const u8 };
+    for ([_]Case{
+        // The MOS levels' first-iterate test: `$abstime` inside the event.
+        .{ .body = "g = 1.0; @(initial_step(\"tran\")) begin if ($abstime > 0.0 && $simparam(\"iteration\") == 1) g = 2.0; end", .want = ".{ .t = false, .dt = false, .iteration = true }" },
+        .{ .body = "g = $abstime;", .want = ".{ .t = true, .dt = false, .iteration = false }" },
+        .{ .body = "g = $simparam(\"dt\");", .want = ".{ .t = false, .dt = true, .iteration = false }" },
+        .{ .body = "g = 1.0;", .want = ".{ .t = false, .dt = false, .iteration = false }" },
+    }) |c| {
+        const src = try a.print(
+            \\module t(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  real g;
+            \\  analog begin
+            \\    {s}
+            \\    I(p, n) <+ g * V(p, n);
+            \\  end
+            \\endmodule
+            \\
+        , .{c.body});
+        var h: Harness = undefined;
+        try Harness.run(a, src, &h);
+        const out = try h.gen(a);
+        const want = try a.print("pub const sim_reads: contract.SimReads = {s};", .{c.want});
+        if (std.mem.find(u8, out, want) == null) {
+            std.debug.print("{s}\nwant: {s}\n", .{ c.body, want });
+            return error.TestUnexpectedResult;
+        }
+    }
 }

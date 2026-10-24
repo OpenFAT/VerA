@@ -22,6 +22,7 @@ pub const Defparam = struct {
     /// expression involving ... parameters declared in the same module as the
     /// defparam statement").
     value: Ast.ExprId,
+    /// The defparam statement's token, where E0907/E0908 point.
     tok: u32,
     /// §6.3.1 a path that named no parameter of the elaborated design is E0907,
     /// and this is how that is noticed: nothing ever claimed it.
@@ -490,13 +491,12 @@ pub fn collectOverrides(
     var ord: usize = 0;
     for (inst.params) |o| {
         // The value is the parent's expression, cloned under the parent's map.
-        const saved = self.unit;
-        self.unit = parent.*;
-        const value = elab_clone.cloneExpr(self, o.value) catch |e| {
-            self.unit = saved;
-            return e;
+        const value = blk: {
+            const saved = self.unit;
+            self.unit = parent.*;
+            defer self.unit = saved;
+            break :blk try elab_clone.cloneExpr(self, o.value);
         };
-        self.unit = saved;
 
         if (!named) {
             // §6.3 "in the order of their declaration".
@@ -730,6 +730,6 @@ test "IEEE 1364-2005 §12.8.1 an upward defparam's value is replaced down a chai
         \\endmodule
     );
     try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
-    try std.testing.expectEqual(@import("diag").Code.E0907, f.bag.at(0).code);
+    try std.testing.expectEqual(diag.Code.E0907, f.bag.at(0).code);
     try std.testing.expect(std.mem.find(u8, f.bag.at(0).message, "the cycle `w.y` → `w.x` → `w.y`") != null);
 }

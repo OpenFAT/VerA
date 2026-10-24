@@ -1,0 +1,11 @@
+# The actions are pinned by commit SHA; Dependabot moves the pins, all in one
+# weekly pull request, which the merge gate tests like any other.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

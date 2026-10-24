@@ -1,4 +1,0 @@
-open_drain_zero_is_invisible 0
-strong_one_wins 1
-weak_one_uncontested 1
-no_driver_left z

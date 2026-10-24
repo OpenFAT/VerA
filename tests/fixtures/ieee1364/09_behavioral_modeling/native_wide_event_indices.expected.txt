@@ -1,3 +1,0 @@
-wake 1 1
-wake 2 3
-total 2

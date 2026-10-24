@@ -24,6 +24,7 @@ const lower_stmt = @import("stmt.zig");
 const lower_shape = @import("shape.zig");
 const lower_var = @import("var.zig");
 const Ast = @import("frontend").Ast;
+const constfold = @import("frontend").constfold;
 const Mir = @import("ir").Mir;
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
@@ -515,11 +516,9 @@ fn timerStmtPure(self: *Lower, id: Ast.StmtId) Oom!bool {
     var walk = struct {
         lower: *Lower,
         pure: bool = true,
-        /// Visits one expression edge.
         pub fn expr(w: *@This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {
             w.pure = (try timerExprPure(w.lower, e)) and w.pure;
         }
-        /// Visits one nested statement.
         pub fn stmt(w: *@This(), s: Ast.StmtId) Oom!void {
             w.pure = (try timerStmtPure(w.lower, s)) and w.pure;
         }
@@ -616,8 +615,7 @@ fn timerFunctionConstant(self: *Lower, name: Ast.StrId) Oom!bool {
             .jump => |j| if (j.kind == .ret) j.value else return false,
             else => return false, // else: no unconditional final result is established
         };
-        const cf = @import("frontend").constfold;
-        if (cf.fold(self.file, value, cf.literal_env) == null) return false;
+        if (constfold.fold(self.file, value, constfold.literal_env) == null) return false;
         return !try timerEarlyReturn(self, fd.body, last);
     };
     return false;
@@ -632,7 +630,6 @@ fn timerEarlyReturn(self: *Lower, id: Ast.StmtId, last: Ast.StmtId) Oom!bool {
         found: bool = false,
         /// An expression holds no `return`.
         pub fn expr(_: *@This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
-        /// Visits one nested statement.
         pub fn stmt(w: *@This(), s: Ast.StmtId) Oom!void {
             w.found = (try timerEarlyReturn(w.lower, s, w.last)) or w.found;
         }

@@ -1,2 +1,0 @@
-module=audit_display_named_scope value=7
-block=audit_display_named_scope.inner value=7

@@ -311,26 +311,17 @@ pub fn readMemory(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, ra
     const start = if (args.len >= 3) (try evaluate.eval(self, a, args[2], 0)).asInt() orelse return self.exprFail(args[2], unknown_bound) else null;
     const finish = if (args.len == 4) (try evaluate.eval(self, a, args[3], 0)).asInt() orelse return self.exprFail(args[3], unknown_bound) else null;
     var load: MemLoad = .init(&in.interface, radix, self.values[base].width, arr.low, arr.high, @intCast(args.len - 2), start, finish);
+    const tok = ex.mainTok(args[0]);
+    const at = self.starts[@min(tok, self.starts.len - 1)];
+    const site: diag.Span = .{ .start = at, .end = at };
     while (load.next(a) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         // An error message, the load terminated, and the run goes on.
-        error.AddressOutOfRange => {
-            const tok = ex.mainTok(args[0]);
-            const at = self.starts[@min(tok, self.starts.len - 1)];
-            return self.bag.add(self.stage(), .E1157, .{ .start = at, .end = at }, MemLoad.out_of_range_text, .{ load.at, load.range_low, load.range_high });
-        },
-        else => |f| return self.fail(ex.mainTok(args[0]), "{s}", .{MemLoad.message(f)}),
+        error.AddressOutOfRange => return self.bag.add(self.stage(), .E1157, site, MemLoad.out_of_range_text, .{ load.at, load.range_low, load.range_high }),
+        else => |f| return self.fail(tok, "{s}", .{MemLoad.message(f)}),
     }) |w| try waiters.store(self, base + w.index, w.value.planes);
-    if (load.mismatch()) |m| {
-        const tok = ex.mainTok(args[0]);
-        const at = self.starts[@min(tok, self.starts.len - 1)];
-        try self.bag.add(self.stage(), .W1150, .{ .start = at, .end = at }, MemLoad.mismatch_text, .{ m.found, m.expected });
-    }
-    if (load.outside) |o| {
-        const tok = ex.mainTok(args[0]);
-        const at = self.starts[@min(tok, self.starts.len - 1)];
-        try self.bag.add(self.stage(), .W1156, .{ .start = at, .end = at }, MemLoad.outside_text, .{ o, arr.low, arr.high });
-    }
+    if (load.mismatch()) |m| try self.bag.add(self.stage(), .W1150, site, MemLoad.mismatch_text, .{ m.found, m.expected });
+    if (load.outside) |o| try self.bag.add(self.stage(), .W1156, site, MemLoad.outside_text, .{ o, arr.low, arr.high });
 }
 
 /// §17.2.9 gives an address no x or z digit, so a bound that evaluates to
@@ -532,6 +523,13 @@ fn sformatMismatch(self: *Run, e: Ast.ExprId) Error!void {
     try self.bag.add(self.stage(), .W1153, .{ .start = at, .end = at }, sformat_mismatch, .{});
 }
 
+/// A format `e` that ran out before its specifiers did: one held in a
+/// variable (`dynamic`) warns and the task stops (`sformatMismatch`), a
+/// literal one is refused with `msg`.
+fn short(self: *Run, e: Ast.ExprId, dynamic: bool, comptime msg: []const u8) Error!void {
+    return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, msg);
+}
+
 /// §17.1.1.2 one real conversion (`%e %f %g`, §9.4.7 `%r`): C's text under
 /// C11 7.21.6.1p6's `flags` (`str_kernels.zc_*`; `fmt.flagVerdict` has
 /// refused '#' on `%r`), in a field `width` wide, for both engines. No width
@@ -553,12 +551,12 @@ pub fn real(out: *std.Io.Writer, gpa: std.mem.Allocator, r: f64, conv: u8, flags
     const pad = (width orelse 0) -| text.len;
     if (flags & str_k.zc_left != 0) {
         try out.writeAll(text);
-        return out.splatByteAll(' ', pad);
+        return out.splatByteAll(' ', @intCast(pad));
     }
     const zero = flags & str_k.zc_zero != 0 and std.math.isFinite(r);
     const sign: usize = if (zero and text.len != 0 and (text[0] == '-' or text[0] == '+' or text[0] == ' ')) 1 else 0;
     try out.writeAll(text[0..sign]);
-    try out.splatByteAll(if (zero) '0' else ' ', pad);
+    try out.splatByteAll(if (zero) '0' else ' ', @intCast(pad));
     try out.writeAll(text[sign..]);
 }
 
@@ -603,7 +601,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 continue;
             }
             i += 1;
-            if (i == format.len) return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, "unterminated display format");
+            if (i == format.len) return short(self, e, dynamic, "unterminated display format");
             if (format[i] == '%') {
                 if (allocator != null) try self.out.writeByte('%');
                 continue;
@@ -617,7 +615,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
             const sp = fmt.spec(format, &i);
             const width = sp.width;
             const precision = sp.precision;
-            if (i == format.len) return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, "unterminated display format");
+            if (i == format.len) return short(self, e, dynamic, "unterminated display format");
             // #43: a flag is rendered where §17.1.1.2 grants C, refused
             // where it does not; never read and then ignored.
             if (format[i] != '%') switch (fmt.flagVerdict(sp.flags, format[i])) {
@@ -644,7 +642,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 // time unit.
                 't', 'T' => {
                     arg += 1;
-                    if (arg == args.len) return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, "missing display argument");
+                    if (arg == args.len) return short(self, e, dynamic, "missing display argument");
                     try compile.checkExpr(self, args[arg]);
                     // A real operand is formatted as it is, not rounded to
                     // a whole unit first (#64).
@@ -668,7 +666,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 // §17.1.1.5 `%v`: "the strength of scalar nets".
                 'v', 'V' => {
                     arg += 1;
-                    if (arg == args.len) return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, "missing display argument");
+                    if (arg == args.len) return short(self, e, dynamic, "missing display argument");
                     try compile.checkExpr(self, args[arg]);
                     if (compile.typeOf(self, args[arg]).width != 1) return self.exprFail(args[arg], "§17.1.1.5: %v takes a scalar net reference");
                     const net = if (ex.tag(args[arg]) == .ident) self.net_of.get(try self.slot(args[arg])) else null;
@@ -688,7 +686,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 // `%c` (its low eight bits as one character).
                 's', 'S', 'c', 'C' => {
                     arg += 1;
-                    if (arg == args.len) return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, "missing display argument");
+                    if (arg == args.len) return short(self, e, dynamic, "missing display argument");
                     try compile.checkExpr(self, args[arg]);
                     if (allocator) |a| try fmt.text(self.out, try evaluate.eval(self, a, args[arg], 0), format[i] == 'c' or format[i] == 'C', width);
                     continue;
@@ -697,7 +695,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 // as binary data.
                 'u', 'U', 'z', 'Z' => {
                     arg += 1;
-                    if (arg == args.len) return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, "missing display argument");
+                    if (arg == args.len) return short(self, e, dynamic, "missing display argument");
                     try compile.checkExpr(self, args[arg]);
                     if (allocator) |a| try unformatted(self.out, try evaluate.eval(self, a, args[arg], 0), format[i] == 'z' or format[i] == 'Z');
                     continue;
@@ -708,7 +706,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 ),
             };
             arg += 1;
-            if (arg == args.len) return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, "missing display argument");
+            if (arg == args.len) return short(self, e, dynamic, "missing display argument");
             if (radix) |r| {
                 try compile.checkExpr(self, args[arg]);
                 if (allocator) |a| try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
@@ -850,7 +848,7 @@ pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
 /// its value at the last report, a change being VD-032's `!=`. An argument
 /// is not compared whole: `$time`, `$stime` and `$realtime` are the clause's
 /// exceptions inside an expression too, so time passing alone reports
-/// nothing (specification/Vague_Decisions.md VD-111).
+/// nothing (docs/specification/Vague_Decisions.md VD-111).
 pub fn monitorDue(self: *Run, a: std.mem.Allocator) Error!bool {
     const m = self.monitor orelse return false;
     if (self.monitor_slot_hit) return true;

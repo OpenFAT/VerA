@@ -1,3 +1,0 @@
-000111xxx 000111xxx
-01x01x01x 01x01x01x
-0xxx1xxxx 0xxx1xxxx

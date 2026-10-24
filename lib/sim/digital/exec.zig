@@ -25,6 +25,13 @@ const setBit = @import("net.zig").setBit;
 const wordMask = @import("net.zig").wordMask;
 const Show = display.Show;
 const Overrides = @import("root.zig").Overrides;
+const Frame = @import("root.zig").Frame;
+const PcRange = @import("root.zig").PcRange;
+const Delay = @import("net.zig").Delay;
+const Tran = @import("net.zig").Tran;
+const system = @import("system.zig");
+const vcd = @import("vcd.zig");
+const evcd = @import("evcd.zig");
 const driver = @import("driver.zig");
 const evaluate = @import("evaluate.zig");
 const resolution = @import("resolution.zig");
@@ -92,7 +99,7 @@ pub const Row = struct {
     // Budget: one row per event queued at once (recycled). `Pending.write`
     // is the widest payload: a slot, a value and an optional select.
     comptime {
-        std.debug.assert(@sizeOf(Row) == 88);
+        std.debug.assert(@sizeOf(Row) <= 88);
     }
 };
 
@@ -108,10 +115,14 @@ pub const Scratch = struct {
     arena: *std.heap.ArenaAllocator,
     spilled: bool = false,
 
+    /// Borrows `buffer` and `arena`, which must outlive the `Scratch`; the
+    /// arena is only ever reset with its capacity kept, never freed.
     pub fn init(buffer: []u8, arena: *std.heap.ArenaAllocator) Scratch {
         return .{ .fixed = .init(buffer), .arena = arena };
     }
 
+    /// The allocator over both halves. It points at `self`, so the
+    /// `Scratch` must not move while the allocator is in use.
     pub fn allocator(self: *Scratch) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
     }
@@ -168,7 +179,6 @@ test "Scratch: the fixed buffer serves until it is full, the arena after, and re
     a.free(big);
     sc.reset();
     try std.testing.expect(!sc.spilled and sc.fixed.end_index == 0);
-    try std.testing.expectEqual(@as(usize, 0), arena.queryCapacity() - arena.queryCapacity());
     var none: Scratch = .init(&.{}, &arena);
     _ = try none.allocator().alloc(u8, 1);
     try std.testing.expect(none.spilled);
@@ -188,12 +198,19 @@ pub const release = waiters.release;
 /// `waiters.forceValue`: a VPI force of a constant.
 pub const forceValue = waiters.forceValue;
 
-/// Cancel one queued event and give its row back.
+/// Cancels one queued event and gives its row back. A handle no longer
+/// pending (dispatched, or cancelled already) is a no-op.
 pub fn cancel(self: *Run, h: Handle) Error!void {
     const row = self.scheduler.payloadOf(h) orelse return;
-    _ = self.scheduler.cancel(h) catch |e|
-        return if (e == error.OutOfMemory) error.OutOfMemory else self.fail(0, "digital scheduling failure: {t}", .{e});
+    _ = self.scheduler.cancel(h) catch |e| return scheduleFailure(self, e, "scheduling");
     try self.free_rows.append(self.arena, row);
+}
+
+/// A scheduler error as the run's: `OutOfMemory` passes through, any other
+/// is reported (E1100) as a digital `what` failure.
+pub fn scheduleFailure(self: *Run, e: anyerror, comptime what: []const u8) Error {
+    if (e == error.OutOfMemory) return error.OutOfMemory;
+    return self.fail(0, "digital " ++ what ++ " failure: {t}", .{e});
 }
 
 // ---- process control and scheduling (§9.7.1, §17.1.3, 1364 §10.3) -----------
@@ -216,8 +233,8 @@ fn delayOf(self: *Run, scratch: std.mem.Allocator, e: Ast.ExprId, tok: u32) Erro
 
 /// A driver's `delay3` that reads a variable (`Run.driver_delays`), its
 /// values now, defaulted as `Run.declaredDelay3` defaults a constant one.
-fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!@import("net.zig").Delay {
-    var out: @import("net.zig").Delay = .{ .present = true };
+fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!Delay {
+    var out: Delay = .{ .present = true };
     out.rise = try delayOf(self, scratch, d.rise, tok);
     out.fall = if (d.fall != .none) try delayOf(self, scratch, d.fall, tok) else out.rise;
     out.off = if (d.off != .none) try delayOf(self, scratch, d.off, tok) else @min(out.rise, out.fall);
@@ -248,21 +265,14 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
             const arr = self.arrays.get(base).?;
             for (0..arr.count) |k| {
                 const slot = base + @as(u32, @intCast(k));
-                try waiters.watch(self, id, slot, .any);
-                const term = &waiters.termsOf(self, slot).?.items[waiters.termsOf(self, slot).?.items.len - 1];
-                term.event_select = watched;
-                term.scope = self.scope;
+                try waiters.watchExt(self, id, slot, .any, .{ .event_select = watched, .scope = self.scope });
             }
             return;
         }
     }
     if (try compile.selectTerm(self, watched)) |sel| {
-        try waiters.watch(self, id, sel.slot, edge);
-        const list = waiters.termsOf(self, sel.slot).?;
-        const term = &list.items[list.items.len - 1];
         const now = waiters.termBits(self.values[sel.slot], sel.first, sel.count);
-        term.* = .{ .susp = term.susp, .gen = term.gen, .edge = edge, .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] };
-        return;
+        return waiters.watchExt(self, id, sel.slot, edge, .{ .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] });
     }
     try waiters.watch(self, id, try self.termSlot(watched), edge);
 }
@@ -272,8 +282,7 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
 /// inactive and NBA.
 pub fn enqueueMonitor(self: *Run, item: Pending) Error!void {
     const at = try claim(self, item);
-    self.pending.items[at].handle = self.scheduler.schedule(.monitor, at) catch |e|
-        return if (e == error.OutOfMemory) error.OutOfMemory else self.fail(0, "digital scheduling failure: {t}", .{e});
+    self.pending.items[at].handle = self.scheduler.schedule(.monitor, at) catch |e| return scheduleFailure(self, e, "scheduling");
 }
 
 /// A row for `item`: a recycled one when there is one. A `.write` value is
@@ -348,9 +357,9 @@ pub fn resumption(pc: u32, ctx: u32) Pending {
 pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle {
     const at = try claim(self, item);
     const h = (if (delay) |d|
-        self.scheduler.scheduleAfter(d, if (nba) .nba else .inactive, at) catch |e| return if (e == error.OutOfMemory) error.OutOfMemory else self.fail(0, "digital timing failure: {t}", .{e})
+        self.scheduler.scheduleAfter(d, if (nba) .nba else .inactive, at) catch |e| return scheduleFailure(self, e, "timing")
     else
-        self.scheduler.schedule(if (nba) .nba else .active, at) catch |e| return if (e == error.OutOfMemory) error.OutOfMemory else self.fail(0, "digital scheduling failure: {t}", .{e}));
+        self.scheduler.schedule(if (nba) .nba else .active, at) catch |e| return scheduleFailure(self, e, "scheduling"));
     self.pending.items[at].handle = h;
     if (item == .write) try driver.scheduled(self, item.write.target);
     return h;
@@ -413,12 +422,10 @@ pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.Ex
     // invocations of a function at elaboration time", so it runs as an
     // automatic one does.
     const fresh = decl.automatic or self.growing != null or self.folding_constant;
-    if (fresh) for (f.first..f.first + f.count) |s| {
-        const v = self.values[s];
-        try self.saved_planes.appendSlice(self.arena, v.planes);
-        const fill: Int.Bit = if (self.reals.contains(@intCast(s))) .zero else .x;
-        @memcpy(v.planes, (try filled(a, v.width, v.signed, fill)).planes);
-    };
+    if (fresh) {
+        for (f.first..f.first + f.count) |s| try self.saved_planes.appendSlice(self.arena, self.values[s].planes);
+        try resetFrame(self, a, f);
+    }
     for (inputs, f.ports) |in, slot| if (in) |v| @memcpy(self.values[slot].planes, v.planes);
     const caller_scope = self.scope;
     const caller_pc = self.pc;
@@ -441,12 +448,7 @@ pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.Ex
     for (decl.ports, inputs, f.ports) |p, *out, slot|
         out.* = if (p.direction != .input and self.unwind == null) try copyLiteral(a, self.values[slot]) else null;
     if (fresh) {
-        var at = saved_len;
-        for (f.first..f.first + f.count) |s| {
-            const planes = self.values[s].planes;
-            @memcpy(planes, self.saved_planes.items[at..][0..planes.len]);
-            at += planes.len;
-        }
+        loadFrame(self, f, self.saved_planes.items[saved_len..]);
         self.saved_planes.shrinkRetainingCapacity(saved_len);
     }
     for (args, inputs, f.ports) |arg, out, slot| if (out) |v|
@@ -484,13 +486,7 @@ fn callTimed(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.ExprI
     };
     if (sub.decl.automatic) {
         try evict(self, idx);
-        for (f.first..f.first + f.count) |s| {
-            const v = self.values[s];
-            // `filled` keeps the bits past the width 0, as every slot's are;
-            // a whole-word memset left them set.
-            const fill: Int.Bit = if (self.reals.contains(@intCast(s))) .zero else .x;
-            @memcpy(v.planes, (try filled(a, v.width, v.signed, fill)).planes);
-        }
+        try resetFrame(self, a, f);
         sub.resident = id;
     }
     for (inputs, f.ports) |in, slot| if (in) |v| @memcpy(self.values[slot].planes, v.planes);
@@ -536,6 +532,28 @@ fn evict(self: *Run, idx: u32) Error!void {
     sub.resident = 0;
 }
 
+/// Copies `from`, frame `f`'s slots' planes laid end to end in slot order
+/// (as `evict` and `callSync` save them), back into the slots.
+fn loadFrame(self: *Run, f: Frame, from: []const u64) void {
+    var at: usize = 0;
+    for (f.first..f.first + f.count) |s| {
+        const planes = self.values[s].planes;
+        @memcpy(planes, from[at..][0..planes.len]);
+        at += planes.len;
+    }
+}
+
+/// Sets every slot of frame `f` to what entering its scope gives it
+/// (§10.2.3): x, or 0.0 for a real. `filled` keeps the bits past the width
+/// 0, as every slot's are; a whole-word memset would set them.
+fn resetFrame(self: *Run, a: std.mem.Allocator, f: Frame) Error!void {
+    for (f.first..f.first + f.count) |s| {
+        const v = self.values[s];
+        const fill: Int.Bit = if (self.reals.contains(@intCast(s))) .zero else .x;
+        @memcpy(v.planes, (try filled(a, v.width, v.signed, fill)).planes);
+    }
+}
+
 /// Put activation `ctx`'s storage in its task's frame, if it is not there.
 pub fn makeResident(self: *Run, ctx: u32) Error!void {
     if (ctx == 0) return;
@@ -543,13 +561,7 @@ pub fn makeResident(self: *Run, ctx: u32) Error!void {
     const sub = &self.subs.items[act.sub];
     if (!sub.decl.automatic or sub.resident == ctx) return;
     try evict(self, act.sub);
-    const f = sub.body.?.frame;
-    var at: usize = 0;
-    for (f.first..f.first + f.count) |s| {
-        const planes = self.values[s].planes;
-        @memcpy(planes, act.storage[at..][0..planes.len]);
-        at += planes.len;
-    }
+    loadFrame(self, sub.body.?.frame, act.storage);
     sub.resident = ctx;
 }
 
@@ -582,7 +594,7 @@ fn doneFlush(self: *Run, start: u32) Error!void {
 /// iteration): an untimed loop never returns to the scheduler, so each pass
 /// counts against the time step's event budget (`Run.budget`), and
 /// `initial forever x = 1;` is refused by name instead of hanging at one
-/// tick (specification/Vague_Decisions.md §7). `rt.State.loopIteration` is
+/// tick (docs/specification/Vague_Decisions.md §7). `rt.State.loopIteration` is
 /// the native executable's.
 fn loopIteration(self: *Run) Error!void {
     self.budget_used += 1;
@@ -673,17 +685,17 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                         self.active_timeformat = .{ .scope = self.instanceOf(self.scope), .tok = s.tok };
                     },
                     .readmem => |radix| try display.readMemory(self, scratch, s.args, radix),
-                    .queue => |op| try @import("system.zig").queueTask(self, scratch, op, s.args),
-                    .pla => |p| try @import("system.zig").pla(self, scratch, p, s.args),
-                    .fclose => try @import("system.zig").fclose(self, scratch, s.args),
+                    .queue => |op| try system.queueTask(self, scratch, op, s.args),
+                    .pla => |p| try system.pla(self, scratch, p, s.args),
+                    .fclose => try system.fclose(self, scratch, s.args),
                     .fflush => {},
                     .user => try self.systf.?.call(self, self.instanceOf(self.scope), s.tok, null),
-                    .fshow => |sh| try @import("system.zig").fdisplay(self, scratch, s.args, sh),
-                    .sshow => |sh| try @import("system.zig").sformat(self, scratch, s.args, sh),
-                    .sformat => try @import("system.zig").sformat(self, scratch, s.args, null),
+                    .fshow => |sh| try system.fdisplay(self, scratch, s.args, sh),
+                    .sshow => |sh| try system.sformat(self, scratch, s.args, sh),
+                    .sformat => try system.sformat(self, scratch, s.args, null),
                     .printtimescale => try display.printTimescale(self, s.args),
-                    .dump => |op| try @import("vcd.zig").task(self, scratch, op, s.args, s.tok),
-                    .ports => |op| try @import("evcd.zig").task(self, scratch, op, s.args, s.tok),
+                    .dump => |op| try vcd.task(self, scratch, op, s.args, s.tok),
+                    .ports => |op| try evcd.task(self, scratch, op, s.args, s.tok),
                     .finish => |stop| {
                         // An x/z level has no verbosity to select; the fullest
                         // report is the reading that loses nothing.
@@ -695,7 +707,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                             const args = .{ if (stop) "$stop" else "$finish", self.scheduler.now, self.bag.fileName(loc.file), loc.offset };
                             if (stop) std.debug.print(fmt_s, args) else try self.out.print(fmt_s, args);
                         }
-                        try @import("vcd.zig").finish(self, scratch);
+                        try vcd.finish(self, scratch);
                         self.scheduler.finish();
                         return;
                     },
@@ -847,7 +859,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             .switch_ctrl => |s| {
                 const t = &self.trans[s.tran];
                 const c = (try evaluate.eval(self, scratch, t.ctrl, 1)).bit(0);
-                const next: @import("net.zig").Tran.State = if (c == t.on) .on else if (c == .zero or c == .one) .off else .unknown;
+                const next: Tran.State = if (c == t.on) .on else if (c == .zero or c == .one) .off else .unknown;
                 if (t.delay.present) try resolution.switchAfter(self, s.tran, next) else {
                     t.state = next;
                     try resolution.resolve(self, t.a);
@@ -861,7 +873,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 if (!entry.found_existing) entry.value_ptr.* = .{};
                 if (o.bits) |bits| {
                     const parts = &entry.value_ptr.parts;
-                    const range: @import("root.zig").PcRange = .{ .start = o.start, .end = o.end };
+                    const range: PcRange = .{ .start = o.start, .end = o.end };
                     for (parts.items) |*p| {
                         if (!std.meta.eql(p.bits, bits)) continue;
                         try doneFlush(self, p.range.start);

@@ -1,3 +1,0 @@
-audit_param_width_per_instance.a W=4 r=15 sel=1111 rep=1111
-audit_param_width_per_instance.b W=8 r=255 sel=11111111 rep=11111111
-audit_param_width_per_instance.c W=4 r=15 sel=1111 rep=1111

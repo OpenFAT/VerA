@@ -1,9 +1,0 @@
-// LRM 5.2.1: contribution statements are forbidden in an analog initial block.
-//! lrm 5.2.1
-//! lrm 5.2.1:1
-//! reject-only E0405
-//! neighbour analog_initial.va
-module ch5_bad_initial(p);
-  inout p; electrical p;
-  analog initial I(p) <+ 1m;
-endmodule

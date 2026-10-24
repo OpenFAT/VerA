@@ -2,29 +2,32 @@
 
 Run commands from the repository root through `nix develop -c`. Keep one
 `nix develop -c zig build check --watch -fincremental` running while editing.
+The fixtures live in the `tests/conformance` submodule; after cloning, run
+`git submodule update --init tests/conformance` (add `--recursive` for the
+external suites `zig build conformance` runs).
 
 | Command | Purpose |
 |---|---|
-| `nix develop -c zig build test` | Unit, host, reference, generated-code and harness checks |
-| `nix develop -c zig build test-ams` | Strict AMS fixtures: compile, execute and judge |
-| `nix develop -c zig build test-devices` | Digital transcripts and diagnostic cases |
-| `nix develop -c zig build test-1364` | Only the IEEE 1364 digital cases |
+| `nix develop -c zig build check` | The pre-commit tier: type-check every root and `zig fmt --check` |
+| `nix develop -c zig build test` | Unit, host, reference, generated-code and harness checks, the canary, host observations, paired refusals and host profiles |
+| `nix develop -c zig build test-<module>` | One module's tests (`test-cli`, `test-unit`, …); the edit loop |
+| `nix develop -c zig build suite -- ams` | Strict AMS fixtures: compile, execute and judge |
+| `nix develop -c zig build suite -- devices` | Digital transcripts and diagnostic cases |
+| `nix develop -c zig build suite -- ieee1364` | Only the IEEE 1364 digital cases |
 | `nix develop -c zig build test-vpi` | VPI module tests and C applications |
-| `nix develop -c zig build test-vpi-fixtures` | C header compatibility; compile only |
-| `nix develop -c zig build test-spice` | SPICE decks and their oracles |
-| `nix develop -c zig build test-canary` | The harness FAILs every wrong-on-purpose fixture in `fixtures/canary/` |
-| `nix develop -c zig build test-observations` | Host assertions about analog diagnostic output |
-| `nix develop -c zig build test-paired-compiler` | Exact compiler refusals paired with behavioral controls |
-| `nix develop -c zig build test-host-profiles` | Conditional host assertions; unavailable adapters record skips |
-| `nix develop .#external -c zig build test-rtlil` | `--emit-rtlil` of `fixtures/rtlil/*.v` read, `proc`ed and checked by Yosys |
-| `nix develop -c zig build benchmark` | Fixture checks plus a separate compiler timing pass |
+| `nix develop -c zig build suite -- vpi` | C header compatibility; compile only |
+| `nix develop -c zig build test-spice -Despice=PATH` | The `.sp` decks on an ESPice release, graded against their oracles. VerA does not build ESPice, so that espice compiles the devices with its own VerA: a compatibility check, not a test of this tree |
+| `nix develop .#external -c zig build test-external` | `--emit-verilog` in verilator and iverilog, `--emit-rtlil` of `conformance/vera/rtlil/*.v` in Yosys, VAMPyRE on the compact models |
+| `nix develop .#external -c zig build conformance` | The suite's own `conform` harness against this build's `vera`; known failures in `tools/vera.xfail` |
+| `nix develop -c zig build suite` | Every fixture plus a separate compiler timing pass |
+| `nix develop -c zig build suite -- golden <tag>` | Snapshot every fixture's generated code; `-- golden diff [a b]` compares two |
 | `nix develop -c python3 tools/conformance.py run` | Execute the principal suites and write a unified evidence report |
 | `python3 tests/host.py selftest` | The host oracles fed wrong observations; never evidence |
 | `python3 tools/conformance.py selftest` | Regression checks: the subcommands, `run`'s accounting, the fixture layout |
 
 `test` is the development gate; it does not run all language fixtures.
-`test-ams` fails on failures, unasserted fixtures and expected failures.
-`test-devices` allows declared expected failures and reports them separately.
+`suite -- ams` fails on failures, unasserted fixtures and expected failures.
+`suite -- devices` allows declared expected failures and reports them separately.
 The conformance report preserves those distinctions, including each suite's
 exit status. An expected AMS failure therefore fails the combined command.
 Unexpected failures, missing execution records and unasserted fixtures also
@@ -32,28 +35,64 @@ fail the command.
 
 ## Layout
 
-`tests/` is flat: `fixtures/` is its only directory, and every other file is
-one root the build compiles or runs.
+`tests/` is flat: `conformance/` is its only directory, and every other file
+is one root the build compiles or runs.
 
 | File | Contents |
 |---|---|
-| `suite.zig` | The fixture runner (`vera-suite`) behind `benchmark`, `test-ams`, `test-devices`, `test-1364`, `test-vpi-fixtures`, `test-spice`, `golden` and `test-canary`. One namespace per mode (`Suite`, `Devices`, `Native`, `Fuzz`, `Ieee1364`, `CFixtures`, `SpiceDecks`, `Golden`, `Canary`, `SizeSweep`) over the harness they share: `Fixtures` (collection, the verdict algebra, the parallel run), `Analog` (VerA plugged in as the compiler), `Lint`, `Coverage`, `Digital` and `Child` |
+| `suite.zig` | The fixture runner (`vera-suite`) behind `suite` (every mode), `test-spice` and the canary in `test`. One namespace per mode (`Suite`, `Devices`, `Native`, `Fuzz`, `Ieee1364`, `CFixtures`, `SpiceDecks`, `Golden`, `Canary`, `SizeSweep`) over the harness they share: `Fixtures` (collection, the verdict algebra, the parallel run), `Analog` (VerA plugged in as the compiler), `Lint`, `Coverage`, `Digital` and `Child` |
 | `unit.zig` | The one test compilation that imports every module: each module's public-API tests as a namespace (`parser_tests` … `vpi_tests`, `ulp_tests`), the stage-boundary guard (`exhaustive_tests`), the citation check (`citations_tests`), the allocation-failure sweep (`oom_tests`) and the contract-name claim (`contract_names`) |
 | `fuzz.zig` | In-process fuzz targets: `zig build fuzz --fuzz` coverage-guided, replayed seeded under `test` |
 | `rng_reference.zig`, `rng_reference.c` | The RNG oracle (`rng_kernels` against the IEEE 1364 §17.9.3 C listing) and, as an executable, its domain refusals, one case per run |
 | `printf_reference.zig` | The formatting oracle: `zCReal` against glibc's `snprintf` |
 | `codegen_probe.zig` | Hand-built vectorisation probes (`zig build-obj … -femit-asm`); nothing in the build runs it |
 | `host.py` | Host observations: `diagnostic_observations` and `paired_compiler_observations` drive the build's `vera`; the profiles bind a real host through an adapter (below); `selftest` |
-| `fixtures/` | HDL, C, SPICE and their expected outputs and support inputs, by specification chapter, with the host that drives a device (`*_host.zig`, its `*_gpu.zig` twin, `*_dyn.zig`) beside the device. `canary/`: the wrong-on-purpose fixtures `test-canary` judges, with their `EXPECT.tsv`; `beh_verilog/` and `rtlil/`: the `--emit-verilog` and `--emit-rtlil` inputs; `conformance/`: the requirement ledger, baselines and registries; `external/`: the external suites' triage |
+| `conformance/` | The [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite), a submodule: the fixtures (below) and its own `conform` harness, tool configs and external suites |
+
+The suite's corpus is `conformance/tests/`, split by language and then by
+specification chapter. Its `vera/` directory holds what only VerA uses;
+`conformance/vera/README.md` describes it.
+
+| Suite path | Contents | VerA's runner |
+|---|---|---|
+| `tests/verilog-a/` | Analog-only fixtures: the Annex C subset, with the `.sp` decks beside the models they load | AMS (`suite -- ams`); decks `test-spice` |
+| `tests/verilog-ams/` | Fixtures needing the full language; `digital/` holds the mixed-signal `.v` cases, `ch11_vpi/` and `ch12_vpi_routines/` the VPI `.c` applications | AMS; `digital/` the digital runner; `.c` `test-vpi` |
+| `tests/verilog/` | IEEE 1364-2005 by clause (`03_lexical_conventions` ...); `pli/` holds the PLI `.c` applications | digital (`suite -- devices`, `suite -- ieee1364`); `.c` `test-vpi` |
+| `tests/spice/` | Annex E: SPICE primitives and model cards seen from Verilog-AMS | AMS |
+| `tests/include/` | `check.vh` (the `CHECK` macros) and `erfc.vh`, on every compile's include path | |
+| `tests/netlist/` | ESPice's decks | none |
+| `vera/host/` | The hosts that drive a device: `*_host.zig`, the `*_gpu.zig` twin, `*_dyn.zig`, `vdev_*.zig`, `vpi_host.zig` | `test` |
+| `vera/canary/` | The wrong-on-purpose fixtures the canary in `test` judges, with their `EXPECT.tsv` | `test` |
+| `vera/rtlil/`, `vera/beh_verilog/`, `vera/osdi/` | The `--emit-rtlil`, `--emit-verilog` and `--emit-osdi` inputs | |
+| `vera/ledger/` | The requirement ledger, baselines and registries (`VERDICTS.tsv`, `OBLIGATIONS.tsv`, `SPECIALIZED.tsv`, ...) | `conformance.py` |
+| `vera/clauses/` | Per-chapter `CLAUSES.tsv` classification rows | `conformance.py` |
+| `vera/external/` | The external analog suites' manifests and triage | `external_*.py` |
+| `vera/xfail` | VerA's own expected failures | AMS, digital |
 
 A dedicated test file is a namespace of `unit.zig`. A `test` block that
 checks a file's private declarations stays beside that declaration in `lib/`
 or `src/`, as in Zig's own std; what a unit namespace needs from a module is
 exported by the module's root (`Lower.Harness`, `codegen.Harness`,
-`digital.emit`). The `CLAUSES.tsv` files beside fixture groups classify
-specification clauses; they are metadata, not passing tests.
+`digital.emit`). The `CLAUSES.tsv` files under `conformance/vera/clauses/`
+classify specification clauses; they are metadata, not passing tests.
 
-## Fixture names and ownership
+## Adding a fixture
+
+A fixture is a file of the suite: commit it in `tests/conformance` first, then
+move VerA's submodule pointer. Put it under its language directory: a source
+that uses anything Annex C excludes from Verilog-A (digital behavior, `wreal`,
+`discrete`, `===`, x/z literals, ...) goes in `verilog-ams/`, a 1364 case in
+`verilog/<clause>/`, the rest in `verilog-a/`. Fixtures compile with no
+prelude: a `.va` writes `` `include "disciplines.vams" `` (and
+`constants.vams`) itself, or includes `check.vh`, which includes both; a
+missing include is E0371. A `.v` case states its compile options as
+`//@ std SPEC`, `//@ libmap FILE`, `//@ files FILE...` and `//@ liblist LIB`,
+paths relative to the case; a case about the zero-delay event budget sets
+it with `//! event-budget N` (`vera --event-budget=N`, a VerA line the
+suite's harness ignores). A known VerA gap is a line of
+`conformance/vera/xfail`, not a directive in the fixture. A host goes in
+`conformance/vera/host/`, its `//! device` line naming the device by its
+suite path (`//! device tests/verilog-a/ch05_analog_behavior/timer_fixed.va`).
 
 Keep the specification chapter directories. Name each case after the behavior
 it checks, using lowercase words with underscores: `parameter_range_excluded_interior.va`,
@@ -64,15 +103,16 @@ Name a rejection's forbidden behavior and use `_rejected` for new cases.
 
 Keep a digital case's `.expected.txt` or `.expected.vcd` beside its source with
 the same stem. Keep supporting includes, tables and designs near their users.
-`//! neighbour` paths are relative to the referring fixture.
-`//! design` and host `//! device` paths are relative to `tests/fixtures/`.
+`//! neighbour` and a `.c`'s `//! design` paths are relative to the referring
+file; a host's `//! device` path is relative to the suite root.
 Rename these references and golden-output paths together. SPICE `.hdl` paths
 must name real files relative to the deck; the harness does not guess filenames.
 
-The AMS runner collects `.va` files with directives and `.v` files with
-directives that have no transcript and are not digital rejection cases, and
-skips `canary/`. The digital runner owns `.v` transcript cases and
-`// digital-runner: reject` cases. A support design without an executable
+The AMS runner collects, under `verilog-a/`, `verilog-ams/` and `spice/`,
+`.va` files with directives and `.v` files with directives that have no
+transcript and are not digital rejection cases. The digital runner owns
+`verilog/` and `verilog-ams/digital/`: `.v` transcript cases and `//! reject`
+cases. `netlist/` and `vera/canary/` are outside both. A support design without an executable
 assertion is not a passing test. Host-only designs use ordinary `//`
 documentation rather than `//!` fixture directives unless they also have
 their own executable checks.
@@ -107,18 +147,18 @@ and negative evidence are available separately in the JSON.
 Clause coverage is a map of exercised requirements, not a percentage of all
 possible language behavior. The AMS sentence ledger gives a stricter view:
 a bare clause citation does not cover every sentence in that clause. IEEE
-1364 currently has a clause inventory, not a sentence ledger. Static
-`--coverage` inventories and the older release measures remain available;
-they count citations and do not establish execution.
+1364 currently has a clause inventory, not a sentence ledger. The older
+release measures remain available; they count citations and do not establish
+execution.
 
 ## Specialized tests
 
 Some behavior needs accepted/rejected solver steps, a host parameter write,
 callbacks, or an independent numerical reference. Register its exact assertion
-in `fixtures/conformance/SPECIALIZED.tsv`, with the source, executable
+in `conformance/vera/ledger/SPECIALIZED.tsv`, with the source, executable
 artifact, standard, clause or sentence, polarity and a description of what it
 checks. SPICE registrations use artifact `spice` and the deck's path relative
-to `fixtures/` as the test name. Its `.expected.json` supplies the assertions.
+to `conformance/` (`tests/verilog-a/...`) as the test name. Its `.expected.json` supplies the assertions.
 Every deck records its actual pass, fail or skip result; a compile-only deck
 earns no runtime coverage.
 
@@ -145,13 +185,13 @@ build discovery and evidence accounting read fixture headers.
 
 ## Known conformance gaps
 
-`fixtures/conformance/GAPS.tsv` accounts for every non-covered clause and
+`conformance/vera/ledger/GAPS.tsv` accounts for every non-covered clause and
 mandatory unmeasured sentence in the report preceding the gap regressions. It
 is a review inventory, not execution evidence. Its entries distinguish
 executable tests, pending host profiles, conditional requirements and
 headings without a fixed behavioral oracle.
 
-`fixtures/conformance/FEATURE_GAPS.tsv` groups the new failing checks into
+`conformance/vera/ledger/FEATURE_GAPS.tsv` groups the new failing checks into
 concrete behavior gaps. This is a defined work breakdown, not a claim that a
 language has an objectively fixed number of features. It does not count each
 repeated test or each parent/child specification heading as a separate
@@ -159,20 +199,21 @@ feature. The unified report measures these groups from the current execution:
 any failure keeps the group failing, and every check must pass before it is
 covered.
 
-New regression cases assert the required result. `//! xfail` and Python's
-`expectedFailure` preserve the known failure; an unexpected pass fails the
-suite so the marker must be removed after implementation. No engine behavior
+New regression cases assert the required result. A line of
+`conformance/vera/xfail` (the fixture's suite path, then `# reason`) and
+Python's `expectedFailure` preserve the known failure; an unexpected pass
+fails the suite so the marker must be removed after implementation. No engine behavior
 is changed by adding a case.
 
-`test-observations` builds and runs the exact CLI artifact, then checks the
+`test`'s diagnostic observations build and run the exact CLI artifact, then check the
 diagnostics around `$finish` and `$info`. It excludes testbench progress labels
 from its oracle: a runner timestamp is not a timestamp in a task diagnostic.
 Compilation/setup errors fail normally. Use
-`nix develop -c zig build test-observations -- --strict` to return nonzero
+`python3 tests/host.py diagnostic_observations --vera zig-out/bin/vera --strict` to return nonzero
 for the known failures too. The unified conformance run records its exact
 named assertions alongside the other specialized tests.
 
-`fixtures/conformance/PROFILES.json` describes test inputs and oracles
+`conformance/vera/ledger/PROFILES.json` describes test inputs and oracles
 requiring an additional host interface, such as negative-timing invocation
 options or model reports. `.v.in`/`.expected.txt.in` are inactive conditional
 scenarios, not runnable digital cases. They earn no coverage until the actual
@@ -186,14 +227,14 @@ configured. Synthetic oracle regression tests earn no language conformance
 credit.
 
 Protected ciphertext regressions have public test keys and an explicit
-profile in `fixtures/ieee1364/28_protected_envelopes/known_keys.json`.
+profile in `conformance/tests/verilog/28_protected_envelopes/known_keys.json`.
 The local README explains the key-provider prerequisite and the independent
 OpenSSL vector check. Current rejection at the protect directive is recorded
 as XFAIL; it is not evidence of a cryptographic comparison.
 
 ## Host profile adapters
 
-`nix develop -c zig build test-host-profiles` runs the registered conditional
+`nix develop -c zig build test` also runs the registered conditional
 assertions (`host.py`'s `PROFILES`). Without a real adapter they record
 **skip**, not pass. These tests also belong to `zig build test`, and their
 named results enter the unified report. Compiling a support model or passing
@@ -249,7 +290,7 @@ capabilities that its host has not yet exposed.
 | `input_position_restore_failure` | The same runner requests healthy and fault-injected rejected reads of `41 73\n`. Return `trial_values`, `iteration_rejected`, `restore_attempted`, `fatal`, `retry_values`, `simulation_terminated`, and `continued_after_restore`. The fault also exposes `backing_position_restorable`, `buffer_replay_available`, `restore_failed`, and the actual `diagnostic`. The fault must make restoration impossible through both the backing stream and any buffer; an ordinary non-seekable stream is insufficient. A fatal outcome must terminate simulation, though the adapter process itself may remain alive. |
 | `driver_type_unavailable` | Bind exactly one genuinely opaque driver at the requested net. Return integer `opaque_driver_count`, `opaque_driver_index`, `opaque_driver_type`, `known_driver_count`, `known_driver_type`, boolean `opaque_type_available`/`known_type_available`, `unavailable_reason`, and `vpi_errors`. Unknown type is required only for the opaque driver; the reg control must report `DRIVER_BEHAVIORAL`. Do not turn off known information just to fabricate applicability. |
 
-`fixtures/conformance/PROFILES.json` records these prerequisites and their
+`conformance/vera/ledger/PROFILES.json` records these prerequisites and their
 exact test names. Absent interfaces remain pending there even after the
 assertions have been written. `host.py selftest` deliberately feeds wrong
 observations to the oracles; only the host runners are registered in

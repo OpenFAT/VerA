@@ -46,7 +46,7 @@ pub fn shapeOverrides(arena: Allocator, d: Directives, lowered: *const Lowered) 
 /// (`Directives.mem_bytes`): eight per element, real or integer. Plus the
 /// IEEE 1364 §5.4 wide temporaries (`wide_kernels.zig`): one value per node
 /// of every sized tree and the division's scratch, three values' bytes per
-/// node (specification/Vague_Decisions.md §7, "wide `reg` temporaries").
+/// node (docs/specification/Vague_Decisions.md §7, "wide `reg` temporaries").
 pub fn memBytes(lowered: *const Lowered) u64 {
     var n: u64 = 0;
     for (lowered.mem_arrays.items) |m| n += 8 * @as(u64, m.len);
@@ -121,10 +121,7 @@ pub fn warnGridEvents(bag: *diag.Bag, lowered: *const Lowered, mir: *const Mir) 
 /// `renderMixed` when `d.mixed` is set. `title` keys each transcript block
 /// (the fixture's file stem). All output goes to stderr via `std.debug.print`,
 /// the stream generated `$strobe` uses, so the interleaving is deterministic.
-/// Fails with `error.TooManyPoints` past `max_points`, and with
-/// `error.BadSyntax` for a deck that writes both `//! tran` and
-/// `//! onoise`, or either without `//! solve` or beside a `bias`, `sweep`,
-/// `psweep` or `wave`: `sim.spice` solves every unknown itself.
+/// Fails with `error.TooManyPoints` past `max_points`.
 pub fn renderRunner(arena: Allocator, title: []const u8, d: Directives) Error![]const u8 {
     if (d.mixed) |mx| return renderMixed(arena, title, d, mx);
     var out: std.ArrayList(u8) = .empty;
@@ -175,7 +172,6 @@ pub fn renderRunner(arena: Allocator, title: []const u8, d: Directives) Error![]
         \\    if (comptime @hasDecl(D, "setup")) D.setup(Dual, &model);
         \\    if (comptime @hasDecl(D, "setupInstance")) D.setupInstance(&model, &inst);
         \\    // §4.6.2 one per analysis: `initState` at each analysis's first point.
-        \\    // A deck run by `lib/sim/spice` (`//! tran`) has no point here.
         \\    var state: State = undefined;
         \\    _ = &state;
         \\
@@ -260,23 +256,6 @@ pub fn renderRunner(arena: Allocator, title: []const u8, d: Directives) Error![]
         \\    }} else std.debug.print("abstol[{0f}] got=none want={{e}} ok=0\n", .{{@as(f64, {1f})}});
         \\
     , .{ std.zig.fmtString(b.name), fmtF64(b.value) });
-
-    // --- a SPICE deck's one analysis (`zig build test-spice`) ----------------
-    if (d.tran != null or d.onoise != null) {
-        // `sim.spice` solves every unknown: a deck's sources are its circuit.
-        if (!d.solve_free or d.bias.len != 0 or d.sweeps.len != 0 or d.psweeps.len != 0 or d.waves.len != 0 or
-            (d.tran != null and d.onoise != null)) return error.BadSyntax;
-        if (d.tran) |tr| {
-            try out.print(arena, "    @import(\"sim\").spice.deck.runTran(D, title, &model, &inst, {f}, {f});\n", .{ fmtF64(tr[0]), fmtF64(tr[1]) });
-        } else {
-            const on = d.onoise.?;
-            try out.print(arena, "    @import(\"sim\").spice.deck.runNoise(D, title, &model, &inst, @fromBackingInt(@intCast(ix(\"{f}\"))), &.{{", .{std.zig.fmtString(on.name)});
-            for (on.values, 0..) |f, i| try out.print(arena, "{s}{f}", .{ if (i == 0) " " else ", ", fmtF64(f) });
-            try out.appendSlice(arena, " });\n");
-        }
-        try out.print(arena, "}}\n\nconst print_residual = {};\n", .{d.print_residual});
-        return out.items;
-    }
 
     // --- one straight-line block per operating point ------------------------
     // Sweep outer, time inner. With `//! time` each sweep point is its own
@@ -763,12 +742,12 @@ fn setCard(out: *std.ArrayList(u8), arena: Allocator, indent: []const u8, card: 
     assert(card.len != 0);
     // §3.4.1/§4.2.1.1 via `cardValue`: a card is written in reals and an
     // integer parameter rounds, away from zero on a tie.
-    try out.print(arena, "{s}{s}.{f} = cardValue(@TypeOf({s}.{f}), {f});\n", .{
-        indent, card, std.zig.fmtId(name), card, std.zig.fmtId(name), fmtF64(value),
+    try out.print(arena, "{s}{s}.{f} = cardValue(@TypeOf({s}.{f}), \"{f}\", {f});\n", .{
+        indent, card, std.zig.fmtId(name), card, std.zig.fmtId(name), std.zig.fmtString(name), fmtF64(value),
     });
-    // §9.19 `$param_given` reads the companion field when codegen emitted one.
-    try out.print(arena, "{s}if (comptime @hasField(D.Model, \"{f}__given\")) @field({s}, \"{f}__given\") = true;\n", .{
-        indent, std.zig.fmtString(name), card, std.zig.fmtString(name),
+    // §9.19 `$param_given` reads the bit `setGiven` raises, when codegen emitted one.
+    try out.print(arena, "{s}if (comptime @hasDecl(D.Model, \"setGiven\")) {s}.setGiven(\"{f}\");\n", .{
+        indent, card, std.zig.fmtString(name),
     });
 }
 
@@ -780,8 +759,7 @@ fn sweepPoint(out: *std.ArrayList(u8), arena: Allocator, d: Directives, pt: []co
     if (pt.len == 0) return;
     try out.appendSlice(arena, "        diag_sweep = \"");
     for (pt, 0..) |v, k| {
-        const s = if (k < d.sweeps.len) d.sweeps[k] else d.psweeps[k - d.sweeps.len];
-        try out.print(arena, "{s}{f}={d}", .{ if (k == 0) "" else " ", std.zig.fmtString(s.name), v });
+        try out.print(arena, "{s}{f}={d}", .{ if (k == 0) "" else " ", std.zig.fmtString(column(d, k).name), v });
     }
     try out.appendSlice(arena, "\";\n");
 }
@@ -830,14 +808,19 @@ fn timeArrays(out: *std.ArrayList(u8), arena: Allocator, d: Directives) Error!vo
     // `parse` gives every grid and every wave at least one value.
     assert(d.times.len != 0);
     try out.appendSlice(arena, "const times = [_]f64{");
-    for (d.times, 0..) |t, i| try out.print(arena, "{s}{f}", .{ if (i == 0) " " else ", ", fmtF64(t) });
+    try f64List(out, arena, d.times);
     try out.appendSlice(arena, " };\n");
     for (d.waves, 0..) |wv, k| {
         assert(wv.values.len != 0);
         try out.print(arena, "const wave_{d} = [_]f64{{", .{k});
-        for (wv.values, 0..) |v, i| try out.print(arena, "{s}{f}", .{ if (i == 0) " " else ", ", fmtF64(v) });
+        try f64List(out, arena, wv.values);
         try out.appendSlice(arena, " };\n");
     }
+}
+
+/// Writes `xs` as the inside of a Zig array literal: ` a, b, c`, each by `fmtF64`.
+fn f64List(out: *std.ArrayList(u8), arena: Allocator, xs: []const f64) Error!void {
+    for (xs, 0..) |x, i| try out.print(arena, "{s}{f}", .{ if (i == 0) " " else ", ", fmtF64(x) });
 }
 
 /// The relative compare for `white`/`flicker`/`ef`/`points`, emitted locally
@@ -856,14 +839,12 @@ const noise_close =
 /// statement per asserting line.
 fn emitNoiseComptime(arena: Allocator, out: *std.ArrayList(u8), d: Directives) Error!void {
     var any_points = false;
+    var any_label = false;
     for (d.noise) |w| {
-        if (w.points != null or w.psd != null) any_points = true;
+        any_points = any_points or w.points != null or w.psd != null;
+        any_label = any_label or w.name != null or w.interp != null;
     }
-    var any = any_points;
-    for (d.noise) |w| {
-        if (w.name != null or w.interp != null) any = true;
-    }
-    if (!any) return;
+    if (!any_points and !any_label) return;
     try out.appendSlice(arena, "    if (comptime @hasDecl(D, \"noise_gens\")) {\n");
     if (any_points) try out.appendSlice(arena, noise_close);
     for (d.noise, 0..) |w, k| {
@@ -1260,14 +1241,9 @@ fn emitLimitCheck(arena: Allocator, out: *std.ArrayList(u8), d: Directives, mdl:
 pub fn expand(arena: Allocator, d: Directives) Error![]const []const f64 {
     const dims = d.sweeps.len + d.psweeps.len;
     if (dims == 0) return &.{&.{}};
-    const col = struct {
-        fn at(dd: Directives, k: usize) Sweep {
-            return if (k < dd.sweeps.len) dd.sweeps[k] else dd.psweeps[k - dd.sweeps.len];
-        }
-    };
     var total: usize = 1;
     for (0..dims) |k| {
-        total *|= col.at(d, k).values.len;
+        total *|= column(d, k).values.len;
         if (total > max_points) return error.TooManyPoints;
     }
     // One block of `total * dims` cells; each row is a view into it.
@@ -1279,7 +1255,7 @@ pub fn expand(arena: Allocator, d: Directives) Error![]const []const f64 {
         var k = dims;
         while (k > 0) {
             k -= 1;
-            const vals = col.at(d, k).values;
+            const vals = column(d, k).values;
             assert(vals.len != 0); // `parseNumbers` refuses an empty list.
             row_cells[k] = vals[rem % vals.len];
             rem /= vals.len;
@@ -1291,6 +1267,11 @@ pub fn expand(arena: Allocator, d: Directives) Error![]const []const f64 {
     assert(rows.len == total);
     assert(total <= max_points);
     return rows;
+}
+
+/// Column `k` of an `expand` row: the `sweeps`, then the `psweeps`.
+fn column(d: Directives, k: usize) Sweep {
+    return if (k < d.sweeps.len) d.sweeps[k] else d.psweeps[k - d.sweeps.len];
 }
 
 /// Formats `x` as a Zig expression that evaluates to the same f64, bit for

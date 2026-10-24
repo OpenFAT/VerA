@@ -11,12 +11,12 @@
 // §9.17.3's "when the simulator has converged, the return value of the $limit()
 // function is the value of the access function reference" — i.e. a converged
 // bias must come back UNCHANGED. That transparency is the property the
-// `annex_e_spice/limit_*.va` fixtures assert and the one `kernels/test.zig` pins.
+// `annex_e_spice/limit_*.va` fixtures assert and the one `tests/unit.zig` pins.
 //
 // BRANCHLESS (simd-first T7): the `*Clamp` bodies compute every candidate
 // unconditionally and combine with selects, so the predictor sees constant
 // behaviour whether or not the clamp fires — the ngspice control flow survives
-// only in the `*Oracle` transcriptions in `kernels/test.zig`, kept as the
+// only in the `*Oracle` transcriptions in `tests/unit.zig`, kept as the
 // differential-test reference (T8 step 5).
 //
 // EACH KERNEL IS A HOT/COLD PAIR, and the split is the shape, not a tweak. The
@@ -171,7 +171,7 @@ pub inline fn zFetlim(vnew0: f64, vold: f64, vto: f64) f64 {
     //                  vto+0.5 ceiling to be clear
     // Checked against `zFetlimOracle` over 20 M draws on the SPICE-realistic
     // grid vto ∈ [-1,1], vold ∈ [-1,6], |delv| ≤ 3: 11.8 M transparent hits,
-    // 0 disagreements, and `kernels/test.zig` re-checks it on
+    // 0 disagreements, and `tests/unit.zig` re-checks it on
     // the log-uniform draws and every boundary tie.
     if (comptime !k_dev) {
         const d = vnew0 - vold;

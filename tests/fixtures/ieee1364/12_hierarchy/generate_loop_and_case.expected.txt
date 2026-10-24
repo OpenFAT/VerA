@@ -1,4 +1,0 @@
-top.g[0].u v=0
-top.g[1].u v=10
-top.g[2].u v=20
-case arm b

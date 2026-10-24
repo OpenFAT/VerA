@@ -1,2 +1,0 @@
-events=2 inv=-inf
-events=2 inv=inf

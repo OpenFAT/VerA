@@ -6,7 +6,7 @@ hand-derived values, OpenVAF-Reloaded, published QA references and Xyce.
 
 Run it in `nix develop .#external` (ngspice, openvaf-r, Xyce; `.#benchmarking`
 has them too). SUITE is one or more of the folders under
-tests/fixtures/external/ (default: all):
+tests/conformance/vera/external/, or osdi (tests/conformance/vera/osdi) (default: all):
 
     selftest   the harness's own compare, sweep and qaSpec parsing
     osdi       hand-derived ngspice decks over `vera --emit-osdi` devices
@@ -58,7 +58,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXT = ROOT / "tests" / "fixtures" / "external"
+EXT = ROOT / "tests" / "conformance" / "vera" / "external"
+OSDI = ROOT / "tests" / "conformance" / "vera" / "osdi"
 SUITES = ["selftest", "osdi", "va-models", "cmcqa", "hicum-qa", "xyce"]
 
 # The solver tolerances every QA deck runs under: tight enough that Newton's
@@ -742,7 +743,7 @@ def suite_osdi(ctx):
     `*! expect <vector> <value> <reltol>` lines, checked against ngspice's
     `print` of that vector with `{osdi}` replaced by VerA's library, and
     `{osdi_v}` by its library of a `<name>.v` beside it."""
-    d = EXT / "osdi"
+    d = OSDI
     with tempfile.TemporaryDirectory(prefix="vera-osdi-") as tmp:
         for sp in sorted(d.glob("*.sp")):
             name = f"osdi/{sp.stem}"
@@ -777,7 +778,7 @@ def models_of(suite):
 
 
 def suite_va_models(ctx):
-    """VerA against openvaf-r on our own qaSpec per model (tests/fixtures/
+    """VerA against openvaf-r on our own qaSpec per model (tests/conformance/vera/
     external/va-models/<model>.qa), over the fetched Verilog-A."""
     src = fetch_git(ctx.cache, "va-models")
     for name, va, spec, *mod in models_of("va-models"):

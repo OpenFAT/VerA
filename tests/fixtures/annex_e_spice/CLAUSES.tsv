@@ -1,8 +1,0 @@
-# Annex E clauses that state no rule an input can break. Format:
-#   <clause>\t<kind>\t<evidence: the LRM sentence(s), quoted; for
-#   no-prohibition, the positive fixture that runs and asserts>
-E	non-normative	The clause body is empty: "Annex E (normative) SPICE compatibility" is followed directly by E.1. Every rule of the annex is in a subclause, and each subclause is classified or cited on its own.
-E.2.2	non-normative	"This subsection shows some examples." — the whole body; the examples are E.2.2.1-E.2.2.3, each cited both ways.
-E.4	non-normative	"This section highlights some other issues" — the whole body; the issues are E.4.1 and E.4.2, each cited both ways.
-E.1	no-prohibition	"In order for Verilog-AMS HDL to be embraced by the analog design community, it is important Verilog-AMS HDL provide an appropriate degree of SPICE compatibility. This annex describes the degree of compatibility which Verilog-AMS HDL provides and the approach taken to provide that compatibility." Motivation; no rule. Positive: model_card_r_binds_table_e1_r.va, primitive_segment_discipline.va.
-E.1.1	no-prohibition	"Verilog-AMS HDL makes no judgment as to which of the various SPICE languages should be supported. Instead, it states if a simulator which supports Verilog-AMS HDL is also able to read SPICE netlists of a particular flavor, then certain objects defined in that flavor of SPICE netlist can be referenced from within a Verilog-AMS HDL structural description." A conditional permission; the flavor is the implementation's (E.1.2: "solely determined by the authors of the simulator"). Positive: spice_model.va, spice_subcircuit.va, spice_case_lookup.va.

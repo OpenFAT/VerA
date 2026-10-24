@@ -1,6 +1,0 @@
-// Host-only oracle: tests/host.py.
-// AMS 9.7.1:5: initialization is reported in place of simulation time.
-// observation: print none
-module diagnostic_finish_initial;
-  analog initial $finish(1);
-endmodule

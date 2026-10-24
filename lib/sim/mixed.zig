@@ -283,11 +283,18 @@ fn State(comptime A: type) type {
 
         /// The solution at `t`: a new time finishes the tentative one first.
         fn accept(s: *Self, t: f64) !void {
+            return s.solveCarrying(t, true);
+        }
+
+        /// A solution at `t` carrying the pending explicit D2A terms. A new
+        /// time finishes the tentative one first and, when `settle`, runs
+        /// the A2D writes of that finished point (`settleA2d`).
+        fn solveCarrying(s: *Self, t: f64, comptime settle: bool) !void {
             if (s.acc) |ta| if (ta != t) {
                 try s.a.finish();
                 s.prev = ta;
                 s.fired = 0;
-                try s.settleA2d(tickAtOrBefore(ta, s.opts.tick));
+                if (settle) try s.settleA2d(tickAtOrBefore(ta, s.opts.tick));
             };
             s.fired |= s.pending;
             s.pending = 0;
@@ -317,22 +324,14 @@ fn State(comptime A: type) type {
         /// of this tick still pending (a #0 delta cycle later) is evaluated
         /// first, with its own snapshot, and what its statements assigned is
         /// committed before this one's values replace the snapshot. That is
-        /// `accept` without `settleA2d`: the tick is mid-flight, so the A2D
+        /// `solveCarrying` without `settleA2d`: the tick is mid-flight, so the A2D
         /// writes of a point it finishes run with the rest of the tick.
         // ponytail: that evaluation reads the unguarded inputs as they are now,
         // not as they were at its 1b, and one pending while the finished point
         // settles its A2D writes stays coalesced with the next.
         fn explicitD2a(s: *Self) anyerror!void {
             if (s.pending != 0 and !s.settling) {
-                const t = s.nowTime();
-                if (s.acc) |ta| if (ta != t) {
-                    try s.a.finish();
-                    s.prev = ta;
-                    s.fired = 0;
-                };
-                s.fired |= s.pending;
-                s.pending = 0;
-                try s.solve(t);
+                try s.solveCarrying(s.nowTime(), false);
                 try s.a.latch();
                 s.fired = 0;
             }

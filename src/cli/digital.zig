@@ -15,9 +15,7 @@ const native = @import("digital");
 const diag = vera.diag;
 const Io = std.Io;
 const args = @import("args.zig");
-const cli_report = @import("report.zig");
-
-const report = cli_report.report;
+const report = @import("report.zig").report;
 const missing = args.missing;
 
 /// The `.v` half of `main`. `opt` and `backend` are the derived build mode;
@@ -48,7 +46,7 @@ pub fn run(
     defer arena.deinit();
     var digital_bag = diag.Bag.init(arena.allocator());
     digital_bag.levels = cli.levels;
-    var opts: digital.Options = .{ .file_name = in_path, .include_dirs = cli.include_dirs.items, .io = io, .language = cli.language, .event_budget = cli.event_budget };
+    var opts: digital.Options = .{ .file_name = in_path, .include_dirs = cli.include_dirs.items, .io = io, .language = cli.language, .event_budget = cli.event_budget, .params = cli.overrides.items };
     if (!try libraries(arena.allocator(), io, cli.paths.items, cli.libmaps.items, cli.search.items, &opts, err, json, use_color)) return 1;
     if (cli.emit_rtlil) return emitRtlil(io, arena.allocator(), &digital_bag, source, opts, cli.out_path, out, err, json, use_color);
     if (device) return emitDevice(gpa, io, arena.allocator(), &digital_bag, source, opts, cli.schedule, if (cli.logic_flag != null) cli.logic else .four, .{
@@ -419,10 +417,8 @@ fn libraries(
 }
 
 /// The compiler cache the prebuilt digital engine lives in, shared by every
-/// work directory: `vera-engine` in Zig's global cache directory
-/// (`ZIG_GLOBAL_CACHE_DIR`, else `XDG_CACHE_HOME/zig`, else
-/// `HOME/.cache/zig`, else Windows' `LOCALAPPDATA/zig`), else the work
-/// directory's own cache.
+/// work directory: `globalCache`'s `vera-engine`, else the work directory's
+/// own `.zig-cache`.
 fn engineCache(arena: std.mem.Allocator, env: *const std.process.Environ.Map, work_dir: ?[]const u8) ![]const u8 {
     return try globalCache(arena, env, "vera-engine") orelse std.fs.path.join(arena, &.{ work_dir orelse ".", ".zig-cache" });
 }
@@ -521,7 +517,7 @@ test "libraries: a file that cannot be read is refused by path" {
 /// `vera --emit-zig [--deny=W1155] v_seconds.v`, in process: the exit status
 /// and what it printed on each stream.
 fn emitSeconds(arena: std.mem.Allocator, deny: bool) !struct { code: u8, out: []const u8, err: []const u8 } {
-    // tests/fixtures/ch07_mixed_signal/v_seconds.v: no `timescale, so the
+    // tests/conformance/tests/verilog-ams/ch07_mixed_signal/v_seconds.v: no `timescale, so the
     // device's tick is 1 s and the emit warns W1155.
     const src = "module v_seconds(a, y);\n  input a;\n  output y;\n  assign y = a;\nendmodule\n";
     var t: Tree = try .init(arena, &.{.{ "v_seconds.v", src }});

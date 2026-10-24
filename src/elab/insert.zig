@@ -10,6 +10,7 @@ const elaborate = @import("elaborate.zig");
 const Flatten = elaborate.Flatten;
 const elab_names = @import("names.zig");
 const elab_resolve = @import("resolve.zig");
+const elab_override = @import("override.zig");
 const elab_paramset = @import("paramset.zig");
 const elab_segment = @import("segment.zig");
 const discipline = @import("discipline_rules.zig");
@@ -132,12 +133,7 @@ pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src
                 continue;
             }
             if (upper.domain == lower.domain) continue;
-            var found: ?usize = null;
-            var count: usize = 0;
-            for (rules.items, 0..) |r, ri| if (matches(file, r, p.direction, upper.disc, lower.disc)) {
-                count += 1;
-                if (found == null) found = ri;
-            };
+            const found, const count = matchRules(file, rules.items, p.direction, upper.disc, lower.disc);
             if (count > 1) {
                 try self.err(inst.ports[ci].main_tok, .E0922, "port `{s}` of `{s}` matches more than one connect statement ({d})", .{
                     file.str(p.name), file.str(inst.name), count,
@@ -219,12 +215,7 @@ pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src
         var k = lo;
         while (k <= hi) : (k += 1) {
             const inst = try file.intern(self.ctx.arena, if (pt.range == null) pt.inst else try self.ctx.arena.print("{s}[{d}]", .{ pt.inst, k }));
-            var found: ?usize = null;
-            var count: usize = 0;
-            for (rules.items, 0..) |r, ri| if (matches(file, r, pt.dir, upper.disc, bottom)) {
-                count += 1;
-                if (found == null) found = ri;
-            };
+            const found, const count = matchRules(file, rules.items, pt.dir, upper.disc, bottom);
             if (count > 1) {
                 try self.err(pt.main_tok, .E0922, "port `{s}` of `{s}` matches more than one connect statement ({d})", .{
                     pt.port, file.str(inst), count,
@@ -538,10 +529,7 @@ pub fn paramsDeclared(self: *Flatten, ins: *const Ast.ConnectInsertion, m: *cons
     if (ins.params.len == 0) return true;
     const named = ins.params[0].name != .none;
     if (!named) {
-        var n: usize = 0;
-        for (m.params) |p| if (!p.is_local) {
-            n += 1;
-        };
+        const n = elab_override.overridableCount(m.params);
         if (ins.params.len <= n) return true;
         if (report) try self.err(ins.params[n].main_tok, .E0907, "`{s}` declares {d} overridable parameter{s}, and this connect statement sets {d}", .{
             file.str(m.name), n, if (n == 1) "" else "s", ins.params.len,
@@ -566,6 +554,18 @@ pub fn paramsDeclared(self: *Flatten, ins: *const Ast.ConnectInsertion, m: *cons
         });
     }
     return ok;
+}
+
+/// The first of `rules` that `matches` the port, and how many do: §7.8.4's
+/// "one (and only one)" is a count of one.
+fn matchRules(file: *const Ast.SourceFile, rules: []const Rule, dir: Ast.Direction, upper: Ast.StrId, lower: Ast.StrId) struct { ?usize, usize } {
+    var found: ?usize = null;
+    var count: usize = 0;
+    for (rules, 0..) |r, ri| if (matches(file, r, dir, upper, lower)) {
+        count += 1;
+        if (found == null) found = ri;
+    };
+    return .{ found, count };
 }
 
 /// Does connect rule `r` bridge a port of direction `dir` whose upper and

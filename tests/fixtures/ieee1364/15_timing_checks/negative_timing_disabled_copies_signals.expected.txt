@@ -1,2 +1,0 @@
-copies=1,1
-copies=0,0

@@ -8,7 +8,7 @@ differently. This page is what VerA chooses, so you can tell a portable
 model from one that works only here.
 
 The tables below are the project's own record,
-[`specification/Vague_Decisions.md`](https://github.com/OmarSiwy/VerA/blob/main/specification/Vague_Decisions.md),
+[`docs/specification/Vague_Decisions.md`](https://github.com/OmarSiwy/VerA/blob/main/specification/Vague_Decisions.md),
 included here as it stands in the repository. Each row names the clause,
 what it leaves open, VerA's choice, the code that makes it, and the fixture
 that pins it, so a choice cannot change without a test failing. "AMS"

@@ -1,2 +1,0 @@
-t=51 q=a5 nib=a ns=1 ns2=1
-t=101 q=3c nib=a ns=0 ns2=0

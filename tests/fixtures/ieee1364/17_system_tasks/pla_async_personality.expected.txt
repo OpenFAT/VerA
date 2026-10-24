@@ -1,5 +1,0 @@
-initial async=1 sync=1
-input async=0 sync=1
-memory async=1 sync=1
-held async=0 sync=1
-called async=0 sync=0

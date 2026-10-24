@@ -1,6 +1,0 @@
-before_x=00
-after_x=0x
-before_mixed_z=0x
-after_mixed_z=1z
-before_all_z=1z
-after_all_z=zz

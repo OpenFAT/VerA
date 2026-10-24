@@ -304,9 +304,10 @@ pub fn literalWidth(self: *const Parser, d: Ast.Dim) ?u64 {
     return std.math.cast(u64, @abs(literalValue(self, d.msb) - literalValue(self, d.lsb)) + 1);
 }
 
-// An `.int_literal`'s value as written. The store keeps an `i64`, so an
-// unsigned 64-bit literal with its top bit set (`64'h8000000000000000`)
-// reads back negative; reinterpreted here, it is the large positive number.
+/// An `.int_literal`'s value as written. The store keeps an `i64`, so an
+/// unsigned 64-bit literal with its top bit set (`64'h8000000000000000`)
+/// reads back negative; reinterpreted here, it is the large positive number.
+/// Asserts (by `intLiteral`) that `e` is an `.int_literal`.
 pub fn literalValue(self: *const Parser, e: Ast.ExprId) i128 {
     const lit = self.file.exprs.intLiteral(e);
     if (!lit.signed and lit.value < 0) return @as(u64, @bitCast(lit.value));

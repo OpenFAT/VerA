@@ -1,6 +1,0 @@
-t=1 ntfr=0
-t=12 ntfr=1
-t=13 ntfr=0
-t=30 ntfr=1
-t=40 ntfr=0
-t=45 n0=0

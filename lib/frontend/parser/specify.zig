@@ -85,12 +85,14 @@ fn pulseControls(self: *const Parser, open: u32) bool {
     for (open..self.pos) |at| {
         const w = self.tokenText(@intCast(at));
         if (std.mem.startsWith(u8, w, "PATHPULSE$")) return true;
-        if (self.tags[at] != .kw_reserved) continue;
-        for ([_][]const u8{ "pulsestyle_onevent", "pulsestyle_ondetect", "showcancelled", "noshowcancelled" }) |k|
-            if (std.mem.eql(u8, w, k)) return true;
+        if (self.tags[at] == .kw_reserved and pulse_words.has(w)) return true;
     }
     return false;
 }
+
+/// A.7.1's `pulsestyle_declaration` and `showcancelled_declaration` keywords,
+/// all `.kw_reserved`, so the spelling is the test.
+const pulse_words = std.StaticStringMap(void).initComptime(.{ .{"pulsestyle_onevent"}, .{"pulsestyle_ondetect"}, .{"showcancelled"}, .{"noshowcancelled"} });
 
 /// Parses one A.7.1 `specify_item`, any of the five arms:
 ///
@@ -110,11 +112,7 @@ fn parseSpecifyItem(self: *Parser, b: *parse_module.Body) Error!void {
             if (std.mem.eql(u8, w, "specparam")) return parseSpecparamDecl(self, &b.params);
             // A.7.1 `pulsestyle_declaration` / `showcancelled_declaration`,
             // four keywords over one `list_of_path_outputs ;`.
-            if (std.mem.eql(u8, w, "pulsestyle_onevent") or
-                std.mem.eql(u8, w, "pulsestyle_ondetect") or
-                std.mem.eql(u8, w, "showcancelled") or
-                std.mem.eql(u8, w, "noshowcancelled"))
-            {
+            if (pulse_words.has(w)) {
                 self.pos += 1;
                 // A.7.2's `list_of_path_outputs` has no parentheses of its
                 // own, and IEEE 1364-2005 §14.6.4.2's examples write none
@@ -687,17 +685,11 @@ fn mintypmaxArg(name: []const u8, n: u8) MinTypMaxArg {
 /// A.7.5.3 `edge_descriptor ::= 01 | 10 | z_or_x zero_or_one | zero_or_one
 /// z_or_x`, its two characters lower-cased.
 fn edgeDescriptor(a: u8, b: u8) bool {
-    const bit = struct {
-        fn f(c: u8) bool {
-            return c == '0' or c == '1';
-        }
-    }.f;
-    const xz = struct {
-        fn f(c: u8) bool {
-            return c == 'x' or c == 'z';
-        }
-    }.f;
-    return (bit(a) and bit(b) and a != b) or (xz(a) and bit(b)) or (bit(a) and xz(b));
+    const a01 = a == '0' or a == '1';
+    const b01 = b == '0' or b == '1';
+    const axz = a == 'x' or a == 'z';
+    const bxz = b == 'x' or b == 'z';
+    return (a01 and b01 and a != b) or (axz and b01) or (a01 and bxz);
 }
 
 /// Parses one A.2.1.1 `specparam_declaration ::= specparam [ range ]

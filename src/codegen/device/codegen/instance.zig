@@ -22,7 +22,6 @@ const opdb = @import("op_zig.zig");
 const cg_filters = @import("../cg_filters.zig");
 const cg_strcap = @import("../cg_strcap.zig");
 const kt = @import("kernel_text.zig");
-const Lower = @import("ir").Lowered;
 const Lowered = @import("ir").Lowered;
 const Mir = @import("ir").Mir;
 const Error = codegen.Error;
@@ -53,7 +52,7 @@ const hist_max: usize = 16384;
 fn histLen(self: *const Gen, i: usize) usize {
     const args = self.names.opArgs(self.mir, i);
     if (args.len < 3) return hist_len;
-    const md = (self.an.foldConst(args[2], true) orelse return hist_len).f;
+    const md = self.an.foldConst(args[2], true) orelse return hist_len;
     const want = md / hist_min_step + 2.0;
     if (!(want > @as(f64, @floatFromInt(hist_len)))) return hist_len;
     if (!(want < @as(f64, @floatFromInt(hist_max)))) return hist_max;
@@ -82,12 +81,17 @@ pub fn emitInstance(self: *Gen) Error!void {
         \\    /// discontinuity (0 = the equation itself, 1 = its slope, …), or
         \\    /// -1 for "none announced this step". Written by `updateState`.
         \\    discontinuity_order: i32 = -1,
-        \\    /// §2.8.3/§12.32 the VPI application. Read only by a `$name`
-        \\    /// this compiler could not resolve; `contract.validateHost`
-        \\    /// is what keeps it non-null when `systf_calls` is not empty.
-        \\    systf: ?*const contract.SystfHost = null,
         \\
     , .{});
+    // §2.8.3/§12.32: only a device with a `$name` left to a VPI application
+    // has a binding to hold; the slot is 8 bytes on every instance.
+    if (self.lowered.uses.contains(.systf)) try self.w(
+        "    /// §2.8.3/§12.32 the VPI application. Read only by a `$name`\n" ++
+            "    /// this compiler could not resolve; `contract.validateHost`\n" ++
+            "    /// is what keeps it non-null when `systf_calls` is not empty.\n" ++
+            "    systf: ?*const contract.SystfHost = null,\n",
+        .{},
+    );
     // §9.17 the two fields `updateState` resets every accepted point are
     // history only where an operator moves them off the reset value; without
     // one they are the same constant before and after any revert, and their
@@ -301,7 +305,7 @@ pub fn emitInstance(self: *Gen) Error!void {
             continue;
         }
         const init = self.an.foldConst(self.an.rv(h.init), true);
-        const v: f64 = if (init) |c| c.f else 0.0;
+        const v: f64 = init orelse 0.0;
         if (h.ty == .integer) {
             try self.w("    {s}: i64 = {d}, {s}\n", .{
                 // Saturating like every other fold-side real -> int cast: an
@@ -347,7 +351,7 @@ pub fn hasStatus(self: *const Gen) bool {
 /// constant, or 0 for an argument the site never set.
 fn statusVal(self: *Gen, v: Mir.Value) Error![]const u8 {
     if (v == .undef) return "0.0";
-    if (self.an.foldConst(v, false)) |c| return gen_file.fmtF64(self, c.f);
+    if (self.an.foldConst(v, false)) |c| return gen_file.fmtF64(self, c);
     const k = gen_dispatch.coreIdx(self, self.an.rv(v)).?;
     return self.arena.print("m.f{d}.val()", .{k});
 }
@@ -447,7 +451,7 @@ fn emitTpFields(self: *Gen) Error!void {
 /// `Instance` (`eval`, `evalQ`). A local copy of a held history and its copy
 /// in the core's result are what put txl's 2048-deep history at 165 KB of
 /// GPU stack, and the coupled lines' at 307-612 KB (#82).
-pub fn tpInPlace(self: *const Gen, sl: Lower.TpSlot) bool {
+pub fn tpInPlace(self: *const Gen, sl: Lowered.TpSlot) bool {
     if (sl.array == none_u32 or !gen_render.cow(self, sl.array)) return false;
     // The slot's field exists only when the full core carries the final
     // version (`emitTpFields`); a slice's `plan.lo_idx` is its own.
@@ -611,19 +615,19 @@ fn keepHist(self: *Gen, comptime fmt: []const u8, args: anytype) Error!void {
 /// Emits a §3.2.2/§5.10 held array's `Instance` field: plain values,
 /// defaulting element by element to the declared initializer (§3.2's zero
 /// where the pattern is silent), the spec default as for a held scalar.
-fn emitHeldArrayField(self: *Gen, h: Lower.HeldVar, name: []const u8, comment: []const u8) Error!void {
+fn emitHeldArrayField(self: *Gen, h: Lowered.HeldVar, name: []const u8, comment: []const u8) Error!void {
     const m = self.lowered.mem_arrays.items[h.array];
     const ty: []const u8 = if (m.ty == .integer) "i64" else "f64";
     var all_zero = true;
     for (h.inits) |iv| {
         const c = self.an.foldConst(self.an.rv(iv), true) orelse continue;
-        if (c.f != 0.0) all_zero = false;
+        if (c != 0.0) all_zero = false;
     }
     if (all_zero) return self.w("    {s}: [{d}]{s} = @splat(0), {s}\n", .{ name, m.len, ty, comment });
     try self.w("    {s}: [{d}]{s} = .{{", .{ name, m.len, ty });
     for (0..m.len) |k| {
         const c = if (k < h.inits.len) self.an.foldConst(self.an.rv(h.inits[k]), true) else null;
-        const v: f64 = if (c) |x| x.f else 0.0;
+        const v: f64 = c orelse 0.0;
         if (k != 0) try self.w(", ", .{});
         if (m.ty == .integer) try self.w("{d}", .{std.math.lossyCast(i64, @round(v))}) else try self.w("{s}", .{try gen_file.fmtF64(self, v)});
     }
@@ -664,13 +668,13 @@ pub fn dirtyTracked(self: *const Gen, id: u32) bool {
 const dirty_min_len = 64;
 
 /// Returns the `Lowered.held_vars` row's array id when it is dirty-tracked.
-fn dirtyArray(self: *const Gen, h: Lower.HeldVar) ?u32 {
+fn dirtyArray(self: *const Gen, h: Lowered.HeldVar) ?u32 {
     if (h.array == none_u32 or !dirtyTracked(self, h.array)) return null;
     return h.array;
 }
 
 /// Returns the module's `Lowered.held_vars` row named `name`, if any.
-fn heldNamed(self: *const Gen, name: []const u8) ?Lower.HeldVar {
+fn heldNamed(self: *const Gen, name: []const u8) ?Lowered.HeldVar {
     for (self.names.held_names, self.lowered.held_vars.items) |n, h| {
         if (std.mem.eql(u8, n, name)) return h;
     }
@@ -678,7 +682,7 @@ fn heldNamed(self: *const Gen, name: []const u8) ?Lower.HeldVar {
 }
 
 /// Returns the element type of held array row `h`'s `Instance` field.
-fn elemTy(self: *const Gen, h: Lower.HeldVar) []const u8 {
+fn elemTy(self: *const Gen, h: Lowered.HeldVar) []const u8 {
     return if (self.lowered.mem_arrays.items[h.array].ty == .integer) "i64" else "f64";
 }
 
@@ -762,13 +766,12 @@ pub fn emitStateCtl(self: *Gen, t_prev: bool) Error!void {
     for (self.names.held_names, self.lowered.held_vars.items) |n, h| {
         if (!fsm) break;
         if (h.why != .event) continue;
-        // §3.2.2 a held array compares element by element; a string by text.
-        if (h.array != none_u32)
+        // §3.2.2 a held array (and a wide `reg`) compares element by element;
+        // a string by text.
+        if (h.array != none_u32 or h.ty == .wide)
             try self.w("{s}!std.meta.eql(inst.{s}, state.{s})", .{ if (first) " " else "\n            or ", n, n })
         else if (h.ty == .string)
             try self.w("{s}!std.mem.eql(u8, inst.{s}.get(), state.{s}.get())", .{ if (first) " " else "\n            or ", n, n })
-        else if (h.ty == .wide)
-            try self.w("{s}!std.meta.eql(inst.{s}, state.{s})", .{ if (first) " " else "\n            or ", n, n })
         else
             try self.w("{s}(inst.{s} != state.{s})", .{ if (first) " " else "\n            or ", n, n });
         first = false;

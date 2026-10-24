@@ -1,7 +1,0 @@
-driven 1
-t49 1
-t59 1
-t61 x
-redriven 0
-t72 0
-t117 x

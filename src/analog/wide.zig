@@ -9,7 +9,7 @@
 //! (`leaf_*`) are the call's arguments. `codegen/wide.zig` renders the tree
 //! over `kernels/wide_kernels.zig`.
 //!
-//! The rule (specification/Vague_Decisions.md VD-116). IEEE 1364 §5.4.1 Table
+//! The rule (docs/specification/Vague_Decisions.md VD-116). IEEE 1364 §5.4.1 Table
 //! 5-22 and §5.5.1 give every operand a self-determined width and sign; the
 //! assignment's left-hand width joins the context of the right-hand side
 //! (§5.4.1, "including the left-hand side of an assignment"), §5.5.2
@@ -31,7 +31,7 @@
 //!
 //! LRM clauses this file's code cites: §2.6.1, §3.2, §7.3.1, §7.3.2, §9.11.
 //! IEEE 1364-2005 clauses cited: §3.5.1, §4.1, §4.2.1, §4.8.2, §5.1.5, §5.1.7-§5.1.14,
-//! IEEE 1364-2005 §5.4.1, §5.5.1-§5.5.3, Table 5-6 and Table 5-22.
+//! §5.4.1, §5.5.1-§5.5.3, Table 5-6 and Table 5-22.
 
 const std = @import("std");
 const Lower = @import("lower.zig");
@@ -235,7 +235,7 @@ fn common(a: T, c: T) T {
     return .{ .w = @max(a.w, c.w), .s = a.s and c.s };
 }
 
-/// `operand`'s type, which IEEE 1364 §4.1 Table 5-? keeps integral: a real
+/// `operand`'s type, which IEEE 1364 §4.1 keeps integral: a real
 /// operand of a bitwise, shift or reduction operator is E0329.
 fn intType(b: *Build, op: Ast.ExprId, operand: Ast.ExprId) Oom!T {
     const t = try selfType(b, operand);

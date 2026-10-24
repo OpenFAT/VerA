@@ -62,6 +62,21 @@ Nix packages bring their own. Every install also ships the device contract,
 `share/vera/contract.zig`, and every device declares the VerA release that
 generated it (`vera_version`), which the contract checks at compile time.
 
+## Dependencies
+
+On Ubuntu and Linux Mint:
+
+```sh
+sudo apt install git xz-utils                              # build
+sudo apt install python3 ngspice iverilog yosys verilator  # tests (optional)
+```
+
+Zig master is not in apt: take the Linux tarball from
+<https://ziglang.org/download/> (at least `0.18.0-dev.349+d924f83bf`), unpack
+it and put it on `PATH`. Zig bundles libc and a linker, so nothing else is
+needed. Xyce and mdbook (also used by tests and docs) are not in apt;
+`nix develop` brings everything.
+
 ## Usage
 
 ```sh
@@ -94,8 +109,9 @@ builds a host step by step.
   too, so ngspice can load a Verilog module beside a Verilog-A model.
 - **Languages:** Verilog-AMS and IEEE 1364-2005 Verilog. SystemVerilog (E1104)
   and VHDL are out of scope.
-- **Open bugs** are `//! xfail` fixtures, each naming its clause; CI's verdict
-  ratchet ([`tests/fixtures/conformance/VERDICTS.tsv`](tests/fixtures/conformance/VERDICTS.tsv)) fails
+- **Open bugs** are fixtures listed in the conformance suite's `vera/xfail`,
+  each with its reason; CI's verdict
+  ratchet ([`vera/ledger/VERDICTS.tsv`](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/vera/ledger/VERDICTS.tsv)) fails
   on any verdict change. Operating-point variables are not exported to OSDI yet.
 
 ## Conformance
@@ -106,6 +122,8 @@ See [the test guide](tests/README.md) and the [live report](https://omarsiwy.git
 
 ## Contributing
 
+The fixtures live in the [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+a submodule: run `git submodule update --init tests/conformance` after cloning.
 Run `nix develop -c zig build test` and the relevant language fixtures; see [tests/README.md](tests/README.md).
 Questions and bugs go to [GitHub issues](https://github.com/OmarSiwy/VerA/issues).
 

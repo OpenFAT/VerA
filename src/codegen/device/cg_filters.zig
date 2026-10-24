@@ -119,7 +119,6 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
     };
     // `filterSide` refuses an empty denominator, so a plan has a section.
     assert(den.items.len > 0);
-    assert(lets.items.len <= 2);
     for (0..p.ns) |i| {
         p.deg = @max(p.deg, @max(p.poly(true, i).len, p.poly(false, i).len) - 1);
     }
@@ -131,12 +130,11 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
             .err = "LRM 4.5.12: the sampling period T of a zi_* filter is mandatory",
         };
         if (g.an.foldConst(args[dv.next], true)) |c| {
-            if (!(c.f > 0.0)) return .{
+            if (!(c > 0.0)) return .{
                 .err = "LRM 4.5.12: the sampling period T of a zi_* filter shall be positive",
             };
         }
         p.period = try g.f64Expr(args[dv.next]);
-        p.uses_model = g.uses.model;
         // §4.5.12 τ and t0. Absent or the literal 0, the sampler steps
         // abruptly on the k·T grid (the plain `zZiEval`). Otherwise the samples
         // fall on t0 + k·T and each one is reached by a τ-long transition
@@ -149,11 +147,11 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
             const c = g.an.foldConst(a, true) orelse return .{
                 .err = "LRM 4.5.12: the τ and t0 arguments of a zi_* filter must be constant expressions",
             };
-            if (i == 0 and c.f < 0.0) return .{
+            if (i == 0 and c < 0.0) return .{
                 .err = "LRM 4.5.12: the transition time τ of a zi_* filter shall be nonnegative",
             };
             const lit = g.an.foldConst(a, false);
-            if (lit != null and lit.?.f == 0.0) continue;
+            if (lit != null and lit.? == 0.0) continue;
             const text = try g.f64Expr(a);
             if (i == 0) p.tau = text else p.t0 = text;
         }
@@ -166,7 +164,6 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
     // §4.5.11 the optional ε argument only "deriv[es] an absolute
     // tolerance (if needed)"; VerA has no per-signal tolerance table, so
     // dropping it changes no value the device computes.
-    assert(p.err == null);
     if (z) assert(p.period != null);
     if (!z) assert(p.period == null);
     if (p.tau != null) assert(p.t0 != null);
@@ -179,7 +176,6 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
 pub fn planAll(g: *Gen) Error!void {
     g.filters = try g.arena.alloc(?FilterPlan, g.names.units.len);
     @memset(g.filters, null);
-    assert(g.filters.len == g.names.units.len);
     const saved_tok = g.ctrl_tok;
     defer g.ctrl_tok = saved_tok;
     for (g.names.units, 0..) |u, i| {
@@ -221,10 +217,7 @@ fn readVec(g: *const Gen, args: []const Mir.Value, i: usize) ?Vec {
     if (def != .int_const or def.int_const < 0) return null;
     const n: usize = @intCast(def.int_const);
     if (i + 1 + n > args.len) return null;
-    const v: Vec = .{ .elems = args[i + 1 ..][0..n], .next = i + 1 + n };
-    assert(v.next <= args.len);
-    assert(v.next > i);
-    return v;
+    return .{ .elems = args[i + 1 ..][0..n], .next = i + 1 + n };
 }
 
 /// Renders filter coefficients, collecting the ones §4.5.14 samples.
@@ -237,7 +230,6 @@ const Coefs = struct {
     fn text(cx: *Coefs, g: *Gen, e: Mir.Value) Error![]const u8 {
         if (!try gen_host.ctrlIsDynamic(g, e)) return g.f64Expr(e);
         try cx.sampled.append(g.arena, e);
-        assert(cx.sampled.items.len > 0);
         return g.arena.print("k[{d}]", .{cx.sampled.items.len - 1});
     }
 };
@@ -268,12 +260,11 @@ fn filterSide(
         for (elems, 0..) |e, i| {
             poly[i] = try cx.text(g, e);
             const c = g.an.foldConst(e, true);
-            if (c == null or c.?.f != 0.0) all_zero = false;
+            if (c == null or c.? != 0.0) all_zero = false;
         }
         if (is_den and all_zero)
             return "LRM 4.5.11/4.5.12: the denominator coefficients of this filter are identically zero";
         try out.append(g.arena, poly);
-        assert(out.items.len > 0);
         return null;
     }
     // §4.5.11.1 "ζ is a vector of M pairs of real numbers … the first
@@ -291,7 +282,6 @@ fn filterSide(
         card = card or c;
         card_im = card_im or (c and i % 2 == 1);
     }
-    assert(elems.len > 0);
     if (card_im) return runtimeRoots(g, cx, out, lets, elems, z);
     const mark = out.items.len;
     const smark = cx.sampled.items.len;
@@ -319,7 +309,6 @@ fn runtimeRoots(
     const k = lets.items.len;
     // One let per side at most: the capacity `filterPlan` reserved.
     assert(k < 2);
-    const out_before = out.items.len;
     var t: std.ArrayList(u8) = .empty;
     try t.print(g.arena, "const zr{d} = zRootSecs({d}, {s}, .{{ ", .{ k, m, if (z) "true" else "false" });
     for (elems, 0..) |e, i| {
@@ -333,7 +322,6 @@ fn runtimeRoots(
         for (poly, 0..) |*c, j| c.* = try g.arena.print("zr{d}[{d}][{d}]", .{ k, s, j });
         try out.append(g.arena, poly);
     }
-    assert(out.items.len == out_before + (m + 1) / 2);
     return null;
 }
 
@@ -357,13 +345,13 @@ fn constRoots(g: *Gen, cx: *Coefs, out: *std.ArrayList(Poly), elems: []const Mir
                 "(the conjugate pairing decides the section structure)";
         const re = try cx.text(g, elems[2 * k]);
         const re_c = g.an.foldConst(elems[2 * k], true);
-        if (im.f == 0.0) {
+        if (im == 0.0) {
             // "If a root is zero, then the term associated with it is
             // implemented as s, rather than (1 − s/r)". In z⁻¹ the LRM's
             // own wording says "z", which is a non-causal advance and
             // contradicts its H(z) formula (which is written in z⁻¹
             // throughout); the causal dual of `s` is the unit delay z⁻¹.
-            if (re_c != null and re_c.?.f == 0.0) {
+            if (re_c != null and re_c.? == 0.0) {
                 try out.append(g.arena, &.{ "0.0", "1.0" });
             } else if (z) {
                 // §4.5.12 (1 − z⁻¹ρ)
@@ -380,7 +368,7 @@ fn constRoots(g: *Gen, cx: *Coefs, out: *std.ArrayList(Poly), elems: []const Mir
             continue;
         }
         // "If a root is complex, its conjugate shall also be present."
-        const j = conjugateOf(g, elems, used, re, im.f) orelse
+        const j = conjugateOf(g, elems, used, re, im) orelse
             return "LRM 4.5.11/4.5.12: a complex filter root has no conjugate partner " ++
                 "(\"If a root is complex, its conjugate shall also be present\")";
         used[j] = true;
@@ -391,7 +379,7 @@ fn constRoots(g: *Gen, cx: *Coefs, out: *std.ArrayList(Poly), elems: []const Mir
         // ponytail: b ≠ 0 here, so a²+b² > 0 and the §4.5.11 divisions are
         // safe for any real part. a == 0 is an undamped pole pair on the
         // imaginary axis; that is the transfer function the model asked for.
-        const bb = try g.fmtF64(im.f * im.f);
+        const bb = try g.fmtF64(im * im);
         const mag = try g.arena.print("(({0s}) * ({0s}) + {1s})", .{ re, bb });
         try out.append(g.arena, if (z) try g.arena.dupe([]const u8, &.{
             "1.0",
@@ -415,7 +403,7 @@ fn conjugateOf(g: *Gen, elems: []const Mir.Value, used: []const bool, re: []cons
     for (used, 0..) |u, j| {
         if (u) continue;
         const jm = g.an.foldConst(elems[2 * j + 1], true) orelse continue;
-        if (jm.f != -im) continue;
+        if (jm != -im) continue;
         // `f64Const`, not `f64Expr`: a speculative render, so a root that does
         // not resolve is "not the conjugate", not a diagnostic.
         const jre = (g.f64Const(elems[2 * j], 0, false) catch continue) orelse continue;

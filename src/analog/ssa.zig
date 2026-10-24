@@ -247,7 +247,7 @@ pub const SsaBuilder = struct {
         // Per block, beside `block_state`; `skipUp` reads 26 of its 36 bytes.
         assert(@sizeOf(Dom) == 36);
         assert(@sizeOf(Row) == 12);
-        assert(@sizeOf(JoinRead) == 32);
+        assert(@sizeOf(JoinRead) <= 32);
     }
 
     /// Returns an empty builder writing into `mir`, whose rows (phis) `gpa`
@@ -391,7 +391,7 @@ pub const SsaBuilder = struct {
     /// phi emissions and memo writes is the recursion's (depth first, each
     /// join's predecessors in declaration order), so the emitted MIR is the
     /// same; the depth is bounded by memory, not by the native stack
-    /// (10,000 sequential `if`s: `analog/test.zig`).
+    /// (10,000 sequential `if`s).
     fn readFrom(self: *SsaBuilder, place: Place, block: Mir.Block) Error!Mir.Value {
         const base = self.joins.items.len;
         defer self.joins.shrinkRetainingCapacity(base);

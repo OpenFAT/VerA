@@ -1,6 +1,0 @@
-mcd=2 fd_msb=1
-both 7
-[ab12
-c3]
-[both 7
-]

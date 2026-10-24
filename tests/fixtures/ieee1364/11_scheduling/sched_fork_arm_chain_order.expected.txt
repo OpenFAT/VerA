@@ -1,2 +1,0 @@
-negedge q at 1
-joined at 3

@@ -1,7 +1,0 @@
-60 35
-110 e2
-160 00
-210 f7
-end_wave 260
-after-wave 261
-joined 310 4

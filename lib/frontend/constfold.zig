@@ -194,6 +194,7 @@ pub const UnsignedCompare = struct {
     /// of both before the signed compare.
     flip: bool,
 
+    /// The comparison's operand; its backing integer indexes `mask`.
     pub const Side = enum { lhs, rhs };
 
     /// Returns operand `side`'s value as the i64 the signed compare orders as
@@ -431,8 +432,7 @@ fn reduction(ex: *const Ast.ExprStore, op: Ast.UnaryOp, operand: Ast.ExprId, a: 
     if (ex.tag(operand) != .int_literal) return null;
     const w = literalWidth(ex, operand);
     if (w > 64) return null;
-    const width: u7 = @intCast(w);
-    const mask: u64 = if (width == 64) std.math.maxInt(u64) else (@as(u64, 1) << @as(u6, @intCast(width))) - 1;
+    const mask: u64 = if (w == 64) std.math.maxInt(u64) else (@as(u64, 1) << @intCast(w)) - 1;
     const bits: u64 = @as(u64, @bitCast(a.int)) & mask;
     const r: bool = switch (op) {
         .reduce_and => bits == mask,

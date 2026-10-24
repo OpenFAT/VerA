@@ -1,4 +1,0 @@
-one_zero 1 1
-suppressed_zero 1 0
-zero_zero 0 0
-float_one 1 1

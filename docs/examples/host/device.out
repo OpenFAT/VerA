@@ -1,7 +1,7 @@
 $ vera --emit-zig --allow=W0650 diode.va | grep "^pub "
 pub const U = enum(u8) {
 pub const num_ports: usize = 2;
-pub const vera_version = "0.12.1";
+pub const vera_version = "0.13.0";
 pub const u_abstol = [n_u]f64{
 pub const Model = struct {
 pub fn checkRange(model: *const Model) ?[]const u8 {
@@ -9,6 +9,7 @@ pub const Setup = struct {
 pub const Instance = struct {
 pub const setup_simparams = [_][]const u8{};
 pub fn setup(comptime V: type, model: *Model) void {
+pub const sim_reads: contract.SimReads = .{ .t = false, .dt = false, .iteration = false };
 pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {
 pub const jac_pattern = [n_u]u64{
 pub const jac_rows: u64 = 0x0000000000000007;

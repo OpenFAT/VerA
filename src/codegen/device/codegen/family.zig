@@ -195,8 +195,7 @@ fn affineStep(self: *const Gen, v: Mir.Value, aff: []const bool, host: []const b
     if (k.card(v)) return true;
     const def = self.mir.valueDef(self.an.rv(v));
     switch (def) {
-        .block_param => return true,
-        .undef, .float_const, .int_const, .str_const, .param_ref => return true,
+        .block_param, .undef, .float_const, .int_const, .str_const, .param_ref => return true,
         .inst_result => |inst| return switch (self.mir.instData(inst)) {
             // `dstop`'s lanes are zero at every x.
             .unary => |u| if (u.op == .fneg) k.affine(u.operand) else u.op == .dstop,

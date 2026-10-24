@@ -1,6 +1,0 @@
-static 1.25
-fresh 0.00
-recursive 7.00
-again 1.50
-copy-int -3.75 -3
-copy-real 1.25 2.50 defaults=0

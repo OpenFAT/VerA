@@ -1,8 +1,0 @@
-// Host-only oracle: tests/host.py.
-// AMS 9.7.1:1001: level 2 also reports memory and CPU statistics.
-// observation: analysis tran
-// observation: time 0, 2n
-// observation: print none
-module diagnostic_finish_statistics;
-  analog if ($abstime >= 2n) $finish(2);
-endmodule

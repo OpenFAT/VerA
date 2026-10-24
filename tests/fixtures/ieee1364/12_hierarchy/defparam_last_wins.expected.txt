@@ -1,2 +1,0 @@
-b_12_2_1_defparam_last_wins.m1 size=6 delay=10
-b_12_2_1_defparam_last_wins.m2 size=10 delay=20

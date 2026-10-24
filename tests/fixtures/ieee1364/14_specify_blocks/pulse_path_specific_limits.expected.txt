@@ -1,2 +1,0 @@
-pulse=0,1
-settled=0,0

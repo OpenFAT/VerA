@@ -1,5 +1,0 @@
-t15 mid=0 y=0
-t24 mid=0 y=0
-t25 mid=1 y=0
-t29 mid=1 y=0
-t30 mid=1 y=1

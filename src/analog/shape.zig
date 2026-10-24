@@ -170,8 +170,9 @@ pub fn elemKey(self: *Lower, buf: *[elem_key_len]u8, name: []const u8, idx: []co
     return buf[0..n];
 }
 
-/// Packed bounds are source shape: a numeric model card cannot resize them.
-/// Resolve and retain the width before entering any later procedural scope.
+/// Returns the width of packed range `range` (`constfold.packedWidth`), or
+/// null when it does not fold. Marks every parameter either bound reads a
+/// shape (`shapeEval`) first: a model card cannot resize a packed range.
 pub fn packedShapeWidth(self: *Lower, range: Ast.Dim) ?u32 {
     _ = lower_constfold.shapeEval(self, range.msb);
     _ = lower_constfold.shapeEval(self, range.lsb);
@@ -260,7 +261,7 @@ pub fn patternElems(self: *Lower, e: Ast.ExprId) Oom![]const Ast.ExprId {
         try self.err(ex.mainTok(count), .E1016, "the pattern has {d} elements", .{cells});
         return &.{};
     }
-    const out = try self.arena.alloc(Ast.ExprId, @as(usize, @intCast(n.?)) * group.len);
+    const out = try self.arena.alloc(Ast.ExprId, @intCast(cells));
     for (0..@intCast(n.?)) |k| @memcpy(out[k * group.len ..][0..group.len], group);
     return out;
 }

@@ -17,7 +17,13 @@ may call at any state vector, in any order.
 
 `noise_gens` is the list of LRM §4.6.4 generators. Position `k` is a
 generator of `kind` (`thermal`, `shot`, `flicker`, `table`) on the branch
-`(row, col)`, and position `k` of `noisePsd(S, x, &model, &inst, sim)` is its
+`(row, col)`: a current generator (a noise function in a flow contribution)
+between its two nodes, `row == col` when one is the reference; a voltage
+generator (§4.6.4.1, a noise function in a potential contribution) in series
+with its branch, `row == col` on the branch's current unknown
+(`U.@"flow(a,b)"`), entering that unknown's own equation row with the row's
+sign already in `coeff`. Add `coeff·n` to row `row` and, when `col` differs,
+subtract it from `col`. Position `k` of `noisePsd(S, x, &model, &inst, sim)` is its
 spectral density at the state vector `x`, as a `PsdTerm`. Pass `eval`'s
 family as `S`: a `ddx` in a PSD argument (a channel noise's gm) reads its
 partial there, and reads 0 in a family without lanes.
@@ -118,12 +124,13 @@ the table on the CPU only. The `Model`'s other `__` fields are on
 | Declaration | Meaning |
 |---|---|
 | `decl_meta` | the module's LRM §2.9.2 `desc` and `units` attributes, one `DeclMeta` row per parameter, output variable or net that has one, for a help message or an operating-point report. Read by no entry point |
+| `Model.given_params`, `model.setGiven(name)` | the LRM §9.19 given flags: the `Model` field names with a bit in `Model.given__`, bit k for name k, and the method that sets one after a card write; absent when nothing reads a flag |
 | `mc_param` | the name of the float field of `Model` or `Instance` Monte Carlo varies |
 | `status_sites` | the device's `$fatal`/`$error` calls ([state](state.md)) |
 | `say_sites`, `say(S, &x, &model, inst, sim, &out)` | the LRM §9.4 display tasks (`$strobe`, `$display`, `$write`, `$debug`, `$warning`, `$info`) as records: call `say` once per accepted point with a `contract.Say` buffer, then `contract.formatSay(D, &out, name, writer)` prints them. LRM §9.4.1 shows `$debug` at every iteration: a host that does so also calls `say` after each Newton iteration with `Say.pass = .iteration`, then `.accepted` at the accepted point. `$monitor` and a non-constant string argument are not recorded (W0850) |
 | `display(S, &x, ...)` | the display phase of an artifact built with `--display=emit`, which prints from inside the device instead of recording; per accepted point, and a `$finish` inside it exits the process |
 | `file_io: FileIo` | the device's LRM §9.5 descriptor table, for a mixed simulation whose digital half must share descriptors (§9.5.1.2) |
-| `systf_calls` | `$name`s the compiler left to a VPI application (LRM §2.8.3, §12.32), one entry per call site; an entry's `task` is true for a system task (a statement), false for a function in an expression, so a host can refuse a registration of the wrong type (LRM §12.32.1) without the source, and only a task has `outs`. Point `inst.systf` at a `SystfHost`, whose `call(ctx, k, args, partials)` returns call `k`'s value and its partials (and whose optional `out` answers the arguments the application wrote, LRM §12.22.2); `validateHost` requires your host to declare `systf`, a `fn (*const Model) ?*const contract.SystfHost` |
+| `systf_calls` | `$name`s the compiler left to a VPI application (LRM §2.8.3, §12.32), one entry per call site; an entry's `task` is true for a system task (a statement), false for a function in an expression, so a host can refuse a registration of the wrong type (LRM §12.32.1) without the source, and only a task has `outs`. Point `inst.systf`, an `Instance` field only such a device has, at a `SystfHost`, whose `call(ctx, k, args, partials)` returns call `k`'s value and its partials (and whose optional `out` answers the arguments the application wrote, LRM §12.22.2); `validateHost` requires your host to declare `systf`, a `fn (*const Model) ?*const contract.SystfHost` |
 
 To run a C VPI application's calltf through VerA's own VPI layer (the `vpi`
 module) while your host does the solving, attach each device library through
@@ -143,6 +150,6 @@ frequency, `.op`) once per point, before the calls, for every library:
 `vpi_get_analog_time`, `vpi_get_analog_delta`, `vpi_get_analog_freq` and
 `vpi_get_real`'s analysis bounds then read your point. Such a library holds
 no solution, so `vpi_get_analog_value` refuses every quantity that needs one
-with error code `NOSOLUTION`; `tests/fixtures/ch11_vpi/vpi_host.zig`'s `External` is this host
+with error code `NOSOLUTION`; `tests/conformance/vera/host/vpi_host.zig`'s `External` is this host
 in miniature, with two libraries and two instances in
-`tests/fixtures/ch12_vpi_routines/two_libraries_two_instances.c`.
+`tests/conformance/tests/verilog-ams/ch12_vpi_routines/two_libraries_two_instances.c`.

@@ -1,9 +1,0 @@
-// Host profile for AMS 2.8:7. Substitute the same simple identifier at both
-// occurrences, first at a DOCUMENTED finite limit and then one character over.
-// No chosen stress-test size constitutes an implementation-specified limit.
-module identifier_length_limit(p, n);
-  inout p, n;
-  electrical p, n;
-  parameter real @IDENTIFIER@ = 1.0;
-  analog I(p, n) <+ @IDENTIFIER@ * V(p, n);
-endmodule

@@ -4,7 +4,7 @@
 //! distribution's argument range; out: the variate and the updated seed, two
 //! calls deep, so a correct first value cannot hide a wrong seed walk.
 //! Restored from `git show 4250899d^:tests/rng_reference.zig` (the commit
-//! CLAUSE-AUDIT.md cites as 2cc1c08) onto today's kernels,
+//! the old clause audit cited as 2cc1c08) onto today's kernels,
 //! which add `$random` and `$dist_uniform` (the listing's `rtl_dist_uniform`)
 //! and the seedless latch step `zRngNext`. Their domain refusals are `main`
 //! below: build.zig also builds this file as an executable (`rng-domains`),

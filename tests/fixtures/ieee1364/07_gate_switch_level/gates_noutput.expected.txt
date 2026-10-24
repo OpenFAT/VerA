@@ -1,4 +1,0 @@
-in=0 got buf=000 not=11 want buf=000 not=11
-in=1 got buf=111 not=00 want buf=111 not=00
-in=x got buf=xxx not=xx want buf=xxx not=xx
-in=z got buf=xxx not=xx want buf=xxx not=xx

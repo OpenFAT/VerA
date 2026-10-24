@@ -1,3 +1,0 @@
-top work.top work.top
-top.u work.mid work.mid
-top.u.v work.leaf work.leaf

@@ -1,6 +1,0 @@
-// Host-only oracle: tests/host.py.
-// AMS 9.7.3:13 and 9.7.3:5: initialization context, no error severity.
-// observation: print none
-module diagnostic_info_initial;
-  analog initial $info("observe-info");
-endmodule

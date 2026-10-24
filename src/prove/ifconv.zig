@@ -132,7 +132,7 @@ fn cardOnly(mir: *const Mir, v0: Mir.Value, budget: *u32) bool {
 fn countPreds(mir: *const Mir, preds: []u32) void {
     @memset(preds, 0);
     for (0..preds.len) |b| {
-        var it = mir.blockInsts(@fromBackingInt(@intCast(@as(u32, @intCast(b)))));
+        var it = mir.blockInsts(@fromBackingInt(@intCast(b)));
         while (it.next()) |inst| {
             switch (mir.instData(inst)) {
                 .branch => |d| {
@@ -350,7 +350,7 @@ fn rewritePhi(mir: *Mir, phi: Mir.Inst, then_key: Mir.Block, else_key: Mir.Block
     std.debug.assert(count + 2 <= d.count); // both edges' pairs were dropped
     mir.extra.items[d.start + count * 2] = @backingInt(x);
     mir.extra.items[d.start + count * 2 + 1] = @backingInt(sel);
-    mir.insts.items(.c)[@backingInt(phi)] = count + 1;
+    mir.insts.items(.a)[@backingInt(phi)] = count + 1; // a phi's pair count
     // Even dead phis must hold the new pairs: proof evaluates their operands.
     if (count == 0) mir.setAlias(mir.instResult(phi), sel);
 }
@@ -807,7 +807,7 @@ test "if-conversion is deterministic: equal MIR converts to equal MIR" {
     defer s2.mir.deinit(a);
     _ = try run(a, &s1.mir);
     _ = try run(a, &s2.mir);
-    inline for (.{ .op, .a, .b, .c, .result, .next, .block }) |col|
+    inline for (.{ .op, .a, .b, .result, .next, .block }) |col|
         try std.testing.expectEqualSlices(@TypeOf(s1.mir.insts.items(col)[0]), s1.mir.insts.items(col), s2.mir.insts.items(col));
     try std.testing.expectEqualSlices(u32, s1.mir.extra.items, s2.mir.extra.items);
     try std.testing.expectEqualSlices(Mir.Value, s1.mir.alias.items, s2.mir.alias.items);

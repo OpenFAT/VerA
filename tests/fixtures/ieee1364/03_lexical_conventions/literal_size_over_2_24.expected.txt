@@ -1,2 +1,0 @@
-is_zero=0 is_one=1
-bit0=1 top=1

@@ -128,7 +128,7 @@ fn lowerEventTrigger(self: *Lower, tok: u32, target: Ast.ExprId) Oom!void {
     }
     // §5.10.4 Syntax 5-21 `-> hierarchical_event_identifier { [ expression ] }`:
     // the element the subscript selects is raised, and no other.
-    const r = try @import("event.zig").eventRef(self, target) orelse return;
+    const r = try lower_event.eventRef(self, target) orelse return;
     for (r.places, r.conds) |p, c| {
         const v = if (c == .one) Mir.Value.one else try self.emit(.select, &.{ c, .one, try self.builder.readVariable(p, self.cur) });
         try self.builder.writeVariable(p, self.cur, v);
@@ -804,9 +804,11 @@ pub fn readSliceCells(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, sd: []const
         .string => "$idx$str",
         .wide => unreachable, // an array element is never `.wide` (`lower_var.declareVarDecl`)
     };
+    // One operand buffer for every cell: each call copies its operands.
+    var args: std.ArrayList(Mir.Value) = .empty;
+    defer args.deinit(self.arena);
     for (out, 0..) |*v, k| {
-        var args: std.ArrayList(Mir.Value) = .empty;
-        defer args.deinit(self.arena);
+        args.clearRetainingCapacity();
         try args.append(self.arena, .zero);
         try args.append(self.arena, iv);
         lower_shape.shapeSubscripts(sd, k, idx[s.subs.len..]);

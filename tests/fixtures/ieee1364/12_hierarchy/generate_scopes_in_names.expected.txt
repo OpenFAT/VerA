@@ -1,4 +1,0 @@
-b_12_4_3_generate_scopes_in_names.genblk1.nb1
-b_12_4_3_generate_scopes_in_names.genblk02.nb2
-b_12_4_3_generate_scopes_in_names.mult.u1
-b_12_4_3_generate_scopes_in_names.genblk4.nb4

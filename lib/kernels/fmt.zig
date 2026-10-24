@@ -68,7 +68,7 @@ pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io
     if (!char) while (n != 0 and byteAt(v, n - 1) == 0) {
         n -= 1;
     };
-    if (width) |w| if (n < w) try out.splatByteAll(' ', w - n);
+    if (width) |w| if (n < w) try out.splatByteAll(' ', @intCast(w - n));
     while (n != 0) {
         n -= 1;
         try out.writeByte(byteAt(v, n));
@@ -90,7 +90,7 @@ pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io
 pub fn time(out: *std.Io.Writer, t: f64, f: TimeFormat, unit_exp: i32) std.Io.Writer.Error!void {
     const scaled = t * std.math.pow(f64, 10, @floatFromInt(unit_exp - f.units));
     const len = std.fmt.count("{d:.[1]}", .{ scaled, f.precision }) + f.suffix.len;
-    if (len < f.width) try out.splatByteAll(' ', f.width - len);
+    if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
     try out.print("{d:.[1]}", .{ scaled, f.precision });
     try out.writeAll(f.suffix);
 }
@@ -129,7 +129,7 @@ pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix:
         if (v.width > 64 and !v.hasUnknown()) return wideDecimal(out, gpa, v, field);
         var buf: [24]u8 = undefined;
         const t = decimalText(&buf, v);
-        if (t.len < field) try out.splatByteAll(' ', field - t.len);
+        if (t.len < field) try out.splatByteAll(' ', @intCast(field - t.len));
         return out.writeAll(t);
     }
     // §17.1.1.3: a zero width overrides the automatic size, so a group radix
@@ -142,7 +142,7 @@ pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix:
     // zeros: `%d` of an 8-bit 7 is "  7" and not "007". A group radix is
     // already exactly its own width, so padding only ever shows up under
     // decimal or an explicit format width.
-    if (d < field) try out.splatByteAll(' ', field - d);
+    if (d < field) try out.splatByteAll(' ', @intCast(field - d));
     while (d != 0) {
         d -= 1;
         try out.writeByte(groupDigit(v, radix, d));
@@ -179,23 +179,16 @@ fn autoWidth(v: Int.Literal, radix: Radix) u32 {
 /// which is what makes an all-x 8-bit operand print "xxx" in octal rather
 /// than "Xxx": the top group holds two x bits and no third bit at all.
 fn groupDigit(v: Int.Literal, radix: Radix, d: u32) u8 {
-    const per = radix.perDigit();
-    var val: u32 = 0;
-    var xs: u32 = 0;
-    var zs: u32 = 0;
-    var present: u32 = 0;
-    var k: u32 = 0;
-    while (k < per) : (k += 1) {
-        const index = d * per + k;
-        if (index >= v.width) continue;
-        present += 1;
-        switch (v.bit(index)) {
-            .zero => {},
-            .one => val |= @as(u32, 1) << @intCast(k),
-            .x => xs += 1,
-            .z => zs += 1,
-        }
-    }
+    // Both planes' bits of the group at once, cut at the width: one or two
+    // word reads per digit instead of one `bit` call per bit.
+    const lo = d * radix.perDigit();
+    const present: u6 = @intCast(@min(radix.perDigit(), v.width - lo));
+    const live = (@as(u64, 1) << present) - 1;
+    const val = groupBits(v.values(), lo) & live;
+    const unk = groupBits(v.unknowns(), lo) & live;
+    // An x bit is value and unknown set, a z bit unknown alone.
+    const xs = @popCount(val & unk);
+    const zs = @popCount(~val & unk);
     // §17.1.1.4: all unknown prints lowercase, partly unknown prints
     // uppercase; the case is the only sign that the digit's known bits
     // were thrown away.
@@ -203,7 +196,18 @@ fn groupDigit(v: Int.Literal, radix: Radix, d: u32) u8 {
     else if (zs == present) 'z' //
     else if (xs != 0) 'X' //
     else if (zs != 0) 'Z' //
-    else "0123456789abcdef"[val];
+    else "0123456789abcdef"[@intCast(val)];
+}
+
+/// The bits of `plane` from bit `lo` up, as many as one word holds: a group
+/// of a power-of-two radix that straddles a word takes the next word's low
+/// bits. Asserts `lo` is inside `plane`.
+fn groupBits(plane: []const u64, lo: u32) u64 {
+    const w = lo / 64;
+    const off: u6 = @truncate(lo);
+    var bits = plane[w] >> off;
+    if (off != 0 and w + 1 < plane.len) bits |= plane[w + 1] << @intCast(64 - @as(u7, off));
+    return bits;
 }
 
 /// Decimal, where one unknown bit poisons the whole number (§17.1.1.4), as
@@ -276,7 +280,7 @@ fn wideDecimal(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, fiel
         n += 1;
     }
     const len = std.fmt.count("{d}", .{groups[n - 1]}) + 19 * (n - 1) + @intFromBool(negative);
-    if (len < field) try out.splatByteAll(' ', field - len);
+    if (len < field) try out.splatByteAll(' ', @intCast(field - len));
     if (negative) try out.writeByte('-');
     try out.print("{d}", .{groups[n - 1]});
     var k = n - 1;

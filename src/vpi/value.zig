@@ -99,9 +99,9 @@ const Bits = struct {
     fn low64(b: Bits) u64 {
         var x = b.val[0] & ~b.unk[0];
         if (b.width < 64) {
-            x &= (@as(u64, 1) << @intCast(b.width)) - 1;
+            x &= lowMask(b.width);
             if (b.signed and b.width > 0 and (x >> @intCast(b.width - 1)) & 1 == 1)
-                x |= ~((@as(u64, 1) << @intCast(b.width)) - 1);
+                x |= ~lowMask(b.width);
         }
         return x;
     }
@@ -138,7 +138,7 @@ fn source(o: *const Obj) ?Source {
         const lit = r.values[at];
         // The engine holds a real as its IEEE 754 bits in the value plane.
         if (r.reals.contains(at)) return .{ .real = @bitCast(lit.planes[0]) };
-        return .{ .bits = .{ .width = lit.width, .val = lit.values(), .unk = lit.unknowns(), .signed = lit.signed } };
+        return literalSource(lit);
     }
     if (o.value) |c| return switch (c) {
         .int => |i| .{ .bits = constBits(i) },
@@ -149,7 +149,12 @@ fn source(o: *const Obj) ?Source {
 }
 
 fn literalSource(lit: Int.Literal) Source {
-    return .{ .bits = .{ .width = lit.width, .val = lit.values(), .unk = lit.unknowns(), .signed = lit.signed } };
+    return .{ .bits = bitsOf(lit) };
+}
+
+/// `lit`'s planes, borrowed.
+fn bitsOf(lit: Int.Literal) Bits {
+    return .{ .width = lit.width, .val = lit.values(), .unk = lit.unknowns(), .signed = lit.signed };
 }
 
 /// IEEE 1364-2005 §26.6.24 cont assign -> value: what its one engine driver
@@ -186,6 +191,13 @@ pub const Store = struct {
     str: std.ArrayList(u8) = .empty,
     vec: std.ArrayList(VecVal) = .empty,
     time: Time = std.mem.zeroes(Time),
+
+    /// Frees the storage; `st` stays usable. Invalidates every value it
+    /// handed out.
+    fn clear(st: *Store) void {
+        st.str.clearAndFree(gpa);
+        st.vec.clearAndFree(gpa);
+    }
 };
 
 var get_store: Store = .{};
@@ -282,8 +294,7 @@ fn strength(o: *const Obj, v: *Value) void {
         root.fail("BADFORMAT", "vpi_get_value: vpiStrengthVal is answered for a reg or integer variable only", .{});
         return;
     }
-    const lit = r.?.values[at];
-    const b: Bits = .{ .width = lit.width, .val = lit.values(), .unk = lit.unknowns(), .signed = lit.signed };
+    const b = bitsOf(r.?.values[at]);
     const bits: [*]callback.StrengthVal = @ptrCast(out);
     for (0..b.width) |i| bits[i] = .{ .logic = scalar(b.bit(@intCast(i))), .s0 = vpiStrongDrive, .s1 = vpiStrongDrive };
 }
@@ -402,7 +413,7 @@ fn toReal(b: Bits) f64 {
         k -= 1;
         const u = b.val[k] & ~b.unk[k];
         var w: u64 = if (!neg) u else if (k < lo) 0 else if (k == lo) 0 -% u else ~u;
-        if (k == n - 1 and b.width % 64 != 0) w &= (@as(u64, 1) << @intCast(b.width % 64)) - 1;
+        if (k == n - 1 and b.width % 64 != 0) w &= lowMask(b.width % 64);
         r = r * 18446744073709551616.0 + @as(f64, @floatFromInt(w));
     }
     return if (neg) -r else r;
@@ -503,6 +514,16 @@ fn lowMask(n: u32) u64 {
     return if (n >= 64) ~@as(u64, 0) else (@as(u64, 1) << @intCast(n)) - 1;
 }
 
+/// Two's-complement negation of the little-endian words in place.
+fn negate(words: []u64) void {
+    var carry: u1 = 1;
+    for (words) |*w| {
+        const r = @addWithOverflow(~w.*, @as(u64, carry));
+        w.* = r[0];
+        carry = r[1];
+    }
+}
+
 /// ORs the `n`-bit `bits` (n in 1..64) into `plane` at bit `lo`, dropping
 /// what falls at or past `width`; `plane` holds `width` bits.
 fn orField(plane: []u64, lo: usize, bits: u64, n: u32, width: u32) void {
@@ -552,32 +573,27 @@ fn decimal(out: *std.ArrayList(u8), b: Bits) !void {
     defer if (words.ptr != @as([*]u64, &stack)) gpa.free(words);
     @memcpy(words, b.val);
     // Mask to width, then negate a signed negative value.
-    if (b.width % 64 != 0) words[words.len - 1] &= (@as(u64, 1) << @intCast(b.width % 64)) - 1;
-    var neg = false;
-    if (b.signed and b.bit(b.width - 1) == .one) {
-        neg = true;
-        var carry: u1 = 1;
-        for (words) |*w| {
-            const r = @addWithOverflow(~w.*, @as(u64, carry));
-            w.* = r[0];
-            carry = r[1];
-        }
-        if (b.width % 64 != 0) words[words.len - 1] &= (@as(u64, 1) << @intCast(b.width % 64)) - 1;
+    if (b.width % 64 != 0) words[words.len - 1] &= lowMask(b.width % 64);
+    const neg = b.signed and b.bit(b.width - 1) == .one;
+    if (neg) {
+        negate(words);
+        if (b.width % 64 != 0) words[words.len - 1] &= lowMask(b.width % 64);
     }
     const start = out.items.len;
     while (true) {
         var rem: u128 = 0;
         var k = words.len;
-        var zero = true;
+        // OR of the quotient words: zero once the magnitude is.
+        var left: u64 = 0;
         while (k > 0) {
             k -= 1;
             const cur = (rem << 64) | words[k];
             words[k] = @intCast(cur / 10);
             rem = cur % 10;
-            if (words[k] != 0) zero = false;
+            left |= words[k];
         }
         try out.append(gpa, '0' + @as(u8, @intCast(rem)));
-        if (zero) break;
+        if (left == 0) break;
     }
     if (neg) try out.append(gpa, '-');
     std.mem.reverse(u8, out.items[start..]);
@@ -603,9 +619,7 @@ pub export fn vpi_get_value(obj: vpiHandle, value_p: ?*Value) void {
     };
     // IEEE 1364-2005 §26.6.13: a prim term's value is its terminal's.
     if (o.kind == .code and o.vtype == root.code.vpiPrimTerm) {
-        const e = for (o.edges) |e| {
-            if (e.tag == root.code.vpiExpr) break e.to;
-        } else root.no_obj;
+        const e = root.edgeTo(o, root.code.vpiExpr);
         if (e == root.no_obj) {
             root.fail("NOVALUE", "vpi_get_value: that terminal's expression is not one this model holds", .{});
             return;
@@ -655,10 +669,8 @@ pub fn reset() void {
     for (events.items) |e| gpa.destroy(e);
     events.clearAndFree(gpa);
     live.clearAndFree(gpa);
-    get_store.str.clearAndFree(gpa);
-    get_store.vec.clearAndFree(gpa);
-    cb_store.str.clearAndFree(gpa);
-    cb_store.vec.clearAndFree(gpa);
+    get_store.clear();
+    cb_store.clear();
     put_buf.clearAndFree(gpa);
 }
 
@@ -1039,14 +1051,7 @@ fn toPlanes(v: *const Value, width: u32, planes: []u64) !void {
                     carry = p >> 64;
                 }
             }
-            if (neg) {
-                var carry: u1 = 1;
-                for (val) |*w| {
-                    const r = @addWithOverflow(~w.*, @as(u64, carry));
-                    w.* = r[0];
-                    carry = r[1];
-                }
-            }
+            if (neg) negate(val);
         },
         vpiStringVal => {
             const s = std.mem.span(v.value.str orelse return badPut("vpiStringVal with a NULL str"));
@@ -1057,7 +1062,7 @@ fn toPlanes(v: *const Value, width: u32, planes: []u64) !void {
     }
     // Nothing past the object's width.
     if (width % 64 != 0) {
-        const m = (@as(u64, 1) << @intCast(width % 64)) - 1;
+        const m = lowMask(width % 64);
         val[n - 1] &= m;
         unk[n - 1] &= m;
     }
@@ -1363,10 +1368,7 @@ test "Table 12-4 vpiStringVal: 8-bit groups MSB first, NUL groups dropped" {
 
 test "Table 12-4 vpiIntVal: x/z read as 0, a signed value sign-extends from its width" {
     var st: Store = .{};
-    defer {
-        st.str.deinit(gpa);
-        st.vec.deinit(gpa);
-    }
+    defer st.clear();
     var v: Value = std.mem.zeroes(Value);
     v.format = vpiIntVal;
     const val = [1]u64{0b1010};
@@ -1383,10 +1385,7 @@ test "Table 12-4 vpiIntVal: x/z read as 0, a signed value sign-extends from its 
 
 test "Table 12-4 vpiVectorVal: 32-bit words, bits past the width cleared" {
     var st: Store = .{};
-    defer {
-        st.str.deinit(gpa);
-        st.vec.deinit(gpa);
-    }
+    defer st.clear();
     var v: Value = std.mem.zeroes(Value);
     v.format = vpiVectorVal;
     // 36 bits of ones, with garbage above them in the plane: two words, the
@@ -1522,10 +1521,7 @@ test "§12.30 toPlanes: scalars, strings, and the values it refuses" {
 
 test "IEEE 1364-2005 §27.14: a table entry's vector is two-byte symbols, four per vecval" {
     var st: Store = .{};
-    defer {
-        st.str.deinit(gpa);
-        st.vec.deinit(gpa);
-    }
+    defer st.clear();
     var v: Value = std.mem.zeroes(Value);
     // Symbols `(01)`, `0`, `1`: aval's high half, aval's low half, bval's
     // high half. An edge stores both characters, a level its one in the

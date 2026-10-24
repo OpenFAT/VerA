@@ -1,5 +1,0 @@
-undriven_wreal_at_time_zero 0
-undriven_wire_at_time_zero z
-decl_assigned_wreal_at_time_zero 2.5
-undriven_wreal_stays_zero 0
-decl_assigned_wreal_stays 2.5

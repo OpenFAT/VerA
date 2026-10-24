@@ -2,38 +2,36 @@
 """How conformant VerA is to the specification, measured — never typed.
 
     tools/conformance.py run                  # execute suites; report fresh fixture and specialized evidence
-    tools/conformance.py                      # print the measures block (A, B, C)
+    tools/conformance.py                      # print the measures block (A, B)
     tools/conformance.py --changelog v0.1.0   # set the version literals, prepend it to CHANGELOG.md
     tools/conformance.py --check v0.1.0       # check them, re-measure and diff vs CHANGELOG.md
     tools/conformance.py <subcommand> [...]   # one of the signals below
 
 `run` writes the execution report (one fresh directory under
 `.zig-cache/conformance/`: suite logs, results, `report.md`, `report.json`);
-the older A/B/C release measures below retain their historical meaning (B
-and C inventory citations).
+the older A/B release measures below retain their historical meaning (B
+inventories IEEE 1364 citations; the AMS citation measure C is retired with
+the HTML LRM its clause table came from).
 Every number comes from a command in this file. There is no second place a
-percentage is written down, which is the point: v1.0.0 is defined
-as four measures, and three of them are machine-readable today. Only the
-measures block may write A, B and C; every subcommand is a separate signal and
+percentage is written down. Only the
+measures block may write A and B; every subcommand is a separate signal and
 none of them changes the block or CHANGELOG.md:
 
     comments        clauses the code cites or refuses vs the fixtures' tags
-    tally-b         CLAUSE-AUDIT.md §7.1's §§17-18 obligation arithmetic
-    lrm-audit       the LRM PDF against specification/*.html, section by section
     ieee1364-audit  the IEEE 1364-2005 heading worklist (licensed local PDF)
     keywords        Table B.1 against the PDF, and its spelling fixtures
-    figures         re-crop the LRM figures in specification/figures from the PDF
     verilator       Verilator as a second engine on the same .v designs
+    icarus          Icarus Verilog as a third engine on the same .v designs
     adversarial     L10 sizes through `vera --check` under a time and memory cap
     determinism     L11: `--emit-zig` device text across runs, cwds and binaries
-    grammar         the R3 oracle: Syntax boxes to BNF (tests/fixtures/conformance/GRAMMAR.tsv), an Earley
+    grammar         the R3 oracle: Syntax boxes to BNF (tests/conformance/vera/ledger/GRAMMAR.tsv), an Earley
                     recognizer, R3 coverage, and VerA's parse vs the recognizer
-    selftest        regression checks: the subcommands, the LRM text, `run`'s
+    selftest        regression checks: the subcommands, `run`'s
                     accounting and the fixture layout
 
 ponytail: a regex over the suite's own report, not a --json flag on suite.zig.
 Both lines parsed here are already machine-shaped — the `pass fail unasserted
-xfail` TSV row (tests/suite.zig) and the coverage tally (its `Coverage`
+xfail` TSV row (tests/suite.zig) and the 1364 coverage tally (its `Ieee1364`
 namespace). If a third consumer ever wants this, add the JSON then.
 """
 import argparse
@@ -41,31 +39,47 @@ import ast
 from collections import Counter
 import datetime
 import difflib
+import functools
 import hashlib
-import html
 import importlib.util
 import json
 import os
 import re
-import struct
 import subprocess
 import sys
 import tempfile
 import time
-import unicodedata
-from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "tests/fixtures"
+# The VAMS Conformance Suite (a submodule). Its tests/ is the corpus; result
+# and ledger paths are relative to it (`verilog-a/ch05_analog_behavior/x.va`).
+# VerA's own material (ledgers, hosts, canary, clause lists) is under vera/.
+SUITE = ROOT / "tests/conformance"
+FIXTURES = SUITE / "tests"
+# The corpus subtrees VerA runs: the AMS roots, plus the IEEE 1364 tree.
+# netlist/ is ESPice's decks and include/ the shared headers: never fixtures.
+AMS_ROOTS = ("verilog-a", "verilog-ams", "spice")
+FIXTURE_ROOTS = AMS_ROOTS + ("verilog",)
+INCLUDE = FIXTURES / "include"
+VERA = SUITE / "vera"
+CLAUSES_DIR = VERA / "clauses"
+LEDGER_DIR = VERA / "ledger"
 
 
-def fixture_files(*patterns):
-    """Every fixture matching one of `patterns`, sorted. `canary/` holds the
-    wrong-on-purpose fixtures `zig build test-canary` judges on their own;
-    they are evidence of nothing, so no walk sees them."""
-    return sorted(p for pattern in patterns for p in FIXTURES.rglob(pattern)
-                  if p.is_file() and "canary" not in p.relative_to(FIXTURES).parts)
+def fixture_files(*patterns, roots=FIXTURE_ROOTS):
+    """Every fixture under `roots` matching one of `patterns`, sorted. The
+    wrong-on-purpose canary fixtures live in vera/canary, outside every root."""
+    return sorted(p for root in roots for pattern in patterns for p in (FIXTURES / root).rglob(pattern)
+                  if p.is_file())
+
+
+@functools.cache
+def vera_xfail():
+    """VerA's own expected failures (vera/xfail: one `tests/<path>  # reason`
+    per line), as paths relative to FIXTURES. The suite carries no `//! xfail`."""
+    lines = (VERA / "xfail").read_text().splitlines() if (VERA / "xfail").exists() else []
+    return {p.removeprefix("tests/") for ln in lines if (p := ln.partition("#")[0].strip())}
 
 # name -> function(argv) -> exit code. Each section below adds its own.
 SUBCOMMANDS = {}
@@ -132,7 +146,7 @@ def assertion_validation(run_dir, normal):
 
 def read_specialized(root, clauses, ledger):
     rows, ids, checks = [], set(), {}
-    path = root / "tests/fixtures/conformance/SPECIALIZED.tsv"
+    path = root / "tests/conformance/vera/ledger/SPECIALIZED.tsv"
     for number, line in enumerate(path.read_text().splitlines(), 1):
         if not line or line.startswith("#"):
             continue
@@ -154,7 +168,7 @@ def read_specialized(root, clauses, ledger):
         # Exact test name, not a file-level claim or a substring of another test.
         if source.suffix == ".sp":
             declared = (row["artifact"] == "spice" and
-                        row["test"] == row["source"].removeprefix("tests/fixtures/") and
+                        row["test"] == row["source"].removeprefix("tests/conformance/tests/") and
                         source.with_suffix(".expected.json").is_file())
         elif source.suffix == ".py":
             declared = any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == row["test"]
@@ -204,7 +218,7 @@ def read_dispositions(root):
 
     Only whole-clause rows are useful here. Sentence rows (`3.4.1:1`) are a
     different worklist and never make a clause not-applicable."""
-    path = root / "tests/fixtures/conformance/GAPS.tsv"
+    path = root / "tests/conformance/vera/ledger/GAPS.tsv"
     out = {}
     for number, line in enumerate(path.read_text().splitlines(), 1):
         if not line or line.startswith("#"):
@@ -287,7 +301,7 @@ def source_digest(root):
     """Content identity includes new files and uncommitted edits, not just HEAD."""
     digest = hashlib.sha256()
     paths = [root / name for name in ("build.zig", "build.zig.zon", "flake.nix", "flake.lock")]
-    for directory in ("lib", "src", "tools", "tests", "specification"):
+    for directory in ("lib", "src", "tools", "tests"):
         paths.extend(p for p in (root / directory).rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts)
     for path in sorted(paths):
@@ -298,15 +312,19 @@ def source_digest(root):
 
 
 def clause_inventory():
-    # Match the established AMS clause denominator: numeric chapter headings
-    # organize their sections; annex headings are themselves inventoried.
-    clauses = {("ams", key): {"title": value["title"], "classification": "-"}
-               for key, value in html_sections(ROOT)[0].items() if not key.isdigit()}
-    for line in (FIXTURES / "ieee1364/CLAUSES.tsv").read_text().splitlines():
+    # The AMS clause denominator: every clause the requirement ledger has a
+    # row for, and every clause a CLAUSES.tsv classifies (a non-normative
+    # clause states no sentence to row). Numeric chapter headings organize
+    # their sections and are not counted; annex headings are. The LRM's
+    # headings were read once into these committed files; titles were not kept.
+    kinds = clause_kinds()
+    ams = {rid.partition(":")[0] for rid in read_ledger()} | {c for s, c in kinds if s == "ams"}
+    clauses = {("ams", key): {"title": "", "classification": "-"} for key in ams if not key.isdigit()}
+    for line in (CLAUSES_DIR / "ieee1364/CLAUSES.tsv").read_text().splitlines():
         if line and not line.startswith("#"):
             clause, kind, title, *_ = line.split("\t")
             clauses["ieee", clause] = {"title": title, "classification": kind}
-    for key, kind in clause_kinds().items():
+    for key, kind in kinds.items():
         if key not in clauses:
             raise ValueError(f"classification names an unknown clause: {key}")
         clauses[key]["classification"] = kind
@@ -336,7 +354,7 @@ def collect_report(run_dir, suites):
             raise ValueError(f"unknown fixture citation: {standard} {citation}")
         for polarity, paths in polarities.items():
             for path in paths:
-                test = path.removeprefix("tests/fixtures/")
+                test = path.removeprefix("tests/conformance/tests/")
                 item = {"test": test, "kind": "specialized" if test.endswith(".c") else "fixture",
                         "polarity": polarity}
                 items = citations.setdefault((standard, clause), [])
@@ -378,7 +396,7 @@ def collect_report(run_dir, suites):
         "unit_execution_counts": dict(Counter(v for k, table in artifacts.items()
                                                if not k.startswith("vpi--") and k != "spice"
                                                for v in table.values())),
-        "feature_groups": feature_groups(ROOT / "tests/fixtures/conformance/FEATURE_GAPS.tsv",
+        "feature_groups": feature_groups(ROOT / "tests/conformance/vera/ledger/FEATURE_GAPS.tsv",
                                          tags.keys() | special_results.keys(), results),
         "clauses": clause_results(clauses, citations, results, read_dispositions(ROOT)),
         "ams_obligations": {"total": len(ledger), "mandatory": len(mandatory),
@@ -435,7 +453,7 @@ def markdown(report):
     states = Counter(row["status"] for row in groups)
     lines += ["", f"Tracked behavior groups: {states['failing']} failing, {states['covered']} covered, "
               f"{states['not-run']} not run.",
-              "These groups are defined in tests/fixtures/conformance/FEATURE_GAPS.tsv, not an exhaustive",
+              "These groups are defined in tests/conformance/vera/ledger/FEATURE_GAPS.tsv, not an exhaustive",
               "language feature count. A group is covered only when every registered check passes.",
               "Pending host profiles and unmeasured requirements remain in GAPS.tsv.", "",
               "| Behavior group | Status | Checks |", "|---|---|---:|"]
@@ -472,6 +490,9 @@ def run_suites(argv):
     parser = argparse.ArgumentParser(prog="conformance.py run", description=run_suites.__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / ".zig-cache/conformance")
     parser.add_argument("--jobs", type=int, default=4)
+    # VerA does not depend on ESPice: the SPICE decks run only on an espice
+    # release named here (`zig build test-spice -Despice=PATH`), never one built.
+    parser.add_argument("--espice", type=Path, help="run the .sp decks on this espice executable")
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be positive")
@@ -488,16 +509,15 @@ def run_suites(argv):
         ("accounting", [sys.executable, "tools/conformance.py", "selftest",
                         "EvidenceTests", "GapInventoryTests", "FixtureLayoutTests"]),
         ("unit", build + ["test", f"-j{args.jobs}", f"-Dtest-results={run_dir / 'tests'}", "--summary", "all"]),
-        ("ams", build + ["test-ams", f"-j{args.jobs}", "--", f"--jobs={args.jobs}", f"--verdicts={run_dir / 'ams.tsv'}"]),
-        ("ams-perturbed", build + ["test-ams", f"-j{args.jobs}", "--", f"--jobs={args.jobs}", "--perturb",
+        ("ams", build + ["suite", f"-j{args.jobs}", "--", "ams", f"--jobs={args.jobs}", f"--verdicts={run_dir / 'ams.tsv'}"]),
+        ("ams-perturbed", build + ["suite", f"-j{args.jobs}", "--", "ams", f"--jobs={args.jobs}", "--perturb",
                                   f"--verdicts={run_dir / 'ams-perturbed.tsv'}"]),
-        ("digital", build + ["test-devices", f"-j{args.jobs}", "--", f"--verdicts={run_dir / 'digital.tsv'}"]),
-        ("vpi-abi", build + ["test-vpi-fixtures", f"-j{args.jobs}"]),
-        ("spice", build + ["test-spice", f"-j{args.jobs}", "--",
-                          f"--results={run_dir / 'tests/spice.tsv'}"]),
-        ("observations", build + ["test-observations", f"-j{args.jobs}",
-                                 f"-Dtest-results={run_dir / 'tests'}"]),
+        ("digital", build + ["suite", f"-j{args.jobs}", "--", "devices", f"--verdicts={run_dir / 'digital.tsv'}"]),
+        ("vpi-abi", build + ["suite", f"-j{args.jobs}", "--", "vpi"]),
     ]
+    if args.espice:
+        commands.append(("spice", build + ["test-spice", f"-Despice={args.espice.resolve()}", f"-j{args.jobs}", "--",
+                                           f"--results={run_dir / 'tests/spice.tsv'}"]))
     suites = []
     for name, command in commands:
         print(f"conformance: {name} → {run_dir / (name + '.log')}", flush=True)
@@ -526,10 +546,10 @@ def run_suites(argv):
         if name == "spice" and completed.returncode == 0:
             path = run_dir / "tests/spice.tsv"
             expected = {"spice.test." + p.relative_to(FIXTURES).as_posix()
-                        for p in FIXTURES.rglob("*.sp")
-                        if not p.is_relative_to(FIXTURES / "external")}
+                        for p in fixture_files("*.sp", roots=AMS_ROOTS)}
             require_results(read_results(path) if path.exists() else {}, expected, "SPICE decks")
-        if name == "observations" and completed.returncode == 0:
+        # `test` runs the diagnostic observations too, into the same results directory.
+        if name == "unit" and completed.returncode == 0:
             path = run_dir / "tests/diagnostic_observations.tsv"
             require_specialized_results(
                 [row for row in special if row["artifact"] == "diagnostic_observations"],
@@ -588,111 +608,55 @@ def pct(n, d):
     return "n/a" if d == 0 else "%.1f%%" % (100 * n / d)
 
 
+SUITE = ROOT / "tests" / "conformance"
+SCORED = (("verilog-a", "Verilog-A"), ("verilog", "Verilog"), ("verilog-ams", "Verilog-AMS"))
+
+
+def suite_scores(rows):
+    """`zig-out/conformance.tsv` rows (status, test name, ...) -> {category:
+    (passed, total)}, by the suite's own categories (its tools/report.py): a
+    test's language is its directory under tests/ or its manifest row's first
+    column. XFAIL counts as a fail and XPASS as a pass; a skip counts against."""
+    spec = importlib.util.spec_from_file_location("vams_suite_report", SUITE / "tools" / "report.py")
+    suite_report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(suite_report)
+    langs = suite_report.languages()
+    out = {}
+    for row in rows:
+        status, name = row[0], row[1]
+        cat = suite_report.category(name, langs)
+        if cat is None:
+            continue
+        p, t = out.get(cat, (0, 0))
+        out[cat] = (p + (status in ("PASS", "XPASS")), t + 1)
+    return out
+
+
 def measure():
-    """The measures block, and the numbers its status lines quote."""
-    # CI has already run these suites and kept the logs; re-running them costs
-    # half an hour and cannot produce a different answer. Locally both are
-    # unset and this script runs them itself.
-    #   STRICT_LOG=… COVERAGE_LOG=… tools/conformance.py
-    strict_log = os.environ.get("STRICT_LOG", "")
-    coverage_log = os.environ.get("COVERAGE_LOG", "")
-    if not (strict_log or coverage_log):
-        if subprocess.run(["zig", "build", "-Doptimize=ReleaseFast", "install"], cwd=ROOT, stdout=sys.stderr).returncode:
-            sys.exit(2)
-
-    # --- Measure A: the fixture suite ---------------------------------------
-    # suite.zig prints a TSV header `pass fail unasserted xfail` and one row
-    # under it. --strict decides the exit code on it; the counts print either way.
-    if strict_log:
-        try:
-            strict = Path(strict_log).read_text(errors="replace").rstrip("\n")
-        except OSError as e:
-            print(f"cat: {strict_log}: {e.strerror}", file=sys.stderr)
-            strict = ""
-        rcs = re.findall(r"^(?:strict exit: |exit=)(\d+)", strict, re.M)
-        strict_rc = rcs[-1] if rcs else "?"
-    else:
-        strict, strict_rc = run("zig", "build", "benchmark", "--", "--strict")
-    lines = strict.split("\n")
-    heads = [i for i, l in enumerate(lines) if l == "pass\tfail\tunasserted\txfail"]
-    row = (lines[heads[-1] + 1] if heads[-1] + 1 < len(lines) else lines[heads[-1]]).split(None, 3) if heads else []
-    passed, fail, unas, xfail = (row + ["", "", "", ""])[:4]
-    if not is_num(passed):
-        print("\n".join(lines[-30:]), file=sys.stderr)
-        die("could not parse the verdict row. suite.zig changed?")
+    """The VAMS Conformance Suite's score per language, the one line a release
+    carries. CONFORMANCE_TSV reuses a finished run (CI's); locally this runs
+    `zig build conformance` itself."""
+    tsv = Path(os.environ.get("CONFORMANCE_TSV", "") or ROOT / "zig-out" / "conformance.tsv")
+    if not os.environ.get("CONFORMANCE_TSV"):
+        if subprocess.run(["zig", "build", "-Doptimize=ReleaseFast", "conformance"], cwd=ROOT, stdout=sys.stderr).returncode:
+            die("zig build conformance failed")
     try:
-        total = sum(int(v or 0) for v in (passed, fail, unas, xfail))
-    except ValueError:
-        die("could not parse the verdict row. suite.zig changed?")
-    p = int(passed)
-
-    # --- Measure C: static clause citations, not verified rule coverage -------
-    if coverage_log:
-        try:
-            cov = Path(coverage_log).read_text(errors="replace").rstrip("\n")
-        except OSError:
-            die("could not read COVERAGE_LOG")
-    else:
-        cov, rc = run("zig", "build", "benchmark", "--", "--coverage")
-        if rc:
-            die("coverage command failed")
-    both, acc, ref, unc = polarity(cov)
-    # CLAUSE-AUDIT §5 classifications (`CLAUSES.tsv`), counted apart from both
-    # ways: a reviewed claim that a clause carries nothing to reject, not evidence.
-    classified = first(r"(\d+)(?= classified$)", cov)
-    clauses = first(r"^\d+ of (\d+)(?= LRM clauses cited)", cov)
-    if not is_num(clauses):
-        die("could not parse the coverage tally. harness/coverage.zig changed?")
-    if not all(is_num(v) for v in (both, acc, ref, unc, classified)):
-        die("incomplete coverage polarity tally")
-    if sum(int(v) for v in (both, acc, ref, unc, classified)) != int(clauses):
-        die("coverage tally does not sum to clause denominator")
-
-    # --- Measure B: IEEE 1364-2005 clauses, the same static inventory ---------
-    cov1364, rc = run("zig", "build", "test-1364", "--", "--coverage")
-    if rc:
-        die("1364 coverage command failed")
-    b_both, b_acc, b_ref, b_unc = polarity(cov1364)
-    b_classified = first(r"(\d+)(?= classified$)", cov1364)
-    b_clauses = first(r"^\d+ of (\d+)(?= IEEE 1364-2005 clauses cited)", cov1364)
-    if not all(is_num(v) for v in (b_clauses, b_both, b_acc, b_ref, b_unc, b_classified)):
-        die("could not parse the 1364 coverage tally. tests/suite.zig's Ieee1364 changed?")
-    if sum(int(v) for v in (b_both, b_acc, b_ref, b_unc, b_classified)) != int(b_clauses):
-        die("1364 tally does not sum to its clause denominator")
-
-    # --- The two gates that are pass/fail, not a percentage --------------------
-    unit = quiet("zig", "build", "test")
-    devices = quiet("zig", "build", "test-devices")
-
-    n_both, n_clauses, n_classified = int(both), int(clauses), int(classified)
-    nb_both, nb_clauses, nb_classified = int(b_both), int(b_clauses), int(b_classified)
-    block = f"""| Measure | Number | Remaining to v1.0.0 | Command |
-|---|---|---|---|
-| **A** — fixtures behaving as stated | **{passed} / {total} — {pct(p, total)}** | {total - p} rows | `zig build benchmark -- --strict` |
-| &nbsp;&nbsp;↳ FAIL · unasserted · XFAIL | {fail} · {unas} · {xfail} | all three to 0 | same run |
-| **C** — clauses with both citation polarities (static) | **{both} / {clauses} — {pct(n_both, n_clauses)}** | {n_clauses - n_both - n_classified} clauses | `zig build benchmark -- --coverage` |
-| &nbsp;&nbsp;↳ positive-only · rejection-only · uncited | {acc} · {ref} · {unc} | requires rule-level review | same run |
-| &nbsp;&nbsp;↳ classified under `CLAUSE-AUDIT.md` §5 (`CLAUSES.tsv`) | {classified} | reviewed claims, not evidence | same run |
-| **B** — IEEE 1364-2005 clauses with both citation polarities (static) | **{b_both} / {b_clauses} — {pct(nb_both, nb_clauses)}** | {nb_clauses - nb_both - nb_classified} clauses | `zig build test-1364 -- --coverage` |
-| &nbsp;&nbsp;↳ positive-only · rejection-only · uncited · classified | {b_acc} · {b_ref} · {b_unc} · {b_classified} | §§17–18 obligation detail: `specification/CLAUSE-AUDIT.md` §7.1 | same run |
-| `zig build test` | **{unit}** | pass | `zig build test` |
-| `zig build test-devices` | **{devices}** | pass | `zig build test-devices` |
-
-`--strict` exit code **{strict_rc}** — 0 only when FAIL, unasserted and XFAIL are all 0.
-A, B and C are measured by this script and nothing else may write them.
-
-B and C count citations without executing fixtures. It is not a conformance score:
-XFAILs and implementation-limit rejections can supply citations, and a clause
-can contain multiple untested rules. See `specification/CLAUSE-AUDIT.md`."""
-    return block, f"{passed}/{total} fixtures, {both}/{clauses} clauses"
+        rows = [l.split("\t") for l in tsv.read_text().splitlines() if l.strip()]
+    except OSError:
+        die(f"no suite results at {tsv}")
+    scores = suite_scores(rows)
+    if any(c not in scores for c, _ in SCORED):
+        die(f"{tsv}: no tests in {', '.join(t for c, t in SCORED if c not in scores)}")
+    passed = sum(scores[c][0] for c, _ in SCORED)
+    total = sum(scores[c][1] for c, _ in SCORED)
+    parts = ", ".join(f"{title} {scores[c][0]}/{scores[c][1]}" for c, title in SCORED)
+    line = f"On Suite VAMS-CONFORMANCE, we score {parts}, Cumulative: {passed}/{total}."
+    return line, f"{passed}/{total} suite tests"
 
 
 def measured(lines):
-    """Only the rows this script computes are verifiable. D is hand-entered
-    against a document no command reads, so `--check` must not hold it to the
-    placeholder text `--changelog` wrote: it would force every release to
-    either leave them blank or fail."""
-    return [l for l in lines if l.startswith("|") and "hand-entered" not in l]
+    """The one line `--check` holds a release to."""
+    return [l for l in lines if l.startswith("On Suite VAMS-CONFORMANCE")]
 
 
 def section(text, version):
@@ -788,326 +752,8 @@ def main(argv):
     return measures(mode, version)
 
 
-# ---------------------------------------------------------------------------
-# tally-b: CLAUSE-AUDIT.md §7.1's inherited §§17-18 obligation table
-# ---------------------------------------------------------------------------
-
-def tally_b(argv):
-    """Re-add CLAUSE-AUDIT.md §7.1's table and fail if the per-section rows stop
-    summing to the total, or closed + open stops summing to the row count.
-
-    B is the one measure with no suite behind its §§17-18 detail: those
-    obligations are outside `--coverage`'s denominator by construction
-    (CLAUSE-AUDIT.md §1.1 c), so the rows are hand-read. What CAN be checked is
-    the arithmetic, and that is this check's whole job. It answers "is the
-    hand-read tally self-consistent?", not "is it right?": re-deriving the rows
-    is reading. Never report it as a measurement.
-
-    ponytail: a split on `|` over the one table, not a markdown parser. The
-    table is pinned by its header row, so a reshuffle of §7 cannot silently
-    match the wrong one.
-    """
-    doc = ROOT / "specification/CLAUSE-AUDIT.md"
-    if not os.access(doc, os.R_OK):
-        print(f"tally-b: {doc} is missing (it was deleted once: 2cc1c08)", file=sys.stderr)
-        return 2
-
-    def cells(fields):
-        """Columns Rows..unspecified as numbers: digits only, a dash is 0."""
-        out = []
-        for i in range(2, 9):
-            digits = re.sub(r"[^0-9]", "", fields[i]) if i < len(fields) else ""
-            out.append(int(digits) if digits else 0)
-        return out
-
-    intable, rows, verdicts, trows, tsum, closed, opened = False, 0, 0, 0, 0, 0, 0
-    per, bad = [], []
-    for line in doc.read_text().split("\n"):
-        fields = line.split("|")
-        if re.match(r"^\| Section \| Rows \| missing \|", line):
-            intable = True
-            continue
-        if intable and line.startswith("| **Total**"):
-            v = cells(fields)
-            trows, tsum, intable = v[0], sum(v[1:]), False
-            continue
-        if intable and line.startswith("| §4"):
-            v = cells(fields)
-            rows += v[0]
-            verdicts += sum(v[1:])
-            per.append(f"{fields[1]}  rows={v[0]}  verdicts={sum(v[1:])}")
-            if v[0] != sum(v[1:]):
-                bad.append(per[-1])
-        if line.startswith("| **closed** |"):
-            closed = cells(fields)[0]
-        if line.startswith("| **open** |"):
-            opened = cells(fields)[0]
-
-    rc = 0
-    for p in per:
-        print("  " + p)
-    print(f"\n  section rows       {rows}\n  section verdicts   {verdicts}\n  stated total       {trows} / {tsum}")
-    print(f"  closed + open      {closed} + {opened} = {closed + opened}\n")
-    for b in bad:
-        print(f"FAIL: section does not sum: {b}")
-        rc = 1
-    if rows != verdicts:
-        print(f"FAIL: rows {rows} != verdicts {verdicts}")
-        rc = 1
-    if trows != rows:
-        print(f"FAIL: stated total {trows} != summed rows {rows}")
-        rc = 1
-    if tsum != verdicts:
-        print(f"FAIL: stated verdict total {tsum} != summed {verdicts}")
-        rc = 1
-    if closed + opened != rows:
-        print(f"FAIL: closed+open {closed + opened} != rows {rows}")
-        rc = 1
-    if rc == 0:
-        print(f"measure B: {closed} / {rows} closed, {opened} open — tally is self-consistent")
-    return rc
-
-
-SUBCOMMANDS["tally-b"] = tally_b
-
-
-# ---------------------------------------------------------------------------
-# lrm-audit: the LRM PDF against specification/*.html, section by section
-# ---------------------------------------------------------------------------
-
-LRM_PDF = ROOT / "specification/VAMS-LRM-2023.pdf"
-LRM_SHA256 = "e93b5b6a767fe10e0e4a3ef312ffdc67907ffcc3c7553d16e04e03383a99c134"
-SECTION = re.compile(r"^((?:[1-9][0-9]?|[A-H])(?:\.[0-9]+)+)\s+(.+)$")
-CHAPTER = re.compile(r"^([1-9][0-9]?)\.\s+([A-Z].+)$")
-ANNEX = re.compile(r"^Annex ([A-H])(?:\s|$)")
-
-
-def heading(text):
-    match = SECTION.match(text) or CHAPTER.match(text) or ANNEX.match(text)
-    return match.group(1) if match else None
-
-
-def tokens(text):
-    # Do not guess which hyphens are line-wrap artifacts: Verilog-\nAMS and
-    # arithmetic a-\nb retain meaningful '-'. Compatibility normalization
-    # would also erase distinctions such as superscript ² versus ordinary 2.
-    # Canonical Unicode equivalence is safe for this text-token worklist;
-    # ligatures, soft hyphens and typography still require explicit review.
-    text = unicodedata.normalize("NFC", text)
-    return re.findall(r"\w+|[^\w\s]", text)
-
-
-class ChapterHTML(HTMLParser):
-    """Collect headings and body text, excluding navigation/style metadata."""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.sections = {}
-        self.current = None
-        self.skip = 0
-        self.in_heading = False
-        self.heading_text = []
-        self.heading_line = 0
-        self.duplicates = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ("head", "nav", "script", "style"):
-            self.skip += 1
-        if self.skip:
-            return
-        if re.fullmatch(r"h[1-6]", tag):
-            self.in_heading = True
-            self.heading_text = []
-            self.heading_line = self.getpos()[0]
-        elif tag in ("p", "div", "pre", "tr", "li", "br", "figure"):
-            self.append("\n")
-        elif tag in ("td", "th"):
-            self.append(" ")
-
-    def handle_endtag(self, tag):
-        if tag in ("head", "nav", "script", "style"):
-            self.skip -= 1
-            return
-        if self.skip:
-            return
-        if re.fullmatch(r"h[1-6]", tag) and self.in_heading:
-            title = "".join(self.heading_text).strip()
-            section = heading(title)
-            if section:
-                if section in self.sections:
-                    self.duplicates.append(section)
-                self.current = section
-                self.sections[section] = {
-                    "title": title, "line": self.heading_line, "text": ""
-                }
-            else:
-                self.append("\n" + title + "\n")
-            self.in_heading = False
-        elif tag in ("p", "div", "pre", "tr", "li", "figure"):
-            self.append("\n")
-
-    def append(self, text):
-        if self.current:
-            self.sections[self.current]["text"] += text
-
-    def handle_data(self, text):
-        if self.skip:
-            return
-        if self.in_heading:
-            self.heading_text.append(text)
-        else:
-            self.append(text)
-
-
-def pdf_sections(pdf):
-    proc = subprocess.run(
-        ["pdftotext", "-layout", str(pdf), "-"],
-        capture_output=True, text=True, check=True,
-    )
-    sections = {}
-    current = None
-    chapter = None
-    started = False
-    duplicates = []
-    for page, text in enumerate(proc.stdout.split("\f"), 1):
-        lines = text.splitlines()
-        # Exclude front matter/TOC using the first body heading, without dotted
-        # leaders. PDF physical page indices remain attached to every section.
-        if not started:
-            if "1. Verilog-AMS introduction" not in lines:
-                continue
-            started = True
-        for index, line in enumerate(lines):
-            stripped = line.strip()
-            if (not stripped or "Accellera Std VAMS-2023" in line
-                    or "Accellera Standard for VERILOG-AMS" in line
-                    or "Copyright © 2024 Accellera" in line
-                    or (re.fullmatch(r"\d+", stripped) and
-                        next((tail.strip() for tail in lines[index + 1:]
-                              if tail.strip()), "").startswith(
-                                  "Copyright © 2024 Accellera"))):
-                continue
-            # Body headings have varying indentation. Restrict candidates
-            # to the current chapter so references cannot create foreign rows.
-            top = CHAPTER.match(stripped) or re.fullmatch(r"Annex ([A-H])", stripped)
-            sec = SECTION.match(stripped)
-            new_id = None
-            if top:
-                proposed = top.group(1)
-                # §1.5 repeats chapter titles as a contents description.
-                # A new chapter follows its predecessor, never inside §1.5.
-                order = [str(n) for n in range(1, 13)] + list("ABCDEFGH")
-                expected = order[0] if chapter is None else (
-                    order[order.index(chapter) + 1] if chapter != "H" else None
-                )
-                if proposed == expected and (current != "1.5" or page >= 24):
-                    chapter = proposed
-                    new_id = proposed
-            elif sec and sec.group(1).split(".")[0] == chapter:
-                # Cross references have prose continuations and sometimes
-                # start at column zero. Repeated ids are retained as body text.
-                if sec.group(1) not in sections:
-                    new_id = sec.group(1)
-            if new_id and new_id not in sections:
-                current = new_id
-                sections[current] = {"title": stripped, "page": page, "text": ""}
-            elif current:
-                sections[current]["text"] += line.rstrip() + "\n"
-    return sections, duplicates
-
-
 def sort_key(section):
     return tuple((0, int(p)) if p.isdigit() else (1, p) for p in section.split("."))
-
-
-def html_sections(root):
-    """Every numbered heading of specification/*.html: {section: {title, line, text, file}},
-    and the headings declared twice."""
-    html, duplicates = {}, []
-    for path in sorted((root / "specification").glob("*.html")):
-        if path.name == "index.html":
-            continue
-        parsed = ChapterHTML()
-        parsed.feed(path.read_text())
-        duplicates.extend(f"{path.name}:{s}" for s in parsed.duplicates)
-        for section, item in parsed.sections.items():
-            if section in html:
-                duplicates.append(section)
-            html[section] = dict(item, file=str(path.relative_to(root)))
-    return html, duplicates
-
-
-def inventory(root):
-    pdf = root / "specification/VAMS-LRM-2023.pdf"
-    source, pdf_duplicates = pdf_sections(pdf)
-    html, duplicates = html_sections(root)
-    duplicates = list(pdf_duplicates) + duplicates
-    rows = []
-    for section in sorted(source.keys() | html.keys(), key=sort_key):
-        p, h = source.get(section), html.get(section)
-        row = {"section": section, "pdf": p, "html": h}
-        if p is None:
-            row["comparison"] = "html-only-heading"
-        elif h is None:
-            row["comparison"] = "pdf-only-heading"
-        else:
-            row["comparison"] = (
-                "same-text-tokens" if tokens(p["text"]) == tokens(h["text"])
-                else "review-difference"
-            )
-        rows.append(row)
-    return {
-        "pdf_sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
-        "warning": "Mechanical worklist only; no claim of semantic fidelity or conformance.",
-        "duplicate_html_headings": duplicates,
-        "sections": rows,
-    }
-
-
-def lrm_audit(argv):
-    """Source-fidelity worklist, NOT a conformance score.
-
-    Read the checked-in PDF with Poppler and compare each numbered section with
-    the HTML. Keep differences visible: equations, diagrams, tables, grammar and
-    normative scope still require human review. No fixture earns credit here.
-    """
-    parser = argparse.ArgumentParser(prog="conformance.py lrm-audit", description=lrm_audit.__doc__)
-    parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--section", help="Show a section and its descendants")
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("--diff", action="store_true", help="Print token differences")
-    args = parser.parse_args(argv)
-    report = inventory(args.root)
-    if args.section:
-        report["sections"] = [r for r in report["sections"] if
-                              r["section"] == args.section or
-                              r["section"].startswith(args.section + ".")]
-        if not report["sections"]:
-            parser.error("section not found")
-    if args.json:
-        json.dump(report, sys.stdout, indent=2, ensure_ascii=False)
-        print()
-        return 0
-    print(report["warning"])
-    print("PDF SHA256:", report["pdf_sha256"])
-    for row in report["sections"]:
-        p, h = row["pdf"], row["html"]
-        loc = f'{h["file"]}:{h["line"]}' if h else "MISSING HTML"
-        page = p["page"] if p else "MISSING PDF HEADING"
-        print(f'{row["section"]}\tPDF page {page}\t{loc}\t{row["comparison"]}')
-        if args.diff and p and h:
-            a, b = tokens(p["text"]), tokens(h["text"])
-            matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
-            for tag, i, j, k, l in matcher.get_opcodes():
-                if tag != "equal":
-                    print("  PDF:", " ".join(a[max(0, i-5):j+5]))
-                    print("  HTML:", " ".join(b[max(0, k-5):l+5]))
-    for duplicate in report["duplicate_html_headings"]:
-        print("DUPLICATE:", duplicate)
-    return 0
-
-
-SUBCOMMANDS["lrm-audit"] = lrm_audit
 
 
 # ---------------------------------------------------------------------------
@@ -1181,11 +827,11 @@ def ieee1364_audit(argv):
 
     No source body text is written. Requires the user's local IEEE PDF and
     Poppler. The table of contents locates headings; it does not enumerate
-    atomic rules. `tests/fixtures/ieee1364/CLAUSES.tsv` was cut from this
+    atomic rules. `tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv` was cut from this
     output and is reviewed, never regenerated.
     """
     parser = argparse.ArgumentParser(prog="conformance.py ieee1364-audit", description=ieee1364_audit.__doc__)
-    parser.add_argument("--pdf", type=Path, default=ROOT / "specification/1364-2005.pdf")
+    parser.add_argument("--pdf", type=Path, default=ROOT / "docs/specification/1364-2005.pdf")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -1216,28 +862,36 @@ SUBCOMMANDS["ieee1364-audit"] = ieee1364_audit
 # keywords: Table B.1 against the PDF, and the exhaustive spelling fixtures
 # ---------------------------------------------------------------------------
 
-class KeywordTable(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.in_table = False
-        self.in_code = False
-        self.words = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "table":
-            self.in_table = True
-        if tag == "code":
-            self.in_code = True
-
-    def handle_endtag(self, tag):
-        if tag == "table":
-            self.in_table = False
-        if tag == "code":
-            self.in_code = False
-
-    def handle_data(self, data):
-        if self.in_table and self.in_code:
-            self.words.extend(data.split())
+LRM_PDF = ROOT / "docs/specification/VAMS-LRM-2023.pdf"
+LRM_SHA256 = "e93b5b6a767fe10e0e4a3ef312ffdc67907ffcc3c7553d16e04e03383a99c134"
+# Table B.1 (physical pages 400-401), its negedgenmos defect split into
+# negedge and nmos. Transcribed once from the retired HTML LRM; `keywords`
+# re-reads the PDF against it.
+VAMS_KEYWORDS = frozenset((
+    "above", "abs", "absdelay", "absdelta", "abstol", "ac_stim", "access", "acos", "acosh", "aliasparam",
+    "always", "analog", "analysis", "and", "asin", "asinh", "assign", "atan", "atan2", "atanh", "automatic",
+    "begin", "branch", "break", "buf", "bufif0", "bufif1", "case", "casex", "casez", "ceil", "cell",
+    "cmos", "config", "connect", "connectmodule", "connectrules", "continue", "continuous", "cos", "cosh",
+    "cross", "ddt", "ddt_nature", "ddx", "deassign", "default", "defparam", "design", "disable", "discipline",
+    "discrete", "domain", "driver_update", "edge", "else", "end", "endcase", "endconfig", "endconnectrules",
+    "enddiscipline", "endfunction", "endgenerate", "endmodule", "endnature", "endparamset", "endprimitive",
+    "endspecify", "endtable", "endtask", "event", "exclude", "exp", "expm1", "final_step", "flicker_noise",
+    "floor", "flow", "for", "force", "forever", "fork", "from", "function", "generate", "genvar", "ground",
+    "highz0", "highz1", "hypot", "idt", "idt_nature", "idtmod", "if", "ifnone", "incdir", "include",
+    "inf", "initial", "initial_step", "inout", "input", "instance", "integer", "join", "laplace_nd",
+    "laplace_np", "laplace_zd", "laplace_zp", "large", "last_crossing", "liblist", "library", "limexp",
+    "ln", "ln1p", "localparam", "log", "macromodule", "max", "medium", "merged", "min", "module", "nand",
+    "nature", "negedge", "nmos", "noise_table", "noise_table_log", "nor", "noshowcancelled", "not",
+    "notif0", "notif1", "or", "output", "parameter", "paramset", "pmos", "posedge", "potential", "pow",
+    "primitive", "pull0", "pull1", "pulldown", "pullup", "pulsestyle_ondetect", "pulsestyle_onevent",
+    "rcmos", "real", "realtime", "reg", "release", "repeat", "resolveto", "return", "rnmos", "rpmos",
+    "rtran", "rtranif0", "rtranif1", "scalared", "showcancelled", "signed", "sin", "sinh", "slew", "small",
+    "specify", "specparam", "split", "sqrt", "string", "strong0", "strong1", "supply0", "supply1", "table",
+    "tan", "tanh", "task", "time", "timer", "tran", "tranif0", "tranif1", "transition", "tri", "tri0",
+    "tri1", "triand", "trior", "trireg", "units", "unsigned", "use", "uwire", "vectored", "wait", "wand",
+    "weak0", "weak1", "while", "white_noise", "wire", "wor", "wreal", "xnor", "xor", "zi_nd", "zi_np",
+    "zi_zd", "zi_zp",
+))
 
 
 def keyword_inventory():
@@ -1251,20 +905,16 @@ def keyword_inventory():
     for line in source.splitlines():
         if re.fullmatch(r"\s*[a-z][a-z_0-9]*(?:\s+[a-z][a-z_0-9]*){0,2}\s*", line):
             words.extend(line.split())
-    # Visually confirmed source-table defect, also labeled in the HTML.
+    # Visually confirmed source-table defect.
     if words.count("negedgenmos") != 1:
         raise ValueError("Source table changed: re-audit the negedgenmos correction")
     words.remove("negedgenmos")
     words.extend(["negedge", "nmos"])
     if len(words) != len(set(words)):
         raise ValueError("Duplicate source keyword")
-    html = KeywordTable()
-    html.feed((ROOT / "specification/annex-b-keywords.html").read_text())
-    if len(html.words) != len(set(html.words)):
-        raise ValueError("Duplicate HTML keyword")
-    if set(words) != set(html.words):
-        raise ValueError(f"PDF-only: {set(words) - set(html.words)}; "
-                         f"HTML-only: {set(html.words) - set(words)}")
+    if set(words) != VAMS_KEYWORDS:
+        raise ValueError(f"PDF-only: {set(words) - VAMS_KEYWORDS}; "
+                         f"VAMS_KEYWORDS-only: {VAMS_KEYWORDS - set(words)}")
     return sorted(words)
 
 
@@ -1319,142 +969,14 @@ def keywords(argv):
         return 0
     if args.check_fixtures:
         for mode in ["escaped", "case"]:
-            path = ROOT / f"tests/fixtures/annex_b_keywords/audit_all_{mode}_keywords.va"
+            path = next(FIXTURES.glob(f"*/annex_b_keywords/all_{mode}_keywords.va"))
             if path.read_text() != keyword_fixture(words, mode):
                 raise SystemExit(f"Fixture drift: {path}")
-    print(f"Table B.1: {len(words)} distinct corrected spellings; PDF and HTML sets match.")
+    print(f"Table B.1: {len(words)} distinct corrected spellings; the PDF matches VAMS_KEYWORDS.")
     return 0
 
 
 SUBCOMMANDS["keywords"] = keywords
-
-
-# ---------------------------------------------------------------------------
-# figures: the LRM's figures in specification/figures, cropped from the pinned PDF
-# ---------------------------------------------------------------------------
-
-# Requires Poppler's pdftoppm. Coordinates are PDF points measured from the
-# top-left of a physical page: (physical page, left, top, width, height).
-# Crops include the original caption. Adding an entry requires visual
-# comparison against the source page. Direct PDF rasterization preserves
-# patterned guide lines that were lost in a pdftocairo-SVG/librsvg round trip
-# during visual validation.
-FIG_SCALE = 3  # 216 dpi; lossless PNG, no resampling or generative processing.
-
-# Chapters 1-9 (`lrm-figure-<n>.png`).
-LRM_FIGURES = {
-    "1-1": (15, 152, 349, 310, 150),
-    "1-2": (16, 163, 403, 285, 104),
-    "1-3": (17, 88, 312, 436, 262),
-    "3-1": (62, 180, 78, 252, 154),
-    "3-2": (62, 184, 293, 244, 150),
-    "4-3": (81, 135, 78, 345, 290),
-    "4-4": (85, 88, 175, 437, 220),
-    "4-5": (85, 127, 565, 359, 137),
-    "4-6": (86, 136, 103, 340, 130),
-    "4-7": (87, 150, 439, 310, 154),
-    "4-8": (88, 150, 140, 310, 154),
-    "4-9": (88, 150, 332, 310, 153),
-    "4-10": (89, 150, 90, 310, 152),
-    "4-11": (89, 150, 280, 310, 150),
-    "4-12": (90, 150, 90, 310, 152),
-    "4-13": (91, 148, 590, 316, 114),
-    "4-14": (104, 125, 202, 360, 352),
-    "5-1": (113, 130, 404, 352, 131),
-    "5-2": (114, 130, 79, 352, 210),
-    "5-3": (124, 105, 551, 402, 143),
-    "5-4": (125, 119, 127, 374, 146),
-    "5-5": (126, 128, 79, 355, 225),
-    "5-6": (140, 88, 93, 436, 144),
-    "7-1": (178, 105, 390, 402, 206),
-    "7-2": (187, 111, 294, 390, 242),
-    "7-3": (188, 87, 463, 500, 258),
-    "7-4": (189, 87, 258, 500, 258),
-    "7-5": (190, 87, 162, 500, 260),
-    "7-6": (197, 87, 150, 500, 262),
-    "7-7": (199, 152, 78, 308, 600),
-    # One source drawing has an empty 7-8 caption above and the 7-9 caption
-    # below. Keep both captions in this single crop, not duplicate drawings.
-    "7-9": (201, 119, 67, 374, 465),
-    "7-10": (202, 117, 210, 378, 458),
-    "7-11": (212, 87, 78, 438, 380),
-    "8-1": (214, 158, 78, 296, 469),
-    "8-2": (216, 158, 78, 296, 516),
-    "8-3": (220, 130, 78, 352, 202),
-    "8-4": (221, 90, 238, 470, 310),
-    "8-5": (222, 90, 90, 471, 309),
-    "8-6": (224, 90, 90, 470, 292),
-    "8-7": (225, 88, 98, 474, 280),
-    "9-1": (268, 160, 86, 305, 214),
-    "9-2": (268, 137, 463, 370, 222),
-    "9-3": (276, 64, 403, 484, 141),
-    "9-4": (277, 150, 417, 312, 216),
-}
-
-# Chapter 6 (`lrm-figure-6-<n>.png`).
-CH6_FIGURES = {
-    "6-1": (151, 190, 247, 232, 132),
-    "6-2": (174, 103, 300, 423, 110),
-}
-
-# Chapter 11 source graphs (`ch11-<name>.png`). All source pages were visually
-# checked on 2026-09-23. Broad model-page crops retain the original notes as
-# well as edges; HTML also transcribes those notes.
-CH11_CROPS = {"figure-11-1": (288, 110, 493, 390, 158),
-              "legend-11-5-1-2": (293, 85, 68, 475, 660),
-              "legend-11-5-3": (294, 85, 68, 475, 660)}
-CH11_CROPS.update({f"model-page-{p}": (p, 60, 60, 500, 668)
-                   for p in range(296, 322)})
-
-# Annex E figure and table crops (`annex-e-<name>.png`).
-ANNEX_E_CROPS = {
-    "figure-e-1": (415, 220, 584, 175, 120),
-    "table-e-1-a": (417, 78, 242, 455, 400),
-    "table-e-1-b": (418, 78, 68, 455, 555),
-    "table-e-1-c": (419, 78, 68, 455, 590),
-}
-
-# set: (crops, output prefix, message when the PDF changed, report line)
-FIGURE_SETS = {
-    "lrm": (LRM_FIGURES, "lrm-figure-", "Source PDF changed: re-audit page and crop coordinates first",
-            "Figure {name}: PDF page {page}, box {left} {top} {width} {height}"),
-    "ch6": (CH6_FIGURES, "lrm-figure-", "Source PDF changed: re-audit crop coordinates first",
-            "Figure {name}: PDF page {page}, box {left} {top} {width} {height}"),
-    "ch11": (CH11_CROPS, "ch11-", "Source PDF changed: re-audit every crop first",
-             "{name}: physical {page}; rectangle {left} {top} {width} {height}"),
-    "annex-e": (ANNEX_E_CROPS, "annex-e-", "Source changed: visually re-audit rectangles",
-                "{name}: physical {page}; rectangle {left} {top} {width} {height}"),
-}
-
-
-def figures(argv):
-    """Re-crop the LRM figures in specification/figures from specification/VAMS-LRM-2023.pdf.
-
-        tools/conformance.py figures [lrm|ch6|ch11|annex-e ...]   # default: all
-    """
-    names = argv or list(FIGURE_SETS)
-    for name in names:
-        if name not in FIGURE_SETS:
-            print(f"usage: conformance.py figures [{'|'.join(FIGURE_SETS)} ...]", file=sys.stderr)
-            return 2
-    destination = ROOT / "specification/figures"
-    for name in names:
-        crops, prefix, changed, report = FIGURE_SETS[name]
-        if hashlib.sha256(LRM_PDF.read_bytes()).hexdigest() != LRM_SHA256:
-            raise SystemExit(changed)
-        destination.mkdir(exist_ok=True)
-        for crop, (page, left, top, width, height) in crops.items():
-            subprocess.run([
-                "pdftoppm", "-f", str(page), "-l", str(page), "-singlefile",
-                "-r", str(72 * FIG_SCALE), "-x", str(left * FIG_SCALE),
-                "-y", str(top * FIG_SCALE), "-W", str(width * FIG_SCALE),
-                "-H", str(height * FIG_SCALE), "-png", str(LRM_PDF), str(destination / f"{prefix}{crop}"),
-            ], check=True)
-            print(report.format(name=crop, page=page, left=left, top=top, width=width, height=height))
-    return 0
-
-
-SUBCOMMANDS["figures"] = figures
 
 
 # ---------------------------------------------------------------------------
@@ -1501,11 +1023,10 @@ def under(child, parent):
 
 def fixture_cites():
     """{(standard, clause): {"pos": [paths], "neg": [paths]}} from the
-    fixtures' tags, the polarity rules `--coverage` and `test-1364 --coverage`
-    use: a file with a `//! reject` (or `// digital-runner: reject`) cites
+    fixtures' tags, the polarity rules `suite -- ieee1364 --coverage` uses: a file with a `//! reject` (or `// digital-runner: reject`) cites
     negatively; a `.c` application counts only if `build.zig` runs it (its
     `//! design` line), and polarity is per line (`lrm-reject`, `inherited-reject`)."""
-    runs = {f"tests/fixtures/{c}" for c in vpi_runs()}
+    runs = {f"tests/conformance/tests/{c}" for c in vpi_runs()}
     cites = {}
 
     def add(std, clause, side, path):
@@ -1561,10 +1082,10 @@ def refusals():
 
 
 def clause_kinds():
-    """{(standard, clause): kind} from every CLAUSES.tsv: the CLAUSE-AUDIT.md
-    §5 classifications (`-` is an ordinary clause in the IEEE list)."""
+    """{(standard, clause): kind} from every CLAUSES.tsv: the clauses that state
+    no rule an input can break, by kind (`-` is an ordinary clause in the IEEE list)."""
     out = {}
-    for path in sorted((ROOT / "tests/fixtures").rglob("CLAUSES.tsv")):
+    for path in sorted(CLAUSES_DIR.rglob("CLAUSES.tsv")):
         std = "ieee" if "ieee1364" in path.parts else "ams"
         for line in path.read_text().split("\n"):
             if not line.strip() or line.startswith("#"):
@@ -1578,23 +1099,23 @@ def clause_kinds():
 def comments(argv):
     """Code-comment clause signal: which clauses the code's comments cite and
     which its error codes refuse, cross-checked against the fixtures' tags and
-    the CLAUSE-AUDIT.md §5 classifications (CLAUSES.tsv).
+    the clause classifications (CLAUSES.tsv).
 
         tools/conformance.py comments          # counts, then every row
         tools/conformance.py comments --counts # counts only
 
-    NOT a measure. It moves none of A, B or C and reports counts per category,
+    NOT a measure. It moves neither A nor B and reports counts per category,
     never a percentage: it is pattern matching over prose, so a row is a place
     to look, not a finding.
     """
     counts_only = "--counts" in argv
-    ams_known = set(html_sections(ROOT)[0])
+    ams_known = {c for s, c in clause_inventory() if s == "ams"}
+    ams_known |= {c.split(".")[0] for c in ams_known}  # the chapter headings
     ieee_known = set()
-    for line in (ROOT / "tests/fixtures/ieee1364/CLAUSES.tsv").read_text().split("\n"):
+    for line in (CLAUSES_DIR / "ieee1364/CLAUSES.tsv").read_text().split("\n"):
         if line.strip() and not line.startswith("#"):
             ieee_known.add(line.split("\t")[0].strip())
     known = {"ams": ams_known, "ieee": ieee_known}
-    audit_text = (ROOT / "specification/CLAUSE-AUDIT.md").read_text()
 
     # The code's claims: comment cites in lib/ and src/.
     sites, unresolved, nfiles = {}, {"ams": 0, "ieee": 0}, 0
@@ -1625,10 +1146,6 @@ def comments(argv):
         std, clause = key
         return any(s == std and under(c, clause) for (s, c) in list(sites) + list(refused))
 
-    def in_audit(key):
-        std, clause = key
-        return re.search(r"§" + re.escape(clause) + r"(?![\d.]*\d)", audit_text) is not None
-
     order = lambda k: (k[0], sort_key(k[1]))
     implemented = sorted((k for k in sites if not evidence(k, "pos")), key=order)
     unpinned = sorted((k for k in refused if not evidence(k, "neg")), key=order)
@@ -1638,7 +1155,7 @@ def comments(argv):
     def split(keys):
         return " · ".join(f"{std_name[s]} {sum(1 for k in keys if k[0] == s)}" for s in ("ams", "ieee"))
 
-    print("Code-comment clause signal — NOT a measure: it moves none of A, B or C.")
+    print("Code-comment clause signal — NOT a measure: it moves neither A nor B.")
     print("Pattern matching over comments; every row is a place to look, not a finding.")
     print("A bare § is this LRM unless its line names IEEE 1364, or only IEEE 1364 has the")
     print("heading. A clause matches its own cites and its subclauses' (code §4.5 is met by")
@@ -1658,7 +1175,7 @@ def comments(argv):
 
     def tags(key):
         kind = kinds.get(key)
-        return (f"  [CLAUSES.tsv: {kind}]" if kind else "") + ("  [in CLAUSE-AUDIT.md]" if in_audit(key) else "")
+        return f"  [CLAUSES.tsv: {kind}]" if kind else ""
 
     def where(paths):
         return ", ".join(paths[:3]) + (f" (+{len(paths) - 3})" if len(paths) > 3 else "")
@@ -1750,15 +1267,15 @@ def without_report(data):
 
 
 def verilator_oracle(work):
-    """Verilator over every tests/fixtures/ieee1364 .v, one row each, into
-    tests/fixtures/ieee1364/VERILATOR.tsv. VerA is not run; its answer is the
-    committed transcript `zig build test-1364` already holds it to. A row that
+    """Verilator over every tests/conformance/tests/verilog .v, one row each, into
+    tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv. VerA is not run; its answer is the
+    committed transcript `zig build suite -- ieee1364` already holds it to. A row that
     disagrees is data for a reader, never a reason to edit the fixture."""
     import concurrent.futures
     import shutil
 
     def oracle(f):
-        n = f.removeprefix("tests/fixtures/ieee1364/")
+        n = f.removeprefix("tests/conformance/tests/verilog/")
         d = work / f.replace("/", "_")
         expected = ROOT / (f[:-2] + ".expected.txt")
         shutil.copytree(ROOT / os.path.dirname(f), d, dirs_exist_ok=True)  # `$readmem`/`$fopen` paths are relative
@@ -1807,13 +1324,13 @@ def verilator_oracle(work):
                         note += "; golden shows x/z"
         return f"{n}\t{expect}\t{acc}\t{rc}\t{agrees}\t{note}\n"
 
-    fixtures = sorted(str(p.relative_to(ROOT)) for p in (ROOT / "tests/fixtures/ieee1364").rglob("*.v"))
+    fixtures = sorted(str(p.relative_to(ROOT)) for p in (FIXTURES / "verilog").rglob("*.v"))
     with concurrent.futures.ThreadPoolExecutor(4) as pool:
         rows = list(pool.map(oracle, fixtures))
     # `sort`, not `sorted`: the committed file is in the locale's collation.
     rows = subprocess.run(["sort"], input="".join(rows), capture_output=True, text=True).stdout
     version = subprocess.run(["verilator", "--version"], capture_output=True, text=True).stdout.rstrip("\n")
-    out = ROOT / "tests/fixtures/ieee1364/VERILATOR.tsv"
+    out = ROOT / "tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv"
     out.write_text(
         f"# {version} — `verilator --binary --timing -Wno-fatal -Wno-lint -Wno-style`,\n"
         "# written by `tools/conformance.py verilator --oracle`. agrees: a transcript fixture's stdout\n"
@@ -1830,8 +1347,8 @@ def verilator_oracle(work):
 
 def icarus(argv):
     """`icarus [--work=DIR]`: Icarus Verilog (4-state, event-driven) over every
-    .v with a committed transcript or a refusal under tests/fixtures/ieee1364
-    and tests/fixtures/digital -> tests/fixtures/conformance/ICARUS.tsv, one row each, in
+    .v with a committed transcript or a refusal under tests/conformance/tests/verilog
+    and verilog-ams/digital -> tests/conformance/vera/ledger/ICARUS.tsv, one row each, in
     VERILATOR.tsv's columns. The second engine:
     Verilator is 2-state, so its x/z disagreements are expected; Icarus's are
     not. A disagreement is data for a reader (VerA bug, Icarus bug, or a
@@ -1844,7 +1361,7 @@ def icarus(argv):
     opts = dict(a[2:].split("=", 1) for a in argv if a.startswith("--") and "=" in a)
     work = Path(opts.get("work") or tempfile.mkdtemp(prefix="vera-icarus-"))
     # Every child is bounded: 2026-10-07, one deliberately oversized design
-    # (ieee1364/12_hierarchy/instance_array_width_product_rejected.v)
+    # (verilog/12_hierarchy/instance_array_width_product_rejected.v)
     # drove `ivl` to 20 GB and a 4.3 GB `sim.vvp`, and the OOM killer took
     # the session. Address space, output size and CPU are capped per process,
     # and at most `JOBS` run at once, so the worst case is JOBS * AS_KIB.
@@ -1859,7 +1376,7 @@ def icarus(argv):
     noise = re.compile(rb"^(VCD info:|VCD warning:|WARNING: .*: \$readmem|.*: \$finish called at |.*: \$stop called at ).*\n?", re.M)
 
     def oracle(f):
-        rel = f.removeprefix("tests/fixtures/")
+        rel = f.removeprefix("tests/conformance/tests/")
         d = work / rel.replace("/", "_")
         expected = ROOT / (f[:-2] + ".expected.txt")
         shutil.copytree(ROOT / os.path.dirname(f), d, dirs_exist_ok=True)  # `$readmem`/`$fopen` paths are relative
@@ -1900,12 +1417,12 @@ def icarus(argv):
         shutil.rmtree(d, ignore_errors=True)  # the row is the result; the work dir is not kept
         return f"{rel}\t{expect}\t{acc}\t{rc}\t{agrees}\t{note}\n"
 
-    fixtures = sorted(str(p.relative_to(ROOT)) for d in ("ieee1364", "digital") for p in (ROOT / "tests/fixtures" / d).rglob("*.v"))
+    fixtures = sorted(str(p.relative_to(ROOT)) for d in ("verilog", "verilog-ams/digital") for p in (FIXTURES / d).rglob("*.v"))
     with concurrent.futures.ThreadPoolExecutor(JOBS) as pool:
         rows = [r for r in pool.map(oracle, fixtures) if r]
     rows = "".join(sorted(rows))
     version = subprocess.run(["iverilog", "-V"], capture_output=True, text=True).stdout.split("\n")[0]
-    out = ROOT / "tests/fixtures/conformance/ICARUS.tsv"
+    out = ROOT / "tests/conformance/vera/ledger/ICARUS.tsv"
     out.write_text(
         f"# {version} — `iverilog -g2005`, `vvp -n`; written by `tools/conformance.py icarus`.\n"
         "# agrees: a transcript fixture's stdout (vvp's own VCD/$finish notices dropped) equals its\n"
@@ -1937,7 +1454,7 @@ def verilator_table(work, vera):
     as built (not stripped), and whether all three stdouts agree (Verilator's
     `- ` report lines dropped). The column a reader wants for conformance is
     the last one; the times mean nothing unless vera is -Doptimize=ReleaseFast."""
-    designs = [f"tests/fixtures/ieee1364/{f}.v" for f in (
+    designs = [f"tests/conformance/tests/verilog/{f}.v" for f in (
         "05_expressions/audit_expr_signed_boundaries", "10_tasks_functions/audit_function_return_variable",
         "17_system_tasks/audit_ieee_math_clog2_unsigned", "04_data_types/audit_type_multidimensional_array",
         "10_tasks_functions/d04_09_task_argument_passing", "17_system_tasks/d09_01_display_radix")]
@@ -2026,7 +1543,7 @@ def verilator(argv):
 
         tools/conformance.py verilator [VERA]    # the three-engine table; VERA
                                                  # defaults to zig-out/bin/vera
-        tools/conformance.py verilator --oracle  # tests/fixtures/ieee1364/VERILATOR.tsv
+        tools/conformance.py verilator --oracle  # tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv
     """
     import tempfile
     # Resolved once: `nix shell` per call would add its start-up to every build.
@@ -2046,14 +1563,13 @@ SUBCOMMANDS["verilator"] = verilator
 
 
 # ---------------------------------------------------------------------------
-# selftest: regression checks for the subcommands above and for the LRM text
-# they read. Documentation integrity, not language conformance: no fixture
+# selftest: regression checks for the subcommands above. Tool integrity,
+# not language conformance: no fixture
 # earns credit here, and none of these runs the compiler.
 # ---------------------------------------------------------------------------
 
 import unittest
 from unittest.mock import patch
-from types import SimpleNamespace
 
 
 class ReleaseVersionTests(unittest.TestCase):
@@ -2078,63 +1594,15 @@ class ReleaseVersionTests(unittest.TestCase):
             self.assertIn('pub const vera_version = "0.10.0";', con.read_text())
 
 
-class WorklistTests(unittest.TestCase):
-    """lrm-audit's heading, token and HTML rules."""
+class SuiteScoreTests(unittest.TestCase):
+    """The release line: XFAIL fails, XPASS passes, a skip counts against, SPICE is not scored."""
 
-    def test_heading_forms(self):
-        for title, expected in (("2. Lexical conventions", "2"),
-                                ("2.6.1 Integer constants", "2.6.1"),
-                                ("Annex C (normative)", "C"),
-                                ("C.3 Lexical conventions", "C.3"),
-                                ("Table 2-2: Escapes", None)):
-            self.assertEqual(heading(title), expected)
-
-    def test_tokens_preserve_semantically_significant_symbols(self):
-        self.assertEqual(tokens("first\n word"), tokens("first word"))
-        self.assertNotEqual(tokens("a <= b"), tokens("a < b"))
-        self.assertNotEqual(tokens("1M"), tokens("1m"))
-        self.assertNotEqual(tokens("x ** 2"), tokens("x * 2"))
-
-    def test_no_lossy_hyphen_or_compatibility_folding(self):
-        self.assertEqual(tokens("Verilog-\nAMS"), tokens("Verilog-AMS"))
-        self.assertNotEqual(tokens("Verilog-\nAMS"), tokens("VerilogAMS"))
-        self.assertNotEqual(tokens("a-\nb"), tokens("ab"))
-        self.assertNotEqual(tokens("x²"), tokens("x2"))
-        self.assertNotEqual(tokens("ﬁ"), tokens("fi"))
-        self.assertNotEqual(tokens("a­b"), tokens("ab"))
-
-    def test_html_excludes_navigation_but_keeps_tables_and_subheadings(self):
-        parser = ChapterHTML()
-        parser.feed('<head><title>ignored</title></head><nav>ignored</nav>'
-                    '<h1>2. Lexical conventions</h1><h2>2.7 Strings</h2>'
-                    '<p>A &lt; B</p><h3>Table 2-2</h3>'
-                    '<table><tr><td>escape</td><td>value</td></tr></table>')
-        text = parser.sections['2.7']['text']
-        self.assertIn('A < B', text)
-        self.assertIn('Table 2-2', text)
-        self.assertIn('escape value', text)
-        self.assertNotIn('ignored', text)
-
-    def test_duplicate_html_heading_is_visible(self):
-        parser = ChapterHTML()
-        parser.feed('<h2>2.7 Strings</h2><p>first</p>'
-                    '<h2>2.7 Strings again</h2>')
-        self.assertEqual(parser.duplicates, ['2.7'])
-
-    @patch.object(subprocess, "run")
-    def test_pdf_front_matter_footer_and_numeric_table_cells(self, run):
-        run.return_value = SimpleNamespace(stdout=(
-            'Contents\n2. Lexical conventions .... 11\f'
-            '1. Verilog-AMS introduction\n1.1 Scope\nsource text\n'
-            '2. Lexical conventions\n2.7 Strings\n377\nbyte boundary\n'
-            '12\nCopyright © 2024 Accellera\f'))
-        sections, _ = pdf_sections('source.pdf')
-        self.assertEqual(list(sections), ['1', '1.1', '2', '2.7'])
-        self.assertIn('377', sections['2.7']['text'])
-        self.assertNotIn('12\n', sections['2.7']['text'])
-        self.assertEqual(sections['2.7']['page'], 2)
-
-
+    def test_scores_by_language(self):
+        rows = [("PASS", "verilog-a/a.va"), ("XFAIL", "verilog-a/b.va"), ("XPASS", "verilog/c.v"),
+                ("SKIP", "verilog/d.v"), ("PASS", "verilog-ams/e.vams"), ("PASS", "netlist/f.sp")]
+        self.assertEqual(suite_scores(rows), {"verilog-a": (1, 2), "verilog": (1, 2), "verilog-ams": (1, 1), "spice": (1, 1)})
+        self.assertEqual(measured(["x", "On Suite VAMS-CONFORMANCE, we score Verilog-A 1/2"]),
+                         ["On Suite VAMS-CONFORMANCE, we score Verilog-A 1/2"])
 class InheritedWorklistTests(unittest.TestCase):
     """ieee1364-audit's table-of-contents reader, on synthetic text (no PDF)."""
 
@@ -2184,12 +1652,10 @@ class InheritedWorklistTests(unittest.TestCase):
 class KeywordInventory(unittest.TestCase):
     """keywords: the independent inventory and its fixture generator."""
 
-    def test_editorial_notes_do_not_add_keywords(self):
-        parser = KeywordTable()
-        parser.feed('<table><tr><td><code>if</code></td>'
-                    '<td><code>module</code></td></tr></table>'
-                    '<p>Not a keyword: <code>negedgenmos</code></p>')
-        self.assertEqual(parser.words, ['if', 'module'])
+    def test_table_b1_is_whole_and_corrected(self):
+        self.assertEqual(len(VAMS_KEYWORDS), 215)
+        self.assertTrue({"negedge", "nmos"} <= VAMS_KEYWORDS)
+        self.assertNotIn("negedgenmos", VAMS_KEYWORDS)
 
     def test_escaped_generation_terminates_names_and_pins_observation_count(self):
         source = keyword_fixture(['analog', 'if'], 'escaped')
@@ -2210,360 +1676,17 @@ class KeywordInventory(unittest.TestCase):
         self.assertEqual(source.count('`CHECKX('), 4)
 
 
-class FigureImages(HTMLParser):
-    """Every <img>'s attributes, every id, and how many inline <svg>s."""
-
-    def __init__(self):
-        super().__init__()
-        self.images = []
-        self.ids = []
-        self.figures = set()
-        self.svg_count = 0
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "img":
-            self.images.append(attrs)
-        if tag == "svg":
-            self.svg_count += 1
-        if tag == "figure":
-            self.figures.add(attrs.get("id"))
-        if "id" in attrs:
-            self.ids.append(attrs["id"])
-
-
-def png_size(data):
-    return struct.unpack(">II", data[16:24])
-
-
-class SourceFigures(unittest.TestCase):
-    """figures: structural guards for the PDF figure assets; visual fidelity is
-    reviewed separately. The figures are not committed (they are 8 MB and the
-    `figures` subcommand re-crops them from the pinned PDF), so every check but
-    the PDF's own revision skips until they are generated."""
-
-    def setUp(self):
-        if self._testMethodName != "test_source_revision" and not (ROOT / "specification/figures").is_dir():
-            self.skipTest("specification/figures not generated: run tools/conformance.py figures")
-
-    def test_source_revision(self):
-        self.assertEqual(hashlib.sha256(LRM_PDF.read_bytes()).hexdigest(), LRM_SHA256)
-
-    def test_chapter_one_figures_and_convention_colors(self):
-        expected = {"1-1", "1-2", "1-3"}
-        self.assertEqual({key for key in LRM_FIGURES if key.startswith("1-")}, expected)
-        html = (ROOT / "specification/ch1-intro.html").read_text()
-        self.assertIn('.syntax b { color: #c00000; }', html)
-        self.assertIn('.syntax.extension { color: #2020b0; }', html)
-        self.assertIn('<div class="syntax extension">connectrules_declaration', html)
-
-    def test_chapter_five_uses_all_source_figures(self):
-        # These redraws previously changed open probe paths into wires and
-        # moved the timing-event dot. Guard against silently reintroducing
-        # inline substitutes; visual comparison remains a separate review.
-        expected = {f"5-{n}" for n in range(1, 7)}
-        self.assertEqual({key for key in LRM_FIGURES if key.startswith("5-")}, expected)
-        parser = FigureImages()
-        parser.feed((ROOT / "specification/ch5-analog.html").read_text())
-        self.assertEqual(parser.svg_count, 0)
-        for key in expected:
-            self.assertEqual(parser.ids.count(f"figure-{key}"), 1)
-
-    def test_chapter_six_crop_bounds_png_and_accessible_html(self):
-        self.assertEqual(set(CH6_FIGURES), {"6-1", "6-2"})
-        parser = FigureImages()
-        parser.feed((ROOT / "specification/ch6-hierarchy.html").read_text())
-        images = {i.get("src"): i for i in parser.images}
-        for figure, (page, left, top, width, height) in CH6_FIGURES.items():
-            self.assertIn(page, (151, 174))
-            self.assertGreaterEqual(min(left, top), 0)
-            self.assertGreater(min(width, height), 0)
-            self.assertLessEqual(left + width, 612)
-            self.assertLessEqual(top + height, 792)
-            path = f"figures/lrm-figure-{figure}.png"
-            data = (ROOT / "specification" / path).read_bytes()
-            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual(png_size(data), (width * FIG_SCALE, height * FIG_SCALE))
-            self.assertIn(f"figure-{figure}", parser.figures)
-            attrs = images[path]
-            self.assertIn(f"Source Figure {figure}", attrs["alt"])
-            self.assertEqual(int(attrs["width"]), width * FIG_SCALE)
-            self.assertEqual(int(attrs["height"]), height * FIG_SCALE)
-
-    def test_chapter_seven_preserves_shared_figure_captions(self):
-        expected = {f"7-{n}" for n in range(1, 12)} - {"7-8"}
-        self.assertEqual({key for key in LRM_FIGURES if key.startswith("7-")}, expected)
-        parser = FigureImages()
-        parser.feed((ROOT / "specification/ch7-mixed-signal.html").read_text())
-        self.assertEqual(parser.svg_count, 0)
-        # 7-8 is a source caption above the same drawing captioned 7-9 below.
-        # Both remain addressable, without fabricating a separate image.
-        for n in range(1, 12):
-            self.assertEqual(parser.ids.count(f"figure-7-{n}"), 1)
-        matches = [i for i in parser.images if i.get("src") == "figures/lrm-figure-7-9.png"]
-        self.assertEqual(len(matches), 1)
-
-    def test_chapter_nine_source_figures(self):
-        expected = {f"9-{n}" for n in range(1, 5)}
-        self.assertEqual({key for key in LRM_FIGURES if key.startswith("9-")}, expected)
-        parser = FigureImages()
-        parser.feed((ROOT / "specification/ch9-system.html").read_text())
-        for key in expected:
-            self.assertEqual(parser.ids.count(f"figure-{key}"), 1)
-            filename = f"figures/lrm-figure-{key}.png"
-            matches = [item for item in parser.images if item.get("src") == filename]
-            self.assertEqual(len(matches), 1)
-            self.assertTrue(matches[0].get("alt"))
-            data = (ROOT / "specification" / filename).read_bytes()
-            _, _, _, width, height = LRM_FIGURES[key]
-            self.assertEqual(png_size(data), (width * 3, height * 3))
-
-    def test_crops_are_inside_source_pages(self):
-        for figure, (page, x, y, width, height) in LRM_FIGURES.items():
-            with self.subTest(figure=figure):
-                self.assertGreater(page, 0)
-                self.assertLessEqual(page, 442)
-                self.assertGreaterEqual(x, 0)
-                self.assertGreaterEqual(y, 0)
-                self.assertGreater(width, 0)
-                self.assertGreater(height, 0)
-                self.assertLessEqual(x + width, 612)
-                self.assertLessEqual(y + height, 792)
-
-    def test_assets_and_html_references(self):
-        for figure, (_, _, _, width, height) in LRM_FIGURES.items():
-            with self.subTest(figure=figure):
-                filename = f"figures/lrm-figure-{figure}.png"
-                data = (ROOT / "specification" / filename).read_bytes()
-                self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
-                self.assertEqual(data[12:16], b"IHDR")
-                self.assertEqual(png_size(data), (width * 3, height * 3))
-                chapter = figure.split("-")[0]
-                paths = list((ROOT / "specification").glob(f"ch{chapter}-*.html"))
-                self.assertEqual(len(paths), 1)
-                parser = FigureImages()
-                parser.feed(paths[0].read_text())
-                matches = [i for i in parser.images if i.get("src") == filename]
-                self.assertEqual(len(matches), 1)
-                self.assertTrue(matches[0].get("alt"))
-                self.assertEqual(parser.ids.count(f"figure-{figure}"), 1)
-
-    def test_chapter_eleven_source_and_assets(self):
-        # Documentation integrity only: this is not an executed VPI test.
-        parsed = FigureImages()
-        parsed.feed((ROOT / "specification/ch11-vpi.html").read_text())
-        self.assertEqual(len(parsed.ids), len(set(parsed.ids)))
-        expected = {f"figures/ch11-{name}.png" for name in CH11_CROPS}
-        self.assertEqual({item["src"] for item in parsed.images}, expected)
-        for item in parsed.images:
-            self.assertTrue(item.get("alt"))
-            data = (ROOT / "specification" / item["src"]).read_bytes()
-            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
-            name = Path(item["src"]).stem.removeprefix("ch11-")
-            width, height = CH11_CROPS[name][-2:]
-            self.assertEqual(png_size(data), (width * 3, height * 3))
-        for clause in range(1, 26):
-            self.assertIn(f"s11-6-{clause}", parsed.ids)
-
-    def test_annex_e_source_links_and_dimensions(self):
-        # Documentation integrity, not primitive simulation evidence.
-        html = (ROOT / "specification/annex-e-spice.html").read_text()
-        for name, (_, _, _, width, height) in ANNEX_E_CROPS.items():
-            relative = f"figures/annex-e-{name}.png"
-            self.assertIn(f'src="{relative}"', html)
-            data = (ROOT / "specification" / relative).read_bytes()
-            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual(png_size(data), (width * 3, height * 3))
-
-
-class SyntaxText(HTMLParser):
-    """The text of every `<div class="syntax">` display, entities decoded."""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.depth = 0
-        self.parts = []
-        self.blocks = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "div":
-            if self.depth:
-                self.depth += 1
-            elif "syntax" in dict(attrs).get("class", "").split():
-                self.depth = 1
-                self.parts = []
-
-    def handle_endtag(self, tag):
-        if tag == "div" and self.depth:
-            self.depth -= 1
-            if not self.depth:
-                self.blocks.append("".join(self.parts))
-
-    def handle_data(self, data):
-        if self.depth:
-            self.parts.append(data)
-
-
-def syntax_text(source):
-    parser = SyntaxText()
-    parser.feed(source)
-    parser.close()
-    if parser.depth:
-        raise ValueError("Unclosed syntax display")
-    return parser.blocks
-
-
-# The rendered Chapter 4 syntax text from root HTML SHA256
-# c452aae6c5868af5538ce84d989bb3ae83b51e3047b9157784190688dca188fe.
-CH4_SYNTAX_SHA256 = "c206b78ed2fa1dbba040bb45b5056ecb6ce58f10dfce7c977f8f595a0f6f4ff3"
-
-
-class LrmSource(unittest.TestCase):
-    """Bounded source-review guards on specification/*.html, not grammar completeness
-    proof and not proof of whole-chapter source fidelity."""
-
-    def test_annex_a_signed_base_separates_terminals_from_meta_symbols(self):
-        page = (ROOT / "specification/annex-a-syntax.html").read_text()
-        for base in "dDbBoOhH":
-            spelling = "<b>'</b>[<b>s</b>|<b>S</b>]<b>" + base + "</b>"
-            self.assertIn(spelling, page)
-            self.assertEqual(html.unescape(re.sub(r"<[^>]*>", "", spelling)), "'[s|S]" + base)
-        self.assertIn("lexical character classes", page)
-        self.assertIn("Editorial source note", page)
-
-    def test_ch2_comment_delimiters_are_literals_not_repetition_notation(self):
-        page = (ROOT / "specification/ch2-lexical.html").read_text()
-        block = re.search(r'<div class="syntax">(.*?)</div>', page, re.S).group(1)
-        # AMS2023 physical24/printed11, visually reviewed2026-09-23.
-        self.assertEqual(re.findall(r"<b>(.*?)</b>", block), ["//", "/*", "*/"])
-        self.assertIn("one_line_comment ::= <b>//</b> comment_text \\n", block)
-        self.assertIn("block_comment ::= <b>/*</b> comment_text <b>*/</b>", block)
-        self.assertIn("comment_text ::= { Any_ASCII_character }", block)
-        self.assertIn("      | block_comment", block)
-
-    def test_ch4_rendered_syntax_matches_pre_markup_root(self):
-        # Guards typography-only edits; it is not proof of full LRM fidelity.
-        blocks = syntax_text((ROOT / "specification/ch4-expressions.html").read_text())
-        self.assertTrue(blocks)
-        digest = hashlib.sha256(json.dumps(blocks, ensure_ascii=False).encode()).hexdigest()
-        self.assertEqual(digest, CH4_SYNTAX_SHA256)
-
-    def test_entities_are_not_split_by_markup(self):
-        for path in sorted((ROOT / "specification").glob("*.html")):
-            with self.subTest(path=path.name):
-                source = path.read_text()
-                self.assertIsNone(re.search(r"&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#x[0-9a-fA-F]+)<", source))
-
-    def test_regression_rejects_tag_stripping_before_entity_decode(self):
-        good = '<div class="syntax">&zeta;</div>'
-        broken = '<div class="syntax">&zeta<b>;</b></div>'
-        self.assertEqual(syntax_text(good), ["ζ"])
-        self.assertNotEqual(syntax_text(good), syntax_text(broken))
-
-    def test_ch12_literal_source_entities_and_editorial_boundary(self):
-        page = (ROOT / "specification/ch12-vpi-routines.html").read_text()
-        rendered = html.unescape(page)
-        self.assertIn("systf_data_p = &amp;(systf_data_list[0]);", rendered)
-        self.assertIn("while (systf_data_p-&gt;type)", rendered)
-        for name in ("callback-layout", "resistor-source-defects",
-                     "sampler-source-defects", "startup-source-defects",
-                     "control-source-count"):
-            self.assertIn('id="editorial-' + name + '"', page)
-        self.assertEqual(page.count("Editorial source note (not LRM text)."), 5)
-
-    def test_ch12_no_numbered_hdl_fixture_claims_vpi_execution(self):
-        fixtures = ROOT / "tests/fixtures/ch12_vpi_routines"
-        for path in fixtures.glob("[0-9]*.va"):
-            with self.subTest(path=path.name):
-                self.assertNotRegex(path.read_text(), r"(?m)^//! lrm 12(?:\.|$)")
-
-
-class InformativeContent(HTMLParser):
-    """Glossary terms and table cells of an informative annex."""
-
-    def __init__(self):
-        super().__init__()
-        self.terms = []
-        self.tables = []
-        self.in_term = False
-        self.term = ""
-        self.in_cell = False
-        self.cell = ""
-        self.row = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "dt":
-            self.in_term, self.term = True, ""
-        elif tag == "table":
-            self.tables.append([])
-        elif tag == "tr":
-            self.row = []
-        elif tag in ("td", "th"):
-            self.in_cell, self.cell = True, ""
-
-    def handle_data(self, data):
-        if self.in_term:
-            self.term += data
-        if self.in_cell:
-            self.cell += data
-
-    def handle_endtag(self, tag):
-        if tag == "dt":
-            self.terms.append(self.term)
-            self.in_term = False
-        elif tag in ("td", "th"):
-            self.row.append(self.cell)
-            self.in_cell = False
-        elif tag == "tr":
-            self.tables[-1].append(self.row)
-
-
-class InformativeSource(unittest.TestCase):
-    """Source-review guards for informative annex content, not compiler coverage."""
-
-    def test_glossary_exact_term_inventory(self):
-        expected = [
-            "AMS", "behavioral description", "behavioral model", "block",
-            "branch", "compact model", "component", "constitutive relationships",
-            "control flow", "child module", "flow", "instance", "instantiation",
-            "Kirchhoff’s Laws", "level", "model", "module", "net declaration",
-            "node", "NR method", "parameter", "parameter declaration", "port",
-            "potential", "primitive", "probe", "reference direction",
-            "reference node", "scope", "structural definitions", "terminal",
-            "Verilog-A", "Verilog-AMS",
-        ]
-        parsed = InformativeContent()
-        parsed.feed((ROOT / "specification/annex-h-glossary.html").read_text())
-        self.assertEqual(parsed.terms, expected)
-
-    def test_history_preserves_source_gaps_and_table_cells(self):
-        page = (ROOT / "specification/annex-g-changes.html").read_text()
-        parsed = InformativeContent()
-        parsed.feed(page)
-        self.assertEqual(len(parsed.tables), 7)
-        for index, table in enumerate(parsed.tables):
-            for row in table:
-                self.assertEqual(len(row), 4 if index == 0 else 3)
-        # Printed 415 omits item 14; printed 416 omits item 13.
-        self.assertNotIn("14", [row[0] for row in parsed.tables[1][1:]])
-        self.assertNotIn("13", [row[0] for row in parsed.tables[2][1:]])
-        # Printed 423 contains a genuinely blank Mantis row, not lost HTML.
-        self.assertIn(["7893", "", ""], parsed.tables[6])
-        self.assertIn("Editorial context (not LRM text)", page)
-        self.assertIn("$roi()", page)  # source typo; do not silently rewrite
-
-
 # ---------------------------------------------------------------------------
-# obligations / metric: the requirement ledger and the conformance metric
-#. The ledger's rows are the normative sentences of the
-# LRM, extracted here; the metric is each row's evidence level, computed from
+# metric: the requirement ledger and the conformance metric. The ledger's
+# rows are the LRM's normative sentences (committed data, extracted once from
+# the retired HTML LRM); the metric is each row's evidence level, computed from
 # the fixtures' cites and one strict run's verdicts.
 # ---------------------------------------------------------------------------
 
-LEDGER = ROOT / "tests/fixtures/conformance/OBLIGATIONS.tsv"
+LEDGER = ROOT / "tests/conformance/vera/ledger/OBLIGATIONS.tsv"
 LEDGER_HEAD = (
     "# The AMS LRM's normative sentences: the requirement ledger.\n"
-    "# Rows are extracted by `tools/conformance.py obligations --update`; a reader\n"
+    "# Rows were extracted from the LRM's modal sentences (the HTML LRM is retired); a reader\n"
     "# classifies `pol`, `kind` and `oracle` and adds `declar.` rows (ordinal >= 1000,\n"
     "# hash `manual`) for rules stated without a modal verb. A changed hash means the\n"
     "# text moved, and the row's classification is reset to `?` for a re-read.\n"
@@ -2581,16 +1704,6 @@ MODALS = [
     ("unspecified", re.compile(r"\bunspecified\b|\bundefined\b")),
     ("may", re.compile(r"\bmay\b|\bis optional\b|\bare optional\b")),
 ]
-# CLAUSES.tsv's clause kind -> the default (pol, kind) of the clause's rows.
-KIND_DEFAULT = {
-    "non-normative": ("0", "non-normative"),
-    "optional": ("0", "optional"),
-    "unspecified": ("0", "unspecified"),
-    "not-supported": ("0", "not-supported"),
-    "no-prohibition": ("+", "-"),
-    "implementation-defined": ("+", "implementation-defined"),
-    "resource-limit": ("+-", "resource-limit"),
-}
 INDEPENDENT_ORACLES = {"hand2", "icarus", "verilator", "ngspice", "fd", "ref", "earley", "spec-example"}
 MANDATORY_KINDS = {"-", "?", "implementation-defined", "resource-limit"}
 
@@ -2606,24 +1719,6 @@ def modal(sentence):
         if pattern.search(low):
             return name
     return None
-
-
-def sentence_hash(sentence):
-    return hashlib.sha256(re.sub(r"\s+", " ", sentence).strip().encode()).hexdigest()[:8]
-
-
-def extract_obligations(html):
-    """{clause: [(ordinal, hash, modal, sentence)]} over every numbered clause
-    of the LRM HTML, in reading order within the clause."""
-    out = {}
-    for section, item in html.items():
-        rows = []
-        for sent in sentences(item["text"]):
-            m = modal(sent)
-            if m:
-                rows.append((len(rows) + 1, sentence_hash(sent), m, sent))
-        out[section] = rows
-    return out
 
 
 def read_ledger(path=LEDGER):
@@ -2651,72 +1746,6 @@ def write_ledger(rows, path=LEDGER):
             r = rows[rid]
             text = r["text"].replace("\t", " ")
             f.write("\t".join([rid, r["hash"], r["modal"], r["pol"], r["kind"], r["oracle"], text]) + "\n")
-
-
-def default_class(clause, m, sentence, kinds):
-    """(pol, kind) before a reader looks: the clause's CLAUSES.tsv kind, a
-    note's informative status, and the prohibitions that need a refusal."""
-    if sentence.startswith("NOTE"):
-        return "0", "non-normative"
-    k = kinds.get(("ams", clause))
-    if k in KIND_DEFAULT:
-        return KIND_DEFAULT[k]
-    if m in ("shall-not", "error"):
-        return "-", "-"
-    if m == "unspecified":
-        return "0", "unspecified"
-    if m == "impl-defined":
-        return "+", "implementation-defined"
-    return "?", "?"
-
-
-def obligations(argv):
-    """`obligations --update`: re-extract the ledger and merge it with the
-    reviewed columns; `obligations --check`: exit 1 when the ledger and the
-    text disagree (a new, moved or vanished sentence). Prints a census."""
-    html, _ = html_sections(ROOT)
-    found = extract_obligations(html)
-    kinds = clause_kinds()
-    old = read_ledger()
-    new, moved, added = {}, [], []
-    for clause, rows in found.items():
-        for n, h, m, sent in rows:
-            rid = f"{clause}:{n}"
-            prev = old.get(rid)
-            if prev and prev["hash"] == h:
-                new[rid] = prev
-                continue
-            pol, kind = default_class(clause, m, sent, kinds)
-            if prev:
-                moved.append(rid)
-            else:
-                added.append(rid)
-            new[rid] = {"id": rid, "hash": h, "modal": m, "pol": pol, "kind": kind, "oracle": "?", "text": sent[:400]}
-        # A clause no modal verb reaches still states something: a placeholder
-        # a reader replaces with the clause's rules.
-        if not rows and kinds.get(("ams", clause)) != "non-normative":
-            rid = f"{clause}:{MANUAL_ORDINAL}"
-            if rid not in old:
-                pol, kind = KIND_DEFAULT.get(kinds.get(("ams", clause)), ("?", "?"))
-                new[rid] = {"id": rid, "hash": "manual", "modal": "declar.", "pol": pol, "kind": kind,
-                            "oracle": "?", "text": f"(no modal sentence in §{clause} {html[clause]['title']}; state its rules here)"}
-    for rid, r in old.items():
-        if r["hash"] == "manual":
-            new[rid] = r  # a reader's row survives every re-extraction
-    vanished = sorted(set(old) - set(new), key=ledger_key)
-    print(f"ledger: {len(new)} rows over {len(found)} clauses; "
-          f"{len(added)} new, {len(moved)} moved, {len(vanished)} vanished")
-    for rid in moved:
-        print(f"  moved: {rid}")
-    for rid in vanished:
-        print(f"  vanished: {rid}")
-    if "--update" in argv:
-        write_ledger(new)
-        return 0
-    return 1 if (added or moved or vanished) else 0
-
-
-SUBCOMMANDS["obligations"] = obligations
 
 
 def fixture_tags(path):
@@ -2748,14 +1777,16 @@ def fixture_tags(path):
         elif word == "neighbour":
             # Normalise `..` so a legal twin in another chapter resolves to the
             # same root-relative key the verdicts file uses.
-            tags["neighbours"].append(os.path.relpath(os.path.normpath(path.parent / rest), ROOT / "tests/fixtures"))
+            tags["neighbours"].append(os.path.relpath(os.path.normpath(path.parent / rest), ROOT / "tests/conformance/tests"))
         elif word == "xfail":
             tags["xfail"] = True
+    if path.is_relative_to(FIXTURES) and path.relative_to(FIXTURES).as_posix() in vera_xfail():
+        tags["xfail"] = True
     return tags
 
 
 def vpi_runs():
-    """{c path under tests/fixtures: 'pass' | 'xfail'} for build.zig's
+    """{c path under tests/conformance/tests: 'pass' | 'xfail'} for build.zig's
     `vpiRuns`, the `.c` fixtures `zig build test` runs in-process: those with
     a `//! design` line. A `.c` that only compiles is not evidence
     and is absent here."""
@@ -2851,23 +1882,23 @@ def levels(ledger, fixtures, verdicts, perturbed, killed, oracles=None):
 
 def read_oracles():
     """{fixture: [engine]} from the independent engines' agreement tables:
-    tests/fixtures/ieee1364/VERILATOR.tsv (`agrees` = yes) and any
-    tests/fixtures/conformance/ORACLES.tsv rows `<fixture>\t<engine>` (iverilog, ngspice,
+    tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv (`agrees` = yes) and any
+    tests/conformance/vera/ledger/ORACLES.tsv rows `<fixture>\t<engine>` (iverilog, ngspice,
     ...). Agreement is evidence, not authority."""
     out = {}
-    ver = ROOT / "tests/fixtures/ieee1364/VERILATOR.tsv"
+    ver = ROOT / "tests/conformance/vera/clauses/ieee1364/VERILATOR.tsv"
     if ver.exists():
         for line in ver.read_text().split("\n"):
             c = line.split("\t")
             if len(c) > 4 and not line.startswith("#") and c[4] == "yes":
-                out.setdefault("ieee1364/" + c[0], []).append("verilator")
-    ica = ROOT / "tests/fixtures/conformance/ICARUS.tsv"
+                out.setdefault("verilog/" + c[0], []).append("verilator")
+    ica = ROOT / "tests/conformance/vera/ledger/ICARUS.tsv"
     if ica.exists():
         for line in ica.read_text().split("\n"):
             c = line.split("\t")
             if len(c) > 4 and not line.startswith("#") and c[4] == "yes":
                 out.setdefault(c[0], []).append("icarus")
-    extra = ROOT / "tests/fixtures/conformance/ORACLES.tsv"
+    extra = ROOT / "tests/conformance/vera/ledger/ORACLES.tsv"
     if extra.exists():
         for line in extra.read_text().split("\n"):
             c = line.split("\t")
@@ -2883,9 +1914,9 @@ def chapter_of(clause):
 
 def metric(argv):
     """`metric --verdicts=F [--digital=F] [--perturbed=F] [--killed=F]
-    [--levels=OUT]`: the evidence-level table. F files are `zig build benchmark
+    [--levels=OUT]`: the evidence-level table. F files are `zig build suite
     -- --strict --verdicts=F` (and `--perturb --verdicts=F`) outputs;
-    `--digital` is `zig build test-devices -- --verdicts=F`'s, the digital
+    `--digital` is `zig build suite -- devices --verdicts=F`'s, the digital
     runner's cases (`.v` with a golden or `// digital-runner: reject`), which
     the .va suite never collects. `--killed` is one row id per line.
     `--levels` writes `<id>\t<level>`, the ratchet file."""
@@ -2895,7 +1926,7 @@ def metric(argv):
         return 2
     ledger = read_ledger()
     if not ledger:
-        print("metric: no ledger; run `obligations --update` first", file=sys.stderr)
+        print(f"metric: no ledger at {LEDGER.relative_to(ROOT)}", file=sys.stderr)
         return 2
     root = FIXTURES
     runs = vpi_runs()
@@ -2964,15 +1995,15 @@ def row_line(name, t, order):
 SUBCOMMANDS["metric"] = metric
 
 
-VERDICTS = ROOT / "tests/fixtures/conformance/VERDICTS.tsv"
-LEVELS = ROOT / "tests/fixtures/conformance/LEVELS.tsv"
-STEPS = ROOT / "tests/fixtures/conformance/STEPS.txt"
+VERDICTS = ROOT / "tests/conformance/vera/ledger/VERDICTS.tsv"
+LEVELS = ROOT / "tests/conformance/vera/ledger/LEVELS.tsv"
+STEPS = ROOT / "tests/conformance/vera/ledger/STEPS.txt"
 
 
 def ratchet(argv):
     """`ratchet --verdicts=F [--levels=F] [--update]`: the run's per-fixture
-    verdicts (and per-row levels) against the committed tests/fixtures/conformance/VERDICTS.tsv and
-    tests/fixtures/conformance/LEVELS.tsv. Any difference fails, a fix as much as a regression, so the
+    verdicts (and per-row levels) against the committed tests/conformance/vera/ledger/VERDICTS.tsv and
+    tests/conformance/vera/ledger/LEVELS.tsv. Any difference fails, a fix as much as a regression, so the
     committed files are always this tree's truth and every change to them is
     reviewed by name.
     `--update` writes the run's files over the committed ones."""
@@ -3008,9 +2039,9 @@ SUBCOMMANDS["ratchet"] = ratchet
 
 
 def steps(argv):
-    """`steps [--update]`: `zig build -l`'s step names against tests/fixtures/conformance/STEPS.txt.
+    """`steps [--update]`: `zig build -l`'s step names against tests/conformance/vera/ledger/STEPS.txt.
     A step that disappears takes its tests with it and says nothing, which is
-    how `2cc1c08` lost twelve (CLAUSE-AUDIT.md, provenance)."""
+    how `2cc1c08` lost twelve."""
     out, code = run("zig", "build", "-l")
     if code:
         print(out, file=sys.stderr)
@@ -3027,7 +2058,7 @@ def steps(argv):
     for n in new:
         print(f"steps: new {n}")
     if gone or new:
-        print("steps: commit tests/fixtures/conformance/STEPS.txt with `steps --update` once the change is intended")
+        print("steps: commit tests/conformance/vera/ledger/STEPS.txt with `steps --update` once the change is intended")
         return 1
     print(f"steps: {len(names)} build steps, as committed")
     return 0
@@ -3066,7 +2097,7 @@ def promote_reject_only(argv):
     """`promote-reject-only <probe stderr>`: every `ONLY-OK` fixture from a
     `benchmark -- --probe-reject-only` run gets its first `//! reject` turned
     into `//! reject-only`: it already refuses with the named error alone, so
-    the stronger claim costs nothing and closes CLAUSE-AUDIT.md §6.4."""
+    the stronger claim costs nothing: a refusal fixture should pin its error alone."""
     if not argv:
         print("promote-reject-only: give the probe run's stderr", file=sys.stderr)
         return 2
@@ -3075,7 +2106,7 @@ def promote_reject_only(argv):
         if not line.startswith("ONLY-OK "):
             continue
         path = Path(line[len("ONLY-OK "):].strip())
-        path = FIXTURES / str(path).split("/tests/fixtures/", 1)[-1]
+        path = FIXTURES / str(path).split("/tests/conformance/tests/", 1)[-1]
         text = path.read_text()
         new, n = re.subn(r"(?m)^(\s*//!\s*)reject(\s)", r"\1reject-only\2", text, count=1)
         if n:
@@ -3190,7 +2221,7 @@ class FixtureLinking(unittest.TestCase):
         self.assertEqual(out[1], "//! lrm 5.1:2")
 
 
-MUTANTS = ROOT / "tests/fixtures/conformance/MUTANTS.tsv"
+MUTANTS = ROOT / "tests/conformance/vera/ledger/MUTANTS.tsv"
 MUT_TREE = ROOT.parent / "vera-mut"
 VQ = ROOT.parent / ".build-queue/vq"
 # One mutation per site: (name, pattern, replacement). Spaces around the
@@ -3268,7 +2299,7 @@ def mutate(argv):
     fixtures that cite the file's header clauses (at most K). A mutant some
     fixture fails is KILLED: that fixture's evidence can fail when the code
     is wrong (the metric's E5). A survivor names a check that cannot see
-    that change. Results are appended to tests/fixtures/conformance/MUTANTS.tsv with the
+    that change. Results are appended to tests/conformance/vera/ledger/MUTANTS.tsv with the
     file's hash, so a kill stops counting once the file changes."""
     import random
     opts = dict(a[2:].split("=", 1) for a in argv if a.startswith("--") and "=" in a)
@@ -3354,7 +2385,7 @@ SUBCOMMANDS["mutate"] = mutate
 def killed_rows(ledger):
     """Row ids with E5 evidence: a passing fixture that cites the row and that
     killed a mutant of a file whose header names the row's clause, recorded
-    against the file as it is now (tests/fixtures/conformance/MUTANTS.tsv's hash)."""
+    against the file as it is now (tests/conformance/vera/ledger/MUTANTS.tsv's hash)."""
     if not MUTANTS.exists():
         return set()
     out = set()
@@ -3388,7 +2419,7 @@ def killed_rows(ledger):
 # adversarial, determinism: input-size limits and device-text determinism
 # ---------------------------------------------------------------------------
 
-ADVERSARIAL = ROOT / "tests/fixtures/conformance/ADVERSARIAL.tsv"
+ADVERSARIAL = ROOT / "tests/conformance/vera/ledger/ADVERSARIAL.tsv"
 
 
 def binaries(argv):
@@ -3476,7 +2507,7 @@ def adversarial(argv):
     """`adversarial [[NAME=]VERA ...]`: L10's adversarial sizes (deep
     expressions, `begin` and macro nesting, huge statement, generate, module
     and hierarchy counts, a 64k-bit literal) through `vera --check` under
-    `ulimit -v 4194304` and a wall-clock budget -> tests/fixtures/conformance/ADVERSARIAL.tsv.
+    `ulimit -v 4194304` and a wall-clock budget -> tests/conformance/vera/ledger/ADVERSARIAL.tsv.
     Oracle: exit 0 or a named diagnostic; never a signal, a timeout, or an
     unnamed failure. Exit 1 when any row breaks it."""
     import concurrent.futures
@@ -3544,8 +2575,8 @@ def determinism(argv):
         """The fixture's differences from the first run, compared here so a
         worker holds one fixture's devices at a time."""
         d = os.path.dirname(f)
-        rel = ["--emit-zig", "-I", "tests/fixtures", "-I", d, f]
-        abs_ = ["--emit-zig", "-I", str(FIXTURES), "-I", str(ROOT / d), str(ROOT / f)]
+        rel = ["--emit-zig", "-I", "tests/conformance/tests/include", "-I", d, f]
+        abs_ = ["--emit-zig", "-I", str(INCLUDE), "-I", str(ROOT / d), str(ROOT / f)]
         ref, diffs = None, []
         for bname, vera in bins:
             for label, args, cwd in (("a", rel, ROOT), ("b", rel, ROOT), ("cwd", abs_, elsewhere)):
@@ -3777,82 +2808,14 @@ class ObligationLedger(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# grammar: the R3 oracle (L5c). Every Syntax box read
-# into BNF, an Earley recognizer over it, the alternatives passing positive
+# grammar: the R3 oracle (L5c). Every Syntax box (GRAMMAR.tsv, extracted from
+# the retired HTML LRM) read into BNF, an Earley recognizer over it, the alternatives passing positive
 # fixtures derive, and VerA's parse-level acceptance against the recognizer's.
 # None of it reads VerA's parser: the oracle is the LRM's text.
 # ---------------------------------------------------------------------------
 
-GRAMMAR_TSV = ROOT / "tests/fixtures/conformance/GRAMMAR.tsv"
-GRAMMAR_DIFF_TSV = ROOT / "tests/fixtures/conformance/GRAMMAR-DIFF.tsv"
-# Boxes that are not grammar: 1.4's notation examples, and Annex G's history.
-GRAMMAR_SKIP_FILES = ("ch1-intro.html", "annex-g-changes.html")
-
-
-class SyntaxBoxes(HTMLParser):
-    """Every `class="syntax"` <div> or <pre>, as [(clause, file, parts)]:
-    `parts` is [(bold?, text)]. Bold (<b>, <strong>) is a terminal (1.4 item
-    2). Dropped: <sup> footnote marks, the <em>/<i> caption, and a footnote
-    printed inside the box (a line opening with <sup> or `1)`); a <sub> joins
-    the text before it (4.5.12's t<sub>0</sub>). `clause` is the number of the
-    last heading above the box."""
-
-    def __init__(self, name):
-        super().__init__(convert_charrefs=True)
-        self.name, self.clause, self.heading = name, "", None
-        self.box, self.tag, self.depth, self.bold, self.skip, self.sub = None, None, 0, 0, 0, 0
-        self.footnote = False
-        self.boxes = []
-
-    def handle_starttag(self, tag, attrs):
-        if self.box is None:
-            if re.fullmatch(r"h[1-6]", tag):
-                self.heading = []
-            elif tag in ("div", "pre") and "syntax" in (dict(attrs).get("class") or "").split():
-                self.box, self.tag, self.depth, self.footnote = [], tag, 1, False
-            return
-        if tag == self.tag:
-            self.depth += 1
-        elif tag in ("b", "strong"):
-            self.bold += 1
-        elif tag in ("sup", "em", "i"):
-            self.skip += 1
-            if tag == "sup" and (not self.box or self.box[-1][1].endswith("\n")):
-                self.footnote = True
-        elif tag == "sub":
-            self.sub += 1
-
-    def handle_endtag(self, tag):
-        if self.box is None:
-            if self.heading is not None and re.fullmatch(r"h[1-6]", tag):
-                words = "".join(self.heading).split()
-                self.clause = words[0] if words else self.clause
-                self.heading = None
-            return
-        if tag == self.tag:
-            self.depth -= 1
-            if not self.depth:
-                self.boxes.append((self.clause, self.name, self.box))
-                self.box = None
-        elif tag in ("b", "strong"):
-            self.bold -= 1
-        elif tag in ("sup", "em", "i"):
-            self.skip -= 1
-        elif tag == "sub":
-            self.sub -= 1
-
-    def handle_data(self, data):
-        if self.heading is not None:
-            self.heading.append(data)
-        if self.box is None or self.skip or self.footnote:
-            return
-        m = re.search(r"(?:^|\n)\s*\d+\)\s", data)
-        if m:
-            data, self.footnote = data[:m.start()], True
-        if self.sub and self.box:
-            self.box[-1] = (self.box[-1][0], self.box[-1][1] + data)
-        else:
-            self.box.append((self.bold > 0, data))
+GRAMMAR_TSV = ROOT / "tests/conformance/vera/ledger/GRAMMAR.tsv"
+GRAMMAR_DIFF_TSV = ROOT / "tests/conformance/vera/ledger/GRAMMAR-DIFF.tsv"
 
 
 # Plain (non-bold) text of a box: meta-symbols, names, `// from A.x` notes.
@@ -3958,111 +2921,53 @@ class Alt:
         self.id, self.lhs, self.seq, self.text, self.note = id, lhs, seq, text, note
 
 
-CAPTION = re.compile(r"\s*Syntax \d+-\d+")
+def read_grammar_tsv(path=None):
+    """GRAMMAR.tsv's rows as alternatives: the inverse of `render`. The ledger
+    was extracted from the retired HTML LRM's Syntax boxes and is data now.
+    A token quoted at both ends is a bold terminal, `[ ]`/`{ }` group `|`
+    alternatives, a word is a name unless it is a `$name` no row defines
+    (9.16's `$simprobe`, a terminal in plain type), anything else is a
+    plain-type terminal."""
+    rows = [ln.split("\t") for ln in Path(path or GRAMMAR_TSV).read_text().split("\n")
+            if ln and not ln.startswith("#")]
+    defined = {r[1] for r in rows}
 
+    def word(t):
+        if len(t) >= 3 and t[0] == t[-1] and t[0] in "'\"":
+            return ("T", t[1:-1])
+        if re.fullmatch(r"[\w$][\w$-]*", t) and not (t.startswith("$") and t not in defined):
+            return ("N", t)
+        return ("U", t)
 
-def read_syntax(docs=None):
-    """Every Syntax box of Annex A and the chapters as alternatives, and the
-    extraction's notes. Ids are `<clause>/<n>`, the n-th alternative of the
-    boxes under that heading: `A.6.4/12`, `9.17.3/2`.
-
-    Annex A is the formal syntax and comes first. A chapter box quotes it
-    (`// from A.6.5`) in whatever typography the chapter used, so a chapter
-    alternative with the same characters as an Annex A alternative of the
-    same production is the same requirement and gets no row; one with an
-    elision (`...`) inside it is an excerpt and gets none either. The rest
-    are rows, noted `not in Annex A` or `differs from Annex A`. Every
-    alternative keeps its ordinal whether or not it is a row, so an id does
-    not move when an excerpt changes."""
-    docs = Path(docs or ROOT / "specification")
-    files = ["annex-a-syntax.html"] + sorted(
-        (p.name for p in docs.glob("ch*.html") if p.name not in GRAMMAR_SKIP_FILES),
-        key=lambda n: int(re.search(r"\d+", n).group()))
-    boxes = []
-    for name in files:
-        parser = SyntaxBoxes(name)
-        parser.feed((docs / name).read_text())
-        parser.close()
-        boxes += parser.boxes
-    prods = []
-    for clause, fname, parts in boxes:
-        parts = [(b, t) for b, t in parts if not CAPTION.match(t)]
-        anonymous = "syntax_" + re.sub(r"[.-]", "_", clause)
-        for lhs, raw in box_productions(box_lexemes(parts), anonymous):
-            prods.append((clause, fname.startswith("annex-a"), lhs, raw))
-    defined = {lhs for _, _, lhs, _ in prods}
-    alts, notes, counter, annex, seen = [], [], {}, set(), {}
-    for clause, in_annex, lhs, raw in prods:
-        for lex in raw:
-            # A `$name` in plain type is a production name only where one is
-            # defined (A.7.5.1's `$setup_timing_check`); elsewhere it is a
-            # terminal printed without bold (9.16's `$simprobe`).
-            lex = [("U", s) if k == "N" and s.startswith("$") and s not in defined else (k, s) for k, s in lex]
-            while lex and lex[0][0] == "...":
-                lex = lex[1:]
-            while lex and lex[-1][0] == "...":
-                lex = lex[:-1]
-            if not lex:
-                continue
-            counter[clause] = counter.get(clause, 0) + 1
-            aid = f"{clause}/{counter[clause]}"
-            key = "".join(s for _, s in lex)
-            if key in seen.get(lhs, ()):
-                continue
-            seen.setdefault(lhs, set()).add(key)
-            if in_annex:
-                annex.add(lhs)
-                note = ""
-            elif any(k == "..." for k, _ in lex):
-                notes.append(f"{aid} {lhs}: an excerpt with an elision; no row")
-                continue
+    def parse(toks, i, close):
+        alts = [[]]
+        while i < len(toks):
+            t = toks[i]
+            i += 1
+            if close and t == close:
+                return alts, i
+            if close and t == "|":
+                alts.append([])
+            elif t in ("[", "{"):
+                inner, i = parse(toks, i, "]" if t == "[" else "}")
+                alts[-1].append(("opt" if t == "[" else "rep", inner))
             else:
-                note = "differs from Annex A" if lhs in annex else "not in Annex A"
-            try:
-                seq = ebnf(lex)
-            except ValueError as e:
-                notes.append(f"{aid} {lhs}: {e}; read as written")
-                seq = [(k, s) for k, s in lex if k in ("T", "U", "N")]
-                note = (note + "; " if note else "") + str(e)
-            if any(k == "U" for k, _ in lex):
-                notes.append(f"{aid} {lhs}: terminal in plain type: " + " ".join(s for k, s in lex if k == "U"))
-            alts.append(Alt(aid, lhs, seq, render(seq), note))
-    return alts, notes
+                alts[-1].append(word(t))
+        return alts, i
+
+    out = []
+    for aid, lhs, text, *note in rows:
+        (seq,), _ = parse(text.split(), 0, None)
+        out.append(Alt(aid, lhs, seq, text, note[0] if note else ""))
+    return out
 
 
-def write_grammar_tsv(alts, path=None):
-    path = path or GRAMMAR_TSV
-    head = ("# Every alternative of every Syntax box: the grammar-coverage denominator.\n"
-            "# Written by `tools/conformance.py grammar extract`; never edit by hand.\n"
-            "# Terminals (bold in the LRM) are quoted; plain-type punctuation is bare.\n"
-            "# note: empty for Annex A; a chapter row says how it relates to Annex A.\n"
-            "# id\tproduction\ttext\tnote\n")
-    Path(path).write_text(head + "".join(f"{a.id}\t{a.lhs}\t{a.text}\t{a.note}\n" for a in alts))
-
-
-def grammar_extract(argv):
-    """`extract`: every Syntax box into tests/fixtures/conformance/GRAMMAR.tsv, with the extraction's
-    notes and every name no box defines (a transcription finding, or a
-    chapter box's argument placeholder)."""
-    alts, notes = read_syntax()
-    write_grammar_tsv(alts)
-    annex = sum(1 for a in alts if a.id.startswith("A."))
-    print(f"grammar extract: {len(alts)} alternatives ({annex} Annex A, {len(alts) - annex} from chapter boxes) "
-          f"of {len({a.lhs for a in alts})} productions -> {GRAMMAR_TSV.relative_to(ROOT)}")
-    for n in notes:
-        print(f"  note {n}")
-    for name, users in sorted(grammar_undefined(alts).items()):
-        reading = next((f"; read as `{b or 'empty'}`" for r, b, _ in GRAMMAR_READINGS if r == name), "")
-        print(f"  undefined {name} (in {', '.join(sorted(set(users))[:4])}{', ...' if len(set(users)) > 4 else ''}){reading}")
-    return 0
-
-
-GRAMMAR_COMMANDS = {"extract": grammar_extract}
+GRAMMAR_COMMANDS = {}
 
 
 def grammar(argv):
-    """`grammar extract|earley|coverage|diff [...]`: the R3 oracle
-    (L5c)."""
+    """`grammar earley|coverage|diff [...]`: the R3 oracle (L5c), over the
+    committed GRAMMAR.tsv."""
     if not argv or argv[0] not in GRAMMAR_COMMANDS:
         print(f"usage: conformance.py grammar {'|'.join(GRAMMAR_COMMANDS)} ...", file=sys.stderr)
         return 2
@@ -4098,11 +3003,7 @@ TOKEN = re.compile(r"""
 
 
 def vams_keywords():
-    if not hasattr(vams_keywords, "words"):
-        table = KeywordTable()
-        table.feed((ROOT / "specification/annex-b-keywords.html").read_text())
-        vams_keywords.words = frozenset(table.words)
-    return vams_keywords.words
+    return VAMS_KEYWORDS
 
 
 class Tok:
@@ -4184,7 +3085,7 @@ def grammar_undefined(alts):
     return out
 
 
-# Readings of Annex A's undefined names, for the recognizer only (tests/fixtures/conformance/GRAMMAR.tsv
+# Readings of Annex A's undefined names, for the recognizer only (tests/conformance/vera/ledger/GRAMMAR.tsv
 # keeps the text as printed). Each is the evident intent of a defect the
 # annex's own editorial note lists or the chapters resolve. Without the first
 # three no analog assignment derives at all. A derivation that needs one of
@@ -4210,7 +3111,7 @@ PLACEHOLDER = "analog_expression | expression | constant_assignment_pattern"
 class BNF:
     """A grammar over integer symbols. A symbol's key is ("n", name) for a
     nonterminal, ("t", text) for a token's exact text, ("c", class) for a
-    lexical class. `rules[r] = (lhs, rhs)`; `alt[r]` is the tests/fixtures/conformance/GRAMMAR.tsv id the
+    lexical class. `rules[r] = (lhs, rhs)`; `alt[r]` is the tests/conformance/vera/ledger/GRAMMAR.tsv id the
     rule is an alternative of (None for a [ ] or { } helper or a reading)."""
 
     def __init__(self, terminal, classes=()):
@@ -4701,7 +3602,7 @@ def preprocess(path, include_dirs=None):
     """(text, directives) of a fixture: its preprocessed text, and the
     `default_discipline / `default_transition / `define lines it ran."""
     path = Path(path)
-    dirs = include_dirs if include_dirs is not None else [FIXTURES, path.parent]
+    dirs = include_dirs if include_dirs is not None else [INCLUDE, path.parent]
     pp = Preprocessor(dirs)
     text = pp.run(path.read_text(errors="replace"), path)
     return text, pp.directives
@@ -4714,7 +3615,7 @@ class Oracle:
     `ng` A.8.7 over characters."""
 
     def __init__(self, alts=None):
-        self.alts = alts or read_syntax()[0]
+        self.alts = alts or read_grammar_tsv()
         self.g = token_bnf(self.alts)
         self.annex = token_bnf(self.alts, chapters=False)
         _, self.number = lexical_names(self.alts)
@@ -4865,7 +3766,7 @@ def verdicts_file(opts):
         return Path(opts["verdicts"])
     if VERDICTS.exists():
         return VERDICTS
-    print("grammar: --verdicts=<file> from a strict run is required (no tests/fixtures/conformance/VERDICTS.tsv)", file=sys.stderr)
+    print("grammar: --verdicts=<file> from a strict run is required (no tests/conformance/vera/ledger/VERDICTS.tsv)", file=sys.stderr)
     return None
 
 
@@ -4923,7 +3824,7 @@ GRAMMAR_COMMANDS["coverage"] = grammar_coverage
 
 def grammar_earley(argv):
     """`earley [--start=NAME] [--derive] FILE...`: the recognizer on each file
-    (preprocessed with tests/fixtures and the file's directory on the include
+    (preprocessed with tests/conformance/tests/include and the file's directory on the include
     path): `accept`, or `refuse` at the first token no Earley item can read.
     `--derive` lists the alternatives an accepted file derives."""
     opts = grammar_opts(argv)
@@ -4962,7 +3863,7 @@ GRAMMAR_COMMANDS["earley"] = grammar_earley
 GENERATOR_AVOID = ("paramset", "primitive", "config", "connectmodule", "macromodule", "connectrules", "(*")
 # A.1.2's first module form needs a port list, whose shortest port is empty,
 # and A.4.2's loop generate an undeclared genvar: fillers VerA refuses for
-# their own reasons (tests/fixtures/conformance/GRAMMAR-DIFF.tsv), which would hide every target.
+# their own reasons (tests/conformance/vera/ledger/GRAMMAR-DIFF.tsv), which would hide every target.
 GENERATOR_AVOID_ALTS = ("A.1.2/9", "A.4.2/5")
 
 
@@ -5240,7 +4141,7 @@ def grammar_diff(argv):
     at most four at once, each under `ulimit -v 4 GiB`) judge the same text:
     every .va fixture, one-token mutants of the positive ones the recognizer
     derives, and k sentences generated for each alternative. Each
-    disagreement is classified and written to tests/fixtures/conformance/GRAMMAR-DIFF.tsv."""
+    disagreement is classified and written to tests/conformance/vera/ledger/GRAMMAR-DIFF.tsv."""
     import shutil
     from concurrent.futures import ThreadPoolExecutor
     opts = grammar_opts(argv)
@@ -5274,7 +4175,7 @@ def grammar_diff(argv):
         if v == "pass" and not t["reject"] and not t["xfail"]:
             positive.add(rel)
         if "fixture" in only or "mutant" in only:
-            add("fixture", rel, FIXTURES / rel, [FIXTURES, (FIXTURES / rel).parent],
+            add("fixture", rel, FIXTURES / rel, [INCLUDE, (FIXTURES / rel).parent],
                 known=("accept", "a passing positive fixture") if rel in positive else None)
     run_earley(list(cases))
     if "fixture" not in only:
@@ -5287,7 +4188,7 @@ def grammar_diff(argv):
             for j, (name, text) in enumerate(mutants(rel, nmut, seed)):
                 path = work / "cases" / f"m{len(cases):05d}_{Path(rel).name}"
                 path.write_text(text)
-                add("mutant", f"{rel}: {name}", path, [FIXTURES, (FIXTURES / rel).parent])
+                add("mutant", f"{rel}: {name}", path, [INCLUDE, (FIXTURES / rel).parent])
     if "generated" in only:
         gen, skipped = generated_cases(o, k, seed)
         print(f"grammar diff: {len(gen)} sentences for {len({a for a, _, _ in gen})} alternatives; "
@@ -5571,30 +4472,16 @@ class GrammarOracle(unittest.TestCase):
         self.assertEqual(name, "a")
         self.assertEqual([render(ebnf(x)) for x in alts], ["'x' [ b | c ] { ',' d }", "e 0"])
 
-    def test_box_reader_drops_captions_and_in_box_footnotes(self):
-        p = SyntaxBoxes("t.html")
-        p.feed('<h3>9.9 T</h3><div class="syntax">x ::= <b>a</b>\n'
-               '<sup>1</sup>The $ character shall not be followed by white_space.\n'
-               '<strong>Syntax 9-9&mdash;caption</strong></div>')
-        (clause, _, parts), = p.boxes
-        self.assertEqual(clause, "9.9")
-        text = "".join(t for _, t in parts if not CAPTION.match(t))
-        self.assertNotIn("white_space", text)
-        self.assertNotIn("caption", text)
-
-    def test_extraction_matches_the_committed_ledger_and_the_lrm(self):
-        alts, _ = read_syntax()
+    def test_ledger_reads_back_to_the_text_it_was_written_from(self):
+        alts = read_grammar_tsv()
         by_id = {a.id: a for a in alts}
-        self.assertEqual(by_id["A.1.2/1"].text, "{ description }")
-        self.assertEqual(by_id["A.6.4/22"].text, "{ attribute_instance } ';'")
-        self.assertEqual(by_id["A.8.7/37"].text, "\"'\" [ 's' | 'S' ] 'd'")
-        self.assertEqual(by_id["5.6.7/11"].note, "differs from Annex A")
         self.assertEqual(len(by_id), len(alts))  # ids are unique
-        head = "".join(ln + "\n" for ln in GRAMMAR_TSV.read_text().split("\n") if ln.startswith("#"))
-        rows = [ln for ln in GRAMMAR_TSV.read_text().split("\n") if ln and not ln.startswith("#")]
-        self.assertEqual(rows, [f"{a.id}\t{a.lhs}\t{a.text}\t{a.note}" for a in alts],
-                         "tests/fixtures/conformance/GRAMMAR.tsv drifted from docs/: run `grammar extract`")
-        self.assertIn("grammar-coverage denominator", head)
+        self.assertEqual(by_id["A.1.2/1"].seq, [("rep", [[("N", "description")]])])
+        self.assertEqual(by_id["A.8.7/37"].seq,
+                         [("T", "'"), ("opt", [[("T", "s")], [("T", "S")]]), ("T", "d")])
+        self.assertEqual(by_id["5.6.7/11"].note, "differs from Annex A")
+        for a in alts:
+            self.assertEqual(render(a.seq), a.text, a.id)
 
     def test_tokens(self):
         kinds = lambda s: [(t.kind, t.text) for t in lex(s)]  # noqa: E731
@@ -5606,15 +4493,15 @@ class GrammarOracle(unittest.TestCase):
         self.assertEqual(kinds('"a\\\nb"')[0], ("op", '"'))  # a string stays on its line
 
     def test_preprocessor(self):
-        pp = Preprocessor([FIXTURES])
+        pp = Preprocessor([INCLUDE])
         text = pp.run("`define SQ(x) ((x)*(x))\n`ifdef NOPE\nbad\n`else\ny = `SQ(a+1);\n`endif\n"
                       "`resetall module m; `define ID(A) (A)\nz = `ID(\\w.v );\n", Path("t.va"))
         self.assertEqual([t.text for t in lex(text)],
                          ["y", "=", "(", "(", "a", "+", "1", ")", "*", "(", "a", "+", "1", ")", ")", ";",
                           "module", "m", ";", "z", "=", "(", "\\w.v", ")", ";"])
         with self.assertRaises(Unexpandable):
-            Preprocessor([FIXTURES]).run("`UNDEFINED_MACRO\n", Path("t.va"))
-        text, _ = preprocess(FIXTURES / "ch05_analog_behavior/rlc.va")
+            Preprocessor([INCLUDE]).run("`UNDEFINED_MACRO\n", Path("t.va"))
+        text, _ = preprocess(FIXTURES / "verilog-a/ch05_analog_behavior/rlc.va")
         self.assertIn("$strobe", text)  # `CHECK from check.vh expanded
 
     def test_earley_on_a_small_grammar_derives_and_refuses(self):
@@ -5641,14 +4528,14 @@ class GrammarOracle(unittest.TestCase):
 
     def test_real_fixtures(self):
         o = self.o
-        for rel in ("ch05_analog_behavior/rlc.va", "annex_a_syntax/behavioral_statements.va",
-                    "annex_a_syntax/jump_statements.va", "ch04_expressions/absdelay.va"):
+        for rel in ("verilog-a/ch05_analog_behavior/rlc.va", "verilog-a/annex_a_syntax/behavioral_statements.va",
+                    "verilog-a/annex_a_syntax/jump_statements.va", "verilog-a/ch04_expressions/absdelay.va"):
             with self.subTest(rel=rel):
                 rel_, status, detail, alts = derive_fixture(rel)
                 self.assertEqual(status, "derived", detail)
                 self.assertIn("A.6.10/1", alts)  # contribution_statement
         # A.1.4 declares no module string (3.3 does): the oracle says so.
-        self.assertEqual(derive_fixture("ch03_data_types/string_variables.va")[1], "refused")
+        self.assertEqual(derive_fixture("verilog-a/ch03_data_types/string_variables.va")[1], "refused")
         toks = lex("module m; analog begin x = ; end endmodule")
         c = o.parse(toks)
         self.assertFalse(c.accepted)
@@ -5669,7 +4556,7 @@ class GrammarOracle(unittest.TestCase):
                     self.assertIn(aid, o.derive(lex(text), c))
 
     def test_classifier(self):
-        c = {"case": "x.va", "text": None, "path": FIXTURES / "ch05_analog_behavior/rlc.va"}
+        c = {"case": "x.va", "text": None, "path": FIXTURES / "verilog-a/ch05_analog_behavior/rlc.va"}
         self.assertEqual(classify_diff(c, "refuse", "refuse", "p ; electrical p ; >>string<< s ;", "accept",
                                        "a passing positive fixture")[0], "bnf-transcription")
         self.assertEqual(classify_diff(c, "accept", "accept", "", "crash", "exit -11:")[0], "vera-bug")
@@ -5744,7 +4631,7 @@ class EvidenceTests(unittest.TestCase):
     def test_dispositions_only_name_whole_clauses(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            path = root / "tests/fixtures/conformance/GAPS.tsv"
+            path = root / "tests/conformance/vera/ledger/GAPS.tsv"
             path.parent.mkdir(parents=True)
             path.write_text("standard\tcitation\tbaseline\tdisposition\tsources\treason\n"
                             "ams\t1.4\tuncovered\tno-fixed-oracle\t-\tnon-normative\n"
@@ -5841,10 +4728,10 @@ class EvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "tests").mkdir()
-            (root / "ams.tsv").write_text("pass\tch01_intro/current_source.va\n")
+            (root / "ams.tsv").write_text("pass\tverilog-a/ch01_intro/current_source.va\n")
             before = collect_report(root, [])
             self.assertEqual(before["ams_obligations"]["rows"]["5.6.1:1"], "E2")
-            (root / "ams-perturbed.tsv").write_text("pass\tch01_intro/current_source.va\n")
+            (root / "ams-perturbed.tsv").write_text("pass\tverilog-a/ch01_intro/current_source.va\n")
             after = collect_report(root, [])
             self.assertEqual(after["ams_obligations"]["rows"]["5.6.1:1"], "E3")
             self.assertEqual(after["fixture_results"], before["fixture_results"])
@@ -5890,7 +4777,7 @@ class GapInventoryTests(unittest.TestCase):
         ledger = read_ledger()
         seen = set()
         counts = {"ams": 0, "ieee": 0, "sentence": 0}
-        for line in (FIXTURES / "conformance/GAPS.tsv").read_text().splitlines():
+        for line in (LEDGER_DIR / "GAPS.tsv").read_text().splitlines():
             if not line or line.startswith("#"):
                 continue
             standard, cite, baseline, disposition, sources, reason = line.split("\t")
@@ -5916,7 +4803,7 @@ class GapInventoryTests(unittest.TestCase):
         self.assertEqual(counts, {"ams": 27, "ieee": 231, "sentence": 23})
 
     def test_pending_profiles_have_inputs_and_explicit_oracles(self):
-        profiles = json.loads((FIXTURES / "conformance/PROFILES.json").read_text())
+        profiles = json.loads((LEDGER_DIR / "PROFILES.json").read_text())
         seen = set()
         for row in profiles["scenarios"]:
             self.assertNotIn(row["id"], seen)
@@ -5935,9 +4822,9 @@ class GapInventoryTests(unittest.TestCase):
 
     def test_behavior_inventory_names_real_checks_without_claiming_execution(self):
         specialized = read_specialized(ROOT, clause_inventory(), read_ledger())
-        known = {p.relative_to(FIXTURES).as_posix() for p in FIXTURES.rglob("*") if p.is_file()}
+        known = {p.relative_to(FIXTURES).as_posix() for p in fixture_files("*")}
         known.update("specialized:" + row["id"] for row in specialized)
-        rows = feature_groups(FIXTURES / "conformance/FEATURE_GAPS.tsv", known, {})
+        rows = feature_groups(LEDGER_DIR / "FEATURE_GAPS.tsv", known, {})
         self.assertTrue(rows)
         self.assertEqual({row["status"] for row in rows}, {"not-run"})
 
@@ -5946,13 +4833,20 @@ class FixtureLayoutTests(unittest.TestCase):
     """The path relationships discovery and coverage depend on."""
 
     def test_host_and_vpi_designs_exist(self):
+        # A host's `//! device` is relative to the suite root; a `.c`'s
+        # `//! design` to the `.c`'s own directory.
         missing = []
-        for path in fixture_files("*_host.zig", "*.c"):
-            key = "design" if path.suffix == ".c" else "device"
+        for path in sorted((VERA / "host").glob("*.zig")) + fixture_files("*.c"):
+            key, base = ("design", path.parent) if path.suffix == ".c" else ("device", SUITE)
             for rel in re.findall(rf"(?m)^//! {key} (.+)$", path.read_text()):
-                if not (FIXTURES / rel).is_file():
+                if not (base / rel.strip()).is_file():
                     missing.append(f"{path.relative_to(ROOT)}: {rel}")
         self.assertEqual(missing, [])
+
+    def test_ch12_no_numbered_hdl_fixture_claims_vpi_execution(self):
+        for path in FIXTURES.glob("*/ch12_vpi_routines/[0-9]*.va"):
+            with self.subTest(path=path.name):
+                self.assertNotRegex(path.read_text(), r"(?m)^//! lrm 12(?:\.|$)")
 
     def test_legal_neighbours_exist(self):
         missing = []
@@ -5964,14 +4858,14 @@ class FixtureLayoutTests(unittest.TestCase):
 
     def test_spice_models_exist_at_the_declared_relative_path(self):
         missing = []
-        for path in FIXTURES.rglob("*.sp"):
+        for path in fixture_files("*.sp", roots=AMS_ROOTS):
             for rel in re.findall(r'(?im)^\s*\.hdl\s+"([^"]+)"', path.read_text()):
                 if not (path.parent / rel).is_file():
                     missing.append(f"{path.relative_to(FIXTURES)}: {rel}")
         self.assertEqual(missing, [])
 
     def test_spice_oracle_hashes_match_the_deck(self):
-        for path in FIXTURES.rglob("*.sp"):
+        for path in fixture_files("*.sp", roots=AMS_ROOTS):
             oracle = path.with_suffix(".expected.json")
             if not oracle.exists():
                 continue
@@ -5981,7 +4875,7 @@ class FixtureLayoutTests(unittest.TestCase):
 
     def test_digital_goldens_have_a_source(self):
         missing = []
-        for path in FIXTURES.rglob("*.expected.txt"):
+        for path in fixture_files("*.expected.txt"):
             stem = path.name.removesuffix(".expected.txt")
             if not path.with_name(stem + ".v").is_file():
                 missing.append(str(path.relative_to(FIXTURES)))

@@ -1,3 +1,0 @@
-# Chapter 2, read against specification/ch2-lexical.html on 2026-09-24.
-# Format: <clause>\t<kind>\t<evidence>.
-2.1	non-normative	The whole clause is one sentence of overview: "This clause describes the lexical tokens used in Verilog-AMS HDL source text and their conventions." The rules it introduces are §2.2–§2.9's, each cited by its own fixtures in this directory.

@@ -1,4 +1,0 @@
-sum2=6 wide=1 real=1 count=8
-sum3=9 wide=1 real=1 count=17
-sum4=1 wide=1 rounded=2 count=11
-selected=1

@@ -17,14 +17,11 @@ const Error = cg.Error;
 // The pure half: which sites are honoured, and the questions both halves ask.
 const plan_limit = @import("codegen/plan/limit.zig");
 const gen_mask = @import("codegen/mask.zig");
-/// A `$limit` algorithm name (§9.17.3).
-pub const Alg = plan_limit.Alg;
-/// One honoured `$limit` site.
-pub const LimitCall = plan_limit.LimitCall;
+const LimitCall = plan_limit.LimitCall;
 const Ladder = plan_limit.Ladder;
 const Rung = plan_limit.Rung;
 
-const none_u32 = std.math.maxInt(u32);
+const none_u32 = cg.none_u32;
 
 // -------------------------------------------------------- the live sets
 
@@ -38,6 +35,29 @@ const none_u32 = std.math.maxInt(u32);
 /// mirrors `emitClamp`/`emitLadder` site for site.
 /// `Gen.mw` words each (`codegen/mask.zig`).
 const Live = struct { reads: []u64, writes: []u64 };
+
+/// What call `i` emits in `limit`: its own clamp, or the `fetlimds` mode
+/// ladder or `pnjlimds` bulk rung whose earlier leg it is. Null for the
+/// partner leg and a claimed `limvds`, which that ladder or rung speaks for
+/// (`Collect` kept only complete ones). `liveSets`, `emitSigns` and `emit`
+/// all walk this, so the live masks mirror the emitted clamps site for site.
+const Site = union(enum) { clamp: LimitCall, ladder: Ladder, rung: Rung };
+
+fn siteAt(g: *const Gen, i: usize) ?Site {
+    const lc = g.limits.calls[i];
+    switch (lc.alg) {
+        .fetlimds => {
+            const lad = g.limits.ladderOf(i).?;
+            return if (i == @min(lad.gs, lad.gd)) .{ .ladder = lad } else null;
+        },
+        .pnjlimds => {
+            const r = g.limits.rungOf(i).?;
+            return if (i == @min(r.bs, r.bd)) .{ .rung = r } else null;
+        },
+        .limvds => return if (g.limits.limvdsClaimed(i)) null else .{ .clamp = lc },
+        .pnjlim, .fetlim, .steplim => return .{ .clamp = lc },
+    }
+}
 
 /// Sets unknown `u` in `m`; `none_u32` (no node) sets nothing.
 fn put(m: []u64, u: u32) void {
@@ -60,10 +80,8 @@ pub fn liveSets(g: *const Gen) Error!Live {
     if (usesCore(g)) {
         if (g.mw == 1) lv.reads[0] = std.math.maxInt(u64) else for (0..g.names.n_u) |u| gen_mask.set(lv.reads, @intCast(u));
     }
-    for (g.limits.calls, 0..) |lc, i| switch (lc.alg) {
-        .fetlimds => {
-            const lad = g.limits.ladderOf(i).?;
-            if (i != @min(lad.gs, lad.gd)) continue;
+    for (0..g.limits.calls.len) |i| switch (siteAt(g, i) orelse continue) {
+        .ladder => |lad| {
             // The two mode arms unioned: the shared gate is read, and both
             // channel nodes are read AND written (which one takes the fetlim
             // correction and which the limvds one swaps with the mode).
@@ -74,15 +92,12 @@ pub fn liveSets(g: *const Gen) Error!Live {
             put(lv.writes, gd.lo);
         },
         // The rung reads the bulk and both channel nodes, and writes the bulk.
-        .pnjlimds => {
-            const r = g.limits.rungOf(i).?;
-            if (i != @min(r.bs, r.bd)) continue;
+        .rung => |r| {
             const bs = g.limits.calls[r.bs];
             for ([_]u32{ bs.hi, bs.lo, g.limits.calls[r.bd].lo }) |u| put(lv.reads, u);
             put(lv.writes, bs.hi);
         },
-        .limvds => if (!g.limits.limvdsClaimed(i)) unionSite(lv, g, lc),
-        .pnjlim, .fetlim, .steplim => unionSite(lv, g, lc),
+        .clamp => |lc| unionSite(lv, g, lc),
     };
     // `seed` corrects the same node `emitClamp` does, but it is ORed in
     // anyway: the host initialises `lim_x` through `seed` and reads it back
@@ -275,20 +290,10 @@ pub fn emit(g: *Gen) Error!void {
     for (g.limits.calls) |lc| any_pnjlim = any_pnjlim or lc.alg == .pnjlim or lc.alg == .pnjlimds or lc.alg == .steplim;
     if (any_pnjlim) try g.w("    var ok = true;\n", .{});
     try emitSigns(g);
-    for (g.limits.calls, 0..) |lc, i| switch (lc.alg) {
-        // Collect kept only complete ladders; the earlier leg speaks for all
-        // three sites, the partner and the claimed limvds stay silent.
-        .fetlimds => {
-            const lad = g.limits.ladderOf(i).?;
-            if (i == @min(lad.gs, lad.gd)) try emitLadder(g, lad);
-        },
-        // Likewise the bulk rung, at its earlier leg.
-        .pnjlimds => {
-            const r = g.limits.rungOf(i).?;
-            if (i == @min(r.bs, r.bd)) try emitRung(g, r);
-        },
-        .limvds => if (!g.limits.limvdsClaimed(i)) try emitClamp(g, lc),
-        .pnjlim, .fetlim, .steplim => try emitClamp(g, lc),
+    for (0..g.limits.calls.len) |i| switch (siteAt(g, i) orelse continue) {
+        .ladder => |lad| try emitLadder(g, lad),
+        .rung => |r| try emitRung(g, r),
+        .clamp => |lc| try emitClamp(g, lc),
     };
     try g.w("    return .{{ .x = x, .converged = ", .{});
     if (any_pnjlim) try g.w("ok", .{});
@@ -322,26 +327,13 @@ pub fn emit(g: *Gen) Error!void {
 fn emitSigns(g: *Gen) Error!void {
     var seen: std.ArrayList(u32) = .empty;
     defer seen.deinit(g.gpa);
-    // Mirrors `emit`'s dispatch site for site. A claimed `limvds` emits no
-    // clamp of its own but is the ladder's channel rung, so its sign is still
-    // referenced. An unreferenced const is a Zig compile error.
-    for (g.limits.calls, 0..) |lc, i| switch (lc.alg) {
-        .fetlimds => {
-            const lad = g.limits.ladderOf(i).?;
-            if (i != @min(lad.gs, lad.gd)) continue;
-            try oneSign(g, &seen, g.limits.calls[lad.gs].sign);
-            try oneSign(g, &seen, g.limits.calls[lad.gd].sign);
-            try oneSign(g, &seen, g.limits.calls[lad.ds].sign);
-        },
-        .pnjlimds => {
-            const r = g.limits.rungOf(i).?;
-            if (i != @min(r.bs, r.bd)) continue;
-            try oneSign(g, &seen, g.limits.calls[r.bs].sign);
-            try oneSign(g, &seen, g.limits.calls[r.bd].sign);
-            try oneSign(g, &seen, g.limits.calls[r.ds].sign);
-        },
-        .limvds => if (!g.limits.limvdsClaimed(i)) try oneSign(g, &seen, lc.sign),
-        .pnjlim, .fetlim, .steplim => try oneSign(g, &seen, lc.sign),
+    // `emit`'s dispatch, site for site (`siteAt`). A claimed `limvds` emits
+    // no clamp of its own but is the ladder's channel rung, so its sign is
+    // still referenced. An unreferenced const is a Zig compile error.
+    for (0..g.limits.calls.len) |i| switch (siteAt(g, i) orelse continue) {
+        .ladder => |lad| for ([_]u32{ lad.gs, lad.gd, lad.ds }) |k| try oneSign(g, &seen, g.limits.calls[k].sign),
+        .rung => |r| for ([_]u32{ r.bs, r.bd, r.ds }) |k| try oneSign(g, &seen, g.limits.calls[k].sign),
+        .clamp => |lc| try oneSign(g, &seen, lc.sign),
     };
 }
 

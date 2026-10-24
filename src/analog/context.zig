@@ -1188,10 +1188,8 @@ fn recordProbeTerminal(self: *Lower, t: Ast.ExprId, only: bool) Oom!void {
     };
     if (self.out.discrete_probes.contains(key)) return;
     const name = if (ex.tag(t) == .ident) key else try lower_expr.flatName(self, t);
-    const pair: [2]u32 = if (only and self.branches.contains(name)) blk: {
-        const b = self.branches.get(name).?;
-        break :blk .{ b.hi, b.lo };
-    } else if (self.node_voltages.get(name)) |n| .{ n, Lower.ground } else {
+    const branch = if (only) self.branches.get(name) else null;
+    const pair: [2]u32 = if (branch) |b| .{ b.hi, b.lo } else if (self.node_voltages.get(name)) |n| .{ n, Lower.ground } else {
         if (ex.tag(t) == .hier_ident) try self.err(ex.mainTok(t), .E0901, "`{s}` names no net or branch in the elaborated design", .{name});
         return;
     };
@@ -1304,7 +1302,7 @@ test markDiscreteExprs {
 
 test "collectInitialState: A.6.2 a constant initial installs its value; an undeclared target is E0313" {
     // A body that is not the constant shape is `isMixed`'s (its test, #57).
-    const cases = [_]struct { decls: []const u8, want: ?@import("diag").Code }{
+    const cases = [_]struct { decls: []const u8, want: ?diag.Code }{
         .{ .decls = "  real x;\n  initial x = 2.0;", .want = null },
         // §6.8: a name the module never declared.
         .{ .decls = "  initial zz = 1.0;", .want = .E0313 },

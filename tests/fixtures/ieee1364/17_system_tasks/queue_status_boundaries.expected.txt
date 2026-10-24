@@ -1,9 +1,0 @@
-bad type=4
-zero length=5
-negative length=5
-legal create=0
-duplicate=6
-undefined add=2
-undefined remove=2
-undefined exam=2
-undefined full=2

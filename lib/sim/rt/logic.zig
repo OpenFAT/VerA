@@ -144,7 +144,7 @@ pub inline fn k(v: u64, x: u64) W {
     return .{ .v = v, .x = x };
 }
 
-/// Bit 0.
+/// Bit 0 of a `W` or a `Wide`: the bit an edge is of (§9.7.2).
 pub inline fn low(a: anytype) Bit {
     const s = wide(a);
     return @fromBackingInt(@intCast(@as(u2, @intCast(s.v[0] & 1)) | @as(u2, @intCast(s.x[0] & 1)) << 1));

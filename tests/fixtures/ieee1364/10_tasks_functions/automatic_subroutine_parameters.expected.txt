@@ -1,4 +1,0 @@
-add4=7 add5=8
-task4=7
-task5=8
-sum2=6 sum3=9

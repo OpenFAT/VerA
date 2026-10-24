@@ -1,4 +1,0 @@
-t12 nd=1 nn=1 ca=1
-t14 nd=2 nn=2 ca=2
-t24 nd=2 nn=2 ca=2
-t26 nd=0 nn=0 ca=0

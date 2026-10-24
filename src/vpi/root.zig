@@ -43,9 +43,13 @@ pub const systf = @import("systf.zig");
 pub const code = @import("code.zig");
 /// The analog analysis a host attaches a device library to and runs.
 pub const analog_run = @import("analog.zig");
+/// §12.19-§12.22: one-to-one traversal and lookup by name or index.
 pub const handle = @import("handle.zig");
+/// §12.23/§12.35 one-to-many traversal and its reverse indexes.
 pub const iterate = @import("iterate.zig");
+/// §12.5/§12.12/§12.18 property reads.
 pub const property = @import("property.zig");
+/// §12.11/§12.29 delays, and IEEE 1364-2005 §26.6.16's inter-module paths.
 pub const delays = @import("delays.zig");
 const analog_model = @import("model_analog.zig");
 const digital_model = @import("model_digital.zig");
@@ -90,7 +94,7 @@ pub const no_obj: u32 = std.math.maxInt(u32);
 //
 // These must agree with src/vpi/vpi_user.h (IEEE 1364-2005 Annex G's
 // numbering, which §12.2 and §12.31 defer to). Nothing shares a source of
-// truth between the two; tests/fixtures/ch11_vpi/vpi_app.c, compiled against the header,
+// truth between the two; tests/conformance/tests/verilog-ams/ch11_vpi/vpi_app.c, compiled against the header,
 // asserts every constant it names (e.g. `vpi_get(vpiType, m) == vpiModule`).
 // ---------------------------------------------------------------------------
 
@@ -112,7 +116,7 @@ pub const vpiVariables: c_int = 100;
 pub const vpiAutomatic: c_int = 50;
 
 // §11.6.2/§11.6.5–§11.6.7, the analog classes. Verilog-AMS names these and
-// numbers none; VerA's numbers, shared with tests/fixtures/ch12_vpi_routines/
+// numbers none; VerA's numbers, shared with tests/conformance/tests/verilog-ams/ch12_vpi_routines/
 // p03_vpi_analog.h so a plugin including both sees one value per name.
 pub const vpiQuantity: c_int = 720;
 pub const vpiBranch: c_int = 721;
@@ -434,12 +438,6 @@ pub const Obj = struct {
     expr_scope: OptU32 = .none,
     /// `.net` only: its A.2.2.1 net type, IEEE 1364-2005 §26.6.6 vpiNetType.
     net_type: Ast.NetKind = .wire,
-    /// `.code` only: §11.6.13/§11.6.14's vpiDefName of a primitive or UDP
-    /// definition.
-    def_name: []const u8 = "",
-    /// A declaration inside a generated digital scope evaluates its source
-    /// attribute expressions there, including the iteration's localparam.
-    src_engine: OptU32 = .none,
     /// A continuous assignment's literal delays, in its module's time unit
     /// (IEEE 1364 §7.14: rise, fall, turn-off), for §12.11. Hot, not in
     /// `Cold`: §12.29's vpi_put_delays may give one to any gate or
@@ -451,9 +449,10 @@ pub const Obj = struct {
 };
 
 // Budget: the row every handle points at and every scan walks. 472 bytes
-// before the cold split; a new field that is not on most rows goes in `Cold`.
+// before the cold split, 224 before `def_name` and `src_engine` left it; a
+// new field that is not on most rows goes in `Cold`.
 comptime {
-    std.debug.assert(@sizeOf(Obj) == 224);
+    std.debug.assert(@sizeOf(Obj) == 200);
 }
 
 /// `Obj.cold` of a row with no `Cold` entry.
@@ -533,6 +532,13 @@ pub const Cold = struct {
     /// override ranges retain this identity, so traversal can distinguish
     /// two source statements that write the same target (§26.6.6 i, j).
     override_expr: Ast.ExprId = .none,
+    /// A vpiUdpDefn: its §11.6.14 vpiDefName. A primitive's is derived
+    /// (`code.defName`).
+    def_name: []const u8 = "",
+    /// A net of a generated digital scope: that scope's engine index, where
+    /// its source attribute expressions evaluate (the iteration's localparam
+    /// included).
+    src_engine: ?u32 = null,
     /// IEEE 1364-2005 §26.3.3 vpiLineNo and vpiFile, resolved when the model
     /// was built: the analog model's instances (model/analog.zig), whose
     /// compilation is freed after `open`. The digital model resolves its
@@ -543,6 +549,25 @@ pub const Cold = struct {
 /// IEEE 1364-2005 §26.3.3: a 1-based line of a named source file, as
 /// written (no §19.7 `line renumbering).
 pub const Loc = struct { line: c_int, file: []const u8 };
+
+/// Where span-currency offset `start` lands through `bag`'s source map (an
+/// `include`d file names itself, a macro expansion its invocation): the
+/// physical line, and the file name, borrowed from `bag`.
+pub fn locate(bag: *const @import("vera").diag.Bag, start: u32) Loc {
+    const at = bag.locate(.{ .start = start, .end = start }, null);
+    const off = bag.toSourceOffset(at.file, at.offset);
+    const text = bag.sourceText(at.file);
+    return .{
+        .line = @intCast(1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n")),
+        .file = bag.fileName(at.file),
+    };
+}
+
+/// `x`'s first single arrow `tag`, or `no_obj`.
+pub fn edgeTo(x: *const Obj, tag: c_int) u32 {
+    for (x.edges) |e| if (e.tag == tag) return e.to;
+    return no_obj;
+}
 
 const empty_cold: Cold = .{};
 
@@ -625,13 +650,13 @@ pub const Design = struct {
     /// and `object` accepts a pointer only if it lands here on an element
     /// boundary. One object always yields one pointer, but applications must
     /// still compare with `vpi_compare_objects` (§12.3).
-    objects: []Obj,
+    objects: []Obj = &.{},
     /// The `Cold` rows `Obj.cold` indexes, in no particular order.
     cold: []Cold = &.{},
-    scopes: []Scope,
+    scopes: []Scope = &.{},
     /// §11.6.1 NOTE 1 — what `vpi_iterate(vpiModule, NULL)` walks. One entry:
     /// `Elaborate.pickTop` elaborates exactly one design root.
-    top_modules: []const u32,
+    top_modules: []const u32 = &.{},
     /// §11.6.2's two top-level sets: `vpi_iterate(vpiDiscipline, NULL)` and
     /// `vpi_iterate(vpiNature, NULL)`, in declaration order. Empty for a
     /// digital design, which declares neither.
@@ -654,9 +679,9 @@ pub const Design = struct {
     file: ?*const Ast.SourceFile = null,
     /// §11.6 `vpiFullName` → object index. Every object has one and they are
     /// unique, which is what makes §12.21 a lookup rather than a tree walk.
-    by_name: std.StringHashMapUnmanaged(u32),
+    by_name: std.StringHashMapUnmanaged(u32) = .empty,
     /// The live iterators, keyed by handle value.
-    iters: std.AutoHashMapUnmanaged(usize, *Iter),
+    iters: std.AutoHashMapUnmanaged(usize, *Iter) = .empty,
     /// iterate.zig's reverse indexes, built on first use; owned (`gpa`).
     relations: ?iterate.Relations = null,
     /// §12.32.2 the partials each analog call's derivtf declared, by call
@@ -665,6 +690,13 @@ pub const Design = struct {
     /// IEEE 1364-2005 §27.31 user data, by call object index and the host
     /// instance whose calltf was running (`systf.active_inst`).
     userdata: std.AutoHashMapUnmanaged(systf.UserKey, ?*anyopaque) = .empty,
+
+    /// The index of row `o`, which must point into `objects` (a pointer
+    /// `asObj` returned, or `&objects[i]`); any other pointer is a wrong
+    /// index or a safety panic.
+    pub fn indexOf(d: *const Design, o: *const Obj) u32 {
+        return @intCast((@intFromPtr(o) - @intFromPtr(d.objects.ptr)) / @sizeOf(Obj));
+    }
 
     /// Frees the model and every live iterator; all handles become invalid.
     pub fn deinit(self: *Design) void {

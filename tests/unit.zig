@@ -432,8 +432,10 @@ pub const parser_tests = struct {
         };
         // Annex C.2 through C.8: disciplined nets (`wire` with a discipline is
         // clause 3's, C.4), named branches and events, analog blocks and
-        // functions, ranged parameters, instances.
+        // functions, ranged parameters, instances. C.17: an unused discrete
+        // discipline (annex D's `logic`) is silently ignored.
         const subset =
+            \\discipline logic; domain discrete; enddiscipline
             \\nature Charge; abstol = 1e-14; access = Q; units = "C"; endnature
             \\discipline elec; domain continuous; potential Charge; enddiscipline
             \\module r(p, n); inout p, n; elec p, n; wire elec w; event e;
@@ -452,7 +454,7 @@ pub const parser_tests = struct {
         const digital = try Case.parse(arena,
             \\discipline d; domain discrete; enddiscipline
             \\connectrules cr; endconnectrules
-            \\module m(a); input a; elec a; reg q; wire w; wreal r;
+            \\module m(a); input a; elec a; reg q; wire w; wreal r; d x;
             \\  assign w = a; and g(w, a, a); task t; ; endtask
             \\  initial q = 1; always @(a) q = a;
             \\  analog begin if (a === 1) ; casex (a) 1: ; endcase end
@@ -460,7 +462,8 @@ pub const parser_tests = struct {
             \\
         );
         // The W0252 an analog parse puts on a gate primitive is not the subset's.
-        const want = [_][]const u8{ "domain discrete", "connectrules", "reg", "wreal", "assign", "and", "task", "initial", "always", "===", "casex" };
+        // C.4's `domain discrete` is the use `d x`, judged once the file is read.
+        const want = [_][]const u8{ "connectrules", "reg", "wreal", "assign", "and", "task", "initial", "always", "===", "casex", "domain discrete" };
         var k: usize = 0;
         for (0..digital.count()) |i| {
             if (digital.code(i) != .E0250) continue;
@@ -1770,6 +1773,23 @@ pub const parser_tests = struct {
         const r = try parseForTest(arena, src.items);
         try std.testing.expectEqual(@as(usize, 0), r.count());
         try std.testing.expectEqualStrings("u[100001].p", r.file.str(r.file.modules[0].defparams[0].path));
+    }
+
+    test "§6.6 generate regions nested 10^5 deep are E0228, not a stack overflow" {
+        // "Generate regions do not nest": each inner one is reported and read
+        // on, a recursion through the module-item loop that no `enter` counts.
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const n = 100_000;
+        var src: std.ArrayList(u8) = .empty;
+        try src.appendSlice(arena, "module m; ");
+        for (0..n) |_| try src.appendSlice(arena, "generate ");
+        for (0..n) |_| try src.appendSlice(arena, "endgenerate ");
+        try src.appendSlice(arena, "endmodule");
+        const r = try parseForTest(arena, src.items);
+        try std.testing.expect(r.count() != 0);
+        try std.testing.expectEqual(diag.Code.E0228, r.code(0));
     }
 
     test "a stack segment that cannot be reserved is E0241, naming the depth" {
@@ -7628,7 +7648,7 @@ pub const lower_tests = struct {
     }
 
     test "lower: a 60000-statement dependency chain lowers without exhausting the stack" {
-        // tests/fixtures/conformance/ADVERSARIAL.tsv: `scanFinite` recursed along the whole
+        // tests/conformance/vera/ledger/ADVERSARIAL.tsv: `scanFinite` recursed along the whole
         // chain and overflowed the native stack at 2e4 chained statements.
         const gpa = std.testing.allocator;
         var src: std.ArrayList(u8) = .empty;
@@ -7741,15 +7761,15 @@ pub const lower_tests = struct {
 };
 
 pub const rtlil_tests = struct {
-    //! `digital.rtlil` over the designs `tests/fixtures/rtlil/` holds: the RTLIL text a
+    //! `digital.rtlil` over the designs `tests/conformance/vera/rtlil/` holds: the RTLIL text a
     //! module, a process, a cell and a refusal come out as. Yosys's own reading of
-    //! the same text is `zig build test-rtlil`.
+    //! the same text is `zig build test-external`.
 
     const std = @import("std");
     const digital = @import("digital");
     const diag = @import("diag");
 
-    const counter = @embedFile("fixtures/rtlil/counter.v");
+    const counter = @embedFile("conformance/vera/rtlil/counter.v");
 
     fn emit(arena: std.mem.Allocator, src: []const u8) ![]const u8 {
         var bag: diag.Bag = .init(arena);
@@ -9462,6 +9482,7 @@ pub const preprocessor_tests = struct {
     const scan_stops = Preprocessor.scan_stops;
     const findStop = Preprocessor.findStop;
     const Qualifier = Preprocessor.Qualifier;
+    const vera = @import("vera");
 
     // ---------------------------------------------------------------------------
     // Tests
@@ -11256,6 +11277,98 @@ pub const preprocessor_tests = struct {
         try testing.expectEqualStrings("`GAN", src[fix.span.start..fix.span.end]);
     }
 
+    // `require_std_includes`, the conformance suite's convention and `vera`'s:
+    // the prelude is still prepended, but a source reaches annex D only by
+    // including it.
+    const std_model =
+        \\module res(p, n);
+        \\  inout p, n;
+        \\  electrical p, n;
+        \\  parameter real r = 1000.0 from (0.0:inf);
+        \\  analog I(p, n) <+ V(p, n) / r;
+        \\endmodule
+    ;
+    /// `std_model` reading annex D.2's `M_PI.
+    const pi_model =
+        \\module res(p, n);
+        \\  inout p, n;
+        \\  electrical p, n;
+        \\  parameter real r = 1000.0 * `M_PI from (0.0:inf);
+        \\  analog I(p, n) <+ V(p, n) / r;
+        \\endmodule
+    ;
+    const std_includes = "`include \"disciplines.vams\"\n`include \"constants.vams\"\n";
+
+    /// Whether a `.lint` of `src` fails with a `code` diagnostic.
+    fn lintReports(src: []const u8, opts: vera.Options, code: diag.Code) !bool {
+        var bag: diag.Bag = .init(testing.allocator);
+        defer bag.deinit(testing.allocator);
+        var o = opts;
+        o.diags = &bag;
+        try testing.expectError(error.CompileFailed, vera.compileSourceOpts(testing.allocator, src, .lint, o));
+        for (0..bag.count()) |i| if (bag.at(i).code == code) return true;
+        return false;
+    }
+
+    test "require_std_includes: annex D reaches a source that includes it, under --sim=verilogA too" {
+        const gpa = testing.allocator;
+        // Annex C.17: disciplines.vams's discrete `logic` and `ddiscrete` are
+        // ignored, with the prelude (the include is then guarded empty) or
+        // without it (the include splices the header itself).
+        for ([_]vera.Sim{ .verilog_ams, .verilog_a }) |sim| for ([_]bool{ true, false }) |std_defs| {
+            var res = try vera.compileSourceOpts(gpa, std_includes ++ std_model, .lint, .{ .require_std_includes = true, .sim = sim, .std_defs = std_defs });
+            res.deinit();
+        };
+        var pi = try vera.compileSourceOpts(gpa, std_includes ++ pi_model, .lint, .{ .require_std_includes = true });
+        pi.deinit();
+    }
+
+    test "require_std_includes: annex D without its include is E0371 or E0115, and is not without the option" {
+        // A D.1 discipline without disciplines.vams.
+        try testing.expect(try lintReports(std_model, .{ .require_std_includes = true }, .E0371));
+        var res = try vera.compileSourceOpts(testing.allocator, std_model, .lint, .{});
+        res.deinit();
+        // A D.2 macro without constants.vams.
+        const pi = "`include \"disciplines.vams\"\n" ++ pi_model;
+        try testing.expect(try lintReports(pi, .{ .require_std_includes = true }, .E0115));
+        var res2 = try vera.compileSourceOpts(testing.allocator, pi, .lint, .{});
+        res2.deinit();
+    }
+
+    test "require_std_includes: annex D's own guards read as undefined until the file is included" {
+        // A header that includes D.1 only when nothing has yet (the suite's
+        // check.vh): the prelude's `DISCIPLINES_VAMS` must not hide the include.
+        const guarded = "`ifndef DISCIPLINES_VAMS\n`include \"disciplines.vams\"\n`endif\n" ++
+            "`ifndef CONSTANTS_VAMS\n`include \"constants.vams\"\n`endif\n";
+        var res = try vera.compileSourceOpts(testing.allocator, guarded ++ pi_model, .lint, .{ .require_std_includes = true });
+        res.deinit();
+        // A source that declares its own base natures defines the guard first,
+        // and the header then leaves annex D's out (no E0335 on access `V`).
+        const own = "`define DISCIPLINES_VAMS 1\n" ++ guarded ++
+            \\nature own_v; units = "V"; access = V; abstol = 1m; endnature
+            \\nature own_i; units = "A"; access = I; abstol = 1n; endnature
+            \\discipline own_e; domain continuous; potential own_v; flow own_i; enddiscipline
+            \\module m(p); inout p; own_e p; analog I(p) <+ V(p); endmodule
+            \\
+        ;
+        var res2 = try vera.compileSourceOpts(testing.allocator, own, .lint, .{ .require_std_includes = true });
+        res2.deinit();
+        // Without the option the guards are the prelude's, as before.
+        var res3 = try vera.compileSourceOpts(testing.allocator, guarded ++ std_model, .lint, .{});
+        res3.deinit();
+    }
+
+    test "--sim=verilogA: a user's discrete discipline is E0250 where a net uses it (annex C.4)" {
+        // C.17 ignores the definition itself; C.4's error is the domain
+        // binding a net or port takes from it.
+        const src = std_includes ++
+            \\discipline d; domain discrete; enddiscipline
+            \\module m(a); inout a; d a; endmodule
+            \\
+        ;
+        try testing.expect(try lintReports(src, .{ .require_std_includes = true, .sim = .verilog_a }, .E0250));
+    }
+
     /// Preprocesses `src` with every allocation on `gpa`, for
     /// `checkAllAllocationFailures`.
     fn preprocessAll(gpa: Allocator, src: []const u8) !void {
@@ -11360,6 +11473,28 @@ pub const sim_digital_tests = struct {
     const system = root.system;
     const filled = root.for_emitter.net.filled;
     const expectRun = root.expectRun;
+
+    test "vera --param sets a top-level parameter: integer, real, string, and a misspelling refused" {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const src =
+            \\module m; parameter N = 1; parameter S = "hi"; parameter R = 1.5; parameter T = 0;
+            \\initial $display("%0d %s %0.2f %s", N, S, R, T); endmodule
+        ;
+        var bag = diag.Bag.init(a);
+        var out = std.Io.Writer.Allocating.init(a);
+        try root.run(a, src, .{
+            .params = &.{
+                .{ .name = "N", .value = 5, .text = "5" },
+                .{ .name = "S", .value = 12, .text = "12" }, // a string default keeps the text
+                .{ .name = "R", .value = 2.25, .text = "2.25" },
+                .{ .name = "T", .value = std.math.nan(f64), .text = "yo" },
+            },
+        }, &bag, &out.writer);
+        try std.testing.expectEqualStrings("5 12 2.25 yo\n", out.written());
+        try std.testing.expectError(error.DigitalFailed, root.run(a, src, .{ .params = &.{.{ .name = "Q", .value = 1, .text = "1" }} }, &bag, &out.writer));
+    }
 
     test "§17.8 $rtoi takes -2^31 exactly and refuses one past it as x" {
         try expectRun(
@@ -12417,7 +12552,7 @@ pub const codegen_tests = struct {
         const src = try h.gen(std.testing.allocator);
         const unit = src[std.mem.find(u8, src, "fn ml__").?..];
         const body = unit[0..std.mem.find(u8, unit, "\n}\n").?];
-        const lg = std.mem.find(u8, body, "zLnD(S, zPick(").?;
+        const lg = std.mem.find(u8, body, "zLnD(S, zPick(S, ").?;
         // The guard is the branch's condition, and the fallback is `S.con(1.0)`.
         const guard_end = std.mem.find(u8, body[lg..], "S.con(1.0)").?;
         try std.testing.expect(std.mem.find(u8, body[lg..][0..guard_end], "zCmp(S, .lt, S.con(0.0)") != null or
@@ -12656,13 +12791,15 @@ pub const codegen_tests = struct {
         const src = try h.gen(std.testing.allocator);
         // ONE generator (both rows carry `.source = 0`) with TWO coefficients.
         // Without them both rows report the raw 1e-18 and a host computes this
-        // module's output noise 4x and 9x low.
+        // module's output noise 4x and 9x low. Both are voltages in series
+        // with their branch (§4.6.4.1), so each coefficient carries the branch
+        // row's sign, `V(hi,lo) − <value>`: `-(...)`.
         const at = std.mem.find(u8, src, "pub fn noisePsd(").?;
-        try std.testing.expect(std.mem.find(u8, src[at..], ".coeff = 2") != null);
+        try std.testing.expect(std.mem.find(u8, src[at..], ".coeff = -(2") != null);
         // §1.3.1.2: `V(d,c)` drives the same branch as `V(c,d)` with the sign
         // flipped, and the SIGN is what separates correlation from
         // anti-correlation, so it has to survive into the export.
-        try std.testing.expect(std.mem.find(u8, src[at..], ".coeff = -3") != null);
+        try std.testing.expect(std.mem.find(u8, src[at..], ".coeff = -(-3") != null);
     }
 
     test "codegen: §4.6.4.6 a generator no single factor describes keeps coefficient 1" {
@@ -13381,7 +13518,7 @@ pub const codegen_tests = struct {
         // the add from panicking; the truncation is §3.2's width. The left operand
         // is a PARAMETER, so neither fold can reach it and the wrap has to survive
         // as emitted code, which is the site this half of the test is about.
-        try std.testing.expect(std.mem.find(u8, src, "@as(i32, @truncate(((model.big) +% (@as(i64, 1)))))") != null);
+        try std.testing.expect(std.mem.find(u8, src, "@as(i32, @truncate(((@as(i64, model.big)) +% (@as(i64, 1)))))") != null);
     }
 
     test "codegen: a unit whose target is defined in one arm returns a VALUE, not undefined" {
@@ -13830,6 +13967,111 @@ pub const codegen_tests = struct {
         try std.testing.expect(std.mem.find(u8, src, "inst.systf.?") != null);
     }
 
+    test "codegen: Instance carries a `systf` slot only when a `$name` is left to the host" {
+        // The slot is 8 bytes on every instance, so a device that resolves
+        // every `$name` itself has none (`Lowered.Uses.systf`).
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module r(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter real g = 1.0;
+            \\  analog I(p, n) <+ g * V(p, n);
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const src = try h.gen(std.testing.allocator);
+        try std.testing.expect(std.mem.find(u8, src, "systf:") == null);
+        try std.testing.expect(std.mem.find(u8, src, "pub const systf_calls") == null);
+    }
+
+    test "codegen: §3.4.2 an integer parameter takes the narrowest field its range and default allow" {
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module nw(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter integer m = 1 from [0:3];
+            \\  parameter integer t = 1 from [-1:1] exclude 0;
+            \\  parameter integer k = 7;
+            \\  parameter integer d = m + 1 from [0:3];
+            \\  parameter integer w = 300 from [0:1000];
+            \\  parameter real g = 1.0;
+            \\  analog I(p, n) <+ g * V(p, n) * (m + t + k + d + w);
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const src = try h.gen(std.testing.allocator);
+        // The range and the default size the field; no range, or a `derive`
+        // target, keeps the i64 carrier of §3.4.1's 32-bit value.
+        try std.testing.expect(std.mem.find(u8, src, "    m: u8 = 1,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    t: i8 = 1,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    k: i64 = 7,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    d: i64 = 2,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    w: u16 = 300,\n") != null);
+        // A read widens to the i64 the bodies compute in.
+        try std.testing.expect(std.mem.find(u8, src, "@as(i64, model.m)") != null);
+    }
+
+    test "codegen: §9.19 the given flags are one bitset, named by given_params and set by setGiven" {
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module gv(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter real a = 1.0;
+            \\  parameter real b = a;
+            \\  parameter real c = 2.0;
+            \\  analog I(p, n) <+ V(p, n) * (b + c + $param_given(c));
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const src = try h.gen(std.testing.allocator);
+        // `b` is a derive target, `c` is asked about, `a` is neither.
+        try std.testing.expect(std.mem.find(u8, src, "    given__: std.StaticBitSet(2) = .empty,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    pub const given_params = [_][]const u8{\n        \"b\",\n        \"c\",\n    };") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    pub fn setGiven(model: *Model, name: []const u8) void {") != null);
+        try std.testing.expect(std.mem.find(u8, src, "if (!model.given__.isSet(0)) model.b = model.a;") != null);
+        try std.testing.expect(std.mem.find(u8, src, "@intFromBool(model.given__.isSet(1))") != null);
+        try std.testing.expect(std.mem.find(u8, src, "__given") == null);
+    }
+
+    test "codegen: a card value eval reads is copied into Setup beside the derived values" {
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module cp(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter real r = 2.0;
+            \\  parameter real s = 3.0;
+            \\  analog I(p, n) <+ V(p, n) * exp(r) + V(p, n) * V(p, n) * s;
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const src = try h.gen(std.testing.allocator);
+        // `exp(r)` is derived; `s` is a plain read, copied so the core touches
+        // `su` alone. `r` feeds only the derived root, so it is not copied.
+        try std.testing.expect(std.mem.find(u8, src, "    r: [2]f64 = @splat(") != null);
+        try std.testing.expect(std.mem.find(u8, src, "model.su.r[0] = (S.con(model.s)).val();") != null);
+        try std.testing.expect(std.mem.find(u8, src, ".scale(model.su.r[0])") != null);
+        // The card is read once, by the copy.
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, src, "S.con(model.s)"));
+        // With nothing derived there is no `Setup` to pack into: the card is read.
+        var h2: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module cq(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  parameter real s = 3.0;
+            \\  analog I(p, n) <+ V(p, n) * s;
+            \\endmodule
+        , &h2);
+        defer h2.deinit();
+        const src2 = try h2.gen(std.testing.allocator);
+        try std.testing.expect(std.mem.find(u8, src2, "pub const Setup") == null);
+        try std.testing.expect(std.mem.find(u8, src2, "(model.s)") != null);
+    }
+
     test "codegen: a systf call reassembles the host's value and partials into one S" {
         // The shape §12.22.1 forces, and the reason it is forced: `eval` is generic
         // over S and a function POINTER cannot be, so the host returns a value and
@@ -14043,19 +14285,24 @@ pub const codegen_tests = struct {
         , &h);
         defer h.deinit();
         const src = try h.gen(std.testing.allocator);
+        // Bits: `dtemp` 0 (the only flagged parameter), then the aliases
+        // `trise` 1 and `cc` 2 (`given_params`).
+        try std.testing.expect(std.mem.find(u8, src, "    given__: std.StaticBitSet(3) = .empty,\n") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    pub const given_params = [_][]const u8{\n        \"dtemp\",\n        \"trise\",\n        \"cc\",\n    };") != null);
         const alias_then_default =
-            \\    if (model.trise__given) {
+            \\    if (model.given__.isSet(1)) {
             \\        model.dtemp = model.trise;
-            \\        model.dtemp__given = true;
+            \\        model.given__.set(0);
             \\    }
             \\
         ;
         const at = std.mem.find(u8, src, alias_then_default) orelse return error.TestUnexpectedResult;
         // The alias is folded first, so the guarded default sees the raised flag.
-        const guard = std.mem.find(u8, src, "if (!model.dtemp__given) model.dtemp = model.a;") orelse return error.TestUnexpectedResult;
+        const guard = std.mem.find(u8, src, "if (!model.given__.isSet(0)) model.dtemp = model.a;") orelse return error.TestUnexpectedResult;
         try std.testing.expect(at < guard);
-        try std.testing.expect(std.mem.find(u8, src, "    if (model.cc__given) model.c = model.cc;\n") != null);
-        try std.testing.expect(std.mem.find(u8, src, "c__given = true") == null);
+        try std.testing.expect(std.mem.find(u8, src, "    if (model.given__.isSet(2)) model.c = model.cc;\n") != null);
+        // Only `dtemp`'s bit is raised in `derive`: `c` has none to raise.
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, src, "\n        model.given__.set("));
     }
 
     test "codegen: §3.4.2 checkRange names a card value outside its from/exclude ranges (#80)" {
@@ -14142,8 +14389,8 @@ pub const codegen_tests = struct {
 
         // Precedence: the card wins. `__given` is the same flag §9.19 uses, raised
         // by the host's `applyKv` when the model card named the parameter.
-        try std.testing.expect(std.mem.find(u8, src, "if (!model.tnom__given) model.tnom = model.nom_temp__;") != null);
-        try std.testing.expect(std.mem.find(u8, src, "if (!model.tnomk__given) model.tnomk = (model.nom_temp__) + (273.15);") != null);
+        try std.testing.expect(std.mem.find(u8, src, "if (!model.given__.isSet(0)) model.tnom = model.nom_temp__;") != null);
+        try std.testing.expect(std.mem.find(u8, src, "if (!model.given__.isSet(1)) model.tnomk = (model.nom_temp__) + (273.15);") != null);
 
         // A default that reads the host's table is not W1050: `derive()`
         // overwrites the field, which is that warning's own silence condition.
@@ -14185,7 +14432,7 @@ pub const codegen_tests = struct {
         try std.testing.expect(std.mem.count(u8, src, "reltol__: f64 = 0.001,") == 1);
         try std.testing.expect(std.mem.count(u8, src, "vntol__: f64 = 0.000001,") == 1);
         try std.testing.expect(std.mem.find(u8, src, "abstol__") == null);
-        try std.testing.expect(std.mem.find(u8, src, "if (!model.rt__given) model.rt = model.reltol__;") != null);
+        try std.testing.expect(std.mem.find(u8, src, "if (!model.given__.isSet(0)) model.rt = model.reltol__;") != null);
         // A known name ignores its fallback (§9.15).
         try std.testing.expect(std.mem.find(u8, src, "S.con(model.vntol__)") != null);
     }
@@ -14298,7 +14545,7 @@ pub const codegen_tests = struct {
         // `filter_kernels.zig` has, and the reason both live in real Zig files.
         //
         // Every row below is a sentence of §9.5.4.2, and the numbers are the ones
-        // tests/fixtures/ch09_system_tasks/{048,162,09,06} hold VerA to.
+        // tests/conformance/tests/verilog-a/ch09_system_tasks/{048,162,09,06} hold VerA to.
         const k = @import("kernels").str_kernels;
         // "the number of successfully matched and assigned input items is returned"
         try std.testing.expectEqual(@as(i64, 1), k.zScanN("42", "%d"));
@@ -14334,7 +14581,7 @@ pub const codegen_tests = struct {
         // printing artifact, so what runs here is byte-for-byte what runs there.
         //
         // Every claim below is a sentence of §9.5.1/§9.5.4/§9.5.5/§9.5.7/§9.5.8, and
-        // the digits are the ones tests/fixtures/ch09_system_tasks/{07,046,049,050,
+        // the digits are the ones tests/conformance/tests/verilog-a/ch09_system_tasks/{07,046,049,050,
         // 051,053,054,158,11} hold VerA to.
         const k = @import("kernels").file_kernels;
         // The kernels resolve a path relative to the process cwd (which is exactly
@@ -15298,8 +15545,8 @@ pub const codegen_tests = struct {
         , &h);
         defer h.deinit();
         const src = try h.gen(std.testing.allocator);
-        try std.testing.expect(std.mem.find(u8, src, "    r: [1]f64 = @splat(" ++ gen_kernel_text.nan_lit ++ "),\n    /// One per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: [1]bool = @splat(false),\n};") != null);
-        try std.testing.expect(std.mem.find(u8, src, "model.su.b[0] = (") != null);
+        try std.testing.expect(std.mem.find(u8, src, "    r: [1]f64 = @splat(" ++ gen_kernel_text.nan_lit ++ "),\n    /// One bit per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: std.StaticBitSet(1) = .empty,\n};") != null);
+        try std.testing.expect(std.mem.find(u8, src, "model.su.b.setValue(0, (") != null);
     }
 
     test "codegen: §5.10.2 a held variable written only by @(initial_step) is computed once, by setup" {
@@ -16294,7 +16541,7 @@ pub const digital_tests = struct {
     //! The emitter's tests: Verilog source -> `program`/`device`/`emitDevice`
     //! text, checked for the rows, calls and refusals a construct must produce.
     //! The oracle is the clause each test names; that the text runs as
-    //! `vera --run` does is the corpus's job (`zig build test-1364 -- --native`).
+    //! `vera --run` does is the corpus's job (`zig build suite -- ieee1364 --native`).
     //! Clauses: IEEE 1364-2005 §5.2.1, §7.3, §9.7.1, §9.7.5, §10.3, §11.4.2, §15.
     const std = @import("std");
     const testing = std.testing;
@@ -17353,7 +17600,7 @@ pub const exe_tests = struct {
         try testing.expect(std.mem.find(u8, src, "point(1, &x") != null);
         // §3.4.1/§4.2.1.1: card values go through `cardValue`, which rounds for
         // an `integer` parameter.
-        try testing.expect(std.mem.find(u8, src, "model.g = cardValue(@TypeOf(model.g), 0.002)") != null);
+        try testing.expect(std.mem.find(u8, src, "model.g = cardValue(@TypeOf(model.g), \"g\", 0.002)") != null);
     }
 
     test "every directive set that parses renders to Zig that passes AstGen" {
@@ -17394,8 +17641,6 @@ pub const exe_tests = struct {
             "//! limit V(b) = 0 -> V(b) = 0.1, converged = 0",
             "//! limit -> V(a) = 1.5",
             "//! print none",
-            "//! tran 1n, 10n",
-            "//! onoise V(out) = 1, 10",
         };
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
@@ -17416,7 +17661,7 @@ pub const exe_tests = struct {
             d.certify = r.boolean();
             d.finite_proved = r.boolean();
             const fixed = tb.renderRunner(arena, "gen \"t\" \\", d) catch |e| switch (e) {
-                error.BadSyntax, error.TooManyPoints => continue,
+                error.TooManyPoints => continue,
                 else => return e,
             };
             try expectAstGen(fixed);
@@ -17453,7 +17698,6 @@ pub const exe_tests = struct {
             try tb.renderRunner(arena, "dep", d),
             try tb.renderRunner(arena, "dep", dm),
             try tb.renderVpiLib(arena, "dep", d),
-            try tb.renderRunner(arena, "dep", try tb.parse(arena, "//! solve\n//! onoise V(out) = 1\n")),
         };
         for (texts) |src| for (deprecated) |name| {
             if (std.mem.find(u8, src, name)) |at| {
@@ -17476,7 +17720,7 @@ pub const exe_tests = struct {
         try testing.expectEqual(@as(usize, 3), (try tb.parse(arena, "//! time 0, 1n, 1.5n\n")).times.len);
     }
 
-    test "a time, a temperature and a .tran step are finite" {
+    test "a time and a temperature are finite" {
         // `std.fmt.parseFloat` reads `NaN` and `infinity` (`nan` and `inf` end in
         // a §2.6 scale letter and fail as numbers). None is a §9.10 `$abstime`
         // or `$temperature`, and a NaN time also slips past the order check.
@@ -17487,8 +17731,6 @@ pub const exe_tests = struct {
             "//! time NaN\n",
             "//! time infinity\n",
             "//! time 0, infinity\n",
-            "//! tran 1n, infinity\n",
-            "//! tran infinity, 1n\n",
         }) |line| try testing.expectError(error.BadSyntax, tb.parse(arena, line));
         for ([_][]const u8{ "//! temp NaN\n", "//! temp infinity\n", "//! temp -infinity\n" }) |line|
             try testing.expectError(error.BadNumber, tb.parse(arena, line));
@@ -17565,29 +17807,8 @@ pub const exe_tests = struct {
         // 2 x 3 points, the parameter column fastest.
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "        var pm = model;\n"));
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "        if (comptime @hasDecl(D, \"derive\")) D.derive(Val, &pm);\n"));
-        try testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "        pm.r = cardValue(@TypeOf(pm.r), 3);\n"));
+        try testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "        pm.r = cardValue(@TypeOf(pm.r), \"r\", 3);\n"));
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "solve(&x, &forced, &pm, &inst);"));
-    }
-
-    test "a SPICE deck renders one sim.spice call and leaves every unknown to it" {
-        var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const tran = try tb.renderRunner(arena, "deck", try tb.parse(arena, "//! solve\n//! tran 1n, 10n\n"));
-        try expectAstGen(tran);
-        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, tran, "    @import(\"sim\").spice.deck.runTran(D, title, &model, &inst, 0.000000001, 0.00000001);\n"));
-        try testing.expectEqual(@as(usize, 0), std.mem.count(u8, tran, "        point("));
-        const noise = try tb.renderRunner(arena, "deck", try tb.parse(arena, "//! solve\n//! onoise V(out) = 1, 1k\n"));
-        try expectAstGen(noise);
-        try testing.expect(std.mem.find(u8, noise, "ix(\"out\")") != null);
-        try testing.expect(std.mem.find(u8, noise, "&.{ 1, 1000 });\n") != null);
-        // `sim.spice` solves every unknown, so a deck pins, sweeps and frees none.
-        for ([_][]const u8{
-            "//! tran 1n, 10n\n",
-            "//! solve\n//! tran 1n, 10n\n//! bias V(a) = 1\n",
-            "//! solve\n//! tran 1n, 10n\n//! psweep r = 1\n",
-            "//! solve\n//! tran 1n, 10n\n//! onoise V(out) = 1\n",
-        }) |deck| try testing.expectError(error.BadSyntax, tb.renderRunner(arena, "deck", try tb.parse(arena, deck)));
     }
 
     test "the mixed runner hands each point to sim.mixed and refuses the device-table checks" {
@@ -17616,7 +17837,7 @@ pub const exe_tests = struct {
         const src = try tb.renderVpiLib(arena, "vpi", d);
         try expectAstGen(src);
         for ([_][]const u8{
-            "    g_model.g = cardValue(@TypeOf(g_model.g), 0.002);\n",
+            "    g_model.g = cardValue(@TypeOf(g_model.g), \"g\", 0.002);\n",
             "    set(&g_x, &g_forced, \"n\", 0);\n",
             "    set(&g_x, &g_forced, \"in\", pwl(&wave_0, t));\n",
             "const times = [_]f64{ 0, 0.000000001 };\n",
@@ -17703,7 +17924,7 @@ pub const vpi_tests = struct {
     //! The model's and the routines' unit tests: a design compiled with
     //! `vera.compileSource` (or the digital `run.Harness`), opened, and its rows
     //! and failure paths checked. The ABI, the header's constants and C object
-    //! lifetimes are `zig build test-vpi` (tests/fixtures/ch11_vpi/vpi_app.c against
+    //! lifetimes are `zig build test-vpi` (tests/conformance/tests/verilog-ams/ch11_vpi/vpi_app.c against
     //! src/vpi/vpi_user.h); the last test here checks every Zig copy of a header
     //! constant against the header text.
 
@@ -19063,7 +19284,7 @@ pub const vpi_tests = struct {
         // reflection sees `pub` decls only). A `vpi*`/`cb*` name the header does
         // not define is an error too: VerA's own numbers in that namespace
         // (`vpiQuantity`, `vpiExpStrVal`) are in the header. The `acb*` analog
-        // reasons are not: tests/fixtures/ch12_vpi_routines/p03_vpi_analog.h
+        // reasons are not: tests/conformance/tests/verilog-ams/ch12_vpi_routines/p03_vpi_analog.h
         // defines them, outside this module's directory.
         @setEvalBranchQuota(100_000);
         var checked: usize = 0;
@@ -19404,11 +19625,13 @@ pub const exhaustive_tests = struct {
 
 pub const citations_tests = struct {
     //! Every diagnostic's `.lrm` citation against the clauses that exist: the
-    //! headings of `specification/*.html` (the Verilog-AMS LRM 2023) and the rows of
-    //! `tests/fixtures/ieee1364/CLAUSES.tsv` (IEEE 1364-2005, whose PDF is not in
-    //! git), both read at test time from `repo_options.repo_root` as
-    //! `exhaustive.zig` reads source. In: `diag.info(c).lrm` for every code. Out:
-    //! pass, or one line per citation that names no clause.
+    //! AMS clause inventory (the clause of every row of
+    //! `tests/conformance/vera/ledger/OBLIGATIONS.tsv`, plus each chapter's
+    //! `vera/clauses/*/CLAUSES.tsv`, the rule-free clauses) and the rows of
+    //! `tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv` (IEEE 1364-2005),
+    //! all read at test time from `repo_options.repo_root` as `exhaustive.zig`
+    //! reads source. In: `diag.info(c).lrm` for every code. Out: pass, or one
+    //! line per citation that names no clause.
     //!
     //! No LRM clause: this checks VerA's own catalogue (#68). E0501 cited a
     //! §3.6.1.4 the 2023 LRM does not have (#62); its §3.6.1 has subclauses 1-3.
@@ -19420,37 +19643,14 @@ pub const citations_tests = struct {
 
     const Clauses = std.StringHashMapUnmanaged(void);
 
-    /// `1`, `3.6.1.2`, `A`, `A.1.2`: a number or annex letter, then `.number`s.
-    fn isClause(s: []const u8) bool {
-        if (s.len == 0) return false;
-        var parts = std.mem.splitScalar(u8, s, '.');
-        const first = parts.first();
-        const annex = first.len == 1 and first[0] >= 'A' and first[0] <= 'H';
-        if (!annex and !allDigits(first)) return false;
-        while (parts.next()) |p| if (!allDigits(p)) return false;
-        return true;
-    }
-
-    fn allDigits(s: []const u8) bool {
-        if (s.len == 0) return false;
-        for (s) |c| if (!std.ascii.isDigit(c)) return false;
-        return true;
-    }
-
-    /// Adds the clause number that opens each `<h1>`..`<h6>`: "3.6.1.2 Attributes",
-    /// "10. Compiler directives", "Annex A (normative) ...". Keys borrow `html`.
-    fn addHeadings(gpa: std.mem.Allocator, set: *Clauses, html: []const u8) !void {
-        var i: usize = 0;
-        while (std.mem.findPos(u8, html, i, "<h")) |at| {
-            i = at + 2;
-            if (i >= html.len or html[i] < '1' or html[i] > '6') continue;
-            const gt = std.mem.findScalarPos(u8, html, i, '>') orelse return;
-            var text = html[gt + 1 ..];
-            text = text[0 .. std.mem.findScalar(u8, text, '<') orelse text.len];
-            if (std.mem.startsWith(u8, text, "Annex ")) text = text["Annex ".len..];
-            var tok = text[0 .. std.mem.findScalar(u8, text, ' ') orelse text.len];
-            if (std.mem.endsWith(u8, tok, ".")) tok = tok[0 .. tok.len - 1];
-            if (isClause(tok)) try set.put(gpa, tok, {});
+    /// Adds the first column of every row of a ledger, up to a `:` (the
+    /// requirement ledger's ids are `<clause>:<ordinal>`). Keys borrow `tsv`.
+    fn addClauses(gpa: std.mem.Allocator, set: *Clauses, tsv: []const u8) !void {
+        var rows = std.mem.splitScalar(u8, tsv, '\n');
+        while (rows.next()) |row| {
+            if (row.len == 0 or row[0] == '#') continue;
+            const id = row[0 .. std.mem.findScalar(u8, row, '\t') orelse row.len];
+            try set.put(gpa, id[0 .. std.mem.findScalar(u8, id, ':') orelse id.len], {});
         }
     }
 
@@ -19463,24 +19663,25 @@ pub const citations_tests = struct {
         const root = try Io.Dir.cwd().openDir(io, repo_root, .{});
         defer root.close(io);
         var lrm: Clauses = .empty;
-        var spec = try root.openDir(io, "specification", .{ .iterate = true });
-        defer spec.close(io);
-        var it = spec.iterate();
+        try addClauses(arena, &lrm, try root.readFileAlloc(io, "tests/conformance/vera/ledger/OBLIGATIONS.tsv", arena, .limited(1 << 26)));
+        var clauses = try root.openDir(io, "tests/conformance/vera/clauses", .{ .iterate = true });
+        defer clauses.close(io);
+        var it = clauses.iterate();
         while (try it.next(io)) |e| {
-            if (e.kind != .file or !std.mem.endsWith(u8, e.name, ".html")) continue;
-            try addHeadings(arena, &lrm, try spec.readFileAlloc(io, e.name, arena, .limited(1 << 24)));
+            if (e.kind != .directory or std.mem.eql(u8, e.name, "ieee1364")) continue;
+            const path = try std.fs.path.join(arena, &.{ e.name, "CLAUSES.tsv" });
+            const tsv = clauses.readFileAlloc(io, path, arena, .limited(1 << 24)) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                else => return err,
+            };
+            try addClauses(arena, &lrm, tsv);
         }
-        // The heading reader found a deep clause and an annex subclause, so a
-        // miss below is the citation's, not the reader's.
+        // The inventory holds a deep clause and an annex subclause, so a miss
+        // below is the citation's, not the reader's.
         try std.testing.expect(lrm.contains("3.6.1.2") and lrm.contains("A.1.2"));
 
         var ieee: Clauses = .empty;
-        const tsv = try root.readFileAlloc(io, "tests/fixtures/ieee1364/CLAUSES.tsv", arena, .limited(1 << 24));
-        var lines = std.mem.splitScalar(u8, tsv, '\n');
-        while (lines.next()) |line| {
-            if (line.len == 0 or line[0] == '#') continue;
-            try ieee.put(arena, line[0 .. std.mem.findScalar(u8, line, '\t') orelse line.len], {});
-        }
+        try addClauses(arena, &ieee, try root.readFileAlloc(io, "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv", arena, .limited(1 << 24)));
 
         var missing: usize = 0;
         for (0..@typeInfo(diag.Code).@"enum".field_names.len) |i| {
@@ -19523,7 +19724,7 @@ pub const oom_tests = struct {
 
     /// `check.vh` lives here; every fixture below includes nothing else but the
     /// built-in annex D files.
-    const include_dirs: []const []const u8 = &.{@import("repo_options").repo_root ++ "/tests/fixtures"};
+    const include_dirs: []const []const u8 = &.{@import("repo_options").repo_root ++ "/tests/conformance/tests/include"};
 
     fn compileOne(gpa: std.mem.Allocator, src: []const u8, target: vera.Target) !void {
         var bag: vera.diag.Bag = .init(gpa);
@@ -19571,7 +19772,7 @@ pub const oom_tests = struct {
     } };
 
     fn oom(comptime path: []const u8, target: vera.Target) !void {
-        const src = @embedFile("fixtures/" ++ path);
+        const src = @embedFile("conformance/tests/" ++ path);
         // The sweep assumes every clean compile makes the same allocations; say
         // so by count when one does not, rather than as std's bare
         // NondeterministicMemoryUsage.
@@ -19589,70 +19790,70 @@ pub const oom_tests = struct {
     }
 
     test "OOM .lint ch01_intro" {
-        try oom("ch01_intro/reference_ground.va", .lint);
+        try oom("verilog-a/ch01_intro/reference_ground.va", .lint);
     }
     test "OOM .lint ch02_lexical" {
-        try oom("ch02_lexical/operator_arity.va", .lint);
+        try oom("verilog-a/ch02_lexical/operator_arity.va", .lint);
     }
     test "OOM .lint ch03_data_types" {
-        try oom("ch03_data_types/nature_compatibility_rules.va", .lint);
+        try oom("verilog-a/ch03_data_types/nature_compatibility_rules.va", .lint);
     }
     test "OOM .lint ch04_expressions" {
-        try oom("ch04_expressions/parameter_reduction_and_arithmetic_shift.va", .lint);
+        try oom("verilog-a/ch04_expressions/parameter_reduction_and_arithmetic_shift.va", .lint);
     }
     test "OOM .lint ch05_analog_behavior" {
-        try oom("ch05_analog_behavior/port_flow_includes_the_reactive_part.va", .lint);
+        try oom("verilog-a/ch05_analog_behavior/port_flow_includes_the_reactive_part.va", .lint);
     }
     test "OOM .lint ch06_hierarchy" {
-        try oom("ch06_hierarchy/paramset_selected_after_generate.va", .lint);
+        try oom("verilog-a/ch06_hierarchy/paramset_selected_after_generate.va", .lint);
     }
     test "OOM .lint ch07_mixed_signal" {
-        try oom("ch07_mixed_signal/mixed_signal_smallest_abstol.va", .lint);
+        try oom("verilog-ams/ch07_mixed_signal/mixed_signal_smallest_abstol.va", .lint);
     }
     test "OOM .lint ch08_scheduling" {
-        try oom("ch08_scheduling/shared_conservative_node.va", .lint);
+        try oom("verilog-a/ch08_scheduling/shared_conservative_node.va", .lint);
     }
     test "OOM .lint ch09_system_tasks" {
-        try oom("ch09_system_tasks/control_default_filling.va", .lint);
+        try oom("verilog-a/ch09_system_tasks/control_default_filling.va", .lint);
     }
     test "OOM .lint ch10_directives" {
-        try oom("ch10_directives/default_transition_ramp.va", .lint);
+        try oom("verilog-a/ch10_directives/default_transition_ramp.va", .lint);
     }
     test "OOM .lint ch11_vpi" {
-        try oom("ch11_vpi/vpi_design.va", .lint);
+        try oom("verilog-ams/ch11_vpi/vpi_design.va", .lint);
     }
     test "OOM .lint ch12_vpi_routines" {
-        try oom("ch12_vpi_routines/rc_ac.va", .lint);
+        try oom("verilog-ams/ch12_vpi_routines/rc_ac.va", .lint);
     }
     test "OOM .lint annex_a_syntax" {
-        try oom("annex_a_syntax/expression_primaries.va", .lint);
+        try oom("verilog-a/annex_a_syntax/expression_primaries.va", .lint);
     }
     test "OOM .lint annex_b_keywords" {
-        try oom("annex_b_keywords/escaped_keyword_port.va", .lint);
+        try oom("verilog-a/annex_b_keywords/escaped_keyword_port.va", .lint);
     }
     test "OOM .lint annex_c_analog_subset" {
-        try oom("annex_c_analog_subset/compiler_directives.va", .lint);
+        try oom("verilog-a/annex_c_analog_subset/compiler_directives.va", .lint);
     }
     test "OOM .lint annex_d_standard_definitions" {
-        try oom("annex_d_standard_definitions/thermal_definitions.va", .lint);
+        try oom("verilog-a/annex_d_standard_definitions/thermal_definitions.va", .lint);
     }
     test "OOM .lint annex_e_spice" {
-        try oom("annex_e_spice/primitive_mesfet.va", .lint);
+        try oom("spice/primitive_mesfet.va", .lint);
     }
     test "OOM .lint annex_f_resolution" {
-        try oom("annex_f_resolution/resolveto_resolution.va", .lint);
+        try oom("verilog-ams/annex_f_resolution/resolveto_resolution.va", .lint);
     }
     test "OOM .lint annex_g_change_history" {
-        try oom("annex_g_change_history/transition_fall_time_binding.va", .lint);
+        try oom("verilog-a/annex_g_change_history/transition_fall_time_binding.va", .lint);
     }
     test "OOM .lint annex_h_glossary" {
-        try oom("annex_h_glossary/node_port_terminal.va", .lint);
+        try oom("verilog-a/annex_h_glossary/node_port_terminal.va", .lint);
     }
     test "OOM .build ch05_analog_behavior (codegen)" {
-        try oom("ch05_analog_behavior/port_flow_includes_the_reactive_part.va", .build);
+        try oom("verilog-a/ch05_analog_behavior/port_flow_includes_the_reactive_part.va", .build);
     }
     test "OOM .build annex_e_spice (codegen)" {
-        try oom("annex_e_spice/primitive_mesfet.va", .build);
+        try oom("spice/primitive_mesfet.va", .build);
     }
 };
 

@@ -1,6 +1,0 @@
-fd_valid=1
-first=65 position=1
-push=0 character=90
-rewind=0 character=65
-seek=0 last=10
-eof_char=-1 detected=1

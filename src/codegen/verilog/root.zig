@@ -340,11 +340,7 @@ const Emitter = struct {
         assert(first_signal < pins.len);
         var in_ifdef = false;
         for (pins, names[0..lw.num_ports], 0..) |p, n, i| {
-            const h = self.hidden(p);
-            if (h != in_ifdef) {
-                try w.appendSlice(A, if (h) "`ifdef USE_POWER_PINS\n" else "`endif\n");
-                in_ifdef = h;
-            }
+            try self.powerIfdef(w, p, &in_ifdef);
             if (i < first_signal) {
                 try w.print(A, "    {f},\n", .{ident(n)});
             } else try w.print(A, "    {s}{f}\n", .{ if (i == first_signal) "  " else ", ", ident(n) });
@@ -354,11 +350,7 @@ const Emitter = struct {
 
         in_ifdef = false;
         for (pins, names[0..lw.num_ports], 0..) |p, n, i| {
-            const h = self.hidden(p);
-            if (h != in_ifdef) {
-                try w.appendSlice(A, if (h) "`ifdef USE_POWER_PINS\n" else "`endif\n");
-                in_ifdef = h;
-            }
+            try self.powerIfdef(w, p, &in_ifdef);
             const dw: [2][]const u8 = switch (p) {
                 .digital => if (driven[i]) .{ "output", "digital" } else .{ "input ", "digital" },
                 .analog => .{ "inout ", "analog, undriven" },
@@ -375,6 +367,15 @@ const Emitter = struct {
         try w.appendSlice(A, body.items);
         try w.appendSlice(A, "endmodule\n");
         return out.items;
+    }
+
+    /// Opens or closes `` `ifdef USE_POWER_PINS `` as the port list crosses
+    /// from signal pins to hidden supply pins or back.
+    fn powerIfdef(self: *const Emitter, w: *std.ArrayList(u8), p: Pin, in_ifdef: *bool) Error!void {
+        const h = self.hidden(p);
+        if (h == in_ifdef.*) return;
+        try w.appendSlice(self.arena, if (h) "`ifdef USE_POWER_PINS\n" else "`endif\n");
+        in_ifdef.* = h;
     }
 
     fn isSupply(self: *const Emitter, r: u32) bool {
@@ -1109,7 +1110,7 @@ test "emit: a row placed after its block's terminator still runs, before it" {
 
 test "emit refuses a vera_pin or vera_delay whose value is not one" {
     // Only the attribute's value is judged here; `attrs.va` in
-    // test-beh-verilog runs the accepted ones by name.
+    // test-external runs the accepted ones by name.
     const bad = [_]struct { name: []const u8, value: ?Const, says: []const u8 }{
         .{ .name = "vera_pin", .value = null, .says = "vera_pin takes" },
         .{ .name = "vera_pin", .value = .{ .real = 1 }, .says = "vera_pin takes" },

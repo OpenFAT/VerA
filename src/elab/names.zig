@@ -720,12 +720,18 @@ pub fn constValue(self: *Flatten, e: Ast.ExprId, local: bool, reads: ?[]bool) ?c
 /// parameter appended later may make it fold.
 pub const ParamValue = union(enum) { unknown, folding, done: constfold.Const };
 
-/// Grows `Flatten.param_values` to one row per flat parameter; run after
-/// every append to `Flatten.params`.
+/// Grows `Flatten.param_values` to one row per flat parameter and indexes
+/// the new rows' names (`Flatten.param_index`); run after every append to
+/// `Flatten.params`. Asserts that rows are only ever appended.
 pub fn syncParamValues(self: *Flatten) Error!void {
     const have = self.param_values.items.len;
     std.debug.assert(have <= self.params.items.len);
     try self.param_values.appendNTimes(self.ctx.arena, .unknown, self.params.items.len - have);
+    for (self.params.items[have..], have..) |p, i| {
+        if (p.dims.len != 0) continue;
+        const gop = try self.param_index.getOrPut(self.ctx.arena, p.name);
+        if (!gop.found_existing) gop.value_ptr.* = @intCast(i);
+    }
 }
 
 /// Flat parameter `i`'s folded value, cached. The parameters before `i` are
@@ -774,17 +780,15 @@ const ParamEnv = struct {
         // lowering's diagnostic, this only has to terminate.
         if (ex.tag(e) != .ident or env.depth > 32) return null;
         const name = if (env.local) flat(self, ex.strOf(e)) else ex.strOf(e);
-        for (self.params.items, 0..) |p, i| if (p.name == name and p.dims.len == 0) {
-            // ponytail: a fold that records `reads` (§6.4.2 overload choice)
-            // is not cached, so its chain of defaults still nests on the
-            // stack; the upgrade is caching each parameter's read set.
-            if (env.reads) |reads| {
-                reads[i] = true;
-                return env.param(i);
-            }
-            return paramValue(self, i, env.depth);
-        };
-        return null;
+        const i = self.param_index.get(name) orelse return null;
+        // ponytail: a fold that records `reads` (§6.4.2 overload choice)
+        // is not cached, so its chain of defaults still nests on the
+        // stack; the upgrade is caching each parameter's read set.
+        if (env.reads) |reads| {
+            reads[i] = true;
+            return env.param(i);
+        }
+        return paramValue(self, i, env.depth);
     }
 
     /// Flat parameter `i`'s value: a `--param` card value, else its default
@@ -793,7 +797,7 @@ const ParamEnv = struct {
         const self = env.self;
         const p = self.params.items[i];
         if (!p.is_local and p.ty != .string) for (self.ctx.param_overrides) |o| {
-            if (!std.mem.eql(u8, o.name, self.ctx.file.str(p.name))) continue;
+            if (!std.mem.eql(u8, o.name, self.ctx.file.str(p.name)) or std.math.isNan(o.value)) continue;
             // The replaced default supplies an inferred TYPE only. Its
             // former value dependencies cannot change this card binding
             // and must not freeze unrelated host fields as shape inputs.

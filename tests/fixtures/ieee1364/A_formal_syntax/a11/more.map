@@ -1,3 +1,0 @@
-// Included by a11/lib.map: one library_declaration with a wildcarded
-// file_path_spec, relative to this file's directory (§13.2.2).
-library libc cells/c*.v;

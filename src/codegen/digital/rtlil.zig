@@ -23,7 +23,8 @@
 //! Clauses: IEEE 1364-2005 §3.2 (`reg`), §4.2 (`integer`), §5.1 (operators),
 //! §5.4 (expression widths), §5.5 (signedness), §6.1 (continuous assigns),
 //! §7.2 to §7.4 (gates), §9.2 (assignments), §9.4 (`if`, `case`), §9.7
-//! (event controls), §12.1 (instances).
+//! (event controls), §12.1 (instances), §12.2 (parameter defaults), §17
+//! (system tasks, dropped: synthesis has no simulation output).
 
 const std = @import("std");
 const Front = @import("frontend");
@@ -38,6 +39,9 @@ const ExprId = Ast.ExprId;
 const StmtId = Ast.StmtId;
 const StrId = Ast.StrId;
 
+/// `Refused`: a construct outside the subset, named in `emit`'s `why`.
+/// `DigitalFailed`: the preprocessor or parser refused the source, with the
+/// diagnostics in the bag. Either way nothing is returned.
 pub const Error = error{ OutOfMemory, WriteFailed, Refused, DigitalFailed };
 
 /// Preprocesses and parses `source` as `vera --run` does (IEEE 1364, no annex
@@ -206,13 +210,15 @@ const Emitter = struct {
         try self.out.writeAll("end\n");
     }
 
-    /// The §5.4 width of a declared `[msb:lsb]`, folded, and its bounds.
-    fn dim(self: *Self, d: Ast.Dim, tok: u32) Error!struct { w: u32, lsb: i64, descending: bool } {
+    /// `sym` sized by a declared `[msb:lsb]`, folded: its §5.4 width and bounds.
+    fn dim(self: *Self, d: Ast.Dim, tok: u32, sym: *Sym) Error!void {
         const msb = (try self.foldInt(d.msb)) orelse return self.refuse(tok, "a range that is not constant", .{});
         const lsb = (try self.foldInt(d.lsb)) orelse return self.refuse(tok, "a range that is not constant", .{});
         const span = @abs(msb - lsb) + 1;
         if (span > std.math.maxInt(u32)) return self.refuse(tok, "a range wider than 2^32 bits", .{});
-        return .{ .w = @intCast(span), .lsb = lsb, .descending = msb >= lsb };
+        sym.width = @intCast(span);
+        sym.lsb = lsb;
+        sym.descending = msb >= lsb;
     }
 
     /// §12.2: every parameter at its default, folded in declaration order so
@@ -223,8 +229,8 @@ const Emitter = struct {
             const v = constfold.fold(self.file, p.default, Env{ .e = self }) orelse return self.refuse(p.main_tok, "a parameter default that is not constant: `{s}`", .{self.str(p.name)});
             var sym: Sym = .{ .width = 32, .signed = true, .kind = .param, .value = v };
             if (p.packed_range) |r| {
-                const d = try self.dim(r, p.main_tok);
-                sym = .{ .width = d.w, .lsb = d.lsb, .descending = d.descending, .signed = p.is_signed, .kind = .param, .value = v };
+                try self.dim(r, p.main_tok, &sym);
+                sym.signed = p.is_signed;
             }
             try self.syms.put(self.arena, p.name, sym);
         }
@@ -239,12 +245,7 @@ const Emitter = struct {
             const range = p.range orelse p.type_range orelse for (m.vars) |*v| {
                 if (v.name == p.name) break v.packed_range;
             } else null;
-            if (range) |r| {
-                const d = try self.dim(r, p.main_tok);
-                sym.width = d.w;
-                sym.lsb = d.lsb;
-                sym.descending = d.descending;
-            }
+            if (range) |r| try self.dim(r, p.main_tok, &sym);
             for (m.vars) |*v| if (v.name == p.name) {
                 sym.kind = .reg;
                 sym.signed = sym.signed or v.is_signed;
@@ -258,12 +259,7 @@ const Emitter = struct {
             if (n.kind == .wreal) return self.refuse(n.main_tok, "a wreal net", .{});
             if (n.dims.len != 0) return self.refuse(n.main_tok, "a net array", .{});
             var sym: Sym = .{ .width = 1, .signed = n.is_signed, .kind = .wire };
-            if (n.range) |r| {
-                const d = try self.dim(r, n.main_tok);
-                sym.width = d.w;
-                sym.lsb = d.lsb;
-                sym.descending = d.descending;
-            }
+            if (n.range) |r| try self.dim(r, n.main_tok, &sym);
             try self.syms.put(self.arena, n.name, sym);
         }
         for (m.vars) |*v| {
@@ -280,12 +276,7 @@ const Emitter = struct {
                     .unspecified => {},
                 },
             }
-            if (v.packed_range) |r| {
-                const d = try self.dim(r, v.main_tok);
-                sym.width = d.w;
-                sym.lsb = d.lsb;
-                sym.descending = d.descending;
-            }
+            if (v.packed_range) |r| try self.dim(r, v.main_tok, &sym);
             try self.syms.put(self.arena, v.name, sym);
         }
     }
@@ -328,20 +319,19 @@ const Emitter = struct {
     /// `constfold`'s environment: a parameter answers its value, width and sign.
     const Env = struct {
         e: *Self,
-        pub fn leaf(env: Env, x: ExprId) ?Const {
+        fn sym(env: Env, x: ExprId) ?Sym {
             if (env.e.file.exprs.tag(x) != .ident) return null;
-            const s = env.e.syms.get(env.e.file.exprs.strOf(x)) orelse return null;
+            return env.e.syms.get(env.e.file.exprs.strOf(x));
+        }
+        pub fn leaf(env: Env, x: ExprId) ?Const {
+            const s = env.sym(x) orelse return null;
             return if (s.kind == .param) s.value else null;
         }
         pub fn signed(env: Env, x: ExprId) ?bool {
-            if (env.e.file.exprs.tag(x) != .ident) return null;
-            const s = env.e.syms.get(env.e.file.exprs.strOf(x)) orelse return null;
-            return s.signed;
+            return (env.sym(x) orelse return null).signed;
         }
         pub fn width(env: Env, x: ExprId) ?u32 {
-            if (env.e.file.exprs.tag(x) != .ident) return null;
-            const s = env.e.syms.get(env.e.file.exprs.strOf(x)) orelse return null;
-            return s.width;
+            return (env.sym(x) orelse return null).width;
         }
     };
 
@@ -500,14 +490,20 @@ const Emitter = struct {
             },
             .binary => {
                 const op = ex.binOp(e);
-                const arith = switch (op) {
-                    .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => true,
-                    else => false, // else: comparisons, logic and shifts size their operands themselves
+                // §5.4.1 Table 5-22: the operands' context widths.
+                const a_ctx: u32, const b_ctx: u32 = switch (op) {
+                    .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => .{ w, w },
+                    // The right operand is self-determined.
+                    .pow, .shl, .shr, .ashl, .ashr => .{ w, 0 },
+                    .logical_and, .logical_or => .{ 0, 0 },
+                    // A comparison's operands take each other's width.
+                    .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => blk: {
+                        const cmp_w = @max((try self.shape(ex.lhs(e))).w, (try self.shape(ex.rhs(e))).w);
+                        break :blk .{ cmp_w, cmp_w };
+                    },
                 };
-                // §5.4.1: a comparison's operands take each other's width.
-                const cmp_w = @max((try self.shape(ex.lhs(e))).w, (try self.shape(ex.rhs(e))).w);
-                const a = try self.expr(ex.lhs(e), if (arith) w else if (op == .pow or op == .shl or op == .shr or op == .ashl or op == .ashr) w else if (op == .logical_and or op == .logical_or) 0 else cmp_w);
-                const b = try self.expr(ex.rhs(e), if (arith) w else if (op == .logical_and or op == .logical_or or op == .pow or op == .shl or op == .shr or op == .ashl or op == .ashr) 0 else cmp_w);
+                const a = try self.expr(ex.lhs(e), a_ctx);
+                const b = try self.expr(ex.rhs(e), b_ctx);
                 const both = a.signed and b.signed;
                 return switch (op) {
                     .add => self.cell2("$add", a, b, both, w, both),
@@ -925,7 +921,7 @@ const Emitter = struct {
         if (s == .none) return;
         const tok = self.file.stmtTok(s);
         switch (self.file.stmt(s)) {
-            .assign => |a| {
+            .assign => {
                 var names: std.ArrayList(ExprId) = .empty;
                 try self.file.stmtWrites(&.{}, s, self.arena, &names);
                 for (names.items) |lv| {
@@ -936,7 +932,6 @@ const Emitter = struct {
                         if (have == name) break;
                     } else try out.append(self.arena, name);
                 }
-                _ = a;
             },
             .block => |b| for (b.body) |x| try self.assigned(x, out),
             .if_stmt => |i| {
@@ -1034,7 +1029,7 @@ const Emitter = struct {
 
 // ---------------------------------------------------------------------------
 // Tests: `tests/unit.zig` emits designs and reads the text back;
-// `zig build test-rtlil` has Yosys read it.
+// `zig build test-external` has Yosys read it.
 // ---------------------------------------------------------------------------
 
 test "constSig: two's complement, MSB first, past 64 bits sign-extended" {

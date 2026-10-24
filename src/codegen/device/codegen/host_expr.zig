@@ -30,7 +30,8 @@ const opcode_zig = codegen.opcode_zig;
 /// LLVM lowers to one PTX instruction qualifies; everything else keeps its S
 /// form. Real opcodes only: `f64Const` renders integer opcodes in f64, which
 /// drops §3.2's 32-bit wraparound, so an integer residual goes through
-/// `intBin32` instead. Only `f64Const`'s `in_unit` path consults this.
+/// `intBin32` instead. Only `f64Const`'s `in_unit` path consults this, and
+/// the emitted `zPow` comment cites it by name.
 fn devSafe(op: Mir.Opcode) bool {
     // The `dev_safe` column: sqrt/floor/ceil are there because they are
     // sqrt.rn.f64 and cvt.rmi/rpi.f64.f64, single instructions.
@@ -119,7 +120,7 @@ pub fn i64Const(self: *Gen, v0: Mir.Value, depth: u32) Error!?[]const u8 {
             if (Analysis.tyOfParam(self.lowered.params.items[p].ty) == .str) return null;
             self.uses.model = true;
             return switch (Analysis.tyOfParam(self.lowered.params.items[p].ty)) {
-                .int => try self.arena.print("model.{s}", .{self.names.p_names[p]}),
+                .int => try self.arena.print("@as(i64, model.{s})", .{self.names.p_names[p]}),
                 .real => try self.arena.print("std.math.lossyCast(i64, @round(model.{s}))", .{self.names.p_names[p]}),
                 .str => unreachable,
                 .wide => unreachable, // `tyOfParam` types no parameter wide
@@ -143,7 +144,9 @@ pub fn i64Const(self: *Gen, v0: Mir.Value, depth: u32) Error!?[]const u8 {
                     const def = if (d.args.len > 0) self.mir.valueDef(self.an.rv(d.args[0])) else Mir.Def.undef;
                     if (def != .param_ref) return "@as(i64, 0)";
                     self.uses.model = true;
-                    return try self.arena.print("@as(i64, @intFromBool(model.{s}__given))", .{self.names.p_names[def.param_ref]});
+                    const bit = self.names.given_bit[def.param_ref];
+                    if (bit == none_u32) return "@as(i64, 0)";
+                    return try self.arena.print("@as(i64, @intFromBool(model.given__.isSet({d})))", .{bit});
                 }
                 if (d.callee != .@"$clog2") return null;
                 // `lowerClog2` writes the operand and its width, always both.
@@ -310,10 +313,10 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
         }
         // A planner literal (`UnitPlan.literal`) is a leaf whose operands the
         // unit never planned: its number, whatever they would name.
-        if (v != .undef and self.plan.literal(v)) return try gen_file.fmtF64(self, self.an.foldConst(v, false).?.f);
+        if (v != .undef and self.plan.literal(v)) return try gen_file.fmtF64(self, self.an.foldConst(v, false).?);
         // Fold a literal chain to one number unless it would swallow a slot.
         if (!gen_render.foldHidesSlot(self, v, 0)) {
-            if (self.an.foldConst(v, false)) |k| return try gen_file.fmtF64(self, k.f);
+            if (self.an.foldConst(v, false)) |k| return try gen_file.fmtF64(self, k);
         }
     } else {
         // A real parameter may depend on integer arithmetic. Evaluate that
@@ -322,7 +325,7 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
             const integer = try i64Const(self, v, depth + 1) orelse return null;
             return try self.arena.print("@as(f64, @floatFromInt({s}))", .{integer});
         }
-        if (self.an.foldConst(v0, false)) |k| return try gen_file.fmtF64(self, k.f);
+        if (self.an.foldConst(v0, false)) |k| return try gen_file.fmtF64(self, k);
     }
     switch (self.mir.valueDef(v)) {
         .param_ref => |p| {
@@ -392,10 +395,7 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
 /// expression. Otherwise reports E0515 at the source, marks the build fatal
 /// and returns "0.0".
 pub fn f64Expr(self: *Gen, v0: Mir.Value) Error![]const u8 {
-    if (try f64Const(self, v0, 0, false)) |s| {
-        assert(s.len > 0);
-        return s;
-    }
+    if (try f64Const(self, v0, 0, false)) |s| return s;
     // Point at the argument's defining expression, else the operator call.
     const v = self.an.rv(v0);
     const def = self.mir.valueDef(v);

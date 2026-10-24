@@ -1,5 +1,0 @@
-weak_tie x
-strong_zero_breaks_tie 0
-strong_one_breaks_tie 1
-tie_restored_after_removal x
-weak_drivers_agree 1

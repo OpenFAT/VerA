@@ -216,7 +216,7 @@ fn nameSignedForClog2(self: *const Lower, e: Ast.ExprId, depth: u32) ?bool {
 /// assigned to the parameter, after any value overrides have been applied." A
 /// card value is a number with no Verilog width, so VerA reads it as an
 /// unsized integer (3.5.1: at least 32 bits, signed) where `$clog2` asks for a
-/// width (specification/Vague_Decisions.md VD-089). Null for a local parameter, an
+/// width (docs/specification/Vague_Decisions.md VD-089). Null for a local parameter, an
 /// `integer` or ranged one (whose width no override changes), or a non-integer.
 pub fn hostSizedParam(self: *const Lower, name: []const u8) ?usize {
     if (self.vars.contains(name) or lower_expr.funcParamShadows(self, name)) return null;
@@ -485,7 +485,7 @@ test "integerSourceSigned: an untyped local parameter carries its default's sign
     var unsigned: u32 = 0;
     var signed: u32 = 0;
     for (0..ex.len()) |n| {
-        const e: @import("frontend").Ast.ExprId = @fromBackingInt(@intCast(n));
+        const e: Ast.ExprId = @fromBackingInt(@intCast(n));
         if (ex.tag(e) != .binary or ex.binOp(e) != .lt) continue;
         if (unsignedCompare(&h.low, e) != null) unsigned += 1 else signed += 1;
     }

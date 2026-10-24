@@ -1,8 +1,0 @@
-// Host-only oracle: tests/host.py.
-// AMS 9.7.1:1001: omitted argument means diagnostic level 1.
-// observation: analysis tran
-// observation: time 0, 2n
-// observation: print none
-module diagnostic_finish_default;
-  analog if ($abstime >= 2n) $finish;
-endmodule

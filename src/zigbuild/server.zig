@@ -1,6 +1,7 @@
 //! One `zig ... --listen=-` child and the compiler server protocol over its
 //! stdin/stdout (`std.zig.Server`): spawn, request updates, read each
-//! update's reply, reap. The protocol is the compiler's and is frozen.
+//! update's reply, reap. The protocol is the compiler's and is frozen; no
+//! LRM clause.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -38,8 +39,6 @@ pub const Server = struct {
         }) catch return error.CompilerGone;
         // Steady-state buffer; larger message bodies go through `readAlloc`.
         s.out = s.child.stdout.?.readerStreaming(io, try arena.alloc(u8, 64 * 1024));
-        // `.pipe` above: `send` and `close` write to it.
-        assert(s.child.stdin != null);
     }
 
     /// Asks for an exit and reaps the child.

@@ -1,6 +1,0 @@
-complex 0110
-split a5
-same_port 1
-renamed 0
-same_input 1
-mixed 1

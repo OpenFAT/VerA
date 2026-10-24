@@ -20,6 +20,12 @@ pub const Options = struct {
     file_name: []const u8 = "<source>",
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams.
     std_defs: bool = true,
+    /// The prepended annex D files serve only a source that `include`s them:
+    /// a D.2 macro without `include "constants.vams"` is
+    /// E0115, and elaboration hides the D.1 disciplines without
+    /// `include "disciplines.vams"` (`Output.disciplines_included`). The
+    /// Table E.1 primitives still read both. `vera` and `--lsp` set it.
+    require_std_includes: bool = false,
     /// Annex E.2 SPICE netlist text, one card per line. Each `.MODEL` and
     /// `.SUBCKT` becomes a module appended after the Table E.1 prelude; empty
     /// appends nothing. Read only with `std_defs`, because a model card's
@@ -66,6 +72,9 @@ pub const Output = struct {
     /// VD-093's `discipline.h`): the source asked for annex D itself, so its
     /// natures join §3.13.2's uniqueness rule (specification/Vague_Decisions.md VD-096).
     annex_d_included: bool = false,
+    /// The source `include`d `disciplines.vams` (or `discipline.h`), from an
+    /// include directory or built in. Read with `Options.require_std_includes`.
+    disciplines_included: bool = false,
 };
 
 /// Every directive whose state outlives its own line, as `Region` event lists
@@ -125,7 +134,7 @@ pub fn readText(io: std.Io, dir: std.Io.Dir, path: []const u8, gpa: Allocator) !
     const st = try file.stat(io);
     if (st.kind == .file and st.size > max_text_bytes) return error.StreamTooLong;
     var r = file.reader(io, &.{});
-    return r.interface.allocRemaining(gpa, .limited(max_text_bytes + 1)) catch |e| switch (e) {
+    return r.interface.allocRemaining(gpa, .limited(max_text_bytes +| 1)) catch |e| switch (e) {
         error.ReadFailed => return r.err.?,
         else => |other| return other,
     };
@@ -398,6 +407,8 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
         }
         hdl = cards.hdl;
         if (cards.modules != 0) {
+            pp.in_std_defs = true;
+            defer pp.in_std_defs = false;
             try pp.runFile(cards.text, "spice_netlist.vams", null);
             netlist_modules = cards.modules;
         }
@@ -465,6 +476,7 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
         .directives = directives,
         .more_starts = more_starts,
         .annex_d_included = pp.annex_d_included,
+        .disciplines_included = pp.disciplines_included,
     };
 }
 
@@ -496,12 +508,19 @@ pub const Macro = struct {
     body: []const u8,
     /// §10.5 predefined: survives `undef and `resetall.
     predefined: bool = false,
+    /// Defined by the prelude's annex D.2 constants.vams: under
+    /// `Options.require_std_includes` a use needs `include "constants.vams"`.
+    annex_d2: bool = false,
+    /// Defined by the prelude's annex D.1 disciplines.vams (its guard
+    /// `DISCIPLINES_VAMS`): under `Options.require_std_includes` an `ifdef
+    /// reads it as undefined until the source includes the file.
+    annex_d1: bool = false,
 
-    // Budget: two slices and two flags. A few hundred per compilation (psp103
+    // Budget: two slices and three flags. A few hundred per compilation (psp103
     // holds 204: 45 prelude, 156 its own, 3 predefined), so packing the slices
     // into pool offsets would save under 4 KB of scratch.
     comptime {
-        std.debug.assert(@sizeOf(Macro) == 40);
+        std.debug.assert(@sizeOf(Macro) <= 40);
     }
 };
 
@@ -565,6 +584,13 @@ pub const Pp = struct {
     events: Events = .{},
     /// `Output.annex_d_included`, set by `directive.builtin`.
     annex_d_included: bool = false,
+    /// An `include named constants.vams (constants.h) / disciplines.vams
+    /// (discipline.h), set by `directive.include`; `Output.disciplines_included`.
+    constants_included: bool = false,
+    disciplines_included: bool = false,
+    /// Running text VerA ships (the prelude, a synthesized netlist), which
+    /// reads annex D.2 whatever the source includes.
+    in_std_defs: bool = false,
 
     // ---- scan state ------------------------------------------------------
     macros: std.StringHashMapUnmanaged(Macro) = .empty,
@@ -746,8 +772,16 @@ pub const Pp = struct {
     pub fn runStdDefs(pp: *Pp) Error!void {
         // annex D.2 first: disciplines.vams reads `*_ABSTOL overrides, and the
         // constants are pure directives (they contribute only newlines here).
+        pp.in_std_defs = true;
+        defer pp.in_std_defs = false;
         try pp.runFile(pp_annex_d.constants_vams, "constants.vams", null);
+        // Every macro so far but the §10.5 predefined ones is D.2's.
+        var it = pp.macros.valueIterator();
+        while (it.next()) |m| m.annex_d2 = !m.predefined;
         try pp.runFile(pp_annex_d.disciplines_vams, "disciplines.vams", null);
+        // What D.1 added (its own guard) is D.1's, for the same rule.
+        var d1 = pp.macros.valueIterator();
+        while (d1.next()) |m| m.annex_d1 = !m.predefined and !m.annex_d2;
         // Annex E after annex D.1: the primitives' ports are `electrical`, which
         // disciplines.vams declares, and the source rows read `M_TWO_PI, which
         // constants.vams defines. Before the user's source, so nothing the user
@@ -1009,7 +1043,7 @@ pub const Rest = struct {
         r.skipSpace();
         if (r.i >= r.s.len or !isIdentStart(r.s[r.i])) return null;
         const start = r.i;
-        while (r.i < r.s.len and isIdentChar(r.s[r.i])) r.i += 1;
+        r.i = identEnd(r.s, start);
         return r.s[start..r.i];
     }
 };

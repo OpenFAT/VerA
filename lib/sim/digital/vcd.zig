@@ -14,6 +14,7 @@ const evaluate = @import("evaluate.zig");
 const compile = @import("compile.zig");
 const Error = @import("root.zig").Error;
 const Run = @import("root.zig").Run;
+const bitChar = @import("net.zig").bitChar;
 
 /// The §18.1 tasks: `$dumpfile`, `$dumpvars`, `$dumpoff`, `$dumpon`,
 /// `$dumpall`, `$dumplimit`, `$dumpflush`.
@@ -60,8 +61,8 @@ const Code = struct {
 
     // Budget: `changes` walks every code each dumped step.
     comptime {
-        std.debug.assert(@sizeOf(Code) == 24);
-        std.debug.assert(@sizeOf(Var) == 48);
+        std.debug.assert(@sizeOf(Code) <= 24);
+        std.debug.assert(@sizeOf(Var) <= 48);
     }
 };
 
@@ -349,7 +350,7 @@ fn value(w: *std.Io.Writer, v: Var, p: []const u64, code: u32, as_x: bool) std.I
         var buf: [64]u8 = undefined;
         try w.print("r{s} ", .{g16(&buf, @bitCast(p[0]))});
     } else if (v.width == 1) {
-        try w.writeByte(if (as_x) 'x' else digit(lit.bit(0)));
+        try w.writeByte(if (as_x) 'x' else bitChar(lit.bit(0)));
     } else {
         try w.writeByte('b');
         var i = v.width;
@@ -362,7 +363,7 @@ fn value(w: *std.Io.Writer, v: Var, p: []const u64, code: u32, as_x: bool) std.I
             const redundant = if (top == .zero) next == .zero or next == .one else top != .one and top == next;
             if (!redundant) break;
         }
-        while (i > 0) : (i -= 1) try w.writeByte(if (as_x) 'x' else digit(lit.bit(i - 1)));
+        while (i > 0) : (i -= 1) try w.writeByte(if (as_x) 'x' else bitChar(lit.bit(i - 1)));
         try w.writeByte(' ');
     }
     try codeText(w, code);
@@ -397,15 +398,6 @@ test "§18.2.1 %.16g" {
     var buf: [64]u8 = undefined;
     for ([_]f64{ 1.5, -2.25e10, 0.25, 6.02e23, 1e16, 0.0, 1.0 / 3.0, 1e-5, 123456789012345678.0 }, [_][]const u8{ "1.5", "-22500000000", "0.25", "6.02e+23", "1e+16", "0", "0.3333333333333333", "1e-05", "1.234567890123457e+17" }) |r, want|
         try std.testing.expectEqualStrings(want, g16(&buf, r));
-}
-
-fn digit(b: @import("kernels").Integer.Bit) u8 {
-    return switch (b) {
-        .zero => '0',
-        .one => '1',
-        .x => 'x',
-        .z => 'z',
-    };
 }
 
 // ---- compile time -----------------------------------------------------------

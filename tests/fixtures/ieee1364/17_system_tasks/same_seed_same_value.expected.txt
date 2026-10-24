@@ -1,4 +1,0 @@
-moved=1
-same=1 bound=1
-again=1
-random=1 range=1

@@ -1,7 +1,0 @@
-t5 w=1 ca=1 nn=1
-t11 w=x ca=x nn=1
-t14 w=x ca=x nn=x
-t21 w=1 ca=1 nn=x
-t24 w=1 ca=1 nn=1
-t32 w=1 ca=1 nn=1
-t34 w=0 ca=0 nn=0

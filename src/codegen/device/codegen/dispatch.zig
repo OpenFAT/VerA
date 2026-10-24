@@ -230,14 +230,22 @@ fn emitQ(self: *Gen) Error!void {
         \\
     , .{});
     try writeLead(self, "q", "out");
+    if (gen_instance.hasStatus(self)) {
+        try self.w(
+            \\    var out: contract.Sites(Self, S) = zSitesZero(S);
+            \\    if (inst.vera_status__ == 0) {{
+            \\        const m = @call(.always_inline, core, .{{ S, zProbe(S, x), model, inst, sim{s} }});
+            \\        zStatusStore(inst, m);
+            \\        if (inst.vera_status__ == 0) out = 
+        , .{self.heldArg(false)});
+        try writeSites(self);
+        try self.w(";\n    }}\n" ++ status_tail, .{});
+        return;
+    }
     try self.w(
-        \\{s}    const m = @call(.always_inline, core, .{{ S, zProbe(S, x), model, inst, sim{s} }});
-        \\{s}
-    , .{
-        if (gen_instance.hasStatus(self)) status_pre ++ "zSitesZero(S);\n" else "",
-        self.heldArg(false),
-        if (gen_instance.hasStatus(self)) status_post ++ "zSitesZero(S);\n" else "",
-    });
+        \\    const m = @call(.always_inline, core, .{{ S, zProbe(S, x), model, inst, sim{s} }});
+        \\
+    , .{self.heldArg(false)});
     try self.w("    return ", .{});
     try writeSites(self);
     try self.w(";\n}}\n\n", .{});
@@ -308,7 +316,7 @@ fn emitAcDyn(self: *Gen, any_q: bool) Error!void {
     for (0..n) |r| for (0..n) |c| {
         if (gen_mask.has(rowOf(self, self.jac.dpat, @intCast(r)), c)) slots.appendAssumeCapacity(@intCast(r * n + c));
     };
-    std.debug.assert(slots.items.len == slots.capacity);
+    assert(slots.items.len == slots.capacity);
     if (slots.items.len == 0) return;
     try self.w(
         \\/// §4.5.7/§4.5.11/§4.5.12 the slots `row * n_u + col` whose small-signal
@@ -477,20 +485,26 @@ fn emitEval(self: *Gen) Error!void {
     if (self.core_wanted and (self.lowered.timepoints.items.len != 0 or st)) {
         // VerA's `vera_timepoint` (§2.9): the core result fills a stale cache.
         // §9.7.3 a status latches, and a latched one zeroes every row.
-        try self.w(
+        const tp = if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "";
+        if (st) try self.w(
             \\pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {{
-            \\{s}    const xs = zProbe(S, x);
+            \\    var out: contract.Rows(Self, S) = zRowsZero(S);
+            \\    if (inst.vera_status__ == 0) {{
+            \\        const xs = zProbe(S, x);
+            \\        const m = @call(.always_inline, core, .{{ S, xs, model, inst, sim{s} }});
+            \\{s}        zStatusStore(inst, m);
+            \\        if (inst.vera_status__ == 0) out = zResidual(S, xs, m);
+            \\    }}
+            \\
+        ++ status_tail, .{ self.heldArg(false), tp8(self) }) else try self.w(
+            \\pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {{
+            \\    const xs = zProbe(S, x);
             \\    const m = @call(.always_inline, core, .{{ S, xs, model, inst, sim{s} }});
-            \\{s}{s}    return zResidual(S, xs, m);
+            \\{s}    return zResidual(S, xs, m);
             \\}}
             \\
             \\
-        , .{
-            if (st) status_pre ++ "zRowsZero(S);\n" else "",
-            self.heldArg(false),
-            if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "",
-            if (st) status_post ++ "zRowsZero(S);\n" else "",
-        });
+        , .{ self.heldArg(false), tp });
     } else if (self.core_wanted) {
         try self.w(
             \\pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {{
@@ -532,12 +546,18 @@ fn writeLead(self: *Gen, call: []const u8, ret: []const u8) Error!void {
     , .{ call, ret });
 }
 
-/// §9.7.3 a status device's entry-point guards (`gen_instance.hasStatus`): a
-/// latched status returns zero rows before the core runs, and the core's own
-/// report latches and does the same. Each is followed by the zero value.
-const status_pre = "    if (inst.vera_status__ != 0) return ";
-const status_post = "    zStatusStore(inst, m);\n" ++ status_pre;
-const zero_both = ".{ .res = zRowsZero(S), .q = zSitesZero(S) };\n";
+/// §9.7.3 a status device's entry points (`gen_instance.hasStatus`): a
+/// latched status returns zero rows without running the core, and the core's
+/// own report latches and does the same. One result variable, seeded zero,
+/// and one return: an early `return` per guard left three copies of the
+/// result in the GPU frame, the paths merged by a pointer phi that SROA
+/// cannot split (bsimcmg's `evalQ`: 20.8 → 9.8 KB). `status_tail` closes it.
+const status_tail = "    return out;\n}}\n\n";
+
+/// VerA's `vera_timepoint` (§2.9) store inside a status guard's block.
+fn tp8(self: *const Gen) []const u8 {
+    return if (self.lowered.timepoints.items.len != 0) "        zTpStore(inst, sim, m);\n" else "";
+}
 
 /// Emits the §5.6 stamp rows for one residual half into a `res` the caller
 /// has declared. Accumulates `uses.x`/`uses.model`/`uses.inst`, `jac.pat`, `jac.rows`
@@ -782,17 +802,14 @@ fn emitStamps(self: *Gen, react: bool) Error!u32 {
         patRow(self, pp.u, try bits(self, if (react) &.{} else &.{pp.u}, &.{try patOf(self, pp.port)}));
         if (self.jac.dpat.len != 0) gen_mask.orIn(rowOf(self, self.jac.dpat, pp.u), rowOf(self, self.jac.dpat, pp.port));
         try linPortProbe(self, pp.u, pp.port, !react);
-        if (react) {
-            try rowSet(self, pp.u);
-            try self.b("res[@intFromEnum(U.{s})].neg()", .{self.names.u_names[pp.port]});
-            try rowEnd(self);
-        } else {
-            try rowSet(self, pp.u);
+        try rowSet(self, pp.u);
+        if (react)
+            try self.b("res[@intFromEnum(U.{s})].neg()", .{self.names.u_names[pp.port]})
+        else
             try self.b("x[@intFromEnum(U.{0s})].sub(res[@intFromEnum(U.{1s})])", .{
                 self.names.u_names[pp.u], self.names.u_names[pp.port],
             });
-            try rowEnd(self);
-        }
+        try rowEnd(self);
     }
 
     return stamps;
@@ -810,16 +827,28 @@ fn emitFused(self: *Gen) Error!void {
         \\
     , .{});
     try writeLead(self, "evalQ", ".{ .res = out.res, .q = out.q }");
+    const tp = if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "";
+    if (gen_instance.hasStatus(self)) {
+        try self.w(
+            \\    var res: contract.Rows(Self, S) = zRowsZero(S);
+            \\    var qs: contract.Sites(Self, S) = zSitesZero(S);
+            \\    if (inst.vera_status__ == 0) {{
+            \\        const xs = zProbe(S, x);
+            \\        const m = @call(.always_inline, core, .{{ S, xs, model, inst, sim{s} }});
+            \\{s}        zStatusStore(inst, m);
+            \\        if (inst.vera_status__ == 0) {{
+            \\            res = zResidual(S, xs, m);
+            \\            qs = 
+        , .{ self.heldArg(false), tp8(self) });
+        try writeSites(self);
+        try self.w(";\n        }}\n    }}\n    return .{{ .res = res, .q = qs }};\n}}\n\n", .{});
+        return;
+    }
     try self.w(
-        \\{s}    const xs = zProbe(S, x);
+        \\    const xs = zProbe(S, x);
         \\    const m = @call(.always_inline, core, .{{ S, xs, model, inst, sim{s} }});
-        \\{s}{s}
-    , .{
-        if (gen_instance.hasStatus(self)) status_pre ++ zero_both else "",
-        self.heldArg(false),
-        if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "",
-        if (gen_instance.hasStatus(self)) status_post ++ zero_both else "",
-    });
+        \\{s}
+    , .{ self.heldArg(false), tp });
     // §5.6.1.2 the charges, one per site, off the same core.
     try self.b("    return .{{ .res = zResidual(S, xs, m), .q = ", .{});
     try writeSites(self);
@@ -1081,9 +1110,7 @@ pub fn stamp(self: *Gen, depth: u32, node: u32, sign: StampSign, val: []const u8
 /// pattern (`contract.rowMask`), so every value assigned to it widens there.
 /// `rowEnd` closes it.
 fn rowSet(self: *Gen, u: u32) Error!void {
-    const n = self.names.u_names[u];
-    try self.b("res[@intFromEnum(U.{s})] = ", .{n});
-    try self.b("zRow(S, .{s}, ", .{n});
+    try self.b("res[@intFromEnum(U.{0s})] = zRow(S, .{0s}, ", .{self.names.u_names[u]});
 }
 
 fn rowEnd(self: *Gen) Error!void {
@@ -1146,12 +1173,14 @@ fn linClear(self: *Gen, row: u32) void {
     const l = self.jac.lin[@intFromBool(self.jac.react)];
     if (l.len == 0) return;
     l[row].clearRetainingCapacity();
-    // Its guarded constants go with the assignment too.
+    // Its guarded constants go with the assignment too, the rest in order.
     if (self.jac.react) return;
-    var k: usize = 0;
-    while (k < self.jac.guarded.items.len) {
-        if (self.jac.guarded.items[k].row == row) _ = self.jac.guarded.orderedRemove(k) else k += 1;
-    }
+    var keep: usize = 0;
+    for (self.jac.guarded.items) |e| if (e.row != row) {
+        self.jac.guarded.items[keep] = e;
+        keep += 1;
+    };
+    self.jac.guarded.shrinkRetainingCapacity(keep);
 }
 
 /// Records that row `row` is assigned `V(hi) − V(lo) − <core value>`: §5.6's branch

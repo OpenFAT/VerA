@@ -90,7 +90,8 @@ not for accurate transients: that is your simulator's job.
 A check prints its own verdict as a number, `ok=1` or `ok=0`, rather than
 printing only on success, so a check that never ran cannot pass. VerA's own
 fixtures use the macros in
-[`tests/fixtures/check.vh`](https://github.com/OmarSiwy/VerA/blob/main/tests/fixtures/check.vh)
+[`tests/include/check.vh`](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/tests/include/check.vh)
+of the conformance suite
 (`CHECK` absolute tolerance, `CHECKR` relative, `CHECKX` exact, `CHECKI`
 integer, `CHECKEQ` two expressions against each other); this one defines its
 own:
@@ -138,9 +139,13 @@ Their exact syntax is in the header of
 
 ## Directives the fixture suite grades
 
-VerA's own test suite (`zig build benchmark -- --strict`) runs every fixture
-under `tests/fixtures/` through the same testbench and grades it by these.
-`vera --run` ignores them; you need them only to contribute a fixture.
+VerA's own test suite (`zig build suite -- --strict`) runs every fixture
+under `tests/conformance/tests/` (the
+[VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+a submodule) through the same testbench and grades it by these.
+`vera --run` ignores them; you need them only to contribute a fixture, which
+goes into the suite under its language directory
+([the test guide](https://github.com/OmarSiwy/VerA/blob/main/tests/README.md)).
 
 | Directive | Meaning |
 |---|---|
@@ -152,11 +157,15 @@ under `tests/fixtures/` through the same testbench and grades it by these.
 | `//! nowarn` | the compile must report no warning |
 | `//! checks N` | exactly N `ok=` verdicts must be printed, all `ok=1` |
 | `//! exit N` | the testbench's expected exit status |
-| `//! xfail REASON` | a known gap: the fixture states the LRM correctly and VerA does not meet it yet. The suite fails if it unexpectedly passes |
-| `//! lrm 5.6.1` | the LRM clause the fixture tests, counted by `--coverage` |
-| `//! lrm 5.6.1:2` | one normative sentence of the clause (the second), a row of the requirement ledger `tests/fixtures/conformance/OBLIGATIONS.tsv` |
+| `//! lrm 5.6.1` | the clause of the [LRM](../specification/VAMS-LRM-2023.pdf) the fixture tests |
+| `//! lrm 5.6.1:2` | one normative sentence of the clause (the second), a row of the requirement ledger `tests/conformance/vera/ledger/OBLIGATIONS.tsv` |
 | `//! inherited IEEE 1364-2005 9.2` | the same, for a clause the LRM inherits from IEEE 1364 |
 | `//! fd-exempt REASON` | the derivative and finiteness certificates (`benchmark -- --certify`) do not apply, for the stated reason |
+
+A known gap, where the fixture states the LRM correctly and VerA does not
+meet it yet, is not a directive: it is a line of the suite's `vera/xfail`,
+the fixture's path and then `# reason`. The suite fails if it unexpectedly
+passes.
 
 ## Running a testbench by hand
 

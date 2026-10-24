@@ -336,7 +336,7 @@ ret: ?RetCtx = null,
 /// declaration shadows the module's parameter of the same name.
 func_params: []const Ast.ParamDecl = &.{},
 /// Nonzero while `lowerClog2` lowers its operand as a host card sets it
-/// (specification/Vague_Decisions.md VD-089): each `hostSizedParam` then reads as a
+/// (docs/specification/Vague_Decisions.md VD-089): each `hostSizedParam` then reads as a
 /// signed integer of this many bits instead of its declaration's width.
 clog2_host: u8 = 0,
 /// §4.7.1 recursion guard — names on the inline stack.
@@ -984,6 +984,9 @@ pub fn emit(self: *Lower, op: Mir.Opcode, ops: []const Mir.Value) Oom!Mir.Value 
 
 /// Appends a call to `name` in the current block (`Mir.emitCall`).
 pub fn call(self: *Lower, name: []const u8, args: []const Mir.Value) Oom!Mir.Value {
+    // §2.8.3 a `$name` no clause defines is the host's: the device owes it
+    // an `Instance.systf` binding (`Uses.systf`).
+    if (Mir.Callee.fromName(name) == .systf) self.out.uses.insert(.systf);
     const callee = try self.mir.internString(self.arena, name);
     return self.mir.emitCall(self.arena, self.cur, callee, args);
 }
@@ -1206,11 +1209,10 @@ pub const Harness = struct {
     /// Lowers the file: the tables, or null when an error was reported.
     /// Any other error (`NoModule`, OOM) is returned.
     pub fn lower(h: *Harness) Error!?Lowered {
-        const out = h.low.lowerFile() catch |e| switch (e) {
+        return h.low.lowerFile() catch |e| switch (e) {
             error.DiagnosticsReported => return null,
             else => |other| return other, // else: anything but a verdict fails the test
         };
-        return out;
     }
 
     /// Returns how many diagnostics of `code` were recorded.

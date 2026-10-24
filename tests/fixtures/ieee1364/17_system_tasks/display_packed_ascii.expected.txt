@@ -1,3 +1,0 @@
-string=[ABC]
-upper=[DEF]
-char=[Z][!]

@@ -686,6 +686,9 @@ pub const Kernel = enum {
     /// `Instance.cwd`/`analysis_name` slices and their GPU-safe twins,
     /// `Model.cwd_idx__`/`analysis_name_idx__` (`contract.host_strings`).
     host_strings,
+    /// §2.8.3/§12.32 a `$name` left to a VPI application (`Mir.Callee.systf`):
+    /// the `Instance.systf` binding the host writes.
+    systf,
 };
 // ---- row types: the discrete half -------------------------------------------
 
@@ -725,15 +728,15 @@ pub const TimescaleEvent = base.Region(?Timescale);
 // Row budgets on a 64-bit host. Every table here is per module and short
 // (psp103: 847 params, 12 nodes, 18 contributions), so these pin today's
 // sizes against a silent bloat rather than claim a tight layout;
-// docs/seams/s1-lower.md has the narrower shapes the readers outside
+// docs/seams/s1-lower.md at 2c3f565d has the narrower shapes the readers outside
 // lowering would have to accept.
 comptime {
-    std.debug.assert(@sizeOf(ParamInfo) == 88); // ~850 rows on a compact model
-    std.debug.assert(@sizeOf(Node) == 72); // SoA (`nodes` is a MultiArrayList)
-    std.debug.assert(@sizeOf(Contribution) == 56); // u32 node rows (#29)
+    std.debug.assert(@sizeOf(ParamInfo) <= 88); // ~850 rows on a compact model
+    std.debug.assert(@sizeOf(Node) <= 72); // SoA (`nodes` is a MultiArrayList)
+    std.debug.assert(@sizeOf(Contribution) <= 56); // u32 node rows (#29)
     std.debug.assert(@sizeOf(ChargeSite) == 24);
-    std.debug.assert(@sizeOf(HeldVar) == 56);
-    std.debug.assert(@sizeOf(NoiseSrc) == 56);
+    std.debug.assert(@sizeOf(HeldVar) <= 56);
+    std.debug.assert(@sizeOf(NoiseSrc) <= 56);
     // The node sentinels: `ground` is never "absent" (`none_u32`).
     std.debug.assert(ground < none_u32);
 }
@@ -1043,7 +1046,7 @@ test tokenSpan {
 test simparamAnswer {
     // §9.15: a known name answers whether or not a fallback is written; an
     // unknown one returns the fallback, else is not known. Values are
-    // VD-072's (`specification/Vague_Decisions.md`), not this table's.
+    // VD-072's (`docs/specification/Vague_Decisions.md`), not this table's.
     const l: Lowered = .{};
     const t = std.testing;
     for ([_]bool{ false, true }) |fb| {

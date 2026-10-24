@@ -1,2 +1,0 @@
-/* IEEE 1364-2005 §13.2.2: an include path is relative to this file. */
-include ../proj/tb/lib.map;

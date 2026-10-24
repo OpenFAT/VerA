@@ -1,1 +1,0 @@
-Time scale of (b_17_3_1_printtimescale_current_scope) is 1ms / 1us

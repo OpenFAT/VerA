@@ -165,8 +165,8 @@ fn pathFired(self: *const Run, p: net_mod.Path, t: u64) bool {
     if (c.time != t) return false;
     if (p.edge == .none or p.src_bit >= 64) return true;
     const sh: u6 = @intCast(p.src_bit);
-    const before: Int.Bit = @fromBackingInt(@intCast(@as(u2, @intCast(c.before[0] >> sh & 1)) | @as(u2, @intCast(c.before[1] >> sh & 1)) << 1));
-    const after: Int.Bit = @fromBackingInt(@intCast(@as(u2, @intCast(c.after[0] >> sh & 1)) | @as(u2, @intCast(c.after[1] >> sh & 1)) << 1));
+    const before = net_mod.planeBit(c.before[0] >> sh, c.before[1] >> sh);
+    const after = net_mod.planeBit(c.after[0] >> sh, c.after[1] >> sh);
     return (if (p.edge == .posedge) waiters.Edge.posedge else waiters.Edge.negedge).matches(before, after);
 }
 

@@ -226,7 +226,7 @@ pub fn buildStructure(
     var self: Analysis = .{ .arena = arena, .mir = mir, .lowered = lowered };
     self.nv = @intCast(mir.defs.len + Mir.Value.first_dynamic);
     self.alias = try arena.alloc(Mir.Value, self.nv);
-    for (self.alias, 0..) |*p, v| p.* = mir.resolveAlias(@fromBackingInt(@intCast(@as(u32, @intCast(v)))));
+    for (self.alias, 0..) |*p, v| p.* = mir.resolveAlias(@fromBackingInt(@intCast(v)));
     try self.buildCfg();
     return self;
 }
@@ -275,14 +275,14 @@ fn buildCfg(self: *Analysis) Error!void {
     var n_insts: u32 = 0;
     for (0..nb) |bi| {
         self.inst_off[bi] = n_insts;
-        var it = self.mir.blockInsts(@fromBackingInt(@intCast(@as(u32, @intCast(bi)))));
+        var it = self.mir.blockInsts(@fromBackingInt(@intCast(bi)));
         while (it.next()) |_| n_insts += 1;
     }
     self.inst_off[nb] = n_insts;
     self.inst_pool = try a.alloc(Mir.Inst, n_insts);
     var ki: u32 = 0;
     for (0..nb) |bi| {
-        var it = self.mir.blockInsts(@fromBackingInt(@intCast(@as(u32, @intCast(bi)))));
+        var it = self.mir.blockInsts(@fromBackingInt(@intCast(bi)));
         while (it.next()) |inst| {
             self.inst_pool[ki] = inst;
             ki += 1;
@@ -1048,13 +1048,13 @@ fn buildDeps(self: *Analysis) Error!void {
     self.xdeps = try self.fixDeps(g, .value);
     self.pdeps = self.xdeps;
     for (0..self.mir.insts.len) |i| {
-        if (!readsInstance(self, @fromBackingInt(@intCast(@as(u32, @intCast(i)))))) continue;
+        if (!readsInstance(self, @fromBackingInt(@intCast(i)))) continue;
         self.pdeps = try self.fixDeps(g, .point);
         break;
     }
     // After `deps`, which an operator's `acdyn` reads.
     for (0..self.mir.insts.len) |i| {
-        const inst: Mir.Inst = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
+        const inst: Mir.Inst = @fromBackingInt(@intCast(i));
         if (self.mir.instOp(inst) != .call or !op_kind.acDynamic(Mir.callee.opKind(self.mir.instData(inst).call.callee))) continue;
         self.acdyn = try self.fixDeps(g, .ac_dyn);
         break;
@@ -1433,20 +1433,17 @@ pub fn tyOfParam(t: Lower.Type) VTy {
 // per-unit planner fold through this.
 // ---------------------------------------------------------------------------
 
-/// A folded constant, as a real.
-pub const Folded = struct { f: f64 };
-
-/// Returns `v` as a §4.2 constant expression, or null. Used for parameter
+/// Returns `v` as a §4.2 constant expression, read as a real, or null. Used for parameter
 /// defaults (`parameter real b = a*2;`, §6.3.4) and §4.5 operator control
 /// arguments; anything touching an unknown or a call is not constant.
 /// `resolve_params` looks through a parameter to its declared default, which
 /// only a Model default may do. O(1): a load from `folds`. Requires `build`
 /// (`buildLiteralFolds` for `resolve_params = false`); asserts that the
 /// column it reads was built.
-pub fn foldConst(self: *const Analysis, v: Mir.Value, resolve_params: bool) ?Folded {
+pub fn foldConst(self: *const Analysis, v: Mir.Value, resolve_params: bool) ?f64 {
     std.debug.assert(self.folds[@intFromBool(resolve_params)].kind.len == self.nv);
     const c = self.folds[@intFromBool(resolve_params)].get(v) orelse return null;
-    return .{ .f = c.asReal() };
+    return c.asReal();
 }
 
 fn buildFolds(self: *Analysis) Error!void {
@@ -1479,7 +1476,7 @@ fn buildFoldColumn(self: *Analysis, resolve_params: bool) Error!FoldColumn {
         changed = false;
         for (0..self.nv) |v| {
             if (col.kind[v] != .none) continue;
-            const c = self.foldStep(@fromBackingInt(@intCast(@as(u32, @intCast(v)))), &col, resolve_params) orelse continue;
+            const c = self.foldStep(@fromBackingInt(@intCast(v)), &col, resolve_params) orelse continue;
             try col.set(self.arena, v, c);
             changed = true;
         }
@@ -1931,13 +1928,13 @@ test foldConst {
     defer arena.deinit();
     const an = try build(arena.allocator(), &mir, &lowered);
     // Only a Model default looks through a parameter to its declaration.
-    try std.testing.expectEqual(@as(?Folded, null), an.foldConst(twice, false));
-    try std.testing.expectEqual(@as(f64, 5), an.foldConst(twice, true).?.f);
-    try std.testing.expectEqual(@as(?Folded, null), an.foldConst(bad, true));
-    try std.testing.expectEqual(@as(f64, 10), an.foldConst(sel, false).?.f);
-    try std.testing.expectEqual(@as(f64, 2), an.foldConst(isum, false).?.f);
-    try std.testing.expectEqual(@as(?Folded, null), an.foldConst(varies, true));
-    try std.testing.expectEqual(@as(?Folded, null), an.foldConst(.undef, true));
+    try std.testing.expectEqual(@as(?f64, null), an.foldConst(twice, false));
+    try std.testing.expectEqual(@as(f64, 5), an.foldConst(twice, true).?);
+    try std.testing.expectEqual(@as(?f64, null), an.foldConst(bad, true));
+    try std.testing.expectEqual(@as(f64, 10), an.foldConst(sel, false).?);
+    try std.testing.expectEqual(@as(f64, 2), an.foldConst(isum, false).?);
+    try std.testing.expectEqual(@as(?f64, null), an.foldConst(varies, true));
+    try std.testing.expectEqual(@as(?f64, null), an.foldConst(.undef, true));
 }
 
 test "analysis: §3.2.2 array versions, value types and per-instance reads" {

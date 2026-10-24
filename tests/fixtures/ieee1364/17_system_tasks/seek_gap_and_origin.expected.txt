@@ -1,5 +1,0 @@
-seek=0 tell=4
-65 66 0 0 67 -1
-rel=0 66
-size=5
-bad=-1

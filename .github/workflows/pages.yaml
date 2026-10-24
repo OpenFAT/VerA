@@ -25,9 +25,8 @@ jobs:
   # Every transcript a page shows is re-run against this commit's vera, and a
   # page that no longer matches what vera prints fails the job
   # (tools/doctest.py). One heavy build at a time, two jobs wide (-j2): the
-  # runner's RAM. It waits for `report`, whose charts conformance.md
-  # includes; on a pull request `report` is skipped and the book builds
-  # with placeholders.
+  # runner's RAM. It waits for `report` so the two deploy together; on a
+  # pull request `report` is skipped.
   docs:
     needs: report
     if: ${{ !cancelled() }}
@@ -37,15 +36,16 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - uses: cachix/install-nix-action@v31
+          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
       - name: Build vera
         run: nix develop .#docs -c zig build -Doptimize=ReleaseFast -j2 install
       - name: Transcripts match vera (gate)
         run: nix develop .#docs -c python3 tools/doctest.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: github.event_name == 'workflow_run'
         continue-on-error: true
         with:
@@ -53,20 +53,11 @@ jobs:
           path: docs
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
-        if: needs.report.result == 'success'
-        with:
-          name: charts
-          path: specification/img
       - name: Build the book (gate)
         run: |
           test -s docs/measured.md || echo '(the conformance workflow did not measure this run)' > docs/measured.md
-          mkdir -p specification/img
-          for f in conformance lrm-chapters ieee-chapters compile-time scaling model-build; do
-            test -s "specification/img/$f.svg" || echo "($f.svg: not measured in this run)" > "specification/img/$f.svg"
-          done
           nix develop .#docs -c mdbook build docs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: book
           path: docs/book/
@@ -74,52 +65,34 @@ jobs:
   # The conformance and speed report (tools/report.py): one self-contained
   # page with the measures, the clause-by-clause rule map, the gaps, and the
   # timing charts, re-measured from scratch in ReleaseFast. A published
-  # record, not a gate. Its charts are also committed to main as
-  # specification/img/ so GitHub shows them; a GITHUB_TOKEN push triggers
-  # no workflow, so this does not loop.
+  # record, not a gate.
   report:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - uses: actions/checkout@v4
+          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: OmarSiwy/ESPice
           path: arpice
           sparse-checkout: models
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.18.0-dev.349+d924f83bf
       - name: Generate report/
         run: |
           python3 tools/report.py --selftest
-          python3 tools/report.py --models arpice/models --svg specification/img
-      - uses: actions/upload-artifact@v4
+          python3 tools/report.py --models arpice/models
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: report
           path: report/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: charts
-          path: specification/img/
-      # Main may have moved while the suites ran: the charts land on its tip.
-      - name: Commit the charts to main
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          mv specification/img "$RUNNER_TEMP/img"
-          git fetch origin main
-          git checkout -f -B charts origin/main
-          rm -rf specification/img && mv "$RUNNER_TEMP/img" specification/img
-          git add -A specification/img
-          git diff --cached --quiet && exit 0
-          git commit -m "specification/img: charts measured at ${{ github.event.workflow_run.head_sha || github.sha }}"
-          git push origin charts:main
 
   deploy:
     needs: [docs, report]
@@ -132,16 +105,16 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: book
           path: site
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: report
           path: site/report
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: site
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

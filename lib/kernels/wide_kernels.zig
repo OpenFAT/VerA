@@ -1,7 +1,7 @@
 // IEEE 1364-2005 §5.1, §5.4 and §5.5 integer arithmetic at any width — EMITTED
 // VERBATIM into every device whose analog context computes a `reg` wider than
 // 32 bits (`kernel_text.wide_txt` is `@embedFile` of this file), and `@import`ed
-// by `kernels/test.zig`, so the numerics the tests check are the numerics the
+// by `tests/unit.zig`, so the numerics the tests check are the numerics the
 // device runs. Verilog-AMS §7.3.1 gives the analog context read access to a
 // discrete bit grouping; a `reg` the analog context assigns is computed with
 // the bits IEEE 1364 gives it (`analog/wide.zig` sizes each operand).
@@ -19,7 +19,7 @@
 // type `analog/wide.zig` computed. The analog context has no x or z (§7.3.2),
 // so the IEEE 1364 operations that yield x yield 0 here: a division or
 // remainder by zero, and zero to a negative power
-// (specification/Vague_Decisions.md VD-116).
+// (docs/specification/Vague_Decisions.md VD-116).
 //
 // `std` is spelled `zwstd` HERE for the reason `file_kernels.zig` spells it
 // `zfstd`: the text is embedded into device.zig, which declares `std` already.
@@ -113,30 +113,39 @@ pub fn zwResize(comptime to: u32, comptime from: u32, comptime signed: bool, a: 
     return zwFromLimbs(to, zwL.resize(to, from, signed, zwToLimbs(from, a)));
 }
 
+/// IEEE 1364 §5.1.5 `+`, wrapping at `n` bits.
 pub fn zwAdd(comptime n: u32, a: ZW(n), b: ZW(n)) ZW(n) {
     return if (comptime zwNative(n)) a +% b else zwL.add(n, a, b);
 }
+/// IEEE 1364 §5.1.5 `-`, wrapping at `n` bits.
 pub fn zwSub(comptime n: u32, a: ZW(n), b: ZW(n)) ZW(n) {
     return if (comptime zwNative(n)) a -% b else zwL.sub(n, a, b);
 }
+/// IEEE 1364 §5.1.5 `*`: the low `n` bits of the product.
 pub fn zwMul(comptime n: u32, a: ZW(n), b: ZW(n)) ZW(n) {
     return if (comptime zwNative(n)) a *% b else zwL.mul(n, a, b);
 }
+/// IEEE 1364 §5.1.5 unary `-`: the two's complement at `n` bits.
 pub fn zwNeg(comptime n: u32, a: ZW(n)) ZW(n) {
     return if (comptime zwNative(n)) 0 -% a else zwL.sub(n, zwZero(n), a);
 }
+/// IEEE 1364 §5.1.10 `~`; the bits past `n` stay zero.
 pub fn zwNot(comptime n: u32, a: ZW(n)) ZW(n) {
     return if (comptime zwNative(n)) ~a else zwL.not(n, a);
 }
+/// IEEE 1364 §5.1.10 `&`, two-state (§7.3.2: no x or z here).
 pub fn zwAnd(comptime n: u32, a: ZW(n), b: ZW(n)) ZW(n) {
     return if (comptime zwNative(n)) a & b else zwL.bit(n, .@"and", a, b);
 }
+/// IEEE 1364 §5.1.10 `|`, two-state.
 pub fn zwOr(comptime n: u32, a: ZW(n), b: ZW(n)) ZW(n) {
     return if (comptime zwNative(n)) a | b else zwL.bit(n, .@"or", a, b);
 }
+/// IEEE 1364 §5.1.10 `^`, two-state.
 pub fn zwXor(comptime n: u32, a: ZW(n), b: ZW(n)) ZW(n) {
     return if (comptime zwNative(n)) a ^ b else zwL.bit(n, .xor, a, b);
 }
+/// IEEE 1364 §5.1.10 `~^`, two-state.
 pub fn zwXnor(comptime n: u32, a: ZW(n), b: ZW(n)) ZW(n) {
     return zwNot(n, zwXor(n, a, b));
 }
@@ -216,11 +225,13 @@ pub fn zwBit(comptime n: u32, a: ZW(n), k: u32) bool {
     return (a[k / 32] >> @intCast(k % 32)) & 1 != 0;
 }
 
+/// Whether every bit is zero: §5.1.9's false.
 pub fn zwIsZero(comptime n: u32, a: ZW(n)) bool {
     if (comptime zwNative(n)) return a == 0;
     for (a) |d| if (d != 0) return false;
     return true;
 }
+/// IEEE 1364 §5.1.8 `==` on two-state bits of one width.
 pub fn zwEq(comptime n: u32, a: ZW(n), b: ZW(n)) bool {
     if (comptime zwNative(n)) return a == b;
     return zwstd.mem.eql(u32, &a, &b);
@@ -307,12 +318,14 @@ pub const zwL = struct {
         return r;
     }
 
+    /// The value 1.
     pub fn one(comptime n: u32) L(n) {
         var r = zwstd.mem.zeroes(L(n));
         r[0] = 1;
         return r;
     }
 
+    /// `x` as limbs. Bits past `n` are not cleared: `zwLeaf` `norm`s after.
     pub fn from64(comptime n: u32, x: u64) L(n) {
         var r = zwstd.mem.zeroes(L(n));
         r[0] = @truncate(x);
@@ -320,11 +333,13 @@ pub const zwL = struct {
         return r;
     }
 
+    /// The low 64 bits, zero-extended from one limb.
     pub fn low64(comptime n: u32, a: L(n)) u64 {
         const hi: u64 = if (comptime zwLimbs(n) > 1) a[1] else 0;
         return (hi << 32) | a[0];
     }
 
+    /// `zwResize` on limbs: cut, or extended by the sign bit when `signed`.
     pub fn resize(comptime to: u32, comptime from: u32, signed: bool, a: L(from)) L(to) {
         const fill: u32 = if (signed and zwBit(from, zwFromLimbs(from, a), from - 1)) 0xffff_ffff else 0;
         // Sign-fill the source's top limb above `from` first, so a copy that
@@ -336,6 +351,7 @@ pub const zwL = struct {
         return norm(to, r);
     }
 
+    /// `zwAdd` on limbs, ripple carry.
     pub fn add(comptime n: u32, a: L(n), b: L(n)) L(n) {
         var r: L(n) = undefined;
         var c: u64 = 0;
@@ -347,6 +363,7 @@ pub const zwL = struct {
         return norm(n, r);
     }
 
+    /// `zwSub` on limbs: `a + ~b + 1`.
     pub fn sub(comptime n: u32, a: L(n), b: L(n)) L(n) {
         var r: L(n) = undefined;
         var c: u64 = 1;
@@ -358,12 +375,14 @@ pub const zwL = struct {
         return norm(n, r);
     }
 
+    /// `zwNot` on limbs.
     pub fn not(comptime n: u32, a: L(n)) L(n) {
         var r: L(n) = undefined;
         for (&r, a) |*d, x| d.* = ~x;
         return norm(n, r);
     }
 
+    /// `zwAnd`, `zwOr` or `zwXor` on limbs, by `op`.
     pub fn bit(comptime n: u32, comptime op: enum { @"and", @"or", xor }, a: L(n), b: L(n)) L(n) {
         var r: L(n) = undefined;
         for (&r, a, b) |*d, x, y| d.* = switch (op) {
@@ -390,6 +409,7 @@ pub const zwL = struct {
         return norm(n, r);
     }
 
+    /// `a << s`; a count of `n` or more clears every bit.
     pub fn shl(comptime n: u32, a: L(n), s: u64) L(n) {
         if (s >= n) return zwstd.mem.zeroes(L(n));
         const k = zwLimbs(n);
@@ -406,6 +426,8 @@ pub const zwL = struct {
         return norm(n, r);
     }
 
+    /// `a >> s`, filling with the sign bit when `arith`; a count of `n` or
+    /// more leaves only the fill.
     pub fn shr(comptime n: u32, arith: bool, a: L(n), s: u64) L(n) {
         const k = zwLimbs(n);
         const fill: u32 = if (arith and zwBit(n, zwFromLimbs(n, a), n - 1)) 0xffff_ffff else 0;

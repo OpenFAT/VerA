@@ -1,9 +1,0 @@
-// Host-only oracle: tests/host.py.
-// AMS 9.7.1:6: report the swept variable, not the transient time.
-// observation: analysis dc
-// observation: psweep drive = 1, 2, 3
-// observation: print none
-module diagnostic_finish_dc_sweep;
-  parameter real drive=1;
-  analog if (drive == 2) $finish(1);
-endmodule

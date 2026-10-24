@@ -1,4 +1,0 @@
-fgets n=4 s=Zbc
-fscanf r=1 v=72
-fscanf r=0 v=72 next=Q
-fread r=2 w=Pm next=n

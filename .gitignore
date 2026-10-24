@@ -1,5 +1,7 @@
 .zig-cache
 zig-out/
+# Fetched packages (none today; zig puts any here).
+/zig-pkg/
 
 # Local agent config and worktrees
 .claude/
@@ -7,8 +9,6 @@ zig-out/
 # Local reference notes
 ref/
 
-# User-supplied licensed IEEE reference; local audit input, not redistributable.
-/specification/1364-2005.pdf
 
 # Fixtures that write into the repo root at test time.
 # ch09_system_tasks/long_record_is_not_truncated.va $fopen()s these "w"
@@ -19,4 +19,3 @@ __pycache__/
 
 # tools/report.py output: generated, never committed.
 /report/
-/specification/figures/

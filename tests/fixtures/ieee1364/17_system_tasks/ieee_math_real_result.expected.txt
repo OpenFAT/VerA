@@ -1,2 +1,0 @@
-sqrt 1
-pow 1 floor 1 ceil 1

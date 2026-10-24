@@ -1,4 +1,0 @@
-empty full=0 status=0
-one full=1 status=0
-removed full=0 status=0
-undefined status=2

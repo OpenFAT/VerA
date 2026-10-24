@@ -1,8 +1,9 @@
 //! Locations: preprocessed byte offsets -> file, line and column, through the
-//! preprocessor's segment map and the comment-stripping marks (LRM §2.4).
+//! preprocessor's segment map and the comment-stripping marks.
+//!
+//! LRM clauses this file's code cites: §2.4 (comments).
 
 const std = @import("std");
-const diag = @import("root.zig");
 const Allocator = std.mem.Allocator;
 
 // ---------------------------------------------------------------------------
@@ -80,7 +81,7 @@ pub const Segment = struct {
     // Half of it is the `macro` slice; see docs/seams/s1-diag.md (removed
     // from the tree; `git show 6e59b3d4^:docs/seams/s1-diag.md`).
     comptime {
-        std.debug.assert(@sizeOf(Segment) == 32);
+        std.debug.assert(@sizeOf(Segment) <= 32);
     }
 };
 

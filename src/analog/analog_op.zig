@@ -576,7 +576,7 @@ pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.Expr
             const n = @abs(ends[1] - ends[0]) + 1;
             const step: i64 = if (ends[1] >= ends[0]) 1 else -1;
             try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(n)));
-            for (0..n) |k| {
+            for (0..@as(usize, @intCast(n))) |k| {
                 const el = (try lower_expr.arrayElemValue(self, name, &.{ends[0] + step * @as(i64, @intCast(k))})) orelse return true;
                 try out.append(self.arena, try self.toReal(el));
             }

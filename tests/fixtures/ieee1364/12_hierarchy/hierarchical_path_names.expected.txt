@@ -1,3 +1,0 @@
-b_12_5_hierarchical_path_names.a.amod.keep
-1 x 1
-b_12_5_hierarchical_path_names.wave1.innerwave

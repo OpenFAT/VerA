@@ -1,4 +1,0 @@
-t1 y=1
-t1-settled y=0
-t2 y=0
-t3 y=1

@@ -81,7 +81,7 @@ pub fn retention(self: Input, c: Lower.Contribution) Retention {
 /// `.flow` direct entry over the same (hi, lo, branch), or null.
 /// `contribIndex` dedupes per (access, pair, branch), so there is at most
 /// one. ponytail: O(n) scan per potential entry; contributions per module
-/// are tens, same order as `uIsDriven`'s existing scan.
+/// are tens, same order as `plan/names.zig`'s branch-current scan.
 /// Asserts that `pi` indexes a contribution.
 pub fn switchFlowOf(self: Input, pi: usize) ?usize {
     assert(pi < self.lowered.contributions.items.len);
@@ -247,18 +247,27 @@ fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
 /// values, which recursion refuses. Loop-carried phis are refused
 /// outright.
 fn buildFree(self: Input, v0: Mir.Value, depth: u32) bool {
-    return constFree(self, v0, depth, true);
+    var budget: u32 = max_visits;
+    return constFree(self, v0, depth, true, &budget);
 }
 
 /// `buildFree` without the Instance: no §9.10 `$temperature`/`$vt`, no
 /// §6.3.6 `$mfactor`. What is left is a function of the model card, which
 /// `derive` (it has no Instance) can compute.
 fn cardOnly(self: Input, v0: Mir.Value) bool {
-    return constFree(self, v0, 0, false);
+    var budget: u32 = max_visits;
+    return constFree(self, v0, 0, false, &budget);
 }
 
-fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool) bool {
-    if (depth > 64) return false;
+/// The most operand visits one `constFree` walk makes before it answers
+/// false (the safe side: no collapse, or no guard). The walk does not
+/// memoize, so a DAG that shares its operands (`x = x*x + x` repeated) is
+/// exponential in its depth, and the depth cap alone still allows 2^64.
+const max_visits = 1 << 16;
+
+fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool, budget: *u32) bool {
+    if (depth > 64 or budget.* == 0) return false;
+    budget.* -= 1;
     const v = self.an.rv(v0);
     switch (self.mir.valueDef(v)) {
         .undef, .float_const, .int_const, .str_const, .param_ref => return true,
@@ -270,12 +279,15 @@ fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool) bool {
                 // one carries the last accepted point): refused, like a call
                 // off the allowlist.
                 .branch, .jump, .anew, .load, .store => return false,
-                .unary => return constFree(self, @fromBackingInt(@intCast(row.a)), depth + 1, env),
-                .binary => return constFree(self, @fromBackingInt(@intCast(row.a)), depth + 1, env) and
-                    constFree(self, @fromBackingInt(@intCast(row.b)), depth + 1, env),
-                .ternary => return constFree(self, @fromBackingInt(@intCast(row.a)), depth + 1, env) and
-                    constFree(self, @fromBackingInt(@intCast(row.b)), depth + 1, env) and
-                    constFree(self, @fromBackingInt(@intCast(row.c)), depth + 1, env),
+                .unary => return constFree(self, @fromBackingInt(@intCast(row.a)), depth + 1, env, budget),
+                .binary => return constFree(self, @fromBackingInt(@intCast(row.a)), depth + 1, env, budget) and
+                    constFree(self, @fromBackingInt(@intCast(row.b)), depth + 1, env, budget),
+                .ternary => {
+                    const d = self.mir.instData(inst).ternary;
+                    return constFree(self, d.cond, depth + 1, env, budget) and
+                        constFree(self, d.then_val, depth + 1, env, budget) and
+                        constFree(self, d.else_val, depth + 1, env, budget);
+                },
                 .call => {
                     const d = self.mir.instData(inst).call;
                     switch (d.callee) {
@@ -284,7 +296,7 @@ fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool) bool {
                         else => return false, // else: ALLOWLISTED (above) — a new callee is unsound here until shown otherwise
                     }
                     for (d.args) |arg| {
-                        if (!constFree(self, arg, depth + 1, env)) return false;
+                        if (!constFree(self, arg, depth + 1, env, budget)) return false;
                     }
                     return true;
                 },
@@ -297,10 +309,10 @@ fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool) bool {
                     if (ti == .none) return false;
                     const t = self.mir.instData(ti);
                     if (t != .branch) return false;
-                    if (!constFree(self, t.branch.cond, depth + 1, env)) return false;
+                    if (!constFree(self, t.branch.cond, depth + 1, env, budget)) return false;
                     const d = self.mir.instData(inst).phi;
                     for (0..d.count) |k| {
-                        if (!constFree(self, self.mir.phiPair(inst, @intCast(k)).value, depth + 1, env)) return false;
+                        if (!constFree(self, self.mir.phiPair(inst, @intCast(k)).value, depth + 1, env, budget)) return false;
                     }
                     return true;
                 },
@@ -317,7 +329,7 @@ fn zeroOnEveryPath(self: Input, v0: Mir.Value, depth: u32) bool {
     if (depth > 16) return false;
     const v = self.an.rv(v0);
     if (v == .f_zero) return true;
-    if (self.an.foldConst(v, false)) |k| return k.f == 0.0;
+    if (self.an.foldConst(v, false)) |k| return k == 0.0;
     const def = self.mir.valueDef(v);
     if (def != .inst_result) return false;
     const op = self.mir.instRow(def.inst_result).op;

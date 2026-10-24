@@ -1,2 +1,0 @@
-dynamic=0101 other=1001
-truncated=0001 untouched=1110
