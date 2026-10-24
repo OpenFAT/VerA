@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-## v0.13.0 — 2026-10-23
+## v0.15.0 — 2026-10-24
+
+On Suite VAMS-CONFORMANCE, we score Verilog-A 1844/2466, Verilog 3106/3607, Verilog-AMS 521/744, Cumulative: 5471/6817.
 
 - **`vera.wasm`**: `zig build -Dtarget=wasm32-wasi` builds VerA as
   WebAssembly, and each release ships `vera-<tag>.wasm`. Checking, linting
