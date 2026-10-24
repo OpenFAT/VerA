@@ -378,6 +378,27 @@ class PairedCompilerObservations(unittest.TestCase):
             {"the defaulted net has the electrical potential access": (0.5, 0.0)},
         )
 
+    def test_transcript_to_a_file_equals_the_transcript_through_a_pipe(self):
+        # Oracle (metamorphic): where stdout and stderr go cannot change what
+        # is written to them. A positional writer pwrites from offset 0 on a
+        # regular file and overwrites what the testbench (or the other
+        # stream) wrote first; through a pipe it cannot. The analog run warns
+        # (W0650) after its testbench printed; the digital one interleaves
+        # stdout ($display) with stderr ($stop's report).
+        digital = self.work / "streams.v"
+        digital.write_text('module top; initial begin $display("first"); '
+                           '$fdisplay(32\'h8000_0002, "second"); $display("third"); $stop; end endmodule\n')
+        for source in (FIXTURES / "verilog-ams/annex_a_syntax/analog_initial.va", digital):
+            command = [str(VERA), "--run", "-I", str(FIXTURES / "include"),
+                       "--work-dir", str(self.work / source.stem), str(source)]
+            with self.subTest(source=source.name):
+                piped = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+                path = self.work / f"{source.stem}.out"
+                with path.open("wb") as out:
+                    subprocess.run(command, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT, timeout=180)
+                self.assertTrue(piped.stdout, "the run printed nothing")
+                self.assertEqual(path.read_bytes(), piped.stdout)
+
     def test_standalone_hierarchy_accepts_instances_and_parameter_overrides(self):
         assert_exclusive_refusal(
             self.invoke("verilog-a/ch06_hierarchy/nested_module_definition_rejected.va", reject=True),

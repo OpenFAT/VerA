@@ -53,7 +53,7 @@ pub fn interpret(init: std.process.Init, opts: digital.Options, source: []const 
 fn interpretDeep(init: std.process.Init, opts: digital.Options, source: []const u8) u8 {
     const io = init.io;
     var out_buf: [1 << 16]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(io, &out_buf);
+    var stdout = std.Io.File.stdout().writerStreaming(io, &out_buf);
     var err_buf: [1 << 12]u8 = undefined;
     var stderr = std.Io.File.stderr().writerStreaming(io, &err_buf);
     defer stderr.interface.flush() catch {};
@@ -761,7 +761,7 @@ pub const State = struct {
             .io = io,
             .buf = undefined,
         };
-        self.stdout = std.Io.File.stdout().writer(io, &self.buf);
+        self.stdout = std.Io.File.stdout().writerStreaming(io, &self.buf);
         try net.seedPaths(&self.nets, gpa, d.v, d.x);
         self.sink = &self.stdout.interface;
         self.out = self.sink;

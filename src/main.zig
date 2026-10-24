@@ -38,12 +38,12 @@ pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
 
     var stdout_buf: [1 << 16]u8 = undefined;
-    var stdout = Io.File.stdout().writer(io, &stdout_buf);
+    var stdout = Io.File.stdout().writerStreaming(io, &stdout_buf);
     const out = &stdout.interface;
     defer out.flush() catch {};
 
     var stderr_buf: [1 << 16]u8 = undefined;
-    var stderr = Io.File.stderr().writer(io, &stderr_buf);
+    var stderr = Io.File.stderr().writerStreaming(io, &stderr_buf);
     const err = &stderr.interface;
     defer err.flush() catch {};
 
