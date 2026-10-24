@@ -246,6 +246,7 @@ pub const Code = enum(u16) {
     E0375,
     E0376,
     E0377,
+    E0378,
 
     // ---------------------------------------------------------------- class 4
     // Behavioral semantics: statements and contributions — lower.zig.
@@ -3109,6 +3110,24 @@ fn infoOf(c: Code) Info {
             \\A discipline declaration is not a direction. Every module of the
             \\compilation is checked, instantiated or not. The digital engine
             \\(`--run` of a `.v` design) reports the same omission as E1100.
+            ,
+        },
+        .E0378 => .{
+            .title = "discipline binds an undeclared nature",
+            .lrm = "3.6.2.1",
+            .explain =
+            \\A.1.7's `nature_binding ::= potential_or_flow nature_identifier ;`
+            \\names a nature declared with `nature ... endnature` (3.6.1), and
+            \\3.6.2.1 makes that nature's `access` the discipline's access
+            \\function. A name no nature declares binds nothing, so every
+            \\`V(...)` or `I(...)` on a net of the discipline would name nothing.
+            \\
+            \\    `define DISCIPLINES_VAMS     // annex D's natures are out
+            \\    discipline mine;
+            \\        potential Voltage;      // E0378: no `nature Voltage`
+            \\    enddiscipline
+            \\
+            \\Declare the nature, or include `disciplines.vams` for annex D's.
             ,
         },
         .E0377 => .{

@@ -67,6 +67,12 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
             });
         inline for (.{ Lower.Access.potential, Lower.Access.flow }) |half| {
             const bound = @field(d, @tagName(half));
+            // §3.6.2.1 / A.1.7: the binding names a declared nature. Said
+            // here, at the discipline, not as an E0501 at the first access.
+            if (bound != .none and rules.baseNatureOf(self.file, bound) == .none)
+                try self.err(d.main_tok, .E0378, "`{s}` binds `{s}` as its {s}, and no nature `{s}` is declared", .{
+                    self.file.str(d.name), self.file.str(bound), @tagName(half), self.file.str(bound),
+                });
             if (bound != .none) {
                 const n = natureOf(self, bound);
                 if (n.abstol) |a| @field(info, @tagName(half) ++ "_abstol") = a;
