@@ -26,6 +26,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      # LF on Windows too, the submodule included: it has no `eol=lf` of its
+      # own, and `zig fmt --check` rejects its CRLF host files.
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: true  # tests/conformance: the fixtures the unit tests read
