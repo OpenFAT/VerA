@@ -13,7 +13,6 @@ gnucap-modelgen/dump_analog.0.vams
 gnucap-modelgen/dump_analog.1.vams
 gnucap-modelgen/dump_array.0.vams
 gnucap-modelgen/dump_array.1.vams
-gnucap-modelgen/dump_assign.0.vams
 gnucap-modelgen/dump_attrib.vams
 gnucap-modelgen/dump_block.2.vams
 gnucap-modelgen/dump_branch.0.vams
