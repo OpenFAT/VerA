@@ -61,7 +61,7 @@ specification chapter. Its `vera/` directory holds what only VerA uses;
 | `tests/spice/` | Annex E: SPICE primitives and model cards seen from Verilog-AMS | AMS |
 | `tests/include/` | `check.vh` (the `CHECK` macros) and `erfc.vh`, on every compile's include path | |
 | `tests/netlist/` | ESPice's decks | none |
-| `vera/host/` | The hosts that drive a device: `*_host.zig`, the `*_gpu.zig` twin, `*_dyn.zig`, `vdev_*.zig`, `vpi_host.zig` | `test` |
+| `vera/host/` | The hosts that drive a device: `*_host.zig`, the `*_gpu.zig` twin, `*_dyn.zig`, `vdev_*.zig` | `test` |
 | `vera/canary/` | The wrong-on-purpose fixtures the canary in `test` judges, with their `EXPECT.tsv` | `test` |
 | `vera/rtlil/`, `vera/beh_verilog/`, `vera/osdi/` | The `--emit-rtlil`, `--emit-verilog` and `--emit-osdi` inputs | |
 | `vera/ledger/` | The requirement ledger, baselines and registries (`VERDICTS.tsv`, `OBLIGATIONS.tsv`, `SPECIALIZED.tsv`, ...) | `conformance.py` |
