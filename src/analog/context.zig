@@ -315,7 +315,7 @@ pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!vo
         // declaration does not include a net or variable type, then the port
         // can be again declared in a net or variable declaration", and
         // undeclared it is an implicit net of the default net type.
-        if (t == .none or !isNetName(module, ex.strOf(t))) {
+        if (t == .none or (netOf(module, ex.strOf(t)) == null and !isNetName(module, ex.strOf(t)))) {
             try self.err(a.main_tok, .E0438, "", .{});
             continue;
         }
