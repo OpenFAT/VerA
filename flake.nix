@@ -151,6 +151,7 @@
           vera --help > /dev/null
           test -s ${vera}/share/vera/contract.zig
           cat > r.va <<'EOF'
+          `include "disciplines.vams"
           module r(p, n);
             inout p, n;
             electrical p, n;
