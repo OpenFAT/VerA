@@ -307,6 +307,8 @@ pub const runner_body =
     \\    // would differ from its scalar evaluation.
     \\    var insts: [NL]D.Instance = @splat(inst.*);
     \\    const inst_info = @typeInfo(D.Instance).@"struct";
+    \\    // A compact model's Instance has thousands of fields (BSIM4).
+    \\    @setEvalBranchQuota(1000 + 100 * inst_info.field_names.len);
     \\    for (1..NL) |k| inline for (inst_info.field_names, inst_info.field_types) |name, FT| {
     \\        const kf: f64 = @floatFromInt(k);
     \\        if (FT == f64) {
