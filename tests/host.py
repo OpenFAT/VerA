@@ -399,6 +399,22 @@ class PairedCompilerObservations(unittest.TestCase):
                 self.assertTrue(piped.stdout, "the run printed nothing")
                 self.assertEqual(path.read_bytes(), piped.stdout)
 
+    def test_elab_elaborates_and_runs_nothing(self):
+        # Oracle: IEEE 1364-2005 §12.1.3, elaboration completes before time 0.
+        # A design that never finishes elaborates (and prints nothing); one
+        # that instantiates an undeclared module is still refused.
+        endless = self.work / "endless.v"
+        endless.write_text('module top; reg clk = 0; always #5 clk = ~clk; '
+                           'initial $display("ran"); endmodule\n')
+        unknown = self.work / "unknown.v"
+        unknown.write_text("module top; nosuch u(); endmodule\n")
+        ok = subprocess.run([str(VERA), "--elab", str(endless)], cwd=self.work, text=True,
+                            capture_output=True, timeout=60)
+        self.assertEqual((ok.returncode, ok.stdout), (0, ""), ok.stderr)
+        bad = subprocess.run([str(VERA), "--elab", str(unknown)], cwd=self.work, text=True,
+                             capture_output=True, timeout=60)
+        self.assertEqual(bad.returncode, 1, bad.stdout + bad.stderr)
+
     def test_standalone_hierarchy_accepts_instances_and_parameter_overrides(self):
         assert_exclusive_refusal(
             self.invoke("verilog-a/ch06_hierarchy/nested_module_definition_rejected.va", reject=True),

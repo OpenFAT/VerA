@@ -37,7 +37,7 @@ pub fn run(
 ) !u8 {
     const json = cli.json;
     const device = cli.emit_zig or cli.check or cli.emit_so;
-    if (!cli.emit_rtlil and ((cli.exe_flag == null) == !device or cli.lint_flag or (cli.out_path != null and !cli.emit_zig and !cli.emit_osdi))) {
+    if (!cli.emit_rtlil and !cli.elab and ((cli.exe_flag == null) == !device or cli.lint_flag or (cli.out_path != null and !cli.emit_zig and !cli.emit_osdi))) {
         try err.writeAll("error: digital .v source takes --run or --emit-exe, or --emit-zig, --check or --emit-so for a contract device\n");
         return 2;
     }
@@ -48,6 +48,18 @@ pub fn run(
     digital_bag.levels = cli.levels;
     var opts: digital.Options = .{ .file_name = in_path, .include_dirs = cli.include_dirs.items, .io = io, .language = cli.language, .event_budget = cli.event_budget, .params = cli.overrides.items };
     if (!try libraries(arena.allocator(), io, cli.paths.items, cli.libmaps.items, cli.search.items, &opts, err, json, use_color)) return 1;
+    if (cli.elab) {
+        // IEEE 1364-2005 §12.1.3: elaboration is complete before time 0, so
+        // a design that never finishes or reads an absent file still
+        // elaborates. Nothing is scheduled to run.
+        _ = digital.elaborate(arena.allocator(), source, opts, &digital_bag, out) catch |e| {
+            try report(&digital_bag, err, json, use_color);
+            if (e != error.DigitalFailed) try err.print("error: digital elaboration failed: {t}\n", .{e});
+            return 1;
+        };
+        try report(&digital_bag, err, json, use_color);
+        return if (digital_bag.failed()) 1 else 0;
+    }
     if (cli.emit_rtlil) return emitRtlil(io, arena.allocator(), &digital_bag, source, opts, cli.out_path, out, err, json, use_color);
     if (device) return emitDevice(gpa, io, arena.allocator(), &digital_bag, source, opts, cli.schedule, if (cli.logic_flag != null) cli.logic else .four, .{
         .zig = cli.emit_zig,

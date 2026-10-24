@@ -41,6 +41,8 @@ pub const usage_text =
     \\       vera --lsp [options]
     \\
     \\  --lint                  frontend only (parse, lower, prove); no codegen
+    \\  --elab                  a .v design: preprocess, parse and elaborate it
+    \\                          (IEEE 1364-2005 12.1.3), then stop: nothing runs
     \\  --lsp                   a language server on stdin/stdout: --lint's
     \\                          diagnostics and fix-its for each open document;
     \\                          the options here, then the workspace's .vera-flags
@@ -201,6 +203,8 @@ pub const Cli = struct {
     // conflicting flags are refused by name after the loop, whatever their
     // order.
     lint_flag: bool = false,
+    /// `--elab`: a `.v` design elaborated, not run.
+    elab: bool = false,
     /// `--lsp`: serve, and take no input file.
     lsp: bool = false,
     /// The last `--display=` typed. `.drop` conflicts with a testbench, and
@@ -269,6 +273,8 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
             return 0;
         } else if (std.mem.eql(u8, arg, "--lint")) {
             cli.lint_flag = true;
+        } else if (std.mem.eql(u8, arg, "--elab")) {
+            cli.elab = true;
         } else if (std.mem.eql(u8, arg, "--lsp")) {
             cli.lsp = true;
         } else if (std.mem.eql(u8, arg, "--emit-zig")) {
@@ -496,6 +502,11 @@ pub fn resolve(cli: *Cli, err: *Io.Writer) !?u8 {
             "testbench; --check always runs them\n");
         return 2;
     }
+    const elab_other: ?[]const u8 = cli.codegen_flag orelse if (cli.lint_flag) "--lint" else if (cli.emit_rtlil) "--emit-rtlil" else null;
+    if (cli.elab) if (elab_other) |f| {
+        try err.print("error: `--elab` and `{s}` conflict: --elab stops after elaboration\n", .{f});
+        return 2;
+    };
     if (cli.lint_flag) if (cli.codegen_flag) |f| {
         try err.print(
             "error: `--lint` and `{s}` conflict: --lint stops after the frontend " ++
@@ -948,6 +959,8 @@ test "resolve: each conflict is refused by name, in either order" {
         .{ .a = "--emit-osdi", .b = "--emit-zig", .says = "error: `--emit-osdi` builds under this vera's own OSDI dyn: it takes neither --dyn, --emit-zig, --emit-exe nor --run\n" },
         .{ .a = "--lsp", .b = "--lint", .says = "error: `--lsp` and `--lint` conflict: the server lints each open document itself\n" },
         .{ .a = "--lsp", .b = "--check", .says = "error: `--lsp` and `--check` conflict: the server lints each open document itself\n" },
+        .{ .a = "--elab", .b = "--run", .says = "error: `--elab` and `--run` conflict: --elab stops after elaboration\n" },
+        .{ .a = "--elab", .b = "--lint", .says = "error: `--elab` and `--lint` conflict: --elab stops after elaboration\n" },
     };
     for (cases) |c| {
         try expectSettled(&.{ c.a, c.b, "m.va" }, 2, c.says);

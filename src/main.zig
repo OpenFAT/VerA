@@ -161,6 +161,10 @@ pub fn main(init: std.process.Init) !u8 {
         try err.print("error: {s}: -D takes a Verilog-A/AMS source; a .v design defines its macros in the source\n", .{in_path});
         return 2;
     }
+    if (!digital_source and cli.elab) {
+        try err.print("error: {s}: --elab takes an IEEE 1364 design (.v); --lint elaborates a Verilog-A/AMS source\n", .{in_path});
+        return 2;
+    }
     if (digital_source and cli.emit_verilog) {
         try err.print("error: {s}: --emit-verilog takes a Verilog-A model (.va)\n", .{in_path});
         return 2;
