@@ -45,12 +45,13 @@ pub const Backend = enum {
         return if (optimize == .debug and arch == .x86_64) .self_hosted else .llvm;
     }
 
-    /// The backend a build on this host actually uses: `.llvm` on Windows,
-    /// whatever was asked. The self-hosted COFF linker writes a DLL at a fixed
-    /// base with its relocations stripped, so a second one cannot load in the
-    /// same process.
+    /// The backend a build on this host actually uses: `.llvm` on Windows and
+    /// off x86_64, whatever was asked. The self-hosted COFF linker writes a
+    /// DLL at a fixed base with its relocations stripped, so a second one
+    /// cannot load in the same process; and off x86_64 the self-hosted code
+    /// generator panics "TODO" on a device (aarch64-macos, seen in CI).
     pub fn forHost(b: Backend) Backend {
-        return if (builtin.target.os.tag == .windows) .llvm else b; // os: picks a backend; every target builds
+        return if (builtin.target.os.tag == .windows or builtin.target.cpu.arch != .x86_64) .llvm else b; // os: picks a backend; every target builds
     }
 
     /// The `zig` flags that select `forHost(b)`.
