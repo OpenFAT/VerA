@@ -520,11 +520,8 @@ openvaf/integration_tests/EKV/ekv.va
 openvaf/integration_tests/EKV_LONGCHANNEL/ekv_longchannel.va
 openvaf/integration_tests/HiSIM2/hisim2.va
 openvaf/integration_tests/HiSIMSOTB/hisimsotb.va
-openvaf/integration_tests/VAMS2023_EVENT_FUNS/vams2023_event_funs.va
 openvaf/integration_tests/VAMS2023_STRING_FUN/vams2023_string_fun.va
 openvaf/openvaf/test_data/syn_ui/unknown_lint.va
-openvaf/openvaf/test_data/ui/event_functions.va
-openvaf/openvaf/test_data/ui/transition_tolerance_err.va
 spice/cccs_inside_a_spice_subcircuit.va
 spice/instance_override_beats_the_model_card.va
 spice/limit_fet.va

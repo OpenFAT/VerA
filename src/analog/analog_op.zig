@@ -61,6 +61,13 @@ pub fn checkOperatorPlace(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!boo
         try self.err(self.file.exprs.mainTok(e), .E0422, "not allowed in {s}", .{ctx});
         return false;
     }
+    // A.8.2 fixes each operator's last slot: an extra argument has no meaning
+    // to ignore (`transition(x, td, rise, fall, tol, 1.0)`).
+    const argc = self.file.exprs.args(e).len;
+    if (maxArgs(name)) |max| if (argc > max) {
+        try self.err(self.file.exprs.mainTok(e), .E0506, "`{s}()` takes at most {d} argument(s), got {d} (A.8.2)", .{ name, max, argc });
+        return false;
+    };
     // VerA's `vera_timepoint` (§2.9): an operator with history advances per
     // accepted step and reads its input every iterate.
     if (self.tp_cur != null and !isHistoryless(name)) {
@@ -144,7 +151,6 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         try self.err(self.file.exprs.mainTok(e), .E0505, "`{s}()` needs {d} argument(s), got {d}", .{ name, min_args, args.len });
         return poison;
     }
-
     try checkFilterArgBounds(self, name, args); // §4.5.5-§4.5.10
 
     const abstol_slot = abstolSlot(name);
@@ -317,6 +323,21 @@ pub fn interpQuad(self: *Lower, a: Ast.LteAttr) Oom!bool {
 /// Which argument of an analog operator is its tolerance, or null for an
 /// operator that has none. §5.5.3, last sentence: "The abstol attribute of a
 /// nature may also be accessed simply by using the nature's identifier as the
+/// A.8.2 Syntax 4-3's longest argument list per `analog_filter_function_call`
+/// (`ddx` is checked exactly on its own path), or null for a name it does not
+/// list.
+fn maxArgs(name: []const u8) ?usize {
+    const table = std.StaticStringMap(usize).initComptime(.{
+        .{ "ddt", 2 },           .{ "idt", 4 },        .{ "idtmod", 5 },
+        .{ "absdelay", 3 },      .{ "transition", 5 }, .{ "slew", 3 },
+        .{ "last_crossing", 2 }, .{ "limexp", 1 },
+    });
+    if (table.get(name)) |n| return n;
+    if (std.mem.startsWith(u8, name, "laplace_")) return 4;
+    if (std.mem.startsWith(u8, name, "zi_")) return 6;
+    return null;
+}
+
 /// appropriate argument to the ddt(), idt(), or idtmod() operators described in
 /// 4.5." Those three, and the slot each of their signatures puts it in:
 ///
@@ -1208,6 +1229,18 @@ test "§4.5 analog operators: argument shapes and bounds" {
         // Table 4-20: abstol is a constant expression argument; a probe moves.
         .{ .src = "analog I(p) <+ ddt(V(p), V(q));", .code = .E0515 },
         .{ .src = "analog I(p) <+ ddt(V(p), 1e-6);", .code = null },
+        // A.8.2's longest list for each operator, and one past it.
+        .{ .src = "analog I(p) <+ transition(V(p), 0.0, 1n, 1n, 1p);", .code = null },
+        .{ .src = "analog I(p) <+ transition(V(p), 0.0, 1n, 1n, 1p, 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ ddt(V(p), 1e-6, 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ idt(V(p), 0.0, 0, 1e-6, 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ idtmod(V(p), 0.0, 1.0, 0.0, 1e-6, 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ absdelay(V(p), 1n, 1n, 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ slew(V(p), 1.0, -1.0, 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ last_crossing(V(p), 1, 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ limexp(V(p), 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ laplace_nd(V(p), '{1.0}, '{1.0, 1.0}, 1e-6, 1.0);", .code = .E0506 },
+        .{ .src = "analog I(p) <+ zi_nd(V(p), '{1.0}, '{1.0, 1.0}, 1n, 0.0, 0.0, 1.0);", .code = .E0506 },
     });
 }
 

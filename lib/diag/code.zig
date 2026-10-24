@@ -4446,12 +4446,14 @@ fn infoOf(c: Code) Info {
             ,
         },
         .E0506 => .{
-            .title = "wrong number of arguments to a math function",
+            .title = "wrong number of arguments to a math function or analog operator",
             .lrm = "4.3",
             .explain =
             \\LRM 4.3 tables 4-14 and 4-15 fix each math function's arity.
             \\Note `atan2(y, x)` and `hypot(x, y)` take two, while `min`, `max`
-            \\and `pow` also take two.
+            \\and `pow` also take two. A.8.2 Syntax 4-3 fixes the longest
+            \\argument list of each §4.5 analog operator: `transition` takes at
+            \\most five, `ddt` two, `absdelay` three.
             ,
         },
         .E0507 => .{
