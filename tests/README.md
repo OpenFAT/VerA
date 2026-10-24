@@ -16,7 +16,7 @@ external suites `zig build conformance` runs).
 | `nix develop -c zig build suite -- ieee1364` | Only the IEEE 1364 digital cases |
 | `nix develop -c zig build test-vpi` | VPI module tests and C applications |
 | `nix develop -c zig build suite -- vpi` | C header compatibility; compile only |
-| `nix develop -c zig build test-spice --fork .` | The `.sp` decks on ESPice (built against this tree), graded against their oracles. A fresh cache needs `zig build --fetch` once first: the fork is matched against fetched packages, and ESPice is a lazy dependency |
+| `nix develop -c zig build test-spice -Despice=PATH` | The `.sp` decks on an ESPice release, graded against their oracles. VerA does not build ESPice, so that espice compiles the devices with its own VerA: a compatibility check, not a test of this tree |
 | `nix develop .#external -c zig build test-external` | `--emit-verilog` in verilator and iverilog, `--emit-rtlil` of `conformance/vera/rtlil/*.v` in Yosys, VAMPyRE on the compact models |
 | `nix develop .#external -c zig build conformance` | The suite's own `conform` harness against this build's `vera`; known failures in `tools/vera.xfail` |
 | `nix develop -c zig build suite` | Every fixture plus a separate compiler timing pass |

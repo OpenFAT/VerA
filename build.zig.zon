@@ -3,13 +3,7 @@
     .version = "0.13.0",
     .fingerprint = 0x6b0632dec2e307f,
     .minimum_zig_version = "0.18.0-dev.349+d924f83bf",
-    .dependencies = .{
-        .espice = .{
-            .url = "git+https://github.com/OmarSiwy/ESPice#ec53a724d1e67adcb54927e46fbd13af40aed1eb",
-            .hash = "espice-1.2.0-ClTRP947vAGVAVyyhctskE0BMimgEBJYg1nTYv0f2QpN",
-            .lazy = true,
-        },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",

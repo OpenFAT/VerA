@@ -25,10 +25,10 @@
     i8/u8/i16/u16 its range allows; write it with a checked cast.
   - `Instance.systf` exists only in a device that declares `systf_calls`.
 - An `absdelay` history on a GPU thins silently; W1051 is host-only.
-- **`zig build test-spice`** runs the `.sp` decks on ESPice (`build.zig.zon`'s
-  lazy `espice` dependency, built against this tree with `--fork .`, or an
-  installed one with `-Despice=PATH`, CPU or GPU) and grades its CSV against
-  each deck's oracle. `lib/sim/spice/`, the in-tree copy of its solver, is
+- **`zig build test-spice -Despice=PATH`** runs the `.sp` decks on an ESPice
+  release, CPU or GPU, and grades its CSV against each deck's oracle. VerA
+  does not depend on ESPice: `build.zig.zon` has no dependencies, and
+  nothing in the merge gate fetches or builds ESPice. `lib/sim/spice/`, the in-tree copy of its solver, is
   gone.
 - **The fixtures live in the VAMS Conformance Suite** (`tests/conformance`,
   a submodule: `git submodule update --init tests/conformance` after

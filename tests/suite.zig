@@ -4710,9 +4710,8 @@ const SpiceDecks = struct {
     //! decks, and any other `--` argument is espice's own, forwarded untouched
     //! (`--backend=cuda`, `--jobs=4`): CPU or GPU is never VerA's decision.
     //!
-    //!   zig build test-spice --fork .                         # ESPice from build.zig.zon, over this tree's vera
     //!   zig build test-spice -Despice=PATH                    # an espice built elsewhere
-    //!   zig build test-spice --fork . -- timer                # the decks whose name contains timer
+    //!   zig build test-spice -Despice=PATH -- timer           # the decks whose name contains timer
     //!   zig build test-spice -Despice=PATH -- --backend=cuda  # forwarded to espice
 
     const std = @import("std");

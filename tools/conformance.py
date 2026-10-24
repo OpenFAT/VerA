@@ -490,6 +490,9 @@ def run_suites(argv):
     parser = argparse.ArgumentParser(prog="conformance.py run", description=run_suites.__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / ".zig-cache/conformance")
     parser.add_argument("--jobs", type=int, default=4)
+    # VerA does not depend on ESPice: the SPICE decks run only on an espice
+    # release named here (`zig build test-spice -Despice=PATH`), never one built.
+    parser.add_argument("--espice", type=Path, help="run the .sp decks on this espice executable")
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be positive")
@@ -511,13 +514,10 @@ def run_suites(argv):
                                   f"--verdicts={run_dir / 'ams-perturbed.tsv'}"]),
         ("digital", build + ["suite", f"-j{args.jobs}", "--", "devices", f"--verdicts={run_dir / 'digital.tsv'}"]),
         ("vpi-abi", build + ["suite", f"-j{args.jobs}", "--", "vpi"]),
-        # The decks run on ESPice built against the tree under test. `--fork .`
-        # is matched against the fetched dependency tree, and ESPice is lazy, so
-        # a fresh cache fetches it first or the fork "matched no vera packages".
-        ("espice-fetch", build + ["--fetch"]),
-        ("spice", build + ["test-spice", "--fork", ".", f"-j{args.jobs}", "--",
-                          f"--results={run_dir / 'tests/spice.tsv'}"]),
     ]
+    if args.espice:
+        commands.append(("spice", build + ["test-spice", f"-Despice={args.espice.resolve()}", f"-j{args.jobs}", "--",
+                                           f"--results={run_dir / 'tests/spice.tsv'}"]))
     suites = []
     for name, command in commands:
         print(f"conformance: {name} → {run_dir / (name + '.log')}", flush=True)
