@@ -2237,7 +2237,8 @@ test "§9.7.1 delays: an x is no delay, a negative integer an unsigned time; §9
     // -1 is 2^64 - 1 units, which no tick count holds.
     try testing.expectError(error.Failed, s.ticks(.{ .v = std.math.maxInt(u64), .x = 0 }, true, scale));
     try testing.expectEqual(@as(u64, 1500), try s.realTicks(1.5, scale));
-    try testing.expectError(error.Failed, s.realTicks(-1.0, scale));
+    // A negative real wraps as its integer would (`Scale.realDelay`).
+    try testing.expectEqual(@as(u64, 0) -% 1000, try s.realTicks(-1.0, scale));
     try testing.expectEqual(@as(u64, 0), repeatCount(W{ .v = 3, .x = 2 }, 8, false));
     try testing.expectEqual(@as(u64, 255), repeatCount(W{ .v = 255, .x = 0 }, 8, false));
     try testing.expectEqual(@as(u64, 0), repeatCount(W{ .v = 255, .x = 0 }, 8, true));

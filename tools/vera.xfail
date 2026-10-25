@@ -265,7 +265,6 @@ ivtest/ivltests/decl_before_use6.v
 ivtest/ivltests/def_nettype_none.v
 ivtest/ivltests/delayed_sfunc.v
 ivtest/ivltests/delay.v
-ivtest/ivltests/delay_var.v
 ivtest/ivltests/drive_strength4.v
 ivtest/ivltests/dump_memword.v
 ivtest/ivltests/dumpvars.v
