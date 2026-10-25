@@ -145,7 +145,7 @@ const Suite = struct {
             if (std.mem.eql(u8, arg, "--sweep")) do_sweep = true //
             else if (std.mem.startsWith(u8, arg, "-")) {
                 var e_buf: [256]u8 = undefined;
-                var e = Io.File.stderr().writer(io, &e_buf);
+                var e = Io.File.stderr().writerStreaming(io, &e_buf);
                 try e.interface.print("benchmark: unknown flag `{s}`\n", .{arg});
                 try e.interface.flush();
                 return 2;
@@ -156,7 +156,7 @@ const Suite = struct {
         cfg.root = std.fs.path.resolveAlloc(arena, &.{cfg.root}) catch cfg.root;
 
         var out_buf: [1 << 16]u8 = undefined;
-        var stdout = Io.File.stdout().writer(io, &out_buf);
+        var stdout = Io.File.stdout().writerStreaming(io, &out_buf);
         const w = &stdout.interface;
         defer w.flush() catch {};
 
@@ -549,7 +549,7 @@ const Fixtures = struct {
     /// Prints `why` and the usage line to stderr; returns exit code 2.
     pub fn usage(io: Io, why: []const u8) !u8 {
         var buf: [256]u8 = undefined;
-        var e = Io.File.stderr().writer(io, &buf);
+        var e = Io.File.stderr().writerStreaming(io, &buf);
         try e.interface.print(
             "suite: {s}\nusage: <vera-exe> [devices | ieee1364 | vpi | spice | benchmark args]\n",
             .{why},
@@ -704,7 +704,7 @@ const Fixtures = struct {
         const arena = arena_state.allocator();
 
         var stderr_buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &stderr_buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &stderr_buf);
         const w = &stderr.interface;
 
         var fixtures = try collect(arena, io, cfg.root, &ams_dirs, cfg.filter);
@@ -2173,7 +2173,7 @@ const Canary = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2296,7 +2296,7 @@ const CFixtures = struct {
         while (args.next()) |a| filter = a;
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2514,7 +2514,7 @@ const Devices = struct {
         }
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -3016,7 +3016,7 @@ const Fuzz = struct {
         const gpa = init.gpa;
         const io = init.io;
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
         const exe = try Io.Dir.cwd().realPathFileAlloc(io, vera_exe, gpa);
@@ -3318,7 +3318,7 @@ const Golden = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -3722,7 +3722,7 @@ const Ieee1364 = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -4768,7 +4768,7 @@ const SpiceDecks = struct {
         defer results.deinit();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
