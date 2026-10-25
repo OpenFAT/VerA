@@ -648,10 +648,18 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                     try compile.checkExpr(self, args[arg]);
                     // A real operand is formatted as it is, not rounded to
                     // a whole unit first (#64).
-                    if (allocator) |a| try emitTime(self, if (compile.typeOf(self, args[arg]).real)
-                        try evaluate.evalReal(self, a, args[arg])
-                    else
-                        fmt.timeOperand(try evaluate.eval(self, a, args[arg], 0)), width);
+                    if (allocator) |a| {
+                        const out = self.out;
+                        defer self.out = out;
+                        var field: std.Io.Writer.Allocating = .init(a);
+                        const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
+                        if (zero) self.out = &field.writer;
+                        try emitTime(self, if (compile.typeOf(self, args[arg]).real)
+                            try evaluate.evalReal(self, a, args[arg])
+                        else
+                            fmt.timeOperand(try evaluate.eval(self, a, args[arg], 0)), width);
+                        if (zero) try zeroFilled(out, field.written());
+                    }
                     continue;
                 },
                 // §17.1.1.6 `%m` and §13.6 `%l` consume no argument: they
@@ -712,10 +720,17 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
             if (radix) |r| {
                 try compile.checkExpr(self, args[arg]);
                 if (allocator) |a| {
+                    // `%05d`: C's '0' flag, which iverilog renders (`zeroFilled`).
+                    const out = self.out;
+                    defer self.out = out;
+                    var field: std.Io.Writer.Allocating = .init(a);
+                    const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
+                    if (zero) self.out = &field.writer;
                     if (compile.typeOf(self, args[arg]).real)
                         try realRadix(self.out, a, try evaluate.evalReal(self, a, args[arg]), r, width)
                     else
                         try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
+                    if (zero) try zeroFilled(out, field.written());
                 }
             } else {
                 try compile.checkExpr(self, args[arg]);
@@ -724,6 +739,19 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
         }
     }
     if (allocator != null and show.newline) try self.out.writeByte('\n');
+}
+
+/// A field written with C's '0' flag and a width (`%05d`, `%04h`, `%06t`):
+/// `text`, the field as the conversion padded it with spaces on the left,
+/// with those spaces as zeros after any sign. §17.1.1.2 grants C's flags to
+/// the real conversions only and leaves a width's leading zero open; this is
+/// iverilog's text (ivtest delay.v's `%04d`).
+pub fn zeroFilled(out: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
+    const pad = std.mem.indexOfNone(u8, text, " ") orelse text.len;
+    const sign: usize = @intFromBool(pad < text.len and text[pad] == '-');
+    try out.writeAll(text[pad..][0..sign]);
+    try out.splatByteAll('0', pad);
+    try out.writeAll(text[pad + sign ..]);
 }
 
 /// A radix conversion (`%d %h %o %b`) of a real, as iverilog prints it
@@ -1354,6 +1382,19 @@ test "§17.2.3 $sformat/$swrite fill a reg with the text, §17.3.1 $printtimesca
     , "[t=3]\n[ab!]\n[o-long]\nTime scale of (m) is 10us / 100ns\n");
 }
 
+// §17.1.1.2 grants C's flags to the real conversions only; a radix or `%t`
+// width written with a leading zero pads with zeros after the sign, as
+// iverilog prints it (ivtest delay.v's `%04d`; this transcript is iverilog's).
+test "§17.1.1.2 a zero-led width pads a radix or time field with zeros" {
+    try expectRun(
+        \\module t; reg [7:0] r; integer i; reg [3:0] x;
+        \\initial begin r = 8'h5; i = -5; x = 4'bx01x;
+        \\$display("[%04d][%04h][%06b][%04o][%05d][%06d][%04d][%03d][%04t][%4d]", r, r, r, r, i, x, 12345, 3'd2, 5, r);
+        \\end endmodule
+        \\
+    , "[0005][0005][00000101][0005][-0005][00000X][12345][002][0005][   5]\n");
+}
+
 // §17.3.1 leaves the printed name and a non-module argument open; iverilog
 // (ivtest pr1701855, pr1701855b) prints this transcript: the current module
 // instance's full name with no argument, and for an argument its full name,
@@ -1513,12 +1554,13 @@ test "§17.1.1 %c, %s, %%, %m in a named block, %l, a real's width and precision
 test "§17.1.1.2 a real conversion renders C's flags; any other refuses them (#43)" {
     // By hand: "2.50" left in 8; '+' on 1.5; ' ' where 3.0's sign would be;
     // "-2.500" zero-filled to 8 after its sign; '#' keeps 2's point; `%r`
-    // of 1500 is "1.5K", left in 6. `%05d` stays §17.1.1.3's width 5.
+    // of 1500 is "1.5K", left in 6. `%05d` is width 5, zero-filled as
+    // iverilog fills it (`zeroFilled`).
     try expectRun(
         \\module m; initial $display("[%-8.2f|%+e|% .1f|%08.3f|%#.0f|%-6r|%05d]", 2.5, 1.5, 3.0, -2.5, 2.0, 1500.0, 42);
         \\endmodule
         \\
-    , "[2.50    |+1.500000e+00| 3.0|-002.500|2.|1.5K  |   42]\n");
+    , "[2.50    |+1.500000e+00| 3.0|-002.500|2.|1.5K  |00042]\n");
     try @import("root.zig").expectRejected("module m; initial $display(\"%-5d\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%+h\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%#h\", 1); endmodule", "alternative form");

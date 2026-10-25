@@ -263,7 +263,6 @@ ivtest/ivltests/decl_before_use5.v
 ivtest/ivltests/decl_before_use6.v
 ivtest/ivltests/def_nettype_none.v
 ivtest/ivltests/delayed_sfunc.v
-ivtest/ivltests/delay.v
 ivtest/ivltests/drive_strength4.v
 ivtest/ivltests/dump_memword.v
 ivtest/ivltests/dumpvars.v
@@ -441,7 +440,6 @@ ivtest/ivltests/sv_lval_concat_uarray1.v
 ivtest/ivltests/sv_lval_concat_uarray2.v
 ivtest/ivltests/sv_task_call_instance_lookup.v
 ivtest/ivltests/switch_instance_shadow_fail.v
-ivtest/ivltests/test_extended.v
 ivtest/ivltests/test_width.v
 ivtest/ivltests/timing_check_delayed_signals.v
 ivtest/ivltests/timing_check_syntax.v
