@@ -1284,7 +1284,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
             },
         },
         .restart => |x| try self.print(
-            \\            if (restarted) return s.fail("this always process completed an iteration without suspending; it needs a delay or event control", .{{}});
+            \\            if (restarted) try s.loopIteration();
             \\            restarted = true;
             \\            continue :sw {d};
             \\

@@ -2286,7 +2286,6 @@ test "§12.4.1 a genvar-indexed hierarchical task enable names the task in that 
 test "unsupported source is rejected before any process side effect" {
     try expectRejected("module m; initial $display(\"before\"); initial forever ; endmodule", "error");
     try expectRejected("module m; wire [1:0] a, b; tran(a,b); initial $display(\"before\"); endmodule", "a scalar net or a bit-select of a vector net");
-    try expectRejected("module m; reg c; always begin c = 1; end endmodule", "without suspending");
     try expectRejected("module m; reg c; initial @(c[0]) c = 1; endmodule", "no bits to select");
     // §5.10 "events do not hold any data", so neither direction of the
     // event/variable confusion compiles.

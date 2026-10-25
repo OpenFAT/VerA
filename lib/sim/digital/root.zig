@@ -2209,42 +2209,10 @@ fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
             .{ .restart = .{ .target = start, .tok = process.main_tok } }
         else
             .stop);
-        // §9.9.2: an always construct whose statement never waits "will
-        // cause a simulation deadlock" at time 0, the one time every process
-        // starts at; iverilog refuses it at compile time (ivtest
-        // always3.1.*), and so does VerA, rather than when it first runs
-        // (specification/Vague_Decisions.md VD-133).
-        if (process.is_always and timeless(r.file, process.body))
-            return r.fail(process.main_tok, "§9.9.2: this always construct has no timing control, so it loops at time 0 without suspending (a simulation deadlock)", .{});
         if (process.is_always and try levelControlled(r, process.body)) {
             try r.early.append(r.arena, start);
         } else _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
     }
-}
-
-/// Whether statement `s` can never suspend nor end the run: no delay, event
-/// or wait control anywhere in it, no intra-assignment one, no task enable
-/// (a task may wait) and no `$finish`/`$stop`.
-fn timeless(file: *const Ast.SourceFile, s: Ast.StmtId) bool {
-    const V = struct {
-        f: *const Ast.SourceFile,
-        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) error{Timed}!void {}
-        pub fn stmt(v: @This(), c: Ast.StmtId) error{Timed}!void {
-            if (c == .none) return;
-            switch (v.f.stmt(c)) {
-                .event_control => return error.Timed,
-                .assign => |a| if (a.timing != .none or a.timing_implicit) return error.Timed,
-                .sys_task => |t| {
-                    const name = v.f.str(t.name);
-                    if (name[0] != '$' or std.mem.eql(u8, name, "$finish") or std.mem.eql(u8, name, "$stop")) return error.Timed;
-                },
-                else => {}, // else: no timing of its own; its children are searched
-            }
-            try v.f.stmtEdges(c, v);
-        }
-    };
-    (V{ .f = file }).stmt(s) catch return false;
-    return true;
 }
 
 /// Whether `body`, an always construct's, starts with an event control on
@@ -2319,11 +2287,11 @@ test "§9.9 time-0 process order is iverilog's" {
         \\module a; initial $display("a"); b ub(); endmodule
         \\module b; initial $display("b"); endmodule
     , "b\na\ntop\nfoo=00000000000000000000000000000001\n2 w=1z\n");
-    // §9.9.2: an always construct that can never wait deadlocks at time 0;
-    // iverilog refuses it (ivtest always3.1.2A).
-    try expectRejected("module m; reg [3:0] v; initial $display(\"%h\", v); always v <= 4'h5; endmodule", "has no timing control");
-    // VD-133: a timing control anywhere, a task call (which may wait) or a
-    // `wait` keeps the construct running.
+    // A timing control anywhere, a task call (which may wait) or a `wait`
+    // keeps an always construct running.
+    // A body that waits only on a later pass runs: three passes at time 0
+    // without suspending, then `#1`.
+    try expectRun("module m; integer n; initial n = 0; always begin if (n < 3) n = n + 1; else begin #1 $display(\"%0d\", n); $finish(0); end end endmodule", "3\n");
     try expectRun("module m; reg c; task t; #2 c = ~c; endtask initial begin c = 0; #5 $display(\"%b\", c); $finish(0); end always t; endmodule", "0\n");
     try expectRun("module m; reg c; initial begin c = 0; #3 c = 1; #1 $display(\"%b\", c); $finish(0); end always begin if (c) wait (!c); else #1; end endmodule", "1\n");
 }
@@ -2339,6 +2307,22 @@ test "a zero-delay loop fails by name instead of hanging at one tick" {
     r.budget = 1000;
     try std.testing.expectError(error.DigitalFailed, r.runUntil(std.math.maxInt(Tick)));
     try std.testing.expectEqual(@as(Tick, 0), r.scheduler.now);
+}
+
+test "an always construct with no timing control runs until the event budget ends it (§9.9.2, VD-133)" {
+    // Oracle: §9.9.2's own example, `always areg = ~areg;`, which "creates a
+    // zero-delay infinite loop" (ISP RAS test_09_09_02_1): legal source.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var bag = diag.Bag.init(arena.allocator());
+    var output = std.Io.Writer.Allocating.init(arena.allocator());
+    var r = try elaborate(arena.allocator(),
+        \\module m; reg areg; initial areg = 0; always areg = ~areg; endmodule
+    , .{}, &bag, &output.writer);
+    r.budget = 1000;
+    try std.testing.expectError(error.DigitalFailed, r.runUntil(std.math.maxInt(Tick)));
+    try std.testing.expectEqual(@as(Tick, 0), r.scheduler.now);
+    try std.testing.expect(std.mem.indexOf(u8, bag.at(0).message, "keeps simulation time from advancing") != null);
 }
 
 test "an untimed loop inside one process fails by name instead of hanging at one tick" {
