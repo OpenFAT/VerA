@@ -1407,6 +1407,16 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: A: +3 fixtures. C: §3.4.2's value half gains a run-time invalid-input test.
 - **Status**: DONE (#80).
 
+### VD-126: What a continuous driver outputs before its first update
+- **Source**: conformance-to-100 (2026-10-24), Verilog gap G8: `wire #5 w = a;`, `assign #3 w2 = 1;` and `buf #2 (b, a)` read z before the first update in VerA, x in iverilog; 13 ivtest tests (ldelay1, ldelay3, multi_driver_delay, pr1883052(b), pr2801662, strength_feedback_delay, br947, br_gh732, pr1587669, pr1645518, pr528(b)) and delay_var.v.
+- **Rule**: IEEE 1364-2005 §4.2.1: "Nets with drivers shall assume the output value of their drivers", and "The default initialization value for a net shall be the value z". §8.5 Figure 8-1 draws `q` and `qb`, behind `buf #3` and `not #5`, as unknown until 3 and 5.
+- **Why vague**: §4.2.1 does not say what a driver outputs before it has evaluated, so a driven net's value before its first delayed update is either the default z or the driver's own unknown.
+- **Options**: (a) z, the net default, until the first update lands (VerA until 2026-10-24; fixture `net_z_before_delayed_driver.v`); (b) x: a driver holds an evaluated value not yet scheduled, which is unknown, and the net takes its drivers' value.
+- **Decision**: `DECIDED:` (b). Figure 8-1 is the clause's own picture of it, iverilog and the commercial tools agree, and (a) let a net read a high impedance no driver ever asserted. A net with no driver keeps §4.2.1's z; a `trireg` starts at x anyway; a sequential UDP's output is its initial state.
+- **VerA today**: `lib/sim/digital/root.zig` `elaborateDeep` (a driver's `.current` starts at x), `lib/sim/digital/resolution.zig` `initial` (each driven net starts at what its drivers assert). Fixture `verilog/04_data_types/net_x_before_delayed_driver.v` (was `net_z_before_delayed_driver.v`).
+- **Measure impact**: A: the renamed fixture. C: §4.2.1's driven half gains a test.
+- **Status**: DONE 2026-10-24.
+
 ## 6. Implementation-defined choices
 
 A fixture here tests VerA's choice, not the clause. A tool that chooses
