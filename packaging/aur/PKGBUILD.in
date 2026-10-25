@@ -1,0 +1,26 @@
+# vera-bin: the release binary, as the AUR ships it. tools/package.sh fills the
+# @...@ fields from a release's tarballs; publish.yaml attaches the result.
+pkgname=vera-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Verilog-AMS compiler: Verilog-A to Zig device code, Verilog simulation, OSDI and VPI"
+arch=('x86_64' 'aarch64')
+url="https://github.com/OmarSiwy/VerA"
+license=('Apache-2.0')
+provides=('vera')
+conflicts=('vera')
+optdepends=('zig: simulating a design (VerA @VERSION@ runs Zig @ZIG@)')
+source=("LICENSE-$pkgver::https://raw.githubusercontent.com/OmarSiwy/VerA/v$pkgver/LICENSE"
+        "contract-$pkgver.zig::https://raw.githubusercontent.com/OmarSiwy/VerA/v$pkgver/lib/contract.zig")
+source_x86_64=("https://github.com/OmarSiwy/VerA/releases/download/v$pkgver/vera-v$pkgver-x86_64-linux-gnu.tar.gz")
+source_aarch64=("https://github.com/OmarSiwy/VerA/releases/download/v$pkgver/vera-v$pkgver-aarch64-linux-gnu.tar.gz")
+sha256sums=('@LICENSE_SHA256@'
+            '@CONTRACT_SHA256@')
+sha256sums_x86_64=('@X86_64_LINUX_SHA256@')
+sha256sums_aarch64=('@AARCH64_LINUX_SHA256@')
+
+package() {
+  install -Dm755 vera "$pkgdir/usr/bin/vera"
+  install -Dm644 "contract-$pkgver.zig" "$pkgdir/usr/share/vera/contract.zig"
+  install -Dm644 "LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

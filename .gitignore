@@ -19,3 +19,13 @@ __pycache__/
 
 # tools/report.py output: generated, never committed.
 /report/
+# tools/package.sh and publish.yaml's release build
+/out/
+/pkg/
+/vera-v*.tar.gz
+/vera_*.deb
+/vera-*.rpm
+/vera-*.pkg.tar.zst
+/PKGBUILD
+/vera.rb
+/SHA256SUMS

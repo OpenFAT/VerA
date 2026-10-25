@@ -51,6 +51,17 @@ jobs:
           cp out/wasm/bin/vera.wasm "vera-${GITHUB_REF_NAME}.wasm"
           sha256sum vera-*.tar.gz vera-*.wasm | tee SHA256SUMS
 
+      # .deb, .rpm and Arch .pkg.tar.zst from the Linux prefixes, plus the AUR
+      # PKGBUILD and the Homebrew formula over the tarballs (tools/package.sh).
+      # Each x86_64 package is installed by its own package manager in its
+      # distribution and must print this version before anything is uploaded.
+      - name: Distribution packages
+        run: |
+          set -euo pipefail
+          nix shell nixpkgs#nfpm -c tools/package.sh "${GITHUB_REF_NAME}"
+          tools/package.sh --check "${GITHUB_REF_NAME}"
+          sha256sum vera_*.deb vera-*.rpm vera-*.pkg.tar.zst PKGBUILD vera.rb | tee -a SHA256SUMS
+
       # The release body is the CHANGELOG section for this tag, verbatim — the
       # same table --check just confirmed.
       - name: Extract the CHANGELOG section
@@ -65,14 +76,20 @@ jobs:
           files: |
             vera-*.tar.gz
             vera-*.wasm
+            vera_*.deb
+            vera-*.rpm
+            vera-*.pkg.tar.zst
+            PKGBUILD
+            vera.rb
             SHA256SUMS
 
   # sources.json is what `nix build '.#"<version>"'` installs, so the release
   # just uploaded is added to it on main, through a pull request like any
-  # other change: main's ruleset admits nothing else. A GITHUB_TOKEN push or
-  # pull request starts no workflow, but a workflow_dispatch does, so the job
-  # dispatches every required check on the branch itself and auto-merge lands
-  # it when they pass.
+  # other change: main's ruleset admits nothing else. A pull request opened
+  # with GITHUB_TOKEN starts no workflow, and the checks this job dispatches on
+  # its branch are not attached to the PR, so the ruleset still blocks it: a
+  # maintainer closes it and reopens it from the same branch (#88, #90 -> #92),
+  # and its pull_request checks then run and auto-merge lands it.
   sources:
     needs: release
     runs-on: ubuntu-latest
@@ -108,3 +125,73 @@ jobs:
             gh workflow run "$w" --ref "$branch"
           done
           gh pr merge "$branch" --auto --squash
+
+  # The Homebrew formula the release attached, installed through a local tap on
+  # macOS from the uploaded tarballs and run by its own `test do`. With a
+  # HOMEBREW_TAP_TOKEN secret (contents: write on OmarSiwy/homebrew-vera) the
+  # formula is pushed to that tap: `brew install OmarSiwy/vera/vera`.
+  homebrew:
+    needs: release
+    runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Install and test the formula
+        run: |
+          set -euo pipefail
+          gh release download "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" -p vera.rb
+          brew tap-new --no-git vera/local
+          cp vera.rb "$(brew --repository vera/local)/Formula/vera.rb"
+          brew install vera/local/vera
+          brew test vera/local/vera
+          vera --version
+      - name: Push to OmarSiwy/homebrew-vera
+        if: env.TAP_TOKEN != ''
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/OmarSiwy/homebrew-vera.git" tap
+          mkdir -p tap/Formula && cp vera.rb tap/Formula/vera.rb
+          cd tap
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/vera.rb
+          git diff --cached --quiet || { git commit -m "vera ${GITHUB_REF_NAME}"; git push; }
+
+  # The AUR package the release attached: makepkg in Arch downloads the
+  # uploaded tarball, checks it against the PKGBUILD's sha256, and the package
+  # it builds must install and run. With an AUR_SSH_PRIVATE_KEY secret (an AUR
+  # account's key) the PKGBUILD and its .SRCINFO are pushed to vera-bin.
+  aur:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Build, install and run vera-bin
+        run: |
+          set -euo pipefail
+          mkdir aur && cd aur
+          gh release download "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" -p PKGBUILD
+          docker run --rm -v "$PWD:/aur" archlinux:latest sh -c '
+            set -e
+            pacman -Sy --noconfirm --needed base-devel >/dev/null
+            useradd -m builder && chown -R builder /aur
+            su builder -c "cd /aur && makepkg --noconfirm && makepkg --printsrcinfo > .SRCINFO"
+            pacman -U --noconfirm /aur/vera-bin-*.pkg.tar.zst >/dev/null
+            vera --version'
+      - name: Push to the AUR
+        if: env.AUR_KEY != ''
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && printf '%s\n' "$AUR_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur"
+          git clone ssh://aur@aur.archlinux.org/vera-bin.git vera-bin
+          cp aur/PKGBUILD aur/.SRCINFO vera-bin/
+          cd vera-bin
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet || { git commit -m "vera-bin ${GITHUB_REF_NAME#v}"; git push; }
