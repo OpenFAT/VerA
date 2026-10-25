@@ -1566,7 +1566,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         const more = try arena.alloc(Front.Preprocessor.File, opts.more.len);
         for (opts.more, more) |u, *f| f.* = .{ .name = u.name, .text = u.text };
         break :more more;
-    }, .bag = bag }) catch |e| return switch (e) {
+    }, .bag = bag, .std_1364 = @backingInt(opts.language) < @backingInt(Front.token.KeywordSet.vams_2_3) }) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.PreprocessFailed => error.DigitalFailed,
     };
