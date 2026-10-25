@@ -410,10 +410,11 @@ pub const Run = struct {
     /// slot at all.
     instances: std.AutoHashMapUnmanaged(Name, u32) = .empty,
     /// IEEE 1364-2005 §12.7 the gate, switch and UDP instance names of each
-    /// scope: no storage, but declared there, so they hide an outer name of
-    /// the same spelling from `lookup`, `upward` and a call (iverilog
-    /// refuses the hidden use the same way).
-    prim_names: std.AutoHashMapUnmanaged(Name, void) = .empty,
+    /// scope, each to its token: no storage, but declared there, so they hide
+    /// an outer name of the same spelling from `lookupAt`, `upward` and a call
+    /// (iverilog refuses the hidden use the same way); `lookupAt` from the
+    /// instance on, a call and `upward` wherever it is.
+    prim_names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
     /// §12.5 the scope of each named block that declares something, keyed by
     /// the scope it runs in and its statement (`blockScope`).
     block_scopes: std.AutoHashMapUnmanaged(struct { scope: u32, stmt: Ast.StmtId }, u32) = .empty,
@@ -1144,7 +1145,7 @@ pub const Run = struct {
                 self.exprFail(e, "undeclared digital variable");
         }
         if (ex.tag(e) != .ident) return self.exprFail(e, "only whole-variable lvalues are implemented");
-        return self.lookup(self.scope, ex.strOf(e)) orelse self.exprFail(e, "undeclared digital variable");
+        return self.lookupAt(self.scope, ex.strOf(e), ex.mainTok(e)) orelse self.exprFail(e, "undeclared digital variable");
     }
     /// `text`, a part of the hierarchical name at token `tok` with `[]`
     /// selects, with each one's index from `indices` (from `used` on) folded
@@ -1241,11 +1242,24 @@ pub const Run = struct {
 
     /// §12.7 a name as seen from `scope`: declared there, or in an enclosing
     /// scope of the same module, never across an instance boundary.
+    /// `lookup` from a statement or expression at token `tok`: a gate,
+    /// switch or UDP instance named the same in a scope on the way hides the
+    /// outer name from the instance on (iverilog's gate_instance_shadow_fail
+    /// and gate_instance_reference_order).
+    pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
+        var s = scope;
+        while (true) {
+            if (self.names.get(.{ .scope = s, .str = str })) |at| return at;
+            if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return null;
+            const info = self.scope_info.items[s];
+            if (!info.lexical) return null;
+            s = info.parent;
+        }
+    }
     pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
         var s = scope;
         while (true) {
             if (self.names.get(.{ .scope = s, .str = str })) |at| return at;
-            if (self.prim_names.contains(.{ .scope = s, .str = str })) return null;
             const info = self.scope_info.items[s];
             if (!info.lexical) return null;
             s = info.parent;
