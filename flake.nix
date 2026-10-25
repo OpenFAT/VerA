@@ -8,8 +8,9 @@
     flake-utils.url = "github:numtide/flake-utils";
     zig-overlay.url = "github:mitchellh/zig-overlay";
     zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
-    # The conformance suite: its `conform` harness and OpenVAF-Reloaded.
-    conformance.url = "github:OmarSiwy/VAMS-Conformance-Suite";
+    # The conformance suite: its `conform` harness and OpenVAF-Reloaded, from
+    # vera-fixtures, the branch tests/conformance follows.
+    conformance.url = "github:OmarSiwy/VAMS-Conformance-Suite/vera-fixtures";
     conformance.inputs.nixpkgs.follows = "nixpkgs";
     conformance.inputs.flake-utils.follows = "flake-utils";
   };

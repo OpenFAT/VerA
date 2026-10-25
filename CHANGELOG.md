@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+## v0.20.0 — 2026-10-25
+
+On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Verilog-AMS 754/754, Cumulative: 6817/6817.
+
+- **No expected failures.** Every Verilog-A, Verilog and Verilog-AMS test in
+  the VAMS Conformance Suite passes: `tools/vera.xfail` and the suite's
+  `vera/xfail` are empty. Where a test expected what the LRM forbids, the
+  suite now expects a refusal citing the clause
+  (OmarSiwy/VAMS-Conformance-Suite#1); VerA accepts nothing the LRM forbids.
+- **Output to a file is no longer overwritten.** `vera`, the `.v` runtime and
+  the VPI host wrote stdout and stderr at fixed offsets, so a warning printed
+  after a testbench ran overwrote its output when both went to one file.
+  They stream now; a test checks that output to a file equals output to a
+  pipe.
+- **`vera --run`** honours `//! spice`, `//! discipline-resolution` and
+  `//! plusargs`, as the fixture runner did.
+- **New options:** `-D NAME[=TEXT]` defines a macro for a Verilog-A/AMS
+  source; `--elab` elaborates a `.v` design and runs nothing;
+  `--protect-keys FILE` decrypts IEEE 1364 §28 envelopes (VD-127).
+- **VPI:** `zig build install` ships `lib/libvera-vpi.a` and
+  `include/vpi_user.h`; a C application links them and runs on its design.
+  `vpiIsProtected` is TRUE for what a decrypted envelope declares (§26.3.5).
+- **Preprocessor:** `` `" `` and `` `\`" `` macro stringification (IEEE 1800
+  §22.5.1) under every standard, with W0151 under 1364; `pragma protect`
+  metadata; `expm1`/`ln1p` are identifiers before VAMS-2023; an undefined
+  macro stays an error (VD-126).
+- **Analog:** an access name two disciplines bind resolves on the net's
+  discipline, not on declaration order; `cross`/`last_crossing` take a
+  run-time direction; a string output formal starts at `""`; analog operators
+  check their argument count; a discipline naming an undeclared nature is
+  E0378; a continuous assignment may drive an output port with no net type.
+- **Paramset ranges** are checked at the declaration (E0347), not only when an
+  instance selects the paramset.
+- **Digital simulation:**
+  - A net behind a delayed driver reads x until its first update (VD-128).
+  - `$sdf_annotate` reads SDF 3.0; specify-block pulse limits filter pulses.
+  - `%x`, `%t` at any width, `%s` with zero bytes (VD-129) and `$fscanf`
+    follow iverilog where the LRM is silent.
+  - Time-0 process order follows iverilog (VD-081).
+  - A zero-delay `always` runs until the per-time-step event budget ends it
+    (VD-133).
+  - A failed `$readmem` load is warning W1157 and the run goes on (VD-134).
+  - Task and function names are searched in enclosing instances (§12.7).
+  - A MOS switch whose data input is an undriven supply net, a `%d` of a real
+    above 2^63, and a vector wider than 64 bits converted to real gave wrong
+    values; they are fixed.
+- **A SPICE deck scores as SPICE**, not Verilog-AMS, wherever it is filed.
+- **Tests:** VPI runs and the file-kernel test no longer share fixed file
+  names in `.zig-cache`, which raced between worktrees.
+
 ## v0.15.0 — 2026-10-24
 
 On Suite VAMS-CONFORMANCE, we score Verilog-A 1844/2466, Verilog 3106/3607, Verilog-AMS 521/744, Cumulative: 5471/6817.
