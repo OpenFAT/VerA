@@ -9,6 +9,9 @@
   manager before upload), the AUR `PKGBUILD` (`vera-bin`) and a Homebrew
   formula; the AUR and the `OmarSiwy/homebrew-vera` tap are updated when
   their secrets are set.
+- **The release's `sources.json` pull request** is opened with a
+  `RELEASE_PR_TOKEN` secret, so its required checks run on it and it merges
+  itself; opened with `GITHUB_TOKEN` it could never merge (#88, #90).
 
 ## v0.20.0 — 2026-10-25
 
