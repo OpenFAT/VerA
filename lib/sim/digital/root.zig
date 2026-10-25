@@ -109,6 +109,8 @@ pub const Options = struct {
     /// instance's `#( … )` would set it. A number's text reads as one, any
     /// other as a §3.6 string.
     params: []const @import("base").ParamOverride = &.{},
+    /// IEEE 1364-2005 §28.2 decryption keys (`vera --protect-keys`).
+    protect_keys: Front.Preprocessor.protect.Keys = .{},
 };
 
 /// Where statement `stmt` of instance `scope` is reached: its first
@@ -1566,7 +1568,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         const more = try arena.alloc(Front.Preprocessor.File, opts.more.len);
         for (opts.more, more) |u, *f| f.* = .{ .name = u.name, .text = u.text };
         break :more more;
-    }, .bag = bag, .std_1364 = @backingInt(opts.language) < @backingInt(Front.token.KeywordSet.vams_2_3) }) catch |e| return switch (e) {
+    }, .bag = bag, .std_1364 = @backingInt(opts.language) < @backingInt(Front.token.KeywordSet.vams_2_3), .protect_keys = opts.protect_keys }) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.PreprocessFailed => error.DigitalFailed,
     };
