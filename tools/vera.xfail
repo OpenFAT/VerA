@@ -4,12 +4,9 @@
 # listed here and on any listed test that passes (XPASS): delete its line.
 # Seed or refresh it from a run:
 #   grep '^FAIL' zig-out/conformance.tsv | cut -f2 > tools/vera.xfail
-ivtest/ivltests/br1000.v
 ivtest/ivltests/br_gh1591a.v
 ivtest/ivltests/br_gh1591b.v
 ivtest/ivltests/br_gh1591c.v
-ivtest/ivltests/nb_ec_concat.v
-ivtest/ivltests/param_string.v
 ivtest/ivltests/real_unary_minus_inf.v
 ivtest/ivltests/sv_task_call_instance_lookup.v
 ivtest/ivltests/vardly_undefined_vec.v
