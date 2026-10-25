@@ -403,7 +403,6 @@ ivtest/ivltests/shellho1.v
 ivtest/ivltests/shift6.v
 ivtest/ivltests/signed_a.v
 ivtest/ivltests/specify_01.v
-ivtest/ivltests/specparam_specify_reference_order.v
 ivtest/ivltests/sqrt32.v
 ivtest/ivltests/strength_net_change.v
 ivtest/ivltests/strength_net_release.v

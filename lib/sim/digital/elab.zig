@@ -605,8 +605,9 @@ fn ieee1364(r: *const Run) bool {
 /// IEEE 1364-2005 §12.2 the parameters `params` of `scope` (an instance, or a
 /// §12.5 named block, which `over` never reaches), in declaration order so a
 /// default may name an earlier one.
-fn declareParams(r: *Run, scope: u32, params: []const Ast.ParamDecl, over: []const Ast.ParamOverride) Error!void {
+fn declareParams(r: *Run, scope: u32, declared_params: []const Ast.ParamDecl, over: []const Ast.ParamOverride) Error!void {
     const arena = r.arena;
+    const params = try specifyOrder(r, declared_params);
     const g = r.growing.?;
     const path = if (r.real_card.len != 0) try scopePath(r, scope) else "";
     var positional: usize = 0;
@@ -644,11 +645,62 @@ fn declareParams(r: *Run, scope: u32, params: []const Ast.ParamDecl, over: []con
         try g.append(arena, slot_value);
         try r.params.put(arena, at, {});
         if (ty.real) try r.reals.put(arena, at, {});
-        if (p.is_spec) try r.specparams.put(arena, at, p.main_tok);
+        // A specify block's specparam has no declare-before-reference rule
+        // (§4.10.3 binds only one outside a block): token 0 never trips it.
+        if (p.is_spec) try r.specparams.put(arena, at, if (p.in_specify) 0 else p.main_tok);
         // §4.10.1: a select of a ranged parameter indexes its declared range.
         if (p.packed_range) |range| try putRange(r, at, range, p.main_tok);
     }
     r.values = g.items;
+}
+
+/// `params` with each specify-block specparam moved after the specify-block
+/// specparams its value names: §4.10.3 binds only one "declared outside a
+/// specify block" to be "declared before it is referenced", so inside one a
+/// specparam may name a later one (iverilog's
+/// specparam_specify_reference_order). A cycle keeps the written order,
+/// whose first forward name is then refused as undefined.
+fn specifyOrder(r: *Run, params: []const Ast.ParamDecl) Error![]const Ast.ParamDecl {
+    for (params) |p| {
+        if (p.in_specify) break;
+    } else return params;
+    const out = try r.arena.alloc(Ast.ParamDecl, params.len);
+    const placed = try r.arena.alloc(bool, params.len);
+    @memset(placed, false);
+    var n: usize = 0;
+    while (n < params.len) {
+        const before = n;
+        for (params, 0..) |p, i| {
+            if (placed[i]) continue;
+            // Anything else keeps its place after every earlier item.
+            const blocked = if (p.in_specify) blk: {
+                for (params, 0..) |q, j| if (!placed[j] and j != i and q.in_specify and names(r, p.default, q.name)) break :blk true;
+                break :blk false;
+            } else for (0..i) |j| {
+                if (!placed[j]) break true;
+            } else false;
+            if (blocked) continue;
+            out[n] = p;
+            placed[i] = true;
+            n += 1;
+        }
+        if (n == before) for (params, 0..) |p, i| if (!placed[i]) {
+            out[n] = p;
+            placed[i] = true;
+            n += 1;
+        };
+    }
+    return out;
+}
+
+/// Whether expression `e` reads the plain name `name`.
+fn names(r: *Run, e: Ast.ExprId, name: Ast.StrId) bool {
+    const ex = &r.file.exprs;
+    if (e == .none) return false;
+    if (ex.tag(e) == .ident) return ex.strOf(e) == name;
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| if (names(r, c, name)) return true;
+    return false;
 }
 
 /// IEEE 1364-2005 §12.3.10 Table 12-1's "warn" (W1160) for port `p` joined
@@ -2813,4 +2865,11 @@ test "§12.2.2.2 an empty named parameter assignment assigns nothing, so it is n
     // iverilog's parameter_named_empty.
     try expectRun("module M #(parameter V = 1); endmodule module t; M #(.V(), .V()) a(); M #(.V(), .V(2)) b(); M #(.V(3), .V()) c(); initial $display(\"%0d %0d %0d\", a.V, b.V, c.V); endmodule", "1 2 3\n");
     try expectRejected("module M #(parameter V = 1); endmodule module t; M #(.V(1), .V(), .V(2)) a(); endmodule", "is assigned twice");
+}
+
+test "§4.10.3 a specify block's specparam may name a later one of the block" {
+    // Only a specparam "declared outside a specify block shall be declared
+    // before it is referenced" (iverilog's specparam_specify_reference_order).
+    try expectRun("module m; specify specparam v = d + 1; specparam d = 41; endspecify initial $display(\"%0d\", v); endmodule", "42\n");
+    try expectRejected("module m; specparam v = d; specparam d = 41; initial $display(\"%0d\", v); endmodule", "");
 }
