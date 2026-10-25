@@ -390,7 +390,6 @@ ivtest/ivltests/real_unary_minus_zero.v
 ivtest/ivltests/recursive_task.v
 ivtest/ivltests/repeat_signed_one_bit.v
 ivtest/ivltests/resetall.v
-ivtest/ivltests/rise_fall_delay3.v
 ivtest/ivltests/scanf4.v
 ivtest/ivltests/scope2b.v
 ivtest/ivltests/scope4.v

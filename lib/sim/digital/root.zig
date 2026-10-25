@@ -569,6 +569,8 @@ pub const Run = struct {
     /// continuous assignment's or gate's delay be one, which §6.1.3 reads
     /// each time the driver schedules (`exec`'s `.continuous`).
     driver_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
+    /// The same for a §7.6 pass switch's delays, by `trans` index.
+    tran_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
     /// IEEE 1364-2005 §14.3.3: per module path source slot (a `.path`
     /// watch), its last transition, which picks the path whose delay a
     /// destination transition takes (`waiters.store` fills it).
@@ -1844,8 +1846,14 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     r.trans = try arena.alloc(Tran, e.trans.items.len);
     for (e.trans.items, r.trans, 0..) |t, *dst, i| {
         dst.* = t.tran;
-        if (t.tran.ctrl == .none) continue;
         r.scope = t.scope;
+        // §7.6's delays, a variable read when the control changes as a
+        // driver's is (iverilog's rise_fall_delay3).
+        if (t.delay.rise != .none) dst.delay = if (try constantDelay(&r, t.delay)) try r.declaredDelay3(t.delay, t.tok) else blk: {
+            try r.tran_delays.put(arena, @intCast(i), t.delay);
+            break :blk .{ .present = true };
+        };
+        if (t.tran.ctrl == .none) continue;
         try compile.checkExpr(&r, t.tran.ctrl);
         var watched: std.ArrayList(u32) = .empty;
         try compile.sensitivity(&r, t.tran.ctrl, &watched);
@@ -2598,4 +2606,9 @@ test "a name is visible from its declaration on (iverilog's decl_before_use)" {
     try expectRejected("module m; initial $display(\"%b\", w); localparam w = 8'hAA; endmodule", "a name is used before its declaration");
     try expectRun("module m; integer w = 5; initial begin : b $display(\"%0d\", w); end endmodule", "5\n");
     try expectRun("module m; buf (a, c); buf (c, 1'b1); initial #1 $display(\"%b\", a); endmodule", "1\n");
+}
+
+test "§7.6 a pass switch's variable delay is read when its control changes" {
+    // iverilog's rise_fall_delay3: tranif1 #(d, 1) turns on d after en rises.
+    try expectRun("`timescale 1ns/1ns\nmodule m; reg [7:0] d = 3; reg en; wire i = 1; wire o; tranif1 #(d, 1) t(o, i, en); initial begin en = 0; #1 en = 1; #2 $display(\"%b\", o); #1 $display(\"%b\", o); end endmodule", "z\n1\n");
 }

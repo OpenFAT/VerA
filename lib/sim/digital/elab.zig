@@ -112,7 +112,7 @@ pub const Elab = struct {
     /// One row per elaborated instance: the definition and its name scope.
     insts: std.ArrayList(struct { module: *const Ast.ModuleDecl, scope: u32 }) = .empty,
     /// §7.6 pass switches, with the instance scope their control is read in.
-    trans: std.ArrayList(struct { tran: Tran, scope: u32, tok: u32 }) = .empty,
+    trans: std.ArrayList(struct { tran: Tran, scope: u32, tok: u32, delay: Ast.Delay3 = .{} }) = .empty,
     /// §6.6 the processes and variables of each elaborated generate block,
     /// with its scope; the variables for their §6.2.1 initializers.
     procs: std.ArrayList(struct { scope: u32, blocks: []const Ast.DiscreteBlock, vars: []const Ast.VarDecl }) = .empty,
@@ -1021,10 +1021,11 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
                             .state = if (gated) .unknown else .on,
                             .target = if (gated) .unknown else .on,
                             .resistive = resistive,
-                            .delay = try r.declaredDelay3(sw.delay, sw.main_tok),
                         },
                         .scope = scope,
                         .tok = sw.main_tok,
+                        // Typed and valued with the drivers' (`elaborateDeep`).
+                        .delay = sw.delay,
                     });
                 }
             },

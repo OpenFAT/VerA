@@ -861,6 +861,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 const t = &self.trans[s.tran];
                 const c = (try evaluate.eval(self, scratch, t.ctrl, 1)).bit(0);
                 const next: Tran.State = if (c == t.on) .on else if (c == .zero or c == .one) .off else .unknown;
+                if (self.tran_delays.get(s.tran)) |d3| t.delay = try variableDelay(self, scratch, d3, self.file.exprs.mainTok(d3.rise));
                 if (t.delay.present) try resolution.switchAfter(self, s.tran, next) else {
                     t.state = next;
                     try resolution.resolve(self, t.a);
