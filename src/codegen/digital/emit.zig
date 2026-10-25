@@ -1936,6 +1936,9 @@ fn netTables(self: *Emitter) Error!void {
             try self.print(" }},", .{});
             continue;
         }
+        // `rt` runs the default pulse handling only (`resolution.pulse`).
+        if (c.ondetect or c.showcancelled) return self.refuse("IEEE 1364-2005 §14.6.4 pulsestyle_ondetect or showcancelled, which the interpreter (`vera --run`) applies");
+        for (c.paths) |p| if (p.reject != null or p.err != null) return self.refuse("IEEE 1364-2005 §14.6.1 PATHPULSE$ limits, which the interpreter (`vera --run`) applies");
         // §14.3 its module paths, a condition as `pathCond<i>` in `pathConds`' order.
         try self.print(", .paths = &.{{", .{});
         for (c.paths) |p| {

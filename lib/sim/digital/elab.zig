@@ -1010,7 +1010,8 @@ fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!voi
                     const sel = (try evaluate.selection(r, r.arena, in)) orelse return r.fail(p.main_tok, "§14.2: a module path source's select is x, z or outside its port", .{});
                     bit = @intCast(@max(sel.first, 0));
                 }
-                try rows.append(r.arena, .{ .src = src, .src_bit = bit, .edge = p.edge, .cond = p.cond, .ifnone = p.ifnone, .scope = scope, .table = table, .delays = p.delays, .tok = p.main_tok });
+                const lim = try pulseLimits(r, m, ex.strOf(src_expr), ex.strOf(dst));
+                try rows.append(r.arena, .{ .src = src, .src_bit = bit, .edge = p.edge, .cond = p.cond, .ifnone = p.ifnone, .scope = scope, .table = table, .delays = p.delays, .tok = p.main_tok, .reject = lim[0], .err = lim[1] });
             }
             for (dests.items) |net| {
                 const n = &e.nets.items[net];
@@ -1020,9 +1021,34 @@ fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!voi
                 }
                 const cold = &e.net_cold.items[n.cold];
                 cold.paths = try std.mem.concat(r.arena, net_mod.Path, &.{ cold.paths, rows.items });
+                // §14.6.4: the pulse style and showcancelled declarations
+                // naming this output, the last of each pair winning.
+                for (m.pulses) |pc| for (pc.outs) |o2| if (ex.strOf(if (ex.tag(o2) == .index) ex.lhs(o2) else o2) == ex.strOf(dst)) switch (pc.kind) {
+                    .onevent, .ondetect => cold.ondetect = pc.kind == .ondetect,
+                    .showcancelled, .noshowcancelled => cold.showcancelled = pc.kind == .showcancelled,
+                    .limits => {},
+                };
             }
         }
     }
+}
+
+/// IEEE 1364-2005 §14.6.1 the reject and error limits of `m`'s path from
+/// `in` to `out`: `PATHPULSE$in$out`, else the module's `PATHPULSE$`, else
+/// none (the default, the path delay). "If only the reject limit value is
+/// specified, it shall apply to both the reject and error limits."
+fn pulseLimits(r: *Run, m: *const Ast.ModuleDecl, in: Ast.StrId, out: Ast.StrId) Error![2]?u64 {
+    const specific = try std.fmt.allocPrint(r.arena, "PATHPULSE${s}${s}", .{ r.file.str(in), r.file.str(out) });
+    var pick: ?Ast.PulseControl = null;
+    for (m.pulses) |pc| {
+        if (pc.kind != .limits) continue;
+        const name = r.file.str(pc.name);
+        if (std.mem.eql(u8, name, specific)) pick = pc else if (std.mem.eql(u8, name, "PATHPULSE$") and (pick == null or std.mem.eql(u8, r.file.str(pick.?.name), "PATHPULSE$"))) pick = pc;
+    }
+    const pc = pick orelse return .{ null, null };
+    const reject = (try r.declaredDelay3(.{ .rise = pc.reject, .fall = pc.reject, .off = pc.reject }, pc.main_tok)).rise;
+    const err = if (pc.err == .none) reject else (try r.declaredDelay3(.{ .rise = pc.err, .fall = pc.err, .off = pc.err }, pc.main_tok)).rise;
+    return .{ reject, @max(reject, err) };
 }
 
 /// IEEE 1364-2005 §14.3.1 a path's A.7.4 delay expressions, folded in the

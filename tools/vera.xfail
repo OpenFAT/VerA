@@ -580,10 +580,6 @@ verilog/13_configuration/command_line_search_order.v
 verilog/13_configuration/config_binding_display.v
 verilog/13_configuration/config_design_select.v
 verilog/13_configuration/config_overrides_command_line.v
-verilog/14_specify_blocks/negative_pulse_showcancelled.v
-verilog/14_specify_blocks/pulse_error_window_styles.v
-verilog/14_specify_blocks/pulse_path_specific_limits.v
-verilog/14_specify_blocks/sdf_pulse_limits_override_specparam.v
 verilog/14_specify_blocks/specify_timing_checks_named_by_w0251.v
 verilog/17_system_tasks/clog2.v
 verilog/17_system_tasks/decimal_of_real_width.v

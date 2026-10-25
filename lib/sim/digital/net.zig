@@ -26,6 +26,9 @@ pub const Inertial = struct {
     /// timer alone instead of restarting it. Sized once and reused, so a
     /// toggling input allocates nothing per transition.
     target: Int.Literal = .{ .width = 0, .sized = true, .signed = false, .planes = &.{} },
+    /// When the event in flight lands, in absolute ticks; kept by a module
+    /// path's destination only, whose §14.6 pulse handling reads it.
+    due: u64 = 0,
     /// `target`'s §7.10.2 H/L flag, for a gate driver (see `Driver.or_z`).
     or_z: bool = false,
 };
@@ -145,6 +148,10 @@ pub const NetCold = struct {
     /// transitions in place of `delay` (`resolution.pathDelay`).
     /// Mutable: `$sdf_annotate` rewrites a row's `table` (`sdf.zig`).
     paths: []Path = &.{},
+    /// §14.6.4.1 `pulsestyle_ondetect` (else on-event) and §14.6.4.2
+    /// `showcancelled` (else noshowcancelled) on this path destination.
+    ondetect: bool = false,
+    showcancelled: bool = false,
 
     /// Every field at its default: the row of a net with none.
     pub const none: NetCold = .{};
@@ -169,6 +176,11 @@ pub const Path = struct {
     /// SDF LABEL changes a specparam they read (§16.2.3), and their token.
     delays: []const Ast.ExprId = &.{},
     tok: u32 = 0,
+    /// §14.6.1 its reject and error limits in ticks, from a `PATHPULSE$`
+    /// specparam or an SDF PATHPULSE; null is the default, the delay of the
+    /// transition being scheduled.
+    reject: ?u64 = null,
+    err: ?u64 = null,
 };
 
 /// A module path's delay for each destination transition, `[from][to]`

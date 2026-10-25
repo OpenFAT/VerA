@@ -2539,11 +2539,9 @@ fn infoOf(c: Code) Info {
             \\refusing a form it does not run (E1149), and applies the module
             \\path delays (14.2-14.4: simple, edge-sensitive and state-dependent
             \\paths, `ifnone`, 1/2/3/6/12 delays, chosen per 14.3.3 when the
-            \\destination is scheduled to change). There the warning is only for
-            \\the 14.6 pulse controls (pulsestyle, showcancelled, PATHPULSE$),
-            \\which are ignored: 14.6's default pulse handling applies instead,
-            \\inertial, with the reject and error limits equal to the path delay.
-            \\A block without pulse controls raises none. The same engine runs
+            \\destination is scheduled to change) and the 14.6 pulse controls
+            \\(PATHPULSE$ limits, pulsestyle_onevent/ondetect, showcancelled), so
+            \\it raises no warning there. The same engine runs
             \\the digital half of a mixed-signal design and evaluates its timing
             \\checks too, refusing the forms E1149 lists; the analog compile
             \\still names every check, since the analog solver evaluates none.

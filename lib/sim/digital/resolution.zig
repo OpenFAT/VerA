@@ -86,9 +86,16 @@ pub fn resolve(self: *Run, net: u32) Error!void {
         const c = try self.netColdMut(net);
         const st = &c.transition;
         const from = self.values[n.slot];
-        if (try transitionDelay(self, c, from, n.resolved)) |ticks| {
-            if (try schedule(self, from, false, n.resolved, false, st))
-                st.in_flight = try exec.enqueue(self, .{ .net_update = net }, ticks, false);
+        // A transition is timed from what is in flight to land, when
+        // something is: that is the edge §14.6's pulse ends with.
+        const base = if (st.in_flight != null) st.target else from;
+        if (try transitionDelay(self, c, base, n.resolved)) |td| {
+            if (st.in_flight != null and c.paths.len != 0 and !std.mem.eql(u64, st.target.planes, n.resolved.planes))
+                if (try pulse(self, net, c, td)) return;
+            if (try schedule(self, from, false, n.resolved, false, st)) {
+                st.in_flight = try exec.enqueue(self, .{ .net_update = net }, td.ticks, false);
+                st.due = self.scheduler.now + td.ticks;
+            }
             return;
         }
         // No path is active: the transition is not delayed, and one in
@@ -124,14 +131,72 @@ pub fn initial(self: *Run, net: u32) void {
     @memcpy(self.values[n.slot].planes, n.resolved.planes);
 }
 
-/// The delay of net `c`'s transition from `from` to `to`, in ticks from
-/// now: its own `delay3` (§6.1.3), its module paths' (`pathDelay`), or of
-/// the two "the larger" (IEEE 1364-2005 §14.4); null when neither applies.
-fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to: Int.Literal) Error!?u64 {
+/// A transition's delay in ticks from now, and the §14.6.1 reject and error
+/// limits its pulses are judged by.
+const Timed = struct { ticks: u64, reject: u64, err: u64 };
+
+/// The delay of net `c`'s transition from `from` to `to`: its own `delay3`
+/// (§6.1.3), its module paths' (`pathDelay`), or of the two "the larger"
+/// (IEEE 1364-2005 §14.4); null when neither applies.
+fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to: Int.Literal) Error!?Timed {
     const own: ?u64 = if (c.delay.present) c.delay.continuous(from.truth(), to) else null;
-    const path = try pathDelay(self, c.paths, from, to);
-    if (own) |o| return if (path) |p| @max(o, p) else o;
+    var path = try pathDelay(self, c.paths, from, to);
+    if (own) |o| {
+        if (path) |*p| p.ticks = @max(o, p.ticks) else return .{ .ticks = o, .reject = o, .err = o };
+    }
     return path;
+}
+
+/// IEEE 1364-2005 §14.6 a module path destination's transition `td` while
+/// another is in flight to land at `st.due`: the pulse between them, as wide
+/// as the time between the two landings, is judged by `td`'s limits.
+/// Narrower than the reject limit it is filtered, the inertial default
+/// (false: `schedule` cancels the one in flight). Not narrower than the
+/// error limit, both land (transport). Between the two, the pulse is x: from
+/// its leading edge (§14.6.4.1 on-event), or from now (on-detect), to its
+/// trailing one. A trailing edge landing no later than the leading one is a
+/// negative pulse (§14.6.4.2): filtered, or, under showcancelled, x from
+/// the earlier landing (on-event) or from now (on-detect) to the later.
+/// Returns whether it scheduled the transition itself.
+fn pulse(self: *Run, net: u32, c: *net_mod.NetCold, td: Timed) Error!bool {
+    const st = &c.transition;
+    const n = self.nets[net];
+    const now = self.scheduler.now;
+    const leading = st.due;
+    const trailing = now + td.ticks;
+    const xs = try filled(self.arena, n.resolved.width, n.resolved.signed, .x);
+    if (trailing <= leading) {
+        if (!c.showcancelled) return false;
+        try exec.cancel(self, st.in_flight.?);
+        st.in_flight = null;
+        if (c.ondetect) try waiters.store(self, n.slot, xs.planes) else _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = xs } }, trailing - now, false);
+        try land(self, net, st, n.resolved, leading);
+        return true;
+    }
+    const width = trailing - leading;
+    if (width < td.reject) return false;
+    try exec.cancel(self, st.in_flight.?);
+    st.in_flight = null;
+    if (width >= td.err) {
+        _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = st.target } }, leading - now, false);
+    } else if (c.ondetect) {
+        try waiters.store(self, n.slot, xs.planes);
+    } else {
+        _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = xs } }, leading - now, false);
+    }
+    try land(self, net, st, n.resolved, trailing);
+    return true;
+}
+
+/// Puts `to` in flight on `st` to land on net `net` at absolute time `at`.
+fn land(self: *Run, net: u32, st: *net_mod.Inertial, to: Int.Literal, at: u64) Error!void {
+    if (st.target.planes.len != to.planes.len) st.target.planes = try self.arena.alloc(u64, to.planes.len);
+    @memcpy(st.target.planes, to.planes);
+    st.target.width = to.width;
+    st.target.signed = to.signed;
+    st.or_z = false;
+    st.in_flight = try exec.enqueue(self, .{ .net_update = net }, at - self.scheduler.now, false);
+    st.due = at;
 }
 
 /// IEEE 1364-2005 §14.3.3: "Active specify paths are those whose input has
@@ -146,13 +211,14 @@ fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to:
 /// lands at 22, Figure 14-4 at 30). Null when no path is active.
 /// ponytail: a vector destination takes the smallest delay its changed bits
 /// select, as one transition; per-bit scheduling would time each bit.
-fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int.Literal) Error!?u64 {
+fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int.Literal) Error!?Timed {
     var latest: ?u64 = null;
     for (paths) |p| if (self.path_changed.get(p.src)) |c| {
         latest = @max(latest orelse c.time, c.time);
     };
     const t = latest orelse return null;
     var best: ?u64 = null;
+    var limits: [2]?u64 = .{ null, null };
     for (paths) |p| {
         if (!try pathActive(self, paths, p, t)) continue;
         for (0..to.width) |i| {
@@ -160,11 +226,13 @@ fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int
             const b = to.bit(@intCast(i));
             if (a == b) continue;
             const d = p.table[@backingInt(a)][@backingInt(b)];
+            if (best == null or d < best.?) limits = .{ p.reject, p.err };
             best = @min(best orelse d, d);
         }
     }
     const d = best orelse return null;
-    return (t + d) -| self.scheduler.now;
+    // §14.6.1: with no limits written, both are the path delay.
+    return .{ .ticks = (t + d) -| self.scheduler.now, .reject = limits[0] orelse d, .err = limits[1] orelse d };
 }
 
 /// Whether path `p` into a destination whose paths are `paths` is active

@@ -440,8 +440,8 @@ fn destNets(c: *Ctx, slot: u32) Error![]const u32 {
 
 /// Table 16-4's transitions of the 12 positions, in `net.pathTable`'s order.
 const positions = [12][2]Int.Bit{
-    .{ .zero, .one }, .{ .one, .zero }, .{ .zero, .z }, .{ .z, .one }, .{ .one, .z }, .{ .z, .zero },
-    .{ .zero, .x },   .{ .x, .one },    .{ .one, .x },  .{ .x, .zero }, .{ .x, .z },  .{ .z, .x },
+    .{ .zero, .one }, .{ .one, .zero }, .{ .zero, .z }, .{ .z, .one },  .{ .one, .z }, .{ .z, .zero },
+    .{ .zero, .x },   .{ .x, .one },    .{ .one, .x },  .{ .x, .zero }, .{ .x, .z },   .{ .z, .x },
 };
 
 /// One ABSOLUTE or INCREMENT entry on instance `s`.
@@ -604,8 +604,45 @@ fn timingCheck(c: *Ctx, s: u32, e: Node) Error!void {
     if (!hit) try c.warn(e.line, "{s} names no timing check of this instance", .{fam[0]});
 }
 
-/// §16.5 `(PATHPULSE [input output] rvalue [rvalue])`.
+/// §16.5 `(PATHPULSE [input output] rvalue [rvalue])`: the reject and
+/// error limits (§14.6.1, the error limit the reject one when absent) of the
+/// module paths of `s` from the input to the output, or of every path of
+/// `s` when no ports are named.
 fn pathPulse(c: *Ctx, s: u32, e: Node) Error!void {
-    _ = s;
-    try c.warn(e.line, "PATHPULSE is not applied", .{});
+    const r = c.r;
+    var kids = e.kids[1..];
+    var ends: ?[2]u32 = null;
+    if (kids.len >= 2 and kids[0].atom != null) {
+        const in = (try portSpec(c, kids[0])) orelse return c.warn(e.line, "PATHPULSE's input is a port", .{});
+        const out = (try portSpec(c, kids[1])) orelse return c.warn(e.line, "PATHPULSE's output is a port", .{});
+        ends = .{
+            portSlot(r, s, in.name) orelse return c.warn(e.line, "PATHPULSE input {s} is no port of this instance", .{in.name}),
+            portSlot(r, s, out.name) orelse return c.warn(e.line, "PATHPULSE output {s} is no port of this instance", .{out.name}),
+        };
+        kids = kids[2..];
+    }
+    if (kids.len == 0 or kids.len > 2) return c.warn(e.line, "PATHPULSE has a reject limit and an optional error limit", .{});
+    const vals = rvalues(c, kids) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Syntax => return c.warn(e.line, "PATHPULSE has a malformed value", .{}),
+    };
+    const reject: ?u64 = if (vals[0]) |v| @intCast(@max(0, c.ticks(s, v) orelse 0)) else null;
+    const err: ?u64 = if (vals.len == 2) (if (vals[1]) |v| @as(u64, @intCast(@max(0, c.ticks(s, v) orelse 0))) else null) else reject;
+    const nets: []const u32 = if (ends) |x| try destNets(c, x[1]) else blk: {
+        var all: std.ArrayList(u32) = .empty;
+        for (r.nets, 0..) |n, k| if (n.cold != net_mod.no_cold) try all.append(c.a, @intCast(k));
+        break :blk all.items;
+    };
+    var hit = false;
+    for (nets) |net| {
+        const cold = try r.netColdMut(net);
+        for (cold.paths) |*p| {
+            if (p.scope != s) continue;
+            if (ends) |x| if (p.src != x[0]) continue;
+            hit = true;
+            if (reject) |v| p.reject = v;
+            if (err) |v| p.err = @max(v, p.reject orelse v);
+        }
+    }
+    if (!hit) try c.warn(e.line, "PATHPULSE names no module path of this instance", .{});
 }
