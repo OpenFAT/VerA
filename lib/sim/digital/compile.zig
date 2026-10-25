@@ -916,7 +916,17 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
         // so the call site's context never reaches inside it.
         .call => blk: {
             const inst = self.instanceOf(self.scope);
-            const idx = subIn(self, self.scope, ex.strOf(e)) orelse return self.exprFail(e, "undeclared function");
+            // §12.5: `block.f(0)` names a function by a hierarchical name,
+            // resolved as a task enable's is (A.8.2 hierarchical_function_identifier).
+            const idx = (if (std.mem.findScalar(u8, self.file.str(ex.strOf(e)), '.') == null)
+                subIn(self, self.scope, ex.strOf(e))
+            else
+                try enabledTask(self, self.scope, ex.strOf(e), ex.mainTok(e), false)) orelse return self.exprFail(e, "undeclared function");
+            // A call site records an index relative to its own instance's
+            // subroutines (`Run.sub_base`).
+            // ponytail: a function of another instance is refused; an
+            // absolute index in `call_subs` is the upgrade.
+            if (self.instanceOf(self.subs.items[idx].inst) != inst) return self.exprFail(e, "§12.5: a hierarchical call of a function in another module instance is not implemented by digital execution");
             if (!self.subs.items[idx].decl.is_function) return self.exprFail(e, "§10.2: a task is enabled as a statement, not called in an expression");
             if (!self.subs.items[idx].framed) try elab.earlyFrame(self, idx, ex.mainTok(e));
             const sub = self.subs.items[idx];
@@ -2478,4 +2488,19 @@ test "§9.8.2 a fork in a function completes inside the call" {
         \\initial begin y = f(4); $display("%0d", y); end
         \\endmodule
     , "5\n");
+}
+
+test "§12.5 a function called by a hierarchical name in its generate block" {
+    // Oracle: iverilog -g2005 prints `2 3` (ivtest pr2350934's form).
+    try expectRun(
+        \\module m;
+        \\  parameter p = 2;
+        \\  reg [2:0] d;
+        \\  generate if (p == 2) begin : blk
+        \\    function [2:0] f; input i; f = p + i; endfunction
+        \\  end endgenerate
+        \\  initial begin d = blk.f(0); $display("%0d %0d", d, blk.f(1)); end
+        \\endmodule
+    , "2 3\n");
+    try expectRejected("module m; initial $display(blk.f(0)); endmodule", "undeclared function");
 }
