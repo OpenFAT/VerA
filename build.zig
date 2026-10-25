@@ -302,8 +302,10 @@ pub fn build(b: *Build) void {
     }
     for (vpi_runs) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
-        r.addFileArg(b.path(f.design));
-        if (std.mem.endsWith(u8, f.design, ".va")) r.addFileArg(b.path(f.c));
+        // Absolute: from a cwd of .zig-cache, a relative `../tests` resolves
+        // through a worktree's symlinked .zig-cache into the main checkout.
+        r.addFileArg2(b.path(f.design), .{ .make_absolute = true });
+        if (std.mem.endsWith(u8, f.design, ".va")) r.addFileArg2(b.path(f.c), .{ .make_absolute = true });
         r.setCwd(b.path(".zig-cache"));
         if (f.xfail orelse f.refuse) |msg| {
             r.expectExitCode(1);
@@ -320,7 +322,7 @@ pub fn build(b: *Build) void {
         if (f.xfail == null and f.refuse == null and !std.mem.endsWith(u8, f.design, ".va")) {
             const filed = b.addSystemCommand(&.{ "sh", "-c", "\"$1\" \"$2\" > \"$3\" && cat \"$3\"", "sh" });
             filed.addArtifactArg2(r.producer.?, .{ .make_absolute = true });
-            filed.addFileArg(b.path(f.design));
+            filed.addFileArg2(b.path(f.design), .{ .make_absolute = true });
             _ = filed.addOutputFileArg2(b.fmt("{s}.stdout", .{std.fs.path.stem(f.c)}), .{});
             filed.setCwd(b.path(".zig-cache"));
             filed.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
