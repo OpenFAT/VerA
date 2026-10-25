@@ -932,8 +932,6 @@ pub fn printTimescale(self: *Run, args: []const Ast.ExprId) Error!void {
     try self.out.writeAll("Time scale of (");
     try emitPath(self, t.scope);
     if (t.leaf) |name| try self.out.print(".{s}", .{self.file.str(name)});
-    // A select is named as iverilog's VPI names it: a word `[i]`, a bit `[i:i]`.
-    if (t.index) |i| if (t.word) try self.out.print("[{d}]", .{i}) else try self.out.print("[{d}:{d}]", .{ i, i });
     try self.out.writeAll(") is ");
     try fmt.decade(self.out, mt.unit_exp);
     try self.out.writeAll(" / ");
@@ -943,7 +941,7 @@ pub fn printTimescale(self: *Run, args: []const Ast.ExprId) Error!void {
 
 /// What `$printtimescale`'s argument names: a scope, or the object `leaf`
 /// declared in one.
-pub const TimescaleTarget = struct { scope: u32, leaf: ?Ast.StrId = null, index: ?i64 = null, word: bool = false };
+pub const TimescaleTarget = struct { scope: u32, leaf: ?Ast.StrId = null };
 
 /// §17.3.1 what `$printtimescale`'s argument names, by §12.5's resolution:
 /// an instance (or a named block that declares something, which `instances`
@@ -954,23 +952,11 @@ pub const TimescaleTarget = struct { scope: u32, leaf: ?Ast.StrId = null, index:
 /// module's source (`namedBlock`).
 pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!TimescaleTarget {
     const ex = &self.file.exprs;
-    // A constant bit- or word-select of a variable or net names that bit
-    // or word (iverilog's pr1701855b).
-    if (ex.tag(e) == .index and ex.tag(ex.rhs(e)) != .range and ex.tag(ex.rhs(e)) != .indexed_range) {
-        var t = try timescaleScope(self, ex.lhs(e));
-        const name = t.leaf orelse return self.exprFail(e, "§17.3.1: $printtimescale selects from a variable or a net only");
-        const at = self.names.get(.{ .scope = t.scope, .str = name }) orelse return self.exprFail(e, "§17.3.1: $printtimescale selects from a variable or a net only");
-        if (!compile.constantExpression(self, ex.rhs(e))) return self.exprFail(e, "§17.3.1: $printtimescale's select is a constant");
-        try compile.checkExpr(self, ex.rhs(e));
-        var scratch = std.heap.ArenaAllocator.init(self.arena);
-        defer scratch.deinit();
-        t.index = (try evaluate.eval(self, scratch.allocator(), ex.rhs(e), 0)).asInt() orelse return self.exprFail(e, "§17.3.1: $printtimescale's select is a known constant");
-        t.word = self.arrays.contains(at);
-        return t;
-    }
     const parts: []const Ast.StrId = switch (ex.tag(e)) {
         .ident => &.{ex.strOf(e)},
         .hier_ident => ex.nameParts(e),
+        // Syntax 17-9's argument is a hierarchical_identifier (A.9.3), so
+        // a bit- or word-select (`r[0]`, ivtest pr1701855b) is refused.
         else => return self.exprFail(e, "§17.3.1: $printtimescale names a module instance or an object in one"), // else: no hierarchical_identifier
     };
     var scope: u32 = blk: {
@@ -1476,7 +1462,7 @@ test "§17.3.1 $printtimescale names any object by its full hierarchical name" {
         \\module top;
         \\  reg [1:0] r; reg a [0:2]; wire w;
         \\  initial begin : blk
-        \\    $printtimescale(dut); $printtimescale(dut.q); $printtimescale(r[0]); $printtimescale(a[1]);
+        \\    $printtimescale(dut); $printtimescale(dut.q); $printtimescale(r); $printtimescale(a);
         \\    $printtimescale(top.w); $printtimescale(blk); $printtimescale(dut.t);
         \\  end
         \\  lower dut();
@@ -1487,14 +1473,15 @@ test "§17.3.1 $printtimescale names any object by its full hierarchical name" {
     ,
         \\Time scale of (top.dut) is 10ns / 10ps
         \\Time scale of (top.dut.q) is 10ns / 10ps
-        \\Time scale of (top.r[0:0]) is 1us / 1ns
-        \\Time scale of (top.a[1]) is 1us / 1ns
+        \\Time scale of (top.r) is 1us / 1ns
+        \\Time scale of (top.a) is 1us / 1ns
         \\Time scale of (top.w) is 1us / 1ns
         \\Time scale of (top.blk) is 1us / 1ns
         \\Time scale of (top.dut.t) is 10ns / 10ps
         \\Time scale of (top.dut) is 10ns / 10ps
         \\
     );
+    try @import("root.zig").expectRejected("module m; reg [1:0] r; initial $printtimescale(r[0]); endmodule", "names a module instance or an object in one");
 }
 
 test "display retains escaped NUL bytes and unsized integer width" {

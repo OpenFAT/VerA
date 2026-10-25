@@ -169,11 +169,11 @@ summary and has a **Status** line naming what landed.
 | VD-126 | VAMS 10.4; IEEE 1364-2005 19.3.2 | A use of a text macro that is not defined is refused (E0115), never expanded to nothing | DONE |
 | VD-127 | IEEE 1364-2005 28.2, 28.4 | A decryption envelope is decrypted with the keys and CBC IV of `--protect-keys FILE` (des-cbc, PKCS#7 padding); no key is E0152, a key that does not open it E0153, an encryption envelope or another method E0146 | DONE |
 | VD-128 | IEEE 1364-2005 4.2.1, 8.5 Figure 8-1 | A continuous driver outputs x until its first update lands; only an undriven net reads z | DONE |
-| VD-129 | IEEE 1364-2005 17.1.1.2, 17.1.1.7 | `%s` shows a zero byte as a space, `%0s` drops the leading ones; a `0` before a radix width zero-fills (iverilog) | DONE |
+| VD-129 | IEEE 1364-2005 17.1.1.2, 17.1.1.7 | `%s` shows a zero byte as a space, a written width (`%0s`, `%5s`) drops the leading ones; a `0` before a radix width zero-fills (iverilog) | DONE |
 | VD-130 | IEEE 1364-2005 17.8 | `$itor` of a real and `$rtoi` of an integer convert the argument first; `$rtoi` keeps the low 32 bits (iverilog) | DONE |
 | VD-131 | IEEE 1364-2005 3.5.1 | An unsized based constant with more than 32 bits of digits is as wide as its digits (digital; iverilog) | DONE |
 | VD-132 | IEEE 1364-2005 17.2.4.3 | `$fscanf`/`$sscanf` details the clause leaves open follow iverilog | DONE |
-| VD-133 | IEEE 1364-2005 9.9.2 | An always construct with no reachable timing control is refused at elaboration (iverilog) | DONE |
+| VD-133 | IEEE 1364-2005 9.9.2 | An always construct with no timing control runs; the event budget ends its time step (E1100), no elaboration-time refusal | DONE |
 | VD-134 | IEEE 1364-2005 17.2.9, 17.2.1 | Every reason a `$readmem` load cannot go on is warning W1157; the load ends, the run goes on, its exit status untouched (iverilog) | DONE |
 | VD-135 | IEEE 1364-2005 4.10.3, 9.7.3 | A name read by a statement before its declaration is refused (iverilog) | DONE |
 | VD-136 | IEEE 1364-2005 19.8 | A `` `timescale `` inside a module definition is refused (iverilog) | DONE |
@@ -1455,7 +1455,7 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Source**: conformance-to-100 (2026-10-24), ivtest H9c (br_gh827, pr1804877, string4, string5, string7, test_extended, test_width) and string13.
 - **Rule**: IEEE 1364-2005 17.1.1.7: %s's argument is "a sequence of 8-bit hexadecimal ASCII codes", and "No termination character or value is required at the end of a string, and leading zeros are never printed." 17.1.1.2 grants "the full formatting capabilities available in the C language" to the real conversions only; 17.1.1.3's one override of the automatic width is `%0`.
 - **Why vague**: "never printed" does not say whether a leading zero byte leaves its column (blank) or is dropped, nor what an inner zero byte prints; and nothing says what the `0` of `%08d` (a width written with a leading zero) does.
-- **Options**: (a) drop leading zero bytes, print an inner one as the byte 0, and read `%08d` as width 8 with spaces (VerA until 2026-10-24); (b) iverilog's: under `%s` every zero byte is shown as a space, so `%s` keeps the operand's width in characters, `%0s` drops the leading ones; `%08d` is C's zero fill, after the sign.
+- **Options**: (a) drop leading zero bytes, print an inner one as the byte 0, and read `%08d` as width 8 with spaces (VerA until 2026-10-24); (b) iverilog's: under `%s` every zero byte is shown as a space, so `%s` keeps the operand's width in characters, while a written width (`%0s`, `%5s`) drops the leading ones and pads the rest to it (ivtest pr1819452); `%08d` is C's zero fill, after the sign.
 - **Decision**: `DECIDED:` (b). A zero byte is still not printed as a character, the field keeps the width the operand's characters span (as §17.1.1.3 sizes every other conversion by the operand), and the reference tool prints it so.
 - **VerA today**: `lib/kernels/fmt.zig` `text`, `valueFill`; `lib/sim/digital/display.zig` `walk`; `lib/sim/rt/root.zig` `value`; `src/codegen/digital/emit.zig` `operand`. Fixtures `verilog/17_system_tasks/string_leading_nul_as_space.v` (was `string_leading_zeros.v`), `decimal_field_width_zero_flag.v` (was `decimal_field_width_space_padded.v`), and the %s lines of `string_output.v`, `sformat_variable_format.v`, `sscanf_conversions.v`, `native_sformat_dynamic.v`.
 - **Measure impact**: A: two renamed fixtures. C: none.
@@ -1492,14 +1492,14 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Status**: DONE 2026-10-24.
 
 ### VD-133: An always construct with no timing control anywhere in it
-- **Source**: conformance-to-100 (2026-10-24), ivtest always3.1.* (iverilog refuses `always v <= 4'h5;` and its kin at compile time).
-- **Rule**: IEEE 1364-2005 §9.9.2: "The always construct, because of its looping nature, is only useful when used in conjunction with some form of timing control. If an always construct has no control for simulation time to advance, it will cause a simulation deadlock condition." The clause describes the outcome; it has no "shall" and forbids no source.
-- **Why vague**: the text is legal syntax; whether a tool reports the deadlock at compile time, at run time or loops forever is not said.
-- **Options**: (a) run it, and stop it by the zero-delay event budget at time 0 (VerA until 2026-10-24; fixture `zero_delay_always_finishes`); (b) refuse it at elaboration, as iverilog does.
-- **Decision**: `DECIDED:` (b). The construct can only deadlock, so the earliest report is the most useful one, and it matches the reference tool. The refusal fires only when no timing control can be reached anywhere in the statement: a delay, an event control or `wait` at any depth, a timed or event-controlled assignment, a `$finish`/`$stop`, or a call of any user task counts as one (a task may wait, so a call is never judged timeless), so a block that can suspend on some path is always run.
-- **VerA today**: `lib/sim/digital/root.zig` `timeless`, checked where each always construct is compiled. Fixtures: always3.1.* (ivtest) and `verilog/09_behavioral_modeling/zero_delay_always_rejected.v`.
-- **Measure impact**: A: the reject fixture. C: §9.9.2 gains a negative test.
-- **Status**: DONE 2026-10-24.
+- **Source**: conformance-to-100 (2026-10-24), ivtest always3.1.* (iverilog refuses `always v <= 4'h5;` and its kin at compile time); revised 2026-10-25 by ISP RAS test_09_09_02_1, §9.9.2's own example.
+- **Rule**: IEEE 1364-2005 §9.9.2: "The always construct, because of its looping nature, is only useful when used in conjunction with some form of timing control. If an always construct has no control for simulation time to advance, it will cause a simulation deadlock condition." Its example, `always areg = ~areg;`, "creates a zero-delay infinite loop": the clause presents the source as legal and describes what running it does. It has no "shall".
+- **Why vague**: whether a tool reports the deadlock at compile time, at run time or loops forever is not said.
+- **Options**: (a) run it, and stop it by the zero-delay event budget at time 0; (b) refuse it at elaboration, as iverilog does (VerA 2026-10-24 to 2026-10-25).
+- **Decision**: `DECIDED:` (a). The clause's own example is legal source, so refusing it before it runs rejects a conforming description; the run reaches the deadlock the clause names, and the event budget (`vera --event-budget=N`, 10,000,000 by default) ends that time step by name, E1100 "keeps simulation time from advancing".
+- **VerA today**: `lib/sim/digital/root.zig` `Run` budget, checked per dispatched event. Fixtures: `verilog/09_behavioral_modeling/zero_delay_always_rejected.v` (event budget 1000), ISP RAS test_09_09_02_1 (compiles), ivtest always3.1.* (reject rows ended by the budget).
+- **Measure impact**: A: the reject fixture is a run-time rejection. C: §9.9.2's example compiles.
+- **Status**: DONE 2026-10-25.
 
 ### VD-134: What a terminated `$readmem` load does to the run
 - **Source**: conformance-to-100 (2026-10-24), the dialect audit's BUG on ivtest readmem-error; the lead's ruling.

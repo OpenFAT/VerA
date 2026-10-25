@@ -1045,12 +1045,18 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             },
             .restart => |s| {
                 // A suspension returns from this dispatch, so reaching the
-                // restart a second time within one proves a whole body ran
-                // with no timing control. That spins the scheduler forever
-                // at one timestamp, so it is reported instead of hanging.
-                // After `$finish` the step only drains: a process that would
-                // spin in it ends there (always3.1.1B's zero-delay always).
-                if (restarted) return if (self.scheduler.finishing) {} else self.fail(s.tok, "this always process completed an iteration without suspending; it needs a delay or event control", .{});
+                // restart a second time within one means a whole body ran
+                // with no timing control. §9.9.2 calls that a deadlock, of
+                // legal source (its `always areg = ~areg;`), so each further
+                // pass counts against the event budget (`loopIteration`),
+                // which ends the time step by name (VD-133); a body that
+                // waits on a later pass is never refused. After `$finish`
+                // the step only drains: a process that would spin in it
+                // ends there (always3.1.1B's zero-delay always).
+                if (restarted) {
+                    if (self.scheduler.finishing) return;
+                    try loopIteration(self);
+                }
                 restarted = true;
                 pc = s.target;
                 continue;

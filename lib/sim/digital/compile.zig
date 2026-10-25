@@ -1690,7 +1690,8 @@ fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
     while (true) : (s = self.scope_info.items[s].parent) {
         if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
         if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
-        if (s == 0) return null;
+        // A root is its own parent (`elaborate`'s other top-level modules).
+        if (self.scope_info.items[s].parent == s) return null;
     }
 }
 
@@ -2213,6 +2214,18 @@ test "an array element operand wakes a continuous assignment" {
     , "0001\n0010\n0111\n");
 }
 
+test "§12.7 a task name is searched for in the enclosing instances, and a name no root declares is refused" {
+    // Oracle: §12.7 "continues to search higher level modules until found"
+    // (ivtest sv_task_call_instance_lookup); each root is its own parent, so
+    // the search ends at whichever top-level module it reaches (ivtest
+    // constfunccall3 hung there).
+    try expectRun(
+        \\module c; initial t; endmodule
+        \\module m; task t; $display("%m"); endtask c u(); endmodule
+    , "m.t\n");
+    try expectRejected("module a; initial t; endmodule module b; initial t; endmodule", "undeclared task");
+}
+
 test "§3.6 a string operand is packed ASCII, right-justified and truncated on the left" {
     try expectRun(
         \\module m;
@@ -2273,7 +2286,6 @@ test "§12.4.1 a genvar-indexed hierarchical task enable names the task in that 
 test "unsupported source is rejected before any process side effect" {
     try expectRejected("module m; initial $display(\"before\"); initial forever ; endmodule", "error");
     try expectRejected("module m; wire [1:0] a, b; tran(a,b); initial $display(\"before\"); endmodule", "a scalar net or a bit-select of a vector net");
-    try expectRejected("module m; reg c; always begin c = 1; end endmodule", "without suspending");
     try expectRejected("module m; reg c; initial @(c[0]) c = 1; endmodule", "no bits to select");
     // §5.10 "events do not hold any data", so neither direction of the
     // event/variable confusion compiles.
