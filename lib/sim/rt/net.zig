@@ -250,7 +250,9 @@ pub const Nets = struct {
         @memset(t.nflight, null);
         @memset(t.decay_ev, null);
         @memset(t.capacitive, false);
-        @memset(t.sig0, .{});
+        // `resolution.initial`: an undriven net holds its type's pull (a
+        // supply net's supply strength), which a MOS switch passes on.
+        for (nets, t.sig0) |net, *sg| sg.* = if (net.kind == .trireg or net.kind == .wreal) .{} else dnet.netPull(net.kind);
         var mos_ix: std.ArrayList(u32) = .empty;
         for (drivers, 0..) |d, i| if (d.source == .mos) try mos_ix.append(gpa, @intCast(i));
         t.mos_ix = mos_ix.items;

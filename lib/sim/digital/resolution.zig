@@ -112,10 +112,16 @@ pub fn resolve(self: *Run, net: u32) Error!void {
 /// that has produced no value yet asserts the unknown it starts at
 /// (`Driver.current`). Bits no driver covers keep the default z. Stored
 /// without an event, since nothing has changed; a `trireg` (x already), a
-/// wreal and a switch-joined net are left to their first resolution.
+/// wreal and a switch-joined net are left to their first resolution. A net
+/// with no driver at all holds its type's pull (§3.7: a supply net's supply
+/// strength), which a MOS switch reading it as data passes on (§7.11).
 pub fn initial(self: *Run, net: u32) void {
     const n = self.nets[net];
-    if (n.kind == .wreal or n.kind == .trireg or self.netDrivers(net).len == 0 or self.netCold(n).trans.len != 0) return;
+    if (n.kind == .wreal or n.kind == .trireg or self.netCold(n).trans.len != 0) return;
+    if (self.netDrivers(net).len == 0) {
+        @memset(self.signals[n.signal..][0..n.resolved.width], netPull(n.kind));
+        return;
+    }
     const tables = wiredLogic(n.kind);
     for (0..n.resolved.width) |i| {
         const at: u32 = @intCast(i);
