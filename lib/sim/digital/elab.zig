@@ -2899,3 +2899,8 @@ test "A.8.5 a continuous assignment drives a hierarchical net or a select of one
     // iteration named from another one.
     try expectRun("module m; genvar i; for (i = 0; i < 2; i = i + 1) begin : w wire [1:0] s; end for (i = 0; i < 2; i = i + 1) begin : a assign w[i].s[i] = 1'b1; end initial #1 $display(\"%b %b\", w[0].s, w[1].s); endmodule", "z1 1z\n");
 }
+
+test "§14.6.1 `PATHPULSE$ = 3;`, the clause's own unparenthesized form, is a reject limit" {
+    // ISP RAS test_14_06_01_1 is the clause's example.
+    try expectRun("module m(input a, output q); assign q = a; specify (a => q) = 12; specparam PATHPULSE$a$q = (2, 9), PATHPULSE$ = 3; endspecify endmodule module t; reg a; wire q; m u(a, q); initial begin a = 0; #20 $display(\"%b\", q); end endmodule", "0\n");
+}
