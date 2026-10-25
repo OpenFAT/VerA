@@ -1902,8 +1902,10 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
     const ports = try r.arena.alloc(u32, t.ports.len);
     // §10.2.1/§10.4.1: a non-ANSI port's type may come from a following
     // declaration of its name (`input x; real x;`), which declares the port.
-    // ponytail: the two declarations' ranges are not compared, and an ANSI
-    // port redeclared in the body is taken the same way, not refused.
+    // `redeclaredPort` has judged the pair by §12.3.3.
+    // ponytail: an ANSI port redeclared in the body is taken the same way,
+    // not refused.
+    for (t.ports) |p| try redeclaredPort(r, p);
     for (t.ports, ports) |p, *slot| slot.* = try mintVar(r, for (t.vars) |v| {
         if (v.name == p.v.name) break v;
     } else p.v);
@@ -1916,6 +1918,28 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
     }
     if (t.automatic) for (first..g.items.len) |at| try r.auto_slots.put(r.arena, @intCast(at), {});
     return .{ .scope = scope, .ports = ports, .result = result, .first = first, .count = @as(u32, @intCast(g.items.len)) - first };
+}
+
+/// IEEE 1364-2005 §12.3.3's port rules, which a task's or function's body
+/// port follows as a module's does (iverilog refuses the same): "If a port
+/// declaration includes a net or variable type, then the port is considered
+/// completely declared, and it is an error for the port to be declared
+/// again"; otherwise "If the net or variable is declared as a vector, the
+/// range specification between the two declarations of a port shall be
+/// identical. Once a name is used in a port declaration, it shall not be
+/// declared again". An `integer`, `time` or `real` redeclaration has a
+/// range of its own, so it may only follow a port declared without one.
+fn redeclaredPort(r: *Run, p: Ast.TfPort) Error!void {
+    const d = p.redecl;
+    if (d.count == 0) return;
+    if (d.typed) return r.fail(d.tok, "§12.3.3: a port declared with a type is completely declared; this is a duplicate declaration of it", .{});
+    if (d.count > 1) return r.fail(d.tok, "§12.3.3: a duplicate declaration of a port's variable; a port is declared again at most once", .{});
+    if (p.v.storage != .reg) {
+        if (d.port_range != null) return r.fail(d.tok, "§12.3.3: this variable's range differs from its port declaration's: a port with a range is declared again only as a reg of the same range", .{});
+        return;
+    }
+    const same = if (d.port_range) |a| if (d.var_range) |b| try sameRange(r, a, b, d.tok) else false else d.var_range == null;
+    if (!same) return r.fail(d.tok, "§12.3.3: this variable's range differs from its port declaration's; the two shall be identical", .{});
 }
 
 /// §10.4.5: function `idx`, called by a constant function call before its
