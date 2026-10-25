@@ -96,6 +96,9 @@ pub const Scheduler = struct {
     free: SlotId = .none,
     sequence: u64 = 0,
     phase: union(enum) { idle, dispatch: Region, stopped } = .idle,
+    /// `finishStep` ran: the current time's regions drain, then the queue
+    /// stops instead of advancing.
+    finishing: bool = false,
     /// VAMS §8.5.1 a VPI read-write callback is an inactive event: when set
     /// to `now`, `nextUntil` returns null at this time's inactive point (after
     /// active, explicit D2A and inactive, before the NBA updates) and sets
@@ -139,6 +142,17 @@ pub const Scheduler = struct {
         try self.checkMutation();
         const handle = try self.allocate(region, payload);
         self.append(region, handle.slot);
+        return handle;
+    }
+
+    /// `schedule`, but ahead of every event already in `region`.
+    pub fn scheduleFirst(self: *Scheduler, region: Region, payload: u32) Error!Handle {
+        try self.checkMutation();
+        const handle = try self.allocate(region, payload);
+        const r = @backingInt(region);
+        self.slots.items(.next)[@backingInt(handle.slot)] = self.heads[r];
+        if (self.heads[r] == .none) self.tails[r] = handle.slot;
+        self.heads[r] = handle.slot;
         return handle;
     }
 
@@ -205,6 +219,12 @@ pub const Scheduler = struct {
         self.phase = .stopped;
     }
 
+    /// Stop once every region of the current time is empty: what this time
+    /// step has queued still dispatches, no later time does.
+    pub fn finishStep(self: *Scheduler) void {
+        self.finishing = true;
+    }
+
     /// Complete the preceding dispatch and return one active event. Promotion
     /// moves a whole region into active; newly scheduled active work joins its
     /// tail. FIFO is one order §11.4.2 permits among active events; NBA
@@ -260,6 +280,10 @@ pub const Scheduler = struct {
             }
             if (promoted) continue;
             if (self.syncHere()) return null;
+            if (self.finishing) {
+                self.phase = .stopped;
+                return null;
+            }
             if (!self.advance(limit)) return null;
         }
     }
@@ -326,7 +350,7 @@ pub const Scheduler = struct {
     pub fn save(self: *const Scheduler, w: *std.Io.Writer) std.Io.Writer.Error!void {
         const lens = [2]u32{ @intCast(self.slots.len), @intCast(self.future.items.len) };
         try w.writeAll(std.mem.asBytes(&lens));
-        inline for (.{ &self.now, &self.heads, &self.tails, &self.free, &self.sequence, &self.phase }) |f| try w.writeAll(std.mem.asBytes(f));
+        inline for (.{ &self.now, &self.heads, &self.tails, &self.free, &self.sequence, &self.phase, &self.finishing }) |f| try w.writeAll(std.mem.asBytes(f));
         inline for (comptime std.enums.values(std.MultiArrayList(Slot).Field)) |f| try w.writeAll(std.mem.sliceAsBytes(self.slots.items(f)));
         try w.writeAll(std.mem.sliceAsBytes(self.future.items));
     }
@@ -337,7 +361,7 @@ pub const Scheduler = struct {
     pub fn restore(self: *Scheduler, r: *std.Io.Reader) (std.Io.Reader.Error || std.mem.Allocator.Error)!void {
         var lens: [2]u32 = undefined;
         try r.readSliceAll(std.mem.asBytes(&lens));
-        inline for (.{ &self.now, &self.heads, &self.tails, &self.free, &self.sequence, &self.phase }) |f| try r.readSliceAll(std.mem.asBytes(f));
+        inline for (.{ &self.now, &self.heads, &self.tails, &self.free, &self.sequence, &self.phase, &self.finishing }) |f| try r.readSliceAll(std.mem.asBytes(f));
         try self.slots.resize(self.allocator, lens[0]);
         inline for (comptime std.enums.values(std.MultiArrayList(Slot).Field)) |f| try r.readSliceAll(std.mem.sliceAsBytes(self.slots.items(f)));
         try self.future.ensureTotalCapacity(self.allocator, lens[1]);
@@ -686,6 +710,19 @@ test "future NBA insertion order is preserved even with recycled slots" {
     try t.expectEqual(@as(u32, 1), scheduler.next().?.payload);
     try t.expectEqual(@as(u32, 2), scheduler.next().?.payload);
     try t.expect(scheduler.next() == null);
+}
+
+test "finishStep drains the current time's regions and never advances" {
+    var scheduler = Scheduler.init(t.allocator);
+    defer scheduler.deinit();
+    _ = try scheduler.schedule(.active, 1);
+    _ = try scheduler.schedule(.monitor, 2);
+    _ = try scheduler.scheduleAt(5, .inactive, 3);
+    scheduler.finishStep();
+    try t.expectEqual(@as(u32, 1), scheduler.next().?.payload);
+    try t.expectEqual(@as(u32, 2), scheduler.next().?.payload);
+    try t.expect(scheduler.next() == null);
+    try t.expectEqual(@as(Time, 0), scheduler.now);
 }
 
 test "finish is terminal and does not advance or dispatch queued events" {

@@ -145,7 +145,7 @@ const Suite = struct {
             if (std.mem.eql(u8, arg, "--sweep")) do_sweep = true //
             else if (std.mem.startsWith(u8, arg, "-")) {
                 var e_buf: [256]u8 = undefined;
-                var e = Io.File.stderr().writer(io, &e_buf);
+                var e = Io.File.stderr().writerStreaming(io, &e_buf);
                 try e.interface.print("benchmark: unknown flag `{s}`\n", .{arg});
                 try e.interface.flush();
                 return 2;
@@ -156,7 +156,7 @@ const Suite = struct {
         cfg.root = std.fs.path.resolveAlloc(arena, &.{cfg.root}) catch cfg.root;
 
         var out_buf: [1 << 16]u8 = undefined;
-        var stdout = Io.File.stdout().writer(io, &out_buf);
+        var stdout = Io.File.stdout().writerStreaming(io, &out_buf);
         const w = &stdout.interface;
         defer w.flush() catch {};
 
@@ -549,7 +549,7 @@ const Fixtures = struct {
     /// Prints `why` and the usage line to stderr; returns exit code 2.
     pub fn usage(io: Io, why: []const u8) !u8 {
         var buf: [256]u8 = undefined;
-        var e = Io.File.stderr().writer(io, &buf);
+        var e = Io.File.stderr().writerStreaming(io, &buf);
         try e.interface.print(
             "suite: {s}\nusage: <vera-exe> [devices | ieee1364 | vpi | spice | benchmark args]\n",
             .{why},
@@ -704,7 +704,7 @@ const Fixtures = struct {
         const arena = arena_state.allocator();
 
         var stderr_buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &stderr_buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &stderr_buf);
         const w = &stderr.interface;
 
         var fixtures = try collect(arena, io, cfg.root, &ams_dirs, cfg.filter);
@@ -2173,7 +2173,7 @@ const Canary = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2296,7 +2296,7 @@ const CFixtures = struct {
         while (args.next()) |a| filter = a;
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2514,7 +2514,7 @@ const Devices = struct {
         }
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2728,7 +2728,8 @@ const Digital = struct {
     /// suite's `//@` lines (`harness/conform.c`): `//@ std SPEC` is `--std=SPEC`;
     /// `//@ libmap FILE` is `--libmap FILE` and `//@ files FILE...` more sources
     /// after the fixture, both relative to the fixture's directory `dir`; and
-    /// `//@ liblist LIB...` is `-L LIB` each. Any other `//@` word is
+    /// `//@ liblist LIB...` is `-L LIB` each; `//@ protect-keys FILE` is
+    /// `--protect-keys FILE`, relative to `dir`. Any other `//@` word is
     /// `error.BadDirective`, as the suite's harness refuses it. VerA's own
     /// `//! event-budget N` is `--event-budget=N` (the harness ignores `//!`
     /// words it does not know, so this one is VerA's to read).
@@ -2751,6 +2752,9 @@ const Digital = struct {
                 try out.append(arena, try std.mem.concat(arena, u8, &.{ "--std=", words.next() orelse return error.BadDirective }));
             } else if (std.mem.eql(u8, key, "libmap")) {
                 try out.appendSlice(arena, &.{ "--libmap", try std.fs.path.join(arena, &.{ dir, words.next() orelse return error.BadDirective }) });
+            } else if (std.mem.eql(u8, key, "protect-keys")) {
+                // IEEE 1364-2005 §28.2's key "supplied by the user".
+                try out.appendSlice(arena, &.{ "--protect-keys", try std.fs.path.join(arena, &.{ dir, words.next() orelse return error.BadDirective }) });
             } else if (std.mem.eql(u8, key, "liblist")) {
                 while (words.next()) |lib| try out.appendSlice(arena, &.{ "-L", lib });
             } else if (std.mem.eql(u8, key, "files")) {
@@ -2974,10 +2978,10 @@ const Digital = struct {
         try std.testing.expect(!caseSelected(false, "module support; endmodule"));
         var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena.deinit();
-        const args = try runnerArgs(arena.allocator(), "//! reject E1100\n//@ files a.v b.vg\n//@ std 1364-2005\n  //@ libmap m/lib.map\n//@ liblist gateLib\n", "d");
+        const args = try runnerArgs(arena.allocator(), "//! reject E1100\n//@ files a.v b.vg\n//@ std 1364-2005\n  //@ libmap m/lib.map\n//@ liblist gateLib\n//@ protect-keys k.json\n", "d");
         // Joined to the fixture's directory with the host's separator.
         const sep = std.fs.path.sep_str;
-        const want = [_][]const u8{ "--std=1364-2005", "--libmap", "d" ++ sep ++ "m/lib.map", "-L", "gateLib", "d" ++ sep ++ "a.v", "d" ++ sep ++ "b.vg" };
+        const want = [_][]const u8{ "--std=1364-2005", "--libmap", "d" ++ sep ++ "m/lib.map", "-L", "gateLib", "--protect-keys", "d" ++ sep ++ "k.json", "d" ++ sep ++ "a.v", "d" ++ sep ++ "b.vg" };
         try std.testing.expectEqual(want.len, args.len);
         for (want, args) |w, a| try std.testing.expectEqualStrings(w, a);
         try std.testing.expectEqual(0, (try runnerArgs(arena.allocator(), "//! reject E1100\n// @ std prose\n", "d")).len);
@@ -3016,7 +3020,7 @@ const Fuzz = struct {
         const gpa = init.gpa;
         const io = init.io;
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
         const exe = try Io.Dir.cwd().realPathFileAlloc(io, vera_exe, gpa);
@@ -3318,7 +3322,7 @@ const Golden = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -3722,7 +3726,7 @@ const Ieee1364 = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -4768,7 +4772,7 @@ const SpiceDecks = struct {
         defer results.deinit();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 

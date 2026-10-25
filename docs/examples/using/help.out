@@ -7,6 +7,8 @@ usage: vera [options] FILE.va
        vera --lsp [options]
 
   --lint                  frontend only (parse, lower, prove); no codegen
+  --elab                  a .v design: preprocess, parse and elaborate it
+                          (IEEE 1364-2005 12.1.3), then stop: nothing runs
   --lsp                   a language server on stdin/stdout: --lint's
                           diagnostics and fix-its for each open document;
                           the options here, then the workspace's .vera-flags
@@ -48,6 +50,9 @@ usage: vera [options] FILE.va
   --libmap FILE           read an IEEE 1364 §13.2 library map (repeatable, read
                           in order); each .v file compiles into the library
                           whose file_path_spec matches it, else `work`
+  --protect-keys FILE     the keys and CBC IV for IEEE 1364 §28 decryption
+                          envelopes in a .v design (JSON: profile.iv_hex,
+                          keys[] of owner, name, key_hex)
   -L LIB                  search LIB for an instance's cell (repeatable, in
                           order; IEEE 1364 §13.7.1); default: map order, then work
   --display=record|drop|emit
@@ -75,6 +80,8 @@ usage: vera [options] FILE.va
                           --emit-exe artifact (default: stripped; same machine
                           code, about half the LLVM time of a large device)
   -I DIR                  add an `include search directory
+  -D NAME[=TEXT]          `define NAME TEXT before the source (bare: 1);
+                          also -DNAME[=TEXT]; repeatable
   --param NAME=VALUE      compile with the top module's parameter NAME set
                           to VALUE (LRM 3.4): a number, or a string parameter's
                           text (`--param mode=fast`). A parameter that sizes an

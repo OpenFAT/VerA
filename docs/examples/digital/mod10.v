@@ -1,6 +1,7 @@
 // Exercise: a decade counter. On the rising edge after 9 the count wraps to
 // 0. The edges are as in counter.v; with the run extended to 120 ns, the
-// falling edges at 10, 20, ..., 110 ns read 1, 2, ..., 9, 0, 1.
+// falling edges at 10, 20, ..., 120 ns read 1, 2, ..., 9, 0, 1, 2 (the last
+// in $finish's own time step, as in counter.v).
 `timescale 1ns/1ns
 module decade_tb;
   reg clk;

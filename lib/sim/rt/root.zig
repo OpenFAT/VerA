@@ -53,7 +53,7 @@ pub fn interpret(init: std.process.Init, opts: digital.Options, source: []const 
 fn interpretDeep(init: std.process.Init, opts: digital.Options, source: []const u8) u8 {
     const io = init.io;
     var out_buf: [1 << 16]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(io, &out_buf);
+    var stdout = std.Io.File.stdout().writerStreaming(io, &out_buf);
     var err_buf: [1 << 12]u8 = undefined;
     var stderr = std.Io.File.stderr().writerStreaming(io, &err_buf);
     defer stderr.interface.flush() catch {};
@@ -63,8 +63,9 @@ fn interpretDeep(init: std.process.Init, opts: digital.Options, source: []const 
     var bag: diag.Bag = .init(arena);
     var run_opts = opts;
     run_opts.io = io;
-    // An error that did not end the run (§17.2.9's terminated load, E1157)
-    // still fails it, as in `vera --run` (`cli/digital.zig`, #65).
+    // An error that did not end the run still fails it, as in `vera --run`
+    // (`cli/digital.zig`, #65); §17.2.9's terminated load is a warning,
+    // W1157 (VD-134).
     const code: u8 = if (digital.run(arena, source, run_opts, &bag, &stdout.interface)) @intFromBool(bag.failed()) else |e| blk: {
         if (e != error.DigitalFailed) stderr.interface.print("error: digital execution failed: {t}\n", .{e}) catch {};
         break :blk 1;
@@ -701,13 +702,14 @@ pub const State = struct {
     /// it goes now: `sink`, or a `capture`.
     sink: *std.Io.Writer,
     out: *std.Io.Writer,
+    /// A '0'-flag field in progress (`zeroBegin`): where `out` pointed, and
+    /// the field's text.
+    zero_out: ?*std.Io.Writer = null,
+    zero_field: std.Io.Writer.Allocating = undefined,
     /// A run whose effects outside `State` are dropped (`snapshot.twice`):
     /// no transcript, no diagnostic, no file opened, read or written, no
     /// dump. Every file descriptor reads as unknown.
     quiet: bool = false,
-    /// A run-time error was issued that does not end the run (§17.2.9's
-    /// terminated load, E1157): the run exits 1 when it ends.
-    errored: bool = false,
     io: std.Io,
     buf: [1 << 16]u8,
 
@@ -761,7 +763,7 @@ pub const State = struct {
             .io = io,
             .buf = undefined,
         };
-        self.stdout = std.Io.File.stdout().writer(io, &self.buf);
+        self.stdout = std.Io.File.stdout().writerStreaming(io, &self.buf);
         try net.seedPaths(&self.nets, gpa, d.v, d.x);
         self.sink = &self.stdout.interface;
         self.out = self.sink;
@@ -822,7 +824,9 @@ pub const State = struct {
             }
             if (event.payload == monitor_payload) {
                 self.mon_pending = false;
-                if (self.mon_on) if (self.mon_site) |k| return show_base + k;
+                // Requested while on, so it reports though a `$monitoroff`
+                // followed (`display.monitorPrint`).
+                if (self.mon_site) |k| return show_base + k;
                 continue;
             }
             if (event.payload == settle_payload) {
@@ -947,7 +951,7 @@ pub const State = struct {
     pub fn exit(self: *State, failed: ?Error) u8 {
         const flushed = if (self.out.flush()) true else |_| false;
         if (failed) |e| if (e != error.Failed) self.say("digital execution failed: {t}", .{e});
-        return if (failed == null and flushed and !self.errored) 0 else 1;
+        return if (failed == null and flushed) 0 else 1;
     }
 
     /// A run-time refusal in `vera --run`'s words (E1100), on stderr.
@@ -1831,11 +1835,14 @@ pub const State = struct {
     /// start and finish addresses `first`/`last` the call has (null: x or z).
     pub fn readmem(self: *State, source: []const u8, name: []const u8, radix: fmt.Radix, width: u32, slot: u32, off: u32, low: i64, high: i64, given: u2, first: ?i64, last: ?i64) Error!void {
         if (self.quiet) return;
-        if ((given >= 1 and first == null) or (given == 2 and last == null)) return self.fail(display.unknown_bound, .{});
+        if ((given >= 1 and first == null) or (given == 2 and last == null)) return self.warn("W1157", display.unknown_bound ++ display.load_ended, .{});
+        // `display.readMemory`'s rules: a bound outside the memory loads nothing.
+        if (given >= 1) if (first) |f| if (f < low or f > high) return self.warn("W1157", display.outside_memory ++ display.load_ended, .{ "start", f, low, high });
+        if (given == 2) if (last) |l| if (l < low or l > high) return self.warn("W1157", display.outside_memory ++ display.load_ended, .{ "finish", l, low, high });
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        const file = display.sideFile(self.io, a, source, name) catch return self.fail(display.cannot_read, .{});
+        const file = display.sideFile(self.io, a, source, name) catch return self.warn("W1157", display.cannot_read ++ display.load_ended, .{std.zig.fmtString(name)});
         defer file.close(self.io);
         var buf: [4096]u8 = undefined;
         var in = file.reader(self.io, &buf);
@@ -1847,11 +1854,8 @@ pub const State = struct {
         while (load.next(a) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             // An error message, the load terminated, and the run goes on.
-            error.AddressOutOfRange => {
-                self.errored = true;
-                return self.diagnose("error[E1157]: ", display.MemLoad.out_of_range_text, .{ load.at, load.range_low, load.range_high });
-            },
-            else => return self.fail("{s}", .{display.MemLoad.message(e)}),
+            error.AddressOutOfRange => return self.warn("W1157", display.MemLoad.out_of_range_text ++ display.load_ended, .{ load.at, load.range_low, load.range_high }),
+            else => return self.warn("W1157", "{s}" ++ display.load_ended, .{display.MemLoad.message(e)}),
         }) |w| {
             const v = w.value.values();
             const x = w.value.unknowns();
@@ -1895,9 +1899,9 @@ pub const State = struct {
     /// §17.4.1 `$finish`: end the run after this process step.
     pub fn finish(self: *State, verbose: bool, file: []const u8, byte: u32) Error!void {
         if (verbose) try self.out.print("$finish at tick {d}, {s} byte {d}\n", .{ self.sched.now, file, byte });
-        // §18: what this step changed is still part of the dump.
-        if (self.dump.pending and !self.quiet) try self.dumpTick();
-        self.sched.finish();
+        // `exec`'s `.finish`: the rest of this time step runs, the dump's
+        // tick included.
+        self.sched.finishStep();
     }
 
     /// `a`'s planes as the `Literal` the interpreter formats.
@@ -1905,24 +1909,45 @@ pub const State = struct {
         return .{ .width = w, .signed = signed, .sized = true, .planes = buf };
     }
 
+    /// The next field is a `%05d`/`%04t`: written aside until `zeroEnd`
+    /// (`display.zeroFilled`, the interpreter's rule).
+    pub fn zeroBegin(self: *State) void {
+        self.zero_field = .init(self.gpa);
+        self.zero_out = self.out;
+        self.out = &self.zero_field.writer;
+    }
+
+    pub fn zeroEnd(self: *State, f: display.Fill) Error!void {
+        self.out = self.zero_out.?;
+        self.zero_out = null;
+        defer self.zero_field.deinit();
+        try display.fillField(self.out, self.zero_field.written(), f);
+    }
+
     /// One `%b`/`%o`/`%h`/`%d` operand (§17.1.1.3).
-    pub fn value(self: *State, a: anytype, w: u32, signed: bool, radix: fmt.Radix, width: ?u64) Error!void {
+    pub fn value(self: *State, a: anytype, w: u32, signed: bool, radix: fmt.Radix, width: ?u64, zero: bool) Error!void {
         var buf = logic.planesOf(a);
-        return fmt.value(self.out, self.gpa, literal(&buf, w, signed), radix, width);
+        return fmt.valueFill(self.out, self.gpa, literal(&buf, w, signed), radix, width, zero);
+    }
+
+    /// One `%d %h %o %b` operand of real type (`display.realRadix`).
+    pub fn realValue(self: *State, r: f64, radix: fmt.Radix, width: ?u64) Error!void {
+        return display.realRadix(self.out, self.gpa, r, radix, width);
     }
 
     /// One integral `%t` operand, in a module whose unit is 10^`unit_exp` s
     /// (§17.3).
-    pub fn time(self: *State, a: anytype, w: u32, signed: bool, unit_exp: i32, width: ?u64) Error!void {
+    pub fn time(self: *State, a: anytype, w: u32, signed: bool, unit_exp: i32, width: ?u64, precision: i64) Error!void {
         var buf = logic.planesOf(a);
-        return self.timeReal(fmt.timeOperand(literal(&buf, w, signed)), unit_exp, width);
+        const v = literal(&buf, w, signed);
+        const f = self.time_format.field(width, precision);
+        if (v.hasUnknown()) return fmt.timeUnknown(self.out, v, f);
+        return fmt.timeInt(self.out, self.gpa, v, f, unit_exp);
     }
 
     /// One `%t` operand of real type, formatted as it is (#64).
-    pub fn timeReal(self: *State, v: f64, unit_exp: i32, width: ?u64) Error!void {
-        var f = self.time_format;
-        if (width) |fw| f.width = fw;
-        try fmt.time(self.out, v, f, unit_exp);
+    pub fn timeReal(self: *State, v: f64, unit_exp: i32, width: ?u64, precision: i64) Error!void {
+        try fmt.time(self.out, v, self.time_format.field(width, precision), unit_exp);
     }
 
     /// One real conversion (§17.1.1.2 `%e %f %g`, §9.4.7 `%r`): C's text
@@ -2237,7 +2262,8 @@ test "§9.7.1 delays: an x is no delay, a negative integer an unsigned time; §9
     // -1 is 2^64 - 1 units, which no tick count holds.
     try testing.expectError(error.Failed, s.ticks(.{ .v = std.math.maxInt(u64), .x = 0 }, true, scale));
     try testing.expectEqual(@as(u64, 1500), try s.realTicks(1.5, scale));
-    try testing.expectError(error.Failed, s.realTicks(-1.0, scale));
+    // A negative real wraps as its integer would (`Scale.realDelay`).
+    try testing.expectEqual(@as(u64, 0) -% 1000, try s.realTicks(-1.0, scale));
     try testing.expectEqual(@as(u64, 0), repeatCount(W{ .v = 3, .x = 2 }, 8, false));
     try testing.expectEqual(@as(u64, 255), repeatCount(W{ .v = 255, .x = 0 }, 8, false));
     try testing.expectEqual(@as(u64, 0), repeatCount(W{ .v = 255, .x = 0 }, 8, true));

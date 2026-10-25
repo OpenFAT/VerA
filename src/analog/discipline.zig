@@ -67,12 +67,22 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
             });
         inline for (.{ Lower.Access.potential, Lower.Access.flow }) |half| {
             const bound = @field(d, @tagName(half));
+            // §3.6.2.1 / A.1.7: the binding names a declared nature. Said
+            // here, at the discipline, not as an E0501 at the first access.
+            if (bound != .none and rules.baseNatureOf(self.file, bound) == .none)
+                try self.err(d.main_tok, .E0378, "`{s}` binds `{s}` as its {s}, and no nature `{s}` is declared", .{
+                    self.file.str(d.name), self.file.str(bound), @tagName(half), self.file.str(bound),
+                });
             if (bound != .none) {
                 const n = natureOf(self, bound);
                 if (n.abstol) |a| @field(info, @tagName(half) ++ "_abstol") = a;
                 if (n.access) |acc| {
                     @field(info, @tagName(half) ++ "_access") = acc;
-                    try self.access_kind.put(self.arena, acc, half);
+                    const gop = try self.access_kind.getOrPut(self.arena, acc);
+                    if (gop.found_existing and gop.value_ptr.* != half)
+                        try self.access_both.put(self.arena, acc, {})
+                    else
+                        gop.value_ptr.* = half;
                 }
             }
         }

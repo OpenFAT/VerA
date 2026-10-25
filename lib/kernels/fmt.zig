@@ -39,6 +39,16 @@ pub const TimeFormat = struct {
     precision: u32 = 0,
     suffix: []const u8 = "",
     width: u64 = 20,
+
+    /// This format under one `%t`'s own field width (`%0t`: none) and
+    /// precision (`%.700t`; -1: none), which replace $timeformat's for that
+    /// field as iverilog does (§17.3.2 names only $timeformat's).
+    pub fn field(self: TimeFormat, width: ?u64, precision: i64) TimeFormat {
+        var f = self;
+        if (width) |w| f.width = w;
+        if (precision >= 0) f.precision = std.math.lossyCast(u32, precision);
+        return f;
+    }
 };
 
 /// A `%d` of a known operand wider than 64 bits takes scratch from the
@@ -62,16 +72,20 @@ pub fn byteAt(v: Int.Literal, n: u32) u8 {
 /// §17.1.1.7 `%s` (`char` false) or `%c`, right-justified in `width` columns:
 /// "each 8 bits representing a single character ... right-justified so that
 /// the rightmost bit of the value is the least significant bit of the last
-/// character", and "leading zeros are never printed".
+/// character", and "leading zeros are never printed". A `%s` NUL byte is
+/// not printed but shown as a space, so `%s` keeps the operand's width in
+/// characters; a written width (`%0s`, `%5s`) drops the leading ones and
+/// pads what is left to it (VD-129, iverilog's text).
 pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io.Writer.Error!void {
     var n: u32 = if (char) 1 else (v.width + 7) / 8;
-    if (!char) while (n != 0 and byteAt(v, n - 1) == 0) {
+    if (!char and width != null) while (n != 0 and byteAt(v, n - 1) == 0) {
         n -= 1;
     };
     if (width) |w| if (n < w) try out.splatByteAll(' ', @intCast(w - n));
     while (n != 0) {
         n -= 1;
-        try out.writeByte(byteAt(v, n));
+        const c = byteAt(v, n);
+        try out.writeByte(if (c == 0 and !char) ' ' else c);
     }
 }
 
@@ -89,14 +103,121 @@ pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io
 /// `$realtime`; #64), an integral one through `timeOperand`.
 pub fn time(out: *std.Io.Writer, t: f64, f: TimeFormat, unit_exp: i32) std.Io.Writer.Error!void {
     const scaled = t * std.math.pow(f64, 10, @floatFromInt(unit_exp - f.units));
-    const len = std.fmt.count("{d:.[1]}", .{ scaled, f.precision }) + f.suffix.len;
+    // C's `%.Nf` (`zCReal`; std's `{d:.N}` gives up past a few hundred
+    // digits). ponytail: digits past the 400th are written as zeros, which
+    // is exact for every time value but a real below 2^-400.
+    const q = @min(f.precision, 400);
+    var buf: [1024]u8 = undefined;
+    const body = str_k.zCReal(&buf, scaled, 'f', 0, 0, q);
+    const extra: usize = f.precision - q;
+    const len = body.len + extra + f.suffix.len;
     if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
-    try out.print("{d:.[1]}", .{ scaled, f.precision });
+    try out.writeAll(body);
+    try out.splatByteAll('0', extra);
     try out.writeAll(f.suffix);
 }
 
-/// An integral `%t` operand as the real `time` formats: one with an x or z
-/// bit is 0, as is a signed one wider than 64 bits; an unsigned one wider
+/// `%t` of a known integral operand `v`, a count of 10^`unit_exp` s, in
+/// `f`'s units: exact at any width, the fractional digits past `f`'s
+/// precision cut, not rounded, as iverilog prints it (§17.3.2 names the
+/// precision, not how a finer value meets it; ivtest br_gh1591a/b/c).
+pub fn timeInt(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, f: TimeFormat, unit_exp: i32) Error!void {
+    var dec: std.Io.Writer.Allocating = .init(gpa);
+    defer dec.deinit();
+    try value(&dec.writer, gpa, v, .decimal, 0);
+    const all = dec.written();
+    const neg = all.len != 0 and all[0] == '-';
+    const digits = all[@intFromBool(neg)..];
+    const k = unit_exp - f.units;
+    // The integer digits, then every fractional digit the shift gives.
+    var int_part: []const u8 = digits;
+    var frac: []const u8 = "";
+    var zeros: usize = 0; // after the integer digits, for k > 0
+    var lead: usize = 0; // fractional zeros before `frac`, for a short `digits`
+    if (k >= 0) zeros = @intCast(k) else {
+        const m: usize = @intCast(-k);
+        if (digits.len > m) {
+            int_part = digits[0 .. digits.len - m];
+            frac = digits[digits.len - m ..];
+        } else {
+            int_part = "0";
+            lead = m - digits.len;
+            frac = digits;
+        }
+    }
+    const int_trim = std.mem.trimStart(u8, int_part, "0");
+    const int_len = if (int_trim.len == 0) 1 else int_trim.len + zeros;
+    const len = @as(usize, @intFromBool(neg)) + int_len + (if (f.precision > 0) 1 + f.precision else 0) + f.suffix.len;
+    if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
+    if (neg) try out.writeByte('-');
+    if (int_trim.len == 0) try out.writeByte('0') else {
+        try out.writeAll(int_trim);
+        try out.splatByteAll('0', zeros);
+    }
+    if (f.precision > 0) {
+        try out.writeByte('.');
+        var left: usize = f.precision;
+        const z = @min(lead, left);
+        try out.splatByteAll('0', z);
+        left -= z;
+        const d = @min(frac.len, left);
+        try out.writeAll(frac[0..d]);
+        try out.splatByteAll('0', left - d);
+    }
+    try out.writeAll(f.suffix);
+}
+
+test timeInt {
+    var out_buf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out_buf);
+    // Oracle: iverilog -g2005. 1999 ns in us is cut, not rounded: "1",
+    // "1.99"; in ps it is exact with one fractional zero.
+    var p = [2]u64{ 1999, 0 };
+    const ns = -9;
+    try timeInt(&w, testing.allocator, lit(&p, 64, false), .{ .units = -6, .width = 0, .suffix = " us" }, ns);
+    try testing.expectEqualStrings("1 us", w.buffered());
+    w.end = 0;
+    try timeInt(&w, testing.allocator, lit(&p, 64, false), .{ .units = -6, .precision = 2, .width = 0 }, ns);
+    try testing.expectEqualStrings("1.99", w.buffered());
+    w.end = 0;
+    try timeInt(&w, testing.allocator, lit(&p, 64, false), .{ .units = -12, .precision = 1, .width = 10 }, ns);
+    try testing.expectEqualStrings(" 1999000.0", w.buffered());
+    w.end = 0;
+    // 5 ns in ms: no integer digit, the fraction's leading zeros kept.
+    var five = [2]u64{ 5, 0 };
+    try timeInt(&w, testing.allocator, lit(&five, 64, false), .{ .units = -3, .precision = 7, .width = 0 }, ns);
+    try testing.expectEqualStrings("0.0000050", w.buffered());
+    w.end = 0;
+    var zero = [2]u64{ 0, 0 };
+    try timeInt(&w, testing.allocator, lit(&zero, 64, false), .{ .units = -12, .width = 0 }, ns);
+    try testing.expectEqualStrings("0", w.buffered());
+    w.end = 0;
+    // 2^90 + 1999 (100 bits) in us: every digit (iverilog prints the same).
+    var wide = [4]u64{ 1999, 1 << 26, 0, 0 };
+    try timeInt(&w, testing.allocator, lit(&wide, 100, false), .{ .units = -6, .precision = 2, .width = 0 }, ns);
+    try testing.expectEqualStrings("1237940039285380274899126.22", w.buffered());
+}
+
+/// `%t` of an integral operand with an x or z bit: §17.1.1.4's decimal
+/// character for it (x, X, z or Z), then `f`'s point and precision zeros and
+/// its suffix, padded to its width, as iverilog prints it (§17.3.2 says
+/// nothing of an unknown time; 1364-2005 §4.8 makes an unset `time` x).
+pub fn timeUnknown(out: *std.Io.Writer, v: Int.Literal, f: TimeFormat) std.Io.Writer.Error!void {
+    var buf: [1]u8 = undefined;
+    const ch = decimalText(&buf, v);
+    const len = 1 + (if (f.precision > 0) 1 + f.precision else 0) + f.suffix.len;
+    if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
+    try out.writeAll(ch);
+    if (f.precision > 0) {
+        try out.writeByte('.');
+        try out.splatByteAll('0', @intCast(f.precision));
+    }
+    try out.writeAll(f.suffix);
+}
+
+/// An integral `%t` operand as the real `time` formats (one with an x or z
+/// bit is 0 here; the display prints it with `timeUnknown`). A signed one
+/// wider than 64 bits is 0 too; an unsigned one wider
 /// than 64 bits is read by its low 64.
 pub fn timeOperand(v: Int.Literal) f64 {
     if (v.hasUnknown()) return 0;
@@ -124,12 +245,26 @@ pub fn decade(out: *std.Io.Writer, e: i32) std.Io.Writer.Error!void {
 /// rendering has no such locality (one unknown bit makes the whole number
 /// unknown), which is why §17.1.1.4 gives it its own rule.
 pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix: Radix, width: ?u64) Error!void {
+    return valueFill(out, gpa, v, radix, width, false);
+}
+
+/// `value`, with C's `0` flag when `zero`: an explicit width is filled with
+/// zeros after the sign, not spaces (`%08d` of 65 is `00000065`). 1364
+/// grants no flags to the radix conversions; VerA prints iverilog's text
+/// (VD-129).
+pub fn valueFill(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix: Radix, width: ?u64, zero: bool) Error!void {
     const field = width orelse autoWidth(v, radix);
+    const fill: u8 = if (zero and width != null) '0' else ' ';
     if (radix == .decimal) {
+        // ponytail: a wide decimal pads with spaces even under `0`.
         if (v.width > 64 and !v.hasUnknown()) return wideDecimal(out, gpa, v, field);
         var buf: [24]u8 = undefined;
-        const t = decimalText(&buf, v);
-        if (t.len < field) try out.splatByteAll(' ', @intCast(field - t.len));
+        var t = decimalText(&buf, v);
+        if (fill == '0' and t.len < field and t[0] == '-') {
+            try out.writeByte('-');
+            t = t[1..];
+            try out.splatByteAll('0', @intCast(field - t.len - 1));
+        } else if (t.len < field) try out.splatByteAll(fill, @intCast(field - t.len));
         return out.writeAll(t);
     }
     // §17.1.1.3: a zero width overrides the automatic size, so a group radix
@@ -142,7 +277,7 @@ pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix:
     // zeros: `%d` of an 8-bit 7 is "  7" and not "007". A group radix is
     // already exactly its own width, so padding only ever shows up under
     // decimal or an explicit format width.
-    if (d < field) try out.splatByteAll(' ', @intCast(field - d));
+    if (d < field) try out.splatByteAll(fill, @intCast(field - d));
     while (d != 0) {
         d -= 1;
         try out.writeByte(groupDigit(v, radix, d));
@@ -343,7 +478,13 @@ pub fn flagVerdict(flags: u8, conv: u8) enum { ok, alt, c_flag } {
         'e', 'f', 'g', 'r' => true,
         else => false,
     };
-    if (!real and flags & (str_k.zc_left | str_k.zc_plus | str_k.zc_space) != 0) return .c_flag;
+    // '-' left-justifies a `%t` field too: §17.3.2 gives it a minimum field
+    // width, so its pad has a side, which iverilog puts on the right
+    // (`display.Fill`, ivtest br_gh1591a's `%-700t`). '+' and ' ' stay the
+    // real conversions'.
+    const left_ok = conv | 0x20 == 't';
+    if (!real and flags & (str_k.zc_plus | str_k.zc_space) != 0) return .c_flag;
+    if (!real and !left_ok and flags & str_k.zc_left != 0) return .c_flag;
     return .ok;
 }
 
@@ -378,7 +519,10 @@ test "§17.1.1.2 flagVerdict: C's flags on the real conversions only (#43)" {
     for ("dDhHoObBcCsStTvVmMlL") |c| {
         try testing.expect(flagVerdict(str_k.zc_zero, c) == .ok); // `%0d`
         try testing.expect(flagVerdict(str_k.zc_alt, c) == .alt);
-        try testing.expect(flagVerdict(str_k.zc_left, c) == .c_flag);
+        // '-' left-justifies a `%t` field (`display.Fill`); every other
+        // conversion here refuses it.
+        const left_ok = c | 0x20 == 't';
+        try testing.expect((flagVerdict(str_k.zc_left, c) == .ok) == left_ok);
         try testing.expect(flagVerdict(str_k.zc_plus, c) == .c_flag);
         try testing.expect(flagVerdict(str_k.zc_space, c) == .c_flag);
     }
@@ -406,17 +550,26 @@ test "byteAt reads known 1 bits only, and nothing past the width" {
     try testing.expectEqual(@as(u8, 0xab), byteAt(lit(&q, 72, false), 8));
 }
 
-test "%s drops leading zero bytes and right-justifies; %c is the last byte (§17.1.1.7)" {
+test "%s shows a NUL byte as a space, a written width drops the leading ones; %c is the last byte (§17.1.1.7, VD-129)" {
+    // Oracle: iverilog 13 -g2005 (ivtest string13, string4, test_width).
     var out_buf: [32]u8 = undefined;
     var w: std.Io.Writer = .fixed(&out_buf);
     // 24'h00_48_69: "Hi" behind a zero byte.
     var p = [2]u64{ 0x4869, 0 };
     const v = lit(&p, 24, false);
     try text(&w, v, false, null);
+    try testing.expectEqualStrings(" Hi", w.buffered());
+    w.end = 0;
+    try text(&w, v, false, 0);
     try testing.expectEqualStrings("Hi", w.buffered());
     w.end = 0;
     try text(&w, v, false, 5);
     try testing.expectEqualStrings("   Hi", w.buffered());
+    w.end = 0;
+    // A width short of the operand's bytes: the leading NUL goes first
+    // (ivtest pr1819452's `%5s` of a 9-byte select holding "in_0").
+    try text(&w, v, false, 2);
+    try testing.expectEqualStrings("Hi", w.buffered());
     w.end = 0;
     try text(&w, v, true, null);
     try testing.expectEqualStrings("i", w.buffered());
@@ -424,10 +577,17 @@ test "%s drops leading zero bytes and right-justifies; %c is the last byte (§17
     try text(&w, v, true, 3);
     try testing.expectEqualStrings("  i", w.buffered());
     w.end = 0;
-    // All zero: every byte is a leading zero, so nothing prints.
+    // 32'h00610062 under %0s: the leading NUL goes, the inner one is a space.
+    var q = [2]u64{ 0x00610062, 0 };
+    try text(&w, lit(&q, 32, false), false, 0);
+    try testing.expectEqualStrings("a b", w.buffered());
+    w.end = 0;
+    // All zero: %0s prints nothing, %s two spaces.
     var zero = [2]u64{ 0, 0 };
-    try text(&w, lit(&zero, 16, false), false, null);
+    try text(&w, lit(&zero, 16, false), false, 0);
     try testing.expectEqualStrings("", w.buffered());
+    try text(&w, lit(&zero, 16, false), false, null);
+    try testing.expectEqualStrings("  ", w.buffered());
 }
 
 test "decade spells every §19.8 operand" {
@@ -461,10 +621,15 @@ test "%t scales a unit count to $timeformat's units and pads to its width (§17.
     try time(&w, timeOperand(lit(&n, 64, true)), .{ .units = -9, .width = 0 }, -9);
     try testing.expectEqualStrings("-5", w.buffered());
     w.end = 0;
-    // An x bit reads as no time at all.
+    // An x bit is printed as §17.1.1.4's decimal character, with the
+    // format's point, zeros and suffix (iverilog's text).
     var x = [2]u64{ 1, 1 };
-    try time(&w, timeOperand(lit(&x, 64, false)), .{ .units = -9, .width = 0 }, -9);
-    try testing.expectEqualStrings("0", w.buffered());
+    try timeUnknown(&w, lit(&x, 64, false), .{ .units = -9, .width = 0 });
+    try testing.expectEqualStrings("X", w.buffered());
+    w.end = 0;
+    var all_x = [2]u64{ ~@as(u64, 0), ~@as(u64, 0) };
+    try timeUnknown(&w, lit(&all_x, 64, false), .{ .units = -9, .precision = 2, .suffix = " ns", .width = 12 });
+    try testing.expectEqualStrings("     x.00 ns", w.buffered());
     w.end = 0;
     // A real operand is not rounded to a whole unit first (#64): 1.55 units
     // of 10 ns is 15.5 ns.

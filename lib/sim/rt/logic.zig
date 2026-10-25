@@ -553,10 +553,74 @@ pub inline fn cond(c: Bit, y: anytype, n: @TypeOf(y)) @TypeOf(y) {
 /// §4.8.2 integer to real (`evaluate.realOfInt`): the value read by its own
 /// signedness, each x or z bit as 0.
 pub inline fn toReal(a: anytype, comptime w: u32, comptime signed: bool) f64 {
-    // ponytail: the low 64 bits of a wider operand, as the interpreter reads it.
     const lo = wide(a).v[0] & ~wide(a).x[0];
-    if (signed and w <= 64) return @floatFromInt(@as(i64, @bitCast(sext(lo, w))));
-    return @floatFromInt(lo);
+    if (w <= 64) return if (signed) @floatFromInt(@as(i64, @bitCast(sext(lo, w)))) else @floatFromInt(lo);
+    return wordsToReal(&wide(a).v, &wide(a).x, w, signed);
+}
+
+/// §4.8.2 integer to real at any width: the `width`-bit value in `v` (bits
+/// set in `x` read as 0), by its signedness, rounded once to nearest even
+/// (C's conversion; iverilog converts pr2913404's 2^64 exactly); +-inf past
+/// the f64 range.
+pub fn wordsToReal(v: []const u64, x: []const u64, width: u32, signed: bool) f64 {
+    const Mag = struct {
+        v: []const u64,
+        x: []const u64,
+        width: u32,
+        neg: bool = false,
+        /// The lowest nonzero word: a negative value's two's complement is
+        /// 0 below it, -b at it and ~b above it.
+        low: usize = 0,
+        fn raw(m: @This(), i: usize) u64 {
+            const b = m.v[i] & ~m.x[i];
+            return if (i == words(m.width) - 1 and m.width % 64 != 0) b & ((@as(u64, 1) << @intCast(m.width % 64)) - 1) else b;
+        }
+        fn get(m: @This(), i: usize) u64 {
+            if (!m.neg) return m.raw(i);
+            const r = if (i < m.low) 0 else if (i == m.low) 0 -% m.raw(i) else ~m.raw(i);
+            return if (i == words(m.width) - 1 and m.width % 64 != 0) r & ((@as(u64, 1) << @intCast(m.width % 64)) - 1) else r;
+        }
+    };
+    const n = words(width);
+    var mag: Mag = .{ .v = v, .x = x, .width = width };
+    mag.neg = signed and (mag.raw(n - 1) >> @intCast((width - 1) % 64)) & 1 != 0;
+    if (mag.neg) mag.low = for (0..n) |i| {
+        if (mag.raw(i) != 0) break i;
+    } else n;
+    var t: usize = n;
+    while (t > 0 and mag.get(t - 1) == 0) t -= 1;
+    if (t == 0) return 0;
+    const hi = mag.get(t - 1);
+    const lead: u32 = 63 - @clz(hi);
+    const msb: u32 = @as(u32, @intCast(t - 1)) * 64 + lead;
+    const r: f64 = if (msb < 64) @floatFromInt(hi) else blk: {
+        // The 64 bits from the msb down, and a sticky bit for any lower one,
+        // so the one rounding to 53 bits is the exact value's.
+        const sh: u32 = 63 - lead;
+        const next = mag.get(t - 2);
+        var top64 = if (sh == 0) hi else (hi << @intCast(sh)) | (next >> @intCast(64 - sh));
+        var sticky = (if (sh == 0) next else next << @intCast(sh)) != 0;
+        for (0..t - 2) |i| sticky = sticky or mag.get(i) != 0;
+        if (sticky) top64 |= 1;
+        break :blk std.math.ldexp(@as(f64, @floatFromInt(top64)), @intCast(msb - 63));
+    };
+    return if (mag.neg) -r else r;
+}
+
+test wordsToReal {
+    // 2^64 and -2^64 as 65-bit values (pr2913404), and a sticky bit that
+    // breaks a tie: 2^64 + 2^11 + 1 rounds up to 2^64 + 2^12.
+    try std.testing.expectEqual(@as(f64, 0x1p64), wordsToReal(&.{ 0, 1 }, &.{ 0, 0 }, 65, false));
+    try std.testing.expectEqual(@as(f64, -0x1p64), wordsToReal(&.{ 0, 1 }, &.{ 0, 0 }, 65, true));
+    try std.testing.expectEqual(@as(f64, 0x1p64 + 0x1p12), wordsToReal(&.{ 0x801, 1 }, &.{ 0, 0 }, 65, false));
+    try std.testing.expectEqual(@as(f64, 0x1p64), wordsToReal(&.{ 0x800, 1 }, &.{ 0, 0 }, 65, false));
+    // -1 at 128 bits, and x bits read as 0.
+    try std.testing.expectEqual(@as(f64, -1), wordsToReal(&.{ ones, ones }, &.{ 0, 0 }, 128, true));
+    try std.testing.expectEqual(@as(f64, 0x1p64), wordsToReal(&.{ 5, 1 }, &.{ 5, 0 }, 100, false));
+    // Past the f64 range.
+    var huge: [17]u64 = @splat(0);
+    huge[16] = 1;
+    try std.testing.expect(std.math.isInf(wordsToReal(&huge, &@as([17]u64, @splat(0)), 1088, false)));
 }
 
 /// §4.8.2 real to integer (`evaluate.intOfReal`): rounded to nearest, halves
@@ -600,11 +664,19 @@ pub fn ofRealTo(r: f64, comptime to: u32) T(to) {
     return narrow(to, .{ .v = v, .x = @splat(0) });
 }
 
-/// §17.8 `$rtoi`: truncated toward zero, a 32-bit signed value; x when none.
+/// §17.8 `$rtoi`: truncated toward zero, a 32-bit signed value, the low 32
+/// bits of a larger one (iverilog's itor_rtoi, VD-130); x for an infinity
+/// or a NaN.
 pub inline fn rtoi(r: f64) W {
-    const t = @trunc(r);
-    if (!(t >= -0x1p31 and t < 0x1p31)) return xs(32);
-    return .{ .v = @as(u32, @bitCast(@as(i32, @intFromFloat(t)))), .x = 0 };
+    return ofRealTo(@trunc(r), 32);
+}
+
+/// §17.8 `$itor` of a real argument (VD-130): the argument converts to an
+/// integer first (§4.8.2's rounding), and one with no integer is x, which
+/// `$itor` reads as 0.
+pub inline fn itorReal(r: f64) f64 {
+    const n = @round(r);
+    return if (std.math.isFinite(n)) n else 0;
 }
 
 /// A real as the 64-bit value a real slot holds: its IEEE 754 bits.
@@ -1095,7 +1167,7 @@ test "real to integer rounds half away from zero; one with no 64-bit integer is 
         try std.testing.expectEqual(x64, ofReal(r));
 }
 
-test "$rtoi truncates toward zero into 32 bits; one with no 32-bit integer is x (§17.8)" {
+test "$rtoi truncates toward zero into 32 bits, the low 32 of a larger value; inf and NaN are x (§17.8, VD-130)" {
     try std.testing.expectEqual(W{ .v = 2, .x = 0 }, rtoi(2.9));
     try std.testing.expectEqual(W{ .v = 0xffff_fffe, .x = 0 }, rtoi(-2.9));
     try std.testing.expectEqual(W{ .v = 0x7fff_ffff, .x = 0 }, rtoi(2147483647.9));
@@ -1103,8 +1175,14 @@ test "$rtoi truncates toward zero into 32 bits; one with no 32-bit integer is x 
     try std.testing.expectEqual(W{ .v = 0x8000_0000, .x = 0 }, rtoi(-0x1p31));
     try std.testing.expectEqual(W{ .v = 0x8000_0000, .x = 0 }, rtoi(-2147483648.9));
     const x32: W = .{ .v = 0xffff_ffff, .x = 0xffff_ffff };
-    for ([_]f64{ 0x1p31, -2147483649.0, std.math.inf(f64), std.math.nan(f64) }) |r|
+    for ([_]f64{ std.math.inf(f64), -std.math.inf(f64), std.math.nan(f64) }) |r|
         try std.testing.expectEqual(x32, rtoi(r));
+    // Oracle: iverilog's itor_rtoi gold (Overflow(0) = 0, Overflow(1) = 1).
+    try std.testing.expectEqual(W{ .v = 0x8000_0000, .x = 0 }, rtoi(0x1p31));
+    try std.testing.expectEqual(W{ .v = 1, .x = 0 }, rtoi(0x1p32 + 1));
+    try std.testing.expectEqual(W{ .v = 0x7fff_ffff, .x = 0 }, rtoi(-2147483649.0));
+    try std.testing.expectEqual(@as(f64, -2), itorReal(-1.5));
+    try std.testing.expectEqual(@as(f64, 0), itorReal(std.math.nan(f64)));
 }
 
 test "integer to real reads the operand's own signedness, x and z bits as 0 (§4.8.2)" {

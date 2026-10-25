@@ -445,7 +445,12 @@ fn isDynCtrlArg(k: OpKind, ai: usize) bool {
         // and a moving ε is E0515 in lowering, so neither is queued; a moving
         // zi_* period, τ or t0 is queued and then refused by the plan.
         .laplace, .zi => ai >= 1,
-        .none, .transition, .slew, .last_crossing, .cross, .above, .timer, .bound_step, .discontinuity => false,
+        // Table 4-20 "dynamic: expr, dir"; §5.10.3.1 every `cross` argument
+        // is an `analog_expression` (dir, time_tol, expr_tol: `updateState`
+        // reads all three; the enable is decided in `eval`).
+        .last_crossing => ai == 1,
+        .cross => ai >= 1 and ai <= 3,
+        .none, .transition, .slew, .above, .timer, .bound_step, .discontinuity => false,
     };
 }
 

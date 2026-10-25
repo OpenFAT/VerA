@@ -38,12 +38,12 @@ pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
 
     var stdout_buf: [1 << 16]u8 = undefined;
-    var stdout = Io.File.stdout().writer(io, &stdout_buf);
+    var stdout = Io.File.stdout().writerStreaming(io, &stdout_buf);
     const out = &stdout.interface;
     defer out.flush() catch {};
 
     var stderr_buf: [1 << 16]u8 = undefined;
-    var stderr = Io.File.stderr().writer(io, &stderr_buf);
+    var stderr = Io.File.stderr().writerStreaming(io, &stderr_buf);
     const err = &stderr.interface;
     defer err.flush() catch {};
 
@@ -155,6 +155,16 @@ pub fn main(init: std.process.Init) !u8 {
         try err.print("error: {s}: --emit-rtlil takes an IEEE 1364 design (.v)\n", .{in_path});
         return 2;
     }
+    // ponytail: the digital runner's preprocessor takes no -D yet; refused,
+    // not ignored. Pass `cli.defines` through `digital.Options` to lift it.
+    if (digital_source and cli.defines.items.len != 0) {
+        try err.print("error: {s}: -D takes a Verilog-A/AMS source; a .v design defines its macros in the source\n", .{in_path});
+        return 2;
+    }
+    if (!digital_source and cli.elab) {
+        try err.print("error: {s}: --elab takes an IEEE 1364 design (.v); --lint elaborates a Verilog-A/AMS source\n", .{in_path});
+        return 2;
+    }
     if (digital_source and cli.emit_verilog) {
         try err.print("error: {s}: --emit-verilog takes a Verilog-A model (.va)\n", .{in_path});
         return 2;
@@ -176,6 +186,7 @@ pub fn main(init: std.process.Init) !u8 {
         .options = .{
             .file_name = in_path,
             .include_dirs = cli.include_dirs.items,
+            .defines = cli.defines.items,
             .std_defs = cli.std_defs,
             .require_std_includes = true, // the source includes the annex D files it uses
             .language = cli.language,
@@ -236,7 +247,10 @@ pub fn main(init: std.process.Init) !u8 {
     }
     // --run: the transcript is the point, so inherit both streams and let
     // the testbench's exit status be ours.
-    var child = try std.process.spawn(io, .{ .argv = &.{bin} });
+    const tb_argv = try arena.allocator().alloc([]const u8, 1 + o.plusargs.len);
+    tb_argv[0] = bin;
+    @memcpy(tb_argv[1..], o.plusargs);
+    var child = try std.process.spawn(io, .{ .argv = tb_argv });
     return switch (try child.wait(io)) {
         .exited => |c| c,
         else => 1,

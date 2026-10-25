@@ -115,32 +115,34 @@ pub fn queueStep(queues: *Queues, gpa: std.mem.Allocator, op: QueueOp, id: ?i64,
             return .{ .status = ok, .out = .{ job.id, job.info } };
         },
         // §17.6.5 Table 17-15's statistics codes; any other is status 2
-        // with no value (VD-050).
+        // with no value (VD-050). The clause defines none of them further;
+        // VerA computes what iverilog does (VD-052): the means truncate,
+        // code 6 averages every job's wait so far, those that left and
+        // those still queued, and a statistic with no population yet (no
+        // second arrival, no job left, an empty queue) leaves q_stat_value
+        // as it was.
         .exam => {
             const q = queues.getPtr(id orelse return .{ .status = undefined_id }) orelse return .{ .status = undefined_id };
-            const value: u64 = switch (in1 orelse 0) {
+            const value: ?u64 = switch (in1 orelse 0) {
                 1 => q.jobs.items.len,
-                2 => mean(q.interarrival_sum, q.interarrivals),
+                2 => if (q.interarrivals == 0) null else q.interarrival_sum / q.interarrivals,
                 3 => q.peak,
-                4 => q.wait_min orelse 0,
-                5 => longest: {
+                4 => q.wait_min,
+                5 => if (q.jobs.items.len == 0) null else longest: {
                     var w: u64 = 0;
                     for (q.jobs.items) |j| w = @max(w, t - j.arrived);
                     break :longest w;
                 },
-                6 => mean(q.wait_sum, q.waits),
+                6 => if (q.waits + q.jobs.items.len == 0) null else average: {
+                    var sum = q.wait_sum;
+                    for (q.jobs.items) |j| sum += t - j.arrived;
+                    break :average sum / (q.waits + q.jobs.items.len);
+                },
                 else => return .{ .status = undefined_id },
             };
-            return .{ .status = ok, .out = .{ null, @intCast(value) } };
+            return .{ .status = ok, .out = .{ null, if (value) |v| @intCast(v) else null } };
         },
     }
-}
-
-/// A §17.6.5 mean as an integer: §3.5.3 rounds a real to the nearest
-/// integer "rather than by truncating it", ties away from zero (VD-052); 0
-/// over an empty population.
-fn mean(sum: u64, n: u64) u64 {
-    return if (n == 0) 0 else (2 * sum + n) / (2 * n);
 }
 
 /// §17.6.4 `$q_full(q_id, status)`: 1 when the queue holds its maximum.
@@ -460,7 +462,7 @@ fn fread(self: *Run, a: std.mem.Allocator, t: contract.FileIo, args: []const Ast
     const arr = (if (ex.tag(args[0]) == .ident) self.arrays.get(base) else null) orelse {
         const width = (try evaluate.targetType(self, args[0])).width;
         const w = try readWord(a, t, d, width);
-        if (w.value) |v| try evaluate.assign(self, a, args[0], v);
+        if (w.value) |v| try evaluate.assign(self, a, args[0], overWord(v, try evaluate.eval(self, a, args[0], width), w.n));
         return w.n;
     };
     var at = if (args.len > 2 and args[2] != .none) (try int(self, a, args[2])) orelse return 0 else arr.low;
@@ -469,7 +471,8 @@ fn fread(self: *Run, a: std.mem.Allocator, t: contract.FileIo, args: []const Ast
     while (at >= arr.low and at <= arr.high and left > 0) {
         const w = try readWord(a, t, d, self.values[base].width);
         read += w.n;
-        try waiters.store(self, base + @as(u32, @intCast(at - arr.low)), (w.value orelse break).planes);
+        const slot = base + @as(u32, @intCast(at - arr.low));
+        try waiters.store(self, slot, overWord(w.value orelse break, self.values[slot], w.n).planes);
         if (at == arr.high) break;
         at += 1;
         left -= 1;
@@ -478,14 +481,19 @@ fn fread(self: *Run, a: std.mem.Allocator, t: contract.FileIo, args: []const Ast
 }
 
 /// One `$fread` word: ceil(width/8) characters, big-endian, into `width`
-/// bits; the value is null when the file ends first. `n` is the characters
-/// read.
+/// bits; the value is null when the file ends before its first character.
+/// `n` is the characters read: fewer than a word's means the file ended
+/// inside it, and `overWord` keeps the bits no character reached.
 pub fn readWord(a: std.mem.Allocator, t: contract.FileIo, d: i64, width: u32) Error!struct { value: ?Int.Literal, n: i64 } {
     const bytes = (width + 7) / 8;
     const v = try filled(a, width, false, .zero);
     for (0..bytes) |k| {
         const c = t.getc(d);
-        if (c < 0) return .{ .value = null, .n = @intCast(k) };
+        if (c < 0) {
+            if (k == 0) return .{ .value = null, .n = 0 };
+            v.values()[v.values().len - 1] &= wordMask(width, v.values().len - 1);
+            return .{ .value = v, .n = @intCast(k) };
+        }
         const lo = (bytes - 1 - k) * 8;
         v.values()[lo / 64] |= @as(u64, @intCast(c)) << @intCast(lo % 64);
     }
@@ -493,6 +501,19 @@ pub fn readWord(a: std.mem.Allocator, t: contract.FileIo, d: i64, width: u32) Er
     const top = v.values().len - 1;
     v.values()[top] &= wordMask(width, top);
     return .{ .value = v, .n = bytes };
+}
+
+/// A word `readWord` read `n` characters of, over the target's `prior`
+/// value: the characters fill it from the most significant byte down, and
+/// the bits below the last one keep `prior` (§17.2.4.4 says nothing of a
+/// file that ends inside a word; iverilog keeps them, ivtest fread.v).
+/// `v` is updated in place and returned.
+pub fn overWord(v: Int.Literal, prior: Int.Literal, n: i64) Int.Literal {
+    const bytes: i64 = (v.width + 7) / 8;
+    if (n >= bytes) return v;
+    const cut: u32 = @intCast(@min((bytes - n) * 8, v.width));
+    for (0..cut) |i| setBit(v, @intCast(i), if (i < prior.width) prior.bit(@intCast(i)) else .zero);
+    return v;
 }
 
 /// §17.2.7 `$fclose` of a file descriptor, or of every file a multichannel
@@ -561,6 +582,12 @@ fn scanContext(self: *Run, a: std.mem.Allocator, sc: *Scan, outs: []const Ast.Ex
     for (outs, widths) |e, *w| w.* = (try evaluate.targetType(self, e)).width;
     sc.widths = widths;
     sc.time = .{ .units = self.time_format.units, .precision = self.time_format.precision, .unit_exp = self.timeOf(self.scope).unit_exp };
+    var path: std.Io.Writer.Allocating = .init(a);
+    const saved = self.out;
+    self.out = &path.writer;
+    defer self.out = saved;
+    try display.emitScope(self);
+    sc.module = path.written();
 }
 
 fn scanAssign(self: *Run, a: std.mem.Allocator, sc: *Scan, outs: []const Ast.ExprId) Error!void {
@@ -599,6 +626,9 @@ pub const Scan = struct {
     widths: []const u32 = &.{},
     /// §17.2.4.3 `%t`'s scale; null stops the scan at a `%t`.
     time: ?Time = null,
+    /// §17.2.4.3 `%m`'s text, "the current hierarchical path"; null stops
+    /// the scan at a `%m`.
+    module: ?[]const u8 = null,
 
     /// `$timeformat`'s units and precision and the module's time unit, all
     /// as the exponents (precision: digits) §17.3.2 gives them.
@@ -613,7 +643,11 @@ pub const Scan = struct {
         /// (the clause's example: 10.345 at -3, 2 is 10350000.0 in 1ns).
         pub fn scale(t: Time, v: f64) f64 {
             const p: i32 = @intCast(t.precision);
-            return @round(v * std.math.pow(f64, 10, @floatFromInt(p))) * std.math.pow(f64, 10, @floatFromInt(t.units - p - t.unit_exp));
+            const e = t.units - p - t.unit_exp;
+            // A negative power divides, so -2256 at -3 is the double nearest
+            // -2.256 (iverilog's scanf4 compares it with that literal).
+            const r = @round(v * std.math.pow(f64, 10, @floatFromInt(p)));
+            return if (e < 0) r / std.math.pow(f64, 10, @floatFromInt(-e)) else r * std.math.pow(f64, 10, @floatFromInt(e));
         }
     };
 
@@ -664,12 +698,33 @@ pub const Scan = struct {
             while (self.i < format.len and std.ascii.isDigit(format[self.i])) : (self.i += 1) width = width *| 10 +| (format[self.i] - '0');
             if (self.i == format.len) return self.stop(false);
             const conv = std.ascii.toLower(format[self.i]);
+            // §17.2.4.3 `%m` "Returns the current hierarchical path as a
+            // string. Does not read data from the input".
+            if (conv == 'm') {
+                const m = self.module orelse return self.stop(false);
+                self.i += 1;
+                if (suppress) continue;
+                const arg: usize = @intCast(self.result);
+                if (arg >= self.outs) return self.stop(false);
+                self.result += 1;
+                return .{ .arg = arg, .value = .{ .chars = m } };
+            }
             // §17.2.4.3 `%u`/`%z` match binary data, whose bytes may be white space.
+            // A field width counts bits, read in whole 32-bit words and
+            // the value cut to it (`%16u` reads a word and keeps 16 bits); a
+            // suppressed one with none skips one word (iverilog's
+            // fscanf_u/fscanf_z, VD-132). Too few bytes left is EOF.
             if (conv == 'u' or conv == 'z') {
-                if (suppress or width != 0) return self.stop(false);
+                const per: usize = if (conv == 'z') 8 else 4;
+                if (suppress) {
+                    const words: usize = @max(1, (width + 31) / 32);
+                    if (input.len - self.at < words * per) return self.stop(true);
+                    self.at += words * per;
+                    continue;
+                }
                 const arg: usize = @intCast(self.result);
                 if (arg >= self.widths.len or arg >= self.outs) return self.stop(false);
-                const bits = unformatted(input[self.at..], self.widths[arg], conv == 'z') orelse return self.stop(true);
+                const bits = unformatted(input[self.at..], if (width != 0) @intCast(@min(width, 64)) else self.widths[arg], conv == 'z') orelse return self.stop(true);
                 self.at += @intCast(bits[2]);
                 self.i += 1;
                 self.result += 1;
@@ -723,6 +778,12 @@ pub const Scan = struct {
             v |= @as(u64, std.mem.readInt(u32, w[0..4], .little)) << @intCast(32 * k);
             if (four) u |= @as(u64, std.mem.readInt(u32, w[4..8], .little)) << @intCast(32 * k);
         }
+        // The bits past `width` of the last word are dropped (zero-filled).
+        if (width != 0 and width < 64) {
+            const keep = (@as(u64, 1) << @intCast(width)) - 1;
+            v &= keep;
+            u &= keep;
+        }
         return .{ v, u, words * per };
     }
 
@@ -730,14 +791,16 @@ pub const Scan = struct {
     /// value, or null on a matching failure. `%d` is an optional sign and
     /// decimal digits, or a single x, z or ?; the others take their radix's
     /// digits and x, z, ?, which give §3.5.1's bits (an x or z leftmost pads
-    /// the value with itself). `_` separates digits in every radix.
+    /// the value with itself). `_` separates digits in every radix but may
+    /// not lead, and `?` reads as x (VD-132, iverilog's scanf4).
     fn number(field: []const u8, conv: u8) ?struct { usize, @FieldType(Assign, "value") } {
+        if (field[0] == '_') return null;
         if (conv == 'd') {
             const neg = field[0] == '-';
             const sign: usize = @intFromBool(neg or field[0] == '+');
             if (sign == 0) switch (std.ascii.toLower(field[0])) {
-                'x' => return .{ 1, .{ .bits = .{ ~@as(u64, 0), ~@as(u64, 0) } } },
-                'z', '?' => return .{ 1, .{ .bits = .{ 0, ~@as(u64, 0) } } },
+                'x', '?' => return .{ 1, .{ .bits = .{ ~@as(u64, 0), ~@as(u64, 0) } } },
+                'z' => return .{ 1, .{ .bits = .{ 0, ~@as(u64, 0) } } },
                 else => {},
             };
             var n = sign;
@@ -762,8 +825,8 @@ pub const Scan = struct {
             const ch = std.ascii.toLower(field[n]);
             if (ch == '_') continue;
             const digit: [2]u64 = switch (ch) {
-                'x' => .{ ones, ones },
-                'z', '?' => .{ 0, ones },
+                'x', '?' => .{ ones, ones },
+                'z' => .{ 0, ones },
                 else => .{ (std.fmt.charToDigit(ch, @as(u8, 1) << @intCast(per)) catch break), 0 },
             };
             top = top orelse digit;
@@ -795,13 +858,15 @@ pub const Scan = struct {
             while (n < field.len and std.ascii.isDigit(field[n])) : (n += 1) digits += 1;
         }
         if (digits == 0) return null;
+        // An `e` with no exponent digits after it is a matching failure, as
+        // C's scanf, which has consumed it, reports (iverilog's scanf4:
+        // "2.ea" matches nothing).
         if (n < field.len and (field[n] == 'e' or field[n] == 'E')) {
             var k = n + 1;
             if (k < field.len and (field[k] == '+' or field[k] == '-')) k += 1;
-            if (k < field.len and std.ascii.isDigit(field[k])) {
-                while (k < field.len and std.ascii.isDigit(field[k])) k += 1;
-                n = k;
-            }
+            if (k == field.len or !std.ascii.isDigit(field[k])) return null;
+            while (k < field.len and std.ascii.isDigit(field[k])) k += 1;
+            n = k;
         }
         return .{ n, .{ .real = std.fmt.parseFloat(f64, field[0..n]) catch return null } };
     }
@@ -911,7 +976,8 @@ test "§17.2.4.3 $sscanf: conversions, a mismatch stops, unknown input is EOF" {
         \\  n = $sscanf(16'h31xx, "%d", a); $display("%0d", n);
         \\end
         \\endmodule
-    , "3 12 255 z 1 7 -1\n");
+        // w is 16 bits: %s shows its leading zero byte as a space (VD-129).
+    , "3 12 255  z 1 7 -1\n");
 }
 
 test "§17.6 queues: FIFO and LIFO order, capacity and the status codes" {
@@ -976,9 +1042,10 @@ test queueStep {
     try std.testing.expectEqual(@as(i64, full), (try queueStep(&qs, a, .add, 1, 9, 90, 15)).status);
     try std.testing.expectEqual(@as(i64, 1), queueIsFull(&qs, 1).full);
     // §17.6.5 Table 17-15 at t = 20: length 2, mean interarrival 4, peak 2,
-    // no wait yet (0 shortest, 0 mean), longest wait 20 - 10.
-    const Exam = struct { i64, i64 };
-    for ([_]Exam{ .{ 1, 2 }, .{ 2, 4 }, .{ 3, 2 }, .{ 4, 0 }, .{ 5, 10 }, .{ 6, 0 } }) |e| {
+    // no job has left (no shortest wait), longest wait 20 - 10, average
+    // wait of the two queued (10 + 6) / 2 (iverilog's statistics).
+    const Exam = struct { i64, ?i64 };
+    for ([_]Exam{ .{ 1, 2 }, .{ 2, 4 }, .{ 3, 2 }, .{ 4, null }, .{ 5, 10 }, .{ 6, 8 } }) |e| {
         const r = try queueStep(&qs, a, .exam, 1, e[0], null, 20);
         try std.testing.expectEqual(@as(i64, ok), r.status);
         try std.testing.expectEqual(@as(?i64, e[1]), r.out[1]);
@@ -1003,15 +1070,6 @@ test queueStep {
     _ = try queueStep(&qs, a, .add, 2, 1, 0, 0);
     _ = try queueStep(&qs, a, .add, 2, 2, 0, 1);
     try std.testing.expectEqual(@as(?i64, 2), (try queueStep(&qs, a, .remove, 2, null, null, 2)).out[0]);
-}
-
-test mean {
-    // §3.5.3: to the nearest integer, ties away from zero (VD-052).
-    try std.testing.expectEqual(@as(u64, 0), mean(0, 0));
-    try std.testing.expectEqual(@as(u64, 3), mean(5, 2));
-    try std.testing.expectEqual(@as(u64, 2), mean(3, 2));
-    try std.testing.expectEqual(@as(u64, 0), mean(1, 3));
-    try std.testing.expectEqual(@as(u64, 1), mean(2, 3));
 }
 
 test dist {
@@ -1091,6 +1149,36 @@ test "§17.2.4.3 Scan: %u, %z and %t" {
     // With no width or scale the conversion stops the scan.
     var none: Scan = .init("1234", "%u", 1);
     try std.testing.expect(none.next() == null);
+}
+
+test "§17.2.4.3 Scan: %u widths and suppression, ? as x, a leading _, an empty exponent, %m (VD-132)" {
+    // Oracle: iverilog 13's fscanf_u, fscanf_z and scanf4.
+    // `%16u` reads a whole word and keeps 16 bits; `%*u` skips one word.
+    var w: Scan = .init("\x78\x56\x34\x12\x01\x00\x00\x00", "%16u%*u", 1);
+    w.widths = &.{32};
+    try std.testing.expectEqual([2]u64{ 0x5678, 0 }, w.next().?.value.bits);
+    try std.testing.expect(w.next() == null);
+    try std.testing.expectEqual(@as(i64, 1), w.result);
+    // `%*u%u` with one word: the skip leaves too few bytes, EOF.
+    var e: Scan = .init("\x01\x00\x00\x00", "%*u%u", 1);
+    e.widths = &.{32};
+    try std.testing.expect(e.next() == null);
+    try std.testing.expectEqual(@as(i64, -1), e.result);
+    var q: Scan = .init("1?", "%b", 1);
+    try std.testing.expectEqual([2]u64{ 0b11, 0b01 }, q.next().?.value.bits);
+    var lead: Scan = .init("_01", "%b", 1);
+    try std.testing.expect(lead.next() == null);
+    try std.testing.expectEqual(@as(i64, 0), lead.result);
+    var exp: Scan = .init("2.ea", "%f", 1);
+    try std.testing.expect(exp.next() == null);
+    try std.testing.expectEqual(@as(i64, 0), exp.result);
+    var m: Scan = .init(" ", "%m", 1);
+    m.module = "top.u";
+    try std.testing.expectEqualStrings("top.u", m.next().?.value.chars);
+    // -2.2566789 under %6t is -2.256 at $timeformat(-9, 3) in 1ns.
+    var t: Scan = .init("-2.2566789", "%6t", 1);
+    t.time = .{ .units = -9, .precision = 3, .unit_exp = -9 };
+    try std.testing.expectEqual(@as(f64, -2.256), t.next().?.value.real);
 }
 
 test "§17.2.4.3 Scan: C's conversions over a string" {
@@ -1226,10 +1314,16 @@ test readWord {
     const w = try readWord(a, FakeFile.io, 1, 12);
     try std.testing.expectEqual(@as(i64, 2), w.n);
     try std.testing.expectEqual(@as(?i64, 0x234), w.value.?.asInt());
-    // The file ends inside the next word: one byte read, no value.
+    // The file ends inside the next word: one byte read, its bits on top,
+    // and `overWord` keeps the prior value's low byte (iverilog's fread.v).
     const short = try readWord(a, FakeFile.io, 1, 12);
     try std.testing.expectEqual(@as(i64, 1), short.n);
-    try std.testing.expect(short.value == null);
+    const prior = try filled(a, 12, false, .x);
+    const got = overWord(short.value.?, prior, short.n);
+    for (0..8) |i| try std.testing.expectEqual(Int.Bit.x, got.bit(@intCast(i)));
+    // 0x56's low nibble, bits 11..8.
+    for (8..12, [_]Int.Bit{ .zero, .one, .one, .zero }) |i, want| try std.testing.expectEqual(want, got.bit(@intCast(i)));
+    try std.testing.expect((try readWord(a, FakeFile.io, 1, 12)).value == null);
 }
 
 test fileOp {

@@ -373,7 +373,7 @@ const FileReporter = struct {
         const NO_COLOR = threaded.environ.exist.NO_COLOR;
         const CLICOLOR_FORCE = threaded.environ.exist.CLICOLOR_FORCE;
         const mode = try std.Io.Terminal.Mode.detect(threaded.io(), file, NO_COLOR, CLICOLOR_FORCE);
-        return .{ .file_writer = file.writer(threaded.io(), buffer), .mode = mode };
+        return .{ .file_writer = file.writerStreaming(threaded.io(), buffer), .mode = mode };
     }
 
     fn terminal(self: *FileReporter) std.Io.Terminal {

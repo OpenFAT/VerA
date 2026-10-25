@@ -60,6 +60,13 @@ pub fn build(b: *Build) void {
     const exe = cliExe(b, target, optimize, mods, "vera", language == .ams);
     b.installArtifact(exe);
     b.installFile("lib/contract.zig", "share/vera/contract.zig");
+    // The VPI simulator a C application links (src/vpi/host.zig), where
+    // `zig cc` finds it: `-I<prefix>/include <prefix>/lib/libvera-vpi.a`.
+    const vpi_host = vpiHost(b, m, mods, vera, sim, dynlib);
+    if (target.result.os.tag != .wasi) {
+        b.installArtifact(vpi_host);
+        b.installFile("src/vpi/vpi_user.h", "include/vpi_user.h");
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -74,12 +81,16 @@ pub fn build(b: *Build) void {
     // own directories), so the step depends on the compile, not on `install`.
     const conformance = b.addSystemCommand(&.{
         "sh", "-c",
-        \\mkdir -p zig-out && VERA="$1" conform -t tests/conformance/tools/vera.conf -x tools/vera.xfail -j "${CONFORM_JOBS:-$(nproc)}" -T 300 \
+        \\mkdir -p zig-out && VERA="$1" VERA_VPI_LIB="$2" VERA_VPI_INCLUDE="$3" conform -t tests/conformance/tools/vera.conf -x tools/vera.xfail -j "${CONFORM_JOBS:-$(nproc)}" -T 300 \
         \\  -o zig-out/conformance.tsv tests/conformance/tests tests/conformance/external/*.manifest
         ,
         "sh",
     });
     conformance.addArtifactArg2(exe, .{ .make_absolute = true });
+    // `$2`, `$3`: the `libvera-vpi.a` and `vpi_user.h` directory the `.c`
+    // applications build against (vera.conf's `compile.vpi`).
+    conformance.addArtifactArg2(vpi_host, .{ .make_absolute = true });
+    conformance.addDirectoryArg2(b.path("src/vpi"), .{ .make_absolute = true });
     conformance.has_side_effects = true;
     b.step("conformance", "Run the conformance suite (tests/conformance) against the installed vera").dependOn(&conformance.step);
 
@@ -131,7 +142,7 @@ pub fn build(b: *Build) void {
     b.step("test-unit", "Run tests/unit.zig, the cross-module claims, only").dependOn(&all_run.step);
 
     // LLVM: the self-hosted backend emits no coverage, so the fuzzer sees no PCs.
-    const fuzz_test = b.addTest(.{ .name = "fuzz", .root_module = m.make("tests/fuzz.zig", &.{.{ .name = "vera", .module = vera }}), .use_llvm = true });
+    const fuzz_test = b.addTest(.{ .name = "fuzz", .root_module = m.make("tests/fuzz.zig", &.{ .{ .name = "vera", .module = vera }, .{ .name = "sim", .module = sim } }), .use_llvm = true });
     b.step("fuzz", "The in-process fuzz targets on the stock runner (`zig build fuzz --fuzz[=N]`: coverage-guided)").dependOn(&b.addRunArtifact(fuzz_test).step);
 
     const rng_ref = m.make("tests/rng_reference.zig", &.{.{ .name = "kernels", .module = kernels }});
@@ -264,22 +275,9 @@ pub fn build(b: *Build) void {
     canary.has_side_effects = true;
     test_step.dependOn(&canary.step);
 
-    const host_opts = b.addOptions();
-    host_opts.addOption([]const u8, "contract", pathFromRoot(b, "lib/contract.zig"));
-    host_opts.addOption([]const u8, "zig_exe", b.graph.zig_exe);
-    host_opts.addOption([]const u8, "work_root", pathFromRoot(b, ".zig-cache/vera-vpi"));
-    const vpi_host_mod = m.make("tests/conformance/vera/host/vpi_host.zig", &.{
-        .{ .name = "vera", .module = vera },
-        .{ .name = "vpi", .module = byName(mods, "vpi") },
-        .{ .name = "sim", .module = sim },
-        .{ .name = "vpi_host_options", .module = host_opts.createModule() },
-        .{ .name = "dynlib", .module = dynlib },
-    });
-    vpi_host_mod.link_libc = true;
-    vpi_host_mod.addAnonymousImport("vpi_design", .{ .root_source_file = b.path("tests/conformance/tests/verilog-ams/ch11_vpi/vpi_design.va") });
-    const vpi_host = b.addLibrary(.{ .name = "vera-vpi-host", .linkage = .static, .root_module = vpi_host_mod });
     all_step.dependOn(&vpi_host.step);
     const vpi_app = vpiApp(b, target, optimize, vpi_host, "tests/conformance/tests/verilog-ams/ch11_vpi/vpi_app.c");
+    vpi_app.addFileArg(b.path("tests/conformance/tests/verilog-ams/ch11_vpi/vpi_design.va"));
     vpi_app.expectExitCode(0);
     vpi_app.expectStdOutEqual("vpi: scopes=5 ports=11 nets=6 regs=2 params=8 checks=702\n");
     test_step.dependOn(&vpi_app.step);
@@ -304,9 +302,14 @@ pub fn build(b: *Build) void {
     }
     for (vpi_runs) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
-        r.addFileArg(b.path(f.design));
-        if (std.mem.endsWith(u8, f.design, ".va")) r.addFileArg(b.path(f.c));
-        r.setCwd(b.path(".zig-cache"));
+        // Each run gets its own cwd: an application writes fixed names there
+        // (`b_27_mcd_a.log`), and worktrees share one symlinked .zig-cache, so a
+        // shared cwd lets concurrent runs overwrite each other's files. The
+        // inputs are absolute to match.
+        r.addFileArg2(b.path(f.design), .{ .make_absolute = true });
+        if (std.mem.endsWith(u8, f.design, ".va")) r.addFileArg2(b.path(f.c), .{ .make_absolute = true });
+        r.setCwd(b.tmpPath());
+        if (f.protect_keys) |k| r.setEnvironmentVariable("VERA_PROTECT_KEYS", pathFromRoot(b, k));
         if (f.xfail orelse f.refuse) |msg| {
             r.expectExitCode(1);
             r.expectStdErrMatch(msg);
@@ -317,6 +320,20 @@ pub fn build(b: *Build) void {
             if (f.stderr) |e| r.expectStdErrEqual(e);
         }
         test_step.dependOn(&r.step);
+        // The same run with stdout a file, as conform runs it: the application's
+        // printf and the host's writer share one offset only if both stream.
+        if (f.xfail == null and f.refuse == null and !std.mem.endsWith(u8, f.design, ".va")) {
+            const filed = b.addSystemCommand(&.{ "sh", "-c", "\"$1\" \"$2\" > \"$3\" && cat \"$3\"", "sh" });
+            filed.addArtifactArg2(r.producer.?, .{ .make_absolute = true });
+            filed.addFileArg2(b.path(f.design), .{ .make_absolute = true });
+            _ = filed.addOutputFileArg2(b.fmt("{s}.stdout", .{std.fs.path.stem(f.c)}), .{});
+            filed.setCwd(b.tmpPath());
+            filed.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
+            if (f.protect_keys) |k| filed.setEnvironmentVariable("VERA_PROTECT_KEYS", pathFromRoot(b, k));
+            filed.expectExitCode(0);
+            filed.expectStdOutEqual(f.stdout);
+            test_step.dependOn(&filed.step);
+        }
         if (results_dir) |dir| {
             // A marker can only be written after the application's exit,
             // stdout and stderr checks succeed. Missing markers earn no credit.
@@ -693,13 +710,36 @@ fn vpiApp(b: *Build, target: Build.ResolvedTarget, optimize: std.lang.Optimize, 
     mod.linkLibrary(host);
     const app = b.addExecutable(.{ .name = b.fmt("vpi-{s}", .{std.fs.path.stem(c)}), .root_module = mod });
     b.top_level_steps.get("build-all").?.step.dependOn(&app.step);
-    return b.addRunArtifact(app);
+    const run = b.addRunArtifact(app);
+    run.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
+    // Keyed by checkout: worktrees share one symlinked .zig-cache, and two
+    // building the same application in one work dir at once corrupt it.
+    const root_key = std.hash.Wyhash.hash(0, pathFromRoot(b, "."));
+    run.setEnvironmentVariable("VERA_VPI_WORK", pathFromRoot(b, b.fmt(".zig-cache/vera-vpi/{x}", .{root_key})));
+    return run;
 }
 
-/// A `.c` fixture with `//! design` (relative to the `.c`), plus its `//! stdout|stderr|xfail|refuse` lines.
+/// `libvera-vpi.a` (src/vpi/host.zig): the simulator a VPI application links
+/// against, its `main` included.
+fn vpiHost(b: *Build, m: M, mods: []const Import, vera: *Module, sim: *Module, dynlib: *Module) *Build.Step.Compile {
+    const mod = m.make("src/vpi/host.zig", &.{
+        .{ .name = "vera", .module = vera },
+        .{ .name = "vpi", .module = byName(mods, "vpi") },
+        .{ .name = "sim", .module = sim },
+        .{ .name = "dynlib", .module = dynlib },
+    });
+    mod.link_libc = true;
+    mod.addAnonymousImport("contract_source", .{ .root_source_file = b.path("lib/contract.zig") });
+    return b.addLibrary(.{ .name = "vera-vpi", .linkage = .static, .root_module = mod });
+}
+
+/// A `.c` fixture with `//! design` (relative to the `.c`), plus its `//! stdout|stderr|xfail` lines;
+/// `//! exit 1` is a refusal, whose message is the `.expected.stderr.txt` beside it;
+/// `//@ protect-keys F` (relative to the `.c`) reaches the host as `$VERA_PROTECT_KEYS`.
 const VpiRun = struct {
     c: []const u8,
     design: []const u8 = "",
+    protect_keys: ?[]const u8 = null,
     stdout: []const u8 = "",
     stderr: ?[]const u8 = null,
     xfail: ?[]const u8 = null,
@@ -714,6 +754,10 @@ fn vpiRuns(b: *Build) []const VpiRun {
         var err: ?std.ArrayList(u8) = null;
         var lines = std.mem.splitScalar(u8, configText(b, c), '\n');
         while (lines.next()) |raw| {
+            if (std.mem.cutPrefix(u8, std.mem.trimEnd(u8, raw, "\r"), "//@ protect-keys ")) |k| {
+                r.protect_keys = b.fmt("{s}/{s}", .{ std.fs.path.dirnamePosix(c).?, k });
+                continue;
+            }
             const line = std.mem.cutPrefix(u8, std.mem.trimEnd(u8, raw, "\r"), "//! ") orelse continue;
             const key, const val = std.mem.cutScalar(u8, line, ' ') orelse .{ line, "" };
             if (std.mem.eql(u8, key, "design")) {
@@ -725,8 +769,9 @@ fn vpiRuns(b: *Build) []const VpiRun {
                 if (val.len != 0) err.?.print(b.allocator, "{s}\n", .{val}) catch @panic("OOM");
             } else if (std.mem.eql(u8, key, "xfail")) {
                 r.xfail = val;
-            } else if (std.mem.eql(u8, key, "refuse")) {
-                r.refuse = val;
+            } else if (std.mem.eql(u8, key, "exit")) {
+                if (!std.mem.eql(u8, val, "1")) @panic(b.fmt("{s}: only `//! exit 1` (a refusal) is supported", .{c}));
+                r.refuse = configText(b, b.fmt("{s}.expected.stderr.txt", .{c[0 .. c.len - 2]}));
             }
         }
         if (r.design.len == 0) continue;

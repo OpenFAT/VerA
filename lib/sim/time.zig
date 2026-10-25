@@ -9,15 +9,14 @@ const std = @import("std");
 /// coarser than its unit, which §19.8 forbids. `GlobalPrecisionTooCoarse`:
 /// the tick is coarser than a module's precision, which only a caller that
 /// passes something other than the design's finest precision causes.
-/// `DelayOverflow`: more than 2^64 - 1 ticks. `NonFiniteDelay` and
-/// `NegativeRealDelay`: a real delay that names no tick.
+/// `DelayOverflow`: more than 2^64 - 1 ticks. `NonFiniteDelay`: a real
+/// delay that names no tick.
 pub const Error = error{
     InvalidQuantum,
     PrecisionTooCoarse,
     GlobalPrecisionTooCoarse,
     DelayOverflow,
     NonFiniteDelay,
-    NegativeRealDelay,
 };
 
 /// Decimal exponent in seconds, including all 18 legal directive operands.
@@ -93,13 +92,15 @@ pub const Scale = struct {
     }
 
     /// `value` time units rounded half away from zero to the module's
-    /// precision, then scaled exactly to global ticks. `NonFiniteDelay` for
-    /// an infinity or NaN, `NegativeRealDelay` below 0 (-0.0 is 0),
-    /// `DelayOverflow` past 2^64 - 1 ticks.
+    /// precision, then scaled exactly to global ticks. A negative value is
+    /// the 64-bit two's complement of its magnitude's ticks, as §9.7.1 makes
+    /// a negative integral delay an unsigned time (1364 says nothing of a
+    /// negative real; iverilog wraps it the same way). `NonFiniteDelay` for
+    /// an infinity or NaN, `DelayOverflow` past 2^64 - 1 ticks.
     pub fn realDelay(self: Scale, value: f64) Error!u64 {
         if (!std.math.isFinite(value)) return error.NonFiniteDelay;
-        if (value < 0) return error.NegativeRealDelay;
-        return multiply(try roundedLocal(value, self.local_per_unit), self.global_per_local);
+        const ticks = try multiply(try roundedLocal(@abs(value), self.local_per_unit), self.global_per_local);
+        return if (value < 0) 0 -% ticks else ticks;
     }
 
     /// Returns `ticks` in the invoking module's time unit, rounded half away
@@ -260,12 +261,14 @@ test "binary64 scaling interpretation preserves conventional decimal-half roundi
     try testing.expectError(error.DelayOverflow, global.realDelay(1000));
 }
 
-test "negative procedural integers are unsigned times; negative reals are refused" {
+test "negative procedural integers and reals are unsigned times" {
     const scale = try Scale.init(.ns, .ns, .ns);
     try testing.expectEqual(std.math.maxInt(u64), try scale.signedDelay(-1));
     try testing.expectEqual(@as(u64, 1) << 63, try scale.signedDelay(std.math.minInt(i64)));
     try testing.expectEqual(@as(u64, 2), try scale.signedDelay(2));
-    try testing.expectError(error.NegativeRealDelay, scale.realDelay(-0.5));
+    // -0.5 rounds away from zero to 1 tick, so 2^64 - 1 (iverilog's delay_var.v).
+    try testing.expectEqual(std.math.maxInt(u64), try scale.realDelay(-0.5));
+    try testing.expectEqual(@as(u64, 0), try scale.realDelay(-0.0));
     try testing.expectError(error.NonFiniteDelay, scale.realDelay(-std.math.inf(f64)));
     const finer = try Scale.init(.ns, .ps, .ps);
     try testing.expectError(error.DelayOverflow, finer.signedDelay(-1));

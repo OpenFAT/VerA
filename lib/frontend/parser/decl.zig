@@ -47,7 +47,11 @@ pub fn parseParamDecl(self: *Parser, out: *std.ArrayList(Ast.ParamDecl)) Error!v
     // §3.4.1: no type keyword is `.unspecified`, inferred from the default
     // by lowering.
     const is_time = self.peek() == .kw_time;
-    const ty = varType(self.peek()) orelse .unspecified;
+    // A type keyword the §10.6 set does not reserve, right before `=`, is the
+    // parameter's name: under "1364-2005" `localparam string = "ab";`
+    // declares `string` (iverilog fread.v).
+    const named = self.peekAt(1) == .assign_eq and self.identLike(self.pos);
+    const ty = if (named) .unspecified else varType(self.peek()) orelse .unspecified;
     if (ty != .unspecified) self.pos += 1;
     // A.2.1.1's first arm, `parameter [ signed ] [ range ] list_of_param_assignments`.
     // The range is a width, not a §3.4.4 array dimension, so it goes in

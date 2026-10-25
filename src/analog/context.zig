@@ -309,20 +309,26 @@ pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!vo
     var owned: std.ArrayList(Ast.ExprId) = .empty;
     for (module.assigns) |a| {
         const t = self.file.lvalueBase(a.target);
-        const n = if (t == .none) null else netOf(module, ex.strOf(t));
-        if (n == null) {
-            // IEEE 1364-2005 §6.1 (via VAMS §1.1): A.6.1's `net_assignment`
-            // drives a `net_lvalue` — a variable has no driver to add.
+        // IEEE 1364-2005 §6.1 (via VAMS §1.1): A.6.1's `net_assignment`
+        // drives a `net_lvalue` — a variable has no driver to add. A port
+        // with no net or variable declaration is a net: §12.3.3 "If a port
+        // declaration does not include a net or variable type, then the port
+        // can be again declared in a net or variable declaration", and
+        // undeclared it is an implicit net of the default net type.
+        if (t == .none or (netOf(module, ex.strOf(t)) == null and !isNetName(module, ex.strOf(t)))) {
             try self.err(a.main_tok, .E0438, "", .{});
             continue;
         }
+        const discipline = if (netOf(module, ex.strOf(t))) |n| n.discipline else for (module.ports) |p| {
+            if (p.name == ex.strOf(t)) break p.discipline;
+        } else unreachable; // `isNetName` found it among the nets or the ports
         // The declaration kind decided E0438; the domain decides this one.
         // §7.2: "only digital blocks and primitives can drive a discrete net",
         // and §7.3: "Write operations of nets ... are only allowed from the
         // context of their domain" — and a continuous assignment is the
         // discrete context. A `ddiscrete` net (§3.6.2.2 `domain discrete`) is
         // a net exactly as `wire` is, and legal here.
-        if (discipline_rules.isContinuous(self.file, n.?.discipline)) {
+        if (discipline_rules.isContinuous(self.file, discipline)) {
             try self.err(a.main_tok, .E0435, "`{s}` is driven by a continuous assignment", .{self.file.str(ex.strOf(t))});
             continue;
         }
@@ -1135,10 +1141,11 @@ fn scanContextExpr(self: *Lower, e: Ast.ExprId, comptime discrete: bool, is_init
         // the net's discipline in either context (§4.4, E0501/E0337). Only a
         // declared net that is an analog node is judged; a digital-owned
         // name never became one (`declareDiscreteInputs`).
-        if (tag == .branch_access) if (self.access_kind.get(self.file.str(ex.strOf(e)))) |access| {
+        if (tag == .branch_access) if (self.access_kind.get(self.file.str(ex.strOf(e)))) |global| {
             for ([_]Ast.ExprId{ ex.lhs(e), ex.rhs(e) }) |arg| {
                 if (arg == .none or ex.tag(arg) != .ident) continue;
                 const node = self.node_voltages.get(self.file.str(ex.strOf(arg))) orelse continue;
+                const access = try lower_contrib.accessOn(self, e, self.file.str(ex.strOf(e)), global, node, Lower.ground);
                 try lower_contrib.checkAccessMatch(self, e, self.file.str(ex.strOf(e)), access, node);
             }
         };
@@ -1356,21 +1363,30 @@ test "lower: A.6.1 an assign target is judged by declaration kind, then by domai
     // discrete`) exactly as an undisciplined `wire`. Pinned here because the
     // positive fixture (ch07/ddiscrete_net_continuously_assigned) is xfail on the
     // digital runner and would not catch a wrong E0438.
+    //
+    // IEEE 1364-2005 §12.3.3: a port with no net or variable type is a net
+    // (gnucap's dump_assign.0: `output out; assign out = !in;`), redeclared
+    // as a `wire` or not; a `reg` port is a variable.
     const cases = [_]struct { decl: []const u8, code: ?diag.Code }{
         .{ .decl = "integer t;", .code = .E0438 },
         .{ .decl = "electrical t;", .code = .E0435 },
         .{ .decl = "ddiscrete t;", .code = null },
         .{ .decl = "wire t;", .code = null },
+        .{ .decl = "output t;", .code = null },
+        .{ .decl = "output t; wire t;", .code = null },
+        .{ .decl = "output reg t;", .code = .E0438 },
+        .{ .decl = "output t; electrical t;", .code = .E0435 },
     };
     for (cases) |c| {
+        const port = std.mem.startsWith(u8, c.decl, "output");
         const src = try std.testing.allocator.print(
-            \\module m(p);
+            \\module m(p{s});
             \\  inout p; electrical p;
             \\  {s}
             \\  assign t = 1'b1;
             \\  analog I(p) <+ V(p) + t;
             \\endmodule
-        , .{c.decl});
+        , .{ if (port) ", t" else "", c.decl });
         defer std.testing.allocator.free(src);
 
         var h: Lower.Harness = undefined;

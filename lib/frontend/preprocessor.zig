@@ -16,10 +16,21 @@ const spice_cards = @import("spice_cards.zig");
 pub const Options = struct {
     /// Searched in order for `include, before the built-in annex D files.
     include_dirs: []const []const u8 = &.{},
+    /// Command-line macros (`vera -D`), each `NAME` or `NAME=TEXT`: defined
+    /// after the prelude and before the compilation unit, as `define NAME TEXT
+    /// would be; a bare `NAME` is `1`, as iverilog's `-D` defines it.
+    defines: []const []const u8 = &.{},
     /// Name the compilation unit is registered under; `__FILE__` expands to it.
     file_name: []const u8 = "<source>",
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams.
     std_defs: bool = true,
+    /// With `std_defs` off, still prepend the Table E.1 primitives (and read
+    /// `spice_netlist`): E.2 makes them built-ins "in the same manner ... as
+    /// built-in primitives of gate- and switch-level modeling", not part of
+    /// the annex D prelude. Their `electrical` ports bind to the source's
+    /// own discipline of that name. The Verilog-AMS spine sets it; a 1364
+    /// design has no use for them.
+    spice_primitives: bool = false,
     /// The prepended annex D files serve only a source that `include`s them:
     /// a D.2 macro without `include "constants.vams"` is
     /// E0115, and elaboration hides the D.1 disciplines without
@@ -28,8 +39,8 @@ pub const Options = struct {
     require_std_includes: bool = false,
     /// Annex E.2 SPICE netlist text, one card per line. Each `.MODEL` and
     /// `.SUBCKT` becomes a module appended after the Table E.1 prelude; empty
-    /// appends nothing. Read only with `std_defs`, because a model card's
-    /// interface comes from a Table E.1 primitive.
+    /// appends nothing. Read only with `std_defs` or `spice_primitives`, because a
+    /// model card's interface comes from a Table E.1 primitive.
     spice_netlist: []const u8 = "",
     /// The file `spice_netlist` was read from, or "": its `.INCLUDE`, `.LIB`
     /// and `.HDL` names are looked for beside it (`spice_cards.Reader`).
@@ -43,7 +54,18 @@ pub const Options = struct {
     /// E0150's bound on the preprocessed text. Only tests lower it, to reach
     /// the diagnostic without 4 GiB of text.
     text_limit: usize = max_text_bytes,
+    /// The unit is compiled as IEEE 1364 (`--std=1364-*`). IEEE 1800-2017
+    /// §22.5.1's macro text forms (`" `\`" ``) are accepted under every
+    /// standard, and under 1364, whose Syntax 19-3 lacks them, each `define
+    /// that uses one warns W0151.
+    std_1364: bool = false,
+    /// IEEE 1364-2005 §28.2: the keys "supplied by the user" for decryption
+    /// envelopes (`vera --protect-keys`). None: an envelope is E0152.
+    protect_keys: protect.Keys = .{},
 };
+
+/// §28 decryption envelopes and the key provider's file (pp/protect.zig).
+pub const protect = @import("pp/protect.zig");
 
 /// One of `Options.more`: the name it registers under in the bag (and
 /// `__FILE__` reads), and its raw text. Both are borrowed for the call and
@@ -161,7 +183,7 @@ pub const Directive = enum {
     endcelldefine,
     unconnected_drive, // IEEE 1364 §19.9: read by §6.2.2 port binding
     nounconnected_drive,
-    pragma, // IEEE 1364 §19.10: no effect, except §28's `protect` (E0146)
+    pragma, // IEEE 1364 §19.10: no effect, except §28's `protect` (pp/protect.zig)
 };
 
 /// §10.2 Syntax 10-1:
@@ -380,10 +402,10 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
     var netlist_modules: u32 = 0;
     var netlist_unsupported: []const []const u8 = &.{};
     var hdl: []const []const u8 = &.{};
-    if (opts.std_defs) {
+    if (opts.std_defs or opts.spice_primitives) {
         // Replayed from the process-lifetime snapshot (`Prelude`), which
         // pp/test.zig checks against a fresh `runStdDefs`.
-        try pp.replayStdDefs();
+        if (opts.std_defs) try pp.replayStdDefs() else try pp.runSpicePrimitives();
         // Annex E.2 after Table E.1: a `.MODEL` wrapper instantiates the
         // primitive its type names, so the primitive has to be declared first.
         const cards = try spice_cards.synthesize(arena, opts.spice_netlist, opts.spice_path);
@@ -413,6 +435,11 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
             netlist_modules = cards.modules;
         }
         netlist_unsupported = cards.unsupported;
+    }
+
+    for (opts.defines) |d| {
+        const eq = std.mem.findScalar(u8, d, '=');
+        try pp.putMacro(d[0 .. eq orelse d.len], .{ .body = if (eq) |i| d[i + 1 ..] else "1" });
     }
 
     // The compilation unit's output is about its own length (comments out,
@@ -789,6 +816,17 @@ pub const Pp = struct {
         try pp.runFile(pp_annex_e.spice_primitives, "spice_primitives.vams", null);
     }
 
+    /// Table E.1 alone (`Options.spice_primitives`): its source rows read
+    /// annex D.2's `M_TWO_PI, defined for this file only, so no annex D macro
+    /// reaches the source.
+    fn runSpicePrimitives(pp: *Pp) Error!void {
+        pp.in_std_defs = true;
+        defer pp.in_std_defs = false;
+        try pp.putMacro("M_TWO_PI", .{ .body = "6.28318530717958647693" });
+        defer pp.removeMacro("M_TWO_PI");
+        try pp.runFile(pp_annex_e.spice_primitives, "spice_primitives.vams", null);
+    }
+
     /// Copies `runStdDefs`' result out of the process-lifetime snapshot. Must
     /// leave `pp` in exactly the state `runStdDefs` would.
     fn replayStdDefs(pp: *Pp) Error!void {
@@ -1078,4 +1116,5 @@ test {
     _ = pp_directive;
     _ = pp_annex_d;
     _ = pp_annex_e;
+    _ = protect;
 }

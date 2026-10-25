@@ -400,6 +400,14 @@ pub const parser_tests = struct {
         // IEEE 1364-2005 §19.11: "1364-2001-noconfig" is no newer than 1364-2001.
         const noconfig = "`begin_keywords \"1364-2001-noconfig\"\nmodule m; reg config; endmodule\n`end_keywords\n";
         try std.testing.expectEqual(@as(usize, 0), (try Case.parse(arena, noconfig, .v1364_2001)).count());
+        // Under the AMS default, a pre-2023 set frees `expm1`; a model's
+        // own `expm1` frees it in any set, with W0259.
+        const own = "module m; analog function real expm1; input x; real x; expm1 = exp(x) - 1.0; endfunction\nendmodule\n";
+        const own_r = try Case.parse(arena, own, .vams_2023);
+        try std.testing.expectEqual(@as(usize, 1), own_r.count());
+        try std.testing.expectEqual(diag.Code.W0259, own_r.code(0));
+        const own_old = "`begin_keywords \"VAMS-2.3\"\n" ++ own ++ "`end_keywords\n";
+        try std.testing.expectEqual(@as(usize, 0), (try Case.parse(arena, own_old, .vams_2023)).count());
 
         // One error per construct, and the construct is still read past.
         const ams = try Case.parse(arena, "nature N; endnature\nmodule m; analog begin end\nreg r; endmodule\n", .v1364_2005);
@@ -9046,10 +9054,10 @@ pub const diag_tests = struct {
 
         // Only `.run` errors: the error lines alone, as the native runtime prints.
         var ran = diag.Bag.init(arena);
-        try ran.add(.run, .E1157, diag.Span.none, "", .{});
+        try ran.add(.run, .E1100, diag.Span.none, "", .{});
         const out = try renderToString(&ran, .{});
         try std.testing.expect(std.mem.find(u8, out, "could not compile") == null);
-        try std.testing.expect(std.mem.startsWith(u8, out, "error[E1157]"));
+        try std.testing.expect(std.mem.startsWith(u8, out, "error[E1100]"));
         try std.testing.expect(ran.failed());
         // A warning beside it is still counted; a compile error still is too.
         try ran.add(.lower, .W1150, .at(1), "", .{});
@@ -9438,7 +9446,7 @@ pub const diag_tests = struct {
         var bag = diag.Bag.init(arena);
         for (0..diag.max_entries) |i| try bag.add(.proof, .W0650, .at(@intCast(i + 1)), "", .{});
         try bag.add(.lower, .E0313, .at(1000), "", .{});
-        try bag.add(.run, .E1157, .at(1001), "", .{}); // a run error, dropped: no compile error
+        try bag.add(.run, .E1100, .at(1001), "", .{}); // a run error, dropped: no compile error
         try bag.add(.proof, .W0651, .at(1002), "", .{});
         try std.testing.expect(bag.failed());
         try std.testing.expect(std.mem.endsWith(u8, try renderToString(&bag, .{ .explain_hint = false }),
@@ -9643,6 +9651,87 @@ pub const preprocessor_tests = struct {
         // A formal spelled inside a §2.8.1 escaped identifier is part of that
         // identifier, not a use of the formal.
         try expectPp("\nreal \\sig-x ;", "`define M(x) real \\sig-x ;\n`M(1)");
+    }
+
+    test "IEEE 1800-2017 §22.5.1 `\" `\\`\" and `` in macro text" {
+        // Oracle: the clause's own examples, expanded as the LRM prints them
+        // (and as `iverilog -E` does), under every standard; a 1364 unit warns.
+        const Sv = struct {
+            fn expect(expected: []const u8, src: []const u8) !void {
+                try expectPp(expected, src);
+                var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+                defer arena_state.deinit();
+                var bag: diag.Bag = .init(arena_state.allocator());
+                const out = try process(arena_state.allocator(), src, .{ .std_defs = false, .bag = &bag, .std_1364 = true });
+                try testing.expectEqualStrings(expected, out.text);
+                try testing.expectEqual(@as(usize, 1), bag.count());
+                try testing.expectEqual(diag.Code.W0151, bag.at(0).code);
+                try testing.expect(!bag.failed());
+            }
+        };
+        try Sv.expect(
+            "\n$display(\"left side: \\\"right side\\\"\");",
+            "`define msg(x,y) `\"x: `\\`\"y`\\`\"`\"\n$display(`msg(left side,right side));",
+        );
+        try Sv.expect("\nclock_master", "`define append(f) f``_master\n`append(clock)");
+        // A plain string still keeps its formal; an object-like body works too.
+        try Sv.expect("\n\"x\" \"1\"", "`define M(x) \"x\" `\"x`\"\n`M(1)");
+        try Sv.expect("\n\"a b\"", "`define S `\"a b`\"\n`S");
+        // Outside macro text `" is no token at all.
+        try expectFail("`\"a`\"\n", .E0103);
+    }
+
+    test "IEEE 1364 §19.3.1: a `\\` ending a line inside a block comment continues `define text" {
+        // Oracle: iverilog macro_comment_multiline (the comment is dropped, the
+        // continuation is not). Outside a `define the comment keeps its newlines.
+        try expectPp("\n\n(1 + 2)", "`define T(a,b) (a + /* x \\\n y */ b)\n`T(1,2)");
+        try expectPp("a\n b", "a/* x \\\n y */ b");
+    }
+
+    test "IEEE 1364-2005 §28.4: protect metadata has no action outside an envelope" {
+        // Oracle: §28.4 gives author, comment, encoding ... an action only
+        // inside an envelope, and §19.10 makes a pragma without one no-effect.
+        try expectPp("\nx", "`pragma protect author=\"a, b\", comment=\"c\"\nx");
+        try expectPp("\n\n", "`pragma protect\n`pragma protect end\n");
+        // An encryption envelope, a block outside an envelope and an envelope
+        // with no end are refused.
+        try expectFail("`pragma protect data_method=\"x\", begin_protected\n", .E0146);
+        try expectFail("`pragma protect encoding=(enctype=\"raw\"), begin\n", .E0146);
+        try expectFail("`pragma protect data_block\n", .E0146);
+    }
+
+    test "IEEE 1364-2005 §28.2: a decryption envelope is scanned as its cleartext" {
+        // Oracle: openssl. `printf '`define IN 7\nwire [`OUT:0] w;\n' | openssl
+        // enc -des-cbc -K 0123456789abcdef -iv 1234567890abcdef | base64` is
+        // the data_block. A macro defined outside expands inside, and one
+        // defined inside is in force after.
+        const src =
+            \\`define OUT 3
+            \\`pragma protect data_keyowner="o", data_keyname="k", data_method="des-cbc", begin_protected
+            \\`pragma protect encoding=(enctype="base64", bytes=32), data_block
+            \\n1Wn+COi7/PUYfw8LBpbP5gnjLT1WISNkOj0IsRnLq0=
+            \\`pragma protect end_protected
+            \\`IN
+        ;
+        const keys: Preprocessor.protect.Keys = .{
+            .iv = .{ 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef },
+            .keys = &.{.{ .owner = "o", .name = "k", .key = .{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef } }},
+        };
+        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var bag: diag.Bag = .init(arena);
+        const out = try process(arena, src, .{ .std_defs = false, .bag = &bag, .protect_keys = keys });
+        try testing.expectEqualStrings("\n\nwire [3:0] w;\n\n\n\n\n7", out.text);
+        // No key of that owner and name: E0152; a wrong key: E0153.
+        var bag2: diag.Bag = .init(arena);
+        try testing.expectError(error.PreprocessFailed, process(arena, src, .{ .std_defs = false, .bag = &bag2 }));
+        try testing.expectEqual(diag.Code.E0152, bag2.at(0).code);
+        var wrong = keys;
+        wrong.keys = &.{.{ .owner = "o", .name = "k", .key = @splat(0x13) }};
+        var bag3: diag.Bag = .init(arena);
+        try testing.expectError(error.PreprocessFailed, process(arena, src, .{ .std_defs = false, .bag = &bag3, .protect_keys = wrong }));
+        try testing.expectEqual(diag.Code.E0153, bag3.at(0).code);
     }
 
     test "§10.4 macro argument brackets must match their openers" {
@@ -11496,12 +11585,13 @@ pub const sim_digital_tests = struct {
         try std.testing.expectError(error.DigitalFailed, root.run(a, src, .{ .params = &.{.{ .name = "Q", .value = 1, .text = "1" }} }, &bag, &out.writer));
     }
 
-    test "§17.8 $rtoi takes -2^31 exactly and refuses one past it as x" {
+    test "§17.8 $rtoi takes -2^31 exactly and keeps the low 32 bits of one past it (VD-130)" {
+        // Oracle: iverilog's itor_rtoi gold; an infinity is x.
         try expectRun(
-            \\module m; integer i, j, k;
-            \\initial begin i = $rtoi(-2147483648.0); j = $rtoi(-2147483648.9); k = $rtoi(-2147483649.0);
-            \\$display("%0d %0d %b", i, j, k); end endmodule
-        , "-2147483648 -2147483648 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n");
+            \\module m; integer i, j, k, n;
+            \\initial begin i = $rtoi(-2147483648.0); j = $rtoi(-2147483648.9); k = $rtoi(-2147483649.0); n = $rtoi(1.0/0.0);
+            \\$display("%0d %0d %b %0d", i, j, k, n); end endmodule
+        , "-2147483648 -2147483648 01111111111111111111111111111111 x\n");
     }
 
     test "§4.8.2 a real rounds into a 64-bit integer down to -2^63, and NaN is x" {
@@ -11600,7 +11690,8 @@ pub const sim_digital_tests = struct {
             \\  $display("%s %0d %0d %g %0d %0d %0d", s, n, a, r, st, j, i);
             \\end endmodule
         , .{}, &bag, &output.writer);
-        try std.testing.expectEqualStrings("12-ab 2 7 2.5 0 3 4\n", output.written());
+        // s is 10 characters: %s shows its five leading zero bytes as spaces (VD-129).
+        try std.testing.expectEqualStrings("     12-ab 2 7 2.5 0 3 4\n", output.written());
     }
 
     test "allocation failure anywhere in $sformat, $sscanf, the queues and $display cleans up" {
@@ -14586,10 +14677,15 @@ pub const codegen_tests = struct {
         const k = @import("kernels").file_kernels;
         // The kernels resolve a path relative to the process cwd (which is exactly
         // what makes `ch09_047_missing.dat` a claim about a DIRECTORY, and why
-        // tests/suite.zig runs each fixture in its own), so the name is what has to
-        // be unique here.
-        const path = ".zig-cache/vera-file-kernels-test.dat";
-        const absent = ".zig-cache/vera-file-kernels-absent.dat";
+        // tests/suite.zig runs each fixture in its own), so the directory is what
+        // has to be unique here: worktrees share one symlinked .zig-cache, and a
+        // fixed name there is overwritten by a concurrent run.
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var path_buf: [96]u8 = undefined;
+        var absent_buf: [96]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/vera-file-kernels-test.dat", .{tmp.sub_path});
+        const absent = try std.fmt.bufPrint(&absent_buf, ".zig-cache/tmp/{s}/vera-file-kernels-absent.dat", .{tmp.sub_path});
 
         // §9.5.1 "the most significant bit (bit 31) of a fd is reserved and shall
         // always be set", and "three file descriptors are pre-opened ...

@@ -86,9 +86,16 @@ pub fn resolve(self: *Run, net: u32) Error!void {
         const c = try self.netColdMut(net);
         const st = &c.transition;
         const from = self.values[n.slot];
-        if (try transitionDelay(self, c, from, n.resolved)) |ticks| {
-            if (try schedule(self, from, false, n.resolved, false, st))
-                st.in_flight = try exec.enqueue(self, .{ .net_update = net }, ticks, false);
+        // A transition is timed from what is in flight to land, when
+        // something is: that is the edge §14.6's pulse ends with.
+        const base = if (st.in_flight != null) st.target else from;
+        if (try transitionDelay(self, c, base, n.resolved)) |td| {
+            if (st.in_flight != null and c.paths.len != 0 and !std.mem.eql(u64, st.target.planes, n.resolved.planes))
+                if (try pulse(self, net, c, td)) return;
+            if (try schedule(self, from, false, n.resolved, false, st)) {
+                st.in_flight = try exec.enqueue(self, .{ .net_update = net }, td.ticks, false);
+                st.due = self.scheduler.now + td.ticks;
+            }
             return;
         }
         // No path is active: the transition is not delayed, and one in
@@ -100,14 +107,106 @@ pub fn resolve(self: *Run, net: u32) Error!void {
     if (moved) try waiters.wakeSwitches(self, n.slot);
 }
 
-/// The delay of net `c`'s transition from `from` to `to`, in ticks from
-/// now: its own `delay3` (§6.1.3), its module paths' (`pathDelay`), or of
-/// the two "the larger" (IEEE 1364-2005 §14.4); null when neither applies.
-fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to: Int.Literal) Error!?u64 {
+/// IEEE 1364-2005 §4.2.1 a driven net's value before any event: "Nets with
+/// drivers shall assume the output value of their drivers", and a driver
+/// that has produced no value yet asserts the unknown it starts at
+/// (`Driver.current`). Bits no driver covers keep the default z. Stored
+/// without an event, since nothing has changed; a `trireg` (x already), a
+/// wreal and a switch-joined net are left to their first resolution. A net
+/// with no driver at all holds its type's pull (§3.7: a supply net's supply
+/// strength), which a MOS switch reading it as data passes on (§7.11).
+pub fn initial(self: *Run, net: u32) void {
+    const n = self.nets[net];
+    if (n.kind == .wreal or n.kind == .trireg or self.netCold(n).trans.len != 0) return;
+    if (self.netDrivers(net).len == 0) {
+        @memset(self.signals[n.signal..][0..n.resolved.width], netPull(n.kind));
+        return;
+    }
+    const tables = wiredLogic(n.kind);
+    for (0..n.resolved.width) |i| {
+        const at: u32 = @intCast(i);
+        var acc: Signal = .{};
+        for (self.netDrivers(net)) |d| {
+            const dr = self.drivers[d];
+            // A sequential UDP's initial state is published at time 0
+            // (§8.5), a change from the unknown a process armed earlier
+            // sees, as iverilog's does (ivtest br_ml20190806a).
+            const c = if (dr.source == .udp and dr.source.udp.sequential) Signal.of(.x, dr.s0, dr.s1) else contribution(dr, at);
+            acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
+        }
+        acc = acc.combine(netPull(n.kind));
+        self.signals[n.signal + at] = acc;
+        setBit(n.resolved, at, acc.collapse());
+    }
+    @memcpy(self.values[n.slot].planes, n.resolved.planes);
+}
+
+/// A transition's delay in ticks from now, and the §14.6.1 reject and error
+/// limits its pulses are judged by.
+const Timed = struct { ticks: u64, reject: u64, err: u64 };
+
+/// The delay of net `c`'s transition from `from` to `to`: its own `delay3`
+/// (§6.1.3), its module paths' (`pathDelay`), or of the two "the larger"
+/// (IEEE 1364-2005 §14.4); null when neither applies.
+fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to: Int.Literal) Error!?Timed {
     const own: ?u64 = if (c.delay.present) c.delay.continuous(from.truth(), to) else null;
-    const path = try pathDelay(self, c.paths, from, to);
-    if (own) |o| return if (path) |p| @max(o, p) else o;
+    var path = try pathDelay(self, c.paths, from, to);
+    if (own) |o| {
+        if (path) |*p| p.ticks = @max(o, p.ticks) else return .{ .ticks = o, .reject = o, .err = o };
+    }
     return path;
+}
+
+/// IEEE 1364-2005 §14.6 a module path destination's transition `td` while
+/// another is in flight to land at `st.due`: the pulse between them, as wide
+/// as the time between the two landings, is judged by `td`'s limits.
+/// Narrower than the reject limit it is filtered, the inertial default
+/// (false: `schedule` cancels the one in flight). Not narrower than the
+/// error limit, both land (transport). Between the two, the pulse is x: from
+/// its leading edge (§14.6.4.1 on-event), or from now (on-detect), to its
+/// trailing one. A trailing edge landing no later than the leading one is a
+/// negative pulse (§14.6.4.2): filtered, or, under showcancelled, x from
+/// the earlier landing (on-event) or from now (on-detect) to the later.
+/// Returns whether it scheduled the transition itself.
+fn pulse(self: *Run, net: u32, c: *net_mod.NetCold, td: Timed) Error!bool {
+    const st = &c.transition;
+    const n = self.nets[net];
+    const now = self.scheduler.now;
+    const leading = st.due;
+    const trailing = now + td.ticks;
+    const xs = try filled(self.arena, n.resolved.width, n.resolved.signed, .x);
+    if (trailing <= leading) {
+        if (!c.showcancelled) return false;
+        try exec.cancel(self, st.in_flight.?);
+        st.in_flight = null;
+        if (c.ondetect) try waiters.store(self, n.slot, xs.planes) else _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = xs } }, trailing - now, false);
+        try land(self, net, st, n.resolved, leading);
+        return true;
+    }
+    const width = trailing - leading;
+    if (width < td.reject) return false;
+    try exec.cancel(self, st.in_flight.?);
+    st.in_flight = null;
+    if (width >= td.err) {
+        _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = st.target } }, leading - now, false);
+    } else if (c.ondetect) {
+        try waiters.store(self, n.slot, xs.planes);
+    } else {
+        _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = xs } }, leading - now, false);
+    }
+    try land(self, net, st, n.resolved, trailing);
+    return true;
+}
+
+/// Puts `to` in flight on `st` to land on net `net` at absolute time `at`.
+fn land(self: *Run, net: u32, st: *net_mod.Inertial, to: Int.Literal, at: u64) Error!void {
+    if (st.target.planes.len != to.planes.len) st.target.planes = try self.arena.alloc(u64, to.planes.len);
+    @memcpy(st.target.planes, to.planes);
+    st.target.width = to.width;
+    st.target.signed = to.signed;
+    st.or_z = false;
+    st.in_flight = try exec.enqueue(self, .{ .net_update = net }, at - self.scheduler.now, false);
+    st.due = at;
 }
 
 /// IEEE 1364-2005 §14.3.3: "Active specify paths are those whose input has
@@ -122,13 +221,14 @@ fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to:
 /// lands at 22, Figure 14-4 at 30). Null when no path is active.
 /// ponytail: a vector destination takes the smallest delay its changed bits
 /// select, as one transition; per-bit scheduling would time each bit.
-fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int.Literal) Error!?u64 {
+fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int.Literal) Error!?Timed {
     var latest: ?u64 = null;
     for (paths) |p| if (self.path_changed.get(p.src)) |c| {
         latest = @max(latest orelse c.time, c.time);
     };
     const t = latest orelse return null;
     var best: ?u64 = null;
+    var limits: [2]?u64 = .{ null, null };
     for (paths) |p| {
         if (!try pathActive(self, paths, p, t)) continue;
         for (0..to.width) |i| {
@@ -136,11 +236,13 @@ fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int
             const b = to.bit(@intCast(i));
             if (a == b) continue;
             const d = p.table[@backingInt(a)][@backingInt(b)];
+            if (best == null or d < best.?) limits = .{ p.reject, p.err };
             best = @min(best orelse d, d);
         }
     }
     const d = best orelse return null;
-    return (t + d) -| self.scheduler.now;
+    // §14.6.1: with no limits written, both are the path delay.
+    return .{ .ticks = (t + d) -| self.scheduler.now, .reject = limits[0] orelse d, .err = limits[1] orelse d };
 }
 
 /// Whether path `p` into a destination whose paths are `paths` is active
@@ -238,6 +340,15 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
                 const n = self.nets[z.net];
                 var own = netPull(n.kind);
                 for (self.netDrivers(z.net)) |d| own = own.combine(contribution(self.drivers[d], z.bit));
+                // §9.3.2 "The force procedural statement on a net shall
+                // override all drivers"; across a switch the forced value is
+                // a strong driver of the other nets, as iverilog reads it
+                // (ivtest pr2937417b/c). The forced net keeps its own value
+                // (`waiters.store` drops this resolution's write to it).
+                // ponytail: a whole-net force only, not a forced select.
+                if (self.overrides.count() != 0) if (self.overrides.get(n.slot)) |o| if (o.force != null) {
+                    own = .of(self.values[n.slot].bit(z.bit), .strong, .strong);
+                };
                 acc = acc.combine(crossed(own, z, y, p));
             }
             if (acc.none()) for (group, paths) |z, p| {
@@ -265,6 +376,12 @@ const Switches = struct {
     }
     pub fn conduction(g: Switches, ti: u32) Tran.State {
         return g.r.trans[ti].state;
+    }
+    pub fn fixed(g: Switches, net: u32) bool {
+        return switch (g.r.nets[net].kind) {
+            .supply0, .supply1 => true,
+            else => false, // else: every other net kind is a conductor
+        };
     }
 };
 
@@ -374,7 +491,7 @@ pub fn gateValue(self: *Run, scratch: std.mem.Allocator, g: Gate, width: u32, or
     const bits = try scratch.alloc(Int.Bit, g.ins.len);
     for (g.ins, bits) |in, *b| {
         const v = try evaluate.eval(self, scratch, in, 1);
-        b.* = v.bit(if (v.width > 1) g.lane.? else 0);
+        b.* = v.bit(if (v.width > 1) g.lane orelse 0 else 0);
     }
     const out = try filled(scratch, width, false, .z);
     const o = gateBit(g.kind, bits);
@@ -412,6 +529,8 @@ pub fn udpValue(self: *Run, scratch: std.mem.Allocator, u: *net_mod.Udp, width: 
 pub fn window(self: *Run, scratch: std.mem.Allocator, b: Bridge, width: u32) Error!Int.Literal {
     const out = try filled(scratch, width, false, .z);
     evaluate.copyBits(out, b.dst_lo, self.values[b.src], b.src_lo, b.width);
+    const fill: Int.Bit = if (b.sign_at) |at| self.values[b.src].bit(at) else .zero;
+    for (0..b.ext) |j| setBit(out, b.dst_lo + b.width + @as(u32, @intCast(j)), fill);
     return out;
 }
 
@@ -513,6 +632,56 @@ test "a delayed continuous assignment is inertial and swallows a short pulse" {
         \\t26 0
         \\
     );
+}
+
+// §7.6 switch-connected nets resolve as one, but a supply net (§4.6.6) is
+// a source no signal crosses: the NOR's and the inverter's switches share
+// vdd and vss and stay two groups, and `w2`, which the NOR drives, is the
+// inverter's control. iverilog prints this transcript (ivtest br_gh1122).
+test "§7.6 switch groups that share a supply net stay apart" {
+    try expectRun(
+        \\module test;
+        \\reg a, b; supply1 vdd; supply0 vss; wire w1, w2, y;
+        \\tranif0(w1, vdd, a);
+        \\tranif0(w2, w1,  b);
+        \\tranif1(w2, vss, a);
+        \\tranif1(w2, vss, b);
+        \\tranif0(y, vdd, w2);
+        \\tranif1(y, vss, w2);
+        \\initial begin
+        \\  $monitor("%0t a=%b b=%b w1=%b w2=%b y=%b", $time, a, b, w1, w2, y);
+        \\  #10 a = 0; b = 0; #10 a = 0; b = 1; #10 a = 1; b = 0; #10 a = 1; b = 1; #1;
+        \\end
+        \\endmodule
+    ,
+        \\0 a=x b=x w1=x w2=x y=x
+        \\10 a=0 b=0 w1=1 w2=1 y=0
+        \\20 a=0 b=1 w1=1 w2=0 y=1
+        \\30 a=1 b=0 w1=0 w2=0 y=1
+        \\40 a=1 b=1 w1=z w2=0 y=1
+        \\
+    );
+}
+
+// §9.3.2 a forced net overrides its drivers; joined by a switch, it drives
+// the other side at strong strength while the force holds, and its own
+// drivers again once released. iverilog prints this (ivtest pr2937417b).
+test "§9.3.2 a forced net drives the nets switched to it" {
+    try expectRun(
+        \\module top;
+        \\  reg a; wire x, y, ab;
+        \\  assign (weak1, weak0) x = 1'b1;
+        \\  assign y = a;
+        \\  assign ab = ~a;
+        \\  tran (x, y);
+        \\  initial begin
+        \\    a = 1; #1 $display("%b %b", x, y);
+        \\    force x = ab; #1 $display("%b %b", x, y);
+        \\    a = 0; #1 $display("%b %b", x, y);
+        \\    release x; #1 $display("%b %b", x, y);
+        \\  end
+        \\endmodule
+    , "1 1\n0 x\n1 x\n0 0\n");
 }
 
 test "a trireg holds its charge for the decay time and then gives up" {
@@ -773,10 +942,10 @@ test "§14.4 Figures 14-3 and 14-4: a path delay and the distributed delays alon
 }
 
 test "§14.3.3 a path delay times a destination driven through a procedural block" {
-    // `q` starts at z (§4.2.1: "The default initialization value for a net
-    // shall be the value z") and takes `r`'s x at time 0, when `clk` too
-    // first transitions: that z -> x lands after Table 14-3's
-    // min(tz1, tz0) = 3. (iverilog starts the net at x and prints no line.)
+    // `q` is driven, so it starts at its driver's unknown (§4.2.1: "Nets
+    // with drivers shall assume the output value of their drivers") and
+    // `r`'s x at time 0 is no change; the first line is the x -> 1 Table
+    // 14-3 delays by 3 after `clk` rises. iverilog prints the same.
     try expectRun(
         \\`timescale 1ns/1ns
         \\module dut(input clk, input d, output q);
@@ -795,7 +964,7 @@ test "§14.3.3 a path delay times a destination driven through a procedural bloc
         \\    #10 clk = 1;
         \\  end
         \\endmodule
-    , "3 q=x\n13 q=1\n");
+    , "13 q=1\n");
 }
 
 test "§14.3.3 a destination change no path source caused takes no path delay" {

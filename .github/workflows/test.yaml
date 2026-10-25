@@ -40,8 +40,12 @@ jobs:
         run: zig build
       - name: Unit tests (gate)
         shell: bash
+        # `--summary failures`: Zig's build runner crashed printing the full
+        # step tree on Windows once the VPI runs grew it (every step passed,
+        # then exit 3 mid-tree). The failing steps and the summary line are
+        # what the gate and the job summary read.
         run: |
-          zig build test --summary all 2>&1 | tee unit.txt
+          zig build test --summary failures 2>&1 | tee unit.txt
           exit "${PIPESTATUS[0]}"
       - name: Job summary
         if: always()
