@@ -74,10 +74,11 @@ pub fn byteAt(v: Int.Literal, n: u32) u8 {
 /// the rightmost bit of the value is the least significant bit of the last
 /// character", and "leading zeros are never printed". A `%s` NUL byte is
 /// not printed but shown as a space, so `%s` keeps the operand's width in
-/// characters; `%0s` drops the leading ones (VD-129, iverilog's text).
+/// characters; a written width (`%0s`, `%5s`) drops the leading ones and
+/// pads what is left to it (VD-129, iverilog's text).
 pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io.Writer.Error!void {
     var n: u32 = if (char) 1 else (v.width + 7) / 8;
-    if (!char and width == 0) while (n != 0 and byteAt(v, n - 1) == 0) {
+    if (!char and width != null) while (n != 0 and byteAt(v, n - 1) == 0) {
         n -= 1;
     };
     if (width) |w| if (n < w) try out.splatByteAll(' ', @intCast(w - n));
@@ -549,7 +550,7 @@ test "byteAt reads known 1 bits only, and nothing past the width" {
     try testing.expectEqual(@as(u8, 0xab), byteAt(lit(&q, 72, false), 8));
 }
 
-test "%s shows a NUL byte as a space, %0s drops the leading ones; %c is the last byte (§17.1.1.7, VD-129)" {
+test "%s shows a NUL byte as a space, a written width drops the leading ones; %c is the last byte (§17.1.1.7, VD-129)" {
     // Oracle: iverilog 13 -g2005 (ivtest string13, string4, test_width).
     var out_buf: [32]u8 = undefined;
     var w: std.Io.Writer = .fixed(&out_buf);
@@ -564,6 +565,11 @@ test "%s shows a NUL byte as a space, %0s drops the leading ones; %c is the last
     w.end = 0;
     try text(&w, v, false, 5);
     try testing.expectEqualStrings("   Hi", w.buffered());
+    w.end = 0;
+    // A width short of the operand's bytes: the leading NUL goes first
+    // (ivtest pr1819452's `%5s` of a 9-byte select holding "in_0").
+    try text(&w, v, false, 2);
+    try testing.expectEqualStrings("Hi", w.buffered());
     w.end = 0;
     try text(&w, v, true, null);
     try testing.expectEqualStrings("i", w.buffered());
