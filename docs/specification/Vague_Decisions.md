@@ -166,6 +166,12 @@ summary and has a **Status** line naming what landed.
 | VD-123 | VAMS 4.3.1 Table 4-14, 4.3.2 Table 4-15, 9.14 | asinh, acosh, atanh, log10, asin, acos and atan2 run the C algorithm (musl's) with the analytic derivative, one function shared by folder, prover and device; tan stays sin/cos, folded the same way | DONE (#60) |
 | VD-124 | VAMS 2.6.1, 3.2; IEEE 1364-2005 3.5.1, 5.4.1 Table 5-22, 17.1.1.3 | An unsized integer literal is 32 bits in the analog context, as an `integer`, and 64 when its value needs more; display conversions size it, and every integer expression, by one rule (`systask.intSize`) | DONE (#77) |
 | VD-125 | VAMS 3.4.2 | A value the host writes on the model card is checked against the declared `from`/`exclude` ranges after `derive` (`checkRange`); the testbench stops with E0377, the OSDI library fails setup fatally; only bounds that fold over literals, numeric parameters only | DONE (#80) |
+| VD-128 | IEEE 1364-2005 4.2.1, 8.5 Figure 8-1 | A continuous driver outputs x until its first update lands; only an undriven net reads z | DONE |
+| VD-129 | IEEE 1364-2005 17.1.1.2, 17.1.1.7 | `%s` shows a zero byte as a space, `%0s` drops the leading ones; a `0` before a radix width zero-fills (iverilog) | DONE |
+| VD-130 | IEEE 1364-2005 17.8 | `$itor` of a real and `$rtoi` of an integer convert the argument first; `$rtoi` keeps the low 32 bits (iverilog) | DONE |
+| VD-131 | IEEE 1364-2005 3.5.1 | An unsized based constant with more than 32 bits of digits is as wide as its digits (digital; iverilog) | DONE |
+| VD-132 | IEEE 1364-2005 17.2.4.3 | `$fscanf`/`$sscanf` details the clause leaves open follow iverilog | DONE |
+| VD-133 | IEEE 1364-2005 9.9.2 | An always construct with no reachable timing control is refused at elaboration (iverilog) | DONE |
 
 ## 1. Open decisions (CLAUSE-AUDIT §7.5)
 
