@@ -389,6 +389,10 @@ pub const Run = struct {
     /// The storage of automatic tasks and functions, which §10.2.3 keeps
     /// out of constructs that might outlive an activation.
     auto_slots: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// The scopes whose variables are automatic: an automatic task's or
+    /// function's frame, and the named blocks inside it (§10.2.1: "all
+    /// items declared inside automatic tasks" are allocated per call).
+    auto_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// The saved storage of the automatic activations in progress.
     saved_planes: std.ArrayList(u64) = .empty,
     /// §10.2.3 the activations of recursive timed tasks: the one the

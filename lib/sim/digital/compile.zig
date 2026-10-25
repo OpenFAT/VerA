@@ -2390,6 +2390,10 @@ test "§10.4.4 a function body has no timing, nonblocking or procedural continuo
 test "§10.2.3 an automatic variable is neither a nonblocking target nor monitored" {
     try expectRejected("module m; task automatic t; integer k; k <= 1; endtask initial t; endmodule", "a nonblocking assignment cannot name a variable of an automatic task");
     try expectRejected("module m; task automatic t; integer k; $monitor(\"%0d\", k); endtask initial t; endmodule", "$monitor cannot name a variable of an automatic task");
+    // A named block's variable inside an automatic task is automatic too
+    // (§10.2.1; iverilog's automatic_error3), whether or not the task is called.
+    try expectRejected("module m; reg g; task automatic t; begin : b reg l; g <= @(l) 0; end endtask endmodule", "a nonblocking assignment's event control cannot name a variable of an automatic task");
+    try expectRejected("module m; task automatic t; begin : b reg l; l <= 0; end endtask initial t; endmodule", "a nonblocking assignment cannot name a variable of an automatic task");
 }
 
 test "§9.3 assign takes a variable, force a variable or net; a select is of a net, by constant" {

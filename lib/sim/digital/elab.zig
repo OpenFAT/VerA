@@ -831,9 +831,12 @@ pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
     r.scope = at;
     try declareParams(r, at, b.params, &.{});
     try declareEvents(r, b.events);
+    const automatic = r.auto_scopes.contains(scope);
+    if (automatic) try r.auto_scopes.put(r.arena, at, {});
     for (b.vars) |v| {
         if (v.init != .none) return r.fail(v.main_tok, "an initialized block-local variable is not implemented", .{});
-        _ = try mintVar(r, v);
+        const slot = try mintVar(r, v);
+        if (automatic) try r.auto_slots.put(r.arena, slot, {});
     }
     return at;
 }
@@ -1949,7 +1952,10 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
         if (v.init != .none) return r.fail(v.main_tok, "an initialized task or function variable is not implemented", .{});
         _ = try mintVar(r, v);
     }
-    if (t.automatic) for (first..g.items.len) |at| try r.auto_slots.put(r.arena, @intCast(at), {});
+    if (t.automatic) {
+        try r.auto_scopes.put(r.arena, scope, {});
+        for (first..g.items.len) |at| try r.auto_slots.put(r.arena, @intCast(at), {});
+    }
     return .{ .scope = scope, .ports = ports, .result = result, .first = first, .count = @as(u32, @intCast(g.items.len)) - first };
 }
 

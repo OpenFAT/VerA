@@ -192,7 +192,6 @@ ivtest/ivltests/array_word_check.v
 ivtest/ivltests/assign3.2E.v
 ivtest/ivltests/assign_deassign_pv.v
 ivtest/ivltests/attrib_expr.v
-ivtest/ivltests/automatic_error3.v
 ivtest/ivltests/automatic_task3.v
 ivtest/ivltests/br1000.v
 ivtest/ivltests/br1029a.v
