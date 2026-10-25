@@ -1756,7 +1756,9 @@ fn checkLists(r: *Run, child: *const Ast.ModuleDecl, inst: *const Ast.Instance) 
             return r.fail(o.main_tok, "§12.2.2: a parameter value assignment mixes ordered and named parameter assignments", .{});
         if (o.name == .none) continue;
         const name = r.file.str(o.name);
-        for (inst.params[0..i]) |q| if (q.name == o.name) return r.fail(o.main_tok, "§12.2.2.2: parameter `{s}` is assigned twice", .{name});
+        // A.4.1.1's `.name()` assigns nothing (§12.2.2.2: "without assigning
+        // anything to it"), so it is no second assignment.
+        if (o.value != .none) for (inst.params[0..i]) |q| if (q.name == o.name and q.value != .none) return r.fail(o.main_tok, "§12.2.2.2: parameter `{s}` is assigned twice", .{name});
         const p = for (child.params) |p| {
             if (p.name == o.name) break p;
         } else return r.fail(o.main_tok, "§12.2.2.2: the module has no such parameter: `{s}`", .{name});
@@ -2802,4 +2804,10 @@ test "§12.7 a gate, switch or UDP instance name hides an outer name of the same
     try expectRun("module m; parameter i_g = 23; if (1) begin : g wire o; initial #1 $display(\"%0d\", i_g); and i_g(o, 1'b1, 1'b1); end endmodule", "23\n");
     // The neighbour: a differently named gate hides nothing.
     try expectRun("module m; integer i_g = 23; if (1) begin : g wire o; and a(o, 1'b1, 1'b1); initial $display(\"%0d\", i_g); end endmodule", "23\n");
+}
+
+test "§12.2.2.2 an empty named parameter assignment assigns nothing, so it is no second assignment" {
+    // iverilog's parameter_named_empty.
+    try expectRun("module M #(parameter V = 1); endmodule module t; M #(.V(), .V()) a(); M #(.V(), .V(2)) b(); M #(.V(3), .V()) c(); initial $display(\"%0d %0d %0d\", a.V, b.V, c.V); endmodule", "1 2 3\n");
+    try expectRejected("module M #(parameter V = 1); endmodule module t; M #(.V(1), .V(), .V(2)) a(); endmodule", "is assigned twice");
 }
