@@ -7,7 +7,6 @@
 ispras-1364/test_07_01_06_3.v
 ispras-1364/test_07_01_06_4.v
 ispras-1364/test_15_05_02_2.v
-ivtest/contrib/pic.v
 ivtest/ivltests/always3.1.1B.v
 ivtest/ivltests/always3.1.2A.v
 ivtest/ivltests/always3.1.2B.v
@@ -37,9 +36,7 @@ ivtest/ivltests/br_gh1591b.v
 ivtest/ivltests/br_gh1591c.v
 ivtest/ivltests/br_gh732.v
 ivtest/ivltests/br_gh827.v
-ivtest/ivltests/br_gh889.v
 ivtest/ivltests/br_ml20190806a.v
-ivtest/ivltests/br_ml20190814.v
 ivtest/ivltests/constfunc10.v
 ivtest/ivltests/constfunc9.v
 ivtest/ivltests/decl_before_use1.v
@@ -65,7 +62,6 @@ ivtest/ivltests/mem1.v
 ivtest/ivltests/monitor4.v
 ivtest/ivltests/multi_driver_delay.v
 ivtest/ivltests/nb_ec_concat.v
-ivtest/ivltests/nb_ec_multi_ev.v
 ivtest/ivltests/no_timescale_in_module.v
 ivtest/ivltests/parameter_named_empty.v
 ivtest/ivltests/parameter_type.v
@@ -85,7 +81,6 @@ ivtest/ivltests/pr1704726b.v
 ivtest/ivltests/pr1755629.v
 ivtest/ivltests/pr1799904.v
 ivtest/ivltests/pr1804877.v
-ivtest/ivltests/pr1830834.v
 ivtest/ivltests/pr1861212a.v
 ivtest/ivltests/pr1866215.v
 ivtest/ivltests/pr1883052b.v
@@ -102,7 +97,6 @@ ivtest/ivltests/pr2350934b.v
 ivtest/ivltests/pr2350934.v
 ivtest/ivltests/pr2350988.v
 ivtest/ivltests/pr243.v
-ivtest/ivltests/pr2453002.v
 ivtest/ivltests/pr245_std.v
 ivtest/ivltests/pr245.v
 ivtest/ivltests/pr2728032.v
@@ -126,8 +120,6 @@ ivtest/ivltests/pr812.v
 ivtest/ivltests/pr903.v
 ivtest/ivltests/pr985.v
 ivtest/ivltests/prng.v
-ivtest/ivltests/pv_wr_vec4a_nb_ec.v
-ivtest/ivltests/pv_wr_vec4_nb_ec.v
 ivtest/ivltests/queue_stat.v
 ivtest/ivltests/readmem-error.v
 ivtest/ivltests/real_delay.v
@@ -138,7 +130,6 @@ ivtest/ivltests/rise_fall_decay2.v
 ivtest/ivltests/rise_fall_delay1.v
 ivtest/ivltests/rise_fall_delay2.v
 ivtest/ivltests/rise_fall_delay3.v
-ivtest/ivltests/scanf4.v
 ivtest/ivltests/sdf1.v
 ivtest/ivltests/sdf2.v
 ivtest/ivltests/sdf3.v
@@ -148,7 +139,6 @@ ivtest/ivltests/sdf6.v
 ivtest/ivltests/sdf7.v
 ivtest/ivltests/sdf8.v
 ivtest/ivltests/sdf_esc_id.v
-ivtest/ivltests/sdf_header.v
 ivtest/ivltests/sdf_timescale.v
 ivtest/ivltests/specparam_specify_reference_order.v
 ivtest/ivltests/strength_feedback_delay.v
