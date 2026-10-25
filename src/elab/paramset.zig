@@ -255,6 +255,28 @@ fn inRanges(self: *Flatten, value: ?constfold.Const, ranges: []const Ast.ValueRa
     return !has_from or in_from;
 }
 
+/// §3.4.2 "The first expression in the range shall be numerically smaller
+/// than the second expression in the range", for every paramset parameter,
+/// once per declaration, whether or not an instance selects the paramset:
+/// the check `Lower.lowerParamDecl` makes on a module's (E0347). Bounds fold
+/// over the paramset's own defaults; one that does not fold is not judged.
+pub fn checkRanges(self: *Flatten) Error!void {
+    for (self.ctx.file.paramsets) |*ps| {
+        const bindings = try self.ctx.arena.alloc(?elab_override.ParamBinding, ps.params.len);
+        @memset(bindings, null);
+        const env: ParamsetEnv = .{ .self = self, .ps = ps, .bindings = bindings, .reads = null };
+        for (ps.params) |p| for (p.ranges) |r| {
+            if (r.strings != null or r.hi == .none) continue; // string set / single value
+            const lo = constfold.fold(self.ctx.file, r.lo, env) orelse continue;
+            const hi = constfold.fold(self.ctx.file, r.hi, env) orelse continue;
+            if (lo == .str or hi == .str or lo.asReal() < hi.asReal()) continue;
+            try self.err(p.main_tok, .E0347, "`{s}` of paramset `{s}`: {s} bounds {d} and {d} are not in increasing order", .{
+                self.ctx.file.str(p.name), self.ctx.file.str(ps.name), @tagName(r.kind), lo.asReal(), hi.asReal(),
+            });
+        };
+    }
+}
+
 /// §6.4.2 defaults and localparams see the candidate's effective parameters,
 /// while an inline override and a defparam retain their respective scopes.
 const ParamsetEnv = struct {

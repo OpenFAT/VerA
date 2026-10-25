@@ -347,6 +347,7 @@ pub fn elaborate(ctx: Ctx) Error!Design {
     try elab_resolve.checkConnectRules(&f);
     try elab_resolve.checkNetDisciplines(&f); // A.2.1.3, every module: see there
     try elab_instance.checkPortDirections(&f); // §6.5.2.2, every module
+    try elab_paramset.checkRanges(&f); // §3.4.2, every paramset, selected or not
     // §7.4.2 "the real-value nets shall obey the rules imposed by 3.7": the
     // same structural check the digital runner makes (E0918/E0919).
     try @import("frontend").wreal.check(ctx.file, ctx.tok_starts, ctx.bag);
