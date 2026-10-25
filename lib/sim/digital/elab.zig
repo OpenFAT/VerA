@@ -112,7 +112,7 @@ pub const Elab = struct {
     /// One row per elaborated instance: the definition and its name scope.
     insts: std.ArrayList(struct { module: *const Ast.ModuleDecl, scope: u32 }) = .empty,
     /// §7.6 pass switches, with the instance scope their control is read in.
-    trans: std.ArrayList(struct { tran: Tran, scope: u32, tok: u32 }) = .empty,
+    trans: std.ArrayList(struct { tran: Tran, scope: u32, tok: u32, delay: Ast.Delay3 = .{} }) = .empty,
     /// §6.6 the processes and variables of each elaborated generate block,
     /// with its scope; the variables for their §6.2.1 initializers.
     procs: std.ArrayList(struct { scope: u32, blocks: []const Ast.DiscreteBlock, vars: []const Ast.VarDecl }) = .empty,
@@ -306,6 +306,14 @@ pub fn defOf(r: *const Run, m: *const Ast.ModuleDecl) u32 {
 /// Recurses into child instances AFTER its own nets exist, so a port connection
 /// always resolves against a parent that is fully declared.
 pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, over: []const Ast.ParamOverride, depth: u32) Error!void {
+    try declareHead(r, e, m, scope, over, depth);
+    return declareBody(r, e, m, scope, binds, depth);
+}
+
+/// `declare`'s first half: the instance's defparams, tasks and functions,
+/// and parameters, which an instance's parent needs before it binds the
+/// ports (a port range may name a parameter, IEEE 1364-2005 §12.2).
+fn declareHead(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, over: []const Ast.ParamOverride, depth: u32) Error!void {
     const arena = r.arena;
     if (deep.exhausted()) return r.deepFail(m.main_tok);
     // §12.1.3: a module may instantiate itself only under a generate that
@@ -341,6 +349,13 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
         try r.subs.append(arena, .{ .decl = t, .inst = scope, .frame = undefined });
     }
     try declareParams(r, scope, m.params, over);
+}
+
+/// `declare`'s second half: everything after the parameters, the ports
+/// bound by `binds` and the child instances last.
+fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, depth: u32) Error!void {
+    const arena = r.arena;
+    r.scope = scope;
     try declareEvents(r, m.events);
     const written = if (r.mixed) try digitalWrites(r, m) else std.AutoHashMapUnmanaged(Ast.StrId, void).empty;
     for (m.vars) |v| {
@@ -431,7 +446,17 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
                 .collapse => |c| try e.wires.append(arena, .{
                     .net = c.net,
                     .scope = scope,
-                    .source = .{ .bridge = .{ .src = var_slot, .src_lo = 0, .dst_lo = 0, .width = @min(e.values.items[var_slot].width, e.nets.items[c.net].resolved.width) } },
+                    .source = .{
+                        .bridge = .{
+                            .src = var_slot,
+                            .src_lo = 0,
+                            .dst_lo = 0,
+                            .width = @min(e.values.items[var_slot].width, e.nets.items[c.net].resolved.width),
+                            // §12.3.9.2's widening (`sendPort`).
+                            .ext = e.nets.items[c.net].resolved.width -| e.values.items[var_slot].width,
+                            .sign_at = if (e.values.items[var_slot].signed) e.values.items[var_slot].width - 1 else null,
+                        },
+                    },
                     .tok = p.main_tok,
                 }),
                 // §12.3.9.2 a select or concatenation outside: the variable
@@ -455,16 +480,20 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
             // sizes of the ports and net must match". IEEE 1364-2005
             // §12.3.9.2 instead makes the connection a continuous assignment,
             // which §5.6 zero-extends or truncates: two nets, not one.
-            // ponytail: under 1364 an output narrower than its net (§5.6
-            // zero-fills the net's high bits, which needs a constant driver)
-            // and an inout are still refused.
+            // An inout joins the bits both sides have (§12.3.10).
             if (!merging and outer.resolved.width != width) {
                 if (!ieee1364(r)) return r.fail(p.main_tok, size_mismatch, .{});
-                switch (p.direction) {
-                    .input => bind = .{ .receive = .{ .expr = c.expr, .scope = c.scope, .tok = c.tok } },
-                    .output => bind = .{ .send = .{ .operands = try arena.dupe(Sink, &.{.{ .net = c.net, .lo = 0, .width = outer.resolved.width }}), .tok = c.tok } },
-                    .inout, .unspecified => return r.fail(p.main_tok, size_mismatch, .{}),
-                }
+                const whole = try arena.dupe(Sink, &.{.{ .net = c.net, .lo = 0, .width = outer.resolved.width }});
+                // §12.3.8: "A port that is declared as input (output) but
+                // used as an output (input) or inout may be coerced to
+                // inout"; iverilog coerces an input the module drives and an
+                // output it does not, and so does VerA.
+                const driven = assignsTo(r, m, p.name);
+                bind = switch (p.direction) {
+                    .input => if (driven) .{ .join = .{ .operands = whole, .tok = c.tok } } else .{ .receive = .{ .expr = c.expr, .scope = c.scope, .tok = c.tok } },
+                    .output => if (!driven) .{ .join = .{ .operands = whole, .tok = c.tok } } else .{ .send = .{ .operands = whole, .tok = c.tok } },
+                    .inout, .unspecified => .{ .join = .{ .operands = whole, .tok = c.tok } },
+                };
                 break :collapse;
             }
             _ = try warnPort(r, p, outer.kind);
@@ -530,15 +559,19 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
                 while (k != 0) {
                     k -= 1;
                     const op = c.operands[k];
-                    if (lo + op.width > width) return r.fail(c.tok, size_mismatch, .{});
-                    for (0..op.width) |j| try e.trans.append(arena, .{
+                    // IEEE 1364-2005 §12.3.10: a size mismatch joins the
+                    // bits both sides have, rightmost first; the rest of
+                    // either side connects nothing (iverilog's reading).
+                    const n = @min(op.width, width - lo);
+                    if (n != op.width and !ieee1364(r)) return r.fail(c.tok, size_mismatch, .{});
+                    for (0..n) |j| try e.trans.append(arena, .{
                         .tran = .{ .a = at, .b = op.net, .a_bit = lo + @as(u32, @intCast(j)), .b_bit = op.lo + @as(u32, @intCast(j)) },
                         .scope = scope,
                         .tok = c.tok,
                     });
-                    lo += op.width;
+                    lo += n;
                 }
-                if (lo != width) return r.fail(c.tok, size_mismatch, .{});
+                if (lo != width and !ieee1364(r)) return r.fail(c.tok, size_mismatch, .{});
             },
         }
     }
@@ -565,6 +598,27 @@ fn sameRange(r: *Run, a: Ast.Dim, b: Ast.Dim, tok: u32) Error!bool {
         try r.declaredBound(a.lsb, tok) == try r.declaredBound(b.lsb, tok);
 }
 
+/// Whether one of `m`'s continuous assignments or gate outputs drives
+/// `name` (whole, or a select of it), the use §12.3.8's coercion reads.
+// ponytail: an instance's output port driving `name` is not looked for.
+fn assignsTo(r: *const Run, m: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+    for (m.assigns) |a| if (namesIn(r, a.target, name)) return true;
+    for (m.gates) |g| if (namesIn(r, g.out, name)) return true;
+    return false;
+}
+
+fn namesIn(r: *const Run, e: Ast.ExprId, name: Ast.StrId) bool {
+    const ex = &r.file.exprs;
+    return switch (ex.tag(e)) {
+        .ident => ex.strOf(e) == name,
+        .index => namesIn(r, ex.lhs(e), name),
+        .concat => for (ex.args(e)) |x| {
+            if (namesIn(r, x, name)) break true;
+        } else false,
+        else => false, // else: no other lvalue form names a net
+    };
+}
+
 const size_mismatch = "§6.5.7.1: the sizes of the port and the net connected to it shall match";
 
 /// §12.3.9.2 an output port's value, slot `src` of `width` bits, bridged
@@ -578,17 +632,27 @@ fn sendPort(r: *Run, e: *Elab, operands: []const Sink, tok: u32, src: u32, width
     while (k != 0) {
         k -= 1;
         const op = operands[k];
-        if (lo + op.width > width) return r.fail(tok, size_mismatch, .{});
+        // Under IEEE 1364-2005 §12.3.9.2 the connection is a continuous
+        // assignment of the port to the operands, which §5.6 widens (zero,
+        // or a signed port's sign) and truncates: operands past the port's
+        // width take the widening, a port past theirs sends its low bits.
+        const copy = @min(op.width, width - lo);
+        if (copy != op.width and !ieee1364(r)) return r.fail(tok, size_mismatch, .{});
         try e.wires.append(r.arena, .{
             .net = op.net,
             .scope = scope,
-            .source = .{ .bridge = .{ .src = src, .src_lo = lo, .dst_lo = op.lo, .width = op.width } },
+            .source = .{ .bridge = .{
+                .src = src,
+                .src_lo = lo,
+                .dst_lo = op.lo,
+                .width = copy,
+                .ext = op.width - copy,
+                .sign_at = if (e.values.items[src].signed and width != 0) width - 1 else null,
+            } },
             .tok = tok,
         });
-        lo += op.width;
+        lo += copy;
     }
-    // Under IEEE 1364-2005 a port wider than its operands sends only its low
-    // `lo` bits: §12.3.9.2's continuous assignment truncates (§5.6).
     if (lo != width and !ieee1364(r)) return r.fail(tok, size_mismatch, .{});
 }
 
@@ -605,8 +669,9 @@ fn ieee1364(r: *const Run) bool {
 /// IEEE 1364-2005 §12.2 the parameters `params` of `scope` (an instance, or a
 /// §12.5 named block, which `over` never reaches), in declaration order so a
 /// default may name an earlier one.
-fn declareParams(r: *Run, scope: u32, params: []const Ast.ParamDecl, over: []const Ast.ParamOverride) Error!void {
+fn declareParams(r: *Run, scope: u32, declared_params: []const Ast.ParamDecl, over: []const Ast.ParamOverride) Error!void {
     const arena = r.arena;
+    const params = try specifyOrder(r, declared_params);
     const g = r.growing.?;
     const path = if (r.real_card.len != 0) try scopePath(r, scope) else "";
     var positional: usize = 0;
@@ -644,11 +709,62 @@ fn declareParams(r: *Run, scope: u32, params: []const Ast.ParamDecl, over: []con
         try g.append(arena, slot_value);
         try r.params.put(arena, at, {});
         if (ty.real) try r.reals.put(arena, at, {});
-        if (p.is_spec) try r.specparams.put(arena, at, p.main_tok);
+        // A specify block's specparam has no declare-before-reference rule
+        // (§4.10.3 binds only one outside a block): token 0 never trips it.
+        if (p.is_spec) try r.specparams.put(arena, at, if (p.in_specify) 0 else p.main_tok);
         // §4.10.1: a select of a ranged parameter indexes its declared range.
         if (p.packed_range) |range| try putRange(r, at, range, p.main_tok);
     }
     r.values = g.items;
+}
+
+/// `params` with each specify-block specparam moved after the specify-block
+/// specparams its value names: §4.10.3 binds only one "declared outside a
+/// specify block" to be "declared before it is referenced", so inside one a
+/// specparam may name a later one (iverilog's
+/// specparam_specify_reference_order). A cycle keeps the written order,
+/// whose first forward name is then refused as undefined.
+fn specifyOrder(r: *Run, params: []const Ast.ParamDecl) Error![]const Ast.ParamDecl {
+    for (params) |p| {
+        if (p.in_specify) break;
+    } else return params;
+    const out = try r.arena.alloc(Ast.ParamDecl, params.len);
+    const placed = try r.arena.alloc(bool, params.len);
+    @memset(placed, false);
+    var n: usize = 0;
+    while (n < params.len) {
+        const before = n;
+        for (params, 0..) |p, i| {
+            if (placed[i]) continue;
+            // Anything else keeps its place after every earlier item.
+            const blocked = if (p.in_specify) blk: {
+                for (params, 0..) |q, j| if (!placed[j] and j != i and q.in_specify and names(r, p.default, q.name)) break :blk true;
+                break :blk false;
+            } else for (0..i) |j| {
+                if (!placed[j]) break true;
+            } else false;
+            if (blocked) continue;
+            out[n] = p;
+            placed[i] = true;
+            n += 1;
+        }
+        if (n == before) for (params, 0..) |p, i| if (!placed[i]) {
+            out[n] = p;
+            placed[i] = true;
+            n += 1;
+        };
+    }
+    return out;
+}
+
+/// Whether expression `e` reads the plain name `name`.
+fn names(r: *Run, e: Ast.ExprId, name: Ast.StrId) bool {
+    const ex = &r.file.exprs;
+    if (e == .none) return false;
+    if (ex.tag(e) == .ident) return ex.strOf(e) == name;
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| if (names(r, c, name)) return true;
+    return false;
 }
 
 /// IEEE 1364-2005 §12.3.10 Table 12-1's "warn" (W1160) for port `p` joined
@@ -754,6 +870,9 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
     // `default_nettype none: the name stays undeclared.
     const kind = std.meta.stringToEnum(Ast.NetKind, @tagName(t)) orelse return;
     _ = try mintNet(r, e, kind, 1, false, ex.strOf(x), tok);
+    // §4.5's implicit net is the scope's from its start, so a terminal
+    // before the one that declares it reads it (`lookupAt`).
+    try r.bound_at.put(r.arena, .{ .scope = scope, .str = ex.strOf(x) }, 0);
 }
 
 /// §5.10.4 a named event gets a slot so `-> e` and `@(e)` have a rendezvous
@@ -831,9 +950,12 @@ pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
     r.scope = at;
     try declareParams(r, at, b.params, &.{});
     try declareEvents(r, b.events);
+    const automatic = r.auto_scopes.contains(scope);
+    if (automatic) try r.auto_scopes.put(r.arena, at, {});
     for (b.vars) |v| {
         if (v.init != .none) return r.fail(v.main_tok, "an initialized block-local variable is not implemented", .{});
-        _ = try mintVar(r, v);
+        const slot = try mintVar(r, v);
+        if (automatic) try r.auto_slots.put(r.arena, slot, {});
     }
     return at;
 }
@@ -858,6 +980,7 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
             if (seen.found_existing and seen.value_ptr.* != g.main_tok)
                 return r.fail(g.main_tok, "§7.1.5: `{s}` names two instances; one instance identifier has one range", .{r.file.str(g.name)});
             seen.value_ptr.* = g.main_tok;
+            try r.prim_names.put(r.arena, .{ .scope = scope, .str = g.name }, g.main_tok);
         }
         const net = try drivenNet(r, e, scope, g.out, g.main_tok, .gate, .{ g.strength0, g.strength1 });
         const width = e.nets.items[net].resolved.width;
@@ -901,17 +1024,29 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
     // p-type sharing data and output. A pass switch joins its two nets into
     // one resolution while it conducts.
     for (items.switches) |sw| {
+        if (sw.name != .none) try r.prim_names.put(r.arena, .{ .scope = scope, .str = sw.name }, sw.main_tok);
         const resistive = switch (sw.kind) {
             .rcmos, .rnmos, .rpmos, .rtran, .rtranif0, .rtranif1 => true,
             .cmos, .nmos, .pmos, .tran, .tranif0, .tranif1 => false,
         };
         switch (sw.kind) {
             .nmos, .pmos, .rnmos, .rpmos, .cmos, .rcmos => {
-                const out = r.net_of.get(try r.scalarSlot(sw.terms[0])) orelse return r.fail(sw.main_tok, "a switch's output and inout terminals are nets", .{});
-                const width = e.nets.items[out].resolved.width;
+                // A.3.3's output terminal is a net_lvalue: a net, or a
+                // constant bit-select of one (`nmos (o[1], i, en)`, iverilog's
+                // rise_fall_decay2), which the switch drives alone.
+                const at: Sink = if (r.file.exprs.tag(sw.terms[0]) == .index)
+                    try sink(r, e, sw.terms[0], sw.main_tok, .gate)
+                else blk: {
+                    const n = r.net_of.get(try r.scalarSlot(sw.terms[0])) orelse return r.fail(sw.main_tok, "a switch's output and inout terminals are nets", .{});
+                    break :blk .{ .net = n, .lo = 0, .width = e.nets.items[n].resolved.width };
+                };
+                r.scope = scope;
+                const out = at.net;
+                const width = at.width;
                 // §7.1.5/§7.1.6 an instance array is one switch per index, as a gate array is.
                 const lanes: u32 = if (sw.range) |rg| try r.declaredWidth(rg, sw.main_tok) else 1;
-                if (width != 1 and width != lanes) return r.fail(sw.main_tok, "a MOS switch's output terminal is one bit, or one per instance of an array", .{});
+                if (width != 1 and (width != lanes or at.lo != 0)) return r.fail(sw.main_tok, "a MOS switch's output terminal is one bit, or one per instance of an array", .{});
+                const whole = e.nets.items[out].resolved.width;
                 const cmos = sw.kind == .cmos or sw.kind == .rcmos;
                 const n_type = sw.kind == .nmos or sw.kind == .rnmos;
                 for (0..lanes) |j| {
@@ -919,7 +1054,7 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
                     for (0..@as(usize, if (cmos) 2 else 1)) |half| try e.wires.append(r.arena, .{
                         .net = out,
                         .scope = scope,
-                        .source = .{ .mos = .{ .data = sw.terms[1], .gate = sw.terms[2 + half], .n_type = if (cmos) half == 0 else n_type, .resistive = resistive, .lane = lane, .out_bit = if (width == 1) null else lane } },
+                        .source = .{ .mos = .{ .data = sw.terms[1], .gate = sw.terms[2 + half], .n_type = if (cmos) half == 0 else n_type, .resistive = resistive, .lane = lane, .out_bit = if (whole == 1) null else if (width == 1) at.lo else lane } },
                         .delay = sw.delay,
                         .tok = sw.main_tok,
                     });
@@ -950,10 +1085,11 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
                             .state = if (gated) .unknown else .on,
                             .target = if (gated) .unknown else .on,
                             .resistive = resistive,
-                            .delay = try r.declaredDelay3(sw.delay, sw.main_tok),
                         },
                         .scope = scope,
                         .tok = sw.main_tok,
+                        // Typed and valued with the drivers' (`elaborateDeep`).
+                        .delay = sw.delay,
                     });
                 }
             },
@@ -981,15 +1117,7 @@ fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!voi
     r.scope = scope;
     for (m.paths) |p| {
         if (p.edge == .edge) return r.fail(p.main_tok, "§14.2.3: a module path's edge is posedge or negedge", .{});
-        // §14.3.1: "If the path delay expression results in a negative
-        // value, it shall be treated as zero."
-        var ticks: [12]u64 = undefined;
-        for (p.delays, ticks[0..p.delays.len]) |d, *t| {
-            const v = try r.constant(d, p.main_tok);
-            const negative = !compile.typeOf(r, d).real and v.signed and (v.asInt() orelse 0) < 0;
-            t.* = if (negative) 0 else (try r.declaredDelay3(.{ .rise = d, .fall = d, .off = d }, p.main_tok)).rise;
-        }
-        const table = net_mod.pathTable(ticks[0..p.delays.len]);
+        const table = try pathTable(r, p.delays, p.main_tok);
         for (p.outs) |o| {
             const dst = if (ex.tag(o) == .index) ex.lhs(o) else o;
             const at = try r.scalarSlot(dst);
@@ -1018,7 +1146,8 @@ fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!voi
                     const sel = (try evaluate.selection(r, r.arena, in)) orelse return r.fail(p.main_tok, "§14.2: a module path source's select is x, z or outside its port", .{});
                     bit = @intCast(@max(sel.first, 0));
                 }
-                try rows.append(r.arena, .{ .src = src, .src_bit = bit, .edge = p.edge, .cond = p.cond, .ifnone = p.ifnone, .scope = scope, .table = table });
+                const lim = try pulseLimits(r, m, ex.strOf(src_expr), ex.strOf(dst));
+                try rows.append(r.arena, .{ .src = src, .src_bit = bit, .edge = p.edge, .cond = p.cond, .ifnone = p.ifnone, .scope = scope, .table = table, .delays = p.delays, .tok = p.main_tok, .reject = lim[0], .err = lim[1] });
             }
             for (dests.items) |net| {
                 const n = &e.nets.items[net];
@@ -1028,9 +1157,47 @@ fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!voi
                 }
                 const cold = &e.net_cold.items[n.cold];
                 cold.paths = try std.mem.concat(r.arena, net_mod.Path, &.{ cold.paths, rows.items });
+                // §14.6.4: the pulse style and showcancelled declarations
+                // naming this output, the last of each pair winning.
+                for (m.pulses) |pc| for (pc.outs) |o2| if (ex.strOf(if (ex.tag(o2) == .index) ex.lhs(o2) else o2) == ex.strOf(dst)) switch (pc.kind) {
+                    .onevent, .ondetect => cold.ondetect = pc.kind == .ondetect,
+                    .showcancelled, .noshowcancelled => cold.showcancelled = pc.kind == .showcancelled,
+                    .limits => {},
+                };
             }
         }
     }
+}
+
+/// IEEE 1364-2005 §14.6.1 the reject and error limits of `m`'s path from
+/// `in` to `out`: `PATHPULSE$in$out`, else the module's `PATHPULSE$`, else
+/// none (the default, the path delay). "If only the reject limit value is
+/// specified, it shall apply to both the reject and error limits."
+fn pulseLimits(r: *Run, m: *const Ast.ModuleDecl, in: Ast.StrId, out: Ast.StrId) Error![2]?u64 {
+    const specific = try std.fmt.allocPrint(r.arena, "PATHPULSE${s}${s}", .{ r.file.str(in), r.file.str(out) });
+    var pick: ?Ast.PulseControl = null;
+    for (m.pulses) |pc| {
+        if (pc.kind != .limits) continue;
+        const name = r.file.str(pc.name);
+        if (std.mem.eql(u8, name, specific)) pick = pc else if (std.mem.eql(u8, name, "PATHPULSE$") and (pick == null or std.mem.eql(u8, r.file.str(pick.?.name), "PATHPULSE$"))) pick = pc;
+    }
+    const pc = pick orelse return .{ null, null };
+    const reject = (try r.declaredDelay3(.{ .rise = pc.reject, .fall = pc.reject, .off = pc.reject }, pc.main_tok)).rise;
+    const err = if (pc.err == .none) reject else (try r.declaredDelay3(.{ .rise = pc.err, .fall = pc.err, .off = pc.err }, pc.main_tok)).rise;
+    return .{ reject, @max(reject, err) };
+}
+
+/// IEEE 1364-2005 §14.3.1 a path's A.7.4 delay expressions, folded in the
+/// current scope (`r.scope`) to its transition table. "If the path delay
+/// expression results in a negative value, it shall be treated as zero."
+pub fn pathTable(r: *Run, delays: []const Ast.ExprId, tok: u32) Error!net_mod.PathTable {
+    var ticks: [12]u64 = undefined;
+    for (delays, ticks[0..delays.len]) |d, *t| {
+        const v = try r.constant(d, tok);
+        const negative = !compile.typeOf(r, d).real and v.signed and (v.asInt() orelse 0) < 0;
+        t.* = if (negative) 0 else (try r.declaredDelay3(.{ .rise = d, .fall = d, .off = d }, tok)).rise;
+    }
+    return net_mod.pathTable(ticks[0..delays.len]);
 }
 
 /// `bridged`'s answer: `m`'s instances and primitives as insertion left
@@ -1173,7 +1340,15 @@ fn switchTerminal(r: *Run, e: *Elab, t: Ast.ExprId, tok: u32, lanes: u32, lane: 
         if (width != 1) return r.fail(tok, "§7.6: a pass switch terminal is a scalar net or a bit-select of a vector net", .{});
         return .{ .net = net, .bit = 0 };
     }
-    if (ex.tag(ex.rhs(t)) == .range) return r.fail(tok, "§7.6: a pass switch terminal is a scalar net or a bit-select of a vector net", .{});
+    if (ex.tag(ex.rhs(t)) == .range or ex.tag(ex.rhs(t)) == .indexed_range) {
+        // §7.1.6: an array's lanes split a part-select as they split a
+        // vector (iverilog's pr3296466d `tran t3[1:0](a, c[1:0])`).
+        if (lanes > 1) {
+            const s = try sink(r, e, t, tok, .gate);
+            if (s.width == lanes) return .{ .net = s.net, .bit = s.lo + lane };
+        }
+        return r.fail(tok, "§7.6: a pass switch terminal is a scalar net or a bit-select of a vector net", .{});
+    }
     const at = try r.scalarSlot(ex.lhs(t));
     const net = r.net_of.get(at) orelse return r.fail(tok, "a switch's output and inout terminals are nets", .{});
     const index = try r.declaredBound(ex.rhs(t), tok);
@@ -1596,18 +1771,15 @@ fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, depth: 
 /// whole). One as wide as the port times the element count is split: IEEE
 /// 1364-2005 §7.1.6, "each instance shall get a part-select of the port
 /// expression as specified in the range, starting with the right-hand index".
-// ponytail: only a whole identifier is sized and split here; general
-// expressions wait for a design that needs them.
-fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, port: Ast.Port, conn: Ast.PortConn, k: i64) Error!?PortBind {
-    const refused = "§12.1.2: only a whole net or variable, as wide as the port or as the port times the array size, is connected across an instance array by digital execution";
-    const w = try portWidth(r, port);
+fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, child_scope: u32, port: Ast.Port, conn: Ast.PortConn, k: i64) Error!?PortBind {
+    const refused = "§12.1.2: only an expression as wide as the port or as the port times the array size is connected across an instance array";
+    const w = try childPortWidth(r, child_scope, port);
+    // `typeOf` reads the slots elaborated so far, as `sink` does.
+    r.values = e.values.items;
+    try compile.checkExpr(r, conn.expr);
+    const whole = compile.typeOf(r, conn.expr).width;
     // §12.1.2: "If the bit length of a port expression is the same as the
     // port, the expression is connected to each instance", whatever it is.
-    if (r.file.exprs.tag(conn.expr) != .ident) {
-        try compile.checkExpr(r, conn.expr);
-        return if (compile.typeOf(r, conn.expr).width == w) null else r.fail(conn.main_tok, refused, .{});
-    }
-    const whole = e.values.items[try r.scalarSlot(conn.expr)].width;
     if (whole == w) return null;
     const range = inst.range.?;
     const left = try r.declaredBound(range.msb, inst.main_tok);
@@ -1620,12 +1792,28 @@ fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, port: Ast.Port, conn:
     const lo: u32 = @intCast(@abs(@as(i128, k) - right) * w);
     return switch (port.direction) {
         .input => .{ .receive = .{ .expr = conn.expr, .scope = r.scope, .tok = conn.main_tok, .slice = .{ .lo = lo, .total = whole } } },
-        .output => blk: {
-            const s = try sink(r, e, conn.expr, conn.main_tok, .port);
-            const operands = try r.arena.dupe(Sink, &.{.{ .net = s.net, .lo = s.lo + lo, .width = w }});
-            break :blk .{ .send = .{ .operands = operands, .tok = conn.main_tok } };
+        // The instance's bits [lo, lo + w) of the expression, which may be
+        // a concatenation (the LRM's own `.out({bushigh, buslow})`): each
+        // operand's share, rightmost operand the lowest bits. An inout's
+        // share is joined as `bindPort` joins a select (iverilog's pr2219441).
+        .output, .inout => blk: {
+            var leaves: std.ArrayList(Ast.ExprId) = .empty;
+            try concatLeaves(r, conn.expr, &leaves);
+            var picked: std.ArrayList(Sink) = .empty;
+            var at: u32 = 0;
+            var i = leaves.items.len;
+            while (i != 0) {
+                i -= 1;
+                const s = try sink(r, e, leaves.items[i], conn.main_tok, .port);
+                const a = @max(at, lo);
+                const b = @min(at + s.width, lo + w);
+                if (a < b) try picked.insert(r.arena, 0, .{ .net = s.net, .lo = s.lo + (a - at), .width = b - a });
+                at += s.width;
+            }
+            const s: Sinks = .{ .operands = picked.items, .tok = conn.main_tok };
+            break :blk if (port.direction == .output) .{ .send = s } else .{ .join = s };
         },
-        .inout, .unspecified => r.fail(conn.main_tok, refused, .{}),
+        .unspecified => r.fail(conn.main_tok, refused, .{}),
     };
 }
 
@@ -1637,6 +1825,12 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
     try checkLists(r, child, inst);
     const binds_out = try arena.alloc(PortBind, child.ports.len);
     @memset(binds_out, .open);
+    // The child's scope and parameters first: its port ranges may name them.
+    const child_scope = try newScope(r, inst.main_tok);
+    try r.scope_info.append(arena, .{ .parent = scope, .name = inst.name, .def = bound.def, .index = index });
+    try r.binds.put(arena, child_scope, bound.ctx);
+    try declareHead(r, e, child, child_scope, inst.params, depth + 1);
+    r.scope = scope;
     const grouped = !r.mixed and expressionPorts(child);
     if (grouped) {
         if (index != null) return r.fail(inst.main_tok, "§12.1.2: an instance array of a module with port expressions is not implemented by digital execution", .{});
@@ -1661,11 +1855,11 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
             var total: u32 = 0;
             var last = first;
             while (last < child.ports.len and (last == first or child.ports[last].concat_rest)) : (last += 1)
-                total += try portWidth(r, child.ports[last]);
+                total += try childPortWidth(r, child_scope, child.ports[last]);
             var lo = total;
             for (child.ports[first..last], first..) |p, k| {
                 if (p.direction != .input) return r.fail(conn.main_tok, "only an input port may be a concatenation of internal ports", .{});
-                const w = try portWidth(r, p);
+                const w = try childPortWidth(r, child_scope, p);
                 lo -= w;
                 r.scope = scope;
                 binds_out[k] = if (conn.expr == .none) .open else .{ .receive = .{ .expr = conn.expr, .scope = scope, .tok = conn.main_tok, .slice = .{ .lo = lo, .total = total } } };
@@ -1682,20 +1876,17 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
         // so a mixed design's digital half connects nothing through it,
         // as the child's own port loop skips it.
         if (r.mixed and continuous(r.file, child.ports[at].discipline)) continue;
-        if (index) |k| if (conn.expr != .none) if (try arrayConn(r, e, inst, child.ports[at], conn, k)) |split| {
+        if (index) |k| if (conn.expr != .none) if (try arrayConn(r, e, inst, child_scope, child.ports[at], conn, k)) |split| {
             binds_out[at] = split;
             continue;
         };
         binds_out[at] = try bindPort(r, e, child.ports[at], conn, scope);
     }
-    const child_scope = try newScope(r, inst.main_tok);
-    try r.scope_info.append(arena, .{ .parent = scope, .name = inst.name, .def = bound.def, .index = index });
-    try r.binds.put(arena, child_scope, bound.ctx);
     // §12.4's path is walked by name, so the instance's own identifier has
     // to outlive the recursion that consumes it. An array element's path
     // carries its index, which that walk does not read: not registered.
     if (inst.name != .none) if (index) |k| try selectable(r, scope, inst.name, k, child_scope) else try r.instances.put(arena, .{ .scope = scope, .str = inst.name }, child_scope);
-    try declare(r, e, child, child_scope, binds_out, inst.params, depth + 1);
+    try declareBody(r, e, child, child_scope, binds_out, depth + 1);
     r.scope = scope;
 }
 
@@ -1709,7 +1900,9 @@ fn checkLists(r: *Run, child: *const Ast.ModuleDecl, inst: *const Ast.Instance) 
             return r.fail(o.main_tok, "§12.2.2: a parameter value assignment mixes ordered and named parameter assignments", .{});
         if (o.name == .none) continue;
         const name = r.file.str(o.name);
-        for (inst.params[0..i]) |q| if (q.name == o.name) return r.fail(o.main_tok, "§12.2.2.2: parameter `{s}` is assigned twice", .{name});
+        // A.4.1.1's `.name()` assigns nothing (§12.2.2.2: "without assigning
+        // anything to it"), so it is no second assignment.
+        if (o.value != .none) for (inst.params[0..i]) |q| if (q.name == o.name and q.value != .none) return r.fail(o.main_tok, "§12.2.2.2: parameter `{s}` is assigned twice", .{name});
         const p = for (child.params) |p| {
             if (p.name == o.name) break p;
         } else return r.fail(o.main_tok, "§12.2.2.2: the module has no such parameter: `{s}`", .{name});
@@ -1718,7 +1911,13 @@ fn checkLists(r: *Run, child: *const Ast.ModuleDecl, inst: *const Ast.Instance) 
     if (inst.params.len != 0 and inst.params[0].name == .none) {
         var n: usize = 0;
         for (child.params) |p| n += @intFromBool(!p.is_local);
-        if (inst.params.len > n) return r.fail(inst.params[n].main_tok, "§12.2.2.1: more parameter values than the module has parameters", .{});
+        // §12.2.2.1 says nothing of a value past the last parameter; it is
+        // ignored with a warning, as iverilog ignores it (ivtest param_test3;
+        // specification/Vague_Decisions.md VD-139).
+        if (inst.params.len > n) {
+            const at = r.starts[@min(inst.params[n].main_tok, r.starts.len - 1)];
+            try r.bag.add(.lower, .W1161, .{ .start = at, .end = at }, "§12.2.2.1: {d} more parameter value(s) than the module has parameters ({d}); the extra ones are ignored", .{ inst.params.len - n, n });
+        }
     }
     for (inst.ports, 0..) |c, i| {
         if ((c.name == .none) != (inst.ports[0].name == .none))
@@ -1783,6 +1982,7 @@ fn continuous(file: *const Ast.SourceFile, name: Ast.StrId) bool {
 pub fn newScope(r: *Run, tok: u32) Error!u32 {
     r.scopes += 1;
     if (r.scopes == std.math.maxInt(u32)) return r.fail(tok, "too many digital instances", .{});
+    try r.scope_toks.put(r.arena, r.scopes, tok);
     return r.scopes;
 }
 
@@ -1891,8 +2091,10 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
     const ports = try r.arena.alloc(u32, t.ports.len);
     // §10.2.1/§10.4.1: a non-ANSI port's type may come from a following
     // declaration of its name (`input x; real x;`), which declares the port.
-    // ponytail: the two declarations' ranges are not compared, and an ANSI
-    // port redeclared in the body is taken the same way, not refused.
+    // `redeclaredPort` has judged the pair by §12.3.3.
+    // ponytail: an ANSI port redeclared in the body is taken the same way,
+    // not refused.
+    for (t.ports) |p| try redeclaredPort(r, p);
     for (t.ports, ports) |p, *slot| slot.* = try mintVar(r, for (t.vars) |v| {
         if (v.name == p.v.name) break v;
     } else p.v);
@@ -1903,8 +2105,33 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
         if (v.init != .none) return r.fail(v.main_tok, "an initialized task or function variable is not implemented", .{});
         _ = try mintVar(r, v);
     }
-    if (t.automatic) for (first..g.items.len) |at| try r.auto_slots.put(r.arena, @intCast(at), {});
+    if (t.automatic) {
+        try r.auto_scopes.put(r.arena, scope, {});
+        for (first..g.items.len) |at| try r.auto_slots.put(r.arena, @intCast(at), {});
+    }
     return .{ .scope = scope, .ports = ports, .result = result, .first = first, .count = @as(u32, @intCast(g.items.len)) - first };
+}
+
+/// IEEE 1364-2005 §12.3.3's port rules, which a task's or function's body
+/// port follows as a module's does (iverilog refuses the same): "If a port
+/// declaration includes a net or variable type, then the port is considered
+/// completely declared, and it is an error for the port to be declared
+/// again"; otherwise "If the net or variable is declared as a vector, the
+/// range specification between the two declarations of a port shall be
+/// identical. Once a name is used in a port declaration, it shall not be
+/// declared again". An `integer`, `time` or `real` redeclaration has a
+/// range of its own, so it may only follow a port declared without one.
+fn redeclaredPort(r: *Run, p: Ast.TfPort) Error!void {
+    const d = p.redecl;
+    if (d.count == 0) return;
+    if (d.typed) return r.fail(d.tok, "§12.3.3: a port declared with a type is completely declared; this is a duplicate declaration of it", .{});
+    if (d.count > 1) return r.fail(d.tok, "§12.3.3: a duplicate declaration of a port's variable; a port is declared again at most once", .{});
+    if (p.v.storage != .reg) {
+        if (d.port_range != null) return r.fail(d.tok, "§12.3.3: this variable's range differs from its port declaration's: a port with a range is declared again only as a reg of the same range", .{});
+        return;
+    }
+    const same = if (d.port_range) |a| if (d.var_range) |b| try sameRange(r, a, b, d.tok) else false else d.var_range == null;
+    if (!same) return r.fail(d.tok, "§12.3.3: this variable's range differs from its port declaration's; the two shall be identical", .{});
 }
 
 /// §10.4.5: function `idx`, called by a constant function call before its
@@ -1919,7 +2146,9 @@ pub fn earlyFrame(r: *Run, idx: u32, tok: u32) Error!void {
         return r.fail(tok, "§10.4.5: a function called during elaboration is a constant function, and {s}", .{why});
     const saved = r.scope;
     defer r.scope = saved;
+    const first = r.disables.items.len;
     try compile.compileSub(r, idx);
+    try root.bindDisables(r, first);
 }
 
 /// VAMS §3.7's port merge: a wire or tri joined to a wreal port becomes one
@@ -1971,6 +2200,7 @@ fn findUdp(file: *const Ast.SourceFile, name: Ast.StrId) ?*const Ast.UdpDecl {
 /// at time 0 whatever the instance delay.
 fn declareUdp(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, u: *const Ast.UdpDecl) Error!void {
     const tok = inst.main_tok;
+    try r.prim_names.put(r.arena, .{ .scope = scope, .str = inst.name }, inst.main_tok);
     if (inst.ports.len != u.ports.len) return r.fail(tok, "§8: a UDP instance connects its output and every input, in order", .{});
     for (inst.ports) |c| if (c.name != .none or c.expr == .none)
         return r.fail(c.main_tok, "§8: a UDP instance connects its terminals by position, none left open", .{});
@@ -2211,10 +2441,18 @@ fn putRange(r: *Run, slot: u32, range: Ast.Dim, tok: u32) Error!void {
 /// A port's declared width, evaluated in the scope being elaborated: a
 /// child port's range is read before the child's parameters exist.
 fn portWidth(r: *Run, p: Ast.Port) Error!u32 {
-    // ponytail: a range naming the child's parameters is sized too early;
-    // the literal ranges every fixture writes are fine.
     if (p.kind == .wreal) return 64;
     return if (p.range orelse p.type_range) |range| r.declaredWidth(range, p.main_tok) else 1;
+}
+
+/// `portWidth` of a child's port, its range read in `child`, the child
+/// instance's scope with its parameters already valued (`declareHead`), not
+/// in the parent's, where the same name may be another parameter or none.
+fn childPortWidth(r: *Run, child: u32, p: Ast.Port) Error!u32 {
+    const saved = r.scope;
+    defer r.scope = saved;
+    r.scope = child;
+    return portWidth(r, p);
 }
 
 /// §6.5.7 one port connection, decided in the PARENT's scope.
@@ -2275,12 +2513,14 @@ fn sink(r: *Run, e: *Elab, arg: Ast.ExprId, tok: u32, comptime who: SinkOf) Erro
         .assign => .{ "a continuous assignment can only drive a net", "§6.1.1: a continuous assignment connects to" ++ lvalue },
         .gate => .{ "a gate's output terminal must be a net", "A.3.3: a gate's output terminal is a net_lvalue:" ++ lvalue },
     };
-    if (ex.tag(arg) == .ident or try r.indexedArray(arg) != null) {
+    // A.8.5's hierarchical_net_identifier: a net named through a scope
+    // (`what[i].slice`, iverilog's pr1755629) is a net as much as a local one.
+    if (ex.tag(arg) == .ident or ex.tag(arg) == .hier_ident or try r.indexedArray(arg) != null) {
         const net = r.net_of.get(try netSlot(r, arg, tok)) orelse return r.exprFail(arg, not_net);
         return .{ .net = net, .lo = 0, .width = e.nets.items[net].resolved.width };
     }
     // §6.1.1/A.8.5: the select may stand on a net array element, `b[i][j]`.
-    if (ex.tag(arg) != .index or (ex.tag(ex.lhs(arg)) != .ident and try r.indexedArray(ex.lhs(arg)) == null)) return r.exprFail(arg, refused);
+    if (ex.tag(arg) != .index or (ex.tag(ex.lhs(arg)) != .ident and ex.tag(ex.lhs(arg)) != .hier_ident and try r.indexedArray(ex.lhs(arg)) == null)) return r.exprFail(arg, refused);
     const rg = ex.rhs(arg);
     const index = switch (ex.tag(rg)) {
         .range => Ast.ExprId.none,
@@ -2491,7 +2731,7 @@ test "§12.2 parameters fold into bounds, delays and expressions" {
         \\  #2 $display("%b", late);
         \\end
         \\endmodule
-    , "1111 7 -4 0001 z 1\n1\n");
+    , "1111 7 -4 0001 x 1\n1\n");
 }
 
 test "§12.2 a parameter takes a defparam over a named or positional override over its default" {
@@ -2715,4 +2955,107 @@ test "§4.9 a net array element driven by a constant index" {
         \\initial #1 $display("%b%b%b", w[0], w[1], w[2]);
         \\endmodule
     , "z1z\n");
+}
+
+test "IEEE 1364-2005 §12.3.9.2 a port of another width converts as an assignment, §12.3.8 coerces a port used the other way" {
+    // Oracle: iverilog -g2005 prints this line for the same source. An
+    // output narrower than its net widens (zero, or a signed port's sign);
+    // an inout joins the bits both sides have; an input the module drives
+    // is coerced to inout; a tran array splits a part-select (§7.1.6).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var bag = diag.Bag.init(arena.allocator());
+    var output = std.Io.Writer.Allocating.init(arena.allocator());
+    try root.run(arena.allocator(),
+        \\module lo(output [1:0] o, output signed [1:0] so, inout [1:0] io, input [1:0] ci);
+        \\  assign o = 2'b10; assign so = 2'b10; assign io = 2'b01; assign ci = 2'b11;
+        \\endmodule
+        \\module top;
+        \\  wire [3:0] o, so, io; wire [2:0] ci; wire [3:0] t; wire [1:0] p;
+        \\  lo u(o, so, io, ci);
+        \\  tran g[1:0](p, t[2:1]);
+        \\  assign p = 2'b10;
+        \\  initial #1 $display("%b %b %b %b %b", o, so, io, ci, t);
+        \\endmodule
+    , .{ .language = .v1364_2005 }, &bag, &output.writer);
+    try std.testing.expectEqualStrings("0010 1110 zz01 z11 z10z\n", output.written());
+}
+
+test "§10.4.5 a constant function's disable of its own named block ends the block" {
+    // Oracle: iverilog -g2005 prints 8 (ivtest constfunc9/10's form): the
+    // function is compiled early, before every process exists, so it binds
+    // its `disable` then (`root.bindDisables`).
+    try root.expectRun(
+        \\module m;
+        \\  function [31:0] g(input [5:0] x);
+        \\  begin : body
+        \\    g = 1;
+        \\    while (1) begin : loop
+        \\      if (x == 0) disable body;
+        \\      g = 2 * g;
+        \\      x = x - 1;
+        \\      disable loop;
+        \\      g = 0;
+        \\    end
+        \\  end
+        \\  endfunction
+        \\  localparam q = g(3);
+        \\  initial $display("%0d", q);
+        \\endmodule
+    , "8\n");
+}
+
+test "§12.7 a gate, switch or UDP instance name hides an outer name of the same spelling" {
+    // iverilog's gate_instance_shadow_fail family: the inner `i_g` is an
+    // instance, so neither the outer variable nor the outer function is
+    // what `i_g` names inside the block.
+    try expectRejected("module m; integer i_g = 23; if (1) begin : g wire o; and i_g(o, 1'b1, 1'b1); initial $display(\"%0d\", i_g); end endmodule", "undeclared digital variable");
+    try expectRejected("module m; function integer i_g(input integer v); i_g = v; endfunction if (1) begin : g wire o; initial $display(\"%0d\", i_g(1)); and i_g(o, 1'b1, 1'b1); end endmodule", "undeclared function");
+    // Only from the instance on (iverilog's gate_instance_reference_order).
+    try expectRun("module m; parameter i_g = 23; if (1) begin : g wire o; initial #1 $display(\"%0d\", i_g); and i_g(o, 1'b1, 1'b1); end endmodule", "23\n");
+    // The neighbour: a differently named gate hides nothing.
+    // (#1: the block's initial runs before the outer initializer at time 0,
+    // iverilog's order, which prints x.)
+    try expectRun("module m; integer i_g = 23; if (1) begin : g wire o; and a(o, 1'b1, 1'b1); initial #1 $display(\"%0d\", i_g); end endmodule", "23\n");
+}
+
+test "§12.2.2.2 an empty named parameter assignment assigns nothing, so it is no second assignment" {
+    // iverilog's parameter_named_empty.
+    try expectRun("module M #(parameter V = 1); endmodule module t; M #(.V(), .V()) a(); M #(.V(), .V(2)) b(); M #(.V(3), .V()) c(); initial $display(\"%0d %0d %0d\", a.V, b.V, c.V); endmodule", "1 2 3\n");
+    try expectRejected("module M #(parameter V = 1); endmodule module t; M #(.V(1), .V(), .V(2)) a(); endmodule", "is assigned twice");
+}
+
+test "§4.10.3 a specify block's specparam may name a later one of the block" {
+    // Only a specparam "declared outside a specify block shall be declared
+    // before it is referenced" (iverilog's specparam_specify_reference_order).
+    try expectRun("module m; specify specparam v = d + 1; specparam d = 41; endspecify initial $display(\"%0d\", v); endmodule", "42\n");
+    try expectRejected("module m; specparam v = d; specparam d = 41; initial $display(\"%0d\", v); endmodule", "");
+}
+
+test "A.3.3 a MOS switch drives a constant bit-select of a vector net" {
+    // iverilog's rise_fall_decay2: each switch drives its own bit, the
+    // others' bits stay z.
+    try expectRun("module m; reg i; wire [2:0] o; nmos a(o[0], i, 1'b1); pmos b(o[2], i, 1'b0); initial begin i = 1; #1 $display(\"%b\", o); end endmodule", "1z1\n");
+}
+
+test "A.8.5 a continuous assignment drives a hierarchical net or a select of one" {
+    // iverilog's pr1755629: `what[i].slice[i]`, a net of a loop generate's
+    // iteration named from another one.
+    try expectRun("module m; genvar i; for (i = 0; i < 2; i = i + 1) begin : w wire [1:0] s; end for (i = 0; i < 2; i = i + 1) begin : a assign w[i].s[i] = 1'b1; end initial #1 $display(\"%b %b\", w[0].s, w[1].s); endmodule", "z1 1z\n");
+}
+
+test "§14.6.1 `PATHPULSE$ = 3;`, the clause's own unparenthesized form, is a reject limit" {
+    // ISP RAS test_14_06_01_1 is the clause's example.
+    try expectRun("module m(input a, output q); assign q = a; specify (a => q) = 12; specparam PATHPULSE$a$q = (2, 9), PATHPULSE$ = 3; endspecify endmodule module t; reg a; wire q; m u(a, q); initial begin a = 0; #20 $display(\"%b\", q); end endmodule", "0\n");
+}
+
+test "§7.1.6 an instance array's port is sized by the child's parameters, not a parent parameter of the same name" {
+    // Oracle: iverilog -g2005 prints 010011. `W` is 3 in each `c` (the
+    // override), 2 in `top`: a port sized in the parent's scope would be
+    // 2 bits and the 6-bit connection no multiple of it (ISP RAS
+    // test_07_01_06_4, the clause's MxN pipeline, names the child's `bits`).
+    try expectRun(
+        \\module c(q, d); parameter W = 1; output [W-1:0] q; input [W-1:0] d; assign q = ~d; endmodule
+        \\module top; parameter W = 2; wire [5:0] o; reg [5:0] i; c #(3) u[1:0](o, i); initial begin i = 6'b101100; #1 $display("%b", o); end endmodule
+    , "010011\n");
 }

@@ -21,14 +21,13 @@ const Error = parser.Error;
 // -----------------------------------------------------------------------
 
 /// Parses one A.7.1 `specify_block ::= specify { specify_item } endspecify`
-/// into `b.paths` and `b.timing_checks`, then warns W0251: in an analog
-/// compile naming the block's timing checks, in a digital parse only when
-/// the block holds a path delay or a pulse control.
+/// into `b.paths`, `b.timing_checks` and `b.pulses`, then, in an analog
+/// compile, warns W0251 naming the block's timing checks.
 ///
 /// The block is legal source under §1.1, and annex C.16 does not exempt it.
 /// Its content is §8 scheduling (A.7.2 path delays, A.7.5 timing checks):
 /// §11.6.15's VPI objects read what is recorded, an analog device applies
-/// none of it, and the digital engine runs the timing checks only. The
+/// none of it, and the digital engine runs all of it. The
 /// block is parsed rather than skipped so a typo in a path declaration is
 /// still an error.
 pub fn parseSpecifyBlock(self: *Parser, b: *parse_module.Body) Error!void {
@@ -44,18 +43,9 @@ pub fn parseSpecifyBlock(self: *Parser, b: *parse_module.Body) Error!void {
     }
     self.pos += 1; // `endspecify`
     // A digital run (`vera --run`) evaluates the §15 timing checks (or
-    // refuses one by name, E1149) and every §14 module path. What it ignores
-    // is §14.6's pulse controls, so a digital parse warns only for those.
-    if (self.digital) {
-        if (!pulseControls(self, open)) return;
-        return self.bag.add(
-            .parse,
-            .W0251,
-            lexer.tokenSpan(self.src, self.starts, open),
-            "its §14.6 pulse controls are ignored: the default pulse handling applies (inertial, with reject and error limits equal to the path delay)",
-            .{},
-        );
-    }
+    // refuses one by name, E1149), every §14 module path and its §14.6
+    // pulse controls, so a digital parse has nothing to warn of.
+    if (self.digital) return;
     // A timing check is the one item whose loss a design notices by name (a
     // violation it expected to be told about), so each is listed.
     const checks = b.timing_checks.items[first..];
@@ -78,18 +68,6 @@ pub fn parseSpecifyBlock(self: *Parser, b: *parse_module.Body) Error!void {
     );
 }
 
-/// Whether the block opened at token `open` and closed just before
-/// `self.pos` writes a §14.6 pulse control: an A.7.1 pulsestyle or
-/// showcancelled declaration, or an A.2.4 `PATHPULSE$` specparam.
-fn pulseControls(self: *const Parser, open: u32) bool {
-    for (open..self.pos) |at| {
-        const w = self.tokenText(@intCast(at));
-        if (std.mem.startsWith(u8, w, "PATHPULSE$")) return true;
-        if (self.tags[at] == .kw_reserved and pulse_words.has(w)) return true;
-    }
-    return false;
-}
-
 /// A.7.1's `pulsestyle_declaration` and `showcancelled_declaration` keywords,
 /// all `.kw_reserved`, so the spelling is the test.
 const pulse_words = std.StaticStringMap(void).initComptime(.{ .{"pulsestyle_onevent"}, .{"pulsestyle_ondetect"}, .{"showcancelled"}, .{"noshowcancelled"} });
@@ -109,7 +87,7 @@ fn parseSpecifyItem(self: *Parser, b: *parse_module.Body) Error!void {
             // A.2.1.1's declaration as a specify_item. A specify block is
             // no scope (IEEE 1364-2005 4.10.3 lets the body use it, e.g. as a
             // §9.7.1 delay), so it joins the module's specparams.
-            if (std.mem.eql(u8, w, "specparam")) return parseSpecparamDecl(self, &b.params);
+            if (std.mem.eql(u8, w, "specparam")) return parseSpecparamDecl(self, b, true);
             // A.7.1 `pulsestyle_declaration` / `showcancelled_declaration`,
             // four keywords over one `list_of_path_outputs ;`.
             if (pulse_words.has(w)) {
@@ -121,7 +99,13 @@ fn parseSpecifyItem(self: *Parser, b: *parse_module.Body) Error!void {
                 const paren = self.peek() == .lparen;
                 if (paren) try self.report(self.pos, .E0207, "found `(`: A.7.1's `{s}` takes list_of_path_outputs, written without parentheses", .{w});
                 if (paren) self.pos += 1;
-                _ = try parseSpecifyTerminalList(self);
+                const decl_tok = self.pos - 1;
+                const outs = try parseSpecifyTerminalList(self);
+                try b.pulses.append(self.arena, .{
+                    .kind = if (std.mem.eql(u8, w, "pulsestyle_onevent")) .onevent else if (std.mem.eql(u8, w, "pulsestyle_ondetect")) .ondetect else if (std.mem.eql(u8, w, "showcancelled")) .showcancelled else .noshowcancelled,
+                    .outs = outs,
+                    .main_tok = decl_tok,
+                });
                 if (paren) _ = try self.expect(.rparen);
                 _ = try self.expect(.semicolon);
                 return;
@@ -699,19 +683,16 @@ fn edgeDescriptor(a: u8, b: u8) bool {
 ///             specparam_identifier = constant_mintypmax_expression
 ///             | pulse_control_specparam
 ///
-/// `out` is the module's parameter list, for both the Syntax 6-1
-/// module-item form and an A.7.1 `specify_item`: each specparam becomes a
-/// §3.4.5 `localparam` (a constant with a mandatory default that no
-/// `parameter_value_assignment` can name).
+/// Into `b.params`, for both the Syntax 6-1 module-item form and an A.7.1
+/// `specify_item`: each specparam becomes a §3.4.5 `localparam` (a constant
+/// with a mandatory default that no `parameter_value_assignment` can name;
+/// the digital engine's SDF annotator writes its slot, §16.2.3).
 ///
 /// A.2.4's `pulse_control_specparam`, `PATHPULSE$[input$output] = (
-/// reject_limit_value [ , error_limit_value ] )`, is parsed and dropped: it
-/// declares no constant, and the pulse limits it sets are §14.6's simulation,
-/// which VerA does not run (W0251).
-pub fn parseSpecparamDecl(self: *Parser, out: *std.ArrayList(Ast.ParamDecl)) Error!void {
-    // ponytail: 1364's specparams are what SDF back-annotation overrides,
-    // and a `localparam` cannot be overridden. VerA reads no SDF; reading
-    // it needs separate storage.
+/// reject_limit_value [ , error_limit_value ] )`, declares no constant: it
+/// goes to `b.pulses`, the §14.6.1 limits the digital engine applies.
+pub fn parseSpecparamDecl(self: *Parser, b: *parse_module.Body, in_specify: bool) Error!void {
+    const out = &b.params;
     self.pos += 1; // `specparam`
     const packed_range: ?Ast.Dim = try parse_decl.optDim(self);
     while (true) {
@@ -721,11 +702,14 @@ pub fn parseSpecparamDecl(self: *Parser, out: *std.ArrayList(Ast.ParamDecl)) Err
         if (std.mem.startsWith(u8, self.file.str(name), "PATHPULSE$")) {
             // §14.6.1's own example writes `PATHPULSE$ = 3;`, one limit and no
             // parentheses, beside A.2.4's parenthesized form.
+            var reject: Ast.ExprId = undefined;
+            var err: Ast.ExprId = .none;
             if (self.eat(.lparen)) {
-                _ = try parse_expr.parseMinTypMax(self);
-                if (self.eat(.comma)) _ = try parse_expr.parseMinTypMax(self);
+                reject = try parse_expr.parseMinTypMax(self);
+                if (self.eat(.comma)) err = try parse_expr.parseMinTypMax(self);
                 _ = try self.expect(.rparen);
-            } else _ = try parse_expr.parseMinTypMax(self);
+            } else reject = try parse_expr.parseMinTypMax(self);
+            try b.pulses.append(self.arena, .{ .kind = .limits, .name = name, .reject = reject, .err = err, .main_tok = tok });
             if (!self.eat(.comma)) break;
             continue;
         }
@@ -736,6 +720,7 @@ pub fn parseSpecparamDecl(self: *Parser, out: *std.ArrayList(Ast.ParamDecl)) Err
             .default = default,
             .is_local = true,
             .is_spec = true,
+            .in_specify = in_specify,
             .packed_range = packed_range,
             .main_tok = tok,
         });

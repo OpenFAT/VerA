@@ -279,7 +279,7 @@ pub const MemLoad = struct {
             error.BadAddress => "the memory file has a malformed `@` address",
             error.AddressOutOfRange => "memory file address is outside the requested load range",
             error.BadWord => "the memory file has a malformed data word",
-            error.ReadFailed => cannot_read,
+            error.ReadFailed => "the memory file cannot be read to its end",
             error.OutOfMemory => "out of memory",
         };
     }
@@ -290,11 +290,11 @@ pub const MemLoad = struct {
     /// The W1156 text; the arguments are `outside`, then `low` and `high`.
     pub const outside_text = "memory file address @{x} is outside the memory's declared range [{d}:{d}]; its words are skipped";
 
-    /// The E1157 text, after `next` failed with `AddressOutOfRange`; the
+    /// The W1157 text, after `next` failed with `AddressOutOfRange`; the
     /// arguments are the address (`at`), then `range_low` and `range_high`.
     /// §17.2.9: "an error message is issued, and the load operation is
     /// terminated": the load, not the run (#65).
-    pub const out_of_range_text = "§17.2.9: memory file address @{x} is outside the load range [{d}:{d}] the task gives; the load is terminated, the words before it stay loaded";
+    pub const out_of_range_text = "§17.2.9: memory file address @{x} is outside the load range [{d}:{d}] the task gives (the words before it stay loaded)";
 };
 
 /// The interpreter's `$readmemb` / `$readmemh` (`MemLoad`).
@@ -302,34 +302,59 @@ pub fn readMemory(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, ra
     const ex = &self.file.exprs;
     const base = try self.slot(args[1]);
     const arr = self.arrays.get(base).?;
-    const name = self.file.str(ex.strOf(args[0]));
-    const io = self.io orelse return self.exprFail(args[0], cannot_read);
-    const file = sideFile(io, a, self.file_name, name) catch return self.exprFail(args[0], cannot_read);
-    defer file.close(io);
-    var buf: [4096]u8 = undefined;
-    var in = file.reader(io, &buf);
-    const start = if (args.len >= 3) (try evaluate.eval(self, a, args[2], 0)).asInt() orelse return self.exprFail(args[2], unknown_bound) else null;
-    const finish = if (args.len == 4) (try evaluate.eval(self, a, args[3], 0)).asInt() orelse return self.exprFail(args[3], unknown_bound) else null;
-    var load: MemLoad = .init(&in.interface, radix, self.values[base].width, arr.low, arr.high, @intCast(args.len - 2), start, finish);
     const tok = ex.mainTok(args[0]);
     const at = self.starts[@min(tok, self.starts.len - 1)];
     const site: diag.Span = .{ .start = at, .end = at };
+    const name = if (ex.tag(args[0]) == .str_literal)
+        self.file.str(ex.strOf(args[0]))
+    else
+        (try system.text(a, try evaluate.eval(self, a, args[0], 0))) orelse return loadEnded(self, site, not_a_name, .{});
+    const io = self.io orelse return loadEnded(self, site, cannot_read, .{std.zig.fmtString(name)});
+    const file = sideFile(io, a, self.file_name, name) catch return loadEnded(self, site, cannot_read, .{std.zig.fmtString(name)});
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var in = file.reader(io, &buf);
+    const start = if (args.len >= 3) (try evaluate.eval(self, a, args[2], 0)).asInt() orelse return loadEnded(self, site, unknown_bound, .{}) else null;
+    const finish = if (args.len == 4) (try evaluate.eval(self, a, args[3], 0)).asInt() orelse return loadEnded(self, site, unknown_bound, .{}) else null;
+    for ([_]?i64{ start, finish }, [_][]const u8{ "start", "finish" }) |bound, which| if (bound) |b| if (b < arr.low or b > arr.high)
+        return loadEnded(self, site, outside_memory, .{ which, b, arr.low, arr.high });
+    var load: MemLoad = .init(&in.interface, radix, self.values[base].width, arr.low, arr.high, @intCast(args.len - 2), start, finish);
     while (load.next(a) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        // An error message, the load terminated, and the run goes on.
-        error.AddressOutOfRange => return self.bag.add(self.stage(), .E1157, site, MemLoad.out_of_range_text, .{ load.at, load.range_low, load.range_high }),
-        else => |f| return self.fail(tok, "{s}", .{MemLoad.message(f)}),
+        error.AddressOutOfRange => return loadEnded(self, site, MemLoad.out_of_range_text, .{ load.at, load.range_low, load.range_high }),
+        else => |f| return loadEnded(self, site, "{s}", .{MemLoad.message(f)}),
     }) |w| try waiters.store(self, base + w.index, w.value.planes);
     if (load.mismatch()) |m| try self.bag.add(self.stage(), .W1150, site, MemLoad.mismatch_text, .{ m.found, m.expected });
     if (load.outside) |o| try self.bag.add(self.stage(), .W1156, site, MemLoad.outside_text, .{ o, arr.low, arr.high });
 }
 
+/// §17.2.9 "an error message is issued, and the load operation is
+/// terminated": W1157 names why, the words loaded before it stay, and the
+/// simulation goes on with its exit status untouched, as iverilog's does
+/// (specification/Vague_Decisions.md VD-134). Every reason a load cannot go
+/// on takes this one path, in both engines.
+fn loadEnded(self: *Run, site: diag.Span, comptime why: []const u8, args: anytype) Error!void {
+    return self.bag.add(self.stage(), .W1157, site, why ++ load_ended, args);
+}
+
+/// The tail of every W1157 message.
+pub const load_ended = "; the $readmem load is terminated, the simulation goes on";
+
 /// §17.2.9 gives an address no x or z digit, so a bound that evaluates to
-/// one names no address and the load is refused rather than defaulted.
+/// one names no address.
 pub const unknown_bound = "a $readmem start or finish address evaluates to x or z";
 
-/// The refusal of a memory file that cannot be opened or read to its end.
-pub const cannot_read = "the memory file cannot be read";
+/// A file name held in a variable with an x or z bit names no file.
+pub const not_a_name = "the $readmem file name has an x or z bit, so it names no file";
+
+/// A start or finish address outside the memory's declared range: no word
+/// is loaded (§17.2.9 says nothing of it; iverilog loads none). The
+/// arguments are which bound, its value, then the memory's low and high.
+pub const outside_memory = "the $readmem {s} address {d} is outside the memory's range [{d}:{d}]";
+
+/// A memory file that cannot be opened; the argument is its name, as
+/// `std.zig.fmtString` escapes a non-printing character in it.
+pub const cannot_read = "the memory file \"{f}\" cannot be read";
 
 /// The memory file `name`, opened. It sits beside the source `file_name`
 /// that names it, which is what makes a fixture self-contained; the working
@@ -399,6 +424,8 @@ pub const Task = union(enum) {
     sformat,
     /// §17.3.1 `$printtimescale`.
     printtimescale,
+    /// §17.2.10 `$sdf_annotate` (`sdf.zig`).
+    sdf_annotate,
     /// §18.1 the value change dump tasks.
     dump: @import("vcd.zig").Op,
     /// §18.3 the extended value change dump tasks.
@@ -470,6 +497,7 @@ pub const tasks = std.StaticStringMap(Task).initComptime(@as([]const TaskRow, &.
     .{ "$swriteh", Task{ .sshow = showAs(.hex, false) } },
     .{ "$sformat", .sformat },
     .{ "$printtimescale", .printtimescale },
+    .{ "$sdf_annotate", .sdf_annotate },
     .{ "$dumpfile", Task{ .dump = .file } },
     .{ "$dumpvars", Task{ .dump = .vars } },
     .{ "$dumpoff", Task{ .dump = .off } },
@@ -586,7 +614,9 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
         // the default of this task, so $displayh's bare argument is hex.
         if (ex.tag(e) != .str_literal and !dynamic) {
             try compile.checkExpr(self, e);
-            if (allocator) |a| try fmt.value(self.out, a, try evaluate.eval(self, a, e, 0), show.radix, null);
+            if (allocator) |a| {
+                if (compile.typeOf(self, e).real) try bareReal(self, a, e) else try fmt.value(self.out, a, try evaluate.eval(self, a, e, 0), show.radix, null);
+            }
             continue;
         }
         if (dynamic and allocator == null) {
@@ -629,7 +659,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 '%' => return self.failWith(.E0826, ex.mainTok(e), "a flag, width or precision before the second `%` of `%%`", .{}),
                 'b', 'B' => .binary,
                 'o', 'O' => .octal,
-                'h', 'H' => .hex,
+                'h', 'H', 'x', 'X' => .hex,
                 'd', 'D' => .decimal,
                 // §9.4.3 Table 9-23's real conversions, which "have the full
                 // formatting capabilities available in the C language".
@@ -646,10 +676,24 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                     try compile.checkExpr(self, args[arg]);
                     // A real operand is formatted as it is, not rounded to
                     // a whole unit first (#64).
-                    if (allocator) |a| try emitTime(self, if (compile.typeOf(self, args[arg]).real)
-                        try evaluate.evalReal(self, a, args[arg])
-                    else
-                        fmt.timeOperand(try evaluate.eval(self, a, args[arg], 0)), width);
+                    if (allocator) |a| {
+                        const out = self.out;
+                        defer self.out = out;
+                        var field: std.Io.Writer.Allocating = .init(a);
+                        const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
+                        if (zero) self.out = &field.writer;
+                        if (compile.typeOf(self, args[arg]).real)
+                            try emitTime(self, try evaluate.evalReal(self, a, args[arg]), width)
+                        else {
+                            const v = try evaluate.eval(self, a, args[arg], 0);
+                            if (v.hasUnknown()) {
+                                var f = self.time_format;
+                                if (width) |w| f.width = w;
+                                try fmt.timeUnknown(self.out, v, f);
+                            } else try emitTime(self, fmt.timeOperand(v), width);
+                        }
+                        if (zero) try zeroFilled(out, field.written());
+                    }
                     continue;
                 },
                 // §17.1.1.6 `%m` and §13.6 `%l` consume no argument: they
@@ -709,7 +753,19 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
             if (arg == args.len) return short(self, e, dynamic, "missing display argument");
             if (radix) |r| {
                 try compile.checkExpr(self, args[arg]);
-                if (allocator) |a| try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
+                if (allocator) |a| {
+                    // `%05d`: C's '0' flag, which iverilog renders (`zeroFilled`).
+                    const out = self.out;
+                    defer self.out = out;
+                    var field: std.Io.Writer.Allocating = .init(a);
+                    const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
+                    if (zero) self.out = &field.writer;
+                    if (compile.typeOf(self, args[arg]).real)
+                        try realRadix(self.out, a, try evaluate.evalReal(self, a, args[arg]), r, width)
+                    else
+                        try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
+                    if (zero) try zeroFilled(out, field.written());
+                }
             } else {
                 try compile.checkExpr(self, args[arg]);
                 if (allocator) |a| try real(self.out, a, try evaluate.evalReal(self, a, args[arg]), format[i], sp.flags, precision, width);
@@ -717,6 +773,50 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
         }
     }
     if (allocator != null and show.newline) try self.out.writeByte('\n');
+}
+
+/// A field written with C's '0' flag and a width (`%05d`, `%04h`, `%06t`):
+/// `text`, the field as the conversion padded it with spaces on the left,
+/// with those spaces as zeros after any sign. §17.1.1.2 grants C's flags to
+/// the real conversions only and leaves a width's leading zero open; this is
+/// iverilog's text (ivtest delay.v's `%04d`).
+pub fn zeroFilled(out: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
+    const pad = std.mem.indexOfNone(u8, text, " ") orelse text.len;
+    const sign: usize = @intFromBool(pad < text.len and text[pad] == '-');
+    try out.writeAll(text[pad..][0..sign]);
+    try out.splatByteAll('0', pad);
+    try out.writeAll(text[pad + sign ..]);
+}
+
+/// A radix conversion (`%d %h %o %b`) of a real, as iverilog prints it
+/// (VD-120): the §4.8.2 integer, exact at any magnitude, at minimal width
+/// unless the format gives one, since §17.1.1.3 sizes by a bit width a real
+/// does not have; an infinity or a NaN, which has no integer, as C spells it.
+pub fn realRadix(out: *std.Io.Writer, a: std.mem.Allocator, r: f64, radix: Radix, width: ?u64) (std.mem.Allocator.Error || std.Io.Writer.Error)!void {
+    // A negative real that rounds to zero keeps its sign under `%d`, as
+    // C's `%.0f` (iverilog's br1029a: -0.4 is `-0`).
+    const neg_zero = radix == .decimal and @round(r) == 0 and std.math.signbit(r);
+    if (!std.math.isFinite(r) or neg_zero) {
+        const text = if (neg_zero) "-0" else if (std.math.isNan(r)) "nan" else if (r < 0) "-inf" else "inf";
+        try out.splatByteAll(' ', @intCast((width orelse 0) -| text.len));
+        return out.writeAll(text);
+    }
+    // `intOfReal` fails only for memory.
+    const v = evaluate.intOfReal(a, r) catch return error.OutOfMemory;
+    try fmt.value(out, a, v, radix, width orelse 0);
+}
+
+/// A real argument with no format. §17.1.1.2's "default decimal format" is
+/// an integer's, and 1364 names none for a real; VerA prints what iverilog
+/// prints: C's `%#g`, and a bare `$realtime` call in `%.Nf`, N the decimal
+/// digits of its module's precision below its unit.
+fn bareReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!void {
+    const r = try evaluate.evalReal(self, a, e);
+    if (self.file.exprs.tag(e) == .sys_call and self.sys_calls[@backingInt(e)].? == .realtime) {
+        const digits = std.math.log10_int(@as(u64, self.timeOf(self.scope).scale.local_per_unit));
+        return real(self.out, a, r, 'f', 0, digits, null);
+    }
+    try real(self.out, a, r, 'g', str_k.zc_alt, -1, null);
 }
 
 /// §17.1.1.2 `%u` (`four` false: "unknown or high-impedance bits ... shall
@@ -798,17 +898,19 @@ fn emitTime(self: *Run, v: f64, width: ?u64) Error!void {
 /// IEEE 1364-2005 §17.3.1 `$printtimescale`: "the time unit and precision of
 /// the module that is the current scope", or with an argument "of the module
 /// passed to it", in the clause's format `Time scale of (name) is unit /
-/// precision`. The name is the current module's, or the argument as written.
+/// precision`. The clause names a module and leaves the printed name open;
+/// VerA prints what iverilog prints: the full hierarchical name of the
+/// current module instance, or of the argument, which may name any object
+/// (a named block, a variable, a parameter) and reports its module's scale.
 pub fn printTimescale(self: *Run, args: []const Ast.ExprId) Error!void {
-    const scope = if (args.len == 1) try timescaleScope(self, args[0]) else self.scope;
-    const mt = self.timeOf(scope);
+    const t: TimescaleTarget = if (args.len == 1) try timescaleScope(self, args[0]) else .{ .scope = self.instanceOf(self.scope) };
+    const mt = self.timeOf(t.scope);
     const prec_exp = mt.unit_exp - @as(i32, std.math.log10_int(@as(u64, mt.scale.local_per_unit)));
     try self.out.writeAll("Time scale of (");
-    if (args.len == 0) try self.out.writeAll(self.file.str(self.file.modules[self.scope_info.items[self.scope].def].name)) else {
-        const ex = &self.file.exprs;
-        const parts: []const Ast.StrId = if (ex.tag(args[0]) == .ident) &.{ex.strOf(args[0])} else ex.nameParts(args[0]);
-        for (parts, 0..) |p, i| try self.out.print("{s}{s}", .{ if (i == 0) "" else ".", self.file.str(p) });
-    }
+    try emitPath(self, t.scope);
+    if (t.leaf) |name| try self.out.print(".{s}", .{self.file.str(name)});
+    // A select is named as iverilog's VPI names it: a word `[i]`, a bit `[i:i]`.
+    if (t.index) |i| if (t.word) try self.out.print("[{d}]", .{i}) else try self.out.print("[{d}:{d}]", .{ i, i });
     try self.out.writeAll(") is ");
     try fmt.decade(self.out, mt.unit_exp);
     try self.out.writeAll(" / ");
@@ -816,12 +918,83 @@ pub fn printTimescale(self: *Run, args: []const Ast.ExprId) Error!void {
     try self.out.writeByte('\n');
 }
 
-/// §17.3.1 the module instance `$printtimescale`'s argument names.
-pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!u32 {
-    return switch (try @import("vcd.zig").target(self, e)) {
-        .scope => |sc| sc,
-        .slot => self.exprFail(e, "§17.3.1: $printtimescale names a module instance"),
+/// What `$printtimescale`'s argument names: a scope, or the object `leaf`
+/// declared in one.
+pub const TimescaleTarget = struct { scope: u32, leaf: ?Ast.StrId = null, index: ?i64 = null, word: bool = false };
+
+/// §17.3.1 what `$printtimescale`'s argument names, by §12.5's resolution:
+/// an instance (or a named block that declares something, which `instances`
+/// holds too), or a variable, net or parameter and the scope declaring it
+/// (iverilog takes any such object). The first name is searched for upward
+/// from the current scope to its module, then among the top-level modules.
+/// A named block that declares nothing has no scope, so is found in its
+/// module's source (`namedBlock`).
+pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!TimescaleTarget {
+    const ex = &self.file.exprs;
+    // A constant bit- or word-select of a variable or net names that bit
+    // or word (iverilog's pr1701855b).
+    if (ex.tag(e) == .index and ex.tag(ex.rhs(e)) != .range and ex.tag(ex.rhs(e)) != .indexed_range) {
+        var t = try timescaleScope(self, ex.lhs(e));
+        const name = t.leaf orelse return self.exprFail(e, "§17.3.1: $printtimescale selects from a variable or a net only");
+        const at = self.names.get(.{ .scope = t.scope, .str = name }) orelse return self.exprFail(e, "§17.3.1: $printtimescale selects from a variable or a net only");
+        if (!compile.constantExpression(self, ex.rhs(e))) return self.exprFail(e, "§17.3.1: $printtimescale's select is a constant");
+        try compile.checkExpr(self, ex.rhs(e));
+        var scratch = std.heap.ArenaAllocator.init(self.arena);
+        defer scratch.deinit();
+        t.index = (try evaluate.eval(self, scratch.allocator(), ex.rhs(e), 0)).asInt() orelse return self.exprFail(e, "§17.3.1: $printtimescale's select is a known constant");
+        t.word = self.arrays.contains(at);
+        return t;
+    }
+    const parts: []const Ast.StrId = switch (ex.tag(e)) {
+        .ident => &.{ex.strOf(e)},
+        .hier_ident => ex.nameParts(e),
+        else => return self.exprFail(e, "§17.3.1: $printtimescale names a module instance or an object in one"), // else: no hierarchical_identifier
     };
+    var scope: u32 = blk: {
+        var at = self.scope;
+        while (true) {
+            if (self.instances.get(.{ .scope = at, .str = parts[0] })) |child| break :blk child;
+            if (parts.len == 1 and (self.names.contains(.{ .scope = at, .str = parts[0] }) or namedBlock(self, at, parts[0]))) return .{ .scope = at, .leaf = parts[0] };
+            if (!self.scope_info.items[at].lexical) break;
+            at = self.scope_info.items[at].parent;
+        }
+        for (self.roots) |t| if (self.scope_info.items[t].name == parts[0]) break :blk t;
+        if (parts.len == 1) return self.exprFail(e, "§17.3.1: $printtimescale names no object of this design");
+        return self.exprFail(e, "undeclared instance in a hierarchical reference");
+    };
+    for (parts[1..], 1..) |p, i| {
+        if (self.instances.get(.{ .scope = scope, .str = p })) |child| {
+            scope = child;
+        } else if (i + 1 == parts.len and (self.names.contains(.{ .scope = scope, .str = p }) or namedBlock(self, scope, p))) {
+            return .{ .scope = scope, .leaf = p };
+        } else if (i + 1 == parts.len) {
+            return self.exprFail(e, "§17.3.1: $printtimescale names no object of this design");
+        } else return self.exprFail(e, "undeclared instance in a hierarchical reference");
+    }
+    return .{ .scope = scope };
+}
+
+/// Whether a block named `name` that declares nothing, so has no scope of
+/// its own (`elab.blockScopes`), is in module instance `scope`'s
+/// initial and always constructs.
+fn namedBlock(self: *const Run, scope: u32, name: Ast.StrId) bool {
+    if (self.scope_info.items[scope].lexical) return false;
+    const V = struct {
+        f: *const Ast.SourceFile,
+        name: Ast.StrId,
+        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) error{Found}!void {}
+        pub fn stmt(v: @This(), c: Ast.StmtId) error{Found}!void {
+            if (c == .none) return;
+            switch (v.f.stmt(c)) {
+                .block => |b| if (b.name == v.name) return error.Found,
+                else => {}, // else: only a block is named
+            }
+            try v.f.stmtEdges(c, v);
+        }
+    };
+    for (self.file.modules[self.scope_info.items[scope].def].discrete) |d|
+        (V{ .f = self.file, .name = name }).stmt(d.body) catch return true;
+    return false;
 }
 
 /// Prints the standing monitor's argument list, if there is one and it is
@@ -829,7 +1002,10 @@ pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!u32 {
 /// `.monitor` event, or `$monitoron` ran), never by comparing text.
 pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
     const m = self.monitor orelse return;
-    if (!self.monitor_on) return;
+    // A change seen while monitoring was on still reports at the end of its
+    // step, after a `$monitoroff` there, as iverilog's does (monitor4):
+    // §17.1.3 says only that $monitoroff "disables monitoring".
+    if (!self.monitor_on and !self.monitor_slot_hit) return;
     // §17.1.3 the monitor renders in the instance that installed it; the
     // `.monitor` region runs outside any process's dispatch.
     self.scope = m.scope;
@@ -852,7 +1028,7 @@ pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
 pub fn monitorDue(self: *Run, a: std.mem.Allocator) Error!bool {
     const m = self.monitor orelse return false;
     if (self.monitor_slot_hit) return true;
-    if (self.monitor_probes.len == 0) return false;
+    if (self.monitor_probes.len == 0 or !self.monitor_on) return false;
     self.scope = m.scope;
     self.pc = m.pc;
     for (self.monitor_probes, self.monitor_last) |e, last| {
@@ -911,13 +1087,18 @@ pub fn install(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show:
 
 /// §17.2.7: "Active $fmonitor and/or $fstrobe operations on a file
 /// descriptor or multichannel descriptor are implicitly cancelled by an
-/// $fclose operation". The `$fmonitor`s writing to `d` stop.
+/// $fclose operation". The `$fmonitor`s writing to `d` stop: one on a
+/// multichannel descriptor any of whose channels `d` closes stops whole, as
+/// iverilog's does (fmonitor2), since the clause does not split it.
 pub fn cancelFile(self: *Run, d: i64) void {
     watchAll(self, false);
     defer watchAll(self, true);
+    const mcd = d & (1 << 31) == 0;
     var k: usize = 0;
     while (k < self.fmonitors.items.len) {
-        if (self.fmonitors.items[k].fd == d) _ = self.fmonitors.orderedRemove(k) else k += 1;
+        const fd = self.fmonitors.items[k].fd;
+        const hit = if (mcd and fd & (1 << 31) == 0) fd & d != 0 else fd == d;
+        if (hit) _ = self.fmonitors.orderedRemove(k) else k += 1;
     }
 }
 
@@ -1003,7 +1184,7 @@ pub fn monitorChanged(self: *Run, slot: u32) Error!void {
     self.monitor_evaluating = true;
     defer self.monitor_evaluating = false;
     const a = self.scratch.allocator();
-    if (self.monitor) |*m| if (std.mem.findScalar(u32, self.monitor_slots.items, slot) != null and try moved(self, m, a, slot)) {
+    if (self.monitor) |*m| if (std.mem.findScalar(u32, self.monitor_slots.items, slot) != null and try moved(self, m, a, slot) and self.monitor_on) {
         self.monitor_slot_hit = true;
         try waiters.requestMonitor(self);
     };
@@ -1092,8 +1273,9 @@ test "readmem validates high token characters beyond destination width" {
 }
 
 /// `terminated`: a file address falls outside the task's range, so §17.2.9's
-/// "an error message is issued, and the load operation is terminated": E1157,
-/// the words before it stay loaded and the run goes on to print them (#65).
+/// "an error message is issued, and the load operation is terminated":
+/// W1157, the words before it stay loaded and the run goes on to print them
+/// (#65, VD-134).
 fn expectMemoryLoad(data: []const u8, bounds: []const u8, expected: []const u8, warnings: u32, terminated: bool) !void {
     return expectMemoryLoadDiagnostic("$readmemh", data, bounds, expected, warnings, if (terminated) "is outside the load range" else null);
 }
@@ -1113,16 +1295,15 @@ fn expectMemoryLoadDiagnostic(task: []const u8, data: []const u8, bounds: []cons
     var bag = diag.Bag.init(a);
     var output = std.Io.Writer.Allocating.init(a);
     const result = run(a, source, .{ .io = std.testing.io, .file_name = file_name }, &bag, &output.writer);
+    // A terminated load (W1157) never ends the run nor fails it (VD-134).
+    try result;
+    try std.testing.expect(!bag.failed());
     if (failure_phrase) |phrase| {
-        // A refusal ends the run (DigitalFailed); §17.2.9's terminated load
-        // issues its error and the run goes on. `expected` tells them apart:
-        // only a run that went on prints the memory.
-        result catch |e| if (e != error.DigitalFailed) return e;
-        try std.testing.expect(bag.failed());
         var messages = std.Io.Writer.Allocating.init(a);
         try diag.render(&bag, &messages.writer, .{});
+        try std.testing.expect(std.mem.find(u8, messages.written(), "W1157") != null);
         try std.testing.expect(std.mem.find(u8, messages.written(), phrase) != null);
-    } else try result;
+    }
     try std.testing.expectEqual(warnings, bag.warn_count);
     try std.testing.expectEqualStrings(expected, output.written());
 }
@@ -1160,9 +1341,11 @@ test "readmem underscore must follow an initial digit" {
 
 test "readmem validates discarded excess tokens and still restarts after addresses" {
     const invalid = "the memory file has a malformed data word";
-    try expectMemoryLoadDiagnostic("$readmemh", "11 ;", ",0,0", "", 0, invalid);
-    try expectMemoryLoadDiagnostic("$readmemb", "1 2", ",0,0", "", 0, invalid);
-    try expectMemoryLoadDiagnostic("$readmemh", "11 _", ",0,0", "", 0, invalid);
+    // The load ends at the bad word; the words before it stay (iverilog
+    // prints the same memory for the first two, and takes `_` as a word).
+    try expectMemoryLoadDiagnostic("$readmemh", "11 ;", ",0,0", "11 bb cc dd\n", 1, invalid);
+    try expectMemoryLoadDiagnostic("$readmemb", "1 2", ",0,0", "01 bb cc dd\n", 1, invalid);
+    try expectMemoryLoadDiagnostic("$readmemh", "11 _", ",0,0", "11 bb cc dd\n", 1, invalid);
     try expectMemoryLoadDiagnostic("$readmemh", "11 22", ",0,0", "11 bb cc dd\n", 1, null);
     try expectMemoryLoadDiagnostic("$readmemh", "11 22 @0 33", ",0,0", "33 bb cc dd\n", 0, null);
 }
@@ -1173,9 +1356,9 @@ test "readmem addresses suppress count warning and relocate after range end" {
     try expectMemoryLoad("11 22 33 44 @2 66 77", ",3,0", "44 77 66 11\n", 0, false);
     // §17.2.9 (#65): an address outside the task's range ends the load, not
     // the run. 11 -> mem[1], 22 -> mem[2], then @0 is outside 1..2.
-    try expectMemoryLoad("11 22 @0", ",1,2", "aa 11 22 dd\n", 0, true);
+    try expectMemoryLoad("11 22 @0", ",1,2", "aa 11 22 dd\n", 1, true);
     // @3 is outside 2..1 before any word: nothing loads.
-    try expectMemoryLoad("@3 11", ",2,1", "aa bb cc dd\n", 0, true);
+    try expectMemoryLoad("@3 11", ",2,1", "aa bb cc dd\n", 1, true);
 }
 
 test "readmem start-only defaults to highest address and stays upward" {
@@ -1187,9 +1370,9 @@ test "readmem start-only defaults to highest address and stays upward" {
     // §17.2.9 (#65): start alone makes the range 2..3, the memory's highest
     // address; an address outside it ends the load, not the run. @1 comes
     // before any word: nothing loads.
-    try expectMemoryLoad("@1 11", ",2", "aa bb cc dd\n", 0, true);
+    try expectMemoryLoad("@1 11", ",2", "aa bb cc dd\n", 1, true);
     // 11 -> mem[2], 22 -> mem[3], then @4 is outside 2..3.
-    try expectMemoryLoad("11 22 @4", ",2", "aa bb 11 22\n", 0, true);
+    try expectMemoryLoad("11 22 @4", ",2", "aa bb 11 22\n", 1, true);
 }
 
 test "readmem formfeeds delimit words and addresses without adding words" {
@@ -1243,7 +1426,52 @@ test "§17.2.3 $sformat/$swrite fill a reg with the text, §17.3.1 $printtimesca
         \\  $printtimescale;
         \\end endmodule
         \\
-    , "[t=3]\n[ab!]\n[o-long]\nTime scale of (m) is 10us / 100ns\n");
+        // %s shows s's leading zero bytes as spaces (VD-129; iverilog the same).
+    , "[   t=3]\n[   ab!]\n[o-long]\nTime scale of (m) is 10us / 100ns\n");
+}
+
+// §17.1.1.2 grants C's flags to the real conversions only; a radix or `%t`
+// width written with a leading zero pads with zeros after the sign, as
+// iverilog prints it (ivtest delay.v's `%04d`; this transcript is iverilog's).
+test "§17.1.1.2 a zero-led width pads a radix or time field with zeros" {
+    try expectRun(
+        \\module t; reg [7:0] r; integer i; reg [3:0] x;
+        \\initial begin r = 8'h5; i = -5; x = 4'bx01x;
+        \\$display("[%04d][%04h][%06b][%04o][%05d][%06d][%04d][%03d][%04t][%4d]", r, r, r, r, i, x, 12345, 3'd2, 5, r);
+        \\end endmodule
+        \\
+    , "[0005][0005][00000101][0005][-0005][00000X][12345][002][0005][   5]\n");
+}
+
+// §17.3.1 leaves the printed name and a non-module argument open; iverilog
+// (ivtest pr1701855, pr1701855b) prints this transcript: the current module
+// instance's full name with no argument, and for an argument its full name,
+// a select as `[i]`/`[i:i]`, and its own module's scale.
+test "§17.3.1 $printtimescale names any object by its full hierarchical name" {
+    try expectRun(
+        \\`timescale 1us/1ns
+        \\module top;
+        \\  reg [1:0] r; reg a [0:2]; wire w;
+        \\  initial begin : blk
+        \\    $printtimescale(dut); $printtimescale(dut.q); $printtimescale(r[0]); $printtimescale(a[1]);
+        \\    $printtimescale(top.w); $printtimescale(blk); $printtimescale(dut.t);
+        \\  end
+        \\  lower dut();
+        \\endmodule
+        \\`timescale 10ns/10ps
+        \\module lower; reg q; task t; ; endtask initial #1 $printtimescale; endmodule
+        \\
+    ,
+        \\Time scale of (top.dut) is 10ns / 10ps
+        \\Time scale of (top.dut.q) is 10ns / 10ps
+        \\Time scale of (top.r[0:0]) is 1us / 1ns
+        \\Time scale of (top.a[1]) is 1us / 1ns
+        \\Time scale of (top.w) is 1us / 1ns
+        \\Time scale of (top.blk) is 1us / 1ns
+        \\Time scale of (top.dut.t) is 10ns / 10ps
+        \\Time scale of (top.dut) is 10ns / 10ps
+        \\
+    );
 }
 
 test "display retains escaped NUL bytes and unsized integer width" {
@@ -1374,12 +1602,13 @@ test "§17.1.1 %c, %s, %%, %m in a named block, %l, a real's width and precision
 test "§17.1.1.2 a real conversion renders C's flags; any other refuses them (#43)" {
     // By hand: "2.50" left in 8; '+' on 1.5; ' ' where 3.0's sign would be;
     // "-2.500" zero-filled to 8 after its sign; '#' keeps 2's point; `%r`
-    // of 1500 is "1.5K", left in 6. `%05d` stays §17.1.1.3's width 5.
+    // of 1500 is "1.5K", left in 6. `%05d` is C's zero fill, as iverilog
+    // prints it (VD-129).
     try expectRun(
         \\module m; initial $display("[%-8.2f|%+e|% .1f|%08.3f|%#.0f|%-6r|%05d]", 2.5, 1.5, 3.0, -2.5, 2.0, 1500.0, 42);
         \\endmodule
         \\
-    , "[2.50    |+1.500000e+00| 3.0|-002.500|2.|1.5K  |   42]\n");
+    , "[2.50    |+1.500000e+00| 3.0|-002.500|2.|1.5K  |00042]\n");
     try @import("root.zig").expectRejected("module m; initial $display(\"%-5d\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%+h\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%#h\", 1); endmodule", "alternative form");
@@ -1423,4 +1652,23 @@ test "§17.1.1.2 no field width or precision is too large" {
     try want.writer.splatByteAll('0', 4999);
     try want.writer.writeAll("\n");
     try @import("root.zig").expectRun("module m; initial $display(\"%4097d|%20000s|%.5000f\", 1, \"x\", 0.5); endmodule", want.written());
+}
+
+test "§17.1.3 a change before $monitoroff in its step still reports; a $finish step drains first" {
+    // Oracle: iverilog -g2005 (ivtest monitor4) for b's change at 1, which
+    // precedes the $monitoroff, its change at 2, which does not report, and
+    // the change in the $finish step at 3, reported at the step's end. The
+    // `b=2 t=3` line is §17.1.3's own: "$monitoron shall produce a display
+    // immediately" (iverilog defers it to the end of the step).
+    try expectRun(
+        \\module m;
+        \\  integer b;
+        \\  initial begin
+        \\    b = 0; $monitor("b=%0d t=%0d", b, $time);
+        \\    #1 b = 1; $monitoroff;
+        \\    #1 b = 2;
+        \\    #1 $monitoron; b = 3; $finish(0);
+        \\  end
+        \\endmodule
+    , "b=0 t=0\nb=1 t=1\nb=2 t=3\nb=3 t=3\n");
 }

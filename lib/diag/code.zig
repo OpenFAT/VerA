@@ -435,7 +435,10 @@ pub const Code = enum(u16) {
     E1020,
     E1100,
     E1101,
+    /// IEEE 1364-2005 §17.2.10: an SDF file `$sdf_annotate` cannot read.
     E1102,
+    /// IEEE 1364-2005 §16: an SDF construct the annotator does not apply.
+    W1105,
     /// A `.v` design that cannot be a contract device.
     E1103,
     /// A SystemVerilog source.
@@ -459,10 +462,15 @@ pub const Code = enum(u16) {
     W1155,
     /// A `$readmem` file address outside the memory, with no bounds given.
     W1156,
-    /// IEEE 1364-2005 §17.2.9: a `$readmem` file address outside the
-    /// task's range; the load is terminated, the run goes on.
-    E1157,
+    /// IEEE 1364-2005 §17.2.9: a `$readmem` load that cannot go on (a file
+    /// address outside the task's range, a malformed word or address, a
+    /// file that cannot be read, a bound outside the memory); the load is
+    /// terminated, the run goes on.
+    W1157,
     W1160,
+    /// IEEE 1364-2005 §12.2.2.1: more ordered parameter values than the
+    /// module has parameters; the extra ones are ignored.
+    W1161,
     /// IEEE 1364-2005 §15: a timing check reported a violation at run time.
     W1199,
     W1050,
@@ -2613,11 +2621,9 @@ fn infoOf(c: Code) Info {
             \\refusing a form it does not run (E1149), and applies the module
             \\path delays (14.2-14.4: simple, edge-sensitive and state-dependent
             \\paths, `ifnone`, 1/2/3/6/12 delays, chosen per 14.3.3 when the
-            \\destination is scheduled to change). There the warning is only for
-            \\the 14.6 pulse controls (pulsestyle, showcancelled, PATHPULSE$),
-            \\which are ignored: 14.6's default pulse handling applies instead,
-            \\inertial, with the reject and error limits equal to the path delay.
-            \\A block without pulse controls raises none. The same engine runs
+            \\destination is scheduled to change) and the 14.6 pulse controls
+            \\(PATHPULSE$ limits, pulsestyle_onevent/ondetect, showcancelled), so
+            \\it raises no warning there. The same engine runs
             \\the digital half of a mixed-signal design and evaluates its timing
             \\checks too, refusing the forms E1149 lists; the analog compile
             \\still names every check, since the analog solver evaluates none.
@@ -7329,21 +7335,33 @@ fn infoOf(c: Code) Info {
             .explain = "The digital executor supports a documented subset of source processes. Unsupported forms are diagnosed before simulation; timing and capacity failures stop execution explicitly. This does not make legal unsupported Verilog-AMS forms illegal.",
         },
         .E1102 => .{
-            .title = "back-annotation from an SDF file is not supported",
+            .title = "an SDF file the annotator cannot read",
             .lrm = "IEEE 1364-2005 17.2.10",
             .explain =
-            \\$sdf_annotate (IEEE 1364-2005 17.2.10) runs the SDF annotator of
-            \\clause 16, which replaces a design's specify path delays, specparams,
-            \\timing check limits and interconnect delays with values read from
-            \\an SDF file. VerA does not implement clause 16, and it applies no
-            \\specify path delay for one to replace (W0251). Running on as if
-            \\the call had succeeded would simulate a design whose timing the
-            \\file was meant to set, so the call is refused.
+            \\$sdf_annotate (IEEE 1364-2005 17.2.10) reads timing data from an
+            \\SDF file into the design: clause 16's mapping of IOPATH,
+            \\INTERCONNECT, LABEL, TIMINGCHECK and PATHPULSE onto the module
+            \\paths, ports, specparams and timing checks of the instances the
+            \\file's CELLs name. The file could not be opened or read, its
+            \\parentheses do not balance, it is not one (DELAYFILE ...), or its
+            \\TIMESCALE or DIVIDER is malformed. The run stops: carrying on
+            \\would simulate a design whose timing the file was meant to set.
             \\
-            \\Write the delays the design needs in its source: a delay control,
-            \\a continuous assignment or gate delay, or a module-level specparam
-            \\that one of those reads. A timing check's limits are the ones its
-            \\source writes (or a VPI application puts, IEEE 1364-2005 27.31).
+            \\The file is looked for beside the source that names it, then in
+            \\the working directory, as a $readmemh file is.
+            ,
+        },
+        .W1105 => .{
+            .title = "an SDF construct the annotator does not apply",
+            .lrm = "IEEE 1364-2005 16.2",
+            .explain =
+            \\The SDF file holds a construct `vera --run`'s annotator does not
+            \\apply, or one that names nothing in the design: a COND, PORT or
+            \\DEVICE delay, a skew or no-change check, an INSTANCE no instance
+            \\below the annotation scope has, an IOPATH no module path of the
+            \\instance matches, a malformed value. That construct is skipped
+            \\and the rest of the file is applied. The message gives the file
+            \\and line.
             ,
         },
         .E1147 => .{
@@ -7504,10 +7522,15 @@ fn infoOf(c: Code) Info {
             .lrm = "IEEE 1364-2005 17.2.9",
             .explain = "A `$readmemb`/`$readmemh` call with no start or finish argument met an `@` address outside the memory's declared range. The clause's error for an address outside the load range applies only when the task gives addresses, so VerA does not stop the load: the words at addresses outside the memory are skipped, and loading continues at the next in-range address. The warning names the first such address (specification/Vague_Decisions.md VD-040).",
         },
-        .E1157 => .{
-            .title = "memory file address outside the task's load range",
+        .W1157 => .{
+            .title = "a $readmem load terminated",
             .lrm = "IEEE 1364-2005 17.2.9",
-            .explain = "A `$readmemb`/`$readmemh` call that gives a start (and finish) address met an `@` address in the file outside that range. §17.2.9 makes that an error that ends the load operation. VerA issues this error and stops that load: the words loaded before the address stay, none after it is loaded, and the simulation goes on. The run exits 1 when it ends, because an error was issued. With no start or finish argument the rule does not apply (W1156).",
+            .explain = "A `$readmemb`/`$readmemh` load could not go on: a file address outside the start..finish range the task gives (§17.2.9: \"an error message is issued, and the load operation is terminated\"), a word or `@` address that is not a number in the task's radix (the file \"shall contain only\" white space, comments and such numbers), a file that cannot be opened or read, a file name with an x or z bit, a start or finish address that is x, z or outside the memory. VerA issues this message and stops that load: the words loaded before it stay, none after it is loaded, and the simulation goes on. The run's exit status is untouched, as iverilog's is (specification/Vague_Decisions.md VD-134). With no start or finish argument an address outside the memory is W1156 instead.",
+        },
+        .W1161 => .{
+            .title = "extra ordered parameter values ignored",
+            .lrm = "IEEE 1364-2005 12.2.2.1",
+            .explain = "A module instance's parameter value assignment by ordered list gives more values than the module has parameters (local parameters are not in the list). §12.2.2.1 says what the list's order follows and that it may be shorter, not what a longer one means; VerA ignores the values past the last parameter and warns, as iverilog does (specification/Vague_Decisions.md VD-139).",
         },
         .W1160 => .{
             .title = "dissimilar net types joined through a port",

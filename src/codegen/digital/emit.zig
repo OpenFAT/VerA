@@ -972,7 +972,7 @@ fn reach(self: *Emitter, entry: u32, seen: []bool) Error![]const u32 {
                 try work.append(self.arena, next);
             },
             .task_return => {},
-            .pla_start => |loop| try work.appendSlice(self.arena, &.{ next, loop }),
+            .pla_start => |p| try work.appendSlice(self.arena, &.{ next, p.at }),
             .fork => |f| try work.appendSlice(self.arena, if (f.arms.len == 0) &.{f.end} else f.arms),
             .join_arm => |j| try work.append(self.arena, j.end),
             // §9.3 the held slot's own process, started by its `.override_on`.
@@ -1074,6 +1074,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                     try int(self, t.args[3]);
                     try self.print(") }};\n", .{});
                 },
+                .sdf_annotate => return self.refuse("§17.2.10 $sdf_annotate, which the interpreter (`vera --run`) applies"),
                 .printtimescale => try self.print("            try s.out.writeAll(\"{f}\");\n", .{std.zig.fmtString(try staticText(self, display.printTimescale, .{t.args}))}),
                 // §17.1.2: the call is queued, its arguments are read then.
                 .strobe => |sh| {
@@ -1101,6 +1102,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                 // §17.2.9: the bounds are read now; the file when the task runs.
                 .readmem => |radix| {
                     if (self.device) return self.refuse("§17.2.9 $readmemb/$readmemh: a device reads no file");
+                    if (r.file.exprs.tag(t.args[0]) != .str_literal) return self.refuse("§17.2.9 $readmemb/$readmemh with a file name held in a variable");
                     const base = try self.slot(t.args[1]);
                     const arr = r.arrays.get(base).?;
                     const name = r.file.str(r.file.exprs.strOf(t.args[0]));
@@ -1355,7 +1357,11 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
         },
         .join_arm => |j| try self.print("            s.joins[{d}] -= 1;\n            if (s.joins[{d}] == 0) try s.run({d}, null);\n            return;\n", .{ j.join, j.join, j.end }),
         // §17.5 an asynchronous array's own process starts now.
-        .pla_start => |loop| try self.print("            try s.run({d}, null);\n            continue :sw {d};\n", .{ loop, next }),
+        // `exec`'s `now` start is a nested dispatch: the child parks first.
+        .pla_start => |p| if (p.now)
+            try self.print("            try dispatch(s, {d});\n            continue :sw {d};\n", .{ p.at, next })
+        else
+            try self.print("            try s.run({d}, null);\n            continue :sw {d};\n", .{ p.at, next }),
         .override_on => |o| if (o.bits) |b|
             try self.print("            try s.overrideBits({d}, {d}, {d}, {d}, {d}, {d});\n            continue :sw {d};\n", .{ o.slot, partOf(self, o.slot, b).?, b.lo, b.width, o.start, o.end, next })
         else
@@ -1935,6 +1941,9 @@ fn netTables(self: *Emitter) Error!void {
             try self.print(" }},", .{});
             continue;
         }
+        // `rt` runs the default pulse handling only (`resolution.pulse`).
+        if (c.ondetect or c.showcancelled) return self.refuse("IEEE 1364-2005 §14.6.4 pulsestyle_ondetect or showcancelled, which the interpreter (`vera --run`) applies");
+        for (c.paths) |p| if (p.reject != null or p.err != null) return self.refuse("IEEE 1364-2005 §14.6.1 PATHPULSE$ limits, which the interpreter (`vera --run`) applies");
         // §14.3 its module paths, a condition as `pathCond<i>` in `pathConds`' order.
         try self.print(", .paths = &.{{", .{});
         for (c.paths) |p| {
@@ -1970,7 +1979,7 @@ fn netTables(self: *Emitter) Error!void {
                 };
                 try self.print("0, .source = .{{ .mos = .{{ .n_type = {}, .resistive = {}, .data_net = {?d} }} }} }},", .{ m.n_type, m.resistive, data_net });
             },
-            .bridge => |b| try self.print("0, .source = .{{ .bridge = .{{ .src_off = {d}, .src_lo = {d}, .dst_lo = {d}, .width = {d} }} }} }},", .{ self.off[b.src], b.src_lo, b.dst_lo, b.width }),
+            .bridge => |b| try self.print("0, .source = .{{ .bridge = .{{ .src_off = {d}, .src_lo = {d}, .dst_lo = {d}, .width = {d}, .ext = {d}, .sign_at = {?d} }} }} }},", .{ self.off[b.src], b.src_lo, b.dst_lo, b.width, b.ext, b.sign_at }),
             .pull => |b| try self.print("0, .source = .{{ .pull = .{t} }} }},", .{b}),
         }
     }
@@ -2139,7 +2148,7 @@ fn bits(self: *Emitter, ins: []const Ast.ExprId, lane: ?u32) Error!void {
         try self.print("            const in{d} = ", .{j});
         const t = try expr.selfDetermined(self, in);
         try self.print(";\n", .{});
-        if (t.width > 1) try self.print("            const bit{d} = L.low(L.part(in{d}, {d}, 1, {d}));\n", .{ j, j, lane.?, t.width }) else try self.print("            const bit{d} = L.low(in{d});\n", .{ j, j });
+        if (t.width > 1) try self.print("            const bit{d} = L.low(L.part(in{d}, {d}, 1, {d}));\n", .{ j, j, lane orelse 0, t.width }) else try self.print("            const bit{d} = L.low(in{d});\n", .{ j, j });
     }
     try self.print("            const b = [_]L.Bit{{", .{});
     for (0..ins.len) |j| try self.print(" bit{d},", .{j});
@@ -2200,12 +2209,17 @@ pub fn fread(self: *Emitter, args: []const Ast.ExprId) Error!void {
         try self.print(";\n            if (first{d} < {d} or first{d} > {d} or count{d} <= 0) break :fr{d} L.k(0, 0);\n", .{ lb, memory.low, lb, memory.high, lb, lb });
         try self.print("            const n{d}: u32 = @intCast(@min(count{d}, {d} - first{d} + 1));\n            var read{d}: i64 = 0;\n            for (0..n{d}) |k{d}| {{\n", .{ lb, lb, memory.high, lb, lb, lb, lb });
         try self.print("            const a{d}: u32 = {d} + @as(u32, @intCast(first{d} - {d})) + @as(u32, @intCast(k{d}));\n", .{ lb, at, lb, memory.low, lb });
-        try self.print("            const word{d} = try s.fileWord(fd{d}, {d});\n            read{d} += word{d}.n;\n            const v{d} = word{d}.value orelse break;\n            ", .{ lb, lb, width, lb, lb, lb, lb });
+        try self.print("            const word{d} = try s.fileWord(fd{d}, {d}, ", .{ lb, lb, width });
+        const prior = .{ self.off[at], lb, at, words(width) };
+        if (width <= 64) try self.print("M.get(s, {d} + (a{d} - {d}) * {d})", prior) else try self.print("M.getw(s, {d} + (a{d} - {d}) * {d}, {d})", prior ++ .{words(width)});
+        try self.print(");\n            read{d} += word{d}.n;\n            const v{d} = word{d}.value orelse break;\n            ", .{ lb, lb, lb, lb });
         try self.storeElement(at, lb, .blocking);
         try self.print("v{d}, {f});\n            }}\n            break :fr{d} L.k(@as(u32, @truncate(@as(u64, @bitCast(read{d})))), 0);\n            }}", .{ lb, full(width), lb, lb });
     } else {
         const ty = try targetType(self, args[0]);
-        try self.print("            const word{d} = try s.fileWord(fd{d}, {d});\n            if (word{d}.value) |v{d}| {{\n", .{ lb, lb, ty.width, lb, lb });
+        try self.print("            const word{d} = try s.fileWord(fd{d}, {d}, ", .{ lb, lb, ty.width });
+        _ = try expr.selfDetermined(self, args[0]);
+        try self.print(");\n            if (word{d}.value) |v{d}| {{\n", .{ lb, lb });
         try assignment(self, args[0], .{ .evaluated = .{ .label = lb, .ty = .{ .width = ty.width, .signed = false } } }, .blocking);
         try self.print("            }}\n            break :fr{d} L.k(@as(u32, @truncate(@as(u64, @bitCast(word{d}.n)))), 0);\n            }}", .{ lb, lb });
     }
@@ -2257,7 +2271,15 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
         }
         if (ex.tag(e) != .str_literal) {
             try flush(self, &text);
-            try operand(self, e, sh.radix, null);
+            if (compile.typeOf(r, e).real) {
+                // `display.bareReal`'s text: `%#g`, a bare `$realtime` `%.Nf`.
+                try self.print("            try s.real(", .{});
+                try expr.real(self, e);
+                if (ex.tag(e) == .sys_call and r.sys_calls[@backingInt(e)].? == .realtime)
+                    try self.print(", 'f', 0, {d}, null);\n", .{std.math.log10_int(@as(u64, r.timeOf(r.scope).scale.local_per_unit))})
+                else
+                    try self.print(", 'g', {d}, -1, null);\n", .{@import("kernels").str_kernels.zc_alt});
+            } else try operand(self, e, sh.radix, null, false);
             continue;
         }
         const format = r.file.str(ex.strOf(e));
@@ -2277,20 +2299,25 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
             const sp = fmt.spec(format, &i);
             const width = sp.width;
             const precision = sp.precision;
+            // `display.walk`'s '0'-flag field (`display.zeroFilled`).
+            const zero = sp.flags & @import("kernels").str_kernels.zc_zero != 0 and (width orelse 0) != 0;
             switch (format[i]) {
-                'b', 'B', 'o', 'O', 'h', 'H', 'd', 'D' => {
+                'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D' => {
                     arg += 1;
                     try flush(self, &text);
+                    if (zero) try self.print("            s.zeroBegin();\n", .{});
                     try operand(self, args[arg], switch (format[i]) {
                         'b', 'B' => .binary,
                         'o', 'O' => .octal,
-                        'h', 'H' => .hex,
+                        'h', 'H', 'x', 'X' => .hex,
                         else => .decimal,
-                    }, width);
+                    }, width, false);
+                    if (zero) try self.print("            try s.zeroEnd();\n", .{});
                 },
                 't', 'T' => {
                     arg += 1;
                     try flush(self, &text);
+                    if (zero) try self.print("            s.zeroBegin();\n", .{});
                     // A real operand is formatted as it is (#64).
                     if (compile.typeOf(r, args[arg]).real) {
                         try self.print("            try s.timeReal(", .{});
@@ -2301,6 +2328,7 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
                         const t = try expr.selfDetermined(self, args[arg]);
                         try self.print(", {d}, {}, {d}, {?d});\n", .{ t.width, t.signed, r.timeOf(r.scope).unit_exp, width });
                     }
+                    if (zero) try self.print("            try s.zeroEnd();\n", .{});
                 },
                 's', 'S', 'c', 'C' => {
                     arg += 1;
@@ -2380,9 +2408,9 @@ fn dynamicFormat(self: *Emitter, args: []const Ast.ExprId) Error!void {
     try self.print(", {d});\n            b{d}: {{\n", .{ ft.width, lb });
     for (args[1..], 1..) |a, k| {
         try self.print("            const c{d}_{d} = (try s.nextSpec(&f{d}, \"{f}\", \"{f}\")) orelse break :b{d};\n", .{ lb, k, lb, scope, lib, lb });
-        try self.print("            switch (c{d}_{d}.conv) {{\n                'b', 'B', 'o', 'O', 'h', 'H', 'd', 'D' => try s.value(", .{ lb, k });
+        try self.print("            switch (c{d}_{d}.conv) {{\n                'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D' => try s.value(", .{ lb, k });
         var t = try expr.selfDetermined(self, a);
-        try self.print(", {d}, {}, switch (c{d}_{d}.conv) {{\n                    'b', 'B' => .binary,\n                    'o', 'O' => .octal,\n                    'h', 'H' => .hex,\n                    else => .decimal,\n                }}, c{d}_{d}.width),\n", .{ t.width, t.signed, lb, k, lb, k });
+        try self.print(", {d}, {}, switch (c{d}_{d}.conv) {{\n                    'b', 'B' => .binary,\n                    'o', 'O' => .octal,\n                    'h', 'H', 'x', 'X' => .hex,\n                    else => .decimal,\n                }}, c{d}_{d}.width, c{d}_{d}.flags & {d} != 0),\n", .{ t.width, t.signed, lb, k, lb, k, lb, k, @import("kernels").str_kernels.zc_zero });
         if (compile.typeOf(r, a).real) {
             try self.print("                't', 'T' => try s.timeReal(", .{});
             try expr.real(self, a);
@@ -2414,10 +2442,15 @@ fn flush(self: *Emitter, text: *std.ArrayList(u8)) Error!void {
 }
 
 /// One `%b %o %h %d` operand, or an argument with no format.
-fn operand(self: *Emitter, e: Ast.ExprId, radix: fmt.Radix, width: ?u64) Error!void {
+fn operand(self: *Emitter, e: Ast.ExprId, radix: fmt.Radix, width: ?u64, zero: bool) Error!void {
+    if (compile.typeOf(self.r, e).real) {
+        try self.print("            try s.realValue(", .{});
+        try expr.real(self, e);
+        return self.print(", .{t}, {?d});\n", .{ radix, width });
+    }
     try self.print("            try s.value(", .{});
     const t = try expr.selfDetermined(self, e);
-    try self.print(", {d}, {}, .{t}, {?d});\n", .{ t.width, t.signed, radix, width });
+    try self.print(", {d}, {}, .{t}, {?d}, {});\n", .{ t.width, t.signed, radix, width, zero });
 }
 
 test words {

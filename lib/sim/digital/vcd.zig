@@ -595,12 +595,6 @@ pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
     try @import("evcd.zig").tick(r, a);
 }
 
-/// §17.4.1 `$finish` ends the run before the step's `.vcd_tick` dispatches;
-/// what that step changed is still part of the dump.
-pub fn finish(r: *Run, a: std.mem.Allocator) Error!void {
-    if (r.vcd.pending) try tick(r, a);
-}
-
 test "§18.2.1 %.16g at the edges of its two styles" {
     var buf: [64]u8 = undefined;
     // Each expected text is C's printf("%.16g") of the value: the style is

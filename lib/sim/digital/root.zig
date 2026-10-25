@@ -343,6 +343,9 @@ pub const Run = struct {
     /// key is the scope the name was declared in plus the interned name. The
     /// scope in force is `self.scope`, which the executing process carries.
     names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// Each `names` entry's declaration token, for `lookupAt` (by name, not
+    /// slot: a port's slot is its connection's, declared in another module).
+    bound_at: std.AutoHashMapUnmanaged(Name, u32) = .empty,
     scope: u32 = 0,
     /// IEEE 1364-2005 §26.6.19(e): the lexical scope of an expression a
     /// VPI application may evaluate later, keyed by (instance, expression).
@@ -388,9 +391,24 @@ pub const Run = struct {
     /// §9.7.2 each event term that is an expression, by the scope it is
     /// compiled in: the hidden slot `compile.exprTerm` keeps equal to it.
     term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) = .empty,
+    /// The always constructs `processes` starts first at time 0
+    /// (`levelControlled`), in source order, by the pc each starts at.
+    early: std.ArrayList(u32) = .empty,
+    /// The token each scope after the root was made at (`elab.newScope`),
+    /// which orders a scope's children as the source does (`processOrder`).
+    scope_toks: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// §9.7.2 an expression term that reads a timed automatic task's
+    /// variables, by scope, and the slots it reads: a hidden slot would be
+    /// shared by every activation (§10.2.1), so each waiter instead tests
+    /// the expression in its own activation (`waiters.TermExt.expr`).
+    auto_terms: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, []const u32) = .empty,
     /// The storage of automatic tasks and functions, which §10.2.3 keeps
     /// out of constructs that might outlive an activation.
     auto_slots: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// The scopes whose variables are automatic: an automatic task's or
+    /// function's frame, and the named blocks inside it (§10.2.1: "all
+    /// items declared inside automatic tasks" are allocated per call).
+    auto_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// The saved storage of the automatic activations in progress.
     saved_planes: std.ArrayList(u64) = .empty,
     /// §10.2.3 the activations of recursive timed tasks: the one the
@@ -407,6 +425,12 @@ pub const Run = struct {
     /// and a downward hierarchical reference walks these before it reaches a
     /// slot at all.
     instances: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// IEEE 1364-2005 §12.7 the gate, switch and UDP instance names of each
+    /// scope, each to its token: no storage, but declared there, so they hide
+    /// an outer name of the same spelling from `lookupAt`, `upward` and a call
+    /// (iverilog refuses the hidden use the same way); `lookupAt` from the
+    /// instance on, a call and `upward` wherever it is.
+    prim_names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
     /// §12.5 the scope of each named block that declares something, keyed by
     /// the scope it runs in and its statement (`blockScope`).
     block_scopes: std.AutoHashMapUnmanaged(struct { scope: u32, stmt: Ast.StmtId }, u32) = .empty,
@@ -558,6 +582,8 @@ pub const Run = struct {
     /// continuous assignment's or gate's delay be one, which §6.1.3 reads
     /// each time the driver schedules (`exec`'s `.continuous`).
     driver_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
+    /// The same for a §7.6 pass switch's delays, by `trans` index.
+    tran_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
     /// IEEE 1364-2005 §14.3.3: per module path source slot (a `.path`
     /// watch), its last transition, which picks the path whose delay a
     /// destination transition takes (`waiters.store` fills it).
@@ -1001,6 +1027,7 @@ pub const Run = struct {
         var s = self.scope;
         while (true) {
             if (self.instances.get(.{ .scope = s, .str = name })) |child| return child;
+            if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
             const info = self.scope_info.items[s];
             if (info.lexical) {
                 if (info.name == name and info.index == null) return s;
@@ -1136,7 +1163,8 @@ pub const Run = struct {
                 self.exprFail(e, "undeclared digital variable");
         }
         if (ex.tag(e) != .ident) return self.exprFail(e, "only whole-variable lvalues are implemented");
-        return self.lookup(self.scope, ex.strOf(e)) orelse self.exprFail(e, "undeclared digital variable");
+        return self.lookupAt(self.scope, ex.strOf(e), ex.mainTok(e)) orelse
+            if (self.lookup(self.scope, ex.strOf(e)) != null and !self.instanceHides(self.scope, ex.strOf(e), ex.mainTok(e))) self.exprFail(e, "a name is used before its declaration") else self.exprFail(e, "undeclared digital variable");
     }
     /// `text`, a part of the hierarchical name at token `tok` with `[]`
     /// selects, with each one's index from `indices` (from `used` on) folded
@@ -1233,6 +1261,38 @@ pub const Run = struct {
 
     /// §12.7 a name as seen from `scope`: declared there, or in an enclosing
     /// scope of the same module, never across an instance boundary.
+    /// `lookup` from a statement or expression at token `tok`. A name is
+    /// visible from its declaration on, so one declared after `tok` leaves
+    /// an outer one in view, or none (iverilog's decl_before_use: 1364
+    /// states the rule only for specparams, §4.10.3, and events, §9.7.3,
+    /// and leaves it open elsewhere). A gate, switch or UDP instance named
+    /// the same hides the outer name from the instance on (iverilog's
+    /// gate_instance_shadow_fail and gate_instance_reference_order).
+    pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
+        var s = scope;
+        while (true) {
+            if (self.names.get(.{ .scope = s, .str = str })) |at| {
+                // Elaboration's constant contexts (a range over a parameter
+                // declared later, §12.2) see the whole scope.
+                if (self.growing != null or (self.bound_at.get(.{ .scope = s, .str = str }) orelse 0) <= tok) return at;
+            } else if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return null;
+            const info = self.scope_info.items[s];
+            if (!info.lexical) return null;
+            s = info.parent;
+        }
+    }
+    /// Whether `lookupAt` found nothing because a primitive instance of
+    /// that name, at or before `tok`, hides the outer one.
+    fn instanceHides(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) bool {
+        var s = scope;
+        while (true) {
+            if (self.names.contains(.{ .scope = s, .str = str })) return false;
+            if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return true;
+            const info = self.scope_info.items[s];
+            if (!info.lexical) return false;
+            s = info.parent;
+        }
+    }
     pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
         var s = scope;
         while (true) {
@@ -1340,6 +1400,7 @@ pub const Run = struct {
         const entry = try self.names.getOrPut(self.arena, .{ .scope = self.scope, .str = name });
         if (entry.found_existing) return self.fail(tok, "duplicate digital variable", .{});
         entry.value_ptr.* = at;
+        try self.bound_at.put(self.arena, entry.key_ptr.*, tok);
     }
     /// A vector slot's declared `[msb:lsb]` (an array's first element's is
     /// every element's), `[w-1:0]` when it declares none.
@@ -1617,8 +1678,17 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     var finest: Time.Quantum = default_quantum;
     var set: usize = 0;
     const locals = try arena.alloc(Local, file.modules.len);
+    const tags = tokens.items(.tag);
     for (file.modules, locals) |*def, *l| {
         l.* = .{};
+        // A `timescale between a module's header and its `endmodule`: §19.8
+        // gives a directive to "all modules that follow", and 1364 has no
+        // "shall" on where it is written; VerA refuses it, as iverilog does
+        // (no_timescale_in_module).
+        var end = def.main_tok;
+        while (end + 1 < tags.len and tags[end] != .kw_endmodule) end += 1;
+        for (times) |event| if (event.at > r.starts[def.main_tok] and event.at < r.starts[end])
+            return r.fail(def.main_tok, "§19.8: a `timescale directive is written outside a module definition, not inside one", .{});
         for (times) |event| {
             if (event.at > r.starts[def.main_tok]) continue;
             const t = event.value orelse {
@@ -1734,7 +1804,10 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
             .gate => |g| for (g.ins) |in| {
                 try compile.checkExpr(&r, in);
                 const w = compile.typeOf(&r, in).width;
-                if (w != 1 and !(g.lane != null and w == g.lanes)) return r.exprFail(in, "a gate's input terminal is one bit, or one per instance of an array");
+                // A single gate reads a vector input's LSB: §7.1.6 sizes only
+                // an array's terminals, and iverilog (gate_connect1) and the
+                // other simulators read bit 0.
+                if (g.lane != null and w != 1 and w != g.lanes) return r.exprFail(in, "a gate's input terminal is one bit, or one per instance of an array");
                 try compile.sensitivity(&r, in, &watched);
             },
             .mos => |mo| for ([_]Ast.ExprId{ mo.data, mo.gate }) |in| {
@@ -1761,8 +1834,13 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
             .source = a.source,
             .scope = a.scope,
             .sensitivity = watched.items,
-            // A sequential UDP's output is its state from the start (§8.5).
-            .current = try filled(arena, r.nets[a.net].resolved.width, false, .z),
+            // A driver's output is unknown until its first value lands
+            // (§4.2.1: "Nets with drivers shall assume the output value of
+            // their drivers"; §8.5 Figure 8-1 draws q and qb, behind `buf #3`
+            // and `not #5`, unknown until 3 and 5). Only a net with no driver
+            // keeps §4.2.1's default z. A sequential UDP's output is its state
+            // from the start (§8.5), set below.
+            .current = try filled(arena, r.nets[a.net].resolved.width, false, .x),
             .s0 = a.s0,
             .s1 = a.s1,
             .delay = if (try constantDelay(&r, a.delay)) try r.declaredDelay3(a.delay, a.tok) else blk: {
@@ -1776,13 +1854,64 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         if (a.source == .udp) setBit(r.drivers[i].current, a.source.udp.out_bit orelse 0, a.source.udp.state);
         _ = try exec.enqueue(&r, .{ .run_process = try compile.append(&r, .{ .continuous = @intCast(i) }) }, null, false);
     }
+    // The bits a continuous assignment or a port window leaves at z (a
+    // select's other bits, a constant z) are z from the start, not the x
+    // of a value still to come: their first evaluation changes nothing
+    // there, so it wakes nothing (iverilog's reading; a process armed
+    // before it would see a change no driver made).
+    {
+        var scratch = std.heap.ArenaAllocator.init(arena);
+        defer scratch.deinit();
+        // Read every net as x, the value its drivers have not yet given it:
+        // a bit is z here only when no operand value can make it otherwise.
+        const saved = try scratch.allocator().alloc([]u64, r.nets.len);
+        for (r.nets, saved) |n, *keep| {
+            const planes = r.values[n.slot].planes;
+            keep.* = try scratch.allocator().dupe(u64, planes);
+            const x = try filled(scratch.allocator(), r.values[n.slot].width, false, .x);
+            @memcpy(planes, x.planes);
+        }
+        defer for (r.nets, saved) |n, keep| @memcpy(r.values[n.slot].planes, keep);
+        for (r.drivers) |*d| {
+            r.scope = d.scope;
+            const first = switch (d.source) {
+                // A window's source may be a net not yet initialized: only
+                // the bits outside the window are known to be z.
+                .bridge => |b| blk: {
+                    const w = try filled(scratch.allocator(), d.current.width, false, .z);
+                    for (b.dst_lo..b.dst_lo + b.width) |k| setBit(w, @intCast(k), .x);
+                    break :blk w;
+                },
+                // A call may have side effects (a function writing a module
+                // variable): such a driver starts at x throughout.
+                .expr => |x| blk: {
+                    if (calls(&r.file.exprs, x.e)) continue;
+                    if (x.slice) |sl| {
+                        const whole = try evaluate.eval(&r, scratch.allocator(), x.e, sl.total);
+                        const part = try filled(scratch.allocator(), d.current.width, false, .z);
+                        evaluate.copyBits(part, 0, whole, sl.lo, d.current.width);
+                        break :blk part;
+                    }
+                    break :blk try evaluate.evalFor(&r, scratch.allocator(), x.e, r.slotType(r.nets[d.net].slot));
+                },
+                else => continue, // else: a gate, switch, UDP or pull starts at its own unknown
+            };
+            for (0..d.current.width) |k| if (first.bit(@intCast(k)) == .z) setBit(d.current, @intCast(k), .z);
+        }
+    }
     // §7.6: each net knows the pass switches on it, and a controlled one is
     // a process that re-resolves both sides whenever its control changes.
     r.trans = try arena.alloc(Tran, e.trans.items.len);
     for (e.trans.items, r.trans, 0..) |t, *dst, i| {
         dst.* = t.tran;
-        if (t.tran.ctrl == .none) continue;
         r.scope = t.scope;
+        // §7.6's delays, a variable read when the control changes as a
+        // driver's is (iverilog's rise_fall_delay3).
+        if (t.delay.rise != .none) dst.delay = if (try constantDelay(&r, t.delay)) try r.declaredDelay3(t.delay, t.tok) else blk: {
+            try r.tran_delays.put(arena, @intCast(i), t.delay);
+            break :blk .{ .present = true };
+        };
+        if (t.tran.ctrl == .none) continue;
         try compile.checkExpr(&r, t.tran.ctrl);
         var watched: std.ArrayList(u32) = .empty;
         try compile.sensitivity(&r, t.tran.ctrl, &watched);
@@ -1815,6 +1944,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         r.net_driver_start = at.start;
         r.net_drivers = at.items;
         for (r.nets, 0..) |n, net| {
+            resolution.initial(&r, @intCast(net));
             // §7.9 `uwire` is the UNRESOLVED net type: a second driver is not a
             // resolution question there, it is an error. §4.6.5's "more than
             // one driver" is per bit: drivers of disjoint selects are legal.
@@ -1831,7 +1961,13 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     // §10 subroutine bodies, each on its own pc range before any process, so
     // a synchronous call never runs into a process's code.
     try compile.compileSubs(&r);
-    for (e.insts.items) |inst| {
+    // §9.9 leaves the order of initial and always constructs open; VerA
+    // queues them as iverilog does: the scope tree depth first, each
+    // instance's and generate block's child scopes (in source order) before
+    // its own processes, which keep source order (ivtest contrib/pic's
+    // first lines).
+    for (try processOrder(&r, &e)) |g| if (g < e.insts.items.len) {
+        const inst = e.insts.items[g];
         r.scope = inst.scope;
         try initVars(&r, inst.module.vars);
         if (r.mixed) {
@@ -1859,32 +1995,24 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         // slots their events name, in a `.v` run and in the digital half of
         // a mixed-signal design alike.
         try tchk.compileChecks(&r, inst.module.timing_checks);
-    }
-    for (e.procs.items) |p| {
+    } else {
+        const p = e.procs.items[g - e.insts.items.len];
         r.scope = p.scope;
         try initVars(&r, p.vars);
         try processes(&r, p.blocks);
+    };
+    // Last, each ahead of the rest, so the first in source order runs first.
+    var left = r.early.items.len;
+    while (left > 0) {
+        left -= 1;
+        try exec.enqueueFirst(&r, .{ .run_process = r.early.items[left] });
     }
     // A.6.5's `disable` names a block that needs no declaration before its
     // use (it may be in another process), so the ranges are bound here, once
     // every process has a pc range.
     // A block is looked for through the enclosing scopes (§12.7); a name
     // that is no block may be a task (§10.3), which has no single range.
-    disabling: for (r.disables.items) |d| {
-        var s = d.name.scope;
-        while (true) {
-            if (r.blocks.get(.{ .scope = s, .str = d.name.str })) |range| {
-                r.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
-                continue :disabling;
-            }
-            if (!r.scope_info.items[s].lexical) break;
-            s = r.scope_info.items[s].parent;
-        }
-        const idx = r.sub_by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
-            return r.fail(d.tok, "undeclared named block or task", .{});
-        if (r.subs.items[idx].decl.is_function) return r.fail(d.tok, "§10.3: `disable` cannot name a function, only a named block within one", .{});
-        r.code.items[d.at] = .{ .disable_task = idx };
-    }
+    try bindDisables(&r, 0);
     // Pass two may have minted storage (an automatic task inlined at a call
     // site), so the slot space is final only now.
     r.growing = null;
@@ -1915,6 +2043,27 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     @memset(r.slot_memo, .{});
     r.diag_stage = .run;
     return r;
+}
+
+/// Binds `r.disables[from..]` to their blocks' pc ranges or their tasks.
+/// A function compiled early for a §10.4.5 constant call binds its own at
+/// once (`elab.earlyFrame`): it runs before the other processes exist.
+pub fn bindDisables(r: *Run, from: usize) Error!void {
+    disabling: for (r.disables.items[from..]) |d| {
+        var s = d.name.scope;
+        while (true) {
+            if (r.blocks.get(.{ .scope = s, .str = d.name.str })) |range| {
+                r.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
+                continue :disabling;
+            }
+            if (!r.scope_info.items[s].lexical) break;
+            s = r.scope_info.items[s].parent;
+        }
+        const idx = r.sub_by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
+            return r.fail(d.tok, "undeclared named block or task", .{});
+        if (r.subs.items[idx].decl.is_function) return r.fail(d.tok, "§10.3: `disable` cannot name a function, only a named block within one", .{});
+        r.code.items[d.at] = .{ .disable_task = idx };
+    }
 }
 
 /// The rows of `rows` grouped by net, as one counting sort: `items` holds
@@ -1950,11 +2099,14 @@ fn netRuns(
 /// `delay_value` and the `mintypmax_expression` in `delay3`'s parentheses may
 /// read a variable too (`Run.driver_delays`).
 fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
+    // Every value is checked, not only those before the first variable one:
+    // `exec.variableDelay` types each of them at run time.
+    var constant = true;
     for ([_]Ast.ExprId{ d.rise, d.fall, d.off }) |x| if (x != .none) {
         try compile.checkExpr(r, x);
-        if (!compile.constantExpression(r, x)) return false;
+        constant = constant and compile.constantExpression(r, x);
     };
-    return true;
+    return constant;
 }
 
 /// Whether top-level module `m` declares a parameter `--param` may set,
@@ -1966,9 +2118,63 @@ fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []co
 
 /// The bits [lo, hi) of its `width`-bit net that driver `d` drives: a port
 /// window's, or an instance-array member's one output bit; else all of them.
+/// The order `elaborateDeep` queues the process groups of `e` in: index k
+/// below `e.insts.items.len` is that instance's module body, the rest are
+/// `e.procs` (generate blocks), each visited when the scope tree's post-order
+/// walk from the roots reaches its scope.
+fn processOrder(r: *Run, e: *const elab.Elab) Error![]const u32 {
+    const a = r.arena;
+    const n = r.scope_info.items.len;
+    const groups = try a.alloc(std.ArrayList(u32), n);
+    @memset(groups, .empty);
+    for (e.insts.items, 0..) |inst, k| try groups[inst.scope].append(a, @intCast(k));
+    for (e.procs.items, 0..) |p, k| try groups[p.scope].append(a, @intCast(e.insts.items.len + k));
+    const children = try a.alloc(std.ArrayList(u32), n);
+    @memset(children, .empty);
+    for (r.scope_info.items, 0..) |info, k| if (info.parent != k and k != 0) try children[info.parent].append(a, @intCast(k));
+    const BySource = struct {
+        fn less(toks: *const std.AutoHashMapUnmanaged(u32, u32), x: u32, y: u32) bool {
+            return (toks.get(x) orelse 0) < (toks.get(y) orelse 0);
+        }
+    };
+    for (children) |c| std.sort.block(u32, c.items, &r.scope_toks, BySource.less);
+    var out: std.ArrayList(u32) = .empty;
+    // An explicit stack: (scope, next child to visit).
+    var stack: std.ArrayList([2]u32) = .empty;
+    for (r.roots) |root_scope| {
+        try stack.append(a, .{ root_scope, 0 });
+        while (stack.items.len != 0) {
+            const top = &stack.items[stack.items.len - 1];
+            const kids = children[top[0]].items;
+            if (top[1] < kids.len) {
+                const c = kids[top[1]];
+                top[1] += 1;
+                try stack.append(a, .{ c, 0 });
+                continue;
+            }
+            try out.appendSlice(a, groups[top[0]].items);
+            _ = stack.pop();
+        }
+    }
+    std.debug.assert(out.items.len == e.insts.items.len + e.procs.items.len);
+    return out.items;
+}
+
+/// Whether expression `e` calls a function, user or system.
+fn calls(ex: *const Ast.ExprStore, e: Ast.ExprId) bool {
+    if (e == .none) return false;
+    switch (ex.tag(e)) {
+        .call, .sys_call => return true,
+        else => {}, // else: an operator or operand, whose operands are searched
+    }
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| if (calls(ex, c)) return true;
+    return false;
+}
+
 fn driverBits(d: Driver, width: u32) [2]u32 {
     const bit: ?u32 = switch (d.source) {
-        .bridge => |b| return .{ b.dst_lo, b.dst_lo + b.width },
+        .bridge => |b| return .{ b.dst_lo, b.dst_lo + b.width + b.ext },
         .gate => |g| g.out_bit,
         .mos => |m| m.out_bit,
         .udp => |u| u.out_bit,
@@ -2003,8 +2209,65 @@ fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
             .{ .restart = .{ .target = start, .tok = process.main_tok } }
         else
             .stop);
-        _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
+        // §9.9.2: an always construct whose statement never waits "will
+        // cause a simulation deadlock" at time 0, the one time every process
+        // starts at; iverilog refuses it at compile time (ivtest
+        // always3.1.*), and so does VerA, rather than when it first runs
+        // (specification/Vague_Decisions.md VD-133).
+        if (process.is_always and timeless(r.file, process.body))
+            return r.fail(process.main_tok, "§9.9.2: this always construct has no timing control, so it loops at time 0 without suspending (a simulation deadlock)", .{});
+        if (process.is_always and try levelControlled(r, process.body)) {
+            try r.early.append(r.arena, start);
+        } else _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
     }
+}
+
+/// Whether statement `s` can never suspend nor end the run: no delay, event
+/// or wait control anywhere in it, no intra-assignment one, no task enable
+/// (a task may wait) and no `$finish`/`$stop`.
+fn timeless(file: *const Ast.SourceFile, s: Ast.StmtId) bool {
+    const V = struct {
+        f: *const Ast.SourceFile,
+        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) error{Timed}!void {}
+        pub fn stmt(v: @This(), c: Ast.StmtId) error{Timed}!void {
+            if (c == .none) return;
+            switch (v.f.stmt(c)) {
+                .event_control => return error.Timed,
+                .assign => |a| if (a.timing != .none or a.timing_implicit) return error.Timed,
+                .sys_task => |t| {
+                    const name = v.f.str(t.name);
+                    if (name[0] != '$' or std.mem.eql(u8, name, "$finish") or std.mem.eql(u8, name, "$stop")) return error.Timed;
+                },
+                else => {}, // else: no timing of its own; its children are searched
+            }
+            try v.f.stmtEdges(c, v);
+        }
+    };
+    (V{ .f = file }).stmt(s) catch return false;
+    return true;
+}
+
+/// Whether `body`, an always construct's, starts with an event control on
+/// levels only (`@(a or b[0])`, `@*`): no posedge or negedge, no named event.
+/// §9.9 gives initial and always constructs no order; VerA starts these
+/// first at time 0, ahead of every driver and process (`Run.early`), so
+/// they see the time-0 changes the others make, as iverilog does (ivtest
+/// pr1026, pr1956211, pr2986528).
+fn levelControlled(r: *Run, body: Ast.StmtId) Error!bool {
+    const st = r.file.stmt(body);
+    if (st != .event_control or st.event_control.kind != .event) return false;
+    const L = struct {
+        fn level(rr: *Run, e: Ast.ExprId) Error!bool {
+            const ex = &rr.file.exprs;
+            return switch (ex.tag(e)) {
+                .event_or => try level(rr, ex.lhs(e)) and try level(rr, ex.rhs(e)),
+                .event_posedge, .event_negedge, .event_function, .event_driver_update => false,
+                .ident, .hier_ident, .index => (try compile.eventReference(rr, e)) == null,
+                else => true, // else: an expression term
+            };
+        }
+    };
+    return st.event_control.event == .none or try L.level(r, st.event_control.event);
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -2016,6 +2279,7 @@ test {
     _ = @import("evcd.zig");
     _ = @import("driver.zig");
     _ = tchk;
+    _ = @import("sdf.zig");
 }
 
 /// Test helper: runs `source` and expects its transcript to be `expected`
@@ -2032,6 +2296,36 @@ pub fn expectRun(source: []const u8, expected: []const u8) !void {
         return e;
     };
     try std.testing.expectEqualStrings(expected, output.written());
+}
+
+// §9.9 gives initial and always constructs no order; VerA starts them as
+// iverilog does, and this is iverilog's transcript: child instances' processes
+// before their parent's (`processOrder`), a level-controlled always armed
+// before the initial that writes its operand (`levelControlled`, ivtest
+// pr1026), and a driver of `w[1]` leaving `w[0]` z from the start, so its
+// first evaluation is no change of `w` (only the write at 2 is).
+test "§9.9 time-0 process order is iverilog's" {
+    try expectRun(
+        \\module top;
+        \\  reg [4:0] index; reg [31:0] foo; reg r; wire [1:0] w;
+        \\  initial begin index = 0; #1 $display("foo=%b", foo); end
+        \\  always @(*) begin foo = 32'b0; foo[index] = 1'b1; end
+        \\  assign w[1] = r;
+        \\  always @(w) $display("%0t w=%b", $time, w);
+        \\  initial #2 r = 1;
+        \\  a ua();
+        \\  initial $display("top");
+        \\endmodule
+        \\module a; initial $display("a"); b ub(); endmodule
+        \\module b; initial $display("b"); endmodule
+    , "b\na\ntop\nfoo=00000000000000000000000000000001\n2 w=1z\n");
+    // §9.9.2: an always construct that can never wait deadlocks at time 0;
+    // iverilog refuses it (ivtest always3.1.2A).
+    try expectRejected("module m; reg [3:0] v; initial $display(\"%h\", v); always v <= 4'h5; endmodule", "has no timing control");
+    // VD-133: a timing control anywhere, a task call (which may wait) or a
+    // `wait` keeps the construct running.
+    try expectRun("module m; reg c; task t; #2 c = ~c; endtask initial begin c = 0; #5 $display(\"%b\", c); $finish(0); end always t; endmodule", "0\n");
+    try expectRun("module m; reg c; initial begin c = 0; #3 c = 1; #1 $display(\"%b\", c); $finish(0); end always begin if (c) wait (!c); else #1; end endmodule", "1\n");
 }
 
 test "a zero-delay loop fails by name instead of hanging at one tick" {
@@ -2259,6 +2553,36 @@ test "§10.2.3 recursive timed automatic tasks and a formal passed to itself" {
     , "4 ra=3\n9 rb=6 f=7\n");
 }
 
+// §10.2.1: an automatic task's variables are each activation's own, so a
+// write in one activation is no change an event control in another sees
+// (`@f` in `fact`, ivtest recursive_task), and an expression term over them
+// is the waiter's own, read when it arms (`@(arr[j])` after `j` is written,
+// ivtest automatic_task3). iverilog prints this transcript.
+test "§10.2.1 an event control over automatic variables reads its own activation" {
+    try expectRun(
+        \\module m;
+        \\reg [7:0] arr [0:1];
+        \\integer r;
+        \\task automatic fact(input integer n, output integer f);
+        \\  integer t;
+        \\  fork
+        \\    begin if (n > 1) fact(n - 1, t); else t = 1; #1 f = n * t; end
+        \\    @f $display("%0t f=%0d", $time, f);
+        \\  join
+        \\endtask
+        \\task automatic t(input [7:0] v);
+        \\  integer j;
+        \\  begin j = v - 1; @(arr[j]) $display("%0t v=%0d", $time, v); end
+        \\endtask
+        \\initial arr[1] = 7;
+        \\initial #10 arr[0] = 3;
+        \\initial t(1);
+        \\initial #1 t(2);
+        \\initial begin fact(3, r); $display("%0t r=%0d", $time, r); end
+        \\endmodule
+    , "1 f=1\n2 f=2\n3 f=6\n3 r=6\n10 v=1\n");
+}
+
 // §6.2.1: the initializer is an initial-block assignment at time 0, so a
 // net assigned from the variable tracks it, and a later write replaces it.
 test "§6.2.1 a variable declaration assignment is a time-0 write" {
@@ -2288,7 +2612,7 @@ pub fn expectRejected(source: []const u8, message: []const u8) !void {
 test "§19.8 no timescale is the simulator's own unit, not an error" {
     // "If there is no `timescale specified or it has been reset by a
     // `resetall directive, the time unit and precision are simulator-specific."
-    try expectRun("module m; wire w; reg a; assign #3 w = a; initial begin a = 1; #2 $display(\"%b %0d\", w, $time); #1 $display(\"%b %t\", w, $time); end endmodule", "z 2\n1                    3\n");
+    try expectRun("module m; wire w; reg a; assign #3 w = a; initial begin a = 1; #2 $display(\"%b %0d\", w, $time); #1 $display(\"%b %t\", w, $time); end endmodule", "x 2\n1                    3\n");
     try expectRun("`timescale 1ns/1ps\n`resetall\nmodule m; initial #1 $display(\"%0d %g\", $time, $realtime); endmodule", "1 1\n");
 }
 
@@ -2302,6 +2626,7 @@ test "timescale provenance rejects malformed or later directives" {
     // §19.8: "It shall be an error if some modules have a `timescale
     // specified and others do not": here `resetall takes it from `top`.
     try expectRejected("`timescale 1ns/1ns\nmodule a; endmodule\n`resetall\nmodule top; a u(); endmodule", "others do not");
+    try expectRejected("`timescale 1ns/1ps\nmodule top;\n`timescale 1us/1ns\nendmodule", "outside a module definition");
 }
 
 // IEEE 1364 §19.8: a `timescale applies to the modules that follow it, until
@@ -2483,7 +2808,7 @@ test "A.2.2.3 a driver's variable delay is read when the driver schedules" {
         \\  $finish(0);
         \\end
         \\endmodule
-    , "z\n0\n1\n");
+    , "x\n0\n1\n");
 }
 
 test "§12.4.1 a genvar-indexed hierarchical name finds its iteration's scope unspelled" {
@@ -2519,4 +2844,19 @@ test "§4.6.5 uwire drivers of disjoint bits are legal" {
 
 test "§7.9 a uwire with two drivers is an error, not a resolution" {
     try expectRejected("module m; uwire w; assign w = 1'b0; assign w = 1'b1; endmodule", "a uwire net accepts a single driver per bit");
+}
+
+test "a name is visible from its declaration on (iverilog's decl_before_use)" {
+    // A variable or localparam read before it is declared is refused; a
+    // block's later local leaves the outer name in view, and §4.5's
+    // implicit net is the scope's from its start.
+    try expectRejected("module m; initial begin v = 1; end reg v; endmodule", "a name is used before its declaration");
+    try expectRejected("module m; initial $display(\"%b\", w); localparam w = 8'hAA; endmodule", "a name is used before its declaration");
+    try expectRun("module m; integer w = 5; initial begin : b $display(\"%0d\", w); end endmodule", "5\n");
+    try expectRun("module m; buf (a, c); buf (c, 1'b1); initial #1 $display(\"%b\", a); endmodule", "1\n");
+}
+
+test "§7.6 a pass switch's variable delay is read when its control changes" {
+    // iverilog's rise_fall_delay3: tranif1 #(d, 1) turns on d after en rises.
+    try expectRun("`timescale 1ns/1ns\nmodule m; reg [7:0] d = 3; reg en; wire i = 1; wire o; tranif1 #(d, 1) t(o, i, en); initial begin en = 0; #1 en = 1; #2 $display(\"%b\", o); #1 $display(\"%b\", o); end endmodule", "z\n1\n");
 }

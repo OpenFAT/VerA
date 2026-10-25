@@ -723,7 +723,7 @@ pub fn stepLocal(self: *Emitter, procs: []const Proc) Error![]const u32 {
                 try meet(a, in, seen, &work, nw, next, out);
                 for (r.subs.items[idx].ranges.items) |rg| if (pc >= rg.start and pc < rg.end) try meet(a, in, seen, &work, nw, rg.end, out);
             },
-            .pla_start => |loop| for ([_]u32{ next, loop }) |t| try meet(a, in, seen, &work, nw, t, none),
+            .pla_start => |p| for ([_]u32{ next, p.at }) |t| try meet(a, in, seen, &work, nw, t, none),
             .fork => |f| for (if (f.arms.len == 0) &[_]u32{f.end} else f.arms) |t| try meet(a, in, seen, &work, nw, t, none),
             .join_arm => |j| try meet(a, in, seen, &work, nw, j.end, none),
             .override_on => |o| {

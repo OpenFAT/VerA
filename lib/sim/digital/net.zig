@@ -26,6 +26,9 @@ pub const Inertial = struct {
     /// timer alone instead of restarting it. Sized once and reused, so a
     /// toggling input allocates nothing per transition.
     target: Int.Literal = .{ .width = 0, .sized = true, .signed = false, .planes = &.{} },
+    /// When the event in flight lands, in absolute ticks; kept by a module
+    /// path's destination only, whose §14.6 pulse handling reads it.
+    due: u64 = 0,
     /// `target`'s §7.10.2 H/L flag, for a gate driver (see `Driver.or_z`).
     or_z: bool = false,
 };
@@ -77,8 +80,11 @@ pub const Delay = struct {
 /// collapse: `width` bits starting at `src_lo` of one slot are carried onto
 /// `dst_lo` of another net. Everything outside that window is z, which is the
 /// identity of §7.9's resolution, so a window is an ordinary driver that
-/// happens to assert only part of the net.
-pub const Bridge = struct { src: u32, src_lo: u32, dst_lo: u32, width: u32 };
+/// happens to assert only part of the net. `ext` bits above the window are
+/// IEEE 1364-2005 §12.3.9.2's widening of a port narrower than what it
+/// drives (the connection is a continuous assignment, §5.6): copies of
+/// source bit `sign_at` (a signed port's top bit), or 0.
+pub const Bridge = struct { src: u32, src_lo: u32, dst_lo: u32, width: u32, ext: u32 = 0, sign_at: ?u32 = null };
 
 /// §7.9 one net: its resolution function, its storage, and the drivers whose
 /// wired-logic combination is its value. `resolved` is the scratch the fold
@@ -143,7 +149,12 @@ pub const NetCold = struct {
     trans: []const u32 = &.{},
     /// IEEE 1364-2005 §14.3 the module paths into this net, which time its
     /// transitions in place of `delay` (`resolution.pathDelay`).
-    paths: []const Path = &.{},
+    /// Mutable: `$sdf_annotate` rewrites a row's `table` (`sdf.zig`).
+    paths: []Path = &.{},
+    /// §14.6.4.1 `pulsestyle_ondetect` (else on-event) and §14.6.4.2
+    /// `showcancelled` (else noshowcancelled) on this path destination.
+    ondetect: bool = false,
+    showcancelled: bool = false,
 
     /// Every field at its default: the row of a net with none.
     pub const none: NetCold = .{};
@@ -164,6 +175,15 @@ pub const Path = struct {
     ifnone: bool = false,
     scope: u32 = 0,
     table: PathTable,
+    /// The A.7.4 delay expressions `table` was folded from, re-folded when an
+    /// SDF LABEL changes a specparam they read (§16.2.3), and their token.
+    delays: []const Ast.ExprId = &.{},
+    tok: u32 = 0,
+    /// §14.6.1 its reject and error limits in ticks, from a `PATHPULSE$`
+    /// specparam or an SDF PATHPULSE; null is the default, the delay of the
+    /// transition being scheduled.
+    reject: ?u64 = null,
+    err: ?u64 = null,
 };
 
 /// A module path's delay for each destination transition, `[from][to]`
@@ -300,12 +320,18 @@ fn across(tr: anytype, u: Node) ?Node {
 }
 
 /// The net bits joined to `from` through pass switches that may conduct.
+/// A supply net (`g.fixed`) is a member but no conductor: its value is its
+/// own (§4.6.6, nothing outranks supply strength), so a signal does not cross
+/// it from one switch to another, and two groups sharing `vdd` stay two
+/// (iverilog agrees: ivtest br_gh1122's CMOS NOR then inverter). A supply
+/// net's own group is itself: its neighbours resolve from their side.
 pub fn reach(g: anytype, a: std.mem.Allocator, from: Node) std.mem.Allocator.Error![]const Node {
     var seen: std.ArrayList(Node) = .empty;
     try seen.append(a, from);
     var i: usize = 0;
     while (i < seen.items.len) : (i += 1) {
         const u = seen.items[i];
+        if (g.fixed(u.net)) continue;
         for (g.switches(u.net)) |ti| {
             if (g.conduction(ti) == .off) continue;
             const v = across(g.tran(ti), u) orelse continue;
@@ -329,6 +355,8 @@ pub fn switchPaths(g: anytype, a: std.mem.Allocator, y: Node, group: []const Nod
         changed = false;
         for (group, 0..) |u, iu| {
             if (p[iu].res == std.math.maxInt(u32)) continue;
+            // `reach`: a path does not run through a supply net.
+            if (!std.meta.eql(u, y) and g.fixed(u.net)) continue;
             for (g.switches(u.net)) |ti| {
                 const st = g.conduction(ti);
                 if (st == .off) continue;

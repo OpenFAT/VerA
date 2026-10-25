@@ -110,9 +110,13 @@ pub const Instruction = union(enum(u5)) {
     call_timed: struct { sub: u32, args: []const Ast.ExprId },
     /// The end of a `call_timed` activation of task `n`.
     task_return: u32,
-    /// Start a process of its own at this pc: §17.5 an asynchronous PLA's,
-    /// or §9.7.7 the wait of a nonblocking assignment's event control.
-    pla_start: u32,
+    /// Start a process of its own at `at`: §17.5 an asynchronous PLA's, or
+    /// §9.7.7 the wait of a nonblocking assignment's event control, which
+    /// (`now`) runs at once, up to its wait: "the right-hand expressions are
+    /// evaluated when the assignment statements are encountered, but the
+    /// assignments are delayed until" the event, so an event the parent
+    /// triggers next is one it sees.
+    pla_start: struct { at: u32, now: bool = false },
     /// §9.8.2 `fork`: start every arm as a process of its own; join cell
     /// `join` counts them back, and the parent resumes at `end`.
     fork: struct { arms: []const u32, join: u32, end: u32 },
@@ -411,9 +415,14 @@ fn leafType(self: *Run, e: Ast.ExprId) Error!Type {
         },
         // An unsized based constant is an integer-sized operand (Table
         // 5-22) whose x/z fill is decided in context (`evaluate.unsizedFill`).
+        // VD-131: past 32 bits it is as wide as its digits.
         .logic_literal => blk: {
             const n = ex.logicValue(e);
-            break :blk .{ .width = if (n.sized) n.width else 32, .signed = n.signed };
+            // ponytail: one with an x/z digit and 33 to 64 digit bits
+            // ('h0000000000x) reads as 32: the frontend holds it in 64 and
+            // keeps no digit count for it. Keep one if such a literal shows up.
+            const wide = !n.hasUnknown() or n.width > 64;
+            break :blk .{ .width = if (n.sized) n.width else if (wide) @max(32, n.width) else 32, .signed = n.signed };
         },
         // IEEE 1364-2005 §3.6: a string operand is an unsigned number of
         // eight bits per character, and §5.2.3.3's "" is one NUL byte.
@@ -430,6 +439,8 @@ const IntLiteral = @typeInfo(@TypeOf(Ast.ExprStore.intLiteral)).@"fn".return_typ
 /// §3.5.1 makes a minimum: a value that does not fit keeps the frontend's 64.
 pub fn literalWidth(n: IntLiteral) u32 {
     if (n.width != 0) return n.width;
+    // VD-131: an unsized based one is as wide as its digits past 32 bits.
+    if (n.digit_bits != 0) return @max(32, n.digit_bits);
     const fits = if (n.signed) n.value >= std.math.minInt(i32) and n.value <= std.math.maxInt(i32) else n.value >= 0 and n.value <= std.math.maxInt(u32);
     return if (fits) 32 else 64;
 }
@@ -720,7 +731,10 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                 // supplying an address for each dimension".
                 if (ex.tag(ex.rhs(x)) == .range or ex.tag(ex.rhs(x)) == .indexed_range)
                     return self.exprFail(ex.rhs(x), "§5.2.2: each array dimension takes an index, not a part-select");
-                _ = try inferValue(self, ex.rhs(x));
+                // §4.8.1 refuses a real index of a vector's select; an array
+                // address is refused the same way (iverilog's
+                // array_index_real_fail; 1364 lists only the vector case).
+                if ((try inferValue(self, ex.rhs(x))).real) return self.exprFail(ex.rhs(x), "§4.8.1: a real is not an array index");
             }
             const base = try self.slot(x);
             if (self.events.contains(base)) return self.exprFail(e, "§9.7.3: a named event holds no data; it can only be triggered and waited on");
@@ -840,6 +854,9 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                             else => false, // else: every other file function only reads its arguments
                         };
                         if (written) try checkTarget(self, arg) else _ = try inferValue(self, arg);
+                        // A word the file ends inside keeps the target's bits
+                        // no character reached (`system.overWord`): read too.
+                        if (f == .fread and i == 0) _ = try inferValue(self, arg);
                     }
                     // §17.2.1: "The type is a character string ... of one of
                     // the forms in Table 17-7".
@@ -855,7 +872,10 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                     if (args.len != 1 or args[0] == .none) return self.exprFail(e, "a §17.8 conversion takes exactly one argument");
                     const operand = try inferValue(self, args[0]);
                     const wants_real = f == .rtoi or f == .realtobits;
-                    if (operand.real != wants_real) return self.exprFail(e, "$rtoi and $realtobits convert a real; $itor and $bitstoreal an integral value");
+                    // VD-130: §17.8's `$rtoi`/`$itor` prototypes are not a
+                    // "shall"; an argument of the other type converts first,
+                    // as iverilog does. The bit conversions stay strict.
+                    if (operand.real != wants_real and (f == .realtobits or f == .bitstoreal)) return self.exprFail(e, "$rtoi and $realtobits convert a real; $itor and $bitstoreal an integral value");
                     break :blk switch (f) {
                         .rtoi => .{ .width = 32, .signed = true },
                         .realtobits => .{ .width = 64, .signed = false },
@@ -916,7 +936,17 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
         // so the call site's context never reaches inside it.
         .call => blk: {
             const inst = self.instanceOf(self.scope);
-            const idx = subIn(self, self.scope, ex.strOf(e)) orelse return self.exprFail(e, "undeclared function");
+            // §12.5: `block.f(0)` names a function by a hierarchical name,
+            // resolved as a task enable's is (A.8.2 hierarchical_function_identifier).
+            const idx = (if (std.mem.findScalar(u8, self.file.str(ex.strOf(e)), '.') == null)
+                subIn(self, self.scope, ex.strOf(e))
+            else
+                try enabledTask(self, self.scope, ex.strOf(e), ex.mainTok(e), false)) orelse return self.exprFail(e, "undeclared function");
+            // A call site records an index relative to its own instance's
+            // subroutines (`Run.sub_base`).
+            // ponytail: a function of another instance is refused; an
+            // absolute index in `call_subs` is the upgrade.
+            if (self.instanceOf(self.subs.items[idx].inst) != inst) return self.exprFail(e, "§12.5: a hierarchical call of a function in another module instance is not implemented by digital execution");
             if (!self.subs.items[idx].decl.is_function) return self.exprFail(e, "§10.2: a task is enabled as a statement, not called in an expression");
             if (!self.subs.items[idx].framed) try elab.earlyFrame(self, idx, ex.mainTok(e));
             const sub = self.subs.items[idx];
@@ -1189,7 +1219,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             // before the first's event replaces it.
             var skip: ?u32 = null;
             if (s.nonblocking) {
-                _ = try append(self, .{ .pla_start = position(self) + 2 });
+                _ = try append(self, .{ .pla_start = .{ .at = position(self) + 2, .now = true } });
                 skip = try append(self, .{ .jump = 0 });
             }
             // §9.7.7 `repeat (n) @(e)`: n occurrences, none when n <= 0.
@@ -1266,7 +1296,6 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                 _ = try append(self, .{ .task = .{ .task = .user, .args = s.args, .tok = tok } });
                 return;
             };
-            if (std.mem.eql(u8, name, "$sdf_annotate")) return self.failWith(.E1102, tok, "", .{});
             // §17.4.2 Syntax 17-12 `$stop [ ( n ) ]`, refused by the runner
             // below either way.
             if (std.mem.eql(u8, name, "$stop") and s.args.len > 1) return self.fail(tok, "$stop accepts zero or one argument", .{});
@@ -1309,8 +1338,15 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     const ex = &self.file.exprs;
                     if (s.args.len < 2 or s.args.len > 4)
                         return self.fail(tok, "$readmemb/$readmemh take (file, memory [, start [, finish]])", .{});
-                    if (s.args[0] == .none or ex.tag(s.args[0]) != .str_literal)
-                        return self.exprFail(s.args[0], "§17.2.9 Syntax 17-7: the memory file name is a string literal");
+                    // Syntax 17-7's `" file_name "` is §17.2.1's placeholder,
+                    // "a character string or ... a reg containing a character
+                    // string": a literal, or an integral expression whose
+                    // characters are read when the task runs (pr690, pr704).
+                    if (s.args[0] == .none) return self.fail(tok, "§17.2.9 Syntax 17-7: the memory file name is a string", .{});
+                    if (ex.tag(s.args[0]) != .str_literal) {
+                        try checkExpr(self, s.args[0]);
+                        if (typeOf(self, s.args[0]).real) return self.exprFail(s.args[0], "§17.2.9: the memory file name is a string, not a real");
+                    }
                     // ponytail: one dimension; §17.2.9's order over several
                     // is the row-major walk, when a source loads one.
                     const arr = if (s.args[1] == .none or ex.tag(s.args[1]) != .ident) null else self.arrays.get(try self.slot(s.args[1]));
@@ -1363,7 +1399,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                         for (0..arr.?.count) |i| try watch(self, base + @as(u32, @intCast(i)), &watched);
                         try sensitivity(self, s.args[1], &watched);
                         const loop = try watcher(self, .{ .task = .{ .task = .{ .pla = sync }, .args = s.args, .tok = tok } }, watched.items);
-                        _ = try append(self, .{ .pla_start = loop });
+                        _ = try append(self, .{ .pla_start = .{ .at = loop } });
                         return;
                     }
                 },
@@ -1386,9 +1422,17 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                         try display.sformat(self, s.args[1..], null);
                     }
                 },
+                // §17.2.10 Syntax 17-8: the file, then up to six optional
+                // arguments; the second names a module instance.
+                .sdf_annotate => {
+                    if (s.args.len == 0 or s.args.len > 7 or s.args[0] == .none) return self.fail(tok, "§17.2.10: $sdf_annotate takes the SDF file name and up to six optional arguments", .{});
+                    for (s.args, 0..) |a, i| if (a != .none) {
+                        if (i == 1) _ = try display.timescaleScope(self, a) else try checkExpr(self, a);
+                    };
+                },
                 // §17.3.1 Syntax 17-9.
                 .printtimescale => {
-                    if (s.args.len > 1) return self.fail(tok, "$printtimescale takes at most one module instance", .{});
+                    if (s.args.len > 1) return self.fail(tok, "$printtimescale takes at most one hierarchical name", .{});
                     if (s.args.len == 1) _ = try display.timescaleScope(self, s.args[0]);
                 },
                 .fclose => {
@@ -1642,6 +1686,7 @@ fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
     var s = scope;
     while (true) : (s = self.scope_info.items[s].parent) {
         if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
+        if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
         if (!self.scope_info.items[s].lexical) return null;
     }
 }
@@ -1922,6 +1967,7 @@ fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
         var x = e;
         while (ex.tag(x) == .index) : (x = ex.lhs(x)) {
             try checkExpr(self, ex.rhs(x));
+            if (typeOf(self, ex.rhs(x)).real) return self.exprFail(ex.rhs(x), "§4.8.1: a real is not an array index");
         }
         return;
     }
@@ -2048,7 +2094,8 @@ fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
                 if (try selectTerm(self, x) != null) return;
                 try exprTerm(self, x);
             }
-            if (self.reals.contains(try self.termSlot(x)))
+            // An `auto_terms` expression is never real.
+            if (!self.auto_terms.contains(.{ .scope = self.scope, .e = x }) and self.reals.contains(try self.termSlot(x)))
                 return self.exprFail(e, "§4.8.1: posedge and negedge do not apply to a real variable");
         },
         .hier_ident => _ = try self.scalarSlot(e),
@@ -2065,7 +2112,7 @@ fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
 
 /// §9.7.3: a scalar event or exactly one selected array element. Only the
 /// indices are value expressions; neither the array nor an event holds data.
-fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
+pub fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
     const ex = &self.file.exprs;
     const c = self.chainBase(e);
     if (ex.tag(c.base) != .ident and ex.tag(c.base) != .hier_ident) return null;
@@ -2118,10 +2165,17 @@ pub fn selectTerm(self: *Run, e: Ast.ExprId) Error!?SelectTerm {
 /// process of its own started at time 0, and the term watches that slot.
 fn exprTerm(self: *Run, e: Ast.ExprId) Error!void {
     try checkExpr(self, e);
+    if (self.auto_terms.contains(.{ .scope = self.scope, .e = e })) return;
+    const ty = typeOf(self, e);
+    if (!ty.real and ty.width <= 64) {
+        var reads: std.ArrayList(u32) = .empty;
+        try sensitivity(self, e, &reads);
+        for (reads.items) |at| if (self.auto_slots.contains(at))
+            return self.auto_terms.put(self.arena, .{ .scope = self.scope, .e = e }, reads.items);
+    }
     const entry = try self.term_slots.getOrPut(self.arena, .{ .scope = self.scope, .e = e });
     if (entry.found_existing) return;
     const g = self.growing.?;
-    const ty = typeOf(self, e);
     const at: u32 = @intCast(g.items.len);
     entry.value_ptr.* = at;
     try g.append(self.arena, try filled(self.arena, ty.width, ty.signed, if (ty.real) .zero else .x));
@@ -2169,10 +2223,12 @@ test "§3.6 a string operand is packed ASCII, right-justified and truncated on t
 }
 
 test "§17.1.1.6 %m names the instance path and the named blocks around it" {
+    // The child instance's process runs first (`root.processOrder`).
     try expectRun(
         \\module leaf; initial begin : outer begin : inner $display("%m %l %s%c", "", 8'h21); end end endmodule
         \\module m; leaf u(); initial $display("%M"); endmodule
-    , "m\nm.u.outer.inner work.leaf !\n");
+        // "" is one zero byte, which %s shows as a space (VD-129; iverilog too).
+    , "m.u.outer.inner work.leaf  !\nm\n");
 }
 
 test "§12.7 a named block's local shadows the module's, and each instance has its own" {
@@ -2320,8 +2376,11 @@ test "§17.9 a distribution takes its own argument count and a variable seed" {
 test "§17.8 and §17.11.2 conversions and math functions take their own argument types and counts" {
     // $rtoi truncates -2.7 toward zero; $itor(3) is 3.0, which %g prints as 3.
     try expectRun("module m; initial $display(\"%0d %g %g\", $rtoi(-2.7), $itor(3), $pow(2.0, 10.0)); endmodule", "-2 3 1024\n");
-    try expectRejected("module m; integer i; initial i = $rtoi(1); endmodule", "$rtoi and $realtobits convert a real");
-    try expectRejected("module m; real r; initial r = $itor(1.5); endmodule", "$rtoi and $realtobits convert a real");
+    // VD-130 (oracle: iverilog's itor_rtoi gold): an argument of the other
+    // type converts first; $rtoi keeps the low 32 bits of a larger value.
+    try expectRun("module m; initial $display(\"%0d %g %g %0d %0d\", $rtoi(1'bx), $itor(-1.5), $itor(1.0/0.0), $rtoi((33'b1<<32)+1.0), $rtoi(1.0/0.0)); endmodule", "0 -2 0 1 x\n");
+    try expectRejected("module m; integer i; initial i = $realtobits(1); endmodule", "$rtoi and $realtobits convert a real");
+    try expectRejected("module m; real r; initial r = $bitstoreal(1.5); endmodule", "$rtoi and $realtobits convert a real");
     try expectRejected("module m; real r; initial r = $pow(2.0); endmodule", "wrong number of arguments to a §17.11.2");
     try expectRejected("module m; integer i; initial i = $time(1); endmodule", "$time and $stime take no arguments");
     // §17.7.3 `$realtime` and VAMS §9.10 `$abstime` (#58) take no arguments:
@@ -2346,6 +2405,8 @@ test "§5.2.1 a part-select names its more significant bit first; bounds and wid
     try expectRejected("module m; reg [7:0] a; reg b; initial b = a[1.0:0]; endmodule", "a real is not a part-select bound");
     try expectRejected("module m; reg [7:0] a; real r; reg [1:0] b; initial b = a[r +: 2]; endmodule", "a real is not a part-select index");
     try expectRejected("module m; reg [7:0] a; real r; reg b; initial b = a[r]; endmodule", "a real is not a bit-select index");
+    try expectRejected("module m; reg [1:0] a[1:0]; real r; initial a[r] = 2'b10; endmodule", "a real is not an array index");
+    try expectRejected("module m; reg [1:0] a[1:0], x; real r; initial x = a[r]; endmodule", "a real is not an array index");
 }
 
 test "§5.1.1 a real takes no bitwise operator and is no concatenation operand" {
@@ -2382,6 +2443,10 @@ test "§10.4.4 a function body has no timing, nonblocking or procedural continuo
 test "§10.2.3 an automatic variable is neither a nonblocking target nor monitored" {
     try expectRejected("module m; task automatic t; integer k; k <= 1; endtask initial t; endmodule", "a nonblocking assignment cannot name a variable of an automatic task");
     try expectRejected("module m; task automatic t; integer k; $monitor(\"%0d\", k); endtask initial t; endmodule", "$monitor cannot name a variable of an automatic task");
+    // A named block's variable inside an automatic task is automatic too
+    // (§10.2.1; iverilog's automatic_error3), whether or not the task is called.
+    try expectRejected("module m; reg g; task automatic t; begin : b reg l; g <= @(l) 0; end endtask endmodule", "a nonblocking assignment's event control cannot name a variable of an automatic task");
+    try expectRejected("module m; task automatic t; begin : b reg l; l <= 0; end endtask initial t; endmodule", "a nonblocking assignment cannot name a variable of an automatic task");
 }
 
 test "§9.3 assign takes a variable, force a variable or net; a select is of a net, by constant" {
@@ -2403,15 +2468,17 @@ test "A.6.9 a hierarchical task name walks instances before the task" {
 
 test "§17 system task argument forms are checked before any process runs" {
     try expectRejected("module m; initial $stop(0, 1); endmodule", "$stop accepts zero or one argument");
-    try expectRejected("module m; reg [7:0] mem [0:3]; reg [8*4:1] f; initial $readmemh(f, mem); endmodule", "the memory file name is a string literal");
+    // §17.2.1's file_name may be a reg holding the characters; a real is no string.
+    try expectRejected("module m; reg [7:0] mem [0:3]; real f; initial $readmemh(f, mem); endmodule", "the memory file name is a string, not a real");
     try expectRejected("module m; reg [7:0] mem [0:1][0:1]; initial $readmemh(\"x.hex\", mem); endmodule", "load a one-dimensional unpacked array");
     try expectRejected("module m; initial $readmemh(\"x.hex\"); endmodule", "take (file, memory [, start [, finish]])");
     try expectRejected("module m; initial $q_initialize(1, 1, 5); endmodule", "the §17.6 queue tasks take four arguments");
     try expectRejected("module m; integer v, st; initial $q_exam(1, 7, v, st); endmodule", "Table 17-15's codes 1 to 6");
     try expectRejected("module m; initial $fflush(1, 2); endmodule", "$fflush takes at most one descriptor");
-    try expectRejected("module m; initial $printtimescale(m, m); endmodule", "$printtimescale takes at most one module instance");
+    try expectRejected("module m; initial $printtimescale(m, m); endmodule", "$printtimescale takes at most one hierarchical name");
     try expectRejected("module m; initial $fclose(); endmodule", "$fclose takes one descriptor");
-    try expectRejected("module m; initial $sdf_annotate(\"x.sdf\"); endmodule", "E1102");
+    try expectRejected("module m; initial $sdf_annotate(); endmodule", "$sdf_annotate takes the SDF file name");
+    try expectRejected("module m; initial $sdf_annotate(\"x.sdf\"); endmodule", "x.sdf: the SDF file cannot be read");
 }
 
 test "§9.7.3 a named event is waited on whole, declared first, and has no edge; a real has no edge" {
@@ -2470,4 +2537,19 @@ test "§9.8.2 a fork in a function completes inside the call" {
         \\initial begin y = f(4); $display("%0d", y); end
         \\endmodule
     , "5\n");
+}
+
+test "§12.5 a function called by a hierarchical name in its generate block" {
+    // Oracle: iverilog -g2005 prints `2 3` (ivtest pr2350934's form).
+    try expectRun(
+        \\module m;
+        \\  parameter p = 2;
+        \\  reg [2:0] d;
+        \\  generate if (p == 2) begin : blk
+        \\    function [2:0] f; input i; f = p + i; endfunction
+        \\  end endgenerate
+        \\  initial begin d = blk.f(0); $display("%0d %0d", d, blk.f(1)); end
+        \\endmodule
+    , "2 3\n");
+    try expectRejected("module m; initial $display(blk.f(0)); endmodule", "undeclared function");
 }

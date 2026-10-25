@@ -331,9 +331,14 @@ pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) 
         if (parse_net.portDirection(self.peek())) |d| {
             const decl_tok = self.pos;
             self.pos += 1;
+            const typed = switch (self.peek()) {
+                .kw_reg, .kw_integer, .kw_time, .kw_real, .kw_realtime => true,
+                else => false, // else: a bare direction, `signed` or a range
+            };
             const ty = try tfPortType(self);
             while (true) {
-                const formal = try tfFormal(self, d, ty);
+                var formal = try tfFormal(self, d, ty);
+                formal.redecl.typed = typed;
                 try self.copyAttributes(decl_tok, formal.v.main_tok);
                 try ports.append(self.arena, formal);
                 if (!self.eat(.comma)) break;
@@ -380,6 +385,14 @@ pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) 
         for (ports.items[ansi_ports..]) |*p| {
             if (p.v.name != vars.items[i].name) continue;
             var v = vars.items[i];
+            // §12.3.3's checks need both declarations: the elaborator
+            // judges them (`Ast.TfPort.Redecl`).
+            if (p.redecl.count == 0) {
+                p.redecl.port_range = p.v.packed_range;
+                p.redecl.var_range = v.packed_range;
+                p.redecl.tok = v.main_tok;
+            }
+            p.redecl.count += 1;
             v.main_tok = p.v.main_tok;
             if (v.packed_range == null) v.packed_range = p.v.packed_range;
             p.v = v;

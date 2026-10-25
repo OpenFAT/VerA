@@ -9054,10 +9054,10 @@ pub const diag_tests = struct {
 
         // Only `.run` errors: the error lines alone, as the native runtime prints.
         var ran = diag.Bag.init(arena);
-        try ran.add(.run, .E1157, diag.Span.none, "", .{});
+        try ran.add(.run, .E1100, diag.Span.none, "", .{});
         const out = try renderToString(&ran, .{});
         try std.testing.expect(std.mem.find(u8, out, "could not compile") == null);
-        try std.testing.expect(std.mem.startsWith(u8, out, "error[E1157]"));
+        try std.testing.expect(std.mem.startsWith(u8, out, "error[E1100]"));
         try std.testing.expect(ran.failed());
         // A warning beside it is still counted; a compile error still is too.
         try ran.add(.lower, .W1150, .at(1), "", .{});
@@ -9446,7 +9446,7 @@ pub const diag_tests = struct {
         var bag = diag.Bag.init(arena);
         for (0..diag.max_entries) |i| try bag.add(.proof, .W0650, .at(@intCast(i + 1)), "", .{});
         try bag.add(.lower, .E0313, .at(1000), "", .{});
-        try bag.add(.run, .E1157, .at(1001), "", .{}); // a run error, dropped: no compile error
+        try bag.add(.run, .E1100, .at(1001), "", .{}); // a run error, dropped: no compile error
         try bag.add(.proof, .W0651, .at(1002), "", .{});
         try std.testing.expect(bag.failed());
         try std.testing.expect(std.mem.endsWith(u8, try renderToString(&bag, .{ .explain_hint = false }),
@@ -11585,12 +11585,13 @@ pub const sim_digital_tests = struct {
         try std.testing.expectError(error.DigitalFailed, root.run(a, src, .{ .params = &.{.{ .name = "Q", .value = 1, .text = "1" }} }, &bag, &out.writer));
     }
 
-    test "§17.8 $rtoi takes -2^31 exactly and refuses one past it as x" {
+    test "§17.8 $rtoi takes -2^31 exactly and keeps the low 32 bits of one past it (VD-130)" {
+        // Oracle: iverilog's itor_rtoi gold; an infinity is x.
         try expectRun(
-            \\module m; integer i, j, k;
-            \\initial begin i = $rtoi(-2147483648.0); j = $rtoi(-2147483648.9); k = $rtoi(-2147483649.0);
-            \\$display("%0d %0d %b", i, j, k); end endmodule
-        , "-2147483648 -2147483648 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n");
+            \\module m; integer i, j, k, n;
+            \\initial begin i = $rtoi(-2147483648.0); j = $rtoi(-2147483648.9); k = $rtoi(-2147483649.0); n = $rtoi(1.0/0.0);
+            \\$display("%0d %0d %b %0d", i, j, k, n); end endmodule
+        , "-2147483648 -2147483648 01111111111111111111111111111111 x\n");
     }
 
     test "§4.8.2 a real rounds into a 64-bit integer down to -2^63, and NaN is x" {
@@ -11689,7 +11690,8 @@ pub const sim_digital_tests = struct {
             \\  $display("%s %0d %0d %g %0d %0d %0d", s, n, a, r, st, j, i);
             \\end endmodule
         , .{}, &bag, &output.writer);
-        try std.testing.expectEqualStrings("12-ab 2 7 2.5 0 3 4\n", output.written());
+        // s is 10 characters: %s shows its five leading zero bytes as spaces (VD-129).
+        try std.testing.expectEqualStrings("     12-ab 2 7 2.5 0 3 4\n", output.written());
     }
 
     test "allocation failure anywhere in $sformat, $sscanf, the queues and $display cleans up" {
