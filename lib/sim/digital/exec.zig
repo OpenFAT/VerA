@@ -274,6 +274,14 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
         const now = waiters.termBits(self.values[sel.slot], sel.first, sel.count);
         return waiters.watchExt(self, id, sel.slot, edge, .{ .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] });
     }
+    if (self.auto_terms.get(.{ .scope = self.scope, .e = watched })) |reads| {
+        var scratch = std.heap.ArenaAllocator.init(self.arena);
+        defer scratch.deinit();
+        const width = compile.typeOf(self, watched).width;
+        const now = waiters.termBits(try evaluate.eval(self, scratch.allocator(), watched, 0), 0, width);
+        for (reads) |slot| try waiters.watchExt(self, id, slot, edge, .{ .expr = watched, .scope = self.scope, .width = width, .v = now[0], .x = now[1] });
+        return;
+    }
     try waiters.watch(self, id, try self.termSlot(watched), edge);
 }
 

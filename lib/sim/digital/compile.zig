@@ -2048,7 +2048,8 @@ fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
                 if (try selectTerm(self, x) != null) return;
                 try exprTerm(self, x);
             }
-            if (self.reals.contains(try self.termSlot(x)))
+            // An `auto_terms` expression is never real.
+            if (!self.auto_terms.contains(.{ .scope = self.scope, .e = x }) and self.reals.contains(try self.termSlot(x)))
                 return self.exprFail(e, "§4.8.1: posedge and negedge do not apply to a real variable");
         },
         .hier_ident => _ = try self.scalarSlot(e),
@@ -2118,10 +2119,17 @@ pub fn selectTerm(self: *Run, e: Ast.ExprId) Error!?SelectTerm {
 /// process of its own started at time 0, and the term watches that slot.
 fn exprTerm(self: *Run, e: Ast.ExprId) Error!void {
     try checkExpr(self, e);
+    if (self.auto_terms.contains(.{ .scope = self.scope, .e = e })) return;
+    const ty = typeOf(self, e);
+    if (!ty.real and ty.width <= 64) {
+        var reads: std.ArrayList(u32) = .empty;
+        try sensitivity(self, e, &reads);
+        for (reads.items) |at| if (self.auto_slots.contains(at))
+            return self.auto_terms.put(self.arena, .{ .scope = self.scope, .e = e }, reads.items);
+    }
     const entry = try self.term_slots.getOrPut(self.arena, .{ .scope = self.scope, .e = e });
     if (entry.found_existing) return;
     const g = self.growing.?;
-    const ty = typeOf(self, e);
     const at: u32 = @intCast(g.items.len);
     entry.value_ptr.* = at;
     try g.append(self.arena, try filled(self.arena, ty.width, ty.signed, if (ty.real) .zero else .x));

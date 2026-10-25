@@ -386,6 +386,11 @@ pub const Run = struct {
     /// §9.7.2 each event term that is an expression, by the scope it is
     /// compiled in: the hidden slot `compile.exprTerm` keeps equal to it.
     term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) = .empty,
+    /// §9.7.2 an expression term that reads a timed automatic task's
+    /// variables, by scope, and the slots it reads: a hidden slot would be
+    /// shared by every activation (§10.2.1), so each waiter instead tests
+    /// the expression in its own activation (`waiters.TermExt.expr`).
+    auto_terms: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, []const u32) = .empty,
     /// The storage of automatic tasks and functions, which §10.2.3 keeps
     /// out of constructs that might outlive an activation.
     auto_slots: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -2264,6 +2269,36 @@ test "§10.2.3 recursive timed automatic tasks and a formal passed to itself" {
         \\initial begin sum(3, 3, rb); $display("%0d rb=%0d f=%0d", $time, rb, f(7, 3)); end
         \\endmodule
     , "4 ra=3\n9 rb=6 f=7\n");
+}
+
+// §10.2.1: an automatic task's variables are each activation's own, so a
+// write in one activation is no change an event control in another sees
+// (`@f` in `fact`, ivtest recursive_task), and an expression term over them
+// is the waiter's own, read when it arms (`@(arr[j])` after `j` is written,
+// ivtest automatic_task3). iverilog prints this transcript.
+test "§10.2.1 an event control over automatic variables reads its own activation" {
+    try expectRun(
+        \\module m;
+        \\reg [7:0] arr [0:1];
+        \\integer r;
+        \\task automatic fact(input integer n, output integer f);
+        \\  integer t;
+        \\  fork
+        \\    begin if (n > 1) fact(n - 1, t); else t = 1; #1 f = n * t; end
+        \\    @f $display("%0t f=%0d", $time, f);
+        \\  join
+        \\endtask
+        \\task automatic t(input [7:0] v);
+        \\  integer j;
+        \\  begin j = v - 1; @(arr[j]) $display("%0t v=%0d", $time, v); end
+        \\endtask
+        \\initial arr[1] = 7;
+        \\initial #10 arr[0] = 3;
+        \\initial t(1);
+        \\initial #1 t(2);
+        \\initial begin fact(3, r); $display("%0t r=%0d", $time, r); end
+        \\endmodule
+    , "1 f=1\n2 f=2\n3 f=6\n3 r=6\n10 v=1\n");
 }
 
 // §6.2.1: the initializer is an initial-block assignment at time 0, so a

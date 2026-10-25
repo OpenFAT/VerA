@@ -93,6 +93,10 @@ pub const TermExt = struct {
     /// cause an occurrence.
     event_select: Ast.ExprId = .none,
     scope: u32 = 0,
+    /// §9.7.2 an expression term over automatic variables
+    /// (`Run.auto_terms`): evaluated in `scope` and the waiter's own
+    /// activation, its bits `[0, width)` compared as a select's are.
+    expr: Ast.ExprId = .none,
     /// §9.7.2 a constant select term (`compile.selectTerm`): bits
     /// `[lo, lo + width)` of the slot, and their value when last tested
     /// (`v`, `x` planes); width 0 is the whole slot.
@@ -132,6 +136,20 @@ fn selectChanged(e: *TermExt, edge: Edge, value: Int.Literal) bool {
 /// which has a `TermExt`.
 fn extHit(self: *Run, t: Term, target: u32, before: Int.Bit, after: Int.Bit) Error!bool {
     const e = &self.term_exts.items[t.ext];
+    if (e.expr != .none) {
+        var scratch = std.heap.ArenaAllocator.init(self.arena);
+        defer scratch.deinit();
+        const scope = self.scope;
+        const ctx = self.ctx;
+        defer self.scope = scope;
+        defer self.ctx = ctx;
+        self.scope = e.scope;
+        self.ctx = self.susps.items[t.susp].ctx;
+        try exec.makeResident(self, self.ctx);
+        const value = try evaluate.eval(self, scratch.allocator(), e.expr, 0);
+        try exec.makeResident(self, ctx);
+        return selectChanged(e, t.edge, value);
+    }
     if (e.width != 0) return selectChanged(e, t.edge, self.values[target]);
     return t.edge.matches(before, after) and try selectedEvent(self, e.*, t.susp, target);
 }
@@ -380,6 +398,10 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
     const list = termsOf(self, target) orelse return;
     const event = self.events.get(target);
     const event_ctx = if (event) |e| eventContext(self, e.scope, self.ctx) else 0;
+    // §10.2.1: an automatic task's variables, too, are each activation's
+    // own; a write in one activation is no change in another's.
+    const auto = event == null and self.auto_slots.contains(target);
+    const slot_ctx = if (auto) slotContext(self, target, self.ctx) else 0;
     // Compacts as it goes: a matched term leaves with its suspension, and a
     // stale one (its suspension resumed through another slot, or was
     // disabled) is dropped.
@@ -390,7 +412,7 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
             dropExt(self, t);
             continue;
         }
-        const selected = (if (event) |e| event_ctx == eventContext(self, e.scope, s.ctx) else true) and
+        const selected = (if (event) |e| event_ctx == eventContext(self, e.scope, s.ctx) else !auto or slot_ctx == slotContext(self, target, s.ctx)) and
             if (t.ext == no_ext) t.edge.matches(before, after) else try extHit(self, t, target, before, after);
         // An index function's blocking write can satisfy another term of
         // this event-or suspension while selectedEvent evaluates it.
@@ -431,6 +453,22 @@ fn eventContext(self: *const Run, declared: u32, from: u32) u32 {
                 if (!info.lexical) break;
                 scope = info.parent;
             }
+        }
+        ctx = act.ret_ctx;
+    }
+    return 0;
+}
+
+/// `eventContext` for a variable: the live activation, from `from` out,
+/// whose automatic task's frame holds `slot`; 0 for none.
+fn slotContext(self: *const Run, slot: u32, from: u32) u32 {
+    var ctx = from;
+    while (ctx != 0) {
+        const act = self.acts.items[ctx];
+        const sub = self.subs.items[act.sub];
+        if (sub.decl.automatic) {
+            const f = sub.body.?.frame;
+            if (slot >= f.first and slot < f.first + f.count) return ctx;
         }
         ctx = act.ret_ctx;
     }

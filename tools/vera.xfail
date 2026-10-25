@@ -193,7 +193,6 @@ ivtest/ivltests/assign3.2E.v
 ivtest/ivltests/assign_deassign_pv.v
 ivtest/ivltests/attrib_expr.v
 ivtest/ivltests/automatic_error3.v
-ivtest/ivltests/automatic_task3.v
 ivtest/ivltests/br1000.v
 ivtest/ivltests/br1029a.v
 ivtest/ivltests/br1029b.v
@@ -406,7 +405,6 @@ ivtest/ivltests/real_invalid_ops.v
 ivtest/ivltests/real_unary_minus_inf.v
 ivtest/ivltests/real_unary_minus_nan.v
 ivtest/ivltests/real_unary_minus_zero.v
-ivtest/ivltests/recursive_task.v
 ivtest/ivltests/repeat_signed_one_bit.v
 ivtest/ivltests/resetall.v
 ivtest/ivltests/rise_fall_decay2.v
