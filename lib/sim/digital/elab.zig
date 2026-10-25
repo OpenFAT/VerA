@@ -967,11 +967,22 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
         };
         switch (sw.kind) {
             .nmos, .pmos, .rnmos, .rpmos, .cmos, .rcmos => {
-                const out = r.net_of.get(try r.scalarSlot(sw.terms[0])) orelse return r.fail(sw.main_tok, "a switch's output and inout terminals are nets", .{});
-                const width = e.nets.items[out].resolved.width;
+                // A.3.3's output terminal is a net_lvalue: a net, or a
+                // constant bit-select of one (`nmos (o[1], i, en)`, iverilog's
+                // rise_fall_decay2), which the switch drives alone.
+                const at: Sink = if (r.file.exprs.tag(sw.terms[0]) == .index)
+                    try sink(r, e, sw.terms[0], sw.main_tok, .gate)
+                else blk: {
+                    const n = r.net_of.get(try r.scalarSlot(sw.terms[0])) orelse return r.fail(sw.main_tok, "a switch's output and inout terminals are nets", .{});
+                    break :blk .{ .net = n, .lo = 0, .width = e.nets.items[n].resolved.width };
+                };
+                r.scope = scope;
+                const out = at.net;
+                const width = at.width;
                 // §7.1.5/§7.1.6 an instance array is one switch per index, as a gate array is.
                 const lanes: u32 = if (sw.range) |rg| try r.declaredWidth(rg, sw.main_tok) else 1;
-                if (width != 1 and width != lanes) return r.fail(sw.main_tok, "a MOS switch's output terminal is one bit, or one per instance of an array", .{});
+                if (width != 1 and (width != lanes or at.lo != 0)) return r.fail(sw.main_tok, "a MOS switch's output terminal is one bit, or one per instance of an array", .{});
+                const whole = e.nets.items[out].resolved.width;
                 const cmos = sw.kind == .cmos or sw.kind == .rcmos;
                 const n_type = sw.kind == .nmos or sw.kind == .rnmos;
                 for (0..lanes) |j| {
@@ -979,7 +990,7 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
                     for (0..@as(usize, if (cmos) 2 else 1)) |half| try e.wires.append(r.arena, .{
                         .net = out,
                         .scope = scope,
-                        .source = .{ .mos = .{ .data = sw.terms[1], .gate = sw.terms[2 + half], .n_type = if (cmos) half == 0 else n_type, .resistive = resistive, .lane = lane, .out_bit = if (width == 1) null else lane } },
+                        .source = .{ .mos = .{ .data = sw.terms[1], .gate = sw.terms[2 + half], .n_type = if (cmos) half == 0 else n_type, .resistive = resistive, .lane = lane, .out_bit = if (whole == 1) null else if (width == 1) at.lo else lane } },
                         .delay = sw.delay,
                         .tok = sw.main_tok,
                     });
@@ -2872,4 +2883,10 @@ test "§4.10.3 a specify block's specparam may name a later one of the block" {
     // before it is referenced" (iverilog's specparam_specify_reference_order).
     try expectRun("module m; specify specparam v = d + 1; specparam d = 41; endspecify initial $display(\"%0d\", v); endmodule", "42\n");
     try expectRejected("module m; specparam v = d; specparam d = 41; initial $display(\"%0d\", v); endmodule", "");
+}
+
+test "A.3.3 a MOS switch drives a constant bit-select of a vector net" {
+    // iverilog's rise_fall_decay2: each switch drives its own bit, the
+    // others' bits stay z.
+    try expectRun("module m; reg i; wire [2:0] o; nmos a(o[0], i, 1'b1); pmos b(o[2], i, 1'b0); initial begin i = 1; #1 $display(\"%b\", o); end endmodule", "1z1\n");
 }
