@@ -2144,7 +2144,7 @@ fn bits(self: *Emitter, ins: []const Ast.ExprId, lane: ?u32) Error!void {
         try self.print("            const in{d} = ", .{j});
         const t = try expr.selfDetermined(self, in);
         try self.print(";\n", .{});
-        if (t.width > 1) try self.print("            const bit{d} = L.low(L.part(in{d}, {d}, 1, {d}));\n", .{ j, j, lane.?, t.width }) else try self.print("            const bit{d} = L.low(in{d});\n", .{ j, j });
+        if (t.width > 1) try self.print("            const bit{d} = L.low(L.part(in{d}, {d}, 1, {d}));\n", .{ j, j, lane orelse 0, t.width }) else try self.print("            const bit{d} = L.low(in{d});\n", .{ j, j });
     }
     try self.print("            const b = [_]L.Bit{{", .{});
     for (0..ins.len) |j| try self.print(" bit{d},", .{j});

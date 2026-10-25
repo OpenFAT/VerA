@@ -1789,7 +1789,10 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
             .gate => |g| for (g.ins) |in| {
                 try compile.checkExpr(&r, in);
                 const w = compile.typeOf(&r, in).width;
-                if (w != 1 and !(g.lane != null and w == g.lanes)) return r.exprFail(in, "a gate's input terminal is one bit, or one per instance of an array");
+                // A single gate reads a vector input's LSB: §7.1.6 sizes only
+                // an array's terminals, and iverilog (gate_connect1) and the
+                // other simulators read bit 0.
+                if (g.lane != null and w != 1 and w != g.lanes) return r.exprFail(in, "a gate's input terminal is one bit, or one per instance of an array");
                 try compile.sensitivity(&r, in, &watched);
             },
             .mos => |mo| for ([_]Ast.ExprId{ mo.data, mo.gate }) |in| {

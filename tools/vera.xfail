@@ -275,7 +275,6 @@ ivtest/ivltests/fscanf_u_warn.v
 ivtest/ivltests/fscanf_z.v
 ivtest/ivltests/fscanf_z_warn.v
 ivtest/ivltests/func_return_index.v
-ivtest/ivltests/gate_connect1.v
 ivtest/ivltests/gate_connect2.v
 ivtest/ivltests/include1.v
 ivtest/ivltests/include2.v
