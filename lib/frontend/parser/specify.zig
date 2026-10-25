@@ -700,10 +700,15 @@ pub fn parseSpecparamDecl(self: *Parser, b: *parse_module.Body) Error!void {
         const name = try self.expectIdent();
         _ = try self.expect(.assign_eq);
         if (std.mem.startsWith(u8, self.file.str(name), "PATHPULSE$")) {
-            _ = try self.expect(.lparen);
-            const reject = try parse_expr.parseMinTypMax(self);
-            const err = if (self.eat(.comma)) try parse_expr.parseMinTypMax(self) else .none;
-            _ = try self.expect(.rparen);
+            // §14.6.1's own example writes `PATHPULSE$ = 3;`, one limit and no
+            // parentheses, beside A.2.4's parenthesized form.
+            var reject: Ast.ExprId = undefined;
+            var err: Ast.ExprId = .none;
+            if (self.eat(.lparen)) {
+                reject = try parse_expr.parseMinTypMax(self);
+                if (self.eat(.comma)) err = try parse_expr.parseMinTypMax(self);
+                _ = try self.expect(.rparen);
+            } else reject = try parse_expr.parseMinTypMax(self);
             try b.pulses.append(self.arena, .{ .kind = .limits, .name = name, .reject = reject, .err = err, .main_tok = tok });
             if (!self.eat(.comma)) break;
             continue;
