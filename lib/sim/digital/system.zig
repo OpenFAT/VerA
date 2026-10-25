@@ -955,7 +955,7 @@ test "§17.2.4.3 $sscanf: conversions, a mismatch stops, unknown input is EOF" {
         \\  n = $sscanf(16'h31xx, "%d", a); $display("%0d", n);
         \\end
         \\endmodule
-    // w is 16 bits: %s shows its leading zero byte as a space (VD-127).
+        // w is 16 bits: %s shows its leading zero byte as a space (VD-127).
     , "3 12 255  z 1 7 -1\n");
 }
 

@@ -11496,12 +11496,13 @@ pub const sim_digital_tests = struct {
         try std.testing.expectError(error.DigitalFailed, root.run(a, src, .{ .params = &.{.{ .name = "Q", .value = 1, .text = "1" }} }, &bag, &out.writer));
     }
 
-    test "§17.8 $rtoi takes -2^31 exactly and refuses one past it as x" {
+    test "§17.8 $rtoi takes -2^31 exactly and keeps the low 32 bits of one past it (VD-128)" {
+        // Oracle: iverilog's itor_rtoi gold; an infinity is x.
         try expectRun(
-            \\module m; integer i, j, k;
-            \\initial begin i = $rtoi(-2147483648.0); j = $rtoi(-2147483648.9); k = $rtoi(-2147483649.0);
-            \\$display("%0d %0d %b", i, j, k); end endmodule
-        , "-2147483648 -2147483648 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n");
+            \\module m; integer i, j, k, n;
+            \\initial begin i = $rtoi(-2147483648.0); j = $rtoi(-2147483648.9); k = $rtoi(-2147483649.0); n = $rtoi(1.0/0.0);
+            \\$display("%0d %0d %b %0d", i, j, k, n); end endmodule
+        , "-2147483648 -2147483648 01111111111111111111111111111111 x\n");
     }
 
     test "§4.8.2 a real rounds into a 64-bit integer down to -2^63, and NaN is x" {
@@ -11600,7 +11601,8 @@ pub const sim_digital_tests = struct {
             \\  $display("%s %0d %0d %g %0d %0d %0d", s, n, a, r, st, j, i);
             \\end endmodule
         , .{}, &bag, &output.writer);
-        try std.testing.expectEqualStrings("12-ab 2 7 2.5 0 3 4\n", output.written());
+        // s is 10 characters: %s shows its five leading zero bytes as spaces (VD-127).
+        try std.testing.expectEqualStrings("     12-ab 2 7 2.5 0 3 4\n", output.written());
     }
 
     test "allocation failure anywhere in $sformat, $sscanf, the queues and $display cleans up" {

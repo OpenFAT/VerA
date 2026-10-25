@@ -1284,7 +1284,7 @@ test "§17.2.3 $sformat/$swrite fill a reg with the text, §17.3.1 $printtimesca
         \\  $printtimescale;
         \\end endmodule
         \\
-    // %s shows s's leading zero bytes as spaces (VD-127; iverilog the same).
+        // %s shows s's leading zero bytes as spaces (VD-127; iverilog the same).
     , "[   t=3]\n[   ab!]\n[o-long]\nTime scale of (m) is 10us / 100ns\n");
 }
 
