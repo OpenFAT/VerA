@@ -390,7 +390,6 @@ ivtest/ivltests/pr938b.v
 ivtest/ivltests/pr985.v
 ivtest/ivltests/pv_wr_vec4a_nb_ec.v
 ivtest/ivltests/pv_wr_vec4_nb_ec.v
-ivtest/ivltests/queue_stat.v
 ivtest/ivltests/random.v
 ivtest/ivltests/readmem-error.v
 ivtest/ivltests/real_array_multi_dim.v

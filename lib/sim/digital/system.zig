@@ -115,32 +115,34 @@ pub fn queueStep(queues: *Queues, gpa: std.mem.Allocator, op: QueueOp, id: ?i64,
             return .{ .status = ok, .out = .{ job.id, job.info } };
         },
         // §17.6.5 Table 17-15's statistics codes; any other is status 2
-        // with no value (VD-050).
+        // with no value (VD-050). The clause defines none of them further;
+        // VerA computes what iverilog does (VD-052): the means truncate,
+        // code 6 averages every job's wait so far, those that left and
+        // those still queued, and a statistic with no population yet (no
+        // second arrival, no job left, an empty queue) leaves q_stat_value
+        // as it was.
         .exam => {
             const q = queues.getPtr(id orelse return .{ .status = undefined_id }) orelse return .{ .status = undefined_id };
-            const value: u64 = switch (in1 orelse 0) {
+            const value: ?u64 = switch (in1 orelse 0) {
                 1 => q.jobs.items.len,
-                2 => mean(q.interarrival_sum, q.interarrivals),
+                2 => if (q.interarrivals == 0) null else q.interarrival_sum / q.interarrivals,
                 3 => q.peak,
-                4 => q.wait_min orelse 0,
-                5 => longest: {
+                4 => q.wait_min,
+                5 => if (q.jobs.items.len == 0) null else longest: {
                     var w: u64 = 0;
                     for (q.jobs.items) |j| w = @max(w, t - j.arrived);
                     break :longest w;
                 },
-                6 => mean(q.wait_sum, q.waits),
+                6 => if (q.waits + q.jobs.items.len == 0) null else average: {
+                    var sum = q.wait_sum;
+                    for (q.jobs.items) |j| sum += t - j.arrived;
+                    break :average sum / (q.waits + q.jobs.items.len);
+                },
                 else => return .{ .status = undefined_id },
             };
-            return .{ .status = ok, .out = .{ null, @intCast(value) } };
+            return .{ .status = ok, .out = .{ null, if (value) |v| @intCast(v) else null } };
         },
     }
-}
-
-/// A §17.6.5 mean as an integer: §3.5.3 rounds a real to the nearest
-/// integer "rather than by truncating it", ties away from zero (VD-052); 0
-/// over an empty population.
-fn mean(sum: u64, n: u64) u64 {
-    return if (n == 0) 0 else (2 * sum + n) / (2 * n);
 }
 
 /// §17.6.4 `$q_full(q_id, status)`: 1 when the queue holds its maximum.
@@ -976,9 +978,10 @@ test queueStep {
     try std.testing.expectEqual(@as(i64, full), (try queueStep(&qs, a, .add, 1, 9, 90, 15)).status);
     try std.testing.expectEqual(@as(i64, 1), queueIsFull(&qs, 1).full);
     // §17.6.5 Table 17-15 at t = 20: length 2, mean interarrival 4, peak 2,
-    // no wait yet (0 shortest, 0 mean), longest wait 20 - 10.
-    const Exam = struct { i64, i64 };
-    for ([_]Exam{ .{ 1, 2 }, .{ 2, 4 }, .{ 3, 2 }, .{ 4, 0 }, .{ 5, 10 }, .{ 6, 0 } }) |e| {
+    // no job has left (no shortest wait), longest wait 20 - 10, average
+    // wait of the two queued (10 + 6) / 2 (iverilog's statistics).
+    const Exam = struct { i64, ?i64 };
+    for ([_]Exam{ .{ 1, 2 }, .{ 2, 4 }, .{ 3, 2 }, .{ 4, null }, .{ 5, 10 }, .{ 6, 8 } }) |e| {
         const r = try queueStep(&qs, a, .exam, 1, e[0], null, 20);
         try std.testing.expectEqual(@as(i64, ok), r.status);
         try std.testing.expectEqual(@as(?i64, e[1]), r.out[1]);
@@ -1003,15 +1006,6 @@ test queueStep {
     _ = try queueStep(&qs, a, .add, 2, 1, 0, 0);
     _ = try queueStep(&qs, a, .add, 2, 2, 0, 1);
     try std.testing.expectEqual(@as(?i64, 2), (try queueStep(&qs, a, .remove, 2, null, null, 2)).out[0]);
-}
-
-test mean {
-    // §3.5.3: to the nearest integer, ties away from zero (VD-052).
-    try std.testing.expectEqual(@as(u64, 0), mean(0, 0));
-    try std.testing.expectEqual(@as(u64, 3), mean(5, 2));
-    try std.testing.expectEqual(@as(u64, 2), mean(3, 2));
-    try std.testing.expectEqual(@as(u64, 0), mean(1, 3));
-    try std.testing.expectEqual(@as(u64, 1), mean(2, 3));
 }
 
 test dist {
