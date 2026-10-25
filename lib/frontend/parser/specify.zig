@@ -87,7 +87,7 @@ fn parseSpecifyItem(self: *Parser, b: *parse_module.Body) Error!void {
             // A.2.1.1's declaration as a specify_item. A specify block is
             // no scope (IEEE 1364-2005 4.10.3 lets the body use it, e.g. as a
             // §9.7.1 delay), so it joins the module's specparams.
-            if (std.mem.eql(u8, w, "specparam")) return parseSpecparamDecl(self, b);
+            if (std.mem.eql(u8, w, "specparam")) return parseSpecparamDecl(self, b, true);
             // A.7.1 `pulsestyle_declaration` / `showcancelled_declaration`,
             // four keywords over one `list_of_path_outputs ;`.
             if (pulse_words.has(w)) {
@@ -691,7 +691,7 @@ fn edgeDescriptor(a: u8, b: u8) bool {
 /// A.2.4's `pulse_control_specparam`, `PATHPULSE$[input$output] = (
 /// reject_limit_value [ , error_limit_value ] )`, declares no constant: it
 /// goes to `b.pulses`, the §14.6.1 limits the digital engine applies.
-pub fn parseSpecparamDecl(self: *Parser, b: *parse_module.Body) Error!void {
+pub fn parseSpecparamDecl(self: *Parser, b: *parse_module.Body, in_specify: bool) Error!void {
     const out = &b.params;
     self.pos += 1; // `specparam`
     const packed_range: ?Ast.Dim = try parse_decl.optDim(self);
@@ -715,6 +715,7 @@ pub fn parseSpecparamDecl(self: *Parser, b: *parse_module.Body) Error!void {
             .default = default,
             .is_local = true,
             .is_spec = true,
+            .in_specify = in_specify,
             .packed_range = packed_range,
             .main_tok = tok,
         });
