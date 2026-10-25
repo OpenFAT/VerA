@@ -1290,6 +1290,10 @@ fn bridged(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!Bridge
             const lower = try interned(r, row.lower_port);
             for (bridge.ports) |p| if (p.name == lower and !continuous(r.file, p.discipline)) {
                 _ = try mintNet(r, e, .wire, width, false, r.file.exprs.strOf(seg), up.main_tok);
+                // The segment is the scope's from its start, as an implicit
+                // net is: every re-pointed terminal reads it, wherever the
+                // source spells its instance (`lookupAt`).
+                try r.bound_at.put(r.arena, .{ .scope = scope, .str = r.file.exprs.strOf(seg) }, 0);
             };
             const conns = try arena.alloc(Ast.PortConn, 2);
             conns[0] = .{ .name = try interned(r, row.upper_port), .expr = up.expr, .main_tok = up.main_tok };
