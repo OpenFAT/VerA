@@ -462,7 +462,7 @@ fn fread(self: *Run, a: std.mem.Allocator, t: contract.FileIo, args: []const Ast
     const arr = (if (ex.tag(args[0]) == .ident) self.arrays.get(base) else null) orelse {
         const width = (try evaluate.targetType(self, args[0])).width;
         const w = try readWord(a, t, d, width);
-        if (w.value) |v| try evaluate.assign(self, a, args[0], v);
+        if (w.value) |v| try evaluate.assign(self, a, args[0], overWord(v, try evaluate.eval(self, a, args[0], width), w.n));
         return w.n;
     };
     var at = if (args.len > 2 and args[2] != .none) (try int(self, a, args[2])) orelse return 0 else arr.low;
@@ -471,7 +471,8 @@ fn fread(self: *Run, a: std.mem.Allocator, t: contract.FileIo, args: []const Ast
     while (at >= arr.low and at <= arr.high and left > 0) {
         const w = try readWord(a, t, d, self.values[base].width);
         read += w.n;
-        try waiters.store(self, base + @as(u32, @intCast(at - arr.low)), (w.value orelse break).planes);
+        const slot = base + @as(u32, @intCast(at - arr.low));
+        try waiters.store(self, slot, overWord(w.value orelse break, self.values[slot], w.n).planes);
         if (at == arr.high) break;
         at += 1;
         left -= 1;
@@ -480,14 +481,19 @@ fn fread(self: *Run, a: std.mem.Allocator, t: contract.FileIo, args: []const Ast
 }
 
 /// One `$fread` word: ceil(width/8) characters, big-endian, into `width`
-/// bits; the value is null when the file ends first. `n` is the characters
-/// read.
+/// bits; the value is null when the file ends before its first character.
+/// `n` is the characters read: fewer than a word's means the file ended
+/// inside it, and `overWord` keeps the bits no character reached.
 pub fn readWord(a: std.mem.Allocator, t: contract.FileIo, d: i64, width: u32) Error!struct { value: ?Int.Literal, n: i64 } {
     const bytes = (width + 7) / 8;
     const v = try filled(a, width, false, .zero);
     for (0..bytes) |k| {
         const c = t.getc(d);
-        if (c < 0) return .{ .value = null, .n = @intCast(k) };
+        if (c < 0) {
+            if (k == 0) return .{ .value = null, .n = 0 };
+            v.values()[v.values().len - 1] &= wordMask(width, v.values().len - 1);
+            return .{ .value = v, .n = @intCast(k) };
+        }
         const lo = (bytes - 1 - k) * 8;
         v.values()[lo / 64] |= @as(u64, @intCast(c)) << @intCast(lo % 64);
     }
@@ -495,6 +501,19 @@ pub fn readWord(a: std.mem.Allocator, t: contract.FileIo, d: i64, width: u32) Er
     const top = v.values().len - 1;
     v.values()[top] &= wordMask(width, top);
     return .{ .value = v, .n = bytes };
+}
+
+/// A word `readWord` read `n` characters of, over the target's `prior`
+/// value: the characters fill it from the most significant byte down, and
+/// the bits below the last one keep `prior` (§17.2.4.4 says nothing of a
+/// file that ends inside a word; iverilog keeps them, ivtest fread.v).
+/// `v` is updated in place and returned.
+pub fn overWord(v: Int.Literal, prior: Int.Literal, n: i64) Int.Literal {
+    const bytes: i64 = (v.width + 7) / 8;
+    if (n >= bytes) return v;
+    const cut: u32 = @intCast(@min((bytes - n) * 8, v.width));
+    for (0..cut) |i| setBit(v, @intCast(i), if (i < prior.width) prior.bit(@intCast(i)) else .zero);
+    return v;
 }
 
 /// §17.2.7 `$fclose` of a file descriptor, or of every file a multichannel
@@ -1295,10 +1314,16 @@ test readWord {
     const w = try readWord(a, FakeFile.io, 1, 12);
     try std.testing.expectEqual(@as(i64, 2), w.n);
     try std.testing.expectEqual(@as(?i64, 0x234), w.value.?.asInt());
-    // The file ends inside the next word: one byte read, no value.
+    // The file ends inside the next word: one byte read, its bits on top,
+    // and `overWord` keeps the prior value's low byte (iverilog's fread.v).
     const short = try readWord(a, FakeFile.io, 1, 12);
     try std.testing.expectEqual(@as(i64, 1), short.n);
-    try std.testing.expect(short.value == null);
+    const prior = try filled(a, 12, false, .x);
+    const got = overWord(short.value.?, prior, short.n);
+    for (0..8) |i| try std.testing.expectEqual(Int.Bit.x, got.bit(@intCast(i)));
+    // 0x56's low nibble, bits 11..8.
+    for (8..12, [_]Int.Bit{ .zero, .one, .one, .zero }) |i, want| try std.testing.expectEqual(want, got.bit(@intCast(i)));
+    try std.testing.expect((try readWord(a, FakeFile.io, 1, 12)).value == null);
 }
 
 test fileOp {

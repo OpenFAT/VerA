@@ -2208,12 +2208,17 @@ pub fn fread(self: *Emitter, args: []const Ast.ExprId) Error!void {
         try self.print(";\n            if (first{d} < {d} or first{d} > {d} or count{d} <= 0) break :fr{d} L.k(0, 0);\n", .{ lb, memory.low, lb, memory.high, lb, lb });
         try self.print("            const n{d}: u32 = @intCast(@min(count{d}, {d} - first{d} + 1));\n            var read{d}: i64 = 0;\n            for (0..n{d}) |k{d}| {{\n", .{ lb, lb, memory.high, lb, lb, lb, lb });
         try self.print("            const a{d}: u32 = {d} + @as(u32, @intCast(first{d} - {d})) + @as(u32, @intCast(k{d}));\n", .{ lb, at, lb, memory.low, lb });
-        try self.print("            const word{d} = try s.fileWord(fd{d}, {d});\n            read{d} += word{d}.n;\n            const v{d} = word{d}.value orelse break;\n            ", .{ lb, lb, width, lb, lb, lb, lb });
+        try self.print("            const word{d} = try s.fileWord(fd{d}, {d}, ", .{ lb, lb, width });
+        const prior = .{ self.off[at], lb, at, words(width) };
+        if (width <= 64) try self.print("M.get(s, {d} + (a{d} - {d}) * {d})", prior) else try self.print("M.getw(s, {d} + (a{d} - {d}) * {d}, {d})", prior ++ .{words(width)});
+        try self.print(");\n            read{d} += word{d}.n;\n            const v{d} = word{d}.value orelse break;\n            ", .{ lb, lb, lb, lb });
         try self.storeElement(at, lb, .blocking);
         try self.print("v{d}, {f});\n            }}\n            break :fr{d} L.k(@as(u32, @truncate(@as(u64, @bitCast(read{d})))), 0);\n            }}", .{ lb, full(width), lb, lb });
     } else {
         const ty = try targetType(self, args[0]);
-        try self.print("            const word{d} = try s.fileWord(fd{d}, {d});\n            if (word{d}.value) |v{d}| {{\n", .{ lb, lb, ty.width, lb, lb });
+        try self.print("            const word{d} = try s.fileWord(fd{d}, {d}, ", .{ lb, lb, ty.width });
+        _ = try expr.selfDetermined(self, args[0]);
+        try self.print(");\n            if (word{d}.value) |v{d}| {{\n", .{ lb, lb });
         try assignment(self, args[0], .{ .evaluated = .{ .label = lb, .ty = .{ .width = ty.width, .signed = false } } }, .blocking);
         try self.print("            }}\n            break :fr{d} L.k(@as(u32, @truncate(@as(u64, @bitCast(word{d}.n)))), 0);\n            }}", .{ lb, lb });
     }

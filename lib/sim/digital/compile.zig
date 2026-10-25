@@ -851,6 +851,9 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                             else => false, // else: every other file function only reads its arguments
                         };
                         if (written) try checkTarget(self, arg) else _ = try inferValue(self, arg);
+                        // A word the file ends inside keeps the target's bits
+                        // no character reached (`system.overWord`): read too.
+                        if (f == .fread and i == 0) _ = try inferValue(self, arg);
                     }
                     // §17.2.1: "The type is a character string ... of one of
                     // the forms in Table 17-7".

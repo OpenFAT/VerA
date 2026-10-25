@@ -41,17 +41,21 @@ pub fn fileLine(self: *State, d: ?i64, comptime w: u32) Error![]const u8 {
     return system.readLine(self.scratch.allocator(), system.own, fd, w / 8);
 }
 
-/// §17.2.4.4: one big-endian binary word, copied out of the shared
-/// reader's scratch storage so assigning it may safely call other tasks.
-pub fn fileWord(self: *State, d: ?i64, comptime w: u32) Error!struct { value: ?logic.T(w), n: i64 } {
+/// §17.2.4.4: one big-endian binary word over the target's `prior` value
+/// (`system.overWord`: a file that ends inside the word keeps the bits no
+/// character reached), copied out of the shared reader's scratch storage
+/// so assigning it may safely call other tasks.
+pub fn fileWord(self: *State, d: ?i64, comptime w: u32, prior: anytype) Error!struct { value: ?logic.T(w), n: i64 } {
     if (self.quiet) return .{ .value = null, .n = 0 };
     const fd = (d orelse return .{ .value = null, .n = 0 }) & 0xffff_ffff;
     _ = self.scratch.reset(.retain_capacity);
     const word = system.readWord(self.scratch.allocator(), system.own, fd, w) catch return error.OutOfMemory;
-    const v = word.value orelse return .{ .value = null, .n = word.n };
-    if (w <= 64) return .{ .value = .{ .v = v.values()[0], .x = 0 }, .n = word.n };
-    var word_value: logic.T(w) = .{ .v = undefined, .x = @splat(0) };
+    var buf = logic.planesOf(prior);
+    const v = system.overWord(word.value orelse return .{ .value = null, .n = word.n }, State.literal(&buf, w, false), word.n);
+    if (w <= 64) return .{ .value = .{ .v = v.values()[0], .x = v.unknowns()[0] }, .n = word.n };
+    var word_value: logic.T(w) = undefined;
     @memcpy(&word_value.v, v.values());
+    @memcpy(&word_value.x, v.unknowns());
     return .{ .value = word_value, .n = word.n };
 }
 
