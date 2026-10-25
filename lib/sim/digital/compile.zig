@@ -1690,7 +1690,8 @@ fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
     while (true) : (s = self.scope_info.items[s].parent) {
         if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
         if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
-        if (s == 0) return null;
+        // A root is its own parent (`elaborate`'s other top-level modules).
+        if (self.scope_info.items[s].parent == s) return null;
     }
 }
 
@@ -2211,6 +2212,18 @@ test "an array element operand wakes a continuous assignment" {
         \\end
         \\endmodule
     , "0001\n0010\n0111\n");
+}
+
+test "§12.7 a task name is searched for in the enclosing instances, and a name no root declares is refused" {
+    // Oracle: §12.7 "continues to search higher level modules until found"
+    // (ivtest sv_task_call_instance_lookup); each root is its own parent, so
+    // the search ends at whichever top-level module it reaches (ivtest
+    // constfunccall3 hung there).
+    try expectRun(
+        \\module c; initial t; endmodule
+        \\module m; task t; $display("%m"); endtask c u(); endmodule
+    , "m.t\n");
+    try expectRejected("module a; initial t; endmodule module b; initial t; endmodule", "undeclared task");
 }
 
 test "§3.6 a string operand is packed ASCII, right-justified and truncated on the left" {
