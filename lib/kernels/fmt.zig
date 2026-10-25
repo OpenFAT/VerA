@@ -64,7 +64,7 @@ pub fn byteAt(v: Int.Literal, n: u32) u8 {
 /// the rightmost bit of the value is the least significant bit of the last
 /// character", and "leading zeros are never printed". A `%s` NUL byte is
 /// not printed but shown as a space, so `%s` keeps the operand's width in
-/// characters; `%0s` drops the leading ones (VD-127, iverilog's text).
+/// characters; `%0s` drops the leading ones (VD-129, iverilog's text).
 pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io.Writer.Error!void {
     var n: u32 = if (char) 1 else (v.width + 7) / 8;
     if (!char and width == 0) while (n != 0 and byteAt(v, n - 1) == 0) {
@@ -133,7 +133,7 @@ pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix:
 /// `value`, with C's `0` flag when `zero`: an explicit width is filled with
 /// zeros after the sign, not spaces (`%08d` of 65 is `00000065`). 1364
 /// grants no flags to the radix conversions; VerA prints iverilog's text
-/// (VD-127).
+/// (VD-129).
 pub fn valueFill(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix: Radix, width: ?u64, zero: bool) Error!void {
     const field = width orelse autoWidth(v, radix);
     const fill: u8 = if (zero and width != null) '0' else ' ';
@@ -423,7 +423,7 @@ test "byteAt reads known 1 bits only, and nothing past the width" {
     try testing.expectEqual(@as(u8, 0xab), byteAt(lit(&q, 72, false), 8));
 }
 
-test "%s shows a NUL byte as a space, %0s drops the leading ones; %c is the last byte (§17.1.1.7, VD-127)" {
+test "%s shows a NUL byte as a space, %0s drops the leading ones; %c is the last byte (§17.1.1.7, VD-129)" {
     // Oracle: iverilog 13 -g2005 (ivtest string13, string4, test_width).
     var out_buf: [32]u8 = undefined;
     var w: std.Io.Writer = .fixed(&out_buf);

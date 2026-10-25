@@ -682,7 +682,7 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
                 return normalize(a, value, ty);
             },
             // §17.8: `$rtoi` truncates toward zero; `$realtobits` is the bits.
-            // A value past 32 bits keeps its low 32 (VD-128), and an
+            // A value past 32 bits keeps its low 32 (VD-130), and an
             // infinity or a NaN is x; an integral argument converts to real
             // first (`evalReal`).
             .rtoi => {

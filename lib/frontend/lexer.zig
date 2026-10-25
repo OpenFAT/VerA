@@ -537,7 +537,7 @@ pub const IntLiteral = struct {
     /// An unsized based constant's digit count times its digit's bits
     /// (`'h0001` is 16), saturating; 0 for any other. The digital engine
     /// sizes the constant by it past 32 bits (specification/Vague_Decisions.md
-    /// VD-129).
+    /// VD-131).
     digit_bits: u16 = 0,
 };
 

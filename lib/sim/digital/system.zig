@@ -694,7 +694,7 @@ pub const Scan = struct {
             // A field width counts bits, read in whole 32-bit words and
             // the value cut to it (`%16u` reads a word and keeps 16 bits); a
             // suppressed one with none skips one word (iverilog's
-            // fscanf_u/fscanf_z, VD-130). Too few bytes left is EOF.
+            // fscanf_u/fscanf_z, VD-132). Too few bytes left is EOF.
             if (conv == 'u' or conv == 'z') {
                 const per: usize = if (conv == 'z') 8 else 4;
                 if (suppress) {
@@ -773,7 +773,7 @@ pub const Scan = struct {
     /// decimal digits, or a single x, z or ?; the others take their radix's
     /// digits and x, z, ?, which give §3.5.1's bits (an x or z leftmost pads
     /// the value with itself). `_` separates digits in every radix but may
-    /// not lead, and `?` reads as x (VD-130, iverilog's scanf4).
+    /// not lead, and `?` reads as x (VD-132, iverilog's scanf4).
     fn number(field: []const u8, conv: u8) ?struct { usize, @FieldType(Assign, "value") } {
         if (field[0] == '_') return null;
         if (conv == 'd') {
@@ -957,7 +957,7 @@ test "§17.2.4.3 $sscanf: conversions, a mismatch stops, unknown input is EOF" {
         \\  n = $sscanf(16'h31xx, "%d", a); $display("%0d", n);
         \\end
         \\endmodule
-        // w is 16 bits: %s shows its leading zero byte as a space (VD-127).
+        // w is 16 bits: %s shows its leading zero byte as a space (VD-129).
     , "3 12 255  z 1 7 -1\n");
 }
 
@@ -1132,7 +1132,7 @@ test "§17.2.4.3 Scan: %u, %z and %t" {
     try std.testing.expect(none.next() == null);
 }
 
-test "§17.2.4.3 Scan: %u widths and suppression, ? as x, a leading _, an empty exponent, %m (VD-130)" {
+test "§17.2.4.3 Scan: %u widths and suppression, ? as x, a leading _, an empty exponent, %m (VD-132)" {
     // Oracle: iverilog 13's fscanf_u, fscanf_z and scanf4.
     // `%16u` reads a whole word and keeps 16 bits; `%*u` skips one word.
     var w: Scan = .init("\x78\x56\x34\x12\x01\x00\x00\x00", "%16u%*u", 1);

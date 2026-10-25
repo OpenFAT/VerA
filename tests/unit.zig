@@ -11496,7 +11496,7 @@ pub const sim_digital_tests = struct {
         try std.testing.expectError(error.DigitalFailed, root.run(a, src, .{ .params = &.{.{ .name = "Q", .value = 1, .text = "1" }} }, &bag, &out.writer));
     }
 
-    test "§17.8 $rtoi takes -2^31 exactly and keeps the low 32 bits of one past it (VD-128)" {
+    test "§17.8 $rtoi takes -2^31 exactly and keeps the low 32 bits of one past it (VD-130)" {
         // Oracle: iverilog's itor_rtoi gold; an infinity is x.
         try expectRun(
             \\module m; integer i, j, k, n;
@@ -11601,7 +11601,7 @@ pub const sim_digital_tests = struct {
             \\  $display("%s %0d %0d %g %0d %0d %0d", s, n, a, r, st, j, i);
             \\end endmodule
         , .{}, &bag, &output.writer);
-        // s is 10 characters: %s shows its five leading zero bytes as spaces (VD-127).
+        // s is 10 characters: %s shows its five leading zero bytes as spaces (VD-129).
         try std.testing.expectEqualStrings("     12-ab 2 7 2.5 0 3 4\n", output.written());
     }
 

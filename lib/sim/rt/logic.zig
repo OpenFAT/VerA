@@ -665,13 +665,13 @@ pub fn ofRealTo(r: f64, comptime to: u32) T(to) {
 }
 
 /// §17.8 `$rtoi`: truncated toward zero, a 32-bit signed value, the low 32
-/// bits of a larger one (iverilog's itor_rtoi, VD-128); x for an infinity
+/// bits of a larger one (iverilog's itor_rtoi, VD-130); x for an infinity
 /// or a NaN.
 pub inline fn rtoi(r: f64) W {
     return ofRealTo(@trunc(r), 32);
 }
 
-/// §17.8 `$itor` of a real argument (VD-128): the argument converts to an
+/// §17.8 `$itor` of a real argument (VD-130): the argument converts to an
 /// integer first (§4.8.2's rounding), and one with no integer is x, which
 /// `$itor` reads as 0.
 pub inline fn itorReal(r: f64) f64 {
@@ -1167,7 +1167,7 @@ test "real to integer rounds half away from zero; one with no 64-bit integer is 
         try std.testing.expectEqual(x64, ofReal(r));
 }
 
-test "$rtoi truncates toward zero into 32 bits, the low 32 of a larger value; inf and NaN are x (§17.8, VD-128)" {
+test "$rtoi truncates toward zero into 32 bits, the low 32 of a larger value; inf and NaN are x (§17.8, VD-130)" {
     try std.testing.expectEqual(W{ .v = 2, .x = 0 }, rtoi(2.9));
     try std.testing.expectEqual(W{ .v = 0xffff_fffe, .x = 0 }, rtoi(-2.9));
     try std.testing.expectEqual(W{ .v = 0x7fff_ffff, .x = 0 }, rtoi(2147483647.9));

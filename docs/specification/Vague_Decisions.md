@@ -1407,7 +1407,7 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: A: +3 fixtures. C: §3.4.2's value half gains a run-time invalid-input test.
 - **Status**: DONE (#80).
 
-### VD-126: What a continuous driver outputs before its first update
+### VD-128: What a continuous driver outputs before its first update
 - **Source**: conformance-to-100 (2026-10-24), Verilog gap G8: `wire #5 w = a;`, `assign #3 w2 = 1;` and `buf #2 (b, a)` read z before the first update in VerA, x in iverilog; 13 ivtest tests (ldelay1, ldelay3, multi_driver_delay, pr1883052(b), pr2801662, strength_feedback_delay, br947, br_gh732, pr1587669, pr1645518, pr528(b)) and delay_var.v.
 - **Rule**: IEEE 1364-2005 §4.2.1: "Nets with drivers shall assume the output value of their drivers", and "The default initialization value for a net shall be the value z". §8.5 Figure 8-1 draws `q` and `qb`, behind `buf #3` and `not #5`, as unknown until 3 and 5.
 - **Why vague**: §4.2.1 does not say what a driver outputs before it has evaluated, so a driven net's value before its first delayed update is either the default z or the driver's own unknown.
@@ -1417,7 +1417,7 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: A: the renamed fixture. C: §4.2.1's driven half gains a test.
 - **Status**: DONE 2026-10-24.
 
-### VD-127: How `%s` shows a zero byte, and what a `0` before a radix conversion's width means
+### VD-129: How `%s` shows a zero byte, and what a `0` before a radix conversion's width means
 - **Source**: conformance-to-100 (2026-10-24), ivtest H9c (br_gh827, pr1804877, string4, string5, string7, test_extended, test_width) and string13.
 - **Rule**: IEEE 1364-2005 17.1.1.7: %s's argument is "a sequence of 8-bit hexadecimal ASCII codes", and "No termination character or value is required at the end of a string, and leading zeros are never printed." 17.1.1.2 grants "the full formatting capabilities available in the C language" to the real conversions only; 17.1.1.3's one override of the automatic width is `%0`.
 - **Why vague**: "never printed" does not say whether a leading zero byte leaves its column (blank) or is dropped, nor what an inner zero byte prints; and nothing says what the `0` of `%08d` (a width written with a leading zero) does.
@@ -1427,7 +1427,7 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: A: two renamed fixtures. C: none.
 - **Status**: DONE 2026-10-24.
 
-### VD-128: `$itor` of a real, `$rtoi` of an integer, and `$rtoi` past 32 bits
+### VD-130: `$itor` of a real, `$rtoi` of an integer, and `$rtoi` past 32 bits
 - **Source**: conformance-to-100 (2026-10-24), ivtest itor_rtoi.
 - **Rule**: IEEE 1364-2005 17.8: "`$rtoi` converts real values to an integer type by truncating the real value", "`$itor` converts integer values to real values", with the prototypes `integer $rtoi(real_val)` and `real $itor(int_val)`; 4.8.2 converts between the types implicitly, an x or z bit read as 0.
 - **Why vague**: the prototypes name the argument's type but no "shall" requires it, and the clause does not say what `$rtoi` returns for a value no `integer` holds.
@@ -1437,7 +1437,7 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: none.
 - **Status**: DONE 2026-10-24.
 
-### VD-129: How wide an unsized based constant with more than 32 bits of digits is (digital)
+### VD-131: How wide an unsized based constant with more than 32 bits of digits is (digital)
 - **Source**: conformance-to-100 (2026-10-24), ivtest pr903 (`'h9000_0000_0000_0000_0000 / 'h3000_0000_0000_0000_0000` is 3).
 - **Rule**: IEEE 1364-2005 3.5.1: "The number of bits that make up an unsized number ... shall be at least 32." Table 5-22: "Unsized constant number: Same as integer".
 - **Why vague**: 3.5.1 sets a floor and no ceiling; Table 5-22 names `integer`, whose own size 4.8 also leaves at "at least 32".
@@ -1447,7 +1447,7 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: A: the renamed fixture. C: none.
 - **Status**: DONE 2026-10-24.
 
-### VD-130: `$fscanf`/`$sscanf` details 17.2.4.3 leaves open
+### VD-132: `$fscanf`/`$sscanf` details 17.2.4.3 leaves open
 - **Source**: conformance-to-100 (2026-10-24), ivtest fscanf_u, fscanf_u_warn, fscanf_z, fscanf_z_warn, scanf4.
 - **Rule**: IEEE 1364-2005 17.2.4.3: `%b` "Matches a binary number, consisting of a sequence from the set 0,1,X,x,Z,z,?, and _" (likewise `%o`, `%h`, and `%d`'s single x, z, ?); `%u` "shall transfer sufficient data from the input to fill the target reg"; "An optional decimal integer that specifies the maximum field width"; `%m` "Returns the current hierarchical path as a string".
 - **Why vague**: the clause does not say what `?` reads as, whether `_` may lead, what a field width means for binary data, or what `%*u` skips.
@@ -1455,6 +1455,16 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Not taken**: ivtest scanf4's `$sscanf(" ", "%s", a)` returning 0. The clause says "If the input ends before the first matching failure or conversion, EOF is returned", and C's scanf returns EOF too; VerA returns -1 (fixture `sscanf_conversions.v`), so scanf4 stays in `tools/vera.xfail` as a suite expectation to correct.
 - **VerA today**: `lib/sim/digital/system.zig` `Scan` (`next`, `number`, `float`, `unformatted`, `Time.scale`) and `scanContext`; `src/codegen/digital/emit_expr.zig` refuses `%m` with `%t`/`%u`/`%z`. Test `system.zig` "§17.2.4.3 Scan: %u widths".
 - **Measure impact**: none.
+- **Status**: DONE 2026-10-24.
+
+### VD-133: An always construct with no timing control anywhere in it
+- **Source**: conformance-to-100 (2026-10-24), ivtest always3.1.* (iverilog refuses `always v <= 4'h5;` and its kin at compile time).
+- **Rule**: IEEE 1364-2005 §9.9.2: "The always construct, because of its looping nature, is only useful when used in conjunction with some form of timing control. If an always construct has no control for simulation time to advance, it will cause a simulation deadlock condition." The clause describes the outcome; it has no "shall" and forbids no source.
+- **Why vague**: the text is legal syntax; whether a tool reports the deadlock at compile time, at run time or loops forever is not said.
+- **Options**: (a) run it, and stop it by the zero-delay event budget at time 0 (VerA until 2026-10-24; fixture `zero_delay_always_finishes`); (b) refuse it at elaboration, as iverilog does.
+- **Decision**: `DECIDED:` (b). The construct can only deadlock, so the earliest report is the most useful one, and it matches the reference tool. The refusal fires only when no timing control can be reached anywhere in the statement: a delay, an event control or `wait` at any depth, a timed or event-controlled assignment, a `$finish`/`$stop`, or a call of any user task counts as one (a task may wait, so a call is never judged timeless), so a block that can suspend on some path is always run.
+- **VerA today**: `lib/sim/digital/root.zig` `timeless`, checked where each always construct is compiled. Fixtures: always3.1.* (ivtest) and `verilog/09_behavioral_modeling/zero_delay_always_rejected.v`.
+- **Measure impact**: A: the reject fixture. C: §9.9.2 gains a negative test.
 - **Status**: DONE 2026-10-24.
 
 ## 6. Implementation-defined choices

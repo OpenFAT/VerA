@@ -1393,7 +1393,7 @@ test "§17.2.3 $sformat/$swrite fill a reg with the text, §17.3.1 $printtimesca
         \\  $printtimescale;
         \\end endmodule
         \\
-        // %s shows s's leading zero bytes as spaces (VD-127; iverilog the same).
+        // %s shows s's leading zero bytes as spaces (VD-129; iverilog the same).
     , "[   t=3]\n[   ab!]\n[o-long]\nTime scale of (m) is 10us / 100ns\n");
 }
 
@@ -1570,7 +1570,7 @@ test "§17.1.1.2 a real conversion renders C's flags; any other refuses them (#4
     // By hand: "2.50" left in 8; '+' on 1.5; ' ' where 3.0's sign would be;
     // "-2.500" zero-filled to 8 after its sign; '#' keeps 2's point; `%r`
     // of 1500 is "1.5K", left in 6. `%05d` is C's zero fill, as iverilog
-    // prints it (VD-127).
+    // prints it (VD-129).
     try expectRun(
         \\module m; initial $display("[%-8.2f|%+e|% .1f|%08.3f|%#.0f|%-6r|%05d]", 2.5, 1.5, 3.0, -2.5, 2.0, 1500.0, 42);
         \\endmodule

@@ -2142,7 +2142,8 @@ fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
         // §9.9.2: an always construct whose statement never waits "will
         // cause a simulation deadlock" at time 0, the one time every process
         // starts at; iverilog refuses it at compile time (ivtest
-        // always3.1.*), and so does VerA, rather than when it first runs.
+        // always3.1.*), and so does VerA, rather than when it first runs
+        // (specification/Vague_Decisions.md VD-133).
         if (process.is_always and timeless(r.file, process.body))
             return r.fail(process.main_tok, "§9.9.2: this always construct has no timing control, so it loops at time 0 without suspending (a simulation deadlock)", .{});
         if (process.is_always and try levelControlled(r, process.body)) {
@@ -2251,6 +2252,10 @@ test "§9.9 time-0 process order is iverilog's" {
     // §9.9.2: an always construct that can never wait deadlocks at time 0;
     // iverilog refuses it (ivtest always3.1.2A).
     try expectRejected("module m; reg [3:0] v; initial $display(\"%h\", v); always v <= 4'h5; endmodule", "has no timing control");
+    // VD-133: a timing control anywhere, a task call (which may wait) or a
+    // `wait` keeps the construct running.
+    try expectRun("module m; reg c; task t; #2 c = ~c; endtask initial begin c = 0; #5 $display(\"%b\", c); $finish; end always t; endmodule", "0\n");
+    try expectRun("module m; reg c; initial begin c = 0; #3 c = 1; #1 $display(\"%b\", c); $finish; end always begin if (c) wait (!c); else #1; end endmodule", "1\n");
 }
 
 test "a zero-delay loop fails by name instead of hanging at one tick" {

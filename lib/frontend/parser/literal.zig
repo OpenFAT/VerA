@@ -46,7 +46,7 @@ pub fn parseNumber(self: *Parser) Error!Ast.ExprId {
             });
         }
         // A known unsized based constant holds its leading zero digits too
-        // (VD-129); its planes were allocated for every digit.
+        // (VD-131); its planes were allocated for every digit.
         var wide = lit;
         if (!lit.hasUnknown()) wide.width = @max(lit.width, digit_bits);
         return self.file.exprs.addLogic(self.arena, tok, wide);
@@ -66,7 +66,7 @@ pub fn parseNumber(self: *Parser) Error!Ast.ExprId {
 }
 
 /// An unsized based §2.6.1 constant's digits times the bits per digit
-/// (VD-129); 0 for a sized or a decimal one.
+/// (VD-131); 0 for a sized or a decimal one.
 fn unsizedDigitBits(text: []const u8, sized: bool) u32 {
     const q = std.mem.findScalar(u8, text, '\'') orelse return 0;
     if (sized) return 0;
