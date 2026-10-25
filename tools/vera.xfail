@@ -186,7 +186,6 @@ ivtest/ivltests/always3.1.2B.v
 ivtest/ivltests/always3.1.3A.v
 ivtest/ivltests/always3.1.3B.v
 ivtest/ivltests/always3.1.3C.v
-ivtest/ivltests/array_index_real_fail.v
 ivtest/ivltests/array_packed_2d.v
 ivtest/ivltests/array_word_check.v
 ivtest/ivltests/assign3.2E.v

@@ -720,7 +720,10 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                 // supplying an address for each dimension".
                 if (ex.tag(ex.rhs(x)) == .range or ex.tag(ex.rhs(x)) == .indexed_range)
                     return self.exprFail(ex.rhs(x), "§5.2.2: each array dimension takes an index, not a part-select");
-                _ = try inferValue(self, ex.rhs(x));
+                // §4.8.1 refuses a real index of a vector's select; an array
+                // address is refused the same way (iverilog's
+                // array_index_real_fail; 1364 lists only the vector case).
+                if ((try inferValue(self, ex.rhs(x))).real) return self.exprFail(ex.rhs(x), "§4.8.1: a real is not an array index");
             }
             const base = try self.slot(x);
             if (self.events.contains(base)) return self.exprFail(e, "§9.7.3: a named event holds no data; it can only be triggered and waited on");
@@ -1930,6 +1933,7 @@ fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
         var x = e;
         while (ex.tag(x) == .index) : (x = ex.lhs(x)) {
             try checkExpr(self, ex.rhs(x));
+            if (typeOf(self, ex.rhs(x)).real) return self.exprFail(ex.rhs(x), "§4.8.1: a real is not an array index");
         }
         return;
     }
@@ -2354,6 +2358,8 @@ test "§5.2.1 a part-select names its more significant bit first; bounds and wid
     try expectRejected("module m; reg [7:0] a; reg b; initial b = a[1.0:0]; endmodule", "a real is not a part-select bound");
     try expectRejected("module m; reg [7:0] a; real r; reg [1:0] b; initial b = a[r +: 2]; endmodule", "a real is not a part-select index");
     try expectRejected("module m; reg [7:0] a; real r; reg b; initial b = a[r]; endmodule", "a real is not a bit-select index");
+    try expectRejected("module m; reg [1:0] a[1:0]; real r; initial a[r] = 2'b10; endmodule", "a real is not an array index");
+    try expectRejected("module m; reg [1:0] a[1:0], x; real r; initial x = a[r]; endmodule", "a real is not an array index");
 }
 
 test "§5.1.1 a real takes no bitwise operator and is no concatenation operand" {
