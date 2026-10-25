@@ -1311,8 +1311,15 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     const ex = &self.file.exprs;
                     if (s.args.len < 2 or s.args.len > 4)
                         return self.fail(tok, "$readmemb/$readmemh take (file, memory [, start [, finish]])", .{});
-                    if (s.args[0] == .none or ex.tag(s.args[0]) != .str_literal)
-                        return self.exprFail(s.args[0], "§17.2.9 Syntax 17-7: the memory file name is a string literal");
+                    // Syntax 17-7's `" file_name "` is §17.2.1's placeholder,
+                    // "a character string or ... a reg containing a character
+                    // string": a literal, or an integral expression whose
+                    // characters are read when the task runs (pr690, pr704).
+                    if (s.args[0] == .none) return self.fail(tok, "§17.2.9 Syntax 17-7: the memory file name is a string", .{});
+                    if (ex.tag(s.args[0]) != .str_literal) {
+                        try checkExpr(self, s.args[0]);
+                        if (typeOf(self, s.args[0]).real) return self.exprFail(s.args[0], "§17.2.9: the memory file name is a string, not a real");
+                    }
                     // ponytail: one dimension; §17.2.9's order over several
                     // is the row-major walk, when a source loads one.
                     const arr = if (s.args[1] == .none or ex.tag(s.args[1]) != .ident) null else self.arrays.get(try self.slot(s.args[1]));
@@ -2421,7 +2428,8 @@ test "A.6.9 a hierarchical task name walks instances before the task" {
 
 test "§17 system task argument forms are checked before any process runs" {
     try expectRejected("module m; initial $stop(0, 1); endmodule", "$stop accepts zero or one argument");
-    try expectRejected("module m; reg [7:0] mem [0:3]; reg [8*4:1] f; initial $readmemh(f, mem); endmodule", "the memory file name is a string literal");
+    // §17.2.1's file_name may be a reg holding the characters; a real is no string.
+    try expectRejected("module m; reg [7:0] mem [0:3]; real f; initial $readmemh(f, mem); endmodule", "the memory file name is a string, not a real");
     try expectRejected("module m; reg [7:0] mem [0:1][0:1]; initial $readmemh(\"x.hex\", mem); endmodule", "load a one-dimensional unpacked array");
     try expectRejected("module m; initial $readmemh(\"x.hex\"); endmodule", "take (file, memory [, start [, finish]])");
     try expectRejected("module m; initial $q_initialize(1, 1, 5); endmodule", "the §17.6 queue tasks take four arguments");

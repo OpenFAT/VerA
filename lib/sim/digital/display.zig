@@ -302,7 +302,10 @@ pub fn readMemory(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, ra
     const ex = &self.file.exprs;
     const base = try self.slot(args[1]);
     const arr = self.arrays.get(base).?;
-    const name = self.file.str(ex.strOf(args[0]));
+    const name = if (ex.tag(args[0]) == .str_literal)
+        self.file.str(ex.strOf(args[0]))
+    else
+        (try system.text(a, try evaluate.eval(self, a, args[0], 0))) orelse return self.exprFail(args[0], cannot_read);
     const io = self.io orelse return self.exprFail(args[0], cannot_read);
     const file = sideFile(io, a, self.file_name, name) catch return self.exprFail(args[0], cannot_read);
     defer file.close(io);

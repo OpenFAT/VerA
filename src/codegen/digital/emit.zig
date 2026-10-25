@@ -1102,6 +1102,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                 // §17.2.9: the bounds are read now; the file when the task runs.
                 .readmem => |radix| {
                     if (self.device) return self.refuse("§17.2.9 $readmemb/$readmemh: a device reads no file");
+                    if (r.file.exprs.tag(t.args[0]) != .str_literal) return self.refuse("§17.2.9 $readmemb/$readmemh with a file name held in a variable");
                     const base = try self.slot(t.args[1]);
                     const arr = r.arrays.get(base).?;
                     const name = r.file.str(r.file.exprs.strOf(t.args[0]));

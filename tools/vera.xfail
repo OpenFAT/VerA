@@ -376,8 +376,6 @@ ivtest/ivltests/pr434.v
 ivtest/ivltests/pr478.v
 ivtest/ivltests/pr498b.v
 ivtest/ivltests/pr584.v
-ivtest/ivltests/pr690.v
-ivtest/ivltests/pr704.v
 ivtest/ivltests/pr707.v
 ivtest/ivltests/pr812.v
 ivtest/ivltests/pr903.v
