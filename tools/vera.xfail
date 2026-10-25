@@ -121,7 +121,6 @@ ivtest/ivltests/pr2014673.v
 ivtest/ivltests/pr2043585.v
 ivtest/ivltests/pr2121536b.v
 ivtest/ivltests/pr2121536.v
-ivtest/ivltests/pr2172606b.v
 ivtest/ivltests/pr2219441.v
 ivtest/ivltests/pr2224949.v
 ivtest/ivltests/pr2350934b.v
@@ -146,7 +145,6 @@ ivtest/ivltests/pr3296466d.v
 ivtest/ivltests/pr492.v
 ivtest/ivltests/pr528b.v
 ivtest/ivltests/pr528.v
-ivtest/ivltests/pr584.v
 ivtest/ivltests/pr690.v
 ivtest/ivltests/pr704.v
 ivtest/ivltests/pr812.v
@@ -181,9 +179,7 @@ ivtest/ivltests/sdf8.v
 ivtest/ivltests/sdf_esc_id.v
 ivtest/ivltests/sdf_header.v
 ivtest/ivltests/sdf_timescale.v
-ivtest/ivltests/shellho1.v
 ivtest/ivltests/shift6.v
-ivtest/ivltests/signed_a.v
 ivtest/ivltests/specparam_specify_reference_order.v
 ivtest/ivltests/strength_feedback_delay.v
 ivtest/ivltests/strength_net_change.v
