@@ -651,10 +651,18 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                     try compile.checkExpr(self, args[arg]);
                     // A real operand is formatted as it is, not rounded to
                     // a whole unit first (#64).
-                    if (allocator) |a| try emitTime(self, if (compile.typeOf(self, args[arg]).real)
-                        try evaluate.evalReal(self, a, args[arg])
-                    else
-                        fmt.timeOperand(try evaluate.eval(self, a, args[arg], 0)), width);
+                    if (allocator) |a| {
+                        const out = self.out;
+                        defer self.out = out;
+                        var field: std.Io.Writer.Allocating = .init(a);
+                        const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
+                        if (zero) self.out = &field.writer;
+                        try emitTime(self, if (compile.typeOf(self, args[arg]).real)
+                            try evaluate.evalReal(self, a, args[arg])
+                        else
+                            fmt.timeOperand(try evaluate.eval(self, a, args[arg], 0)), width);
+                        if (zero) try zeroFilled(out, field.written());
+                    }
                     continue;
                 },
                 // §17.1.1.6 `%m` and §13.6 `%l` consume no argument: they
@@ -715,10 +723,17 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
             if (radix) |r| {
                 try compile.checkExpr(self, args[arg]);
                 if (allocator) |a| {
+                    // `%05d`: C's '0' flag, which iverilog renders (`zeroFilled`).
+                    const out = self.out;
+                    defer self.out = out;
+                    var field: std.Io.Writer.Allocating = .init(a);
+                    const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
+                    if (zero) self.out = &field.writer;
                     if (compile.typeOf(self, args[arg]).real)
                         try realRadix(self.out, a, try evaluate.evalReal(self, a, args[arg]), r, width)
                     else
-                        try fmt.valueFill(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width, sp.flags & str_k.zc_zero != 0);
+                        try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
+                    if (zero) try zeroFilled(out, field.written());
                 }
             } else {
                 try compile.checkExpr(self, args[arg]);
@@ -727,6 +742,19 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
         }
     }
     if (allocator != null and show.newline) try self.out.writeByte('\n');
+}
+
+/// A field written with C's '0' flag and a width (`%05d`, `%04h`, `%06t`):
+/// `text`, the field as the conversion padded it with spaces on the left,
+/// with those spaces as zeros after any sign. §17.1.1.2 grants C's flags to
+/// the real conversions only and leaves a width's leading zero open; this is
+/// iverilog's text (ivtest delay.v's `%04d`).
+pub fn zeroFilled(out: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
+    const pad = std.mem.indexOfNone(u8, text, " ") orelse text.len;
+    const sign: usize = @intFromBool(pad < text.len and text[pad] == '-');
+    try out.writeAll(text[pad..][0..sign]);
+    try out.splatByteAll('0', pad);
+    try out.writeAll(text[pad + sign ..]);
 }
 
 /// A radix conversion (`%d %h %o %b`) of a real, as iverilog prints it
@@ -839,17 +867,19 @@ fn emitTime(self: *Run, v: f64, width: ?u64) Error!void {
 /// IEEE 1364-2005 §17.3.1 `$printtimescale`: "the time unit and precision of
 /// the module that is the current scope", or with an argument "of the module
 /// passed to it", in the clause's format `Time scale of (name) is unit /
-/// precision`. The name is the current module's, or the argument as written.
+/// precision`. The clause names a module and leaves the printed name open;
+/// VerA prints what iverilog prints: the full hierarchical name of the
+/// current module instance, or of the argument, which may name any object
+/// (a named block, a variable, a parameter) and reports its module's scale.
 pub fn printTimescale(self: *Run, args: []const Ast.ExprId) Error!void {
-    const scope = if (args.len == 1) try timescaleScope(self, args[0]) else self.scope;
-    const mt = self.timeOf(scope);
+    const t: TimescaleTarget = if (args.len == 1) try timescaleScope(self, args[0]) else .{ .scope = self.instanceOf(self.scope) };
+    const mt = self.timeOf(t.scope);
     const prec_exp = mt.unit_exp - @as(i32, std.math.log10_int(@as(u64, mt.scale.local_per_unit)));
     try self.out.writeAll("Time scale of (");
-    if (args.len == 0) try self.out.writeAll(self.file.str(self.file.modules[self.scope_info.items[self.scope].def].name)) else {
-        const ex = &self.file.exprs;
-        const parts: []const Ast.StrId = if (ex.tag(args[0]) == .ident) &.{ex.strOf(args[0])} else ex.nameParts(args[0]);
-        for (parts, 0..) |p, i| try self.out.print("{s}{s}", .{ if (i == 0) "" else ".", self.file.str(p) });
-    }
+    try emitPath(self, t.scope);
+    if (t.leaf) |name| try self.out.print(".{s}", .{self.file.str(name)});
+    // A select is named as iverilog's VPI names it: a word `[i]`, a bit `[i:i]`.
+    if (t.index) |i| if (t.word) try self.out.print("[{d}]", .{i}) else try self.out.print("[{d}:{d}]", .{ i, i });
     try self.out.writeAll(") is ");
     try fmt.decade(self.out, mt.unit_exp);
     try self.out.writeAll(" / ");
@@ -857,12 +887,83 @@ pub fn printTimescale(self: *Run, args: []const Ast.ExprId) Error!void {
     try self.out.writeByte('\n');
 }
 
-/// §17.3.1 the module instance `$printtimescale`'s argument names.
-pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!u32 {
-    return switch (try @import("vcd.zig").target(self, e)) {
-        .scope => |sc| sc,
-        .slot => self.exprFail(e, "§17.3.1: $printtimescale names a module instance"),
+/// What `$printtimescale`'s argument names: a scope, or the object `leaf`
+/// declared in one.
+pub const TimescaleTarget = struct { scope: u32, leaf: ?Ast.StrId = null, index: ?i64 = null, word: bool = false };
+
+/// §17.3.1 what `$printtimescale`'s argument names, by §12.5's resolution:
+/// an instance (or a named block that declares something, which `instances`
+/// holds too), or a variable, net or parameter and the scope declaring it
+/// (iverilog takes any such object). The first name is searched for upward
+/// from the current scope to its module, then among the top-level modules.
+/// A named block that declares nothing has no scope, so is found in its
+/// module's source (`namedBlock`).
+pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!TimescaleTarget {
+    const ex = &self.file.exprs;
+    // A constant bit- or word-select of a variable or net names that bit
+    // or word (iverilog's pr1701855b).
+    if (ex.tag(e) == .index and ex.tag(ex.rhs(e)) != .range and ex.tag(ex.rhs(e)) != .indexed_range) {
+        var t = try timescaleScope(self, ex.lhs(e));
+        const name = t.leaf orelse return self.exprFail(e, "§17.3.1: $printtimescale selects from a variable or a net only");
+        const at = self.names.get(.{ .scope = t.scope, .str = name }) orelse return self.exprFail(e, "§17.3.1: $printtimescale selects from a variable or a net only");
+        if (!compile.constantExpression(self, ex.rhs(e))) return self.exprFail(e, "§17.3.1: $printtimescale's select is a constant");
+        try compile.checkExpr(self, ex.rhs(e));
+        var scratch = std.heap.ArenaAllocator.init(self.arena);
+        defer scratch.deinit();
+        t.index = (try evaluate.eval(self, scratch.allocator(), ex.rhs(e), 0)).asInt() orelse return self.exprFail(e, "§17.3.1: $printtimescale's select is a known constant");
+        t.word = self.arrays.contains(at);
+        return t;
+    }
+    const parts: []const Ast.StrId = switch (ex.tag(e)) {
+        .ident => &.{ex.strOf(e)},
+        .hier_ident => ex.nameParts(e),
+        else => return self.exprFail(e, "§17.3.1: $printtimescale names a module instance or an object in one"), // else: no hierarchical_identifier
     };
+    var scope: u32 = blk: {
+        var at = self.scope;
+        while (true) {
+            if (self.instances.get(.{ .scope = at, .str = parts[0] })) |child| break :blk child;
+            if (parts.len == 1 and (self.names.contains(.{ .scope = at, .str = parts[0] }) or namedBlock(self, at, parts[0]))) return .{ .scope = at, .leaf = parts[0] };
+            if (!self.scope_info.items[at].lexical) break;
+            at = self.scope_info.items[at].parent;
+        }
+        for (self.roots) |t| if (self.scope_info.items[t].name == parts[0]) break :blk t;
+        if (parts.len == 1) return self.exprFail(e, "§17.3.1: $printtimescale names no object of this design");
+        return self.exprFail(e, "undeclared instance in a hierarchical reference");
+    };
+    for (parts[1..], 1..) |p, i| {
+        if (self.instances.get(.{ .scope = scope, .str = p })) |child| {
+            scope = child;
+        } else if (i + 1 == parts.len and (self.names.contains(.{ .scope = scope, .str = p }) or namedBlock(self, scope, p))) {
+            return .{ .scope = scope, .leaf = p };
+        } else if (i + 1 == parts.len) {
+            return self.exprFail(e, "§17.3.1: $printtimescale names no object of this design");
+        } else return self.exprFail(e, "undeclared instance in a hierarchical reference");
+    }
+    return .{ .scope = scope };
+}
+
+/// Whether a block named `name` that declares nothing, so has no scope of
+/// its own (`elab.blockScopes`), is in module instance `scope`'s
+/// initial and always constructs.
+fn namedBlock(self: *const Run, scope: u32, name: Ast.StrId) bool {
+    if (self.scope_info.items[scope].lexical) return false;
+    const V = struct {
+        f: *const Ast.SourceFile,
+        name: Ast.StrId,
+        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) error{Found}!void {}
+        pub fn stmt(v: @This(), c: Ast.StmtId) error{Found}!void {
+            if (c == .none) return;
+            switch (v.f.stmt(c)) {
+                .block => |b| if (b.name == v.name) return error.Found,
+                else => {}, // else: only a block is named
+            }
+            try v.f.stmtEdges(c, v);
+        }
+    };
+    for (self.file.modules[self.scope_info.items[scope].def].discrete) |d|
+        (V{ .f = self.file, .name = name }).stmt(d.body) catch return true;
+    return false;
 }
 
 /// Prints the standing monitor's argument list, if there is one and it is
@@ -1294,6 +1395,50 @@ test "§17.2.3 $sformat/$swrite fill a reg with the text, §17.3.1 $printtimesca
         \\
         // %s shows s's leading zero bytes as spaces (VD-127; iverilog the same).
     , "[   t=3]\n[   ab!]\n[o-long]\nTime scale of (m) is 10us / 100ns\n");
+}
+
+// §17.1.1.2 grants C's flags to the real conversions only; a radix or `%t`
+// width written with a leading zero pads with zeros after the sign, as
+// iverilog prints it (ivtest delay.v's `%04d`; this transcript is iverilog's).
+test "§17.1.1.2 a zero-led width pads a radix or time field with zeros" {
+    try expectRun(
+        \\module t; reg [7:0] r; integer i; reg [3:0] x;
+        \\initial begin r = 8'h5; i = -5; x = 4'bx01x;
+        \\$display("[%04d][%04h][%06b][%04o][%05d][%06d][%04d][%03d][%04t][%4d]", r, r, r, r, i, x, 12345, 3'd2, 5, r);
+        \\end endmodule
+        \\
+    , "[0005][0005][00000101][0005][-0005][00000X][12345][002][0005][   5]\n");
+}
+
+// §17.3.1 leaves the printed name and a non-module argument open; iverilog
+// (ivtest pr1701855, pr1701855b) prints this transcript: the current module
+// instance's full name with no argument, and for an argument its full name,
+// a select as `[i]`/`[i:i]`, and its own module's scale.
+test "§17.3.1 $printtimescale names any object by its full hierarchical name" {
+    try expectRun(
+        \\`timescale 1us/1ns
+        \\module top;
+        \\  reg [1:0] r; reg a [0:2]; wire w;
+        \\  initial begin : blk
+        \\    $printtimescale(dut); $printtimescale(dut.q); $printtimescale(r[0]); $printtimescale(a[1]);
+        \\    $printtimescale(top.w); $printtimescale(blk); $printtimescale(dut.t);
+        \\  end
+        \\  lower dut();
+        \\endmodule
+        \\`timescale 10ns/10ps
+        \\module lower; reg q; task t; ; endtask initial #1 $printtimescale; endmodule
+        \\
+    ,
+        \\Time scale of (top.dut) is 10ns / 10ps
+        \\Time scale of (top.dut.q) is 10ns / 10ps
+        \\Time scale of (top.r[0:0]) is 1us / 1ns
+        \\Time scale of (top.a[1]) is 1us / 1ns
+        \\Time scale of (top.w) is 1us / 1ns
+        \\Time scale of (top.blk) is 1us / 1ns
+        \\Time scale of (top.dut.t) is 10ns / 10ps
+        \\Time scale of (top.dut) is 10ns / 10ps
+        \\
+    );
 }
 
 test "display retains escaped NUL bytes and unsized integer width" {

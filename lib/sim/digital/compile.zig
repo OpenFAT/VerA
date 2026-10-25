@@ -1419,7 +1419,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                 },
                 // §17.3.1 Syntax 17-9.
                 .printtimescale => {
-                    if (s.args.len > 1) return self.fail(tok, "$printtimescale takes at most one module instance", .{});
+                    if (s.args.len > 1) return self.fail(tok, "$printtimescale takes at most one hierarchical name", .{});
                     if (s.args.len == 1) _ = try display.timescaleScope(self, s.args[0]);
                 },
                 .fclose => {
@@ -2079,7 +2079,8 @@ fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
                 if (try selectTerm(self, x) != null) return;
                 try exprTerm(self, x);
             }
-            if (self.reals.contains(try self.termSlot(x)))
+            // An `auto_terms` expression is never real.
+            if (!self.auto_terms.contains(.{ .scope = self.scope, .e = x }) and self.reals.contains(try self.termSlot(x)))
                 return self.exprFail(e, "§4.8.1: posedge and negedge do not apply to a real variable");
         },
         .hier_ident => _ = try self.scalarSlot(e),
@@ -2096,7 +2097,7 @@ fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
 
 /// §9.7.3: a scalar event or exactly one selected array element. Only the
 /// indices are value expressions; neither the array nor an event holds data.
-fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
+pub fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
     const ex = &self.file.exprs;
     const c = self.chainBase(e);
     if (ex.tag(c.base) != .ident and ex.tag(c.base) != .hier_ident) return null;
@@ -2149,10 +2150,17 @@ pub fn selectTerm(self: *Run, e: Ast.ExprId) Error!?SelectTerm {
 /// process of its own started at time 0, and the term watches that slot.
 fn exprTerm(self: *Run, e: Ast.ExprId) Error!void {
     try checkExpr(self, e);
+    if (self.auto_terms.contains(.{ .scope = self.scope, .e = e })) return;
+    const ty = typeOf(self, e);
+    if (!ty.real and ty.width <= 64) {
+        var reads: std.ArrayList(u32) = .empty;
+        try sensitivity(self, e, &reads);
+        for (reads.items) |at| if (self.auto_slots.contains(at))
+            return self.auto_terms.put(self.arena, .{ .scope = self.scope, .e = e }, reads.items);
+    }
     const entry = try self.term_slots.getOrPut(self.arena, .{ .scope = self.scope, .e = e });
     if (entry.found_existing) return;
     const g = self.growing.?;
-    const ty = typeOf(self, e);
     const at: u32 = @intCast(g.items.len);
     entry.value_ptr.* = at;
     try g.append(self.arena, try filled(self.arena, ty.width, ty.signed, if (ty.real) .zero else .x));
@@ -2200,11 +2208,12 @@ test "§3.6 a string operand is packed ASCII, right-justified and truncated on t
 }
 
 test "§17.1.1.6 %m names the instance path and the named blocks around it" {
+    // The child instance's process runs first (`root.processOrder`).
     try expectRun(
         \\module leaf; initial begin : outer begin : inner $display("%m %l %s%c", "", 8'h21); end end endmodule
         \\module m; leaf u(); initial $display("%M"); endmodule
         // "" is one zero byte, which %s shows as a space (VD-127; iverilog too).
-    , "m\nm.u.outer.inner work.leaf  !\n");
+    , "m.u.outer.inner work.leaf  !\nm\n");
 }
 
 test "§12.7 a named block's local shadows the module's, and each instance has its own" {
@@ -2444,7 +2453,7 @@ test "§17 system task argument forms are checked before any process runs" {
     try expectRejected("module m; initial $q_initialize(1, 1, 5); endmodule", "the §17.6 queue tasks take four arguments");
     try expectRejected("module m; integer v, st; initial $q_exam(1, 7, v, st); endmodule", "Table 17-15's codes 1 to 6");
     try expectRejected("module m; initial $fflush(1, 2); endmodule", "$fflush takes at most one descriptor");
-    try expectRejected("module m; initial $printtimescale(m, m); endmodule", "$printtimescale takes at most one module instance");
+    try expectRejected("module m; initial $printtimescale(m, m); endmodule", "$printtimescale takes at most one hierarchical name");
     try expectRejected("module m; initial $fclose(); endmodule", "$fclose takes one descriptor");
     try expectRejected("module m; initial $sdf_annotate(); endmodule", "$sdf_annotate takes the SDF file name");
     try expectRejected("module m; initial $sdf_annotate(\"x.sdf\"); endmodule", "x.sdf: the SDF file cannot be read");

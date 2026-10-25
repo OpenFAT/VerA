@@ -145,6 +145,17 @@ pub const Scheduler = struct {
         return handle;
     }
 
+    /// `schedule`, but ahead of every event already in `region`.
+    pub fn scheduleFirst(self: *Scheduler, region: Region, payload: u32) Error!Handle {
+        try self.checkMutation();
+        const handle = try self.allocate(region, payload);
+        const r = @backingInt(region);
+        self.slots.items(.next)[@backingInt(handle.slot)] = self.heads[r];
+        if (self.heads[r] == .none) self.tails[r] = handle.slot;
+        self.heads[r] = handle.slot;
+        return handle;
+    }
+
     /// Future work has precisely the two categories specified by §8.5.1.
     /// At the current time, inactive means #0; NBA stays in the NBA region.
     /// `TimeInPast` for a `time` before `now`; on any error nothing is queued.

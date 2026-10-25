@@ -274,6 +274,14 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
         const now = waiters.termBits(self.values[sel.slot], sel.first, sel.count);
         return waiters.watchExt(self, id, sel.slot, edge, .{ .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] });
     }
+    if (self.auto_terms.get(.{ .scope = self.scope, .e = watched })) |reads| {
+        var scratch = std.heap.ArenaAllocator.init(self.arena);
+        defer scratch.deinit();
+        const width = compile.typeOf(self, watched).width;
+        const now = waiters.termBits(try evaluate.eval(self, scratch.allocator(), watched, 0), 0, width);
+        for (reads) |slot| try waiters.watchExt(self, id, slot, edge, .{ .expr = watched, .scope = self.scope, .width = width, .v = now[0], .x = now[1] });
+        return;
+    }
     try waiters.watch(self, id, try self.termSlot(watched), edge);
 }
 
@@ -363,6 +371,12 @@ pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle {
     self.pending.items[at].handle = h;
     if (item == .write) try driver.scheduled(self, item.write.target);
     return h;
+}
+
+/// `enqueue` at now in the active region, ahead of everything queued there.
+pub fn enqueueFirst(self: *Run, item: Pending) Error!void {
+    const at = try claim(self, item);
+    self.pending.items[at].handle = self.scheduler.scheduleFirst(.active, at) catch |e| return scheduleFailure(self, e, "scheduling");
 }
 
 fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool {
@@ -921,6 +935,10 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     else
                         try waiters.store(self, o.slot, value.planes);
                 }
+                // A forced net drives the switch-connected nets joined to it
+                // (`resolution.resolveJoined`), which follow its new value.
+                if (o.force and o.bits == null) if (self.net_of.get(o.slot)) |net| if (self.netCold(self.nets[net]).trans.len != 0)
+                    try resolution.resolve(self, net);
                 try doneFlush(self, pc);
                 pc += 1;
                 continue;

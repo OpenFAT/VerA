@@ -127,7 +127,11 @@ pub fn initial(self: *Run, net: u32) void {
         const at: u32 = @intCast(i);
         var acc: Signal = .{};
         for (self.netDrivers(net)) |d| {
-            const c = contribution(self.drivers[d], at);
+            const dr = self.drivers[d];
+            // A sequential UDP's initial state is published at time 0
+            // (§8.5), a change from the unknown a process armed earlier
+            // sees, as iverilog's does (ivtest br_ml20190806a).
+            const c = if (dr.source == .udp and dr.source.udp.sequential) Signal.of(.x, dr.s0, dr.s1) else contribution(dr, at);
             acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
         }
         acc = acc.combine(netPull(n.kind));
@@ -336,6 +340,15 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
                 const n = self.nets[z.net];
                 var own = netPull(n.kind);
                 for (self.netDrivers(z.net)) |d| own = own.combine(contribution(self.drivers[d], z.bit));
+                // §9.3.2 "The force procedural statement on a net shall
+                // override all drivers"; across a switch the forced value is
+                // a strong driver of the other nets, as iverilog reads it
+                // (ivtest pr2937417b/c). The forced net keeps its own value
+                // (`waiters.store` drops this resolution's write to it).
+                // ponytail: a whole-net force only, not a forced select.
+                if (self.overrides.count() != 0) if (self.overrides.get(n.slot)) |o| if (o.force != null) {
+                    own = .of(self.values[n.slot].bit(z.bit), .strong, .strong);
+                };
                 acc = acc.combine(crossed(own, z, y, p));
             }
             if (acc.none()) for (group, paths) |z, p| {
@@ -363,6 +376,12 @@ const Switches = struct {
     }
     pub fn conduction(g: Switches, ti: u32) Tran.State {
         return g.r.trans[ti].state;
+    }
+    pub fn fixed(g: Switches, net: u32) bool {
+        return switch (g.r.nets[net].kind) {
+            .supply0, .supply1 => true,
+            else => false, // else: every other net kind is a conductor
+        };
     }
 };
 
@@ -613,6 +632,56 @@ test "a delayed continuous assignment is inertial and swallows a short pulse" {
         \\t26 0
         \\
     );
+}
+
+// §7.6 switch-connected nets resolve as one, but a supply net (§4.6.6) is
+// a source no signal crosses: the NOR's and the inverter's switches share
+// vdd and vss and stay two groups, and `w2`, which the NOR drives, is the
+// inverter's control. iverilog prints this transcript (ivtest br_gh1122).
+test "§7.6 switch groups that share a supply net stay apart" {
+    try expectRun(
+        \\module test;
+        \\reg a, b; supply1 vdd; supply0 vss; wire w1, w2, y;
+        \\tranif0(w1, vdd, a);
+        \\tranif0(w2, w1,  b);
+        \\tranif1(w2, vss, a);
+        \\tranif1(w2, vss, b);
+        \\tranif0(y, vdd, w2);
+        \\tranif1(y, vss, w2);
+        \\initial begin
+        \\  $monitor("%0t a=%b b=%b w1=%b w2=%b y=%b", $time, a, b, w1, w2, y);
+        \\  #10 a = 0; b = 0; #10 a = 0; b = 1; #10 a = 1; b = 0; #10 a = 1; b = 1; #1;
+        \\end
+        \\endmodule
+    ,
+        \\0 a=x b=x w1=x w2=x y=x
+        \\10 a=0 b=0 w1=1 w2=1 y=0
+        \\20 a=0 b=1 w1=1 w2=0 y=1
+        \\30 a=1 b=0 w1=0 w2=0 y=1
+        \\40 a=1 b=1 w1=z w2=0 y=1
+        \\
+    );
+}
+
+// §9.3.2 a forced net overrides its drivers; joined by a switch, it drives
+// the other side at strong strength while the force holds, and its own
+// drivers again once released. iverilog prints this (ivtest pr2937417b).
+test "§9.3.2 a forced net drives the nets switched to it" {
+    try expectRun(
+        \\module top;
+        \\  reg a; wire x, y, ab;
+        \\  assign (weak1, weak0) x = 1'b1;
+        \\  assign y = a;
+        \\  assign ab = ~a;
+        \\  tran (x, y);
+        \\  initial begin
+        \\    a = 1; #1 $display("%b %b", x, y);
+        \\    force x = ab; #1 $display("%b %b", x, y);
+        \\    a = 0; #1 $display("%b %b", x, y);
+        \\    release x; #1 $display("%b %b", x, y);
+        \\  end
+        \\endmodule
+    , "1 1\n0 x\n1 x\n0 0\n");
 }
 
 test "a trireg holds its charge for the decay time and then gives up" {

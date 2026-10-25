@@ -701,6 +701,10 @@ pub const State = struct {
     /// it goes now: `sink`, or a `capture`.
     sink: *std.Io.Writer,
     out: *std.Io.Writer,
+    /// A '0'-flag field in progress (`zeroBegin`): where `out` pointed, and
+    /// the field's text.
+    zero_out: ?*std.Io.Writer = null,
+    zero_field: std.Io.Writer.Allocating = undefined,
     /// A run whose effects outside `State` are dropped (`snapshot.twice`):
     /// no transcript, no diagnostic, no file opened, read or written, no
     /// dump. Every file descriptor reads as unknown.
@@ -1905,6 +1909,21 @@ pub const State = struct {
     /// `a`'s planes as the `Literal` the interpreter formats.
     pub fn literal(buf: []u64, w: u32, signed: bool) Int.Literal {
         return .{ .width = w, .signed = signed, .sized = true, .planes = buf };
+    }
+
+    /// The next field is a `%05d`/`%04t`: written aside until `zeroEnd`
+    /// (`display.zeroFilled`, the interpreter's rule).
+    pub fn zeroBegin(self: *State) void {
+        self.zero_field = .init(self.gpa);
+        self.zero_out = self.out;
+        self.out = &self.zero_field.writer;
+    }
+
+    pub fn zeroEnd(self: *State) Error!void {
+        self.out = self.zero_out.?;
+        self.zero_out = null;
+        defer self.zero_field.deinit();
+        try display.zeroFilled(self.out, self.zero_field.written());
     }
 
     /// One `%b`/`%o`/`%h`/`%d` operand (§17.1.1.3).

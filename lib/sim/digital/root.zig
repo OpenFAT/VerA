@@ -386,6 +386,17 @@ pub const Run = struct {
     /// §9.7.2 each event term that is an expression, by the scope it is
     /// compiled in: the hidden slot `compile.exprTerm` keeps equal to it.
     term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) = .empty,
+    /// The always constructs `processes` starts first at time 0
+    /// (`levelControlled`), in source order, by the pc each starts at.
+    early: std.ArrayList(u32) = .empty,
+    /// The token each scope after the root was made at (`elab.newScope`),
+    /// which orders a scope's children as the source does (`processOrder`).
+    scope_toks: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// §9.7.2 an expression term that reads a timed automatic task's
+    /// variables, by scope, and the slots it reads: a hidden slot would be
+    /// shared by every activation (§10.2.1), so each waiter instead tests
+    /// the expression in its own activation (`waiters.TermExt.expr`).
+    auto_terms: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, []const u32) = .empty,
     /// The storage of automatic tasks and functions, which §10.2.3 keeps
     /// out of constructs that might outlive an activation.
     auto_slots: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -1779,6 +1790,51 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         if (a.source == .udp) setBit(r.drivers[i].current, a.source.udp.out_bit orelse 0, a.source.udp.state);
         _ = try exec.enqueue(&r, .{ .run_process = try compile.append(&r, .{ .continuous = @intCast(i) }) }, null, false);
     }
+    // The bits a continuous assignment or a port window leaves at z (a
+    // select's other bits, a constant z) are z from the start, not the x
+    // of a value still to come: their first evaluation changes nothing
+    // there, so it wakes nothing (iverilog's reading; a process armed
+    // before it would see a change no driver made).
+    {
+        var scratch = std.heap.ArenaAllocator.init(arena);
+        defer scratch.deinit();
+        // Read every net as x, the value its drivers have not yet given it:
+        // a bit is z here only when no operand value can make it otherwise.
+        const saved = try scratch.allocator().alloc([]u64, r.nets.len);
+        for (r.nets, saved) |n, *keep| {
+            const planes = r.values[n.slot].planes;
+            keep.* = try scratch.allocator().dupe(u64, planes);
+            const x = try filled(scratch.allocator(), r.values[n.slot].width, false, .x);
+            @memcpy(planes, x.planes);
+        }
+        defer for (r.nets, saved) |n, keep| @memcpy(r.values[n.slot].planes, keep);
+        for (r.drivers) |*d| {
+            r.scope = d.scope;
+            const first = switch (d.source) {
+                // A window's source may be a net not yet initialized: only
+                // the bits outside the window are known to be z.
+                .bridge => |b| blk: {
+                    const w = try filled(scratch.allocator(), d.current.width, false, .z);
+                    for (b.dst_lo..b.dst_lo + b.width) |k| setBit(w, @intCast(k), .x);
+                    break :blk w;
+                },
+                // A call may have side effects (a function writing a module
+                // variable): such a driver starts at x throughout.
+                .expr => |x| blk: {
+                    if (calls(&r.file.exprs, x.e)) continue;
+                    if (x.slice) |sl| {
+                        const whole = try evaluate.eval(&r, scratch.allocator(), x.e, sl.total);
+                        const part = try filled(scratch.allocator(), d.current.width, false, .z);
+                        evaluate.copyBits(part, 0, whole, sl.lo, d.current.width);
+                        break :blk part;
+                    }
+                    break :blk try evaluate.evalFor(&r, scratch.allocator(), x.e, r.slotType(r.nets[d.net].slot));
+                },
+                else => continue, // else: a gate, switch, UDP or pull starts at its own unknown
+            };
+            for (0..d.current.width) |k| if (first.bit(@intCast(k)) == .z) setBit(d.current, @intCast(k), .z);
+        }
+    }
     // §7.6: each net knows the pass switches on it, and a controlled one is
     // a process that re-resolves both sides whenever its control changes.
     r.trans = try arena.alloc(Tran, e.trans.items.len);
@@ -1835,7 +1891,13 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     // §10 subroutine bodies, each on its own pc range before any process, so
     // a synchronous call never runs into a process's code.
     try compile.compileSubs(&r);
-    for (e.insts.items) |inst| {
+    // §9.9 leaves the order of initial and always constructs open; VerA
+    // queues them as iverilog does: the scope tree depth first, each
+    // instance's and generate block's child scopes (in source order) before
+    // its own processes, which keep source order (ivtest contrib/pic's
+    // first lines).
+    for (try processOrder(&r, &e)) |g| if (g < e.insts.items.len) {
+        const inst = e.insts.items[g];
         r.scope = inst.scope;
         try initVars(&r, inst.module.vars);
         if (r.mixed) {
@@ -1863,11 +1925,17 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         // slots their events name, in a `.v` run and in the digital half of
         // a mixed-signal design alike.
         try tchk.compileChecks(&r, inst.module.timing_checks);
-    }
-    for (e.procs.items) |p| {
+    } else {
+        const p = e.procs.items[g - e.insts.items.len];
         r.scope = p.scope;
         try initVars(&r, p.vars);
         try processes(&r, p.blocks);
+    };
+    // Last, each ahead of the rest, so the first in source order runs first.
+    var left = r.early.items.len;
+    while (left > 0) {
+        left -= 1;
+        try exec.enqueueFirst(&r, .{ .run_process = r.early.items[left] });
     }
     // A.6.5's `disable` names a block that needs no declaration before its
     // use (it may be in another process), so the ranges are bound here, once
@@ -1980,6 +2048,60 @@ fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []co
 
 /// The bits [lo, hi) of its `width`-bit net that driver `d` drives: a port
 /// window's, or an instance-array member's one output bit; else all of them.
+/// The order `elaborateDeep` queues the process groups of `e` in: index k
+/// below `e.insts.items.len` is that instance's module body, the rest are
+/// `e.procs` (generate blocks), each visited when the scope tree's post-order
+/// walk from the roots reaches its scope.
+fn processOrder(r: *Run, e: *const elab.Elab) Error![]const u32 {
+    const a = r.arena;
+    const n = r.scope_info.items.len;
+    const groups = try a.alloc(std.ArrayList(u32), n);
+    @memset(groups, .empty);
+    for (e.insts.items, 0..) |inst, k| try groups[inst.scope].append(a, @intCast(k));
+    for (e.procs.items, 0..) |p, k| try groups[p.scope].append(a, @intCast(e.insts.items.len + k));
+    const children = try a.alloc(std.ArrayList(u32), n);
+    @memset(children, .empty);
+    for (r.scope_info.items, 0..) |info, k| if (info.parent != k and k != 0) try children[info.parent].append(a, @intCast(k));
+    const BySource = struct {
+        fn less(toks: *const std.AutoHashMapUnmanaged(u32, u32), x: u32, y: u32) bool {
+            return (toks.get(x) orelse 0) < (toks.get(y) orelse 0);
+        }
+    };
+    for (children) |c| std.sort.block(u32, c.items, &r.scope_toks, BySource.less);
+    var out: std.ArrayList(u32) = .empty;
+    // An explicit stack: (scope, next child to visit).
+    var stack: std.ArrayList([2]u32) = .empty;
+    for (r.roots) |root_scope| {
+        try stack.append(a, .{ root_scope, 0 });
+        while (stack.items.len != 0) {
+            const top = &stack.items[stack.items.len - 1];
+            const kids = children[top[0]].items;
+            if (top[1] < kids.len) {
+                const c = kids[top[1]];
+                top[1] += 1;
+                try stack.append(a, .{ c, 0 });
+                continue;
+            }
+            try out.appendSlice(a, groups[top[0]].items);
+            _ = stack.pop();
+        }
+    }
+    std.debug.assert(out.items.len == e.insts.items.len + e.procs.items.len);
+    return out.items;
+}
+
+/// Whether expression `e` calls a function, user or system.
+fn calls(ex: *const Ast.ExprStore, e: Ast.ExprId) bool {
+    if (e == .none) return false;
+    switch (ex.tag(e)) {
+        .call, .sys_call => return true,
+        else => {}, // else: an operator or operand, whose operands are searched
+    }
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| if (calls(ex, c)) return true;
+    return false;
+}
+
 fn driverBits(d: Driver, width: u32) [2]u32 {
     const bit: ?u32 = switch (d.source) {
         .bridge => |b| return .{ b.dst_lo, b.dst_lo + b.width + b.ext },
@@ -2017,8 +2139,64 @@ fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
             .{ .restart = .{ .target = start, .tok = process.main_tok } }
         else
             .stop);
-        _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
+        // §9.9.2: an always construct whose statement never waits "will
+        // cause a simulation deadlock" at time 0, the one time every process
+        // starts at; iverilog refuses it at compile time (ivtest
+        // always3.1.*), and so does VerA, rather than when it first runs.
+        if (process.is_always and timeless(r.file, process.body))
+            return r.fail(process.main_tok, "§9.9.2: this always construct has no timing control, so it loops at time 0 without suspending (a simulation deadlock)", .{});
+        if (process.is_always and try levelControlled(r, process.body)) {
+            try r.early.append(r.arena, start);
+        } else _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
     }
+}
+
+/// Whether statement `s` can never suspend nor end the run: no delay, event
+/// or wait control anywhere in it, no intra-assignment one, no task enable
+/// (a task may wait) and no `$finish`/`$stop`.
+fn timeless(file: *const Ast.SourceFile, s: Ast.StmtId) bool {
+    const V = struct {
+        f: *const Ast.SourceFile,
+        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) error{Timed}!void {}
+        pub fn stmt(v: @This(), c: Ast.StmtId) error{Timed}!void {
+            if (c == .none) return;
+            switch (v.f.stmt(c)) {
+                .event_control => return error.Timed,
+                .assign => |a| if (a.timing != .none or a.timing_implicit) return error.Timed,
+                .sys_task => |t| {
+                    const name = v.f.str(t.name);
+                    if (name[0] != '$' or std.mem.eql(u8, name, "$finish") or std.mem.eql(u8, name, "$stop")) return error.Timed;
+                },
+                else => {}, // else: no timing of its own; its children are searched
+            }
+            try v.f.stmtEdges(c, v);
+        }
+    };
+    (V{ .f = file }).stmt(s) catch return false;
+    return true;
+}
+
+/// Whether `body`, an always construct's, starts with an event control on
+/// levels only (`@(a or b[0])`, `@*`): no posedge or negedge, no named event.
+/// §9.9 gives initial and always constructs no order; VerA starts these
+/// first at time 0, ahead of every driver and process (`Run.early`), so
+/// they see the time-0 changes the others make, as iverilog does (ivtest
+/// pr1026, pr1956211, pr2986528).
+fn levelControlled(r: *Run, body: Ast.StmtId) Error!bool {
+    const st = r.file.stmt(body);
+    if (st != .event_control or st.event_control.kind != .event) return false;
+    const L = struct {
+        fn level(rr: *Run, e: Ast.ExprId) Error!bool {
+            const ex = &rr.file.exprs;
+            return switch (ex.tag(e)) {
+                .event_or => try level(rr, ex.lhs(e)) and try level(rr, ex.rhs(e)),
+                .event_posedge, .event_negedge, .event_function, .event_driver_update => false,
+                .ident, .hier_ident, .index => (try compile.eventReference(rr, e)) == null,
+                else => true, // else: an expression term
+            };
+        }
+    };
+    return st.event_control.event == .none or try L.level(r, st.event_control.event);
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -2047,6 +2225,32 @@ pub fn expectRun(source: []const u8, expected: []const u8) !void {
         return e;
     };
     try std.testing.expectEqualStrings(expected, output.written());
+}
+
+// §9.9 gives initial and always constructs no order; VerA starts them as
+// iverilog does, and this is iverilog's transcript: child instances' processes
+// before their parent's (`processOrder`), a level-controlled always armed
+// before the initial that writes its operand (`levelControlled`, ivtest
+// pr1026), and a driver of `w[1]` leaving `w[0]` z from the start, so its
+// first evaluation is no change of `w` (only the write at 2 is).
+test "§9.9 time-0 process order is iverilog's" {
+    try expectRun(
+        \\module top;
+        \\  reg [4:0] index; reg [31:0] foo; reg r; wire [1:0] w;
+        \\  initial begin index = 0; #1 $display("foo=%b", foo); end
+        \\  always @(*) begin foo = 32'b0; foo[index] = 1'b1; end
+        \\  assign w[1] = r;
+        \\  always @(w) $display("%0t w=%b", $time, w);
+        \\  initial #2 r = 1;
+        \\  a ua();
+        \\  initial $display("top");
+        \\endmodule
+        \\module a; initial $display("a"); b ub(); endmodule
+        \\module b; initial $display("b"); endmodule
+    , "b\na\ntop\nfoo=00000000000000000000000000000001\n2 w=1z\n");
+    // §9.9.2: an always construct that can never wait deadlocks at time 0;
+    // iverilog refuses it (ivtest always3.1.2A).
+    try expectRejected("module m; reg [3:0] v; initial $display(\"%h\", v); always v <= 4'h5; endmodule", "has no timing control");
 }
 
 test "a zero-delay loop fails by name instead of hanging at one tick" {
@@ -2272,6 +2476,36 @@ test "§10.2.3 recursive timed automatic tasks and a formal passed to itself" {
         \\initial begin sum(3, 3, rb); $display("%0d rb=%0d f=%0d", $time, rb, f(7, 3)); end
         \\endmodule
     , "4 ra=3\n9 rb=6 f=7\n");
+}
+
+// §10.2.1: an automatic task's variables are each activation's own, so a
+// write in one activation is no change an event control in another sees
+// (`@f` in `fact`, ivtest recursive_task), and an expression term over them
+// is the waiter's own, read when it arms (`@(arr[j])` after `j` is written,
+// ivtest automatic_task3). iverilog prints this transcript.
+test "§10.2.1 an event control over automatic variables reads its own activation" {
+    try expectRun(
+        \\module m;
+        \\reg [7:0] arr [0:1];
+        \\integer r;
+        \\task automatic fact(input integer n, output integer f);
+        \\  integer t;
+        \\  fork
+        \\    begin if (n > 1) fact(n - 1, t); else t = 1; #1 f = n * t; end
+        \\    @f $display("%0t f=%0d", $time, f);
+        \\  join
+        \\endtask
+        \\task automatic t(input [7:0] v);
+        \\  integer j;
+        \\  begin j = v - 1; @(arr[j]) $display("%0t v=%0d", $time, v); end
+        \\endtask
+        \\initial arr[1] = 7;
+        \\initial #10 arr[0] = 3;
+        \\initial t(1);
+        \\initial #1 t(2);
+        \\initial begin fact(3, r); $display("%0t r=%0d", $time, r); end
+        \\endmodule
+    , "1 f=1\n2 f=2\n3 f=6\n3 r=6\n10 v=1\n");
 }
 
 // §6.2.1: the initializer is an initial-block assignment at time 0, so a
