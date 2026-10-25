@@ -411,9 +411,14 @@ fn leafType(self: *Run, e: Ast.ExprId) Error!Type {
         },
         // An unsized based constant is an integer-sized operand (Table
         // 5-22) whose x/z fill is decided in context (`evaluate.unsizedFill`).
+        // VD-129: past 32 bits it is as wide as its digits.
         .logic_literal => blk: {
             const n = ex.logicValue(e);
-            break :blk .{ .width = if (n.sized) n.width else 32, .signed = n.signed };
+            // ponytail: one with an x/z digit and 33 to 64 digit bits
+            // ('h0000000000x) reads as 32: the frontend holds it in 64 and
+            // keeps no digit count for it. Keep one if such a literal shows up.
+            const wide = !n.hasUnknown() or n.width > 64;
+            break :blk .{ .width = if (n.sized) n.width else if (wide) @max(32, n.width) else 32, .signed = n.signed };
         },
         // IEEE 1364-2005 §3.6: a string operand is an unsigned number of
         // eight bits per character, and §5.2.3.3's "" is one NUL byte.
@@ -430,6 +435,8 @@ const IntLiteral = @typeInfo(@TypeOf(Ast.ExprStore.intLiteral)).@"fn".return_typ
 /// §3.5.1 makes a minimum: a value that does not fit keeps the frontend's 64.
 pub fn literalWidth(n: IntLiteral) u32 {
     if (n.width != 0) return n.width;
+    // VD-129: an unsized based one is as wide as its digits past 32 bits.
+    if (n.digit_bits != 0) return @max(32, n.digit_bits);
     const fits = if (n.signed) n.value >= std.math.minInt(i32) and n.value <= std.math.maxInt(i32) else n.value >= 0 and n.value <= std.math.maxInt(u32);
     return if (fits) 32 else 64;
 }

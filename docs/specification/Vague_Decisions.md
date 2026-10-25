@@ -1437,6 +1437,16 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: none.
 - **Status**: DONE 2026-10-24.
 
+### VD-129: How wide an unsized based constant with more than 32 bits of digits is (digital)
+- **Source**: conformance-to-100 (2026-10-24), ivtest pr903 (`'h9000_0000_0000_0000_0000 / 'h3000_0000_0000_0000_0000` is 3).
+- **Rule**: IEEE 1364-2005 3.5.1: "The number of bits that make up an unsized number ... shall be at least 32." Table 5-22: "Unsized constant number: Same as integer".
+- **Why vague**: 3.5.1 sets a floor and no ceiling; Table 5-22 names `integer`, whose own size 4.8 also leaves at "at least 32".
+- **Options**: (a) 32 bits, the high digits lost (VerA's digital engine until 2026-10-24; fixture `unsized_wide_hex_truncated.v`); (b) the digits' width, digit count times bits per digit with leading zero digits counted, floored at 32, as iverilog sizes it. A decimal one keeps VD-124's 32-or-64.
+- **Decision**: `DECIDED:` (b) in the digital engine: (a) silently drops digits the user wrote. The analog context keeps VD-124.
+- **VerA today**: `lib/frontend/parser/literal.zig` `unsizedDigitBits` records the width (`IntLiteral.digit_bits`, and a known wide constant's `width`); `lib/sim/digital/compile.zig` `literalWidth` and the `.logic_literal` arm size by it. Ceiling: a constant with an x or z digit and 33 to 64 digit bits still reads as 32 (its digit count is not kept). Fixture `verilog/03_lexical_conventions/unsized_based_constant_digit_width.v` (was `unsized_wide_hex_truncated.v`).
+- **Measure impact**: A: the renamed fixture. C: none.
+- **Status**: DONE 2026-10-24.
+
 ## 6. Implementation-defined choices
 
 A fixture here tests VerA's choice, not the clause. A tool that chooses

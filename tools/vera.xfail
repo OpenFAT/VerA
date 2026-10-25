@@ -383,7 +383,6 @@ ivtest/ivltests/pr690.v
 ivtest/ivltests/pr704.v
 ivtest/ivltests/pr707.v
 ivtest/ivltests/pr812.v
-ivtest/ivltests/pr903.v
 ivtest/ivltests/pr938b.v
 ivtest/ivltests/pr985.v
 ivtest/ivltests/pv_wr_vec4a_nb_ec.v
