@@ -306,6 +306,14 @@ pub fn defOf(r: *const Run, m: *const Ast.ModuleDecl) u32 {
 /// Recurses into child instances AFTER its own nets exist, so a port connection
 /// always resolves against a parent that is fully declared.
 pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, over: []const Ast.ParamOverride, depth: u32) Error!void {
+    try declareHead(r, e, m, scope, over, depth);
+    return declareBody(r, e, m, scope, binds, depth);
+}
+
+/// `declare`'s first half: the instance's defparams, tasks and functions,
+/// and parameters, which an instance's parent needs before it binds the
+/// ports (a port range may name a parameter, IEEE 1364-2005 §12.2).
+fn declareHead(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, over: []const Ast.ParamOverride, depth: u32) Error!void {
     const arena = r.arena;
     if (deep.exhausted()) return r.deepFail(m.main_tok);
     // §12.1.3: a module may instantiate itself only under a generate that
@@ -341,6 +349,13 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
         try r.subs.append(arena, .{ .decl = t, .inst = scope, .frame = undefined });
     }
     try declareParams(r, scope, m.params, over);
+}
+
+/// `declare`'s second half: everything after the parameters, the ports
+/// bound by `binds` and the child instances last.
+fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, depth: u32) Error!void {
+    const arena = r.arena;
+    r.scope = scope;
     try declareEvents(r, m.events);
     const written = if (r.mixed) try digitalWrites(r, m) else std.AutoHashMapUnmanaged(Ast.StrId, void).empty;
     for (m.vars) |v| {
@@ -1756,9 +1771,9 @@ fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, depth: 
 /// whole). One as wide as the port times the element count is split: IEEE
 /// 1364-2005 §7.1.6, "each instance shall get a part-select of the port
 /// expression as specified in the range, starting with the right-hand index".
-fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, port: Ast.Port, conn: Ast.PortConn, k: i64) Error!?PortBind {
+fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, child_scope: u32, port: Ast.Port, conn: Ast.PortConn, k: i64) Error!?PortBind {
     const refused = "§12.1.2: only an expression as wide as the port or as the port times the array size is connected across an instance array";
-    const w = try portWidth(r, port);
+    const w = try childPortWidth(r, child_scope, port);
     // `typeOf` reads the slots elaborated so far, as `sink` does.
     r.values = e.values.items;
     try compile.checkExpr(r, conn.expr);
@@ -1810,6 +1825,12 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
     try checkLists(r, child, inst);
     const binds_out = try arena.alloc(PortBind, child.ports.len);
     @memset(binds_out, .open);
+    // The child's scope and parameters first: its port ranges may name them.
+    const child_scope = try newScope(r, inst.main_tok);
+    try r.scope_info.append(arena, .{ .parent = scope, .name = inst.name, .def = bound.def, .index = index });
+    try r.binds.put(arena, child_scope, bound.ctx);
+    try declareHead(r, e, child, child_scope, inst.params, depth + 1);
+    r.scope = scope;
     const grouped = !r.mixed and expressionPorts(child);
     if (grouped) {
         if (index != null) return r.fail(inst.main_tok, "§12.1.2: an instance array of a module with port expressions is not implemented by digital execution", .{});
@@ -1834,11 +1855,11 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
             var total: u32 = 0;
             var last = first;
             while (last < child.ports.len and (last == first or child.ports[last].concat_rest)) : (last += 1)
-                total += try portWidth(r, child.ports[last]);
+                total += try childPortWidth(r, child_scope, child.ports[last]);
             var lo = total;
             for (child.ports[first..last], first..) |p, k| {
                 if (p.direction != .input) return r.fail(conn.main_tok, "only an input port may be a concatenation of internal ports", .{});
-                const w = try portWidth(r, p);
+                const w = try childPortWidth(r, child_scope, p);
                 lo -= w;
                 r.scope = scope;
                 binds_out[k] = if (conn.expr == .none) .open else .{ .receive = .{ .expr = conn.expr, .scope = scope, .tok = conn.main_tok, .slice = .{ .lo = lo, .total = total } } };
@@ -1855,20 +1876,17 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
         // so a mixed design's digital half connects nothing through it,
         // as the child's own port loop skips it.
         if (r.mixed and continuous(r.file, child.ports[at].discipline)) continue;
-        if (index) |k| if (conn.expr != .none) if (try arrayConn(r, e, inst, child.ports[at], conn, k)) |split| {
+        if (index) |k| if (conn.expr != .none) if (try arrayConn(r, e, inst, child_scope, child.ports[at], conn, k)) |split| {
             binds_out[at] = split;
             continue;
         };
         binds_out[at] = try bindPort(r, e, child.ports[at], conn, scope);
     }
-    const child_scope = try newScope(r, inst.main_tok);
-    try r.scope_info.append(arena, .{ .parent = scope, .name = inst.name, .def = bound.def, .index = index });
-    try r.binds.put(arena, child_scope, bound.ctx);
     // §12.4's path is walked by name, so the instance's own identifier has
     // to outlive the recursion that consumes it. An array element's path
     // carries its index, which that walk does not read: not registered.
     if (inst.name != .none) if (index) |k| try selectable(r, scope, inst.name, k, child_scope) else try r.instances.put(arena, .{ .scope = scope, .str = inst.name }, child_scope);
-    try declare(r, e, child, child_scope, binds_out, inst.params, depth + 1);
+    try declareBody(r, e, child, child_scope, binds_out, depth + 1);
     r.scope = scope;
 }
 
@@ -2417,10 +2435,18 @@ fn putRange(r: *Run, slot: u32, range: Ast.Dim, tok: u32) Error!void {
 /// A port's declared width, evaluated in the scope being elaborated: a
 /// child port's range is read before the child's parameters exist.
 fn portWidth(r: *Run, p: Ast.Port) Error!u32 {
-    // ponytail: a range naming the child's parameters is sized too early;
-    // the literal ranges every fixture writes are fine.
     if (p.kind == .wreal) return 64;
     return if (p.range orelse p.type_range) |range| r.declaredWidth(range, p.main_tok) else 1;
+}
+
+/// `portWidth` of a child's port, its range read in `child`, the child
+/// instance's scope with its parameters already valued (`declareHead`), not
+/// in the parent's, where the same name may be another parameter or none.
+fn childPortWidth(r: *Run, child: u32, p: Ast.Port) Error!u32 {
+    const saved = r.scope;
+    defer r.scope = saved;
+    r.scope = child;
+    return portWidth(r, p);
 }
 
 /// §6.5.7 one port connection, decided in the PARENT's scope.
@@ -3013,4 +3039,15 @@ test "A.8.5 a continuous assignment drives a hierarchical net or a select of one
 test "§14.6.1 `PATHPULSE$ = 3;`, the clause's own unparenthesized form, is a reject limit" {
     // ISP RAS test_14_06_01_1 is the clause's example.
     try expectRun("module m(input a, output q); assign q = a; specify (a => q) = 12; specparam PATHPULSE$a$q = (2, 9), PATHPULSE$ = 3; endspecify endmodule module t; reg a; wire q; m u(a, q); initial begin a = 0; #20 $display(\"%b\", q); end endmodule", "0\n");
+}
+
+test "§7.1.6 an instance array's port is sized by the child's parameters, not a parent parameter of the same name" {
+    // Oracle: iverilog -g2005 prints 010011. `W` is 3 in each `c` (the
+    // override), 2 in `top`: a port sized in the parent's scope would be
+    // 2 bits and the 6-bit connection no multiple of it (ISP RAS
+    // test_07_01_06_4, the clause's MxN pipeline, names the child's `bits`).
+    try expectRun(
+        \\module c(q, d); parameter W = 1; output [W-1:0] q; input [W-1:0] d; assign q = ~d; endmodule
+        \\module top; parameter W = 2; wire [5:0] o; reg [5:0] i; c #(3) u[1:0](o, i); initial begin i = 6'b101100; #1 $display("%b", o); end endmodule
+    , "010011\n");
 }
