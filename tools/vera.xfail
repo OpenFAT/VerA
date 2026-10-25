@@ -7,4 +7,3 @@
 ivtest/ivltests/br1000.v
 ivtest/ivltests/nb_ec_concat.v
 ivtest/ivltests/param_string.v
-ivtest/ivltests/sv_task_call_instance_lookup.v

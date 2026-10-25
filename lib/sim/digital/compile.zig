@@ -1680,14 +1680,17 @@ fn stmtTimed(self: *Run, inst: u32, id: Ast.StmtId) Error!bool {
 }
 
 /// The task or function `name` names from `scope`: §12.4's generate blocks
-/// declare their own (A.1.4), searched before the instance's, up to and
-/// including the instance.
+/// declare their own (A.1.4), searched before the instance's, then, past
+/// the instance, the instances that enclose it. IEEE 1364-2005 §12.7: "if
+/// the item is a task, function, named block, or generate block, it
+/// continues to search higher level modules until found" (ivtest
+/// sv_task_call_instance_lookup: each `child` calls its own parent's task).
 fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
     var s = scope;
     while (true) : (s = self.scope_info.items[s].parent) {
         if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
         if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
-        if (!self.scope_info.items[s].lexical) return null;
+        if (s == 0) return null;
     }
 }
 
