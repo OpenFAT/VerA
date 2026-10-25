@@ -1794,7 +1794,7 @@ def vpi_runs():
     for path in fixture_files("*.c"):
         text = path.read_text(errors="replace")
         if re.search(r"(?m)^//! design ", text):
-            # `//! refuse`: the run is refused by name, and build.zig holds it
+            # `//! exit 1`: the run is refused by name (its .expected.stderr.txt), and build.zig holds it
             # to that exit and stdout, so a met refusal passes like any run.
             out[path.relative_to(FIXTURES).as_posix()] = "xfail" if re.search(r"(?m)^//! xfail ", text) else "pass"
     return out

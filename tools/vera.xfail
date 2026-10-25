@@ -1225,12 +1225,6 @@ verilog-ams/ch12_vpi_routines/systf_devices.va
 verilog-ams/digital/digital_delay_notation.v
 verilog-ams/digital/digital_delay_primitive_notation.v
 verilog-ams/digital/std_1364_ams_keywords_are_identifiers.v
-verilog/pli/analog_attributes.va
-verilog/pli/argument_handle_delays_evaluation.v
-verilog/pli/builtin_override.v
-verilog/pli/vpi_event_handles.v
-verilog/pli/vpi_invalid_time_callback.v
-verilog/pli/vpi_value_formats.v
 verilog-a/ch04_expressions/spice_noise_series_voltage.sp  # a SPICE deck: vera has no .sp front end; ESPice runs it (zig build test-spice)
 ispras-1364/test_10_02_02_2.v  # compile-only test run by run.verilog's `vera --run`: no $finish, so the simulation never ends (-T 300)
 ispras-1364/test_10_03_00_6.v  # compile-only test run by run.verilog's `vera --run`: no $finish, so the simulation never ends (-T 300)
