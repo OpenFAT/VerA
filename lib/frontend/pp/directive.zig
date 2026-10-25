@@ -9,6 +9,7 @@ const diag = @import("diag");
 const Preprocessor = @import("../preprocessor.zig");
 const Lexer = @import("../lexer.zig");
 const pp_macro = @import("macro.zig");
+const pp_protect = Preprocessor.protect;
 const Directive = Preprocessor.Directive;
 const directive_map = Preprocessor.directive_map;
 const identEnd = Preprocessor.identEnd;
@@ -139,14 +140,20 @@ pub fn directive(pp: *Pp, text: []const u8, at: usize) Error!usize {
         // IEEE 1364 §19.1's pair takes no operand.
         .celldefine => try pp.mark(&pp.events.cells, true),
         .endcelldefine => try pp.mark(&pp.events.cells, false),
-        // `protect` is not unrecognized: IEEE 1364 §28 reserves it, and §28.2
-        // obliges decryption that VerA does not do.
+        // `protect` is not unrecognized: IEEE 1364 §28 reserves it. §28.2
+        // obliges decryption, which VerA does; it provides no encryption
+        // service, so an encryption envelope (`begin`) and a block outside a
+        // decryption envelope are refused.
         .pragma => {
             var r: Rest = .{ .s = text[j..end] };
             const pragma_name = r.ident() orelse return pp.fail(pp.spanAt(at, j), .E0147, "", .{});
             if (std.mem.eql(u8, pragma_name, "protect")) {
-                if (envelopeKeyword(r.s[r.i..])) |kw|
-                    return pp.fail(pp.spanAt(at, end), .E0146, "`{s}`", .{kw});
+                const list = r.s[r.i..];
+                if (envelopeKeyword(list)) |kw| {
+                    if (!std.mem.eql(u8, kw, "begin_protected"))
+                        return pp.fail(pp.spanAt(at, end), .E0146, "`{s}`", .{kw});
+                    return decryptionEnvelope(pp, text, at, end, list);
+                }
             }
         },
         // §10.6: passed through instead of being blanked out, so the lexer and
@@ -160,6 +167,27 @@ pub fn directive(pp: *Pp, text: []const u8, at: usize) Error!usize {
     }
     try pp.putNewlines(text[at..end]);
     return end;
+}
+
+/// IEEE 1364-2005 §28.2: decrypts the envelope whose `begin_protected` line
+/// is `text[at..end]` (expression list `list`) and scans its cleartext in its
+/// place, so a macro defined outside expands inside and an envelope inside
+/// opens in turn. Returns the offset past the `end_protected` line.
+///
+/// ponytail: a diagnostic inside the cleartext quotes it; §28's rule that a
+/// tool not reveal decrypted text is not applied to diagnostics.
+fn decryptionEnvelope(pp: *Pp, text: []const u8, at: usize, end: usize, list: []const u8) Error!usize {
+    const span = pp.spanAt(at, end);
+    const r = pp_protect.open(pp.arena, pp.opts.protect_keys, list, text, @min(end + 1, text.len)) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    switch (r.opened) {
+        .fail => |f| return pp.fail(span, f.code, "{s}", .{f.why}),
+        .text => |clear| try pp.nested(span, Pp.runFile, .{ pp, clear, "<protected envelope>", null }),
+    }
+    try pp.checkTextSize(span);
+    try pp.putNewlines(text[at..r.end]);
+    return r.end;
 }
 
 /// The first §28.4 pragma keyword in a `pragma protect expression list that

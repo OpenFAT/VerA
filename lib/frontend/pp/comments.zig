@@ -116,9 +116,27 @@ pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
             try marks.append(pp.scratch, .{ .out = @intCast(out.items.len), .src = @intCast(i) });
             continue;
         }
+        if (c == '`') {
+            // IEEE 1364-2005 §28.4.3: a protect block's encoded lines are
+            // data, not source; base64 and uuencode both spell `//` and `/*`.
+            // They pass untouched up to the next directive line.
+            const nl = std.mem.findScalarPos(u8, src, i, '\n') orelse src.len;
+            const start = i;
+            i += 1;
+            if (Preprocessor.protect.opensBlock(src[start..nl])) {
+                i = nl;
+                while (i < src.len) {
+                    const next = std.mem.findScalarPos(u8, src, i + 1, '\n') orelse src.len;
+                    if (std.mem.startsWith(u8, std.mem.trimStart(u8, src[i + 1 .. next], " \t"), "`")) break;
+                    i = next;
+                }
+            }
+            out.appendSliceAssumeCapacity(src[start..i]);
+            continue;
+        }
         // Ordinary text up to the next byte the branches above care about.
         // `end == i` is a '/' that starts no comment; step over it.
-        const end = findStop(src, i, "\"\\/");
+        const end = findStop(src, i, "\"\\/`");
         if (end == i) {
             out.appendAssumeCapacity(c);
             i += 1;

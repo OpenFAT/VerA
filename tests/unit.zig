@@ -9693,10 +9693,45 @@ pub const preprocessor_tests = struct {
         // inside an envelope, and §19.10 makes a pragma without one no-effect.
         try expectPp("\nx", "`pragma protect author=\"a, b\", comment=\"c\"\nx");
         try expectPp("\n\n", "`pragma protect\n`pragma protect end\n");
-        // An envelope is still refused: VerA neither encrypts nor decrypts.
+        // An encryption envelope, a block outside an envelope and an envelope
+        // with no end are refused.
         try expectFail("`pragma protect data_method=\"x\", begin_protected\n", .E0146);
         try expectFail("`pragma protect encoding=(enctype=\"raw\"), begin\n", .E0146);
         try expectFail("`pragma protect data_block\n", .E0146);
+    }
+
+    test "IEEE 1364-2005 §28.2: a decryption envelope is scanned as its cleartext" {
+        // Oracle: openssl. `printf '`define IN 7\nwire [`OUT:0] w;\n' | openssl
+        // enc -des-cbc -K 0123456789abcdef -iv 1234567890abcdef | base64` is
+        // the data_block. A macro defined outside expands inside, and one
+        // defined inside is in force after.
+        const src =
+            \\`define OUT 3
+            \\`pragma protect data_keyowner="o", data_keyname="k", data_method="des-cbc", begin_protected
+            \\`pragma protect encoding=(enctype="base64", bytes=32), data_block
+            \\n1Wn+COi7/PUYfw8LBpbP5gnjLT1WISNkOj0IsRnLq0=
+            \\`pragma protect end_protected
+            \\`IN
+        ;
+        const keys: Preprocessor.protect.Keys = .{
+            .iv = .{ 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef },
+            .keys = &.{.{ .owner = "o", .name = "k", .key = .{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef } }},
+        };
+        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var bag: diag.Bag = .init(arena);
+        const out = try process(arena, src, .{ .std_defs = false, .bag = &bag, .protect_keys = keys });
+        try testing.expectEqualStrings("\n\nwire [3:0] w;\n\n\n\n\n7", out.text);
+        // No key of that owner and name: E0152; a wrong key: E0153.
+        var bag2: diag.Bag = .init(arena);
+        try testing.expectError(error.PreprocessFailed, process(arena, src, .{ .std_defs = false, .bag = &bag2 }));
+        try testing.expectEqual(diag.Code.E0152, bag2.at(0).code);
+        var wrong = keys;
+        wrong.keys = &.{.{ .owner = "o", .name = "k", .key = @splat(0x13) }};
+        var bag3: diag.Bag = .init(arena);
+        try testing.expectError(error.PreprocessFailed, process(arena, src, .{ .std_defs = false, .bag = &bag3, .protect_keys = wrong }));
+        try testing.expectEqual(diag.Code.E0153, bag3.at(0).code);
     }
 
     test "§10.4 macro argument brackets must match their openers" {
