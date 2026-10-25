@@ -561,6 +561,12 @@ fn scanContext(self: *Run, a: std.mem.Allocator, sc: *Scan, outs: []const Ast.Ex
     for (outs, widths) |e, *w| w.* = (try evaluate.targetType(self, e)).width;
     sc.widths = widths;
     sc.time = .{ .units = self.time_format.units, .precision = self.time_format.precision, .unit_exp = self.timeOf(self.scope).unit_exp };
+    var path: std.Io.Writer.Allocating = .init(a);
+    const saved = self.out;
+    self.out = &path.writer;
+    defer self.out = saved;
+    try display.emitScope(self);
+    sc.module = path.written();
 }
 
 fn scanAssign(self: *Run, a: std.mem.Allocator, sc: *Scan, outs: []const Ast.ExprId) Error!void {
@@ -599,6 +605,9 @@ pub const Scan = struct {
     widths: []const u32 = &.{},
     /// §17.2.4.3 `%t`'s scale; null stops the scan at a `%t`.
     time: ?Time = null,
+    /// §17.2.4.3 `%m`'s text, "the current hierarchical path"; null stops
+    /// the scan at a `%m`.
+    module: ?[]const u8 = null,
 
     /// `$timeformat`'s units and precision and the module's time unit, all
     /// as the exponents (precision: digits) §17.3.2 gives them.
@@ -613,7 +622,11 @@ pub const Scan = struct {
         /// (the clause's example: 10.345 at -3, 2 is 10350000.0 in 1ns).
         pub fn scale(t: Time, v: f64) f64 {
             const p: i32 = @intCast(t.precision);
-            return @round(v * std.math.pow(f64, 10, @floatFromInt(p))) * std.math.pow(f64, 10, @floatFromInt(t.units - p - t.unit_exp));
+            const e = t.units - p - t.unit_exp;
+            // A negative power divides, so -2256 at -3 is the double nearest
+            // -2.256 (iverilog's scanf4 compares it with that literal).
+            const r = @round(v * std.math.pow(f64, 10, @floatFromInt(p)));
+            return if (e < 0) r / std.math.pow(f64, 10, @floatFromInt(-e)) else r * std.math.pow(f64, 10, @floatFromInt(e));
         }
     };
 
@@ -664,12 +677,33 @@ pub const Scan = struct {
             while (self.i < format.len and std.ascii.isDigit(format[self.i])) : (self.i += 1) width = width *| 10 +| (format[self.i] - '0');
             if (self.i == format.len) return self.stop(false);
             const conv = std.ascii.toLower(format[self.i]);
+            // §17.2.4.3 `%m` "Returns the current hierarchical path as a
+            // string. Does not read data from the input".
+            if (conv == 'm') {
+                const m = self.module orelse return self.stop(false);
+                self.i += 1;
+                if (suppress) continue;
+                const arg: usize = @intCast(self.result);
+                if (arg >= self.outs) return self.stop(false);
+                self.result += 1;
+                return .{ .arg = arg, .value = .{ .chars = m } };
+            }
             // §17.2.4.3 `%u`/`%z` match binary data, whose bytes may be white space.
+            // A field width counts bits, read in whole 32-bit words and
+            // the value cut to it (`%16u` reads a word and keeps 16 bits); a
+            // suppressed one with none skips one word (iverilog's
+            // fscanf_u/fscanf_z, VD-130). Too few bytes left is EOF.
             if (conv == 'u' or conv == 'z') {
-                if (suppress or width != 0) return self.stop(false);
+                const per: usize = if (conv == 'z') 8 else 4;
+                if (suppress) {
+                    const words: usize = @max(1, (width + 31) / 32);
+                    if (input.len - self.at < words * per) return self.stop(true);
+                    self.at += words * per;
+                    continue;
+                }
                 const arg: usize = @intCast(self.result);
                 if (arg >= self.widths.len or arg >= self.outs) return self.stop(false);
-                const bits = unformatted(input[self.at..], self.widths[arg], conv == 'z') orelse return self.stop(true);
+                const bits = unformatted(input[self.at..], if (width != 0) @intCast(@min(width, 64)) else self.widths[arg], conv == 'z') orelse return self.stop(true);
                 self.at += @intCast(bits[2]);
                 self.i += 1;
                 self.result += 1;
@@ -723,6 +757,12 @@ pub const Scan = struct {
             v |= @as(u64, std.mem.readInt(u32, w[0..4], .little)) << @intCast(32 * k);
             if (four) u |= @as(u64, std.mem.readInt(u32, w[4..8], .little)) << @intCast(32 * k);
         }
+        // The bits past `width` of the last word are dropped (zero-filled).
+        if (width != 0 and width < 64) {
+            const keep = (@as(u64, 1) << @intCast(width)) - 1;
+            v &= keep;
+            u &= keep;
+        }
         return .{ v, u, words * per };
     }
 
@@ -730,14 +770,16 @@ pub const Scan = struct {
     /// value, or null on a matching failure. `%d` is an optional sign and
     /// decimal digits, or a single x, z or ?; the others take their radix's
     /// digits and x, z, ?, which give §3.5.1's bits (an x or z leftmost pads
-    /// the value with itself). `_` separates digits in every radix.
+    /// the value with itself). `_` separates digits in every radix but may
+    /// not lead, and `?` reads as x (VD-130, iverilog's scanf4).
     fn number(field: []const u8, conv: u8) ?struct { usize, @FieldType(Assign, "value") } {
+        if (field[0] == '_') return null;
         if (conv == 'd') {
             const neg = field[0] == '-';
             const sign: usize = @intFromBool(neg or field[0] == '+');
             if (sign == 0) switch (std.ascii.toLower(field[0])) {
-                'x' => return .{ 1, .{ .bits = .{ ~@as(u64, 0), ~@as(u64, 0) } } },
-                'z', '?' => return .{ 1, .{ .bits = .{ 0, ~@as(u64, 0) } } },
+                'x', '?' => return .{ 1, .{ .bits = .{ ~@as(u64, 0), ~@as(u64, 0) } } },
+                'z' => return .{ 1, .{ .bits = .{ 0, ~@as(u64, 0) } } },
                 else => {},
             };
             var n = sign;
@@ -762,8 +804,8 @@ pub const Scan = struct {
             const ch = std.ascii.toLower(field[n]);
             if (ch == '_') continue;
             const digit: [2]u64 = switch (ch) {
-                'x' => .{ ones, ones },
-                'z', '?' => .{ 0, ones },
+                'x', '?' => .{ ones, ones },
+                'z' => .{ 0, ones },
                 else => .{ (std.fmt.charToDigit(ch, @as(u8, 1) << @intCast(per)) catch break), 0 },
             };
             top = top orelse digit;
@@ -795,13 +837,15 @@ pub const Scan = struct {
             while (n < field.len and std.ascii.isDigit(field[n])) : (n += 1) digits += 1;
         }
         if (digits == 0) return null;
+        // An `e` with no exponent digits after it is a matching failure, as
+        // C's scanf, which has consumed it, reports (iverilog's scanf4:
+        // "2.ea" matches nothing).
         if (n < field.len and (field[n] == 'e' or field[n] == 'E')) {
             var k = n + 1;
             if (k < field.len and (field[k] == '+' or field[k] == '-')) k += 1;
-            if (k < field.len and std.ascii.isDigit(field[k])) {
-                while (k < field.len and std.ascii.isDigit(field[k])) k += 1;
-                n = k;
-            }
+            if (k == field.len or !std.ascii.isDigit(field[k])) return null;
+            while (k < field.len and std.ascii.isDigit(field[k])) k += 1;
+            n = k;
         }
         return .{ n, .{ .real = std.fmt.parseFloat(f64, field[0..n]) catch return null } };
     }
@@ -1092,6 +1136,36 @@ test "§17.2.4.3 Scan: %u, %z and %t" {
     // With no width or scale the conversion stops the scan.
     var none: Scan = .init("1234", "%u", 1);
     try std.testing.expect(none.next() == null);
+}
+
+test "§17.2.4.3 Scan: %u widths and suppression, ? as x, a leading _, an empty exponent, %m (VD-130)" {
+    // Oracle: iverilog 13's fscanf_u, fscanf_z and scanf4.
+    // `%16u` reads a whole word and keeps 16 bits; `%*u` skips one word.
+    var w: Scan = .init("\x78\x56\x34\x12\x01\x00\x00\x00", "%16u%*u", 1);
+    w.widths = &.{32};
+    try std.testing.expectEqual([2]u64{ 0x5678, 0 }, w.next().?.value.bits);
+    try std.testing.expect(w.next() == null);
+    try std.testing.expectEqual(@as(i64, 1), w.result);
+    // `%*u%u` with one word: the skip leaves too few bytes, EOF.
+    var e: Scan = .init("\x01\x00\x00\x00", "%*u%u", 1);
+    e.widths = &.{32};
+    try std.testing.expect(e.next() == null);
+    try std.testing.expectEqual(@as(i64, -1), e.result);
+    var q: Scan = .init("1?", "%b", 1);
+    try std.testing.expectEqual([2]u64{ 0b11, 0b01 }, q.next().?.value.bits);
+    var lead: Scan = .init("_01", "%b", 1);
+    try std.testing.expect(lead.next() == null);
+    try std.testing.expectEqual(@as(i64, 0), lead.result);
+    var exp: Scan = .init("2.ea", "%f", 1);
+    try std.testing.expect(exp.next() == null);
+    try std.testing.expectEqual(@as(i64, 0), exp.result);
+    var m: Scan = .init(" ", "%m", 1);
+    m.module = "top.u";
+    try std.testing.expectEqualStrings("top.u", m.next().?.value.chars);
+    // -2.2566789 under %6t is -2.256 at $timeformat(-9, 3) in 1ns.
+    var t: Scan = .init("-2.2566789", "%6t", 1);
+    t.time = .{ .units = -9, .precision = 3, .unit_exp = -9 };
+    try std.testing.expectEqual(@as(f64, -2.256), t.next().?.value.real);
 }
 
 test "§17.2.4.3 Scan: C's conversions over a string" {

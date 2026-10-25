@@ -455,7 +455,7 @@ pub fn value(self: *Emitter, e: Ast.ExprId, ty: Type) Error!void {
                     if (ex.tag(args[1]) == .str_literal) {
                         const fm = r.file.str(ex.strOf(args[1]));
                         if (scanNeedsContext(fm))
-                            return self.refuse("§17.2.4.3 a $sscanf/$fscanf %t (scaled by $timeformat) or %u/%z (unformatted) conversion");
+                            return self.refuse("§17.2.4.3 a $sscanf/$fscanf %t (scaled by $timeformat), %u/%z (unformatted) or %m (the scope's path) conversion");
                     }
                     try self.xMeaning("`$sscanf`/`$fscanf`, which answer EOF for an x or z in the input or format", ex.mainTok(e));
                     const lb = self.label();
@@ -785,7 +785,7 @@ fn scanNeedsContext(fm: []const u8) bool {
         i += 1;
         while (i < fm.len and (fm[i] == '*' or std.ascii.isDigit(fm[i]))) i += 1;
         if (i < fm.len) switch (std.ascii.toLower(fm[i])) {
-            't', 'u', 'z' => return true,
+            't', 'u', 'z', 'm' => return true,
             else => {},
         };
     }

@@ -272,10 +272,6 @@ ivtest/ivltests/force_lval_part.v
 ivtest/ivltests/force_release_reg_pv.v
 ivtest/ivltests/format.v
 ivtest/ivltests/fread.v
-ivtest/ivltests/fscanf_u.v
-ivtest/ivltests/fscanf_u_warn.v
-ivtest/ivltests/fscanf_z.v
-ivtest/ivltests/fscanf_z_warn.v
 ivtest/ivltests/func_return_index.v
 ivtest/ivltests/gate_connect1.v
 ivtest/ivltests/gate_connect2.v

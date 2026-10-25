@@ -1447,6 +1447,16 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: A: the renamed fixture. C: none.
 - **Status**: DONE 2026-10-24.
 
+### VD-130: `$fscanf`/`$sscanf` details 17.2.4.3 leaves open
+- **Source**: conformance-to-100 (2026-10-24), ivtest fscanf_u, fscanf_u_warn, fscanf_z, fscanf_z_warn, scanf4.
+- **Rule**: IEEE 1364-2005 17.2.4.3: `%b` "Matches a binary number, consisting of a sequence from the set 0,1,X,x,Z,z,?, and _" (likewise `%o`, `%h`, and `%d`'s single x, z, ?); `%u` "shall transfer sufficient data from the input to fill the target reg"; "An optional decimal integer that specifies the maximum field width"; `%m` "Returns the current hierarchical path as a string".
+- **Why vague**: the clause does not say what `?` reads as, whether `_` may lead, what a field width means for binary data, or what `%*u` skips.
+- **Options / Decision**: `DECIDED:` iverilog's reading throughout. `?` is x. A leading `_` is a matching failure. `%Nu`/`%Nz` reads ceil(N/32) words and keeps N bits, zero above; `%*u` with no width skips one word; too few bytes is EOF. An `e` with no exponent digits after it is a matching failure, as C's scanf reports once it has consumed the `e`. `%m` assigns the scope's `%m` path and reads nothing. `%t`'s rounded value is divided by a negative power of ten, not multiplied by its inverse, so `-2.256` is the literal's double.
+- **Not taken**: ivtest scanf4's `$sscanf(" ", "%s", a)` returning 0. The clause says "If the input ends before the first matching failure or conversion, EOF is returned", and C's scanf returns EOF too; VerA returns -1 (fixture `sscanf_conversions.v`), so scanf4 stays in `tools/vera.xfail` as a suite expectation to correct.
+- **VerA today**: `lib/sim/digital/system.zig` `Scan` (`next`, `number`, `float`, `unformatted`, `Time.scale`) and `scanContext`; `src/codegen/digital/emit_expr.zig` refuses `%m` with `%t`/`%u`/`%z`. Test `system.zig` "§17.2.4.3 Scan: %u widths".
+- **Measure impact**: none.
+- **Status**: DONE 2026-10-24.
+
 ## 6. Implementation-defined choices
 
 A fixture here tests VerA's choice, not the clause. A tool that chooses
