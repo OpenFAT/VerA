@@ -44,6 +44,9 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Veri
   - A zero-delay `always` runs until the per-time-step event budget ends it
     (VD-133).
   - A failed `$readmem` load is warning W1157 and the run goes on (VD-134).
+  - `$finish` ends the run once its time step has drained: other processes,
+    nonblocking updates and `$monitor` still run in that step (§17.4.1, as
+    iverilog reads it).
   - Task and function names are searched in enclosing instances (§12.7).
   - A MOS switch whose data input is an undriven supply net, a `%d` of a real
     above 2^63, and a vector wider than 64 bits converted to real gave wrong

@@ -1,5 +1,6 @@
 $ vera --run comparator.va
 === comparator ===
+0 ns: q = 0
 --- point 0 ---
   x[in] = 0.000000e0
 t = 0  V(in) = 0  q = 0
