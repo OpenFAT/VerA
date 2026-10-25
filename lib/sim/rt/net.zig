@@ -725,7 +725,7 @@ const Switches = struct {
     pub fn fixed(g: Switches, k: u32) bool {
         return switch (g.t.nets[k].kind) {
             .supply0, .supply1 => true,
-            else => false,
+            else => false, // else: every other net kind is a conductor
         };
     }
 };
