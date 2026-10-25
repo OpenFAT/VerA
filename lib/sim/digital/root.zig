@@ -1663,8 +1663,17 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     var finest: Time.Quantum = default_quantum;
     var set: usize = 0;
     const locals = try arena.alloc(Local, file.modules.len);
+    const tags = tokens.items(.tag);
     for (file.modules, locals) |*def, *l| {
         l.* = .{};
+        // A `timescale between a module's header and its `endmodule`: §19.8
+        // gives a directive to "all modules that follow", and 1364 has no
+        // "shall" on where it is written; VerA refuses it, as iverilog does
+        // (no_timescale_in_module).
+        var end = def.main_tok;
+        while (end + 1 < tags.len and tags[end] != .kw_endmodule) end += 1;
+        for (times) |event| if (event.at > r.starts[def.main_tok] and event.at < r.starts[end])
+            return r.fail(def.main_tok, "§19.8: a `timescale directive is written outside a module definition, not inside one", .{});
         for (times) |event| {
             if (event.at > r.starts[def.main_tok]) continue;
             const t = event.value orelse {
@@ -2358,6 +2367,7 @@ test "timescale provenance rejects malformed or later directives" {
     // §19.8: "It shall be an error if some modules have a `timescale
     // specified and others do not": here `resetall takes it from `top`.
     try expectRejected("`timescale 1ns/1ns\nmodule a; endmodule\n`resetall\nmodule top; a u(); endmodule", "others do not");
+    try expectRejected("`timescale 1ns/1ps\nmodule top;\n`timescale 1us/1ns\nendmodule", "outside a module definition");
 }
 
 // IEEE 1364 §19.8: a `timescale applies to the modules that follow it, until

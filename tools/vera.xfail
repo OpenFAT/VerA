@@ -294,7 +294,6 @@ ivtest/ivltests/nba_repeat_wide_count.v
 ivtest/ivltests/nb_ec_concat.v
 ivtest/ivltests/nb_ec_multi_ev.v
 ivtest/ivltests/nb_ec_repeat_auto.v
-ivtest/ivltests/no_timescale_in_module.v
 ivtest/ivltests/param_string.v
 ivtest/ivltests/param_test3.v
 ivtest/ivltests/param-width.v
