@@ -2116,7 +2116,7 @@ fn planes(self: *Emitter, ins: []const Ast.ExprId, lane: ?u32) Error!void {
         // `selfDetermined` reads a real as a 64-bit integer.
         if (nt.real or nt.width > 1) try self.print("L.part(", .{});
         const t = try expr.selfDetermined(self, in);
-        if (t.width > 1) try self.print(", {d}, 1, {d})", .{ lane.?, t.width });
+        if (t.width > 1) try self.print(", {d}, 1, {d})", .{ lane orelse 0, t.width });
         try self.print(";\n", .{});
     }
 }
