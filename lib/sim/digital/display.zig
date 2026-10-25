@@ -718,7 +718,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                     if (compile.typeOf(self, args[arg]).real)
                         try realRadix(self.out, a, try evaluate.evalReal(self, a, args[arg]), r, width)
                     else
-                        try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
+                        try fmt.valueFill(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width, sp.flags & str_k.zc_zero != 0);
                 }
             } else {
                 try compile.checkExpr(self, args[arg]);
@@ -734,8 +734,11 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
 /// unless the format gives one, since §17.1.1.3 sizes by a bit width a real
 /// does not have; an infinity or a NaN, which has no integer, as C spells it.
 pub fn realRadix(out: *std.Io.Writer, a: std.mem.Allocator, r: f64, radix: Radix, width: ?u64) (std.mem.Allocator.Error || std.Io.Writer.Error)!void {
-    if (!std.math.isFinite(r)) {
-        const text = if (std.math.isNan(r)) "nan" else if (r < 0) "-inf" else "inf";
+    // A negative real that rounds to zero keeps its sign under `%d`, as
+    // C's `%.0f` (iverilog's br1029a: -0.4 is `-0`).
+    const neg_zero = radix == .decimal and @round(r) == 0 and std.math.signbit(r);
+    if (!std.math.isFinite(r) or neg_zero) {
+        const text = if (neg_zero) "-0" else if (std.math.isNan(r)) "nan" else if (r < 0) "-inf" else "inf";
         try out.splatByteAll(' ', @intCast((width orelse 0) -| text.len));
         return out.writeAll(text);
     }
@@ -1281,7 +1284,8 @@ test "§17.2.3 $sformat/$swrite fill a reg with the text, §17.3.1 $printtimesca
         \\  $printtimescale;
         \\end endmodule
         \\
-    , "[t=3]\n[ab!]\n[o-long]\nTime scale of (m) is 10us / 100ns\n");
+    // %s shows s's leading zero bytes as spaces (VD-127; iverilog the same).
+    , "[   t=3]\n[   ab!]\n[o-long]\nTime scale of (m) is 10us / 100ns\n");
 }
 
 test "display retains escaped NUL bytes and unsized integer width" {
@@ -1412,12 +1416,13 @@ test "§17.1.1 %c, %s, %%, %m in a named block, %l, a real's width and precision
 test "§17.1.1.2 a real conversion renders C's flags; any other refuses them (#43)" {
     // By hand: "2.50" left in 8; '+' on 1.5; ' ' where 3.0's sign would be;
     // "-2.500" zero-filled to 8 after its sign; '#' keeps 2's point; `%r`
-    // of 1500 is "1.5K", left in 6. `%05d` stays §17.1.1.3's width 5.
+    // of 1500 is "1.5K", left in 6. `%05d` is C's zero fill, as iverilog
+    // prints it (VD-127).
     try expectRun(
         \\module m; initial $display("[%-8.2f|%+e|% .1f|%08.3f|%#.0f|%-6r|%05d]", 2.5, 1.5, 3.0, -2.5, 2.0, 1500.0, 42);
         \\endmodule
         \\
-    , "[2.50    |+1.500000e+00| 3.0|-002.500|2.|1.5K  |   42]\n");
+    , "[2.50    |+1.500000e+00| 3.0|-002.500|2.|1.5K  |00042]\n");
     try @import("root.zig").expectRejected("module m; initial $display(\"%-5d\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%+h\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%#h\", 1); endmodule", "alternative form");

@@ -195,8 +195,6 @@ ivtest/ivltests/attrib_expr.v
 ivtest/ivltests/automatic_error3.v
 ivtest/ivltests/automatic_task3.v
 ivtest/ivltests/br1000.v
-ivtest/ivltests/br1029a.v
-ivtest/ivltests/br1029b.v
 ivtest/ivltests/br1029c.v
 ivtest/ivltests/br916a.v
 ivtest/ivltests/br916b.v
@@ -236,7 +234,6 @@ ivtest/ivltests/br_gh497e.v
 ivtest/ivltests/br_gh531.v
 ivtest/ivltests/br_gh62.v
 ivtest/ivltests/br_gh79.v
-ivtest/ivltests/br_gh827.v
 ivtest/ivltests/br_gh889.v
 ivtest/ivltests/br_gh956a.v
 ivtest/ivltests/br_gh956b.v
@@ -324,7 +321,6 @@ ivtest/ivltests/pr1752823b.v
 ivtest/ivltests/pr1755629.v
 ivtest/ivltests/pr1787423b.v
 ivtest/ivltests/pr1787423.v
-ivtest/ivltests/pr1804877.v
 ivtest/ivltests/pr1830834.v
 ivtest/ivltests/pr1832097b.v
 ivtest/ivltests/pr1833024.v
@@ -422,16 +418,10 @@ ivtest/ivltests/sqrt32.v
 ivtest/ivltests/strength_net_change.v
 ivtest/ivltests/strength_net_release.v
 ivtest/ivltests/string12.v
-ivtest/ivltests/string13.v
-ivtest/ivltests/string4.v
-ivtest/ivltests/string5.v
-ivtest/ivltests/string7.v
 ivtest/ivltests/sv_lval_concat_uarray1.v
 ivtest/ivltests/sv_lval_concat_uarray2.v
 ivtest/ivltests/sv_task_call_instance_lookup.v
 ivtest/ivltests/switch_instance_shadow_fail.v
-ivtest/ivltests/test_extended.v
-ivtest/ivltests/test_width.v
 ivtest/ivltests/timing_check_delayed_signals.v
 ivtest/ivltests/timing_check_syntax.v
 ivtest/ivltests/udp_dff.v

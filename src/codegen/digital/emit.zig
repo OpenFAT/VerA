@@ -2269,7 +2269,7 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
                     try self.print(", 'f', 0, {d}, null);\n", .{std.math.log10_int(@as(u64, r.timeOf(r.scope).scale.local_per_unit))})
                 else
                     try self.print(", 'g', {d}, -1, null);\n", .{@import("kernels").str_kernels.zc_alt});
-            } else try operand(self, e, sh.radix, null);
+            } else try operand(self, e, sh.radix, null, false);
             continue;
         }
         const format = r.file.str(ex.strOf(e));
@@ -2298,7 +2298,7 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
                         'o', 'O' => .octal,
                         'h', 'H', 'x', 'X' => .hex,
                         else => .decimal,
-                    }, width);
+                    }, width, sp.flags & @import("kernels").str_kernels.zc_zero != 0);
                 },
                 't', 'T' => {
                     arg += 1;
@@ -2394,7 +2394,7 @@ fn dynamicFormat(self: *Emitter, args: []const Ast.ExprId) Error!void {
         try self.print("            const c{d}_{d} = (try s.nextSpec(&f{d}, \"{f}\", \"{f}\")) orelse break :b{d};\n", .{ lb, k, lb, scope, lib, lb });
         try self.print("            switch (c{d}_{d}.conv) {{\n                'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D' => try s.value(", .{ lb, k });
         var t = try expr.selfDetermined(self, a);
-        try self.print(", {d}, {}, switch (c{d}_{d}.conv) {{\n                    'b', 'B' => .binary,\n                    'o', 'O' => .octal,\n                    'h', 'H', 'x', 'X' => .hex,\n                    else => .decimal,\n                }}, c{d}_{d}.width),\n", .{ t.width, t.signed, lb, k, lb, k });
+        try self.print(", {d}, {}, switch (c{d}_{d}.conv) {{\n                    'b', 'B' => .binary,\n                    'o', 'O' => .octal,\n                    'h', 'H', 'x', 'X' => .hex,\n                    else => .decimal,\n                }}, c{d}_{d}.width, c{d}_{d}.flags & {d} != 0),\n", .{ t.width, t.signed, lb, k, lb, k, lb, k, @import("kernels").str_kernels.zc_zero });
         if (compile.typeOf(r, a).real) {
             try self.print("                't', 'T' => try s.timeReal(", .{});
             try expr.real(self, a);
@@ -2426,7 +2426,7 @@ fn flush(self: *Emitter, text: *std.ArrayList(u8)) Error!void {
 }
 
 /// One `%b %o %h %d` operand, or an argument with no format.
-fn operand(self: *Emitter, e: Ast.ExprId, radix: fmt.Radix, width: ?u64) Error!void {
+fn operand(self: *Emitter, e: Ast.ExprId, radix: fmt.Radix, width: ?u64, zero: bool) Error!void {
     if (compile.typeOf(self.r, e).real) {
         try self.print("            try s.realValue(", .{});
         try expr.real(self, e);
@@ -2434,7 +2434,7 @@ fn operand(self: *Emitter, e: Ast.ExprId, radix: fmt.Radix, width: ?u64) Error!v
     }
     try self.print("            try s.value(", .{});
     const t = try expr.selfDetermined(self, e);
-    try self.print(", {d}, {}, .{t}, {?d});\n", .{ t.width, t.signed, radix, width });
+    try self.print(", {d}, {}, .{t}, {?d}, {});\n", .{ t.width, t.signed, radix, width, zero });
 }
 
 test words {

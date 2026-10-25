@@ -2179,7 +2179,8 @@ test "§17.1.1.6 %m names the instance path and the named blocks around it" {
     try expectRun(
         \\module leaf; initial begin : outer begin : inner $display("%m %l %s%c", "", 8'h21); end end endmodule
         \\module m; leaf u(); initial $display("%M"); endmodule
-    , "m\nm.u.outer.inner work.leaf !\n");
+    // "" is one zero byte, which %s shows as a space (VD-127; iverilog too).
+    , "m\nm.u.outer.inner work.leaf  !\n");
 }
 
 test "§12.7 a named block's local shadows the module's, and each instance has its own" {

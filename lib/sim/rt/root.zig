@@ -1906,9 +1906,9 @@ pub const State = struct {
     }
 
     /// One `%b`/`%o`/`%h`/`%d` operand (§17.1.1.3).
-    pub fn value(self: *State, a: anytype, w: u32, signed: bool, radix: fmt.Radix, width: ?u64) Error!void {
+    pub fn value(self: *State, a: anytype, w: u32, signed: bool, radix: fmt.Radix, width: ?u64, zero: bool) Error!void {
         var buf = logic.planesOf(a);
-        return fmt.value(self.out, self.gpa, literal(&buf, w, signed), radix, width);
+        return fmt.valueFill(self.out, self.gpa, literal(&buf, w, signed), radix, width, zero);
     }
 
     /// One `%d %h %o %b` operand of real type (`display.realRadix`).
