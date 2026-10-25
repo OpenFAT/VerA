@@ -82,6 +82,9 @@ pub const usage_text =
     \\  --libmap FILE           read an IEEE 1364 §13.2 library map (repeatable, read
     \\                          in order); each .v file compiles into the library
     \\                          whose file_path_spec matches it, else `work`
+    \\  --protect-keys FILE     the keys and CBC IV for IEEE 1364 §28 decryption
+    \\                          envelopes in a .v design (JSON: profile.iv_hex,
+    \\                          keys[] of owner, name, key_hex)
     \\  -L LIB                  search LIB for an instance's cell (repeatable, in
     \\                          order; IEEE 1364 §13.7.1); default: map order, then work
     \\  --display=record|drop|emit
@@ -218,6 +221,9 @@ pub const Cli = struct {
     /// Null: `Backend.auto`.
     zig_backend: ?vera.orchestrator.Backend = null,
     spice_path: ?[]const u8 = null,
+    /// `--protect-keys`: the key file for IEEE 1364-2005 §28 decryption
+    /// envelopes (`Preprocessor.protect.parseKeys`).
+    protect_keys: ?[]const u8 = null,
     schedule: native.Schedule = .static,
     event_budget: u64 = digital.max_events_per_tick,
     logic: native.Logic = .auto,
@@ -376,6 +382,8 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
             cli.spice_path = try pathValue(args, err, "--spice", "a path") orelse return 2;
         } else if (std.mem.eql(u8, arg, "--libmap")) {
             try cli.libmaps.append(gpa, try pathValue(args, err, "--libmap", "a library map file") orelse return 2);
+        } else if (std.mem.eql(u8, arg, "--protect-keys")) {
+            cli.protect_keys = try pathValue(args, err, "--protect-keys", "a key file") orelse return 2;
         } else if (std.mem.eql(u8, arg, "-L")) {
             try cli.search.append(gpa, args.next() orelse return try missing(err, "-L", "a library name"));
         } else if (std.mem.eql(u8, arg, "-I")) {
@@ -672,6 +680,7 @@ test "parse: a flag that takes a value refuses a line that ends before it" {
         .{ "-o", "error: -o needs a path\n" },
         .{ "--spice", "error: --spice needs a path\n" },
         .{ "--libmap", "error: --libmap needs a library map file\n" },
+        .{ "--protect-keys", "error: --protect-keys needs a key file\n" },
         .{ "-L", "error: -L needs a library name\n" },
         .{ "-I", "error: -I needs a directory\n" },
     };
@@ -687,6 +696,7 @@ test "parse: every path-valued flag refuses an empty path; any other is taken as
         .{ "-o", "error: -o needs a path\n" },
         .{ "--spice", "error: --spice needs a path\n" },
         .{ "--libmap", "error: --libmap needs a library map file\n" },
+        .{ "--protect-keys", "error: --protect-keys needs a key file\n" },
         .{ "-I", "error: -I needs a directory\n" },
     };
     for (cases) |c| try expectRefused(&.{ c[0], "" }, c[1]);
