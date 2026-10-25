@@ -694,6 +694,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     .sshow => |sh| try system.sformat(self, scratch, s.args, sh),
                     .sformat => try system.sformat(self, scratch, s.args, null),
                     .printtimescale => try display.printTimescale(self, s.args),
+                    .sdf_annotate => try @import("sdf.zig").annotate(self, scratch, s.args, s.tok),
                     .dump => |op| try vcd.task(self, scratch, op, s.args, s.tok),
                     .ports => |op| try evcd.task(self, scratch, op, s.args, s.tok),
                     .finish => |stop| {

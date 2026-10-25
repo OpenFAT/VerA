@@ -1266,7 +1266,6 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                 _ = try append(self, .{ .task = .{ .task = .user, .args = s.args, .tok = tok } });
                 return;
             };
-            if (std.mem.eql(u8, name, "$sdf_annotate")) return self.failWith(.E1102, tok, "", .{});
             // §17.4.2 Syntax 17-12 `$stop [ ( n ) ]`, refused by the runner
             // below either way.
             if (std.mem.eql(u8, name, "$stop") and s.args.len > 1) return self.fail(tok, "$stop accepts zero or one argument", .{});
@@ -1385,6 +1384,14 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                         if (s.args.len < 2 or s.args[1] == .none) return self.fail(tok, "$sformat's second argument is its format", .{});
                         try display.sformat(self, s.args[1..], null);
                     }
+                },
+                // §17.2.10 Syntax 17-8: the file, then up to six optional
+                // arguments; the second names a module instance.
+                .sdf_annotate => {
+                    if (s.args.len == 0 or s.args.len > 7 or s.args[0] == .none) return self.fail(tok, "§17.2.10: $sdf_annotate takes the SDF file name and up to six optional arguments", .{});
+                    for (s.args, 0..) |a, i| if (a != .none) {
+                        if (i == 1) _ = try display.timescaleScope(self, a) else try checkExpr(self, a);
+                    };
                 },
                 // §17.3.1 Syntax 17-9.
                 .printtimescale => {
@@ -2411,7 +2418,8 @@ test "§17 system task argument forms are checked before any process runs" {
     try expectRejected("module m; initial $fflush(1, 2); endmodule", "$fflush takes at most one descriptor");
     try expectRejected("module m; initial $printtimescale(m, m); endmodule", "$printtimescale takes at most one module instance");
     try expectRejected("module m; initial $fclose(); endmodule", "$fclose takes one descriptor");
-    try expectRejected("module m; initial $sdf_annotate(\"x.sdf\"); endmodule", "E1102");
+    try expectRejected("module m; initial $sdf_annotate(); endmodule", "$sdf_annotate takes the SDF file name");
+    try expectRejected("module m; initial $sdf_annotate(\"x.sdf\"); endmodule", "x.sdf: the SDF file cannot be read");
 }
 
 test "§9.7.3 a named event is waited on whole, declared first, and has no edge; a real has no edge" {

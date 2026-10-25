@@ -2023,6 +2023,7 @@ test {
     _ = @import("evcd.zig");
     _ = @import("driver.zig");
     _ = tchk;
+    _ = @import("sdf.zig");
 }
 
 /// Test helper: runs `source` and expects its transcript to be `expected`

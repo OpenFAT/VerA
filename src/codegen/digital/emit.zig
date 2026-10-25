@@ -1074,6 +1074,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                     try int(self, t.args[3]);
                     try self.print(") }};\n", .{});
                 },
+                .sdf_annotate => return self.refuse("§17.2.10 $sdf_annotate, which the interpreter (`vera --run`) applies"),
                 .printtimescale => try self.print("            try s.out.writeAll(\"{f}\");\n", .{std.zig.fmtString(try staticText(self, display.printTimescale, .{t.args}))}),
                 // §17.1.2: the call is queued, its arguments are read then.
                 .strobe => |sh| {

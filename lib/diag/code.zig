@@ -430,7 +430,10 @@ pub const Code = enum(u16) {
     E1020,
     E1100,
     E1101,
+    /// IEEE 1364-2005 §17.2.10: an SDF file `$sdf_annotate` cannot read.
     E1102,
+    /// IEEE 1364-2005 §16: an SDF construct the annotator does not apply.
+    W1105,
     /// A `.v` design that cannot be a contract device.
     E1103,
     /// A SystemVerilog source.
@@ -7232,21 +7235,33 @@ fn infoOf(c: Code) Info {
             .explain = "The digital executor supports a documented subset of source processes. Unsupported forms are diagnosed before simulation; timing and capacity failures stop execution explicitly. This does not make legal unsupported Verilog-AMS forms illegal.",
         },
         .E1102 => .{
-            .title = "back-annotation from an SDF file is not supported",
+            .title = "an SDF file the annotator cannot read",
             .lrm = "IEEE 1364-2005 17.2.10",
             .explain =
-            \\$sdf_annotate (IEEE 1364-2005 17.2.10) runs the SDF annotator of
-            \\clause 16, which replaces a design's specify path delays, specparams,
-            \\timing check limits and interconnect delays with values read from
-            \\an SDF file. VerA does not implement clause 16, and it applies no
-            \\specify path delay for one to replace (W0251). Running on as if
-            \\the call had succeeded would simulate a design whose timing the
-            \\file was meant to set, so the call is refused.
+            \\$sdf_annotate (IEEE 1364-2005 17.2.10) reads timing data from an
+            \\SDF file into the design: clause 16's mapping of IOPATH,
+            \\INTERCONNECT, LABEL, TIMINGCHECK and PATHPULSE onto the module
+            \\paths, ports, specparams and timing checks of the instances the
+            \\file's CELLs name. The file could not be opened or read, its
+            \\parentheses do not balance, it is not one (DELAYFILE ...), or its
+            \\TIMESCALE or DIVIDER is malformed. The run stops: carrying on
+            \\would simulate a design whose timing the file was meant to set.
             \\
-            \\Write the delays the design needs in its source: a delay control,
-            \\a continuous assignment or gate delay, or a module-level specparam
-            \\that one of those reads. A timing check's limits are the ones its
-            \\source writes (or a VPI application puts, IEEE 1364-2005 27.31).
+            \\The file is looked for beside the source that names it, then in
+            \\the working directory, as a $readmemh file is.
+            ,
+        },
+        .W1105 => .{
+            .title = "an SDF construct the annotator does not apply",
+            .lrm = "IEEE 1364-2005 16.2",
+            .explain =
+            \\The SDF file holds a construct `vera --run`'s annotator does not
+            \\apply, or one that names nothing in the design: a COND, PORT or
+            \\DEVICE delay, a skew or no-change check, an INSTANCE no instance
+            \\below the annotation scope has, an IOPATH no module path of the
+            \\instance matches, a malformed value. That construct is skipped
+            \\and the rest of the file is applied. The message gives the file
+            \\and line.
             ,
         },
         .E1147 => .{

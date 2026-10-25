@@ -399,6 +399,8 @@ pub const Task = union(enum) {
     sformat,
     /// §17.3.1 `$printtimescale`.
     printtimescale,
+    /// §17.2.10 `$sdf_annotate` (`sdf.zig`).
+    sdf_annotate,
     /// §18.1 the value change dump tasks.
     dump: @import("vcd.zig").Op,
     /// §18.3 the extended value change dump tasks.
@@ -470,6 +472,7 @@ pub const tasks = std.StaticStringMap(Task).initComptime(@as([]const TaskRow, &.
     .{ "$swriteh", Task{ .sshow = showAs(.hex, false) } },
     .{ "$sformat", .sformat },
     .{ "$printtimescale", .printtimescale },
+    .{ "$sdf_annotate", .sdf_annotate },
     .{ "$dumpfile", Task{ .dump = .file } },
     .{ "$dumpvars", Task{ .dump = .vars } },
     .{ "$dumpoff", Task{ .dump = .off } },

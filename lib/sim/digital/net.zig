@@ -143,7 +143,8 @@ pub const NetCold = struct {
     trans: []const u32 = &.{},
     /// IEEE 1364-2005 §14.3 the module paths into this net, which time its
     /// transitions in place of `delay` (`resolution.pathDelay`).
-    paths: []const Path = &.{},
+    /// Mutable: `$sdf_annotate` rewrites a row's `table` (`sdf.zig`).
+    paths: []Path = &.{},
 
     /// Every field at its default: the row of a net with none.
     pub const none: NetCold = .{};
@@ -164,6 +165,10 @@ pub const Path = struct {
     ifnone: bool = false,
     scope: u32 = 0,
     table: PathTable,
+    /// The A.7.4 delay expressions `table` was folded from, re-folded when an
+    /// SDF LABEL changes a specparam they read (§16.2.3), and their token.
+    delays: []const Ast.ExprId = &.{},
+    tok: u32 = 0,
 };
 
 /// A module path's delay for each destination transition, `[from][to]`

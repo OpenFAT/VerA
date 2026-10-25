@@ -981,15 +981,7 @@ fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!voi
     r.scope = scope;
     for (m.paths) |p| {
         if (p.edge == .edge) return r.fail(p.main_tok, "§14.2.3: a module path's edge is posedge or negedge", .{});
-        // §14.3.1: "If the path delay expression results in a negative
-        // value, it shall be treated as zero."
-        var ticks: [12]u64 = undefined;
-        for (p.delays, ticks[0..p.delays.len]) |d, *t| {
-            const v = try r.constant(d, p.main_tok);
-            const negative = !compile.typeOf(r, d).real and v.signed and (v.asInt() orelse 0) < 0;
-            t.* = if (negative) 0 else (try r.declaredDelay3(.{ .rise = d, .fall = d, .off = d }, p.main_tok)).rise;
-        }
-        const table = net_mod.pathTable(ticks[0..p.delays.len]);
+        const table = try pathTable(r, p.delays, p.main_tok);
         for (p.outs) |o| {
             const dst = if (ex.tag(o) == .index) ex.lhs(o) else o;
             const at = try r.scalarSlot(dst);
@@ -1018,7 +1010,7 @@ fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!voi
                     const sel = (try evaluate.selection(r, r.arena, in)) orelse return r.fail(p.main_tok, "§14.2: a module path source's select is x, z or outside its port", .{});
                     bit = @intCast(@max(sel.first, 0));
                 }
-                try rows.append(r.arena, .{ .src = src, .src_bit = bit, .edge = p.edge, .cond = p.cond, .ifnone = p.ifnone, .scope = scope, .table = table });
+                try rows.append(r.arena, .{ .src = src, .src_bit = bit, .edge = p.edge, .cond = p.cond, .ifnone = p.ifnone, .scope = scope, .table = table, .delays = p.delays, .tok = p.main_tok });
             }
             for (dests.items) |net| {
                 const n = &e.nets.items[net];
@@ -1031,6 +1023,19 @@ fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!voi
             }
         }
     }
+}
+
+/// IEEE 1364-2005 §14.3.1 a path's A.7.4 delay expressions, folded in the
+/// current scope (`r.scope`) to its transition table. "If the path delay
+/// expression results in a negative value, it shall be treated as zero."
+pub fn pathTable(r: *Run, delays: []const Ast.ExprId, tok: u32) Error!net_mod.PathTable {
+    var ticks: [12]u64 = undefined;
+    for (delays, ticks[0..delays.len]) |d, *t| {
+        const v = try r.constant(d, tok);
+        const negative = !compile.typeOf(r, d).real and v.signed and (v.asInt() orelse 0) < 0;
+        t.* = if (negative) 0 else (try r.declaredDelay3(.{ .rise = d, .fall = d, .off = d }, tok)).rise;
+    }
+    return net_mod.pathTable(ticks[0..delays.len]);
 }
 
 /// `bridged`'s answer: `m`'s instances and primitives as insertion left
