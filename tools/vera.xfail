@@ -595,7 +595,6 @@ spice/vcvs_inside_a_spice_subcircuit.va
 spice/verilog_module_wins_over_netlist_subckt.va
 spice/vsine_dc_is_the_operating_point_value.va
 sv-tests/chapter-12/12.7.6--forever.sv
-sv-tests/chapter-5/5.6.4--compiler-directives-pragma.sv
 va-models/bsim4/vacode/bsim4.va
 va-models/ekv3/vacode/ekv3.va
 va-models/EPFL-HEMT/vacode/epfl_hemt.va
@@ -703,17 +702,12 @@ verilog/17_system_tasks/time_stime_wrap.v
 verilog/17_system_tasks/wide_operand_prints_every_digit.v
 verilog/19_compiler_directives/pragma_unrecognized_no_effect.v
 verilog/19_compiler_directives/timescale_delay_round_each.v
-verilog/28_protected_envelopes/protect_author_info_metadata.v
-verilog/28_protected_envelopes/protect_author_metadata.v
-verilog/28_protected_envelopes/protect_comment_metadata.v
 verilog/28_protected_envelopes/protected_des_base64.v
 verilog/28_protected_envelopes/protected_des_uuencode.v
 verilog/28_protected_envelopes/protected_eight_nested_envelopes.v
 verilog/28_protected_envelopes/protected_md5_digest.v
 verilog/28_protected_envelopes/protected_session_key_block.v
 verilog/28_protected_envelopes/protected_sha1_digest.v
-verilog/28_protected_envelopes/protect_encrypt_agent_info_metadata.v
-verilog/28_protected_envelopes/protect_encrypt_agent_metadata.v
 verilog-a/annex_a_syntax/behavioral_statements.va
 verilog-a/annex_a_syntax/configuration_source_text.va
 verilog-a/annex_a_syntax/declarations.va

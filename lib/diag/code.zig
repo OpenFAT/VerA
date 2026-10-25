@@ -1170,9 +1170,12 @@ fn infoOf(c: Code) Info {
             \\encryption envelope as if nobody had asked for it to be hidden.
             \\
             \\VerA does not implement clause 28: it neither encrypts nor
-            \\decrypts, so any `pragma protect is refused. Compile the cleartext
-            \\source with the protect directives removed. Any other pragma name
-            \\still has no effect.
+            \\decrypts, so a `pragma protect that opens or carries an envelope
+            \\(begin, begin_protected, data_block, key_block, digest_block) is
+            \\refused. Metadata such as author or comment has an action only
+            \\inside an envelope, so outside one it is accepted with no effect.
+            \\Compile the cleartext source with the protect directives removed.
+            \\Any other pragma name still has no effect.
             ,
         },
         .E0150 => .{

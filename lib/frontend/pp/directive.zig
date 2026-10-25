@@ -144,8 +144,10 @@ pub fn directive(pp: *Pp, text: []const u8, at: usize) Error!usize {
         .pragma => {
             var r: Rest = .{ .s = text[j..end] };
             const pragma_name = r.ident() orelse return pp.fail(pp.spanAt(at, j), .E0147, "", .{});
-            if (std.mem.eql(u8, pragma_name, "protect"))
-                return pp.fail(pp.spanAt(at, j), .E0146, "", .{});
+            if (std.mem.eql(u8, pragma_name, "protect")) {
+                if (envelopeKeyword(r.s[r.i..])) |kw|
+                    return pp.fail(pp.spanAt(at, end), .E0146, "`{s}`", .{kw});
+            }
         },
         // §10.6: passed through instead of being blanked out, so the lexer and
         // parser see it. The slice carries its own newlines, so the
@@ -158,6 +160,36 @@ pub fn directive(pp: *Pp, text: []const u8, at: usize) Error!usize {
     }
     try pp.putNewlines(text[at..end]);
     return end;
+}
+
+/// The first §28.4 pragma keyword in a `pragma protect expression list that
+/// opens or carries an envelope (`begin`, `begin_protected` and the three
+/// blocks), or null. Every other keyword is metadata: §28.4 gives it an
+/// action only inside an envelope, so outside one it has none (§19.10), as
+/// for a lone `end`. Items split at top-level commas; strings and
+/// parenthesized values are opaque.
+fn envelopeKeyword(list: []const u8) ?[]const u8 {
+    const opens = [_][]const u8{ "begin", "begin_protected", "data_block", "key_block", "digest_block" };
+    var depth: usize = 0;
+    var item = true;
+    var i: usize = 0;
+    while (i < list.len) : (i += 1) {
+        const c = list[i];
+        if (c == '"') {
+            i = Preprocessor.stringStop(list, i);
+            continue;
+        }
+        if (c == '(') depth += 1;
+        if (c == ')' and depth > 0) depth -= 1;
+        if (c == ',' and depth == 0) item = true;
+        if (!item or !Preprocessor.isIdentStart(c)) continue;
+        const e = identEnd(list, i);
+        const word = list[i..e];
+        for (opens) |o| if (std.mem.eql(u8, o, word)) return word;
+        item = false;
+        i = e - 1;
+    }
+    return null;
 }
 
 /// `ifdef's view of a macro. Under `Options.require_std_includes` the

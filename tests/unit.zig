@@ -9645,6 +9645,17 @@ pub const preprocessor_tests = struct {
         try expectPp("\nreal \\sig-x ;", "`define M(x) real \\sig-x ;\n`M(1)");
     }
 
+    test "IEEE 1364-2005 §28.4: protect metadata has no action outside an envelope" {
+        // Oracle: §28.4 gives author, comment, encoding ... an action only
+        // inside an envelope, and §19.10 makes a pragma without one no-effect.
+        try expectPp("\nx", "`pragma protect author=\"a, b\", comment=\"c\"\nx");
+        try expectPp("\n\n", "`pragma protect\n`pragma protect end\n");
+        // An envelope is still refused: VerA neither encrypts nor decrypts.
+        try expectFail("`pragma protect data_method=\"x\", begin_protected\n", .E0146);
+        try expectFail("`pragma protect encoding=(enctype=\"raw\"), begin\n", .E0146);
+        try expectFail("`pragma protect data_block\n", .E0146);
+    }
+
     test "§10.4 macro argument brackets must match their openers" {
         // Matched nesting of all three bracket kinds is opaque to the comma split.
         try expectPp("\n{[(a)],b}", "`define SQ(x) x\n`SQ({[(a)],b})");
