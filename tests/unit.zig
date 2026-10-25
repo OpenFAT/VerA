@@ -14677,10 +14677,15 @@ pub const codegen_tests = struct {
         const k = @import("kernels").file_kernels;
         // The kernels resolve a path relative to the process cwd (which is exactly
         // what makes `ch09_047_missing.dat` a claim about a DIRECTORY, and why
-        // tests/suite.zig runs each fixture in its own), so the name is what has to
-        // be unique here.
-        const path = ".zig-cache/vera-file-kernels-test.dat";
-        const absent = ".zig-cache/vera-file-kernels-absent.dat";
+        // tests/suite.zig runs each fixture in its own), so the directory is what
+        // has to be unique here: worktrees share one symlinked .zig-cache, and a
+        // fixed name there is overwritten by a concurrent run.
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var path_buf: [96]u8 = undefined;
+        var absent_buf: [96]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/vera-file-kernels-test.dat", .{tmp.sub_path});
+        const absent = try std.fmt.bufPrint(&absent_buf, ".zig-cache/tmp/{s}/vera-file-kernels-absent.dat", .{tmp.sub_path});
 
         // §9.5.1 "the most significant bit (bit 31) of a fd is reserved and shall
         // always be set", and "three file descriptors are pre-opened ...

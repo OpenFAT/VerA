@@ -302,11 +302,13 @@ pub fn build(b: *Build) void {
     }
     for (vpi_runs) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
-        // Absolute: from a cwd of .zig-cache, a relative `../tests` resolves
-        // through a worktree's symlinked .zig-cache into the main checkout.
+        // Each run gets its own cwd: an application writes fixed names there
+        // (`b_27_mcd_a.log`), and worktrees share one symlinked .zig-cache, so a
+        // shared cwd lets concurrent runs overwrite each other's files. The
+        // inputs are absolute to match.
         r.addFileArg2(b.path(f.design), .{ .make_absolute = true });
         if (std.mem.endsWith(u8, f.design, ".va")) r.addFileArg2(b.path(f.c), .{ .make_absolute = true });
-        r.setCwd(b.path(".zig-cache"));
+        r.setCwd(b.tmpPath());
         if (f.protect_keys) |k| r.setEnvironmentVariable("VERA_PROTECT_KEYS", pathFromRoot(b, k));
         if (f.xfail orelse f.refuse) |msg| {
             r.expectExitCode(1);
@@ -325,7 +327,7 @@ pub fn build(b: *Build) void {
             filed.addArtifactArg2(r.producer.?, .{ .make_absolute = true });
             filed.addFileArg2(b.path(f.design), .{ .make_absolute = true });
             _ = filed.addOutputFileArg2(b.fmt("{s}.stdout", .{std.fs.path.stem(f.c)}), .{});
-            filed.setCwd(b.path(".zig-cache"));
+            filed.setCwd(b.tmpPath());
             filed.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
             if (f.protect_keys) |k| filed.setEnvironmentVariable("VERA_PROTECT_KEYS", pathFromRoot(b, k));
             filed.expectExitCode(0);
@@ -710,7 +712,10 @@ fn vpiApp(b: *Build, target: Build.ResolvedTarget, optimize: std.lang.Optimize, 
     b.top_level_steps.get("build-all").?.step.dependOn(&app.step);
     const run = b.addRunArtifact(app);
     run.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
-    run.setEnvironmentVariable("VERA_VPI_WORK", pathFromRoot(b, ".zig-cache/vera-vpi"));
+    // Keyed by checkout: worktrees share one symlinked .zig-cache, and two
+    // building the same application in one work dir at once corrupt it.
+    const root_key = std.hash.Wyhash.hash(0, pathFromRoot(b, "."));
+    run.setEnvironmentVariable("VERA_VPI_WORK", pathFromRoot(b, b.fmt(".zig-cache/vera-vpi/{x}", .{root_key})));
     return run;
 }
 
