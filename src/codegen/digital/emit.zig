@@ -2257,7 +2257,15 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
         }
         if (ex.tag(e) != .str_literal) {
             try flush(self, &text);
-            try operand(self, e, sh.radix, null);
+            if (compile.typeOf(r, e).real) {
+                // `display.bareReal`'s text: `%#g`, a bare `$realtime` `%.Nf`.
+                try self.print("            try s.real(", .{});
+                try expr.real(self, e);
+                if (ex.tag(e) == .sys_call and r.sys_calls[@backingInt(e)].? == .realtime)
+                    try self.print(", 'f', 0, {d}, null);\n", .{std.math.log10_int(@as(u64, r.timeOf(r.scope).scale.local_per_unit))})
+                else
+                    try self.print(", 'g', {d}, -1, null);\n", .{@import("kernels").str_kernels.zc_alt});
+            } else try operand(self, e, sh.radix, null);
             continue;
         }
         const format = r.file.str(ex.strOf(e));
@@ -2415,6 +2423,11 @@ fn flush(self: *Emitter, text: *std.ArrayList(u8)) Error!void {
 
 /// One `%b %o %h %d` operand, or an argument with no format.
 fn operand(self: *Emitter, e: Ast.ExprId, radix: fmt.Radix, width: ?u64) Error!void {
+    if (compile.typeOf(self.r, e).real) {
+        try self.print("            try s.realValue(", .{});
+        try expr.real(self, e);
+        return self.print(", .{t}, {?d});\n", .{ radix, width });
+    }
     try self.print("            try s.value(", .{});
     const t = try expr.selfDetermined(self, e);
     try self.print(", {d}, {}, .{t}, {?d});\n", .{ t.width, t.signed, radix, width });

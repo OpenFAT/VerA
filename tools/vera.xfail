@@ -295,7 +295,6 @@ ivtest/ivltests/include2.v
 ivtest/ivltests/include3.v
 ivtest/ivltests/indef_width_concat.v
 ivtest/ivltests/itor_rtoi.v
-ivtest/ivltests/localparam_type.v
 ivtest/ivltests/macro_comment_multiline.v
 ivtest/ivltests/macro_str_esc.v
 ivtest/ivltests/module_no_port_mixed_instances.v
@@ -310,7 +309,6 @@ ivtest/ivltests/nb_ec_multi_ev.v
 ivtest/ivltests/nb_ec_repeat_auto.v
 ivtest/ivltests/no_timescale_in_module.v
 ivtest/ivltests/parameter_named_empty.v
-ivtest/ivltests/parameter_type.v
 ivtest/ivltests/param_string.v
 ivtest/ivltests/param_test3.v
 ivtest/ivltests/param-width.v
@@ -323,8 +321,6 @@ ivtest/ivltests/pr1603313.v
 ivtest/ivltests/pr1628300.v
 ivtest/ivltests/pr1701855b.v
 ivtest/ivltests/pr1701855.v
-ivtest/ivltests/pr1701890.v
-ivtest/ivltests/pr1703120.v
 ivtest/ivltests/pr1704726b.v
 ivtest/ivltests/pr1716276.v
 ivtest/ivltests/pr1752353.v
@@ -351,7 +347,6 @@ ivtest/ivltests/pr1956211.v
 ivtest/ivltests/pr1960633.v
 ivtest/ivltests/pr1963960.v
 ivtest/ivltests/pr1963962.v
-ivtest/ivltests/pr1985582.v
 ivtest/ivltests/pr2029336.v
 ivtest/ivltests/pr2043585.v
 ivtest/ivltests/pr2121536b.v
@@ -368,7 +363,6 @@ ivtest/ivltests/pr2350988.v
 ivtest/ivltests/pr243.v
 ivtest/ivltests/pr2453002.v
 ivtest/ivltests/pr2728812a.v
-ivtest/ivltests/pr2792897.v
 ivtest/ivltests/pr2809288.v
 ivtest/ivltests/pr2815398a_std.v
 ivtest/ivltests/pr2815398a.v
@@ -377,7 +371,6 @@ ivtest/ivltests/pr2834340b.v
 ivtest/ivltests/pr2834340.v
 ivtest/ivltests/pr2848986.v
 ivtest/ivltests/pr2877564.v
-ivtest/ivltests/pr2913404.v
 ivtest/ivltests/pr2913927.v
 ivtest/ivltests/pr2937417b.v
 ivtest/ivltests/pr2937417c.v

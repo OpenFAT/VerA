@@ -586,7 +586,9 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
         // the default of this task, so $displayh's bare argument is hex.
         if (ex.tag(e) != .str_literal and !dynamic) {
             try compile.checkExpr(self, e);
-            if (allocator) |a| try fmt.value(self.out, a, try evaluate.eval(self, a, e, 0), show.radix, null);
+            if (allocator) |a| {
+                if (compile.typeOf(self, e).real) try bareReal(self, a, e) else try fmt.value(self.out, a, try evaluate.eval(self, a, e, 0), show.radix, null);
+            }
             continue;
         }
         if (dynamic and allocator == null) {
@@ -709,7 +711,12 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
             if (arg == args.len) return short(self, e, dynamic, "missing display argument");
             if (radix) |r| {
                 try compile.checkExpr(self, args[arg]);
-                if (allocator) |a| try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
+                if (allocator) |a| {
+                    if (compile.typeOf(self, args[arg]).real)
+                        try realRadix(self.out, a, try evaluate.evalReal(self, a, args[arg]), r, width)
+                    else
+                        try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
+                }
             } else {
                 try compile.checkExpr(self, args[arg]);
                 if (allocator) |a| try real(self.out, a, try evaluate.evalReal(self, a, args[arg]), format[i], sp.flags, precision, width);
@@ -717,6 +724,34 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
         }
     }
     if (allocator != null and show.newline) try self.out.writeByte('\n');
+}
+
+/// A radix conversion (`%d %h %o %b`) of a real, as iverilog prints it
+/// (VD-120): the §4.8.2 integer, exact at any magnitude, at minimal width
+/// unless the format gives one, since §17.1.1.3 sizes by a bit width a real
+/// does not have; an infinity or a NaN, which has no integer, as C spells it.
+pub fn realRadix(out: *std.Io.Writer, a: std.mem.Allocator, r: f64, radix: Radix, width: ?u64) (std.mem.Allocator.Error || std.Io.Writer.Error)!void {
+    if (!std.math.isFinite(r)) {
+        const text = if (std.math.isNan(r)) "nan" else if (r < 0) "-inf" else "inf";
+        try out.splatByteAll(' ', @intCast((width orelse 0) -| text.len));
+        return out.writeAll(text);
+    }
+    // `intOfReal` fails only for memory.
+    const v = evaluate.intOfReal(a, r) catch return error.OutOfMemory;
+    try fmt.value(out, a, v, radix, width orelse 0);
+}
+
+/// A real argument with no format. §17.1.1.2's "default decimal format" is
+/// an integer's, and 1364 names none for a real; VerA prints what iverilog
+/// prints: C's `%#g`, and a bare `$realtime` call in `%.Nf`, N the decimal
+/// digits of its module's precision below its unit.
+fn bareReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!void {
+    const r = try evaluate.evalReal(self, a, e);
+    if (self.file.exprs.tag(e) == .sys_call and self.sys_calls[@backingInt(e)].? == .realtime) {
+        const digits = std.math.log10_int(@as(u64, self.timeOf(self.scope).scale.local_per_unit));
+        return real(self.out, a, r, 'f', 0, digits, null);
+    }
+    try real(self.out, a, r, 'g', str_k.zc_alt, -1, null);
 }
 
 /// §17.1.1.2 `%u` (`four` false: "unknown or high-impedance bits ... shall

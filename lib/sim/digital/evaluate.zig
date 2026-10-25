@@ -351,11 +351,11 @@ pub fn realLiteral(a: std.mem.Allocator, r: f64) Error!Int.Literal {
 
 /// §4.8.2 integer-to-real: the value, read by its own signedness, "Individual
 /// bits that are x or z in the net or the variable shall be treated as zero".
-/// A wider operand converts its low 64 bits, unsigned.
+/// A wider operand converts whole (`logic.wordsToReal`).
 fn realOfInt(v: Int.Literal) f64 {
-    // ponytail: the low 64 bits of a wider operand.
     const lo = v.values()[0] & ~v.unknowns()[0];
-    if (!v.signed or v.width > 64) return @floatFromInt(lo);
+    if (v.width > 64) return @import("../rt/logic.zig").wordsToReal(v.values(), v.unknowns(), v.width, v.signed);
+    if (!v.signed) return @floatFromInt(lo);
     const shift: u6 = @intCast(64 - v.width);
     return @floatFromInt(@as(i64, @bitCast(lo << shift)) >> shift);
 }

@@ -1911,6 +1911,11 @@ pub const State = struct {
         return fmt.value(self.out, self.gpa, literal(&buf, w, signed), radix, width);
     }
 
+    /// One `%d %h %o %b` operand of real type (`display.realRadix`).
+    pub fn realValue(self: *State, r: f64, radix: fmt.Radix, width: ?u64) Error!void {
+        return display.realRadix(self.out, self.gpa, r, radix, width);
+    }
+
     /// One integral `%t` operand, in a module whose unit is 10^`unit_exp` s
     /// (§17.3).
     pub fn time(self: *State, a: anytype, w: u32, signed: bool, unit_exp: i32, width: ?u64) Error!void {
