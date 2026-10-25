@@ -3008,7 +3008,9 @@ test "§12.7 a gate, switch or UDP instance name hides an outer name of the same
     // Only from the instance on (iverilog's gate_instance_reference_order).
     try expectRun("module m; parameter i_g = 23; if (1) begin : g wire o; initial #1 $display(\"%0d\", i_g); and i_g(o, 1'b1, 1'b1); end endmodule", "23\n");
     // The neighbour: a differently named gate hides nothing.
-    try expectRun("module m; integer i_g = 23; if (1) begin : g wire o; and a(o, 1'b1, 1'b1); initial $display(\"%0d\", i_g); end endmodule", "23\n");
+    // (#1: the block's initial runs before the outer initializer at time 0,
+    // iverilog's order, which prints x.)
+    try expectRun("module m; integer i_g = 23; if (1) begin : g wire o; and a(o, 1'b1, 1'b1); initial #1 $display(\"%0d\", i_g); end endmodule", "23\n");
 }
 
 test "§12.2.2.2 an empty named parameter assignment assigns nothing, so it is no second assignment" {
