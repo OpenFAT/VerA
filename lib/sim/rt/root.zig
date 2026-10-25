@@ -63,8 +63,9 @@ fn interpretDeep(init: std.process.Init, opts: digital.Options, source: []const 
     var bag: diag.Bag = .init(arena);
     var run_opts = opts;
     run_opts.io = io;
-    // An error that did not end the run (§17.2.9's terminated load, E1157)
-    // still fails it, as in `vera --run` (`cli/digital.zig`, #65).
+    // An error that did not end the run still fails it, as in `vera --run`
+    // (`cli/digital.zig`, #65); §17.2.9's terminated load is a warning,
+    // W1157 (VD-134).
     const code: u8 = if (digital.run(arena, source, run_opts, &bag, &stdout.interface)) @intFromBool(bag.failed()) else |e| blk: {
         if (e != error.DigitalFailed) stderr.interface.print("error: digital execution failed: {t}\n", .{e}) catch {};
         break :blk 1;
@@ -709,9 +710,6 @@ pub const State = struct {
     /// no transcript, no diagnostic, no file opened, read or written, no
     /// dump. Every file descriptor reads as unknown.
     quiet: bool = false,
-    /// A run-time error was issued that does not end the run (§17.2.9's
-    /// terminated load, E1157): the run exits 1 when it ends.
-    errored: bool = false,
     io: std.Io,
     buf: [1 << 16]u8,
 
@@ -953,7 +951,7 @@ pub const State = struct {
     pub fn exit(self: *State, failed: ?Error) u8 {
         const flushed = if (self.out.flush()) true else |_| false;
         if (failed) |e| if (e != error.Failed) self.say("digital execution failed: {t}", .{e});
-        return if (failed == null and flushed and !self.errored) 0 else 1;
+        return if (failed == null and flushed) 0 else 1;
     }
 
     /// A run-time refusal in `vera --run`'s words (E1100), on stderr.
@@ -1837,11 +1835,14 @@ pub const State = struct {
     /// start and finish addresses `first`/`last` the call has (null: x or z).
     pub fn readmem(self: *State, source: []const u8, name: []const u8, radix: fmt.Radix, width: u32, slot: u32, off: u32, low: i64, high: i64, given: u2, first: ?i64, last: ?i64) Error!void {
         if (self.quiet) return;
-        if ((given >= 1 and first == null) or (given == 2 and last == null)) return self.fail(display.unknown_bound, .{});
+        if ((given >= 1 and first == null) or (given == 2 and last == null)) return self.warn("W1157", display.unknown_bound ++ display.load_ended, .{});
+        // `display.readMemory`'s rules: a bound outside the memory loads nothing.
+        if (given >= 1) if (first) |f| if (f < low or f > high) return self.warn("W1157", display.outside_memory ++ display.load_ended, .{ "start", f, low, high });
+        if (given == 2) if (last) |l| if (l < low or l > high) return self.warn("W1157", display.outside_memory ++ display.load_ended, .{ "finish", l, low, high });
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        const file = display.sideFile(self.io, a, source, name) catch return self.fail(display.cannot_read, .{});
+        const file = display.sideFile(self.io, a, source, name) catch return self.warn("W1157", display.cannot_read ++ display.load_ended, .{std.zig.fmtString(name)});
         defer file.close(self.io);
         var buf: [4096]u8 = undefined;
         var in = file.reader(self.io, &buf);
@@ -1853,11 +1854,8 @@ pub const State = struct {
         while (load.next(a) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             // An error message, the load terminated, and the run goes on.
-            error.AddressOutOfRange => {
-                self.errored = true;
-                return self.diagnose("error[E1157]: ", display.MemLoad.out_of_range_text, .{ load.at, load.range_low, load.range_high });
-            },
-            else => return self.fail("{s}", .{display.MemLoad.message(e)}),
+            error.AddressOutOfRange => return self.warn("W1157", display.MemLoad.out_of_range_text ++ display.load_ended, .{ load.at, load.range_low, load.range_high }),
+            else => return self.warn("W1157", "{s}" ++ display.load_ended, .{display.MemLoad.message(e)}),
         }) |w| {
             const v = w.value.values();
             const x = w.value.unknowns();

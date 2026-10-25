@@ -457,10 +457,15 @@ pub const Code = enum(u16) {
     W1155,
     /// A `$readmem` file address outside the memory, with no bounds given.
     W1156,
-    /// IEEE 1364-2005 §17.2.9: a `$readmem` file address outside the
-    /// task's range; the load is terminated, the run goes on.
-    E1157,
+    /// IEEE 1364-2005 §17.2.9: a `$readmem` load that cannot go on (a file
+    /// address outside the task's range, a malformed word or address, a
+    /// file that cannot be read, a bound outside the memory); the load is
+    /// terminated, the run goes on.
+    W1157,
     W1160,
+    /// IEEE 1364-2005 §12.2.2.1: more ordered parameter values than the
+    /// module has parameters; the extra ones are ignored.
+    W1161,
     /// IEEE 1364-2005 §15: a timing check reported a violation at run time.
     W1199,
     W1050,
@@ -7420,10 +7425,15 @@ fn infoOf(c: Code) Info {
             .lrm = "IEEE 1364-2005 17.2.9",
             .explain = "A `$readmemb`/`$readmemh` call with no start or finish argument met an `@` address outside the memory's declared range. The clause's error for an address outside the load range applies only when the task gives addresses, so VerA does not stop the load: the words at addresses outside the memory are skipped, and loading continues at the next in-range address. The warning names the first such address (specification/Vague_Decisions.md VD-040).",
         },
-        .E1157 => .{
-            .title = "memory file address outside the task's load range",
+        .W1157 => .{
+            .title = "a $readmem load terminated",
             .lrm = "IEEE 1364-2005 17.2.9",
-            .explain = "A `$readmemb`/`$readmemh` call that gives a start (and finish) address met an `@` address in the file outside that range. §17.2.9 makes that an error that ends the load operation. VerA issues this error and stops that load: the words loaded before the address stay, none after it is loaded, and the simulation goes on. The run exits 1 when it ends, because an error was issued. With no start or finish argument the rule does not apply (W1156).",
+            .explain = "A `$readmemb`/`$readmemh` load could not go on: a file address outside the start..finish range the task gives (§17.2.9: \"an error message is issued, and the load operation is terminated\"), a word or `@` address that is not a number in the task's radix (the file \"shall contain only\" white space, comments and such numbers), a file that cannot be opened or read, a file name with an x or z bit, a start or finish address that is x, z or outside the memory. VerA issues this message and stops that load: the words loaded before it stay, none after it is loaded, and the simulation goes on. The run's exit status is untouched, as iverilog's is (specification/Vague_Decisions.md VD-134). With no start or finish argument an address outside the memory is W1156 instead.",
+        },
+        .W1161 => .{
+            .title = "extra ordered parameter values ignored",
+            .lrm = "IEEE 1364-2005 12.2.2.1",
+            .explain = "A module instance's parameter value assignment by ordered list gives more values than the module has parameters (local parameters are not in the list). §12.2.2.1 says what the list's order follows and that it may be shorter, not what a longer one means; VerA ignores the values past the last parameter and warns, as iverilog does (specification/Vague_Decisions.md VD-139).",
         },
         .W1160 => .{
             .title = "dissimilar net types joined through a port",

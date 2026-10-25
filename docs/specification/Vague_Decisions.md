@@ -172,6 +172,12 @@ summary and has a **Status** line naming what landed.
 | VD-131 | IEEE 1364-2005 3.5.1 | An unsized based constant with more than 32 bits of digits is as wide as its digits (digital; iverilog) | DONE |
 | VD-132 | IEEE 1364-2005 17.2.4.3 | `$fscanf`/`$sscanf` details the clause leaves open follow iverilog | DONE |
 | VD-133 | IEEE 1364-2005 9.9.2 | An always construct with no reachable timing control is refused at elaboration (iverilog) | DONE |
+| VD-134 | IEEE 1364-2005 17.2.9, 17.2.1 | Every reason a `$readmem` load cannot go on is warning W1157; the load ends, the run goes on, its exit status untouched (iverilog) | DONE |
+| VD-135 | IEEE 1364-2005 4.10.3, 9.7.3 | A name read by a statement before its declaration is refused (iverilog) | DONE |
+| VD-136 | IEEE 1364-2005 19.8 | A `` `timescale `` inside a module definition is refused (iverilog) | DONE |
+| VD-137 | IEEE 1364-2005 7.1.6, A.3.3 | A single gate reads a multi-bit input expression's LSB (iverilog) | DONE |
+| VD-138 | IEEE 1364-2005 17.2.1, 17.2.9 | A `$readmem` file name may be a string parameter or a reg (iverilog) | DONE |
+| VD-139 | IEEE 1364-2005 12.2.2.1 | Extra ordered parameter values are ignored with warning W1161 (iverilog) | DONE |
 
 ## 1. Open decisions (CLAUSE-AUDIT §7.5)
 
@@ -1471,6 +1477,61 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Decision**: `DECIDED:` (b). The construct can only deadlock, so the earliest report is the most useful one, and it matches the reference tool. The refusal fires only when no timing control can be reached anywhere in the statement: a delay, an event control or `wait` at any depth, a timed or event-controlled assignment, a `$finish`/`$stop`, or a call of any user task counts as one (a task may wait, so a call is never judged timeless), so a block that can suspend on some path is always run.
 - **VerA today**: `lib/sim/digital/root.zig` `timeless`, checked where each always construct is compiled. Fixtures: always3.1.* (ivtest) and `verilog/09_behavioral_modeling/zero_delay_always_rejected.v`.
 - **Measure impact**: A: the reject fixture. C: §9.9.2 gains a negative test.
+- **Status**: DONE 2026-10-24.
+
+### VD-134: What a terminated `$readmem` load does to the run
+- **Source**: conformance-to-100 (2026-10-24), the dialect audit's BUG on ivtest readmem-error; the lead's ruling.
+- **Rule**: IEEE 1364-2005 §17.2.9: a file address outside the task's range: "an error message is issued, and the load operation is terminated"; the file "shall contain only" white space, comments and numbers in the task's radix. §17.2.1 makes a file name a string or a reg holding one.
+- **Why vague**: the clause ends the load, not the simulation, and says nothing of the run's exit status, of a file that cannot be read, of a name holding x or z bits, of a start or finish address outside the memory, or of a malformed word.
+- **Options**: (a) the out-of-range address an error that lets the run go on but exits 1, every other failure a refusal that ends the run (VerA until 2026-10-24, E1157 and E1100, #65); (b) every one of them a message that ends only its load, the run going on with its exit status untouched (iverilog).
+- **Decision**: `DECIDED:` (b). Every reason a load cannot go on is warning W1157 naming it; the words loaded before it stay; a start or finish address outside the memory loads nothing; the exit status is the run's own. Both engines.
+- **VerA today**: `lib/sim/digital/display.zig` `readMemory`, `loadEnded`; `lib/sim/rt/root.zig` `readmem`. Fixtures: `verilog/17_system_tasks/readmem_*_load_terminated.v` (the 20 former `_rejected` ones, each with iverilog's transcript) and `readmem_address_outside_task_range.v`; ivtest readmem-error.
+- **Measure impact**: A: 21 fixtures now transcripts with `//! warn W1157`.
+- **Status**: DONE 2026-10-24.
+
+### VD-135: A name read before its declaration
+- **Source**: conformance-to-100 (2026-10-24), Verilog gap G6 (ivtest decl_before_use1, decl_before_use5).
+- **Rule**: IEEE 1364-2005 states declare-before-use only for a specparam (§4.10.3, "shall be declared before it is referenced") and a named event (§9.7.3).
+- **Why vague**: no general rule says whether a module-scope variable may be read by a statement written above its declaration.
+- **Options**: (a) accept, the module's names being known before any statement (VerA until 2026-10-24); (b) refuse, as iverilog does.
+- **Decision**: `DECIDED:` (b), the reference tool's reading where the standard is silent. A block's later local leaves an outer name in view (decl_before_use6); an implicit net is its scope's from the start.
+- **VerA today**: `lib/sim/digital/compile.zig`/`elab.zig` (fd-elab db93ddea). Fixture `verilog/03_lexical_conventions/forward_reference_reg_rejected.v`.
+- **Status**: DONE 2026-10-24.
+
+### VD-136: A `` `timescale `` written inside a module definition
+- **Source**: conformance-to-100 (2026-10-24), Verilog gap G6 (ivtest no_timescale_in_module).
+- **Rule**: IEEE 1364-2005 §19.8 applies a `` `timescale `` to "all modules that follow this directive until another `timescale compiler directive is read", with no "shall" on where it may be written.
+- **Why vague**: the clause names the modules it covers, not whether the directive may stand inside one.
+- **Options**: (a) accept, taking effect from the next module (VerA until 2026-10-24); (b) refuse, as iverilog does.
+- **Decision**: `DECIDED:` (b), the reference tool's reading.
+- **VerA today**: fd-elab e36d7239. Fixture `timescale_inside_module_rejected.v`.
+- **Status**: DONE 2026-10-24.
+
+### VD-137: A multi-bit expression on a single gate's input terminal
+- **Source**: conformance-to-100 (2026-10-24), Verilog gap G17 (ivtest gate_connect1).
+- **Rule**: IEEE 1364-2005 §7.1.6 sizes terminals only for instance arrays; A.3.3's `input_terminal` is an expression.
+- **Why vague**: what a single (non-array) gate makes of a wider input expression is not said.
+- **Options**: (a) refuse (VerA until 2026-10-24); (b) read the expression's least significant bit, as iverilog does.
+- **Decision**: `DECIDED:` (b), in the interpreter and `--emit-exe`.
+- **VerA today**: fd-elab fc5dc5b9. Fixture `verilog/07_gate_switch_level/gate_multibit_input_lsb.v`.
+- **Status**: DONE 2026-10-24.
+
+### VD-138: A `$readmem` file name held in a parameter or a reg
+- **Source**: conformance-to-100 (2026-10-24), the dialect audit's BUG (ivtest pr690, pr704).
+- **Rule**: IEEE 1364-2005 Syntax 17-7 writes the name `" file_name "`, the placeholder Syntax 17-4 uses for `$fopen`, which §17.2.1 defines: "a character string or is a reg containing a character string".
+- **Why vague**: Syntax 17-7 draws quotes, §17.2.1 allows a reg; neither names a parameter.
+- **Options**: (a) a literal only (VerA until 2026-10-24); (b) a literal, a string parameter or a reg, read when the task runs, as iverilog does.
+- **Decision**: `DECIDED:` (b). A name with an x or z bit names no file (VD-134). `--emit-exe` refuses the variable form by name.
+- **VerA today**: `lib/sim/digital/display.zig` `readMemory` (fd-elab e9e2ff99). Fixture `verilog/17_system_tasks/readmem_file_name_variable.v`.
+- **Status**: DONE 2026-10-24.
+
+### VD-139: More ordered parameter values than the module has parameters
+- **Source**: conformance-to-100 (2026-10-24), the dialect audit's SILENT item (ivtest param_test3).
+- **Rule**: IEEE 1364-2005 §12.2.2.1: the ordered list "shall follow the order of declaration of the parameters", and "It is not necessary to assign values to all of the parameters".
+- **Why vague**: a list shorter than the parameters is allowed; a longer one is not mentioned.
+- **Options**: (a) refuse (VerA until 2026-10-24); (b) ignore the extra values with a warning, as iverilog does.
+- **Decision**: `DECIDED:` (b), warning W1161.
+- **VerA today**: `lib/sim/digital/elab.zig` `checkLists`. Fixtures `verilog/12_hierarchy/extra_ordered_value_ignored.v`, `extra_ordered_parameter_value_ignored.v` (formerly `_rejected`).
 - **Status**: DONE 2026-10-24.
 
 ## 6. Implementation-defined choices

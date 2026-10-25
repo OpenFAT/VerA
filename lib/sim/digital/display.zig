@@ -279,7 +279,7 @@ pub const MemLoad = struct {
             error.BadAddress => "the memory file has a malformed `@` address",
             error.AddressOutOfRange => "memory file address is outside the requested load range",
             error.BadWord => "the memory file has a malformed data word",
-            error.ReadFailed => cannot_read,
+            error.ReadFailed => "the memory file cannot be read to its end",
             error.OutOfMemory => "out of memory",
         };
     }
@@ -290,11 +290,11 @@ pub const MemLoad = struct {
     /// The W1156 text; the arguments are `outside`, then `low` and `high`.
     pub const outside_text = "memory file address @{x} is outside the memory's declared range [{d}:{d}]; its words are skipped";
 
-    /// The E1157 text, after `next` failed with `AddressOutOfRange`; the
+    /// The W1157 text, after `next` failed with `AddressOutOfRange`; the
     /// arguments are the address (`at`), then `range_low` and `range_high`.
     /// §17.2.9: "an error message is issued, and the load operation is
     /// terminated": the load, not the run (#65).
-    pub const out_of_range_text = "§17.2.9: memory file address @{x} is outside the load range [{d}:{d}] the task gives; the load is terminated, the words before it stay loaded";
+    pub const out_of_range_text = "§17.2.9: memory file address @{x} is outside the load range [{d}:{d}] the task gives (the words before it stay loaded)";
 };
 
 /// The interpreter's `$readmemb` / `$readmemh` (`MemLoad`).
@@ -302,37 +302,59 @@ pub fn readMemory(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, ra
     const ex = &self.file.exprs;
     const base = try self.slot(args[1]);
     const arr = self.arrays.get(base).?;
-    const name = if (ex.tag(args[0]) == .str_literal)
-        self.file.str(ex.strOf(args[0]))
-    else
-        (try system.text(a, try evaluate.eval(self, a, args[0], 0))) orelse return self.exprFail(args[0], cannot_read);
-    const io = self.io orelse return self.exprFail(args[0], cannot_read);
-    const file = sideFile(io, a, self.file_name, name) catch return self.exprFail(args[0], cannot_read);
-    defer file.close(io);
-    var buf: [4096]u8 = undefined;
-    var in = file.reader(io, &buf);
-    const start = if (args.len >= 3) (try evaluate.eval(self, a, args[2], 0)).asInt() orelse return self.exprFail(args[2], unknown_bound) else null;
-    const finish = if (args.len == 4) (try evaluate.eval(self, a, args[3], 0)).asInt() orelse return self.exprFail(args[3], unknown_bound) else null;
-    var load: MemLoad = .init(&in.interface, radix, self.values[base].width, arr.low, arr.high, @intCast(args.len - 2), start, finish);
     const tok = ex.mainTok(args[0]);
     const at = self.starts[@min(tok, self.starts.len - 1)];
     const site: diag.Span = .{ .start = at, .end = at };
+    const name = if (ex.tag(args[0]) == .str_literal)
+        self.file.str(ex.strOf(args[0]))
+    else
+        (try system.text(a, try evaluate.eval(self, a, args[0], 0))) orelse return loadEnded(self, site, not_a_name, .{});
+    const io = self.io orelse return loadEnded(self, site, cannot_read, .{std.zig.fmtString(name)});
+    const file = sideFile(io, a, self.file_name, name) catch return loadEnded(self, site, cannot_read, .{std.zig.fmtString(name)});
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var in = file.reader(io, &buf);
+    const start = if (args.len >= 3) (try evaluate.eval(self, a, args[2], 0)).asInt() orelse return loadEnded(self, site, unknown_bound, .{}) else null;
+    const finish = if (args.len == 4) (try evaluate.eval(self, a, args[3], 0)).asInt() orelse return loadEnded(self, site, unknown_bound, .{}) else null;
+    for ([_]?i64{ start, finish }, [_][]const u8{ "start", "finish" }) |bound, which| if (bound) |b| if (b < arr.low or b > arr.high)
+        return loadEnded(self, site, outside_memory, .{ which, b, arr.low, arr.high });
+    var load: MemLoad = .init(&in.interface, radix, self.values[base].width, arr.low, arr.high, @intCast(args.len - 2), start, finish);
     while (load.next(a) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        // An error message, the load terminated, and the run goes on.
-        error.AddressOutOfRange => return self.bag.add(self.stage(), .E1157, site, MemLoad.out_of_range_text, .{ load.at, load.range_low, load.range_high }),
-        else => |f| return self.fail(tok, "{s}", .{MemLoad.message(f)}),
+        error.AddressOutOfRange => return loadEnded(self, site, MemLoad.out_of_range_text, .{ load.at, load.range_low, load.range_high }),
+        else => |f| return loadEnded(self, site, "{s}", .{MemLoad.message(f)}),
     }) |w| try waiters.store(self, base + w.index, w.value.planes);
     if (load.mismatch()) |m| try self.bag.add(self.stage(), .W1150, site, MemLoad.mismatch_text, .{ m.found, m.expected });
     if (load.outside) |o| try self.bag.add(self.stage(), .W1156, site, MemLoad.outside_text, .{ o, arr.low, arr.high });
 }
 
+/// §17.2.9 "an error message is issued, and the load operation is
+/// terminated": W1157 names why, the words loaded before it stay, and the
+/// simulation goes on with its exit status untouched, as iverilog's does
+/// (specification/Vague_Decisions.md VD-134). Every reason a load cannot go
+/// on takes this one path, in both engines.
+fn loadEnded(self: *Run, site: diag.Span, comptime why: []const u8, args: anytype) Error!void {
+    return self.bag.add(self.stage(), .W1157, site, why ++ load_ended, args);
+}
+
+/// The tail of every W1157 message.
+pub const load_ended = "; the $readmem load is terminated, the simulation goes on";
+
 /// §17.2.9 gives an address no x or z digit, so a bound that evaluates to
-/// one names no address and the load is refused rather than defaulted.
+/// one names no address.
 pub const unknown_bound = "a $readmem start or finish address evaluates to x or z";
 
-/// The refusal of a memory file that cannot be opened or read to its end.
-pub const cannot_read = "the memory file cannot be read";
+/// A file name held in a variable with an x or z bit names no file.
+pub const not_a_name = "the $readmem file name has an x or z bit, so it names no file";
+
+/// A start or finish address outside the memory's declared range: no word
+/// is loaded (§17.2.9 says nothing of it; iverilog loads none). The
+/// arguments are which bound, its value, then the memory's low and high.
+pub const outside_memory = "the $readmem {s} address {d} is outside the memory's range [{d}:{d}]";
+
+/// A memory file that cannot be opened; the argument is its name, as
+/// `std.zig.fmtString` escapes a non-printing character in it.
+pub const cannot_read = "the memory file \"{f}\" cannot be read";
 
 /// The memory file `name`, opened. It sits beside the source `file_name`
 /// that names it, which is what makes a fixture self-contained; the working
@@ -1251,8 +1273,9 @@ test "readmem validates high token characters beyond destination width" {
 }
 
 /// `terminated`: a file address falls outside the task's range, so §17.2.9's
-/// "an error message is issued, and the load operation is terminated": E1157,
-/// the words before it stay loaded and the run goes on to print them (#65).
+/// "an error message is issued, and the load operation is terminated":
+/// W1157, the words before it stay loaded and the run goes on to print them
+/// (#65, VD-134).
 fn expectMemoryLoad(data: []const u8, bounds: []const u8, expected: []const u8, warnings: u32, terminated: bool) !void {
     return expectMemoryLoadDiagnostic("$readmemh", data, bounds, expected, warnings, if (terminated) "is outside the load range" else null);
 }
@@ -1272,16 +1295,15 @@ fn expectMemoryLoadDiagnostic(task: []const u8, data: []const u8, bounds: []cons
     var bag = diag.Bag.init(a);
     var output = std.Io.Writer.Allocating.init(a);
     const result = run(a, source, .{ .io = std.testing.io, .file_name = file_name }, &bag, &output.writer);
+    // A terminated load (W1157) never ends the run nor fails it (VD-134).
+    try result;
+    try std.testing.expect(!bag.failed());
     if (failure_phrase) |phrase| {
-        // A refusal ends the run (DigitalFailed); §17.2.9's terminated load
-        // issues its error and the run goes on. `expected` tells them apart:
-        // only a run that went on prints the memory.
-        result catch |e| if (e != error.DigitalFailed) return e;
-        try std.testing.expect(bag.failed());
         var messages = std.Io.Writer.Allocating.init(a);
         try diag.render(&bag, &messages.writer, .{});
+        try std.testing.expect(std.mem.find(u8, messages.written(), "W1157") != null);
         try std.testing.expect(std.mem.find(u8, messages.written(), phrase) != null);
-    } else try result;
+    }
     try std.testing.expectEqual(warnings, bag.warn_count);
     try std.testing.expectEqualStrings(expected, output.written());
 }
@@ -1319,9 +1341,11 @@ test "readmem underscore must follow an initial digit" {
 
 test "readmem validates discarded excess tokens and still restarts after addresses" {
     const invalid = "the memory file has a malformed data word";
-    try expectMemoryLoadDiagnostic("$readmemh", "11 ;", ",0,0", "", 0, invalid);
-    try expectMemoryLoadDiagnostic("$readmemb", "1 2", ",0,0", "", 0, invalid);
-    try expectMemoryLoadDiagnostic("$readmemh", "11 _", ",0,0", "", 0, invalid);
+    // The load ends at the bad word; the words before it stay (iverilog
+    // prints the same memory for the first two, and takes `_` as a word).
+    try expectMemoryLoadDiagnostic("$readmemh", "11 ;", ",0,0", "11 bb cc dd\n", 1, invalid);
+    try expectMemoryLoadDiagnostic("$readmemb", "1 2", ",0,0", "01 bb cc dd\n", 1, invalid);
+    try expectMemoryLoadDiagnostic("$readmemh", "11 _", ",0,0", "11 bb cc dd\n", 1, invalid);
     try expectMemoryLoadDiagnostic("$readmemh", "11 22", ",0,0", "11 bb cc dd\n", 1, null);
     try expectMemoryLoadDiagnostic("$readmemh", "11 22 @0 33", ",0,0", "33 bb cc dd\n", 0, null);
 }
@@ -1332,9 +1356,9 @@ test "readmem addresses suppress count warning and relocate after range end" {
     try expectMemoryLoad("11 22 33 44 @2 66 77", ",3,0", "44 77 66 11\n", 0, false);
     // §17.2.9 (#65): an address outside the task's range ends the load, not
     // the run. 11 -> mem[1], 22 -> mem[2], then @0 is outside 1..2.
-    try expectMemoryLoad("11 22 @0", ",1,2", "aa 11 22 dd\n", 0, true);
+    try expectMemoryLoad("11 22 @0", ",1,2", "aa 11 22 dd\n", 1, true);
     // @3 is outside 2..1 before any word: nothing loads.
-    try expectMemoryLoad("@3 11", ",2,1", "aa bb cc dd\n", 0, true);
+    try expectMemoryLoad("@3 11", ",2,1", "aa bb cc dd\n", 1, true);
 }
 
 test "readmem start-only defaults to highest address and stays upward" {
@@ -1346,9 +1370,9 @@ test "readmem start-only defaults to highest address and stays upward" {
     // §17.2.9 (#65): start alone makes the range 2..3, the memory's highest
     // address; an address outside it ends the load, not the run. @1 comes
     // before any word: nothing loads.
-    try expectMemoryLoad("@1 11", ",2", "aa bb cc dd\n", 0, true);
+    try expectMemoryLoad("@1 11", ",2", "aa bb cc dd\n", 1, true);
     // 11 -> mem[2], 22 -> mem[3], then @4 is outside 2..3.
-    try expectMemoryLoad("11 22 @4", ",2", "aa bb 11 22\n", 0, true);
+    try expectMemoryLoad("11 22 @4", ",2", "aa bb 11 22\n", 1, true);
 }
 
 test "readmem formfeeds delimit words and addresses without adding words" {

@@ -1911,7 +1911,13 @@ fn checkLists(r: *Run, child: *const Ast.ModuleDecl, inst: *const Ast.Instance) 
     if (inst.params.len != 0 and inst.params[0].name == .none) {
         var n: usize = 0;
         for (child.params) |p| n += @intFromBool(!p.is_local);
-        if (inst.params.len > n) return r.fail(inst.params[n].main_tok, "§12.2.2.1: more parameter values than the module has parameters", .{});
+        // §12.2.2.1 says nothing of a value past the last parameter; it is
+        // ignored with a warning, as iverilog ignores it (ivtest param_test3;
+        // specification/Vague_Decisions.md VD-139).
+        if (inst.params.len > n) {
+            const at = r.starts[@min(inst.params[n].main_tok, r.starts.len - 1)];
+            try r.bag.add(.lower, .W1161, .{ .start = at, .end = at }, "§12.2.2.1: {d} more parameter value(s) than the module has parameters ({d}); the extra ones are ignored", .{ inst.params.len - n, n });
+        }
     }
     for (inst.ports, 0..) |c, i| {
         if ((c.name == .none) != (inst.ports[0].name == .none))

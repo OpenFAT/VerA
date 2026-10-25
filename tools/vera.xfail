@@ -264,7 +264,6 @@ ivtest/ivltests/nb_ec_concat.v
 ivtest/ivltests/nb_ec_multi_ev.v
 ivtest/ivltests/nb_ec_repeat_auto.v
 ivtest/ivltests/param_string.v
-ivtest/ivltests/param_test3.v
 ivtest/ivltests/param-width.v
 ivtest/ivltests/partsel_outside_const.v
 ivtest/ivltests/partsel_outside_expr.v
@@ -321,7 +320,6 @@ ivtest/ivltests/pr938b.v
 ivtest/ivltests/pv_wr_vec4a_nb_ec.v
 ivtest/ivltests/pv_wr_vec4_nb_ec.v
 ivtest/ivltests/random.v
-ivtest/ivltests/readmem-error.v
 ivtest/ivltests/real_array_multi_dim.v
 ivtest/ivltests/real_invalid_ops.v
 ivtest/ivltests/real_unary_minus_inf.v

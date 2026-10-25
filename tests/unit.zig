@@ -9046,10 +9046,10 @@ pub const diag_tests = struct {
 
         // Only `.run` errors: the error lines alone, as the native runtime prints.
         var ran = diag.Bag.init(arena);
-        try ran.add(.run, .E1157, diag.Span.none, "", .{});
+        try ran.add(.run, .E1100, diag.Span.none, "", .{});
         const out = try renderToString(&ran, .{});
         try std.testing.expect(std.mem.find(u8, out, "could not compile") == null);
-        try std.testing.expect(std.mem.startsWith(u8, out, "error[E1157]"));
+        try std.testing.expect(std.mem.startsWith(u8, out, "error[E1100]"));
         try std.testing.expect(ran.failed());
         // A warning beside it is still counted; a compile error still is too.
         try ran.add(.lower, .W1150, .at(1), "", .{});
@@ -9438,7 +9438,7 @@ pub const diag_tests = struct {
         var bag = diag.Bag.init(arena);
         for (0..diag.max_entries) |i| try bag.add(.proof, .W0650, .at(@intCast(i + 1)), "", .{});
         try bag.add(.lower, .E0313, .at(1000), "", .{});
-        try bag.add(.run, .E1157, .at(1001), "", .{}); // a run error, dropped: no compile error
+        try bag.add(.run, .E1100, .at(1001), "", .{}); // a run error, dropped: no compile error
         try bag.add(.proof, .W0651, .at(1002), "", .{});
         try std.testing.expect(bag.failed());
         try std.testing.expect(std.mem.endsWith(u8, try renderToString(&bag, .{ .explain_hint = false }),
