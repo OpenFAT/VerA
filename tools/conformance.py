@@ -1601,6 +1601,10 @@ class SuiteScoreTests(unittest.TestCase):
         rows = [("PASS", "verilog-a/a.va"), ("XFAIL", "verilog-a/b.va"), ("XPASS", "verilog/c.v"),
                 ("SKIP", "verilog/d.v"), ("PASS", "verilog-ams/e.vams"), ("PASS", "netlist/f.sp")]
         self.assertEqual(suite_scores(rows), {"verilog-a": (1, 2), "verilog": (1, 2), "verilog-ams": (1, 1), "spice": (1, 1)})
+        # Annex E's tests/spice/ holds .va tests (Verilog-AMS) and SPICE decks
+        # (SPICE, the simulators'): a deck is a netlist wherever it is filed.
+        self.assertEqual(suite_scores([("PASS", "spice/annex_e.va"), ("SKIP", "spice/deck.sp")]),
+                         {"verilog-ams": (1, 1), "spice": (0, 1)})
         self.assertEqual(measured(["x", "On Suite VAMS-CONFORMANCE, we score Verilog-A 1/2"]),
                          ["On Suite VAMS-CONFORMANCE, we score Verilog-A 1/2"])
 class InheritedWorklistTests(unittest.TestCase):
