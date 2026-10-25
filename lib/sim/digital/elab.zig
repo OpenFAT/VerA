@@ -431,15 +431,17 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
                 .collapse => |c| try e.wires.append(arena, .{
                     .net = c.net,
                     .scope = scope,
-                    .source = .{ .bridge = .{
-                        .src = var_slot,
-                        .src_lo = 0,
-                        .dst_lo = 0,
-                        .width = @min(e.values.items[var_slot].width, e.nets.items[c.net].resolved.width),
-                        // §12.3.9.2's widening (`sendPort`).
-                        .ext = e.nets.items[c.net].resolved.width -| e.values.items[var_slot].width,
-                        .sign_at = if (e.values.items[var_slot].signed) e.values.items[var_slot].width - 1 else null,
-                    } },
+                    .source = .{
+                        .bridge = .{
+                            .src = var_slot,
+                            .src_lo = 0,
+                            .dst_lo = 0,
+                            .width = @min(e.values.items[var_slot].width, e.nets.items[c.net].resolved.width),
+                            // §12.3.9.2's widening (`sendPort`).
+                            .ext = e.nets.items[c.net].resolved.width -| e.values.items[var_slot].width,
+                            .sign_at = if (e.values.items[var_slot].signed) e.values.items[var_slot].width - 1 else null,
+                        },
+                    },
                     .tok = p.main_tok,
                 }),
                 // §12.3.9.2 a select or concatenation outside: the variable
@@ -598,7 +600,7 @@ fn namesIn(r: *const Run, e: Ast.ExprId, name: Ast.StrId) bool {
         .concat => for (ex.args(e)) |x| {
             if (namesIn(r, x, name)) break true;
         } else false,
-        else => false,
+        else => false, // else: no other lvalue form names a net
     };
 }
 
