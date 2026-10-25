@@ -1,0 +1,48 @@
+# The release binary as a Homebrew formula (macOS and Linux). tools/package.sh
+# fills the @...@ fields from a release's tarballs; publish.yaml attaches the
+# result and, given a token, pushes it to the OmarSiwy/homebrew-vera tap.
+class Vera < Formula
+  desc "Verilog-AMS compiler: Verilog-A to Zig device code, Verilog simulation, OSDI, VPI"
+  homepage "https://github.com/OmarSiwy/VerA"
+  version "@VERSION@"
+  license "Apache-2.0"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/OmarSiwy/VerA/releases/download/v@VERSION@/vera-v@VERSION@-aarch64-macos.tar.gz"
+      sha256 "@AARCH64_MACOS_SHA256@"
+    end
+    on_intel do
+      url "https://github.com/OmarSiwy/VerA/releases/download/v@VERSION@/vera-v@VERSION@-x86_64-macos.tar.gz"
+      sha256 "@X86_64_MACOS_SHA256@"
+    end
+  end
+  on_linux do
+    on_arm do
+      url "https://github.com/OmarSiwy/VerA/releases/download/v@VERSION@/vera-v@VERSION@-aarch64-linux-gnu.tar.gz"
+      sha256 "@AARCH64_LINUX_SHA256@"
+    end
+    on_intel do
+      url "https://github.com/OmarSiwy/VerA/releases/download/v@VERSION@/vera-v@VERSION@-x86_64-linux-gnu.tar.gz"
+      sha256 "@X86_64_LINUX_SHA256@"
+    end
+  end
+
+  resource "contract" do
+    url "https://raw.githubusercontent.com/OmarSiwy/VerA/v@VERSION@/lib/contract.zig"
+    sha256 "@CONTRACT_SHA256@"
+  end
+
+  def install
+    bin.install "vera"
+    resource("contract").stage { (share/"vera").install "contract.zig" }
+  end
+
+  def caveats
+    "Simulating a design runs Zig @ZIG@ (zig on PATH, or VERA_ZIG)."
+  end
+
+  test do
+    assert_match "vera @VERSION@", shell_output("#{bin}/vera --version")
+  end
+end

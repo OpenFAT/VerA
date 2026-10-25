@@ -53,6 +53,11 @@ The [tutorial](https://omarsiwy.github.io/VerA/learn/getting-started.html) conti
 |---|---|
 | Nix (from source) | `nix profile add github:OmarSiwy/VerA` |
 | Nix (release binary) | `nix profile add 'github:OmarSiwy/VerA#latest'` |
+| Install script (Linux, macOS) | `curl -fsSL https://raw.githubusercontent.com/OmarSiwy/VerA/main/tools/install.sh \| sh` (`sh -s -- 0.20.0` pins a version); reads `sources.json`, checks each download's sha256, caches it, and keeps versions side by side under `~/.local/share/vera` |
+| Debian, Ubuntu | `sudo apt install ./vera_<version>-1_amd64.deb` (or `arm64`) from the release |
+| Fedora, openSUSE | `sudo dnf install ./vera-<version>-1.x86_64.rpm` (or `aarch64`) from the release |
+| Arch | `sudo pacman -U vera-<version>-1-x86_64.pkg.tar.zst` from the release; the release's `PKGBUILD` is the AUR's `vera-bin` |
+| Homebrew | `brew install OmarSiwy/vera/vera`, once the tap is published (the release's `vera.rb`) |
 | Release tarball | [GitHub releases](https://github.com/OmarSiwy/VerA/releases): x86_64/aarch64 Linux, x86_64/aarch64 macOS, x86_64 Windows, with `SHA256SUMS` |
 | From source | `git clone https://github.com/OmarSiwy/VerA && cd VerA && zig build -Doptimize=ReleaseFast` |
 

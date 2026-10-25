@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Installing without Nix:** `tools/install.sh` installs a release from
+  `sources.json` on Linux and macOS, checks the tarball's sha256, caches it
+  and keeps versions side by side. Each release also ships a `.deb`, an
+  `.rpm` and an Arch package (each installed and run by its own package
+  manager before upload), the AUR `PKGBUILD` (`vera-bin`) and a Homebrew
+  formula; the AUR and the `OmarSiwy/homebrew-vera` tap are updated when
+  their secrets are set.
+
 ## v0.20.0 — 2026-10-25
 
 On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Verilog-AMS 754/754, Cumulative: 6817/6817.
