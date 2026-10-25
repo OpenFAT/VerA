@@ -39,6 +39,16 @@ pub const TimeFormat = struct {
     precision: u32 = 0,
     suffix: []const u8 = "",
     width: u64 = 20,
+
+    /// This format under one `%t`'s own field width (`%0t`: none) and
+    /// precision (`%.700t`; -1: none), which replace $timeformat's for that
+    /// field as iverilog does (§17.3.2 names only $timeformat's).
+    pub fn field(self: TimeFormat, width: ?u64, precision: i64) TimeFormat {
+        var f = self;
+        if (width) |w| f.width = w;
+        if (precision >= 0) f.precision = std.math.lossyCast(u32, precision);
+        return f;
+    }
 };
 
 /// A `%d` of a known operand wider than 64 bits takes scratch from the
@@ -92,10 +102,99 @@ pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io
 /// `$realtime`; #64), an integral one through `timeOperand`.
 pub fn time(out: *std.Io.Writer, t: f64, f: TimeFormat, unit_exp: i32) std.Io.Writer.Error!void {
     const scaled = t * std.math.pow(f64, 10, @floatFromInt(unit_exp - f.units));
-    const len = std.fmt.count("{d:.[1]}", .{ scaled, f.precision }) + f.suffix.len;
+    // C's `%.Nf` (`zCReal`; std's `{d:.N}` gives up past a few hundred
+    // digits). ponytail: digits past the 400th are written as zeros, which
+    // is exact for every time value but a real below 2^-400.
+    const q = @min(f.precision, 400);
+    var buf: [1024]u8 = undefined;
+    const body = str_k.zCReal(&buf, scaled, 'f', 0, 0, q);
+    const extra: usize = f.precision - q;
+    const len = body.len + extra + f.suffix.len;
     if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
-    try out.print("{d:.[1]}", .{ scaled, f.precision });
+    try out.writeAll(body);
+    try out.splatByteAll('0', extra);
     try out.writeAll(f.suffix);
+}
+
+/// `%t` of a known integral operand `v`, a count of 10^`unit_exp` s, in
+/// `f`'s units: exact at any width, the fractional digits past `f`'s
+/// precision cut, not rounded, as iverilog prints it (§17.3.2 names the
+/// precision, not how a finer value meets it; ivtest br_gh1591a/b/c).
+pub fn timeInt(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, f: TimeFormat, unit_exp: i32) Error!void {
+    var dec: std.Io.Writer.Allocating = .init(gpa);
+    defer dec.deinit();
+    try value(&dec.writer, gpa, v, .decimal, 0);
+    const all = dec.written();
+    const neg = all.len != 0 and all[0] == '-';
+    const digits = all[@intFromBool(neg)..];
+    const k = unit_exp - f.units;
+    // The integer digits, then every fractional digit the shift gives.
+    var int_part: []const u8 = digits;
+    var frac: []const u8 = "";
+    var zeros: usize = 0; // after the integer digits, for k > 0
+    var lead: usize = 0; // fractional zeros before `frac`, for a short `digits`
+    if (k >= 0) zeros = @intCast(k) else {
+        const m: usize = @intCast(-k);
+        if (digits.len > m) {
+            int_part = digits[0 .. digits.len - m];
+            frac = digits[digits.len - m ..];
+        } else {
+            int_part = "0";
+            lead = m - digits.len;
+            frac = digits;
+        }
+    }
+    const int_trim = std.mem.trimStart(u8, int_part, "0");
+    const int_len = if (int_trim.len == 0) 1 else int_trim.len + zeros;
+    const len = @as(usize, @intFromBool(neg)) + int_len + (if (f.precision > 0) 1 + f.precision else 0) + f.suffix.len;
+    if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
+    if (neg) try out.writeByte('-');
+    if (int_trim.len == 0) try out.writeByte('0') else {
+        try out.writeAll(int_trim);
+        try out.splatByteAll('0', zeros);
+    }
+    if (f.precision > 0) {
+        try out.writeByte('.');
+        var left: usize = f.precision;
+        const z = @min(lead, left);
+        try out.splatByteAll('0', z);
+        left -= z;
+        const d = @min(frac.len, left);
+        try out.writeAll(frac[0..d]);
+        try out.splatByteAll('0', left - d);
+    }
+    try out.writeAll(f.suffix);
+}
+
+test timeInt {
+    var out_buf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out_buf);
+    // Oracle: iverilog -g2005. 1999 ns in us is cut, not rounded: "1",
+    // "1.99"; in ps it is exact with one fractional zero.
+    var p = [2]u64{ 1999, 0 };
+    const ns = -9;
+    try timeInt(&w, testing.allocator, lit(&p, 64, false), .{ .units = -6, .width = 0, .suffix = " us" }, ns);
+    try testing.expectEqualStrings("1 us", w.buffered());
+    w.end = 0;
+    try timeInt(&w, testing.allocator, lit(&p, 64, false), .{ .units = -6, .precision = 2, .width = 0 }, ns);
+    try testing.expectEqualStrings("1.99", w.buffered());
+    w.end = 0;
+    try timeInt(&w, testing.allocator, lit(&p, 64, false), .{ .units = -12, .precision = 1, .width = 10 }, ns);
+    try testing.expectEqualStrings(" 1999000.0", w.buffered());
+    w.end = 0;
+    // 5 ns in ms: no integer digit, the fraction's leading zeros kept.
+    var five = [2]u64{ 5, 0 };
+    try timeInt(&w, testing.allocator, lit(&five, 64, false), .{ .units = -3, .precision = 7, .width = 0 }, ns);
+    try testing.expectEqualStrings("0.0000050", w.buffered());
+    w.end = 0;
+    var zero = [2]u64{ 0, 0 };
+    try timeInt(&w, testing.allocator, lit(&zero, 64, false), .{ .units = -12, .width = 0 }, ns);
+    try testing.expectEqualStrings("0", w.buffered());
+    w.end = 0;
+    // 2^90 + 1999 (100 bits) in us: every digit (iverilog prints the same).
+    var wide = [4]u64{ 1999, 1 << 26, 0, 0 };
+    try timeInt(&w, testing.allocator, lit(&wide, 100, false), .{ .units = -6, .precision = 2, .width = 0 }, ns);
+    try testing.expectEqualStrings("1237940039285380274899126.22", w.buffered());
 }
 
 /// `%t` of an integral operand with an x or z bit: §17.1.1.4's decimal
@@ -378,7 +477,13 @@ pub fn flagVerdict(flags: u8, conv: u8) enum { ok, alt, c_flag } {
         'e', 'f', 'g', 'r' => true,
         else => false,
     };
-    if (!real and flags & (str_k.zc_left | str_k.zc_plus | str_k.zc_space) != 0) return .c_flag;
+    // '-' left-justifies a `%t` field too: §17.3.2 gives it a minimum field
+    // width, so its pad has a side, which iverilog puts on the right
+    // (`display.Fill`, ivtest br_gh1591a's `%-700t`). '+' and ' ' stay the
+    // real conversions'.
+    const left_ok = conv | 0x20 == 't';
+    if (!real and flags & (str_k.zc_plus | str_k.zc_space) != 0) return .c_flag;
+    if (!real and !left_ok and flags & str_k.zc_left != 0) return .c_flag;
     return .ok;
 }
 
@@ -413,7 +518,10 @@ test "§17.1.1.2 flagVerdict: C's flags on the real conversions only (#43)" {
     for ("dDhHoObBcCsStTvVmMlL") |c| {
         try testing.expect(flagVerdict(str_k.zc_zero, c) == .ok); // `%0d`
         try testing.expect(flagVerdict(str_k.zc_alt, c) == .alt);
-        try testing.expect(flagVerdict(str_k.zc_left, c) == .c_flag);
+        // '-' left-justifies a `%t` field (`display.Fill`); every other
+        // conversion here refuses it.
+        const left_ok = c | 0x20 == 't';
+        try testing.expect((flagVerdict(str_k.zc_left, c) == .ok) == left_ok);
         try testing.expect(flagVerdict(str_k.zc_plus, c) == .c_flag);
         try testing.expect(flagVerdict(str_k.zc_space, c) == .c_flag);
     }

@@ -1917,11 +1917,11 @@ pub const State = struct {
         self.out = &self.zero_field.writer;
     }
 
-    pub fn zeroEnd(self: *State) Error!void {
+    pub fn zeroEnd(self: *State, f: display.Fill) Error!void {
         self.out = self.zero_out.?;
         self.zero_out = null;
         defer self.zero_field.deinit();
-        try display.zeroFilled(self.out, self.zero_field.written());
+        try display.fillField(self.out, self.zero_field.written(), f);
     }
 
     /// One `%b`/`%o`/`%h`/`%d` operand (§17.1.1.3).
@@ -1937,22 +1937,17 @@ pub const State = struct {
 
     /// One integral `%t` operand, in a module whose unit is 10^`unit_exp` s
     /// (§17.3).
-    pub fn time(self: *State, a: anytype, w: u32, signed: bool, unit_exp: i32, width: ?u64) Error!void {
+    pub fn time(self: *State, a: anytype, w: u32, signed: bool, unit_exp: i32, width: ?u64, precision: i64) Error!void {
         var buf = logic.planesOf(a);
         const v = literal(&buf, w, signed);
-        if (v.hasUnknown()) {
-            var f = self.time_format;
-            if (width) |fw| f.width = fw;
-            return fmt.timeUnknown(self.out, v, f);
-        }
-        return self.timeReal(fmt.timeOperand(v), unit_exp, width);
+        const f = self.time_format.field(width, precision);
+        if (v.hasUnknown()) return fmt.timeUnknown(self.out, v, f);
+        return fmt.timeInt(self.out, self.gpa, v, f, unit_exp);
     }
 
     /// One `%t` operand of real type, formatted as it is (#64).
-    pub fn timeReal(self: *State, v: f64, unit_exp: i32, width: ?u64) Error!void {
-        var f = self.time_format;
-        if (width) |fw| f.width = fw;
-        try fmt.time(self.out, v, f, unit_exp);
+    pub fn timeReal(self: *State, v: f64, unit_exp: i32, width: ?u64, precision: i64) Error!void {
+        try fmt.time(self.out, v, self.time_format.field(width, precision), unit_exp);
     }
 
     /// One real conversion (§17.1.1.2 `%e %f %g`, §9.4.7 `%r`): C's text

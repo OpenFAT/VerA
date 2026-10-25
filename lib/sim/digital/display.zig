@@ -680,19 +680,17 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                         const out = self.out;
                         defer self.out = out;
                         var field: std.Io.Writer.Allocating = .init(a);
-                        const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
-                        if (zero) self.out = &field.writer;
+                        const fill = fieldFill(sp, format[i]);
+                        if (fill != null) self.out = &field.writer;
+                        const tf = self.time_format.field(width, precision);
+                        const unit_exp = self.timeOf(self.scope).unit_exp;
                         if (compile.typeOf(self, args[arg]).real)
-                            try emitTime(self, try evaluate.evalReal(self, a, args[arg]), width)
+                            try fmt.time(self.out, try evaluate.evalReal(self, a, args[arg]), tf, unit_exp)
                         else {
                             const v = try evaluate.eval(self, a, args[arg], 0);
-                            if (v.hasUnknown()) {
-                                var f = self.time_format;
-                                if (width) |w| f.width = w;
-                                try fmt.timeUnknown(self.out, v, f);
-                            } else try emitTime(self, fmt.timeOperand(v), width);
+                            if (v.hasUnknown()) try fmt.timeUnknown(self.out, v, tf) else try fmt.timeInt(self.out, a, v, tf, unit_exp);
                         }
-                        if (zero) try zeroFilled(out, field.written());
+                        if (fill) |f| try fillField(out, field.written(), f);
                     }
                     continue;
                 },
@@ -732,7 +730,15 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                     arg += 1;
                     if (arg == args.len) return short(self, e, dynamic, "missing display argument");
                     try compile.checkExpr(self, args[arg]);
-                    if (allocator) |a| try fmt.text(self.out, try evaluate.eval(self, a, args[arg], 0), format[i] == 'c' or format[i] == 'C', width);
+                    if (allocator) |a| {
+                        const out = self.out;
+                        defer self.out = out;
+                        var field: std.Io.Writer.Allocating = .init(a);
+                        const fill = fieldFill(sp, format[i]);
+                        if (fill != null) self.out = &field.writer;
+                        try fmt.text(self.out, try evaluate.eval(self, a, args[arg], 0), format[i] == 'c' or format[i] == 'C', width);
+                        if (fill) |f| try fillField(out, field.written(), f);
+                    }
                     continue;
                 },
                 // §17.1.1.2 `%u`/`%z`: the operand's two- or four-value bits
@@ -754,17 +760,18 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
             if (radix) |r| {
                 try compile.checkExpr(self, args[arg]);
                 if (allocator) |a| {
-                    // `%05d`: C's '0' flag, which iverilog renders (`zeroFilled`).
+                    // `%05d`: C's '0' flag, which iverilog renders
+                    // (`fillField`).
                     const out = self.out;
                     defer self.out = out;
                     var field: std.Io.Writer.Allocating = .init(a);
-                    const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
-                    if (zero) self.out = &field.writer;
+                    const fill = fieldFill(sp, format[i]);
+                    if (fill != null) self.out = &field.writer;
                     if (compile.typeOf(self, args[arg]).real)
                         try realRadix(self.out, a, try evaluate.evalReal(self, a, args[arg]), r, width)
                     else
                         try fmt.value(self.out, a, try evaluate.eval(self, a, args[arg], 0), r, width);
-                    if (zero) try zeroFilled(out, field.written());
+                    if (fill) |f| try fillField(out, field.written(), f);
                 }
             } else {
                 try compile.checkExpr(self, args[arg]);
@@ -773,6 +780,30 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
         }
     }
     if (allocator != null and show.newline) try self.out.writeByte('\n');
+}
+
+/// How a non-real field's C flag reshapes its padded text: '-' (`%t` only,
+/// `fmt.flagVerdict`) moves the leading pad to the end, '0' (with a nonzero
+/// width) turns it into zeros after the sign. 1364 grants C's flags to the
+/// real conversions only and says nothing of them elsewhere; VerA renders
+/// iverilog's text.
+pub const Fill = enum { zero, left };
+
+/// `sp`'s `Fill` for conversion `conv`, if any; '-' wins over '0', as in C,
+/// and a `%s` field's '0' pads with spaces still (iverilog: `%05s` of "ab"
+/// is "   ab", `%05c` of 65 "0000A").
+pub fn fieldFill(sp: fmt.Spec, conv: u8) ?Fill {
+    if (sp.flags & str_k.zc_left != 0) return .left;
+    if (sp.flags & str_k.zc_zero != 0 and (sp.width orelse 0) != 0 and conv | 0x20 != 's') return .zero;
+    return null;
+}
+
+/// `text`, one field as written with its leading pad, reshaped by `f`.
+pub fn fillField(out: *std.Io.Writer, text: []const u8, f: Fill) std.Io.Writer.Error!void {
+    if (f == .zero) return zeroFilled(out, text);
+    const pad = std.mem.indexOfNone(u8, text, " ") orelse text.len;
+    try out.writeAll(text[pad..]);
+    try out.splatByteAll(' ', pad);
 }
 
 /// A field written with C's '0' flag and a width (`%05d`, `%04h`, `%06t`):
@@ -885,14 +916,6 @@ pub fn strength(out: *std.Io.Writer, s: Signal) std.Io.Writer.Error!void {
     if (s.lo == 0) return out.print("{s}H", .{names[hi]});
     if (s.hi == 0) return out.print("{s}L", .{names[lo]});
     return if (lo == hi) out.print("{s}X", .{names[lo]}) else out.print("{d}{d}X", .{ lo, hi });
-}
-
-/// `%t`; a field width in the format (`%0t`: none) replaces §17.3.2's
-/// minimum field width.
-fn emitTime(self: *Run, v: f64, width: ?u64) Error!void {
-    var f = self.time_format;
-    if (width) |w| f.width = w;
-    try fmt.time(self.out, v, f, self.timeOf(self.scope).unit_exp);
 }
 
 /// IEEE 1364-2005 §17.3.1 `$printtimescale`: "the time unit and precision of
@@ -1609,6 +1632,9 @@ test "§17.1.1.2 a real conversion renders C's flags; any other refuses them (#4
         \\endmodule
         \\
     , "[2.50    |+1.500000e+00| 3.0|-002.500|2.|1.5K  |00042]\n");
+    // '-' left-justifies a `%t` field, as iverilog prints it (ivtest
+    // br_gh1591a's `%-700t`); on any other it, '+' and ' ' stay refused.
+    try expectRun("`timescale 1ns/1ps\nmodule m; initial $display(\"[%-6t][%05c][%05s]\", 3, 65, \"ab\"); endmodule", "[3000  ][0000A][   ab]\n");
     try @import("root.zig").expectRejected("module m; initial $display(\"%-5d\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%+h\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%#h\", 1); endmodule", "alternative form");
