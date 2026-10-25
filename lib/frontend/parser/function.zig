@@ -160,6 +160,21 @@ pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_ana
     }
     _ = try self.expect(.kw_endfunction);
 
+    // Syntax 4-5's `{ analog_function_item_declaration }` puts no order on the
+    // items, so `real x; input x;` types the formal as well: a variable
+    // declared before its direction is matched here, as one after it is above.
+    var vi = vars.items.len;
+    while (vi > 0) {
+        vi -= 1;
+        for (args.items) |*a| {
+            if (a.name != vars.items[vi].name) continue;
+            if (a.ty == .unspecified) a.ty = vars.items[vi].ty;
+            if (a.dims.len == 0) a.dims = vars.items[vi].dims;
+            _ = vars.orderedRemove(vi);
+            break;
+        }
+    }
+
     // §4.7.1 bullet list: "shall have at least one formal argument declared".
     if (args.items.len == 0) {
         try self.report(main_tok, .E0224, "`{s}` has an empty formal list", .{self.file.str(name)});
