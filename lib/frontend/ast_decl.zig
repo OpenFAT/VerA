@@ -353,7 +353,28 @@ pub const EventDecl = struct {
 };
 
 /// One A.2.7 task/function formal: a direction and the variable it declares.
-pub const TfPort = struct { direction: Direction, v: VarDecl };
+pub const TfPort = struct {
+    direction: Direction,
+    v: VarDecl,
+    /// A body (non-ANSI) port's variable redeclarations folded into `v`,
+    /// kept for IEEE 1364-2005 §12.3.3's rules, which the elaborator checks:
+    /// a port declared with a type is complete, a name is declared again at
+    /// most once, and a vector's two ranges are identical.
+    redecl: Redecl = .{},
+
+    pub const Redecl = struct {
+        /// Variable declarations of the port's name; the first is in `v`.
+        count: u32 = 0,
+        /// The first one's name token.
+        tok: u32 = 0,
+        /// The port declaration wrote a type (`reg`, `integer`, `time`,
+        /// `real`, `realtime`).
+        typed: bool = false,
+        /// The port declaration's own range, and the variable's.
+        port_range: ?Dim = null,
+        var_range: ?Dim = null,
+    };
+};
 
 /// User-defined analog function. LRM §4.7.1 (A.2.6 analog_function_declaration).
 /// The implicit return variable is the function's own name (§4.7.1).
