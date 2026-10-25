@@ -972,7 +972,7 @@ fn reach(self: *Emitter, entry: u32, seen: []bool) Error![]const u32 {
                 try work.append(self.arena, next);
             },
             .task_return => {},
-            .pla_start => |loop| try work.appendSlice(self.arena, &.{ next, loop }),
+            .pla_start => |p| try work.appendSlice(self.arena, &.{ next, p.at }),
             .fork => |f| try work.appendSlice(self.arena, if (f.arms.len == 0) &.{f.end} else f.arms),
             .join_arm => |j| try work.append(self.arena, j.end),
             // §9.3 the held slot's own process, started by its `.override_on`.
@@ -1356,7 +1356,11 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
         },
         .join_arm => |j| try self.print("            s.joins[{d}] -= 1;\n            if (s.joins[{d}] == 0) try s.run({d}, null);\n            return;\n", .{ j.join, j.join, j.end }),
         // §17.5 an asynchronous array's own process starts now.
-        .pla_start => |loop| try self.print("            try s.run({d}, null);\n            continue :sw {d};\n", .{ loop, next }),
+        // `exec`'s `now` start is a nested dispatch: the child parks first.
+        .pla_start => |p| if (p.now)
+            try self.print("            try dispatch(s, {d});\n            continue :sw {d};\n", .{ p.at, next })
+        else
+            try self.print("            try s.run({d}, null);\n            continue :sw {d};\n", .{ p.at, next }),
         .override_on => |o| if (o.bits) |b|
             try self.print("            try s.overrideBits({d}, {d}, {d}, {d}, {d}, {d});\n            continue :sw {d};\n", .{ o.slot, partOf(self, o.slot, b).?, b.lo, b.width, o.start, o.end, next })
         else

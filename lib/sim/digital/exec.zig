@@ -954,8 +954,20 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             },
             // §17.5 an asynchronous PLA: its own process, which evaluates and
             // waits on its inputs and personality, forever.
-            .pla_start => |loop| {
-                _ = try enqueue(self, .{ .run_process = loop }, null, false);
+            .pla_start => |p| {
+                if (p.now) {
+                    // Nested, as `callSync` runs a body: the child parks at
+                    // its wait and this process carries on.
+                    var nested = std.heap.ArenaAllocator.init(self.arena);
+                    defer nested.deinit();
+                    var nested_scratch: Scratch = .init(&.{}, &nested);
+                    // A process of its own, outside any activation, as a
+                    // queued `.run_process` starts.
+                    const ctx = self.ctx;
+                    self.ctx = 0;
+                    defer self.ctx = ctx;
+                    try execute(self, &nested_scratch, p.at);
+                } else _ = try enqueue(self, .{ .run_process = p.at }, null, false);
                 pc += 1;
                 continue;
             },
@@ -1376,4 +1388,23 @@ test "§17.4.1 $finish reports by its argument; an x argument reports" {
 test "repeat accepts all 64 count bits and finish stops without an iteration clamp" {
     try expectRun("module m; initial repeat(64'hffffffffffffffff) begin $display(\"first\"); $finish(0); end endmodule", "first\n");
     try expectRun("module m; integer i; initial begin i=0; while(i<70001) i=i+1; $display(\"%b\",i); end endmodule", "00000000000000010001000101110001\n");
+}
+
+test "§9.7.7 a nonblocking assignment's event control waits from the statement, so an event triggered next is seen" {
+    // "the right-hand expressions are evaluated when the assignment
+    // statements are encountered, but the assignments are delayed until"
+    // the event. The update is an NBA update (§11.4 c), seen once time
+    // moves; iverilog -g2005 prints the same two lines.
+    try expectRun(
+        \\module m;
+        \\  reg [3:0] x; integer y; event e;
+        \\  initial begin
+        \\    x = 4'hx; y = 0;
+        \\    x[2:1] <= @e 2'b10;
+        \\    y <= repeat (2) @e y + 1;
+        \\    -> e; #1 $display("%b %0d", x, y);
+        \\    -> e; #1 $display("%b %0d", x, y);
+        \\  end
+        \\endmodule
+    , "x10x 0\nx10x 1\n");
 }

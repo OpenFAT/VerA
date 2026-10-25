@@ -110,9 +110,13 @@ pub const Instruction = union(enum(u5)) {
     call_timed: struct { sub: u32, args: []const Ast.ExprId },
     /// The end of a `call_timed` activation of task `n`.
     task_return: u32,
-    /// Start a process of its own at this pc: §17.5 an asynchronous PLA's,
-    /// or §9.7.7 the wait of a nonblocking assignment's event control.
-    pla_start: u32,
+    /// Start a process of its own at `at`: §17.5 an asynchronous PLA's, or
+    /// §9.7.7 the wait of a nonblocking assignment's event control, which
+    /// (`now`) runs at once, up to its wait: "the right-hand expressions are
+    /// evaluated when the assignment statements are encountered, but the
+    /// assignments are delayed until" the event, so an event the parent
+    /// triggers next is one it sees.
+    pla_start: struct { at: u32, now: bool = false },
     /// §9.8.2 `fork`: start every arm as a process of its own; join cell
     /// `join` counts them back, and the parent resumes at `end`.
     fork: struct { arms: []const u32, join: u32, end: u32 },
@@ -1199,7 +1203,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             // before the first's event replaces it.
             var skip: ?u32 = null;
             if (s.nonblocking) {
-                _ = try append(self, .{ .pla_start = position(self) + 2 });
+                _ = try append(self, .{ .pla_start = .{ .at = position(self) + 2, .now = true } });
                 skip = try append(self, .{ .jump = 0 });
             }
             // §9.7.7 `repeat (n) @(e)`: n occurrences, none when n <= 0.
@@ -1372,7 +1376,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                         for (0..arr.?.count) |i| try watch(self, base + @as(u32, @intCast(i)), &watched);
                         try sensitivity(self, s.args[1], &watched);
                         const loop = try watcher(self, .{ .task = .{ .task = .{ .pla = sync }, .args = s.args, .tok = tok } }, watched.items);
-                        _ = try append(self, .{ .pla_start = loop });
+                        _ = try append(self, .{ .pla_start = .{ .at = loop } });
                         return;
                     }
                 },
