@@ -166,6 +166,8 @@ summary and has a **Status** line naming what landed.
 | VD-123 | VAMS 4.3.1 Table 4-14, 4.3.2 Table 4-15, 9.14 | asinh, acosh, atanh, log10, asin, acos and atan2 run the C algorithm (musl's) with the analytic derivative, one function shared by folder, prover and device; tan stays sin/cos, folded the same way | DONE (#60) |
 | VD-124 | VAMS 2.6.1, 3.2; IEEE 1364-2005 3.5.1, 5.4.1 Table 5-22, 17.1.1.3 | An unsized integer literal is 32 bits in the analog context, as an `integer`, and 64 when its value needs more; display conversions size it, and every integer expression, by one rule (`systask.intSize`) | DONE (#77) |
 | VD-125 | VAMS 3.4.2 | A value the host writes on the model card is checked against the declared `from`/`exclude` ranges after `derive` (`checkRange`); the testbench stops with E0377, the OSDI library fails setup fatally; only bounds that fold over literals, numeric parameters only | DONE (#80) |
+| VD-126 | VAMS 10.4; IEEE 1364-2005 19.3.2 | A use of a text macro that is not defined is refused (E0115), never expanded to nothing | DONE |
+| VD-127 | IEEE 1364-2005 28.2, 28.4 | A decryption envelope is decrypted with the keys and CBC IV of `--protect-keys FILE` (des-cbc, PKCS#7 padding); no key is E0152, a key that does not open it E0153, an encryption envelope or another method E0146 | DONE |
 
 ## 1. Open decisions (CLAUSE-AUDIT §7.5)
 
@@ -1406,6 +1408,26 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **VerA today**: `src/codegen/device/codegen/file.zig` `emitRangeCheck`; `lib/contract.zig` (`checkRange` in `validate`); `src/codegen/exe/tb/runner_text.zig` `shapeCheck`; `lib/osdi_dyn.zig` `derive`. Fixtures `ch03_data_types/range_card_value_excluded_rejected.va`, `range_card_value_below_from_rejected.va` (`//! reject-run E0377`) and their neighbour `range_card_value_inside.va`.
 - **Measure impact**: A: +3 fixtures. C: §3.4.2's value half gains a run-time invalid-input test.
 - **Status**: DONE (#80).
+
+### VD-126: What a use of an undefined text macro does
+- **Source**: conformance-to-100% dialect audit, 2026-10-24 (ivtest `undef.v`, `pr478`); user ruling.
+- **Rule**: IEEE 1364-2005 §19.3.2: "An undefined text macro has no value, just as if it had never been defined." VAMS §10.4 hands `define and `undef to IEEE 1364. No clause says a use of an undefined macro "shall" be an error, and none says it expands to nothing.
+- **Why vague**: "has no value" describes the macro, not its use; iverilog reads it as an empty expansion, other tools refuse it.
+- **Options**: (a) expand the use to nothing; (b) refuse it.
+- **Decision**: `DECIDED:` (b), E0115 "undefined macro". Expanding a use to nothing turns a typo (`` `GIAN `` for `` `GAIN ``) or a use before its `define into a silently different expression, the wrong-number-without-a-crash class this project guards against. The diagnostic carries a did-you-mean suggestion from the macro table.
+- **VerA today**: `lib/frontend/pp/macro.zig` `expand`. Fixtures `verilog/19_compiler_directives/use_before_define_rejected.v`, `protect_is_undefined_macro_rejected.v`, `verilog-a/ch10_directives/undefined_macro.va`, `ch02_lexical/reject_2_8_4_macro_used_before_its_define.va`; ivtest `undef.v` and `pr478` are reject rows citing this entry.
+- **Measure impact**: none (behaviour unchanged; the fixtures' citation moves from §19.3.1 to this entry).
+- **Status**: DONE.
+
+### VD-127: Where a decryption envelope's key, IV and padding come from
+- **Source**: conformance-to-100% (VAMS Conformance Suite `verilog/28_protected_envelopes/protected_*.v`).
+- **Rule**: IEEE 1364-2005 §28.2: "Tools that process the Verilog HDL shall perform envelope decryption for all decryption envelopes contained in the source text, where the proper key is supplied by the user." §28.4 names the methods, encodings and blocks; it does not say how a key is supplied, nor des-cbc's IV or padding.
+- **Why vague**: key provisioning, the CBC IV and the padding are left to the tool.
+- **Options**: (a) keep refusing every envelope (E0146); (b) take keys, IV and padding from a key file the user names.
+- **Decision**: `DECIDED:` (b). `vera --protect-keys FILE` reads JSON (`profile.iv_hex`, `keys: [{owner, name, key_hex}]`, the suite's `known_keys.json` layout), one IV for every envelope, PKCS#7 padding. An envelope's `*_keyowner`/`*_keyname` select the key. A §28.4.10 key block's `data_decrypt_key` is the session key; a §28.4.12 digest block is checked (md5, sha1). The three failures stay apart: E0146 an envelope VerA cannot process (an encryption envelope `begin`, a method other than des-cbc, an encoding other than base64/uuencode/raw), E0152 no key, E0153 a key that does not open it. VerA provides no encryption service.
+- **VerA today**: `lib/frontend/pp/protect.zig`, called from `pp/directive.zig`; `pp/comments.zig` leaves a block's encoded lines alone. The cleartext is scanned in place of the envelope, so outside macros expand inside it and nested envelopes open in turn. Diagnostics inside the cleartext quote it (§28's non-disclosure is not applied to them). Fixtures: the six `protected_*.v` (`//@ protect-keys known_keys.json`), `protect_*_rejected.v`.
+- **Measure impact**: A: +6 fixtures.
+- **Status**: DONE.
 
 ## 6. Implementation-defined choices
 

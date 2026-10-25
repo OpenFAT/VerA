@@ -96,6 +96,9 @@ pub const Code = enum(u16) {
     E0148,
     W0149,
     E0150,
+    W0151,
+    E0152,
+    E0153,
 
     // ---------------------------------------------------------------- class 2
     // Syntax / annex A — parser.zig.
@@ -166,6 +169,7 @@ pub const Code = enum(u16) {
     W0251,
     W0252,
     W0253,
+    W0259,
 
     // ---------------------------------------------------------------- class 3
     // Declarations, types, disciplines — lower.zig.
@@ -1159,21 +1163,27 @@ fn infoOf(c: Code) Info {
             ,
         },
         .E0146 => .{
-            .title = "protected envelopes are not supported",
+            .title = "a protected envelope VerA cannot process",
             .lrm = "IEEE 1364-2005 28",
             .explain =
             \\IEEE 1364-2005 19.10 lets a tool ignore a `pragma it does not
             \\recognize, but `protect` is not such a pragma: clause 28 reserves
             \\it for protected envelopes, and 28.2 says a tool "shall perform
             \\envelope decryption for all decryption envelopes contained in the
-            \\source text". Ignoring the directive would compile the ciphertext
-            \\of a decryption envelope as Verilog, or the cleartext of an
-            \\encryption envelope as if nobody had asked for it to be hidden.
+            \\source text, where the proper key is supplied by the user".
             \\
-            \\VerA does not implement clause 28: it neither encrypts nor
-            \\decrypts, so any `pragma protect is refused. Compile the cleartext
-            \\source with the protect directives removed. Any other pragma name
-            \\still has no effect.
+            \\VerA decrypts a `begin_protected` envelope (des-cbc; base64,
+            \\uuencode or raw; a key_block's session key; an md5 or sha1
+            \\digest_block) with the keys of --protect-keys. It provides no
+            \\encryption service, so an encryption envelope (`begin`) is
+            \\refused, as are a block outside an envelope, an envelope with no
+            \\end_protected, and a method or encoding VerA does not implement.
+            \\Ignoring the directive instead would compile ciphertext as
+            \\Verilog, or cleartext as if nobody had asked for it to be hidden.
+            \\
+            \\Metadata such as author or comment has an action only inside an
+            \\envelope, so outside one it is accepted with no effect. Any other
+            \\pragma name still has no effect.
             ,
         },
         .E0150 => .{
@@ -1230,6 +1240,52 @@ fn infoOf(c: Code) Info {
             \\refuse the literal, so the string is not portable.
             \\
             \\Write the character without the backslash, or \\ for a backslash.
+            ,
+        },
+        .W0151 => .{
+            .title = "IEEE 1800 macro text in an IEEE 1364 unit",
+            .lrm = "10.4",
+            .explain =
+            \\IEEE 1800-2017 22.5.1 adds three forms to macro text: `" opens and
+            \\closes a string whose formal arguments are still substituted, `\`"
+            \\puts a \" inside it, and `` joins two tokens with nothing between
+            \\them. VerA reads all three under every standard.
+            \\
+            \\IEEE 1364-2005 Syntax 19-3 has none of them, so under
+            \\--std=1364-* the source is not portable to a 1364 tool. VerA says
+            \\so once per `define and expands it as 1800 does.
+            \\
+            \\  --allow=W0151   silence it, for 1364 code that relies on the
+            \\                  1800 forms (iverilog accepts them in -g2005)
+            ,
+        },
+
+        .E0152 => .{
+            .title = "no key for a protected envelope",
+            .lrm = "IEEE 1364-2005 28.2",
+            .explain =
+            \\A decryption envelope names its key by owner and name
+            \\(data_keyowner/data_keyname, key_keyowner/key_keyname for a
+            \\key_block, digest_keyowner/digest_keyname for a digest_block,
+            \\28.4.6-28.4.7). 28.2 decrypts "where the proper key is supplied
+            \\by the user", and none was: the key file given to --protect-keys
+            \\has no key of that owner and name, or none was given.
+            \\
+            \\  vera --run --protect-keys keys.json design.v
+            \\
+            \\The file is JSON: profile.iv_hex (the CBC IV, 16 hex digits) and
+            \\keys, each {"owner", "name", "key_hex"}.
+            ,
+        },
+        .E0153 => .{
+            .title = "a protected envelope does not decrypt",
+            .lrm = "IEEE 1364-2005 28.2",
+            .explain =
+            \\The key the envelope names was found, but the envelope does not
+            \\open with it: the decrypted block's padding is wrong (a wrong key
+            \\or IV), the digest_block does not match the decrypted data
+            \\(28.4.12), or a block does not decode to the bytes its encoding
+            \\says (28.4.3). Nothing of the envelope is compiled.
             ,
         },
 
@@ -2503,6 +2559,26 @@ fn infoOf(c: Code) Info {
             \\                  answer depends on the configuration selecting
             \\  --allow=W0253   silence it, for a configuration carried in the
             \\                  source for a downstream tool to read
+            ,
+        },
+        .W0259 => .{
+            .title = "a VAMS-2023 math function name declared as a function",
+            .lrm = "10.6",
+            .explain =
+            \\Annex G.7 (item 7780) made `expm1` and `ln1p` keywords in
+            \\VAMS-2023, with built-in meanings (4.3.2). Compact models written
+            \\before that (HiSIM-SOI, HiSIM-SOTB) declare their own
+            \\`analog function real expm1`, which only a pre-2023 keyword set
+            \\(10.6) allows.
+            \\
+            \\VerA reads the source as its author wrote it: when a file declares
+            \\a function of either name, that name is an identifier in the whole
+            \\file and every call reaches the declared function, not the
+            \\built-in. The two can differ in the last bits: a model's
+            \\`exp(x) - 1` loses the precision the built-in keeps near zero.
+            \\
+            \\Put `begin_keywords "VAMS-2.3" around the model to say which
+            \\language it is in, or rename the function to use the built-in.
             ,
         },
         .W0251 => .{

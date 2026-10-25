@@ -95,6 +95,18 @@ pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
             const lines = std.mem.countScalar(u8, src[start..i], '\n');
             if (lines == 0) {
                 out.appendAssumeCapacity(' ');
+            } else if (inDefine(out.items)) {
+                // As for `//` above: in `define text a `\` that ends a line of
+                // the comment still continues the macro (iverilog
+                // macro_comment_multiline). Two bytes out for at least two in.
+                var prev: u8 = 0;
+                for (src[start..i]) |b| {
+                    if (b == '\n') {
+                        if (prev == '\\') out.appendAssumeCapacity('\\');
+                        out.appendAssumeCapacity('\n');
+                    }
+                    if (b != ' ' and b != '\t' and b != '\r') prev = b;
+                }
             } else {
                 out.appendNTimesAssumeCapacity('\n', lines);
             }
@@ -104,9 +116,27 @@ pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
             try marks.append(pp.scratch, .{ .out = @intCast(out.items.len), .src = @intCast(i) });
             continue;
         }
+        if (c == '`') {
+            // IEEE 1364-2005 §28.4.3: a protect block's encoded lines are
+            // data, not source; base64 and uuencode both spell `//` and `/*`.
+            // They pass untouched up to the next directive line.
+            const nl = std.mem.findScalarPos(u8, src, i, '\n') orelse src.len;
+            const start = i;
+            i += 1;
+            if (Preprocessor.protect.opensBlock(src[start..nl])) {
+                i = nl;
+                while (i < src.len) {
+                    const next = std.mem.findScalarPos(u8, src, i + 1, '\n') orelse src.len;
+                    if (std.mem.startsWith(u8, std.mem.trimStart(u8, src[i + 1 .. next], " \t"), "`")) break;
+                    i = next;
+                }
+            }
+            out.appendSliceAssumeCapacity(src[start..i]);
+            continue;
+        }
         // Ordinary text up to the next byte the branches above care about.
         // `end == i` is a '/' that starts no comment; step over it.
-        const end = findStop(src, i, "\"\\/");
+        const end = findStop(src, i, "\"\\/`");
         if (end == i) {
             out.appendAssumeCapacity(c);
             i += 1;

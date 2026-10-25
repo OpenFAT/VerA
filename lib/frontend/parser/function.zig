@@ -54,6 +54,7 @@ pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_ana
     if (is_analog and (self.peek() == .kw_integer or self.peek() == .kw_real or self.peek() == .kw_string)) {
         self.pos += 1;
     }
+    try self.warnOwnMathFn();
     const name = try self.expectIdent();
 
     var args: std.ArrayList(Ast.FuncArg) = .empty;
@@ -158,6 +159,21 @@ pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_ana
         }
     }
     _ = try self.expect(.kw_endfunction);
+
+    // Syntax 4-5's `{ analog_function_item_declaration }` puts no order on the
+    // items, so `real x; input x;` types the formal as well: a variable
+    // declared before its direction is matched here, as one after it is above.
+    var vi = vars.items.len;
+    while (vi > 0) {
+        vi -= 1;
+        for (args.items) |*a| {
+            if (a.name != vars.items[vi].name) continue;
+            if (a.ty == .unspecified) a.ty = vars.items[vi].ty;
+            if (a.dims.len == 0) a.dims = vars.items[vi].dims;
+            _ = vars.orderedRemove(vi);
+            break;
+        }
+    }
 
     // §4.7.1 bullet list: "shall have at least one formal argument declared".
     if (args.items.len == 0) {
@@ -272,6 +288,7 @@ pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) 
     var result: Ast.VarDecl = if (is_function) tfType(self) else .{ .name = .none, .ty = .integer };
     if (is_function and result.storage == .reg and result.packed_range == null and self.peek() == .lbracket) result.packed_range = try parse_decl.parseDim(self);
     const name_tok = self.pos;
+    try self.warnOwnMathFn();
     const name = try self.expectIdent();
     result.name = name;
     result.main_tok = name_tok;

@@ -48,6 +48,9 @@ usage: vera [options] FILE.va
   --libmap FILE           read an IEEE 1364 §13.2 library map (repeatable, read
                           in order); each .v file compiles into the library
                           whose file_path_spec matches it, else `work`
+  --protect-keys FILE     the keys and CBC IV for IEEE 1364 §28 decryption
+                          envelopes in a .v design (JSON: profile.iv_hex,
+                          keys[] of owner, name, key_hex)
   -L LIB                  search LIB for an instance's cell (repeatable, in
                           order; IEEE 1364 §13.7.1); default: map order, then work
   --display=record|drop|emit

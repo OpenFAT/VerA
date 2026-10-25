@@ -43,7 +43,18 @@ pub const Options = struct {
     /// E0150's bound on the preprocessed text. Only tests lower it, to reach
     /// the diagnostic without 4 GiB of text.
     text_limit: usize = max_text_bytes,
+    /// The unit is compiled as IEEE 1364 (`--std=1364-*`). IEEE 1800-2017
+    /// §22.5.1's macro text forms (`" `\`" ``) are accepted under every
+    /// standard, and under 1364, whose Syntax 19-3 lacks them, each `define
+    /// that uses one warns W0151.
+    std_1364: bool = false,
+    /// IEEE 1364-2005 §28.2: the keys "supplied by the user" for decryption
+    /// envelopes (`vera --protect-keys`). None: an envelope is E0152.
+    protect_keys: protect.Keys = .{},
 };
+
+/// §28 decryption envelopes and the key provider's file (pp/protect.zig).
+pub const protect = @import("pp/protect.zig");
 
 /// One of `Options.more`: the name it registers under in the bag (and
 /// `__FILE__` reads), and its raw text. Both are borrowed for the call and
@@ -161,7 +172,7 @@ pub const Directive = enum {
     endcelldefine,
     unconnected_drive, // IEEE 1364 §19.9: read by §6.2.2 port binding
     nounconnected_drive,
-    pragma, // IEEE 1364 §19.10: no effect, except §28's `protect` (E0146)
+    pragma, // IEEE 1364 §19.10: no effect, except §28's `protect` (pp/protect.zig)
 };
 
 /// §10.2 Syntax 10-1:
@@ -1078,4 +1089,5 @@ test {
     _ = pp_directive;
     _ = pp_annex_d;
     _ = pp_annex_e;
+    _ = protect;
 }

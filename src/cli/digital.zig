@@ -48,6 +48,16 @@ pub fn run(
     digital_bag.levels = cli.levels;
     var opts: digital.Options = .{ .file_name = in_path, .include_dirs = cli.include_dirs.items, .io = io, .language = cli.language, .event_budget = cli.event_budget, .params = cli.overrides.items };
     if (!try libraries(arena.allocator(), io, cli.paths.items, cli.libmaps.items, cli.search.items, &opts, err, json, use_color)) return 1;
+    if (cli.protect_keys) |p| {
+        const text = vera.Preprocessor.readText(io, .cwd(), p, arena.allocator()) catch |e| {
+            try vera.readFailed(err, p, e);
+            return 1;
+        };
+        opts.protect_keys = vera.Preprocessor.protect.parseKeys(arena.allocator(), text) catch |e| {
+            try err.print("error: --protect-keys {s}: not a key file ({s})\n", .{ p, @errorName(e) });
+            return 1;
+        };
+    }
     if (cli.emit_rtlil) return emitRtlil(io, arena.allocator(), &digital_bag, source, opts, cli.out_path, out, err, json, use_color);
     if (device) return emitDevice(gpa, io, arena.allocator(), &digital_bag, source, opts, cli.schedule, if (cli.logic_flag != null) cli.logic else .four, .{
         .zig = cli.emit_zig,
