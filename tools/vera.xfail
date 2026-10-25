@@ -205,7 +205,6 @@ ivtest/ivltests/br960c.v
 ivtest/ivltests/br960d.v
 ivtest/ivltests/br961.v
 ivtest/ivltests/br988.v
-ivtest/ivltests/br_gh1122.v
 ivtest/ivltests/br_gh1140a.v
 ivtest/ivltests/br_gh1140b.v
 ivtest/ivltests/br_gh1173.v

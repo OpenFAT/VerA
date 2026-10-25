@@ -300,12 +300,18 @@ fn across(tr: anytype, u: Node) ?Node {
 }
 
 /// The net bits joined to `from` through pass switches that may conduct.
+/// A supply net (`g.fixed`) is a member but no conductor: its value is its
+/// own (§4.6.6, nothing outranks supply strength), so a signal does not cross
+/// it from one switch to another, and two groups sharing `vdd` stay two
+/// (iverilog agrees: ivtest br_gh1122's CMOS NOR then inverter). A supply
+/// net's own group is itself: its neighbours resolve from their side.
 pub fn reach(g: anytype, a: std.mem.Allocator, from: Node) std.mem.Allocator.Error![]const Node {
     var seen: std.ArrayList(Node) = .empty;
     try seen.append(a, from);
     var i: usize = 0;
     while (i < seen.items.len) : (i += 1) {
         const u = seen.items[i];
+        if (g.fixed(u.net)) continue;
         for (g.switches(u.net)) |ti| {
             if (g.conduction(ti) == .off) continue;
             const v = across(g.tran(ti), u) orelse continue;
@@ -329,6 +335,8 @@ pub fn switchPaths(g: anytype, a: std.mem.Allocator, y: Node, group: []const Nod
         changed = false;
         for (group, 0..) |u, iu| {
             if (p[iu].res == std.math.maxInt(u32)) continue;
+            // `reach`: a path does not run through a supply net.
+            if (!std.meta.eql(u, y) and g.fixed(u.net)) continue;
             for (g.switches(u.net)) |ti| {
                 const st = g.conduction(ti);
                 if (st == .off) continue;

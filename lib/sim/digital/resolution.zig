@@ -290,6 +290,12 @@ const Switches = struct {
     pub fn conduction(g: Switches, ti: u32) Tran.State {
         return g.r.trans[ti].state;
     }
+    pub fn fixed(g: Switches, net: u32) bool {
+        return switch (g.r.nets[net].kind) {
+            .supply0, .supply1 => true,
+            else => false,
+        };
+    }
 };
 
 /// §7.6 what a MOS switch drives: its data's value, at the data's strength
@@ -535,6 +541,35 @@ test "a delayed continuous assignment is inertial and swallows a short pulse" {
         \\t19 1
         \\t25 1
         \\t26 0
+        \\
+    );
+}
+
+// §7.6 switch-connected nets resolve as one, but a supply net (§4.6.6) is
+// a source no signal crosses: the NOR's and the inverter's switches share
+// vdd and vss and stay two groups, and `w2`, which the NOR drives, is the
+// inverter's control. iverilog prints this transcript (ivtest br_gh1122).
+test "§7.6 switch groups that share a supply net stay apart" {
+    try expectRun(
+        \\module test;
+        \\reg a, b; supply1 vdd; supply0 vss; wire w1, w2, y;
+        \\tranif0(w1, vdd, a);
+        \\tranif0(w2, w1,  b);
+        \\tranif1(w2, vss, a);
+        \\tranif1(w2, vss, b);
+        \\tranif0(y, vdd, w2);
+        \\tranif1(y, vss, w2);
+        \\initial begin
+        \\  $monitor("%0t a=%b b=%b w1=%b w2=%b y=%b", $time, a, b, w1, w2, y);
+        \\  #10 a = 0; b = 0; #10 a = 0; b = 1; #10 a = 1; b = 0; #10 a = 1; b = 1; #1;
+        \\end
+        \\endmodule
+    ,
+        \\0 a=x b=x w1=x w2=x y=x
+        \\10 a=0 b=0 w1=1 w2=1 y=0
+        \\20 a=0 b=1 w1=1 w2=0 y=1
+        \\30 a=1 b=0 w1=0 w2=0 y=1
+        \\40 a=1 b=1 w1=z w2=0 y=1
         \\
     );
 }

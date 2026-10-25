@@ -722,6 +722,12 @@ const Switches = struct {
     pub fn conduction(g: Switches, ti: u32) dnet.Tran.State {
         return g.t.tstate[ti];
     }
+    pub fn fixed(g: Switches, k: u32) bool {
+        return switch (g.t.nets[k].kind) {
+            .supply0, .supply1 => true,
+            else => false,
+        };
+    }
 };
 
 /// `exec` `.switch_ctrl`: pass switch `i`'s control reads `c`, so it
