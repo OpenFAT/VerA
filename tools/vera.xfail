@@ -313,8 +313,6 @@ ivtest/ivltests/pr2257003b.v
 ivtest/ivltests/pr2257003.v
 ivtest/ivltests/pr2453002.v
 ivtest/ivltests/pr2809288.v
-ivtest/ivltests/pr2815398a_std.v
-ivtest/ivltests/pr2815398a.v
 ivtest/ivltests/pr2823414.v
 ivtest/ivltests/pr2834340b.v
 ivtest/ivltests/pr2834340.v

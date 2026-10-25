@@ -98,8 +98,26 @@ pub fn time(out: *std.Io.Writer, t: f64, f: TimeFormat, unit_exp: i32) std.Io.Wr
     try out.writeAll(f.suffix);
 }
 
-/// An integral `%t` operand as the real `time` formats: one with an x or z
-/// bit is 0, as is a signed one wider than 64 bits; an unsigned one wider
+/// `%t` of an integral operand with an x or z bit: §17.1.1.4's decimal
+/// character for it (x, X, z or Z), then `f`'s point and precision zeros and
+/// its suffix, padded to its width, as iverilog prints it (§17.3.2 says
+/// nothing of an unknown time; 1364-2005 §4.8 makes an unset `time` x).
+pub fn timeUnknown(out: *std.Io.Writer, v: Int.Literal, f: TimeFormat) std.Io.Writer.Error!void {
+    var buf: [1]u8 = undefined;
+    const ch = decimalText(&buf, v);
+    const len = 1 + (if (f.precision > 0) 1 + f.precision else 0) + f.suffix.len;
+    if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
+    try out.writeAll(ch);
+    if (f.precision > 0) {
+        try out.writeByte('.');
+        try out.splatByteAll('0', @intCast(f.precision));
+    }
+    try out.writeAll(f.suffix);
+}
+
+/// An integral `%t` operand as the real `time` formats (one with an x or z
+/// bit is 0 here; the display prints it with `timeUnknown`). A signed one
+/// wider than 64 bits is 0 too; an unsigned one wider
 /// than 64 bits is read by its low 64.
 pub fn timeOperand(v: Int.Literal) f64 {
     if (v.hasUnknown()) return 0;
@@ -489,10 +507,15 @@ test "%t scales a unit count to $timeformat's units and pads to its width (§17.
     try time(&w, timeOperand(lit(&n, 64, true)), .{ .units = -9, .width = 0 }, -9);
     try testing.expectEqualStrings("-5", w.buffered());
     w.end = 0;
-    // An x bit reads as no time at all.
+    // An x bit is printed as §17.1.1.4's decimal character, with the
+    // format's point, zeros and suffix (iverilog's text).
     var x = [2]u64{ 1, 1 };
-    try time(&w, timeOperand(lit(&x, 64, false)), .{ .units = -9, .width = 0 }, -9);
-    try testing.expectEqualStrings("0", w.buffered());
+    try timeUnknown(&w, lit(&x, 64, false), .{ .units = -9, .width = 0 });
+    try testing.expectEqualStrings("X", w.buffered());
+    w.end = 0;
+    var all_x = [2]u64{ ~@as(u64, 0), ~@as(u64, 0) };
+    try timeUnknown(&w, lit(&all_x, 64, false), .{ .units = -9, .precision = 2, .suffix = " ns", .width = 12 });
+    try testing.expectEqualStrings("     x.00 ns", w.buffered());
     w.end = 0;
     // A real operand is not rounded to a whole unit first (#64): 1.55 units
     // of 10 ns is 15.5 ns.

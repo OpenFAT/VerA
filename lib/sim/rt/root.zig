@@ -1941,7 +1941,13 @@ pub const State = struct {
     /// (§17.3).
     pub fn time(self: *State, a: anytype, w: u32, signed: bool, unit_exp: i32, width: ?u64) Error!void {
         var buf = logic.planesOf(a);
-        return self.timeReal(fmt.timeOperand(literal(&buf, w, signed)), unit_exp, width);
+        const v = literal(&buf, w, signed);
+        if (v.hasUnknown()) {
+            var f = self.time_format;
+            if (width) |fw| f.width = fw;
+            return fmt.timeUnknown(self.out, v, f);
+        }
+        return self.timeReal(fmt.timeOperand(v), unit_exp, width);
     }
 
     /// One `%t` operand of real type, formatted as it is (#64).

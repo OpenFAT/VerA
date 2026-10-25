@@ -657,10 +657,16 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                         var field: std.Io.Writer.Allocating = .init(a);
                         const zero = sp.flags & str_k.zc_zero != 0 and (width orelse 0) != 0;
                         if (zero) self.out = &field.writer;
-                        try emitTime(self, if (compile.typeOf(self, args[arg]).real)
-                            try evaluate.evalReal(self, a, args[arg])
-                        else
-                            fmt.timeOperand(try evaluate.eval(self, a, args[arg], 0)), width);
+                        if (compile.typeOf(self, args[arg]).real)
+                            try emitTime(self, try evaluate.evalReal(self, a, args[arg]), width)
+                        else {
+                            const v = try evaluate.eval(self, a, args[arg], 0);
+                            if (v.hasUnknown()) {
+                                var f = self.time_format;
+                                if (width) |w| f.width = w;
+                                try fmt.timeUnknown(self.out, v, f);
+                            } else try emitTime(self, fmt.timeOperand(v), width);
+                        }
                         if (zero) try zeroFilled(out, field.written());
                     }
                     continue;
