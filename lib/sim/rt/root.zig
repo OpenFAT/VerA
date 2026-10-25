@@ -822,7 +822,9 @@ pub const State = struct {
             }
             if (event.payload == monitor_payload) {
                 self.mon_pending = false;
-                if (self.mon_on) if (self.mon_site) |k| return show_base + k;
+                // Requested while on, so it reports though a `$monitoroff`
+                // followed (`display.monitorPrint`).
+                if (self.mon_site) |k| return show_base + k;
                 continue;
             }
             if (event.payload == settle_payload) {
@@ -1895,9 +1897,9 @@ pub const State = struct {
     /// §17.4.1 `$finish`: end the run after this process step.
     pub fn finish(self: *State, verbose: bool, file: []const u8, byte: u32) Error!void {
         if (verbose) try self.out.print("$finish at tick {d}, {s} byte {d}\n", .{ self.sched.now, file, byte });
-        // §18: what this step changed is still part of the dump.
-        if (self.dump.pending and !self.quiet) try self.dumpTick();
-        self.sched.finish();
+        // `exec`'s `.finish`: the rest of this time step runs, the dump's
+        // tick included.
+        self.sched.finishStep();
     }
 
     /// `a`'s planes as the `Literal` the interpreter formats.

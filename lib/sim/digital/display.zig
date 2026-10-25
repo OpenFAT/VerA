@@ -867,7 +867,10 @@ pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!u32 {
 /// `.monitor` event, or `$monitoron` ran), never by comparing text.
 pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
     const m = self.monitor orelse return;
-    if (!self.monitor_on) return;
+    // A change seen while monitoring was on still reports at the end of its
+    // step, after a `$monitoroff` there, as iverilog's does (monitor4):
+    // §17.1.3 says only that $monitoroff "disables monitoring".
+    if (!self.monitor_on and !self.monitor_slot_hit) return;
     // §17.1.3 the monitor renders in the instance that installed it; the
     // `.monitor` region runs outside any process's dispatch.
     self.scope = m.scope;
@@ -890,7 +893,7 @@ pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
 pub fn monitorDue(self: *Run, a: std.mem.Allocator) Error!bool {
     const m = self.monitor orelse return false;
     if (self.monitor_slot_hit) return true;
-    if (self.monitor_probes.len == 0) return false;
+    if (self.monitor_probes.len == 0 or !self.monitor_on) return false;
     self.scope = m.scope;
     self.pc = m.pc;
     for (self.monitor_probes, self.monitor_last) |e, last| {
@@ -949,13 +952,18 @@ pub fn install(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show:
 
 /// §17.2.7: "Active $fmonitor and/or $fstrobe operations on a file
 /// descriptor or multichannel descriptor are implicitly cancelled by an
-/// $fclose operation". The `$fmonitor`s writing to `d` stop.
+/// $fclose operation". The `$fmonitor`s writing to `d` stop: one on a
+/// multichannel descriptor any of whose channels `d` closes stops whole, as
+/// iverilog's does (fmonitor2), since the clause does not split it.
 pub fn cancelFile(self: *Run, d: i64) void {
     watchAll(self, false);
     defer watchAll(self, true);
+    const mcd = d & (1 << 31) == 0;
     var k: usize = 0;
     while (k < self.fmonitors.items.len) {
-        if (self.fmonitors.items[k].fd == d) _ = self.fmonitors.orderedRemove(k) else k += 1;
+        const fd = self.fmonitors.items[k].fd;
+        const hit = if (mcd and fd & (1 << 31) == 0) fd & d != 0 else fd == d;
+        if (hit) _ = self.fmonitors.orderedRemove(k) else k += 1;
     }
 }
 
@@ -1041,7 +1049,7 @@ pub fn monitorChanged(self: *Run, slot: u32) Error!void {
     self.monitor_evaluating = true;
     defer self.monitor_evaluating = false;
     const a = self.scratch.allocator();
-    if (self.monitor) |*m| if (std.mem.findScalar(u32, self.monitor_slots.items, slot) != null and try moved(self, m, a, slot)) {
+    if (self.monitor) |*m| if (std.mem.findScalar(u32, self.monitor_slots.items, slot) != null and try moved(self, m, a, slot) and self.monitor_on) {
         self.monitor_slot_hit = true;
         try waiters.requestMonitor(self);
     };
@@ -1461,4 +1469,23 @@ test "§17.1.1.2 no field width or precision is too large" {
     try want.writer.splatByteAll('0', 4999);
     try want.writer.writeAll("\n");
     try @import("root.zig").expectRun("module m; initial $display(\"%4097d|%20000s|%.5000f\", 1, \"x\", 0.5); endmodule", want.written());
+}
+
+test "§17.1.3 a change before $monitoroff in its step still reports; a $finish step drains first" {
+    // Oracle: iverilog -g2005 (ivtest monitor4) for b's change at 1, which
+    // precedes the $monitoroff, its change at 2, which does not report, and
+    // the change in the $finish step at 3, reported at the step's end. The
+    // `b=2 t=3` line is §17.1.3's own: "$monitoron shall produce a display
+    // immediately" (iverilog defers it to the end of the step).
+    try expectRun(
+        \\module m;
+        \\  integer b;
+        \\  initial begin
+        \\    b = 0; $monitor("b=%0d t=%0d", b, $time);
+        \\    #1 b = 1; $monitoroff;
+        \\    #1 b = 2;
+        \\    #1 $monitoron; b = 3; $finish(0);
+        \\  end
+        \\endmodule
+    , "b=0 t=0\nb=1 t=1\nb=2 t=3\nb=3 t=3\n");
 }

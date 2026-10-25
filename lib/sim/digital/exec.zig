@@ -708,8 +708,11 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                             const args = .{ if (stop) "$stop" else "$finish", self.scheduler.now, self.bag.fileName(loc.file), loc.offset };
                             if (stop) std.debug.print(fmt_s, args) else try self.out.print(fmt_s, args);
                         }
-                        try vcd.finish(self, scratch);
-                        self.scheduler.finish();
+                        // iverilog's reading of §17.4.1's "exit": the rest of
+                        // this time step (other processes, NBA updates, the
+                        // monitor, the dump) runs, no later one does; this
+                        // process ends here (monitor4, pr243).
+                        self.scheduler.finishStep();
                         return;
                     },
                 }
@@ -1026,7 +1029,9 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 // restart a second time within one proves a whole body ran
                 // with no timing control. That spins the scheduler forever
                 // at one timestamp, so it is reported instead of hanging.
-                if (restarted) return self.fail(s.tok, "this always process completed an iteration without suspending; it needs a delay or event control", .{});
+                // After `$finish` the step only drains: a process that would
+                // spin in it ends there (always3.1.1B's zero-delay always).
+                if (restarted) return if (self.scheduler.finishing) {} else self.fail(s.tok, "this always process completed an iteration without suspending; it needs a delay or event control", .{});
                 restarted = true;
                 pc = s.target;
                 continue;

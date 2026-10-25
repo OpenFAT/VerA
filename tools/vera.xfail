@@ -263,7 +263,6 @@ ivtest/ivltests/eofmt_percent.v
 ivtest/ivltests/event_array.v
 ivtest/ivltests/fdisplay2.v
 ivtest/ivltests/fmonitor1.v
-ivtest/ivltests/fmonitor2.v
 ivtest/ivltests/fopen1.v
 ivtest/ivltests/fopen2.v
 ivtest/ivltests/force_lval_part.v
@@ -291,7 +290,6 @@ ivtest/ivltests/macro_str_esc.v
 ivtest/ivltests/module_no_port_mixed_instances.v
 ivtest/ivltests/module_output_port_list_def.v
 ivtest/ivltests/module_output_port_var2.v
-ivtest/ivltests/monitor4.v
 ivtest/ivltests/multi_bit_strength.v
 ivtest/ivltests/nba_repeat_wide_count_real_array.v
 ivtest/ivltests/nba_repeat_wide_count.v
@@ -342,7 +340,6 @@ ivtest/ivltests/pr2172606b.v
 ivtest/ivltests/pr224a.v
 ivtest/ivltests/pr2257003b.v
 ivtest/ivltests/pr2257003.v
-ivtest/ivltests/pr243.v
 ivtest/ivltests/pr2453002.v
 ivtest/ivltests/pr2728812a.v
 ivtest/ivltests/pr2809288.v
