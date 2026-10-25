@@ -2299,8 +2299,9 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
             const sp = fmt.spec(format, &i);
             const width = sp.width;
             const precision = sp.precision;
-            // `display.walk`'s '0'-flag field (`display.zeroFilled`).
-            const zero = sp.flags & @import("kernels").str_kernels.zc_zero != 0 and (width orelse 0) != 0;
+            // `display.walk`'s '0'/'-' field (`display.fillField`).
+            const fill = display.fieldFill(sp, format[i]);
+            const zero = fill != null;
             switch (format[i]) {
                 'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D' => {
                     arg += 1;
@@ -2312,7 +2313,7 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
                         'h', 'H', 'x', 'X' => .hex,
                         else => .decimal,
                     }, width, false);
-                    if (zero) try self.print("            try s.zeroEnd();\n", .{});
+                    if (fill) |f| try self.print("            try s.zeroEnd(.{t});\n", .{f});
                 },
                 't', 'T' => {
                     arg += 1;
@@ -2322,20 +2323,22 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
                     if (compile.typeOf(r, args[arg]).real) {
                         try self.print("            try s.timeReal(", .{});
                         try expr.real(self, args[arg]);
-                        try self.print(", {d}, {?d});\n", .{ r.timeOf(r.scope).unit_exp, width });
+                        try self.print(", {d}, {?d}, {d});\n", .{ r.timeOf(r.scope).unit_exp, width, precision });
                     } else {
                         try self.print("            try s.time(", .{});
                         const t = try expr.selfDetermined(self, args[arg]);
-                        try self.print(", {d}, {}, {d}, {?d});\n", .{ t.width, t.signed, r.timeOf(r.scope).unit_exp, width });
+                        try self.print(", {d}, {}, {d}, {?d}, {d});\n", .{ t.width, t.signed, r.timeOf(r.scope).unit_exp, width, precision });
                     }
-                    if (zero) try self.print("            try s.zeroEnd();\n", .{});
+                    if (fill) |f| try self.print("            try s.zeroEnd(.{t});\n", .{f});
                 },
                 's', 'S', 'c', 'C' => {
                     arg += 1;
                     try flush(self, &text);
+                    if (zero) try self.print("            s.zeroBegin();\n", .{});
                     try self.print("            try s.text(", .{});
                     const t = try expr.selfDetermined(self, args[arg]);
                     try self.print(", {d}, {}, {?d});\n", .{ t.width, format[i] == 'c' or format[i] == 'C', width });
+                    if (fill) |f| try self.print("            try s.zeroEnd(.{t});\n", .{f});
                 },
                 'm', 'M' => try text.appendSlice(self.arena, try staticText(self, display.emitScope, .{})),
                 'l', 'L' => {
@@ -2414,11 +2417,11 @@ fn dynamicFormat(self: *Emitter, args: []const Ast.ExprId) Error!void {
         if (compile.typeOf(r, a).real) {
             try self.print("                't', 'T' => try s.timeReal(", .{});
             try expr.real(self, a);
-            try self.print(", {d}, c{d}_{d}.width),\n", .{ r.timeOf(r.scope).unit_exp, lb, k });
+            try self.print(", {d}, c{d}_{d}.width, c{d}_{d}.precision),\n", .{ r.timeOf(r.scope).unit_exp, lb, k, lb, k });
         } else {
             try self.print("                't', 'T' => try s.time(", .{});
             t = try expr.selfDetermined(self, a);
-            try self.print(", {d}, {}, {d}, c{d}_{d}.width),\n", .{ t.width, t.signed, r.timeOf(r.scope).unit_exp, lb, k });
+            try self.print(", {d}, {}, {d}, c{d}_{d}.width, c{d}_{d}.precision),\n", .{ t.width, t.signed, r.timeOf(r.scope).unit_exp, lb, k, lb, k });
         }
         try self.print("                's', 'S', 'c', 'C' => try s.text(", .{});
         t = try expr.selfDetermined(self, a);
