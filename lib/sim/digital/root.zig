@@ -1874,21 +1874,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     // every process has a pc range.
     // A block is looked for through the enclosing scopes (§12.7); a name
     // that is no block may be a task (§10.3), which has no single range.
-    disabling: for (r.disables.items) |d| {
-        var s = d.name.scope;
-        while (true) {
-            if (r.blocks.get(.{ .scope = s, .str = d.name.str })) |range| {
-                r.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
-                continue :disabling;
-            }
-            if (!r.scope_info.items[s].lexical) break;
-            s = r.scope_info.items[s].parent;
-        }
-        const idx = r.sub_by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
-            return r.fail(d.tok, "undeclared named block or task", .{});
-        if (r.subs.items[idx].decl.is_function) return r.fail(d.tok, "§10.3: `disable` cannot name a function, only a named block within one", .{});
-        r.code.items[d.at] = .{ .disable_task = idx };
-    }
+    try bindDisables(&r, 0);
     // Pass two may have minted storage (an automatic task inlined at a call
     // site), so the slot space is final only now.
     r.growing = null;
@@ -1919,6 +1905,27 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     @memset(r.slot_memo, .{});
     r.diag_stage = .run;
     return r;
+}
+
+/// Binds `r.disables[from..]` to their blocks' pc ranges or their tasks.
+/// A function compiled early for a §10.4.5 constant call binds its own at
+/// once (`elab.earlyFrame`): it runs before the other processes exist.
+pub fn bindDisables(r: *Run, from: usize) Error!void {
+    disabling: for (r.disables.items[from..]) |d| {
+        var s = d.name.scope;
+        while (true) {
+            if (r.blocks.get(.{ .scope = s, .str = d.name.str })) |range| {
+                r.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
+                continue :disabling;
+            }
+            if (!r.scope_info.items[s].lexical) break;
+            s = r.scope_info.items[s].parent;
+        }
+        const idx = r.sub_by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
+            return r.fail(d.tok, "undeclared named block or task", .{});
+        if (r.subs.items[idx].decl.is_function) return r.fail(d.tok, "§10.3: `disable` cannot name a function, only a named block within one", .{});
+        r.code.items[d.at] = .{ .disable_task = idx };
+    }
 }
 
 /// The rows of `rows` grouped by net, as one counting sort: `items` holds

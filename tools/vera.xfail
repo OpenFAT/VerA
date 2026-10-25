@@ -239,9 +239,7 @@ ivtest/ivltests/br_ml20190806a.v
 ivtest/ivltests/br_ml20190814.v
 ivtest/ivltests/ca_time_real.v
 ivtest/ivltests/comment1.v
-ivtest/ivltests/constfunc10.v
 ivtest/ivltests/constfunc6.v
-ivtest/ivltests/constfunc9.v
 ivtest/ivltests/constfunc_call_signedness.v
 ivtest/ivltests/constfunc_case_null_real.v
 ivtest/ivltests/constfunc_case_null.v

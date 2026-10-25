@@ -2042,7 +2042,9 @@ pub fn earlyFrame(r: *Run, idx: u32, tok: u32) Error!void {
         return r.fail(tok, "§10.4.5: a function called during elaboration is a constant function, and {s}", .{why});
     const saved = r.scope;
     defer r.scope = saved;
+    const first = r.disables.items.len;
     try compile.compileSub(r, idx);
+    try root.bindDisables(r, first);
 }
 
 /// VAMS §3.7's port merge: a wire or tri joined to a wreal port becomes one
@@ -2862,4 +2864,28 @@ test "IEEE 1364-2005 §12.3.9.2 a port of another width converts as an assignmen
         \\endmodule
     , .{ .language = .v1364_2005 }, &bag, &output.writer);
     try std.testing.expectEqualStrings("0010 1110 zz01 z11 z10z\n", output.written());
+}
+
+test "§10.4.5 a constant function's disable of its own named block ends the block" {
+    // Oracle: iverilog -g2005 prints 8 (ivtest constfunc9/10's form): the
+    // function is compiled early, before every process exists, so it binds
+    // its `disable` then (`root.bindDisables`).
+    try root.expectRun(
+        \\module m;
+        \\  function [31:0] g(input [5:0] x);
+        \\  begin : body
+        \\    g = 1;
+        \\    while (1) begin : loop
+        \\      if (x == 0) disable body;
+        \\      g = 2 * g;
+        \\      x = x - 1;
+        \\      disable loop;
+        \\      g = 0;
+        \\    end
+        \\  end
+        \\  endfunction
+        \\  localparam q = g(3);
+        \\  initial $display("%0d", q);
+        \\endmodule
+    , "8\n");
 }
