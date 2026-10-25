@@ -754,6 +754,9 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
     // `default_nettype none: the name stays undeclared.
     const kind = std.meta.stringToEnum(Ast.NetKind, @tagName(t)) orelse return;
     _ = try mintNet(r, e, kind, 1, false, ex.strOf(x), tok);
+    // §4.5's implicit net is the scope's from its start, so a terminal
+    // before the one that declares it reads it (`lookupAt`).
+    try r.bound_at.put(r.arena, .{ .scope = scope, .str = ex.strOf(x) }, 0);
 }
 
 /// §5.10.4 a named event gets a slot so `-> e` and `@(e)` have a rendezvous

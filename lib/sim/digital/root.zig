@@ -341,6 +341,9 @@ pub const Run = struct {
     /// key is the scope the name was declared in plus the interned name. The
     /// scope in force is `self.scope`, which the executing process carries.
     names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// Each `names` entry's declaration token, for `lookupAt` (by name, not
+    /// slot: a port's slot is its connection's, declared in another module).
+    bound_at: std.AutoHashMapUnmanaged(Name, u32) = .empty,
     scope: u32 = 0,
     /// IEEE 1364-2005 §26.6.19(e): the lexical scope of an expression a
     /// VPI application may evaluate later, keyed by (instance, expression).
@@ -1145,7 +1148,8 @@ pub const Run = struct {
                 self.exprFail(e, "undeclared digital variable");
         }
         if (ex.tag(e) != .ident) return self.exprFail(e, "only whole-variable lvalues are implemented");
-        return self.lookupAt(self.scope, ex.strOf(e), ex.mainTok(e)) orelse self.exprFail(e, "undeclared digital variable");
+        return self.lookupAt(self.scope, ex.strOf(e), ex.mainTok(e)) orelse
+            if (self.lookup(self.scope, ex.strOf(e)) != null and !self.instanceHides(self.scope, ex.strOf(e), ex.mainTok(e))) self.exprFail(e, "a name is used before its declaration") else self.exprFail(e, "undeclared digital variable");
     }
     /// `text`, a part of the hierarchical name at token `tok` with `[]`
     /// selects, with each one's index from `indices` (from `used` on) folded
@@ -1242,17 +1246,35 @@ pub const Run = struct {
 
     /// §12.7 a name as seen from `scope`: declared there, or in an enclosing
     /// scope of the same module, never across an instance boundary.
-    /// `lookup` from a statement or expression at token `tok`: a gate,
-    /// switch or UDP instance named the same in a scope on the way hides the
-    /// outer name from the instance on (iverilog's gate_instance_shadow_fail
-    /// and gate_instance_reference_order).
+    /// `lookup` from a statement or expression at token `tok`. A name is
+    /// visible from its declaration on, so one declared after `tok` leaves
+    /// an outer one in view, or none (iverilog's decl_before_use: 1364
+    /// states the rule only for specparams, §4.10.3, and events, §9.7.3,
+    /// and leaves it open elsewhere). A gate, switch or UDP instance named
+    /// the same hides the outer name from the instance on (iverilog's
+    /// gate_instance_shadow_fail and gate_instance_reference_order).
     pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
         var s = scope;
         while (true) {
-            if (self.names.get(.{ .scope = s, .str = str })) |at| return at;
-            if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return null;
+            if (self.names.get(.{ .scope = s, .str = str })) |at| {
+                // Elaboration's constant contexts (a range over a parameter
+                // declared later, §12.2) see the whole scope.
+                if (self.growing != null or (self.bound_at.get(.{ .scope = s, .str = str }) orelse 0) <= tok) return at;
+            } else if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return null;
             const info = self.scope_info.items[s];
             if (!info.lexical) return null;
+            s = info.parent;
+        }
+    }
+    /// Whether `lookupAt` found nothing because a primitive instance of
+    /// that name, at or before `tok`, hides the outer one.
+    fn instanceHides(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) bool {
+        var s = scope;
+        while (true) {
+            if (self.names.contains(.{ .scope = s, .str = str })) return false;
+            if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return true;
+            const info = self.scope_info.items[s];
+            if (!info.lexical) return false;
             s = info.parent;
         }
     }
@@ -1363,6 +1385,7 @@ pub const Run = struct {
         const entry = try self.names.getOrPut(self.arena, .{ .scope = self.scope, .str = name });
         if (entry.found_existing) return self.fail(tok, "duplicate digital variable", .{});
         entry.value_ptr.* = at;
+        try self.bound_at.put(self.arena, entry.key_ptr.*, tok);
     }
     /// A vector slot's declared `[msb:lsb]` (an array's first element's is
     /// every element's), `[w-1:0]` when it declares none.
@@ -2552,4 +2575,14 @@ test "§4.6.5 uwire drivers of disjoint bits are legal" {
 
 test "§7.9 a uwire with two drivers is an error, not a resolution" {
     try expectRejected("module m; uwire w; assign w = 1'b0; assign w = 1'b1; endmodule", "a uwire net accepts a single driver per bit");
+}
+
+test "a name is visible from its declaration on (iverilog's decl_before_use)" {
+    // A variable or localparam read before it is declared is refused; a
+    // block's later local leaves the outer name in view, and §4.5's
+    // implicit net is the scope's from its start.
+    try expectRejected("module m; initial begin v = 1; end reg v; endmodule", "a name is used before its declaration");
+    try expectRejected("module m; initial $display(\"%b\", w); localparam w = 8'hAA; endmodule", "a name is used before its declaration");
+    try expectRun("module m; integer w = 5; initial begin : b $display(\"%0d\", w); end endmodule", "5\n");
+    try expectRun("module m; buf (a, c); buf (c, 1'b1); initial #1 $display(\"%b\", a); endmodule", "1\n");
 }

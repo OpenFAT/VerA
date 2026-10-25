@@ -252,8 +252,6 @@ ivtest/ivltests/constfunc_packed_write_undefined.v
 ivtest/ivltests/constfunc_repeat_unknown.v
 ivtest/ivltests/constfunc_resize_signedness.v
 ivtest/ivltests/constfunc_signal_context_sign.v
-ivtest/ivltests/decl_before_use1.v
-ivtest/ivltests/decl_before_use5.v
 ivtest/ivltests/decl_before_use6.v
 ivtest/ivltests/def_nettype_none.v
 ivtest/ivltests/delayed_sfunc.v
