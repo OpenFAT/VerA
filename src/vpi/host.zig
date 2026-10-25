@@ -7,7 +7,8 @@
 //! its calls at host-set points with no solution: `External`, which a
 //! `*! library <design.va>` line gives a second device library with its own
 //! design and a `*! instances <n>` line n instances of each); `<design.v>` runs
-//! the digital engine with time and value-change callbacks.
+//! the digital engine with time and value-change callbacks, decrypting its
+//! §28 envelopes with the key file `$VERA_PROTECT_KEYS` names, if any.
 //!
 //! An analog library is built by spawning `zig` (`$VERA_ZIG`, else `zig` on
 //! PATH) under `$VERA_VPI_WORK` (else `.zig-cache/vera-vpi` in the cwd), with
@@ -364,7 +365,23 @@ fn digitalHost(path: []const u8) !u8 {
     vpi.runStartupRoutines();
     var bag = vera.diag.Bag.init(arena);
     const dir = std.fs.path.dirname(path) orelse ".";
-    var run = sim.digital.elaborate(arena, source, .{ .file_name = path, .include_dirs = &.{dir}, .io = io, .systf = vpi.systf.hook, .stmt_sites = true }, &bag, out) catch |e| {
+    // `$VERA_PROTECT_KEYS` names a key file as `vera --protect-keys` reads it:
+    // the IEEE 1364-2005 §28.2 keys for the design's decryption envelopes.
+    var keys: vera.Preprocessor.protect.Keys = .{};
+    if (std.c.getenv("VERA_PROTECT_KEYS")) |k| if (std.mem.span(k).len != 0) { // os: the host links libc on every target
+        const kpath = std.mem.span(k);
+        const text = Io.Dir.cwd().readFileAlloc(io, kpath, arena, .limited(1 << 20)) catch |e| {
+            try err.print("vpi_host: cannot read VERA_PROTECT_KEYS `{s}`: {t}\n", .{ kpath, e });
+            try err.flush();
+            return 2;
+        };
+        keys = vera.Preprocessor.protect.parseKeys(arena, text) catch |e| {
+            try err.print("vpi_host: VERA_PROTECT_KEYS `{s}`: not a key file ({t})\n", .{ kpath, e });
+            try err.flush();
+            return 2;
+        };
+    };
+    var run = sim.digital.elaborate(arena, source, .{ .file_name = path, .include_dirs = &.{dir}, .io = io, .systf = vpi.systf.hook, .stmt_sites = true, .protect_keys = keys }, &bag, out) catch |e| {
         try vera.diag.render(&bag, err, .{});
         try err.print("vpi_host: `{s}` did not elaborate: {t}\n", .{ path, e });
         try err.flush();

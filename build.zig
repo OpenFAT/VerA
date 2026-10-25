@@ -307,6 +307,7 @@ pub fn build(b: *Build) void {
         r.addFileArg2(b.path(f.design), .{ .make_absolute = true });
         if (std.mem.endsWith(u8, f.design, ".va")) r.addFileArg2(b.path(f.c), .{ .make_absolute = true });
         r.setCwd(b.path(".zig-cache"));
+        if (f.protect_keys) |k| r.setEnvironmentVariable("VERA_PROTECT_KEYS", pathFromRoot(b, k));
         if (f.xfail orelse f.refuse) |msg| {
             r.expectExitCode(1);
             r.expectStdErrMatch(msg);
@@ -326,6 +327,7 @@ pub fn build(b: *Build) void {
             _ = filed.addOutputFileArg2(b.fmt("{s}.stdout", .{std.fs.path.stem(f.c)}), .{});
             filed.setCwd(b.path(".zig-cache"));
             filed.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
+            if (f.protect_keys) |k| filed.setEnvironmentVariable("VERA_PROTECT_KEYS", pathFromRoot(b, k));
             filed.expectExitCode(0);
             filed.expectStdOutEqual(f.stdout);
             test_step.dependOn(&filed.step);
@@ -727,10 +729,12 @@ fn vpiHost(b: *Build, m: M, mods: []const Import, vera: *Module, sim: *Module, d
 }
 
 /// A `.c` fixture with `//! design` (relative to the `.c`), plus its `//! stdout|stderr|xfail` lines;
-/// `//! exit 1` is a refusal, whose message is the `.expected.stderr.txt` beside it.
+/// `//! exit 1` is a refusal, whose message is the `.expected.stderr.txt` beside it;
+/// `//@ protect-keys F` (relative to the `.c`) reaches the host as `$VERA_PROTECT_KEYS`.
 const VpiRun = struct {
     c: []const u8,
     design: []const u8 = "",
+    protect_keys: ?[]const u8 = null,
     stdout: []const u8 = "",
     stderr: ?[]const u8 = null,
     xfail: ?[]const u8 = null,
@@ -745,6 +749,10 @@ fn vpiRuns(b: *Build) []const VpiRun {
         var err: ?std.ArrayList(u8) = null;
         var lines = std.mem.splitScalar(u8, configText(b, c), '\n');
         while (lines.next()) |raw| {
+            if (std.mem.cutPrefix(u8, std.mem.trimEnd(u8, raw, "\r"), "//@ protect-keys ")) |k| {
+                r.protect_keys = b.fmt("{s}/{s}", .{ std.fs.path.dirnamePosix(c).?, k });
+                continue;
+            }
             const line = std.mem.cutPrefix(u8, std.mem.trimEnd(u8, raw, "\r"), "//! ") orelse continue;
             const key, const val = std.mem.cutScalar(u8, line, ' ') orelse .{ line, "" };
             if (std.mem.eql(u8, key, "design")) {
