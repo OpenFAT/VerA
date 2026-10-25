@@ -400,6 +400,14 @@ pub const parser_tests = struct {
         // IEEE 1364-2005 §19.11: "1364-2001-noconfig" is no newer than 1364-2001.
         const noconfig = "`begin_keywords \"1364-2001-noconfig\"\nmodule m; reg config; endmodule\n`end_keywords\n";
         try std.testing.expectEqual(@as(usize, 0), (try Case.parse(arena, noconfig, .v1364_2001)).count());
+        // Under the AMS default, a pre-2023 set frees `expm1`; a model's
+        // own `expm1` frees it in any set, with W0259.
+        const own = "module m; analog function real expm1; input x; real x; expm1 = exp(x) - 1.0; endfunction\nendmodule\n";
+        const own_r = try Case.parse(arena, own, .vams_2023);
+        try std.testing.expectEqual(@as(usize, 1), own_r.count());
+        try std.testing.expectEqual(diag.Code.W0259, own_r.code(0));
+        const own_old = "`begin_keywords \"VAMS-2.3\"\n" ++ own ++ "`end_keywords\n";
+        try std.testing.expectEqual(@as(usize, 0), (try Case.parse(arena, own_old, .vams_2023)).count());
 
         // One error per construct, and the construct is still read past.
         const ams = try Case.parse(arena, "nature N; endnature\nmodule m; analog begin end\nreg r; endmodule\n", .v1364_2005);

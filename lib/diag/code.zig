@@ -166,6 +166,7 @@ pub const Code = enum(u16) {
     W0251,
     W0252,
     W0253,
+    W0259,
 
     // ---------------------------------------------------------------- class 3
     // Declarations, types, disciplines — lower.zig.
@@ -2505,6 +2506,26 @@ fn infoOf(c: Code) Info {
             \\                  answer depends on the configuration selecting
             \\  --allow=W0253   silence it, for a configuration carried in the
             \\                  source for a downstream tool to read
+            ,
+        },
+        .W0259 => .{
+            .title = "a VAMS-2023 math function name declared as a function",
+            .lrm = "10.6",
+            .explain =
+            \\Annex G.7 (item 7780) made `expm1` and `ln1p` keywords in
+            \\VAMS-2023, with built-in meanings (4.3.2). Compact models written
+            \\before that (HiSIM-SOI, HiSIM-SOTB) declare their own
+            \\`analog function real expm1`, which only a pre-2023 keyword set
+            \\(10.6) allows.
+            \\
+            \\VerA reads the source as its author wrote it: when a file declares
+            \\a function of either name, that name is an identifier in the whole
+            \\file and every call reaches the declared function, not the
+            \\built-in. The two can differ in the last bits: a model's
+            \\`exp(x) - 1` loses the precision the built-in keeps near zero.
+            \\
+            \\Put `begin_keywords "VAMS-2.3" around the model to say which
+            \\language it is in, or rename the function to use the built-in.
             ,
         },
         .W0251 => .{

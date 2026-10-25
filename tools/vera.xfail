@@ -519,7 +519,6 @@ openvaf/integration_tests/BSIM6/bsim6.va
 openvaf/integration_tests/EKV/ekv.va
 openvaf/integration_tests/EKV_LONGCHANNEL/ekv_longchannel.va
 openvaf/integration_tests/HiSIM2/hisim2.va
-openvaf/integration_tests/HiSIMSOTB/hisimsotb.va
 openvaf/integration_tests/VAMS2023_EVENT_FUNS/vams2023_event_funs.va
 openvaf/integration_tests/VAMS2023_STRING_FUN/vams2023_string_fun.va
 openvaf/openvaf/test_data/syn_ui/unknown_lint.va
@@ -601,14 +600,6 @@ va-models/EPFL-HEMT/vacode/epfl_hemt.va
 va-models/fbh_hbt/vacode/fbh_hbt-2_3.va
 va-models/hisim2/vacode311/hisim2.va
 va-models/hisim2/vacode/hisim2.va
-va-models/hisimsoi/vacode140/hisimsoi_n4.va
-va-models/hisimsoi/vacode140/hisimsoi_n5.va
-va-models/hisimsoi/vacode140/hisimsoi.va
-va-models/hisimsoi/vacode/hisimsoi_n4.va
-va-models/hisimsoi/vacode/hisimsoi_n5.va
-va-models/hisimsoi/vacode/hisimsoi.va
-va-models/hisimsotb/vacode120/hisimsotb.va
-va-models/hisimsotb/vacode/hisimsotb.va
 va-models/mextram/vacode504p12p1/bjt504t.va
 va-models/mextram/vacode504p12p1/bjt504.va
 va-models/mextram/vacode504p12p1/bjtd504t.va

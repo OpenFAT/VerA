@@ -54,6 +54,7 @@ pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_ana
     if (is_analog and (self.peek() == .kw_integer or self.peek() == .kw_real or self.peek() == .kw_string)) {
         self.pos += 1;
     }
+    try self.warnOwnMathFn();
     const name = try self.expectIdent();
 
     var args: std.ArrayList(Ast.FuncArg) = .empty;
@@ -272,6 +273,7 @@ pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) 
     var result: Ast.VarDecl = if (is_function) tfType(self) else .{ .name = .none, .ty = .integer };
     if (is_function and result.storage == .reg and result.packed_range == null and self.peek() == .lbracket) result.packed_range = try parse_decl.parseDim(self);
     const name_tok = self.pos;
+    try self.warnOwnMathFn();
     const name = try self.expectIdent();
     result.name = name;
     result.main_tok = name_tok;
