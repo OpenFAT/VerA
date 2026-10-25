@@ -24,6 +24,11 @@ const Preprocessor = @import("../preprocessor.zig");
 const identEnd = Preprocessor.identEnd;
 const isIdentStart = Preprocessor.isIdentStart;
 
+/// The file a decrypted envelope's cleartext is registered under in the bag:
+/// its declarations' location, which IEEE 1364-2005 §26.3.5's
+/// vpiIsProtected reads.
+pub const file_name = "<protected envelope>";
+
 /// One key the host provides, found by the envelope's `*_keyowner` and
 /// `*_keyname` (§28.4.6, §28.4.7).
 pub const Key = struct { owner: []const u8, name: []const u8, key: [8]u8 };
