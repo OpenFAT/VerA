@@ -760,8 +760,8 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
             if (radix) |r| {
                 try compile.checkExpr(self, args[arg]);
                 if (allocator) |a| {
-                    // `%05d`/`%-5d`: C's '0' and '-' flags, which iverilog
-                    // renders (`fillField`).
+                    // `%05d`: C's '0' flag, which iverilog renders
+                    // (`fillField`).
                     const out = self.out;
                     defer self.out = out;
                     var field: std.Io.Writer.Allocating = .init(a);
@@ -782,15 +782,11 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
     if (allocator != null and show.newline) try self.out.writeByte('\n');
 }
 
-/// A field written with C's '0' flag and a width (`%05d`, `%04h`, `%06t`):
-/// `text`, the field as the conversion padded it with spaces on the left,
-/// with those spaces as zeros after any sign. §17.1.1.2 grants C's flags to
-/// the real conversions only and leaves a width's leading zero open; this is
-/// iverilog's text (ivtest delay.v's `%04d`).
-/// How a non-real field's C flag reshapes its padded text: '-' moves the
-/// leading pad to the end, '0' (with a nonzero width) turns it into zeros
-/// after the sign. 1364 grants C's flags to the real conversions only and
-/// says nothing of them elsewhere; VerA renders iverilog's text.
+/// How a non-real field's C flag reshapes its padded text: '-' (`%t` only,
+/// `fmt.flagVerdict`) moves the leading pad to the end, '0' (with a nonzero
+/// width) turns it into zeros after the sign. 1364 grants C's flags to the
+/// real conversions only and says nothing of them elsewhere; VerA renders
+/// iverilog's text.
 pub const Fill = enum { zero, left };
 
 /// `sp`'s `Fill` for conversion `conv`, if any; '-' wins over '0', as in C,
@@ -810,6 +806,11 @@ pub fn fillField(out: *std.Io.Writer, text: []const u8, f: Fill) std.Io.Writer.E
     try out.splatByteAll(' ', pad);
 }
 
+/// A field written with C's '0' flag and a width (`%05d`, `%04h`, `%06t`):
+/// `text`, the field as the conversion padded it with spaces on the left,
+/// with those spaces as zeros after any sign. §17.1.1.2 grants C's flags to
+/// the real conversions only and leaves a width's leading zero open; this is
+/// iverilog's text (ivtest delay.v's `%04d`).
 pub fn zeroFilled(out: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
     const pad = std.mem.indexOfNone(u8, text, " ") orelse text.len;
     const sign: usize = @intFromBool(pad < text.len and text[pad] == '-');
@@ -1631,9 +1632,10 @@ test "§17.1.1.2 a real conversion renders C's flags; any other refuses them (#4
         \\endmodule
         \\
     , "[2.50    |+1.500000e+00| 3.0|-002.500|2.|1.5K  |00042]\n");
-    // '-' left-justifies any radix, `%t`, `%s` or `%c` field, as iverilog
-    // prints it (ivtest br_gh1591a's `%-700t`); '+' and ' ' stay refused.
-    try expectRun("`timescale 1ns/1ps\nmodule m; initial $display(\"[%-5d][%-5h][%-d][%-5s][%-6t][%-3c][%05c][%05s]\", 5, 8'h5, 8'd5, \"ab\", 3, 65, 65, \"ab\"); endmodule", "[5    ][05   ][5  ][ab   ][3000  ][A  ][0000A][   ab]\n");
+    // '-' left-justifies a `%t` field, as iverilog prints it (ivtest
+    // br_gh1591a's `%-700t`); on any other it, '+' and ' ' stay refused.
+    try expectRun("`timescale 1ns/1ps\nmodule m; initial $display(\"[%-6t][%05c][%05s]\", 3, 65, \"ab\"); endmodule", "[3000  ][0000A][   ab]\n");
+    try @import("root.zig").expectRejected("module m; initial $display(\"%-5d\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%+h\", 1); endmodule", "to the real conversions only");
     try @import("root.zig").expectRejected("module m; initial $display(\"%#h\", 1); endmodule", "alternative form");
     try @import("root.zig").expectRejected("module m; initial $display(\"%#r\", 1.5); endmodule", "alternative form");

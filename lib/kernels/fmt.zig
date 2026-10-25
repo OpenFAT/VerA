@@ -477,12 +477,11 @@ pub fn flagVerdict(flags: u8, conv: u8) enum { ok, alt, c_flag } {
         'e', 'f', 'g', 'r' => true,
         else => false,
     };
-    // '-' left-justifies a radix, `%t`, `%s` or `%c` field too, as iverilog
-    // prints it (`display.Fill`); '+' and ' ' stay the real conversions'.
-    const left_ok = switch (conv | 0x20) {
-        'b', 'o', 'h', 'x', 'd', 't', 's', 'c' => true,
-        else => false,
-    };
+    // '-' left-justifies a `%t` field too: §17.3.2 gives it a minimum field
+    // width, so its pad has a side, which iverilog puts on the right
+    // (`display.Fill`, ivtest br_gh1591a's `%-700t`). '+' and ' ' stay the
+    // real conversions'.
+    const left_ok = conv | 0x20 == 't';
     if (!real and flags & (str_k.zc_plus | str_k.zc_space) != 0) return .c_flag;
     if (!real and !left_ok and flags & str_k.zc_left != 0) return .c_flag;
     return .ok;
@@ -519,9 +518,9 @@ test "§17.1.1.2 flagVerdict: C's flags on the real conversions only (#43)" {
     for ("dDhHoObBcCsStTvVmMlL") |c| {
         try testing.expect(flagVerdict(str_k.zc_zero, c) == .ok); // `%0d`
         try testing.expect(flagVerdict(str_k.zc_alt, c) == .alt);
-        // '-' left-justifies a radix, `%t`, `%s` or `%c` field (iverilog's
-        // text, `display.Fill`); `%v`, `%m` and `%l` refuse it.
-        const left_ok = std.mem.findScalar(u8, "dDhHoObBcCsStT", c) != null;
+        // '-' left-justifies a `%t` field (`display.Fill`); every other
+        // conversion here refuses it.
+        const left_ok = c | 0x20 == 't';
         try testing.expect((flagVerdict(str_k.zc_left, c) == .ok) == left_ok);
         try testing.expect(flagVerdict(str_k.zc_plus, c) == .c_flag);
         try testing.expect(flagVerdict(str_k.zc_space, c) == .c_flag);
