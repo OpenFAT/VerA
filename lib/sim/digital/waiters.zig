@@ -659,7 +659,9 @@ test "a negedge term ignores the opposite transition" {
 
 test "every term of one event expression retires when any of them fires" {
     // Both waiters belong to one process: a second resumption per change would
-    // double every line below.
+    // double every line below. The always construct is armed before the
+    // initial ones run (`root.levelControlled`), so time 0's writes of a and
+    // b wake it once, the first line; iverilog prints the same.
     try expectRun(
         \\`timescale 1ns/1ns
         \\module example;
@@ -670,10 +672,12 @@ test "every term of one event expression retires when any of them fires" {
         \\always @(a or b) begin hits = hits + 1; $display("hit %b", hits); end
         \\initial begin #5 a = 1; #5 b = 1; #5 a = 0; #5 $finish(0); end
         \\endmodule
-    , "hit 01\nhit 10\nhit 11\n");
+    , "hit 01\nhit 10\nhit 11\nhit 00\n");
 }
 
 test "a write that does not change the value resumes nothing" {
+    // Time 0's x -> 0 is a change (the first line, iverilog's too); 0 -> 0 at
+    // 5 is none; 0 -> 1 at 10 is the second.
     try expectRun(
         \\`timescale 1ns/1ns
         \\module example;
@@ -683,7 +687,7 @@ test "a write that does not change the value resumes nothing" {
         \\always @(a) begin hits = hits + 1; $display("hit %b", hits); end
         \\initial begin #5 a = 0; #5 a = 1; #5 $finish(0); end
         \\endmodule
-    , "hit 01\n");
+    , "hit 01\nhit 10\n");
 }
 
 test "a nonblocking write resumes a waiting process from the NBA region" {

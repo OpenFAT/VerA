@@ -2066,7 +2066,7 @@ fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
 
 /// §9.7.3: a scalar event or exactly one selected array element. Only the
 /// indices are value expressions; neither the array nor an event holds data.
-fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
+pub fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
     const ex = &self.file.exprs;
     const c = self.chainBase(e);
     if (ex.tag(c.base) != .ident and ex.tag(c.base) != .hier_ident) return null;
@@ -2177,10 +2177,11 @@ test "§3.6 a string operand is packed ASCII, right-justified and truncated on t
 }
 
 test "§17.1.1.6 %m names the instance path and the named blocks around it" {
+    // The child instance's process runs first (`root.processOrder`).
     try expectRun(
         \\module leaf; initial begin : outer begin : inner $display("%m %l %s%c", "", 8'h21); end end endmodule
         \\module m; leaf u(); initial $display("%M"); endmodule
-    , "m\nm.u.outer.inner work.leaf !\n");
+    , "m.u.outer.inner work.leaf !\nm\n");
 }
 
 test "§12.7 a named block's local shadows the module's, and each instance has its own" {

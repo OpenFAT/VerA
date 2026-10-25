@@ -373,6 +373,12 @@ pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle {
     return h;
 }
 
+/// `enqueue` at now in the active region, ahead of everything queued there.
+pub fn enqueueFirst(self: *Run, item: Pending) Error!void {
+    const at = try claim(self, item);
+    self.pending.items[at].handle = self.scheduler.scheduleFirst(.active, at) catch |e| return scheduleFailure(self, e, "scheduling");
+}
+
 fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool {
     std.debug.assert(value.width == label.width);
     if (kind == .normal) return value.equality(.case_equal, label) == .one;

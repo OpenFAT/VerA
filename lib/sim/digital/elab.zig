@@ -1794,6 +1794,7 @@ fn continuous(file: *const Ast.SourceFile, name: Ast.StrId) bool {
 pub fn newScope(r: *Run, tok: u32) Error!u32 {
     r.scopes += 1;
     if (r.scopes == std.math.maxInt(u32)) return r.fail(tok, "too many digital instances", .{});
+    try r.scope_toks.put(r.arena, r.scopes, tok);
     return r.scopes;
 }
 

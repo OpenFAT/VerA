@@ -114,7 +114,11 @@ pub fn initial(self: *Run, net: u32) void {
         const at: u32 = @intCast(i);
         var acc: Signal = .{};
         for (self.netDrivers(net)) |d| {
-            const c = contribution(self.drivers[d], at);
+            const dr = self.drivers[d];
+            // A sequential UDP's initial state is published at time 0
+            // (§8.5), a change from the unknown a process armed earlier
+            // sees, as iverilog's does (ivtest br_ml20190806a).
+            const c = if (dr.source == .udp and dr.source.udp.sequential) Signal.of(.x, dr.s0, dr.s1) else contribution(dr, at);
             acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
         }
         acc = acc.combine(netPull(n.kind));
