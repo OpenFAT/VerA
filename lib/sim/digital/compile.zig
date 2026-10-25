@@ -855,7 +855,10 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                     if (args.len != 1 or args[0] == .none) return self.exprFail(e, "a §17.8 conversion takes exactly one argument");
                     const operand = try inferValue(self, args[0]);
                     const wants_real = f == .rtoi or f == .realtobits;
-                    if (operand.real != wants_real) return self.exprFail(e, "$rtoi and $realtobits convert a real; $itor and $bitstoreal an integral value");
+                    // VD-128: §17.8's `$rtoi`/`$itor` prototypes are not a
+                    // "shall"; an argument of the other type converts first,
+                    // as iverilog does. The bit conversions stay strict.
+                    if (operand.real != wants_real and (f == .realtobits or f == .bitstoreal)) return self.exprFail(e, "$rtoi and $realtobits convert a real; $itor and $bitstoreal an integral value");
                     break :blk switch (f) {
                         .rtoi => .{ .width = 32, .signed = true },
                         .realtobits => .{ .width = 64, .signed = false },
@@ -2328,8 +2331,11 @@ test "§17.9 a distribution takes its own argument count and a variable seed" {
 test "§17.8 and §17.11.2 conversions and math functions take their own argument types and counts" {
     // $rtoi truncates -2.7 toward zero; $itor(3) is 3.0, which %g prints as 3.
     try expectRun("module m; initial $display(\"%0d %g %g\", $rtoi(-2.7), $itor(3), $pow(2.0, 10.0)); endmodule", "-2 3 1024\n");
-    try expectRejected("module m; integer i; initial i = $rtoi(1); endmodule", "$rtoi and $realtobits convert a real");
-    try expectRejected("module m; real r; initial r = $itor(1.5); endmodule", "$rtoi and $realtobits convert a real");
+    // VD-128 (oracle: iverilog's itor_rtoi gold): an argument of the other
+    // type converts first; $rtoi keeps the low 32 bits of a larger value.
+    try expectRun("module m; initial $display(\"%0d %g %g %0d %0d\", $rtoi(1'bx), $itor(-1.5), $itor(1.0/0.0), $rtoi((33'b1<<32)+1.0), $rtoi(1.0/0.0)); endmodule", "0 -2 0 1 x\n");
+    try expectRejected("module m; integer i; initial i = $realtobits(1); endmodule", "$rtoi and $realtobits convert a real");
+    try expectRejected("module m; real r; initial r = $bitstoreal(1.5); endmodule", "$rtoi and $realtobits convert a real");
     try expectRejected("module m; real r; initial r = $pow(2.0); endmodule", "wrong number of arguments to a §17.11.2");
     try expectRejected("module m; integer i; initial i = $time(1); endmodule", "$time and $stime take no arguments");
     // §17.7.3 `$realtime` and VAMS §9.10 `$abstime` (#58) take no arguments:

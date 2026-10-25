@@ -664,11 +664,19 @@ pub fn ofRealTo(r: f64, comptime to: u32) T(to) {
     return narrow(to, .{ .v = v, .x = @splat(0) });
 }
 
-/// §17.8 `$rtoi`: truncated toward zero, a 32-bit signed value; x when none.
+/// §17.8 `$rtoi`: truncated toward zero, a 32-bit signed value, the low 32
+/// bits of a larger one (iverilog's itor_rtoi, VD-128); x for an infinity
+/// or a NaN.
 pub inline fn rtoi(r: f64) W {
-    const t = @trunc(r);
-    if (!(t >= -0x1p31 and t < 0x1p31)) return xs(32);
-    return .{ .v = @as(u32, @bitCast(@as(i32, @intFromFloat(t)))), .x = 0 };
+    return ofRealTo(@trunc(r), 32);
+}
+
+/// §17.8 `$itor` of a real argument (VD-128): the argument converts to an
+/// integer first (§4.8.2's rounding), and one with no integer is x, which
+/// `$itor` reads as 0.
+pub inline fn itorReal(r: f64) f64 {
+    const n = @round(r);
+    return if (std.math.isFinite(n)) n else 0;
 }
 
 /// A real as the 64-bit value a real slot holds: its IEEE 754 bits.
@@ -1159,7 +1167,7 @@ test "real to integer rounds half away from zero; one with no 64-bit integer is 
         try std.testing.expectEqual(x64, ofReal(r));
 }
 
-test "$rtoi truncates toward zero into 32 bits; one with no 32-bit integer is x (§17.8)" {
+test "$rtoi truncates toward zero into 32 bits, the low 32 of a larger value; inf and NaN are x (§17.8, VD-128)" {
     try std.testing.expectEqual(W{ .v = 2, .x = 0 }, rtoi(2.9));
     try std.testing.expectEqual(W{ .v = 0xffff_fffe, .x = 0 }, rtoi(-2.9));
     try std.testing.expectEqual(W{ .v = 0x7fff_ffff, .x = 0 }, rtoi(2147483647.9));
@@ -1167,8 +1175,14 @@ test "$rtoi truncates toward zero into 32 bits; one with no 32-bit integer is x 
     try std.testing.expectEqual(W{ .v = 0x8000_0000, .x = 0 }, rtoi(-0x1p31));
     try std.testing.expectEqual(W{ .v = 0x8000_0000, .x = 0 }, rtoi(-2147483648.9));
     const x32: W = .{ .v = 0xffff_ffff, .x = 0xffff_ffff };
-    for ([_]f64{ 0x1p31, -2147483649.0, std.math.inf(f64), std.math.nan(f64) }) |r|
+    for ([_]f64{ std.math.inf(f64), -std.math.inf(f64), std.math.nan(f64) }) |r|
         try std.testing.expectEqual(x32, rtoi(r));
+    // Oracle: iverilog's itor_rtoi gold (Overflow(0) = 0, Overflow(1) = 1).
+    try std.testing.expectEqual(W{ .v = 0x8000_0000, .x = 0 }, rtoi(0x1p31));
+    try std.testing.expectEqual(W{ .v = 1, .x = 0 }, rtoi(0x1p32 + 1));
+    try std.testing.expectEqual(W{ .v = 0x7fff_ffff, .x = 0 }, rtoi(-2147483649.0));
+    try std.testing.expectEqual(@as(f64, -2), itorReal(-1.5));
+    try std.testing.expectEqual(@as(f64, 0), itorReal(std.math.nan(f64)));
 }
 
 test "integer to real reads the operand's own signedness, x and z bits as 0 (§4.8.2)" {

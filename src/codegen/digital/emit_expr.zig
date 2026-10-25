@@ -126,7 +126,12 @@ pub fn real(self: *Emitter, e: Ast.ExprId) Error!void {
                     return self.print("s.realtime(.{{ .local_per_unit = {d}, .global_per_local = {d} }})", .{ scale.local_per_unit, scale.global_per_local });
                 },
                 .abstime => return self.print("s.abstime({d})", .{r.finest}),
-                .itor => return real(self, args[0]),
+                .itor => {
+                    if (!compile.typeOf(r, args[0]).real) return real(self, args[0]);
+                    try self.print("L.itorReal(", .{});
+                    try real(self, args[0]);
+                    return self.print(")", .{});
+                },
                 .bitstoreal => {
                     const t = compile.typeOf(self.r, args[0]);
                     try self.print("@as(f64, @bitCast(L.word0(", .{});

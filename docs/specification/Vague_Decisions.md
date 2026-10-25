@@ -1427,6 +1427,16 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Measure impact**: A: two renamed fixtures. C: none.
 - **Status**: DONE 2026-10-24.
 
+### VD-128: `$itor` of a real, `$rtoi` of an integer, and `$rtoi` past 32 bits
+- **Source**: conformance-to-100 (2026-10-24), ivtest itor_rtoi.
+- **Rule**: IEEE 1364-2005 17.8: "`$rtoi` converts real values to an integer type by truncating the real value", "`$itor` converts integer values to real values", with the prototypes `integer $rtoi(real_val)` and `real $itor(int_val)`; 4.8.2 converts between the types implicitly, an x or z bit read as 0.
+- **Why vague**: the prototypes name the argument's type but no "shall" requires it, and the clause does not say what `$rtoi` returns for a value no `integer` holds.
+- **Options**: (a) refuse an argument of the other type, and give x past 32 bits (VerA until 2026-10-24); (b) convert the argument first by 4.8.2 (`$itor(10.5)` is 11.0, `$itor` of an infinity or NaN, whose integer is x, is 0.0; `$rtoi(1'bx)` is 0), and keep the low 32 bits of a larger truncated value, x only for an infinity or a NaN.
+- **Decision**: `DECIDED:` (b), iverilog's gold. 4.8.2's implicit conversions are the rule everywhere else an operand of the other type appears. `$realtobits`/`$bitstoreal` stay strict: they reinterpret bits, and converting first would hide a type error.
+- **VerA today**: `lib/sim/digital/compile.zig` (the type check), `lib/sim/digital/evaluate.zig` (`.rtoi`, `.itor`), `lib/sim/rt/logic.zig` `rtoi`, `itorReal`, `src/codegen/digital/emit_expr.zig`. Tests `compile.zig` "§17.8", `logic.zig` "$rtoi truncates".
+- **Measure impact**: none.
+- **Status**: DONE 2026-10-24.
+
 ## 6. Implementation-defined choices
 
 A fixture here tests VerA's choice, not the clause. A tool that chooses

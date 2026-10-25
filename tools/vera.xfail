@@ -287,7 +287,6 @@ ivtest/ivltests/include1.v
 ivtest/ivltests/include2.v
 ivtest/ivltests/include3.v
 ivtest/ivltests/indef_width_concat.v
-ivtest/ivltests/itor_rtoi.v
 ivtest/ivltests/macro_comment_multiline.v
 ivtest/ivltests/macro_str_esc.v
 ivtest/ivltests/module_no_port_mixed_instances.v

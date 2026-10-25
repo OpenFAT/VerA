@@ -444,7 +444,10 @@ pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
             break :blk switch (f) {
                 .realtime => self.timeOf(self.scope).scale.realAt(self.scheduler.now),
                 .abstime => @import("../time.zig").secondsAt(self.scheduler.now, self.finest),
-                .itor => realOfInt(try eval(self, a, args[0], 0)),
+                .itor => if (compile.typeOf(self, args[0]).real)
+                    @import("../rt/logic.zig").itorReal(try evalReal(self, a, args[0]))
+                else
+                    realOfInt(try eval(self, a, args[0], 0)),
                 .bitstoreal => @bitCast((try eval(self, a, args[0], 64)).values()[0]),
                 .ln => @log(try evalReal(self, a, args[0])),
                 .ln1p => std.math.log1p(try evalReal(self, a, args[0])),
@@ -679,12 +682,14 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
                 return normalize(a, value, ty);
             },
             // §17.8: `$rtoi` truncates toward zero; `$realtobits` is the bits.
+            // A value past 32 bits keeps its low 32 (VD-128), and an
+            // infinity or a NaN is x; an integral argument converts to real
+            // first (`evalReal`).
             .rtoi => {
                 const t = @trunc(try evalReal(self, a, ex.args(e)[0]));
                 const v = try filled(a, 32, true, .x);
-                // NaN fails both comparisons; -2^31 itself is an i32.
-                if (t >= -0x1p31 and t < 0x1p31) {
-                    v.values()[0] = @as(u32, @bitCast(@as(i32, @intFromFloat(t))));
+                if (std.math.isFinite(t)) {
+                    v.values()[0] = (try intOfReal(a, t)).values()[0] & 0xffff_ffff;
                     v.unknowns()[0] = 0;
                 }
                 return normalize(a, v, ty);
