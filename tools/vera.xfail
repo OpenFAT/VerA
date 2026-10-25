@@ -367,8 +367,6 @@ ivtest/ivltests/pr2834340.v
 ivtest/ivltests/pr2848986.v
 ivtest/ivltests/pr2877564.v
 ivtest/ivltests/pr2913927.v
-ivtest/ivltests/pr2937417b.v
-ivtest/ivltests/pr2937417c.v
 ivtest/ivltests/pr2943394.v
 ivtest/ivltests/pr2986528.v
 ivtest/ivltests/pr2994193.v

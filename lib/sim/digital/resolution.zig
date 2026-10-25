@@ -262,6 +262,15 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
                 const n = self.nets[z.net];
                 var own = netPull(n.kind);
                 for (self.netDrivers(z.net)) |d| own = own.combine(contribution(self.drivers[d], z.bit));
+                // §9.3.2 "The force procedural statement on a net shall
+                // override all drivers"; across a switch the forced value is
+                // a strong driver of the other nets, as iverilog reads it
+                // (ivtest pr2937417b/c). The forced net keeps its own value
+                // (`waiters.store` drops this resolution's write to it).
+                // ponytail: a whole-net force only, not a forced select.
+                if (self.overrides.count() != 0) if (self.overrides.get(n.slot)) |o| if (o.force != null) {
+                    own = .of(self.values[n.slot].bit(z.bit), .strong, .strong);
+                };
                 acc = acc.combine(crossed(own, z, y, p));
             }
             if (acc.none()) for (group, paths) |z, p| {
@@ -572,6 +581,27 @@ test "§7.6 switch groups that share a supply net stay apart" {
         \\40 a=1 b=1 w1=z w2=0 y=1
         \\
     );
+}
+
+// §9.3.2 a forced net overrides its drivers; joined by a switch, it drives
+// the other side at strong strength while the force holds, and its own
+// drivers again once released. iverilog prints this (ivtest pr2937417b).
+test "§9.3.2 a forced net drives the nets switched to it" {
+    try expectRun(
+        \\module top;
+        \\  reg a; wire x, y, ab;
+        \\  assign (weak1, weak0) x = 1'b1;
+        \\  assign y = a;
+        \\  assign ab = ~a;
+        \\  tran (x, y);
+        \\  initial begin
+        \\    a = 1; #1 $display("%b %b", x, y);
+        \\    force x = ab; #1 $display("%b %b", x, y);
+        \\    a = 0; #1 $display("%b %b", x, y);
+        \\    release x; #1 $display("%b %b", x, y);
+        \\  end
+        \\endmodule
+    , "1 1\n0 x\n1 x\n0 0\n");
 }
 
 test "a trireg holds its charge for the decay time and then gives up" {

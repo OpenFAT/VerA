@@ -925,6 +925,10 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     else
                         try waiters.store(self, o.slot, value.planes);
                 }
+                // A forced net drives the switch-connected nets joined to it
+                // (`resolution.resolveJoined`), which follow its new value.
+                if (o.force and o.bits == null) if (self.net_of.get(o.slot)) |net| if (self.netCold(self.nets[net]).trans.len != 0)
+                    try resolution.resolve(self, net);
                 try doneFlush(self, pc);
                 pc += 1;
                 continue;
