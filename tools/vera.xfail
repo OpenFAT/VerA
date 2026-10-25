@@ -216,11 +216,6 @@ ivtest/ivltests/br_gh1178b.v
 ivtest/ivltests/br_gh1178c.v
 ivtest/ivltests/br_gh1225c.v
 ivtest/ivltests/br_gh127a.v
-ivtest/ivltests/br_gh127b.v
-ivtest/ivltests/br_gh127c.v
-ivtest/ivltests/br_gh127d.v
-ivtest/ivltests/br_gh127e.v
-ivtest/ivltests/br_gh127f.v
 ivtest/ivltests/br_gh1541.v
 ivtest/ivltests/br_gh1563.v
 ivtest/ivltests/br_gh156.v
@@ -334,7 +329,6 @@ ivtest/ivltests/pr1864110a.v
 ivtest/ivltests/pr1864110b.v
 ivtest/ivltests/pr1864115.v
 ivtest/ivltests/pr1866215b.v
-ivtest/ivltests/pr1866215.v
 ivtest/ivltests/pr1876798.v
 ivtest/ivltests/pr1877743.v
 ivtest/ivltests/pr1903343.v
@@ -345,11 +339,7 @@ ivtest/ivltests/pr1963960.v
 ivtest/ivltests/pr1963962.v
 ivtest/ivltests/pr2029336.v
 ivtest/ivltests/pr2043585.v
-ivtest/ivltests/pr2121536b.v
-ivtest/ivltests/pr2121536.v
 ivtest/ivltests/pr2172606b.v
-ivtest/ivltests/pr2219441.v
-ivtest/ivltests/pr2224949.v
 ivtest/ivltests/pr224a.v
 ivtest/ivltests/pr2257003b.v
 ivtest/ivltests/pr2257003.v
@@ -378,7 +368,6 @@ ivtest/ivltests/pr3015421.v
 ivtest/ivltests/pr3190941.v
 ivtest/ivltests/pr3194155.v
 ivtest/ivltests/pr3296466b.v
-ivtest/ivltests/pr3296466d.v
 ivtest/ivltests/pr3587570.v
 ivtest/ivltests/pr434.v
 ivtest/ivltests/pr478.v

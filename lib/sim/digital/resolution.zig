@@ -504,6 +504,8 @@ pub fn udpValue(self: *Run, scratch: std.mem.Allocator, u: *net_mod.Udp, width: 
 pub fn window(self: *Run, scratch: std.mem.Allocator, b: Bridge, width: u32) Error!Int.Literal {
     const out = try filled(scratch, width, false, .z);
     evaluate.copyBits(out, b.dst_lo, self.values[b.src], b.src_lo, b.width);
+    const fill: Int.Bit = if (b.sign_at) |at| self.values[b.src].bit(at) else .zero;
+    for (0..b.ext) |j| setBit(out, b.dst_lo + b.width + @as(u32, @intCast(j)), fill);
     return out;
 }
 

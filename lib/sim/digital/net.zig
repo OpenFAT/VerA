@@ -80,8 +80,11 @@ pub const Delay = struct {
 /// collapse: `width` bits starting at `src_lo` of one slot are carried onto
 /// `dst_lo` of another net. Everything outside that window is z, which is the
 /// identity of §7.9's resolution, so a window is an ordinary driver that
-/// happens to assert only part of the net.
-pub const Bridge = struct { src: u32, src_lo: u32, dst_lo: u32, width: u32 };
+/// happens to assert only part of the net. `ext` bits above the window are
+/// IEEE 1364-2005 §12.3.9.2's widening of a port narrower than what it
+/// drives (the connection is a continuous assignment, §5.6): copies of
+/// source bit `sign_at` (a signed port's top bit), or 0.
+pub const Bridge = struct { src: u32, src_lo: u32, dst_lo: u32, width: u32, ext: u32 = 0, sign_at: ?u32 = null };
 
 /// §7.9 one net: its resolution function, its storage, and the drivers whose
 /// wired-logic combination is its value. `resolved` is the scratch the fold

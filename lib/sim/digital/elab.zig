@@ -431,7 +431,15 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
                 .collapse => |c| try e.wires.append(arena, .{
                     .net = c.net,
                     .scope = scope,
-                    .source = .{ .bridge = .{ .src = var_slot, .src_lo = 0, .dst_lo = 0, .width = @min(e.values.items[var_slot].width, e.nets.items[c.net].resolved.width) } },
+                    .source = .{ .bridge = .{
+                        .src = var_slot,
+                        .src_lo = 0,
+                        .dst_lo = 0,
+                        .width = @min(e.values.items[var_slot].width, e.nets.items[c.net].resolved.width),
+                        // §12.3.9.2's widening (`sendPort`).
+                        .ext = e.nets.items[c.net].resolved.width -| e.values.items[var_slot].width,
+                        .sign_at = if (e.values.items[var_slot].signed) e.values.items[var_slot].width - 1 else null,
+                    } },
                     .tok = p.main_tok,
                 }),
                 // §12.3.9.2 a select or concatenation outside: the variable
@@ -455,16 +463,20 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
             // sizes of the ports and net must match". IEEE 1364-2005
             // §12.3.9.2 instead makes the connection a continuous assignment,
             // which §5.6 zero-extends or truncates: two nets, not one.
-            // ponytail: under 1364 an output narrower than its net (§5.6
-            // zero-fills the net's high bits, which needs a constant driver)
-            // and an inout are still refused.
+            // An inout joins the bits both sides have (§12.3.10).
             if (!merging and outer.resolved.width != width) {
                 if (!ieee1364(r)) return r.fail(p.main_tok, size_mismatch, .{});
-                switch (p.direction) {
-                    .input => bind = .{ .receive = .{ .expr = c.expr, .scope = c.scope, .tok = c.tok } },
-                    .output => bind = .{ .send = .{ .operands = try arena.dupe(Sink, &.{.{ .net = c.net, .lo = 0, .width = outer.resolved.width }}), .tok = c.tok } },
-                    .inout, .unspecified => return r.fail(p.main_tok, size_mismatch, .{}),
-                }
+                const whole = try arena.dupe(Sink, &.{.{ .net = c.net, .lo = 0, .width = outer.resolved.width }});
+                // §12.3.8: "A port that is declared as input (output) but
+                // used as an output (input) or inout may be coerced to
+                // inout"; iverilog coerces an input the module drives and an
+                // output it does not, and so does VerA.
+                const driven = assignsTo(r, m, p.name);
+                bind = switch (p.direction) {
+                    .input => if (driven) .{ .join = .{ .operands = whole, .tok = c.tok } } else .{ .receive = .{ .expr = c.expr, .scope = c.scope, .tok = c.tok } },
+                    .output => if (!driven) .{ .join = .{ .operands = whole, .tok = c.tok } } else .{ .send = .{ .operands = whole, .tok = c.tok } },
+                    .inout, .unspecified => .{ .join = .{ .operands = whole, .tok = c.tok } },
+                };
                 break :collapse;
             }
             _ = try warnPort(r, p, outer.kind);
@@ -530,15 +542,19 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
                 while (k != 0) {
                     k -= 1;
                     const op = c.operands[k];
-                    if (lo + op.width > width) return r.fail(c.tok, size_mismatch, .{});
-                    for (0..op.width) |j| try e.trans.append(arena, .{
+                    // IEEE 1364-2005 §12.3.10: a size mismatch joins the
+                    // bits both sides have, rightmost first; the rest of
+                    // either side connects nothing (iverilog's reading).
+                    const n = @min(op.width, width - lo);
+                    if (n != op.width and !ieee1364(r)) return r.fail(c.tok, size_mismatch, .{});
+                    for (0..n) |j| try e.trans.append(arena, .{
                         .tran = .{ .a = at, .b = op.net, .a_bit = lo + @as(u32, @intCast(j)), .b_bit = op.lo + @as(u32, @intCast(j)) },
                         .scope = scope,
                         .tok = c.tok,
                     });
-                    lo += op.width;
+                    lo += n;
                 }
-                if (lo != width) return r.fail(c.tok, size_mismatch, .{});
+                if (lo != width and !ieee1364(r)) return r.fail(c.tok, size_mismatch, .{});
             },
         }
     }
@@ -565,6 +581,27 @@ fn sameRange(r: *Run, a: Ast.Dim, b: Ast.Dim, tok: u32) Error!bool {
         try r.declaredBound(a.lsb, tok) == try r.declaredBound(b.lsb, tok);
 }
 
+/// Whether one of `m`'s continuous assignments or gate outputs drives
+/// `name` (whole, or a select of it), the use §12.3.8's coercion reads.
+// ponytail: an instance's output port driving `name` is not looked for.
+fn assignsTo(r: *const Run, m: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+    for (m.assigns) |a| if (namesIn(r, a.target, name)) return true;
+    for (m.gates) |g| if (namesIn(r, g.out, name)) return true;
+    return false;
+}
+
+fn namesIn(r: *const Run, e: Ast.ExprId, name: Ast.StrId) bool {
+    const ex = &r.file.exprs;
+    return switch (ex.tag(e)) {
+        .ident => ex.strOf(e) == name,
+        .index => namesIn(r, ex.lhs(e), name),
+        .concat => for (ex.args(e)) |x| {
+            if (namesIn(r, x, name)) break true;
+        } else false,
+        else => false,
+    };
+}
+
 const size_mismatch = "§6.5.7.1: the sizes of the port and the net connected to it shall match";
 
 /// §12.3.9.2 an output port's value, slot `src` of `width` bits, bridged
@@ -578,17 +615,27 @@ fn sendPort(r: *Run, e: *Elab, operands: []const Sink, tok: u32, src: u32, width
     while (k != 0) {
         k -= 1;
         const op = operands[k];
-        if (lo + op.width > width) return r.fail(tok, size_mismatch, .{});
+        // Under IEEE 1364-2005 §12.3.9.2 the connection is a continuous
+        // assignment of the port to the operands, which §5.6 widens (zero,
+        // or a signed port's sign) and truncates: operands past the port's
+        // width take the widening, a port past theirs sends its low bits.
+        const copy = @min(op.width, width - lo);
+        if (copy != op.width and !ieee1364(r)) return r.fail(tok, size_mismatch, .{});
         try e.wires.append(r.arena, .{
             .net = op.net,
             .scope = scope,
-            .source = .{ .bridge = .{ .src = src, .src_lo = lo, .dst_lo = op.lo, .width = op.width } },
+            .source = .{ .bridge = .{
+                .src = src,
+                .src_lo = lo,
+                .dst_lo = op.lo,
+                .width = copy,
+                .ext = op.width - copy,
+                .sign_at = if (e.values.items[src].signed and width != 0) width - 1 else null,
+            } },
             .tok = tok,
         });
-        lo += op.width;
+        lo += copy;
     }
-    // Under IEEE 1364-2005 a port wider than its operands sends only its low
-    // `lo` bits: §12.3.9.2's continuous assignment truncates (§5.6).
     if (lo != width and !ieee1364(r)) return r.fail(tok, size_mismatch, .{});
 }
 
@@ -1204,7 +1251,15 @@ fn switchTerminal(r: *Run, e: *Elab, t: Ast.ExprId, tok: u32, lanes: u32, lane: 
         if (width != 1) return r.fail(tok, "§7.6: a pass switch terminal is a scalar net or a bit-select of a vector net", .{});
         return .{ .net = net, .bit = 0 };
     }
-    if (ex.tag(ex.rhs(t)) == .range) return r.fail(tok, "§7.6: a pass switch terminal is a scalar net or a bit-select of a vector net", .{});
+    if (ex.tag(ex.rhs(t)) == .range or ex.tag(ex.rhs(t)) == .indexed_range) {
+        // §7.1.6: an array's lanes split a part-select as they split a
+        // vector (iverilog's pr3296466d `tran t3[1:0](a, c[1:0])`).
+        if (lanes > 1) {
+            const s = try sink(r, e, t, tok, .gate);
+            if (s.width == lanes) return .{ .net = s.net, .bit = s.lo + lane };
+        }
+        return r.fail(tok, "§7.6: a pass switch terminal is a scalar net or a bit-select of a vector net", .{});
+    }
     const at = try r.scalarSlot(ex.lhs(t));
     const net = r.net_of.get(at) orelse return r.fail(tok, "a switch's output and inout terminals are nets", .{});
     const index = try r.declaredBound(ex.rhs(t), tok);
@@ -1650,8 +1705,9 @@ fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, port: Ast.Port, conn:
         .input => .{ .receive = .{ .expr = conn.expr, .scope = r.scope, .tok = conn.main_tok, .slice = .{ .lo = lo, .total = whole } } },
         // The instance's bits [lo, lo + w) of the expression, which may be
         // a concatenation (the LRM's own `.out({bushigh, buslow})`): each
-        // operand's share, rightmost operand the lowest bits.
-        .output => blk: {
+        // operand's share, rightmost operand the lowest bits. An inout's
+        // share is joined as `bindPort` joins a select (iverilog's pr2219441).
+        .output, .inout => blk: {
             var leaves: std.ArrayList(Ast.ExprId) = .empty;
             try concatLeaves(r, conn.expr, &leaves);
             var picked: std.ArrayList(Sink) = .empty;
@@ -1665,9 +1721,10 @@ fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, port: Ast.Port, conn:
                 if (a < b) try picked.insert(r.arena, 0, .{ .net = s.net, .lo = s.lo + (a - at), .width = b - a });
                 at += s.width;
             }
-            break :blk .{ .send = .{ .operands = picked.items, .tok = conn.main_tok } };
+            const s: Sinks = .{ .operands = picked.items, .tok = conn.main_tok };
+            break :blk if (port.direction == .output) .{ .send = s } else .{ .join = s };
         },
-        .inout, .unspecified => r.fail(conn.main_tok, refused, .{}),
+        .unspecified => r.fail(conn.main_tok, refused, .{}),
     };
 }
 
@@ -2781,4 +2838,28 @@ test "§4.9 a net array element driven by a constant index" {
         \\initial #1 $display("%b%b%b", w[0], w[1], w[2]);
         \\endmodule
     , "z1z\n");
+}
+
+test "IEEE 1364-2005 §12.3.9.2 a port of another width converts as an assignment, §12.3.8 coerces a port used the other way" {
+    // Oracle: iverilog -g2005 prints this line for the same source. An
+    // output narrower than its net widens (zero, or a signed port's sign);
+    // an inout joins the bits both sides have; an input the module drives
+    // is coerced to inout; a tran array splits a part-select (§7.1.6).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var bag = diag.Bag.init(arena.allocator());
+    var output = std.Io.Writer.Allocating.init(arena.allocator());
+    try root.run(arena.allocator(),
+        \\module lo(output [1:0] o, output signed [1:0] so, inout [1:0] io, input [1:0] ci);
+        \\  assign o = 2'b10; assign so = 2'b10; assign io = 2'b01; assign ci = 2'b11;
+        \\endmodule
+        \\module top;
+        \\  wire [3:0] o, so, io; wire [2:0] ci; wire [3:0] t; wire [1:0] p;
+        \\  lo u(o, so, io, ci);
+        \\  tran g[1:0](p, t[2:1]);
+        \\  assign p = 2'b10;
+        \\  initial #1 $display("%b %b %b %b %b", o, so, io, ci, t);
+        \\endmodule
+    , .{ .language = .v1364_2005 }, &bag, &output.writer);
+    try std.testing.expectEqualStrings("0010 1110 zz01 z11 z10z\n", output.written());
 }

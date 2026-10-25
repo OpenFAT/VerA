@@ -1975,7 +1975,7 @@ fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []co
 /// window's, or an instance-array member's one output bit; else all of them.
 fn driverBits(d: Driver, width: u32) [2]u32 {
     const bit: ?u32 = switch (d.source) {
-        .bridge => |b| return .{ b.dst_lo, b.dst_lo + b.width },
+        .bridge => |b| return .{ b.dst_lo, b.dst_lo + b.width + b.ext },
         .gate => |g| g.out_bit,
         .mos => |m| m.out_bit,
         .udp => |u| u.out_bit,

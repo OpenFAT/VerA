@@ -89,7 +89,7 @@ pub const Source = union(enum) {
 pub const Mos = struct { n_type: bool, resistive: bool, data_net: ?u32 = null };
 
 /// `dnet.Bridge` with its source slot's first word.
-pub const Bridge = struct { src_off: u32, src_lo: u32, dst_lo: u32, width: u32 };
+pub const Bridge = struct { src_off: u32, src_lo: u32, dst_lo: u32, width: u32, ext: u32 = 0, sign_at: ?u32 = null };
 
 /// `dnet.Udp`'s table: `ins` inputs, its state at time 0.
 pub const Udp = struct { rows: []const dnet.UdpRow, sequential: bool, ins: u32, state: Bit };
@@ -499,6 +499,9 @@ pub fn bridge(s: *State, i: u32) Error!void {
     for (0..b.width) |j| {
         setBit(planes, b.dst_lo + @as(u32, @intCast(j)), shown(s, b.src_off, b.src_lo + @as(u32, @intCast(j))));
     }
+    // `digital.net.Bridge`'s §12.3.9.2 widening.
+    const ext_bit = if (b.sign_at) |at| shown(s, b.src_off, at) else Int.Bit.zero;
+    for (0..b.ext) |j| setBit(planes, b.dst_lo + b.width + @as(u32, @intCast(j)), ext_bit);
     return drive(s, i, planes, false);
 }
 

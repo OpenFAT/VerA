@@ -1974,7 +1974,7 @@ fn netTables(self: *Emitter) Error!void {
                 };
                 try self.print("0, .source = .{{ .mos = .{{ .n_type = {}, .resistive = {}, .data_net = {?d} }} }} }},", .{ m.n_type, m.resistive, data_net });
             },
-            .bridge => |b| try self.print("0, .source = .{{ .bridge = .{{ .src_off = {d}, .src_lo = {d}, .dst_lo = {d}, .width = {d} }} }} }},", .{ self.off[b.src], b.src_lo, b.dst_lo, b.width }),
+            .bridge => |b| try self.print("0, .source = .{{ .bridge = .{{ .src_off = {d}, .src_lo = {d}, .dst_lo = {d}, .width = {d}, .ext = {d}, .sign_at = {?d} }} }} }},", .{ self.off[b.src], b.src_lo, b.dst_lo, b.width, b.ext, b.sign_at }),
             .pull => |b| try self.print("0, .source = .{{ .pull = .{t} }} }},", .{b}),
         }
     }
