@@ -7,8 +7,8 @@
 //! §15.3.5's period or §15.3.6's level window. A violation is reported
 //! (W1199), toggles the notifier (§15.5, Table 15-13) and calls
 //! `Run.tchk_hook` (VAMS 12.31.4 cbTchkViolation). A form this file does
-//! not evaluate (§15.5.2's conditions, a negative $nochange end offset) is
-//! refused by name (E1149), never accepted and ignored.
+//! not evaluate (a negative $nochange end offset) is refused by name
+//! (E1149), never accepted and ignored.
 //!
 //! When a check is judged (docs/specification/Vague_Decisions.md VD-104): at the event, in
 //! the order the time step's events arrive. A reference and a data event
@@ -139,6 +139,12 @@ pub const Tchk = struct {
     /// bits (Table 15-12 lets it be negative), [1] the end offset.
     lim: [2]u64 = .{ 0, 0 },
     notifier: ?u32 = null,
+    /// `$setuphold`/`$recrem`'s stamptime and checktime conditions
+    /// (A.7.5.1 arguments 6 and 7), `.none` when absent: an event is a
+    /// timestamp only while the first holds and a timecheck only while the
+    /// second does, read as §15.6 reads a `&&&` condition (`enabled`).
+    stamp_cond: Ast.ExprId = .none,
+    check_cond: Ast.ExprId = .none,
     /// Run-time: the occurrences of [0] and [1] (`$width`: [0] is the
     /// pulse's open timestamp, cleared once measured; the skew checks:
     /// [0].last the open window's timestamp event; `$nochange`: [0].last
@@ -151,7 +157,7 @@ pub const Tchk = struct {
     comptime {
         std.debug.assert(@sizeOf(Event) == 40);
         std.debug.assert(@sizeOf(Stamp) == 40);
-        std.debug.assert(@sizeOf(Tchk) == 200);
+        std.debug.assert(@sizeOf(Tchk) == 208);
     }
 };
 
@@ -212,15 +218,12 @@ fn compileOne(r: *Run, t: *const Ast.TimingCheck) Error!void {
         .setuphold, .recrem => {
             c.ev[0] = try event(r, t, 0);
             c.ev[1] = try event(r, t, 1);
-            // §15.5.1, §15.5.2: the timestamp and timecheck conditions
-            // serve negative timing checks (§15.8). The delayed signals are
-            // driven (`delayedDrivers`).
-            for (5..7) |k| if (arg(t, k) != .none) return r.failWith(
-                .E1149,
-                r.file.exprs.mainTok(arg(t, k)),
-                "argument {d} of `{s}` (a stamptime or checktime condition, or a delayed signal: IEEE 1364-2005 §15.5.1, §15.5.2) is not evaluated by VerA's digital engine",
-                .{ k + 1, name },
-            );
+            // Table 15-3's timestamp and timecheck conditions (§15.8's
+            // negative checks); the delayed signals are driven
+            // (`delayedDrivers`).
+            c.stamp_cond = arg(t, 5);
+            c.check_cond = arg(t, 6);
+            for ([_]Ast.ExprId{ c.stamp_cond, c.check_cond }) |x| if (x != .none) try compile.checkExpr(r, x);
             const a = try signedLimit(r, t, arg(t, 2));
             const b = try signedLimit(r, t, arg(t, 3));
             // §15.2.3/§15.2.6: the first limit is $setuphold's setup (the
@@ -692,7 +695,8 @@ fn simultaneous(c: *const Tchk) bool {
 /// simultaneous pair whose data event came first.
 fn reference(r: *Run, i: u32, now: u64) Error!void {
     const c = &r.tchks.items[i];
-    c.at[0].note(now);
+    if (try enabled(r, c.scope, c.stamp_cond)) c.at[0].note(now);
+    if (!try enabled(r, c.scope, c.check_cond)) return;
     if (c.lim[0] > 0) if (c.at[1].earlier(now)) |d| if (d +| c.lim[0] > now) try violation(r, i, d, now);
     if (simultaneous(c) and c.at[1].at(now) and !c.at[1].reported) {
         c.at[1].reported = true;
@@ -706,7 +710,8 @@ fn reference(r: *Run, i: u32, now: u64) Error!void {
 /// §15.2.3/§15.2.6); one report per data event's time.
 fn data(r: *Run, i: u32, now: u64) Error!void {
     const c = &r.tchks.items[i];
-    c.at[1].note(now);
+    if (try enabled(r, c.scope, c.stamp_cond)) c.at[1].note(now);
+    if (!try enabled(r, c.scope, c.check_cond)) return;
     const ts = c.at[0].last orelse return;
     const hit = if (ts == now) simultaneous(c) else now < ts +| c.lim[1];
     if (hit and !c.at[1].reported) {
