@@ -731,7 +731,10 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                 // supplying an address for each dimension".
                 if (ex.tag(ex.rhs(x)) == .range or ex.tag(ex.rhs(x)) == .indexed_range)
                     return self.exprFail(ex.rhs(x), "§5.2.2: each array dimension takes an index, not a part-select");
-                _ = try inferValue(self, ex.rhs(x));
+                // §4.8.1 refuses a real index of a vector's select; an array
+                // address is refused the same way (iverilog's
+                // array_index_real_fail; 1364 lists only the vector case).
+                if ((try inferValue(self, ex.rhs(x))).real) return self.exprFail(ex.rhs(x), "§4.8.1: a real is not an array index");
             }
             const base = try self.slot(x);
             if (self.events.contains(base)) return self.exprFail(e, "§9.7.3: a named event holds no data; it can only be triggered and waited on");
@@ -1335,8 +1338,15 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     const ex = &self.file.exprs;
                     if (s.args.len < 2 or s.args.len > 4)
                         return self.fail(tok, "$readmemb/$readmemh take (file, memory [, start [, finish]])", .{});
-                    if (s.args[0] == .none or ex.tag(s.args[0]) != .str_literal)
-                        return self.exprFail(s.args[0], "§17.2.9 Syntax 17-7: the memory file name is a string literal");
+                    // Syntax 17-7's `" file_name "` is §17.2.1's placeholder,
+                    // "a character string or ... a reg containing a character
+                    // string": a literal, or an integral expression whose
+                    // characters are read when the task runs (pr690, pr704).
+                    if (s.args[0] == .none) return self.fail(tok, "§17.2.9 Syntax 17-7: the memory file name is a string", .{});
+                    if (ex.tag(s.args[0]) != .str_literal) {
+                        try checkExpr(self, s.args[0]);
+                        if (typeOf(self, s.args[0]).real) return self.exprFail(s.args[0], "§17.2.9: the memory file name is a string, not a real");
+                    }
                     // ponytail: one dimension; §17.2.9's order over several
                     // is the row-major walk, when a source loads one.
                     const arr = if (s.args[1] == .none or ex.tag(s.args[1]) != .ident) null else self.arrays.get(try self.slot(s.args[1]));
@@ -1676,6 +1686,7 @@ fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
     var s = scope;
     while (true) : (s = self.scope_info.items[s].parent) {
         if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
+        if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
         if (!self.scope_info.items[s].lexical) return null;
     }
 }
@@ -1956,6 +1967,7 @@ fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
         var x = e;
         while (ex.tag(x) == .index) : (x = ex.lhs(x)) {
             try checkExpr(self, ex.rhs(x));
+            if (typeOf(self, ex.rhs(x)).real) return self.exprFail(ex.rhs(x), "§4.8.1: a real is not an array index");
         }
         return;
     }
@@ -2393,6 +2405,8 @@ test "§5.2.1 a part-select names its more significant bit first; bounds and wid
     try expectRejected("module m; reg [7:0] a; reg b; initial b = a[1.0:0]; endmodule", "a real is not a part-select bound");
     try expectRejected("module m; reg [7:0] a; real r; reg [1:0] b; initial b = a[r +: 2]; endmodule", "a real is not a part-select index");
     try expectRejected("module m; reg [7:0] a; real r; reg b; initial b = a[r]; endmodule", "a real is not a bit-select index");
+    try expectRejected("module m; reg [1:0] a[1:0]; real r; initial a[r] = 2'b10; endmodule", "a real is not an array index");
+    try expectRejected("module m; reg [1:0] a[1:0], x; real r; initial x = a[r]; endmodule", "a real is not an array index");
 }
 
 test "§5.1.1 a real takes no bitwise operator and is no concatenation operand" {
@@ -2429,6 +2443,10 @@ test "§10.4.4 a function body has no timing, nonblocking or procedural continuo
 test "§10.2.3 an automatic variable is neither a nonblocking target nor monitored" {
     try expectRejected("module m; task automatic t; integer k; k <= 1; endtask initial t; endmodule", "a nonblocking assignment cannot name a variable of an automatic task");
     try expectRejected("module m; task automatic t; integer k; $monitor(\"%0d\", k); endtask initial t; endmodule", "$monitor cannot name a variable of an automatic task");
+    // A named block's variable inside an automatic task is automatic too
+    // (§10.2.1; iverilog's automatic_error3), whether or not the task is called.
+    try expectRejected("module m; reg g; task automatic t; begin : b reg l; g <= @(l) 0; end endtask endmodule", "a nonblocking assignment's event control cannot name a variable of an automatic task");
+    try expectRejected("module m; task automatic t; begin : b reg l; l <= 0; end endtask initial t; endmodule", "a nonblocking assignment cannot name a variable of an automatic task");
 }
 
 test "§9.3 assign takes a variable, force a variable or net; a select is of a net, by constant" {
@@ -2450,7 +2468,8 @@ test "A.6.9 a hierarchical task name walks instances before the task" {
 
 test "§17 system task argument forms are checked before any process runs" {
     try expectRejected("module m; initial $stop(0, 1); endmodule", "$stop accepts zero or one argument");
-    try expectRejected("module m; reg [7:0] mem [0:3]; reg [8*4:1] f; initial $readmemh(f, mem); endmodule", "the memory file name is a string literal");
+    // §17.2.1's file_name may be a reg holding the characters; a real is no string.
+    try expectRejected("module m; reg [7:0] mem [0:3]; real f; initial $readmemh(f, mem); endmodule", "the memory file name is a string, not a real");
     try expectRejected("module m; reg [7:0] mem [0:1][0:1]; initial $readmemh(\"x.hex\", mem); endmodule", "load a one-dimensional unpacked array");
     try expectRejected("module m; initial $readmemh(\"x.hex\"); endmodule", "take (file, memory [, start [, finish]])");
     try expectRejected("module m; initial $q_initialize(1, 1, 5); endmodule", "the §17.6 queue tasks take four arguments");

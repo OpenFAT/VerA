@@ -170,8 +170,6 @@ ispras-1364/test_09_06_00_3.v
 ispras-1364/test_09_09_02_1.v
 ispras-1364/test_09_09_02_2.v
 ispras-1364/test_14_02_04_4_2.v
-ispras-1364/test_14_06_01_1.v
-ispras-1364/test_15_05_02_2.v
 ispras-1364/test_15_05_02_3.v
 ispras-1364/test_15_06_00_1.v
 ispras-1364/test_15_06_00_2.v
@@ -180,13 +178,11 @@ ispras-1364/test_17_02_09_1.v
 ispras-1364/test_17_05_04_1.v
 ispras-1364/test_17_05_04_2.v
 ivtest/contrib/pic.v
-ivtest/ivltests/array_index_real_fail.v
 ivtest/ivltests/array_packed_2d.v
 ivtest/ivltests/array_word_check.v
 ivtest/ivltests/assign3.2E.v
 ivtest/ivltests/assign_deassign_pv.v
 ivtest/ivltests/attrib_expr.v
-ivtest/ivltests/automatic_error3.v
 ivtest/ivltests/br1000.v
 ivtest/ivltests/br1029c.v
 ivtest/ivltests/br916a.v
@@ -236,8 +232,6 @@ ivtest/ivltests/constfunc_packed_write_undefined.v
 ivtest/ivltests/constfunc_repeat_unknown.v
 ivtest/ivltests/constfunc_resize_signedness.v
 ivtest/ivltests/constfunc_signal_context_sign.v
-ivtest/ivltests/decl_before_use1.v
-ivtest/ivltests/decl_before_use5.v
 ivtest/ivltests/decl_before_use6.v
 ivtest/ivltests/def_nettype_none.v
 ivtest/ivltests/delayed_sfunc.v
@@ -254,12 +248,7 @@ ivtest/ivltests/force_lval_part.v
 ivtest/ivltests/force_release_reg_pv.v
 ivtest/ivltests/format.v
 ivtest/ivltests/func_return_index.v
-ivtest/ivltests/gate_connect1.v
 ivtest/ivltests/gate_connect2.v
-ivtest/ivltests/gate_instance_array_shadow_fail.v
-ivtest/ivltests/gate_instance_function_shadow_fail.v
-ivtest/ivltests/gate_instance_hierarchy_shadow_fail.v
-ivtest/ivltests/gate_instance_shadow_fail.v
 ivtest/ivltests/include1.v
 ivtest/ivltests/include2.v
 ivtest/ivltests/include3.v
@@ -275,8 +264,6 @@ ivtest/ivltests/nba_repeat_wide_count.v
 ivtest/ivltests/nb_ec_concat.v
 ivtest/ivltests/nb_ec_multi_ev.v
 ivtest/ivltests/nb_ec_repeat_auto.v
-ivtest/ivltests/no_timescale_in_module.v
-ivtest/ivltests/parameter_named_empty.v
 ivtest/ivltests/param_string.v
 ivtest/ivltests/param_test3.v
 ivtest/ivltests/param-width.v
@@ -288,7 +275,6 @@ ivtest/ivltests/pr1628300.v
 ivtest/ivltests/pr1716276.v
 ivtest/ivltests/pr1752353.v
 ivtest/ivltests/pr1752823b.v
-ivtest/ivltests/pr1755629.v
 ivtest/ivltests/pr1787423b.v
 ivtest/ivltests/pr1787423.v
 ivtest/ivltests/pr1830834.v
@@ -331,8 +317,6 @@ ivtest/ivltests/pr434.v
 ivtest/ivltests/pr478.v
 ivtest/ivltests/pr498b.v
 ivtest/ivltests/pr584.v
-ivtest/ivltests/pr690.v
-ivtest/ivltests/pr704.v
 ivtest/ivltests/pr707.v
 ivtest/ivltests/pr938b.v
 ivtest/ivltests/pv_wr_vec4a_nb_ec.v
@@ -346,8 +330,6 @@ ivtest/ivltests/real_unary_minus_nan.v
 ivtest/ivltests/real_unary_minus_zero.v
 ivtest/ivltests/repeat_signed_one_bit.v
 ivtest/ivltests/resetall.v
-ivtest/ivltests/rise_fall_decay2.v
-ivtest/ivltests/rise_fall_delay3.v
 ivtest/ivltests/scanf4.v
 ivtest/ivltests/scope2b.v
 ivtest/ivltests/scope4.v
@@ -359,7 +341,6 @@ ivtest/ivltests/shellho1.v
 ivtest/ivltests/shift6.v
 ivtest/ivltests/signed_a.v
 ivtest/ivltests/specify_01.v
-ivtest/ivltests/specparam_specify_reference_order.v
 ivtest/ivltests/sqrt32.v
 ivtest/ivltests/strength_net_change.v
 ivtest/ivltests/strength_net_release.v
@@ -367,11 +348,9 @@ ivtest/ivltests/string12.v
 ivtest/ivltests/sv_lval_concat_uarray1.v
 ivtest/ivltests/sv_lval_concat_uarray2.v
 ivtest/ivltests/sv_task_call_instance_lookup.v
-ivtest/ivltests/switch_instance_shadow_fail.v
 ivtest/ivltests/timing_check_delayed_signals.v
 ivtest/ivltests/timing_check_syntax.v
 ivtest/ivltests/udp_dff.v
-ivtest/ivltests/udp_instance_shadow_fail.v
 ivtest/ivltests/undef.v
 ivtest/ivltests/uwire_fail.v
 ivtest/ivltests/vardly_undefined_vec.v

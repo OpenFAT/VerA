@@ -698,7 +698,7 @@ fn parseModuleItemBody(self: *Parser, b: *Body) Error!void {
             // `specify_item`. This is the module-item half.
             if (std.mem.eql(u8, w, "specparam")) {
                 if (self.gen_depth > 0) return self.failAt(self.pos, .E0229, "a specparam declaration", .{});
-                return parse_specify.parseSpecparamDecl(self, b);
+                return parse_specify.parseSpecparamDecl(self, b, false);
             }
             // A.2.7 `task_declaration`, IEEE 1364-2005 §10.2: a module item
             // of every module (A.1.4), enabled only from §7.2.2's discrete

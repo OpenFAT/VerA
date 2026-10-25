@@ -341,6 +341,9 @@ pub const Run = struct {
     /// key is the scope the name was declared in plus the interned name. The
     /// scope in force is `self.scope`, which the executing process carries.
     names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// Each `names` entry's declaration token, for `lookupAt` (by name, not
+    /// slot: a port's slot is its connection's, declared in another module).
+    bound_at: std.AutoHashMapUnmanaged(Name, u32) = .empty,
     scope: u32 = 0,
     /// IEEE 1364-2005 §26.6.19(e): the lexical scope of an expression a
     /// VPI application may evaluate later, keyed by (instance, expression).
@@ -400,6 +403,10 @@ pub const Run = struct {
     /// The storage of automatic tasks and functions, which §10.2.3 keeps
     /// out of constructs that might outlive an activation.
     auto_slots: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// The scopes whose variables are automatic: an automatic task's or
+    /// function's frame, and the named blocks inside it (§10.2.1: "all
+    /// items declared inside automatic tasks" are allocated per call).
+    auto_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// The saved storage of the automatic activations in progress.
     saved_planes: std.ArrayList(u64) = .empty,
     /// §10.2.3 the activations of recursive timed tasks: the one the
@@ -416,6 +423,12 @@ pub const Run = struct {
     /// and a downward hierarchical reference walks these before it reaches a
     /// slot at all.
     instances: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// IEEE 1364-2005 §12.7 the gate, switch and UDP instance names of each
+    /// scope, each to its token: no storage, but declared there, so they hide
+    /// an outer name of the same spelling from `lookupAt`, `upward` and a call
+    /// (iverilog refuses the hidden use the same way); `lookupAt` from the
+    /// instance on, a call and `upward` wherever it is.
+    prim_names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
     /// §12.5 the scope of each named block that declares something, keyed by
     /// the scope it runs in and its statement (`blockScope`).
     block_scopes: std.AutoHashMapUnmanaged(struct { scope: u32, stmt: Ast.StmtId }, u32) = .empty,
@@ -567,6 +580,8 @@ pub const Run = struct {
     /// continuous assignment's or gate's delay be one, which §6.1.3 reads
     /// each time the driver schedules (`exec`'s `.continuous`).
     driver_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
+    /// The same for a §7.6 pass switch's delays, by `trans` index.
+    tran_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
     /// IEEE 1364-2005 §14.3.3: per module path source slot (a `.path`
     /// watch), its last transition, which picks the path whose delay a
     /// destination transition takes (`waiters.store` fills it).
@@ -1010,6 +1025,7 @@ pub const Run = struct {
         var s = self.scope;
         while (true) {
             if (self.instances.get(.{ .scope = s, .str = name })) |child| return child;
+            if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
             const info = self.scope_info.items[s];
             if (info.lexical) {
                 if (info.name == name and info.index == null) return s;
@@ -1145,7 +1161,8 @@ pub const Run = struct {
                 self.exprFail(e, "undeclared digital variable");
         }
         if (ex.tag(e) != .ident) return self.exprFail(e, "only whole-variable lvalues are implemented");
-        return self.lookup(self.scope, ex.strOf(e)) orelse self.exprFail(e, "undeclared digital variable");
+        return self.lookupAt(self.scope, ex.strOf(e), ex.mainTok(e)) orelse
+            if (self.lookup(self.scope, ex.strOf(e)) != null and !self.instanceHides(self.scope, ex.strOf(e), ex.mainTok(e))) self.exprFail(e, "a name is used before its declaration") else self.exprFail(e, "undeclared digital variable");
     }
     /// `text`, a part of the hierarchical name at token `tok` with `[]`
     /// selects, with each one's index from `indices` (from `used` on) folded
@@ -1242,6 +1259,38 @@ pub const Run = struct {
 
     /// §12.7 a name as seen from `scope`: declared there, or in an enclosing
     /// scope of the same module, never across an instance boundary.
+    /// `lookup` from a statement or expression at token `tok`. A name is
+    /// visible from its declaration on, so one declared after `tok` leaves
+    /// an outer one in view, or none (iverilog's decl_before_use: 1364
+    /// states the rule only for specparams, §4.10.3, and events, §9.7.3,
+    /// and leaves it open elsewhere). A gate, switch or UDP instance named
+    /// the same hides the outer name from the instance on (iverilog's
+    /// gate_instance_shadow_fail and gate_instance_reference_order).
+    pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
+        var s = scope;
+        while (true) {
+            if (self.names.get(.{ .scope = s, .str = str })) |at| {
+                // Elaboration's constant contexts (a range over a parameter
+                // declared later, §12.2) see the whole scope.
+                if (self.growing != null or (self.bound_at.get(.{ .scope = s, .str = str }) orelse 0) <= tok) return at;
+            } else if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return null;
+            const info = self.scope_info.items[s];
+            if (!info.lexical) return null;
+            s = info.parent;
+        }
+    }
+    /// Whether `lookupAt` found nothing because a primitive instance of
+    /// that name, at or before `tok`, hides the outer one.
+    fn instanceHides(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) bool {
+        var s = scope;
+        while (true) {
+            if (self.names.contains(.{ .scope = s, .str = str })) return false;
+            if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return true;
+            const info = self.scope_info.items[s];
+            if (!info.lexical) return false;
+            s = info.parent;
+        }
+    }
     pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
         var s = scope;
         while (true) {
@@ -1349,6 +1398,7 @@ pub const Run = struct {
         const entry = try self.names.getOrPut(self.arena, .{ .scope = self.scope, .str = name });
         if (entry.found_existing) return self.fail(tok, "duplicate digital variable", .{});
         entry.value_ptr.* = at;
+        try self.bound_at.put(self.arena, entry.key_ptr.*, tok);
     }
     /// A vector slot's declared `[msb:lsb]` (an array's first element's is
     /// every element's), `[w-1:0]` when it declares none.
@@ -1626,8 +1676,17 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     var finest: Time.Quantum = default_quantum;
     var set: usize = 0;
     const locals = try arena.alloc(Local, file.modules.len);
+    const tags = tokens.items(.tag);
     for (file.modules, locals) |*def, *l| {
         l.* = .{};
+        // A `timescale between a module's header and its `endmodule`: §19.8
+        // gives a directive to "all modules that follow", and 1364 has no
+        // "shall" on where it is written; VerA refuses it, as iverilog does
+        // (no_timescale_in_module).
+        var end = def.main_tok;
+        while (end + 1 < tags.len and tags[end] != .kw_endmodule) end += 1;
+        for (times) |event| if (event.at > r.starts[def.main_tok] and event.at < r.starts[end])
+            return r.fail(def.main_tok, "§19.8: a `timescale directive is written outside a module definition, not inside one", .{});
         for (times) |event| {
             if (event.at > r.starts[def.main_tok]) continue;
             const t = event.value orelse {
@@ -1743,7 +1802,10 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
             .gate => |g| for (g.ins) |in| {
                 try compile.checkExpr(&r, in);
                 const w = compile.typeOf(&r, in).width;
-                if (w != 1 and !(g.lane != null and w == g.lanes)) return r.exprFail(in, "a gate's input terminal is one bit, or one per instance of an array");
+                // A single gate reads a vector input's LSB: §7.1.6 sizes only
+                // an array's terminals, and iverilog (gate_connect1) and the
+                // other simulators read bit 0.
+                if (g.lane != null and w != 1 and w != g.lanes) return r.exprFail(in, "a gate's input terminal is one bit, or one per instance of an array");
                 try compile.sensitivity(&r, in, &watched);
             },
             .mos => |mo| for ([_]Ast.ExprId{ mo.data, mo.gate }) |in| {
@@ -1840,8 +1902,14 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     r.trans = try arena.alloc(Tran, e.trans.items.len);
     for (e.trans.items, r.trans, 0..) |t, *dst, i| {
         dst.* = t.tran;
-        if (t.tran.ctrl == .none) continue;
         r.scope = t.scope;
+        // §7.6's delays, a variable read when the control changes as a
+        // driver's is (iverilog's rise_fall_delay3).
+        if (t.delay.rise != .none) dst.delay = if (try constantDelay(&r, t.delay)) try r.declaredDelay3(t.delay, t.tok) else blk: {
+            try r.tran_delays.put(arena, @intCast(i), t.delay);
+            break :blk .{ .present = true };
+        };
+        if (t.tran.ctrl == .none) continue;
         try compile.checkExpr(&r, t.tran.ctrl);
         var watched: std.ArrayList(u32) = .empty;
         try compile.sensitivity(&r, t.tran.ctrl, &watched);
@@ -2556,6 +2624,7 @@ test "timescale provenance rejects malformed or later directives" {
     // §19.8: "It shall be an error if some modules have a `timescale
     // specified and others do not": here `resetall takes it from `top`.
     try expectRejected("`timescale 1ns/1ns\nmodule a; endmodule\n`resetall\nmodule top; a u(); endmodule", "others do not");
+    try expectRejected("`timescale 1ns/1ps\nmodule top;\n`timescale 1us/1ns\nendmodule", "outside a module definition");
 }
 
 // IEEE 1364 §19.8: a `timescale applies to the modules that follow it, until
@@ -2773,4 +2842,19 @@ test "§4.6.5 uwire drivers of disjoint bits are legal" {
 
 test "§7.9 a uwire with two drivers is an error, not a resolution" {
     try expectRejected("module m; uwire w; assign w = 1'b0; assign w = 1'b1; endmodule", "a uwire net accepts a single driver per bit");
+}
+
+test "a name is visible from its declaration on (iverilog's decl_before_use)" {
+    // A variable or localparam read before it is declared is refused; a
+    // block's later local leaves the outer name in view, and §4.5's
+    // implicit net is the scope's from its start.
+    try expectRejected("module m; initial begin v = 1; end reg v; endmodule", "a name is used before its declaration");
+    try expectRejected("module m; initial $display(\"%b\", w); localparam w = 8'hAA; endmodule", "a name is used before its declaration");
+    try expectRun("module m; integer w = 5; initial begin : b $display(\"%0d\", w); end endmodule", "5\n");
+    try expectRun("module m; buf (a, c); buf (c, 1'b1); initial #1 $display(\"%b\", a); endmodule", "1\n");
+}
+
+test "§7.6 a pass switch's variable delay is read when its control changes" {
+    // iverilog's rise_fall_delay3: tranif1 #(d, 1) turns on d after en rises.
+    try expectRun("`timescale 1ns/1ns\nmodule m; reg [7:0] d = 3; reg en; wire i = 1; wire o; tranif1 #(d, 1) t(o, i, en); initial begin en = 0; #1 en = 1; #2 $display(\"%b\", o); #1 $display(\"%b\", o); end endmodule", "z\n1\n");
 }

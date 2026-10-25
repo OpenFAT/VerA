@@ -112,7 +112,7 @@ pub const Elab = struct {
     /// One row per elaborated instance: the definition and its name scope.
     insts: std.ArrayList(struct { module: *const Ast.ModuleDecl, scope: u32 }) = .empty,
     /// §7.6 pass switches, with the instance scope their control is read in.
-    trans: std.ArrayList(struct { tran: Tran, scope: u32, tok: u32 }) = .empty,
+    trans: std.ArrayList(struct { tran: Tran, scope: u32, tok: u32, delay: Ast.Delay3 = .{} }) = .empty,
     /// §6.6 the processes and variables of each elaborated generate block,
     /// with its scope; the variables for their §6.2.1 initializers.
     procs: std.ArrayList(struct { scope: u32, blocks: []const Ast.DiscreteBlock, vars: []const Ast.VarDecl }) = .empty,
@@ -654,8 +654,9 @@ fn ieee1364(r: *const Run) bool {
 /// IEEE 1364-2005 §12.2 the parameters `params` of `scope` (an instance, or a
 /// §12.5 named block, which `over` never reaches), in declaration order so a
 /// default may name an earlier one.
-fn declareParams(r: *Run, scope: u32, params: []const Ast.ParamDecl, over: []const Ast.ParamOverride) Error!void {
+fn declareParams(r: *Run, scope: u32, declared_params: []const Ast.ParamDecl, over: []const Ast.ParamOverride) Error!void {
     const arena = r.arena;
+    const params = try specifyOrder(r, declared_params);
     const g = r.growing.?;
     const path = if (r.real_card.len != 0) try scopePath(r, scope) else "";
     var positional: usize = 0;
@@ -693,11 +694,62 @@ fn declareParams(r: *Run, scope: u32, params: []const Ast.ParamDecl, over: []con
         try g.append(arena, slot_value);
         try r.params.put(arena, at, {});
         if (ty.real) try r.reals.put(arena, at, {});
-        if (p.is_spec) try r.specparams.put(arena, at, p.main_tok);
+        // A specify block's specparam has no declare-before-reference rule
+        // (§4.10.3 binds only one outside a block): token 0 never trips it.
+        if (p.is_spec) try r.specparams.put(arena, at, if (p.in_specify) 0 else p.main_tok);
         // §4.10.1: a select of a ranged parameter indexes its declared range.
         if (p.packed_range) |range| try putRange(r, at, range, p.main_tok);
     }
     r.values = g.items;
+}
+
+/// `params` with each specify-block specparam moved after the specify-block
+/// specparams its value names: §4.10.3 binds only one "declared outside a
+/// specify block" to be "declared before it is referenced", so inside one a
+/// specparam may name a later one (iverilog's
+/// specparam_specify_reference_order). A cycle keeps the written order,
+/// whose first forward name is then refused as undefined.
+fn specifyOrder(r: *Run, params: []const Ast.ParamDecl) Error![]const Ast.ParamDecl {
+    for (params) |p| {
+        if (p.in_specify) break;
+    } else return params;
+    const out = try r.arena.alloc(Ast.ParamDecl, params.len);
+    const placed = try r.arena.alloc(bool, params.len);
+    @memset(placed, false);
+    var n: usize = 0;
+    while (n < params.len) {
+        const before = n;
+        for (params, 0..) |p, i| {
+            if (placed[i]) continue;
+            // Anything else keeps its place after every earlier item.
+            const blocked = if (p.in_specify) blk: {
+                for (params, 0..) |q, j| if (!placed[j] and j != i and q.in_specify and names(r, p.default, q.name)) break :blk true;
+                break :blk false;
+            } else for (0..i) |j| {
+                if (!placed[j]) break true;
+            } else false;
+            if (blocked) continue;
+            out[n] = p;
+            placed[i] = true;
+            n += 1;
+        }
+        if (n == before) for (params, 0..) |p, i| if (!placed[i]) {
+            out[n] = p;
+            placed[i] = true;
+            n += 1;
+        };
+    }
+    return out;
+}
+
+/// Whether expression `e` reads the plain name `name`.
+fn names(r: *Run, e: Ast.ExprId, name: Ast.StrId) bool {
+    const ex = &r.file.exprs;
+    if (e == .none) return false;
+    if (ex.tag(e) == .ident) return ex.strOf(e) == name;
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| if (names(r, c, name)) return true;
+    return false;
 }
 
 /// IEEE 1364-2005 §12.3.10 Table 12-1's "warn" (W1160) for port `p` joined
@@ -803,6 +855,9 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
     // `default_nettype none: the name stays undeclared.
     const kind = std.meta.stringToEnum(Ast.NetKind, @tagName(t)) orelse return;
     _ = try mintNet(r, e, kind, 1, false, ex.strOf(x), tok);
+    // §4.5's implicit net is the scope's from its start, so a terminal
+    // before the one that declares it reads it (`lookupAt`).
+    try r.bound_at.put(r.arena, .{ .scope = scope, .str = ex.strOf(x) }, 0);
 }
 
 /// §5.10.4 a named event gets a slot so `-> e` and `@(e)` have a rendezvous
@@ -880,9 +935,12 @@ pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
     r.scope = at;
     try declareParams(r, at, b.params, &.{});
     try declareEvents(r, b.events);
+    const automatic = r.auto_scopes.contains(scope);
+    if (automatic) try r.auto_scopes.put(r.arena, at, {});
     for (b.vars) |v| {
         if (v.init != .none) return r.fail(v.main_tok, "an initialized block-local variable is not implemented", .{});
-        _ = try mintVar(r, v);
+        const slot = try mintVar(r, v);
+        if (automatic) try r.auto_slots.put(r.arena, slot, {});
     }
     return at;
 }
@@ -907,6 +965,7 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
             if (seen.found_existing and seen.value_ptr.* != g.main_tok)
                 return r.fail(g.main_tok, "§7.1.5: `{s}` names two instances; one instance identifier has one range", .{r.file.str(g.name)});
             seen.value_ptr.* = g.main_tok;
+            try r.prim_names.put(r.arena, .{ .scope = scope, .str = g.name }, g.main_tok);
         }
         const net = try drivenNet(r, e, scope, g.out, g.main_tok, .gate, .{ g.strength0, g.strength1 });
         const width = e.nets.items[net].resolved.width;
@@ -950,17 +1009,29 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
     // p-type sharing data and output. A pass switch joins its two nets into
     // one resolution while it conducts.
     for (items.switches) |sw| {
+        if (sw.name != .none) try r.prim_names.put(r.arena, .{ .scope = scope, .str = sw.name }, sw.main_tok);
         const resistive = switch (sw.kind) {
             .rcmos, .rnmos, .rpmos, .rtran, .rtranif0, .rtranif1 => true,
             .cmos, .nmos, .pmos, .tran, .tranif0, .tranif1 => false,
         };
         switch (sw.kind) {
             .nmos, .pmos, .rnmos, .rpmos, .cmos, .rcmos => {
-                const out = r.net_of.get(try r.scalarSlot(sw.terms[0])) orelse return r.fail(sw.main_tok, "a switch's output and inout terminals are nets", .{});
-                const width = e.nets.items[out].resolved.width;
+                // A.3.3's output terminal is a net_lvalue: a net, or a
+                // constant bit-select of one (`nmos (o[1], i, en)`, iverilog's
+                // rise_fall_decay2), which the switch drives alone.
+                const at: Sink = if (r.file.exprs.tag(sw.terms[0]) == .index)
+                    try sink(r, e, sw.terms[0], sw.main_tok, .gate)
+                else blk: {
+                    const n = r.net_of.get(try r.scalarSlot(sw.terms[0])) orelse return r.fail(sw.main_tok, "a switch's output and inout terminals are nets", .{});
+                    break :blk .{ .net = n, .lo = 0, .width = e.nets.items[n].resolved.width };
+                };
+                r.scope = scope;
+                const out = at.net;
+                const width = at.width;
                 // §7.1.5/§7.1.6 an instance array is one switch per index, as a gate array is.
                 const lanes: u32 = if (sw.range) |rg| try r.declaredWidth(rg, sw.main_tok) else 1;
-                if (width != 1 and width != lanes) return r.fail(sw.main_tok, "a MOS switch's output terminal is one bit, or one per instance of an array", .{});
+                if (width != 1 and (width != lanes or at.lo != 0)) return r.fail(sw.main_tok, "a MOS switch's output terminal is one bit, or one per instance of an array", .{});
+                const whole = e.nets.items[out].resolved.width;
                 const cmos = sw.kind == .cmos or sw.kind == .rcmos;
                 const n_type = sw.kind == .nmos or sw.kind == .rnmos;
                 for (0..lanes) |j| {
@@ -968,7 +1039,7 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
                     for (0..@as(usize, if (cmos) 2 else 1)) |half| try e.wires.append(r.arena, .{
                         .net = out,
                         .scope = scope,
-                        .source = .{ .mos = .{ .data = sw.terms[1], .gate = sw.terms[2 + half], .n_type = if (cmos) half == 0 else n_type, .resistive = resistive, .lane = lane, .out_bit = if (width == 1) null else lane } },
+                        .source = .{ .mos = .{ .data = sw.terms[1], .gate = sw.terms[2 + half], .n_type = if (cmos) half == 0 else n_type, .resistive = resistive, .lane = lane, .out_bit = if (whole == 1) null else if (width == 1) at.lo else lane } },
                         .delay = sw.delay,
                         .tok = sw.main_tok,
                     });
@@ -999,10 +1070,11 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
                             .state = if (gated) .unknown else .on,
                             .target = if (gated) .unknown else .on,
                             .resistive = resistive,
-                            .delay = try r.declaredDelay3(sw.delay, sw.main_tok),
                         },
                         .scope = scope,
                         .tok = sw.main_tok,
+                        // Typed and valued with the drivers' (`elaborateDeep`).
+                        .delay = sw.delay,
                     });
                 }
             },
@@ -1810,7 +1882,9 @@ fn checkLists(r: *Run, child: *const Ast.ModuleDecl, inst: *const Ast.Instance) 
             return r.fail(o.main_tok, "§12.2.2: a parameter value assignment mixes ordered and named parameter assignments", .{});
         if (o.name == .none) continue;
         const name = r.file.str(o.name);
-        for (inst.params[0..i]) |q| if (q.name == o.name) return r.fail(o.main_tok, "§12.2.2.2: parameter `{s}` is assigned twice", .{name});
+        // A.4.1.1's `.name()` assigns nothing (§12.2.2.2: "without assigning
+        // anything to it"), so it is no second assignment.
+        if (o.value != .none) for (inst.params[0..i]) |q| if (q.name == o.name and q.value != .none) return r.fail(o.main_tok, "§12.2.2.2: parameter `{s}` is assigned twice", .{name});
         const p = for (child.params) |p| {
             if (p.name == o.name) break p;
         } else return r.fail(o.main_tok, "§12.2.2.2: the module has no such parameter: `{s}`", .{name});
@@ -2007,7 +2081,10 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
         if (v.init != .none) return r.fail(v.main_tok, "an initialized task or function variable is not implemented", .{});
         _ = try mintVar(r, v);
     }
-    if (t.automatic) for (first..g.items.len) |at| try r.auto_slots.put(r.arena, @intCast(at), {});
+    if (t.automatic) {
+        try r.auto_scopes.put(r.arena, scope, {});
+        for (first..g.items.len) |at| try r.auto_slots.put(r.arena, @intCast(at), {});
+    }
     return .{ .scope = scope, .ports = ports, .result = result, .first = first, .count = @as(u32, @intCast(g.items.len)) - first };
 }
 
@@ -2099,6 +2176,7 @@ fn findUdp(file: *const Ast.SourceFile, name: Ast.StrId) ?*const Ast.UdpDecl {
 /// at time 0 whatever the instance delay.
 fn declareUdp(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, u: *const Ast.UdpDecl) Error!void {
     const tok = inst.main_tok;
+    try r.prim_names.put(r.arena, .{ .scope = scope, .str = inst.name }, inst.main_tok);
     if (inst.ports.len != u.ports.len) return r.fail(tok, "§8: a UDP instance connects its output and every input, in order", .{});
     for (inst.ports) |c| if (c.name != .none or c.expr == .none)
         return r.fail(c.main_tok, "§8: a UDP instance connects its terminals by position, none left open", .{});
@@ -2403,12 +2481,14 @@ fn sink(r: *Run, e: *Elab, arg: Ast.ExprId, tok: u32, comptime who: SinkOf) Erro
         .assign => .{ "a continuous assignment can only drive a net", "§6.1.1: a continuous assignment connects to" ++ lvalue },
         .gate => .{ "a gate's output terminal must be a net", "A.3.3: a gate's output terminal is a net_lvalue:" ++ lvalue },
     };
-    if (ex.tag(arg) == .ident or try r.indexedArray(arg) != null) {
+    // A.8.5's hierarchical_net_identifier: a net named through a scope
+    // (`what[i].slice`, iverilog's pr1755629) is a net as much as a local one.
+    if (ex.tag(arg) == .ident or ex.tag(arg) == .hier_ident or try r.indexedArray(arg) != null) {
         const net = r.net_of.get(try netSlot(r, arg, tok)) orelse return r.exprFail(arg, not_net);
         return .{ .net = net, .lo = 0, .width = e.nets.items[net].resolved.width };
     }
     // §6.1.1/A.8.5: the select may stand on a net array element, `b[i][j]`.
-    if (ex.tag(arg) != .index or (ex.tag(ex.lhs(arg)) != .ident and try r.indexedArray(ex.lhs(arg)) == null)) return r.exprFail(arg, refused);
+    if (ex.tag(arg) != .index or (ex.tag(ex.lhs(arg)) != .ident and ex.tag(ex.lhs(arg)) != .hier_ident and try r.indexedArray(ex.lhs(arg)) == null)) return r.exprFail(arg, refused);
     const rg = ex.rhs(arg);
     const index = switch (ex.tag(rg)) {
         .range => Ast.ExprId.none,
@@ -2891,4 +2971,46 @@ test "§10.4.5 a constant function's disable of its own named block ends the blo
         \\  initial $display("%0d", q);
         \\endmodule
     , "8\n");
+}
+
+test "§12.7 a gate, switch or UDP instance name hides an outer name of the same spelling" {
+    // iverilog's gate_instance_shadow_fail family: the inner `i_g` is an
+    // instance, so neither the outer variable nor the outer function is
+    // what `i_g` names inside the block.
+    try expectRejected("module m; integer i_g = 23; if (1) begin : g wire o; and i_g(o, 1'b1, 1'b1); initial $display(\"%0d\", i_g); end endmodule", "undeclared digital variable");
+    try expectRejected("module m; function integer i_g(input integer v); i_g = v; endfunction if (1) begin : g wire o; initial $display(\"%0d\", i_g(1)); and i_g(o, 1'b1, 1'b1); end endmodule", "undeclared function");
+    // Only from the instance on (iverilog's gate_instance_reference_order).
+    try expectRun("module m; parameter i_g = 23; if (1) begin : g wire o; initial #1 $display(\"%0d\", i_g); and i_g(o, 1'b1, 1'b1); end endmodule", "23\n");
+    // The neighbour: a differently named gate hides nothing.
+    try expectRun("module m; integer i_g = 23; if (1) begin : g wire o; and a(o, 1'b1, 1'b1); initial $display(\"%0d\", i_g); end endmodule", "23\n");
+}
+
+test "§12.2.2.2 an empty named parameter assignment assigns nothing, so it is no second assignment" {
+    // iverilog's parameter_named_empty.
+    try expectRun("module M #(parameter V = 1); endmodule module t; M #(.V(), .V()) a(); M #(.V(), .V(2)) b(); M #(.V(3), .V()) c(); initial $display(\"%0d %0d %0d\", a.V, b.V, c.V); endmodule", "1 2 3\n");
+    try expectRejected("module M #(parameter V = 1); endmodule module t; M #(.V(1), .V(), .V(2)) a(); endmodule", "is assigned twice");
+}
+
+test "§4.10.3 a specify block's specparam may name a later one of the block" {
+    // Only a specparam "declared outside a specify block shall be declared
+    // before it is referenced" (iverilog's specparam_specify_reference_order).
+    try expectRun("module m; specify specparam v = d + 1; specparam d = 41; endspecify initial $display(\"%0d\", v); endmodule", "42\n");
+    try expectRejected("module m; specparam v = d; specparam d = 41; initial $display(\"%0d\", v); endmodule", "");
+}
+
+test "A.3.3 a MOS switch drives a constant bit-select of a vector net" {
+    // iverilog's rise_fall_decay2: each switch drives its own bit, the
+    // others' bits stay z.
+    try expectRun("module m; reg i; wire [2:0] o; nmos a(o[0], i, 1'b1); pmos b(o[2], i, 1'b0); initial begin i = 1; #1 $display(\"%b\", o); end endmodule", "1z1\n");
+}
+
+test "A.8.5 a continuous assignment drives a hierarchical net or a select of one" {
+    // iverilog's pr1755629: `what[i].slice[i]`, a net of a loop generate's
+    // iteration named from another one.
+    try expectRun("module m; genvar i; for (i = 0; i < 2; i = i + 1) begin : w wire [1:0] s; end for (i = 0; i < 2; i = i + 1) begin : a assign w[i].s[i] = 1'b1; end initial #1 $display(\"%b %b\", w[0].s, w[1].s); endmodule", "z1 1z\n");
+}
+
+test "§14.6.1 `PATHPULSE$ = 3;`, the clause's own unparenthesized form, is a reject limit" {
+    // ISP RAS test_14_06_01_1 is the clause's example.
+    try expectRun("module m(input a, output q); assign q = a; specify (a => q) = 12; specparam PATHPULSE$a$q = (2, 9), PATHPULSE$ = 3; endspecify endmodule module t; reg a; wire q; m u(a, q); initial begin a = 0; #20 $display(\"%b\", q); end endmodule", "0\n");
 }

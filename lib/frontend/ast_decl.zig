@@ -62,6 +62,10 @@ pub const ParamDecl = struct {
     /// IEEE 1364-2005 §4.10.3 a module-body `specparam`, kept as a
     /// `localparam` (`is_local`) that no module parameter may read.
     is_spec: bool = false,
+    /// A specparam declared inside a specify block, which §4.10.3's
+    /// "declared outside a specify block shall be declared before it is
+    /// referenced" does not bind: it may name a later one of the block.
+    in_specify: bool = false,
     /// IEEE 1364-2005 §4.10.1 `parameter time`: `ty` folds it to `.integer`,
     /// but its value is unsigned 64-bit (§4.8), not a signed 32-bit integer.
     is_time: bool = false,

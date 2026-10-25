@@ -1102,6 +1102,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                 // §17.2.9: the bounds are read now; the file when the task runs.
                 .readmem => |radix| {
                     if (self.device) return self.refuse("§17.2.9 $readmemb/$readmemh: a device reads no file");
+                    if (r.file.exprs.tag(t.args[0]) != .str_literal) return self.refuse("§17.2.9 $readmemb/$readmemh with a file name held in a variable");
                     const base = try self.slot(t.args[1]);
                     const arr = r.arrays.get(base).?;
                     const name = r.file.str(r.file.exprs.strOf(t.args[0]));
@@ -2147,7 +2148,7 @@ fn bits(self: *Emitter, ins: []const Ast.ExprId, lane: ?u32) Error!void {
         try self.print("            const in{d} = ", .{j});
         const t = try expr.selfDetermined(self, in);
         try self.print(";\n", .{});
-        if (t.width > 1) try self.print("            const bit{d} = L.low(L.part(in{d}, {d}, 1, {d}));\n", .{ j, j, lane.?, t.width }) else try self.print("            const bit{d} = L.low(in{d});\n", .{ j, j });
+        if (t.width > 1) try self.print("            const bit{d} = L.low(L.part(in{d}, {d}, 1, {d}));\n", .{ j, j, lane orelse 0, t.width }) else try self.print("            const bit{d} = L.low(in{d});\n", .{ j, j });
     }
     try self.print("            const b = [_]L.Bit{{", .{});
     for (0..ins.len) |j| try self.print(" bit{d},", .{j});

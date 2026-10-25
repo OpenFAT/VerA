@@ -491,7 +491,7 @@ pub fn gateValue(self: *Run, scratch: std.mem.Allocator, g: Gate, width: u32, or
     const bits = try scratch.alloc(Int.Bit, g.ins.len);
     for (g.ins, bits) |in, *b| {
         const v = try evaluate.eval(self, scratch, in, 1);
-        b.* = v.bit(if (v.width > 1) g.lane.? else 0);
+        b.* = v.bit(if (v.width > 1) g.lane orelse 0 else 0);
     }
     const out = try filled(scratch, width, false, .z);
     const o = gateBit(g.kind, bits);
