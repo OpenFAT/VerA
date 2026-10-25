@@ -2419,12 +2419,14 @@ fn sink(r: *Run, e: *Elab, arg: Ast.ExprId, tok: u32, comptime who: SinkOf) Erro
         .assign => .{ "a continuous assignment can only drive a net", "§6.1.1: a continuous assignment connects to" ++ lvalue },
         .gate => .{ "a gate's output terminal must be a net", "A.3.3: a gate's output terminal is a net_lvalue:" ++ lvalue },
     };
-    if (ex.tag(arg) == .ident or try r.indexedArray(arg) != null) {
+    // A.8.5's hierarchical_net_identifier: a net named through a scope
+    // (`what[i].slice`, iverilog's pr1755629) is a net as much as a local one.
+    if (ex.tag(arg) == .ident or ex.tag(arg) == .hier_ident or try r.indexedArray(arg) != null) {
         const net = r.net_of.get(try netSlot(r, arg, tok)) orelse return r.exprFail(arg, not_net);
         return .{ .net = net, .lo = 0, .width = e.nets.items[net].resolved.width };
     }
     // §6.1.1/A.8.5: the select may stand on a net array element, `b[i][j]`.
-    if (ex.tag(arg) != .index or (ex.tag(ex.lhs(arg)) != .ident and try r.indexedArray(ex.lhs(arg)) == null)) return r.exprFail(arg, refused);
+    if (ex.tag(arg) != .index or (ex.tag(ex.lhs(arg)) != .ident and ex.tag(ex.lhs(arg)) != .hier_ident and try r.indexedArray(ex.lhs(arg)) == null)) return r.exprFail(arg, refused);
     const rg = ex.rhs(arg);
     const index = switch (ex.tag(rg)) {
         .range => Ast.ExprId.none,
@@ -2890,4 +2892,10 @@ test "A.3.3 a MOS switch drives a constant bit-select of a vector net" {
     // iverilog's rise_fall_decay2: each switch drives its own bit, the
     // others' bits stay z.
     try expectRun("module m; reg i; wire [2:0] o; nmos a(o[0], i, 1'b1); pmos b(o[2], i, 1'b0); initial begin i = 1; #1 $display(\"%b\", o); end endmodule", "1z1\n");
+}
+
+test "A.8.5 a continuous assignment drives a hierarchical net or a select of one" {
+    // iverilog's pr1755629: `what[i].slice[i]`, a net of a loop generate's
+    // iteration named from another one.
+    try expectRun("module m; genvar i; for (i = 0; i < 2; i = i + 1) begin : w wire [1:0] s; end for (i = 0; i < 2; i = i + 1) begin : a assign w[i].s[i] = 1'b1; end initial #1 $display(\"%b %b\", w[0].s, w[1].s); endmodule", "z1 1z\n");
 }
