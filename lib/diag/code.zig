@@ -96,6 +96,7 @@ pub const Code = enum(u16) {
     E0148,
     W0149,
     E0150,
+    W0151,
 
     // ---------------------------------------------------------------- class 2
     // Syntax / annex A — parser.zig.
@@ -1233,6 +1234,24 @@ fn infoOf(c: Code) Info {
             \\refuse the literal, so the string is not portable.
             \\
             \\Write the character without the backslash, or \\ for a backslash.
+            ,
+        },
+        .W0151 => .{
+            .title = "IEEE 1800 macro text in an IEEE 1364 unit",
+            .lrm = "10.4",
+            .explain =
+            \\IEEE 1800-2017 22.5.1 adds three forms to macro text: `" opens and
+            \\closes a string whose formal arguments are still substituted, `\`"
+            \\puts a \" inside it, and `` joins two tokens with nothing between
+            \\them. 22.4 also lets `include name a macro use that expands to a
+            \\quoted file name. VerA reads all of them under every standard.
+            \\
+            \\IEEE 1364-2005 Syntax 19-3 and 19-6 have none of them, so under
+            \\--std=1364-* the source is not portable to a 1364 tool. VerA says
+            \\so once per `define (or `include) and expands it as 1800 does.
+            \\
+            \\  --allow=W0151   silence it, for 1364 code that relies on the
+            \\                  1800 forms (iverilog accepts them in -g2005)
             ,
         },
 

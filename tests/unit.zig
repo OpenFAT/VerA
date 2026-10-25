@@ -9653,6 +9653,34 @@ pub const preprocessor_tests = struct {
         try expectPp("\nreal \\sig-x ;", "`define M(x) real \\sig-x ;\n`M(1)");
     }
 
+    test "IEEE 1800-2017 §22.5.1 `\" `\\`\" and `` in macro text" {
+        // Oracle: the clause's own examples, expanded as the LRM prints them
+        // (and as `iverilog -E` does), under every standard; a 1364 unit warns.
+        const Sv = struct {
+            fn expect(expected: []const u8, src: []const u8) !void {
+                try expectPp(expected, src);
+                var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+                defer arena_state.deinit();
+                var bag: diag.Bag = .init(arena_state.allocator());
+                const out = try process(arena_state.allocator(), src, .{ .std_defs = false, .bag = &bag, .std_1364 = true });
+                try testing.expectEqualStrings(expected, out.text);
+                try testing.expectEqual(@as(usize, 1), bag.count());
+                try testing.expectEqual(diag.Code.W0151, bag.at(0).code);
+                try testing.expect(!bag.failed());
+            }
+        };
+        try Sv.expect(
+            "\n$display(\"left side: \\\"right side\\\"\");",
+            "`define msg(x,y) `\"x: `\\`\"y`\\`\"`\"\n$display(`msg(left side,right side));",
+        );
+        try Sv.expect("\nclock_master", "`define append(f) f``_master\n`append(clock)");
+        // A plain string still keeps its formal; an object-like body works too.
+        try Sv.expect("\n\"x\" \"1\"", "`define M(x) \"x\" `\"x`\"\n`M(1)");
+        try Sv.expect("\n\"a b\"", "`define S `\"a b`\"\n`S");
+        // Outside macro text `" is no token at all.
+        try expectFail("`\"a`\"\n", .E0103);
+    }
+
     test "IEEE 1364 §19.3.1: a `\\` ending a line inside a block comment continues `define text" {
         // Oracle: iverilog macro_comment_multiline (the comment is dropped, the
         // continuation is not). Outside a `define the comment keeps its newlines.

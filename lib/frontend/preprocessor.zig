@@ -43,6 +43,11 @@ pub const Options = struct {
     /// E0150's bound on the preprocessed text. Only tests lower it, to reach
     /// the diagnostic without 4 GiB of text.
     text_limit: usize = max_text_bytes,
+    /// The unit is compiled as IEEE 1364 (`--std=1364-*`). IEEE 1800-2017
+    /// §22.5.1's macro text forms (`" `\`" ``) are accepted under every
+    /// standard, and under 1364, whose Syntax 19-3 lacks them, each `define
+    /// that uses one warns W0151.
+    std_1364: bool = false,
 };
 
 /// One of `Options.more`: the name it registers under in the bag (and
