@@ -4871,7 +4871,8 @@ class FixtureLayoutTests(unittest.TestCase):
                 continue
             expected = json.loads(oracle.read_text()).get("netlist_sha256")
             if expected:
-                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected, str(path))
+                with self.subTest(deck=path.name):
+                    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected)
 
     def test_digital_goldens_have_a_source(self):
         missing = []
