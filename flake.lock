@@ -10,16 +10,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1792929915,
-        "narHash": "sha256-/b+SPYpAvtvGiN6DB/wcRxEbJIU27+z7kdhT47guTjU=",
+        "lastModified": 1792931361,
+        "narHash": "sha256-Y1d1m8s6DLbcNnkw/2ciFDcpzNgMvkhLBbAs/FdZuMg=",
         "owner": "OmarSiwy",
         "repo": "VAMS-Conformance-Suite",
-        "rev": "05766357ab2c9ea77dca158b5ba27a8ff9afbae9",
+        "rev": "b7330b80f2cefac207c98c833f4769b9803af760",
         "type": "github"
       },
       "original": {
         "owner": "OmarSiwy",
-        "ref": "vera-fixtures",
         "repo": "VAMS-Conformance-Suite",
         "type": "github"
       }
