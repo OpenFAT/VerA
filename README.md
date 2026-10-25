@@ -49,21 +49,27 @@ The [tutorial](https://omarsiwy.github.io/VerA/learn/getting-started.html) conti
 
 ## Install
 
+Each release attaches Linux packages (`arm64`/`aarch64` builds too):
+
+```sh
+sudo apt install ./vera_<version>-1_amd64.deb             # Debian, Ubuntu, Mint
+sudo dnf install ./vera-<version>-1.x86_64.rpm            # Fedora; zypper on openSUSE
+sudo pacman -U ./vera-<version>-1-x86_64.pkg.tar.zst      # Arch; the release's PKGBUILD is the AUR's vera-bin
+```
+
 | How | Command |
 |---|---|
-| Nix (from source) | `nix profile add github:OmarSiwy/VerA` |
-| Nix (release binary) | `nix profile add 'github:OmarSiwy/VerA#latest'` |
-| Install script (Linux, macOS) | `curl -fsSL https://raw.githubusercontent.com/OmarSiwy/VerA/main/tools/install.sh \| sh` (`sh -s -- 0.20.0` pins a version); reads `sources.json`, checks each download's sha256, caches it, and keeps versions side by side under `~/.local/share/vera` |
-| Debian, Ubuntu | `sudo apt install ./vera_<version>-1_amd64.deb` (or `arm64`) from the release |
-| Fedora, openSUSE | `sudo dnf install ./vera-<version>-1.x86_64.rpm` (or `aarch64`) from the release |
-| Arch | `sudo pacman -U vera-<version>-1-x86_64.pkg.tar.zst` from the release; the release's `PKGBUILD` is the AUR's `vera-bin` |
+| Install script (Linux, macOS) | `curl -fsSL https://raw.githubusercontent.com/OmarSiwy/VerA/main/tools/install.sh \| sh` (`sh -s -- 0.20.0` pins a version): reads `sources.json`, checks the download's sha256, caches it, and keeps versions side by side under `~/.local/share/vera` |
 | Homebrew | `brew install OmarSiwy/vera/vera`, once the tap is published (the release's `vera.rb`) |
+| Nix (release binary) | `nix profile add 'github:OmarSiwy/VerA#latest'` |
+| Nix (from source) | `nix profile add github:OmarSiwy/VerA` |
 | Release tarball | [GitHub releases](https://github.com/OmarSiwy/VerA/releases): x86_64/aarch64 Linux, x86_64/aarch64 macOS, x86_64 Windows, with `SHA256SUMS` |
 | From source | `git clone https://github.com/OmarSiwy/VerA && cd VerA && zig build -Doptimize=ReleaseFast` |
 
 Building a device needs the Zig VerA is built with, Zig master (0.18.0-dev,
 from [zig-overlay](https://github.com/mitchellh/zig-overlay)), on `PATH`; the
-Nix packages bring their own. Every install also ships the device contract,
+Nix packages bring their own. The packages, the install script, Homebrew, Nix
+and `zig build install` also install the device contract,
 `share/vera/contract.zig`, and every device declares the VerA release that
 generated it (`vera_version`), which the contract checks at compile time.
 
