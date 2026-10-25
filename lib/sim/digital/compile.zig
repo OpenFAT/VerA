@@ -415,9 +415,14 @@ fn leafType(self: *Run, e: Ast.ExprId) Error!Type {
         },
         // An unsized based constant is an integer-sized operand (Table
         // 5-22) whose x/z fill is decided in context (`evaluate.unsizedFill`).
+        // VD-129: past 32 bits it is as wide as its digits.
         .logic_literal => blk: {
             const n = ex.logicValue(e);
-            break :blk .{ .width = if (n.sized) n.width else 32, .signed = n.signed };
+            // ponytail: one with an x/z digit and 33 to 64 digit bits
+            // ('h0000000000x) reads as 32: the frontend holds it in 64 and
+            // keeps no digit count for it. Keep one if such a literal shows up.
+            const wide = !n.hasUnknown() or n.width > 64;
+            break :blk .{ .width = if (n.sized) n.width else if (wide) @max(32, n.width) else 32, .signed = n.signed };
         },
         // IEEE 1364-2005 §3.6: a string operand is an unsigned number of
         // eight bits per character, and §5.2.3.3's "" is one NUL byte.
@@ -434,6 +439,8 @@ const IntLiteral = @typeInfo(@TypeOf(Ast.ExprStore.intLiteral)).@"fn".return_typ
 /// §3.5.1 makes a minimum: a value that does not fit keeps the frontend's 64.
 pub fn literalWidth(n: IntLiteral) u32 {
     if (n.width != 0) return n.width;
+    // VD-129: an unsized based one is as wide as its digits past 32 bits.
+    if (n.digit_bits != 0) return @max(32, n.digit_bits);
     const fits = if (n.signed) n.value >= std.math.minInt(i32) and n.value <= std.math.maxInt(i32) else n.value >= 0 and n.value <= std.math.maxInt(u32);
     return if (fits) 32 else 64;
 }
@@ -859,7 +866,10 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                     if (args.len != 1 or args[0] == .none) return self.exprFail(e, "a §17.8 conversion takes exactly one argument");
                     const operand = try inferValue(self, args[0]);
                     const wants_real = f == .rtoi or f == .realtobits;
-                    if (operand.real != wants_real) return self.exprFail(e, "$rtoi and $realtobits convert a real; $itor and $bitstoreal an integral value");
+                    // VD-128: §17.8's `$rtoi`/`$itor` prototypes are not a
+                    // "shall"; an argument of the other type converts first,
+                    // as iverilog does. The bit conversions stay strict.
+                    if (operand.real != wants_real and (f == .realtobits or f == .bitstoreal)) return self.exprFail(e, "$rtoi and $realtobits convert a real; $itor and $bitstoreal an integral value");
                     break :blk switch (f) {
                         .rtoi => .{ .width = 32, .signed = true },
                         .realtobits => .{ .width = 64, .signed = false },
@@ -2193,7 +2203,8 @@ test "§17.1.1.6 %m names the instance path and the named blocks around it" {
     try expectRun(
         \\module leaf; initial begin : outer begin : inner $display("%m %l %s%c", "", 8'h21); end end endmodule
         \\module m; leaf u(); initial $display("%M"); endmodule
-    , "m\nm.u.outer.inner work.leaf !\n");
+        // "" is one zero byte, which %s shows as a space (VD-127; iverilog too).
+    , "m\nm.u.outer.inner work.leaf  !\n");
 }
 
 test "§12.7 a named block's local shadows the module's, and each instance has its own" {
@@ -2341,8 +2352,11 @@ test "§17.9 a distribution takes its own argument count and a variable seed" {
 test "§17.8 and §17.11.2 conversions and math functions take their own argument types and counts" {
     // $rtoi truncates -2.7 toward zero; $itor(3) is 3.0, which %g prints as 3.
     try expectRun("module m; initial $display(\"%0d %g %g\", $rtoi(-2.7), $itor(3), $pow(2.0, 10.0)); endmodule", "-2 3 1024\n");
-    try expectRejected("module m; integer i; initial i = $rtoi(1); endmodule", "$rtoi and $realtobits convert a real");
-    try expectRejected("module m; real r; initial r = $itor(1.5); endmodule", "$rtoi and $realtobits convert a real");
+    // VD-128 (oracle: iverilog's itor_rtoi gold): an argument of the other
+    // type converts first; $rtoi keeps the low 32 bits of a larger value.
+    try expectRun("module m; initial $display(\"%0d %g %g %0d %0d\", $rtoi(1'bx), $itor(-1.5), $itor(1.0/0.0), $rtoi((33'b1<<32)+1.0), $rtoi(1.0/0.0)); endmodule", "0 -2 0 1 x\n");
+    try expectRejected("module m; integer i; initial i = $realtobits(1); endmodule", "$rtoi and $realtobits convert a real");
+    try expectRejected("module m; real r; initial r = $bitstoreal(1.5); endmodule", "$rtoi and $realtobits convert a real");
     try expectRejected("module m; real r; initial r = $pow(2.0); endmodule", "wrong number of arguments to a §17.11.2");
     try expectRejected("module m; integer i; initial i = $time(1); endmodule", "$time and $stime take no arguments");
     // §17.7.3 `$realtime` and VAMS §9.10 `$abstime` (#58) take no arguments:

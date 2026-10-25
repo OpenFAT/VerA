@@ -1353,7 +1353,7 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Rule**: IEEE 1364-2005 17.1.1.3: an expression argument is sized automatically, by the largest value the expression can take (a 12-bit expression gets four decimal columns); a zero after `%` overrides it. 4.8.2: a real converts to an integer by rounding, half away from zero; 5.5.1: a real converted by type coercion is signed. 17.8: `$rtoi` returns an `integer`. VAMS 9.4.3 Table 9-22 says only "display in decimal format".
 - **Why vague**: a real has no bit width, and no clause gives the integer a real becomes under `%d` a size (4.8.2 converts on assignment, where the target sets it). So no clause fixes the "largest possible value" 17.1.1.3 sizes the field by.
 - **Options**: (a) minimal width, as if `%0d` (iverilog); (b) 11 columns, the conversion as a 32-bit `integer`, as `$rtoi` returns; (c) 20 columns, the width of the signed 64-bit integer VerA converts to.
-- **Decision**: `DECIDED:` (a) in the digital engine, (c) in the analog context. Digital (2026-10-24, conformance-to-100: the reference tool decides what the clauses leave open): `%d` of a real prints at minimal width, as iverilog does, so ivtest's `pr2792897` (`$sformat(str, "R: %d", 1.4)` is `"R: 1"`) and its kin hold; the operand still converts as a 64-bit signed integer. An argument with no format at all prints as iverilog prints it too: a real in C's `%#g` (`1.50000`), a bare `$realtime` call in `%.Nf`, N its module's precision digits below the unit (`1.250` under `1ns/1ps`). The analog context keeps (c): VAMS 9.4.3 is its rule and no reference tool there disagrees.
+- **Decision**: `DECIDED:` (a) in the digital engine, (c) in the analog context. Digital (2026-10-24, conformance-to-100: the reference tool decides what the clauses leave open): `%d` of a real prints at minimal width, as iverilog does, so ivtest's `pr2792897` (`$sformat(str, "R: %d", 1.4)` is `"R: 1"`) and its kin hold; the operand converts exactly at any magnitude, and a negative real that rounds to zero prints `-0`, C's `%.0f` (ivtest br1029a/b). An argument with no format at all prints as iverilog prints it too: a real in C's `%#g` (`1.50000`), a bare `$realtime` call in `%.Nf`, N its module's precision digits below the unit (`1.250` under `1ns/1ps`). The analog context keeps (c): VAMS 9.4.3 is its rule and no reference tool there disagrees.
 - **VerA today**: `lib/sim/digital/display.zig` `walk` (the `%d` width) and `bareReal`; `src/codegen/digital/emit.zig` `operand` and `show` emit the same. The analog half: `src/codegen/device/cg_display.zig` `decimalField` gives it 20 columns, and a device's `say` records it as `%20d`; `ch09_system_tasks/analog_decimal_is_auto_sized.va` pins both signs.
 - **Measure impact**: A: `verilog/17_system_tasks/decimal_of_real_width.v` (now iverilog's text) and `ch09_system_tasks/analog_decimal_is_auto_sized.va`.
 - **Status**: DONE 2026-10-17; digital half revised 2026-10-24.
@@ -1415,6 +1415,46 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Decision**: `DECIDED:` (b). Figure 8-1 is the clause's own picture of it, iverilog and the commercial tools agree, and (a) let a net read a high impedance no driver ever asserted. A net with no driver keeps §4.2.1's z; a `trireg` starts at x anyway; a sequential UDP's output is its initial state.
 - **VerA today**: `lib/sim/digital/root.zig` `elaborateDeep` (a driver's `.current` starts at x), `lib/sim/digital/resolution.zig` `initial` (each driven net starts at what its drivers assert). Fixture `verilog/04_data_types/net_x_before_delayed_driver.v` (was `net_z_before_delayed_driver.v`).
 - **Measure impact**: A: the renamed fixture. C: §4.2.1's driven half gains a test.
+- **Status**: DONE 2026-10-24.
+
+### VD-127: How `%s` shows a zero byte, and what a `0` before a radix conversion's width means
+- **Source**: conformance-to-100 (2026-10-24), ivtest H9c (br_gh827, pr1804877, string4, string5, string7, test_extended, test_width) and string13.
+- **Rule**: IEEE 1364-2005 17.1.1.7: %s's argument is "a sequence of 8-bit hexadecimal ASCII codes", and "No termination character or value is required at the end of a string, and leading zeros are never printed." 17.1.1.2 grants "the full formatting capabilities available in the C language" to the real conversions only; 17.1.1.3's one override of the automatic width is `%0`.
+- **Why vague**: "never printed" does not say whether a leading zero byte leaves its column (blank) or is dropped, nor what an inner zero byte prints; and nothing says what the `0` of `%08d` (a width written with a leading zero) does.
+- **Options**: (a) drop leading zero bytes, print an inner one as the byte 0, and read `%08d` as width 8 with spaces (VerA until 2026-10-24); (b) iverilog's: under `%s` every zero byte is shown as a space, so `%s` keeps the operand's width in characters, `%0s` drops the leading ones; `%08d` is C's zero fill, after the sign.
+- **Decision**: `DECIDED:` (b). A zero byte is still not printed as a character, the field keeps the width the operand's characters span (as §17.1.1.3 sizes every other conversion by the operand), and the reference tool prints it so.
+- **VerA today**: `lib/kernels/fmt.zig` `text`, `valueFill`; `lib/sim/digital/display.zig` `walk`; `lib/sim/rt/root.zig` `value`; `src/codegen/digital/emit.zig` `operand`. Fixtures `verilog/17_system_tasks/string_leading_nul_as_space.v` (was `string_leading_zeros.v`), `decimal_field_width_zero_flag.v` (was `decimal_field_width_space_padded.v`), and the %s lines of `string_output.v`, `sformat_variable_format.v`, `sscanf_conversions.v`, `native_sformat_dynamic.v`.
+- **Measure impact**: A: two renamed fixtures. C: none.
+- **Status**: DONE 2026-10-24.
+
+### VD-128: `$itor` of a real, `$rtoi` of an integer, and `$rtoi` past 32 bits
+- **Source**: conformance-to-100 (2026-10-24), ivtest itor_rtoi.
+- **Rule**: IEEE 1364-2005 17.8: "`$rtoi` converts real values to an integer type by truncating the real value", "`$itor` converts integer values to real values", with the prototypes `integer $rtoi(real_val)` and `real $itor(int_val)`; 4.8.2 converts between the types implicitly, an x or z bit read as 0.
+- **Why vague**: the prototypes name the argument's type but no "shall" requires it, and the clause does not say what `$rtoi` returns for a value no `integer` holds.
+- **Options**: (a) refuse an argument of the other type, and give x past 32 bits (VerA until 2026-10-24); (b) convert the argument first by 4.8.2 (`$itor(10.5)` is 11.0, `$itor` of an infinity or NaN, whose integer is x, is 0.0; `$rtoi(1'bx)` is 0), and keep the low 32 bits of a larger truncated value, x only for an infinity or a NaN.
+- **Decision**: `DECIDED:` (b), iverilog's gold. 4.8.2's implicit conversions are the rule everywhere else an operand of the other type appears. `$realtobits`/`$bitstoreal` stay strict: they reinterpret bits, and converting first would hide a type error.
+- **VerA today**: `lib/sim/digital/compile.zig` (the type check), `lib/sim/digital/evaluate.zig` (`.rtoi`, `.itor`), `lib/sim/rt/logic.zig` `rtoi`, `itorReal`, `src/codegen/digital/emit_expr.zig`. Tests `compile.zig` "§17.8", `logic.zig` "$rtoi truncates".
+- **Measure impact**: none.
+- **Status**: DONE 2026-10-24.
+
+### VD-129: How wide an unsized based constant with more than 32 bits of digits is (digital)
+- **Source**: conformance-to-100 (2026-10-24), ivtest pr903 (`'h9000_0000_0000_0000_0000 / 'h3000_0000_0000_0000_0000` is 3).
+- **Rule**: IEEE 1364-2005 3.5.1: "The number of bits that make up an unsized number ... shall be at least 32." Table 5-22: "Unsized constant number: Same as integer".
+- **Why vague**: 3.5.1 sets a floor and no ceiling; Table 5-22 names `integer`, whose own size 4.8 also leaves at "at least 32".
+- **Options**: (a) 32 bits, the high digits lost (VerA's digital engine until 2026-10-24; fixture `unsized_wide_hex_truncated.v`); (b) the digits' width, digit count times bits per digit with leading zero digits counted, floored at 32, as iverilog sizes it. A decimal one keeps VD-124's 32-or-64.
+- **Decision**: `DECIDED:` (b) in the digital engine: (a) silently drops digits the user wrote. The analog context keeps VD-124.
+- **VerA today**: `lib/frontend/parser/literal.zig` `unsizedDigitBits` records the width (`IntLiteral.digit_bits`, and a known wide constant's `width`); `lib/sim/digital/compile.zig` `literalWidth` and the `.logic_literal` arm size by it. Ceiling: a constant with an x or z digit and 33 to 64 digit bits still reads as 32 (its digit count is not kept). Fixture `verilog/03_lexical_conventions/unsized_based_constant_digit_width.v` (was `unsized_wide_hex_truncated.v`).
+- **Measure impact**: A: the renamed fixture. C: none.
+- **Status**: DONE 2026-10-24.
+
+### VD-130: `$fscanf`/`$sscanf` details 17.2.4.3 leaves open
+- **Source**: conformance-to-100 (2026-10-24), ivtest fscanf_u, fscanf_u_warn, fscanf_z, fscanf_z_warn, scanf4.
+- **Rule**: IEEE 1364-2005 17.2.4.3: `%b` "Matches a binary number, consisting of a sequence from the set 0,1,X,x,Z,z,?, and _" (likewise `%o`, `%h`, and `%d`'s single x, z, ?); `%u` "shall transfer sufficient data from the input to fill the target reg"; "An optional decimal integer that specifies the maximum field width"; `%m` "Returns the current hierarchical path as a string".
+- **Why vague**: the clause does not say what `?` reads as, whether `_` may lead, what a field width means for binary data, or what `%*u` skips.
+- **Options / Decision**: `DECIDED:` iverilog's reading throughout. `?` is x. A leading `_` is a matching failure. `%Nu`/`%Nz` reads ceil(N/32) words and keeps N bits, zero above; `%*u` with no width skips one word; too few bytes is EOF. An `e` with no exponent digits after it is a matching failure, as C's scanf reports once it has consumed the `e`. `%m` assigns the scope's `%m` path and reads nothing. `%t`'s rounded value is divided by a negative power of ten, not multiplied by its inverse, so `-2.256` is the literal's double.
+- **Not taken**: ivtest scanf4's `$sscanf(" ", "%s", a)` returning 0. The clause says "If the input ends before the first matching failure or conversion, EOF is returned", and C's scanf returns EOF too; VerA returns -1 (fixture `sscanf_conversions.v`), so scanf4 stays in `tools/vera.xfail` as a suite expectation to correct.
+- **VerA today**: `lib/sim/digital/system.zig` `Scan` (`next`, `number`, `float`, `unformatted`, `Time.scale`) and `scanContext`; `src/codegen/digital/emit_expr.zig` refuses `%m` with `%t`/`%u`/`%z`. Test `system.zig` "§17.2.4.3 Scan: %u widths".
+- **Measure impact**: none.
 - **Status**: DONE 2026-10-24.
 
 ## 6. Implementation-defined choices
