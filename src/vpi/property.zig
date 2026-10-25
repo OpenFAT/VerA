@@ -86,10 +86,13 @@ pub export fn vpi_get(prop: c_int, obj: vpiHandle) c_int {
     // type and, at most, one property of its own.
     const other: ?c_int = if (asIter(obj) != null) vpiIterator else if (callback.asCb(obj) != null) callback.vpiCallback else if (value.asEvent(obj) != null) value.vpiSchedEvent else if (systf.asSystf(obj) != null) systf.vpiUserSystf else if (delays.asPath(obj) != null) systf.vpiInterModPath else if (run.asQueue(obj) != null) run.vpiTimeQueue else null;
     // IEEE 1364-2005 §26.3.5: "All objects have a vpiIsProtected property",
-    // which vpi_user.h numbers as Annex G's vpiProtected (VD-045). No object
-    // is protected: §28's `pragma protect` is refused where it is written
-    // (E0146).
-    if (prop == vpiProtected and (other != null or asObj(obj) != null)) return 0;
+    // which vpi_user.h numbers as Annex G's vpiProtected (VD-045). An object
+    // is protected when a §28 decryption envelope's cleartext declares it;
+    // a handle that is no design object never is.
+    if (prop == vpiProtected) {
+        if (asObj(obj)) |o| return @intFromBool(isProtected(o));
+        if (other != null) return 0;
+    }
     if (root.unansweredProp(prop)) |u| {
         root.failUnanswered("vpi_get", u);
         return vpiUndefined;
@@ -340,6 +343,13 @@ fn location(o: *const Obj) ?root.Loc {
     if (o.src_tok == 0) return null;
     const r = run.attached() orelse return null;
     return root.locate(r.bag, r.starts[o.src_tok]);
+}
+
+/// §26.3.5: whether `o` is declared in a decrypted envelope's cleartext,
+/// which the preprocessor registers as its own file.
+fn isProtected(o: *const Obj) bool {
+    const at = location(o) orelse return false;
+    return std.mem.eql(u8, at.file, @import("vera").Preprocessor.protect.file_name);
 }
 
 fn propFail(prop: c_int, o: *const Obj) c_int {

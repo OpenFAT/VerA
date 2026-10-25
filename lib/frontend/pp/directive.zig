@@ -183,7 +183,7 @@ fn decryptionEnvelope(pp: *Pp, text: []const u8, at: usize, end: usize, list: []
     };
     switch (r.opened) {
         .fail => |f| return pp.fail(span, f.code, "{s}", .{f.why}),
-        .text => |clear| try pp.nested(span, Pp.runFile, .{ pp, clear, "<protected envelope>", null }),
+        .text => |clear| try pp.nested(span, Pp.runFile, .{ pp, clear, pp_protect.file_name, null }),
     }
     try pp.checkTextSize(span);
     try pp.putNewlines(text[at..r.end]);
