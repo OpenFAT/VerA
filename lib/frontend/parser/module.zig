@@ -56,6 +56,7 @@ pub const Body = struct {
     switches: std.ArrayList(Ast.SwitchInst) = .empty, // A.3.1, §7.6
     paths: std.ArrayList(Ast.SpecPath) = .empty, // A.7.2
     timing_checks: std.ArrayList(Ast.TimingCheck) = .empty, // A.7.5
+    pulses: std.ArrayList(Ast.PulseControl) = .empty, // §14.6
     /// §6.6.1/§6.6.2 every named generate block of the module, with the
     /// generate construct it belongs to. Not part of `ModuleDecl`: nothing
     /// downstream reaches a generate scope by name (§6.6.3 hierarchical
@@ -196,6 +197,7 @@ pub fn parseModule(self: *Parser) Error!Ast.ModuleDecl {
         .switches = b.switches.items,
         .paths = b.paths.items,
         .timing_checks = b.timing_checks.items,
+        .pulses = b.pulses.items,
         // §2.9: every attr_spec seen since the last module. Attributes
         // before the `module` keyword (Syntax 2-7 puts a slot there) were
         // collected by `parseSourceFile` and belong to this module too, which is
@@ -696,7 +698,7 @@ fn parseModuleItemBody(self: *Parser, b: *Body) Error!void {
             // `specify_item`. This is the module-item half.
             if (std.mem.eql(u8, w, "specparam")) {
                 if (self.gen_depth > 0) return self.failAt(self.pos, .E0229, "a specparam declaration", .{});
-                return parse_specify.parseSpecparamDecl(self, &b.params);
+                return parse_specify.parseSpecparamDecl(self, b);
             }
             // A.2.7 `task_declaration`, IEEE 1364-2005 §10.2: a module item
             // of every module (A.1.4), enabled only from §7.2.2's discrete

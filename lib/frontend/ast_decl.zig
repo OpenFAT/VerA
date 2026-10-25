@@ -499,6 +499,21 @@ pub const SpecPath = struct {
     main_tok: u32,
 };
 
+/// IEEE 1364-2005 §14.6 one pulse control of a specify block: an A.2.4
+/// `pulse_control_specparam` (`limits`: `PATHPULSE$ = (reject [, error])`, or
+/// `PATHPULSE$in$out = ...` for one path, `name` the whole specparam name)
+/// or an A.7.1 pulsestyle or showcancelled declaration over `outs`.
+pub const PulseControl = struct {
+    kind: enum(u8) { limits, onevent, ondetect, showcancelled, noshowcancelled },
+    name: StrId = .none,
+    reject: ExprId = .none,
+    /// `.none` when only the reject limit is written (§14.6.1: the error
+    /// limit is then the same).
+    err: ExprId = .none,
+    outs: []const ExprId = &.{},
+    main_tok: u32,
+};
+
 /// A.7.5.1 one `system_timing_check`: the command, and each argument slot in
 /// order (`.none` for a slot A.7.5.1 lets be empty) with the event control
 /// written on it.
@@ -844,10 +859,12 @@ pub const ModuleDecl = struct {
     switches: []const SwitchInst = &.{},
     /// A.7.2 module paths and A.7.5 system timing checks of the module's
     /// `specify` blocks (IEEE 1364 Clause 14/15, inherited through §1.1).
-    /// Recorded for §11.6.15's VPI objects; no simulation applies them
-    /// (W0251).
+    /// Recorded for §11.6.15's VPI objects and simulated by the digital
+    /// engine; an analog compile applies none of them (W0251).
     paths: []const SpecPath = &.{},
     timing_checks: []const TimingCheck = &.{},
+    /// §14.6 the pulse controls of its specify blocks and specparams.
+    pulses: []const PulseControl = &.{},
     /// §2.9 every `attr_spec` in this module, for value validation. Owner
     /// associations are retained separately in `SourceFile.attributes`.
     attrs: []const NatureAttr = &.{},

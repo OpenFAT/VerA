@@ -77,6 +77,7 @@ pub const GateInst = decl_file.GateInst;
 pub const SpecEdge = decl_file.SpecEdge;
 pub const SpecPolarity = decl_file.SpecPolarity;
 pub const SpecPath = decl_file.SpecPath;
+pub const PulseControl = decl_file.PulseControl;
 pub const TimingCheck = decl_file.TimingCheck;
 pub const PullInst = decl_file.PullInst;
 pub const SwitchKind = decl_file.SwitchKind;

@@ -517,6 +517,7 @@ const fate: std.enums.EnumFieldStruct(std.meta.FieldEnum(Ast.ModuleDecl), Fate, 
     // one, so the flat design keeps the top's.
     .paths = .top,
     .timing_checks = .top,
+    .pulses = .top,
     .attrs = .merged,
     // `pickTop` never picks a connect module, so this is always the top's
     // `false`; a hand-placed one (§7.1) is a child like any other.
