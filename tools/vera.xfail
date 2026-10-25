@@ -282,10 +282,6 @@ ivtest/ivltests/fscanf_z_warn.v
 ivtest/ivltests/func_return_index.v
 ivtest/ivltests/gate_connect1.v
 ivtest/ivltests/gate_connect2.v
-ivtest/ivltests/gate_instance_array_shadow_fail.v
-ivtest/ivltests/gate_instance_function_shadow_fail.v
-ivtest/ivltests/gate_instance_hierarchy_shadow_fail.v
-ivtest/ivltests/gate_instance_shadow_fail.v
 ivtest/ivltests/include1.v
 ivtest/ivltests/include2.v
 ivtest/ivltests/include3.v
@@ -429,13 +425,11 @@ ivtest/ivltests/string7.v
 ivtest/ivltests/sv_lval_concat_uarray1.v
 ivtest/ivltests/sv_lval_concat_uarray2.v
 ivtest/ivltests/sv_task_call_instance_lookup.v
-ivtest/ivltests/switch_instance_shadow_fail.v
 ivtest/ivltests/test_extended.v
 ivtest/ivltests/test_width.v
 ivtest/ivltests/timing_check_delayed_signals.v
 ivtest/ivltests/timing_check_syntax.v
 ivtest/ivltests/udp_dff.v
-ivtest/ivltests/udp_instance_shadow_fail.v
 ivtest/ivltests/undef.v
 ivtest/ivltests/uwire_fail.v
 ivtest/ivltests/vardly_undefined_vec.v

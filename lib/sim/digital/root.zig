@@ -405,6 +405,11 @@ pub const Run = struct {
     /// and a downward hierarchical reference walks these before it reaches a
     /// slot at all.
     instances: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// IEEE 1364-2005 §12.7 the gate, switch and UDP instance names of each
+    /// scope: no storage, but declared there, so they hide an outer name of
+    /// the same spelling from `lookup`, `upward` and a call (iverilog
+    /// refuses the hidden use the same way).
+    prim_names: std.AutoHashMapUnmanaged(Name, void) = .empty,
     /// §12.5 the scope of each named block that declares something, keyed by
     /// the scope it runs in and its statement (`blockScope`).
     block_scopes: std.AutoHashMapUnmanaged(struct { scope: u32, stmt: Ast.StmtId }, u32) = .empty,
@@ -999,6 +1004,7 @@ pub const Run = struct {
         var s = self.scope;
         while (true) {
             if (self.instances.get(.{ .scope = s, .str = name })) |child| return child;
+            if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
             const info = self.scope_info.items[s];
             if (info.lexical) {
                 if (info.name == name and info.index == null) return s;
@@ -1235,6 +1241,7 @@ pub const Run = struct {
         var s = scope;
         while (true) {
             if (self.names.get(.{ .scope = s, .str = str })) |at| return at;
+            if (self.prim_names.contains(.{ .scope = s, .str = str })) return null;
             const info = self.scope_info.items[s];
             if (!info.lexical) return null;
             s = info.parent;

@@ -1649,6 +1649,7 @@ fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
     var s = scope;
     while (true) : (s = self.scope_info.items[s].parent) {
         if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
+        if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
         if (!self.scope_info.items[s].lexical) return null;
     }
 }

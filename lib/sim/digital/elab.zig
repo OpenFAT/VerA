@@ -858,6 +858,7 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
             if (seen.found_existing and seen.value_ptr.* != g.main_tok)
                 return r.fail(g.main_tok, "§7.1.5: `{s}` names two instances; one instance identifier has one range", .{r.file.str(g.name)});
             seen.value_ptr.* = g.main_tok;
+            try r.prim_names.put(r.arena, .{ .scope = scope, .str = g.name }, {});
         }
         const net = try drivenNet(r, e, scope, g.out, g.main_tok, .gate, .{ g.strength0, g.strength1 });
         const width = e.nets.items[net].resolved.width;
@@ -901,6 +902,7 @@ fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: 
     // p-type sharing data and output. A pass switch joins its two nets into
     // one resolution while it conducts.
     for (items.switches) |sw| {
+        if (sw.name != .none) try r.prim_names.put(r.arena, .{ .scope = scope, .str = sw.name }, {});
         const resistive = switch (sw.kind) {
             .rcmos, .rnmos, .rpmos, .rtran, .rtranif0, .rtranif1 => true,
             .cmos, .nmos, .pmos, .tran, .tranif0, .tranif1 => false,
@@ -2037,6 +2039,7 @@ fn findUdp(file: *const Ast.SourceFile, name: Ast.StrId) ?*const Ast.UdpDecl {
 /// at time 0 whatever the instance delay.
 fn declareUdp(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, u: *const Ast.UdpDecl) Error!void {
     const tok = inst.main_tok;
+    try r.prim_names.put(r.arena, .{ .scope = scope, .str = inst.name }, {});
     if (inst.ports.len != u.ports.len) return r.fail(tok, "§8: a UDP instance connects its output and every input, in order", .{});
     for (inst.ports) |c| if (c.name != .none or c.expr == .none)
         return r.fail(c.main_tok, "§8: a UDP instance connects its terminals by position, none left open", .{});
@@ -2781,4 +2784,14 @@ test "§4.9 a net array element driven by a constant index" {
         \\initial #1 $display("%b%b%b", w[0], w[1], w[2]);
         \\endmodule
     , "z1z\n");
+}
+
+test "§12.7 a gate, switch or UDP instance name hides an outer name of the same spelling" {
+    // iverilog's gate_instance_shadow_fail family: the inner `i_g` is an
+    // instance, so neither the outer variable nor the outer function is
+    // what `i_g` names inside the block.
+    try expectRejected("module m; integer i_g = 23; if (1) begin : g wire o; and i_g(o, 1'b1, 1'b1); initial $display(\"%0d\", i_g); end endmodule", "undeclared digital variable");
+    try expectRejected("module m; function integer i_g(input integer v); i_g = v; endfunction if (1) begin : g wire o; initial $display(\"%0d\", i_g(1)); and i_g(o, 1'b1, 1'b1); end endmodule", "undeclared function");
+    // The neighbour: a differently named gate hides nothing.
+    try expectRun("module m; integer i_g = 23; if (1) begin : g wire o; and a(o, 1'b1, 1'b1); initial $display(\"%0d\", i_g); end endmodule", "23\n");
 }
