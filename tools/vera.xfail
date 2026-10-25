@@ -318,8 +318,6 @@ ivtest/ivltests/pr1026.v
 ivtest/ivltests/pr1403406.v
 ivtest/ivltests/pr1603313.v
 ivtest/ivltests/pr1628300.v
-ivtest/ivltests/pr1701855b.v
-ivtest/ivltests/pr1701855.v
 ivtest/ivltests/pr1704726b.v
 ivtest/ivltests/pr1716276.v
 ivtest/ivltests/pr1752353.v

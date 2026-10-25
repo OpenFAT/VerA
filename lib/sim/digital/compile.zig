@@ -1388,7 +1388,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                 },
                 // §17.3.1 Syntax 17-9.
                 .printtimescale => {
-                    if (s.args.len > 1) return self.fail(tok, "$printtimescale takes at most one module instance", .{});
+                    if (s.args.len > 1) return self.fail(tok, "$printtimescale takes at most one hierarchical name", .{});
                     if (s.args.len == 1) _ = try display.timescaleScope(self, s.args[0]);
                 },
                 .fclose => {
@@ -2417,7 +2417,7 @@ test "§17 system task argument forms are checked before any process runs" {
     try expectRejected("module m; initial $q_initialize(1, 1, 5); endmodule", "the §17.6 queue tasks take four arguments");
     try expectRejected("module m; integer v, st; initial $q_exam(1, 7, v, st); endmodule", "Table 17-15's codes 1 to 6");
     try expectRejected("module m; initial $fflush(1, 2); endmodule", "$fflush takes at most one descriptor");
-    try expectRejected("module m; initial $printtimescale(m, m); endmodule", "$printtimescale takes at most one module instance");
+    try expectRejected("module m; initial $printtimescale(m, m); endmodule", "$printtimescale takes at most one hierarchical name");
     try expectRejected("module m; initial $fclose(); endmodule", "$fclose takes one descriptor");
     try expectRejected("module m; initial $sdf_annotate(\"x.sdf\"); endmodule", "E1102");
 }
