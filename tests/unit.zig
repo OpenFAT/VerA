@@ -9653,6 +9653,13 @@ pub const preprocessor_tests = struct {
         try expectPp("\nreal \\sig-x ;", "`define M(x) real \\sig-x ;\n`M(1)");
     }
 
+    test "IEEE 1364 §19.3.1: a `\\` ending a line inside a block comment continues `define text" {
+        // Oracle: iverilog macro_comment_multiline (the comment is dropped, the
+        // continuation is not). Outside a `define the comment keeps its newlines.
+        try expectPp("\n\n(1 + 2)", "`define T(a,b) (a + /* x \\\n y */ b)\n`T(1,2)");
+        try expectPp("a\n b", "a/* x \\\n y */ b");
+    }
+
     test "IEEE 1364-2005 §28.4: protect metadata has no action outside an envelope" {
         // Oracle: §28.4 gives author, comment, encoding ... an action only
         // inside an envelope, and §19.10 makes a pragma without one no-effect.

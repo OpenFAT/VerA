@@ -302,7 +302,6 @@ ivtest/ivltests/itor_rtoi.v
 ivtest/ivltests/ldelay1.v
 ivtest/ivltests/ldelay3.v
 ivtest/ivltests/localparam_type.v
-ivtest/ivltests/macro_comment_multiline.v
 ivtest/ivltests/macro_str_esc.v
 ivtest/ivltests/mem1.v
 ivtest/ivltests/module_no_port_mixed_instances.v

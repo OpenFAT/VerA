@@ -95,6 +95,18 @@ pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
             const lines = std.mem.countScalar(u8, src[start..i], '\n');
             if (lines == 0) {
                 out.appendAssumeCapacity(' ');
+            } else if (inDefine(out.items)) {
+                // As for `//` above: in `define text a `\` that ends a line of
+                // the comment still continues the macro (iverilog
+                // macro_comment_multiline). Two bytes out for at least two in.
+                var prev: u8 = 0;
+                for (src[start..i]) |b| {
+                    if (b == '\n') {
+                        if (prev == '\\') out.appendAssumeCapacity('\\');
+                        out.appendAssumeCapacity('\n');
+                    }
+                    if (b != ' ' and b != '\t' and b != '\r') prev = b;
+                }
             } else {
                 out.appendNTimesAssumeCapacity('\n', lines);
             }
