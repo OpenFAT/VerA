@@ -9,10 +9,8 @@ gnucap-modelgen/dump_dep.af.0b.vams
 gnucap-modelgen/dump_dep.af.0.vams
 ispras-1364/test_07_01_06_3.v
 ispras-1364/test_07_01_06_4.v
-ispras-1364/test_08_06_00_1.v
 ispras-1364/test_14_06_01_1.v
 ispras-1364/test_15_05_02_2.v
-ispras-1364/test_15_05_02_3.v
 ivtest/contrib/pic.v
 ivtest/ivltests/always3.1.1B.v
 ivtest/ivltests/always3.1.2A.v
@@ -114,7 +112,6 @@ ivtest/ivltests/pr1861212a.v
 ivtest/ivltests/pr1866215.v
 ivtest/ivltests/pr1883052b.v
 ivtest/ivltests/pr1883052.v
-ivtest/ivltests/pr1938138.v
 ivtest/ivltests/pr1956211.v
 ivtest/ivltests/pr1985582.v
 ivtest/ivltests/pr2014673.v
