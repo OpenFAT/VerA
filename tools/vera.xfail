@@ -86,7 +86,6 @@ ivtest/ivltests/nb_ec_repeat_auto.v
 ivtest/ivltests/no_timescale_in_module.v
 ivtest/ivltests/parameter_named_empty.v
 ivtest/ivltests/parameter_type.v
-ivtest/ivltests/param_string.v
 ivtest/ivltests/param_test3.v
 ivtest/ivltests/pr1002a.v
 ivtest/ivltests/pr1026.v
