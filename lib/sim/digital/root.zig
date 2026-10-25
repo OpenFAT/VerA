@@ -2254,8 +2254,8 @@ test "§9.9 time-0 process order is iverilog's" {
     try expectRejected("module m; reg [3:0] v; initial $display(\"%h\", v); always v <= 4'h5; endmodule", "has no timing control");
     // VD-133: a timing control anywhere, a task call (which may wait) or a
     // `wait` keeps the construct running.
-    try expectRun("module m; reg c; task t; #2 c = ~c; endtask initial begin c = 0; #5 $display(\"%b\", c); $finish; end always t; endmodule", "0\n");
-    try expectRun("module m; reg c; initial begin c = 0; #3 c = 1; #1 $display(\"%b\", c); $finish; end always begin if (c) wait (!c); else #1; end endmodule", "1\n");
+    try expectRun("module m; reg c; task t; #2 c = ~c; endtask initial begin c = 0; #5 $display(\"%b\", c); $finish(0); end always t; endmodule", "0\n");
+    try expectRun("module m; reg c; initial begin c = 0; #3 c = 1; #1 $display(\"%b\", c); $finish(0); end always begin if (c) wait (!c); else #1; end endmodule", "1\n");
 }
 
 test "a zero-delay loop fails by name instead of hanging at one tick" {
