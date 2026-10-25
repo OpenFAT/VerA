@@ -719,10 +719,13 @@ pub fn parseSpecparamDecl(self: *Parser, out: *std.ArrayList(Ast.ParamDecl)) Err
         const name = try self.expectIdent();
         _ = try self.expect(.assign_eq);
         if (std.mem.startsWith(u8, self.file.str(name), "PATHPULSE$")) {
-            _ = try self.expect(.lparen);
-            _ = try parse_expr.parseMinTypMax(self);
-            if (self.eat(.comma)) _ = try parse_expr.parseMinTypMax(self);
-            _ = try self.expect(.rparen);
+            // §14.6.1's own example writes `PATHPULSE$ = 3;`, one limit and no
+            // parentheses, beside A.2.4's parenthesized form.
+            if (self.eat(.lparen)) {
+                _ = try parse_expr.parseMinTypMax(self);
+                if (self.eat(.comma)) _ = try parse_expr.parseMinTypMax(self);
+                _ = try self.expect(.rparen);
+            } else _ = try parse_expr.parseMinTypMax(self);
             if (!self.eat(.comma)) break;
             continue;
         }
