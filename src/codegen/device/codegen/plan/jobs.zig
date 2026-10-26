@@ -106,6 +106,9 @@ pub const Job = struct {
         /// Clause 12 (`From.vpi`): a row's reactive half, or one instance's
         /// share of a shared row, that `vpiContribs`/`vpiShares` report.
         vpi,
+        /// An operating-point variable's end-of-block value (`Lowered.op_vars`),
+        /// which `opVars` reports.
+        op_var,
         /// §9.4: the one job that is NOT folded into the core, because its
         /// body has side effects the residual must not trigger. See
         /// `plan_core.plan`.
@@ -349,6 +352,19 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
             try queueVpi(self, &jobs, from, sh.resist_val, sh.row);
             try queueVpi(self, &jobs, from, sh.react_val, sh.row);
         }
+    }
+    // The operating-point variables, which `opVars` reads out of its slice of
+    // the core. After every kind `eval` reads, so a model that gains a `desc`
+    // renumbers no field before them. `.strict` unconditionally: a report is
+    // not on the residual path, and proof.zig rates contributions only.
+    for (self.lowered.op_vars.items) |ov| {
+        const v = self.an.rv(ov.final);
+        if (v == .f_zero) continue; // reported as 0 without a field
+        try jobs.append(self.arena, .{
+            .kind = .op_var,
+            .target = v,
+            .mode = .strict,
+        });
     }
     // §9.4 the display tasks, as one unit. Queued last, so no existing job
     // (and so no declaration name) moves when a model gains or loses a

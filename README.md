@@ -112,7 +112,8 @@ builds a host step by step.
 - **Open bugs** are fixtures listed in the conformance suite's `vera/xfail`,
   each with its reason; CI's verdict
   ratchet ([`vera/ledger/VERDICTS.tsv`](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/vera/ledger/VERDICTS.tsv)) fails
-  on any verdict change. Operating-point variables are not exported to OSDI yet.
+  on any verdict change. Operating-point variables reach a contract host
+  (`op_vars`, `opVars`) but are not exported to OSDI yet.
 
 ## Conformance
 

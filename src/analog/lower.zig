@@ -875,6 +875,8 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // §5.10 the same, for every held variable. Reads only (no `call`), so the
     // unit enumeration below is untouched.
     for (self.out.held_vars.items, self.held_places.items) |*h, p| h.final = try self.builder.readVariable(p, self.cur);
+    // The same for every operating-point variable, also reads only.
+    try self.readOpVarFinals();
     // §5.6.1.2 and the same for every charge site.
     try self.readSiteFinals(0);
     // §9.17.3 and the same again for every `$limit` state slot: the value the
@@ -937,6 +939,21 @@ fn readContribFinals(self: *Lower, from: usize) Oom!void {
         c.react_val = try self.builder.readVariable(acc.react, self.cur);
         c.wrote_val = try self.builder.readVariable(acc.wrote, self.cur);
     }
+}
+
+/// Reads, at the end of the block, every module-scope real or integer
+/// variable whose `decl_meta` row carries a `desc` into `Lowered.op_vars`:
+/// OSDI's operating-point variables, which §3.2.1 lets a simulator report.
+/// An array or a string with a `desc` has no single value and is skipped.
+fn readOpVarFinals(self: *Lower) Oom!void {
+    assert(self.out.op_vars.items.len == 0); // runs once, after the analog blocks
+    for (self.out.decl_meta.items) |m| {
+        if (m.kind != .variable or m.desc == null) continue;
+        const slot = self.vars.get(m.name) orelse continue;
+        if (slot.ty != .real and slot.ty != .integer) continue;
+        try self.out.op_vars.append(self.arena, .{ .name = m.name, .final = try self.builder.readVariable(slot.place, self.cur) });
+    }
+    assert(self.out.op_vars.items.len <= self.out.decl_meta.items.len);
 }
 
 /// Reads each §5.6.1.2 charge site's charge from `from` on at the end of the block.

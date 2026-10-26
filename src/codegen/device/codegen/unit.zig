@@ -10,6 +10,7 @@ const plan_jobs = @import("plan/jobs.zig");
 const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_noise = @import("noise.zig");
+const gen_opvars = @import("opvars.zig");
 const gen_file = @import("file.zig");
 const gen_instance = @import("instance.zig");
 const gen_cfg = @import("cfg.zig");
@@ -162,6 +163,7 @@ pub fn emitUnits(self: *Gen) Error!void {
     try gen_state.emitCore(self);
     try gen_state.emitIterCore(self);
     try gen_noise.emitNoiseCore(self);
+    try gen_opvars.emitOpVarCore(self);
     for (self.jobs.list) |job| {
         if (job.kind != .display) continue;
         // §9.5 the one unit where a descriptor operation may actually happen.

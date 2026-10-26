@@ -214,9 +214,9 @@ fn evalRoot(k: Job.Kind) bool {
     return switch (k) {
         .resist, .react, .retained, .table_effect, .timepoint, .status => true,
         // `updateState`/`acceptQ`, `limit`, `seed`, `advanceIteration`,
-        // `noisePsd`, `acStim`, the schedule, `vpiContribs`/`vpiShares` and
-        // §9.4 display read these.
-        .op_input, .ctrl, .held, .limit_arg, .limit_old, .reject_iteration, .reject_step, .noise, .ac_stim, .timer_period, .vpi, .display => false,
+        // `noisePsd`, `acStim`, the schedule, `vpiContribs`/`vpiShares`,
+        // `opVars` and §9.4 display read these.
+        .op_input, .ctrl, .held, .limit_arg, .limit_old, .reject_iteration, .reject_step, .noise, .ac_stim, .timer_period, .vpi, .op_var, .display => false,
     };
 }
 

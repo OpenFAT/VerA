@@ -2599,6 +2599,21 @@ pub const DeclMeta = struct {
     units: ?[]const u8 = null,
 };
 
+// Optional device table `op_vars: [_][]const u8` and its entry point
+//
+//     pub fn opVars(comptime S: type, x: [n_u]f64, model: *const Model,
+//                   inst: *const Instance, sim: SimState) [op_vars.len]f64
+//
+// The operating-point variables, as OSDI defines them: every module-scope
+// real or integer variable with a §2.9.2 `desc` (§3.2.1's output variables),
+// in declaration order; `decl_meta` holds each one's `desc` and `units`.
+// `opVars` runs the analog block at `x` and returns, at position k, the value
+// variable `op_vars[k]` holds at its end (an integer as an f64). Pure in `x`,
+// so a host may call it at any accepted point. `S` is the family `eval` gets,
+// so a `ddx` in a variable's expression (a model's own gm or cgg) reads its
+// partial; a value-only family reads every `ddx` as 0. The values are the
+// instance's own: a host-applied `$mfactor` is not in them.
+
 // Optional device table `instance_params: [_][]const u8`: the `Model` fields
 // of the parameters the source marks `(* type = "instance" *)`, OpenVAF's
 // convention for the ones an instance line sets. An OSDI host lists only
@@ -3956,6 +3971,13 @@ pub fn validate(comptime D: type) void {
     // §2.9.2 descriptions and units. Optional.
     expectArray(D, "decl_meta", DeclMeta);
     if (@hasDecl(D, "decl_meta")) if (declMetaError(&D.decl_meta)) |m| @compileError(name ++ ".decl_meta: " ++ m);
+    // Operating-point variables (`op_vars`): the names and, positionally,
+    // their values at any state vector. Optional, and both or neither.
+    expectArray(D, "op_vars", []const u8);
+    requireWith(D, "op_vars", "opVars");
+    requireWith(D, "opVars", "op_vars");
+    if (@hasDecl(D, "opVars"))
+        expectGeneric(D, "opVars", 5, "fn (comptime S: type, [n_u]f64, *const Model, *const Instance, SimState) [op_vars.len]f64");
 
     // §3.6.1.2 `abstol` of each unknown's nature (§3.6.2.3 discipline
     // overrides included): the absolute half of a Newton stopping test.
@@ -4262,6 +4284,8 @@ const AllowedPubDecl = enum {
     u_abstol,
     u_nodeset,
     decl_meta,
+    op_vars,
+    opVars,
     instance_params,
     jac_pattern,
     q_pattern,
@@ -4757,6 +4781,12 @@ const MockAll = struct {
         .{ .kind = .variable, .name = "ids", .units = "A" },
         .{ .kind = .net, .name = "p", .desc = "positive terminal" },
     };
+    // One operating-point variable, so the `op_vars`/`opVars` pairing and
+    // signature are declared somewhere `validate` sees them.
+    pub const op_vars = [_][]const u8{"i"};
+    pub fn opVars(comptime _: type, x: [n_u]f64, m: *const Model, _: *const Instance, _: SimState) [op_vars.len]f64 {
+        return .{@as(f64, m.g) * (x[0] - x[1])};
+    }
     pub const instance_params = [_][]const u8{"g"};
     pub const mc_param = "g";
     pub const constant: Constant = .{ .g = true };
@@ -5774,6 +5804,11 @@ test "requireWith and the generic-entry check refuse their own mistakes" {
     try testing.expect(comptime requireWithError(PsdOnly, "noisePsd", "noise_gens") != null);
     try testing.expect(comptime requireWithError(MockAll, "noisePsd", "noise_gens") == null);
     try testing.expect(comptime requireWithError(MockR, "noisePsd", "noise_gens") == null);
+    const OpVarsOnly = struct {
+        pub const op_vars = [_][]const u8{"i"};
+    };
+    try testing.expect(comptime requireWithError(OpVarsOnly, "op_vars", "opVars") != null);
+    try testing.expect(comptime requireWithError(MockAll, "op_vars", "opVars") == null);
     const NotFn = struct {
         pub const eval = 3;
     };

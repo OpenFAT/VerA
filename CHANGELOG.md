@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Operating-point variables:** a device whose module-scope variables carry
+  a `desc` (OSDI's opvars, LRM §3.2.1's output variables) declares
+  `op_vars`, their names, and `opVars(S, x, ...)`, their values when the
+  analog block runs at `x`, read off a slice of the core as `noisePsd` is
+  (OmarSiwy/ESPice#236). Not yet in `--emit-osdi`.
+
 ## v0.20.0 — 2026-10-25
 
 On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Verilog-AMS 754/754, Cumulative: 6817/6817.
