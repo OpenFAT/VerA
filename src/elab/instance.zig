@@ -729,6 +729,61 @@ fn expandInstanceArrays(self: *Flatten, insts: []const Ast.Instance) Error![]con
 /// unit that was in force, which the walk puts back after them.
 ///
 /// `path` already ends in `sep`, so a flat name is `path ++ local`.
+/// §5.4.3 whether the flow into `port` of an instance of `child` is read:
+/// by the child itself (`I(<port>)`, or `I(pb)` of a §3.12.1 port branch on
+/// it), or by the parent through §6.7.1's `I(<inst.port>)` /
+/// `I(inst.branch(<port>))`.
+/// ponytail: a reader two or more levels up keeps `lower_expr.instancePortFlow`'s
+/// sum of flow contributions; scanning every ancestor is the upgrade.
+fn portFlowRead(self: *Flatten, child: *const Ast.ModuleDecl, parent: ?*const Ast.ModuleDecl, inst: Ast.StrId, port: Ast.StrId) Error!bool {
+    const file = self.ctx.file;
+    const x = &file.exprs;
+    const Scan = struct {
+        flat: *Flatten,
+        module: *const Ast.ModuleDecl,
+        /// The child's own reads match `port`; the parent's, `want`.
+        port: Ast.StrId,
+        want: ?[]const u8,
+        found: *bool,
+        pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) Error!void {
+            if (e == .none or w.found.*) return;
+            const fx = &w.flat.ctx.file.exprs;
+            const tag = fx.tag(e);
+            if (tag == .port_access or (tag == .branch_access and fx.rhs(e) == .none)) {
+                var t = fx.lhs(e);
+                if (t != .none and fx.tag(t) == .index) t = fx.lhs(t);
+                if (t != .none) if (w.want) |want| {
+                    if (tag == .port_access and fx.tag(t) == .hier_ident and
+                        std.mem.eql(u8, try elab_names.flatReference(w.flat.ctx.file, w.flat.ctx.arena, w.module, t), want)) w.found.* = true;
+                } else if (fx.tag(t) == .ident) {
+                    const name = fx.strOf(t);
+                    if (tag == .port_access and name == w.port) w.found.* = true;
+                    if (tag == .branch_access) for (w.module.branches) |b| if (b.is_port_branch and b.name == name) {
+                        var h = b.hi;
+                        if (h != .none and fx.tag(h) == .index) h = fx.lhs(h);
+                        if (h != .none and fx.tag(h) == .ident and fx.strOf(h) == w.port) w.found.* = true;
+                    };
+                };
+            }
+            var buf: [3]Ast.ExprId = undefined;
+            for (fx.children(e, &buf)) |c| try w.expr(c, .read);
+        }
+        pub fn stmt(w: @This(), s: Ast.StmtId) Error!void {
+            if (s != .none and !w.found.*) try w.flat.ctx.file.stmtEdges(s, w);
+        }
+    };
+    _ = x;
+    var found = false;
+    const own: Scan = .{ .flat = self, .module = child, .port = port, .want = null, .found = &found };
+    for (child.analog) |blk| try own.stmt(blk.body);
+    if (found) return true;
+    const up = parent orelse return false;
+    const want = try std.mem.concat(self.ctx.arena, u8, &.{ file.str(inst), &[_]u8{elaborate.sep}, file.str(port) });
+    const above: Scan = .{ .flat = self, .module = up, .port = port, .want = want, .found = &found };
+    for (up.analog) |blk| try above.stmt(blk.body);
+    return found;
+}
+
 fn inlineInstance(
     self: *Flatten,
     inst: *const Ast.Instance,
@@ -835,6 +890,34 @@ fn inlineInstance(
             // The port is the parent's net: no new node, no new declaration.
             // ponytail: the parent map already owns this lookup and fallback.
             const bound = parent.rename.get(n) orelse n;
+            // §5.4.3/§6.7.1 a port whose flow is read keeps a net of its own,
+            // hung from the parent's by a branch nothing contributes to: the
+            // flow probe whose current is the flow into the port.
+            if (!unit.primitive and p.range == null and p.type_range == null and
+                try portFlowRead(self, child, parent.module, inst.name, p.name))
+            {
+                const internal = try elab_names.join(self, path, p.name);
+                try elab_resolve.addNet(self, .{
+                    .name = internal,
+                    .discipline = elab_resolve.oocDiscipline(self, path, p.name) orelse p.discipline,
+                    .main_tok = p.main_tok,
+                });
+                try self.port_ammeters.append(self.ctx.arena, .{
+                    .internal = self.ctx.file.str(internal),
+                    .bound = self.ctx.file.str(bound),
+                });
+                widths.appendAssumeCapacity(.{ .port = p, .net = bound, .tok = conn.?.main_tok });
+                try elab_resolve.resolveDiscipline(self, path, p, bound, conn.?.main_tok);
+                try unit.rename.put(self.ctx.arena, p.name, internal);
+                const port_path = try self.ctx.arena.print("{s}{s}", .{ path, self.ctx.file.str(p.name) });
+                try self.names.put(self.ctx.arena, port_path, self.ctx.file.str(internal));
+                const local = elab_resolve.oocDiscipline(self, path, p.name) orelse p.discipline;
+                if (local != .none) {
+                    try unit.port_disc.put(self.ctx.arena, p.name, local);
+                    try self.port_disciplines.put(self.ctx.arena, port_path, self.ctx.file.str(local));
+                }
+                continue;
+            }
             // §3.7: "When the two nets connected by a port are of net type
             // wreal and wire/tri, the resulting single net will be assigned
             // as wreal." The runtime digital elaboration promotes the same

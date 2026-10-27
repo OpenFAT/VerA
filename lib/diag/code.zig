@@ -7117,23 +7117,25 @@ fn infoOf(c: Code) Info {
             .explain =
             \\LRM 5.4.3: "The port access function accesses the flow into a port
             \\of a module", and A.8.9 lets the port be hierarchical: `I(<u.p>)`
-            \\is the flow into instance u through its own port p. Elaboration
-            \\joins u's port onto the net it is connected to, so VerA reads the
-            \\flow as what u's hierarchy conducts away from that net: the sum of
-            \\its flow contributions to branches at the net.
+            \\is the flow into instance u through its own port p.
             \\
-            \\That sum is refused when it cannot be exact:
+            \\When u itself reads it (`I(<a>)`, or `I(pb)` over its 3.12.1 port
+            \\branch), or the module that instantiates u does, elaboration keeps
+            \\the port on a net of its own, hung from the connected net by a
+            \\branch nothing contributes to: the flow is that flow probe's
+            \\current (Figure 5-1's ammeter), exact through any source.
+            \\
+            \\Otherwise the port is joined onto the connected net, and VerA reads
+            \\the flow as what u's hierarchy conducts away from it: the sum of
+            \\its flow contributions to branches at the net. That sum is refused
+            \\when it cannot be exact:
             \\  - the access is read before u's own analog blocks are lowered
-            \\    (inside u's hierarchy, or from a sibling written before u);
-            \\    read it from a module above u;
+            \\    (from a sibling written before u); read it from a module above;
             \\  - u drives the net through a potential source or a 5.6.7
-            \\    indirect branch, whose current is a solver unknown.
-            \\
-            \\A module's own `I(<a>)` (or `I(pb)` over its 3.12.1 port branch
-            \\`branch (<a>) pb;`) inside an instance u is the same quantity,
-            \\`I(<u.a>)`, read from inside u, so it is refused too. Read it
-            \\from the module that instantiates u. At the top, `I(<a>)` is the
-            \\host's port current and is read exactly.
+            \\    indirect branch, whose current is a solver unknown (a reader
+            \\    two or more levels above u, or a vector port);
+            \\  - a vector port read from inside u.
+            \\At the top, `I(<a>)` is the host's port current and is read exactly.
             ,
         },
         .E0998 => .{

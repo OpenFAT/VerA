@@ -1412,6 +1412,7 @@ fn instancePortFlow(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
     const access = try lower_contrib.accessOn(self, e, name, global, p, Lower.ground);
     if (access == .potential) return null;
     try lower_contrib.checkAccessMatch(self, e, name, access, p);
+    if (try ammeterFlow(self, lower_node.nodeName(self, p))) |tv| return tv;
     // Every block of the hierarchy is behind this one.
     for (self.cur_block..self.module.?.analog.len) |j| {
         const unit = self.module.?.analog[j].unit;
@@ -1453,6 +1454,22 @@ fn instancePortFlow(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
     return .{ .v = resist, .ty = .real };
 }
 
+/// §5.4.3 the flow into an instance port elaboration split onto its own net
+/// `internal` (`Lower.port_ammeters`), or null when it was not split: the
+/// current of the branch from the parent's net into it. Nothing contributes
+/// to that branch, so it is a §5.4.2.1 flow probe, Figure 5-1's ammeter,
+/// and its unknown is keyed on the pair as `branchOf` orders it.
+pub fn ammeterFlow(self: *Lower, internal: []const u8) Oom!?TypedValue {
+    const am = for (self.port_ammeters) |am| {
+        if (std.mem.eql(u8, am.internal, internal)) break am;
+    } else return null;
+    const into = try lower_node.internNode(self, am.internal, "");
+    const from = try lower_node.internNode(self, am.bound, "");
+    const u = try lower_node.flowUnknown(self, @min(from, into), @max(from, into));
+    const v = try lower_node.probe(self, u);
+    return .{ .v = if (from > into) try self.emit(.fneg, &.{v}) else v, .ty = .real };
+}
+
 /// `acc ± v`, folding a zero on either side.
 fn addSigned(self: *Lower, acc: Mir.Value, v: Mir.Value, neg: bool) Oom!Mir.Value {
     if (v == .f_zero) return acc;
@@ -1468,6 +1485,8 @@ fn addSigned(self: *Lower, acc: Mir.Value, v: Mir.Value, neg: bool) Oom!Mir.Valu
 fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
+    // An instance's own port, split onto its own net: the probe's current.
+    if (try ammeterFlow(self, lower_node.nodeName(self, p))) |tv| return tv;
     const global = self.access_kind.get(name) orelse {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0501);
         b.msg("`{s}`", .{name});

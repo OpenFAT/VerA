@@ -170,6 +170,12 @@ pub const Design = struct {
     /// scope and the net in the parent's, so sharing one flat name is not
     /// two declarations in one scope (`lower_var.checkOneItemPerScope`).
     port_vars: []const Ast.StrId = &.{},
+    /// §5.4.3/§6.7.1 the instance ports whose flow is read, each split off the
+    /// parent's net onto an internal net of its own (`instance.zig`): one
+    /// row per such port, the internal net's flat name and the parent's net
+    /// it hangs from. Lowering reads the port's flow as that branch's current,
+    /// a §5.4.2.1 flow probe (Figure 5-1's ammeter).
+    port_ammeters: []const PortAmmeter = &.{},
     /// §6.4.3 "Integer or real variables in the paramset declared with
     /// descriptions are considered output variables", and "the paramset's
     /// value is reported for instances using the paramset": one row per such
@@ -185,6 +191,10 @@ pub const Design = struct {
     /// §9.18 Table 9-29 domains to check at card time (`SystemCheck`).
     system_checks: []const SystemCheck = &.{},
 };
+
+/// One `Design.port_ammeters` row: the flat names of the port's own internal
+/// net and of the parent's net it was connected to.
+pub const PortAmmeter = struct { internal: []const u8, bound: []const u8 };
 
 /// One `Design.ps_outputs` row: the name an instance reports the variable
 /// under (`path ++ name`) and the flat variable holding it (`path ++
@@ -553,6 +563,8 @@ pub const Flatten = struct {
     port_vars: std.ArrayList(Ast.StrId) = .empty,
     /// `Design.ps_outputs`, as `paramset.paramsetOverrides` declares them.
     ps_outputs: std.ArrayList(PsOutput) = .empty,
+    /// `Design.port_ammeters`, as `instance.inlineInstance` splits ports.
+    port_ammeters: std.ArrayList(PortAmmeter) = .empty,
     /// `Design.paramset_defparams`, before generate schemes have final values.
     paramset_defparams: std.ArrayList(ParamsetDefparam) = .empty,
     /// `Design.selection_params`: flat parameters a §6.4.2 overload choice
@@ -908,6 +920,7 @@ pub const Flatten = struct {
             .ps_hidden = self.ps_hidden.items,
             .port_vars = self.port_vars.items,
             .ps_outputs = self.ps_outputs.items,
+            .port_ammeters = self.port_ammeters.items,
             .paramset_defparams = self.paramset_defparams.items,
             .selection_params = self.selection_params.items,
             .system_checks = self.system_checks.items,

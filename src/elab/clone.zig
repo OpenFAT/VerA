@@ -415,6 +415,15 @@ fn ownPortFlow(self: *Flatten, e: Ast.ExprId) ?Ast.StrId {
     return null;
 }
 
+/// §5.4.3 whether the walk split this unit's `port` onto an internal net of
+/// its own (`Design.port_ammeters`), so its flow is a probe lowering reads.
+fn ammetered(self: *Flatten, port: Ast.StrId) bool {
+    const flat = self.unit.rename.get(port) orelse return false;
+    const name = self.ctx.file.str(flat);
+    for (self.port_ammeters.items) |am| if (std.mem.eql(u8, am.internal, name)) return true;
+    return false;
+}
+
 /// Copies one expression subtree into the store, renaming the names that
 /// belong to the unit being inlined, and applies the per-instance rewrites
 /// (§6.3.6 flow-probe division, §9.18/§9.19 answers, §6.4.1 references).
@@ -478,7 +487,7 @@ pub fn cloneExpr(self: *Flatten, e: Ast.ExprId) Error!Ast.ExprId {
             // is the parent's net, whose port flow is another quantity (the
             // top's, or none: E0508), and VerA sums an instance's port flow
             // only for a reader above it (`lower_expr.instancePortFlow`).
-            if (!self.contrib_target) if (ownPortFlow(self, e)) |port| {
+            if (!self.contrib_target) if (ownPortFlow(self, e)) |port| if (!ammetered(self, port)) {
                 const access = self.ctx.file.str(n.str);
                 try self.err(n.main_tok, .E0997, "`{s}` inside instance `{s}` reads the flow into its own port `{s}`; VerA sums that flow only for a module above it, as `{s}(<{s}{s}>)`", .{
                     access, self.unit.path[0 .. self.unit.path.len - 1], self.ctx.file.str(port), access, self.unit.path, self.ctx.file.str(port),
@@ -970,15 +979,20 @@ test "§4.7.1 a function's formal hides a module name for the function body only
     try std.testing.expectEqualStrings("u.x", f.file.str(ex.strOf(ex.args(call)[0])));
 }
 
-test "§5.4.3 a child reading the flow into its own port is E0997; the top reading its own is not" {
-    var bad: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
-    defer bad.deinit();
-    try fixture.parse(&bad,
+test "§5.4.3 a child reading the flow into its own port gets a net of its own; the top reading its own does not" {
+    // The read port is split off the parent's net (`Design.port_ammeters`),
+    // so the flow into it is the branch between the two; the top's port is
+    // the host's, its `I(<p>)` its own exact unknown.
+    var own: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
+    defer own.deinit();
+    try fixture.parse(&own,
         \\module top(p); inout p; electrical p; kid u(p); endmodule
         \\module kid(a); inout a; electrical a; analog V(a) <+ I(<a>); endmodule
     );
-    try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(bad.ctx()));
-    try std.testing.expect(fixture.hasCode(&bad.bag, .E0997));
+    const d = try elaborate.elaborate(own.ctx());
+    try std.testing.expectEqual(@as(usize, 1), d.port_ammeters.len);
+    try std.testing.expectEqualStrings("u.a", d.port_ammeters[0].internal);
+    try std.testing.expectEqualStrings("p", d.port_ammeters[0].bound);
 
     var good: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
     defer good.deinit();
@@ -986,7 +1000,7 @@ test "§5.4.3 a child reading the flow into its own port is E0997; the top readi
         \\module top(p); inout p; electrical p; kid u(p); analog V(p) <+ I(<p>); endmodule
         \\module kid(a); inout a; electrical a; analog V(a) <+ 0.0; endmodule
     );
-    _ = try elaborate.elaborate(good.ctx());
+    try std.testing.expectEqual(@as(usize, 0), (try elaborate.elaborate(good.ctx())).port_ammeters.len);
 }
 
 test "§3.4.4 an array override must have the parameter's size (E0921)" {

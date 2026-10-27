@@ -22,6 +22,14 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **The flow into an instance's port is read exactly** (§5.4.3, §3.12.1,
+  §6.7.1): a port whose flow the instance itself reads (`I(<a>)`, `I(pb)`),
+  or the module instantiating it reads (`I(<u.a>)`, `I(u.branch(<a>))`),
+  keeps a net of its own hung from the connected net by a flow probe, so the
+  read is that probe's current, through a potential source too. Was E0997
+  (`port_access_own_port_inside_instance.va`,
+  `port_branch_own_port_inside_instance.va`,
+  `port_access_hierarchical_potential_source.va`).
 - **A named block's local hides the module's variable of that name** in
   the checks that run before lowering (IEEE 1364-2005 §12.6): an analog
   `begin : b integer value; value = ...; end` beside a digital `reg value`

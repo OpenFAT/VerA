@@ -469,6 +469,9 @@ port_vars: []const Ast.StrId = &.{},
 /// §6.4.3 `Elaborate.Design.ps_outputs`: paramset output variables, reported
 /// under the instance's name by §9.16's `$simprobe`.
 ps_outputs: []const Elaborate.PsOutput = &.{},
+/// §5.4.3 `Elaborate.Design.port_ammeters`: the instance ports whose flow is
+/// read, each on an internal net of its own (`lower_expr.ammeterFlow`).
+port_ammeters: []const Elaborate.PortAmmeter = &.{},
 /// §6.3.1/§6.4 forbidden defparams, awaiting final generate-scheme values.
 paramset_defparams: []const Elaborate.ParamsetDefparam = &.{},
 /// §6.4.2 parameters whose values selected an overloaded paramset.
@@ -615,6 +618,7 @@ pub fn lowerFile(self: *Lower) Error!Lowered {
     self.ps_hidden = design.ps_hidden; // §6.4.3
     self.port_vars = design.port_vars; // §6.8
     self.ps_outputs = design.ps_outputs;
+    self.port_ammeters = design.port_ammeters;
     self.paramset_defparams = design.paramset_defparams;
     self.selection_params = design.selection_params;
     self.system_checks = design.system_checks;
@@ -733,6 +737,9 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // After the parameters and their defaults are in (§6.3.4).
     try lower_param.declareAliasParams(self, module); // §3.4.7
     try lower_node.declareBranches(self, module); // §3.12
+    // §5.4.3 each split port's flow probe, whether or not a read of it is
+    // lowered: without its branch the port's net would hang free.
+    for (self.port_ammeters) |am| _ = try lower_expr.ammeterFlow(self, am.internal);
 
     // §3.5 genvars exist only for unrolling; they carry no runtime storage.
     // §3.2/§3.3 module-level variables. The §5.10 scan runs first: whether a
