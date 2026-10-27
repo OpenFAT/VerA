@@ -168,8 +168,8 @@ pub const DeclMeta = struct {
     units: ?[]const u8 = null,
 };
 
-/// One operating-point variable, as OSDI defines it: a `decl_meta`
-/// `.variable` row that carries a `desc` (§3.2.1's output variable), and the
+/// One operating-point variable, §3.2.1's output variable: a `decl_meta`
+/// `.variable` row that carries a `desc` or `units`, and the
 /// value its real or integer variable holds at the end of the analog block.
 /// Reaches no residual: codegen publishes it as `op_vars`/`opVars`.
 pub const OpVar = struct { name: []const u8, final: Mir.Value };
@@ -815,7 +815,7 @@ nodesets: std.ArrayList(Nodeset) = .empty,
 /// emits the optional `decl_meta` table only when this is non-empty.
 decl_meta: std.ArrayList(DeclMeta) = .empty,
 /// The operating-point variables (`OpVar`), in `decl_meta` order. Empty
-/// when no module-scope variable carries a `desc`.
+/// when no module-scope variable carries a `desc` or `units`.
 op_vars: std.ArrayList(OpVar) = .empty,
 /// The parameters whose last `type` attribute is "instance", in declaration
 /// order (`lower_param.collectDeclMeta`): OpenVAF's convention for the ones

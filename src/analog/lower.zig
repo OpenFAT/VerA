@@ -942,13 +942,14 @@ fn readContribFinals(self: *Lower, from: usize) Oom!void {
 }
 
 /// Reads, at the end of the block, every module-scope real or integer
-/// variable whose `decl_meta` row carries a `desc` into `Lowered.op_vars`:
-/// OSDI's operating-point variables, which §3.2.1 lets a simulator report.
+/// variable whose `decl_meta` row carries a `desc` or `units` into
+/// `Lowered.op_vars`: §3.2.1's output variables, whose values "Verilog-AMS
+/// simulators shall provide access to".
 /// An array or a string with a `desc` has no single value and is skipped.
 fn readOpVarFinals(self: *Lower) Oom!void {
     assert(self.out.op_vars.items.len == 0); // runs once, after the analog blocks
     for (self.out.decl_meta.items) |m| {
-        if (m.kind != .variable or m.desc == null) continue;
+        if (m.kind != .variable or (m.desc == null and m.units == null)) continue;
         const slot = self.vars.get(m.name) orelse continue;
         if (slot.ty != .real and slot.ty != .integer) continue;
         try self.out.op_vars.append(self.arena, .{ .name = m.name, .final = try self.builder.readVariable(slot.place, self.cur) });

@@ -13,7 +13,7 @@
   `--list`, the diagnostic-citation unit test, the external QA suites
   (va-models, cmcqa, hicum-qa, xyce) and the VAMPyRE run.
 - **Operating-point variables:** a device whose module-scope variables carry
-  a `desc` (OSDI's opvars, LRM §3.2.1's output variables) declares
+  a `desc` or `units` (LRM §3.2.1's output variables) declares
   `op_vars`, their names, and `opVars(S, x, ...)`, their values when the
   analog block runs at `x`, read off a slice of the core as `noisePsd` is
   (OmarSiwy/ESPice#236). Not yet in `--emit-osdi`.

@@ -2604,9 +2604,10 @@ pub const DeclMeta = struct {
 //     pub fn opVars(comptime S: type, x: [n_u]f64, model: *const Model,
 //                   inst: *const Instance, sim: SimState) [op_vars.len]f64
 //
-// The operating-point variables, as OSDI defines them: every module-scope
-// real or integer variable with a §2.9.2 `desc` (§3.2.1's output variables),
-// in declaration order; `decl_meta` holds each one's `desc` and `units`.
+// The operating-point variables, §3.2.1's output variables: every
+// module-scope real or integer variable with a §2.9.2 `desc` or `units`
+// attribute, or both, in declaration order (OSDI's opvars take only a
+// `desc`; a units-only variable is an output variable all the same); `decl_meta` holds each one's `desc` and `units`.
 // `opVars` runs the analog block at `x` and returns, at position k, the value
 // variable `op_vars[k]` holds at its end (an integer as an f64). Pure in `x`,
 // so a host may call it at any accepted point. `S` is the family `eval` gets,

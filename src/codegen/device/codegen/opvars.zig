@@ -1,8 +1,8 @@
 //! `Lowered.op_vars` -> the host's operating-point report: `op_vars` (the
 //! names) and `opVars` (each one's value at a state vector), read off a
-//! slice of the core as `noisePsd` reads its PSDs. OSDI's definition of an
-//! operating-point variable: a module-scope variable with a `desc`, which
-//! LRM §3.2.1 calls an output variable a simulator may report.
+//! slice of the core as `noisePsd` reads its PSDs. An operating-point
+//! variable is LRM §3.2.1's output variable: a module-scope variable with a
+//! `desc` or `units` attribute, or both, whose value a simulator shall report.
 //! LRM: §2.9.2, §3.2.1, §4.5.14.
 
 const std = @import("std");
@@ -54,7 +54,7 @@ pub fn emitOpVarTable(self: *Gen) Error!void {
     if (ovs.len == 0) return;
     try self.w(
         \\/// The operating-point variables: the module-scope variables with a
-        \\/// §2.9.2 `desc` (OSDI's opvars), in declaration order; `decl_meta`
+        \\/// §2.9.2 `desc` or `units` (§3.2.1), in declaration order; `decl_meta`
         \\/// holds each one's `desc` and `units`.
         \\pub const op_vars = [_][]const u8{{
     , .{});
