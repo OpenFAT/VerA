@@ -81,7 +81,7 @@ pub fn open(arena: std.mem.Allocator, keys: Keys, head: []const u8, text: []cons
     return .{ .end = end, .opened = try decrypt(arena, keys, &b) };
 }
 
-const Kind = enum { data_block, key_block, digest_block, data_decrypt_key };
+const Kind = enum { data_block, key_block, digest_block, data_decrypt_key, digest_decrypt_key };
 
 /// One encoded block and the §28.4.3 encoding in force where it started.
 const Block = struct {
@@ -251,6 +251,11 @@ fn decrypt(arena: std.mem.Allocator, keys: Keys, b: *const Body) !Opened {
     // §28.4.10: a key block carries the session key, under the key provider's
     // key; else the data key is the provider's own.
     var data_key: [8]u8 = undefined;
+    // §28.4.20.2: the key_block's cleartext, which a digest_block after it
+    // checks, and the digest key and method it may carry.
+    var key_clear: ?[]const u8 = null;
+    var digest_key: ?[8]u8 = null;
+    var digest_key_method: []const u8 = b.get("digest_key_method");
     if (b.block(.key_block)) |kb| {
         if (!std.mem.eql(u8, b.get("key_method"), "des-cbc"))
             return failf(arena, .E0146, "key_method=\"{s}\": VerA decrypts \"des-cbc\" only", .{b.get("key_method")});
@@ -260,8 +265,21 @@ fn decrypt(arena: std.mem.Allocator, keys: Keys, b: *const Body) !Opened {
             .text => |t| t,
             .fail => |f| return .{ .fail = f },
         };
+        key_clear = session;
         var sb: Body = .{};
         _ = try sb.lines(arena, session, 0, false);
+        // §28.4.20.2 "the digest_key_method and digest_decrypt_key are
+        // encrypted using the key_method and stored ... as the contents of
+        // the key_block".
+        if (sb.block(.digest_decrypt_key)) |gk| {
+            const graw = switch (try decode(arena, gk, "digest_decrypt_key")) {
+                .text => |t| t,
+                .fail => |f| return .{ .fail = f },
+            };
+            if (graw.len != 8) return failf(arena, .E0153, "the digest_decrypt_key is {d} bytes, not 8", .{graw.len});
+            digest_key = graw[0..8].*;
+            if (sb.get("digest_key_method").len != 0) digest_key_method = sb.get("digest_key_method");
+        }
         const dk = sb.block(.data_decrypt_key) orelse return failf(arena, .E0153, "the key_block holds no data_decrypt_key", .{});
         const raw = switch (try decode(arena, dk, "data_decrypt_key")) {
             .text => |t| t,
@@ -284,12 +302,28 @@ fn decrypt(arena: std.mem.Allocator, keys: Keys, b: *const Body) !Opened {
         .fail => |f| return .{ .fail = f },
     };
 
-    // §28.4.12: the digest block is the digest of the cleartext, encrypted.
-    if (b.block(.digest_block)) |db| {
-        if (!std.mem.eql(u8, b.get("digest_key_method"), "des-cbc"))
-            return failf(arena, .E0146, "digest_key_method=\"{s}\": VerA decrypts \"des-cbc\" only", .{b.get("digest_key_method")});
-        const k = keys.find(b.get("digest_keyowner"), b.get("digest_keyname")) orelse
-            return failf(arena, .E0152, "no key for digest_keyowner=\"{s}\", digest_keyname=\"{s}\"", .{ b.get("digest_keyowner"), b.get("digest_keyname") });
+    // §28.4.12: a digest block is the digest of a block's cleartext,
+    // encrypted; §28.4.22.2 it "shall immediately follow the key_block or
+    // data_block to which it refers".
+    for (b.blocks.items, 0..) |*db, i| {
+        if (db.kind != .digest_block) continue;
+        const prev = if (i == 0) null else b.blocks.items[i - 1].kind;
+        const what, const of: []const u8 = if (prev == .data_block)
+            .{ "data_block", plain }
+        else if (prev == .key_block and key_clear != null)
+            .{ "key_block", key_clear.? }
+        else
+            return failf(arena, .E0146, "a digest_block does not follow the key_block or data_block it refers to", .{});
+        // The key_block's digest_decrypt_key, else a key provider's
+        // (digest_keyowner/digest_keyname).
+        const k = digest_key orelse blk: {
+            if (!std.mem.eql(u8, digest_key_method, "des-cbc"))
+                return failf(arena, .E0146, "digest_key_method=\"{s}\": VerA decrypts \"des-cbc\" only", .{digest_key_method});
+            break :blk keys.find(b.get("digest_keyowner"), b.get("digest_keyname")) orelse
+                return failf(arena, .E0152, "no key for digest_keyowner=\"{s}\", digest_keyname=\"{s}\"", .{ b.get("digest_keyowner"), b.get("digest_keyname") });
+        };
+        if (!std.mem.eql(u8, digest_key_method, "des-cbc"))
+            return failf(arena, .E0146, "digest_key_method=\"{s}\": VerA decrypts \"des-cbc\" only", .{digest_key_method});
         const got = switch (try clear(arena, keys, k, db, "digest_block")) {
             .text => |t| t,
             .fail => |f| return .{ .fail = f },
@@ -297,13 +331,13 @@ fn decrypt(arena: std.mem.Allocator, keys: Keys, b: *const Body) !Opened {
         const digest = b.get("digest_method");
         var want_buf: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
         const want: []const u8 = if (std.mem.eql(u8, digest, "sha1")) blk: {
-            std.crypto.hash.Sha1.hash(plain, &want_buf, .{});
+            std.crypto.hash.Sha1.hash(of, &want_buf, .{});
             break :blk &want_buf;
         } else if (std.mem.eql(u8, digest, "md5")) blk: {
-            std.crypto.hash.Md5.hash(plain, want_buf[0..16], .{});
+            std.crypto.hash.Md5.hash(of, want_buf[0..16], .{});
             break :blk want_buf[0..16];
         } else return failf(arena, .E0146, "digest_method=\"{s}\": VerA checks \"md5\" and \"sha1\"", .{digest});
-        if (!std.mem.eql(u8, got, want)) return failf(arena, .E0153, "the digest_block does not match the decrypted data_block ({s})", .{digest});
+        if (!std.mem.eql(u8, got, want)) return failf(arena, .E0153, "the digest_block does not match the decrypted {s} ({s})", .{ what, digest });
     }
     // §28.4.28.2/§28.4.29.2: a model that needs a license is not decrypted
     // or run unless "the application is licensed". VerA loads no license

@@ -22,6 +22,10 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **A protected envelope's `digest_decrypt_key` is read** (IEEE 1364-2005
+  §28.4.20): the digest key and method come from the key_block's cleartext,
+  and each `digest_block` checks the key_block or data_block just before it
+  (§28.4.22.2), not always the data (`protected_digest_decrypt_key.v`).
 - **An analog assignment to a `reg` is refused** (E0316, §5.7: the
   left-hand side "shall be ... an integer, real, or string identifier or an
   element of an integer, real or string array"), of any width and for a
