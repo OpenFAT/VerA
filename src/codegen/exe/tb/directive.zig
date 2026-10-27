@@ -60,6 +60,7 @@ const Keyword = enum {
     @"fd-exempt",
     stdout,
     expect,
+    diagnostic,
 };
 
 /// Parses the `//!` lines of RAW source, before the preprocessor deletes
@@ -161,6 +162,9 @@ pub fn parse(arena: Allocator, source: []const u8) Error!Directives {
                 if (name.len != 0) d.analysis_name = try arena.dupe(u8, name);
             },
             .exit => {
+                // `exit any`: the harness takes any status 0-125; `--run`
+                // checks nothing, so the line sets nothing here.
+                if (std.mem.eql(u8, rest, "any")) continue;
                 // `parseInt` alone also takes `+1` and `1_0`; `checks` refuses both.
                 if (!digits(rest)) return error.BadNumber;
                 d.expected_exit = std.fmt.parseInt(u8, rest, 10) catch return error.BadNumber;
@@ -283,10 +287,12 @@ pub fn parse(arena: Allocator, source: []const u8) Error!Directives {
             .@"discipline-resolution" => d.discipline_resolution = std.meta.stringToEnum(@TypeOf(d.discipline_resolution), rest) orelse return error.BadSyntax,
             // §9.4 `vera --emit-exe --display=record`: the device's `say`.
             .display => d.display_record = if (std.mem.eql(u8, rest, "record")) true else return error.BadSyntax,
-            // The conformance harness's own verdicts (`stdout TEXT`, `expect
-            // stdout GOLD`, `expect vcd OUT == GOLD`): it reads them, `--run`
-            // does not. Checked nonempty, then dropped.
+            // The conformance harness's own verdicts, the suite README's
+            // "Read by: harness" lines `--run` has no use for: `stdout TEXT`,
+            // `expect stdout GOLD`, `expect vcd OUT == GOLD`, `diagnostic`.
+            // Dropped; the two that take an operand must have one.
             .stdout, .expect => if (rest.len == 0) return error.BadSyntax,
+            .diagnostic => {},
             .@"fd-exempt" => {
                 // As `xfail`: the reason is the claim, so it is required.
                 if (rest.len == 0) return error.BadSyntax;
@@ -697,7 +703,7 @@ test "every keyword has a well-formed line, and its empty operand is a flag or r
             .time => .{ .good = "//! time 0, 1n, 2n", .empty = error.BadSyntax },
             .solve => .{ .good = "//! solve", .empty = null },
             .analysis => .{ .good = "//! analysis tran mytran", .empty = error.BadSyntax },
-            .exit => .{ .good = "//! exit 2", .empty = error.BadNumber },
+            .exit => .{ .good = "//! exit any\n//! exit 2", .empty = error.BadNumber },
             .checks => .{ .good = "//! checks 3", .empty = error.BadNumber },
             .plusargs => .{ .good = "//! plusargs +a=1 +b", .empty = error.BadSyntax },
             .reject => .{ .good = "//! reject E0310", .empty = error.BadSyntax },
@@ -724,6 +730,7 @@ test "every keyword has a well-formed line, and its empty operand is a flag or r
             .@"fd-exempt" => .{ .good = "//! fd-exempt a vera_nodiff region", .empty = error.BadSyntax },
             .stdout => .{ .good = "//! stdout b7-analog-time: t=0.0025", .empty = error.BadSyntax },
             .expect => .{ .good = "//! expect vcd out.vcd == gold.vcd", .empty = error.BadSyntax },
+            .diagnostic => .{ .good = "//! diagnostic", .empty = null },
         };
         _ = try parse(arena, c.good);
         const line = try arena.print("//! {t}\n", .{kw});
