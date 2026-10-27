@@ -61,6 +61,8 @@ const Keyword = enum {
     stdout,
     expect,
     diagnostic,
+    @"lrm-reject",
+    @"inherited-reject",
 };
 
 /// Parses the `//!` lines of RAW source, before the preprocessor deletes
@@ -273,6 +275,10 @@ pub fn parse(arena: Allocator, source: []const u8) Error!Directives {
                 if (!validSection(rest)) return error.BadLrmSection;
                 try lrm.append(arena, try arena.dupe(u8, rest));
             },
+            // A rejection test's cite of the clause whose prohibition it
+            // checks: checked as `lrm` and `inherited` are, then dropped.
+            .@"lrm-reject" => if (!validSection(rest)) return error.BadLrmSection,
+            .@"inherited-reject" => if (!validInherited(rest)) return error.BadLrmSection,
             .inherited => {
                 // `IEEE 1364-2005 18.1 (...)`: a clause §1.1 inherits whole. Not
                 // an `lrm` cite. Checked here, then dropped.
@@ -731,6 +737,8 @@ test "every keyword has a well-formed line, and its empty operand is a flag or r
             .stdout => .{ .good = "//! stdout b7-analog-time: t=0.0025", .empty = error.BadSyntax },
             .expect => .{ .good = "//! expect vcd out.vcd == gold.vcd", .empty = error.BadSyntax },
             .diagnostic => .{ .good = "//! diagnostic", .empty = null },
+            .@"lrm-reject" => .{ .good = "//! lrm-reject 12.32", .empty = error.BadLrmSection },
+            .@"inherited-reject" => .{ .good = "//! inherited-reject IEEE 1364-2005 9.2", .empty = error.BadLrmSection },
         };
         _ = try parse(arena, c.good);
         const line = try arena.print("//! {t}\n", .{kw});

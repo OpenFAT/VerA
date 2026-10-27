@@ -20,7 +20,8 @@
 - **`--run` accepts the conformance harness's `//! stdout`, `//! expect`,
   `//! diagnostic` and `//! exit any` lines** instead of refusing them as an
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
-  report tests ran into it.
+  report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
+  checked as `lrm` and `inherited` are.
 - **The nix package's analog VPI apps no longer segfault.** The sandbox has
   no `/usr/bin/env`, so Zig built `libvera-vpi.a` for static musl, where
   `std.DynLib` is `ElfDynLib`: it applies no relocations, and
