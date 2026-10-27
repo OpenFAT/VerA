@@ -77,6 +77,7 @@ pub const GateInst = decl_file.GateInst;
 pub const SpecEdge = decl_file.SpecEdge;
 pub const SpecPolarity = decl_file.SpecPolarity;
 pub const SpecPath = decl_file.SpecPath;
+pub const PulseControl = decl_file.PulseControl;
 pub const TimingCheck = decl_file.TimingCheck;
 pub const PullInst = decl_file.PullInst;
 pub const SwitchKind = decl_file.SwitchKind;
@@ -158,7 +159,7 @@ pub const SourceFile = struct {
     /// SPICE primitives, prepended as source by `Preprocessor.spice_primitives`)
     /// rather than the user's declarations. E.3.3 prefers a user module of the
     /// same name, so lookups search `userModules()` first; and §6.2.2's top must
-    /// be a module the user wrote. Zero with `--no-std-defs`; set by the caller,
+    /// be a module the user wrote. Kept with `--no-std-defs` (E.2); set by the caller,
     /// not the parser, because it is a property of the compilation.
     builtin_modules: u32 = 0,
     /// How many leading entries of `natures` are annex D.1's, preloaded with

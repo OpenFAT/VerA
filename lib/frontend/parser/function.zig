@@ -54,6 +54,7 @@ pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_ana
     if (is_analog and (self.peek() == .kw_integer or self.peek() == .kw_real or self.peek() == .kw_string)) {
         self.pos += 1;
     }
+    try self.warnOwnMathFn();
     const name = try self.expectIdent();
 
     var args: std.ArrayList(Ast.FuncArg) = .empty;
@@ -158,6 +159,21 @@ pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_ana
         }
     }
     _ = try self.expect(.kw_endfunction);
+
+    // Syntax 4-5's `{ analog_function_item_declaration }` puts no order on the
+    // items, so `real x; input x;` types the formal as well: a variable
+    // declared before its direction is matched here, as one after it is above.
+    var vi = vars.items.len;
+    while (vi > 0) {
+        vi -= 1;
+        for (args.items) |*a| {
+            if (a.name != vars.items[vi].name) continue;
+            if (a.ty == .unspecified) a.ty = vars.items[vi].ty;
+            if (a.dims.len == 0) a.dims = vars.items[vi].dims;
+            _ = vars.orderedRemove(vi);
+            break;
+        }
+    }
 
     // §4.7.1 bullet list: "shall have at least one formal argument declared".
     if (args.items.len == 0) {
@@ -272,6 +288,7 @@ pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) 
     var result: Ast.VarDecl = if (is_function) tfType(self) else .{ .name = .none, .ty = .integer };
     if (is_function and result.storage == .reg and result.packed_range == null and self.peek() == .lbracket) result.packed_range = try parse_decl.parseDim(self);
     const name_tok = self.pos;
+    try self.warnOwnMathFn();
     const name = try self.expectIdent();
     result.name = name;
     result.main_tok = name_tok;
@@ -314,9 +331,14 @@ pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) 
         if (parse_net.portDirection(self.peek())) |d| {
             const decl_tok = self.pos;
             self.pos += 1;
+            const typed = switch (self.peek()) {
+                .kw_reg, .kw_integer, .kw_time, .kw_real, .kw_realtime => true,
+                else => false, // else: a bare direction, `signed` or a range
+            };
             const ty = try tfPortType(self);
             while (true) {
-                const formal = try tfFormal(self, d, ty);
+                var formal = try tfFormal(self, d, ty);
+                formal.redecl.typed = typed;
                 try self.copyAttributes(decl_tok, formal.v.main_tok);
                 try ports.append(self.arena, formal);
                 if (!self.eat(.comma)) break;
@@ -363,6 +385,14 @@ pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) 
         for (ports.items[ansi_ports..]) |*p| {
             if (p.v.name != vars.items[i].name) continue;
             var v = vars.items[i];
+            // §12.3.3's checks need both declarations: the elaborator
+            // judges them (`Ast.TfPort.Redecl`).
+            if (p.redecl.count == 0) {
+                p.redecl.port_range = p.v.packed_range;
+                p.redecl.var_range = v.packed_range;
+                p.redecl.tok = v.main_tok;
+            }
+            p.redecl.count += 1;
             v.main_tok = p.v.main_tok;
             if (v.packed_range == null) v.packed_range = p.v.packed_range;
             p.v = v;

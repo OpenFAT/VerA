@@ -2,7 +2,8 @@
 // 25, ... and falls at 10, 20, 30, ... The counter steps on each rising edge,
 // and the display on each falling edge reads the count halfway through the
 // cycle: 1 at 10 ns, 2 at 20 ns, ..., 5 at 50 ns. $finish at 60 ns ends the
-// run before the 60 ns falling edge prints anything.
+// run once that time step has drained (§17.4.1, as iverilog reads it), so the
+// 60 ns falling edge still prints 6 after $finish's report.
 `timescale 1ns/1ns
 module counter_tb;
   reg clk;

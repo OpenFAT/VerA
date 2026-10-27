@@ -78,6 +78,12 @@ pub const Parser = struct {
     /// prelude is seeded from a parse without it, so its `discrete`
     /// disciplines stay silent (C.17).
     verilog_a: bool = false,
+    /// `expm1` (bit 0) and `ln1p` (bit 1) are names here, not VAMS-2023's
+    /// built-ins: the file declares a function so named, as models written
+    /// before annex G.7 item 7780 reserved them do (HiSIM-SOI's
+    /// `analog function real expm1`). `identLike` frees them in the whole
+    /// file, so its calls reach that function; the declaration warns W0259.
+    own_math_fns: u2 = 0,
     /// Inside an `analog function` body (§4.7.1). Two of that clause's bullets
     /// restrict statements the ordinary statement parser also accepts at
     /// module scope, so only the position tells them apart (E0226, E0227).
@@ -178,7 +184,24 @@ pub const Parser = struct {
             .tags = tags,
             .starts = starts,
             .bag = bag,
+            .own_math_fns = ownMathFns(tags),
         };
+    }
+
+    /// `own_math_fns` for `tags`: which of `expm1`/`ln1p` (bit 0/1) some
+    /// `function [real|integer] NAME` declares. One pass over the tags, so a
+    /// call ahead of the declaration reads the same way as one after it.
+    fn ownMathFns(tags: []const token.Tag) u2 {
+        var bits: u2 = 0;
+        for (tags, 0..) |t, i| {
+            if (t != .kw_expm1 and t != .kw_ln1p) continue;
+            if (i == 0) continue;
+            const before = tags[i - 1];
+            const declared = before == .kw_function or
+                ((before == .kw_real or before == .kw_integer) and i >= 2 and tags[i - 2] == .kw_function);
+            if (declared) bits |= if (t == .kw_expm1) 1 else 2;
+        }
+        return bits;
     }
 
     /// The state a parse of a leading run of tokens leaves behind, so a parse
@@ -476,11 +499,23 @@ pub const Parser = struct {
         const j = @min(i, self.tags.len - 1);
         return switch (self.tags[j]) {
             .identifier, .escaped_identifier => true,
+            .kw_expm1 => self.own_math_fns & 1 != 0 or !token.isReserved("expm1", self.kw_set),
+            .kw_ln1p => self.own_math_fns & 2 != 0 or !token.isReserved("ln1p", self.kw_set),
             // Default set ⇒ every keyword is reserved: no text to fetch.
             else => |t| self.kw_set != token.default_keyword_set and // else: a keyword is an identifier only when the keyword set frees it
                 token.isKeyword(t) and
                 !token.isReserved(self.tokenText(j), self.kw_set),
         };
+    }
+
+    /// W0259 if the function name at the cursor is `expm1`/`ln1p` and the
+    /// active §10.6 set reserves it: `own_math_fns` is what frees it.
+    pub fn warnOwnMathFn(self: *Parser) error{OutOfMemory}!void {
+        const t = self.peek();
+        if (t != .kw_expm1 and t != .kw_ln1p) return;
+        const w = self.tokenText(self.pos);
+        if (!token.isReserved(w, self.kw_set)) return;
+        try self.bag.add(.parse, .W0259, lexer.tokenSpan(self.src, self.starts, self.pos), "`{s}` is a built-in under \"{s}\"; calls in this file reach the declared function", .{ w, self.kw_set.specifier() });
     }
 
     /// Consumes a §2.8/§2.8.1 identifier (or a keyword `identLike` frees) and

@@ -322,6 +322,7 @@ fn lintAndPublish(s: *Server, arena: Allocator, uri: []const u8, doc: *Doc) !voi
         if (vera.compileSourceOpts(s.gpa, doc.text, .lint, .{
             .file_name = path orelse "<untitled>",
             .include_dirs = cli.include_dirs.items,
+            .defines = cli.defines.items,
             .std_defs = cli.std_defs,
             .require_std_includes = true, // the source includes the annex D files it uses
             .language = cli.language,

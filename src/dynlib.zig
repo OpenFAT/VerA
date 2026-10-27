@@ -68,7 +68,7 @@ const Windows = struct {
 };
 
 // The positive path on every target is `tests/host/vdev_so_host.zig` and
-// `tests/host/vpi_host.zig`, which load a `.so` VerA built. These pin the
+// `src/vpi/host.zig`, which load a `.so` VerA built. These pin the
 // refusals, which those hosts never reach.
 
 test "a library that does not exist is FileNotFound on every target" {

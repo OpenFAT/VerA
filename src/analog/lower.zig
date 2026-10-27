@@ -262,6 +262,10 @@ bag: *diag.Bag = undefined,
 had_error: bool = false,
 /// §3.6.1.2 access identifier → which half of the discipline it reads.
 access_kind: std.StringHashMapUnmanaged(Access) = .empty,
+/// Access names one discipline binds to its potential and another to its flow
+/// (annex D's `I` is `current`'s potential in some libraries). For these the
+/// net's discipline decides the half, never `access_kind` (`accessOn`).
+access_both: std.StringHashMapUnmanaged(void) = .empty,
 /// Visible variables (§3.2) — locals, function args, scalarized array elements.
 vars: std.StringHashMapUnmanaged(VarSlot) = .empty,
 /// §5.4.1 each instance's share of an unnamed-branch contribution row
@@ -736,7 +740,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // the assignment that reveals it (see `holdSlot`).
     try lower_var.markHeldVars(self, module);
     try lower_var.markMemArrays(self, module);
-    try lower_var.checkOneItemPerScope(self, module.params, module.vars, module.nets);
+    try lower_var.checkOneItemPerScope(self, module.params, module.vars, module.nets, module.ports);
     // A.6.2 the digital `initial` block, for the same reason and at the same
     // point as the §5.10 scan above: what a variable holds at the top of every
     // evaluation is decided at its declaration. `initial x = 3;` and
@@ -871,6 +875,8 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // §5.10 the same, for every held variable. Reads only (no `call`), so the
     // unit enumeration below is untouched.
     for (self.out.held_vars.items, self.held_places.items) |*h, p| h.final = try self.builder.readVariable(p, self.cur);
+    // The same for every operating-point variable, also reads only.
+    try self.readOpVarFinals();
     // §5.6.1.2 and the same for every charge site.
     try self.readSiteFinals(0);
     // §9.17.3 and the same again for every `$limit` state slot: the value the
@@ -933,6 +939,21 @@ fn readContribFinals(self: *Lower, from: usize) Oom!void {
         c.react_val = try self.builder.readVariable(acc.react, self.cur);
         c.wrote_val = try self.builder.readVariable(acc.wrote, self.cur);
     }
+}
+
+/// Reads, at the end of the block, every module-scope real or integer
+/// variable whose `decl_meta` row carries a `desc` into `Lowered.op_vars`:
+/// OSDI's operating-point variables, which §3.2.1 lets a simulator report.
+/// An array or a string with a `desc` has no single value and is skipped.
+fn readOpVarFinals(self: *Lower) Oom!void {
+    assert(self.out.op_vars.items.len == 0); // runs once, after the analog blocks
+    for (self.out.decl_meta.items) |m| {
+        if (m.kind != .variable or m.desc == null) continue;
+        const slot = self.vars.get(m.name) orelse continue;
+        if (slot.ty != .real and slot.ty != .integer) continue;
+        try self.out.op_vars.append(self.arena, .{ .name = m.name, .final = try self.builder.readVariable(slot.place, self.cur) });
+    }
+    assert(self.out.op_vars.items.len <= self.out.decl_meta.items.len);
 }
 
 /// Reads each §5.6.1.2 charge site's charge from `from` on at the end of the block.

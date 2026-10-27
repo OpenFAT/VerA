@@ -1406,9 +1406,11 @@ fn instancePortFlow(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
         return poison;
     }
     const name = self.file.str(ex.strOf(e));
-    const access = self.access_kind.get(name) orelse return null; // `portFlowRead` names it (E0501)
-    if (access == .potential) return null; // and this (E0507)
+    const global = self.access_kind.get(name) orelse return null; // `portFlowRead` names it (E0501)
+    if (global == .potential and !self.access_both.contains(name)) return null; // and this (E0507)
     const p = try nodeUnrefused(self, lhs) orelse return poison;
+    const access = try lower_contrib.accessOn(self, e, name, global, p, Lower.ground);
+    if (access == .potential) return null;
     try lower_contrib.checkAccessMatch(self, e, name, access, p);
     // Every block of the hierarchy is behind this one.
     for (self.cur_block..self.module.?.analog.len) |j| {
@@ -1466,7 +1468,7 @@ fn addSigned(self: *Lower, acc: Mir.Value, v: Mir.Value, neg: bool) Oom!Mir.Valu
 fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
-    const access = self.access_kind.get(name) orelse {
+    const global = self.access_kind.get(name) orelse {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0501);
         b.msg("`{s}`", .{name});
         if (diag.didYouMeanMap(name, self.access_kind)) |s|
@@ -1474,6 +1476,7 @@ fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
         try b.emit();
         return poison;
     };
+    const access = try lower_contrib.accessOn(self, e, name, global, p, Lower.ground);
     // §5.4.3 "The expression V(<a>) is invalid for ports and nets, where V is a
     // potential access function." A port access reads a FLOW, always.
     if (access == .potential) {

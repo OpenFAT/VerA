@@ -86,7 +86,7 @@ summary and has a **Status** line naming what landed.
 | VD-042 | IEEE 1364-2005 18.4.3.2 | Strength 5..7 is the strong range by number; "(large)" is a slip | DONE (4b6c96d8) |
 | VD-043 | IEEE 1364-2005 19.6, 19.11 | `` `resetall `` does not touch the `` `begin_keywords `` region | DONE (ead894ee) |
 | VD-044 | IEEE 1364-2005 26.2.4 vs 27.34.2 / VAMS 12.33.2 | Startup routines may only register; VerA refuses other routines then; fixtures walk at cbEndOfCompile | DONE (9425251f) |
-| VD-045 | IEEE 1364-2005 26.3.5 vs Annex G | `vpiIsProtected` = `vpiProtected` (10), FALSE on every object | DONE (2b569378) |
+| VD-045 | IEEE 1364-2005 26.3.5 vs Annex G | `vpiIsProtected` = `vpiProtected` (10): TRUE on an object a decrypted envelope declares (VD-127), FALSE on every other | DONE (2b569378) |
 | VD-046 | IEEE 1364-2005 26.6.40(c) vs VAMS 11.6.25 note 5 | Current queue listed iff a pending event precedes read-only sync | DONE (65687d0f) |
 | VD-047 | VAMS 11.6.25, 12.31.2 | A callback-only time is a vpiTimeQueue entry | no |
 | VD-048 | VAMS 12.27 / IEEE 27.26 | `vpi_mcd_printf` returns one expansion's length, regardless of channel count | no |
@@ -166,6 +166,20 @@ summary and has a **Status** line naming what landed.
 | VD-123 | VAMS 4.3.1 Table 4-14, 4.3.2 Table 4-15, 9.14 | asinh, acosh, atanh, log10, asin, acos and atan2 run the C algorithm (musl's) with the analytic derivative, one function shared by folder, prover and device; tan stays sin/cos, folded the same way | DONE (#60) |
 | VD-124 | VAMS 2.6.1, 3.2; IEEE 1364-2005 3.5.1, 5.4.1 Table 5-22, 17.1.1.3 | An unsized integer literal is 32 bits in the analog context, as an `integer`, and 64 when its value needs more; display conversions size it, and every integer expression, by one rule (`systask.intSize`) | DONE (#77) |
 | VD-125 | VAMS 3.4.2 | A value the host writes on the model card is checked against the declared `from`/`exclude` ranges after `derive` (`checkRange`); the testbench stops with E0377, the OSDI library fails setup fatally; only bounds that fold over literals, numeric parameters only | DONE (#80) |
+| VD-126 | VAMS 10.4; IEEE 1364-2005 19.3.2 | A use of a text macro that is not defined is refused (E0115), never expanded to nothing | DONE |
+| VD-127 | IEEE 1364-2005 28.2, 28.4 | A decryption envelope is decrypted with the keys and CBC IV of `--protect-keys FILE` (des-cbc, PKCS#7 padding); no key is E0152, a key that does not open it E0153, an encryption envelope or another method E0146 | DONE |
+| VD-128 | IEEE 1364-2005 4.2.1, 8.5 Figure 8-1 | A continuous driver outputs x until its first update lands; only an undriven net reads z | DONE |
+| VD-129 | IEEE 1364-2005 17.1.1.2, 17.1.1.7 | `%s` shows a zero byte as a space, a written width (`%0s`, `%5s`) drops the leading ones; a `0` before a radix width zero-fills (iverilog) | DONE |
+| VD-130 | IEEE 1364-2005 17.8 | `$itor` of a real and `$rtoi` of an integer convert the argument first; `$rtoi` keeps the low 32 bits (iverilog) | DONE |
+| VD-131 | IEEE 1364-2005 3.5.1 | An unsized based constant with more than 32 bits of digits is as wide as its digits (digital; iverilog) | DONE |
+| VD-132 | IEEE 1364-2005 17.2.4.3 | `$fscanf`/`$sscanf` details the clause leaves open follow iverilog | DONE |
+| VD-133 | IEEE 1364-2005 9.9.2 | An always construct with no timing control runs; the event budget ends its time step (E1100), no elaboration-time refusal | DONE |
+| VD-134 | IEEE 1364-2005 17.2.9, 17.2.1 | Every reason a `$readmem` load cannot go on is warning W1157; the load ends, the run goes on, its exit status untouched (iverilog) | DONE |
+| VD-135 | IEEE 1364-2005 4.10.3, 9.7.3 | A name read by a statement before its declaration is refused (iverilog) | DONE |
+| VD-136 | IEEE 1364-2005 19.8 | A `` `timescale `` inside a module definition is refused (iverilog) | DONE |
+| VD-137 | IEEE 1364-2005 7.1.6, A.3.3 | A single gate reads a multi-bit input expression's LSB (iverilog) | DONE |
+| VD-138 | IEEE 1364-2005 17.2.1, 17.2.9 | A `$readmem` file name may be a string parameter or a reg (iverilog) | DONE |
+| VD-139 | IEEE 1364-2005 12.2.2.1 | Extra ordered parameter values are ignored with warning W1161 (iverilog) | DONE |
 
 ## 1. Open decisions (CLAUSE-AUDIT §7.5)
 
@@ -608,9 +622,9 @@ summary and has a **Status** line naming what landed.
 - **Rule**: IEEE 1364-2005 26.3.5: "All objects have a vpiIsProtected property ... Access to the vpiType property and the vpiIsProtected property of a protected object shall be permitted for all objects." Annex G vpi_user.h: `#define vpiProtected 10 /* source protected module (boolean) */`, and there is no `vpiIsProtected`. 26.6.1 lists `vpiProtected` as a module property.
 - **Why vague**: The property every object must answer has no number in the normative header. The only number belongs to a differently named module property.
 - **Options**: (a) leave it undefined and answer only on modules; (b) invent a new constant; (c) treat `vpiIsProtected` as `vpiProtected` (10) and answer it on every object.
-- **Decision**: `DECIDED:` (c). Annex G is the ABI, and a made-up number (b) would make applications non-portable. A module "in a decryption envelope" is exactly a "source protected module", so the two coincide where both apply, and (c) makes 26.3.5's "all objects" true. VerA refuses `pragma protect` (E0146), so every object answers FALSE.
+- **Decision**: `DECIDED:` (c). Annex G is the ABI, and a made-up number (b) would make applications non-portable. A module "in a decryption envelope" is exactly a "source protected module", so the two coincide where both apply, and (c) makes 26.3.5's "all objects" true. An object answers TRUE when the cleartext of a §28 decryption envelope declares it (VD-127: the preprocessor registers that cleartext as the file `<protected envelope>`, and the object's §26.3.3 location names it), FALSE otherwise.
 - **VerA today**: `src/vpi/vpi_user.h:381` defines `vpiProtected 10`. `src/vpi/property.zig:158-161` answers 0 for modules and `propFail`s every other kind. `CHANGE NEEDED:` add `#define vpiIsProtected vpiProtected` (with a comment citing 26.3.5/Annex G) to `vpi_user.h`. Make `property.zig` answer 0 for every object kind. Add a `.c` fixture asserting `vpi_get(vpiIsProtected, h) == 0` on a net, a reg, a port and a module, and move the 26.3.5 `CLAUSES.tsv` row off `not-supported` for its FALSE half. Patch by AGENTS.md §3 (VPI result, not source or device text).
-- **Status**: DONE (2b569378). `vpi_user.h` defines `vpiIsProtected` as `vpiProtected`; `vpi_get` answers 0 for every live handle and refuses a non-object. `ieee_pli/protected.c`; 26.3.5 is `-` in `CLAUSES.tsv`.
+- **Status**: DONE (2b569378; TRUE half with VD-127). `vpi_user.h` defines `vpiIsProtected` as `vpiProtected`; `vpi_get` answers 1 for a design object declared in a decrypted envelope (`src/vpi/property.zig` `isProtected`), 0 for every other live handle, and refuses a non-object. `verilog/pli/protected.c` (FALSE, refusals), `verilog/pli/protected_envelope.c` (TRUE).
 - **Measure impact**: B: 26.3.5 `not-supported` -> partial/verified for the FALSE half.
 
 ### VD-046: Is the current time queue in a `vpiTimeQueue` iteration?
@@ -671,15 +685,15 @@ summary and has a **Status** line naming what landed.
 - **Measure impact**: B: 17.6.5 gains a discriminating case. A: +1 fixture.
 - **Status**: DONE (259c554a).
 
-### VD-052: `$q_exam` mean statistics (codes 2 and 6) in an integer result
-- **Source**: `conformance-ieee-queue-review.md` at 8b1514d4.
-- **Rule**: IEEE 1364-2005 17.6.5, Table 17-15: "2 Mean interarrival time", "6 Average wait time in the queue". No rounding rule is given. IEEE 1364-2005 3.5.3: "Real numbers shall be converted to integers by rounding the real number to the nearest integer, rather than by truncating it."
-- **Why vague**: A mean is generally not an integer, but `q_stat_value` is an integer argument, and the clause gives no conversion.
-- **Options**: (a) truncating integer division (VerA today); (b) the exact mean converted by the language's real-to-integer rule, rounding to nearest with ties away from zero.
-- **Decision**: `DECIDED:` (b). When the language puts a non-integral value into an integer it rounds, and it says so explicitly "rather than by truncating it". Truncation is an artefact of computing in integers. An empty population (no interarrivals, no completed waits) stays 0.
-- **VerA today**: `lib/sim/digital/system.zig:121` (`interarrival_sum / interarrivals`) and `:127` (`wait_sum / waits`) truncate. No fixture asks codes 2 or 6 (`q_exam.v` deliberately skips them). `CHANGE NEEDED:` compute `(2*sum + n) / (2*n)` (non-negative round half up, which equals ties away from zero here). Add a fixture whose mean is x.5 (for example, arrivals at 0, 2, 5 give a mean interarrival of 2.5, so 3). Patch (run-time value, no source or device text change).
-- **Measure impact**: B: 17.6.5 statistics pinned. A: +1 fixture.
-- **Status**: DONE (ca0e6529).
+### VD-052: `$q_exam` statistics (codes 2, 4, 5, 6) in an integer result
+- **Source**: `conformance-ieee-queue-review.md` at 8b1514d4; revised 2026-10-24 (conformance-to-100, ivtest queue_stat).
+- **Rule**: IEEE 1364-2005 17.6.5, Table 17-15: "2 Mean interarrival time", "4 Shortest wait time ever", "5 Longest wait time for jobs still in the queue", "6 Average wait time in the queue". No rounding rule, population or empty case is given. IEEE 1364-2005 3.5.3: "Real numbers shall be converted to integers by rounding the real number to the nearest integer, rather than by truncating it."
+- **Why vague**: a mean is generally not an integer, but `q_stat_value` is an integer argument, and the clause gives no conversion; nor does it say whose waits code 6 averages, or what a statistic with no population yet returns.
+- **Options**: (a) truncating integer division; (b) the exact mean rounded as §3.5.3 converts a real (VerA from ca0e6529 to 2026-10-24); for code 6, (c) the jobs that left, or (d) every job so far, those still queued at their wait until now; with no population, (e) 0 or (f) no value.
+- **Decision**: `DECIDED:` (a), (d), (f), what iverilog computes (the reference tool decides what the clause leaves open; ivtest queue_stat pins all three). A mean is not a real the language converts, so §3.5.3 does not reach it. A statistic with no population (no second arrival for code 2, no job left for code 4, an empty queue for code 5, no job ever for code 6) leaves `q_stat_value` as it was with status 0; iverilog writes x and status 10, a code Table 17-16 does not have.
+- **VerA today**: `lib/sim/digital/system.zig` `queueStep` `.exam` (the interpreter and `--emit-exe` share it). Fixture `verilog/17_system_tasks/q_exam_means.v` (was `q_exam_means_round.v`).
+- **Measure impact**: B: 17.6.5 statistics pinned against iverilog.
+- **Status**: DONE (ca0e6529; revised 2026-10-24).
 
 ## 4. Implementation-defined choices: Verilog-AMS (Vague_Decisions.md §6)
 
@@ -945,13 +959,13 @@ summary and has a **Status** line naming what landed.
 - **Measure impact**: none.
 
 ### VD-081: Order of active events
-- **Source**: Vague_Decisions.md §6 row "1364 11.4.2".
-- **Rule**: IEEE 1364-2005 11.4.2: "active events can be taken off the queue and processed in any order."
+- **Source**: Vague_Decisions.md §6 row "1364 11.4.2"; revised 2026-10-24 (conformance-to-100, ivtest H9e and G19).
+- **Rule**: IEEE 1364-2005 11.4.2: "active events can be taken off the queue and processed in any order." §9.9: "There shall be no implied order of execution between initial and always constructs."
 - **Why vague**: the order is explicitly nondeterministic; a tool must still run them in some order, and a user sees it in any race.
-- **Options**: (a) source-order FIFO; (b) LIFO; (c) randomised order (to flush out races).
-- **Decision**: `DECIDED:` (a) processes start in source order from a FIFO queue, and woken processes resume in the order they suspended; the interpreter and native code agree. It is the order users of event-driven simulators expect from a deterministic run (and what Icarus does in the common cases, though no tool's order is a contract), it makes runs reproducible, and the native/interpreter agreement means `--state`/backend choice never changes a racy design's output. Randomising (c) is a debugging aid, not a default.
-- **VerA today**: `lib/sim/scheduler.zig`, `lib/sim/digital/exec.zig`; `ieee1364/11_scheduling/sched_fork_arm_chain_order.v`, `sched_fork_arm_wake_order.v`, `sched_node_wake_order.v` pin it and cite no clause, as they must (VD-082). No change.
-- **Measure impact**: none.
+- **Options**: (a) source-order FIFO; (b) LIFO; (c) randomised order (to flush out races); (d) iverilog's time-0 order, then FIFO.
+- **Decision**: `DECIDED:` (d) since 2026-10-24, (a) before. At time 0 the processes are queued as iverilog queues them (the reference tool decides what the clauses leave open): the scope tree depth first, each instance's and generate block's child scopes in source order before its own processes, which keep source order; and ahead of all of them, in that order, every always construct that starts with an event control on levels only (`@(a or b)`, `@*`), so it is armed before the initial constructs make their time-0 writes. A continuous driver starts at z on the bits it can never drive (a select's other bits, a constant z), so its first evaluation is no change there. Woken processes still resume in the order they suspended (iverilog's waiter stack is not followed: no conformance test needs it, and the native/interpreter agreement below is kept). The interpreter and native code agree.
+- **VerA today**: `lib/sim/digital/root.zig` `processOrder`, `levelControlled`, the driver coverage before `resolution.initial`; `lib/sim/scheduler.zig` `scheduleFirst`; `lib/sim/digital/waiters.zig` `wake`. Fixtures `verilog/11_scheduling/sched_fork_arm_chain_order.v`, `sched_fork_arm_wake_order.v`, `sched_node_wake_order.v`, `verilog/12_hierarchy/defparam_absolute_inside_array_element.v`; the unit test "§9.9 time-0 process order is iverilog's".
+- **Measure impact**: ivtest pr1026, pr1956211, pr2986528, pr2728812a, pr1002a, pr1861212a, pr2043585, pr812, pr985.
 
 ### VD-082: Tests over clauses that permit several outcomes
 - **Source**: Vague_Decisions.md §8 "Unspecified behaviour" (1364 5.1.4, 11.4.2, 11.5, 12.3.10.1, 12.3.10.2).
@@ -1353,10 +1367,10 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **Rule**: IEEE 1364-2005 17.1.1.3: an expression argument is sized automatically, by the largest value the expression can take (a 12-bit expression gets four decimal columns); a zero after `%` overrides it. 4.8.2: a real converts to an integer by rounding, half away from zero; 5.5.1: a real converted by type coercion is signed. 17.8: `$rtoi` returns an `integer`. VAMS 9.4.3 Table 9-22 says only "display in decimal format".
 - **Why vague**: a real has no bit width, and no clause gives the integer a real becomes under `%d` a size (4.8.2 converts on assignment, where the target sets it). So no clause fixes the "largest possible value" 17.1.1.3 sizes the field by.
 - **Options**: (a) minimal width, as if `%0d` (iverilog); (b) 11 columns, the conversion as a 32-bit `integer`, as `$rtoi` returns; (c) 20 columns, the width of the signed 64-bit integer VerA converts to.
-- **Decision**: `DECIDED:` (c), VerA's behaviour, kept. The digital engine reads a real in any integral context as a 64-bit signed integer (`evaluate.eval`), so every real within ±2^63 converts exactly and one beyond it is x; 17.1.1.3 then sizes that operand as it sizes every other one, and the widest value it can hold, -9223372036854775808, takes 20 columns. (b) would size the field for a value the conversion does not produce (a real above 2^31 converts past 32 bits); (a) drops 17.1.1.3 for one operand type. `%0d` is the clause's own escape. Revisit if the user prefers (a).
-- **VerA today**: `lib/sim/digital/display.zig` `walk` hands the radix conversions `evaluate.eval(.., 0)`, which gives a real `.{ .width = 64, .signed = true }`; `lib/kernels/fmt.zig` `autoWidth` sizes it. The analog context applies the same rule (#61, 2026-10-18): a real under `%d` converts as a 64-bit signed integer there too (`std.math.lossyCast(i64, @round(x))`), so `src/codegen/device/cg_display.zig` `decimalField` gives it 20 columns, and a device's `say` records it as `%20d`; `ch09_system_tasks/analog_decimal_is_auto_sized.va` pins both signs. VAMS 9.1 ("a superset of IEEE Std 1364 Verilog") and 9.4.1 (the display tasks "extended" to the analog context, with no sizing rule of their own) make 17.1.1.3 the analog rule as well, so the integer half there is the clause, not a choice: 11 columns for an `integer`.
-- **Measure impact**: A: +1 fixture (`ieee1364/17_system_tasks/decimal_of_real_width.v`, with `%0d` and a `$rtoi` contrast), and +1 for the analog half (`ch09_system_tasks/analog_decimal_is_auto_sized.va`, #61). B: none (17.1.1.3 already has positive evidence).
-- **Status**: DONE 2026-10-17 (no issue: the clauses leave the width open and VerA's choice is consistent with its conversion).
+- **Decision**: `DECIDED:` (a) in the digital engine, (c) in the analog context. Digital (2026-10-24, conformance-to-100: the reference tool decides what the clauses leave open): `%d` of a real prints at minimal width, as iverilog does, so ivtest's `pr2792897` (`$sformat(str, "R: %d", 1.4)` is `"R: 1"`) and its kin hold; the operand converts exactly at any magnitude, and a negative real that rounds to zero prints `-0`, C's `%.0f` (ivtest br1029a/b). An argument with no format at all prints as iverilog prints it too: a real in C's `%#g` (`1.50000`), a bare `$realtime` call in `%.Nf`, N its module's precision digits below the unit (`1.250` under `1ns/1ps`). The analog context keeps (c): VAMS 9.4.3 is its rule and no reference tool there disagrees.
+- **VerA today**: `lib/sim/digital/display.zig` `walk` (the `%d` width) and `bareReal`; `src/codegen/digital/emit.zig` `operand` and `show` emit the same. The analog half: `src/codegen/device/cg_display.zig` `decimalField` gives it 20 columns, and a device's `say` records it as `%20d`; `ch09_system_tasks/analog_decimal_is_auto_sized.va` pins both signs.
+- **Measure impact**: A: `verilog/17_system_tasks/decimal_of_real_width.v` (now iverilog's text) and `ch09_system_tasks/analog_decimal_is_auto_sized.va`.
+- **Status**: DONE 2026-10-17; digital half revised 2026-10-24.
 
 ### VD-121: What `limexp` limits, and what it returns at a converged point
 - **Source**: bug hunt 2026-10-17, finding clauses-01 (#52).
@@ -1406,6 +1420,141 @@ clauses are the Verilog-AMS LRM; "1364" clauses are IEEE 1364-2005.
 - **VerA today**: `src/codegen/device/codegen/file.zig` `emitRangeCheck`; `lib/contract.zig` (`checkRange` in `validate`); `src/codegen/exe/tb/runner_text.zig` `shapeCheck`; `lib/osdi_dyn.zig` `derive`. Fixtures `ch03_data_types/range_card_value_excluded_rejected.va`, `range_card_value_below_from_rejected.va` (`//! reject-run E0377`) and their neighbour `range_card_value_inside.va`.
 - **Measure impact**: A: +3 fixtures. C: §3.4.2's value half gains a run-time invalid-input test.
 - **Status**: DONE (#80).
+
+### VD-126: What a use of an undefined text macro does
+- **Source**: conformance-to-100% dialect audit, 2026-10-24 (ivtest `undef.v`, `pr478`); user ruling.
+- **Rule**: IEEE 1364-2005 §19.3.2: "An undefined text macro has no value, just as if it had never been defined." VAMS §10.4 hands `define and `undef to IEEE 1364. No clause says a use of an undefined macro "shall" be an error, and none says it expands to nothing.
+- **Why vague**: "has no value" describes the macro, not its use; iverilog reads it as an empty expansion, other tools refuse it.
+- **Options**: (a) expand the use to nothing; (b) refuse it.
+- **Decision**: `DECIDED:` (b), E0115 "undefined macro". Expanding a use to nothing turns a typo (`` `GIAN `` for `` `GAIN ``) or a use before its `define into a silently different expression, the wrong-number-without-a-crash class this project guards against. The diagnostic carries a did-you-mean suggestion from the macro table.
+- **VerA today**: `lib/frontend/pp/macro.zig` `expand`. Fixtures `verilog/19_compiler_directives/use_before_define_rejected.v`, `protect_is_undefined_macro_rejected.v`, `verilog-a/ch10_directives/undefined_macro.va`, `ch02_lexical/reject_2_8_4_macro_used_before_its_define.va`; ivtest `undef.v` and `pr478` are reject rows citing this entry.
+- **Measure impact**: none (behaviour unchanged; the fixtures' citation moves from §19.3.1 to this entry).
+- **Status**: DONE.
+
+### VD-127: Where a decryption envelope's key, IV and padding come from
+- **Source**: conformance-to-100% (VAMS Conformance Suite `verilog/28_protected_envelopes/protected_*.v`).
+- **Rule**: IEEE 1364-2005 §28.2: "Tools that process the Verilog HDL shall perform envelope decryption for all decryption envelopes contained in the source text, where the proper key is supplied by the user." §28.4 names the methods, encodings and blocks; it does not say how a key is supplied, nor des-cbc's IV or padding.
+- **Why vague**: key provisioning, the CBC IV and the padding are left to the tool.
+- **Options**: (a) keep refusing every envelope (E0146); (b) take keys, IV and padding from a key file the user names.
+- **Decision**: `DECIDED:` (b). `vera --protect-keys FILE` reads JSON (`profile.iv_hex`, `keys: [{owner, name, key_hex}]`, the suite's `known_keys.json` layout), one IV for every envelope, PKCS#7 padding. An envelope's `*_keyowner`/`*_keyname` select the key. A §28.4.10 key block's `data_decrypt_key` is the session key; a §28.4.12 digest block is checked (md5, sha1). The three failures stay apart: E0146 an envelope VerA cannot process (an encryption envelope `begin`, a method other than des-cbc, an encoding other than base64/uuencode/raw), E0152 no key, E0153 a key that does not open it. VerA provides no encryption service.
+- **VerA today**: `lib/frontend/pp/protect.zig`, called from `pp/directive.zig`; `pp/comments.zig` leaves a block's encoded lines alone. The cleartext is scanned in place of the envelope, so outside macros expand inside it and nested envelopes open in turn. Diagnostics inside the cleartext quote it (§28's non-disclosure is not applied to them). Fixtures: the six `protected_*.v` (`//@ protect-keys known_keys.json`), `protect_*_rejected.v`.
+- **Measure impact**: A: +6 fixtures.
+- **Status**: DONE.
+
+### VD-128: What a continuous driver outputs before its first update
+- **Source**: conformance-to-100 (2026-10-24), Verilog gap G8: `wire #5 w = a;`, `assign #3 w2 = 1;` and `buf #2 (b, a)` read z before the first update in VerA, x in iverilog; 13 ivtest tests (ldelay1, ldelay3, multi_driver_delay, pr1883052(b), pr2801662, strength_feedback_delay, br947, br_gh732, pr1587669, pr1645518, pr528(b)) and delay_var.v.
+- **Rule**: IEEE 1364-2005 §4.2.1: "Nets with drivers shall assume the output value of their drivers", and "The default initialization value for a net shall be the value z". §8.5 Figure 8-1 draws `q` and `qb`, behind `buf #3` and `not #5`, as unknown until 3 and 5.
+- **Why vague**: §4.2.1 does not say what a driver outputs before it has evaluated, so a driven net's value before its first delayed update is either the default z or the driver's own unknown.
+- **Options**: (a) z, the net default, until the first update lands (VerA until 2026-10-24; fixture `net_z_before_delayed_driver.v`); (b) x: a driver holds an evaluated value not yet scheduled, which is unknown, and the net takes its drivers' value.
+- **Decision**: `DECIDED:` (b). Figure 8-1 is the clause's own picture of it, iverilog and the commercial tools agree, and (a) let a net read a high impedance no driver ever asserted. A net with no driver keeps §4.2.1's z; a `trireg` starts at x anyway; a sequential UDP's output is its initial state.
+- **VerA today**: `lib/sim/digital/root.zig` `elaborateDeep` (a driver's `.current` starts at x), `lib/sim/digital/resolution.zig` `initial` (each driven net starts at what its drivers assert). Fixture `verilog/04_data_types/net_x_before_delayed_driver.v` (was `net_z_before_delayed_driver.v`).
+- **Measure impact**: A: the renamed fixture. C: §4.2.1's driven half gains a test.
+- **Status**: DONE 2026-10-24.
+
+### VD-129: How `%s` shows a zero byte, and what a `0` before a radix conversion's width means
+- **Source**: conformance-to-100 (2026-10-24), ivtest H9c (br_gh827, pr1804877, string4, string5, string7, test_extended, test_width) and string13.
+- **Rule**: IEEE 1364-2005 17.1.1.7: %s's argument is "a sequence of 8-bit hexadecimal ASCII codes", and "No termination character or value is required at the end of a string, and leading zeros are never printed." 17.1.1.2 grants "the full formatting capabilities available in the C language" to the real conversions only; 17.1.1.3's one override of the automatic width is `%0`.
+- **Why vague**: "never printed" does not say whether a leading zero byte leaves its column (blank) or is dropped, nor what an inner zero byte prints; and nothing says what the `0` of `%08d` (a width written with a leading zero) does.
+- **Options**: (a) drop leading zero bytes, print an inner one as the byte 0, and read `%08d` as width 8 with spaces (VerA until 2026-10-24); (b) iverilog's: under `%s` every zero byte is shown as a space, so `%s` keeps the operand's width in characters, while a written width (`%0s`, `%5s`) drops the leading ones and pads the rest to it (ivtest pr1819452); `%08d` is C's zero fill, after the sign.
+- **Decision**: `DECIDED:` (b). A zero byte is still not printed as a character, the field keeps the width the operand's characters span (as §17.1.1.3 sizes every other conversion by the operand), and the reference tool prints it so.
+- **VerA today**: `lib/kernels/fmt.zig` `text`, `valueFill`; `lib/sim/digital/display.zig` `walk`; `lib/sim/rt/root.zig` `value`; `src/codegen/digital/emit.zig` `operand`. Fixtures `verilog/17_system_tasks/string_leading_nul_as_space.v` (was `string_leading_zeros.v`), `decimal_field_width_zero_flag.v` (was `decimal_field_width_space_padded.v`), and the %s lines of `string_output.v`, `sformat_variable_format.v`, `sscanf_conversions.v`, `native_sformat_dynamic.v`.
+- **Measure impact**: A: two renamed fixtures. C: none.
+- **Status**: DONE 2026-10-24.
+
+### VD-130: `$itor` of a real, `$rtoi` of an integer, and `$rtoi` past 32 bits
+- **Source**: conformance-to-100 (2026-10-24), ivtest itor_rtoi.
+- **Rule**: IEEE 1364-2005 17.8: "`$rtoi` converts real values to an integer type by truncating the real value", "`$itor` converts integer values to real values", with the prototypes `integer $rtoi(real_val)` and `real $itor(int_val)`; 4.8.2 converts between the types implicitly, an x or z bit read as 0.
+- **Why vague**: the prototypes name the argument's type but no "shall" requires it, and the clause does not say what `$rtoi` returns for a value no `integer` holds.
+- **Options**: (a) refuse an argument of the other type, and give x past 32 bits (VerA until 2026-10-24); (b) convert the argument first by 4.8.2 (`$itor(10.5)` is 11.0, `$itor` of an infinity or NaN, whose integer is x, is 0.0; `$rtoi(1'bx)` is 0), and keep the low 32 bits of a larger truncated value, x only for an infinity or a NaN.
+- **Decision**: `DECIDED:` (b), iverilog's gold. 4.8.2's implicit conversions are the rule everywhere else an operand of the other type appears. `$realtobits`/`$bitstoreal` stay strict: they reinterpret bits, and converting first would hide a type error.
+- **VerA today**: `lib/sim/digital/compile.zig` (the type check), `lib/sim/digital/evaluate.zig` (`.rtoi`, `.itor`), `lib/sim/rt/logic.zig` `rtoi`, `itorReal`, `src/codegen/digital/emit_expr.zig`. Tests `compile.zig` "§17.8", `logic.zig` "$rtoi truncates".
+- **Measure impact**: none.
+- **Status**: DONE 2026-10-24.
+
+### VD-131: How wide an unsized based constant with more than 32 bits of digits is (digital)
+- **Source**: conformance-to-100 (2026-10-24), ivtest pr903 (`'h9000_0000_0000_0000_0000 / 'h3000_0000_0000_0000_0000` is 3).
+- **Rule**: IEEE 1364-2005 3.5.1: "The number of bits that make up an unsized number ... shall be at least 32." Table 5-22: "Unsized constant number: Same as integer".
+- **Why vague**: 3.5.1 sets a floor and no ceiling; Table 5-22 names `integer`, whose own size 4.8 also leaves at "at least 32".
+- **Options**: (a) 32 bits, the high digits lost (VerA's digital engine until 2026-10-24; fixture `unsized_wide_hex_truncated.v`); (b) the digits' width, digit count times bits per digit with leading zero digits counted, floored at 32, as iverilog sizes it. A decimal one keeps VD-124's 32-or-64.
+- **Decision**: `DECIDED:` (b) in the digital engine: (a) silently drops digits the user wrote. The analog context keeps VD-124.
+- **VerA today**: `lib/frontend/parser/literal.zig` `unsizedDigitBits` records the width (`IntLiteral.digit_bits`, and a known wide constant's `width`); `lib/sim/digital/compile.zig` `literalWidth` and the `.logic_literal` arm size by it. Ceiling: a constant with an x or z digit and 33 to 64 digit bits still reads as 32 (its digit count is not kept). Fixture `verilog/03_lexical_conventions/unsized_based_constant_digit_width.v` (was `unsized_wide_hex_truncated.v`).
+- **Measure impact**: A: the renamed fixture. C: none.
+- **Status**: DONE 2026-10-24.
+
+### VD-132: `$fscanf`/`$sscanf` details 17.2.4.3 leaves open
+- **Source**: conformance-to-100 (2026-10-24), ivtest fscanf_u, fscanf_u_warn, fscanf_z, fscanf_z_warn, scanf4.
+- **Rule**: IEEE 1364-2005 17.2.4.3: `%b` "Matches a binary number, consisting of a sequence from the set 0,1,X,x,Z,z,?, and _" (likewise `%o`, `%h`, and `%d`'s single x, z, ?); `%u` "shall transfer sufficient data from the input to fill the target reg"; "An optional decimal integer that specifies the maximum field width"; `%m` "Returns the current hierarchical path as a string".
+- **Why vague**: the clause does not say what `?` reads as, whether `_` may lead, what a field width means for binary data, or what `%*u` skips.
+- **Options / Decision**: `DECIDED:` iverilog's reading throughout. `?` is x. A leading `_` is a matching failure. `%Nu`/`%Nz` reads ceil(N/32) words and keeps N bits, zero above; `%*u` with no width skips one word; too few bytes is EOF. An `e` with no exponent digits after it is a matching failure, as C's scanf reports once it has consumed the `e`. `%m` assigns the scope's `%m` path and reads nothing. `%t`'s rounded value is divided by a negative power of ten, not multiplied by its inverse, so `-2.256` is the literal's double.
+- **Not taken**: ivtest scanf4's `$sscanf(" ", "%s", a)` returning 0. The clause says "If the input ends before the first matching failure or conversion, EOF is returned", and C's scanf returns EOF too; VerA returns -1 (fixture `sscanf_conversions.v`), so scanf4 stays in `tools/vera.xfail` as a suite expectation to correct.
+- **VerA today**: `lib/sim/digital/system.zig` `Scan` (`next`, `number`, `float`, `unformatted`, `Time.scale`) and `scanContext`; `src/codegen/digital/emit_expr.zig` refuses `%m` with `%t`/`%u`/`%z`. Test `system.zig` "§17.2.4.3 Scan: %u widths".
+- **Measure impact**: none.
+- **Status**: DONE 2026-10-24.
+
+### VD-133: An always construct with no timing control anywhere in it
+- **Source**: conformance-to-100 (2026-10-24), ivtest always3.1.* (iverilog refuses `always v <= 4'h5;` and its kin at compile time); revised 2026-10-25 by ISP RAS test_09_09_02_1, §9.9.2's own example.
+- **Rule**: IEEE 1364-2005 §9.9.2: "The always construct, because of its looping nature, is only useful when used in conjunction with some form of timing control. If an always construct has no control for simulation time to advance, it will cause a simulation deadlock condition." Its example, `always areg = ~areg;`, "creates a zero-delay infinite loop": the clause presents the source as legal and describes what running it does. It has no "shall".
+- **Why vague**: whether a tool reports the deadlock at compile time, at run time or loops forever is not said.
+- **Options**: (a) run it, and stop it by the zero-delay event budget at time 0; (b) refuse it at elaboration, as iverilog does (VerA 2026-10-24 to 2026-10-25).
+- **Decision**: `DECIDED:` (a). The clause's own example is legal source, so refusing it before it runs rejects a conforming description; the run reaches the deadlock the clause names, and the event budget (`vera --event-budget=N`, 10,000,000 by default) ends that time step by name, E1100 "keeps simulation time from advancing".
+- **VerA today**: `lib/sim/digital/root.zig` `Run` budget, checked per dispatched event. Fixtures: `verilog/09_behavioral_modeling/zero_delay_always_rejected.v` (event budget 1000), ISP RAS test_09_09_02_1 (compiles), ivtest always3.1.* (reject rows ended by the budget).
+- **Measure impact**: A: the reject fixture is a run-time rejection. C: §9.9.2's example compiles.
+- **Status**: DONE 2026-10-25.
+
+### VD-134: What a terminated `$readmem` load does to the run
+- **Source**: conformance-to-100 (2026-10-24), the dialect audit's BUG on ivtest readmem-error; the lead's ruling.
+- **Rule**: IEEE 1364-2005 §17.2.9: a file address outside the task's range: "an error message is issued, and the load operation is terminated"; the file "shall contain only" white space, comments and numbers in the task's radix. §17.2.1 makes a file name a string or a reg holding one.
+- **Why vague**: the clause ends the load, not the simulation, and says nothing of the run's exit status, of a file that cannot be read, of a name holding x or z bits, of a start or finish address outside the memory, or of a malformed word.
+- **Options**: (a) the out-of-range address an error that lets the run go on but exits 1, every other failure a refusal that ends the run (VerA until 2026-10-24, E1157 and E1100, #65); (b) every one of them a message that ends only its load, the run going on with its exit status untouched (iverilog).
+- **Decision**: `DECIDED:` (b). Every reason a load cannot go on is warning W1157 naming it; the words loaded before it stay; a start or finish address outside the memory loads nothing; the exit status is the run's own. Both engines.
+- **VerA today**: `lib/sim/digital/display.zig` `readMemory`, `loadEnded`; `lib/sim/rt/root.zig` `readmem`. Fixtures: `verilog/17_system_tasks/readmem_*_load_terminated.v` (the 20 former `_rejected` ones, each with iverilog's transcript) and `readmem_address_outside_task_range.v`; ivtest readmem-error.
+- **Measure impact**: A: 21 fixtures now transcripts with `//! warn W1157`.
+- **Status**: DONE 2026-10-24.
+
+### VD-135: A name read before its declaration
+- **Source**: conformance-to-100 (2026-10-24), Verilog gap G6 (ivtest decl_before_use1, decl_before_use5).
+- **Rule**: IEEE 1364-2005 states declare-before-use only for a specparam (§4.10.3, "shall be declared before it is referenced") and a named event (§9.7.3).
+- **Why vague**: no general rule says whether a module-scope variable may be read by a statement written above its declaration.
+- **Options**: (a) accept, the module's names being known before any statement (VerA until 2026-10-24); (b) refuse, as iverilog does.
+- **Decision**: `DECIDED:` (b), the reference tool's reading where the standard is silent. A block's later local leaves an outer name in view (decl_before_use6); an implicit net is its scope's from the start.
+- **VerA today**: `lib/sim/digital/compile.zig`/`elab.zig` (fd-elab db93ddea). Fixture `verilog/03_lexical_conventions/forward_reference_reg_rejected.v`.
+- **Status**: DONE 2026-10-24.
+
+### VD-136: A `` `timescale `` written inside a module definition
+- **Source**: conformance-to-100 (2026-10-24), Verilog gap G6 (ivtest no_timescale_in_module).
+- **Rule**: IEEE 1364-2005 §19.8 applies a `` `timescale `` to "all modules that follow this directive until another `timescale compiler directive is read", with no "shall" on where it may be written.
+- **Why vague**: the clause names the modules it covers, not whether the directive may stand inside one.
+- **Options**: (a) accept, taking effect from the next module (VerA until 2026-10-24); (b) refuse, as iverilog does.
+- **Decision**: `DECIDED:` (b), the reference tool's reading.
+- **VerA today**: fd-elab e36d7239. Fixture `timescale_inside_module_rejected.v`.
+- **Status**: DONE 2026-10-24.
+
+### VD-137: A multi-bit expression on a single gate's input terminal
+- **Source**: conformance-to-100 (2026-10-24), Verilog gap G17 (ivtest gate_connect1).
+- **Rule**: IEEE 1364-2005 §7.1.6 sizes terminals only for instance arrays; A.3.3's `input_terminal` is an expression.
+- **Why vague**: what a single (non-array) gate makes of a wider input expression is not said.
+- **Options**: (a) refuse (VerA until 2026-10-24); (b) read the expression's least significant bit, as iverilog does.
+- **Decision**: `DECIDED:` (b), in the interpreter and `--emit-exe`.
+- **VerA today**: fd-elab fc5dc5b9. Fixture `verilog/07_gate_switch_level/gate_multibit_input_lsb.v`.
+- **Status**: DONE 2026-10-24.
+
+### VD-138: A `$readmem` file name held in a parameter or a reg
+- **Source**: conformance-to-100 (2026-10-24), the dialect audit's BUG (ivtest pr690, pr704).
+- **Rule**: IEEE 1364-2005 Syntax 17-7 writes the name `" file_name "`, the placeholder Syntax 17-4 uses for `$fopen`, which §17.2.1 defines: "a character string or is a reg containing a character string".
+- **Why vague**: Syntax 17-7 draws quotes, §17.2.1 allows a reg; neither names a parameter.
+- **Options**: (a) a literal only (VerA until 2026-10-24); (b) a literal, a string parameter or a reg, read when the task runs, as iverilog does.
+- **Decision**: `DECIDED:` (b). A name with an x or z bit names no file (VD-134). `--emit-exe` refuses the variable form by name.
+- **VerA today**: `lib/sim/digital/display.zig` `readMemory` (fd-elab e9e2ff99). Fixture `verilog/17_system_tasks/readmem_file_name_variable.v`.
+- **Status**: DONE 2026-10-24.
+
+### VD-139: More ordered parameter values than the module has parameters
+- **Source**: conformance-to-100 (2026-10-24), the dialect audit's SILENT item (ivtest param_test3).
+- **Rule**: IEEE 1364-2005 §12.2.2.1: the ordered list "shall follow the order of declaration of the parameters", and "It is not necessary to assign values to all of the parameters".
+- **Why vague**: a list shorter than the parameters is allowed; a longer one is not mentioned.
+- **Options**: (a) refuse (VerA until 2026-10-24); (b) ignore the extra values with a warning, as iverilog does.
+- **Decision**: `DECIDED:` (b), warning W1161.
+- **VerA today**: `lib/sim/digital/elab.zig` `checkLists`. Fixtures `verilog/12_hierarchy/extra_ordered_value_ignored.v`, `extra_ordered_parameter_value_ignored.v` (formerly `_rejected`).
+- **Status**: DONE 2026-10-24.
 
 ## 6. Implementation-defined choices
 
@@ -1463,7 +1612,7 @@ differently also conforms.
 | AMS E.3.3 | a warning when an HDL module or paramset shadows an always-available SPICE primitive is optional | no warning for primitive shadowing; W0951 for the required same-name model/subcircuit warning | `src/elab/names.zig` `warnSpiceShadows`, `findModule` | `annex_e_spice/spice_paramset_primitive_shadow.va`, `spice_module_shadow_warning.va`, `spice_paramset_shadow_warning.va`, `spice_shadow_case_neighbour.va`, `verilog_module_wins_over_netlist_subckt.va` |
 | AMS 2.8.3 | `$` names VerA uses internally | `$held_int`, `$held_real`, `$idx`, `$limit$old`, `$str$cat`, the `$rng$` family and the others after `$held_int` in `Callee` are reserved (E1014) | `src/ir/callee.zig` `synthetic` | `ch09_system_tasks/reserved_system_function_name_rejected.va` |
 | 1364 8.1.2 | the UDP input limit, at least 9 sequential and 10 combinational | none | `lib/frontend/parser/udp.zig` | `ieee1364/08_udp/input_minimums.v`, `sequential_64_inputs.v`, `udp_65_inputs.v` |
-| 1364 11.4.2 | the order of active events | processes start in source order from a FIFO queue; woken processes resume in the order they suspended; the interpreter and native code agree | `lib/sim/scheduler.zig` `Scheduler.next`, `lib/sim/digital/waiters.zig` `wake` | `ieee1364/11_scheduling/sched_fork_arm_chain_order.v`, `sched_fork_arm_wake_order.v`, `sched_node_wake_order.v` (no clause cite) |
+| 1364 11.4.2 | the order of active events | iverilog's time-0 order (child scopes first, level-controlled always constructs armed first, VD-081); woken processes resume in the order they suspended; the interpreter and native code agree | `lib/sim/scheduler.zig` `Scheduler.next`, `lib/sim/digital/waiters.zig` `wake` | `ieee1364/11_scheduling/sched_fork_arm_chain_order.v`, `sched_fork_arm_wake_order.v`, `sched_node_wake_order.v` (no clause cite) |
 | 1364 13.4.4 | which of several configs configures the design | the config no other config's `use` clause names; two such, or none, is E0243 (Vague_Decisions VD-083) | `lib/sim/digital/bind.zig` `top` | `ieee1364/13_configuration/hierarchical_config.v`, `two_unreferenced_configs_rejected.v`, `every_config_referenced_rejected.v` |
 | 1364 17.2.4.1 | how many characters `$ungetc` can push back | 16 per descriptor; the 17th returns EOF | `lib/backend/kernels/file_kernels.zig` `ZFSlot.back` | `ieee1364/17_system_tasks/ungetc_pushback_limit.v` |
 | 1364 17.2.1, 27.25 | which bit an mcd `$fopen` returns | 1 << k for the lowest free slot k from 1; under a VPI application, the lowest free channel from 4, one table with `vpi_mcd_open` (channels 2 and 3 are AMS 12.26's stderr and log) | `lib/backend/kernels/file_kernels.zig` `zFOpen`, `src/vpi/print.zig` `share` | `ieee_pli/mcd.c` |
@@ -1477,11 +1626,11 @@ differently also conforms.
 | 1364 26.2.4 | what a routine called while `vlog_startup_routines` run does (the clause allows only `vpi_register_systf` and `vpi_register_cb`, the latter for six reasons, and names no failure) | refused: the routine's documented failure value and a `vpi_chk_error` error, code `STARTUP`, citing 26.2.4; `vpi_register_analog_systf` (VAMS 12.32) and `vpi_chk_error` are allowed; `vpi_register_cb` takes cbEndOfCompile, cbStartOfSimulation, cbEndOfSimulation, cbError and cbPLIError (cbUnresolvedSystf is never delivered) (`Vague_Decisions.md` VD-044) | `src/vpi/root.zig` `refused`, `src/vpi/callback.zig` `startupReason` | `ieee_pli/startup_phase.c`; every `.c` fixture defers its work to cbEndOfCompile (`p02_defer`, `p03_defer`) |
 | AMS 12.22; 1364 26.6.16 | when an inter-module path exists, and what a put of its delays does | made on demand for an output (or inout) and an input (or inout) port of one size, one handle per pair; 2 or 3 delays starting at 0, held by the model and read back, never simulated; a put warns W0251 and needs a digital run (`Vague_Decisions.md` VD-114) | `src/vpi/delays.zig` `interModPath`, `putPathDelays` | `ch12_vpi_routines/intermod_path.c` (with its refusals) |
 | 1364 G | what a routine does with an Annex G name whose question VerA does not answer | every name is defined with Annex G's value; the question is refused with vpiError, code NOTSUPPORTED, naming the constant and why (`Vague_Decisions.md` VD-114) | `src/vpi/root.zig` `unansweredType`, `unansweredProp`; `src/vpi/callback.zig` `unansweredReason` | `ieee_pli/b_G_vpi_user.c`; `src/vpi/test.zig` |
-| 1364 26.3.5, G | the number of `vpiIsProtected`, which Annex G does not define | Annex G's `vpiProtected` (10); every object answers it, FALSE, since `pragma protect` is refused (E0146) (`Vague_Decisions.md` VD-045) | `src/vpi/vpi_user.h` `vpiIsProtected`, `src/vpi/property.zig` `vpi_get` | `ieee_pli/protected.c` |
+| 1364 26.3.5, G | the number of `vpiIsProtected`, which Annex G does not define | Annex G's `vpiProtected` (10); every object answers it: TRUE when a decrypted envelope declares it (VD-127), else FALSE (`Vague_Decisions.md` VD-045) | `src/vpi/vpi_user.h` `vpiIsProtected`, `src/vpi/property.zig` `vpi_get` | `ieee_pli/protected.c` |
 | 1364 17.2.4.1 | how many characters `$ungetc` can push back, and which reads see them | 16 per descriptor; the 17th returns EOF, as does a push at file position 0 (C leaves the position after it indeterminate). `$fgetc`, `$fgets`, `$fscanf` and `$fread` all read the pushback before the file, and pushback a read leaves unread stays the next input (VD-084) | `lib/backend/kernels/file_kernels.zig` `ZFSlot.back`, `zFUngetc`, `zFGets`, `zFWindow`, `zFTake`; `lib/sim/digital/system.zig` `fileScan`, `finishFileScan` | `ieee1364/17_system_tasks/ungetc_pushback_limit.v`, `ungetc_read_routines.v` |
 | 1364 17.6.5, 17.6.6 | a `$q_exam` `q_stat_code` outside Table 17-15's 1 to 6 | a constant one is refused (E1100); one known only at run time returns status 2 and leaves `q_stat_value` unchanged (VD-050) | `lib/sim/digital/compile.zig` `.queue`, `lib/sim/digital/system.zig` `queueStep` | `ieee1364/17_system_tasks/q_exam_code_rejected.v`, `q_exam_code_runtime.v` |
 | 1364 17.6.5 | whether `$q_exam` code 3, "Maximum queue length", is the configured `max_length` or the observed peak | the largest length the queue has reached (VD-051) | `lib/sim/digital/system.zig` `queueStep` (`peak`) | `ieee1364/17_system_tasks/q_exam_peak_length.v` |
-| 1364 17.6.5, 3.5.3 | how `$q_exam`'s means (code 2, mean interarrival time; code 6, average wait) become the integer `q_stat_value` | the exact mean rounded to the nearest integer, ties away from zero, as §3.5.3 converts a real; 0 with no interarrival or no completed wait (VD-052) | `lib/sim/digital/system.zig` `mean` | `ieee1364/17_system_tasks/q_exam_means_round.v` |
+| 1364 17.6.5 | how `$q_exam`'s means (code 2, mean interarrival time; code 6, average wait) become the integer `q_stat_value`, and what a statistic with no population returns | truncated, code 6 over every job so far, as iverilog computes; no value with no population (VD-052) | `lib/sim/digital/system.zig` `queueStep` | `verilog/17_system_tasks/q_exam_means.v` |
 | AMS E.1, E.1.2, E.2 | the SPICE flavour and primitive behaviour | SPICE3 card syntax for `.MODEL` (types npn, pnp, d, nmos, pmos, njf, pjf, nmf, pmf, r, c, l; any other type is a Verilog-A module a body card may name) and for `.SUBCKT` bodies of numeric-valued R/C/L/V/I/E/F/G/H cards and of M/Q/J/D cards naming a model (its `.MODEL`'s module type with the card's parameters, `M=` as `$mfactor`, or a module/paramset of that name); `.INCLUDE`, `.LIB file entry` and `.HDL` anywhere, relative names beside the naming file. Not claimed: `PARAMS:`/`k=v` on a `.SUBCKT` header, `{expr}` values, nested `.SUBCKT`, X/S/other device cards, binned models, model-referenced R/C/L, trailing fields; inside a `.SUBCKT` each is E0928, as is an unreadable `.INCLUDE`/`.LIB`; a card whose model is a Table E.1 semiconductor `.MODEL` (no Behavior) is E0953; cards outside any definition are skipped (VD-012). A `.MODEL` whose type is no Table E.1 row declares no module of its own name, and a Verilog-AMS instance of it is E0952. Netlist names match Verilog-AMS declarations regardless of case (E.2.1). Primitives per each `primitive_*.va` header | `lib/frontend/spice_cards.zig`, `lib/frontend/preprocessor.zig` `process`, `src/elab/names.zig` `spiceCase` | `annex_e_spice/spice_model.va`, `spice_subcircuit.va`, `subckt_body_contributes_equations.va`, `spice_fet_card_instantiates_model_module.va`, `spice_lib_include_hdl.va`, `primitive_*.va`; `reject_spice_subckt_params.va`, `reject_spice_expression_value.va`, `reject_spice_nested_subckt.va`, `reject_spice_model_referenced_card.va`, `reject_spice_unread_device_card.va`, `reject_spice_fet_card_model_has_no_behaviour.va`, `reject_spice_binned_model.va`, `reject_spice_lib_entry_missing.va` |
 | 1364 13.2.1.1, 4.11 | two modules with one name in one compilation (13.2.1.1 says the last is the cell with a warning; 4.11 forbids the reuse) | the last definition is the cell, W1152 at it, in both engines (Vague_Decisions VD-009) | `lib/sim/digital/bind.zig` `libraries`; `src/elab/names.zig` `findModule`, `warnRedefinedModules`; `src/elab/elaborate.zig` `pickTop` | `ieee1364/13_configuration/same_name_cell_last_wins.v`, `ch06_hierarchy/same_named_module_last_wins.va` |
 | AMS 7.4.4, F.2.2 | how the discipline resolution mode is selected ("vendor-specific"; F.2.2 "a simulator option") | `--discipline-resolution=basic\|detail` (fixtures: `//! discipline-resolution`), default basic; detail is Annex F.2.2 with step 5 | `src/cli/args.zig`, `src/elab/segment.zig` | `ch07_mixed_signal/discipline_resolution_detail_figure_7_4.va`, `discipline_resolution_basic_figure_7_3.va`, `auto_insertion_figure_7_6_*.va`, `discipline_resolution_detail_one_level.va` |

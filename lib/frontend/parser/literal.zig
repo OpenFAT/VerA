@@ -29,6 +29,7 @@ pub fn parseNumber(self: *Parser) Error!Ast.ExprId {
             error.Overflow => self.failAt(tok, .E1019, "`{s}`", .{text}),
             else => self.failAt(tok, .E0133, "`{s}`", .{text}),
         };
+        const digit_bits = unsizedDigitBits(text, lit.sized);
         if (lit.asInt()) |value| {
             defer self.arena.free(lit.planes);
             // IEEE 1364-2005 §3.5.1: an unsized constant is 32 bits here, so a
@@ -41,9 +42,14 @@ pub fn parseNumber(self: *Parser) Error!Ast.ExprId {
                 .width = if (lit.sized) lit.width else 0,
                 .signed = lit.signed,
                 .radix = integer.radixOf(text),
+                .digit_bits = @intCast(@min(digit_bits, std.math.maxInt(u16))),
             });
         }
-        return self.file.exprs.addLogic(self.arena, tok, lit);
+        // A known unsized based constant holds its leading zero digits too
+        // (VD-131); its planes were allocated for every digit.
+        var wide = lit;
+        if (!lit.hasUnknown()) wide.width = @max(lit.width, digit_bits);
+        return self.file.exprs.addLogic(self.arena, tok, wide);
     }
 
     const text = self.tokenText(tok);
@@ -57,6 +63,26 @@ pub fn parseNumber(self: *Parser) Error!Ast.ExprId {
         error.Overflow => self.failAt(tok, .E0133, "`{s}`", .{text}),
     };
     return self.file.exprs.addReal(self.arena, tok, v);
+}
+
+/// An unsized based §2.6.1 constant's digits times the bits per digit
+/// (VD-131); 0 for a sized or a decimal one.
+fn unsizedDigitBits(text: []const u8, sized: bool) u32 {
+    const q = std.mem.findScalar(u8, text, '\'') orelse return 0;
+    if (sized) return 0;
+    var i = q + 1;
+    if (i < text.len and (text[i] | 0x20) == 's') i += 1;
+    const per: u32 = switch (text[i] | 0x20) {
+        'b' => 1,
+        'o' => 3,
+        'h' => 4,
+        else => return 0,
+    };
+    var n: u32 = 0;
+    for (text[i + 1 ..]) |c| {
+        if (c != '_' and !std.ascii.isWhitespace(c)) n +|= per;
+    }
+    return n;
 }
 
 /// The text `integer.parse` must see to name a malformed §2.6.1 number:

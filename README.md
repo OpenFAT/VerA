@@ -119,8 +119,8 @@ builds a host step by step.
 - **Open bugs** are the tests listed in [`tools/vera.xfail`](tools/vera.xfail)
   (the conformance suite) and [`tests/suite.xfail`](tests/suite.xfail) (VerA's
   fixture runner), each with its reason. A listed test that starts passing
-  fails CI until its line goes. Operating-point variables are not exported to
-  OSDI yet.
+  fails CI until its line goes. Operating-point variables reach a
+  contract host (`op_vars`, `opVars`) but are not exported to OSDI yet.
 
 ## Conformance
 

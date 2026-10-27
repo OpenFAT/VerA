@@ -96,6 +96,11 @@ pub fn handleDefine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void
     if (splitsString(m.body))
         return pp.fail(pp.spanAt(off + r.i, off + r.s.len), .E0145, "`{s}`", .{name});
 
+    // IEEE 1800-2017 §22.5.1's `" `\`" and `` are read under every standard;
+    // IEEE 1364-2005 Syntax 19-3 has none of them, so a 1364 unit hears so.
+    if (pp.opts.std_1364 and (std.mem.find(u8, m.body, "`\"") != null or std.mem.find(u8, m.body, "``") != null))
+        try pp.opts.bag.add(.preprocess, .W0151, pp.spanAt(at, off), "`{s}`", .{name});
+
     // §10.4: a redefinition silently replaces. Predefined macros keep their flag
     // so `undef still has no effect on them.
     if (pp.macros.get(name)) |old| m.predefined = old.predefined;
@@ -246,7 +251,11 @@ pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []c
             break;
         }
         break :blk try substitute(pp, m.body, m.params, actuals);
-    } else m.body;
+    } else if (std.mem.findScalar(u8, m.body, '`') != null)
+        // IEEE 1800-2017 §22.5.1's `" `\`" `` work in an object-like body too.
+        try substitute(pp, m.body, &.{}, &.{})
+    else
+        m.body;
     try pp.expanding.append(pp.scratch, name);
     try pp.expanding_set.put(pp.scratch, name, {});
     defer {
@@ -411,6 +420,16 @@ fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []con
             continue;
         }
         if (c == '`') {
+            // IEEE 1800-2017 §22.5.1: `` is an empty token separator, and `"
+            // opens a string literal whose formals are still substituted.
+            if (i + 1 < body.len and body[i + 1] == '`') {
+                i += 2;
+                continue;
+            }
+            if (i + 1 < body.len and body[i + 1] == '"') {
+                i = try stringify(pp, &out, body, i + 2, params, args);
+                continue;
+            }
             const start = i;
             i = identEnd(body, i + 1);
             try out.appendSlice(pp.scratch, body[start..i]);
@@ -461,6 +480,53 @@ fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []con
     return out.items;
 }
 
+/// Copies the IEEE 1800-2017 §22.5.1 `"...`" string whose text starts at
+/// `start` into `out` as a "..." literal and returns the offset past its
+/// closing `". Formals are replaced by their actuals, `\`" becomes \" and ``
+/// vanishes; escape sequences and everything else are copied. A body that
+/// never closes it ends the string at the end of the body.
+fn stringify(pp: *Pp, out: *std.ArrayList(u8), body: []const u8, start: usize, params: []const []const u8, args: []const []const u8) Error!usize {
+    try out.append(pp.scratch, '"');
+    var i = start;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '`') {
+            if (std.mem.startsWith(u8, body[i..], "`\\`\"")) {
+                try out.appendSlice(pp.scratch, "\\\"");
+                i += 4;
+                continue;
+            }
+            if (std.mem.startsWith(u8, body[i..], "``")) {
+                i += 2;
+                continue;
+            }
+            if (std.mem.startsWith(u8, body[i..], "`\"")) {
+                i += 2;
+                break;
+            }
+        }
+        if (c == '\\' and i + 1 < body.len) {
+            try out.appendSlice(pp.scratch, body[i .. i + 2]);
+            i += 2;
+            continue;
+        }
+        if (isIdentStart(c)) {
+            const w = i;
+            i = identEnd(body, i);
+            const word = body[w..i];
+            const idx = for (params, 0..) |formal, n| {
+                if (std.mem.eql(u8, formal, word)) break n;
+            } else null;
+            try out.appendSlice(pp.scratch, if (idx) |k| args[k] else word);
+            continue;
+        }
+        try out.append(pp.scratch, c);
+        i += 1;
+    }
+    try out.append(pp.scratch, '"');
+    return i;
+}
+
 /// Does `text` open a string literal it does not close? A `\`-started
 /// escaped identifier (§2.8.1) is skipped, so a `"` spelled inside one is not
 /// taken for a quote.
@@ -468,6 +534,12 @@ fn splitsString(text: []const u8) bool {
     var i: usize = 0;
     while (i < text.len) : (i += 1) {
         switch (text[i]) {
+            // §22.5.1's `" and `\`" are not the quote of a string literal.
+            '`' => if (std.mem.startsWith(u8, text[i..], "`\\`\"")) {
+                i += 3;
+            } else if (std.mem.startsWith(u8, text[i..], "`\"")) {
+                i += 1;
+            },
             '"' => {
                 i = stringStop(text, i);
                 if (i >= text.len or text[i] != '"') return true;

@@ -62,6 +62,10 @@ pub const ParamDecl = struct {
     /// IEEE 1364-2005 §4.10.3 a module-body `specparam`, kept as a
     /// `localparam` (`is_local`) that no module parameter may read.
     is_spec: bool = false,
+    /// A specparam declared inside a specify block, which §4.10.3's
+    /// "declared outside a specify block shall be declared before it is
+    /// referenced" does not bind: it may name a later one of the block.
+    in_specify: bool = false,
     /// IEEE 1364-2005 §4.10.1 `parameter time`: `ty` folds it to `.integer`,
     /// but its value is unsigned 64-bit (§4.8), not a signed 32-bit integer.
     is_time: bool = false,
@@ -353,7 +357,28 @@ pub const EventDecl = struct {
 };
 
 /// One A.2.7 task/function formal: a direction and the variable it declares.
-pub const TfPort = struct { direction: Direction, v: VarDecl };
+pub const TfPort = struct {
+    direction: Direction,
+    v: VarDecl,
+    /// A body (non-ANSI) port's variable redeclarations folded into `v`,
+    /// kept for IEEE 1364-2005 §12.3.3's rules, which the elaborator checks:
+    /// a port declared with a type is complete, a name is declared again at
+    /// most once, and a vector's two ranges are identical.
+    redecl: Redecl = .{},
+
+    pub const Redecl = struct {
+        /// Variable declarations of the port's name; the first is in `v`.
+        count: u32 = 0,
+        /// The first one's name token.
+        tok: u32 = 0,
+        /// The port declaration wrote a type (`reg`, `integer`, `time`,
+        /// `real`, `realtime`).
+        typed: bool = false,
+        /// The port declaration's own range, and the variable's.
+        port_range: ?Dim = null,
+        var_range: ?Dim = null,
+    };
+};
 
 /// User-defined analog function. LRM §4.7.1 (A.2.6 analog_function_declaration).
 /// The implicit return variable is the function's own name (§4.7.1).
@@ -475,6 +500,21 @@ pub const SpecPath = struct {
     data_polarity: SpecPolarity = .none,
     /// A.7.4 `list_of_path_delay_expressions`: 1, 2, 3, 6 or 12.
     delays: []const ExprId,
+    main_tok: u32,
+};
+
+/// IEEE 1364-2005 §14.6 one pulse control of a specify block: an A.2.4
+/// `pulse_control_specparam` (`limits`: `PATHPULSE$ = (reject [, error])`, or
+/// `PATHPULSE$in$out = ...` for one path, `name` the whole specparam name)
+/// or an A.7.1 pulsestyle or showcancelled declaration over `outs`.
+pub const PulseControl = struct {
+    kind: enum(u8) { limits, onevent, ondetect, showcancelled, noshowcancelled },
+    name: StrId = .none,
+    reject: ExprId = .none,
+    /// `.none` when only the reject limit is written (§14.6.1: the error
+    /// limit is then the same).
+    err: ExprId = .none,
+    outs: []const ExprId = &.{},
     main_tok: u32,
 };
 
@@ -823,10 +863,12 @@ pub const ModuleDecl = struct {
     switches: []const SwitchInst = &.{},
     /// A.7.2 module paths and A.7.5 system timing checks of the module's
     /// `specify` blocks (IEEE 1364 Clause 14/15, inherited through §1.1).
-    /// Recorded for §11.6.15's VPI objects; no simulation applies them
-    /// (W0251).
+    /// Recorded for §11.6.15's VPI objects and simulated by the digital
+    /// engine; an analog compile applies none of them (W0251).
     paths: []const SpecPath = &.{},
     timing_checks: []const TimingCheck = &.{},
+    /// §14.6 the pulse controls of its specify blocks and specparams.
+    pulses: []const PulseControl = &.{},
     /// §2.9 every `attr_spec` in this module, for value validation. Owner
     /// associations are retained separately in `SourceFile.attributes`.
     attrs: []const NatureAttr = &.{},

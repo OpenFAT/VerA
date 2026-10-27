@@ -89,7 +89,7 @@ pub const Source = union(enum) {
 pub const Mos = struct { n_type: bool, resistive: bool, data_net: ?u32 = null };
 
 /// `dnet.Bridge` with its source slot's first word.
-pub const Bridge = struct { src_off: u32, src_lo: u32, dst_lo: u32, width: u32 };
+pub const Bridge = struct { src_off: u32, src_lo: u32, dst_lo: u32, width: u32, ext: u32 = 0, sign_at: ?u32 = null };
 
 /// `dnet.Udp`'s table: `ins` inputs, its state at time 0.
 pub const Udp = struct { rows: []const dnet.UdpRow, sequential: bool, ins: u32, state: Bit };
@@ -250,7 +250,9 @@ pub const Nets = struct {
         @memset(t.nflight, null);
         @memset(t.decay_ev, null);
         @memset(t.capacitive, false);
-        @memset(t.sig0, .{});
+        // `resolution.initial`: an undriven net holds its type's pull (a
+        // supply net's supply strength), which a MOS switch passes on.
+        for (nets, t.sig0) |net, *sg| sg.* = if (net.kind == .trireg or net.kind == .wreal) .{} else dnet.netPull(net.kind);
         var mos_ix: std.ArrayList(u32) = .empty;
         for (drivers, 0..) |d, i| if (d.source == .mos) try mos_ix.append(gpa, @intCast(i));
         t.mos_ix = mos_ix.items;
@@ -499,6 +501,9 @@ pub fn bridge(s: *State, i: u32) Error!void {
     for (0..b.width) |j| {
         setBit(planes, b.dst_lo + @as(u32, @intCast(j)), shown(s, b.src_off, b.src_lo + @as(u32, @intCast(j))));
     }
+    // `digital.net.Bridge`'s §12.3.9.2 widening.
+    const ext_bit = if (b.sign_at) |at| shown(s, b.src_off, at) else Int.Bit.zero;
+    for (0..b.ext) |j| setBit(planes, b.dst_lo + b.width + @as(u32, @intCast(j)), ext_bit);
     return drive(s, i, planes, false);
 }
 
@@ -721,6 +726,12 @@ const Switches = struct {
     }
     pub fn conduction(g: Switches, ti: u32) dnet.Tran.State {
         return g.t.tstate[ti];
+    }
+    pub fn fixed(g: Switches, k: u32) bool {
+        return switch (g.t.nets[k].kind) {
+            .supply0, .supply1 => true,
+            else => false, // else: every other net kind is a conductor
+        };
     }
 };
 

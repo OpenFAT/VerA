@@ -16,6 +16,7 @@ const gen_call = @import("call.zig");
 const gen_host = @import("host_expr.zig");
 const gen_dispatch = @import("dispatch.zig");
 const gen_noise = @import("noise.zig");
+const gen_opvars = @import("opvars.zig");
 const gen_state = @import("state.zig");
 const gen_unit = @import("unit.zig");
 const gen_instance = @import("instance.zig");
@@ -152,6 +153,7 @@ pub fn emitFile(self: *Gen) Error!void {
     try gen_dispatch.emitDispatchers(self);
     try gen_noise.emitNoiseTable(self);
     try gen_noise.emitAcTable(self);
+    try gen_opvars.emitOpVarTable(self);
     try gen_call.emitSystfTable(self);
     // §4.5.2's accepted-step sweep also carries §9.13.1's internal-seed
     // advance, the only place a stream may move: a per-iteration draw makes

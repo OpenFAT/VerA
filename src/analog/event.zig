@@ -313,6 +313,11 @@ pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bo
         try self.err(self.file.exprs.mainTok(e), .E0517, "`{s}()` has a comma before its enable and no enable", .{name});
         complete = false;
     };
+    // ... and nothing derives past the enable.
+    if (last) |k| if (args.len > k + 1) {
+        try self.err(self.file.exprs.mainTok(e), .E0517, "`{s}()` takes at most {d} arguments, got {d} (A.6.5)", .{ name, k + 1, args.len });
+        complete = false;
+    };
     if (!complete) return false;
     // "enable ... shall evaluate to an integer" (§5.10.3.1-§5.10.3.3); only a
     // folded non-integral value is refused. absdelta's is checked below.
@@ -906,6 +911,10 @@ test "§5.10.3 monitored events: argument rules, each beside a legal call" {
         // §5.10.3.2 the enable "shall evaluate to an integer".
         .{ .src = "analog begin @(above(V(p) - 0.5, 1n, 1u, 0.5)) x = 1.0; I(p) <+ x; end", .code = .E0517 },
         .{ .src = "analog begin @(above(V(p) - 0.5)) x = 1.0; I(p) <+ x; end", .code = null },
+        // A.6.5: nothing derives past the enable.
+        .{ .src = "analog begin @(cross(V(p) - 0.5, 1, 1n, 1u, 1, 1)) x = 1.0; I(p) <+ x; end", .code = .E0517 },
+        .{ .src = "analog begin @(above(V(p) - 0.5, 1n, 1u, 1, 1)) x = 1.0; I(p) <+ x; end", .code = .E0517 },
+        .{ .src = "analog begin @(timer(0, 1n, 1p, 1, 1)) x = 1.0; I(p) <+ x; end", .code = .E0517 },
         // §5.10.3.4 absdelta is "only allowed in an initial or always block".
         .{ .src = "analog begin @(absdelta(V(p), 0.1)) x = 1.0; I(p) <+ x; end", .code = .E0513 },
         // §5.10 "Nested event control statements are not allowed."

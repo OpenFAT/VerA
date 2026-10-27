@@ -106,6 +106,9 @@ pub const Job = struct {
         /// Clause 12 (`From.vpi`): a row's reactive half, or one instance's
         /// share of a shared row, that `vpiContribs`/`vpiShares` report.
         vpi,
+        /// An operating-point variable's end-of-block value (`Lowered.op_vars`),
+        /// which `opVars` reports.
+        op_var,
         /// §9.4: the one job that is NOT folded into the core, because its
         /// body has side effects the residual must not trigger. See
         /// `plan_core.plan`.
@@ -350,6 +353,19 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
             try queueVpi(self, &jobs, from, sh.react_val, sh.row);
         }
     }
+    // The operating-point variables, which `opVars` reads out of its slice of
+    // the core. After every kind `eval` reads, so a model that gains a `desc`
+    // renumbers no field before them. `.strict` unconditionally: a report is
+    // not on the residual path, and proof.zig rates contributions only.
+    for (self.lowered.op_vars.items) |ov| {
+        const v = self.an.rv(ov.final);
+        if (v == .f_zero) continue; // reported as 0 without a field
+        try jobs.append(self.arena, .{
+            .kind = .op_var,
+            .target = v,
+            .mode = .strict,
+        });
+    }
     // §9.4 the display tasks, as one unit. Queued last, so no existing job
     // (and so no declaration name) moves when a model gains or loses a
     // `$strobe`. `.strict` unconditionally: a print is not on the residual
@@ -445,7 +461,12 @@ fn isDynCtrlArg(k: OpKind, ai: usize) bool {
         // and a moving ε is E0515 in lowering, so neither is queued; a moving
         // zi_* period, τ or t0 is queued and then refused by the plan.
         .laplace, .zi => ai >= 1,
-        .none, .transition, .slew, .last_crossing, .cross, .above, .timer, .bound_step, .discontinuity => false,
+        // Table 4-20 "dynamic: expr, dir"; §5.10.3.1 every `cross` argument
+        // is an `analog_expression` (dir, time_tol, expr_tol: `updateState`
+        // reads all three; the enable is decided in `eval`).
+        .last_crossing => ai == 1,
+        .cross => ai >= 1 and ai <= 3,
+        .none, .transition, .slew, .above, .timer, .bound_step, .discontinuity => false,
     };
 }
 

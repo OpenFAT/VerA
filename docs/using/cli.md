@@ -85,6 +85,7 @@ Neovim 0.11 and later needs `editors/nvim` on its runtime path and
 | `--no-std-defs` | do not prepend the LRM Annex D prelude (`disciplines.vams`, `constants.vams`) |
 | `--discipline-resolution=basic\|detail` | LRM §7.4.4's mode for undeclared interconnect (default `basic`; `detail` is Annex F.2.2) |
 | `--libmap FILE`, `-L LIB` | a `.v` design's IEEE 1364-2005 §13 libraries: a library map file (repeatable), and the libraries an instance's cell is searched in |
+| `--protect-keys FILE` | the keys and CBC IV for a `.v` design's IEEE 1364-2005 §28 decryption envelopes: JSON with `profile.iv_hex` and `keys`, each `{owner, name, key_hex}` (des-cbc; E0152 no key, E0153 does not decrypt) |
 | `--expect-module=NAME` | fail unless the compiled module is called `NAME` |
 
 `` `include "disciplines.vams" `` and `` `include "constants.vams" `` always

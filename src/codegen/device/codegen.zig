@@ -379,6 +379,11 @@ pub const Gen = struct {
     /// Whether `noise_core` reads a §4.5.14 `ddx` lane, so `noisePsd` seeds
     /// its inputs as `eval` does (`zProbe`) instead of value-only (#32).
     noise_reads_ddx: bool = false,
+    /// The core as `opVars` reads it: its slice (`gen_opvars.emitOpVarCore`),
+    /// or `.{}` when the module has no operating-point variable to compute.
+    opvar_core: plan_core.Core = .{},
+    /// Whether `opvar_core` reads a §4.5.14 `ddx` lane, as `noise_reads_ddx`.
+    opvar_reads_ddx: bool = false,
     /// The core as `advanceIteration` and `checkConvergence` read it: their
     /// slice (`gen_state.emitIterCore`), or `.{}` when they read nothing off it.
     iter_core: plan_core.Core = .{},
@@ -546,7 +551,7 @@ pub const Gen = struct {
         // the lanes such a load would carry are never observed. Except by a
         // §4.5.14 `ddx` in a display task: the display unit is a consumer
         // `eval_need` does not see, and it reads lanes.
-        const display_ddx = (self.display == .emit or self.say.len != 0) and for (self.an.i_op, 0..) |op, ii| {
+        const display_ddx = (self.display == .emit or self.say.len != 0 or self.lowered.op_vars.items.len != 0) and for (self.an.i_op, 0..) |op, ii| {
             if (op == .call and self.mir.instData(@fromBackingInt(@intCast(ii))).call.callee == .ddx) break true;
         } else false;
         if (self.core.eval_need.len != 0 and !display_ddx) for (self.arr_s, 0..) |*s, id| {

@@ -887,7 +887,7 @@ fn ownerUnit(self: *Lower, e: Ast.ExprId) Oom!u32 {
 pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
-    const access = self.access_kind.get(name) orelse {
+    const global = self.access_kind.get(name) orelse {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0501);
         b.msg("`{s}`", .{name});
         if (diag.didYouMeanMap(name, self.access_kind)) |s|
@@ -901,7 +901,7 @@ pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
     if (self.vars.contains(name) or self.param_index.contains(name) or self.consts.contains(name)) {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0501);
         b.msg("`{s}` is not an access function here: this module declares `{s}`, which hides it (§5.5.1)", .{ name, name });
-        b.help("use the generic spelling, `{s}(...)`", .{if (access == .potential) generic_potential else generic_flow});
+        b.help("use the generic spelling, `{s}(...)`", .{if (global == .potential) generic_potential else generic_flow});
         try b.emit();
         return null;
     }
@@ -928,6 +928,7 @@ pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
         var key_buf: [lower_shape.elem_key_len]u8 = undefined;
         if (try branchKey(self, &key_buf, first)) |key| {
             if (self.branches.get(key)) |b| {
+                const access = try accessOn(self, e, name, global, b.hi, b.lo);
                 try checkAccessMatch(self, e, name, access, b.hi);
                 return canonical(access, b.hi, b.lo, b.id, self.cur_unit);
             }
@@ -935,6 +936,7 @@ pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
     }
     const hi = try lower_node.nodeOf(self, first);
     const lo = if (ex.rhs(e) == .none) ground else try lower_node.nodeOf(self, ex.rhs(e));
+    const access = try accessOn(self, e, name, global, hi, lo);
     try checkAccessMatch(self, e, name, access, hi);
     // §3.11's own example of the rule: "if an access function has two nets as
     // arguments, they must be compatible".
@@ -959,6 +961,23 @@ pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
         return null;
     }
     return canonical(access, hi, lo, unnamed_branch, try ownerUnit(self, e));
+}
+
+/// The half `name` reads on the net (`hi`, or `lo` when `hi` is ground).
+/// §3.6.1.2 makes an access name its nature's, and §3.6.2 lets two disciplines
+/// bind one nature to different halves (`electrical`'s flow `Current`, a
+/// signal-flow `discipline current; potential Current;`), so for a name in
+/// `access_both` the net's discipline decides; the global map's answer would
+/// depend on declaration order. `global` is that answer for every other name.
+pub fn accessOn(self: *Lower, e: Ast.ExprId, name: []const u8, global: Access, hi: u32, lo: u32) Oom!Access {
+    if (!self.access_both.contains(name)) return global;
+    const node = if (hi == ground) lo else hi;
+    if (node == ground) return global;
+    const dname = (try portDiscipline(self, e)) orelse self.out.nodes.items(.disc)[node];
+    const info = self.out.disciplines.get(dname) orelse return global;
+    if (std.mem.eql(u8, info.potential_access, name)) return .potential;
+    if (std.mem.eql(u8, info.flow_access, name)) return .flow;
+    return global;
 }
 
 /// §5.5.1 Syntax 5-3's generic potential access name. The generic pair is the

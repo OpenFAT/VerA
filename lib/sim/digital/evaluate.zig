@@ -351,11 +351,11 @@ pub fn realLiteral(a: std.mem.Allocator, r: f64) Error!Int.Literal {
 
 /// §4.8.2 integer-to-real: the value, read by its own signedness, "Individual
 /// bits that are x or z in the net or the variable shall be treated as zero".
-/// A wider operand converts its low 64 bits, unsigned.
+/// A wider operand converts whole (`logic.wordsToReal`).
 fn realOfInt(v: Int.Literal) f64 {
-    // ponytail: the low 64 bits of a wider operand.
     const lo = v.values()[0] & ~v.unknowns()[0];
-    if (!v.signed or v.width > 64) return @floatFromInt(lo);
+    if (v.width > 64) return @import("../rt/logic.zig").wordsToReal(v.values(), v.unknowns(), v.width, v.signed);
+    if (!v.signed) return @floatFromInt(lo);
     const shift: u6 = @intCast(64 - v.width);
     return @floatFromInt(@as(i64, @bitCast(lo << shift)) >> shift);
 }
@@ -444,7 +444,10 @@ pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
             break :blk switch (f) {
                 .realtime => self.timeOf(self.scope).scale.realAt(self.scheduler.now),
                 .abstime => @import("../time.zig").secondsAt(self.scheduler.now, self.finest),
-                .itor => realOfInt(try eval(self, a, args[0], 0)),
+                .itor => if (compile.typeOf(self, args[0]).real)
+                    @import("../rt/logic.zig").itorReal(try evalReal(self, a, args[0]))
+                else
+                    realOfInt(try eval(self, a, args[0], 0)),
                 .bitstoreal => @bitCast((try eval(self, a, args[0], 64)).values()[0]),
                 .ln => @log(try evalReal(self, a, args[0])),
                 .ln1p => std.math.log1p(try evalReal(self, a, args[0])),
@@ -679,12 +682,14 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
                 return normalize(a, value, ty);
             },
             // §17.8: `$rtoi` truncates toward zero; `$realtobits` is the bits.
+            // A value past 32 bits keeps its low 32 (VD-130), and an
+            // infinity or a NaN is x; an integral argument converts to real
+            // first (`evalReal`).
             .rtoi => {
                 const t = @trunc(try evalReal(self, a, ex.args(e)[0]));
                 const v = try filled(a, 32, true, .x);
-                // NaN fails both comparisons; -2^31 itself is an i32.
-                if (t >= -0x1p31 and t < 0x1p31) {
-                    v.values()[0] = @as(u32, @bitCast(@as(i32, @intFromFloat(t))));
+                if (std.math.isFinite(t)) {
+                    v.values()[0] = (try intOfReal(a, t)).values()[0] & 0xffff_ffff;
                     v.unknowns()[0] = 0;
                 }
                 return normalize(a, v, ty);

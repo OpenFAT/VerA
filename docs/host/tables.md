@@ -124,6 +124,7 @@ the table on the CPU only. The `Model`'s other `__` fields are on
 | Declaration | Meaning |
 |---|---|
 | `decl_meta` | the module's LRM §2.9.2 `desc` and `units` attributes, one `DeclMeta` row per parameter, output variable or net that has one, for a help message or an operating-point report. Read by no entry point |
+| `op_vars`, `opVars(S, x, &model, inst, sim)` | the operating-point variables, as OSDI defines them: the module-scope real and integer variables with a §2.9.2 `desc` (LRM §3.2.1's output variables), by name in declaration order, and their values when the analog block runs at `x`, position k for name k (an integer as an f64). Pass `eval`'s family, so a `ddx` in a variable (a model's own gm) reads its partial; a value-only family reads every `ddx` as 0. Pure in `x`: call it at any accepted point. The values are the instance's own, without your `$mfactor` |
 | `Model.given_params`, `model.setGiven(name)` | the LRM §9.19 given flags: the `Model` field names with a bit in `Model.given__`, bit k for name k, and the method that sets one after a card write; absent when nothing reads a flag |
 | `mc_param` | the name of the float field of `Model` or `Instance` Monte Carlo varies |
 | `status_sites` | the device's `$fatal`/`$error` calls ([state](state.md)) |
@@ -150,6 +151,6 @@ frequency, `.op`) once per point, before the calls, for every library:
 `vpi_get_analog_time`, `vpi_get_analog_delta`, `vpi_get_analog_freq` and
 `vpi_get_real`'s analysis bounds then read your point. Such a library holds
 no solution, so `vpi_get_analog_value` refuses every quantity that needs one
-with error code `NOSOLUTION`; `tests/host/vpi_host.zig`'s `External` is this host
+with error code `NOSOLUTION`; `src/vpi/host.zig`'s `External` is this host
 in miniature, with two libraries and two instances in
 `tests/conformance/tests/verilog-ams/ch12_vpi_routines/two_libraries_two_instances.c`.

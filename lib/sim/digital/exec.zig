@@ -274,6 +274,14 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
         const now = waiters.termBits(self.values[sel.slot], sel.first, sel.count);
         return waiters.watchExt(self, id, sel.slot, edge, .{ .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] });
     }
+    if (self.auto_terms.get(.{ .scope = self.scope, .e = watched })) |reads| {
+        var scratch = std.heap.ArenaAllocator.init(self.arena);
+        defer scratch.deinit();
+        const width = compile.typeOf(self, watched).width;
+        const now = waiters.termBits(try evaluate.eval(self, scratch.allocator(), watched, 0), 0, width);
+        for (reads) |slot| try waiters.watchExt(self, id, slot, edge, .{ .expr = watched, .scope = self.scope, .width = width, .v = now[0], .x = now[1] });
+        return;
+    }
     try waiters.watch(self, id, try self.termSlot(watched), edge);
 }
 
@@ -363,6 +371,12 @@ pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle {
     self.pending.items[at].handle = h;
     if (item == .write) try driver.scheduled(self, item.write.target);
     return h;
+}
+
+/// `enqueue` at now in the active region, ahead of everything queued there.
+pub fn enqueueFirst(self: *Run, item: Pending) Error!void {
+    const at = try claim(self, item);
+    self.pending.items[at].handle = self.scheduler.scheduleFirst(.active, at) catch |e| return scheduleFailure(self, e, "scheduling");
 }
 
 fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool {
@@ -694,6 +708,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     .sshow => |sh| try system.sformat(self, scratch, s.args, sh),
                     .sformat => try system.sformat(self, scratch, s.args, null),
                     .printtimescale => try display.printTimescale(self, s.args),
+                    .sdf_annotate => try @import("sdf.zig").annotate(self, scratch, s.args, s.tok),
                     .dump => |op| try vcd.task(self, scratch, op, s.args, s.tok),
                     .ports => |op| try evcd.task(self, scratch, op, s.args, s.tok),
                     .finish => |stop| {
@@ -707,8 +722,11 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                             const args = .{ if (stop) "$stop" else "$finish", self.scheduler.now, self.bag.fileName(loc.file), loc.offset };
                             if (stop) std.debug.print(fmt_s, args) else try self.out.print(fmt_s, args);
                         }
-                        try vcd.finish(self, scratch);
-                        self.scheduler.finish();
+                        // iverilog's reading of §17.4.1's "exit": the rest of
+                        // this time step (other processes, NBA updates, the
+                        // monitor, the dump) runs, no later one does; this
+                        // process ends here (monitor4, pr243).
+                        self.scheduler.finishStep();
                         return;
                     },
                 }
@@ -860,6 +878,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 const t = &self.trans[s.tran];
                 const c = (try evaluate.eval(self, scratch, t.ctrl, 1)).bit(0);
                 const next: Tran.State = if (c == t.on) .on else if (c == .zero or c == .one) .off else .unknown;
+                if (self.tran_delays.get(s.tran)) |d3| t.delay = try variableDelay(self, scratch, d3, self.file.exprs.mainTok(d3.rise));
                 if (t.delay.present) try resolution.switchAfter(self, s.tran, next) else {
                     t.state = next;
                     try resolution.resolve(self, t.a);
@@ -917,6 +936,10 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     else
                         try waiters.store(self, o.slot, value.planes);
                 }
+                // A forced net drives the switch-connected nets joined to it
+                // (`resolution.resolveJoined`), which follow its new value.
+                if (o.force and o.bits == null) if (self.net_of.get(o.slot)) |net| if (self.netCold(self.nets[net]).trans.len != 0)
+                    try resolution.resolve(self, net);
                 try doneFlush(self, pc);
                 pc += 1;
                 continue;
@@ -953,8 +976,20 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             },
             // §17.5 an asynchronous PLA: its own process, which evaluates and
             // waits on its inputs and personality, forever.
-            .pla_start => |loop| {
-                _ = try enqueue(self, .{ .run_process = loop }, null, false);
+            .pla_start => |p| {
+                if (p.now) {
+                    // Nested, as `callSync` runs a body: the child parks at
+                    // its wait and this process carries on.
+                    var nested = std.heap.ArenaAllocator.init(self.arena);
+                    defer nested.deinit();
+                    var nested_scratch: Scratch = .init(&.{}, &nested);
+                    // A process of its own, outside any activation, as a
+                    // queued `.run_process` starts.
+                    const ctx = self.ctx;
+                    self.ctx = 0;
+                    defer self.ctx = ctx;
+                    try execute(self, &nested_scratch, p.at);
+                } else _ = try enqueue(self, .{ .run_process = p.at }, null, false);
                 pc += 1;
                 continue;
             },
@@ -1010,10 +1045,18 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             },
             .restart => |s| {
                 // A suspension returns from this dispatch, so reaching the
-                // restart a second time within one proves a whole body ran
-                // with no timing control. That spins the scheduler forever
-                // at one timestamp, so it is reported instead of hanging.
-                if (restarted) return self.fail(s.tok, "this always process completed an iteration without suspending; it needs a delay or event control", .{});
+                // restart a second time within one means a whole body ran
+                // with no timing control. §9.9.2 calls that a deadlock, of
+                // legal source (its `always areg = ~areg;`), so each further
+                // pass counts against the event budget (`loopIteration`),
+                // which ends the time step by name (VD-133); a body that
+                // waits on a later pass is never refused. After `$finish`
+                // the step only drains: a process that would spin in it
+                // ends there (always3.1.1B's zero-delay always).
+                if (restarted) {
+                    if (self.scheduler.finishing) return;
+                    try loopIteration(self);
+                }
                 restarted = true;
                 pc = s.target;
                 continue;
@@ -1375,4 +1418,23 @@ test "§17.4.1 $finish reports by its argument; an x argument reports" {
 test "repeat accepts all 64 count bits and finish stops without an iteration clamp" {
     try expectRun("module m; initial repeat(64'hffffffffffffffff) begin $display(\"first\"); $finish(0); end endmodule", "first\n");
     try expectRun("module m; integer i; initial begin i=0; while(i<70001) i=i+1; $display(\"%b\",i); end endmodule", "00000000000000010001000101110001\n");
+}
+
+test "§9.7.7 a nonblocking assignment's event control waits from the statement, so an event triggered next is seen" {
+    // "the right-hand expressions are evaluated when the assignment
+    // statements are encountered, but the assignments are delayed until"
+    // the event. The update is an NBA update (§11.4 c), seen once time
+    // moves; iverilog -g2005 prints the same two lines.
+    try expectRun(
+        \\module m;
+        \\  reg [3:0] x; integer y; event e;
+        \\  initial begin
+        \\    x = 4'hx; y = 0;
+        \\    x[2:1] <= @e 2'b10;
+        \\    y <= repeat (2) @e y + 1;
+        \\    -> e; #1 $display("%b %0d", x, y);
+        \\    -> e; #1 $display("%b %0d", x, y);
+        \\  end
+        \\endmodule
+    , "x10x 0\nx10x 1\n");
 }

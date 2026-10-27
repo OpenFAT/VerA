@@ -41,17 +41,21 @@ pub fn fileLine(self: *State, d: ?i64, comptime w: u32) Error![]const u8 {
     return system.readLine(self.scratch.allocator(), system.own, fd, w / 8);
 }
 
-/// §17.2.4.4: one big-endian binary word, copied out of the shared
-/// reader's scratch storage so assigning it may safely call other tasks.
-pub fn fileWord(self: *State, d: ?i64, comptime w: u32) Error!struct { value: ?logic.T(w), n: i64 } {
+/// §17.2.4.4: one big-endian binary word over the target's `prior` value
+/// (`system.overWord`: a file that ends inside the word keeps the bits no
+/// character reached), copied out of the shared reader's scratch storage
+/// so assigning it may safely call other tasks.
+pub fn fileWord(self: *State, d: ?i64, comptime w: u32, prior: anytype) Error!struct { value: ?logic.T(w), n: i64 } {
     if (self.quiet) return .{ .value = null, .n = 0 };
     const fd = (d orelse return .{ .value = null, .n = 0 }) & 0xffff_ffff;
     _ = self.scratch.reset(.retain_capacity);
     const word = system.readWord(self.scratch.allocator(), system.own, fd, w) catch return error.OutOfMemory;
-    const v = word.value orelse return .{ .value = null, .n = word.n };
-    if (w <= 64) return .{ .value = .{ .v = v.values()[0], .x = 0 }, .n = word.n };
-    var word_value: logic.T(w) = .{ .v = undefined, .x = @splat(0) };
+    var buf = logic.planesOf(prior);
+    const v = system.overWord(word.value orelse return .{ .value = null, .n = word.n }, State.literal(&buf, w, false), word.n);
+    if (w <= 64) return .{ .value = .{ .v = v.values()[0], .x = v.unknowns()[0] }, .n = word.n };
+    var word_value: logic.T(w) = undefined;
     @memcpy(&word_value.v, v.values());
+    @memcpy(&word_value.x, v.unknowns());
     return .{ .value = word_value, .n = word.n };
 }
 
@@ -171,7 +175,7 @@ fn scanSpec(self: *State, f: *Format, scope: []const u8, lib: []const u8) Error!
             '%' => return self.fail("§9.4.2 (E0826): a flag, width or precision before the second `%` of `%%`", .{}),
             'm', 'M' => try self.out.writeAll(scope),
             'l', 'L' => try self.out.writeAll(lib),
-            'b', 'B', 'o', 'O', 'h', 'H', 'd', 'D', 'e', 'E', 'f', 'F', 'g', 'G', 'r', 'R', 't', 'T', 's', 'S', 'c', 'C', 'v', 'V' => return .{ .conv = conv, .flags = sp.flags, .width = sp.width, .precision = sp.precision },
+            'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D', 'e', 'E', 'f', 'F', 'g', 'G', 'r', 'R', 't', 'T', 's', 'S', 'c', 'C', 'v', 'V' => return .{ .conv = conv, .flags = sp.flags, .width = sp.width, .precision = sp.precision },
             else => return self.fail("only the §9.4.3 Table 9-22 conversions (%b, %o, %h, %d, %e, %f, %g, §9.4.7 %r and %%) and %c %s %m %l %t %v are implemented", .{}),
         }
     }

@@ -625,8 +625,11 @@ fn containsFlowRead(self: *const Lower, e: Ast.ExprId) bool {
     if (e == .none) return false;
     const ex = &self.file.exprs;
     if (ex.tag(e) == .branch_access) {
-        const kind = self.access_kind.get(self.file.str(ex.strOf(e))) orelse return false;
-        return kind == .flow;
+        const name = self.file.str(ex.strOf(e));
+        const kind = self.access_kind.get(name) orelse return false;
+        // ponytail: a name both halves use counts as a flow read: the
+        // retention is conservative, and the node is not resolved here.
+        return kind == .flow or self.access_both.contains(name);
     }
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (containsFlowRead(self, c)) return true;

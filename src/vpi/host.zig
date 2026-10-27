@@ -1,12 +1,18 @@
-//! The simulator half of `zig build test-vpi`: a design plus a C application
-//! (its `vlog_startup_routines`, LRM §12.33.2) -> the application's exit code.
-//! No argument elaborates tests/verilog-ams/ch11_vpi/vpi_design.va; `<design.va> <app>` runs the
-//! analog analyses the app's banner asks for (or, for `*! external` lines, runs
+//! `libvera-vpi.a`, the simulator a VPI application links against: a design
+//! plus a C application (its `vlog_startup_routines`, LRM §12.33.2) -> the
+//! application's exit code. Installed beside `vera` with `include/vpi_user.h`:
+//! `zig cc app.c -I<prefix>/include <prefix>/lib/libvera-vpi.a -o app`, then
+//! `./app <design>`. `<design.va> [<app.c>]` opens the analog design and runs
+//! the analyses the app's banner asks for (or, for `*! external` lines, runs
 //! its calls at host-set points with no solution: `External`, which a
 //! `*! library <design.va>` line gives a second device library with its own
-//! design and a `*! instances <n>` line n instances of each); `<design.v>` runs the digital
-//! engine with time and value-change callbacks. Applications are real C against
-//! src/vpi/vpi_user.h, so the ABI itself is under test.
+//! design and a `*! instances <n>` line n instances of each); `<design.v>` runs
+//! the digital engine with time and value-change callbacks, decrypting its
+//! §28 envelopes with the key file `$VERA_PROTECT_KEYS` names, if any.
+//!
+//! An analog library is built by spawning `zig` (`$VERA_ZIG`, else `zig` on
+//! PATH) under `$VERA_VPI_WORK` (else `.zig-cache/vera-vpi` in the cwd), with
+//! the contract this library was built with written out there.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -14,21 +20,24 @@ const DynLib = @import("dynlib").DynLib;
 const vera = @import("vera");
 const vpi = @import("vpi");
 const sim = @import("sim");
-const host_options = @import("vpi_host_options");
 
 const Io = std.Io;
 
 /// C's `main`, because this file is built ONCE as a static library and linked
 /// into one executable per application: the application is the C half, and a
-/// Zig executable per fixture would recompile the whole engine per fixture.
+/// Zig executable per application would recompile the whole engine per one.
 /// The C runtime's, on Windows: `_O_BINARY` keeps an application's `printf`
-/// from writing `\r\n`, so its stdout is the bytes build.zig expects.
-extern "c" fn _setmode(fd: c_int, mode: c_int) c_int;
+/// from writing `\r\n`, so its stdout is the bytes a test expects.
+extern "c" fn _setmode(fd: c_int, mode: c_int) c_int; // os: the C runtime's, declared on every target and called only on Windows
 
 export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
-    if (builtin.os.tag == .windows) {
+    if (builtin.os.tag == .windows) { // os: binary stdio is a Windows-only C runtime mode
         _ = _setmode(1, 0x8000);
         _ = _setmode(2, 0x8000);
+    }
+    if (argc < 2) {
+        std.debug.print("usage: {s} <design.v | design.va [app.c]>\n", .{std.mem.span(argv[0])});
+        return 2;
     }
     // §12.17: the invocation a vpi_get_vlog_info() reports is this one.
     vpi.setInvocation(argc, @ptrCast(@constCast(argv)));
@@ -36,33 +45,13 @@ export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
     var log_buf: [256]u8 = undefined;
     const app_name = std.fs.path.basename(std.mem.span(argv[0]));
     vpi.setLogFile(std.mem.print(&log_buf, "{s}.log", .{app_name}) catch "vera.log") catch {};
-    const code = host(if (argc > 1) std.mem.span(argv[1]) else null, if (argc > 2) std.mem.span(argv[2]) else null) catch |e| {
+    const design = std.mem.span(argv[1]);
+    const app = if (argc > 2) std.mem.span(argv[2]) else null;
+    const code = (if (std.mem.endsWith(u8, design, ".va")) analogHost(design, app) else digitalHost(design)) catch |e| {
         std.debug.print("vpi_host: {t}\n", .{e});
         return 1;
     };
     return code;
-}
-
-fn host(design: ?[]const u8, app: ?[]const u8) !u8 {
-    if (design) |path| return if (std.mem.endsWith(u8, path, ".va")) analogHost(path, app) else digitalHost(path);
-
-    // The design is compiled at `.lint`: P01 models DECLARATIONS, so nothing
-    // below stage 5 is needed and no `zig` child has to be spawned to run the
-    // acceptance test.
-    var res = vera.compileSource(std.heap.page_allocator, @embedFile("vpi_design"), .lint) catch |err| {
-        std.debug.print("vpi_host: the design did not compile: {s}\n", .{@errorName(err)});
-        return 1;
-    };
-    defer res.deinit();
-
-    try vpi.open(std.heap.page_allocator, &res);
-    defer vpi.close();
-
-    // §12.33.2, then cbEndOfCompile: the acceptance test registers at
-    // startup (IEEE 1364-2005 §26.2.4) and asserts everything from there.
-    vpi.runStartupRoutines();
-    vpi.callback.endOfCompile();
-    return 0;
 }
 
 /// An analog design, opened as `vpi.open` models it. When the application's
@@ -118,9 +107,9 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
         // process's own environment.
         var threaded: Io.Threaded = .init(gpa, .{
             .environ = .{
-                .block = switch (builtin.os.tag) {
+                .block = switch (builtin.os.tag) { // os: std reads the environment block differently on Windows
                     .windows => .global, // the process's own block, read by std
-                    else => .{ .slice = std.mem.span(@as([*:null]const ?[*:0]const u8, @ptrCast(std.c.environ))) },
+                    else => .{ .slice = std.mem.span(@as([*:null]const ?[*:0]const u8, @ptrCast(std.c.environ))) }, // os: the host links libc on every target
                 },
             },
         });
@@ -308,15 +297,20 @@ fn buildAnalogLib(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, path
     var d = try vera.tb.parse(arena, source);
     d.validate_contract = true;
     const runner = try vera.tb.renderVpiLib(arena, stem, d);
-    const work = try std.fs.path.join(arena, &.{ host_options.work_root, app_stem });
+    const work_root = if (std.c.getenv("VERA_VPI_WORK")) |w| std.mem.span(w) else ".zig-cache/vera-vpi"; // os: the host links libc on every target
+    const work = try std.fs.path.join(arena, &.{ work_root, app_stem });
+    // The contract this library speaks, beside the device it is built against.
+    const contract = try std.fs.path.join(arena, &.{ work, "contract.zig" });
+    try Io.Dir.cwd().createDirPath(io, work);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = contract, .data = @embedFile("contract_source") });
     const t = &builtin.target;
     const out = try arena.print("{s}/{s}{s}{s}", .{ work, t.libPrefix(), stem, t.dynamicLibSuffix() });
     const built = try vera.tb.buildExe(gpa, io, device, runner, .{
         .work_dir = work,
-        .contract = host_options.contract,
+        .contract = contract,
         .name = res.mir.name,
         .out_path = out,
-        .zig_exe = host_options.zig_exe,
+        .zig_exe = if (std.c.getenv("VERA_ZIG")) |z| std.mem.span(z) else "zig", // os: the host links libc on every target
         .shared_lib = true,
     });
     defer built.deinit(gpa);
@@ -334,7 +328,7 @@ fn stderrWriter() *Io.Writer {
         var buf: [4096]u8 = undefined;
         var w: ?Io.File.Writer = null;
     };
-    if (S.w == null) S.w = Io.File.stderr().writer(Io.Threaded.global_single_threaded.io(), &S.buf);
+    if (S.w == null) S.w = Io.File.stderr().writerStreaming(Io.Threaded.global_single_threaded.io(), &S.buf);
     return &S.w.?.interface;
 }
 
@@ -354,10 +348,10 @@ fn digitalHost(path: []const u8) !u8 {
     const arena = arena_state.allocator();
 
     var ebuf: [4096]u8 = undefined;
-    var ew = Io.File.stderr().writer(io, &ebuf);
+    var ew = Io.File.stderr().writerStreaming(io, &ebuf);
     const err = &ew.interface;
     var obuf: [4096]u8 = undefined;
-    var ow = Io.File.stdout().writer(io, &obuf);
+    var ow = Io.File.stdout().writerStreaming(io, &obuf);
     const out = &ow.interface;
 
     const source = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 * 1024 * 1024)) catch |e| {
@@ -371,7 +365,23 @@ fn digitalHost(path: []const u8) !u8 {
     vpi.runStartupRoutines();
     var bag = vera.diag.Bag.init(arena);
     const dir = std.fs.path.dirname(path) orelse ".";
-    var run = sim.digital.elaborate(arena, source, .{ .file_name = path, .include_dirs = &.{dir}, .io = io, .systf = vpi.systf.hook, .stmt_sites = true }, &bag, out) catch |e| {
+    // `$VERA_PROTECT_KEYS` names a key file as `vera --protect-keys` reads it:
+    // the IEEE 1364-2005 §28.2 keys for the design's decryption envelopes.
+    var keys: vera.Preprocessor.protect.Keys = .{};
+    if (std.c.getenv("VERA_PROTECT_KEYS")) |k| if (std.mem.span(k).len != 0) { // os: the host links libc on every target
+        const kpath = std.mem.span(k);
+        const text = Io.Dir.cwd().readFileAlloc(io, kpath, arena, .limited(1 << 20)) catch |e| {
+            try err.print("vpi_host: cannot read VERA_PROTECT_KEYS `{s}`: {t}\n", .{ kpath, e });
+            try err.flush();
+            return 2;
+        };
+        keys = vera.Preprocessor.protect.parseKeys(arena, text) catch |e| {
+            try err.print("vpi_host: VERA_PROTECT_KEYS `{s}`: not a key file ({t})\n", .{ kpath, e });
+            try err.flush();
+            return 2;
+        };
+    };
+    var run = sim.digital.elaborate(arena, source, .{ .file_name = path, .include_dirs = &.{dir}, .io = io, .systf = vpi.systf.hook, .stmt_sites = true, .protect_keys = keys }, &bag, out) catch |e| {
         try vera.diag.render(&bag, err, .{});
         try err.print("vpi_host: `{s}` did not elaborate: {t}\n", .{ path, e });
         try err.flush();

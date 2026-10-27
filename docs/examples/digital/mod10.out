@@ -10,4 +10,5 @@ $ vera --run mod10.v
 90 ns: count = 9
 100 ns: count = 0
 110 ns: count = 1
-$finish at tick 120, mod10.v byte 309
+$finish at tick 120, mod10.v byte 310
+120 ns: count = 2

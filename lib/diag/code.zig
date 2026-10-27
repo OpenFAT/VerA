@@ -96,6 +96,9 @@ pub const Code = enum(u16) {
     E0148,
     W0149,
     E0150,
+    W0151,
+    E0152,
+    E0153,
 
     // ---------------------------------------------------------------- class 2
     // Syntax / annex A — parser.zig.
@@ -166,6 +169,7 @@ pub const Code = enum(u16) {
     W0251,
     W0252,
     W0253,
+    W0259,
 
     // ---------------------------------------------------------------- class 3
     // Declarations, types, disciplines — lower.zig.
@@ -246,6 +250,7 @@ pub const Code = enum(u16) {
     E0375,
     E0376,
     E0377,
+    E0378,
 
     // ---------------------------------------------------------------- class 4
     // Behavioral semantics: statements and contributions — lower.zig.
@@ -430,7 +435,10 @@ pub const Code = enum(u16) {
     E1020,
     E1100,
     E1101,
+    /// IEEE 1364-2005 §17.2.10: an SDF file `$sdf_annotate` cannot read.
     E1102,
+    /// IEEE 1364-2005 §16: an SDF construct the annotator does not apply.
+    W1105,
     /// A `.v` design that cannot be a contract device.
     E1103,
     /// A SystemVerilog source.
@@ -454,10 +462,15 @@ pub const Code = enum(u16) {
     W1155,
     /// A `$readmem` file address outside the memory, with no bounds given.
     W1156,
-    /// IEEE 1364-2005 §17.2.9: a `$readmem` file address outside the
-    /// task's range; the load is terminated, the run goes on.
-    E1157,
+    /// IEEE 1364-2005 §17.2.9: a `$readmem` load that cannot go on (a file
+    /// address outside the task's range, a malformed word or address, a
+    /// file that cannot be read, a bound outside the memory); the load is
+    /// terminated, the run goes on.
+    W1157,
     W1160,
+    /// IEEE 1364-2005 §12.2.2.1: more ordered parameter values than the
+    /// module has parameters; the extra ones are ignored.
+    W1161,
     /// IEEE 1364-2005 §15: a timing check reported a violation at run time.
     W1199,
     W1050,
@@ -1158,21 +1171,27 @@ fn infoOf(c: Code) Info {
             ,
         },
         .E0146 => .{
-            .title = "protected envelopes are not supported",
+            .title = "a protected envelope VerA cannot process",
             .lrm = "IEEE 1364-2005 28",
             .explain =
             \\IEEE 1364-2005 19.10 lets a tool ignore a `pragma it does not
             \\recognize, but `protect` is not such a pragma: clause 28 reserves
             \\it for protected envelopes, and 28.2 says a tool "shall perform
             \\envelope decryption for all decryption envelopes contained in the
-            \\source text". Ignoring the directive would compile the ciphertext
-            \\of a decryption envelope as Verilog, or the cleartext of an
-            \\encryption envelope as if nobody had asked for it to be hidden.
+            \\source text, where the proper key is supplied by the user".
             \\
-            \\VerA does not implement clause 28: it neither encrypts nor
-            \\decrypts, so any `pragma protect is refused. Compile the cleartext
-            \\source with the protect directives removed. Any other pragma name
-            \\still has no effect.
+            \\VerA decrypts a `begin_protected` envelope (des-cbc; base64,
+            \\uuencode or raw; a key_block's session key; an md5 or sha1
+            \\digest_block) with the keys of --protect-keys. It provides no
+            \\encryption service, so an encryption envelope (`begin`) is
+            \\refused, as are a block outside an envelope, an envelope with no
+            \\end_protected, and a method or encoding VerA does not implement.
+            \\Ignoring the directive instead would compile ciphertext as
+            \\Verilog, or cleartext as if nobody had asked for it to be hidden.
+            \\
+            \\Metadata such as author or comment has an action only inside an
+            \\envelope, so outside one it is accepted with no effect. Any other
+            \\pragma name still has no effect.
             ,
         },
         .E0150 => .{
@@ -1229,6 +1248,52 @@ fn infoOf(c: Code) Info {
             \\refuse the literal, so the string is not portable.
             \\
             \\Write the character without the backslash, or \\ for a backslash.
+            ,
+        },
+        .W0151 => .{
+            .title = "IEEE 1800 macro text in an IEEE 1364 unit",
+            .lrm = "10.4",
+            .explain =
+            \\IEEE 1800-2017 22.5.1 adds three forms to macro text: `" opens and
+            \\closes a string whose formal arguments are still substituted, `\`"
+            \\puts a \" inside it, and `` joins two tokens with nothing between
+            \\them. VerA reads all three under every standard.
+            \\
+            \\IEEE 1364-2005 Syntax 19-3 has none of them, so under
+            \\--std=1364-* the source is not portable to a 1364 tool. VerA says
+            \\so once per `define and expands it as 1800 does.
+            \\
+            \\  --allow=W0151   silence it, for 1364 code that relies on the
+            \\                  1800 forms (iverilog accepts them in -g2005)
+            ,
+        },
+
+        .E0152 => .{
+            .title = "no key for a protected envelope",
+            .lrm = "IEEE 1364-2005 28.2",
+            .explain =
+            \\A decryption envelope names its key by owner and name
+            \\(data_keyowner/data_keyname, key_keyowner/key_keyname for a
+            \\key_block, digest_keyowner/digest_keyname for a digest_block,
+            \\28.4.6-28.4.7). 28.2 decrypts "where the proper key is supplied
+            \\by the user", and none was: the key file given to --protect-keys
+            \\has no key of that owner and name, or none was given.
+            \\
+            \\  vera --run --protect-keys keys.json design.v
+            \\
+            \\The file is JSON: profile.iv_hex (the CBC IV, 16 hex digits) and
+            \\keys, each {"owner", "name", "key_hex"}.
+            ,
+        },
+        .E0153 => .{
+            .title = "a protected envelope does not decrypt",
+            .lrm = "IEEE 1364-2005 28.2",
+            .explain =
+            \\The key the envelope names was found, but the envelope does not
+            \\open with it: the decrypted block's padding is wrong (a wrong key
+            \\or IV), the digest_block does not match the decrypted data
+            \\(28.4.12), or a block does not decode to the bytes its encoding
+            \\says (28.4.3). Nothing of the envelope is compiled.
             ,
         },
 
@@ -2504,6 +2569,26 @@ fn infoOf(c: Code) Info {
             \\                  source for a downstream tool to read
             ,
         },
+        .W0259 => .{
+            .title = "a VAMS-2023 math function name declared as a function",
+            .lrm = "10.6",
+            .explain =
+            \\Annex G.7 (item 7780) made `expm1` and `ln1p` keywords in
+            \\VAMS-2023, with built-in meanings (4.3.2). Compact models written
+            \\before that (HiSIM-SOI, HiSIM-SOTB) declare their own
+            \\`analog function real expm1`, which only a pre-2023 keyword set
+            \\(10.6) allows.
+            \\
+            \\VerA reads the source as its author wrote it: when a file declares
+            \\a function of either name, that name is an identifier in the whole
+            \\file and every call reaches the declared function, not the
+            \\built-in. The two can differ in the last bits: a model's
+            \\`exp(x) - 1` loses the precision the built-in keeps near zero.
+            \\
+            \\Put `begin_keywords "VAMS-2.3" around the model to say which
+            \\language it is in, or rename the function to use the built-in.
+            ,
+        },
         .W0251 => .{
             .title = "specify block read, and part or all of it is not modelled",
             .lrm = "A.7.1",
@@ -2536,11 +2621,9 @@ fn infoOf(c: Code) Info {
             \\refusing a form it does not run (E1149), and applies the module
             \\path delays (14.2-14.4: simple, edge-sensitive and state-dependent
             \\paths, `ifnone`, 1/2/3/6/12 delays, chosen per 14.3.3 when the
-            \\destination is scheduled to change). There the warning is only for
-            \\the 14.6 pulse controls (pulsestyle, showcancelled, PATHPULSE$),
-            \\which are ignored: 14.6's default pulse handling applies instead,
-            \\inertial, with the reject and error limits equal to the path delay.
-            \\A block without pulse controls raises none. The same engine runs
+            \\destination is scheduled to change) and the 14.6 pulse controls
+            \\(PATHPULSE$ limits, pulsestyle_onevent/ondetect, showcancelled), so
+            \\it raises no warning there. The same engine runs
             \\the digital half of a mixed-signal design and evaluates its timing
             \\checks too, refusing the forms E1149 lists; the analog compile
             \\still names every check, since the analog solver evaluates none.
@@ -3109,6 +3192,24 @@ fn infoOf(c: Code) Info {
             \\A discipline declaration is not a direction. Every module of the
             \\compilation is checked, instantiated or not. The digital engine
             \\(`--run` of a `.v` design) reports the same omission as E1100.
+            ,
+        },
+        .E0378 => .{
+            .title = "discipline binds an undeclared nature",
+            .lrm = "3.6.2.1",
+            .explain =
+            \\A.1.7's `nature_binding ::= potential_or_flow nature_identifier ;`
+            \\names a nature declared with `nature ... endnature` (3.6.1), and
+            \\3.6.2.1 makes that nature's `access` the discipline's access
+            \\function. A name no nature declares binds nothing, so every
+            \\`V(...)` or `I(...)` on a net of the discipline would name nothing.
+            \\
+            \\    `define DISCIPLINES_VAMS     // annex D's natures are out
+            \\    discipline mine;
+            \\        potential Voltage;      // E0378: no `nature Voltage`
+            \\    enddiscipline
+            \\
+            \\Declare the nature, or include `disciplines.vams` for annex D's.
             ,
         },
         .E0377 => .{
@@ -4446,12 +4547,14 @@ fn infoOf(c: Code) Info {
             ,
         },
         .E0506 => .{
-            .title = "wrong number of arguments to a math function",
+            .title = "wrong number of arguments to a math function or analog operator",
             .lrm = "4.3",
             .explain =
             \\LRM 4.3 tables 4-14 and 4-15 fix each math function's arity.
             \\Note `atan2(y, x)` and `hypot(x, y)` take two, while `min`, `max`
-            \\and `pow` also take two.
+            \\and `pow` also take two. A.8.2 Syntax 4-3 fixes the longest
+            \\argument list of each §4.5 analog operator: `transition` takes at
+            \\most five, `ddt` two, `absdelay` three.
             ,
         },
         .E0507 => .{
@@ -7232,21 +7335,33 @@ fn infoOf(c: Code) Info {
             .explain = "The digital executor supports a documented subset of source processes. Unsupported forms are diagnosed before simulation; timing and capacity failures stop execution explicitly. This does not make legal unsupported Verilog-AMS forms illegal.",
         },
         .E1102 => .{
-            .title = "back-annotation from an SDF file is not supported",
+            .title = "an SDF file the annotator cannot read",
             .lrm = "IEEE 1364-2005 17.2.10",
             .explain =
-            \\$sdf_annotate (IEEE 1364-2005 17.2.10) runs the SDF annotator of
-            \\clause 16, which replaces a design's specify path delays, specparams,
-            \\timing check limits and interconnect delays with values read from
-            \\an SDF file. VerA does not implement clause 16, and it applies no
-            \\specify path delay for one to replace (W0251). Running on as if
-            \\the call had succeeded would simulate a design whose timing the
-            \\file was meant to set, so the call is refused.
+            \\$sdf_annotate (IEEE 1364-2005 17.2.10) reads timing data from an
+            \\SDF file into the design: clause 16's mapping of IOPATH,
+            \\INTERCONNECT, LABEL, TIMINGCHECK and PATHPULSE onto the module
+            \\paths, ports, specparams and timing checks of the instances the
+            \\file's CELLs name. The file could not be opened or read, its
+            \\parentheses do not balance, it is not one (DELAYFILE ...), or its
+            \\TIMESCALE or DIVIDER is malformed. The run stops: carrying on
+            \\would simulate a design whose timing the file was meant to set.
             \\
-            \\Write the delays the design needs in its source: a delay control,
-            \\a continuous assignment or gate delay, or a module-level specparam
-            \\that one of those reads. A timing check's limits are the ones its
-            \\source writes (or a VPI application puts, IEEE 1364-2005 27.31).
+            \\The file is looked for beside the source that names it, then in
+            \\the working directory, as a $readmemh file is.
+            ,
+        },
+        .W1105 => .{
+            .title = "an SDF construct the annotator does not apply",
+            .lrm = "IEEE 1364-2005 16.2",
+            .explain =
+            \\The SDF file holds a construct `vera --run`'s annotator does not
+            \\apply, or one that names nothing in the design: a COND, PORT or
+            \\DEVICE delay, a skew or no-change check, an INSTANCE no instance
+            \\below the annotation scope has, an IOPATH no module path of the
+            \\instance matches, a malformed value. That construct is skipped
+            \\and the rest of the file is applied. The message gives the file
+            \\and line.
             ,
         },
         .E1147 => .{
@@ -7407,10 +7522,15 @@ fn infoOf(c: Code) Info {
             .lrm = "IEEE 1364-2005 17.2.9",
             .explain = "A `$readmemb`/`$readmemh` call with no start or finish argument met an `@` address outside the memory's declared range. The clause's error for an address outside the load range applies only when the task gives addresses, so VerA does not stop the load: the words at addresses outside the memory are skipped, and loading continues at the next in-range address. The warning names the first such address (specification/Vague_Decisions.md VD-040).",
         },
-        .E1157 => .{
-            .title = "memory file address outside the task's load range",
+        .W1157 => .{
+            .title = "a $readmem load terminated",
             .lrm = "IEEE 1364-2005 17.2.9",
-            .explain = "A `$readmemb`/`$readmemh` call that gives a start (and finish) address met an `@` address in the file outside that range. §17.2.9 makes that an error that ends the load operation. VerA issues this error and stops that load: the words loaded before the address stay, none after it is loaded, and the simulation goes on. The run exits 1 when it ends, because an error was issued. With no start or finish argument the rule does not apply (W1156).",
+            .explain = "A `$readmemb`/`$readmemh` load could not go on: a file address outside the start..finish range the task gives (§17.2.9: \"an error message is issued, and the load operation is terminated\"), a word or `@` address that is not a number in the task's radix (the file \"shall contain only\" white space, comments and such numbers), a file that cannot be opened or read, a file name with an x or z bit, a start or finish address that is x, z or outside the memory. VerA issues this message and stops that load: the words loaded before it stay, none after it is loaded, and the simulation goes on. The run's exit status is untouched, as iverilog's is (specification/Vague_Decisions.md VD-134). With no start or finish argument an address outside the memory is W1156 instead.",
+        },
+        .W1161 => .{
+            .title = "extra ordered parameter values ignored",
+            .lrm = "IEEE 1364-2005 12.2.2.1",
+            .explain = "A module instance's parameter value assignment by ordered list gives more values than the module has parameters (local parameters are not in the list). §12.2.2.1 says what the list's order follows and that it may be shorter, not what a longer one means; VerA ignores the values past the last parameter and warns, as iverilog does (specification/Vague_Decisions.md VD-139).",
         },
         .W1160 => .{
             .title = "dissimilar net types joined through a port",

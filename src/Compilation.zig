@@ -93,6 +93,9 @@ pub const Error = codegen.Error || error{
     CompileFailed,
     /// The source declared no `module` (LRM §6.2).
     NoModule,
+    /// `Options.empty_unit_ok`: the source parsed and was checked, and holds
+    /// no module to elaborate (A.1.2 admits that source_text).
+    NothingToElaborate,
     /// `.lint` produces no artifact by definition.
     NoArtifact,
 };
@@ -116,7 +119,16 @@ pub const Options = struct {
     /// (`--discipline-resolution=`); see `Elaborate.DisciplineResolution`.
     discipline_resolution: Elaborate.DisciplineResolution = .basic,
     /// Prepend annex D.2 constants.vams + annex D.1 disciplines.vams (§3.6.2).
+    /// The Table E.1 primitives are prepended either way (annex E.2).
     std_defs: bool = true,
+    /// `vera -D`: `NAME` or `NAME=TEXT` macros (`Preprocessor.Options.defines`).
+    defines: []const []const u8 = &.{},
+    /// A source with no module of its own to elaborate (A.1.2's
+    /// `source_text ::= { description }`: none, or only connect modules, UDPs,
+    /// disciplines, pragmas) is `error.NothingToElaborate`, not E1001. A
+    /// check that builds nothing sets it (`vera --lint`, `--check`); a request
+    /// for a device has none to build (§6.2, E1001).
+    empty_unit_ok: bool = false,
     /// The source must `include` the annex D files it uses
     /// (`Preprocessor.Options.require_std_includes`): a D.2 macro without
     /// constants.vams is E0115, a D.1 discipline without disciplines.vams is
@@ -366,8 +378,11 @@ fn compileInArena(
     const arena = arena_state.allocator();
     const pp = Preprocessor.process(arena, source, .{
         .include_dirs = opts.include_dirs,
+        .defines = opts.defines,
         .file_name = opts.file_name,
         .std_defs = opts.std_defs,
+        // Annex E.2: Table E.1 is built in, with or without annex D.
+        .spice_primitives = true,
         .require_std_includes = opts.require_std_includes,
         .spice_netlist = opts.spice_netlist,
         .spice_path = opts.spice_path,
@@ -406,8 +421,8 @@ fn compileInArena(
     // The Table E.1 primitives (annex E) are the first declarations in `text`,
     // and the annex E.2 netlist modules follow them before the user's source,
     // so together they lead `file.modules`. This is the one place that knows
-    // whether the prelude was prepended; see `Ast.SourceFile.builtin_modules`.
-    const builtins: u32 = if (opts.std_defs) Preprocessor.spice_module_count + netlist_modules else 0;
+    // how many the netlist added; see `Ast.SourceFile.builtin_modules`.
+    const builtins: u32 = Preprocessor.spice_module_count + netlist_modules;
     parse.* = p.parseSourceFile() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseError => {
@@ -423,6 +438,13 @@ fn compileInArena(
             if (p.file.modules.len <= builtins) return error.NoModule;
             return error.CompileFailed;
         },
+    };
+    // IEEE 1364-2005 §8.1.1 on every UDP declaration, as the digital route
+    // checks it (`lib/sim/digital/elab.zig` `checkUdp`): one output, and it
+    // is the first port.
+    for (parse.udps) |u| if (u.outputs != 1 or u.ports.len == 0 or u.output != u.ports[0]) {
+        const at = starts[u.main_tok];
+        try bag.add(.parse, .E1100, .{ .start = at, .end = at }, "§8.1.1: a UDP has exactly one output port, and it is the first port", .{});
     };
     if (bag.failed()) return error.CompileFailed;
     // Every later stage reads, and elaboration writes, an overlay of the
@@ -485,6 +507,9 @@ fn lowerAndProve(
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.NoModule => {
+            // Connect modules are placed by §7.6 insertion, never a root, so
+            // a unit of them alone has no top either.
+            if (opts.empty_unit_ok) return error.NothingToElaborate;
             try bag.add(.lower, .E1001, .{}, "", .{});
             return error.NoModule;
         },
@@ -694,6 +719,9 @@ pub const Outcome = struct {
     text: []const u8 = "",
     /// The testbench `exe` built.
     exe: ?[]const u8 = null,
+    /// The testbench's `//! plusargs` (IEEE 1364 §17.10), the argv `--run`
+    /// gives `exe` after its path.
+    plusargs: []const []const u8 = &.{},
     /// The refusal; empty when there is none.
     err: []const u8 = "",
     /// Whether the bag's diagnostics are printed, and where.
@@ -746,20 +774,6 @@ pub fn compile(
     const in_path = req.options.file_name;
     const b = req.build;
 
-    // E.1.1's antecedent, made true from the command line: "if a simulator which
-    // supports Verilog-AMS HDL is also able to read SPICE netlists ... certain
-    // objects defined in that flavor of SPICE netlist can be referenced from
-    // within a Verilog-AMS HDL structural description". Read whole, because
-    // `spice_cards.synthesize` works on the text and a `+` continuation makes a
-    // card longer than a line.
-    const netlist: []const u8 = if (req.spice_path) |p|
-        Preprocessor.readText(io, .cwd(), p, arena) catch |e| {
-            try readFailed(err, p, e);
-            return o.done(2);
-        }
-    else
-        "";
-
     // --emit-exe's `//!` directives, read up front: a `//! param` card value
     // for a SHAPE parameter is a compile-time value (below). The directive
     // tables and the runner text are a web of small slices with one lifetime;
@@ -769,14 +783,38 @@ pub fn compile(
         return o.done(2);
     };
 
+    // E.1.1's antecedent, made true from the command line: "if a simulator which
+    // supports Verilog-AMS HDL is also able to read SPICE netlists ... certain
+    // objects defined in that flavor of SPICE netlist can be referenced from
+    // within a Verilog-AMS HDL structural description". Read whole, because
+    // `spice_cards.synthesize` works on the text and a `+` continuation makes a
+    // card longer than a line. Without `--spice`, a testbench's own `//! spice`
+    // cards are the netlist, read beside the source as the fixture runner reads them.
+    const netlist: []const u8 = if (req.spice_path) |p|
+        Preprocessor.readText(io, .cwd(), p, arena) catch |e| {
+            try readFailed(err, p, e);
+            return o.done(2);
+        }
+    else
+        directives.spice;
     var opts = req.options;
     opts.spice_netlist = netlist;
-    opts.spice_path = req.spice_path orelse "";
+    opts.spice_path = req.spice_path orelse if (directives.spice.len != 0) in_path else "";
     opts.diags = bag;
+    // A check accepts a source_text with no module (`connectmodule_is_not_a_device.va`
+    // pins E1001 only where a device is asked for).
+    opts.empty_unit_ok = req.check or (req.verilog == null and req.exe == null and !req.so and !req.zig);
     // `//! display record` asks a testbench for the device a host gets.
     if (directives.display_record) opts.display = .record;
     const target: Target = if (req.verilog == null and !req.check and req.exe == null and !req.so and !req.zig) .lint else .build;
+    // `//! discipline-resolution detail` asks for §7.4.4.2's mode.
+    if (directives.discipline_resolution == .detail) opts.discipline_resolution = .detail;
     o.result = compileSourceOpts(gpa, source, target, opts) catch |e| {
+        // Checked, and nothing to build: what the bag holds are warnings.
+        if (e == error.NothingToElaborate) {
+            o.report = .after;
+            return o.done(0);
+        }
         o.report = .{ .failed = e };
         return o.done(1);
     };
@@ -918,7 +956,10 @@ pub fn compile(
                 try err.writeAll(text);
                 return o.done(1);
             },
-            .ok => |p| o.exe = try arena.dupe(u8, p),
+            .ok => |p| {
+                o.exe = try arena.dupe(u8, p);
+                o.plusargs = directives.plusargs;
+            },
         }
         return;
     }
@@ -1487,14 +1528,65 @@ test "a parse error is NoModule only when no module of the source's own was pars
 }
 
 test "without the prelude, a source that includes the annex D files itself compiles" {
-    // `std_defs = false` drops the prepended annex D.1/D.2 text and the
-    // Table E.1 primitives with it, so nothing is a builtin module and the
-    // user's `res` is the top.
+    // `std_defs = false` drops the prepended annex D.1/D.2 text but keeps
+    // the Table E.1 primitives (E.2: built-ins), which are never the top: the
+    // user's `res` is.
     const gpa = std.testing.allocator;
     var res = try compileSourceOpts(gpa, "`include \"disciplines.vams\"\n" ++ test_resistor, .lint, .{ .std_defs = false });
     defer res.deinit();
     try std.testing.expectEqualStrings("res", res.mir.name);
     try std.testing.expect(res.verdict.ok());
+}
+
+test "without the prelude, the Table E.1 primitives are still built in" {
+    // Oracle: annex E.2, the primitives are built-ins "in the same manner
+    // ... as built-in primitives of gate- and switch-level modeling", not
+    // annex D text. Their `electrical` ports bind to the source's own.
+    const gpa = std.testing.allocator;
+    const src =
+        \\`include "disciplines.vams"
+        \\module top(a, b);
+        \\  inout a, b;
+        \\  electrical a, b;
+        \\  resistor #(.r(2.0)) r1(a, b);
+        \\endmodule
+    ;
+    var res = try compileSourceOpts(gpa, src, .lint, .{ .std_defs = false, .require_std_includes = true });
+    defer res.deinit();
+    try std.testing.expectEqualStrings("top", res.mir.name);
+}
+
+test "a check of a unit of only connect modules or UDPs elaborates nothing and is not E1001" {
+    // Oracle: A.1.2 `description` admits a udp_declaration and a
+    // `connectmodule` module_declaration; neither is a §6.2.2 root (§7.6).
+    const gpa = std.testing.allocator;
+    const units = [_][]const u8{
+        "",
+        "primitive inv(o, a); output o; input a; table 0 : 1; 1 : 0; endtable endprimitive\n",
+        "`include \"disciplines.vams\"\nconnectmodule c(a, b); input a; output b; electrical a, b; analog V(b) <+ V(a); endmodule\n",
+    };
+    for (units) |src| {
+        var bag: diag.Bag = .init(gpa);
+        defer bag.deinit(gpa);
+        try std.testing.expectError(error.NothingToElaborate, compileSourceOpts(gpa, src, .lint, .{ .diags = &bag, .empty_unit_ok = true }));
+        try std.testing.expect(!bag.failed());
+    }
+    // IEEE 1364-2005 §8.1.1: the output is the first port. Without this the
+    // unit above would accept `dump_mux4to1`'s undeclared output.
+    var bag: diag.Bag = .init(gpa);
+    defer bag.deinit(gpa);
+    try std.testing.expectError(error.CompileFailed, compileSourceOpts(gpa, "primitive p(o, a); output q; input a; table 0 : 1; endtable endprimitive\n", .lint, .{ .diags = &bag }));
+    try std.testing.expectEqual(diag.Code.E1100, bag.at(0).code);
+}
+
+test "-D: a command-line macro is defined before the source; a bare name is 1" {
+    // Oracle: §10.4 `define NAME TEXT, the meaning iverilog gives -D.
+    const gpa = std.testing.allocator;
+    const src = "`ifdef ON\n`include \"disciplines.vams\"\nmodule res(p, n); inout p, n; electrical p, n; parameter real r = `R; analog I(p, n) <+ V(p, n) / r * `ON; endmodule\n`endif\n";
+    try std.testing.expectError(error.NoModule, compileSourceOpts(gpa, src, .lint, .{ .defines = &.{"R=2.0"} }));
+    var res = try compileSourceOpts(gpa, src, .lint, .{ .defines = &.{ "ON", "R=2.0" } });
+    defer res.deinit();
+    try std.testing.expectEqualStrings("res", res.mir.name);
 }
 
 const test_netlist =

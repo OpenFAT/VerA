@@ -34,6 +34,7 @@ const lower_wide = @import("wide.zig");
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Ssa = @import("ssa.zig");
+const rules = @import("elab").discipline_rules;
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const VarSlot = Lower.VarSlot;
@@ -624,12 +625,15 @@ pub fn dropHeld(lowered: *Lower.Lowered, keep: []const bool) void {
 /// Checked across parameters, variables and nets over one scope's declaration
 /// lists (not `self.vars`), so shadowing an outer name is not reported. Net
 /// against net is allowed (a port direction and its discipline declare one
-/// item), and so is a discipline against a variable (§7's `reg out; ddiscrete
-/// out;`); only a discipline-less net (`wire x;`) clashes with a variable.
+/// item), and so is a discrete discipline against a variable (§7's `reg out;
+/// ddiscrete out;`). A discipline-less net (`wire x;`) clashes with a
+/// variable, and so does a continuous one (`electrical p; real p;`): §3.6.2
+/// gives a continuous discipline to a net, which is an analog node and never
+/// a variable (gnucap's dump_error.6c, "already declared").
 ///
 /// One set per kind, so a scope of n names is O(n): a flattened instance
 /// array puts every instance's parameters in the top module's scope.
-pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: []const Ast.VarDecl, nets: []const Ast.NetDecl) Oom!void {
+pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: []const Ast.VarDecl, nets: []const Ast.NetDecl, ports: []const Ast.Port) Oom!void {
     const Set = std.AutoHashMapUnmanaged(Ast.StrId, void);
     var param_names: Set = .empty;
     defer param_names.deinit(self.arena);
@@ -639,9 +643,14 @@ pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: [
     // A discipline-less net (`wire x;`) clashes with a variable of its name.
     var plain_nets: std.AutoHashMapUnmanaged(Ast.StrId, u32) = .empty;
     defer plain_nets.deinit(self.arena);
-    for (nets) |n| if (n.discipline == .none) {
+    for (nets) |n| if (n.discipline == .none or rules.isContinuous(self.file, n.discipline)) {
         const gop = try plain_nets.getOrPut(self.arena, n.name);
         gop.value_ptr.* = if (gop.found_existing) gop.value_ptr.* + 1 else 1;
+    };
+    // A port's discipline is on the port row; one clash per name.
+    for (ports) |p| if (rules.isContinuous(self.file, p.discipline)) {
+        const gop = try plain_nets.getOrPut(self.arena, p.name);
+        if (!gop.found_existing) gop.value_ptr.* = 1;
     };
     var port_vars: Set = .empty;
     defer port_vars.deinit(self.arena);
@@ -1203,6 +1212,9 @@ test uniqueHeld {
 test "checkOneItemPerScope: §6.8 one identifier declares one item in a scope (E0362)" {
     try Lower.expectBodyVerdict("  real x;\n  integer x;", "", .E0362);
     try Lower.expectBodyVerdict("  parameter real x = 1.0;\n  real x;", "", .E0362);
+    // A continuous net is a node, not a variable; a discrete one may be both.
+    try Lower.expectBodyVerdict("  electrical x;\n  real x;", "", .E0362);
+    try Lower.expectBodyVerdict("  ddiscrete x;\n  reg x;", "", null);
     // A named block is a scope of its own (§5.3.2): shadowing is no clash.
     try Lower.expectBodyVerdict("  real x;", "    begin : b\n      real x;\n      x = 1.0;\n    end", null);
 }
