@@ -64,6 +64,36 @@ const DiscreteCtx = struct {
     /// The module's discrete half runs on the mixed-signal kernel
     /// (`Lower.mixed_signal`), so what that kernel cannot do yet is E0437.
     mixed: bool = false,
+    /// The names the named blocks around the statement declare
+    /// (`Shadows`): a write to one is to that local, not the module's.
+    shadows: Shadows = .{},
+};
+
+/// IEEE 1364-2005 §12.6: a named block's declaration hides the module's
+/// variable of the same name inside the block. The pre-lowering scans meet a
+/// write before the block's locals are declared, so they keep the names
+/// themselves: `enter` at a block, `leave` after it.
+const Shadows = struct {
+    names: std.ArrayList([]const u8) = .empty,
+
+    /// Pushes the locals `id` declares, if it is a block, and returns how
+    /// many to pop.
+    fn enter(sh: *Shadows, self: *Lower, id: Ast.StmtId) Oom!usize {
+        if (self.file.stmt(id) != .block) return 0;
+        const vars = self.file.stmt(id).block.vars;
+        for (vars) |v| try sh.names.append(self.arena, self.file.str(v.name));
+        return vars.len;
+    }
+
+    fn leave(sh: *Shadows, n: usize) void {
+        std.debug.assert(n <= sh.names.items.len);
+        sh.names.shrinkRetainingCapacity(sh.names.items.len - n);
+    }
+
+    fn hides(sh: *const Shadows, name: []const u8) bool {
+        for (sh.names.items) |n| if (std.mem.eql(u8, n, name)) return true;
+        return false;
+    }
 };
 
 /// §8.5: does this module's discrete half need the event queue? An `always`
@@ -849,13 +879,16 @@ const EventRefs = struct {
 /// only `=` (`stmtWrites`: output actuals and `$random` seeds too). A reg is
 /// the discrete domain's (§7.2.1); the analog side may only read it (§7.3).
 pub fn checkRegWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    for (module.analog) |blk| try regWrites(self, module.functions, blk.body);
+    var sh: Shadows = .{};
+    for (module.analog) |blk| try regWrites(self, module.functions, blk.body, &sh);
 }
 
 /// `checkRegWrites` on statement `id` and, through `stmtEdges`, every
 /// statement under it (`stmtWrites` reads one statement's own writes).
-fn regWrites(self: *Lower, funcs: []const Ast.FuncDecl, id: Ast.StmtId) Oom!void {
+fn regWrites(self: *Lower, funcs: []const Ast.FuncDecl, id: Ast.StmtId, sh: *Shadows) Oom!void {
     if (id == .none) return;
+    const pushed = try sh.enter(self, id);
+    defer sh.leave(pushed);
     const ex = &self.file.exprs;
     var writes: std.ArrayList(Ast.ExprId) = .empty;
     defer writes.deinit(self.arena);
@@ -864,18 +897,20 @@ fn regWrites(self: *Lower, funcs: []const Ast.FuncDecl, id: Ast.StmtId) Oom!void
         const t = self.file.lvalueBase(w);
         if (t == .none) continue;
         const name = self.file.str(ex.strOf(t));
+        if (sh.hides(name)) continue;
         const reg = if (self.vars.get(name)) |v| v.reg_width != null else if (self.arrays.get(name)) |arr| (if (arr.mem) |m| m.reg_width != null else false) else false;
         if (reg) try self.err(ex.mainTok(t), .E0316, "`{s}` is a reg: an analog procedural assignment targets an integer, real or string (§5.7)", .{name});
     }
     const Walk = struct {
         l: *Lower,
         funcs: []const Ast.FuncDecl,
+        sh: *Shadows,
         pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
         pub fn stmt(w: @This(), s: Ast.StmtId) Oom!void {
-            try regWrites(w.l, w.funcs, s);
+            try regWrites(w.l, w.funcs, s, w.sh);
         }
     };
-    try self.file.stmtEdges(id, Walk{ .l = self, .funcs = funcs });
+    try self.file.stmtEdges(id, Walk{ .l = self, .funcs = funcs, .sh = sh });
 }
 
 pub fn checkDiscreteContext(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
@@ -1010,6 +1045,8 @@ fn collectInitialStmt(self: *Lower, id: Ast.StmtId) Oom!void {
 /// scope walk here if a model needs it.
 fn scanContext(self: *Lower, id: Ast.StmtId, comptime discrete: bool, context: if (discrete) u32 else bool, ctx: *DiscreteCtx) Oom!void {
     if (id == .none or (!discrete and ctx.assigned.count() == 0)) return;
+    const pushed = try ctx.shadows.enter(self, id);
+    defer ctx.shadows.leave(pushed);
     const is_initial = if (discrete) {} else context;
     const ex = &self.file.exprs;
     // Every variable the statement writes, not only an assignment target: an
@@ -1024,6 +1061,7 @@ fn scanContext(self: *Lower, id: Ast.StmtId, comptime discrete: bool, context: i
         const t = self.file.lvalueBase(w);
         if (t == .none) continue;
         const name = self.file.str(ex.strOf(t));
+        if (ctx.shadows.hides(name)) continue;
         if (discrete) {
             if (self.vars.contains(name) or self.out.discrete_inputs.contains(name)) try ctx.assigned.put(self.arena, name, context);
         } else if (ctx.assigned.get(name)) |dtok| {
@@ -1378,6 +1416,10 @@ test "§5.7: an analog procedural assignment never targets a reg" {
     try Lower.expectBodyVerdict("  reg [7:0] b;", "    b[3] = 1;", .E0316);
     try Lower.expectBodyVerdict("  integer k;", "    k = 1;", null);
     try Lower.expectBodyVerdict("  real x;", "    x = 1.0;", null);
+    // IEEE 1364-2005 §12.6: a named block's `integer value` hides the module's
+    // reg inside the block, so neither §5.7 nor §7.2.2 (E0432) sees the reg.
+    try Lower.expectBodyVerdict("  reg value;\n  initial value = 1;", "    begin : inner\n      integer value;\n      value = -1;\n    end", null);
+    try Lower.expectBodyVerdict("  reg value;", "    begin : inner\n      integer k;\n      value = -1;\n    end", .E0316);
 }
 
 test "§6.3.4 monitored-event parameters retain their dependencies, not unrelated reals" {

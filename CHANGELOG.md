@@ -22,6 +22,11 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **A named block's local hides the module's variable of that name** in
+  the checks that run before lowering (IEEE 1364-2005 §12.6): an analog
+  `begin : b integer value; value = ...; end` beside a digital `reg value`
+  is neither E0432 (assigned in both contexts) nor E0316
+  (`clog2_reg_analog_conversion.va`).
 - **`$simprobe` takes a name known only at run time** (§9.16: "or a string
   variable"): the probe compares it with every sibling parameter or output
   variable it could name and returns the fallback when none matches. With
