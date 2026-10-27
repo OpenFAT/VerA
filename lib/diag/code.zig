@@ -5751,7 +5751,7 @@ fn infoOf(c: Code) Info {
             .explain = "Inside an analog $clog2 operand, arithmetic, unary negation and shifts retain at most 32 bits per intermediate. Bitwise, conditional and comparison contexts retain at most 64 bits. Above 64 bits only exact wide literals and parameter aliases preserving their width retain proven high bits. The compiler refuses a wider intermediate rather than inventing erased bits; digital execution preserves arbitrary vector widths.",
         },
         .E0823 => .{
-            .title = "$simprobe name known only at run time",
+            .title = "$simprobe name known only at run time, with no fallback",
             .lrm = "9.16",
             .explain =
             \\    $simprobe ( inst_name , param_name [, expression] )
@@ -5761,14 +5761,15 @@ fn infoOf(c: Code) Info {
             \\A string variable's value can be set while the analog block runs, so
             \\the clause asks the simulator to resolve the name at run time.
             \\
-            \\VerA resolves a $simprobe name at compile time, against the
-            \\elaborated design, and has no run-time instance table to look one up
-            \\in. A name whose value the compiler cannot fold is therefore refused,
-            \\with or without the fallback expression: "cannot be resolved" is about
-            \\whether the name exists, so returning the fallback for a name that
-            \\exists would be a wrong value with no diagnostic. This is an
-            \\implementation limit (specification/Vague_Decisions.md §7), not a
-            \\rule of the LRM. Spell the name as a literal or a string parameter.
+            \\VerA resolves a run-time name against the elaborated design: every
+            \\sibling parameter or output variable the name could be is compared
+            \\with it when the probe runs, and the fallback is the value when
+            \\none matches. With no fallback, a name that may match no sibling
+            \\would need the error §9.16 raises at run time, which VerA cannot
+            \\raise yet, so that probe is refused. This is an implementation
+            \\limit (specification/Vague_Decisions.md VD-030), not a rule of the
+            \\LRM. Give the fallback expression, or spell the name as a literal
+            \\or a string parameter.
             ,
         },
         .E0894 => .{

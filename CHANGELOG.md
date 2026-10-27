@@ -22,6 +22,11 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **`$simprobe` takes a name known only at run time** (§9.16: "or a string
+  variable"): the probe compares it with every sibling parameter or output
+  variable it could name and returns the fallback when none matches. With
+  no fallback such a probe is still E0823 (VD-030)
+  (`simprobe_runtime_name_resolves.va`).
 - **A protected envelope's `digest_decrypt_key` is read** (IEEE 1364-2005
   §28.4.20): the digest key and method come from the key_block's cleartext,
   and each `digest_block` checks the key_block or data_block just before it

@@ -384,8 +384,8 @@ fn callerParentPath(self: *const Lower) []const u8 {
 /// Lowers `$simprobe(inst_name, param_name [, expression])` (LRM §9.16) to the
 /// sibling instance's parameter or variable, resolved at compile time by flat name.
 /// When the name does not resolve, returns `expression`, or reports an error when
-/// there is none. A name that does not fold is refused (E0823): §9.16 resolves a
-/// string variable at run time, and VerA has no run-time instance table.
+/// there is none. A name known only at run time (§9.16 "or a string variable")
+/// goes to `lowerSimprobeRuntime`.
 pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     const ex = &self.file.exprs;
     const args = ex.args(e);
@@ -395,48 +395,50 @@ pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     }
     const inst = lower_sysfunc.constStrArg(self, args[0]);
     const param = lower_sysfunc.constStrArg(self, args[1]);
-    for ([2]?[]const u8{ inst, param }, args[0..2]) |name, arg| if (name == null) {
-        var b = self.errWith(ex.mainTok(arg), .E0823);
-        b.msg("this name has no value until the analog block runs", .{});
-        b.note("§9.16 resolves a string variable when the probe runs; VerA resolves names at compile time", .{});
-        b.help("spell the name as a string literal or a string parameter", .{});
-        try b.emit();
-        return poison;
-    };
-    {
-        // §9.16: "the simulator will look for an instance called inst_name in
-        // the parent of the current instance i.e. a sibling of the instance
-        // containing the $simprobe() expression." The name is relative, so the
-        // flat key is the caller's parent path joined to it.
-        const path = try std.mem.concat(self.arena, u8, &.{
-            callerParentPath(self), inst.?, &[_]u8{Elaborate.sep}, param.?,
-        });
-        // §6.4.3 "If a paramset output variable has the same name as a module
-        // output variable, the paramset's value is reported for instances
-        // using the paramset": first, and the nearest link's (last) wins.
-        var k = self.ps_outputs.len;
-        while (k > 0) {
-            k -= 1;
-            if (!std.mem.eql(u8, self.ps_outputs[k].report, path)) continue;
-            const slot = self.vars.get(self.ps_outputs[k].flat) orelse break;
-            return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
-        }
-        if (self.param_index.get(path)) |pi|
-            return .{ .v = self.param_values.items[pi], .ty = astTy(self.out.params.items[pi].ty) };
-        // §9.16: "$simprobe() queries the simulator for an output variable named
-        // param_name in a sibling instance". A flattened child's variable is an
-        // ordinary variable under its path name. The sibling's block was lowered
-        // first (elaboration appends instances in tree order), so this reads the
-        // value it computed for this evaluation.
-        // §6.4.3 unless the instance's paramset hides it: "the module output
-        // variable shall not be available for instances using the paramset".
-        const hidden = for (self.ps_hidden) |h| {
-            if (std.mem.eql(u8, h, path)) break true;
-        } else false;
-        if (!hidden) if (self.vars.get(path)) |slot|
-            return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
+    if (inst == null or param == null) return lowerSimprobeRuntime(self, e, inst, param);
+    // §9.16: "the simulator will look for an instance called inst_name in
+    // the parent of the current instance i.e. a sibling of the instance
+    // containing the $simprobe() expression." The name is relative, so the
+    // flat key is the caller's parent path joined to it.
+    const path = try std.mem.concat(self.arena, u8, &.{
+        callerParentPath(self), inst.?, &[_]u8{Elaborate.sep}, param.?,
+    });
+    if (try resolveProbe(self, path)) |tv| return tv;
+    return unresolvedProbe(self, e, inst, param);
+}
+
+/// §9.16 the value the sibling's parameter or output variable `path` (its
+/// flat name) has in this evaluation, or null when no such name exists.
+fn resolveProbe(self: *Lower, path: []const u8) Oom!?TypedValue {
+    // §6.4.3 "If a paramset output variable has the same name as a module
+    // output variable, the paramset's value is reported for instances
+    // using the paramset": first, and the nearest link's (last) wins.
+    var k = self.ps_outputs.len;
+    while (k > 0) {
+        k -= 1;
+        if (!std.mem.eql(u8, self.ps_outputs[k].report, path)) continue;
+        const slot = self.vars.get(self.ps_outputs[k].flat) orelse break;
+        return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
     }
-    // Unresolved. §9.16's own two outcomes, in the clause's order.
+    if (self.param_index.get(path)) |pi|
+        return .{ .v = self.param_values.items[pi], .ty = astTy(self.out.params.items[pi].ty) };
+    // §9.16: "$simprobe() queries the simulator for an output variable named
+    // param_name in a sibling instance". A flattened child's variable is an
+    // ordinary variable under its path name. The sibling's block was lowered
+    // first (elaboration appends instances in tree order), so this reads the
+    // value it computed for this evaluation.
+    // §6.4.3 unless the instance's paramset hides it: "the module output
+    // variable shall not be available for instances using the paramset".
+    for (self.ps_hidden) |h| if (std.mem.eql(u8, h, path)) return null;
+    if (self.vars.get(path)) |slot|
+        return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
+    return null;
+}
+
+/// §9.16's two outcomes for a name that does not resolve, in the clause's
+/// order: the optional expression, else an error.
+fn unresolvedProbe(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]const u8) Oom!TypedValue {
+    const args = self.file.exprs.args(e);
     if (args.len >= 3 and args[2] != .none) return lower_expr.lowerExpr(self, args[2]);
     var b = self.errWith(self.file.exprs.mainTok(e), .E0817);
     b.msg("`$simprobe(\"{s}\", \"{s}\")` names no parameter of the elaborated design", .{
@@ -444,6 +446,79 @@ pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     });
     b.note("§9.16: with no third argument, an unresolvable probe \"shall generate an error\"", .{});
     b.help("supply the fallback expression §9.16 defines for this case: `$simprobe(inst, param, <value>)`", .{});
+    try b.emit();
+    return poison;
+}
+
+/// §9.16 "either a string literal, string parameter, or a string variable":
+/// a name known only when the probe runs. The design is flat, so the names
+/// it can resolve to are finite: every sibling `inst.param` `resolveProbe`
+/// answers that matches the part that did fold. The probe is a `select`
+/// chain comparing the run-time string with each name, the fallback last.
+/// ponytail: E0823 for a name that may miss with no fallback, whose error
+/// §9.16 raises at run time; a guarded run-time error path is the upgrade.
+fn lowerSimprobeRuntime(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]const u8) Oom!TypedValue {
+    const ex = &self.file.exprs;
+    const args = ex.args(e);
+    std.debug.assert(inst == null or param == null);
+    var rt: [2]?TypedValue = .{ null, null };
+    for ([2]?[]const u8{ inst, param }, args[0..2], &rt) |name, arg, *v| if (name == null) {
+        const tv = try lower_expr.lowerExpr(self, arg);
+        if (tv.ty != .string) return runtimeName(self, arg, "§9.16 takes a string literal, string parameter or string variable");
+        v.* = tv;
+    };
+    const parent = callerParentPath(self);
+    var keys: std.ArrayList([]const u8) = .empty;
+    for (self.ps_outputs) |o| try keys.append(self.arena, o.report);
+    var pk = self.param_index.keyIterator();
+    while (pk.next()) |key| try keys.append(self.arena, key.*);
+    var vk = self.vars.keyIterator();
+    while (vk.next()) |key| try keys.append(self.arena, key.*);
+    // Sorted, so the chain (and the code it becomes) is the same every run.
+    std.mem.sort([]const u8, keys.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
+    const Cand = struct { inst: []const u8, param: []const u8, tv: TypedValue };
+    var cands: std.ArrayList(Cand) = .empty;
+    for (keys.items, 0..) |key, i| {
+        if (i > 0 and std.mem.eql(u8, key, keys.items[i - 1])) continue;
+        const rest = std.mem.cutPrefix(u8, key, parent) orelse continue;
+        const dot = std.mem.findScalar(u8, rest, Elaborate.sep) orelse continue;
+        const ci = rest[0..dot];
+        const cp = rest[dot + 1 ..];
+        if (ci.len == 0 or cp.len == 0 or std.mem.findScalar(u8, cp, Elaborate.sep) != null) continue;
+        if (inst) |n| if (!std.mem.eql(u8, n, ci)) continue;
+        if (param) |n| if (!std.mem.eql(u8, n, cp)) continue;
+        const tv = try resolveProbe(self, key) orelse continue;
+        try cands.append(self.arena, .{ .inst = ci, .param = cp, .tv = tv });
+    }
+    if (cands.items.len == 0) return unresolvedProbe(self, e, inst, param);
+    const fallback = if (args.len >= 3 and args[2] != .none) try lower_expr.lowerExpr(self, args[2]) else return runtimeName(self, args[0], "with no fallback expression, a name that matches no sibling is an error §9.16 raises when the probe runs, which VerA cannot yet");
+    var out = try self.toReal(fallback);
+    for (cands.items) |c| {
+        var hit = try self.toReal(c.tv);
+        if (rt[1]) |p| hit = try matchArm(self, p, c.param, hit, out);
+        if (rt[0]) |n| hit = try matchArm(self, n, c.inst, hit, out);
+        out = hit;
+    }
+    return .{ .v = out, .ty = .real };
+}
+
+/// `name == text ? hit : miss`, `name` a run-time string: a string
+/// comparison, as `==` between two strings is (§3.3 Table 3-3).
+fn matchArm(self: *Lower, name: TypedValue, text: []const u8, hit: Mir.Value, miss: Mir.Value) Oom!Mir.Value {
+    const want = try self.mir.addStrConst(self.arena, text);
+    const eq = try self.emit(.ieq, &.{ name.v, want });
+    return self.emit(.select, &.{ try self.toBool(.{ .v = eq, .ty = .integer }), hit, miss });
+}
+
+/// E0823 at `arg`: a run-time `$simprobe` name VerA cannot resolve exactly.
+fn runtimeName(self: *Lower, arg: Ast.ExprId, why: []const u8) Oom!TypedValue {
+    var b = self.errWith(self.file.exprs.mainTok(arg), .E0823);
+    b.msg("this name has no value until the analog block runs, and {s}", .{why});
+    b.help("spell the name as a string literal or a string parameter, or give the fallback expression", .{});
     try b.emit();
     return poison;
 }
@@ -518,6 +593,9 @@ test "lowerSimprobe: §9.16's two outcomes for a name that does not resolve" {
     try Lower.expectBodyVerdict(decls, "    y = $simprobe(\"nosuch\", \"gain\");", .E0817);
     // With it, the expression is the value.
     try Lower.expectBodyVerdict(decls, "    y = $simprobe(\"nosuch\", \"gain\", 2.0);", null);
-    // A string variable has no value until the block runs (E0823).
-    try Lower.expectBodyVerdict(decls, "    s = \"u\";\n    y = $simprobe(s, \"gain\", 1.0);", .E0823);
+    // §9.16 "or a string variable": resolved when the probe runs. Nothing in
+    // this design can match it, so the fallback is the value, and with no
+    // fallback it is the same error as a literal that does not resolve.
+    try Lower.expectBodyVerdict(decls, "    s = \"u\";\n    y = $simprobe(s, \"gain\", 1.0);", null);
+    try Lower.expectBodyVerdict(decls, "    s = \"u\";\n    y = $simprobe(s, \"gain\");", .E0817);
 }
