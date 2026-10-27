@@ -246,6 +246,7 @@ fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     };
     const name = self.file.str(chain.name);
     const info = self.arrays.get(name) orelse {
+        if (chain.subs.len == 1) if (self.discrete_arrays.get(name)) |rg| return discreteElem(self, name, rg.lo, rg.hi, chain.subs[0]);
         if (chain.subs.len == 1) if (self.reg_ranges.get(name)) |rr| {
             if (self.vars.get(name)) |slot| return lowerRegSelect(self, e, name, .{ .slot = slot }, rr, chain.subs[0]);
             if (self.out.discrete_inputs.contains(name)) return lowerRegSelect(self, e, name, .input, rr, chain.subs[0]);
@@ -1468,6 +1469,37 @@ pub fn ammeterFlow(self: *Lower, internal: []const u8) Oom!?TypedValue {
     const u = try lower_node.flowUnknown(self, @min(from, into), @max(from, into));
     const v = try lower_node.probe(self, u);
     return .{ .v = if (from > into) try self.emit(.fneg, &.{v}) else v, .ty = .real };
+}
+
+/// §7.3.1 `name[index]` of a digital array the analog block reads, one
+/// input per element (`Lower.discrete_arrays`): a constant index is that
+/// element, a run-time one a select over all of them. An index outside
+/// `[lo, hi]` reads 0, as an analog array's out-of-range read does.
+fn discreteElem(self: *Lower, name: []const u8, lo: i64, hi: i64, sub: Ast.ExprId) Oom!TypedValue {
+    std.debug.assert(lo <= hi);
+    const elem = struct {
+        fn read(l: *Lower, base: []const u8, k: i64) Oom!Mir.Value {
+            const key = try l.arena.print("{s}[{d}]", .{ base, k });
+            const pi = l.param_index.get(key).?; // `declareDiscreteArray` added every element
+            return l.param_values.items[pi];
+        }
+    };
+    if (lower_constfold.constEval(self, sub)) |c| if (c.asIntExact()) |k| {
+        if (k < lo or k > hi) return .{ .v = try self.mir.addIntConst(self.arena, 0), .ty = .integer };
+        return .{ .v = try elem.read(self, name, k), .ty = .integer };
+    };
+    const idx = try lowerExpr(self, sub);
+    if (idx.ty != .integer) {
+        try self.err(self.file.exprs.mainTok(sub), .E0311, "the index of `{s}` is not an integer", .{name});
+        return poison;
+    }
+    var out = try self.mir.addIntConst(self.arena, 0);
+    var k = lo;
+    while (k <= hi) : (k += 1) {
+        const eq = try self.emit(.ieq, &.{ idx.v, try self.mir.addIntConst(self.arena, k) });
+        out = try self.emit(.select, &.{ try self.toBool(.{ .v = eq, .ty = .integer }), try elem.read(self, name, k), out });
+    }
+    return .{ .v = out, .ty = .integer };
 }
 
 /// `acc ± v`, folding a zero on either side.

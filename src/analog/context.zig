@@ -14,6 +14,7 @@
 const std = @import("std");
 const Lower = @import("lower.zig");
 const lower_constfold = @import("constfold.zig");
+const lower_node = @import("node.zig");
 const lower_param = @import("param.zig");
 const discipline_rules = @import("elab").discipline_rules;
 const lower_event = @import("event.zig");
@@ -467,6 +468,17 @@ pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!vo
             try lower_param.addParam(self, snap, ty, zero, folded, &.{}, false, t.tok);
         }
         if (self.out.discrete_inputs.contains(name) or !reads.names.contains(name)) continue;
+        // §7.3.1 Table 7-1's `reg [0:9] r[0:7]`: an element of a digital
+        // array reads as an integer, so each element is an input of its own,
+        // `name[k]` (`lower_expr.lowerIndex` selects among them).
+        const dims: []const Ast.Dim = for (module.vars) |v| {
+            if (v.name == t.name) break v.dims;
+        } else &.{};
+        if (dims.len != 0) {
+            if (self.discrete_arrays.contains(name)) continue; // written more than once
+            try declareDiscreteArray(self, name, dims, ty, zero, folded, t.tok, reads.guarded.contains(name));
+            continue;
+        }
         try self.out.discrete_inputs.put(self.arena, name, t.tok);
         try lower_param.addParam(self, name, ty, zero, folded, &.{}, false, t.tok);
         // §7.3.1 a `reg` input: its packed range, for a select's bits, and
@@ -495,6 +507,35 @@ pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!vo
             try lower_param.addParam(self, xz, .integer, try self.mir.addIntConst(self.arena, 0), .{ .int = 0 }, &.{}, false, t.tok);
         }
     }
+}
+
+/// The most elements a digital array the analog block reads may have: each
+/// is a `Model` field the mixed runner copies at every digital tick.
+const max_discrete_elems = 4096;
+
+/// §7.3.1 one input per element of the digital array `name` (one dimension,
+/// constant bounds), `name[k]` for each declared `k`, read as its scalar
+/// inputs are (`Lower.discrete_arrays`). A guarded read's snapshot and a
+/// second dimension are refused (E0437).
+fn declareDiscreteArray(self: *Lower, name: []const u8, dims: []const Ast.Dim, ty: Ast.Type, zero: Mir.Value, folded: Lower.Const, tok: u32, guarded: bool) Oom!void {
+    if (dims.len != 1 or guarded) {
+        try self.err(tok, .E0437, "`{s}` is a digital array the analog block reads {s}; VerA reads one dimension, outside an explicit D2A event's body", .{ name, if (guarded) "in an explicit D2A event's body" else "with more than one dimension" });
+        return;
+    }
+    const range = try lower_node.foldDim(self, dims[0], tok) orelse return;
+    const lo = @min(range.msb, range.lsb);
+    const hi = @max(range.msb, range.lsb);
+    if (hi - lo + 1 > max_discrete_elems) {
+        try self.err(tok, .E0437, "`{s}` is a digital array of {d} elements the analog block reads; VerA copies at most {d}", .{ name, hi - lo + 1, max_discrete_elems });
+        return;
+    }
+    var k = lo;
+    while (k <= hi) : (k += 1) {
+        const elem = try self.arena.print("{s}[{d}]", .{ name, k });
+        try self.out.discrete_inputs.put(self.arena, elem, tok);
+        try lower_param.addParam(self, elem, ty, zero, folded, &.{}, false, tok);
+    }
+    try self.discrete_arrays.put(self.arena, name, .{ .lo = lo, .hi = hi });
 }
 
 /// Marks, in `marks` (indexed by `Ast.ExprId`), every expression §7.2.2's
@@ -1420,6 +1461,30 @@ test "§5.7: an analog procedural assignment never targets a reg" {
     // reg inside the block, so neither §5.7 nor §7.2.2 (E0432) sees the reg.
     try Lower.expectBodyVerdict("  reg value;\n  initial value = 1;", "    begin : inner\n      integer value;\n      value = -1;\n    end", null);
     try Lower.expectBodyVerdict("  reg value;", "    begin : inner\n      integer k;\n      value = -1;\n    end", .E0316);
+}
+
+test "§7.3.1 a digital reg array the analog block reads is one input per element" {
+    // Table 7-1 lists `reg [0:9] r[0:7];` among the discrete variables read
+    // in the continuous context "as integer numbers": each element its own
+    // host-set input, the array no analog variable of its own.
+    var h: Lower.Harness = undefined;
+    try h.init(std.testing.allocator,
+        \\module m(p);
+        \\  inout p; electrical p;
+        \\  reg [3:0] r[1:3];
+        \\  integer k;
+        \\  initial begin r[1] = 1; r[3] = 3; end
+        \\  analog begin
+        \\    k = $rtoi(V(p));
+        \\    I(p) <+ r[2] + r[k];
+        \\  end
+        \\endmodule
+    );
+    defer h.deinit();
+    _ = try h.low.lowerFile();
+    for ([_][]const u8{ "r[1]", "r[2]", "r[3]" }) |e| try std.testing.expect(h.low.out.discrete_inputs.contains(e));
+    try std.testing.expect(!h.low.out.discrete_inputs.contains("r"));
+    try std.testing.expect(h.low.arrays.get("r") == null);
 }
 
 test "§6.3.4 monitored-event parameters retain their dependencies, not unrelated reals" {

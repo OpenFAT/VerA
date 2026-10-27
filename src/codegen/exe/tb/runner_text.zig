@@ -1628,6 +1628,14 @@ const mixed_tail =
     \\}
     \\
     \\fn mixedSlot(dig: *sim.digital.Run, name: []const u8) u32 {
+    \\    // §7.3.1 an element `base[k]` of a digital array: the array's slots
+    \\    // run from its lowest index (`sim.digital.evaluate.Offset`).
+    \\    if (name.len != 0 and name[name.len - 1] == ']') if (std.mem.findScalarLast(u8, name, '[')) |open| {
+    \\        const k = std.fmt.parseInt(i64, name[open + 1 .. name.len - 1], 10) catch unreachable; // `declareDiscreteArray` spelled it
+    \\        const base = mixedSlot(dig, name[0..open]);
+    \\        const arr = dig.arrays.get(base) orelse unreachable; // lowering declared it an array
+    \\        return base + @as(u32, @intCast(k - arr.low));
+    \\    };
     \\    return dig.slotOf(name) orelse {
     \\        std.debug.print("{s}: FAIL the digital half holds no `{s}` for the analog block to read\n", .{ title, name });
     \\        std.process.exit(1);

@@ -22,6 +22,10 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **The analog block reads an element of a digital array** (§7.3.1 Table
+  7-1, `reg [0:9] r[0:7]`): each element of a one-dimensional array the
+  digital context owns is its own host-set input, read at a constant index
+  or selected at a run-time one. Was E0309 (`clog2_reg_analog_conversion.va`).
 - **`--negative-timing`**, IEEE 1364-2005 §15.5.4's option: `$setuphold`
   and `$recrem` take negative limits. Each instance's signals get the least
   delays that keep every adjusted limit a tick or more (§15.5.1), the

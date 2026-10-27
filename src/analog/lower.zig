@@ -472,6 +472,9 @@ ps_outputs: []const Elaborate.PsOutput = &.{},
 /// §5.4.3 `Elaborate.Design.port_ammeters`: the instance ports whose flow is
 /// read, each on an internal net of its own (`lower_expr.ammeterFlow`).
 port_ammeters: []const Elaborate.PortAmmeter = &.{},
+/// §7.3.1 the digital arrays the analog block reads, each one input per
+/// element (`lower_context.declareDiscreteArray`): name → declared bounds.
+discrete_arrays: std.StringHashMapUnmanaged(struct { lo: i64, hi: i64 }) = .empty,
 /// §6.3.1/§6.4 forbidden defparams, awaiting final generate-scheme values.
 paramset_defparams: []const Elaborate.ParamsetDefparam = &.{},
 /// §6.4.2 parameters whose values selected an overloaded paramset.
@@ -757,7 +760,8 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     const analog_writes = try lower_var.analogWrites(self, module);
     self.analog_writes = analog_writes;
     for (module.vars) |*v| {
-        if (self.out.discrete_inputs.contains(self.file.str(v.name))) continue;
+        // A digital-owned value is a host input, an array one per element.
+        if (self.out.discrete_inputs.contains(self.file.str(v.name)) or self.discrete_arrays.contains(self.file.str(v.name))) continue;
         var d = v.*;
         if (self.initial_state.get(self.file.str(d.name))) |a| {
             // §3.2.2 an array takes an assignment pattern, not a scalar, and
