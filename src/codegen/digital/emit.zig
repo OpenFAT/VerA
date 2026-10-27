@@ -572,7 +572,7 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     var order: std.ArrayList(u32) = .empty;
     while (r.scheduler.next()) |ev| switch (r.pending.items[ev.payload].item) {
         .run_process => |pc| try order.append(self.arena, pc),
-        .@"resume", .write, .strobe, .monitor_tick, .vcd_tick, .tran_switch, .drive, .net_update, .decay, .a2d, .analog_point, .tchk_expiry => return self.refuse("an event queued at elaboration"),
+        .@"resume", .write, .strobe, .monitor_tick, .vcd_tick, .tran_switch, .drive, .net_update, .decay, .a2d, .analog_point, .tchk_expiry, .tchk_event => return self.refuse("an event queued at elaboration"),
     };
 
     try self.print(

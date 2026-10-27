@@ -382,11 +382,136 @@ fn nonNegative(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId, what: []const 
 }
 
 /// Tables 15-3 and 15-6: a "Constant expression", which §15.8 lets be
-/// negative when "the negative timing check option is enabled". VerA has
-/// no such option, so §15.5.4's behaviour without it: the limit is 0, and
-/// the delayed signals are copies (`delayedDrivers`).
+/// negative when "the negative timing check option is enabled"
+/// (`Options.negative_timing`): then the signed limit, an i64's bits, which
+/// `solveNegative` turns into delays and adjusted limits. Without it,
+/// §15.5.4: the limit is 0, and the delayed signals are copies
+/// (`delayedDrivers`).
 fn signedLimit(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!u64 {
-    return @intCast(@max(try limitTicks(r, t, e), 0));
+    const v = try limitTicks(r, t, e);
+    return if (r.opts.negative_timing) @bitCast(v) else @intCast(@max(v, 0));
+}
+
+/// IEEE 1364-2005 §15.5.1 with the negative timing option on: in each
+/// instance whose `$setuphold`/`$recrem` checks have a negative limit, every
+/// signal those checks name gets one delay ("a single delayed signal",
+/// Example 2), the least non-negative ones that leave every adjusted limit
+/// at least one tick. A check with a window `S` before its reference and
+/// `H` after it, its reference delayed `dR` and data `dD`, keeps the same
+/// window over the delayed signals with `S + dR - dD` and `H - dR + dD`; the
+/// tick keeps §15.5.1 a)'s end points "exclusive": an event on the original
+/// window's edge lands on the adjusted one, never on the reference itself,
+/// where the check would judge it simultaneous. The LRM's feasibility rule
+/// is the same margin, "removal_limit + recovery_limit > (simulation unit of
+/// precision)". When no
+/// delays exist (`S + H < 0` around a cycle), "changing the smallest negative
+/// limit value to 0" and solving again (W1162). The delays reach the checks
+/// in `changed`; the limits land in `Tchk.lim`.
+/// ponytail: the explicit delayed nets (arguments 8 and 9) stay zero-delay
+/// copies, and SDF or vpi_put_delays limits set later are not solved again.
+pub fn solveNegative(r: *Run) Error!void {
+    if (!r.opts.negative_timing) return;
+    const checks = r.tchks.items;
+    const window = struct {
+        fn of(c: Tchk) bool {
+            return c.kind == .setuphold or c.kind == .recrem;
+        }
+        fn signed(v: u64) i64 {
+            return @bitCast(v);
+        }
+    };
+    var any = false;
+    for (checks) |c| if (window.of(c) and (window.signed(c.lim[0]) < 0 or window.signed(c.lim[1]) < 0)) {
+        any = true;
+    };
+    if (!any) return;
+    try r.tchk_delay.appendNTimes(r.arena, .{ 0, 0 }, checks.len);
+    var done: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (checks) |c0| {
+        if (!window.of(c0) or done.contains(c0.scope)) continue;
+        try done.put(r.arena, c0.scope, {});
+        const scope = c0.scope;
+        if (!for (checks) |c| {
+            if (c.scope == scope and window.of(c) and (window.signed(c.lim[0]) < 0 or window.signed(c.lim[1]) < 0)) break true;
+        } else false) continue;
+        // The scope's signals, one per (slot, select).
+        const Key = struct { slot: u32, lo: u32, width: u32 };
+        var sigs: std.ArrayList(Key) = .empty;
+        var at: std.ArrayList([2]u32) = .empty; // per check of the scope: its two signal indices
+        var rows: std.ArrayList(u32) = .empty; // the scope's checks
+        for (checks, 0..) |c, i| {
+            if (c.scope != scope or !window.of(c)) continue;
+            var pair: [2]u32 = undefined;
+            for (c.ev, 0..) |ev, k| {
+                const key: Key = .{ .slot = ev.slot, .lo = ev.lo, .width = ev.width };
+                pair[k] = for (sigs.items, 0..) |s, j| {
+                    if (std.meta.eql(s, key)) break @intCast(j);
+                } else blk: {
+                    try sigs.append(r.arena, key);
+                    break :blk @intCast(sigs.items.len - 1);
+                };
+            }
+            try at.append(r.arena, pair);
+            try rows.append(r.arena, @intCast(i));
+        }
+        const d = try r.arena.alloc(i64, sigs.items.len);
+        // One retry per negative limit at most, each zeroing one, then one
+        // without the margin, which a set with no negative limit always meets.
+        var eps: i64 = 1;
+        var tries: usize = 2 * rows.items.len + 2;
+        while (tries > 0) : (tries -= 1) {
+            @memset(d, 0);
+            // Bellman-Ford over `dR - dD >= -S` and `dD - dR >= -H`: a
+            // feasible system settles within one round per signal.
+            var settled = false;
+            var round: usize = 0;
+            while (round <= sigs.items.len) : (round += 1) {
+                var moved = false;
+                for (rows.items, at.items) |i, pair| {
+                    const s = window.signed(checks[i].lim[0]);
+                    const h = window.signed(checks[i].lim[1]);
+                    if (d[pair[1]] - s + eps > d[pair[0]]) {
+                        d[pair[0]] = d[pair[1]] - s + eps;
+                        moved = true;
+                    }
+                    if (d[pair[0]] - h + eps > d[pair[1]]) {
+                        d[pair[1]] = d[pair[0]] - h + eps;
+                        moved = true;
+                    }
+                }
+                if (!moved) {
+                    settled = true;
+                    break;
+                }
+            }
+            if (settled) break;
+            // §15.5.1: "changing the smallest negative limit value to 0".
+            var low: ?struct { i: u32, k: usize, v: i64 } = null;
+            for (rows.items) |i| for (0..2) |k| {
+                const v = window.signed(checks[i].lim[k]);
+                if (v < 0 and (low == null or v < low.?.v)) low = .{ .i = i, .k = k, .v = v };
+            };
+            const l = low orelse {
+                std.debug.assert(eps != 0); // with no margin and no negative limit, d = 0 settles
+                eps = 0;
+                continue;
+            };
+            checks[l.i].lim[l.k] = 0;
+            const start = r.starts[@min(checks[l.i].tok, r.starts.len - 1)];
+            try r.bag.add(r.stage(), .W1162, .{ .start = start, .end = start }, "the limits of the timing checks on this instance's signals cannot all be met by delayed signals; the most negative one is set to 0 (IEEE 1364-2005 §15.5.1)", .{});
+        }
+        for (rows.items, at.items) |i, pair| {
+            const s = window.signed(checks[i].lim[0]);
+            const h = window.signed(checks[i].lim[1]);
+            const dr = d[pair[0]];
+            const dd = d[pair[1]];
+            std.debug.assert(s + dr - dd >= 0 and h - dr + dd >= 0);
+            checks[i].lim = .{ @intCast(s + dr - dd), @intCast(h - dr + dd) };
+            r.tchk_delay.items[i] = .{ @intCast(dr), @intCast(dd) };
+        }
+    }
+    // Every other check is non-negative already; its bits are its value.
+    for (checks) |c| std.debug.assert(!window.of(c) or (window.signed(c.lim[0]) >= 0 and window.signed(c.lim[1]) >= 0));
 }
 
 /// Tables 15-8 and 15-9: an event_based_flag or remain_active_flag, a
@@ -463,8 +588,21 @@ pub fn changed(r: *Run, slot: u32, before: Int.Bit, after: Int.Bit) Error!void {
         const i = code / 2;
         const k: usize = code % 2;
         const bit = transitionOf(r, &r.tchks.items[i].ev[k], before, after) orelse continue;
+        // §15.5.1 a delayed signal: the check sees the change later.
+        const delay = if (r.tchk_delay.items.len != 0) r.tchk_delay.items[i][k] else 0;
+        if (delay != 0) {
+            _ = try exec.enqueue(r, .{ .tchk_event = .{ .code = code, .bit = bit } }, delay, false);
+            continue;
+        }
         try judge(r, i, k, bit);
     }
+}
+
+/// §15.5.3: a change `changed` delayed reaches its check now, "when the
+/// delayed signals as measured by the adjusted timing check values are in
+/// violation".
+pub fn delivered(r: *Run, code: u32, bit: u8) Error!void {
+    try judge(r, code / 2, code % 2, bit);
 }
 
 /// The §15.4 transition (`Ast.TimingCheck.transition`, 0 for none) that a
@@ -818,6 +956,47 @@ test "§15.5.1: with non-negative limits a delayed signal is its signal undelaye
         \\  end
         \\endmodule
     , "1 0 1\n2 1 1\n");
+}
+
+test "§15.5.3: with negative timing on, a shared delayed reference detects a violation late" {
+    // The suite's negative_timing_notifier_toggles_at_delayed_detection.v,
+    // derived by hand: `$setuphold(posedge clk, d, -2, 5, na)` needs clk's
+    // one delayed signal at least 2 ticks (1 more for the margin) after d's,
+    // so the second check, `$setuphold(posedge clk, e, 3, 3, nb)`, sees e's
+    // change at 99 against clk's edge at 100 only at the delayed edge, after
+    // 101. With the option off the limit is 0 and the violation is at 100.
+    const src =
+        \\`timescale 1ns/1ns
+        \\module c(input clk, input d, input e);
+        \\  reg na, nb;
+        \\  initial #1 begin na = 0; nb = 0; end
+        \\  specify
+        \\    $setuphold(posedge clk, d, -2, 5, na);
+        \\    $setuphold(posedge clk, e, 3, 3, nb);
+        \\  endspecify
+        \\endmodule
+        \\module t;
+        \\  reg clk = 0, d = 0, e = 0;
+        \\  c u(clk, d, e);
+        \\  initial begin
+        \\    #99 e = 1;
+        \\    #1 clk = 1;
+        \\    #1 $display("%0d %b %b", $time, u.na, u.nb);
+        \\    #39 $display("%0d %b %b", $time, u.na, u.nb);
+        \\  end
+        \\endmodule
+    ;
+    for ([_]struct { on: bool, want: []const u8 }{
+        .{ .on = true, .want = "101 0 0\n140 0 1\n" },
+        .{ .on = false, .want = "101 0 1\n140 0 1\n" },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var bag = @import("diag").Bag.init(arena.allocator());
+        var out = std.Io.Writer.Allocating.init(arena.allocator());
+        try root.run(arena.allocator(), src, .{ .negative_timing = case.on }, &bag, &out.writer);
+        try std.testing.expectEqualStrings(case.want, out.written());
+    }
 }
 
 test "VD-103: a notifier a violation finds at x takes 1" {

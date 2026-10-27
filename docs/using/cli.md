@@ -139,6 +139,7 @@ These matter to `--check`, `--emit-exe`, `--run` and `--emit-so`.
 | `--schedule=static\|fifo` | order of same-time events: combinational logic levelized (`static`, the default; IEEE 1364-2005 §11.4.1) or the interpreter's order |
 | `--state=auto\|2\|4` | `auto` (default) simulates 4-state until no x or z is live, then 2-state; `4` always 4-state; `2` makes every x or z a 0, which is **not** IEEE 1364 4-state logic (E1101) |
 | `--two-state` | `--state=2` |
+| `--negative-timing` | IEEE 1364-2005 §15.5.4's option: `$setuphold` and `$recrem` take negative limits, through one delayed copy per signal per instance (§15.5.1); off, a negative limit is 0 |
 | `--event-budget=N` | events allowed at one time step before a zero-delay loop is refused (default 10000000) |
 
 ## `--emit-verilog`

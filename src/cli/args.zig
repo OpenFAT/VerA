@@ -78,6 +78,8 @@ pub const usage_text =
     \\                          prints (auto, the default); every x or z is 0,
     \\                          NOT IEEE 1364 4-state logic (2, E1101); 4-state
     \\  --two-state             --state=2
+    \\  --negative-timing       let a .v design's $setuphold and $recrem take
+    \\                          negative limits (IEEE 1364 §15.5.4's option)
     \\  --event-budget=N        a .v design's events at one time step before a
     \\                          zero-delay loop is refused (default 10000000)
     \\  --run                   run a .v initial-process program, or an analog testbench
@@ -237,6 +239,8 @@ pub const Cli = struct {
     logic: native.Logic = .auto,
     /// `--state=` or `--two-state`, whichever was typed last.
     logic_flag: ?[]const u8 = null,
+    /// `--negative-timing`: IEEE 1364-2005 §15.5.4's invocation option.
+    negative_timing: bool = false,
 
     /// Frees the lists and the lint levels; `gpa` is the one `parse` was given.
     pub fn deinit(cli: *Cli, gpa: std.mem.Allocator) void {
@@ -356,6 +360,8 @@ pub fn parse(cli: *Cli, gpa: std.mem.Allocator, args: anytype, out: *Io.Writer, 
                 try err.print("error: `{s}`: not Debug|ReleaseSafe|ReleaseFast|ReleaseSmall\n", .{arg});
                 return 2;
             };
+        } else if (std.mem.eql(u8, arg, "--negative-timing")) {
+            cli.negative_timing = true;
         } else if (std.mem.eql(u8, arg, "--two-state")) {
             cli.logic = .two;
             cli.logic_flag = arg;
@@ -855,6 +861,12 @@ test "parse: --state/--two-state, --schedule and --zig-backend" {
     _ = try l.read(&.{"--two-state"});
     try testing.expectEqual(Logic.two, l.cli.logic);
     try expectRefused(&.{"--state=3"}, "error: `--state=3`: not auto|2|4\n");
+
+    // IEEE 1364-2005 §15.5.4's option: off unless typed.
+    _ = try l.read(&.{});
+    try testing.expect(!l.cli.negative_timing);
+    _ = try l.read(&.{"--negative-timing"});
+    try testing.expect(l.cli.negative_timing);
 
     _ = try l.read(&.{"--schedule=fifo"});
     try testing.expectEqual(native.Schedule.fifo, l.cli.schedule);

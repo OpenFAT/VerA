@@ -111,6 +111,10 @@ pub const Options = struct {
     params: []const @import("base").ParamOverride = &.{},
     /// IEEE 1364-2005 §28.2 decryption keys (`vera --protect-keys`).
     protect_keys: Front.Preprocessor.protect.Keys = .{},
+    /// IEEE 1364-2005 §15.5.4's invocation option (`vera --negative-timing`):
+    /// `$setuphold` and `$recrem` take negative limits, through delayed
+    /// signals (`tchk.solveNegative`). Off, a negative limit is 0.
+    negative_timing: bool = false,
 };
 
 /// Where statement `stmt` of instance `scope` is reached: its first
@@ -750,6 +754,10 @@ pub const Run = struct {
     tchks: std.ArrayList(tchk.Tchk) = .empty,
     /// The checks a watched slot wakes, each as `check * 2 + event`.
     tchk_by_slot: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty,
+    /// IEEE 1364-2005 §15.5.1 how long, in ticks, each check's reference [0]
+    /// and data [1] signal is delayed, parallel to `tchks`; empty when no
+    /// negative limit made one (`tchk.solveNegative`).
+    tchk_delay: std.ArrayList([2]u64) = .empty,
     /// Called after timing check `check` (a `tchks` row) reported a
     /// violation. The VPI installs it (VAMS 12.31.4 cbTchkViolation);
     /// nothing in the engine reads it.
@@ -974,6 +982,7 @@ pub const Run = struct {
                 // probing monitor was asked for.
                 .analog_point => {},
                 .tchk_expiry => |t| try tchk.expired(r, t.check, t.gen),
+                .tchk_event => |t| try tchk.delivered(r, t.code, t.bit),
                 .tran_switch => |at| {
                     const t = &r.trans[at];
                     t.pending = null;
@@ -2041,6 +2050,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     // (no event, which the native emitter would refuse). `rt.State.initIn`
     // does the same for its `%v` signals.
     for (r.nets, 0..) |n, k| if (r.netCold(n).trans.len != 0) try resolution.resolve(&r, @intCast(k));
+    try tchk.solveNegative(&r);
     try tchk.arm(&r);
     try waiters.buildFanout(&r);
     try driver.arm(&r);

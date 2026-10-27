@@ -22,6 +22,14 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **`--negative-timing`**, IEEE 1364-2005 §15.5.4's option: `$setuphold`
+  and `$recrem` take negative limits. Each instance's signals get the least
+  delays that keep every adjusted limit a tick or more (§15.5.1), the
+  checks see their changes that much later, and so their notifiers toggle
+  at the delayed detection (§15.5.3); limits no delays can meet zero the
+  most negative one (W1162). Off, a negative limit is still 0
+  (`negative_setuphold_window_shifts.v`, `negative_recrem_window_shifts.v`,
+  `negative_timing_notifier_toggles_at_delayed_detection.v`).
 - **The flow into an instance's port is read exactly** (§5.4.3, §3.12.1,
   §6.7.1): a port whose flow the instance itself reads (`I(<a>)`, `I(pb)`),
   or the module instantiating it reads (`I(<u.a>)`, `I(u.branch(<a>))`),

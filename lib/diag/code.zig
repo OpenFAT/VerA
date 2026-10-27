@@ -471,6 +471,9 @@ pub const Code = enum(u16) {
     /// IEEE 1364-2005 §12.2.2.1: more ordered parameter values than the
     /// module has parameters; the extra ones are ignored.
     W1161,
+    /// IEEE 1364-2005 §15.5.1: negative timing check limits no delayed
+    /// signals can meet; the most negative one is set to 0.
+    W1162,
     /// IEEE 1364-2005 §15: a timing check reported a violation at run time.
     W1199,
     W1050,
@@ -7541,6 +7544,11 @@ fn infoOf(c: Code) Info {
             .title = "a $readmem load terminated",
             .lrm = "IEEE 1364-2005 17.2.9",
             .explain = "A `$readmemb`/`$readmemh` load could not go on: a file address outside the start..finish range the task gives (§17.2.9: \"an error message is issued, and the load operation is terminated\"), a word or `@` address that is not a number in the task's radix (the file \"shall contain only\" white space, comments and such numbers), a file that cannot be opened or read, a file name with an x or z bit, a start or finish address that is x, z or outside the memory. VerA issues this message and stops that load: the words loaded before it stay, none after it is loaded, and the simulation goes on. The run's exit status is untouched, as iverilog's is (specification/Vague_Decisions.md VD-134). With no start or finish argument an address outside the memory is W1156 instead.",
+        },
+        .W1162 => .{
+            .title = "negative timing check limits that cannot all be met",
+            .lrm = "IEEE 1364-2005 15.5.1",
+            .explain = "With --negative-timing, $setuphold and $recrem take negative limits through delayed copies of their signals, one delay per signal per instance, chosen so every adjusted limit is non-negative. A set of limits whose windows contradict each other (a setup and hold summing below zero around a cycle of signals) has no such delays. §15.5.1: \"the problem shall be resolved by changing the smallest negative limit value to 0\"; VerA does that, warns once per change, and solves again.",
         },
         .W1161 => .{
             .title = "extra ordered parameter values ignored",

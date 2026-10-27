@@ -44,6 +44,8 @@ usage: vera [options] FILE.va
                           prints (auto, the default); every x or z is 0,
                           NOT IEEE 1364 4-state logic (2, E1101); 4-state
   --two-state             --state=2
+  --negative-timing       let a .v design's $setuphold and $recrem take
+                          negative limits (IEEE 1364 §15.5.4's option)
   --event-budget=N        a .v design's events at one time step before a
                           zero-delay loop is refused (default 10000000)
   --run                   run a .v initial-process program, or an analog testbench
