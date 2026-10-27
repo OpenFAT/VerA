@@ -319,8 +319,8 @@ pub const Gen = struct {
     /// (`cg_display.planSay`), in `say_sites` order. Empty otherwise.
     say: []const cg_display.SaySite = &.{},
     /// §9.4.1/§9.5.9 a printing artifact's display unit runs in passes
-    /// (`contract.SayPass`): set when it has a `$debug` or `$fdebug`, the
-    /// tasks that show output at every iteration (`cg_display.planPasses`).
+    /// (`contract.SayPass`): set when it has a `$debug`, `$fdebug` or
+    /// `$fatal`, the tasks that run at every iteration (`cg_display.planPasses`).
     passes: bool = false,
     /// §5.2.1 the calls an `analog initial` block makes: a pass performs its
     /// §9.5 and `$debug`/`$fdebug` ones once per analysis, and a §9.7

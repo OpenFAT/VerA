@@ -413,8 +413,8 @@ pub fn planSay(g: *Gen) Error![]const SaySite {
 }
 
 /// §9.4.1/§9.5.9 sets `g.passes` when a printing artifact's display unit has
-/// a task that shows output at every iteration of the solver, `$debug` or
-/// `$fdebug`, and collects the calls an `analog initial` block makes into
+/// a task that runs at every iteration of the solver, `$debug`, `$fdebug` or
+/// §9.7.3's `$fatal`, and collects the calls an `analog initial` block makes into
 /// `g.init_calls` (`callee.isFileCall`'s through `Lower.sequenceFileCall`'s
 /// `$itor` carrier). Such a unit takes a `comptime pass: contract.SayPass`
 /// and gates each call on it (`gen_call.gateOpen`).
@@ -425,7 +425,9 @@ pub fn planPasses(g: *Gen) Error!void {
         // §5.10.2/§9.7: `$finish`/`$stop` also need the pass gate, so the
         // tasks after either of them in the same chain do not run (the halt
         // itself happens in the display wrapper's `zFinishPass`).
-        if (c == .@"$debug" or c == .@"$fdebug" or c == .@"$finish" or c == .@"$stop") g.passes = true;
+        // §9.7.3 `$fatal` "terminates the simulation without checking whether
+        // the iteration would be rejected": it runs at every iterate too.
+        if (c == .@"$debug" or c == .@"$fdebug" or c == .@"$fatal" or c == .@"$finish" or c == .@"$stop") g.passes = true;
         if (!d.analog_initial or d.val == .undef) continue;
         var def = g.mir.valueDef(g.an.rv(d.val));
         if (def != .inst_result) continue;

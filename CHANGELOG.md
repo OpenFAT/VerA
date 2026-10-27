@@ -22,6 +22,11 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **`$fatal` runs on every Newton iterate** (§9.7.3: it "terminates the
+  simulation without checking whether the iteration would be rejected"),
+  not only at the accepted point; a `$fatal` with no `$debug` or `$fdebug`
+  beside it was skipped on a vetoed iterate
+  (`fatal_on_vetoed_iterate_terminates.va`).
 - **The nix package's analog VPI apps no longer segfault.** The sandbox has
   no `/usr/bin/env`, so Zig built `libvera-vpi.a` for static musl, where
   `std.DynLib` is `ElfDynLib`: it applies no relocations, and

@@ -13452,6 +13452,28 @@ pub const codegen_tests = struct {
         try std.testing.expect(std.mem.find(u8, dev, "displayPass") == null);
     }
 
+    test "codegen: §9.7.3 a `$fatal` alone still runs on every iterate" {
+        // "$fatal terminates the simulation without checking whether the
+        // iteration would be rejected": the unit runs in passes for it even
+        // with no `$debug` or `$fdebug` beside it, and a vetoed iterate
+        // performs it.
+        var h: Harness = undefined;
+        try Harness.run(std.testing.allocator,
+            \\module f(p, n);
+            \\  inout p, n;
+            \\  electrical p, n;
+            \\  analog begin
+            \\    if (V(p, n) > 0.5) $fatal(1, "too high");
+            \\    I(p, n) <+ V(p, n);
+            \\  end
+            \\endmodule
+        , &h);
+        defer h.deinit();
+        const exe = try h.genDisplay(std.testing.allocator);
+        try std.testing.expect(std.mem.find(u8, exe, "pub fn displayPass(") != null);
+        try std.testing.expect(std.mem.find(u8, exe, "(if (zFinish == 0 and (pass != .accepted)) ") != null);
+    }
+
     test "codegen: §9.4.6 a display task under an `if` prints inside its arm" {
         // A guarded display call does not dominate the end-of-block chain root,
         // and an unchained call is dead code the unit slice drops. Lowering carries
