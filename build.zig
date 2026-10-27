@@ -98,7 +98,11 @@ pub fn build(b: *Build) void {
     const all_step = b.step("build-all", "Compile every artifact for -Dtarget without running one");
     all_step.dependOn(&exe.step);
     const gen_exe = if (target.query.isNative()) exe else cliExe(b, b.graph.host, optimize, defineModules(b, b.graph.host, false), "vera-gen", true);
-    const va_gen: Gen = .{ .exe = gen_exe, .cached = b.option(bool, "va-cache", "Regenerate a test device's Zig only when its source, its `include`s or its arguments change, not when vera does (default true; false: every vera change regenerates)") orelse true };
+    // One copy for every generating run: a copy per run rewrote the binary
+    // while another run executed it (ETXTBSY, FileBusy).
+    const gen_copy = b.addUpdateSourceFiles();
+    gen_copy.addCopyFileToSource(gen_exe.getEmittedBin(), b.fmt("zig-out/gen/{s}", .{gen_exe.out_filename}));
+    const va_gen: Gen = .{ .exe = gen_exe, .copy = gen_copy, .cached = b.option(bool, "va-cache", "Regenerate a test device's Zig only when its source, its `include`s or its arguments change, not when vera does (default true; false: every vera change regenerates)") orelse true };
 
     const fmt = b.addFmt(.{ .paths = b.pathList(&.{ "lib", "src", "tests", "tools", "build.zig" }), .check = true });
     test_step.dependOn(&fmt.step);
@@ -599,7 +603,7 @@ pub fn build(b: *Build) void {
 
 /// The vera that generates test devices, and whether its runs are keyed on
 /// their inputs alone (`-Dva-cache`).
-const Gen = struct { exe: *Build.Step.Compile, cached: bool };
+const Gen = struct { exe: *Build.Step.Compile, copy: *Build.Step.UpdateSourceFiles, cached: bool };
 
 /// A run of the generating vera on `src` (build-root relative). Cached, vera
 /// runs from a fixed copy under zig-out/gen named by a plain string, so the Run's
@@ -609,11 +613,8 @@ const Gen = struct { exe: *Build.Step.Compile, cached: bool };
 /// `-Dva-cache=false`.
 fn genRun(b: *Build, gen: Gen, src: []const u8) *Run {
     if (!gen.cached) return b.addRunArtifact(gen.exe);
-    const copy = b.fmt("zig-out/gen/{s}", .{gen.exe.out_filename});
-    const usf = b.addUpdateSourceFiles();
-    usf.addCopyFileToSource(gen.exe.getEmittedBin(), copy);
-    const run = b.addSystemCommand(&.{b.fmt("./{s}", .{copy})});
-    run.step.dependOn(&usf.step);
+    const run = b.addSystemCommand(&.{b.fmt("./zig-out/gen/{s}", .{gen.exe.out_filename})});
+    run.step.dependOn(&gen.copy.step);
     addIncludes(b, run, src);
     // The device embeds contract.zig's `vera_version` and targets its
     // contract: a release bump or a contract edit regenerates it.
