@@ -1189,6 +1189,12 @@ fn infoOf(c: Code) Info {
             \\Ignoring the directive instead would compile ciphertext as
             \\Verilog, or cleartext as if nobody had asked for it to be hidden.
             \\
+            \\A model whose cleartext holds a `decrypt_license` or
+            \\`runtime_license` pragma is refused too (§28.4.28.2, §28.4.29.2:
+            \\"if the application is not licensed ... the application shall
+            \\produce an error message"): VerA loads no license library, so it
+            \\is never licensed.
+            \\
             \\Metadata such as author or comment has an action only inside an
             \\envelope, so outside one it is accepted with no effect. Any other
             \\pragma name still has no effect.

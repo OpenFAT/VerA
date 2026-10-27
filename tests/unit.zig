@@ -9734,6 +9734,39 @@ pub const preprocessor_tests = struct {
         try testing.expectEqual(diag.Code.E0153, bag3.at(0).code);
     }
 
+    test "IEEE 1364-2005 §28.4.28.2/§28.4.29.2: a model that needs a license is refused" {
+        // "If the application is not licensed ... no decryption shall be
+        // performed / execution shall not begin, and the application shall
+        // produce an error message": VerA loads no license library, so a
+        // decrypt_license or runtime_license pragma in the cleartext is E0146.
+        // Oracle: openssl. `printf '`pragma protect <L>_license=(library=
+        // "none.so",entry="chk",feature="f",match=1)\nwire w;\n' | openssl enc
+        // -des-cbc -K 0123456789abcdef -iv 1234567890abcdef | base64`.
+        const blocks = [_][]const u8{
+            "CEwlPH76i0/T4ErznDzLTXiO/fE6M6hG3GhSHNfS7/xDln8Ij9YhlGvDdSAiWfxQwSrnuASTQUpW74zwFRsSJn9W7P96MsHSpspQji6DPl8OZgiasP3VMkEDmOyydfAs",
+            "CEwlPH76i0/T4ErznDzLTf2CoUC4gdarIYnP3ZIMKbeRxjsdv/x8HzRzbmiT/cbcKjOyXX+w/u5DBgRZCS+jhtg4w9j0XU9Yjek/BBdWArASDFx6mvaKTKeskF+d+fkK",
+        };
+        const keys: Preprocessor.protect.Keys = .{
+            .iv = .{ 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef },
+            .keys = &.{.{ .owner = "o", .name = "k", .key = .{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef } }},
+        };
+        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        for (blocks) |blk| {
+            const src = try std.fmt.allocPrint(arena,
+                \\`pragma protect data_keyowner="o", data_keyname="k", data_method="des-cbc", begin_protected
+                \\`pragma protect encoding=(enctype="base64", bytes=96), data_block
+                \\{s}
+                \\`pragma protect end_protected
+                \\
+            , .{blk});
+            var bag: diag.Bag = .init(arena);
+            try testing.expectError(error.PreprocessFailed, process(arena, src, .{ .std_defs = false, .bag = &bag, .protect_keys = keys }));
+            try testing.expectEqual(diag.Code.E0146, bag.at(0).code);
+        }
+    }
+
     test "§10.4 macro argument brackets must match their openers" {
         // Matched nesting of all three bracket kinds is opaque to the comma split.
         try expectPp("\n{[(a)],b}", "`define SQ(x) x\n`SQ({[(a)],b})");

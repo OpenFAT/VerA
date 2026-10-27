@@ -305,7 +305,28 @@ fn decrypt(arena: std.mem.Allocator, keys: Keys, b: *const Body) !Opened {
         } else return failf(arena, .E0146, "digest_method=\"{s}\": VerA checks \"md5\" and \"sha1\"", .{digest});
         if (!std.mem.eql(u8, got, want)) return failf(arena, .E0153, "the digest_block does not match the decrypted data_block ({s})", .{digest});
     }
+    // §28.4.28.2/§28.4.29.2: a model that needs a license is not decrypted
+    // or run unless "the application is licensed". VerA loads no license
+    // library, so it is never licensed.
+    // ponytail: refused outright; a host-provided license provider is the
+    // upgrade (the front end also builds for wasm, so no dlopen here).
+    if (licenseNeeded(plain)) |which|
+        return failf(arena, .E0146, "{s}: VerA loads no license library, so the model is not licensed", .{which});
     return .{ .text = plain };
+}
+
+/// The §28.4.28/§28.4.29 license pragma keyword in `plain`'s first
+/// `` `pragma protect `` line naming one, or null.
+fn licenseNeeded(plain: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, plain, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimStart(u8, raw, " \t");
+        const rest = std.mem.cutPrefix(u8, line, "`pragma") orelse continue;
+        const body = std.mem.cutPrefix(u8, std.mem.trimStart(u8, rest, " \t"), "protect") orelse continue;
+        for ([_][]const u8{ "decrypt_license", "runtime_license" }) |kw|
+            if (std.mem.startsWith(u8, std.mem.trimStart(u8, body, " \t"), kw)) return kw;
+    }
+    return null;
 }
 
 /// Decodes `blk` and decrypts it under `key`, removing the padding.

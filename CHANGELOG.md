@@ -22,6 +22,10 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **A protected model that needs a license is refused** (E0146,
+  IEEE 1364-2005 §28.4.28.2/§28.4.29.2): VerA loads no license library, so
+  a `decrypt_license` or `runtime_license` pragma in the cleartext means
+  it is not licensed. Before, VerA decrypted and ran the model anyway.
 - **A terminated `$readmem` load fires VPI's `cbError`** (VAMS 12.31.4,
   IEEE 1364-2005 §17.2.9 "an error message is issued"), with
   `vpi_chk_error` reporting it inside the callback; the run still goes on
