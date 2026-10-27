@@ -58,6 +58,8 @@ const Keyword = enum {
     @"discipline-resolution",
     display,
     @"fd-exempt",
+    stdout,
+    expect,
 };
 
 /// Parses the `//!` lines of RAW source, before the preprocessor deletes
@@ -281,6 +283,10 @@ pub fn parse(arena: Allocator, source: []const u8) Error!Directives {
             .@"discipline-resolution" => d.discipline_resolution = std.meta.stringToEnum(@TypeOf(d.discipline_resolution), rest) orelse return error.BadSyntax,
             // §9.4 `vera --emit-exe --display=record`: the device's `say`.
             .display => d.display_record = if (std.mem.eql(u8, rest, "record")) true else return error.BadSyntax,
+            // The conformance harness's own verdicts (`stdout TEXT`, `expect
+            // stdout GOLD`, `expect vcd OUT == GOLD`): it reads them, `--run`
+            // does not. Checked nonempty, then dropped.
+            .stdout, .expect => if (rest.len == 0) return error.BadSyntax,
             .@"fd-exempt" => {
                 // As `xfail`: the reason is the claim, so it is required.
                 if (rest.len == 0) return error.BadSyntax;
@@ -716,6 +722,8 @@ test "every keyword has a well-formed line, and its empty operand is a flag or r
             .@"discipline-resolution" => .{ .good = "//! discipline-resolution detail", .empty = error.BadSyntax },
             .display => .{ .good = "//! display record", .empty = error.BadSyntax },
             .@"fd-exempt" => .{ .good = "//! fd-exempt a vera_nodiff region", .empty = error.BadSyntax },
+            .stdout => .{ .good = "//! stdout b7-analog-time: t=0.0025", .empty = error.BadSyntax },
+            .expect => .{ .good = "//! expect vcd out.vcd == gold.vcd", .empty = error.BadSyntax },
         };
         _ = try parse(arena, c.good);
         const line = try arena.print("//! {t}\n", .{kw});

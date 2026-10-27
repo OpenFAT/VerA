@@ -17,6 +17,9 @@
   `op_vars`, their names, and `opVars(S, x, ...)`, their values when the
   analog block runs at `x`, read off a slice of the core as `noisePsd` is
   (OmarSiwy/ESPice#236). Not yet in `--emit-osdi`.
+- **`--run` accepts the conformance harness's `//! stdout` and `//! expect`
+  lines** instead of refusing them as an unknown directive; the harness
+  reads them, `--run` drops them. Seven ch09 report tests ran into it.
 
 ## v0.20.0 — 2026-10-25
 
