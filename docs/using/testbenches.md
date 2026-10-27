@@ -158,12 +158,12 @@ goes into the suite under its language directory
 | `//! checks N` | exactly N `ok=` verdicts must be printed, all `ok=1` |
 | `//! exit N` | the testbench's expected exit status |
 | `//! lrm 5.6.1` | the clause of the [LRM](../specification/VAMS-LRM-2023.pdf) the fixture tests |
-| `//! lrm 5.6.1:2` | one normative sentence of the clause (the second), a row of the requirement ledger `tests/conformance/vera/ledger/OBLIGATIONS.tsv` |
+| `//! lrm 5.6.1:2` | one normative sentence of the clause (the second) |
 | `//! inherited IEEE 1364-2005 9.2` | the same, for a clause the LRM inherits from IEEE 1364 |
 | `//! fd-exempt REASON` | the derivative and finiteness certificates (`benchmark -- --certify`) do not apply, for the stated reason |
 
 A known gap, where the fixture states the LRM correctly and VerA does not
-meet it yet, is not a directive: it is a line of the suite's `vera/xfail`,
+meet it yet, is not a directive: it is a line of VerA's `tests/suite.xfail`,
 the fixture's path and then `# reason`. The suite fails if it unexpectedly
 passes.
 

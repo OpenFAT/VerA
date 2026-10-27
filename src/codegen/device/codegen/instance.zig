@@ -269,8 +269,7 @@ pub fn emitInstance(self: *Gen) Error!void {
         // path: write it in `initState`, which already takes `*Instance`.
         try self.hist.append(self.arena, self.names.held_names[i]);
         // Why it is held (`HeldVar.Why`), so a reader of the device can tell
-        // a latch from retention: tools/external_vampyre.py compares the
-        // `retained` ones with a linter's hidden state.
+        // a latch from retention.
         const note = try self.arena.print("// §5.10 held across evaluations: {t}", .{h.why});
         if (h.array != none_u32) {
             try emitHeldArrayField(self, h, self.names.held_names[i], note);

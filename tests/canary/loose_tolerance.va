@@ -1,0 +1,12 @@
+// CANARY (perturb): the tolerance, 0.1 V on 1.25 V, is 8% wide, so moving the
+// want by 0.1% leaves the check passing. `--perturb` must call it LOOSE.
+//! lrm 5.6.3
+//! bias V(p) = 1.5, V(n) = 0.25
+`include "check.vh"
+module canary_loose_tolerance(p, n);
+  inout p, n; electrical p, n;
+  analog begin
+    `CHECK("branch potential, loosely", V(p, n), 1.25, 0.1);
+    I(p, n) <+ V(p, n) / 1k;
+  end
+endmodule

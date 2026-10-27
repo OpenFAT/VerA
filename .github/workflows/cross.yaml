@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: true  # tests/conformance/vera/beh_verilog: the fixture compared
+          submodules: true
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
       - name: Build vera.wasm and native vera
         run: |
@@ -54,7 +54,7 @@ jobs:
       - name: vera.wasm and native vera emit the same Zig
         run: |
           set -euo pipefail
-          f=tests/conformance/vera/beh_verilog/rc_charge.va
+          f=tests/beh_verilog/rc_charge.va
           nix shell nixpkgs#wasmtime -c wasmtime --dir . out/wasm/bin/vera.wasm --allow=W0650 --emit-zig "$f" -o wasm.zig
           out/native/bin/vera --allow=W0650 --emit-zig "$f" -o native.zig
           cmp wasm.zig native.zig

@@ -8,7 +8,7 @@
     flake-utils.url = "github:numtide/flake-utils";
     zig-overlay.url = "github:mitchellh/zig-overlay";
     zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
-    # The conformance suite: its `conform` harness and OpenVAF-Reloaded.
+    # The conformance suite: its `conform` harness.
     conformance.url = "github:OmarSiwy/VAMS-Conformance-Suite";
     conformance.inputs.nixpkgs.follows = "nixpkgs";
     conformance.inputs.flake-utils.follows = "flake-utils";
@@ -186,9 +186,7 @@
         # Drop what this system cannot build (availableOn alone misses `broken`).
         available = lib.filter (p: lib.meta.availableOn pkgs.stdenv.hostPlatform p && !(p.meta.broken or false));
 
-        # OpenVAF-Reloaded, the reference Verilog-A compiler, and the suite's
-        # harness, both from the conformance suite's flake.
-        openvaf = conformance.packages.${system}.openvaf-r or null;
+        # The suite's harness, from the conformance suite's flake.
         conform = conformance.packages.${system}.conform;
 
         # yosys gated by hand: its check inputs hold iverilog, refused on 26.05's x86_64-darwin.
@@ -198,13 +196,11 @@
               pkgs.iverilog
               pkgs.verilator
               pkgs.ngspice
-              pkgs.xyce
               pkgs.python3
               conform
             ]
             ++ lib.optional (system != "x86_64-darwin") pkgs.yosys
-          )
-          ++ lib.optional (system == "x86_64-linux") openvaf;
+          );
       in
       {
         devShells = rec {

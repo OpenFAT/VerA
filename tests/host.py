@@ -13,7 +13,7 @@ test`). The profiles (`PROFILES` below, also under `zig build test`) need a real
 records a skip, never a pass. `tests/README.md` has the adapter protocol.
 `selftest` feeds the oracles wrong observations and checks they refuse; it
 is never conformance evidence. Each runner records its results as
-`<artifact>.test.<method>` rows, the names `SPECIALIZED.tsv` registers.
+`<artifact>.test.<method>` rows.
 """
 import argparse
 import copy

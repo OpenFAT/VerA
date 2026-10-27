@@ -3,8 +3,8 @@
 //! `pub` decl is otherwise never type-checked), the unit tests that reach a
 //! module only through its public API (one namespace per module; a test of a
 //! file's private declarations stays beside that file), and the claims that
-//! span two modules neither of which imports the other: `contract_names`,
-//! `exhaustive_tests` and `citations_tests`.
+//! span two modules neither of which imports the other: `contract_names` and
+//! `exhaustive_tests`.
 //!
 //! One file: a nested namespace may not redeclare a name of the file scope, so
 //! the file scope declares only the namespaces and the test below, and each
@@ -7648,7 +7648,7 @@ pub const lower_tests = struct {
     }
 
     test "lower: a 60000-statement dependency chain lowers without exhausting the stack" {
-        // tests/conformance/vera/ledger/ADVERSARIAL.tsv: `scanFinite` recursed along the whole
+        // An adversarial-size run: `scanFinite` recursed along the whole
         // chain and overflowed the native stack at 2e4 chained statements.
         const gpa = std.testing.allocator;
         var src: std.ArrayList(u8) = .empty;
@@ -7761,7 +7761,7 @@ pub const lower_tests = struct {
 };
 
 pub const rtlil_tests = struct {
-    //! `digital.rtlil` over the designs `tests/conformance/vera/rtlil/` holds: the RTLIL text a
+    //! `digital.rtlil` over the designs `tests/rtlil/` holds: the RTLIL text a
     //! module, a process, a cell and a refusal come out as. Yosys's own reading of
     //! the same text is `zig build test-external`.
 
@@ -7769,7 +7769,7 @@ pub const rtlil_tests = struct {
     const digital = @import("digital");
     const diag = @import("diag");
 
-    const counter = @embedFile("conformance/vera/rtlil/counter.v");
+    const counter = @embedFile("rtlil/counter.v");
 
     fn emit(arena: std.mem.Allocator, src: []const u8) ![]const u8 {
         var bag: diag.Bag = .init(arena);
@@ -19620,87 +19620,6 @@ pub const exhaustive_tests = struct {
         try std.testing.expectEqual(@as(usize, 0), scanOs("x.zig", "/// std.posix in prose", false));
         try std.testing.expectEqual(@as(usize, 0), scanOs("x.zig", "const t = std.os.tag; // os: a reason", false));
         try std.testing.expectEqual(@as(usize, 0), scanOs("x.zig", "const io = std.Io.Threaded;", false));
-    }
-};
-
-pub const citations_tests = struct {
-    //! Every diagnostic's `.lrm` citation against the clauses that exist: the
-    //! AMS clause inventory (the clause of every row of
-    //! `tests/conformance/vera/ledger/OBLIGATIONS.tsv`, plus each chapter's
-    //! `vera/clauses/*/CLAUSES.tsv`, the rule-free clauses) and the rows of
-    //! `tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv` (IEEE 1364-2005),
-    //! all read at test time from `repo_options.repo_root` as `exhaustive.zig`
-    //! reads source. In: `diag.info(c).lrm` for every code. Out: pass, or one
-    //! line per citation that names no clause.
-    //!
-    //! No LRM clause: this checks VerA's own catalogue (#68). E0501 cited a
-    //! §3.6.1.4 the 2023 LRM does not have (#62); its §3.6.1 has subclauses 1-3.
-
-    const std = @import("std");
-    const Io = std.Io;
-    const diag = @import("diag");
-    const repo_root = @import("repo_options").repo_root;
-
-    const Clauses = std.StringHashMapUnmanaged(void);
-
-    /// Adds the first column of every row of a ledger, up to a `:` (the
-    /// requirement ledger's ids are `<clause>:<ordinal>`). Keys borrow `tsv`.
-    fn addClauses(gpa: std.mem.Allocator, set: *Clauses, tsv: []const u8) !void {
-        var rows = std.mem.splitScalar(u8, tsv, '\n');
-        while (rows.next()) |row| {
-            if (row.len == 0 or row[0] == '#') continue;
-            const id = row[0 .. std.mem.findScalar(u8, row, '\t') orelse row.len];
-            try set.put(gpa, id[0 .. std.mem.findScalar(u8, id, ':') orelse id.len], {});
-        }
-    }
-
-    test "every diagnostic cites a clause that exists" {
-        var arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const io = std.testing.io;
-
-        const root = try Io.Dir.cwd().openDir(io, repo_root, .{});
-        defer root.close(io);
-        var lrm: Clauses = .empty;
-        try addClauses(arena, &lrm, try root.readFileAlloc(io, "tests/conformance/vera/ledger/OBLIGATIONS.tsv", arena, .limited(1 << 26)));
-        var clauses = try root.openDir(io, "tests/conformance/vera/clauses", .{ .iterate = true });
-        defer clauses.close(io);
-        var it = clauses.iterate();
-        while (try it.next(io)) |e| {
-            if (e.kind != .directory or std.mem.eql(u8, e.name, "ieee1364")) continue;
-            const path = try std.fs.path.join(arena, &.{ e.name, "CLAUSES.tsv" });
-            const tsv = clauses.readFileAlloc(io, path, arena, .limited(1 << 24)) catch |err| switch (err) {
-                error.FileNotFound => continue,
-                else => return err,
-            };
-            try addClauses(arena, &lrm, tsv);
-        }
-        // The inventory holds a deep clause and an annex subclause, so a miss
-        // below is the citation's, not the reader's.
-        try std.testing.expect(lrm.contains("3.6.1.2") and lrm.contains("A.1.2"));
-
-        var ieee: Clauses = .empty;
-        try addClauses(arena, &ieee, try root.readFileAlloc(io, "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv", arena, .limited(1 << 24)));
-
-        var missing: usize = 0;
-        for (0..@typeInfo(diag.Code).@"enum".field_names.len) |i| {
-            const c: diag.Code = @fromBackingInt(@intCast(i));
-            const cite = diag.info(c).lrm;
-            if (cite.len == 0) continue;
-            // `6.3.3 / 3.4.7`: one rule stated in two places.
-            var parts = std.mem.splitSequence(u8, cite, " / ");
-            while (parts.next()) |p| {
-                const ok = if (std.mem.startsWith(u8, p, "IEEE 1364-2005 "))
-                    ieee.contains(p["IEEE 1364-2005 ".len..])
-                else
-                    lrm.contains(p);
-                if (ok) continue;
-                std.debug.print("{t} cites `{s}`, which is no clause heading\n", .{ c, p });
-                missing += 1;
-            }
-        }
-        try std.testing.expectEqual(@as(usize, 0), missing);
     }
 };
 

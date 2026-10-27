@@ -1,0 +1,13 @@
+// CANARY: names a legal neighbour that does not exist.
+//! lrm 5.10.3.3
+//! reject-only E0517
+//! neighbour no_such_twin.va
+`include "disciplines.vams"
+module canary_neighbour_missing(p);
+  inout p; electrical p;
+  integer k;
+  analog begin
+    @(timer(1n, 2n, -1p)) k = k + 1;
+    I(p) <+ 0.0;
+  end
+endmodule

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The conformance suite is tool-neutral**: VerA runs it through its
+  `conform` harness like any other tool (`zig build conformance`,
+  `tools/vera.xfail`). VerA's own test inputs moved from the suite's `vera/`
+  into `tests/` (`host/`, `canary/`, `rtlil/`, `beh_verilog/`, `osdi/`, and
+  `suite.xfail`). The ledgers and clause tables are gone, and with them
+  `conformance.py run` and its ratchet, metric, steps, grammar, mutate,
+  adversarial, verilator, icarus, comments, lint-cites and ledger-apply
+  subcommands, `suite -- ieee1364 --coverage`, the suite's `--verdicts` and
+  `--list`, the diagnostic-citation unit test, the external QA suites
+  (va-models, cmcqa, hicum-qa, xyce) and the VAMPyRE run.
+
 ## v0.15.0 — 2026-10-24
 
 On Suite VAMS-CONFORMANCE, we score Verilog-A 1844/2466, Verilog 3106/3607, Verilog-AMS 521/744, Cumulative: 5471/6817.

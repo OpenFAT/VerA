@@ -19,7 +19,7 @@ branch, pin and release policy.
   set is incomplete. Fix it with a new oracle or a new generator feature that
   would have caught its whole class, plus the fixture that reproduces it.
 - A known failure is a named, inline marker: `//! xfail` in the fixture, a
-  line of `tools/vera.xfail`, a row of an external suite's `TRIAGE.md`. An
+  line of `tools/vera.xfail` or of `tests/suite.xfail`. An
   unexpected pass fails the run until the marker goes. Never a skip, never a
   silent retry, never a count.
 - A flaky test is fixed or quarantined the same day. A tolerance follows the
@@ -51,8 +51,7 @@ branch, pin and release policy.
 - Edit loop: keep `zig build check --watch -fincremental` running. `check` type-checks every root without emitting or running anything, so an edit is re-checked in under a second. `zig build test-<module> --watch -fincremental` also works, but each rerun costs the tests' run time.
 - After cloning, run `git submodule update --init tests/conformance`: every fixture lives in that submodule. `--recursive` adds the suite's external suites, which only `zig build conformance` runs.
 - `zig build -Dtarget=wasm32-wasi` builds `vera.wasm`. The front end and every `--emit-*` that only writes text run there; anything that spawns `zig` cannot. Size budgets are asserted with `<=` so they hold on 32-bit targets.
-- VerA does not depend on ESPice; ESPice depends on VerA. `zig build test-spice -Despice=PATH` runs the `.sp` decks on an espice it is handed (an ESPice release, a nix profile or a local build) and grades each against its oracle. That espice compiles the decks' devices with its own VerA, so the step checks compatibility with that release, not this tree; `.github/workflows/spice.yaml` imports a pinned ESPice release and runs it (disabled, by hand only, until ESPice publishes one); `tools/conformance.py run` runs it only with `--espice=PATH`. Without `-Despice` the step fails. No `zig build` fetches anything.
-- A removed build step takes its tests with it silently, so `tools/conformance.py steps` diffs `zig build -l` against `tests/conformance/vera/ledger/STEPS.txt`; run `steps --update` when the change is intended.
+- VerA does not depend on ESPice; ESPice depends on VerA. `zig build test-spice -Despice=PATH` runs the `.sp` decks on an espice it is handed (an ESPice release, a nix profile or a local build) and grades each against its oracle. That espice compiles the decks' devices with its own VerA, so the step checks compatibility with that release, not this tree; `.github/workflows/spice.yaml` imports a pinned ESPice release and runs it (disabled, by hand only, until ESPice publishes one). Without `-Despice` the step fails. No `zig build` fetches anything.
 
 ## Worktrees
 
@@ -79,8 +78,12 @@ ships, `tests/` the tests, `tools/` the scripts.
   testbench, `digital/` the `.v` executable, device and `--emit-rtlil`,
   `verilog/` the behavioural `--emit-verilog`), `zigbuild/` (drives `zig`),
   `vpi/` (the VPI library), `dynlib.zig`.
-- `tests/`: flat, `conformance/` its only directory, every other file a root
-  the build compiles or runs: `unit.zig` (every module's public-API tests,
+- `tests/`: every file a root the build compiles or runs, and VerA's own
+  test inputs in directories beside them: `host/` (the hosts that drive a
+  device), `canary/` (the wrong-on-purpose fixtures), `rtlil/`,
+  `beh_verilog/` and `osdi/` (the `--emit-rtlil`, `--emit-verilog` and
+  `--emit-osdi` inputs), `suite.xfail` (the fixture runner's known
+  failures) and the `conformance/` submodule. The roots: `unit.zig` (every module's public-API tests,
   one namespace per module), `suite.zig` (the fixture runner, one namespace
   per mode over the shared harness), `fuzz.zig`, `rng_reference.zig` (+ `.c`),
   `printf_reference.zig`, `codegen_probe.zig`, `host.py` (the host
@@ -93,12 +96,12 @@ ships, `tests/` the tests, `tools/` the scripts.
   `prove/fixture.zig`). `conformance/` is the VAMS Conformance Suite, a
   submodule: its `tests/` holds the HDL, C and SPICE inputs by language
   (`verilog-a/`, `verilog-ams/`, `verilog/`, `spice/`, `include/`) and
-  chapter, and its `vera/` what only VerA uses: `host/` (the hosts that
-  drive a device), `canary/`, `ledger/` (ledgers, baselines, registries),
-  `clauses/`, `rtlil/`, `beh_verilog/`, `osdi/`, `external/` and `xfail`.
+  chapter. The suite is tool-neutral: VerA runs it through its `conform`
+  harness like any other tool, with `tools/vera.xfail` as its baseline.
   `tests/README.md` lists the suites.
-- `tools/`: one file per script (`conformance.py` owns `run`'s evidence
-  accounting and its selftests, `report.py`, `doctest.py`, the three
-  `external_*.py` runners, `update-sources.py`) and `zrunner.zig`.
+- `tools/`: one file per script (`conformance.py`: the release measures and
+  fixture-maintenance signals, `report.py`, `doctest.py`, `external_analog.py`
+  (the OSDI decks in ngspice), `update-sources.py`), `vera.xfail` and
+  `zrunner.zig`.
 - A module imports `lib/` freely and `src/` never imports a module above it in
   `build.zig`'s `module_specs`; `lib/` imports nothing from `src/`.

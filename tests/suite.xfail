@@ -1,0 +1,28 @@
+# VerA's own expected failures under its fixture harness (zig build suite, test):
+# one suite-relative path per line, the reason after `#`. The suite dropped the fixtures'
+# `//! xfail` lines (a tool's known failures are tools/<tool>.xfail); these are theirs.
+tests/verilog/10_tasks_functions/nonansi_task_complete_port_redeclared_rejected.v # A fully typed non-ANSI task port can incorrectly be redeclared with another type.
+tests/verilog/10_tasks_functions/nonansi_task_duplicate_port_variable_rejected.v # Duplicate non-ANSI task-port variables are accepted and executed.
+tests/verilog/10_tasks_functions/nonansi_task_port_range_mismatch_rejected.v # A non-ANSI task port and its variable declaration may incorrectly have different ranges.
+tests/verilog/14_specify_blocks/negative_pulse_showcancelled.v # Pulse limits and pulse-style declarations are parsed but not simulated.
+tests/verilog/14_specify_blocks/pulse_error_window_styles.v # Pulse limits and pulse-style declarations are parsed but not simulated.
+tests/verilog/14_specify_blocks/pulse_path_specific_limits.v # Pulse limits and pulse-style declarations are parsed but not simulated.
+tests/verilog/14_specify_blocks/sdf_pulse_limits_override_specparam.v # SDF pulse-limit annotation is refused with E1102 because $sdf_annotate is not implemented.
+tests/verilog/16_sdf/sdf_absolute_path_delay.v # SDF annotation is not implemented; $sdf_annotate is refused with E1102.
+tests/verilog/16_sdf/sdf_interconnect_delay.v # SDF annotation is not implemented; $sdf_annotate is refused with E1102.
+tests/verilog/16_sdf/sdf_label_reevaluates_path.v # SDF annotation is not implemented; $sdf_annotate is refused with E1102.
+tests/verilog/16_sdf/sdf_min_typ_max_selection.v # SDF annotation is not implemented; $sdf_annotate is refused with E1102.
+tests/verilog/16_sdf/sdf_multiple_files_scoped.v # SDF annotation is not implemented; $sdf_annotate is refused with E1102.
+tests/verilog/16_sdf/sdf_ordered_increment.v # SDF annotation is not implemented; $sdf_annotate is refused with E1102.
+tests/verilog/16_sdf/sdf_timing_check_limit.v # SDF annotation is not implemented; $sdf_annotate is refused with E1102.
+tests/verilog/28_protected_envelopes/protect_author_info_metadata.v # Protect pragma metadata is refused by the preprocessor.
+tests/verilog/28_protected_envelopes/protect_author_metadata.v # Protect pragma metadata is refused by the preprocessor.
+tests/verilog/28_protected_envelopes/protect_comment_metadata.v # Protect pragma metadata is refused by the preprocessor.
+tests/verilog/28_protected_envelopes/protect_encrypt_agent_info_metadata.v # Protect pragma metadata is refused by the preprocessor.
+tests/verilog/28_protected_envelopes/protect_encrypt_agent_metadata.v # Protect pragma metadata is refused by the preprocessor.
+tests/verilog/28_protected_envelopes/protected_des_base64.v # Protected-envelope decryption and its test key-provider adapter are unavailable (E0146).
+tests/verilog/28_protected_envelopes/protected_des_uuencode.v # Protected-envelope decryption and its test key-provider adapter are unavailable (E0146).
+tests/verilog/28_protected_envelopes/protected_eight_nested_envelopes.v # Protected-envelope decryption and its test key-provider adapter are unavailable (E0146).
+tests/verilog/28_protected_envelopes/protected_md5_digest.v # Protected-envelope decryption and its test key-provider adapter are unavailable (E0146).
+tests/verilog/28_protected_envelopes/protected_session_key_block.v # Protected-envelope decryption and its test key-provider adapter are unavailable (E0146).
+tests/verilog/28_protected_envelopes/protected_sha1_digest.v # Protected-envelope decryption and its test key-provider adapter are unavailable (E0146).

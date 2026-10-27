@@ -1,0 +1,12 @@
+// CANARY: the want is an expression, which lets the compiler supply its own
+// expectation. The lint must FAIL it before compiling.
+//! lrm 5.6.3
+//! bias V(p) = 1.5, V(n) = 0.25
+`include "check.vh"
+module canary_computed_want(p, n);
+  inout p, n; electrical p, n;
+  analog begin
+    `CHECK("computed want", V(p, n), 1.5 - 0.25, 1e-12);
+    I(p, n) <+ V(p, n) / 1k;
+  end
+endmodule

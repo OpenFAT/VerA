@@ -1,0 +1,13 @@
+// CANARY: refused, but for E0517 (a negative timer tolerance), not the E0439
+// the header claims. The wrong rule refusing is not the named rule refusing.
+//! lrm 5.10.3.3
+//! reject E0439
+`include "disciplines.vams"
+module canary_reject_wrong_code(p);
+  inout p; electrical p;
+  integer k;
+  analog begin
+    @(timer(1n, 2n, -1p)) k = k + 1;
+    I(p) <+ 0.0;
+  end
+endmodule

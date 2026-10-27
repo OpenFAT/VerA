@@ -163,17 +163,12 @@ pub fn build(b: *Build) void {
         test_step.dependOn(&testRun(b, "printf_reference", printf_ref, runner, results_dir).step);
     }
 
-    const vpi_runs = vpiRuns(b);
-    const vpi_run_paths = b.allocator.alloc([]const u8, vpi_runs.len) catch @panic("OOM");
-    for (vpi_runs, vpi_run_paths) |r, *path| path.* = r.c;
     const o = b.addOptions();
     o.addOption([]const u8, "fixture_root", pathFromRoot(b, "tests/conformance/tests"));
-    o.addOption([]const u8, "vera_root", pathFromRoot(b, "tests/conformance/vera"));
     o.addOption([]const u8, "repo_root", pathFromRoot(b, "."));
     o.addOption([]const u8, "work_root", pathFromRoot(b, ".zig-cache/vera-suite"));
     o.addOption([]const u8, "contract", pathFromRoot(b, "lib/contract.zig"));
     o.addOption([]const u8, "vpi_include", pathFromRoot(b, "src/vpi"));
-    o.addOption([]const []const u8, "vpi_runs", vpi_run_paths);
     o.addOption([]const u8, "zig_exe", b.graph.zig_exe);
     const suite_mod = m.make("tests/suite.zig", &.{
         .{ .name = "vera", .module = vera },
@@ -268,7 +263,7 @@ pub fn build(b: *Build) void {
     host_opts.addOption([]const u8, "contract", pathFromRoot(b, "lib/contract.zig"));
     host_opts.addOption([]const u8, "zig_exe", b.graph.zig_exe);
     host_opts.addOption([]const u8, "work_root", pathFromRoot(b, ".zig-cache/vera-vpi"));
-    const vpi_host_mod = m.make("tests/conformance/vera/host/vpi_host.zig", &.{
+    const vpi_host_mod = m.make("tests/host/vpi_host.zig", &.{
         .{ .name = "vera", .module = vera },
         .{ .name = "vpi", .module = byName(mods, "vpi") },
         .{ .name = "sim", .module = sim },
@@ -302,7 +297,7 @@ pub fn build(b: *Build) void {
         const record = recordResults(b, vpi_app, dir, "vpi_acceptance.tsv", rows.items);
         test_step.dependOn(record);
     }
-    for (vpi_runs) |f| {
+    for (vpiRuns(b)) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
         r.addFileArg(b.path(f.design));
         if (std.mem.endsWith(u8, f.design, ".va")) r.addFileArg(b.path(f.c));
@@ -372,10 +367,10 @@ pub fn build(b: *Build) void {
         }
     }
 
-    const vdev_host = m.make("tests/conformance/vera/host/vdev_host.zig", &.{.{ .name = "contract", .module = contract }});
+    const vdev_host = m.make("tests/host/vdev_host.zig", &.{.{ .name = "contract", .module = contract }});
     const so_opts = b.addOptions();
-    const vdev_so_host = m.make("tests/conformance/vera/host/vdev_so_host.zig", &.{
-        .{ .name = "vdev_dyn", .module = b.createModule(.{ .root_source_file = b.path("tests/conformance/vera/host/vdev_dyn.zig"), .imports = &.{.{ .name = "contract", .module = contract }} }) },
+    const vdev_so_host = m.make("tests/host/vdev_so_host.zig", &.{
+        .{ .name = "vdev_dyn", .module = b.createModule(.{ .root_source_file = b.path("tests/host/vdev_dyn.zig"), .imports = &.{.{ .name = "contract", .module = contract }} }) },
         .{ .name = "vdev_so_options", .module = so_opts.createModule() },
         .{ .name = "dynlib", .module = dynlib },
     });
@@ -400,7 +395,7 @@ pub fn build(b: *Build) void {
         so.addArgs(&.{ "--emit-so", "--contract" });
         so.addFileArg(b.path("lib/contract.zig"));
         so.addArg("--dyn");
-        so.addFileArg(b.path("tests/conformance/vera/host/vdev_dyn.zig"));
+        so.addFileArg(b.path("tests/host/vdev_dyn.zig"));
         so.addArg("--work-dir");
         const wd = so.addOutputDirectoryArg2(name, .{});
         so.addFileArg(src);
@@ -471,8 +466,8 @@ pub fn build(b: *Build) void {
         test_step.dependOn(&run.step);
     };
 
-    // The reference tools of `nix develop .#external`: verilator, iverilog, yosys, VAMPyRE.
-    const external = b.step("test-external", "Reference tools on VerA's output (`nix develop .#external`): --emit-verilog in verilator and iverilog, --emit-rtlil in yosys, VAMPyRE on the compact models");
+    // The reference tools of `nix develop .#external`: verilator, iverilog, yosys.
+    const external = b.step("test-external", "Reference tools on VerA's output (`nix develop .#external`): --emit-verilog in verilator and iverilog, --emit-rtlil in yosys");
     const vdd_vss = "`ifdef USE_POWER_PINS\n    , vdd\n    , vss\n`endif\n);";
     for ([_]struct { va: []const u8, args: []const []const u8, says: []const u8, supplies: []const u8 = vdd_vss }{
         .{ .va = "strongarm", .args = &.{ "--digital-pins", "clk,outp,outn" }, .says = "parameter real vera_fall_fp = 0.500000; // ns" },
@@ -480,7 +475,7 @@ pub fn build(b: *Build) void {
         .{ .va = "tq_chain", .args = &.{ "--digital-pins", "in,tap1,tap2,tap3,tap4" }, .says = "parameter real vera_rise_m1 = 7.100000; // ns" },
         .{ .va = "attrs", .args = &.{}, .says = "parameter real vera_rise_z = 3.000000; // ns", .supplies = "`ifdef USE_POWER_PINS\n    , pwr\n    , gnd0\n`endif\n);" },
     }) |f| {
-        const va = b.path(b.fmt("tests/conformance/vera/beh_verilog/{s}.va", .{f.va}));
+        const va = b.path(b.fmt("tests/beh_verilog/{s}.va", .{f.va}));
         const gen = b.addRunArtifact(exe);
         gen.addArgs(&.{ "--emit-verilog", "--power-pins", "--allow=W0650" });
         gen.addArgs(f.args);
@@ -507,7 +502,7 @@ pub fn build(b: *Build) void {
             comp.addArg("-o");
             const vvp = comp.addOutputFileArg(b.fmt("tb_{s}.vvp", .{f.va}));
             comp.addFileArg(v);
-            comp.addFileArg(b.path(b.fmt("tests/conformance/vera/beh_verilog/tb_{s}.v", .{f.va})));
+            comp.addFileArg(b.path(b.fmt("tests/beh_verilog/tb_{s}.v", .{f.va})));
             comp.expectExitCode(0);
             const sim_run = b.addSystemCommand(&.{ "vvp", "-n" });
             sim_run.addFileArg(vvp);
@@ -516,7 +511,7 @@ pub fn build(b: *Build) void {
         }
     }
     {
-        const va = b.path("tests/conformance/vera/beh_verilog/rc_charge.va");
+        const va = b.path("tests/beh_verilog/rc_charge.va");
         const bad = b.addRunArtifact(exe);
         bad.addArgs(&.{ "--emit-verilog", "--allow=W0650", "--digital-pins", "a,y", "--param", "c=inf" });
         bad.addFileArg(va);
@@ -535,7 +530,7 @@ pub fn build(b: *Build) void {
 
     // `--emit-rtlil` read back by Yosys itself: `proc` lowers the processes
     // and `check -assert` finds a wire with no driver or two of them.
-    for (globFiles(b, "tests/conformance/vera/rtlil", ".v")) |v| {
+    for (globFiles(b, "tests/rtlil", ".v")) |v| {
         const gen = b.addRunArtifact(exe);
         gen.addArg("--emit-rtlil");
         gen.addFileArg(b.path(v));
@@ -547,13 +542,6 @@ pub fn build(b: *Build) void {
         yosys.expectExitCode(0);
         external.dependOn(&yosys.step);
     }
-
-    const vampyre = b.addSystemCommand(&.{ "python3", "tools/external_vampyre.py", "--vera" });
-    vampyre.addArtifactArg(exe);
-    vampyre.setCwd(b.path("."));
-    vampyre.has_side_effects = true;
-    vampyre.expectExitCode(0);
-    external.dependOn(&vampyre.step);
 
     // --emit-so must still name the .va when the device fails to compile.
     {
@@ -641,12 +629,12 @@ fn addIncludes(b: *Build, run: *Run, src: []const u8) void {
     }
 }
 
-/// Every `tests/conformance/vera/host/*_host.zig`, once per `//! device <path under tests/conformance>` line.
+/// Every `tests/host/*_host.zig`, once per `//! device <path under tests/conformance>` line.
 const HostTest = struct { host: []const u8, va: []const u8 };
 
 fn hostTests(b: *Build) []const HostTest {
     var found: std.ArrayList(HostTest) = .empty;
-    for (globFiles(b, "tests/conformance/vera/host", "_host.zig")) |host| {
+    for (globFiles(b, "tests/host", "_host.zig")) |host| {
         var lines = std.mem.splitScalar(u8, configText(b, host), '\n');
         while (lines.next()) |raw| {
             const va = std.mem.cutPrefix(u8, std.mem.trimEnd(u8, raw, "\r"), "//! device ") orelse continue;

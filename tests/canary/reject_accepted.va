@@ -1,0 +1,9 @@
+// CANARY: `//! reject` on legal source (the §5.6.3 resistor). It compiles, so
+// the refusal it claims never happens.
+//! lrm 5.6.3
+//! reject E0439
+`include "disciplines.vams"
+module canary_reject_accepted(p, n);
+  inout p, n; electrical p, n;
+  analog I(p, n) <+ V(p, n) / 1k;
+endmodule

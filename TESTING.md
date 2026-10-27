@@ -15,12 +15,12 @@ names the clause behind it.
 
 | Domain | Bug class | Oracle | Layer, file |
 |---|---|---|---|
-| Front end (`lib/frontend`, `src/elab`) | crash or hang on any input | no signal, a diagnostic from the declared set | `tests/fuzz.zig` (`zig build fuzz --fuzz`), `conformance.py adversarial` (L10) |
-| | wrong accept or refusal | the language reference, clause by clause | `//! lrm` fixtures (`suite -- ams`, `suite -- devices`), the requirement ledger (`conformance.py obligations`), the VAMS Conformance Suite (`zig build conformance`) |
+| Front end (`lib/frontend`, `src/elab`) | crash or hang on any input | no signal, a diagnostic from the declared set | `tests/fuzz.zig` (`zig build fuzz --fuzz`) |
+| | wrong accept or refusal | the language reference, clause by clause | `//! lrm` fixtures (`suite -- ams`, `suite -- devices`), the VAMS Conformance Suite (`zig build conformance`) |
 | Analog pipeline (`src/ir`, `src/analog`, `src/prove`) | wrong derivative | central difference of the residual | `suite -- --certify` (L4a, nightly) |
-| | wrong number, no crash | hand-derived values; ngspice, Xyce, OpenVAF-Reloaded, CMC and TU Dresden QA decks | `//!` checks in fixtures; `tools/external_analog.py` (gated by `TRIAGE.md` rows) |
+| | wrong number, no crash | hand-derived values; ngspice | `//!` checks in fixtures; `tools/external_analog.py` (`tests/osdi` in ngspice) |
 | | a check too loose to see an error | the same check with its expected value moved 0.1% must fail | `suite -- --perturb` (L2b) |
-| Codegen backends (`src/codegen`) | emitted code wrong for a host | the host that drives it, beside the device | `tests/conformance/vera/host/*_host.zig` (in `test`) |
+| Codegen backends (`src/codegen`) | emitted code wrong for a host | the host that drives it, beside the device | `tests/host/*_host.zig` (in `test`) |
 | | emitted Verilog / RTLIL wrong | verilator, iverilog, yosys reading it | `zig build test-external` |
 | | nondeterministic output | the same command twice, and from another cwd, byte-identical | `conformance.py determinism` (L11, nightly) |
 | | target-dependent output | native `vera` against `vera.wasm`, byte-identical | `cross.yaml`'s `wasm` job |
@@ -31,8 +31,7 @@ names the clause behind it.
 | VPI (`src/vpi`) | ABI or behaviour drift | the C applications' expected stdout and exit | `tests/conformance/tests/**/*.c` (`test`; `suite -- vpi` compiles only) |
 | Downstream (ESPice) | a VerA change breaks a consumer | ESPice's decks and their oracle records | `spice.yaml` imports a pinned ESPice release and runs `zig build test-spice -Despice=PATH` (disabled until a release exists; not in the merge gate: VerA's build does not depend on ESPice); `pages.yaml` compiles ESPice's models |
 | Every module | an allocation failure swallowed or leaked | `checkAllAllocationFailures` | `tests/unit.zig`'s `oom_tests` |
-| The harness itself | a judge that passes everything | wrong-on-purpose fixtures must FAIL | `tests/conformance/vera/canary/` (in `test`), `host.py selftest`, `conformance.py selftest` |
-| The tests | a test that cannot fail | a mutant of the code must be killed | `conformance.py mutate` (by hand, needs `vq`) |
+| The harness itself | a judge that passes everything | wrong-on-purpose fixtures must FAIL | `tests/canary/` (in `test`), `host.py selftest`, `conformance.py selftest` |
 
 Assertions in production code multiply every layer: tests run in Debug
 with safety checks on, so a broken invariant is a crash the fuzzer sees.
@@ -42,25 +41,22 @@ with safety checks on, so a broken invariant is a crash the fuzzer sees.
 | Tier | Budget | Command | Measured |
 |---|---|---|---|
 | Pre-commit | under 10 s | `nix develop -c zig build check` | 7 s cold, under 1 s with `--watch -fincremental` |
-| Merge (required) | under 15 min | `test.yaml` (`zig build test` on Linux, macOS, Windows), `cross.yaml` (`build-all` on five targets, wasm), `conformance.yaml` (`conformance.py run`, the ratchet, `--native`), `external.yaml`, `nix.yaml` | `test` 73 s locally, 9-12 min in CI; `conformance` 13-21 min; `nix` 14-18 min |
-| Nightly | hours | `nightly.yaml`: perturb, certify, fuzz, determinism, adversarial, sweep, the evidence-level ratchet | 19-31 min |
+| Merge (required) | under 15 min | `test.yaml` (`zig build test` on Linux, macOS, Windows), `cross.yaml` (`build-all` on five targets, wasm), `conformance.yaml` (`suite -- ams`, `devices`, `vpi`, `--native`), `external.yaml`, `nix.yaml` | `test` 73 s locally, 9-12 min in CI; `conformance` 13-21 min; `nix` 14-18 min |
+| Nightly | hours | `nightly.yaml`: perturb, certify, fuzz, determinism, sweep | 19-31 min |
 | Release | unbounded | `publish.yaml`: the merge gate again, `conformance.py --check <tag>`, every target, `sources.json` through `nix flake check` | |
 
 `conformance` and `nix` are over the merge budget; they are the first to
 split when the queue backs up.
 
-Ratchets are by name, never by count: `conformance.py ratchet` fails on a
-fixture that moves from pass to fail, `LEVELS.tsv` on a requirement whose
-evidence level drops, `STEPS.txt` on a build step that disappears.
+Baselines are by name, never by count: `zig build conformance` fails on any
+FAIL not listed in `tools/vera.xfail` and on any listed test that passes.
 
 ## What a release shows
 
 - The fixture suites pass, with only named expected failures (`//! xfail`,
-  `tools/vera.xfail`, `TRIAGE.md` rows), none of them stale.
+  `tools/vera.xfail`, `tests/suite.xfail`), none of them stale.
 - The CHANGELOG's measures equal the tree's (`conformance.py --check`).
-- The external suites agree, or each disagreement is a triaged row.
 - Determinism holds on every fixture; native and wasm emit the same bytes.
-- No evidence level dropped (`LEVELS.tsv`); no build step vanished.
 - Zero open crash bugs.
 
 ## Not yet tested
@@ -69,7 +65,7 @@ evidence level drops, `STEPS.txt` on a build step that disappears.
   symbol checked, never run on a card. "Compiles for CUDA/HIP; untested."
 - Metamorphic relations (node renumbering, impedance scaling) over the
   analog corpus.
-- Mutation testing runs by hand, not in a tier.
+- Mutation testing, and adversarial input sizes (deep nesting, huge counts).
 - Fuzzing is bounded at 200K runs nightly; no CPU-hour floor and no
   checked-in corpus.
 - `vera.wasm` in a browser: only under wasmtime, on one fixture.

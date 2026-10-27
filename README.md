@@ -74,7 +74,7 @@ sudo apt install python3 ngspice iverilog yosys verilator  # tests (optional)
 Zig master is not in apt: take the Linux tarball from
 <https://ziglang.org/download/> (at least `0.18.0-dev.349+d924f83bf`), unpack
 it and put it on `PATH`. Zig bundles libc and a linker, so nothing else is
-needed. Xyce and mdbook (also used by tests and docs) are not in apt;
+needed. mdbook (used by the docs) is not in apt;
 `nix develop` brings everything.
 
 ## Usage
@@ -107,17 +107,31 @@ builds a host step by step.
   (E1099) and warns on the second (W1098) rather than drop them silently.
   VerA's own device contract carries all four. A `.v` design builds to OSDI
   too, so ngspice can load a Verilog module beside a Verilog-A model.
-- **Languages:** Verilog-AMS and IEEE 1364-2005 Verilog. SystemVerilog (E1104)
-  and VHDL are out of scope.
-- **Open bugs** are fixtures listed in the conformance suite's `vera/xfail`,
-  each with its reason; CI's verdict
-  ratchet ([`vera/ledger/VERDICTS.tsv`](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/vera/ledger/VERDICTS.tsv)) fails
-  on any verdict change. Operating-point variables are not exported to OSDI yet.
+- **Languages:** Verilog-AMS and IEEE 1364-2005 Verilog. SystemVerilog and
+  VHDL are out of scope and will stay out: VerA refuses a `.sv` file (E1104).
+  To run SystemVerilog RTL, convert it to Verilog with
+  [sv2v](https://github.com/zachjs/sv2v) first:
+
+  ```sh
+  sv2v pkg.sv design.sv > design.v   # packages first, then the modules
+  vera --run design.v
+  ```
+- **Open bugs** are the tests listed in [`tools/vera.xfail`](tools/vera.xfail)
+  (the conformance suite) and [`tests/suite.xfail`](tests/suite.xfail) (VerA's
+  fixture runner), each with its reason. A listed test that starts passing
+  fails CI until its line goes. Operating-point variables are not exported to
+  OSDI yet.
 
 ## Conformance
 
-Run `nix develop -c python3 tools/conformance.py run` for measured fixture,
-host, reference and VPI results, with per-clause evidence and uncovered requirements.
+VerA runs the [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite)
+through the suite's own `conform` harness, like any other tool:
+
+```sh
+nix develop .#external -c zig build -Doptimize=ReleaseFast conformance   # results in zig-out/conformance.tsv
+CONFORMANCE_TSV=zig-out/conformance.tsv python3 tools/conformance.py   # that run's per-language score
+```
+
 See [the test guide](tests/README.md) and the [live report](https://omarsiwy.github.io/VerA/report/).
 
 ## Contributing

@@ -1,0 +1,14 @@
+// CANARY: E0517 fires as named, and so does E0501 on the next line. A plain
+// `reject E0517` passes this; `reject-only` must not (CLAUSE-AUDIT.md §6.3).
+//! lrm 5.10.3.3
+//! reject-only E0517
+`include "disciplines.vams"
+module canary_reject_only_second_error(p, n);
+  inout p, n; electrical p, n;
+  branch (p, n) b;
+  integer k;
+  analog begin
+    @(timer(1n, 2n, -1p)) k = k + 1;
+    I(b) <+ 1.0e-3 * Temp(b);
+  end
+endmodule
