@@ -93,8 +93,10 @@ pub const Directives = struct {
     /// 0.5 V across it. Needed where the target is a solution, as in §5.6.7's
     /// indirect contribution.
     solve_free: bool = false,
-    /// Print the residual and its Jacobian after each point's display output.
-    /// `//! print none` leaves only the model's own output.
+    /// Print the title, each point's header (`--- point N ---`, the bias,
+    /// `t`/`dt`), the reject and crossing notes, and the residual and its
+    /// Jacobian after each point's display output. `//! print none` leaves
+    /// only the model's own output, the gates' FAILs and `next_bp`.
     print_residual: bool = true,
     /// Expected normal process exit status; signals always fail the fixture.
     expected_exit: u8 = 0,

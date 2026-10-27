@@ -22,6 +22,11 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **`//! print none` leaves only the model's own output**: the title, each
+  point's `--- point N ---` header with its bias and `t`/`dt`, and the
+  reject and crossing notes go too, so a report test such as
+  `info_in_transient_reports_time.va` sees only what the model printed.
+  The gates' `FAIL` lines and `next_bp` stay.
 - **`$fatal` runs on every Newton iterate** (§9.7.3: it "terminates the
   simulation without checking whether the iteration would be rejected"),
   not only at the accepted point; a `$fatal` with no `$debug` or `$fdebug`

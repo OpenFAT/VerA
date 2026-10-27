@@ -705,7 +705,7 @@ pub const runner_body =
     \\        std.debug.print("reject_step FAIL: retry at {e} is not inside ({e}, {e})\n", .{ r, t_prev, t });
     \\        std.process.exit(1);
     \\    }
-    \\    std.debug.print("--- point {d} rejected: retry at {e} ---\n", .{ n, r });
+    \\    if (print_residual) std.debug.print("--- point {d} rejected: retry at {e} ---\n", .{ n, r });
     \\    atPoint(r, r - t_prev);
     \\    sim_state.initial_step = false;
     \\    sim_state.final_step = false;
@@ -749,7 +749,7 @@ pub const runner_body =
     \\        std.debug.print("cross FAIL: located at {e}, not inside ({e}, {e})\n", .{ r, t_prev, t });
     \\        std.process.exit(1);
     \\    }
-    \\    std.debug.print("--- point {d}: crossing located at {e} ---\n", .{ n, r });
+    \\    if (print_residual) std.debug.print("--- point {d}: crossing located at {e} ---\n", .{ n, r });
     \\    var fr = forced.*;
     \\    for (&fr, forced_prev, x) |*f, p, *xi| if (f.*) |v| if (p) |v0| {
     \\        f.* = v0 + (v - v0) * (r - t_prev) / (t - t_prev);
@@ -819,12 +819,15 @@ pub const runner_body =
     \\};
     \\
     \\/// One operating point: the bias, then whatever the model prints, then the
-    \\/// residual it stamps and the Jacobian the solver would see.
+    \\/// residual it stamps and the Jacobian the solver would see. Under
+    \\/// `//! print none` only the model's own output and the gates' FAILs print.
     \\fn point(n: usize, x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
-    \\    std.debug.print("--- point {d} ---\n", .{n});
-    \\    for (0..n_u) |i| std.debug.print("  x[{s}] = {e:.6}\n", .{ u_names[i], x[i] });
-    \\    if (sim_state.t != 0.0 or sim_state.dt != 0.0)
-    \\        std.debug.print("  t = {e:.6}  dt = {e:.6}\n", .{ sim_state.t, sim_state.dt });
+    \\    if (print_residual) {
+    \\        std.debug.print("--- point {d} ---\n", .{n});
+    \\        for (0..n_u) |i| std.debug.print("  x[{s}] = {e:.6}\n", .{ u_names[i], x[i] });
+    \\        if (sim_state.t != 0.0 or sim_state.dt != 0.0)
+    \\            std.debug.print("  t = {e:.6}  dt = {e:.6}\n", .{ sim_state.t, sim_state.dt });
+    \\    }
     \\
     \\    // §5.10.5 the host's breakpoint hook, when codegen emitted one (only a
     \\    // module with a `timer` has one). Printed OUTSIDE `print_residual`

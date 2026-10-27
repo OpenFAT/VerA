@@ -178,7 +178,7 @@ pub fn renderRunner(arena: Allocator, title: []const u8, d: Directives) Error![]
     );
     try out.appendSlice(arena,
         \\
-        \\    std.debug.print("=== {s} ===\n", .{title});
+        \\    if (print_residual) std.debug.print("=== {s} ===\n", .{title});
         \\
     );
 
@@ -625,7 +625,7 @@ fn renderMixed(arena: Allocator, title: []const u8, d: Directives, mx: tb.Mixed)
         \\    if (comptime @hasField(D.Instance, "analysis_name")) inst.analysis_name = analysis_name;
         \\    if (comptime @hasDecl(D, "setup")) D.setup(Dual, &model);
         \\    if (comptime @hasDecl(D, "setupInstance")) D.setupInstance(&model, &inst);
-        \\    std.debug.print("=== {s} ===\n", .{title});
+        \\    if (print_residual) std.debug.print("=== {s} ===\n", .{title});
         \\    var n: usize = 0;
         \\    var state: State = undefined;
         \\
