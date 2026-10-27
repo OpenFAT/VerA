@@ -8,6 +8,7 @@
 //! solution to "backup to an earlier time" (acbConvergenceTest).
 
 const std = @import("std");
+const sim = @import("sim");
 const root = @import("root.zig");
 const callback = @import("callback.zig");
 const code = @import("code.zig");
@@ -39,6 +40,101 @@ pub const Lib = struct {
     /// §5.10.3.3 the device's next timer instant after `t`, or inf: "the
     /// analog simulator places a time point within time_tol of an event".
     breakpoint: *const fn (f64) callconv(.c) f64,
+    /// The `x` index of the unknown named so, or -1 (a mixed design's
+    /// digital probes, §7.3.3).
+    node: *const fn ([*]const u8, usize) callconv(.c) isize,
+};
+
+/// `sim.mixed.run`'s analog side for `Binding.runMixed`: the library's
+/// solve behind the VPI walk's callbacks. The analog block reads no digital
+/// value here (`host.zig` refuses a design whose block does), so there are no
+/// inputs to set and no explicit D2A event to latch.
+const Mixed = struct {
+    b: *Binding,
+    l: Lib,
+    probe_names: []const []const u8,
+    probe_nodes: []const [2][]const u8,
+    /// The last finished solution and its time, for §7.3.6.3's
+    /// interpolation; `t_prev` null before the first.
+    x_prev: []f64,
+    t_prev: ?f64 = null,
+    /// The tentative solution's time.
+    t_now: f64 = 0,
+    first: bool = false,
+    last: bool = false,
+    /// The application rejected the solution `solveAt` last made.
+    rejected_now: bool = false,
+
+    pub fn setInputs(_: *Mixed, _: *sim.digital.Run, fired: u64) !void {
+        std.debug.assert(fired == 0);
+    }
+    pub fn snapshot(_: *Mixed, _: *sim.digital.Run) !void {}
+    pub fn latch(_: *Mixed) !void {}
+
+    /// A tentative solution, passed to acbConvergenceTest; §12.36's
+    /// vpiTransientFailConverge solves the same time again.
+    pub fn solveAt(m: *Mixed, t: f64, dt: f64, first: bool, last: bool) !void {
+        var tries: u32 = 0;
+        while (true) : (tries += 1) {
+            if (tries == 60) return error.BackupExhausted;
+            try m.b.attempt(m.l, t, dt, first, last);
+            const vetoed = callback.convergenceRejected() or m.b.reject_step;
+            if (!m.b.fail_converge) {
+                m.rejected_now = vetoed and !first;
+                break;
+            }
+        }
+        m.first = first;
+        m.last = last;
+        m.t_now = t;
+    }
+
+    pub fn rejected(m: *Mixed) !bool {
+        defer m.rejected_now = false;
+        return m.rejected_now;
+    }
+
+    pub fn finish(m: *Mixed) !void {
+        m.b.accept(m.l, m.first, m.last);
+        @memcpy(m.x_prev, m.l.x()[0..m.x_prev.len]);
+        m.t_prev = m.t_now;
+    }
+
+    /// §5.10.3.3 the device's next timer instant, if it has one.
+    pub fn breakpoint(m: *Mixed, t: f64) ?f64 {
+        const bp = m.l.breakpoint(t);
+        return if (std.math.isInf(bp)) null else bp;
+    }
+
+    /// §7.3.3 V(n1) or V(n1, n2) of the tentative solution when `t` is
+    /// null, else §7.3.6.3's value at `t`, interpolated between the last
+    /// finished solution and the tentative one.
+    pub fn probe(m: *Mixed, t: ?f64, n1: []const u8, n2: ?[]const u8) !f64 {
+        const now = m.l.x()[0..m.x_prev.len];
+        const v_now = m.terminal(now, n1) - if (n2) |b| m.terminal(now, b) else 0.0;
+        const at = t orelse return v_now;
+        const t0 = m.t_prev orelse return v_now;
+        if (!(m.t_now > t0)) return v_now;
+        const v0 = m.terminal(m.x_prev, n1) - if (n2) |b| m.terminal(m.x_prev, b) else 0.0;
+        const w = std.math.clamp((at - t0) / (m.t_now - t0), 0.0, 1.0);
+        return v0 + (v_now - v0) * w;
+    }
+
+    /// A probe terminal, as the mixed testbench reads one (`runner_text`
+    /// `terminal`): the node pair lowering resolved it to, else a node by
+    /// name; a name that is no unknown of the device is ground.
+    // ponytail: names compared as written; a node whose `D.U` spelling is
+    // sanitized (an escaped identifier) reads as ground.
+    fn terminal(m: *const Mixed, x: []const f64, name: []const u8) f64 {
+        for (m.probe_names, m.probe_nodes) |n, pair| if (std.mem.eql(u8, n, name))
+            return m.nodeValue(x, pair[0]) - m.nodeValue(x, pair[1]);
+        return m.nodeValue(x, name);
+    }
+
+    fn nodeValue(m: *const Mixed, x: []const f64, name: []const u8) f64 {
+        const k = m.l.node(name.ptr, name.len);
+        return if (k < 0) 0.0 else x[@intCast(k)];
+    }
 };
 
 /// The C function the library forwards `contract.SystfHost.call` to:
@@ -299,6 +395,41 @@ pub const Binding = struct {
             }
             b.accept(l, false, sameTime(target, a.stop));
         }
+    }
+
+    /// `run` for a transient of a mixed-signal design (VAMS §8.4): the
+    /// digital half `dig`, already elaborated and attached (`run.attach`),
+    /// steps beside the analog solve under `sim.mixed.run`, which owns the
+    /// time walk; the analog is solved at least at every `max_step` (§12.18)
+    /// and at each digital event, timer and crossing. Each tentative solution
+    /// passes acbConvergenceTest, and one the application rejects (§12.36
+    /// vpiRejectTransientStep) is backed up from with its A2D events, which
+    /// the digital engine has not consumed (§8.4.7). `tick` is the digital
+    /// half's tick in seconds; `probe_names` the §7.3.3 probe terminals that
+    /// stand for a node pair (`probe_nodes`), a named branch or a
+    /// hierarchical net (`Lowered.discrete_probes`).
+    pub fn runMixed(b: *Binding, a: Analysis, dig: *sim.digital.Run, tick: f64, probe_names: []const []const u8, probe_nodes: []const [2][]const u8) (Error || anyerror)!void {
+        std.debug.assert(probe_names.len == probe_nodes.len);
+        std.debug.assert(a.kind == .tran);
+        const l = b.lib orelse return error.NoLibrary;
+        const prev = enter(b);
+        defer leave(b, prev);
+        l.open(kindOrdinal(a.kind));
+        @memset(b.prev_react, 0);
+        var run_a = a;
+        if (run_a.max_step <= 0) run_a.max_step = (a.stop - a.start) / 50.0;
+        setPoint(run_a, a.start, 0, 0);
+        defer setPoint(null, t_now, delta, 0);
+        b.t_accepted = a.start;
+        // The declared timepoints: the DC point, then the §12.18 grid.
+        const steps: usize = @intFromFloat(@max(1, @ceil((a.stop - a.start) / run_a.max_step - 1e-9)));
+        const times = try gpa.alloc(f64, steps + 1);
+        defer gpa.free(times);
+        for (times, 0..) |*t, k| t.* = if (k == steps) a.stop else a.start + @as(f64, @floatFromInt(k)) * run_a.max_step;
+        const x_prev = try gpa.alloc(f64, l.n_u());
+        defer gpa.free(x_prev);
+        var m: Mixed = .{ .b = b, .l = l, .probe_names = probe_names, .probe_nodes = probe_nodes, .x_prev = x_prev };
+        try sim.mixed.run(Mixed, &m, dig, .{ .times = times, .tick = tick });
     }
 
     /// The AC half of `run`: `a.points` small-signal solutions around the
@@ -1232,6 +1363,9 @@ const OneCall = struct {
     fn noBreakpoint(_: f64) callconv(.c) f64 {
         return std.math.inf(f64);
     }
+    fn noNode(_: [*]const u8, _: usize) callconv(.c) isize {
+        return -1;
+    }
     const lib: Lib = .{
         .open = open,
         .solve = solve,
@@ -1250,6 +1384,7 @@ const OneCall = struct {
         .systf_outs = readBack,
         .ac = ac,
         .breakpoint = noBreakpoint,
+        .node = noNode,
     };
     const arg = [_]code.List{.{ .tag = code.vpiArgument, .items = &.{1} }};
 

@@ -22,6 +22,15 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **The VPI analog host runs a mixed-signal design** (VAMS §8.4): its
+  digital half is elaborated beside the analog library and stepped by the
+  mixed kernel, VPI reads its variables, and a tentative solution an
+  application rejects through acbConvergenceTest is solved again halfway
+  back, so a `cross` or `absdelta` event of the rejected solution is never
+  delivered (§8.4.7). A design whose analog block reads a digital value, or
+  with an explicit D2A event, a connect module or a digital read of an analog
+  variable, is refused by name (`reject_step_cross_event.c`,
+  `reject_step_absdelta_events.c`).
 - **The analog block reads an element of a digital array** (§7.3.1 Table
   7-1, `reg [0:9] r[0:7]`): each element of a one-dimensional array the
   digital context owns is its own host-set input, read at a constant index

@@ -147,12 +147,68 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
         return External.run(points, all[0..if (second != null) 2 else 1], instances);
     }
     if (analyses.len == 0) return 0;
+    // VAMS §8.4 a mixed-signal design: its digital half runs beside the
+    // analog solve (`Binding.runMixed`), and VPI reads its variables.
+    if (vera.tb.mixedPlan(res.lowered, res.mir)) |mx| return mixedHost(arena, path, mx, analyses, &binding);
     vpi.callback.startOfSimulation();
     for (analyses) |a| binding.run(a) catch |e| {
         std.debug.print("vpi_host: the {t} analysis of `{s}` failed: {t}\n", .{ a.kind, path, e });
         return 1;
     };
     vpi.callback.endOfSimulation();
+    return 0;
+}
+
+/// `analogHost`'s transient analyses of a mixed-signal design `mx`: the
+/// digital half elaborated afresh from the compile's source, attached for
+/// VPI's value reads (§12.10) and stepped by `sim.mixed.run` beside the
+/// library. Refused, naming why: an analysis other than a transient, and
+/// what `Binding.runMixed`'s analog side does not carry yet (an analog block
+/// that reads a digital value, an explicit D2A event, an inserted connect
+/// module, a digital read of an analog variable).
+fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, analyses: []const vpi.analog_run.Analysis, binding: *vpi.analog_run.Binding) !u8 {
+    const why: ?[]const u8 = if (mx.inputs.len != 0 or mx.snaps.len != 0)
+        "its analog block reads a digital value"
+    else if (mx.events.len != 0)
+        "it has an explicit D2A event"
+    else if (mx.inserts.len != 0)
+        "it inserts a connect module"
+    else if (mx.reads.len != 0)
+        "a digital expression reads an analog variable"
+    else for (analyses) |a| {
+        if (a.kind != .tran) break "only a transient analysis runs a mixed-signal design here";
+    } else null;
+    if (why) |w| {
+        std.debug.print("vpi_host: `{s}` is a mixed-signal design, and {s}; VerA's VPI host does not run that yet\n", .{ path, w });
+        return 1;
+    }
+    var bag = vera.diag.Bag.init(arena);
+    var dout = Io.Writer.Allocating.init(arena);
+    var dig = sim.digital.elaborate(arena, mx.source, .{ .mixed = .{ .top = mx.top, .timescales = mx.timescales } }, &bag, &dout.writer) catch |e| {
+        try vera.diag.render(&bag, stderrWriter(), .{});
+        std.debug.print("vpi_host: the digital half of `{s}` did not elaborate: {t}\n", .{ path, e });
+        return 1;
+    };
+    vpi.run.attach(&dig);
+    defer vpi.run.detach();
+    // §12.10 the design's objects the digital half holds read its slots:
+    // each named as the digital engine names it, relative to the root.
+    const prefix = try std.mem.concat(arena, u8, &.{ mx.top, "." });
+    for (vpi.design.?.objects) |*o| switch (o.kind) {
+        .net, .reg, .integer, .real_var, .time_var => if (o.slot == .none) if (std.mem.startsWith(u8, o.full, prefix)) {
+            if (dig.slotOf(o.full[prefix.len..])) |at| o.slot = .of(at);
+        },
+        else => {},
+    };
+    vpi.callback.startOfSimulation();
+    for (analyses) |a| binding.runMixed(a, &dig, sim.time.secondsAt(1, dig.finest), mx.probe_names, mx.probe_nodes) catch |e| {
+        try vera.diag.render(&bag, stderrWriter(), .{});
+        std.debug.print("vpi_host: the {t} analysis of `{s}` failed: {t}\n", .{ a.kind, path, e });
+        return 1;
+    };
+    vpi.callback.endOfSimulation();
+    // The digital half's own §17.1 output, after the run.
+    std.debug.print("{s}", .{dout.written()});
     return 0;
 }
 

@@ -1404,6 +1404,13 @@ const vpi_lib_tail =
     \\    const i: ?f64 = if (comptime @hasDecl(D, "pendingBreakpoint")) D.pendingBreakpoint(&g_inst, t) else null;
     \\    return (if (m != null and i != null) @min(m.?, i.?) else m orelse i) orelse std.math.inf(f64);
     \\}
+    \\/// The index into `vera_vpi_x` of the unknown named `name`, or -1: a
+    \\/// mixed design's digital half probes a net by name (§7.3.3).
+    \\export fn vera_vpi_node(name_ptr: [*]const u8, len: usize) callconv(.c) isize {
+    \\    const name = name_ptr[0..len];
+    \\    inline for (@typeInfo(D.U).@"enum".field_names, 0..) |f, i| if (std.mem.eql(u8, f, name)) return i;
+    \\    return -1;
+    \\}
     \\/// The solution the last `vera_vpi_solve` reached, tentative or accepted.
     \\export fn vera_vpi_x() callconv(.c) [*]const f64 {
     \\    return &g_x;

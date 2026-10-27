@@ -61,6 +61,13 @@ pub const Options = struct {
 ///                                 analysis (dt = 0), `last` is its final point
 ///   finish(a)                     the last tentative solution is final: report it
 ///                                 (§9.4 strobes) and commit its state (§4.5.2)
+///   rejected(a)                   optional: whether the host rejected the
+///                                 tentative solution `solveAt` just made (VPI
+///                                 §12.36 vpiRejectTransientStep, §12.31.3
+///                                 acbConvergenceTest); the step is halved and
+///                                 solved again before any event reads it, so an
+///                                 A2D event of a rejected solution is never
+///                                 delivered (§8.4.7)
 ///   probe(a, t, n1, n2)           V(n1, n2) (n2 null: V(n1)) of the tentative
 ///                                 solution when `t` is null, else interpolated
 ///                                 at `t` between the last finished solution and
@@ -178,6 +185,10 @@ pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void {
     try a.finish();
 }
 
+/// Rejections of one tentative solution `solve` backs up from before it
+/// gives up, as the VPI walk does (`src/vpi/analog.zig`).
+const max_rejects = 60;
+
 /// Secant cuts `step` tries before it halves the step instead.
 const max_secant = 64;
 /// Cuts one step can take: `max_secant`, then bisections. Each bisection
@@ -274,11 +285,23 @@ fn State(comptime A: type) type {
             return s.timeOf(k, s.target, tickAtOrBefore(s.target, s.opts.tick));
         }
 
-        /// A solution at `t`, tentative: `acc` moves, `prev` does not.
+        /// A solution at `t`, tentative: `acc` moves, `prev` does not. One
+        /// the host rejects (`A.rejected`) halves the step from `prev` and is
+        /// solved again; the first solution of the analysis has no earlier
+        /// time to back up to.
         fn solve(s: *Self, t: f64) !void {
-            try s.a.setInputs(s.dig, s.fired);
-            try s.a.solveAt(t, if (s.prev) |p| t - p else 0.0, s.prev == null, t == s.final);
-            s.acc = t;
+            var at = t;
+            var tries: u32 = 0;
+            while (true) : (tries += 1) {
+                try s.a.setInputs(s.dig, s.fired);
+                try s.a.solveAt(at, if (s.prev) |p| at - p else 0.0, s.prev == null, at == s.final);
+                if (comptime !@hasDecl(A, "rejected")) break;
+                const p = s.prev orelse break;
+                if (!try s.a.rejected()) break;
+                if (tries == max_rejects) return error.BackupExhausted;
+                at = p + (at - p) / 2;
+            }
+            s.acc = at;
         }
 
         /// The solution at `t`: a new time finishes the tentative one first.
@@ -947,6 +970,73 @@ test "§5.10.3.1 a crossing the secant only creeps toward is still cut to within
         if (p.t > at and p.t <= at + 1e-15) return;
     }
     return error.TestExpectedCut;
+}
+
+test "§8.4.7 a rejected tentative solution is solved again halfway back, and its crossing is delivered once" {
+    // A host (VPI §12.36 vpiRejectTransientStep) rejects the first solution
+    // at or after the crossing: the step halves from the last finished point
+    // and the crossing, found again, reaches the digital process once.
+    const Rejecting = struct {
+        f: Fake,
+        at: f64,
+        done: bool = false,
+        rejected_t: f64 = 0,
+        const Self = @This();
+        pub fn setInputs(r: *Self, dig: *digital.Run, fired: u64) !void {
+            return r.f.setInputs(dig, fired);
+        }
+        pub fn snapshot(r: *Self, dig: *digital.Run) !void {
+            return r.f.snapshot(dig);
+        }
+        pub fn latch(r: *Self) !void {
+            return r.f.latch();
+        }
+        pub fn solveAt(r: *Self, t: f64, dt: f64, first: bool, last: bool) !void {
+            return r.f.solveAt(t, dt, first, last);
+        }
+        pub fn rejected(r: *Self) !bool {
+            if (r.done or r.f.t < r.at) return false;
+            r.done = true;
+            r.rejected_t = r.f.t;
+            return true;
+        }
+        pub fn probe(r: *Self, t: ?f64, n1: []const u8, n2: ?[]const u8) !f64 {
+            return r.f.probe(t, n1, n2);
+        }
+        pub fn finish(r: *Self) !void {
+            return r.f.finish();
+        }
+    };
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var bag = diag.Bag.init(arena);
+    var out = std.Io.Writer.Allocating.init(arena);
+    var dig = try digital.elaborate(arena,
+        \\discipline electrical potential Voltage; flow Current; enddiscipline
+        \\module m(vi);
+        \\  inout vi; electrical vi;
+        \\  integer n; initial n = 0;
+        \\  always @(cross(V(vi) - 2.5, +1, 1p)) n = n + 1;
+        \\endmodule
+    , .{ .mixed = .{ .top = "m", .timescales = &.{.{ .at = 0, .value = .{ .unit = 1e-9, .precision = 1e-12 } }} } }, &bag, &out.writer);
+    const n = dig.slotOf("n").?;
+    var r: Rejecting = .{ .f = .{ .slot = n, .gpa = arena, .slope = 1000 }, .at = 2.5e-3 };
+    try run(Rejecting, &r, &dig, .{ .times = &.{ 0, 1e-3, 2e-3, 3e-3, 4e-3, 5e-3 }, .tick = 1e-12 });
+    try testing.expect(r.done);
+    // The step to the rejected time (3 ms, a declared point solved again
+    // later) was halved: the solve after it, and the point finished after
+    // 2 ms, are halfway back from 2 ms.
+    const half = 2e-3 + (r.rejected_t - 2e-3) / 2;
+    const after = for (r.f.solves.items, 0..) |p, i| {
+        if (p.t == r.rejected_t) break r.f.solves.items[i + 1].t;
+    } else unreachable;
+    try testing.expectApproxEqAbs(half, after, 1e-15);
+    const next = for (r.f.points.items, 0..) |p, i| {
+        if (p.t == 2e-3) break r.f.points.items[i + 1].t;
+    } else unreachable;
+    try testing.expectApproxEqAbs(half, next, 1e-15);
+    try testing.expectEqual(@as(?i64, 1), dig.values[n].asInt());
 }
 
 test "§5.10.3.1 a step crossing with a time_tol below one ulp of time is cut to adjacent floats and delivered" {
