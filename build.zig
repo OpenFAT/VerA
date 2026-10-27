@@ -366,11 +366,10 @@ pub fn build(b: *Build) void {
         test_step.dependOn(&run_host.step);
 
         // `<x>_gpu.zig` must export `<x>_ops_kernel`. NVPTX goes to LLVM IR, since the
-        // backend refuses an @export alias of a kernel; `wide` and ptx hosts check its PTX.
+        // backend refuses an @export alias of a kernel; ptx hosts check its PTX.
         const stem = h.host[0 .. h.host.len - "_host.zig".len];
         const gpu_src = b.fmt("{s}_gpu.zig", .{stem});
         b.root.root_dir.handle.access(b.graph.io, gpu_src, .{}) catch continue;
-        const wide_gpu = std.mem.eql(u8, std.fs.path.basename(stem), "wide");
         for ([_][2][]const u8{ .{ "nvptx64-cuda", "sm_70" }, .{ "amdgcn-amdhsa", "gfx906" } }) |gpu| {
             const gt = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = gpu[0], .cpu_features = gpu[1] }) catch unreachable);
             const gc: Import = .{ .name = "contract", .module = b.createModule(.{ .root_source_file = b.path("lib/contract.zig"), .target = gt, .optimize = .fast }) };
@@ -382,7 +381,7 @@ pub fn build(b: *Build) void {
                 .imports = &.{ gc, .{ .name = "device", .module = b.createModule(.{ .root_source_file = device, .target = gt, .optimize = .fast, .imports = &.{gc} }) } },
             }) });
             const nvptx = gt.result.cpu.arch == .nvptx64;
-            const out = if (!nvptx) obj.getEmittedBin() else if (wide_gpu or ptx_opts != null) obj.getEmittedAsm() else obj.getEmittedLlvmIr();
+            const out = if (!nvptx) obj.getEmittedBin() else if (ptx_opts != null) obj.getEmittedAsm() else obj.getEmittedLlvmIr();
             if (nvptx) if (ptx_opts) |po| po.addOptionPath("path", out);
             test_step.dependOn(&b.addCheckFile(out, .{ .expected_matches = &.{b.fmt("{s}_ops_kernel", .{std.fs.path.basename(stem)})} }).step);
         }

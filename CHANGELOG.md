@@ -22,6 +22,12 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **An analog assignment to a `reg` is refused** (E0316, §5.7: the
+  left-hand side "shall be ... an integer, real, or string identifier or an
+  element of an integer, real or string array"), of any width and for a
+  bit or part of one. This revises VD-116, which sized such an assignment
+  to a `reg` wider than 32 bits; `wide_host` and `wide_gpu` go with it
+  (`analog_assignment_to_reg_vector_rejected.va`).
 - **The VPI analog host places a time point at each timer instant**
   (§5.10.3.3), as `--run` does, instead of stepping on its fixed grid past
   it: the library exports `vera_vpi_breakpoint`

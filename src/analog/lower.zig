@@ -824,6 +824,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // below relate the two, and it is the discrete side that names the variables
     // the continuous side is then judged against.
     try lower_context.checkDiscreteContext(self, module);
+    try lower_context.checkRegWrites(self, module); // §5.7
 
     // §9.17.3 the user-function `$limit` state slots, before the body: each
     // slot's previous-iterate read is seeded in the entry block so it dominates

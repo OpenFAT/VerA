@@ -2794,7 +2794,13 @@ fn infoOf(c: Code) Info {
             .lrm = "5.7",
             .explain =
             \\LRM 5.7: "The left-hand side of a procedural assignment shall be
-            \\scalar" — a variable, or one element of a scalarized array.
+            \\scalar, either an integer, real, or string identifier or an
+            \\element of an integer, real or string array" — a variable, or one
+            \\element of a scalarized array.
+            \\
+            \\A `reg` of any width, or a bit, part or element of one, is none of
+            \\these: its contents are "calculated in the discrete domain"
+            \\(§7.2.1), and the analog side may read it but not write it (§7.3).
             ,
         },
         .E0317 => .{

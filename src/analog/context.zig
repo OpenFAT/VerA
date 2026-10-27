@@ -842,6 +842,42 @@ const EventRefs = struct {
 /// Reports the §7.2.2 discrete-context rules listed on `DiscreteCtx` (E0422,
 /// E0430, E0431, E0432) and the A/D boundary cases VerA refuses. No-op for a
 /// module with no discrete block.
+/// §5.7 "The left-hand side of a procedural assignment shall be scalar,
+/// either an integer, real, or string identifier or an element of an
+/// integer, real or string array": an analog write to a `reg`, of any width,
+/// or to a bit, part or element of one, is E0316. Every write counts, not
+/// only `=` (`stmtWrites`: output actuals and `$random` seeds too). A reg is
+/// the discrete domain's (§7.2.1); the analog side may only read it (§7.3).
+pub fn checkRegWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    for (module.analog) |blk| try regWrites(self, module.functions, blk.body);
+}
+
+/// `checkRegWrites` on statement `id` and, through `stmtEdges`, every
+/// statement under it (`stmtWrites` reads one statement's own writes).
+fn regWrites(self: *Lower, funcs: []const Ast.FuncDecl, id: Ast.StmtId) Oom!void {
+    if (id == .none) return;
+    const ex = &self.file.exprs;
+    var writes: std.ArrayList(Ast.ExprId) = .empty;
+    defer writes.deinit(self.arena);
+    try self.file.stmtWrites(funcs, id, self.arena, &writes);
+    for (writes.items) |w| {
+        const t = self.file.lvalueBase(w);
+        if (t == .none) continue;
+        const name = self.file.str(ex.strOf(t));
+        const reg = if (self.vars.get(name)) |v| v.reg_width != null else if (self.arrays.get(name)) |arr| (if (arr.mem) |m| m.reg_width != null else false) else false;
+        if (reg) try self.err(ex.mainTok(t), .E0316, "`{s}` is a reg: an analog procedural assignment targets an integer, real or string (§5.7)", .{name});
+    }
+    const Walk = struct {
+        l: *Lower,
+        funcs: []const Ast.FuncDecl,
+        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
+        pub fn stmt(w: @This(), s: Ast.StmtId) Oom!void {
+            try regWrites(w.l, w.funcs, s);
+        }
+    };
+    try self.file.stmtEdges(id, Walk{ .l = self, .funcs = funcs });
+}
+
 pub fn checkDiscreteContext(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     if (module.discrete.len == 0) return;
     // §7.3.6.1: a named event triggered in the analog context and named in the
@@ -1331,6 +1367,17 @@ test "checkDiscreteContext: §5.2.1 and §7.2.2 judge the analog side against th
     try Lower.expectBodyVerdict("  real x;\n  initial x = 1.0;", "    x = 2.0;", .E0432);
     // §5.10: initial_step "not allowed in the digital context" (E0708).
     try Lower.expectBodyVerdict("  real x;\n  initial @(initial_step) x = 1.0;", "", .E0708);
+}
+
+test "§5.7: an analog procedural assignment never targets a reg" {
+    // "The left-hand side of a procedural assignment shall be scalar, either
+    // an integer, real, or string identifier or an element of an integer,
+    // real or string array": a reg of any width, or a bit of one, is none.
+    try Lower.expectBodyVerdict("  reg r;", "    r = 1;", .E0316);
+    try Lower.expectBodyVerdict("  reg [39:0] w;", "    w = 1;", .E0316);
+    try Lower.expectBodyVerdict("  reg [7:0] b;", "    b[3] = 1;", .E0316);
+    try Lower.expectBodyVerdict("  integer k;", "    k = 1;", null);
+    try Lower.expectBodyVerdict("  real x;", "    x = 1.0;", null);
 }
 
 test "§6.3.4 monitored-event parameters retain their dependencies, not unrelated reals" {

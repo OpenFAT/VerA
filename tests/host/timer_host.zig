@@ -12,7 +12,6 @@
 //! device tests/verilog-a/ch05_analog_behavior/timer_dynamic.va
 //! device tests/verilog-a/ch05_analog_behavior/timer_controls.va
 //! device tests/verilog-a/ch05_analog_behavior/timer_body_controls.va
-//! device tests/verilog-a/ch05_analog_behavior/timer_body_reg_controls.va
 //! device tests/verilog-a/ch05_analog_behavior/timer_body_clog2_controls.va
 //! device tests/verilog-a/ch05_analog_behavior/timer_body_array_controls.va
 //! device tests/verilog-a/ch05_analog_behavior/timer_body_index_controls.va
