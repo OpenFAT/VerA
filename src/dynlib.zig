@@ -17,7 +17,17 @@ const windows = std.os.windows;
 /// `std.DynLib` on every target but Windows, `Windows` there; the error set of
 /// `open` is the target's, and every target has `error.FileNotFound`.
 /// `open` trusts the file: its initializers run in this process.
-pub const DynLib = if (builtin.target.os.tag == .windows) Windows else std.DynLib;
+/// On Linux the artifact must link glibc: without it (or on static musl)
+/// `std.DynLib` is `ElfDynLib`, which maps the segments and applies no
+/// relocation, so every pointer the library stores is an unrelocated offset.
+/// The nix package built `libvera-vpi.a` that way and each analog VPI app
+/// segfaulted in `vera_vpi_open`.
+pub const DynLib = if (builtin.target.os.tag == .windows)
+    Windows
+else if (builtin.target.os.tag == .linux and (!builtin.link_libc or builtin.target.abi.isMusl()))
+    @compileError("dynlib on Linux needs glibc (link_libc, a -gnu target): std's ElfDynLib applies no relocations")
+else
+    std.DynLib;
 
 const Windows = struct {
     handle: windows.PVOID,

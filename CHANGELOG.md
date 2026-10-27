@@ -20,6 +20,12 @@
 - **`--run` accepts the conformance harness's `//! stdout` and `//! expect`
   lines** instead of refusing them as an unknown directive; the harness
   reads them, `--run` drops them. Seven ch09 report tests ran into it.
+- **The nix package's analog VPI apps no longer segfault.** The sandbox has
+  no `/usr/bin/env`, so Zig built `libvera-vpi.a` for static musl, where
+  `std.DynLib` is `ElfDynLib`: it applies no relocations, and
+  `vera_vpi_open` stored through an unrelocated pointer (33 suite tests).
+  `flake.nix` now names the glibc target, and `src/dynlib.zig` refuses to
+  compile on Linux without glibc.
 
 ## v0.20.0 — 2026-10-25
 

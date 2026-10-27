@@ -67,7 +67,11 @@
           dontStrip = stdenv.hostPlatform.isDarwin;
           installPhase = ''
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-global-cache ZIG_LOCAL_CACHE_DIR=$TMPDIR/zig-cache
-            zig build install -j${toString zigJobs} -Doptimize=ReleaseFast -Dcpu=baseline --prefix "$out"
+            # The sandbox has no /usr/bin/env for Zig to read the native ABI
+            # from, so native means static musl there: libvera-vpi.a then
+            # loads a design with std's ElfDynLib, which applies no
+            # relocations, and every analog VPI app segfaulted. Name glibc.
+            zig build install -j${toString zigJobs} -Doptimize=ReleaseFast -Dcpu=baseline ${lib.optionalString stdenv.hostPlatform.isLinux "-Dtarget=${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu"} --prefix "$out"
             ${wrapZig zig}
           '';
           meta = {

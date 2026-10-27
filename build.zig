@@ -109,7 +109,7 @@ pub fn build(b: *Build) void {
 
     const runner: Build.Step.Compile.TestRunner = .{ .path = b.path("tools/zrunner.zig"), .mode = .simple };
     for (mods) |mod| {
-        const r = testRun(b, mod.name, mod.module, runner, results_dir);
+        const r = testRun(b, mod.name, testRoot(b, mod), runner, results_dir);
         test_step.dependOn(&r.step);
         b.step(b.fmt("test-{s}", .{mod.name}), b.fmt("Run the {s} module tests only", .{mod.name})).dependOn(&r.step);
     }
@@ -202,7 +202,7 @@ pub fn build(b: *Build) void {
     for ([_]*Module{ exe.root_module, other_exe.root_module, suite_mod }) |r| {
         check.dependOn(&b.addExecutable(.{ .name = "check", .root_module = r, .use_llvm = false }).step);
     }
-    for (mods) |mod| check.dependOn(&b.addTest(.{ .name = "check", .root_module = mod.module, .test_runner = runner, .use_llvm = false }).step);
+    for (mods) |mod| check.dependOn(&b.addTest(.{ .name = "check", .root_module = testRoot(b, mod), .test_runner = runner, .use_llvm = false }).step);
     for ([_]*Module{ exe.root_module, osdi_mod, all_mod, suite_mod }) |r| {
         check.dependOn(&b.addTest(.{ .name = "check", .root_module = r, .test_runner = runner, .use_llvm = false }).step);
     }
@@ -845,6 +845,21 @@ fn recordResults(b: *Build, run: *Run, dir: []const u8, name: []const u8, conten
 }
 
 /// CLICOLOR_FORCE keeps zrunner's report colored under the build's capture.
+/// The root a module's tests compile from: the module, or on Linux, when its
+/// tests load a library (it is `dynlib` or imports it), a twin with the same
+/// file and imports that links glibc, so `std.DynLib` is `dlopen`
+/// (src/dynlib.zig refuses std's ElfDynLib, which applies no relocations).
+/// A twin, not the module: `vera` shares the module and links no libc.
+fn testRoot(b: *Build, mod: Import) *Module {
+    const m = mod.module;
+    if (m.resolved_target.?.result.os.tag != .linux) return m;
+    if (!std.mem.eql(u8, mod.name, "dynlib") and m.import_table.get("dynlib") == null) return m;
+    const twin = b.createModule(.{ .root_source_file = m.root_source_file, .target = m.resolved_target, .optimize = m.optimize, .link_libc = true });
+    var it = m.import_table.iterator();
+    while (it.next()) |e| twin.addImport(e.key_ptr.*, e.value_ptr.*);
+    return twin;
+}
+
 fn testRun(b: *Build, name: []const u8, mod: *Module, runner: Build.Step.Compile.TestRunner, results_dir: ?[]const u8) *Run {
     const t = b.addTest(.{ .name = name, .root_module = mod, .test_runner = runner });
     b.top_level_steps.get("build-all").?.step.dependOn(&t.step);
