@@ -1397,6 +1397,13 @@ const vpi_lib_tail =
     \\export fn vera_vpi_n_u() callconv(.c) usize {
     \\    return n_u;
     \\}
+    \\/// §5.10.3.3 the device's next timer instant after `t`, or inf: the
+    \\/// host places a time point there.
+    \\export fn vera_vpi_breakpoint(t: f64) callconv(.c) f64 {
+    \\    const m: ?f64 = if (comptime @hasDecl(D, "nextBreakpoint")) D.nextBreakpoint(&g_model, t) else null;
+    \\    const i: ?f64 = if (comptime @hasDecl(D, "pendingBreakpoint")) D.pendingBreakpoint(&g_inst, t) else null;
+    \\    return (if (m != null and i != null) @min(m.?, i.?) else m orelse i) orelse std.math.inf(f64);
+    \\}
     \\/// The solution the last `vera_vpi_solve` reached, tentative or accepted.
     \\export fn vera_vpi_x() callconv(.c) [*]const f64 {
     \\    return &g_x;

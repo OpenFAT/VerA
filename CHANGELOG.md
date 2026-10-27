@@ -22,6 +22,10 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **The VPI analog host places a time point at each timer instant**
+  (§5.10.3.3), as `--run` does, instead of stepping on its fixed grid past
+  it: the library exports `vera_vpi_breakpoint`
+  (`reject_step_table_capture.c`, `reject_step_held_sformat_string.c`).
 - **A protected model that needs a license is refused** (E0146,
   IEEE 1364-2005 §28.4.28.2/§28.4.29.2): VerA loads no license library, so
   a `decrypt_license` or `runtime_license` pragma in the cleartext means

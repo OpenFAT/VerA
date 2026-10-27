@@ -36,6 +36,9 @@ pub const Lib = struct {
     systf_tok: *const fn (usize) callconv(.c) u32,
     systf_outs: *const fn (usize) callconv(.c) u64,
     ac: *const fn (f64, [*]f64, [*]f64) callconv(.c) bool,
+    /// §5.10.3.3 the device's next timer instant after `t`, or inf: "the
+    /// analog simulator places a time point within time_tol of an event".
+    breakpoint: *const fn (f64) callconv(.c) f64,
 };
 
 /// The C function the library forwards `contract.SystfHost.call` to:
@@ -278,6 +281,10 @@ pub const Binding = struct {
             const k = @floor((b.t_accepted - a.start) / h + 1e-9) + 1;
             var target = @min(a.start + k * h, a.stop);
             if (callback.nextForced(b.t_accepted, target)) |f| target = f;
+            // §5.10.3.3 "places a time point within time_tol of an event": a
+            // timer instant before the grid point is solved at itself.
+            const bp = l.breakpoint(b.t_accepted);
+            if (bp > b.t_accepted and bp < target and !sameTime(bp, b.t_accepted)) target = bp;
             if (a.stop - target < h * 1e-6) target = a.stop;
             var tries: u32 = 0;
             while (true) : (tries += 1) {
@@ -1222,6 +1229,9 @@ const OneCall = struct {
     fn ac(_: f64, _: [*]f64, _: [*]f64) callconv(.c) bool {
         return false;
     }
+    fn noBreakpoint(_: f64) callconv(.c) f64 {
+        return std.math.inf(f64);
+    }
     const lib: Lib = .{
         .open = open,
         .solve = solve,
@@ -1239,6 +1249,7 @@ const OneCall = struct {
         .systf_tok = tok,
         .systf_outs = readBack,
         .ac = ac,
+        .breakpoint = noBreakpoint,
     };
     const arg = [_]code.List{.{ .tag = code.vpiArgument, .items = &.{1} }};
 
@@ -1307,6 +1318,41 @@ test "Binding: two libraries at once, each call in its own design, each (library
     try std.testing.expectEqual(@as(f64, 1), p[0]);
     // Outside any call the routines answer for A, on the installed design.
     try std.testing.expect(bound().? == &a);
+}
+
+/// A library with no unknowns whose device has one timer instant, at 0.37 s:
+/// off the 0.02 s grid a 1 s transient walks.
+const Timer = struct {
+    var times: [128]f64 = undefined;
+    var n: usize = 0;
+    fn solve(t: f64, _: f64, _: bool, _: bool) callconv(.c) bool {
+        if (n < times.len) times[n] = t;
+        n += 1;
+        return true;
+    }
+    fn breakpoint(t: f64) callconv(.c) f64 {
+        return if (t < 0.37) 0.37 else std.math.inf(f64);
+    }
+};
+
+test "§5.10.3.3 Binding.run: a transient places a time point at the device's timer instant" {
+    root.close();
+    defer root.close();
+    root.design = try OneCall.design("A.$c");
+    var l = OneCall.lib;
+    l.n_systf = OneCall.zero;
+    l.solve = Timer.solve;
+    l.breakpoint = Timer.breakpoint;
+    var b: Binding = .{};
+    defer b.detach();
+    try b.attach(l, null);
+    Timer.n = 0;
+    try b.run(.{ .kind = .tran, .start = 0, .stop = 1 });
+    try std.testing.expect(Timer.n <= Timer.times.len);
+    const solved = Timer.times[0..Timer.n];
+    try std.testing.expect(std.mem.findScalar(f64, solved, 0.37) != null);
+    // The grid resumes after it: 0.38 is still solved.
+    try std.testing.expect(for (solved) |t| (if (sameTime(t, 0.38)) break true) else false);
 }
 
 test "§12.10 vpiStringVal: the real part's %g choice is the format reported, whatever the imaginary part chose" {
