@@ -754,6 +754,10 @@ pub const Run = struct {
     /// violation. The VPI installs it (VAMS 12.31.4 cbTchkViolation);
     /// nothing in the engine reads it.
     tchk_hook: ?*const fn (r: *Run, check: u32) void = null,
+    /// Called after a run-time error the run survives (IEEE 1364-2005
+    /// §17.2.9's terminated `$readmem` load, VD-134). The VPI installs it
+    /// (VAMS 12.31.4 cbError); nothing in the engine reads it.
+    error_hook: ?*const fn (r: *Run) void = null,
     /// The source and options `elaborate` ran, which IEEE 1364-2005 C.7's
     /// reset elaborates again (`reset`).
     source: []const u8 = "",
@@ -1250,6 +1254,7 @@ pub const Run = struct {
         fresh.done_hook = self.done_hook;
         fresh.stmt_hook = self.stmt_hook;
         fresh.tchk_hook = self.tchk_hook;
+        fresh.error_hook = self.error_hook;
         fresh.file_io = self.file_io;
         fresh.probe = self.probe;
         fresh.probe_ctx = self.probe_ctx;

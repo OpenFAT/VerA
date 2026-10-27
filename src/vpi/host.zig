@@ -407,5 +407,9 @@ fn digitalHost(path: []const u8) !u8 {
         return 1;
     };
     try out.flush();
+    // The warnings a run survives, as `vera --run` prints them: §17.2.9's
+    // terminated load "issues an error message" (W1157).
+    try vera.diag.render(&bag, err, .{});
+    try err.flush();
     return 0;
 }

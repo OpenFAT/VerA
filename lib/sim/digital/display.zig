@@ -334,7 +334,8 @@ pub fn readMemory(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, ra
 /// (specification/Vague_Decisions.md VD-134). Every reason a load cannot go
 /// on takes this one path, in both engines.
 fn loadEnded(self: *Run, site: diag.Span, comptime why: []const u8, args: anytype) Error!void {
-    return self.bag.add(self.stage(), .W1157, site, why ++ load_ended, args);
+    try self.bag.add(self.stage(), .W1157, site, why ++ load_ended, args);
+    if (self.error_hook) |hook| hook(self);
 }
 
 /// The tail of every W1157 message.

@@ -667,6 +667,13 @@ pub fn runError(e: anyerror) void {
     fireAll(cbError, null);
 }
 
+/// cbError for a run-time error the run survives (IEEE 1364-2005 §17.2.9's
+/// terminated `$readmem` load): recorded for `vpi_chk_error`, then fired.
+pub fn onRunError(_: *digital.Run) void {
+    root.noteError("RUNTIME", "IEEE 1364-2005 §17.2.9: a $readmem load was terminated", .{});
+    fireAll(cbError, null);
+}
+
 /// IEEE 1364-2005 §27.33.3 cbPLIError: "Simulation run-time error occurred
 /// in a PLI function call", fired as the routine records it. A routine a
 /// cbPLIError callback calls that fails fires none.

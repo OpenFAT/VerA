@@ -22,6 +22,11 @@
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
   report tests ran into it. `//! lrm-reject` and `//! inherited-reject` are
   checked as `lrm` and `inherited` are.
+- **A terminated `$readmem` load fires VPI's `cbError`** (VAMS 12.31.4,
+  IEEE 1364-2005 §17.2.9 "an error message is issued"), with
+  `vpi_chk_error` reporting it inside the callback; the run still goes on
+  (VD-134). The VPI host now prints the warnings a run survives, W1157
+  among them (`cb_error_chk_error.c`).
 - **`//! print none` leaves only the model's own output**: the title, each
   point's `--- point N ---` header with its bias and `t`/`dt`, and the
   reject and crossing notes go too, so a report test such as

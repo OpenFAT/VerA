@@ -42,6 +42,8 @@ pub fn attach(r: *digital.Run) void {
     r.done_hook = callback.onDone;
     // VAMS 12.31.4 cbTchkViolation on the engine's timing checks.
     r.tchk_hook = callback.onTchk;
+    // VAMS 12.31.4 cbError on the run-time errors the run survives.
+    r.error_hook = callback.onRunError;
 }
 
 /// Unbinds the engine and invalidates every time-queue handle.
@@ -665,6 +667,37 @@ test "IEEE 1364-2005 §27.33.3: a run that stops on an error fires cbError once"
     run_errors = 0;
     try std.testing.expectError(error.DigitalFailed, simulate());
     try std.testing.expectEqual(@as(u32, 1), run_errors);
+}
+
+var load_error_level: c_int = 0;
+
+fn onLoadError(d: *callback.CbData) callconv(.c) c_int {
+    if (d.reason != callback.cbError) return 0;
+    run_errors += 1;
+    load_error_level = root.vpi_chk_error(null);
+    return 0;
+}
+
+test "IEEE 1364-2005 §17.2.9: a terminated $readmem load fires cbError, and the run goes on" {
+    var h: Harness = undefined;
+    h.arena = .init(std.testing.allocator);
+    defer h.arena.deinit();
+    h.bag = .init(h.arena.allocator());
+    h.out = .init(h.arena.allocator());
+    // No file I/O here, so the load cannot read its file: "an error message
+    // is issued, and the load operation is terminated" (VD-134: the run goes on).
+    h.run = try digital.elaborate(h.arena.allocator(), "module z; reg [7:0] m [0:3]; initial begin $readmemh(\"none.hex\", m); #1 $display(\"after\"); end endmodule", .{}, &h.bag, &h.out.writer);
+    try root.openDigital(std.testing.allocator, &h.run);
+    defer root.close();
+    const on: callback.CbData = .{ .reason = callback.cbError, .cb_rtn = onLoadError, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
+    try std.testing.expect(callback.vpi_register_cb(&on) != null);
+    run_errors = 0;
+    load_error_level = 0;
+    try simulate();
+    try std.testing.expectEqual(@as(u32, 1), run_errors);
+    // §12.31.4: inside the cbError routine vpi_chk_error() reports it.
+    try std.testing.expectEqual(root.vpiError, load_error_level);
+    try std.testing.expectEqualStrings("after\n", h.out.written());
 }
 
 var finish_seen: u64 = 0;
