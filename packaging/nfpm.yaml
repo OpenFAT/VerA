@@ -21,7 +21,7 @@ description: |
   OSDI and VPI. Simulating a design runs Zig (zig on PATH, or VERA_ZIG);
   checking and the text --emit modes do not.
 vendor: VerA
-homepage: https://github.com/OmarSiwy/VerA
+homepage: https://github.com/OpenFAT/VerA
 license: Apache-2.0
 contents:
   - src: pkg/bin/vera

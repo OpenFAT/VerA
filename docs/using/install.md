@@ -9,9 +9,9 @@ nothing but `vera`.
 ## With Nix
 
 ```sh
-nix run github:OmarSiwy/VerA -- model.va --lint     # build from source and run
-nix profile add github:OmarSiwy/VerA                # install it (`nix profile install` on older Nix)
-nix profile add 'github:OmarSiwy/VerA#"0.13.0"'     # a release binary, pinned
+nix run github:OpenFAT/VerA -- model.va --lint     # build from source and run
+nix profile add github:OpenFAT/VerA                # install it (`nix profile install` on older Nix)
+nix profile add 'github:OpenFAT/VerA#"0.13.0"'     # a release binary, pinned
 ```
 
 The packaged `vera` is wrapped with the Zig it generates code for, so
@@ -35,7 +35,7 @@ Each GitHub release attaches a `vera` for `x86_64-linux-gnu`,
 with a `SHA256SUMS` file:
 
 ```sh
-curl -LO https://github.com/OmarSiwy/VerA/releases/download/v0.13.0/vera-v0.13.0-x86_64-linux-gnu.tar.gz
+curl -LO https://github.com/OpenFAT/VerA/releases/download/v0.13.0/vera-v0.13.0-x86_64-linux-gnu.tar.gz
 tar xzf vera-v0.13.0-x86_64-linux-gnu.tar.gz      # one file: vera
 ./vera --help
 ```
@@ -48,7 +48,7 @@ Install the Zig that release targets beside it, from
 ## From source
 
 ```sh
-git clone https://github.com/OmarSiwy/VerA && cd VerA
+git clone https://github.com/OpenFAT/VerA && cd VerA
 zig build -Doptimize=ReleaseFast
 ```
 

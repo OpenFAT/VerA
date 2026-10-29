@@ -78,7 +78,7 @@ needs: lanes on the `deriv_reads` columns, constants on the rest.
 ## The reference family
 
 `contract.RefFamily(L, lane, opts)` is the family VerA's own testbenches,
-[ESPice](https://github.com/OmarSiwy/ESPice) (`src/device/eval.zig`) and
+[ESPice](https://github.com/OpenFAT/EGSpice) (`src/device/eval.zig`) and
 the examples use:
 
 ```zig

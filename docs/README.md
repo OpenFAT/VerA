@@ -38,5 +38,5 @@ VerA implements the Verilog-AMS Language Reference Manual 2023 (the "LRM"),
 and through it IEEE 1364-2005, which the LRM inherits for the digital half.
 The book cites clauses as `LRM §5.6.1` and `IEEE 1364-2005 §9.2`. The LRM is
 in the repository as a PDF under
-[`docs/specification/`](https://github.com/OmarSiwy/VerA/tree/main/docs/specification),
+[`docs/specification/`](https://github.com/OpenFAT/VerA/tree/main/docs/specification),
 together with the record of every reading VerA chose where the text is vague.

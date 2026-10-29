@@ -3,27 +3,27 @@
 # result and, given a token, pushes it to the OmarSiwy/homebrew-vera tap.
 class Vera < Formula
   desc "Verilog-AMS compiler: Verilog-A to Zig device code, Verilog simulation, OSDI, VPI"
-  homepage "https://github.com/OmarSiwy/VerA"
+  homepage "https://github.com/OpenFAT/VerA"
   version "@VERSION@"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/OmarSiwy/VerA/releases/download/v@VERSION@/vera-v@VERSION@-aarch64-macos.tar.gz"
+      url "https://github.com/OpenFAT/VerA/releases/download/v@VERSION@/vera-v@VERSION@-aarch64-macos.tar.gz"
       sha256 "@AARCH64_MACOS_SHA256@"
     end
     on_intel do
-      url "https://github.com/OmarSiwy/VerA/releases/download/v@VERSION@/vera-v@VERSION@-x86_64-macos.tar.gz"
+      url "https://github.com/OpenFAT/VerA/releases/download/v@VERSION@/vera-v@VERSION@-x86_64-macos.tar.gz"
       sha256 "@X86_64_MACOS_SHA256@"
     end
   end
   on_linux do
     on_arm do
-      url "https://github.com/OmarSiwy/VerA/releases/download/v@VERSION@/vera-v@VERSION@-aarch64-linux-gnu.tar.gz"
+      url "https://github.com/OpenFAT/VerA/releases/download/v@VERSION@/vera-v@VERSION@-aarch64-linux-gnu.tar.gz"
       sha256 "@AARCH64_LINUX_SHA256@"
     end
     on_intel do
-      url "https://github.com/OmarSiwy/VerA/releases/download/v@VERSION@/vera-v@VERSION@-x86_64-linux-gnu.tar.gz"
+      url "https://github.com/OpenFAT/VerA/releases/download/v@VERSION@/vera-v@VERSION@-x86_64-linux-gnu.tar.gz"
       sha256 "@X86_64_LINUX_SHA256@"
     end
   end

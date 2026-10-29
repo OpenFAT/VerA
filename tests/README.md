@@ -47,7 +47,7 @@ is one root the build compiles or runs.
 | `printf_reference.zig` | The formatting oracle: `zCReal` against glibc's `snprintf` |
 | `codegen_probe.zig` | Hand-built vectorisation probes (`zig build-obj … -femit-asm`); nothing in the build runs it |
 | `host.py` | Host observations: `diagnostic_observations` and `paired_compiler_observations` drive the build's `vera`; the profiles bind a real host through an adapter (below); `selftest` |
-| `conformance/` | The [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite), a submodule: the fixtures (below) and its own `conform` harness, tool configs and external suites |
+| `conformance/` | The [VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite), a submodule: the fixtures (below) and its own `conform` harness, tool configs and external suites |
 
 The suite's corpus is `conformance/tests/`, split by language and then by
 specification chapter. Its `vera/` directory holds what only VerA uses;

@@ -1,4 +1,4 @@
-# The website (https://omarsiwy.github.io/VerA/): the user documentation
+# The website (https://openfat.github.io/VerA/): the user documentation
 # (docs/, mdBook) at / and the conformance and speed report at /report/.
 #
 # It runs when conformance.yaml finishes on main, whatever its verdict, so

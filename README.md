@@ -2,11 +2,11 @@
 
 **A Verilog-AMS compiler: analog device models in, exact and fast Zig device code out, for any circuit simulator.**
 
-[![test](https://github.com/OmarSiwy/VerA/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/OmarSiwy/VerA/actions/workflows/test.yaml)
-[![conformance](https://github.com/OmarSiwy/VerA/actions/workflows/conformance.yaml/badge.svg?branch=main)](https://github.com/OmarSiwy/VerA/actions/workflows/conformance.yaml)
-[![Release](https://img.shields.io/github/v/release/OmarSiwy/VerA)](https://github.com/OmarSiwy/VerA/releases/latest)
-[![Docs](https://img.shields.io/badge/docs-book-blue)](https://omarsiwy.github.io/VerA/)
-[![Conformance](https://img.shields.io/badge/conformance-live%20report-brightgreen)](https://omarsiwy.github.io/VerA/report/)
+[![test](https://github.com/OpenFAT/VerA/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/OpenFAT/VerA/actions/workflows/test.yaml)
+[![conformance](https://github.com/OpenFAT/VerA/actions/workflows/conformance.yaml/badge.svg?branch=main)](https://github.com/OpenFAT/VerA/actions/workflows/conformance.yaml)
+[![Release](https://img.shields.io/github/v/release/OmarSiwy/VerA)](https://github.com/OpenFAT/VerA/releases/latest)
+[![Docs](https://img.shields.io/badge/docs-book-blue)](https://openfat.github.io/VerA/)
+[![Conformance](https://img.shields.io/badge/conformance-live%20report-brightgreen)](https://openfat.github.io/VerA/report/)
 [![Zig](https://img.shields.io/badge/zig-master%20(0.18--dev)-f7a41d)](https://ziglang.org/download/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -24,7 +24,7 @@ clause of the standard behind it.
 ## Quick start
 
 ```sh
-nix profile add github:OmarSiwy/VerA          # or a release binary / source build, below
+nix profile add github:OpenFAT/VerA          # or a release binary / source build, below
 cat > resistor.va <<'EOF'
 `include "disciplines.vams"
 module resistor(p, n);
@@ -45,7 +45,7 @@ vera --emit-zig resistor.va -o resistor.zig   # the device
 pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {
 ```
 
-The [tutorial](https://omarsiwy.github.io/VerA/learn/getting-started.html) continues from here.
+The [tutorial](https://openfat.github.io/VerA/learn/getting-started.html) continues from here.
 
 ## Install
 
@@ -61,10 +61,10 @@ sudo pacman -U ./vera-<version>-1-x86_64.pkg.tar.zst      # Arch; the release's 
 |---|---|
 | Install script (Linux, macOS) | `curl -fsSL https://raw.githubusercontent.com/OmarSiwy/VerA/main/tools/install.sh \| sh` (`sh -s -- 0.20.0` pins a version): reads `sources.json`, checks the download's sha256, caches it, and keeps versions side by side under `~/.local/share/vera` |
 | Homebrew | `brew install OmarSiwy/vera/vera`, once the tap is published (the release's `vera.rb`) |
-| Nix (release binary) | `nix profile add 'github:OmarSiwy/VerA#latest'` |
-| Nix (from source) | `nix profile add github:OmarSiwy/VerA` |
-| Release tarball | [GitHub releases](https://github.com/OmarSiwy/VerA/releases): x86_64/aarch64 Linux, x86_64/aarch64 macOS, x86_64 Windows, with `SHA256SUMS` |
-| From source | `git clone https://github.com/OmarSiwy/VerA && cd VerA && zig build -Doptimize=ReleaseFast` |
+| Nix (release binary) | `nix profile add 'github:OpenFAT/VerA#latest'` |
+| Nix (from source) | `nix profile add github:OpenFAT/VerA` |
+| Release tarball | [GitHub releases](https://github.com/OpenFAT/VerA/releases): x86_64/aarch64 Linux, x86_64/aarch64 macOS, x86_64 Windows, with `SHA256SUMS` |
+| From source | `git clone https://github.com/OpenFAT/VerA && cd VerA && zig build -Doptimize=ReleaseFast` |
 
 Building a device needs the Zig VerA is built with, Zig master (0.18.0-dev,
 from [zig-overlay](https://github.com/mitchellh/zig-overlay)), on `PATH`; the
@@ -102,8 +102,8 @@ vera --explain W0650                                     # the long form of a di
 ```
 
 Exit status: 0 on success, 1 on a diagnosed error, 2 on a usage error.
-[The command line](https://omarsiwy.github.io/VerA/using/cli.html) covers every
-flag; [VerA devices in your own simulator](https://omarsiwy.github.io/VerA/host/why.html)
+[The command line](https://openfat.github.io/VerA/using/cli.html) covers every
+flag; [VerA devices in your own simulator](https://openfat.github.io/VerA/host/why.html)
 builds a host step by step.
 
 ## Scope
@@ -122,21 +122,21 @@ builds a host step by step.
   and VHDL are out of scope.
 - **Open bugs** are fixtures listed in the conformance suite's `vera/xfail`,
   each with its reason; CI's verdict
-  ratchet ([`vera/ledger/VERDICTS.tsv`](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/vera/ledger/VERDICTS.tsv)) fails
+  ratchet ([`vera/ledger/VERDICTS.tsv`](https://github.com/OpenFAT/VAMS-Conformance-Suite/blob/main/vera/ledger/VERDICTS.tsv)) fails
   on any verdict change. Operating-point variables are not exported to OSDI yet.
 
 ## Conformance
 
 Run `nix develop -c python3 tools/conformance.py run` for measured fixture,
 host, reference and VPI results, with per-clause evidence and uncovered requirements.
-See [the test guide](tests/README.md) and the [live report](https://omarsiwy.github.io/VerA/report/).
+See [the test guide](tests/README.md) and the [live report](https://openfat.github.io/VerA/report/).
 
 ## Contributing
 
-The fixtures live in the [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+The fixtures live in the [VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite),
 a submodule: run `git submodule update --init tests/conformance` after cloning.
 Run `nix develop -c zig build test` and the relevant language fixtures; see [tests/README.md](tests/README.md).
-Questions and bugs go to [GitHub issues](https://github.com/OmarSiwy/VerA/issues).
+Questions and bugs go to [GitHub issues](https://github.com/OpenFAT/VerA/issues).
 
 ## License
 

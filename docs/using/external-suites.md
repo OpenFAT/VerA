@@ -62,7 +62,7 @@ pull request.
 
 The digital suites (ivtest, sv-tests' IEEE 1364-2005 subset, the ISP RAS
 examples of the standard) moved to the
-[VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+[VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite),
 checked out at `tests/conformance`, with VerA's own Verilog, Verilog-A,
 Verilog-AMS and Annex E tests and the OpenVAF, gnucap-modelgen and VA-Models
 corpora:

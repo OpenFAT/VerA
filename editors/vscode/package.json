@@ -5,7 +5,7 @@
   "version": "0.0.1",
   "publisher": "omarsiwy",
   "license": "SEE LICENSE IN ../../LICENSE",
-  "repository": { "type": "git", "url": "https://github.com/OmarSiwy/VerA" },
+  "repository": { "type": "git", "url": "https://github.com/OpenFAT/VerA" },
   "engines": { "vscode": "^1.82.0" },
   "main": "./extension.js",
   "activationEvents": [],

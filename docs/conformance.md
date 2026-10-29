@@ -16,11 +16,11 @@ Each run writes a fresh directory under `.zig-cache/conformance/`: `report.md`,
 time and a hash of the actual source, including uncommitted edits. CI runs the
 same command and publishes the complete `execution-results` artifact.
 
-See [the test guide](https://github.com/OmarSiwy/VerA/blob/main/tests/README.md)
+See [the test guide](https://github.com/OpenFAT/VerA/blob/main/tests/README.md)
 for focused commands, fixture conventions and registering specialized tests.
 
 The fixtures are the
-[VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+[VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite),
 checked out as the `tests/conformance` submodule: its `tests/` holds the
 Verilog-A, Verilog-AMS, IEEE 1364 and Annex E fixtures by language and
 chapter, and its `vera/` the hosts, canaries, ledgers and expected failures
@@ -62,7 +62,7 @@ conformance. Declared expected failures remain visible in the report; unexpected
 failures or incomplete execution records fail the command.
 
 Clause coverage does not establish that every rule or possible language program
-conforms. The [AMS requirement ledger](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/vera/ledger/OBLIGATIONS.tsv)
+conforms. The [AMS requirement ledger](https://github.com/OpenFAT/VAMS-Conformance-Suite/blob/main/vera/ledger/OBLIGATIONS.tsv)
 tracks individual normative sentences, with stronger evidence levels. A bare
 clause citation cannot cover every sentence it contains. IEEE 1364 currently
 has a clause inventory rather than a sentence ledger.
@@ -74,14 +74,14 @@ has a clause inventory rather than a sentence ledger.
 **static citation inventories**, not execution-backed conformance scores.
 Release entries in `CHANGELOG.md` keep their original meaning.
 
-The [verdict baseline](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/vera/ledger/VERDICTS.tsv)
+The [verdict baseline](https://github.com/OpenFAT/VAMS-Conformance-Suite/blob/main/vera/ledger/VERDICTS.tsv)
 is compared by fixture name in CI. A change in verdict must be investigated
 and recorded explicitly. The stricter nightly checks still perturb assertions,
 check derivatives, and track sentence-level evidence.
 
 ## The live report
 
-The [conformance and speed report](https://omarsiwy.github.io/VerA/report/)
+The [conformance and speed report](https://openfat.github.io/VerA/report/)
 is rebuilt from scratch on every push to `main`. It holds the
 clause-by-clause map of which fixture covers which rule,
 the open gaps and defects, the compile-time distribution, and the speed of
