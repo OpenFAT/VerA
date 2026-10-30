@@ -10,7 +10,7 @@
     },
     "contract": {
       "sha256": "56d06b5b93066146352f52deaa17a56b42e62cf0fdcba5a189a135eea4c23e03",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.10.0/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.0/tools/contract.zig"
     },
     "date": "2026-10-18",
     "x86_64-darwin": {
@@ -34,7 +34,7 @@
     },
     "contract": {
       "sha256": "4c639280e5ce489c3ed5d5f9b622ba3e1f5aadbd1bd68d9bfa57e9ebe5ff643b",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.10.1/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.1/tools/contract.zig"
     },
     "date": "2026-10-18",
     "x86_64-darwin": {
@@ -58,7 +58,7 @@
     },
     "contract": {
       "sha256": "b1f94306ed21a8757680e4ca2e855373cbe512ab0db1c0fee6e1760d18b3b65d",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.10.2/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.2/tools/contract.zig"
     },
     "date": "2026-10-18",
     "x86_64-darwin": {
@@ -82,7 +82,7 @@
     },
     "contract": {
       "sha256": "2700315c2291e2a64b0e75d0ca916bfa62c130471b42a39a8b4392f46114abad",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.10.3/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.3/tools/contract.zig"
     },
     "date": "2026-10-19",
     "x86_64-darwin": {
@@ -106,7 +106,7 @@
     },
     "contract": {
       "sha256": "d21dfe604a382a015c6cea56f878c7f0ef46c8e6be0c945661381118b2fc27d9",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.10.4/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.4/tools/contract.zig"
     },
     "date": "2026-10-19",
     "x86_64-darwin": {
@@ -130,7 +130,7 @@
     },
     "contract": {
       "sha256": "d137f1b73fdc15f6fe542cf46ac9cba3dea3ddb959afb5ad4610f54d91d619cc",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.11.2/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.11.2/tools/contract.zig"
     },
     "date": "2026-10-20",
     "x86_64-darwin": {
@@ -154,7 +154,7 @@
     },
     "contract": {
       "sha256": "cf00b2fb8c4189f5405556711c646fa2ceba6be1db338d5e2753b6d203d21744",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.11.3/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.11.3/tools/contract.zig"
     },
     "date": "2026-10-20",
     "x86_64-darwin": {
@@ -178,7 +178,7 @@
     },
     "contract": {
       "sha256": "22ce3fbdbf9b4096604d9d59f448a50f54b7ce3270d8e0dd2259421a4bc3817b",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.11.4/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.11.4/tools/contract.zig"
     },
     "date": "2026-10-20",
     "x86_64-darwin": {
@@ -202,7 +202,7 @@
     },
     "contract": {
       "sha256": "3a2c570f22423e54ae632fd864e94e3294666ecd5aab0aadd1f45e46bc771e4e",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.11.5/tools/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.11.5/tools/contract.zig"
     },
     "date": "2026-10-20",
     "x86_64-darwin": {
@@ -226,7 +226,7 @@
     },
     "contract": {
       "sha256": "1d18890c63ef343e419bb12f0481a95ffb09e971f3472e134742145b5d349c9a",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.12.1/lib/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.12.1/lib/contract.zig"
     },
     "date": "2026-10-22",
     "x86_64-darwin": {
@@ -250,7 +250,7 @@
     },
     "contract": {
       "sha256": "6f16d9cf73d552e38c4c4eba416137a22543e591c2b28e773c93f2853fc00e2f",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.15.0/lib/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.15.0/lib/contract.zig"
     },
     "date": "2026-10-25",
     "x86_64-darwin": {
@@ -274,7 +274,7 @@
     },
     "contract": {
       "sha256": "aca21dfdd3cb54cfedfe8e57b3ea29a0c53855aa7e7be07016845111f72c5b67",
-      "url": "https://raw.githubusercontent.com/OmarSiwy/VerA/v0.20.0/lib/contract.zig"
+      "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.20.0/lib/contract.zig"
     },
     "date": "2026-10-25",
     "x86_64-darwin": {

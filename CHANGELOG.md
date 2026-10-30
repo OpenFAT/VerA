@@ -18,7 +18,7 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Veri
   the VAMS Conformance Suite passes: `tools/vera.xfail` and the suite's
   `vera/xfail` are empty. Where a test expected what the LRM forbids, the
   suite now expects a refusal citing the clause
-  (OmarSiwy/VAMS-Conformance-Suite#1); VerA accepts nothing the LRM forbids.
+  (OpenFAT/VAMS-Conformance-Suite#1); VerA accepts nothing the LRM forbids.
 - **Output to a file is no longer overwritten.** `vera`, the `.v` runtime and
   the VPI host wrote stdout and stderr at fixed offsets, so a warning printed
   after a testbench ran overwrote its output when both went to one file.

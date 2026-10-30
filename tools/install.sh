@@ -2,7 +2,7 @@
 # Installs a VerA release from sources.json, the same catalogue the flake's
 # versioned packages install from, without nix:
 #
-#   curl -fsSL https://raw.githubusercontent.com/OmarSiwy/VerA/main/tools/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/OpenFAT/VerA/main/tools/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- 0.20.0      # a pinned version
 #
 # Each version lives in $VERA_HOME/<version> (bin/vera, share/vera/contract.zig)
@@ -19,7 +19,7 @@
 # simulates: the Zig a version needs is sources.json's "zig", printed at the end.
 set -eu
 
-VERA_SOURCES=${VERA_SOURCES:-https://raw.githubusercontent.com/OmarSiwy/VerA/main/sources.json}
+VERA_SOURCES=${VERA_SOURCES:-https://raw.githubusercontent.com/OpenFAT/VerA/main/sources.json}
 VERA_HOME=${VERA_HOME:-$HOME/.local/share/vera}
 VERA_BIN=${VERA_BIN:-$HOME/.local/bin}
 VERA_CACHE=${VERA_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/vera}

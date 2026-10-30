@@ -29,7 +29,7 @@ class Vera < Formula
   end
 
   resource "contract" do
-    url "https://raw.githubusercontent.com/OmarSiwy/VerA/v@VERSION@/lib/contract.zig"
+    url "https://raw.githubusercontent.com/OpenFAT/VerA/v@VERSION@/lib/contract.zig"
     sha256 "@CONTRACT_SHA256@"
   end
 

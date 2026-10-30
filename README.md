@@ -4,7 +4,7 @@
 
 [![test](https://github.com/OpenFAT/VerA/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/OpenFAT/VerA/actions/workflows/test.yaml)
 [![conformance](https://github.com/OpenFAT/VerA/actions/workflows/conformance.yaml/badge.svg?branch=main)](https://github.com/OpenFAT/VerA/actions/workflows/conformance.yaml)
-[![Release](https://img.shields.io/github/v/release/OmarSiwy/VerA)](https://github.com/OpenFAT/VerA/releases/latest)
+[![Release](https://img.shields.io/github/v/release/OpenFAT/VerA)](https://github.com/OpenFAT/VerA/releases/latest)
 [![Docs](https://img.shields.io/badge/docs-book-blue)](https://openfat.github.io/VerA/)
 [![Conformance](https://img.shields.io/badge/conformance-live%20report-brightgreen)](https://openfat.github.io/VerA/report/)
 [![Zig](https://img.shields.io/badge/zig-master%20(0.18--dev)-f7a41d)](https://ziglang.org/download/)
@@ -59,7 +59,7 @@ sudo pacman -U ./vera-<version>-1-x86_64.pkg.tar.zst      # Arch; the release's 
 
 | How | Command |
 |---|---|
-| Install script (Linux, macOS) | `curl -fsSL https://raw.githubusercontent.com/OmarSiwy/VerA/main/tools/install.sh \| sh` (`sh -s -- 0.20.0` pins a version): reads `sources.json`, checks the download's sha256, caches it, and keeps versions side by side under `~/.local/share/vera` |
+| Install script (Linux, macOS) | `curl -fsSL https://raw.githubusercontent.com/OpenFAT/VerA/main/tools/install.sh \| sh` (`sh -s -- 0.20.0` pins a version): reads `sources.json`, checks the download's sha256, caches it, and keeps versions side by side under `~/.local/share/vera` |
 | Homebrew | `brew install OmarSiwy/vera/vera`, once the tap is published (the release's `vera.rb`) |
 | Nix (release binary) | `nix profile add 'github:OpenFAT/VerA#latest'` |
 | Nix (from source) | `nix profile add github:OpenFAT/VerA` |

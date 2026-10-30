@@ -10,8 +10,8 @@ license=('Apache-2.0')
 provides=('vera')
 conflicts=('vera')
 optdepends=('zig: simulating a design (VerA @VERSION@ runs Zig @ZIG@)')
-source=("LICENSE-$pkgver::https://raw.githubusercontent.com/OmarSiwy/VerA/v$pkgver/LICENSE"
-        "contract-$pkgver.zig::https://raw.githubusercontent.com/OmarSiwy/VerA/v$pkgver/lib/contract.zig")
+source=("LICENSE-$pkgver::https://raw.githubusercontent.com/OpenFAT/VerA/v$pkgver/LICENSE"
+        "contract-$pkgver.zig::https://raw.githubusercontent.com/OpenFAT/VerA/v$pkgver/lib/contract.zig")
 source_x86_64=("https://github.com/OpenFAT/VerA/releases/download/v$pkgver/vera-v$pkgver-x86_64-linux-gnu.tar.gz")
 source_aarch64=("https://github.com/OpenFAT/VerA/releases/download/v$pkgver/vera-v$pkgver-aarch64-linux-gnu.tar.gz")
 sha256sums=('@LICENSE_SHA256@'
