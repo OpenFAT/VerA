@@ -142,6 +142,8 @@ pub const Hierarchy = struct {
 /// `values[slot]` is its current value; this is how a caller outside the
 /// engine reads one.
 pub fn slotOf(self: *const Run, name: []const u8) ?u32 {
+    assert(name.len > 0);
+    assert(self.hier.scopes.items.len > 0);
     var scope: u32 = 0;
     var parts = std.mem.splitScalar(u8, name, '.');
     var part = parts.first();
@@ -165,6 +167,7 @@ pub fn slot(self: *Run, e: Ast.ExprId) Error!u32 {
     if (m.scope == self.scope and m.e == e) return m.at;
     const at = try self.resolveSlot(e);
     m.* = .{ .scope = self.scope, .e = e, .at = at };
+    assert(at < self.values.len or self.growing != null);
     return at;
 }
 
@@ -210,6 +213,7 @@ pub fn resolveSlot(self: *Run, e: Ast.ExprId) Error!u32 {
 /// (`SourceFile.hierIndices`).
 pub fn foldSelects(self: *Run, tok: u32, text: []const u8, indices: []const Ast.ExprId, used: *usize) Error!Ast.StrId {
     assert(tok < self.starts.len);
+    assert(used.* <= indices.len);
     var out: std.Io.Writer.Allocating = .init(self.arena);
     var rest = text;
     while (std.mem.find(u8, rest, "[]")) |at| {
@@ -229,6 +233,7 @@ pub fn foldSelects(self: *Run, tok: u32, text: []const u8, indices: []const Ast.
 /// part of a §12.5 name), in the nearest scope upward that has one.
 pub fn elementScope(self: *Run, tok: u32, base: []const u8, parent: ?u32, indices: []const Ast.ExprId, used: *usize) Error!u32 {
     assert(tok < self.starts.len);
+    assert(used.* <= indices.len);
     if (used.* == indices.len) return self.fail(tok, "§12.5: a hierarchical select has no index", .{});
     const v = (try self.constant(indices[used.*], tok)).asInt() orelse return self.fail(tok, "§12.5: a hierarchical select's index has an x or z bit", .{});
     used.* += 1;
@@ -248,12 +253,15 @@ pub fn elementScope(self: *Run, tok: u32, base: []const u8, parent: ?u32, indice
 /// §9.7.2 expression term keeps (`term_slots`).
 pub fn termSlot(self: *Run, e: Ast.ExprId) Error!u32 {
     assert(e != .none);
+    assert(self.scope < self.hier.scopes.items.len);
     return self.typing.term_slots.get(.{ .scope = self.scope, .e = e }) orelse self.slot(e);
 }
 
 /// The type a slot's value has, for an assignment to it.
 pub fn slotType(self: *const Run, at: u32) compile.Type {
+    assert(at < self.values.len);
     if (self.decls.reals.contains(at)) return compile.real_type;
+    assert(!self.decls.reals.contains(at));
     return .{ .width = self.values[at].width, .signed = self.values[at].signed };
 }
 
@@ -278,6 +286,7 @@ pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
         } else if (self.hier.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return null;
         const info = self.hier.scopes.items[s];
         if (!info.lexical) return null;
+        assert(info.parent != s); // A lexical scope has an enclosing one.
         s = info.parent;
     }
 }
@@ -322,6 +331,7 @@ pub fn specOf(self: *const Run, scope: u32) u32 {
         if (!info.lexical or info.index != null) break;
         s = info.parent;
     }
+    assert(s < self.hier.scopes.items.len);
     return s;
 }
 
@@ -330,18 +340,21 @@ pub fn instanceOf(self: *const Run, scope: u32) u32 {
     assert(scope < self.hier.scopes.items.len);
     var s = scope;
     while (self.hier.scopes.items[s].lexical) s = self.hier.scopes.items[s].parent;
+    assert(!self.hier.scopes.items[s].lexical);
     return s;
 }
 
 /// A vector slot's declared `[msb:lsb]` (an array's first element's is
 /// every element's), `[w-1:0]` when it declares none.
 pub fn vecRange(self: *const Run, at: u32) VecRange {
+    assert(at < self.values.len);
     return self.typing.vec_ranges.get(at) orelse .{ .msb = @as(i64, self.values[at].width) - 1, .lsb = 0 };
 }
 
 /// §4.3: "A net or reg declaration without a range specification shall
 /// be considered 1 bit wide and is known as a scalar."
 pub fn isScalar(self: *const Run, at: u32) bool {
+    assert(at < self.values.len);
     return self.values[at].width == 1 and !self.typing.vec_ranges.contains(at) and !self.decls.params.contains(at);
 }
 
@@ -351,7 +364,9 @@ pub fn isScalar(self: *const Run, at: u32) bool {
 pub fn baseSlot(self: *Run, e: Ast.ExprId) Error!u32 {
     assert(e != .none);
     const ex = &self.file.exprs;
-    return if (ex.tag(e) == .index) self.slot(self.chainBase(e).base) else self.scalarSlot(e);
+    const at = if (ex.tag(e) == .index) try self.slot(self.chainBase(e).base) else try self.scalarSlot(e);
+    assert(at < self.values.len);
+    return at;
 }
 
 /// The name at the bottom of a stack of selects, `a` in `a[i][j]`, and
@@ -362,6 +377,8 @@ pub fn chainBase(self: *const Run, e: Ast.ExprId) struct { base: Ast.ExprId, dep
     var x = e;
     var depth: u32 = 0;
     while (ex.tag(x) == .index) : (depth += 1) x = ex.lhs(x);
+    assert(ex.tag(x) != .index);
+    if (depth == 0) assert(x == e);
     return .{ .base = x, .depth = depth };
 }
 
@@ -371,6 +388,7 @@ pub fn scalarSlot(self: *Run, e: Ast.ExprId) Error!u32 {
     assert(e != .none);
     const at = try self.slot(e);
     if (self.decls.arrays.contains(at)) return self.exprFail(e, "an unpacked array reference requires an element index");
+    assert(!self.decls.arrays.contains(at));
     return at;
 }
 
@@ -392,6 +410,7 @@ pub fn indexedArray(self: *Run, e: Ast.ExprId) Error!?Array {
         .range, .indexed_range => return self.exprFail(ex.rhs(at), "§5.2.2: each array dimension takes an index, not a part-select"),
         else => {}, // else: an element index
     };
+    assert(arr.count >= 1);
     return arr;
 }
 
@@ -403,4 +422,5 @@ pub fn bind(self: *Run, name: Ast.StrId, at: u32, tok: u32) Error!void {
     if (entry.found_existing) return self.fail(tok, "duplicate digital variable", .{});
     entry.value_ptr.* = at;
     try self.hier.bound_at.put(self.arena, entry.key_ptr.*, tok);
+    assert(self.hier.names.get(.{ .scope = self.scope, .str = name }).? == at);
 }

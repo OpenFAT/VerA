@@ -98,6 +98,8 @@ pub const Netlist = struct {
 
 /// Net `n`'s cold row, or `NetCold.none` when it has none.
 pub fn netCold(self: *const Run, n: Net) *const NetCold {
+    if (n.cold != no_cold) assert(n.cold < self.netlist.cold.items.len);
+    assert(self.netlist.cold.items.len < no_cold);
     return if (n.cold == no_cold) &NetCold.none else &self.netlist.cold.items[n.cold];
 }
 
@@ -106,17 +108,20 @@ pub fn netCold(self: *const Run, n: Net) *const NetCold {
 pub fn netDrivers(self: *const Run, net: u32) []const u32 {
     assert(net < self.netlist.nets.len);
     if (net + 1 >= self.netlist.driver_start.len) return &.{};
+    assert(self.netlist.driver_start[net] <= self.netlist.driver_start[net + 1]); // A prefix sum.
     return self.netlist.driver_ids[self.netlist.driver_start[net]..self.netlist.driver_start[net + 1]];
 }
 
 /// Driver `at`'s §6.1.3 transition row, made on first use. Invalidates
 /// pointers to other rows when it makes one.
 pub fn driverTransition(self: *Run, at: u32) Error!*Inertial {
+    assert(at < self.netlist.drivers.len);
     const d = &self.netlist.drivers[at];
     if (d.transition == no_transition) {
         try self.netlist.transitions.append(self.arena, .{});
         d.transition = @intCast(self.netlist.transitions.items.len - 1);
     }
+    assert(d.transition < self.netlist.transitions.items.len);
     return &self.netlist.transitions.items[d.transition];
 }
 
@@ -129,5 +134,6 @@ pub fn netColdMut(self: *Run, net: u32) Error!*NetCold {
         n.cold = @intCast(self.netlist.cold.items.len);
         try self.netlist.cold.append(self.arena, .{});
     }
+    assert(n.cold < self.netlist.cold.items.len);
     return &self.netlist.cold.items[n.cold];
 }

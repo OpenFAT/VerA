@@ -34,6 +34,7 @@
 //! - `pub fn isRoot(r: *const Run, scope: u32) bool`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -115,7 +116,10 @@ pub const VecRange = struct {
     pub fn position(r: VecRange, index: i64) i64 {
         // A distant legal integer index names no bit; it cannot overflow
         // the host while deciding that (§5.2.1).
-        return if (r.msb >= r.lsb) index -| r.lsb else r.lsb -| index;
+        const p = if (r.msb >= r.lsb) index -| r.lsb else r.lsb -| index;
+        if (index == r.lsb) assert(p == 0);
+        if (index == r.msb) assert(p == if (r.msb >= r.lsb) r.msb -| r.lsb else r.lsb -| r.msb);
+        return p;
     }
 };
 
@@ -282,7 +286,9 @@ pub const SlotNets = struct {
 
     /// The net slot `slot` is, or null for a variable's slot.
     pub fn get(self: *const SlotNets, slot: u32) ?u32 {
+        std.debug.assert(slot != none);
         if (slot >= self.of.items.len) return null;
+        std.debug.assert(slot < self.of.items.len);
         const net = self.of.items[slot];
         return if (net == none) null else net;
     }
@@ -299,6 +305,8 @@ pub const SlotNets = struct {
         const len = self.of.items.len;
         if (slot >= len) try self.of.appendNTimes(arena, none, slot + 1 - len);
         self.of.items[slot] = net;
+        std.debug.assert(self.of.items.len >= slot + 1);
+        std.debug.assert(self.get(slot).? == net);
     }
 };
 
@@ -316,5 +324,7 @@ const PartForce = struct { bits: compile.Bits, range: PcRange };
 /// Is `scope` a top-level module's instance? The first is scope 0; every
 /// other is its own parent.
 pub fn isRoot(r: *const Run, scope: u32) bool {
+    std.debug.assert(scope < r.hier.scopes.items.len);
+    std.debug.assert(r.hier.scopes.items[scope].parent < r.hier.scopes.items.len);
     return scope == 0 or r.hier.scopes.items[scope].parent == scope;
 }

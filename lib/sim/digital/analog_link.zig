@@ -109,6 +109,7 @@ pub const Link = struct {
 /// implicit D2A. From now on a change of it makes `runUntil` stop with
 /// `.analog` at region 3b of the tick it happened in.
 pub fn watchAnalog(r: *Run, at: u32) void {
+    assert(at < r.waits.watch.len);
     r.waits.watch[at].insert(.analog);
 }
 
@@ -119,6 +120,8 @@ pub fn watchAnalog(r: *Run, at: u32) void {
 /// `assigned`: an analog event statement assigned it, which §7.3.6.1 makes
 /// an event "regardless of whether the variable changes value or not".
 pub fn a2dWrite(r: *Run, at: u32, v: f64, assigned: bool) Error!void {
+    assert(at < r.values.len);
+    assert(r.analog.mixed);
     const cur = r.values[at];
     const real = r.decls.reals.contains(at);
     const lit = if (real) try evaluate.realLiteral(r.arena, v) else blk: {
@@ -128,6 +131,7 @@ pub fn a2dWrite(r: *Run, at: u32, v: f64, assigned: bool) Error!void {
     };
     // `store`'s own test for a change, taken before it overwrites `cur`.
     const same = if (real) @as(f64, @bitCast(cur.planes[0])) == v else std.mem.eql(u64, cur.planes, lit.planes);
+    assert(lit.planes.len == cur.planes.len);
     try waiters.store(r, at, lit.planes);
     if (assigned and same) try waiters.wake(r, at, .x, .x);
 }
@@ -137,6 +141,9 @@ pub fn a2dWrite(r: *Run, at: u32, v: f64, assigned: bool) Error!void {
 /// event makes `runUntil` stop with `.explicit_d2a` at region 1b of its
 /// tick, with bit `site` set in `d2a_fired`.
 pub fn watchEvent(r: *Run, at: u32, edge: waiters.Edge, site: u6) Error!void {
+    assert(at < r.waits.watch.len);
+    const sites = r.analog.d2a_sites.items.len;
+    defer assert(r.analog.d2a_sites.items.len <= sites + 1);
     r.waits.watch[at].insert(.d2a);
     try r.analog.d2a_sites.append(r.arena, .{ .slot = at, .edge = edge, .site = site });
 }
@@ -150,6 +157,7 @@ pub fn registerMonitor(r: *Run, e: Ast.ExprId) Error!void {
         return r.exprFail(e, "only cross(), above() and absdelta() are monitored in a digital event control");
     const scope = r.instanceOf(r.scope);
     if (r.monitorSlot(e, scope) != null) return;
+    assert(r.analog.monitors.items.len < std.math.maxInt(u32) / 2); // Wake slots count down from the top.
     try r.addMonitor(e, std.math.maxInt(u32) - 1 - @as(u32, @intCast(r.analog.monitors.items.len)));
 }
 
@@ -160,11 +168,13 @@ pub fn addMonitor(r: *Run, e: Ast.ExprId, wakes: u32) Error!void {
     if (args.len == 0 or args[0] == .none) return r.exprFail(e, "an analog event needs its expression");
     for (args) |arg| if (arg != .none) try compile.checkExpr(r, arg);
     try r.analog.monitors.append(r.arena, .{ .expr = e, .scope = r.instanceOf(r.scope), .slot = wakes, .kind = monitorKind(r, e) });
+    assert(r.monitorSlot(e, r.instanceOf(r.scope)) != null);
 }
 
 /// Returns which monitored analog function event `e` calls.
 pub fn monitorKind(r: *const Run, e: Ast.ExprId) MonitorKind {
     assert(e != .none);
+    assert(r.file.exprs.tag(e) == .event_function);
     // The parser admits exactly A.6.5's four names as an event function.
     return std.meta.stringToEnum(MonitorKind, r.file.str(r.file.exprs.strOf(e))).?;
 }
@@ -204,13 +214,17 @@ pub fn analogTriggers(r: *Run, m: *const Ast.ModuleDecl, named: *const std.AutoH
             try f.stmtEdges(s, w);
         }
     };
+    assert(r.analog.mixed);
+    const monitors = r.analog.monitors.items.len;
     for (m.analog) |ab| try (W{ .r = r, .named = named }).stmt(ab.body);
+    assert(r.analog.monitors.items.len >= monitors);
 }
 
 /// The slot whose waiters monitor `e` of instance `scope` wakes, or null
 /// when that event is not monitored. O(monitors).
 pub fn monitorSlot(r: *const Run, e: Ast.ExprId, scope: u32) ?u32 {
     assert(e != .none);
+    assert(scope < r.hier.scopes.items.len);
     for (r.analog.monitors.items) |m| if (m.expr == e and m.scope == scope) return m.slot;
     return null;
 }
@@ -218,7 +232,9 @@ pub fn monitorSlot(r: *const Run, e: Ast.ExprId, scope: u32) ?u32 {
 /// Argument `k` of monitor `m`, evaluated as a real in the monitor's scope
 /// (`k` = 0 is the monitored expression), or null when absent.
 pub fn monitorArg(r: *Run, m: usize, k: usize) Error!?f64 {
+    assert(m < r.analog.monitors.items.len);
     const mon = r.analog.monitors.items[m];
+    assert(mon.scope < r.hier.scopes.items.len);
     const args = r.file.exprs.args(mon.expr);
     if (k >= args.len or args[k] == .none) return null;
     const saved = r.scope;
@@ -233,6 +249,8 @@ pub fn monitorArg(r: *Run, m: usize, k: usize) Error!?f64 {
 /// nearest digital time tick to the time of the analog event", but "not
 /// ... earlier than the last or current digital event".
 pub fn deliverA2d(r: *Run, m: usize, tick: Tick) Error!void {
+    assert(m < r.analog.monitors.items.len);
+    assert(r.analog.mixed);
     const now = r.scheduler.now;
     _ = try exec.enqueue(r, .{ .a2d = r.analog.monitors.items[m].slot }, if (tick > now) tick - now else null, false);
 }
@@ -245,6 +263,8 @@ pub fn deliverA2d(r: *Run, m: usize, tick: Tick) Error!void {
 /// False, with nothing queued, when no monitor probes or `k` has run.
 pub fn analogPoint(r: *Run, k: Tick) Error!bool {
     if (r.monitoring.probes.len == 0 or !r.monitoring.on or k <= r.scheduler.now) return false;
+    assert(k > r.scheduler.now);
     _ = try exec.enqueue(r, .analog_point, k - r.scheduler.now, false);
+    assert(r.monitoring.on);
     return true;
 }

@@ -263,6 +263,8 @@ pub const analog_payload: u32 = std.math.maxInt(u32);
 /// Runs `source` to completion: `elaborate`, then every event. `arena` and
 /// `bag` must outlive the call; the transcript goes to `out`.
 pub fn run(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *diag.Bag, out: *std.Io.Writer) Error!void {
+    assert(source.len < std.math.maxInt(u32)); // Byte offsets are u32.
+    assert(opts.mixed == null); // A mixed run is stepped by `sim.mixed.run`.
     return deep.runGuarded(0, runDeep, .{ arena, source, opts, bag, out });
 }
 
@@ -272,6 +274,7 @@ pub fn run(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *di
 /// caller that holds it may step it with `runUntil` for as long as the arena
 /// lives, as a mixed-signal coordinator does.
 pub fn elaborate(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *diag.Bag, out: *std.Io.Writer) Error!Run {
+    assert(source.len < std.math.maxInt(u32)); // Byte offsets are u32.
     return deep.runGuarded(0, elaborateDeep, .{ arena, source, opts, bag, out });
 }
 
