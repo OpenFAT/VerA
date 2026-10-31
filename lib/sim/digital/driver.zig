@@ -4,8 +4,22 @@
 //! at run time, the values of `$driver_count` … `$receiver_count` and the
 //! wake-ups of `driver_update`. VAMS §7.9, §9.22.1-§9.22.6, §9.23.1-§9.23.4,
 //! Annex D.3; IEEE 1364-2005 §7.10 (the strength scale §9.22.4 encodes).
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn key(net: u32) u32`
+//! - `pub fn segregate(r: *Run, e: *elab.Elab) Error!void`
+//! - `pub fn checkUpdate(r: *Run, e: Ast.ExprId) Error!void`
+//! - `pub fn arm(r: *Run) Error!void`
+//! - `pub fn stored(r: *Run, slot: u32, changed: bool) Error!void`
+//! - `pub fn scheduled(r: *Run, slot: u32) Error!void`
+//! - `pub fn of(f: compile.SysFn) ?Fn`
+//! - `pub fn infer(r: *Run, e: Ast.ExprId, f: Fn) Error!compile.Type`
+//! - `pub fn eval(r: *Run, a: std.mem.Allocator, e: Ast.ExprId, f: Fn) Error!Int.Literal`
+//! - `pub fn evalReal(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -38,6 +52,12 @@ pub const State = struct {
 /// changing, which is when a continuous assignment re-evaluates (§6.1).
 const Source = struct { slot: u32, net: u32, reg: bool };
 
+/// The driver access functions, one per VAMS §9.22.1-§9.22.4 / §9.23.1-
+/// §9.23.4 `$driver_*` name (`of` maps the `compile.SysFn` row).
+const Fn = enum { count, receiver_count, state, strength, delay, next_state, next_strength, type };
+
+const Pend = struct { bit: Int.Bit, time: u64 };
+
 /// The waiter slot of `driver_update` on the net whose slot is `net`: one no
 /// variable owns, like `registerMonitor`'s (which count down from the top).
 /// Distinct from every slot, and per net, only while slots stay below 2^31.
@@ -68,12 +88,12 @@ pub fn segregate(r: *Run, e: *elab.Elab) Error!void {
     // loop, which finds each segment by that name.
     const GateRead = struct { scope: u32, str: Ast.StrId, net: u32 };
     var gate_reads: std.ArrayList(GateRead) = .empty;
-    for (r.inserts, r.insert_segs) |row, seg| {
+    for (r.decls.inserts, r.decls.insert_segs) |row, seg| {
         const parent = scopeAt(r, row.path) orelse continue;
         // A continuous lower port minted no segment: nothing digital to split.
-        const slot = r.names.get(.{ .scope = parent, .str = r.file.exprs.strOf(seg) }) orelse continue;
-        const d = r.net_of.get(slot) orelse continue;
-        const is_gate = if (r.file.strings.find(row.inst)) |n| r.instances.get(.{ .scope = parent, .str = n }) == null else true;
+        const slot = r.hier.names.get(.{ .scope = parent, .str = r.file.exprs.strOf(seg) }) orelse continue;
+        const d = r.netlist.slot_nets.get(slot) orelse continue;
+        const is_gate = if (r.file.strings.find(row.inst)) |n| r.hier.instances.get(.{ .scope = parent, .str = n }) == null else true;
         if (is_gate) try gate_reads.append(r.arena, .{ .scope = parent, .str = r.file.exprs.strOf(seg), .net = d });
         if (r.drv.receivers.contains(d)) continue; // a merged group's later port
         var driven = false;
@@ -86,53 +106,23 @@ pub fn segregate(r: *Run, e: *elab.Elab) Error!void {
             w.net = rx;
         };
         const rx_slot = e.nets.items[rx].slot;
-        var it = r.names.iterator();
+        var it = r.hier.names.iterator();
         while (it.next()) |entry| if (entry.value_ptr.* == slot and ordinaryInput(r, entry.key_ptr.scope, entry.key_ptr.str)) {
             entry.value_ptr.* = rx_slot;
         };
         try r.drv.receivers.put(r.arena, d, rx);
     }
     for (gate_reads.items) |g| if (r.drv.receivers.get(g.net)) |rx| {
-        r.names.getPtr(.{ .scope = g.scope, .str = g.str }).?.* = e.nets.items[rx].slot;
+        r.hier.names.getPtr(.{ .scope = g.scope, .str = g.str }).?.* = e.nets.items[rx].slot;
     };
 }
-
-/// The instance scope at a `Mixed.Insert` path (`a.b.`, empty at the root).
-fn scopeAt(r: *const Run, path: []const u8) ?u32 {
-    var scope: u32 = 0;
-    var parts = std.mem.tokenizeScalar(u8, path, '.');
-    while (parts.next()) |part| {
-        const name = r.file.strings.find(part) orelse return null;
-        scope = r.instances.get(.{ .scope = scope, .str = name }) orelse return null;
-    }
-    return scope;
-}
-
-/// §9.22 ¶3: is `scope` inside a connect module, whose drivers "the driver
-/// access functions … only access drivers found in ordinary modules" skip?
-fn isConnect(r: *const Run, scope: u32) bool {
-    return r.file.modules[r.scope_info.items[r.instanceOf(scope)].def].is_connect;
-}
-
-/// §9.22.1 the `i`'th ordinary driver of `net`, "arbitrarily numbered from 0
-/// to N-1" (here in declaration order), or its count N when `i` is null.
-fn ordinary(r: *const Run, net: u32, i: ?u64) union(enum) { count: u32, driver: ?u32 } {
-    var n: u32 = 0;
-    for (r.netDrivers(net)) |d| {
-        if (isConnect(r, r.drivers[d].scope)) continue;
-        if (i) |want| if (n == want) return .{ .driver = d };
-        n += 1;
-    }
-    return if (i == null) .{ .count = n } else .{ .driver = null };
-}
-
-// ---- driver_update (§9.22.5) --------------------------------------------------
 
 /// `@(driver_update x)`: `x` names a net, and its drivers are watched once the
 /// slot space is final (`arm`).
 pub fn checkUpdate(r: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     const signal = r.file.exprs.lhs(e);
-    const net = r.net_of.get(try r.scalarSlot(signal)) orelse return r.exprFail(signal, "§9.22.5: driver_update watches the drivers of a net");
+    const net = r.netlist.slot_nets.get(try r.scalarSlot(signal)) orelse return r.exprFail(signal, "§9.22.5: driver_update watches the drivers of a net");
     if (std.mem.findScalar(u32, r.drv.watched.items, net) != null) return;
     try r.drv.watched.append(r.arena, net);
 }
@@ -146,7 +136,7 @@ pub fn arm(r: *Run) Error!void {
         const halves = [2]u32{ net, rx orelse net };
         for (halves[0 .. @as(usize, 1) + @intFromBool(rx != null)]) |half| {
             for (r.netDrivers(half)) |di| {
-                const dr = r.drivers[di];
+                const dr = r.netlist.drivers[di];
                 // `driver_update` does not fire for a connect module's own
                 // driver (the `assign d = out;` of §9.22.6): §9.22.6 separates
                 // that driver, which "will drive the receivers", from "the
@@ -155,16 +145,11 @@ pub fn arm(r: *Run) Error!void {
                 // 2026-09-24 reading of §9.22.6). Fixture m04_12 pins it.
                 if (isConnect(r, dr.scope)) continue;
                 if (dr.source == .bridge) {
-                    try watch(r, dr.source.bridge.src, r.nets[net].slot, true);
-                } else for (dr.sensitivity) |s| try watch(r, s, r.nets[net].slot, false);
+                    try watch(r, dr.source.bridge.src, r.netlist.nets[net].slot, true);
+                } else for (dr.sensitivity) |s| try watch(r, s, r.netlist.nets[net].slot, false);
             }
         }
     }
-}
-
-fn watch(r: *Run, slot: u32, net: u32, reg: bool) Error!void {
-    r.watch[slot].insert(.driver_update);
-    try r.drv.sources.append(r.arena, .{ .slot = slot, .net = net, .reg = reg });
 }
 
 /// `waiters.store` wrote `slot`. §9.22.5: "an update is defined as the addition
@@ -174,7 +159,7 @@ fn watch(r: *Run, slot: u32, net: u32, reg: bool) Error!void {
 /// was scheduled (`scheduled`), so its maturing in the NBA region is not a
 /// second update.
 pub fn stored(r: *Run, slot: u32, changed: bool) Error!void {
-    if (!r.watch[slot].contains(.driver_update)) return;
+    if (!r.waits.watch[slot].contains(.driver_update)) return;
     const maturing = switch (r.scheduler.phase) {
         .dispatch => |region| region == .nba,
         .idle, .stopped => false,
@@ -186,15 +171,11 @@ pub fn stored(r: *Run, slot: u32, changed: bool) Error!void {
 /// `exec.enqueue` scheduled a write of `slot`: a pending value added to a
 /// `reg` driver (§9.22.5, and what §9.23 then reads back).
 pub fn scheduled(r: *Run, slot: u32) Error!void {
-    if (!r.watch[slot].contains(.driver_update)) return;
+    if (!r.waits.watch[slot].contains(.driver_update)) return;
     for (r.drv.sources.items) |s| if (s.slot == slot and s.reg) try waiters.wake(r, key(s.net), .x, .x);
 }
 
 // ---- the access functions (§9.22.1 to §9.22.4, §9.23.1 to §9.23.4) ----------------
-
-/// The driver access functions, one per VAMS §9.22.1-§9.22.4 / §9.23.1-
-/// §9.23.4 `$driver_*` name (`of` maps the `compile.SysFn` row).
-const Fn = enum { count, receiver_count, state, strength, delay, next_state, next_strength, type };
 
 /// The system function a `compile.SysFn` driver row stands for.
 pub fn of(f: compile.SysFn) ?Fn {
@@ -215,6 +196,7 @@ pub fn of(f: compile.SysFn) ?Fn {
 /// driver_index)` for the rest. The counts, strengths and type are integers;
 /// the states are "0, 1, x, or z"; the delay is "a real number".
 pub fn infer(r: *Run, e: Ast.ExprId, f: Fn) Error!compile.Type {
+    assert(e != .none);
     const args = r.file.exprs.args(e);
     const want: usize = if (f == .count or f == .receiver_count) 1 else 2;
     if (args.len != want or args[0] == .none or (want == 2 and args[1] == .none))
@@ -222,7 +204,7 @@ pub fn infer(r: *Run, e: Ast.ExprId, f: Fn) Error!compile.Type {
     if (!isConnect(r, r.scope))
         return r.failWith(.E0818, r.file.exprs.mainTok(e), "§9.22: \"Driver access functions can only be called from connect modules.\" This is a `module`", .{});
     const slot = try r.scalarSlot(args[0]);
-    if (r.net_of.get(slot) == null) return r.exprFail(args[0], "§9.22: signal_name names a net");
+    if (r.netlist.slot_nets.get(slot) == null) return r.exprFail(args[0], "§9.22: signal_name names a net");
     // §9.22.3 a driver's state is one of "0, 1, x, or z": one bit.
     if (r.values[slot].width != 1) return r.exprFail(args[0], "§9.22.3: signal_name is a scalar net; a driver's state is one bit");
     if (want == 2) {
@@ -238,20 +220,21 @@ pub fn infer(r: *Run, e: Ast.ExprId, f: Fn) Error!compile.Type {
 
 /// The integral functions' values.
 pub fn eval(r: *Run, a: std.mem.Allocator, e: Ast.ExprId, f: Fn) Error!Int.Literal {
+    assert(e != .none);
     const args = r.file.exprs.args(e);
     const slot = try r.scalarSlot(args[0]);
-    const net = r.net_of.get(slot).?;
+    const net = r.netlist.slot_nets.get(slot).?;
     const n: u32 = switch (f) {
         .count => ordinary(r, net, null).count,
         // §9.22.2 "the total number of ordinary receivers": the ordinary
         // input ports on the receivers' net (the segment itself, unsplit).
-        .receiver_count => receivers(r, r.nets[r.drv.receivers.get(net) orelse net].slot),
+        .receiver_count => receivers(r, r.netlist.nets[r.drv.receivers.get(net) orelse net].slot),
         .state, .strength, .next_state, .next_strength, .type => blk: {
             const i = (try evaluate.eval(r, a, args[1], 0)).asInt();
             const d = if (i != null and i.? >= 0) ordinary(r, net, @intCast(i.?)).driver else null;
             // §9.22.3 bounds the index to 0..N-1 and says no more; an index
             // outside it names no driver, and reads x.
-            const dr = r.drivers[d orelse return filled(a, if (f == .state or f == .next_state) 1 else 32, f != .state and f != .next_state, .x)];
+            const dr = r.netlist.drivers[d orelse return filled(a, if (f == .state or f == .next_state) 1 else 32, f != .state and f != .next_state, .x)];
             const now = dr.current.bit(0);
             const next = (try pending(r, a, d.?)) orelse Pend{ .bit = now, .time = 0 };
             break :blk switch (f) {
@@ -275,8 +258,9 @@ pub fn eval(r: *Run, a: std.mem.Allocator, e: Ast.ExprId, f: Fn) Error!Int.Liter
 /// value on a signal, it returns the value minus one (-1.0)", in the calling
 /// module's `timescale units.
 pub fn evalReal(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
+    assert(e != .none);
     const args = r.file.exprs.args(e);
-    const net = r.net_of.get(try r.scalarSlot(args[0])).?;
+    const net = r.netlist.slot_nets.get(try r.scalarSlot(args[0])).?;
     const i = (try evaluate.eval(r, a, args[1], 0)).asInt() orelse return -1.0;
     if (i < 0) return -1.0;
     const d = ordinary(r, net, @intCast(i)).driver orelse return -1.0;
@@ -285,21 +269,61 @@ pub fn evalReal(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
     return scale.realAt(p.time) - scale.realAt(r.scheduler.now);
 }
 
-const Pend = struct { bit: Int.Bit, time: u64 };
+// ---- private ----
+
+/// The instance scope at a `Mixed.Insert` path (`a.b.`, empty at the root).
+fn scopeAt(r: *const Run, path: []const u8) ?u32 {
+    var scope: u32 = 0;
+    var parts = std.mem.tokenizeScalar(u8, path, '.');
+    while (parts.next()) |part| {
+        const name = r.file.strings.find(part) orelse return null;
+        scope = r.hier.instances.get(.{ .scope = scope, .str = name }) orelse return null;
+    }
+    return scope;
+}
+
+/// §9.22 ¶3: is `scope` inside a connect module, whose drivers "the driver
+/// access functions … only access drivers found in ordinary modules" skip?
+fn isConnect(r: *const Run, scope: u32) bool {
+    assert(scope < r.hier.scopes.items.len);
+    return r.file.modules[r.hier.scopes.items[r.instanceOf(scope)].def].is_connect;
+}
+
+/// §9.22.1 the `i`'th ordinary driver of `net`, "arbitrarily numbered from 0
+/// to N-1" (here in declaration order), or its count N when `i` is null.
+fn ordinary(r: *const Run, net: u32, i: ?u64) union(enum) { count: u32, driver: ?u32 } {
+    assert(net < r.netlist.nets.len);
+    var n: u32 = 0;
+    for (r.netDrivers(net)) |d| {
+        if (isConnect(r, r.netlist.drivers[d].scope)) continue;
+        if (i) |want| if (n == want) return .{ .driver = d };
+        n += 1;
+    }
+    return if (i == null) .{ .count = n } else .{ .driver = null };
+}
+
+// ---- driver_update (§9.22.5) --------------------------------------------------
+
+fn watch(r: *Run, slot: u32, net: u32, reg: bool) Error!void {
+    assert(slot < r.values.len);
+    assert(net < r.netlist.nets.len);
+    r.waits.watch[slot].insert(.driver_update);
+    try r.drv.sources.append(r.arena, .{ .slot = slot, .net = net, .reg = reg });
+}
 
 /// The earliest value scheduled onto driver `dr` and not yet active: its own
 /// A.6.1 delayed transition, or, for a `reg` driver, a scheduled write of the
 /// variable it carries (§9.23's "a non-blocking assign with delays").
 fn pending(r: *Run, a: std.mem.Allocator, di: u32) Error!?Pend {
-    const dr = r.drivers[di];
+    const dr = r.netlist.drivers[di];
     var live: std.ArrayList(@import("../scheduler.zig").Live) = .empty;
     try r.scheduler.pendingPayloads(a, &live);
     var best: ?Pend = null;
     for (live.items) |ev| {
         // `root.analog_payload` indexes no row.
-        if (ev.payload >= r.pending.items.len) continue;
-        const bit: Int.Bit = switch (r.pending.items[ev.payload].item) {
-            .drive => |at| if (at == di) r.transitions.items[dr.transition].target.bit(0) else continue,
+        if (ev.payload >= r.rows.pending.items.len) continue;
+        const bit: Int.Bit = switch (r.rows.pending.items[ev.payload].item) {
+            .drive => |at| if (at == di) r.netlist.transitions.items[dr.transition].target.bit(0) else continue,
             .write => |w| switch (dr.source) {
                 .bridge => |b| if (w.target == b.src and w.sel == null) w.value.bit(b.src_lo) else continue,
                 .expr, .gate, .udp, .mos, .pull => continue,
@@ -313,8 +337,9 @@ fn pending(r: *Run, a: std.mem.Allocator, di: u32) Error!?Pend {
 
 /// §9.22.2: ordinary input ports bound to the net at `slot`.
 fn receivers(r: *const Run, slot: u32) u32 {
+    assert(slot < r.values.len);
     var n: u32 = 0;
-    var it = r.names.iterator();
+    var it = r.hier.names.iterator();
     while (it.next()) |entry| n += @intFromBool(entry.value_ptr.* == slot and ordinaryInput(r, entry.key_ptr.scope, entry.key_ptr.str));
     return n;
 }
@@ -322,8 +347,9 @@ fn receivers(r: *const Run, slot: u32) u32 {
 /// Whether name `str` in `scope` is an input port of an ordinary module
 /// instance (not a connect module's, not a block's local).
 fn ordinaryInput(r: *const Run, scope: u32, str: Ast.StrId) bool {
+    assert(scope < r.hier.scopes.items.len);
     if (isConnect(r, scope)) return false;
-    const info = r.scope_info.items[scope];
+    const info = r.hier.scopes.items[scope];
     if (info.lexical) return false;
     for (r.file.modules[info.def].ports) |p| if (p.name == str) return p.direction == .input;
     return false;
@@ -357,7 +383,7 @@ fn typeBits(r: *const Run, dr: Driver) u32 {
         .bridge => 16,
         .pull => 256,
     };
-    t |= switch (r.nets[dr.net].kind) {
+    t |= switch (r.netlist.nets[dr.net].kind) {
         .wor, .trior => 512,
         .wand, .triand => 1024,
         // No other net type has a Table 7-4 wired-logic bit.
