@@ -3,6 +3,10 @@
 //! decides some of them. Callee in, answer out. The literal-string fact the
 //! setup tiers read too is `prove.strArg`. Clauses: §3.3, §4.5, §4.5.14,
 //! §5.10.3, §9.4, §9.5, §9.7.3, §9.13, §9.15.
+//!
+//! Contents:
+//! - `pub const Display = enum`
+//! - `pub fn callArgIsValue(c: Mir.Callee, i: usize, display: Display) bool`
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
@@ -233,6 +237,8 @@ pub fn callArgIsValue(c: Mir.Callee, i: usize, display: Display) bool {
         => false,
     };
 }
+
+// ---- private ----
 
 test "callArgIsValue: the display-gated prongs are the printing and §9.5 families" {
     // Only the §9.4.1/§9.7.3 printing tasks and the §9.5 family answer

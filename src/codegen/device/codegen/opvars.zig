@@ -4,6 +4,10 @@
 //! variable is LRM §3.2.1's output variable: a module-scope variable with a
 //! `desc` or `units` attribute, or both, whose value a simulator shall report.
 //! LRM: §2.9.2, §3.2.1, §4.5.14.
+//!
+//! Contents:
+//! - `pub fn emitOpVarCore(self: *Gen) Error!void`
+//! - `pub fn emitOpVarTable(self: *Gen) Error!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -21,6 +25,7 @@ const coreIdx = @import("dispatch.zig").coreIdx;
 /// `opVars` reads. Called from `emitUnits`, so its range tiles with the
 /// other unit declarations.
 pub fn emitOpVarCore(self: *Gen) Error!void {
+    assert(self.opvar_core.name.len == 0);
     if (self.lowered.op_vars.items.len == 0) return;
     const keep = try self.arena.alloc(bool, self.core.lo_vals.len);
     @memset(keep, false);
@@ -50,6 +55,7 @@ pub fn emitOpVarCore(self: *Gen) Error!void {
 /// whose end-of-block value folded to zero reports 0. Nothing when the
 /// module has no operating-point variable.
 pub fn emitOpVarTable(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     const ovs = self.lowered.op_vars.items;
     if (ovs.len == 0) return;
     try self.w(
@@ -94,8 +100,11 @@ pub fn emitOpVarTable(self: *Gen) Error!void {
     try self.w(" }};\n}}\n\n", .{});
 }
 
+// ---- private ----
+
 /// The text of one `opVars` entry: the slice's field, as an f64.
 fn opVarRef(self: *Gen, final: Mir.Value) Error![]const u8 {
+    assert(self.lowered.op_vars.items.len != 0);
     const v = self.an.rv(final);
     if (v == .f_zero) return "0";
     const k = self.core.lo_idx[@backingInt(v)];

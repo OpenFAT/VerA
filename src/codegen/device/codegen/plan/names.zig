@@ -1,17 +1,24 @@
 //! Names: the lowered module -> `Names`, every identifier the device declares
 //! and the unknowns behind them, decided before a byte is written. Clauses:
 //! §3.4.7, §5.4.1, §5.4.2, §5.6, §5.6.7.1, §5.10, §9.19.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Names = struct`
+//! - `pub fn plan(in: Input, n_unit_modes: usize) Error!Names`
+//! - members: `Names.opInstOf`, `Names.opArgs`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const Analysis = @import("prove").Analysis;
 const Lowered = @import("ir").Lowered;
 const naming = @import("ir").names;
 const Input = @import("prove").Input;
+const Fixture = @import("prove").Fixture;
 
 /// Allocation only: a name has no length bound (VAMS 2.8, VD-054).
 pub const Error = std.mem.Allocator.Error;
-const none_u32 = std.math.maxInt(u32);
 
 /// Every identifier the device declares, and the unknowns behind them.
 pub const Names = struct {
@@ -47,6 +54,7 @@ pub const Names = struct {
     /// The operator `call` unit `unit` was enumerated from (`naming` records
     /// it), or null for a contribution unit. Asserts `unit` indexes `units`.
     pub fn opInstOf(self: *const Names, unit: u32) ?Mir.Inst {
+        assert(unit < self.units.len);
         const inst = self.units[unit].inst;
         return if (inst == .none) null else inst;
     }
@@ -55,16 +63,20 @@ pub const Names = struct {
     /// contribution unit). The slice borrows `mir.extra` and is invalidated
     /// by any later append to it (`Mir.instData`).
     pub fn opArgs(self: *const Names, mir: *const Mir, i: usize) []const Mir.Value {
+        assert(i < self.units.len);
         const inst = self.opInstOf(@intCast(i)) orelse return &.{};
         return mir.instData(inst).call.args;
     }
 };
+
+const none_u32 = std.math.maxInt(u32);
 
 /// Returns every declared name and the unknowns behind them; slices are owned
 /// by `in.arena`. `n_unit_modes` is `Verdict.unit_modes.len`: the
 /// canonical-order contract `unitMode` depends on is asserted here, where all
 /// three tables are in hand. Fails only on allocation.
 pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
+    assert(in.lowered.nodes.len <= std.math.maxInt(u32));
     const a = in.arena;
     const mir = in.mir;
     const an = in.an;
@@ -161,13 +173,19 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
         b.* = if (g) self.n_given else none_u32;
         if (g) self.n_given += 1;
     }
+    assert(self.u_names.len == self.n_u);
+    assert(self.given_bit.len == lowered.params.items.len);
+    assert(self.n_given <= lowered.params.items.len);
     return self;
 }
+
+// ---- private ----
 
 /// `nm`, or `nm#k` for the first `k` that no unknown claims yet. `sanitize`
 /// escapes `#`, so the emitted U member stays a legal, injective name. O(k ·
 /// unknowns); `k` is the number of existing spellings it collides with.
 fn freshUName(a: std.mem.Allocator, lowered: *const Lowered, nm: []const u8, extra: []const []const u8) Error![]const u8 {
+    assert(nm.len != 0);
     var name = nm;
     var k: u32 = 1;
     while (uNameTaken(lowered, name, extra)) : (k += 1) {
@@ -178,6 +196,8 @@ fn freshUName(a: std.mem.Allocator, lowered: *const Lowered, nm: []const u8, ext
 
 /// Does any `nodes` row or already-appended unknown spell `nm`?
 fn uNameTaken(lowered: *const Lowered, nm: []const u8, extra: []const []const u8) bool {
+    assert(nm.len != 0);
+    assert(extra.len <= std.math.maxInt(u32));
     for (lowered.nodes.items(.name)) |n| {
         if (std.mem.eql(u8, n, nm)) return true;
     }
@@ -186,8 +206,6 @@ fn uNameTaken(lowered: *const Lowered, nm: []const u8, extra: []const []const u8
     }
     return false;
 }
-
-const Fixture = @import("prove").Fixture;
 
 test "a potential source gets a branch current; two on one branch get two" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

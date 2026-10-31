@@ -1,22 +1,62 @@
 //! The runtime kernels a device carries, as Zig source text: §4.3 math, §4.5
-//! operators, the scalar-family helpers and Clause 9 kernels. `emitFile`
-//! splices them into device.zig and `buildPrelude` into `h.zig`; the text runs
-//! in the host's Newton loop, never in the compiler.
-//! LRM: §2.9, §4.3, §4.3.1, §4.3.2, §4.5, §4.5.7, §4.5.15, §5.10.3.1, §5.10.5, §9.4.3,
-//! §9.5, §9.13, §9.21.
+//! operators, the scalar-family helpers and Clause 9 kernels. Nothing in,
+//! text out: `emitFile` splices them into device.zig and `buildPrelude` into
+//! `h.zig`; the text runs in the host's Newton loop, never in the compiler.
+//! This file holds the fixed literals and the text embedded from
+//! `lib/kernels`, and re-exports each kernel family's text from its file
+//! under `kernel_text/`, so every name keeps its one path.
+//! Cites: §2.9, §3.2.2, §4.3, §4.3.1, §4.3.2, §4.5, §4.5.7, §4.5.11, §4.5.12,
+//! §4.5.15, §5.10.3.3, §9.4.3, §9.5, §9.7, §9.13, §9.21; IEEE 1364-2005 §5.4.
+//!
+//! Contents:
+//! - `pub const nan_lit = "@as(f64, @bitCast(@as(u64, 0x7ff8000000000000)))"`
+//! - `pub const inf_lit = "@as(f64, @bitCast(@as(u64, 0x7ff0000000000000)))"`
+//! - `pub const header_txt`
+//! - `pub const ops_txt = kernels.text.ops`
+//! - `pub const timer_txt`
+//! - `pub const str_txt`
+//! - `pub const rng_txt`
+//! - `pub const table_txt`
+//! - `pub const file_txt`
+//! - `pub const wide_txt`
+//! - `pub const limit_txt`
+//! - `pub const filt_txt`
+//! - `pub const display_txt`
+//! - `pub const math_txt = math.math_txt`
+//! - `pub const domain_quiet_txt = math.domain_quiet_txt`
+//! - `pub const domain_report_txt = math.domain_report_txt`
+//! - `pub const family_txt = family.family_txt`
+//! - `pub const family_dev_txt = family.family_dev_txt`
+//! - `pub const ac_txt = ac.ac_txt`
+//! - `pub const ac_fam_txt = ac.ac_fam_txt`
+//! - `pub const tp_txt = storage.tp_txt`
+//! - `pub const tp_arr_txt = storage.tp_arr_txt`
+//! - `pub const arr_txt = storage.arr_txt`
+//! - `pub const hist_txt = storage.hist_txt`
+//! - `pub const hist_quad_txt = storage.hist_quad_txt`
+//! - `pub const helpers_head_txt = unit_file.helpers_head_txt`
+//! - `pub const prelude_head_txt = unit_file.prelude_head_txt`
+//! - `pub const appendAliases = unit_file.appendAliases`
+//! - `pub const declKeyword = unit_file.declKeyword`
+//! - `pub const deprecated_std`
 
 const std = @import("std");
 const kernels = @import("kernels");
+const math = @import("kernel_text/math.zig");
+const family = @import("kernel_text/family.zig");
+const ac = @import("kernel_text/ac.zig");
+const storage = @import("kernel_text/storage.zig");
+const unit_file = @import("kernel_text/unit_file.zig");
 
-// ===========================================================================
-// Fixed emitted text
-// ===========================================================================
+// A file-level //! header cannot be spliced into the middle of device.zig.
+const timer_src = kernels.text.timer;
 
 /// NaN and +inf as bit-pattern literals, the values `std.math.nan(f64)` and
 /// `std.math.inf(f64)` return. Those are comptime loops, and every Instance
 /// field default is evaluated in one comptime context, so a device with
 /// ~140 timer/setup defaults exceeded the 1000-branch quota.
 pub const nan_lit = "@as(f64, @bitCast(@as(u64, 0x7ff8000000000000)))";
+
 /// +inf as a bit-pattern literal; `nan_lit` says why not `std.math.inf`.
 pub const inf_lit = "@as(f64, @bitCast(@as(u64, 0x7ff0000000000000)))";
 
@@ -34,626 +74,15 @@ pub const header_txt =
     \\
 ;
 
-/// LRM Tables 4-14/4-15 in value form: a function the scalar family does
-/// not provide (`contract.family_primitives`) is composed from the ones it
-/// does, so forward-mode autodiff carries the analytic derivative, or, where
-/// the composition loses accuracy the named C function keeps (#60, VD-123),
-/// takes the folder's own value (`contract.gm`, `std.math`) with the
-/// analytic derivative grafted on (`zGraft`).
-/// File-scope helpers run in the default (strict) float mode, since
-/// `@setFloatMode` does not cross a call: a `.optimized` unit loses fast-math
-/// inside a helper and never gains unsound fast-math.
-pub const math_txt =
-    \\// ---- §4.3 math, value form (derivative propagates by composition) ----
-    \\
-    \\// §4.3.1 defines the derivative at equality using strict comparisons:
-    \\// min(a,b) = (a < b) ? a : b; max(a,b) = (a > b) ? a : b.
-    \\// Compose the contract's masks and winner-derivative selection rather
-    \\// than inheriting a host min/max primitive's possibly different tie rule.
-    \\fn zMin(comptime S: type, a: S, b: S) S { return a.lt(b).sel(a, b); }
-    \\fn zMax(comptime S: type, a: S, b: S) S { return b.lt(a).sel(a, b); }
-    \\// The plain-f64 form (`opcode_zig.host_f64`: derive, setup), the same
-    \\// strict comparison: `@min`/`@max` drop a NaN and leave a zero's sign open.
-    \\fn zMinF(a: f64, b: f64) f64 { return if (a < b) a else b; }
-    \\fn zMaxF(a: f64, b: f64) f64 { return if (a > b) a else b; }
-    \\
-    \\// ---- per-operating-point decisions (`batch_lead`, contract.zig) ----
-    \\// A real compared, rounded to an integer or stripped of its lanes is one
-    \\// decision per call. A scalar family has one operating point and these
-    \\// are the plain value forms. A batch family (`V` a vector of points)
-    \\// implements the lead protocol: the leader point decides, every other
-    \\// point that would have decided otherwise is marked diverged, and the
-    \\// entry points re-run until every point has run on its own path.
-    \\fn zCmp(comptime S: type, comptime op: std.math.CompareOperator, a: anytype, b: anytype) bool {
-    \\    if (comptime @hasDecl(S, "decide")) return S.decide(op, a, b);
-    \\    return std.math.compare(a.val(), op, b.val());
-    \\}
-    \\fn zRoundI(comptime S: type, a: anytype) i64 {
-    \\    if (comptime @hasDecl(S, "decideI")) return S.decideI(a);
-    \\    return std.math.lossyCast(i64, @round(a.val()));
-    \\}
-    \\fn zStrip(comptime S: type, a: anytype) @TypeOf(S.con(0.0)) {
-    \\    if (comptime @hasDecl(S, "strip")) return S.strip(a);
-    \\    return S.con(a.val());
-    \\}
-    \\/// `a * k`, `a + k`, `a - k` for a derivative-free `k` that differs per
-    \\/// point: `scale`/`addC` of its value in a one-point family, which is
-    \\/// what the device always emitted; in a batch, the same arithmetic per
-    \\/// point (`sub` of `-k` keeps a -0 lane that `add` of a zero lane would not).
-    \\fn zMulP(comptime S: type, a: anytype, k: anytype) @TypeOf(a) {
-    \\    if (comptime @typeInfo(S.V) == .vector) return a.mul(k);
-    \\    return a.scale(k.val());
-    \\}
-    \\fn zAddP(comptime S: type, a: anytype, k: anytype) @TypeOf(a) {
-    \\    if (comptime @typeInfo(S.V) == .vector) return a.sub(k.neg());
-    \\    return a.addC(k.val());
-    \\}
-    \\fn zSubP(comptime S: type, a: anytype, k: anytype) @TypeOf(a) {
-    \\    if (comptime @typeInfo(S.V) == .vector) return a.sub(k);
-    \\    return a.addC(-(k.val()));
-    \\}
-    \\/// Field `f` of the `Instance`, as a value: per point in a batch, whose
-    \\/// points each have their own instance (`S.instLane(T, w)`, contract.zig
-    \\/// `batch_inst`); a one-point family reads `inst`.
-    \\fn zInst(comptime S: type, inst: anytype, comptime f: []const u8) @TypeOf(S.con(0.0)) {
-    \\    if (comptime contract.instLanes(S)) {
-    \\        var ls: [S.lane_count]@TypeOf(S.Lane.con(0.0)) = undefined;
-    \\        inline for (0..S.lane_count) |w| ls[w] = S.Lane.con(@field(S.instLane(@TypeOf(inst.*), w), f));
-    \\        return S.fromLanes(0, ls);
-    \\    }
-    \\    return S.con(@field(inst, f));
-    \\}
-    \\/// Integer field `f` of the `Instance`: one value per call, so in a batch
-    \\/// a decision (the lead protocol) over each point's own instance.
-    \\fn zInstI(comptime S: type, inst: anytype, comptime f: []const u8) i64 {
-    \\    if (comptime contract.instLanes(S)) {
-    \\        var ls: [S.lane_count]@TypeOf(S.Lane.con(0.0)) = undefined;
-    \\        inline for (0..S.lane_count) |w| ls[w] = S.Lane.con(@floatFromInt(@field(S.instLane(@TypeOf(inst.*), w), f)));
-    \\        return S.decideI(S.fromLanes(0, ls));
-    \\    }
-    \\    if (comptime @hasDecl(S, "decideI")) return S.decideI(S.con(@floatFromInt(@field(inst, f)))); // `region` hashes it
-    \\    return @field(inst, f);
-    \\}
-    \\/// Whether `S` runs the lead protocol; a vector family that cannot is
-    \\/// refused, since its points would follow point 0's branches.
-    \\fn zLeads(comptime S: type) bool {
-    \\    return contract.leads(S);
-    \\}
-    \\
-    \\/// Device-routed f64 transcendentals for the SCALAR paths (the
-    \\/// §4.5.15 limiters). Generated devices also
-    \\/// compile for NVPTX/AMDGCN (the engine's GPU eval and StateKernel), and
-    \\/// those targets have no libm — `@exp`/`@log` on an f64 die at PTX
-    \\/// assembly with "no libcall available for fexp". `contract.gm`'s host
-    \\/// branch IS the builtin, so host emission is numerically unchanged; its
-    \\/// device branch is a self-contained soft port. sin/cos joined when the
-    \\/// bjt reached tan through the StateKernel's scalar core (`fsin` cannot
-    \\/// select on NVPTX).
-    \\///
-    \\/// expm1, log1p and atan are routed too, and NOT for a missing libcall --
-    \\/// NVPTX takes them. Each raises the subnormal underflow flag through
-    \\/// `std.mem.doNotOptimizeAway`, which for a float is
-    \\/// `asm volatile ("" :: "rm" (v))`, and AMDGPU cannot match the `m`
-    \\/// alternative: "Could not match memory address. Inline asm failure!".
-    \\/// AMD-only, so a CUDA-only check never sees it.
-    \\inline fn zDevExp(x: f64) f64 {
-    \\    return contract.gm.exp(x);
-    \\}
-    \\inline fn zDevExpm1(x: f64) f64 {
-    \\    return contract.gm.expm1(x);
-    \\}
-    \\inline fn zDevAtan(x: f64) f64 {
-    \\    return contract.gm.atan(x);
-    \\}
-    \\inline fn zDevLog(x: f64) f64 {
-    \\    return contract.gm.log(x);
-    \\}
-    \\inline fn zDevPow(x: f64, y: f64) f64 {
-    \\    return contract.gm.pow(x, y);
-    \\}
-    \\inline fn zDevSin(x: f64) f64 {
-    \\    return contract.gm.sin(x);
-    \\}
-    \\inline fn zDevCos(x: f64) f64 {
-    \\    return contract.gm.cos(x);
-    \\}
-    \\inline fn zDevTanh(x: f64) f64 {
-    \\    return contract.gm.tanh(x);
-    \\}
-    \\inline fn zDevSinh(x: f64) f64 {
-    \\    return contract.gm.sinh(x);
-    \\}
-    \\inline fn zDevCosh(x: f64) f64 {
-    \\    return contract.gm.cosh(x);
-    \\}
-    \\
-    \\fn zTan(comptime S: type, a: S) S { // §4.3.2 tan = sin/cos
-    \\    return a.sin().div(a.cos());
-    \\}
-    \\/// `val`, the value of f(a) at `v = a.val()`, with f's slope `g` grafted
-    \\/// onto a's derivative through a zero-valued carrier (`zHypot`'s idiom).
-    \\/// A non-finite slope (a pole, a branch point) has none worth
-    \\/// propagating. At v = ±0 with f(±0) = ±0 (asin, asinh, atanh) the
-    \\/// value is `a.scale(g)`, since -0 plus a +0 carrier would round to +0.
-    \\fn zGraft(comptime S: type, a: S, v: f64, val: f64, g: f64) S {
-    \\    if (v == 0.0 and val == 0.0) return a.scale(g);
-    \\    var r = S.con(val);
-    \\    if (std.math.isFinite(g) and g != 0.0) r = r.add(a.addC(-v).scale(g));
-    \\    return r;
-    \\}
-    \\// §4.3.1/§4.3.2 the functions Tables 4-14/4-15 name a C equivalent for
-    \\// and the family does not carry: the value is the one function the
-    \\// compiler folds with (`contract.gm`, `std.math`), the derivative the
-    \\// analytic one (#60; the ln/sqrt/atan compositions these replace lost up
-    \\// to every digit, VD-123).
-    \\fn zLog10(comptime S: type, a: S) S { // §4.3.1 log() is base 10, C log10
-    \\    const v = a.val();
-    \\    return zGraft(S, a, v, contract.gm.log10(v), 0.4342944819032518 / v);
-    \\}
-    \\/// #81: a GPU target gets the branch-free core. A select whose arms are
-    \\/// costly runs both there (`render.zig`), and the checked kernels below
-    \\/// inline, so no outlined call splits the core. A host CPU keeps the
-    \\/// lazy arm and the call.
-    \\const zSpec = switch (@import("builtin").target.cpu.arch) {
-    \\    .nvptx64, .amdgcn => true,
-    \\    else => false, // else: every other target is a host CPU
-    \\};
-    \\const zSpecCc: std.builtin.CallingConvention = if (zSpec) .@"inline" else .auto;
-    \\/// `a` when `c`, else `b`. Both are arguments, so both are evaluated. A
-    \\/// GPU picks with `S.sel`'s lane select: an `if` over two struct values
-    \\/// joins them through a pointer phi, which pins both arms' copies in
-    \\/// local memory (SROA cannot split them).
-    \\inline fn zPick(comptime S: type, c: bool, a: anytype, b: @TypeOf(a)) @TypeOf(a) {
-    \\    if (comptime zSpec) return S.sel(S.con(if (c) 1.0 else 0.0), a, b);
-    \\    return if (c) a else b;
-    \\}
-    \\// §4.3.2 "Input values outside of the valid range for the operator shall
-    \\// report an error", for Table 4-14's one-bound domains: each op with its
-    \\// check in front (`opcode_zig.Row.checked`; the unchecked spelling is for
-    \\// a value `setup` speculates outside its guard). The code is the one the
-    \\// prover gives the same argument when it can see it.
-    \\fn zSqrtD(comptime _: type, a: anytype) callconv(zSpecCc) @TypeOf(a) {
-    \\    const v = a.val();
-    \\    zDomain("E0604", "sqrt", "x >= 0", v, v >= 0.0);
-    \\    return a.sqrt();
-    \\}
-    \\fn zLnD(comptime _: type, a: anytype) callconv(zSpecCc) @TypeOf(a) {
-    \\    const v = a.val();
-    \\    zDomain("E0602", "ln", "x > 0", v, v > 0.0);
-    \\    return a.log();
-    \\}
-    \\fn zLn1pD(comptime _: type, a: anytype) callconv(zSpecCc) @TypeOf(a) {
-    \\    const v = a.val();
-    \\    zDomain("E0603", "ln1p", "x > -1", v, v > -1.0);
-    \\    return a.log1p();
-    \\}
-    \\fn zLog10D(comptime S: type, a: S) callconv(zSpecCc) S {
-    \\    const v = a.val();
-    \\    zDomain("E0602", "log", "x > 0", v, v > 0.0);
-    \\    return zLog10(S, a);
-    \\}
-    \\/// §4.3.1 Table 4-14 pow's domain, "if x > 0, all y; if x = 0, y > 0; if
-    \\/// x < 0, all integer y", with the prover's E0609 leniency at x = 0,
-    \\/// y = 0 (IEEE pow(0, 0) = 1).
-    \\fn zPowOk(x: f64, y: f64) bool {
-    \\    return x > 0.0 or (x == 0.0 and y >= 0.0) or (x < 0.0 and y == @trunc(y));
-    \\}
-    \\/// `a.pow(k)` for an exponent that does not move with the solve, checked.
-    \\fn zPowK(comptime _: type, a: anytype, k: f64) callconv(zSpecCc) @TypeOf(a) {
-    \\    const v = a.val();
-    \\    zDomain("E0609", "pow", "x > 0, or x = 0 with y >= 0, or x < 0 with integer y", v, zPowOk(v, k));
-    \\    return a.pow(k);
-    \\}
-    \\/// §4.3.1 Table 4-14 hypot names the C library function, which is
-    \\/// overflow-free — a²+b² composed in S overflowed for legs ≳1e154. The
-    \\/// value is the libm one; the derivative (a/h)·da + (b/h)·db is grafted on
-    \\/// through zero-valued carriers, `a.addC(-av)` being an S whose VALUE is
-    \\/// exactly 0 and whose derivative is da — the same idiom the §12.32 systf
-    \\/// reassembly uses. Guarded: at h = 0 hypot has no derivative (a cone tip),
-    \\/// and a non-finite h has no slope worth propagating.
-    \\fn zHypot(comptime S: type, a: S, b: S) S {
-    \\    const av = a.val();
-    \\    const bv = b.val();
-    \\    const h = std.math.hypot(av, bv);
-    \\    var r = S.con(h);
-    \\    if (h != 0.0 and std.math.isFinite(h))
-    \\        r = r.add(a.addC(-av).scale(av / h)).add(b.addC(-bv).scale(bv / h));
-    \\    return r;
-    \\}
-    \\// d asin = dx/sqrt(1-x^2) and d acos its negation, with 1-x^2 as
-    \\// (1-x)(1+x): exact near ±1, where x*x rounds the gap away.
-    \\fn zAsin(comptime S: type, a: S) S { // §4.3.2, C asin
-    \\    const v = a.val();
-    \\    zDomain("E0605", "asin", "-1 <= x <= 1", v, v >= -1.0 and v <= 1.0);
-    \\    return zGraft(S, a, v, std.math.asin(v), 1.0 / @sqrt((1.0 - v) * (1.0 + v)));
-    \\}
-    \\fn zAcos(comptime S: type, a: S) S { // §4.3.2, C acos
-    \\    const v = a.val();
-    \\    zDomain("E0605", "acos", "-1 <= x <= 1", v, v >= -1.0 and v <= 1.0);
-    \\    return zGraft(S, a, v, std.math.acos(v), -1.0 / @sqrt((1.0 - v) * (1.0 + v)));
-    \\}
-    \\// d asinh = dx/sqrt(x^2+1), as dx/|x| past 1e150 where x^2 overflows.
-    \\fn zAsinh(comptime S: type, a: S) S { // §4.3.2, C asinh
-    \\    const v = a.val();
-    \\    const g = if (@abs(v) > 1e150) 1.0 / @abs(v) else 1.0 / @sqrt(v * v + 1.0);
-    \\    return zGraft(S, a, v, contract.gm.asinh(v), g);
-    \\}
-    \\fn zAcosh(comptime S: type, a: S) S { // §4.3.2, C acosh
-    \\    const v = a.val();
-    \\    zDomain("E0607", "acosh", "x >= 1", v, v >= 1.0);
-    \\    return zGraft(S, a, v, contract.gm.acosh(v), 1.0 / (@sqrt(v - 1.0) * @sqrt(v + 1.0)));
-    \\}
-    \\fn zAtanh(comptime S: type, a: S) S { // §4.3.2, C atanh
-    \\    const v = a.val();
-    \\    zDomain("E0606", "atanh", "-1 < x < 1", v, v > -1.0 and v < 1.0);
-    \\    return zGraft(S, a, v, contract.gm.atanh(v), 1.0 / ((1.0 - v) * (1.0 + v)));
-    \\}
-    \\/// §4.3.2 atan2(y, x), C atan2: C99 F.10.1.4's signed zeros and quadrants
-    \\/// (atan2(-0, -1) = -pi, atan2(+0, -0) = +pi; Table 4-15's "atan2(0,0) =
-    \\/// 0" is +0, +0). d atan2 = (x dy - y dx)/(x^2 + y^2), on every axis,
-    \\/// as (x/h)/h and (y/h)/h with h = hypot(x, y), which does not overflow;
-    \\/// none at the origin. On the +x axis the value is y/x, which keeps
-    \\/// y's signed zero and carries the same slope (dy/x).
-    \\fn zAtan2(comptime S: type, y: S, x: S) S {
-    \\    const yv = y.val();
-    \\    const xv = x.val();
-    \\    if (yv == 0.0 and xv > 0.0) return y.div(x);
-    \\    const h = std.math.hypot(xv, yv);
-    \\    var r = S.con(contract.gm.atan2(yv, xv));
-    \\    if (h != 0.0 and std.math.isFinite(h))
-    \\        r = r.add(y.addC(-yv).scale((xv / h) / h)).sub(x.addC(-xv).scale((yv / h) / h));
-    \\    return r;
-    \\}
-    \\fn zFloor(comptime S: type, a: S) S { // §4.3.1 — derivative 0 a.e.
-    \\    return S.con(@floor(a.val()));
-    \\}
-    \\fn zCeil(comptime S: type, a: S) S { // §4.3.1 — derivative 0 a.e.
-    \\    return S.con(@ceil(a.val()));
-    \\}
-    \\/// §4.2.4 `%` keeps the sign of the first operand — C's fmod, which `@rem`
-    \\/// on f64 is, EXACTLY. The composed `a − b·trunc(a/b)` this replaces lost
-    \\/// the whole remainder to the subtraction's rounding once |a| ≳ 2^53·|b|.
-    \\/// The derivative treatment is unchanged (k = trunc(a/b) is constant a.e.,
-    \\/// so d = da − k·db), carried by zero-valued grafts so the exact value
-    \\/// survives; a non-finite k (b = 0, or a/b overflowed) has no slope worth
-    \\/// propagating and degrades to da alone.
-    \\/// §4.2.4 "It shall be an error to pass zero (0) as the second argument
-    \\/// to the modulus operator", real operands included: `zModZero` reports
-    \\/// E0601 as the integer `%` does, rather than returning @rem's NaN.
-    \\fn zFmod(comptime S: type, a: S, b: S) S {
-    \\    const av = a.val();
-    \\    const bv = b.val();
-    \\    if (bv == 0.0) zModZero();
-    \\    const k = @trunc(av / bv);
-    \\    var r = S.con(@rem(av, bv)).add(a.addC(-av));
-    \\    if (std.math.isFinite(k)) r = r.sub(b.addC(-bv).scale(k));
-    \\    return r;
-    \\}
-    \\/// §4.3.1 pow with a non-constant exponent. The exp(y·ln x) composition
-    \\/// this replaces was NaN on the clause's own legal domain "if x < 0, all
-    \\/// integer y". The value is S's own pow, which handles the negative-base
-    \\/// integral-y sign itself; the derivatives are grafted on zero-valued
-    \\/// carriers:
-    \\///   ∂/∂x = y·x^(y−1)  — valid for x > 0 and for integral y of either sign;
-    \\///   ∂/∂y = x^y·ln(x)  — only for x > 0. For x ≤ 0 the legal y move in
-    \\///   integer steps, so no continuous ∂/∂y exists and 0 is the honest slope.
-    \\/// Non-finite slopes (x = 0 with y < 1, domain-error NaNs) are dropped the
-    \\/// same way zHypot drops its cone tip.
-    \\/// Both transcendentals go through `S.con(x)`, not `std.math.pow` and
-    \\/// `@log`, for the reason `devSafe` exists: a unit body also compiles
-    \\/// for nvptx, which has no libm, and a raw one is "no libcall available
-    \\/// for flog/fexp" at PTX assembly. On a host S it is the same libm call,
-    \\/// bit for bit, and the zero-derivative carriers fold away.
-    \\fn zPow(comptime S: type, a: S, b: S, comptime varying_exponent: bool) S {
-    \\    const x = a.val();
-    \\    const y = b.val();
-    \\    zDomain("E0609", "pow", "x > 0, or x = 0 with y >= 0, or x < 0 with integer y", x, zPowOk(x, y));
-    \\    const v = S.con(x).pow(y).val();
-    \\    // y·x^(y−1) = y·v/x — algebraically exact for x != 0, the negative-base
-    \\    // integral-y clause included, and ONE pow instead of two. A second
-    \\    // `S.con(x).pow(y - 1.0)` was half of the 828k pow calls on
-    \\    // tran/fourbitadder and half of the 51% of instructions mos6_inverter
-    \\    // spent under pow (callgrind, 2026-09-07): every junction exponent in
-    \\    // every SPICE model is a model PARAMETER, so codegen's `.pow` arm sends
-    \\    // all of them here rather than down `Dual.pow`'s own c·p/x.
-    \\    //
-    \\    // x == 0 keeps the second pow, and is NOT a rounding concern: at y == 1
-    \\    // the true slope is 1, but v/x is 0/0 = NaN and the gate below would
-    \\    // drop the term and flatten the Jacobian row. `mjs` defaults to 0 in
-    \\    // bjt.va, so `1 - mjs` is exactly that exponent and the substrate base
-    \\    // `1 - v/ps` reaches exactly 0 at v == ps. The branch is never taken on
-    \\    // a normal bias point, so the hot path is still one pow, and where it
-    \\    // IS taken the expression is the old one character for character.
-    \\    // Elsewhere the two forms sit within 6 ulp of a 60-digit reference and
-    \\    // neither is uniformly closer; the result is a Jacobian entry, and
-    \\    // Newton converges to the accuracy of the RESIDUAL.
-    \\    const gx = if (x != 0.0) y * v / x else y * S.con(x).pow(y - 1.0).val();
-    \\    const gy: f64 = if (varying_exponent and x > 0.0) v * S.con(x).log().val() else 0.0;
-    \\    var r = S.con(v);
-    \\    if (std.math.isFinite(gx) and gx != 0.0) r = r.add(a.addC(-x).scale(gx));
-    \\    if (std.math.isFinite(gy) and gy != 0.0) r = r.add(b.addC(-y).scale(gy));
-    \\    return r;
-    \\}
-    \\/// §9.17.3 `$limit(access, user_function, args…)`: the value is what the
-    \\/// user limiter returned, the DERIVATIVE is the access function's.
-    \\///
-    \\/// SPICE evaluates the device at the limited bias and stamps
-    \\/// `I(vlim) + g(vlim)·(v − vlim)`, so the residual stays linear in the
-    \\/// true unknown past the clamp point and the Jacobian entry never
-    \\/// vanishes. Differentiating the limiter instead gives dv_lim/dv = 0
-    \\/// inside the clamped region — a device contributing no conductance,
-    \\/// which is a singular row for a floating internal node. So: shift the
-    \\/// probe by the constant the clamp moved it, rather than replace it.
-    \\fn zLimitUf(comptime S: type, vnew: S, vlim: S) S {
-    \\    return vnew.addC(vlim.val() - vnew.val());
-    \\}
-    \\fn zIabs(a: i64) i64 { // §4.3.1 integer abs, §3.2's 32-bit result
-    \\    return @as(i32, @truncate(if (a < 0) -%a else a));
-    \\}
-    \\/// §4.2.11 the shift COUNT reads as unsigned: a negative i64 count is a
-    \\/// reinterpreted value ≥ 2^63, which vacates every one of §3.2.1's 32 bits
-    \\/// — so the answer is 0, exactly like any other over-wide count. Without
-    \\/// the guard `std.math.shl`/`shr` take a negative count as "shift the
-    \\/// OTHER way" (8 << -1 came out 4, 8 >> -1 came out 16). Positive counts
-    \\/// keep the std functions' verified over-wide-is-0 semantics untouched.
-    \\fn zShl(a: i64, n: i64) i64 {
-    \\    return if (n < 0) 0 else std.math.shl(i64, a, n);
-    \\}
-    \\fn zShr(a: i64, n: i64) i64 {
-    \\    if (n == 0) return a; // preserve signed/unsigned operand identity
-    \\    const bits: u32 = @bitCast(@as(i32, @truncate(a)));
-    \\    return if (n < 0) 0 else std.math.shr(u32, bits, n);
-    \\}
-    \\fn zClog2(a: i64, width: i64) i64 { // §9.14 / IEEE 1364-2005 §17.11.1
-    \\    if (width > 64 and a < 0) return width;
-    \\    const mask: u64 = if (width >= 64) std.math.maxInt(u64) else (@as(u64, 1) << @intCast(width)) - 1;
-    \\    const bits = @as(u64, @bitCast(a)) & mask;
-    \\    return if (bits <= 1) 0 else 64 - @as(i64, @clz(bits - 1));
-    \\}
-    \\fn zStrCmp(a: []const u8, b: []const u8) i64 { // §3.3.1 string relations
-    \\    return switch (std.mem.order(u8, a, b)) { .lt => -1, .eq => 0, .gt => 1 };
-    \\}
-    \\
-    \\
-;
-
-/// `zDomain` for a solver device: an empty guard. §4.3.2: "Input values
-/// outside of the valid range for the operator shall report an error."
-/// `proof.checkDomain` refuses what it can prove from the source
-/// (E0602-E0607, E0609); `math_txt`'s restricted-domain functions call
-/// `zDomain` with that code for the rest. A device has no transcript (it
-/// also compiles for NVPTX), so only the executable reports; one call site
-/// keeps both artifacts agreeing on which values are out of range.
-/// `zModZero` (§4.2.4 real `%` by zero) traps, as `render.imodFn` does for
-/// the integer `%`.
-pub const domain_quiet_txt =
-    \\fn zDomain(comptime _: []const u8, comptime _: []const u8, comptime _: []const u8, _: f64, _: bool) void {}
-    \\fn zModZero() noreturn { @trap(); }
-    \\
-    \\
-;
-
-/// `zDomain` for the printing executable: reports and stops, on the §9.21.2
-/// `E` precedent, since the clause names no in-range value and libm's quiet
-/// NaN would look like a converged answer. A NaN argument reports too. `tan`
-/// is unguarded: its poles are irrational, so no f64 is ever at one. `code`
-/// is the prover's for the same argument, so `//! reject-run` names it. The
-/// testbench mutes it (`vera_domain_muted`, `tb/runner_text.zig` `point`)
-/// while its self-checks evaluate perturbed points no analysis asked for.
-pub const domain_report_txt =
-    \\fn zDomain(comptime code: []const u8, comptime name: []const u8, comptime rule: []const u8, x: f64, in_range: bool) void {
-    \\    if (in_range) return;
-    \\    if (comptime @hasDecl(@import("root"), "vera_domain_muted")) {
-    \\        if (@import("root").vera_domain_muted) return;
-    \\    }
-    \\    std.debug.print(
-    \\        "error[" ++ code ++ "]: LRM 4.3.2: " ++ name ++ "() input value is outside the valid range " ++ rule ++ ": {d}\n",
-    \\        .{x},
-    \\    );
-    \\    std.process.exit(1);
-    \\}
-    \\fn zModZero() noreturn {
-    \\    std.debug.print("error[E0601]: LRM 4.2.4: real modulus divisor is zero\n", .{});
-    \\    std.process.exit(1);
-    \\}
-    \\
-    \\
-;
-
-/// The scalar-family helpers (`codegen/family.zig`), emitted after `ops_txt`:
-/// how every body and kernel reaches a family. Masks are narrowed by `zdr`,
-/// the device's `deriv_reads` (declared by `family_dev_txt` in device.zig and
-/// by the `h.zig` head), so no mask names a lane the host did not ask for.
-pub const family_txt =
-    \\// ---- the scalar family (`contract.family_fns`) ----
-    \\//
-    \\// A real is typed `zOf(S, m)`, `m` the unknowns it may depend on.
-    \\
-    \\fn zOf(comptime S: type, comptime m: u64) type {
-    \\    @setEvalBranchQuota(1_000_000);
-    \\    return S.Of(m & zdr);
-    \\}
-    \\/// `a` widened to `zOf(S, m)`: a compile error when `a` carries a lane
-    \\/// `m` does not name.
-    \\fn zTo(comptime S: type, comptime m: u64, a: anytype) zOf(S, m) {
-    \\    return a.to(m & zdr);
-    \\}
-    \\fn zV(a: anytype) f64 {
-    \\    return a.val();
-    \\}
-    \\/// §4.3.1 "abs(x) is equivalent to (x > 0) x : -x": a family carries no
-    \\/// `abs`, so the conditional is spelled here.
-    \\fn zAbs(comptime S: type, a: anytype) @TypeOf(a) {
-    \\    return S.sel(S.con(0.0).lt(a), a, a.neg());
-    \\}
-    \\/// `zOf(S, m)` as one scalar type, for the kernels above, which are
-    \\/// written against one: every operation of the kernel runs at mask `m`.
-    \\/// min, max, abs and the slew clamps are §4.3.1's conditionals.
-    \\fn zL(comptime S: type, comptime m: u64) type {
-    \\    return struct {
-    \\        v: zOf(S, m),
-    \\        const T = @This();
-    \\        fn w(a: anytype) T { return .{ .v = zTo(S, m, a) }; }
-    \\        pub fn con(c: f64) T { return w(S.con(c)); }
-    \\        pub fn val(a: T) f64 { return a.v.val(); }
-    \\        pub fn ddxAt(a: T, comptime u: usize) f64 { return a.v.ddxAt(u); }
-    \\        pub fn add(a: T, b: T) T { return .{ .v = a.v.add(b.v) }; }
-    \\        pub fn sub(a: T, b: T) T { return .{ .v = a.v.sub(b.v) }; }
-    \\        pub fn mul(a: T, b: T) T { return .{ .v = a.v.mul(b.v) }; }
-    \\        pub fn div(a: T, b: T) T { return .{ .v = a.v.div(b.v) }; }
-    \\        pub fn neg(a: T) T { return .{ .v = a.v.neg() }; }
-    \\        pub fn scale(a: T, c: f64) T { return .{ .v = a.v.scale(c) }; }
-    \\        pub fn addC(a: T, c: f64) T { return .{ .v = a.v.addC(c) }; }
-    \\        pub fn exp(a: T) T { return .{ .v = a.v.exp() }; }
-    \\        pub fn log(a: T) T { return .{ .v = a.v.log() }; }
-    \\        pub fn expm1(a: T) T { return .{ .v = a.v.expm1() }; }
-    \\        pub fn log1p(a: T) T { return .{ .v = a.v.log1p() }; }
-    \\        pub fn sqrt(a: T) T { return .{ .v = a.v.sqrt() }; }
-    \\        pub fn sin(a: T) T { return .{ .v = a.v.sin() }; }
-    \\        pub fn cos(a: T) T { return .{ .v = a.v.cos() }; }
-    \\        pub fn tanh(a: T) T { return .{ .v = a.v.tanh() }; }
-    \\        pub fn sinh(a: T) T { return .{ .v = a.v.sinh() }; }
-    \\        pub fn cosh(a: T) T { return .{ .v = a.v.cosh() }; }
-    \\        pub fn atan(a: T) T { return .{ .v = a.v.atan() }; }
-    \\        pub fn pow(a: T, c: f64) T { return .{ .v = a.v.pow(c) }; }
-    \\        pub fn lt(a: T, b: T) T { return w(a.v.lt(b.v)); }
-    \\        pub fn le(a: T, b: T) T { return w(a.v.le(b.v)); }
-    \\        pub fn eq(a: T, b: T) T { return w(a.v.eq(b.v)); }
-    \\        pub fn sel(c: T, a: T, b: T) T { return .{ .v = S.sel(c.v, a.v, b.v) }; }
-    \\        pub fn min(a: T, b: T) T { return a.lt(b).sel(a, b); }
-    \\        pub fn max(a: T, b: T) T { return b.lt(a).sel(a, b); }
-    \\        pub fn abs(a: T) T { return con(0.0).lt(a).sel(a, a.neg()); }
-    \\        pub fn minC(a: T, c: f64) T { return con(c).lt(a).sel(con(c), a); }
-    \\        pub fn maxC(a: T, c: f64) T { return a.lt(con(c)).sel(con(c), a); }
-    \\    };
-    \\}
-    \\/// `zPow` at mask `m`; a batch family (`batch_lead`) runs it once per
-    \\/// point on its scalar `Lane` family, since it steers on both values.
-    \\fn zPowL(comptime S: type, comptime m: u64, a: zOf(S, m), b: zOf(S, m), comptime ve: bool) zOf(S, m) {
-    \\    if (comptime @hasDecl(S, "Lane")) {
-    \\        var ls: [S.lane_count]zOf(S.Lane, m) = undefined;
-    \\        inline for (0..S.lane_count) |w| ls[w] = zPowL(S.Lane, m, S.laneOf(a, w), S.laneOf(b, w), ve);
-    \\        return S.fromLanes(m & zdr, ls);
-    \\    }
-    \\    return zLu(S, m, zPow(zL(S, m), zLw(S, m, a), zLw(S, m, b), ve));
-    \\}
-    \\fn zLw(comptime S: type, comptime m: u64, a: anytype) zL(S, m) {
-    \\    return .{ .v = zTo(S, m, a) };
-    \\}
-    \\fn zLu(comptime S: type, comptime m: u64, a: zL(S, m)) zOf(S, m) {
-    \\    return a.v;
-    \\}
-    \\
-    \\
-;
-
-/// device.zig's half of the family helpers: `zdr`, a row as the family
-/// returns it, and the unknowns an entry point hands its core.
-pub const family_dev_txt =
-    \\const zdr = contract.derivReads(Self);
-    \\fn zRow(comptime S: type, comptime r: U, a: anytype) zOf(S, contract.rowMask(Self, @intFromEnum(r))) {
-    \\    return zTo(S, contract.rowMask(Self, @intFromEnum(r)), a);
-    \\}
-    \\fn zRowsZero(comptime S: type) contract.Rows(Self, S) {
-    \\    var r: contract.Rows(Self, S) = undefined;
-    \\    inline for (0..n_u) |u| r[u] = zTo(S, contract.rowMask(Self, u), S.con(0.0));
-    \\    return r;
-    \\}
-    \\/// The unknowns as an entry point's core reads them: a probe for each
-    \\/// lane the device reads, a constant for every other.
-    \\fn zX(comptime S: type) type {
-    \\    @setEvalBranchQuota(1_000_000);
-    \\    var ts: [n_u]type = undefined;
-    \\    for (&ts, 0..) |*t, u| t.* = zOf(S, if (u < 64) @as(u64, 1) << u else ~@as(u64, 0));
-    \\    return @Tuple(&ts);
-    \\}
-    \\fn zProbe(comptime S: type, x: *const [n_u]S.V) zX(S) {
-    \\    var p: zX(S) = undefined;
-    \\    inline for (0..n_u) |u| p[u] = if (comptime u >= 64 or (zdr >> u) & 1 != 0) S.probe(u, x[u]) else if (S.V == f64) S.con(x[u]) else S.lift(x[u]);
-    \\    return p;
-    \\}
-    \\/// The unknowns as values only, for the entry points that read the core
-    \\/// without lanes.
-    \\fn zVals(comptime S: type, x: *const [n_u]f64) [n_u]zOf(S, 0) {
-    \\    var p: [n_u]zOf(S, 0) = undefined;
-    \\    for (&p, x) |*o, v| o.* = S.con(v);
-    \\    return p;
-    \\}
-    \\
-    \\
-;
-
 /// The §4.5 operator kernels. Each takes the current S-valued input plus the
 /// accepted state, so the companion model's Jacobian is analytic. Embedded
 /// whole from `ops_kernels.zig`: its banner is its first line, and its final
 /// newline ends the text, so it needs neither a prefix nor a cut.
 pub const ops_txt = kernels.text.ops;
 
-/// VerA's `vera_timepoint` cache key. Emitted only for a device with one
-/// (`Lowered.timepoints`).
-pub const tp_txt =
-    \\// ---- VerA's `vera_timepoint` (§2.9) cache key ----
-    \\
-    \\/// What a per-timepoint cache is keyed on beside `sim.t`: the analysis
-    \\/// (§4.6.1) and the two §5.10.2 step flags, which a statement may read
-    \\/// through a variable assigned under them.
-    \\fn zTpKey(sim: contract.SimState) u8 {
-    \\    return @intFromEnum(sim.kind) | @as(u8, @intFromBool(sim.initial_step)) << 4 | @as(u8, @intFromBool(sim.final_step)) << 5;
-    \\}
-    \\
-    \\/// Is a cache filled at `t` under key `k` current for `sim`? A dropped
-    \\/// cache holds NaN, which equals nothing.
-    \\fn zTpHit(t: f64, k: u8, sim: contract.SimState) bool {
-    \\    return t == sim.t and k == zTpKey(sim);
-    \\}
-    \\
-;
-
-/// VerA's `vera_timepoint` (§2.9) arrays cached in place
-/// (`instance.tpInPlace`). `slot` is `&inst.tp<b>_s<k>`: `*[n]T` when the
-/// core was handed a mutable `Instance` (`eval`, `evalQ`), `*const` from every
-/// other caller, which keeps the local copy `a` and never fills the cache.
-pub const tp_arr_txt =
-    \\// ---- VerA's `vera_timepoint` arrays cached in place ----
-    \\
-    \\/// The storage a store inside a `vera_timepoint` statement writes: the
-    \\/// cache slot itself, holding what `p` read until now, when `slot` is
-    \\/// writable; else `zArrW`'s local `a`.
-    \\fn zArrWT(comptime T: type, comptime n: usize, slot: anytype, a: *[n]T, p: **const [n]T) *[n]T {
-    \\    if (comptime @typeInfo(@TypeOf(slot)).pointer.attrs.@"const") return zArrW(T, n, a, p);
-    \\    return zArrW(T, n, slot, p);
-    \\}
-    \\
-    \\/// At the statement's join: point `p` at a writable `slot`, copying the
-    \\/// version in when the statement stored none, so the slot holds what the
-    \\/// statement left whichever arm ran.
-    \\fn zTpFill(comptime T: type, comptime n: usize, slot: anytype, p: **const [n]T) void {
-    \\    if (comptime @typeInfo(@TypeOf(slot)).pointer.attrs.@"const") return;
-    \\    if (p.* != slot) {
-    \\        slot.* = p.*.*;
-    \\        p.* = slot;
-    \\    }
-    \\}
-    \\
-    \\/// `updateState`'s join, for an array it stores in place: point `p` at
-    \\/// the held field, copying a cached version in and widening its dirty
-    \\/// range `d` (or `null`) to the whole array.
-    \\fn zTpHeld(comptime T: type, comptime n: usize, held: *[n]T, p: **[n]T, d: anytype) void {
-    \\    if (p.* != held) {
-    \\        held.* = p.*.*;
-    \\        p.* = held;
-    \\        if (@TypeOf(d) != @TypeOf(null)) d.* = .{ 0, n - 1 };
-    \\    }
-    \\}
-    \\
-    \\
-;
-
 /// §5.10.3.3 timer scheduling, shared with the mixed coordinator.
 pub const timer_txt = "// ---- §5.10.3.3 timer schedule ----\n\n" ++
     timer_src[std.mem.find(u8, timer_src, "\n\n").? + 2 ..];
-// A file-level //! header cannot be spliced into the middle of device.zig.
-const timer_src = kernels.text.timer;
 
 /// §9.5.3/§9.5.4.2 the string formatter's scratch and the scanner, embedded
 /// verbatim from `str_kernels.zig` so codegen's tests exercise the device's
@@ -696,454 +125,6 @@ pub const limit_txt = "// ---- §4.5.15 SPICE limiting kernels (lib/kernels/limi
 pub const filt_txt = "// ---- §4.5.11/§4.5.12 filter kernels (lib/kernels/filter_kernels.zig) ----\n\n" ++
     kernels.text.filter;
 
-/// The small-signal side of the operators whose response depends on frequency
-/// (`ir.op.acDynamic`): §4.5.7 `absdelay`, §4.5.11 `laplace_*`, §4.5.12
-/// `zi_*`. At a small-signal point `eval` keeps their value and drops their
-/// lanes (`zSs`), and `acDyn` supplies those slots: it evaluates the core with
-/// `zAc(F)` (`ac_fam_txt`), whose operators multiply the lanes by H(jω) here.
-/// `K` is a kernel scalar, `zL(zAc(F), m)`; `F` is `f64` or a vector of
-/// frequencies. At ω = 0 each H is computed in the order the DC branch scales
-/// by, so `acDyn` reads back exactly the static partial.
-pub const ac_txt =
-    \\// ---- §4.5.7/§4.5.11/§4.5.12 small-signal response ----
-    \\
-    \\/// An operator's output as `eval` sees it: under `.ac`/`.noise` the value
-    \\/// alone, since `acDyn` supplies the operator's slots whole.
-    \\fn zSs(comptime K: type, kind: contract.AnalysisKind, y: K) K {
-    \\    return if (kind == .ac or kind == .noise) K.con(y.val()) else y;
-    \\}
-    \\/// §4.5.7 "Output(ω) = Input(ω) · e^(−jωtd)".
-    \\fn zAcDelay(comptime K: type, vin: K, td: f64) K {
-    \\    const A = @TypeOf(vin.v);
-    \\    const p = vin.v.omega() * A.splat(td);
-    \\    return .{ .v = vin.v.acMul(vin.val(), .init(@cos(p), -@sin(p))) };
-    \\}
-    \\/// §4.5.11 the cascade at s = jω, one section at a time as `zLaplace`'s
-    \\/// DC branch scales, so ω = 0 is that branch's H(0) to the bit. `h0` is
-    \\/// `zLaplaceH0(sec)`, passed in because this text also serves devices
-    \\/// with no filter kernels.
-    \\fn zAcLaplace(comptime K: type, comptime NS: usize, comptime D: usize, uin: K, sec: [NS][2][D + 1]f64, h0: [NS][2]f64) K {
-    \\    const A = @TypeOf(uin.v);
-    \\    const s: std.math.Complex(A.F) = .init(A.splat(0.0), uin.v.omega());
-    \\    var y = uin.v;
-    \\    var v = uin.val();
-    \\    for (sec, h0) |sc, h| {
-    \\        v *= h[0] / h[1];
-    \\        y = y.acMul(v, zCDiv(A.F, zPolyC(A.F, D, sc[0], s), zPolyC(A.F, D, sc[1], s)));
-    \\    }
-    \\    return .{ .v = y };
-    \\}
-    \\/// §4.5.12 the cascade on the unit circle, z = e^(jωT), one section at a
-    \\/// time as `zZiEval`'s DC branch scales, so ω = 0 is its H(1) to the bit.
-    \\fn zAcZi(comptime K: type, comptime NS: usize, comptime D: usize, uin: K, sec: [NS][2][D + 1]f64, period: f64) K {
-    \\    const A = @TypeOf(uin.v);
-    \\    const p = uin.v.omega() * A.splat(period);
-    \\    const zinv: std.math.Complex(A.F) = .init(@cos(p), -@sin(p));
-    \\    var y = uin.v;
-    \\    var v = uin.val();
-    \\    for (sec) |sc| {
-    \\        var num: f64 = 0.0;
-    \\        var den: f64 = 0.0;
-    \\        for (sc[0]) |c| num += c;
-    \\        for (sc[1]) |c| den += c;
-    \\        v *= num / den;
-    \\        y = y.acMul(v, zCDiv(A.F, zPolyC(A.F, D, sc[0], zinv), zPolyC(A.F, D, sc[1], zinv)));
-    \\    }
-    \\    return .{ .v = y };
-    \\}
-    \\/// Σ p[k]·c^k, summed from 0 in ascending k: at c = 0 it is p[0], and at
-    \\/// c = 1 the DC branches' own sum.
-    \\fn zPolyC(comptime F: type, comptime D: usize, p: [D + 1]f64, c: std.math.Complex(F)) std.math.Complex(F) {
-    \\    const zero: F = if (@typeInfo(F) == .vector) @splat(0.0) else 0.0;
-    \\    const one: F = if (@typeInfo(F) == .vector) @splat(1.0) else 1.0;
-    \\    var acc: std.math.Complex(F) = .init(zero, zero);
-    \\    var ck: std.math.Complex(F) = .init(one, zero);
-    \\    for (p) |pk| {
-    \\        const k: F = if (@typeInfo(F) == .vector) @splat(pk) else pk;
-    \\        acc = acc.add(.init(ck.re * k, ck.im * k));
-    \\        ck = ck.mul(c);
-    \\    }
-    \\    return acc;
-    \\}
-    \\/// a/b by Smith's rule, the lane's larger part of b as divisor: a real b
-    \\/// gives a.re/b.re exactly, and |b|² is never formed.
-    \\fn zCDiv(comptime F: type, a: std.math.Complex(F), b: std.math.Complex(F)) std.math.Complex(F) {
-    \\    const r1 = b.im / b.re;
-    \\    const d1 = b.re + b.im * r1;
-    \\    const r2 = b.re / b.im;
-    \\    const d2 = b.im + b.re * r2;
-    \\    const big = @abs(b.re) >= @abs(b.im);
-    \\    const re1 = (a.re + a.im * r1) / d1;
-    \\    const im1 = (a.im - a.re * r1) / d1;
-    \\    const re2 = (a.re * r2 + a.im) / d2;
-    \\    const im2 = (a.im * r2 - a.re) / d2;
-    \\    if (@typeInfo(F) == .vector) return .init(@select(f64, big, re1, re2), @select(f64, big, im1, im2));
-    \\    return if (big) .init(re1, im1) else .init(re2, im2);
-    \\}
-    \\
-    \\
-;
-
-/// `zAc`, the family `acDyn` evaluates the core with. device.zig only: no unit
-/// names it, and it reads `n_u`.
-pub const ac_fam_txt =
-    \\/// A dense family whose lanes are three blocks: `n_u` direct partials, then
-    \\/// the real and imaginary parts of `n_u` complex partials, each an `F` of
-    \\/// frequencies. `w` points at the ω `acDyn` probed with. A probe seeds the
-    \\/// direct block and every operation but `acMul` scales the blocks alike, so
-    \\/// after the core the complex blocks hold exactly the Jacobian that flowed
-    \\/// through a frequency-dependent operator, times that operator's H(jω).
-    \\fn zAc(comptime Fw: type) type {
-    \\    return struct {
-    \\        pub const V = f64;
-    \\        const W = if (@typeInfo(Fw) == .vector) @typeInfo(Fw).vector.len else 1;
-    \\        const N = n_u * (1 + 2 * W);
-    \\        const Lanes = @Vector(N, f64);
-    \\        pub fn Of(comptime _: u64) type {
-    \\            return T;
-    \\        }
-    \\        pub fn con(c: f64) T {
-    \\            return .{ .v = c };
-    \\        }
-    \\        pub fn probe(comptime u: usize, v: f64) T {
-    \\            var t: T = .{ .v = v };
-    \\            t.d[u] = 1.0;
-    \\            return t;
-    \\        }
-    \\        pub fn sel(c: T, a: T, b: T) T {
-    \\            return if (c.v != 0.0) a else b;
-    \\        }
-    \\        pub const T = struct {
-    \\            v: f64,
-    \\            d: [N]f64 = @splat(0.0),
-    \\            /// Null on a value no probe reached, which has no lanes to rotate.
-    \\            w: ?*const Fw = null,
-    \\            pub const F = Fw;
-    \\            pub fn splat(c: f64) F {
-    \\                return if (@typeInfo(F) == .vector) @splat(c) else c;
-    \\            }
-    \\            pub fn omega(a: T) F {
-    \\                return if (a.w) |p| p.* else splat(0.0);
-    \\            }
-    \\            fn k(c: f64) Lanes {
-    \\                return @splat(c);
-    \\            }
-    \\            fn lv(a: T) Lanes {
-    \\                return a.d;
-    \\            }
-    \\            fn mk(v: f64, d: Lanes, a: T, b: T) T {
-    \\                return .{ .v = v, .d = d, .w = a.w orelse b.w };
-    \\            }
-    \\            fn map(a: T, v: f64, c: f64) T {
-    \\                return .{ .v = v, .d = lv(a) * k(c), .w = a.w };
-    \\            }
-    \\            fn at(a: T, o: usize) F {
-    \\                if (@typeInfo(F) == .vector) return a.d[o..][0..W].*;
-    \\                return a.d[o];
-    \\            }
-    \\            fn put(a: *T, o: usize, x: F) void {
-    \\                if (@typeInfo(F) == .vector) a.d[o..][0..W].* = x else a.d[o] = x;
-    \\            }
-    \\            /// The complex partial by unknown `u`, real and imaginary part.
-    \\            pub fn acRe(a: T, u: usize) F {
-    \\                return a.at(n_u + u * W);
-    \\            }
-    \\            pub fn acIm(a: T, u: usize) F {
-    \\                return a.at(n_u * (1 + W) + u * W);
-    \\            }
-    \\            /// An operator output `y` whose small-signal response is `h`: the
-    \\            /// input's direct and complex blocks, summed, times `h`.
-    \\            pub fn acMul(a: T, y: f64, h: std.math.Complex(F)) T {
-    \\                var o: T = .{ .v = y, .w = a.w };
-    \\                for (0..n_u) |u| {
-    \\                    const re = splat(a.d[u]) + a.acRe(u);
-    \\                    const im = a.acIm(u);
-    \\                    o.put(n_u + u * W, h.re * re - h.im * im);
-    \\                    o.put(n_u * (1 + W) + u * W, h.re * im + h.im * re);
-    \\                }
-    \\                return o;
-    \\            }
-    \\            pub fn to(a: T, comptime _: u64) T {
-    \\                return a;
-    \\            }
-    \\            pub fn val(a: T) f64 {
-    \\                return a.v;
-    \\            }
-    \\            pub fn ddxAt(a: T, comptime u: usize) f64 {
-    \\                return a.d[u];
-    \\            }
-    \\            pub fn add(a: T, b: T) T {
-    \\                return mk(a.v + b.v, lv(a) + lv(b), a, b);
-    \\            }
-    \\            pub fn sub(a: T, b: T) T {
-    \\                return mk(a.v - b.v, lv(a) - lv(b), a, b);
-    \\            }
-    \\            pub fn mul(a: T, b: T) T {
-    \\                return mk(a.v * b.v, @mulAdd(Lanes, lv(b), k(a.v), lv(a) * k(b.v)), a, b);
-    \\            }
-    \\            pub fn div(a: T, b: T) T {
-    \\                const qt = a.v / b.v;
-    \\                return mk(qt, @mulAdd(Lanes, lv(b), k(-qt), lv(a)) * k(1.0 / b.v), a, b);
-    \\            }
-    \\            pub fn neg(a: T) T {
-    \\                return .{ .v = -a.v, .d = -lv(a), .w = a.w };
-    \\            }
-    \\            pub fn scale(a: T, c: f64) T {
-    \\                return map(a, a.v * c, c);
-    \\            }
-    \\            pub fn addC(a: T, c: f64) T {
-    \\                return .{ .v = a.v + c, .d = a.d, .w = a.w };
-    \\            }
-    \\            pub fn exp(a: T) T {
-    \\                const e = contract.gm.exp(a.v);
-    \\                return map(a, e, e);
-    \\            }
-    \\            pub fn log(a: T) T {
-    \\                return map(a, contract.gm.log(a.v), 1.0 / a.v);
-    \\            }
-    \\            pub fn expm1(a: T) T {
-    \\                return map(a, contract.gm.expm1(a.v), contract.gm.exp(a.v));
-    \\            }
-    \\            pub fn log1p(a: T) T {
-    \\                return map(a, contract.gm.log1p(a.v), 1.0 / (1.0 + a.v));
-    \\            }
-    \\            pub fn sqrt(a: T) T {
-    \\                const s = @sqrt(a.v);
-    \\                return map(a, s, if (s > 0.0) 0.5 / s else 0.0);
-    \\            }
-    \\            pub fn sin(a: T) T {
-    \\                return map(a, contract.gm.sin(a.v), contract.gm.cos(a.v));
-    \\            }
-    \\            pub fn cos(a: T) T {
-    \\                return map(a, contract.gm.cos(a.v), -contract.gm.sin(a.v));
-    \\            }
-    \\            pub fn tanh(a: T) T {
-    \\                const th = contract.gm.tanh(a.v);
-    \\                return map(a, th, 1.0 - th * th);
-    \\            }
-    \\            pub fn sinh(a: T) T {
-    \\                return map(a, contract.gm.sinh(a.v), contract.gm.cosh(a.v));
-    \\            }
-    \\            pub fn cosh(a: T) T {
-    \\                return map(a, contract.gm.cosh(a.v), contract.gm.sinh(a.v));
-    \\            }
-    \\            pub fn atan(a: T) T {
-    \\                return map(a, contract.gm.atan(a.v), 1.0 / (1.0 + a.v * a.v));
-    \\            }
-    \\            pub fn pow(a: T, c: f64) T {
-    \\                const p = contract.gm.pow(a.v, c);
-    \\                const s = if (a.v != 0.0) c * p / a.v else c * contract.gm.pow(a.v, c - 1.0);
-    \\                return map(a, p, if (std.math.isFinite(s)) s else 0.0);
-    \\            }
-    \\            pub fn lt(a: T, b: T) T {
-    \\                return con(@floatFromInt(@intFromBool(a.v < b.v)));
-    \\            }
-    \\            pub fn le(a: T, b: T) T {
-    \\                return con(@floatFromInt(@intFromBool(a.v <= b.v)));
-    \\            }
-    \\            pub fn eq(a: T, b: T) T {
-    \\                return con(@floatFromInt(@intFromBool(a.v == b.v)));
-    \\            }
-    \\        };
-    \\    };
-    \\}
-    \\
-    \\
-;
-
-/// §3.2.2 memory-backed arrays (`Lowered.mem_arrays`): one storage per array,
-/// indexed at run time. Only devices with one carry these.
-pub const arr_txt =
-    \\// ---- §3.2.2 memory-backed arrays ----
-    \\
-    \\/// Element `i` of `a`, or `z` for an index outside it: §3.2.2 names no
-    \\/// element there, and the read gives the element type's zero. The load is
-    \\/// clamped into bounds and the pick is a select, so it never branches.
-    \\fn zArrLd(comptime T: type, a: []const T, i: i64, z: T) T {
-    \\    const k: u64 = @bitCast(i);
-    \\    const v = a[@intCast(@min(k, a.len - 1))];
-    \\    return if (k < a.len) v else z;
-    \\}
-    \\
-    \\/// Store `v` at `i`; an index outside the array writes nothing.
-    \\fn zArrSt(comptime T: type, a: []T, i: i64, v: T) void {
-    \\    const k: u64 = @bitCast(i);
-    \\    if (k < a.len) a[@intCast(k)] = v;
-    \\}
-    \\
-    \\/// Store `v` at `i` in an in-place held array and widen `d`, the index
-    \\/// range written since the last `stateCtl` (`zArrSync`).
-    \\fn zArrStD(comptime T: type, a: []T, d: *[2]i64, i: i64, v: T) void {
-    \\    const k: u64 = @bitCast(i);
-    \\    if (k < a.len) {
-    \\        a[@intCast(k)] = v;
-    \\        d.* = .{ @min(d[0], i), @max(d[1], i) };
-    \\    }
-    \\}
-    \\
-    \\/// §5.10 `stateCtl` for an in-place held array: copy the elements written
-    \\/// since the last commit or revert (`d`, inclusive; empty when d[0] >
-    \\/// d[1]) from `src` to `dst`; then the two agree everywhere and `d` is
-    \\/// empty. A step appending one sample to a 2048-deep history copies one.
-    \\fn zArrSync(comptime T: type, dst: anytype, src: anytype, d: *[2]i64) void {
-    \\    if (d[0] <= d[1]) {
-    \\        const lo: usize = @intCast(d[0]);
-    \\        const hi: usize = @intCast(d[1] + 1);
-    \\        @memcpy(@as([]T, dst[lo..hi]), @as([]const T, src[lo..hi]));
-    \\    }
-    \\    d.* = .{ std.math.maxInt(i64), -1 };
-    \\}
-    \\
-    \\/// §5.10 the storage a held array's store writes: `a`, holding what `p`
-    \\/// read until now — the `Instance` field, copied in by the first store.
-    \\fn zArrW(comptime T: type, comptime n: usize, a: *[n]T, p: **const [n]T) *[n]T {
-    \\    if (p.* != a) {
-    \\        a.* = p.*.*;
-    \\        p.* = a;
-    \\    }
-    \\    return a;
-    \\}
-    \\
-    \\/// The values of an `S` array: what a held array's `f64` `Instance`
-    \\/// field keeps.
-    \\fn zArrVal(comptime S: type, comptime n: usize, a: *const [n]S) [n]f64 {
-    \\    var o: [n]f64 = undefined;
-    \\    for (&o, a) |*d, s| d.* = s.val();
-    \\    return o;
-    \\}
-    \\
-    \\
-;
-
-/// The §4.5.7 `absdelay` history ring and its linear interpolation
-/// (`zAbsdelay`, `zHistAt`). Emitted only when `usesOp(.absdelay)`.
-pub const hist_txt = "// ---- §4.5.7 absdelay history (lib/kernels/hist_kernels.zig) ----\n\n" ++
-    hist_src[std.mem.find(u8, hist_src, "\n\n").? + 2 ..];
-// A file-level //! header cannot be spliced into the middle of device.zig.
-const hist_src = kernels.text.hist;
-
-/// `zAbsdelay` and `zHistAt` under VerA's `(* vera_interp = 2 *)`: 3-point
-/// Lagrange instead of §4.5.7's linear reading, as SPICE's lossless
-/// transmission line does. Emitted after `hist_txt`, only for a device that
-/// asks.
-pub const hist_quad_txt =
-    \\
-    \\/// `zAbsdelay` read quadratically. Every edge `zAbsdelay` decides for itself
-    \\/// — a static analysis, an empty ring, a query past `now` — is its answer
-    \\/// here too, and so is a single accepted sample.
-    \\///
-    \\/// Past the newest sample the parabola runs through the last two samples
-    \\/// and the in-flight (now, vin), so the output carries ∂/∂vin, the
-    \\/// Lagrange weight of `now`.
-    \\fn zAbsdelayQ(comptime S: type, vin: S, ts: []const f64, vs: []const f64, head: u64, now: f64, dt: f64, td: f64) S {
-    \\    const t = now - td;
-    \\    if (dt <= 0.0 or head < 2 or !(t < now)) return zAbsdelay(S, vin, ts, vs, head, now, dt, td);
-    \\    const b: usize = @intCast((head + ts.len - 1) % ts.len);
-    \\    const a: usize = @intCast((head + ts.len - 2) % ts.len);
-    \\    if (t <= ts[b]) return S.con(zHistAtQ(ts, vs, head, t));
-    \\    const dab = ts[b] - ts[a];
-    \\    const dan = now - ts[a];
-    \\    const dbn = now - ts[b];
-    \\    if (!(dab > 0.0 and dbn > 0.0)) return zAbsdelay(S, vin, ts, vs, head, now, dt, td);
-    \\    const wa = (t - ts[b]) * (t - now) / (dab * dan);
-    \\    const wb = -(t - ts[a]) * (t - now) / (dab * dbn);
-    \\    const wn = (t - ts[a]) * (t - ts[b]) / (dan * dbn);
-    \\    return vin.scale(wn).addC(vs[a] * wa + vs[b] * wb);
-    \\}
-    \\/// `zHistAt` read quadratically: the parabola through the two samples
-    \\/// bracketing `t` and the one before them (the first three, in the first
-    \\/// interval). Fewer than three samples, a query at or before the oldest,
-    \\/// or two samples at one time is `zHistAt`'s linear answer.
-    \\fn zHistAtQ(ts: []const f64, vs: []const f64, head: u64, t: f64) f64 {
-    \\    const n = ts.len;
-    \\    const count: usize = @intCast(@min(head, n));
-    \\    const oldest: usize = if (head > n) @intCast(head % n) else 0;
-    \\    if (count < 3 or t <= ts[oldest]) return zHistAt(ts, vs, head, t);
-    \\    // The ring is monotone in time, so the samples at or before `t` count
-    \\    // out the older end of its interval; `zHistAt`'s binary search in age
-    \\    // order finds that count in O(log n).
-    \\    var lo: usize = 0;
-    \\    var hi: usize = count;
-    \\    while (hi - lo > 1) {
-    \\        const mid = lo + (hi - lo) / 2;
-    \\        if (ts[(oldest + mid) % n] <= t) lo = mid else hi = mid;
-    \\    }
-    \\    const m = lo + 1;
-    \\    const w = oldest + @min(m - 1 -| 1, count - 3);
-    \\    const i_0 = w % n;
-    \\    const i_1 = (w + 1) % n;
-    \\    const i_2 = (w + 2) % n;
-    \\    const d01 = ts[i_1] - ts[i_0];
-    \\    const d12 = ts[i_2] - ts[i_1];
-    \\    if (!(d01 > 0.0 and d12 > 0.0)) return zHistAt(ts, vs, head, t);
-    \\    const d02 = ts[i_2] - ts[i_0];
-    \\    return vs[i_0] * (t - ts[i_1]) * (t - ts[i_2]) / (d01 * d02) -
-    \\        vs[i_1] * (t - ts[i_0]) * (t - ts[i_2]) / (d01 * d12) +
-    \\        vs[i_2] * (t - ts[i_0]) * (t - ts[i_1]) / (d02 * d12);
-    \\}
-;
-
-// ---- the `u/<key>.zig` file-scope prologue (see `Output.prelude`) ----------
-//
-// A unit file is a separate Zig file with none of device.zig's helpers in
-// scope, so these blocks alias them from `h.zig` (derived by `appendAliases`).
-// `..` is the work_dir: `u/<key>.zig` sits one level under `device.zig`.
-
-/// The `h.zig` header: banner and imports ahead of the public helper text.
-pub const helpers_head_txt =
-    \\// GENERATED BY VerA — DO NOT EDIT.
-    \\// The §4.3/§4.5 kernels, public so `u/<key>.zig` can alias them. device.zig
-    \\// carries the same text privately: it must stay a valid stand-alone device.
-    \\const std = @import("std");
-    \\const contract = @import("contract");
-    \\
-    \\
-;
-
-/// The unit-file prologue head: imports and aliases of the device's types.
-/// The helper import is `zh`, not `h`: a unit body's hoist array is `var h`,
-/// and Zig refuses a local that shadows a file-scope name.
-pub const prelude_head_txt =
-    \\// GENERATED BY VerA — DO NOT EDIT.
-    \\const std = @import("std");
-    \\const contract = @import("contract");
-    \\const dev = @import("../device.zig");
-    \\const zh = @import("../h.zig");
-    \\const U = dev.U;
-    \\const Model = dev.Model;
-    \\const Instance = dev.Instance;
-    \\const InstancePtr = contract.InstancePtr(dev);
-    \\const n_u = contract.nU(dev);
-    \\
-;
-
-/// Appends a `const zFoo = zh.zFoo;` alias for each top-level `z*` helper
-/// `src` declares, so a helper that is emitted is aliased by construction. A
-/// line is a declaration by `publish`'s predicate (`fn `, `inline fn ` or
-/// `const `, optionally `pub `), and the name must be `z` plus an uppercase letter: the
-/// spelling of every helper an emitted body calls, which keeps a kernel's
-/// internals (`zstd`, `zfIo`, `zf_max`, `ZScan`) out.
-pub fn appendAliases(out: *std.ArrayList(u8), gpa: std.mem.Allocator, src: []const u8) std.mem.Allocator.Error!void {
-    var it = std.mem.splitScalar(u8, src, '\n');
-    while (it.next()) |line| {
-        const decl = if (std.mem.startsWith(u8, line, "pub ")) line[4..] else line;
-        const rest = decl[declKeyword(decl) orelse continue ..];
-        var n: usize = 0;
-        while (n < rest.len and (std.ascii.isAlphanumeric(rest[n]) or rest[n] == '_')) n += 1;
-        const name = rest[0..n];
-        if (name.len < 2 or name[0] != 'z' or !std.ascii.isUpper(name[1])) continue;
-        try out.print(gpa, "const {0s} = zh.{0s};\n", .{name});
-    }
-}
-
-/// The length of the keyword that makes `line` a top-level helper
-/// declaration (`fn `, `inline fn ` or `const `), or null. `publish` and
-/// `appendAliases` share it, so every helper h.zig exports is aliased.
-pub fn declKeyword(line: []const u8) ?usize {
-    for ([_][]const u8{ "fn ", "inline fn ", "const " }) |kw| if (std.mem.startsWith(u8, line, kw)) return kw.len;
-    return null;
-}
-
 /// §9.4.3 integer padding, for a printing artifact or a device that formats
 /// into a string. `std.fmt` writes `+42` for `{d:>5}`; §9.4.3 (like C's
 /// `%5d`) writes ` 42`, so the rendered decimal is padded instead.
@@ -1181,39 +162,61 @@ pub const display_txt =
     \\
 ;
 
-test appendAliases {
-    const gpa = std.testing.allocator;
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(gpa);
-    // Top-level `z` + uppercase helpers, with or without `pub`; nothing
-    // indented, lowercase after the `z`, capitalised, one letter long, or
-    // in a comment.
-    try appendAliases(&out, gpa,
-        \\fn zFoo() void {}
-        \\pub fn zBar() void {}
-        \\const zBaz = 1;
-        \\pub const zQux = 2;
-        \\inline fn zInl() void {}
-        \\fn zlower() void {}
-        \\const ZUpper = 3;
-        \\    fn zIndented() void {}
-        \\fn z() void {}
-        \\// fn zComment() void {}
-    );
-    try std.testing.expectEqualStrings(
-        \\const zFoo = zh.zFoo;
-        \\const zBar = zh.zBar;
-        \\const zBaz = zh.zBaz;
-        \\const zQux = zh.zQux;
-        \\const zInl = zh.zInl;
-        \\
-    , out.items);
-}
+/// LRM Tables 4-14/4-15 in value form (`kernel_text/math.zig`).
+pub const math_txt = math.math_txt;
+
+/// `zDomain` for a solver device: an empty guard (§4.3.2).
+pub const domain_quiet_txt = math.domain_quiet_txt;
+
+/// `zDomain` for the printing executable: reports and stops (§4.3.2).
+pub const domain_report_txt = math.domain_report_txt;
+
+/// The scalar-family helpers every body reaches a family through.
+pub const family_txt = family.family_txt;
+
+/// device.zig's half of the family helpers.
+pub const family_dev_txt = family.family_dev_txt;
+
+/// The small-signal side of the frequency-dependent operators.
+pub const ac_txt = ac.ac_txt;
+
+/// `zAc`, the family `acDyn` evaluates the core with (device.zig only).
+pub const ac_fam_txt = ac.ac_fam_txt;
+
+/// VerA's `vera_timepoint` cache key (§2.9).
+pub const tp_txt = storage.tp_txt;
+
+/// VerA's `vera_timepoint` arrays cached in place (§2.9).
+pub const tp_arr_txt = storage.tp_arr_txt;
+
+/// §3.2.2 memory-backed arrays.
+pub const arr_txt = storage.arr_txt;
+
+/// The §4.5.7 `absdelay` history ring and its linear interpolation.
+pub const hist_txt = storage.hist_txt;
+
+/// The §4.5.7 history's 3-point reading under `(* vera_interp = 2 *)`.
+pub const hist_quad_txt = storage.hist_quad_txt;
+
+/// The `h.zig` header.
+pub const helpers_head_txt = unit_file.helpers_head_txt;
+
+/// The `u/<key>.zig` prologue head.
+pub const prelude_head_txt = unit_file.prelude_head_txt;
+
+/// Appends the `zh` alias of each `z*` helper a text declares; see
+/// `kernel_text/unit_file.zig`.
+pub const appendAliases = unit_file.appendAliases;
+
+/// Returns the length of a top-level helper declaration's keyword, or null.
+pub const declKeyword = unit_file.declKeyword;
 
 /// Names Zig 0.17 deprecates and a later Zig removes. A device is compiled by
 /// whatever Zig its host has, so one of these in device text breaks every
 /// device that carries it.
 pub const deprecated_std = [_][]const u8{ "std.fmt.bufPrint", "std.fmt.allocPrint", "std.mem.indexOf", "std.mem.lastIndexOf" };
+
+// ---- private ----
 
 test "no fixed device text names a std decl Zig 0.17 deprecates" {
     const texts = [_][]const u8{
@@ -1231,4 +234,8 @@ test "no fixed device text names a std decl Zig 0.17 deprecates" {
             return error.TestUnexpectedResult;
         }
     };
+}
+
+test {
+    _ = unit_file;
 }

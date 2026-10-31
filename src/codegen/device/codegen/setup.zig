@@ -6,15 +6,29 @@
 //! and relooper as the core. `pub fn setupInstance` drops what an instance
 //! caches from the card (`vera_timepoint`, a §9.7.3 status).
 //! LRM: §2.9, §4.4, §5.10.2, §9.4, §9.15.
+//!
+//! Contents:
+//! - `pub const Setup = struct`
+//! - `pub fn probeInstance(self: *Gen) Error![]const u8`
+//! - `pub fn planSetup(self: *Gen) Error!void`
+//! - `pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8`
+//! - `pub fn emitSetupDecl(self: *Gen) Error!void`
+//! - `pub fn emitSetup(self: *Gen) Error!void`
+//! - `pub fn emitStores(self: *Gen, depth: u32, stop: []const u8) Error!void`
+//! - `pub fn mergePays(self: *const Gen) bool`
+//! - `pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const codegen = @import("../codegen.zig");
 const kt = @import("kernel_text.zig");
 const Gen = codegen.Gen;
 const gen_render = @import("render.zig");
 const gen_unit = @import("unit.zig");
+const gen_unit_body = @import("unit_body.zig");
 const gen_cfg = @import("cfg.zig");
 const gen_instance = @import("instance.zig");
+const gen_status = @import("status.zig");
 const plan_setup = @import("prove").setup;
 const setup_chunk = @import("setup_chunk.zig");
 const Mir = @import("ir").Mir;
@@ -68,6 +82,7 @@ pub const Setup = struct {
 /// or a declared copy when the device has §9.21 tables, whose first-call
 /// state must not be initialized at a trial bias.
 pub fn probeInstance(self: *Gen) Error![]const u8 {
+    assert(self.out.items.len != 0);
     if (self.lowered.table_samples.items.len == 0) return "inst";
     try self.w("    var table_probe = inst.*;\n", .{});
     return "&table_probe";
@@ -78,6 +93,8 @@ pub fn probeInstance(self: *Gen) Error![]const u8 {
 /// reaches. Must run after the core is planned and before anything is
 /// emitted, since `emitInstance` sizes `Setup` from the roots.
 pub fn planSetup(self: *Gen) Error!void {
+    assert(self.su.vals.len == 0);
+    assert(self.out.items.len == 0);
     const a = self.arena;
     const nv = self.an.nv;
     self.su.idx = try a.alloc(u32, nv);
@@ -92,26 +109,26 @@ pub fn planSetup(self: *Gen) Error!void {
     for (0..nv) |i| {
         if (plan_setup.candidate(self.input(), self.sinv.val, @fromBackingInt(@intCast(i)))) self.su.idx[i] = 0;
     }
-    self.plan.su_idx = self.su.idx;
-    self.plan.su_on = true;
+    self.cur.plan.su_idx = self.su.idx;
+    self.cur.plan.su_on = true;
     // `root` and `same` are scratch of this pass: on the gpa, freed on return.
     const root = try self.gpa.alloc(bool, nv);
     defer self.gpa.free(root);
     @memset(root, false);
     if (self.core.lo_vals.len != 0) {
-        self.plan.display_unit = false;
-        try self.plan.analyze(.undef, true);
-        for (self.plan.live.items) |lv| {
+        self.cur.plan.display_unit = false;
+        try self.cur.plan.analyze(.undef, true);
+        for (self.cur.plan.live.items) |lv| {
             if (self.su.idx[@backingInt(lv)] != none_u32) root[@backingInt(lv)] = true;
         }
     }
     for (self.jobs.list) |job| {
         if (job.kind != .display) continue;
-        self.plan.display_unit = true;
-        try self.plan.analyze(job.target, false);
-        self.plan.display_unit = false;
-        for (self.plan.live.items) |lv| {
-            if (self.su.idx[@backingInt(lv)] != none_u32 and !self.plan.cached(lv)) root[@backingInt(lv)] = true;
+        self.cur.plan.display_unit = true;
+        try self.cur.plan.analyze(job.target, false);
+        self.cur.plan.display_unit = false;
+        for (self.cur.plan.live.items) |lv| {
+            if (self.su.idx[@backingInt(lv)] != none_u32 and !self.cur.plan.cached(lv)) root[@backingInt(lv)] = true;
         }
     }
     // A card copied beside nothing is a slower read: without a derived root
@@ -140,12 +157,220 @@ pub fn planSetup(self: *Gen) Error!void {
     self.su.vals = vals.items;
     self.su.real = n[0];
     self.su.int = n[1];
-    self.plan.su_idx = self.su.idx;
-    self.plan.su_on = vals.items.len != 0;
+    self.cur.plan.su_idx = self.su.idx;
+    self.cur.plan.su_on = vals.items.len != 0;
 }
+
+/// Returns the text reading root `v`'s `Setup` field, as an f64 (`as_f64`)
+/// or in its own type. Arena-owned.
+pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
+    assert(@backingInt(v) < self.an.nv);
+    const i = @backingInt(v);
+    const k = self.su.idx[i];
+    self.cur.uses.model = true;
+    if (rootGroup(self, v) == 2) {
+        if (as_f64) return self.arena.print("@as(f64, @floatFromInt(@intFromBool(model.su.b.isSet({d}))))", .{k});
+        return self.arena.print("@as(i64, @intFromBool(model.su.b.isSet({d})))", .{k});
+    }
+    if (self.an.vty[i] == .int) {
+        if (as_f64) return self.arena.print("@as(f64, @floatFromInt(model.su.i[{d}]))", .{k});
+        return self.arena.print("model.su.i[{d}]", .{k});
+    }
+    return self.arena.print("model.su.r[{d}]", .{k});
+}
+
+/// Emits `pub const Setup`, the type of `Model.su`.
+pub fn emitSetupDecl(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
+    if (self.su.vals.len == 0) return;
+    const n_flag = self.su.vals.len - self.su.real - self.su.int;
+    try self.w(
+        \\/// Solve-invariant values: functions of `Model` (its card and
+        \\/// `temperature__`) only, which `eval` would otherwise recompute at
+        \\/// every Newton iterate. `setup` fills them; until it runs the reals
+        \\/// are NaN, so a forgotten call is a NaN residual and not a plausible
+        \\/// wrong one. `@sizeOf(Setup)` is a per-Model-row cost.
+        \\pub const Setup = struct {{
+        \\
+    , .{});
+    if (self.su.real != 0) try self.w("    /// One per invariant real; `eval` reads `model.su.r[k]`.\n    r: [{d}]f64 = @splat(" ++ kt.nan_lit ++ "),\n", .{self.su.real});
+    if (self.su.int != 0) try self.w("    /// One per invariant integer; `eval` reads `model.su.i[k]`.\n    i: [{d}]i64 = @splat(0),\n", .{self.su.int});
+    if (n_flag != 0) try self.w("    /// One bit per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: std.StaticBitSet({d}) = .empty,\n", .{n_flag});
+    try self.w("}};\n\n", .{});
+}
+
+/// Emits `pub fn setup`: the invariant slice, through the same plan and
+/// relooper as the core, with the roots as its targets. Per-eval branches
+/// are taken `then` untested (neither arm is setup work, and the §5.10.2
+/// initial-step arm is what setup must compute), and the walk stops at the
+/// first loop that is not invariant, since nothing after it is placeable.
+/// Asserts the body read no unknown and refused nothing: `prove/setup.zig`
+/// admits only solve-invariant, constant-renderable roots.
+pub fn emitSetup(self: *Gen) Error!void {
+    assert(!self.cur.emitting_common);
+    try emitSetupInstance(self);
+    if (self.su.vals.len == 0) return;
+    const save_idx = self.cur.plan.lo_idx;
+    const save_vals = self.cur.plan.lo_vals;
+    self.cur.plan.lo_idx = self.su.idx;
+    self.cur.plan.lo_vals = self.su.vals;
+    self.cur.plan.su_on = false; // computing the roots, not reading them
+    self.cur.plan.setup_mode = true;
+    self.cur.plan.sinv = self.sinv.val;
+    self.cur.plan.su_home = self.sinv.home;
+    self.cur.plan.display_unit = false;
+    self.su.mode = true;
+    self.cur.emitting_common = true;
+    defer {
+        self.cur.plan.lo_idx = save_idx;
+        self.cur.plan.lo_vals = save_vals;
+        self.cur.plan.su_on = true;
+        self.cur.plan.setup_mode = false;
+        self.su.mode = false;
+        self.cur.emitting_common = false;
+    }
+    try self.cur.plan.analyze(.undef, true);
+    try emitSimparams(self);
+
+    self.cur.uses.x = false;
+    self.cur.uses.model = true;
+    self.cur.uses.inst = false;
+    self.cur.fatal = null;
+    self.su.chunks = 0;
+    const at_doc = self.out.items.len;
+    try self.w(
+        \\/// Fill `model.su`: once after `derive`, and again after every write to
+        \\/// `Model` (its card or `temperature__`) or to a `$simparam` in
+        \\/// `setup_simparams` — before `eval` or any other entry point runs.
+        \\/// Once per Model row: the instances that share the row share it.
+        \\/// `V` is the host's VALUE scalar, with exactly the value semantics of
+        \\/// the `S` it evaluates with (its Dual's value half), so every latched
+        \\/// value is the bits `eval` would have computed. A §5.10.2
+        \\/// `@(initial_step)` body the card alone determines is computed here
+        \\/// as if the step were initial: the host evaluates an initial step
+        \\/// before any other.
+        \\
+    , .{});
+    try self.w("pub fn setup(comptime V: type, model: *Model) void {{\n", .{});
+    try self.w("    @setFloatMode(.strict);\n    const S = V;\n", .{});
+    self.float.strict = true;
+    self.su.stop = false;
+    self.su.dead = false;
+    self.su.merge = false;
+    defer self.su.merge = false;
+    const at_body = self.out.items.len;
+    try gen_unit_body.emitUnitBody(self, .undef);
+    try self.w("}}\n\n", .{});
+    // A body of integer roots alone never names `S`, and an unused local is
+    // a Zig error: then the scalar is discarded instead.
+    var at_stop = at_body;
+    if (!namesS(self.out.items[at_body..])) {
+        const decl = "    const S = V;\n";
+        const discard = "    _ = V;\n";
+        assert(std.mem.eql(u8, self.out.items[at_body - decl.len .. at_body], decl));
+        try self.out.replaceRange(self.gpa, at_body - decl.len, decl.len, discard);
+        at_stop = at_body - decl.len + discard.len;
+    }
+    // Declared only when a per-eval branch or loop used it: it is always
+    // true, and a runtime value so the arm it guards still compiles.
+    if (self.su.stop) try self.out.insertSlice(self.gpa, at_stop, "    var zs_stop = true;\n    _ = &zs_stop;\n");
+    // The stores write `model.su`, so `model` is always named. No root reads
+    // an instance (`prove/setup.zig` `callInvariant`: a `$held_*` read is
+    // per-eval), but a per-eval value the relooper places before a `zs_stop`
+    // branch may, for the arm that flag never runs: it reads a default
+    // Instance, so the text compiles and nothing stored depends on it.
+    if (self.cur.uses.inst) {
+        assert(self.su.stop);
+        try self.out.insertSlice(self.gpa, at_stop, "    const inst: *const Instance = &.{};\n");
+    }
+    assert(!self.cur.uses.x);
+    assert(self.cur.fatal == null);
+    if (self.out.items.len - at_doc < setup_chunk.chunk_bytes) return;
+    // A large `setup` becomes chunks a split build compiles in parallel.
+    // The split is a text transform whose working copies (several times the
+    // body: psp103's 1 MiB `setup` churns ~7 MiB) die once `c.text` is
+    // copied into `out`, so they live in an arena of this call, not the
+    // compilation's.
+    var scratch: std.heap.ArenaAllocator = .init(self.gpa);
+    defer scratch.deinit();
+    const c = try setup_chunk.chunk(scratch.allocator(), self.out.items[at_doc..], setup_chunk.chunk_bytes) orelse return;
+    self.out.shrinkRetainingCapacity(at_doc);
+    try self.out.appendSlice(self.gpa, c.text);
+    self.su.chunks = c.n;
+}
+
+/// Emits `emitReturn` inside `setup`: stores every root from wherever the
+/// body holds it, then leaves, unconditionally at an exit block or on the
+/// runtime `zs_stop` flag at a per-eval loop (`emitTree`). In dead text
+/// (`dead`) only the leaving remains.
+pub fn emitStores(self: *Gen, depth: u32, stop: []const u8) Error!void {
+    assert(self.su.mode);
+    if (self.su.dead) {
+        try self.ind(depth);
+        return self.b("{s}return;\n", .{stop});
+    }
+    self.su.exits += 1;
+    if (self.su.merge) {
+        try self.ind(depth);
+        return self.b("{s}break :zs_done;\n", .{stop});
+    }
+    const at = self.out.items.len;
+    defer self.su.store_bytes += self.out.items.len - at;
+    for (self.su.vals) |v| {
+        const k = self.su.idx[@backingInt(v)];
+        try self.ind(depth);
+        if (rootGroup(self, v) == 2) {
+            try self.b("model.su.b.setValue({d}, (", .{k});
+            try gen_render.renderVal(self, v, .int);
+            try self.b(") != 0);\n", .{});
+        } else if (self.an.vty[@backingInt(v)] == .int) {
+            try self.b("model.su.i[{d}] = ", .{k});
+            try gen_render.renderVal(self, v, .int);
+            try self.b(";\n", .{});
+        } else {
+            try self.b("model.su.r[{d}] = (", .{k});
+            try gen_render.renderVal(self, v, .real);
+            try self.b(").val();\n", .{});
+        }
+    }
+    try self.ind(depth);
+    try self.b("if (std.debug.runtime_safety and contract.validating) model.su_ok = true;\n", .{});
+    try self.ind(depth);
+    try self.b("{s}return;\n", .{stop});
+}
+
+/// Returns whether merging the exits would shrink `setup`, judged after a
+/// probe without `merge`: one copy of the stores stays, and every body line
+/// gains four spaces.
+pub fn mergePays(self: *const Gen) bool {
+    const su = self.su;
+    return su.mode and su.exits > 1 and su.store_bytes - su.store_bytes / su.exits > 4 * su.lines;
+}
+
+/// Emits the unit body's root tree. Under `merge`, `setup`'s exits leave one
+/// labelled block and the roots are stored once after it; a root read there
+/// that was defined in an inner scope is hoisted like any other slot read
+/// outside its block (`probeBody`), so every exit stores the same bits.
+pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void {
+    assert(self.cur.plan.slot.len == self.an.nv);
+    if (!self.su.merge) return gen_cfg.emitTree(self, 0, 1, target);
+    try self.ind(1);
+    try self.b("zs_done: {{\n", .{});
+    try gen_unit_body.scopeOpen(self);
+    try gen_cfg.emitTree(self, 0, 2, target);
+    gen_unit_body.scopeClose(self, self.out.items.len);
+    try self.ind(1);
+    try self.b("}}\n", .{});
+    self.su.merge = false;
+    defer self.su.merge = true;
+    try emitStores(self, 1, "");
+}
+
+// ---- private ----
 
 /// Returns which of `Setup`'s arrays holds `v`: 0 real, 1 integer, 2 a 0/1 flag.
 fn rootGroup(self: *const Gen, v: Mir.Value) u2 {
+    assert(@backingInt(v) < self.an.nv);
     const i = @backingInt(v);
     if (self.an.vty[i] == .real) return 0;
     const def = self.mir.valueDef(v);
@@ -222,10 +447,13 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
 
 /// Returns whether `setup` computes `a` wherever it computes `b`.
 fn placedOver(self: *const Gen, a: Mir.Value, b: Mir.Value) bool {
+    assert(@backingInt(a) < self.an.nv);
+    assert(@backingInt(b) < self.an.nv);
     return self.an.dominates(placeOf(self, a), placeOf(self, b));
 }
 
 fn placeOf(self: *const Gen, v: Mir.Value) u32 {
+    assert(@backingInt(v) < self.sinv.home.len);
     const h = self.sinv.home[@backingInt(v)];
     if (h != none_u32) return h;
     const b = self.an.def_block[@backingInt(v)];
@@ -233,49 +461,14 @@ fn placeOf(self: *const Gen, v: Mir.Value) u32 {
     return if (b == none_u32) 0 else b;
 }
 
-/// Returns the text reading root `v`'s `Setup` field, as an f64 (`as_f64`)
-/// or in its own type. Arena-owned.
-pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
-    const i = @backingInt(v);
-    const k = self.su.idx[i];
-    self.uses.model = true;
-    if (rootGroup(self, v) == 2) {
-        if (as_f64) return self.arena.print("@as(f64, @floatFromInt(@intFromBool(model.su.b.isSet({d}))))", .{k});
-        return self.arena.print("@as(i64, @intFromBool(model.su.b.isSet({d})))", .{k});
-    }
-    if (self.an.vty[i] == .int) {
-        if (as_f64) return self.arena.print("@as(f64, @floatFromInt(model.su.i[{d}]))", .{k});
-        return self.arena.print("model.su.i[{d}]", .{k});
-    }
-    return self.arena.print("model.su.r[{d}]", .{k});
-}
-
-/// Emits `pub const Setup`, the type of `Model.su`.
-pub fn emitSetupDecl(self: *Gen) Error!void {
-    if (self.su.vals.len == 0) return;
-    const n_flag = self.su.vals.len - self.su.real - self.su.int;
-    try self.w(
-        \\/// Solve-invariant values: functions of `Model` (its card and
-        \\/// `temperature__`) only, which `eval` would otherwise recompute at
-        \\/// every Newton iterate. `setup` fills them; until it runs the reals
-        \\/// are NaN, so a forgotten call is a NaN residual and not a plausible
-        \\/// wrong one. `@sizeOf(Setup)` is a per-Model-row cost.
-        \\pub const Setup = struct {{
-        \\
-    , .{});
-    if (self.su.real != 0) try self.w("    /// One per invariant real; `eval` reads `model.su.r[k]`.\n    r: [{d}]f64 = @splat(" ++ kt.nan_lit ++ "),\n", .{self.su.real});
-    if (self.su.int != 0) try self.w("    /// One per invariant integer; `eval` reads `model.su.i[k]`.\n    i: [{d}]i64 = @splat(0),\n", .{self.su.int});
-    if (n_flag != 0) try self.w("    /// One bit per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: std.StaticBitSet({d}) = .empty,\n", .{n_flag});
-    try self.w("}};\n\n", .{});
-}
-
 /// Emits `pub fn setupInstance` when an instance caches what a card, a
 /// temperature or a `$simparam` write invalidates: VerA's `vera_timepoint`
 /// (§2.9) caches and a latched §9.7.3 status. The host calls it per instance
 /// after `setup` (`contract.validateHost`'s `calls_setup`).
 fn emitSetupInstance(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     const tp = self.lowered.timepoints.items.len != 0;
-    if (!tp and !gen_instance.hasStatus(self)) return;
+    if (!tp and !gen_status.hasStatus(self)) return;
     try self.w(
         \\/// Call for every instance after `setup`, or after any write to
         \\/// `Model` or this instance: it drops what the instance cached from
@@ -284,14 +477,15 @@ fn emitSetupInstance(self: *Gen) Error!void {
         \\{s}{s}}}
         \\
         \\
-    , .{ if (tp) "    zTpDrop(inst);\n" else "", if (gen_instance.hasStatus(self)) gen_instance.status_drop else "" });
+    , .{ if (tp) "    zTpDrop(inst);\n" else "", if (gen_status.hasStatus(self)) gen_status.status_drop else "" });
 }
 
 /// Emits the §9.15 `$simparam`s `setup` reads, so a host knows which writes
 /// need a new `setup` call. Collected while `emitSetup` plans its slice.
 fn emitSimparams(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     var names: std.ArrayList([]const u8) = .empty;
-    for (self.plan.live.items) |lv| {
+    for (self.cur.plan.live.items) |lv| {
         const def = self.mir.valueDef(lv);
         if (def != .inst_result or self.mir.instOp(def.inst_result) != .call) continue;
         const d = self.mir.instData(def.inst_result).call;
@@ -310,175 +504,11 @@ fn emitSimparams(self: *Gen) Error!void {
     try self.w("{s}}};\n\n", .{if (names.items.len == 0) "" else " "});
 }
 
-/// Emits `pub fn setup`: the invariant slice, through the same plan and
-/// relooper as the core, with the roots as its targets. Per-eval branches
-/// are taken `then` untested (neither arm is setup work, and the §5.10.2
-/// initial-step arm is what setup must compute), and the walk stops at the
-/// first loop that is not invariant, since nothing after it is placeable.
-/// Asserts the body read no unknown and refused nothing: `prove/setup.zig`
-/// admits only solve-invariant, constant-renderable roots.
-pub fn emitSetup(self: *Gen) Error!void {
-    try emitSetupInstance(self);
-    if (self.su.vals.len == 0) return;
-    const save_idx = self.plan.lo_idx;
-    const save_vals = self.plan.lo_vals;
-    self.plan.lo_idx = self.su.idx;
-    self.plan.lo_vals = self.su.vals;
-    self.plan.su_on = false; // computing the roots, not reading them
-    self.plan.setup_mode = true;
-    self.plan.sinv = self.sinv.val;
-    self.plan.su_home = self.sinv.home;
-    self.plan.display_unit = false;
-    self.su.mode = true;
-    self.emitting_common = true;
-    defer {
-        self.plan.lo_idx = save_idx;
-        self.plan.lo_vals = save_vals;
-        self.plan.su_on = true;
-        self.plan.setup_mode = false;
-        self.su.mode = false;
-        self.emitting_common = false;
-    }
-    try self.plan.analyze(.undef, true);
-    try emitSimparams(self);
-
-    self.uses.x = false;
-    self.uses.model = true;
-    self.uses.inst = false;
-    self.fatal = null;
-    self.su.chunks = 0;
-    const at_doc = self.out.items.len;
-    try self.w(
-        \\/// Fill `model.su`: once after `derive`, and again after every write to
-        \\/// `Model` (its card or `temperature__`) or to a `$simparam` in
-        \\/// `setup_simparams` — before `eval` or any other entry point runs.
-        \\/// Once per Model row: the instances that share the row share it.
-        \\/// `V` is the host's VALUE scalar, with exactly the value semantics of
-        \\/// the `S` it evaluates with (its Dual's value half), so every latched
-        \\/// value is the bits `eval` would have computed. A §5.10.2
-        \\/// `@(initial_step)` body the card alone determines is computed here
-        \\/// as if the step were initial: the host evaluates an initial step
-        \\/// before any other.
-        \\
-    , .{});
-    try self.w("pub fn setup(comptime V: type, model: *Model) void {{\n", .{});
-    try self.w("    @setFloatMode(.strict);\n    const S = V;\n", .{});
-    self.float.strict = true;
-    self.su.stop = false;
-    self.su.dead = false;
-    self.su.merge = false;
-    defer self.su.merge = false;
-    const at_body = self.out.items.len;
-    try gen_unit.emitUnitBody(self, .undef);
-    try self.w("}}\n\n", .{});
-    // A body of integer roots alone never names `S`, and an unused local is
-    // a Zig error: then the scalar is discarded instead.
-    var at_stop = at_body;
-    if (!namesS(self.out.items[at_body..])) {
-        const decl = "    const S = V;\n";
-        const discard = "    _ = V;\n";
-        std.debug.assert(std.mem.eql(u8, self.out.items[at_body - decl.len .. at_body], decl));
-        try self.out.replaceRange(self.gpa, at_body - decl.len, decl.len, discard);
-        at_stop = at_body - decl.len + discard.len;
-    }
-    // Declared only when a per-eval branch or loop used it: it is always
-    // true, and a runtime value so the arm it guards still compiles.
-    if (self.su.stop) try self.out.insertSlice(self.gpa, at_stop, "    var zs_stop = true;\n    _ = &zs_stop;\n");
-    // The stores write `model.su`, so `model` is always named. No root reads
-    // an instance (`prove/setup.zig` `callInvariant`: a `$held_*` read is
-    // per-eval), but a per-eval value the relooper places before a `zs_stop`
-    // branch may, for the arm that flag never runs: it reads a default
-    // Instance, so the text compiles and nothing stored depends on it.
-    if (self.uses.inst) {
-        std.debug.assert(self.su.stop);
-        try self.out.insertSlice(self.gpa, at_stop, "    const inst: *const Instance = &.{};\n");
-    }
-    std.debug.assert(!self.uses.x);
-    std.debug.assert(self.fatal == null);
-    if (self.out.items.len - at_doc < setup_chunk.chunk_bytes) return;
-    // A large `setup` becomes chunks a split build compiles in parallel.
-    // The split is a text transform whose working copies (several times the
-    // body: psp103's 1 MiB `setup` churns ~7 MiB) die once `c.text` is
-    // copied into `out`, so they live in an arena of this call, not the
-    // compilation's.
-    var scratch: std.heap.ArenaAllocator = .init(self.gpa);
-    defer scratch.deinit();
-    const c = try setup_chunk.chunk(scratch.allocator(), self.out.items[at_doc..], setup_chunk.chunk_bytes) orelse return;
-    self.out.shrinkRetainingCapacity(at_doc);
-    try self.out.appendSlice(self.gpa, c.text);
-    self.su.chunks = c.n;
-}
-
 /// Returns whether emitted text uses the identifier `S`.
 fn namesS(text: []const u8) bool {
     // Outside string literals and comments: a §3.4.6 string comparison puts
     // the literal "S" in a body that may never name the scalar.
     return setup_chunk.hasWord(text, "S");
-}
-
-/// Emits `emitReturn` inside `setup`: stores every root from wherever the
-/// body holds it, then leaves, unconditionally at an exit block or on the
-/// runtime `zs_stop` flag at a per-eval loop (`emitTree`). In dead text
-/// (`dead`) only the leaving remains.
-pub fn emitStores(self: *Gen, depth: u32, stop: []const u8) Error!void {
-    if (self.su.dead) {
-        try self.ind(depth);
-        return self.b("{s}return;\n", .{stop});
-    }
-    self.su.exits += 1;
-    if (self.su.merge) {
-        try self.ind(depth);
-        return self.b("{s}break :zs_done;\n", .{stop});
-    }
-    const at = self.out.items.len;
-    defer self.su.store_bytes += self.out.items.len - at;
-    for (self.su.vals) |v| {
-        const k = self.su.idx[@backingInt(v)];
-        try self.ind(depth);
-        if (rootGroup(self, v) == 2) {
-            try self.b("model.su.b.setValue({d}, (", .{k});
-            try gen_render.renderVal(self, v, .int);
-            try self.b(") != 0);\n", .{});
-        } else if (self.an.vty[@backingInt(v)] == .int) {
-            try self.b("model.su.i[{d}] = ", .{k});
-            try gen_render.renderVal(self, v, .int);
-            try self.b(";\n", .{});
-        } else {
-            try self.b("model.su.r[{d}] = (", .{k});
-            try gen_render.renderVal(self, v, .real);
-            try self.b(").val();\n", .{});
-        }
-    }
-    try self.ind(depth);
-    try self.b("if (std.debug.runtime_safety and contract.validating) model.su_ok = true;\n", .{});
-    try self.ind(depth);
-    try self.b("{s}return;\n", .{stop});
-}
-
-/// Returns whether merging the exits would shrink `setup`, judged after a
-/// probe without `merge`: one copy of the stores stays, and every body line
-/// gains four spaces.
-pub fn mergePays(self: *const Gen) bool {
-    const su = self.su;
-    return su.mode and su.exits > 1 and su.store_bytes - su.store_bytes / su.exits > 4 * su.lines;
-}
-
-/// Emits the unit body's root tree. Under `merge`, `setup`'s exits leave one
-/// labelled block and the roots are stored once after it; a root read there
-/// that was defined in an inner scope is hoisted like any other slot read
-/// outside its block (`probeBody`), so every exit stores the same bits.
-pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void {
-    if (!self.su.merge) return gen_cfg.emitTree(self, 0, 1, target);
-    try self.ind(1);
-    try self.b("zs_done: {{\n", .{});
-    try gen_unit.scopeOpen(self);
-    try gen_cfg.emitTree(self, 0, 2, target);
-    gen_unit.scopeClose(self, self.out.items.len);
-    try self.ind(1);
-    try self.b("}}\n", .{});
-    self.su.merge = false;
-    defer self.su.merge = true;
-    try emitStores(self, 1, "");
 }
 
 test namesS {

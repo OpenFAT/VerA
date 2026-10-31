@@ -7,8 +7,14 @@
 //! piece. Every statement still runs once, in order, on the same values, so
 //! every root keeps its bits.
 //! LRM: none (build orchestration).
+//!
+//! Contents:
+//! - `pub const chunk_bytes: usize = 256 * 1024`
+//! - `pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked`
+//! - `pub fn hasWord(text: []const u8, word: []const u8) bool`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Error = Allocator.Error;
 
@@ -46,6 +52,38 @@ const State = struct {
     small: usize,
 };
 
+const Arms = struct { cond: []const u8, then: Lines, @"else": Lines, has_else: bool };
+
+/// The identifiers of Zig text, outside literals and comments, that are not
+/// a field or builtin name (`.x`, `@x`).
+const Idents = struct {
+    text: []const u8,
+    i: usize = 0,
+
+    fn next(it: *Idents) ?[]const u8 {
+        const t = it.text;
+        assert(it.i <= t.len);
+        const start = it.i;
+        defer assert(it.i >= start); // The cursor only moves forward.
+        while (it.i < t.len) {
+            const c = t[it.i];
+            if (c == '"' or c == '\'') {
+                it.i = skipLit(t, it.i) + 1;
+            } else if (c == '/' and it.i + 1 < t.len and t[it.i + 1] == '/') {
+                it.i = std.mem.findScalarPos(u8, t, it.i, '\n') orelse t.len;
+            } else if (isIdent(c)) {
+                const s = it.i;
+                while (it.i < t.len and isIdent(t[it.i])) it.i += 1;
+                // A field follows ONE dot; after `..` the name is a range bound.
+                const field = s > 0 and t[s - 1] == '.' and !(s > 1 and t[s - 2] == '.');
+                if (std.ascii.isDigit(c) or field or (s > 0 and t[s - 1] == '@')) continue;
+                return t[s..it.i];
+            } else it.i += 1;
+        }
+        return null;
+    }
+};
+
 /// Splits `setup` (`text`: its doc comment and function as `emitSetup`
 /// writes them) into about `text.len / target` chunks. The body's
 /// statements are cut into pieces: a labelled block whose every `break` is
@@ -62,6 +100,8 @@ const State = struct {
 /// `zs_done` body, fewer than two chunks, or no balanced cut.
 /// `Chunked.text` is allocated in `a` (copied, so `text` may go first).
 pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
+    assert(target > 0);
+    assert(text.len != 0);
     if (std.mem.find(u8, text, "zs_stop") != null or std.mem.find(u8, text, "zs_done") != null) return null;
     const fn_at = std.mem.find(u8, text, "pub fn setup(") orelse return null;
     if (!std.mem.endsWith(u8, text, "\n}\n\n")) return null;
@@ -72,7 +112,7 @@ pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
     const all = try a.alloc([]const u8, std.mem.countScalar(u8, src, '\n') + 1);
     var it = std.mem.splitScalar(u8, src, '\n');
     for (all) |*l| l.* = dedent(it.next().?, 4);
-    std.debug.assert(it.next() == null);
+    assert(it.next() == null);
     var body: Lines = all;
 
     // The prologue: the float mode, the scalar alias and the hoisted arrays.
@@ -233,7 +273,19 @@ pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
     return .{ .text = out.items, .n = n };
 }
 
+/// Whether `text` uses `word` as an identifier.
+pub fn hasWord(text: []const u8, word: []const u8) bool {
+    assert(word.len != 0);
+    assert(isIdent(word[0]));
+    var it: Idents = .{ .text = text };
+    while (it.next()) |id| if (std.mem.eql(u8, id, word)) return true;
+    return false;
+}
+
+// ---- private ----
+
 fn note(a: Allocator, readers: *std.StringHashMapUnmanaged(u32), several: *std.StringHashMapUnmanaged(void), id: []const u8, k: u32) Error!void {
+    assert(id.len != 0);
     const g = try readers.getOrPut(a, id);
     if (!g.found_existing) {
         g.value_ptr.* = k;
@@ -271,6 +323,7 @@ fn pieces(st: *State, body: Lines, guards: Lines) Error!bool {
 }
 
 fn cat(a: Allocator, xs: Lines, x: []const u8) Error!Lines {
+    assert(xs.len < std.math.maxInt(usize));
     const r = try a.alloc([]const u8, xs.len + 1);
     @memcpy(r[0..xs.len], xs);
     r[xs.len] = x;
@@ -286,6 +339,7 @@ fn bytesOf(ls: Lines) usize {
 /// The end of the statement starting at `body[i]`: the line after its
 /// braces balance.
 fn stmtEnd(body: Lines, i: usize) ?usize {
+    assert(i < body.len);
     var d: i64 = 0;
     for (body[i..], i..) |l, j| {
         d += braceDelta(l);
@@ -298,6 +352,7 @@ fn stmtEnd(body: Lines, i: usize) ?usize {
 /// `B: { ... }` whose every `break :B` is in tail position: its statements,
 /// those breaks removed (each falls through to the block's end). Else null.
 fn openBlock(a: Allocator, s: Lines) Error!?Lines {
+    assert(s.len != 0);
     const first = s[0];
     if (!std.mem.endsWith(u8, first, ": {") or !std.mem.eql(u8, s[s.len - 1], "}")) return null;
     const label = first[0 .. first.len - 3];
@@ -335,15 +390,14 @@ fn stripTail(a: Allocator, body: Lines, br: []const u8) Error!?Lines {
         for (e) |l| out.appendAssumeCapacity(try indent(a, l));
     }
     out.appendAssumeCapacity("}");
-    std.debug.assert(out.items.len == out.capacity);
+    assert(out.items.len == out.capacity);
     return out.items;
 }
-
-const Arms = struct { cond: []const u8, then: Lines, @"else": Lines, has_else: bool };
 
 /// `if (C) {` A [`} else {` E] `}` as its parts, the arms at indent 0; null
 /// for any other statement, an `else if` chain included.
 fn splitIf(a: Allocator, s: Lines) Error!?Arms {
+    assert(s.len != 0);
     const first = s[0];
     if (!std.mem.startsWith(u8, first, "if (") or !std.mem.endsWith(u8, first, ") {")) return null;
     if (!std.mem.eql(u8, s[s.len - 1], "}")) return null;
@@ -386,6 +440,7 @@ fn selfContained(a: Allocator, lines: Lines) Error!bool {
 
 /// The name, type and value start of a `const`/`var` piece.
 fn declOf(p: *Piece) void {
+    assert(p.lines.len != 0);
     const l = p.lines[0];
     const kw = if (std.mem.startsWith(u8, l, "const ")) "const " else if (std.mem.startsWith(u8, l, "var ")) "var " else return;
     var i = kw.len;
@@ -398,12 +453,14 @@ fn declOf(p: *Piece) void {
 }
 
 fn dedent(l: []const u8, k: usize) []const u8 {
+    assert(k <= 4096);
     var i: usize = 0;
     while (i < k and i < l.len and l[i] == ' ') i += 1;
     return l[i..];
 }
 
 fn dedentAll(a: Allocator, ls: Lines) Error!Lines {
+    assert(ls.len < std.math.maxInt(u32));
     const r = try a.alloc([]const u8, ls.len);
     for (r, ls) |*o, l| o.* = dedent(l, 4);
     return r;
@@ -433,42 +490,20 @@ fn braceDelta(line: []const u8) i64 {
 
 /// The index of the quote closing the literal opened at `i`.
 fn skipLit(t: []const u8, i: usize) usize {
+    assert(i < t.len);
+    assert(t[i] == '"' or t[i] == '\'');
     var j = i + 1;
     while (j < t.len and t[j] != t[i]) : (j += 1) {
         if (t[j] == '\\') j += 1;
     }
+    assert(j >= t.len or t[j] == t[i]);
     return j;
 }
 
-/// The identifiers of Zig text, outside literals and comments, that are not
-/// a field or builtin name (`.x`, `@x`).
-const Idents = struct {
-    text: []const u8,
-    i: usize = 0,
-
-    fn next(it: *Idents) ?[]const u8 {
-        const t = it.text;
-        while (it.i < t.len) {
-            const c = t[it.i];
-            if (c == '"' or c == '\'') {
-                it.i = skipLit(t, it.i) + 1;
-            } else if (c == '/' and it.i + 1 < t.len and t[it.i + 1] == '/') {
-                it.i = std.mem.findScalarPos(u8, t, it.i, '\n') orelse t.len;
-            } else if (isIdent(c)) {
-                const s = it.i;
-                while (it.i < t.len and isIdent(t[it.i])) it.i += 1;
-                // A field follows ONE dot; after `..` the name is a range bound.
-                const field = s > 0 and t[s - 1] == '.' and !(s > 1 and t[s - 2] == '.');
-                if (std.ascii.isDigit(c) or field or (s > 0 and t[s - 1] == '@')) continue;
-                return t[s..it.i];
-            } else it.i += 1;
-        }
-        return null;
-    }
-};
-
 /// Appends `text` with every identifier in `moved` read as `z.<name>`.
 fn rename(a: Allocator, out: *std.ArrayList(u8), text: []const u8, moved: *const std.StringHashMapUnmanaged(void)) Error!void {
+    const len_before = out.items.len;
+    defer assert(out.items.len >= len_before);
     var it: Idents = .{ .text = text };
     var done: usize = 0;
     while (it.next()) |id| {
@@ -479,13 +514,6 @@ fn rename(a: Allocator, out: *std.ArrayList(u8), text: []const u8, moved: *const
         done = at + id.len;
     }
     try out.appendSlice(a, text[done..]);
-}
-
-/// Whether `text` uses `word` as an identifier.
-pub fn hasWord(text: []const u8, word: []const u8) bool {
-    var it: Idents = .{ .text = text };
-    while (it.next()) |id| if (std.mem.eql(u8, id, word)) return true;
-    return false;
 }
 
 test "chunk opens tail-break blocks, guards if arms, and moves shared values" {
