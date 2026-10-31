@@ -14,12 +14,28 @@
 //! §5.10 held `Instance` field (`heldField`), which codegen declares and the
 //! testbench reads.
 //!
-//! LRM clauses this file's code cites: §1.3.1.1, §2.8.1, §3.6.1.2, §4.4,
-//! §4.5, §5.6, §5.6.7, §5.10, §7.3.1, §7.3.2, §8.5.3.6, §9.4, §9.17.
+//! Cites: §1.3.1.1, §2.7, §2.8.1, §3.6.1.2, §4.4, §4.5, §5.6, §5.6.7, §5.10,
+//! §7.3.1, §7.3.2, §8.5.3.6, §9.4, §9.17.
+//!
+//! Contents:
+//! - `pub const Unit = struct`
+//! - `pub const Role = enum(u8)`
+//! - `pub fn sanitize(buf: []u8, name: []const u8) error{NoSpaceLeft}![]const u8`
+//! - `pub fn sanitizeAlloc(arena: Allocator, name: []const u8) Allocator.Error![]const u8`
+//! - `pub fn snapField(gpa: Allocator, name: []const u8) Allocator.Error![]u8`
+//! - `pub fn wordField(gpa: Allocator, name: []const u8, k: usize) Allocator.Error![]u8`
+//! - `pub fn xzField(gpa: Allocator, name: []const u8) Allocator.Error![]u8`
+//! - `pub fn heldField(arena: Allocator, module: []const u8, name: []const u8) Allocator.Error![]u8`
+//! - `pub fn unitName(buf: []u8, module: []const u8, unit: Unit) error{NoSpaceLeft}![]const u8`
+//! - `pub fn unitNameAlloc(arena: Allocator, module: []const u8, unit: Unit) Allocator.Error![]const u8`
+//! - `pub fn enumerateUnits(arena: Allocator, mir: *const Mir, lowered: *const Lowered) Allocator.Error![]Unit`
+//! - `pub fn assertCanonicalOrder(units: []const Unit, lowered: *const Lowered, unit_modes_len: usize) void`
 
 const std = @import("std");
-const Mir = @import("mir.zig");
-const Lowered = @import("lowered.zig");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+const Mir = @import("Mir.zig");
+const Lowered = @import("Lowered.zig");
 const opdb = @import("op.zig");
 
 /// Identifies one emitted source unit: §5.6 contribution or §4.5 analog operator.
@@ -46,14 +62,14 @@ pub const Unit = struct {
     // Budget: the 16-byte slice, two 4-byte columns and two one-byte tags,
     // padded to the slice's 8-byte alignment.
     comptime {
-        std.debug.assert(@sizeOf(Unit) <= 32);
+        assert(@sizeOf(Unit) <= 32);
     }
 };
 
 /// What an emitted unit is. `display` and `common` are never produced by
 /// `enumerateUnits`: an entry in the canonical order would desynchronize
 /// `proof.Verdict.unit_modes`. codegen names them directly with `unitName`.
-pub const Role = enum {
+pub const Role = enum(u8) {
     /// A §5.6 contribution.
     analog,
     /// A §4.5 analog operator, §5.10 event or §9.17 kernel-control call.
@@ -65,6 +81,32 @@ pub const Role = enum {
     common,
 };
 
+/// Test fixture: the part of `prove.Fixture` these tests read, a hand-built `Mir` and
+/// `Lowered`: `prove` imports `ir`, so its fixture is out of reach here.
+const Fixture = struct {
+    arena: std.heap.ArenaAllocator,
+    mir: Mir = .{ .name = "mymod" },
+    lowered: Lowered = undefined,
+
+    fn init(f: *Fixture, net_names: []const []const u8) !void {
+        f.lowered = .{};
+        const a = f.arena.allocator();
+        for (net_names) |n|
+            try f.lowered.nodes.append(a, .{ .name = n, .kind = .net, .disc = "", .dir = .unspecified });
+        _ = try f.mir.addBlock(a);
+    }
+
+    fn deinit(f: *Fixture) void {
+        f.arena.deinit();
+    }
+
+    fn alloc(f: *Fixture) Allocator {
+        return f.arena.allocator();
+    }
+};
+/// The nets most of the tests below declare.
+const nets = [_][]const u8{ "drain", "gate", "source" };
+
 // Sanitization: Verilog-A identifier to Zig identifier, injectively.
 // §2.8.1 escaped identifiers carry arbitrary printable bytes, and `_` is the
 // separator alphabet. The escape marker is `Z`, so a sanitized leaf never
@@ -74,9 +116,182 @@ pub const Role = enum {
 //   leaf  := [A-Za-z0-9_]*   with no "__", no leading/trailing "_"
 //   escape:= "Z" hex hex     (so a literal 'Z' is escaped to "Z5a")
 
-fn hexDigit(v: u8) u8 {
-    return "0123456789abcdef"[v & 0xf];
+/// Sanitizes one identifier leaf into `buf` and returns the written prefix.
+/// Injective: distinct inputs give distinct outputs. Every source name must
+/// pass through this before it enters an emitted declaration name. Needs up to
+/// `3 * name.len + 1` bytes; fails with `error.NoSpaceLeft` otherwise, with
+/// `buf` partly written.
+pub fn sanitize(buf: []u8, name: []const u8) error{NoSpaceLeft}![]const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    sanitizeInto(&w, name) catch return error.NoSpaceLeft;
+    // Annex B does not reserve Zig keywords or primitives (`pub`, `u32`), so
+    // a model may use them as names. A trailing `Z` marks them rather than
+    // `@"..."`, because consumers interpolate names bare (`model.{s}`); it
+    // stays injective, since `sanitizeInto` emits `Z` only as `Z<hi><lo>`.
+    const leaf = w.buffered();
+    if (std.zig.Token.keywords.has(leaf) or std.zig.primitives.isPrimitive(leaf))
+        w.writeByte('Z') catch return error.NoSpaceLeft;
+    const out = w.buffered();
+    assert(out.len >= name.len); // every byte is kept or escaped to three
+    assert(out.len <= 3 * name.len + 1);
+    return out;
 }
+
+/// `sanitize` into a buffer from `arena` sized for `name` (3n + 1 bytes), so a
+/// name of any length fits (VAMS 2.8, VD-054; #29). The result is a prefix of
+/// that buffer, so it cannot be freed alone: `arena` must be an arena.
+pub fn sanitizeAlloc(arena: Allocator, name: []const u8) Allocator.Error![]const u8 {
+    const buf = try arena.alloc(u8, 3 * name.len + 1);
+    // 3n + 1 bytes is `sanitize`'s documented worst case.
+    const out = sanitize(buf, name) catch unreachable;
+    assert(out.ptr == buf.ptr);
+    return out;
+}
+
+// The cross-stage field names. Each returns the source-level name, which the
+// declaring and the reading site pass through `sanitize` like any other
+// name, except `heldField`, whose two leaves it sanitizes itself.
+
+/// §8.5.3.6 the region-1b snapshot of discrete input `name`: its `Model`
+/// field. Caller owns returned memory and frees it with `gpa`.
+pub fn snapField(gpa: Allocator, name: []const u8) Allocator.Error![]u8 {
+    const out = try gpa.print("{s}__1b", .{name});
+    assert(out.len == name.len + 4);
+    return out;
+}
+
+/// §7.3.1 word `k` (`k >= 1`) of a `reg` input wider than 32 bits: its `Model`
+/// field. Word 0 is the input's own field, `name`. Caller owns returned
+/// memory and frees it with `gpa`. Asserts that `k != 0`.
+pub fn wordField(gpa: Allocator, name: []const u8, k: usize) Allocator.Error![]u8 {
+    assert(k != 0);
+    const out = try gpa.print("{s}__w{d}", .{ name, k });
+    assert(out.len > name.len + 3);
+    return out;
+}
+
+/// §7.3.2 the unknown (x/z) plane of a four-state discrete input: its `Model`
+/// field. Caller owns returned memory and frees it with `gpa`.
+pub fn xzField(gpa: Allocator, name: []const u8) Allocator.Error![]u8 {
+    const out = try gpa.print("{s}__xz", .{name});
+    assert(out.len == name.len + 4);
+    return out;
+}
+
+/// §5.10 held variable `name` of module `module`: its `Instance` field,
+/// `<module>__held__<name>`, both leaves `sanitize`d. The grammar `unitName`
+/// builds, with `held` where a role word would go: `Role` deliberately
+/// excludes it (a held variable is not an emitted source unit), and no
+/// enumerated unit can spell that segment, so the two name spaces cannot
+/// meet. A leaf is injective and a module variable's name is unique in its
+/// scope, so the whole key is. Leaves its two sanitized leaves allocated in
+/// `arena` beside the result: `arena` must be an arena.
+pub fn heldField(arena: Allocator, module: []const u8, name: []const u8) Allocator.Error![]u8 {
+    const m = try sanitizeAlloc(arena, module);
+    const n = try sanitizeAlloc(arena, name);
+    const out = try arena.print("{s}__held__{s}", .{ m, n });
+    assert(out.len == m.len + n.len + 8);
+    return out;
+}
+
+/// Writes `<module>__<role>__<target>[__<disambig>]` into `buf` and returns it.
+/// No part is a position, and the suffix appears only for `disambig > 0`, so
+/// a collision group's first member keeps its name when another is added.
+/// Fails with `error.NoSpaceLeft` past `buf.len`; `unitNameAlloc` sizes it.
+/// Asserts that `unit.target` is not empty.
+pub fn unitName(buf: []u8, module: []const u8, unit: Unit) error{NoSpaceLeft}![]const u8 {
+    assert(unit.target.len != 0);
+    var w: std.Io.Writer = .fixed(buf);
+    sanitizeInto(&w, module) catch return error.NoSpaceLeft;
+    // `role` is a closed set, already a legal leaf; `target` is pre-sanitized
+    // (see Unit.target).
+    w.print("__{t}__{s}", .{ unit.role, unit.target }) catch return error.NoSpaceLeft;
+    if (unit.disambig != 0) w.print("__{d}", .{unit.disambig}) catch return error.NoSpaceLeft;
+    const out = w.buffered();
+    assert(out.len >= module.len + unit.target.len + 4);
+    return out;
+}
+
+/// `unitName` into a buffer from `arena` sized for this name, so a module name
+/// of any length fits (VAMS 2.8, VD-054; #29). The result is a prefix of
+/// that buffer, so it cannot be freed alone: `arena` must be an arena.
+pub fn unitNameAlloc(arena: Allocator, module: []const u8, unit: Unit) Allocator.Error![]const u8 {
+    // The module at 3x, the role and target between `__`s, and a u32's digits.
+    const n = 3 * module.len + 2 + @tagName(unit.role).len + 2 + unit.target.len + 2 + 10;
+    const buf = try arena.alloc(u8, n);
+    // `n` covers every byte `unitName` can write for these parts.
+    const out = unitName(buf, module, unit) catch unreachable;
+    assert(out.len <= n);
+    return out;
+}
+
+/// Returns the module's units in the canonical order, which
+/// `proof.Verdict.unit_modes` and codegen's declaration emission both index:
+///
+///   1. every `Lowered.contributions[i]` in table order, role `.analog`
+///      (§5.6.7 indirect statements are never deduped, so several to one
+///      branch form a collision group);
+///   2. every §4.5 operator, §5.10 event and §9.17 kernel-control `call`, in
+///      block creation order then `Mir.blockInsts` order, role `.analog_op`. The
+///      §9.17 `$bound_step`/`$discontinuity` calls come last, in that order.
+///
+/// The order is a pure function of the source; `disambig` counts 0, 1, 2 in
+/// it. The slice and every `Unit.target` are allocated from `arena`, which
+/// should be the per-compilation arena. O(units²) in the disambiguation.
+pub fn enumerateUnits(arena: Allocator, mir: *const Mir, lowered: *const Lowered) Allocator.Error![]Unit {
+    var units: std.ArrayList(Unit) = .empty;
+    errdefer units.deinit(arena);
+
+    // (1) §5.6 contributions: node names, never `nodes` rows.
+    for (lowered.contributions.items) |c| {
+        var w: std.Io.Writer.Allocating = .init(arena);
+        contribTarget(&w.writer, lowered, c) catch return error.OutOfMemory;
+        try units.append(arena, .{ .role = .analog, .target = try w.toOwnedSlice() });
+    }
+
+    // (2) §4.5 stateful operators. `Instance` state fields are keyed on these
+    // names, so adding an unrelated operator must not rename existing state.
+    for (0..mir.blockCount()) |bi| {
+        const block: Mir.Block = @fromBackingInt(@intCast(bi));
+        var insts = mir.blockInsts(block);
+        while (insts.next()) |inst| {
+            if (mir.instOp(inst) != .call) continue;
+            const callee = mir.instData(inst).call.callee;
+            // An `OpKind` other than `.none` owns state or a monitored event.
+            const k = Mir.callee.opKind(callee);
+            if (k == .none) continue;
+            // The `$` of a §9.17 task is dropped rather than escaped to `Z24`.
+            // No collision: every other target here is an annex B keyword.
+            const spelling = @tagName(callee);
+            const bare = if (spelling[0] == '$') spelling[1..] else spelling;
+            // A synthetic variant `op$variant` (`absdelay$quad`) shares `op`'s
+            // state, so it takes `op`'s name: hosts find state by field name.
+            const op_name = bare[0 .. std.mem.findScalar(u8, bare, '$') orelse bare.len];
+            const t = try sanitizeAlloc(arena, op_name);
+            try units.append(arena, .{ .role = .analog_op, .target = t, .inst = inst, .op = k });
+        }
+    }
+
+    assignDisambig(units.items);
+    const out = try units.toOwnedSlice(arena);
+    assertCanonicalOrder(out, lowered, lowered.contributions.items.len);
+    return out;
+}
+
+/// Asserts the canonical order `enumerateUnits` documents: (a) proof rated
+/// exactly the contribution units, (b) they are the prefix of `units`, and
+/// (c) only `.analog_op` units follow. A violation would make codegen read
+/// another unit's float mode, and `.optimized` on an unproven unit is
+/// undefined behaviour in release builds. O(units).
+pub fn assertCanonicalOrder(units: []const Unit, lowered: *const Lowered, unit_modes_len: usize) void {
+    const n_contrib = lowered.contributions.items.len;
+    assert(unit_modes_len == n_contrib); // (a)
+    assert(units.len >= n_contrib);
+    for (units[0..n_contrib]) |u| assert(u.role == .analog); // (b)
+    for (units[n_contrib..]) |u| assert(u.role == .analog_op); // (c)
+}
+
+// ---- private ----
 
 /// Appends `name` to `w`, escaping every byte that would break injectivity or
 /// Zig's identifier grammar.
@@ -99,113 +314,8 @@ fn sanitizeInto(w: *std.Io.Writer, name: []const u8) std.Io.Writer.Error!void {
     }
 }
 
-/// Sanitizes one identifier leaf into `buf` and returns the written prefix.
-/// Injective: distinct inputs give distinct outputs. Every source name must
-/// pass through this before it enters an emitted declaration name. Needs up to
-/// `3 * name.len + 1` bytes; fails with `error.NoSpaceLeft` otherwise.
-pub fn sanitize(buf: []u8, name: []const u8) error{NoSpaceLeft}![]const u8 {
-    var w: std.Io.Writer = .fixed(buf);
-    sanitizeInto(&w, name) catch return error.NoSpaceLeft;
-    // Annex B does not reserve Zig keywords or primitives (`pub`, `u32`), so
-    // a model may use them as names. A trailing `Z` marks them rather than
-    // `@"..."`, because consumers interpolate names bare (`model.{s}`); it
-    // stays injective, since `sanitizeInto` emits `Z` only as `Z<hi><lo>`.
-    const leaf = w.buffered();
-    if (std.zig.Token.keywords.has(leaf) or std.zig.primitives.isPrimitive(leaf))
-        w.writeByte('Z') catch return error.NoSpaceLeft;
-    return w.buffered();
-}
-
-/// `sanitize` into a buffer from `a` sized for `name` (3n + 1 bytes), so a
-/// name of any length fits (VAMS 2.8, VD-054; #29). The result is a prefix of
-/// that buffer, so `a.free` cannot take it: `a` should be an arena.
-pub fn sanitizeAlloc(a: std.mem.Allocator, name: []const u8) std.mem.Allocator.Error![]const u8 {
-    return sanitize(try a.alloc(u8, 3 * name.len + 1), name) catch unreachable;
-}
-
-test "sanitize escapes Zig keywords and primitives" {
-    var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("pubZ", try sanitize(&buf, "pub"));
-    try std.testing.expectEqualStrings("fnZ", try sanitize(&buf, "fn"));
-    try std.testing.expectEqualStrings("errorZ", try sanitize(&buf, "error"));
-    try std.testing.expectEqualStrings("f64Z", try sanitize(&buf, "f64"));
-    // Non-reserved names are untouched.
-    try std.testing.expectEqualStrings("vth", try sanitize(&buf, "vth"));
-    try std.testing.expectEqualStrings("public", try sanitize(&buf, "public"));
-    // Injectivity at the boundary: a source name that already ends in `Z` has
-    // that `Z` escaped, so it cannot collide with the keyword marker.
-    const pubZ_src = try sanitize(&buf, "pubZ");
-    try std.testing.expect(!std.mem.eql(u8, "pubZ", pubZ_src));
-}
-
-// The cross-stage field names. Each returns the source-level name, which the
-// declaring and the reading site pass through `sanitize` like any other
-// name, except `heldField`, whose two leaves it sanitizes itself.
-
-/// §8.5.3.6 the region-1b snapshot of discrete input `name`: its `Model` field.
-pub fn snapField(a: std.mem.Allocator, name: []const u8) std.mem.Allocator.Error![]u8 {
-    return a.print("{s}__1b", .{name});
-}
-
-/// §7.3.1 word `k` (`k >= 1`) of a `reg` input wider than 32 bits: its `Model`
-/// field. Word 0 is the input's own field, `name`.
-pub fn wordField(a: std.mem.Allocator, name: []const u8, k: usize) std.mem.Allocator.Error![]u8 {
-    std.debug.assert(k != 0);
-    return a.print("{s}__w{d}", .{ name, k });
-}
-
-/// §7.3.2 the unknown (x/z) plane of a four-state discrete input: its `Model` field.
-pub fn xzField(a: std.mem.Allocator, name: []const u8) std.mem.Allocator.Error![]u8 {
-    return a.print("{s}__xz", .{name});
-}
-
-/// §5.10 held variable `name` of module `module`: its `Instance` field,
-/// `<module>__held__<name>`, both leaves `sanitize`d. The grammar `unitName`
-/// builds, with `held` where a role word would go: `Role` deliberately
-/// excludes it (a held variable is not an emitted source unit), and no
-/// enumerated unit can spell that segment, so the two name spaces cannot
-/// meet. A leaf is injective and a module variable's name is unique in its
-/// scope, so the whole key is. Leaves its two sanitized leaves allocated in
-/// `a` beside the result: `a` should be an arena.
-pub fn heldField(a: std.mem.Allocator, module: []const u8, name: []const u8) std.mem.Allocator.Error![]u8 {
-    return a.print("{s}__held__{s}", .{ try sanitizeAlloc(a, module), try sanitizeAlloc(a, name) });
-}
-
-test "the cross-stage field names" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try std.testing.expectEqualStrings("myZ20mod__held__pubZ", try heldField(a, "my mod", "pub"));
-    try std.testing.expectEqualStrings("x__1b", try snapField(a, "x"));
-    try std.testing.expectEqualStrings("x__w2", try wordField(a, "x", 2));
-    try std.testing.expectEqualStrings("x__xz", try xzField(a, "x"));
-}
-
-/// Writes `<module>__<role>__<target>[__<disambig>]` into `buf` and returns it.
-/// No part is a position, and the suffix appears only for `disambig > 0`, so
-/// a collision group's first member keeps its name when another is added.
-/// Fails with `error.NoSpaceLeft` past `buf.len`; `unitNameAlloc` sizes it.
-pub fn unitName(
-    buf: []u8,
-    module: []const u8,
-    unit: Unit,
-) error{NoSpaceLeft}![]const u8 {
-    var w: std.Io.Writer = .fixed(buf);
-    sanitizeInto(&w, module) catch return error.NoSpaceLeft;
-    // `role` is a closed set, already a legal leaf; `target` is pre-sanitized
-    // (see Unit.target).
-    w.print("__{t}__{s}", .{ unit.role, unit.target }) catch return error.NoSpaceLeft;
-    if (unit.disambig != 0) w.print("__{d}", .{unit.disambig}) catch return error.NoSpaceLeft;
-    return w.buffered();
-}
-
-/// `unitName` into a buffer from `a` sized for this name, so a module name
-/// of any length fits (VAMS 2.8, VD-054; #29). The result is a prefix of
-/// that buffer, so `a.free` cannot take it: `a` should be an arena.
-pub fn unitNameAlloc(a: std.mem.Allocator, module: []const u8, unit: Unit) std.mem.Allocator.Error![]const u8 {
-    // The module at 3x, the role and target between `__`s, and a u32's digits.
-    const n = 3 * module.len + 2 + @tagName(unit.role).len + 2 + unit.target.len + 2 + 10;
-    return unitName(try a.alloc(u8, n), module, unit) catch unreachable;
+fn hexDigit(v: u8) u8 {
+    return "0123456789abcdef"[v & 0xf];
 }
 
 /// Writes §5.6 contribution `c`'s unit target, `V_<hi>_<lo>` or `I_<hi>_<lo>`.
@@ -224,74 +334,13 @@ fn contribTarget(w: *std.Io.Writer, lowered: *const Lowered, c: Lowered.Contribu
     }
 }
 
-/// Returns the module's units in the canonical order, which
-/// `proof.Verdict.unit_modes` and codegen's declaration emission both index:
-///
-///   1. every `Lowered.contributions[i]` in table order, role `.analog`
-///      (§5.6.7 indirect statements are never deduped, so several to one
-///      branch form a collision group);
-///   2. every §4.5 operator, §5.10 event and §9.17 kernel-control `call`, in
-///      block creation order then `Mir.blockInsts` order, role `.analog_op`. The
-///      §9.17 `$bound_step`/`$discontinuity` calls come last, in that order.
-///
-/// The order is a pure function of the source; `disambig` counts 0, 1, 2 in
-/// it. The slice and every `Unit.target` are allocated from `gpa`, which
-/// should be the per-compilation arena.
-pub fn enumerateUnits(gpa: std.mem.Allocator, mir: *const Mir, lowered: *const Lowered) ![]Unit {
-    var units: std.ArrayList(Unit) = .empty;
-    errdefer units.deinit(gpa);
-
-    // (1) §5.6 contributions: node names, never `nodes` rows.
-    for (lowered.contributions.items) |c| {
-        var w: std.Io.Writer.Allocating = .init(gpa);
-        contribTarget(&w.writer, lowered, c) catch return error.OutOfMemory;
-        try units.append(gpa, .{ .role = .analog, .target = try w.toOwnedSlice() });
-    }
-
-    // (2) §4.5 stateful operators. `Instance` state fields are keyed on these
-    // names, so adding an unrelated operator must not rename existing state.
-    for (0..mir.blockCount()) |bi| {
-        const block: Mir.Block = @fromBackingInt(@intCast(bi));
-        var insts = mir.blockInsts(block);
-        while (insts.next()) |inst| {
-            if (mir.instOp(inst) != .call) continue;
-            const callee = mir.instData(inst).call.callee;
-            // An `OpKind` other than `.none` owns state or a monitored event.
-            const k = Mir.callee.opKind(callee);
-            if (k == .none) continue;
-            // The `$` of a §9.17 task is dropped rather than escaped to `Z24`.
-            // No collision: every other target here is an annex B keyword.
-            const spelling = @tagName(callee);
-            const bare = if (spelling[0] == '$') spelling[1..] else spelling;
-            // A synthetic variant `op$variant` (`absdelay$quad`) shares `op`'s
-            // state, so it takes `op`'s name: hosts find state by field name.
-            const op_name = bare[0 .. std.mem.findScalar(u8, bare, '$') orelse bare.len];
-            const t = try sanitizeAlloc(gpa, op_name);
-            try units.append(gpa, .{ .role = .analog_op, .target = t, .inst = inst, .op = k });
-        }
-    }
-
-    assignDisambig(units.items);
-    return units.toOwnedSlice(gpa);
-}
-
-/// Asserts the canonical order `enumerateUnits` documents: (a) proof rated
-/// exactly the contribution units, (b) they are the prefix of `units`, and
-/// (c) only `.analog_op` units follow. A violation would make codegen read
-/// another unit's float mode, and `.optimized` on an unproven unit is
-/// undefined behaviour in release builds. Debug-only, O(units).
-pub fn assertCanonicalOrder(units: []const Unit, lowered: *const Lowered, unit_modes_len: usize) void {
-    const n_contrib = lowered.contributions.items.len;
-    std.debug.assert(unit_modes_len == n_contrib); // (a)
-    std.debug.assert(units.len >= n_contrib);
-    for (units[0..n_contrib]) |u| std.debug.assert(u.role == .analog); // (b)
-    for (units[n_contrib..]) |u| std.debug.assert(u.role == .analog_op); // (c)
-}
-
 /// Sets each unit's `disambig` to the number of earlier units sharing its
 /// (role, target).
 // ponytail: O(n²) over units. A module has tens of them; switch to a
 // StringHashMap keyed on role++target if a model ever shows up with thousands.
+// ponytail: an operator's target is its callee name, so N `ddt`s in one module
+// take disambig 0..N-1 and inserting one renames the later ones. Qualifying the
+// target with the enclosing contribution needs lowering to record that link.
 fn assignDisambig(units: []Unit) void {
     for (units, 0..) |*u, i| {
         var n: u32 = 0;
@@ -299,44 +348,51 @@ fn assignDisambig(units: []Unit) void {
             if (prev.role == u.role and std.mem.eql(u8, prev.target, u.target)) n += 1;
         }
         u.disambig = n;
+        assert(n <= i);
     }
 }
 
-// ponytail: an operator's target is its callee name, so N `ddt`s in one module
-// take disambig 0..N-1 and inserting one renames the later ones. Qualifying the
-// target with the enclosing contribution needs lower.zig to record that link.
-
-/// The part of `prove.Fixture` these tests read, a hand-built `Mir` and
-/// `Lowered`: `prove` imports `ir`, so its fixture is out of reach here.
-const Fixture = struct {
-    arena: std.heap.ArenaAllocator,
-    mir: Mir = .{ .name = "mymod" },
-    lowered: Lowered = undefined,
-
-    fn init(f: *Fixture, net_names: []const []const u8) !void {
-        f.lowered = .{};
-        const a = f.arena.allocator();
-        for (net_names) |n|
-            try f.lowered.nodes.append(a, .{ .name = n, .kind = .net, .disc = "", .dir = .unspecified });
-        _ = try f.mir.addBlock(a);
-    }
-
-    fn deinit(f: *Fixture) void {
-        f.arena.deinit();
-    }
-
-    fn alloc(f: *Fixture) std.mem.Allocator {
-        return f.arena.allocator();
-    }
-};
-const nets = [_][]const u8{ "drain", "gate", "source" };
-
+/// Appends every unit name of `f`, in canonical order, to `out`.
 fn names(f: *Fixture, out: *std.ArrayList([]const u8)) !void {
     const a = f.alloc();
     const units = try enumerateUnits(a, &f.mir, &f.lowered);
     for (units) |u| {
         try out.append(a, try unitNameAlloc(a, f.mir.name, u));
     }
+}
+
+/// Fails unless `s` is a sanitized leaf: a Zig identifier that is neither a
+/// keyword nor a primitive, with no `__` and no `_` at either end.
+fn expectLeaf(s: []const u8) !void {
+    try std.testing.expect(std.zig.isValidId(s));
+    try std.testing.expect(!std.zig.primitives.isPrimitive(s));
+    try std.testing.expect(std.mem.find(u8, s, "__") == null);
+    try std.testing.expect(s[0] != '_' and s[s.len - 1] != '_');
+}
+
+test "sanitize escapes Zig keywords and primitives" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("pubZ", try sanitize(&buf, "pub"));
+    try std.testing.expectEqualStrings("fnZ", try sanitize(&buf, "fn"));
+    try std.testing.expectEqualStrings("errorZ", try sanitize(&buf, "error"));
+    try std.testing.expectEqualStrings("f64Z", try sanitize(&buf, "f64"));
+    // Non-reserved names are untouched.
+    try std.testing.expectEqualStrings("vth", try sanitize(&buf, "vth"));
+    try std.testing.expectEqualStrings("public", try sanitize(&buf, "public"));
+    // Injectivity at the boundary: a source name that already ends in `Z` has
+    // that `Z` escaped, so it cannot collide with the keyword marker.
+    const pubZ_src = try sanitize(&buf, "pubZ");
+    try std.testing.expect(!std.mem.eql(u8, "pubZ", pubZ_src));
+}
+
+test "the cross-stage field names" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("myZ20mod__held__pubZ", try heldField(a, "my mod", "pub"));
+    try std.testing.expectEqualStrings("x__1b", try snapField(a, "x"));
+    try std.testing.expectEqualStrings("x__w2", try wordField(a, "x", 2));
+    try std.testing.expectEqualStrings("x__xz", try xzField(a, "x"));
 }
 
 test "inserting a contribution for a different target renames nothing" {
@@ -447,15 +503,6 @@ test "§9.17 kernel-control units drop the `$` and stay after the operator units
     // The `$` is dropped, not escaped to `Z24`.
     try std.testing.expectEqualStrings("mymod__analog_op__bound_step", got.items[2]);
     try std.testing.expectEqualStrings("mymod__analog_op__discontinuity", got.items[3]);
-}
-
-/// Fails unless `s` is a sanitized leaf: a Zig identifier that is neither a
-/// keyword nor a primitive, with no `__` and no `_` at either end.
-fn expectLeaf(s: []const u8) !void {
-    try std.testing.expect(std.zig.isValidId(s));
-    try std.testing.expect(!std.zig.primitives.isPrimitive(s));
-    try std.testing.expect(std.mem.find(u8, s, "__") == null);
-    try std.testing.expect(s[0] != '_' and s[s.len - 1] != '_');
 }
 
 test "sanitize is injective and legal over every one-byte name" {

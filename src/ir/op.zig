@@ -5,10 +5,17 @@
 //! (`Instance` fields, `dt`) are `src/codegen/device/codegen/op_zig.zig`, a table total
 //! over this enum.
 //!
-//! LRM clauses this file's code cites: §4.5.4, §4.5.5, §4.5.7, §4.5.8, §4.5.9,
-//! §4.5.10, §4.5.11, §4.5.12, §4.5.13, §4.5.14, §5.10.3.1, §9.17.1, §9.17.2.
+//! Cites: §4.5.4, §4.5.5, §4.5.7, §4.5.8, §4.5.9, §4.5.10, §4.5.11, §4.5.12,
+//! §4.5.13, §4.5.14, §5.10.3.1, §9.17.1, §9.17.2.
+//!
+//! Contents:
+//! - `pub const OpKind = enum(u8)`
+//! - `pub fn acDynamic(k: OpKind) bool`
+//! - `pub fn needsInput(k: OpKind) bool`
+//! - `pub fn enableArg(k: OpKind) ?u8`
 
 const std = @import("std");
+const assert = std.debug.assert;
 
 /// Every operator that owns per-instance state or a monitored event.
 /// `names.enumerateUnits` gives each occurrence of one a unit; `.none` is the
@@ -16,7 +23,7 @@ const std = @import("std");
 ///
 /// §4.5.13 `limexp` and §4.5.14 `ddx` are not here: they are pure functions of
 /// their argument, so they own no state and get no unit.
-pub const OpKind = enum {
+pub const OpKind = enum(u8) {
     none,
     idt_hold, // §4.5.4 assert
     idtmod, // §4.5.5
@@ -38,10 +45,13 @@ pub const OpKind = enum {
 /// `zi_*` is H(e^(jωT)). Every other operator is flat in ω (§4.5.8
 /// `transition` is unity, §4.5.9 `slew` 1 or 0) or has no small-signal path.
 pub fn acDynamic(k: OpKind) bool {
-    return switch (k) {
+    const dynamic = switch (k) {
         .absdelay, .laplace, .zi => true,
         .none, .idt_hold, .idtmod, .transition, .slew, .last_crossing, .cross, .above, .timer, .bound_step, .discontinuity => false,
     };
+    // A frequency-dependent response is a response to the input.
+    if (dynamic) assert(needsInput(k));
+    return dynamic;
 }
 
 /// Returns whether the operator's kernel reads the current input rather than
@@ -55,10 +65,12 @@ pub fn acDynamic(k: OpKind) bool {
 /// `cross` does, to report a crossing inside the step being evaluated, and the
 /// §9.17 requests evaluate their own argument.
 pub fn needsInput(k: OpKind) bool {
-    return switch (k) {
+    const needs = switch (k) {
         .idt_hold, .idtmod, .absdelay, .transition, .slew, .last_crossing, .laplace, .zi, .cross, .above, .timer => true,
         .none, .bound_step, .discontinuity => false,
     };
+    if (k == .none) assert(!needs);
+    return needs;
 }
 
 /// Returns the index of the §5.10.3 `enable` argument, or null: the one
@@ -66,12 +78,15 @@ pub fn needsInput(k: OpKind) bool {
 /// live while every other control argument folds at codegen time. `?u8`, the
 /// narrowest type the range allows.
 pub fn enableArg(k: OpKind) ?u8 {
-    return switch (k) {
+    const arg: ?u8 = switch (k) {
         .cross => 4, // cross(expr, dir, time_tol, expr_tol, enable)
         .above => 3, // above(expr, time_tol, expr_tol, enable)
         .timer => 3, // timer(start, period, time_tol, enable)
         .none, .idt_hold, .idtmod, .absdelay, .transition, .slew, .last_crossing, .laplace, .zi, .bound_step, .discontinuity => null,
     };
+    // Only a §5.10.3 event takes an `enable`, and it reads its input.
+    if (arg != null) assert(needsInput(k));
+    return arg;
 }
 
 test needsInput {

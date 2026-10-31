@@ -1,5 +1,7 @@
 //! `Lowered`: the tables lowering hands to every later stage, as one value,
-//! and the row types of those tables.
+//! and the row types of those tables. Rows in (appended by lowering, which
+//! owns every write), the same rows out to analysis, proof, codegen and the
+//! VPI, read-only.
 //!
 //! `Lower` builds these (with its symbol tables, SSA builder and scopes); this is the
 //! part that outlives it. Every later stage takes a `*const Lowered`, so none can reach
@@ -8,12 +10,11 @@
 //!
 //! Cross-table references are indices: every row is a `u32` (`none_u32` is
 //! "absent"; for a `nodes` row `ground` is the sentinel past the last row).
-//! The row types are also reachable as `Lower.<Name>`, the spelling most callers use:
-//! code after lowering binds this file as `Lower` (`const Lower = @import("ir").Lowered`),
+//! Code after lowering binds this file as `Lower` (`const Lower = @import("ir").Lowered`),
 //! so it reads the rows, `ParamOverride` and the §9.15 `simparam` rows from `ir` and
 //! never imports lowering.
 //!
-//! LRM clauses this file's code cites: §1.3.1, §1.3.1.1, §1.3.1.2, §1.3.4,
+//! Cites: §1.3.1, §1.3.1.1, §1.3.1.2, §1.3.4,
 //! §1.3.4.1, §2.7, §2.8.1, §2.8.3, §2.9, §2.9.2, §3.1, §3.2, §3.2.2, §3.4,
 //! §3.4.2, §3.4.5, §3.4.7, §3.6, §3.6.1.2, §3.6.2, §3.6.2.1, §3.6.2.2, §3.6.3,
 //! §3.6.3.2, §3.6.5, §3.9, §3.12, §4.2, §4.2.12, §4.4, §4.5.2, §4.5.3, §4.5.15,
@@ -23,23 +24,269 @@
 //! §7.2.4, §7.3.1, §7.3.2, §7.3.3, §7.3.4, §7.3.6.1, §7.3.6.4, §7.3.6.5,
 //! §7.4.4, §7.8.4, §8, §8.5, §8.5.3.6, §9.4, §9.4.1, §9.5.1, §9.5.3,
 //! §9.5.4.2, §9.5.8, §9.7.3, §9.12, §9.13, §9.13.1, §9.15, §9.17.1, §9.17.3,
-//! §9.18, §9.19, §9.21, §10.3, §11.6.6, §11.6.7, §12.32.
-//! IEEE 1364-2005 clauses cited: §4.8.2, §5.1.5, §5.1.7, §5.1.8, §5.1.9,
+//! §9.18, §9.19, §9.21, §10.3, §11.6.6, §11.6.7, §12.32;
+//! IEEE 1364-2005 §4.8.2, §5.1.5, §5.1.7, §5.1.8, §5.1.9,
 //! §5.1.11, §5.1.12, §5.1.13, §5.4, §5.5, §5.5.1, §19.8.
+//!
+//! Contents:
+//! - fields: the tables below (`nodes`, `params`, `contributions`, ...)
+//! - `pub const Lowered`, `pub const Const`, `pub const Type`
+//! - model card: `pub const ParamInfo = struct`, `pub const Range = struct` (`Range.Form`), `pub const Alias = struct`
+//! - unknowns: `pub const ground: u32`, `pub const Node = struct`, `pub const NodeKind = union(enum)`,
+//!   `pub const FlowKey = struct`, `pub const PortProbe = struct`, `pub const Nodeset = struct`,
+//!   `pub const DeclMeta = struct` (`DeclMeta.Decl`), `pub const OpVar = struct`, `pub const DeclAttr = struct`,
+//!   `pub const SystemCheck = struct`, `pub const VecRange = struct`, `VecRange.size(v: VecRange) u32`,
+//!   `VecRange.has(v: VecRange, i: i64) bool`, `VecRange.at(v: VecRange, k: u32) i64`,
+//!   `pub const DisciplineInfo = struct`
+//! - equations: `pub const unnamed_branch: u32`, `pub const Access = enum(u8)`, `pub const Kind = enum(u8)`,
+//!   `pub const Contribution = struct`, `pub const ContribSharer = struct`, `pub const ContribShare = struct`,
+//!   `pub const NoiseKind = enum(u8)`, `pub const NoiseSrc = struct`, `pub const ChargeSite = struct`
+//! - state: `pub const Ty = enum(u8)`, `pub const none_u32: u32`, `pub const HeldVar = struct`
+//!   (`HeldVar.assign_count_prefix`, `HeldVar.Why`), `pub const MemArray = struct`,
+//!   `pub const LimitSlot = struct`, `pub const TpBlock = struct`, `pub const TpSlot = struct`,
+//!   `pub const WideNode = struct`, `pub const WideOp = enum(u8)`, `pub const Display = struct`,
+//!   `pub const StatusSite = struct`, `pub const status_arg_max`, `pub const Kernel = enum`
+//! - discrete: `pub const DiscreteEvent = struct` (`DiscreteEvent.Edge`), `pub const Inserted`
+//! - beside the tables: `pub const ParamOverride`, `pub const DisciplineResolution`,
+//!   `pub const simparamIsRuntime`, `pub const host_simparams`, `pub const DefaultTransition`,
+//!   `pub const Timescale`, `pub const TimescaleEvent`, `pub const SimparamAnswer = union(enum)`
+//! - `pub fn tokenSpan(self: *const Lowered, tok: u32) diag.Span`
+//! - `pub fn nodeName(self: *const Lowered, idx: u32) []const u8`
+//! - `pub fn simparamValue(self: *const Lowered, name: []const u8) ?f64`
+//! - `pub fn simparamAnswer(self: *const Lowered, name: []const u8, has_fallback: bool) SimparamAnswer`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const base = @import("base");
 const diag = @import("diag");
-const Mir = @import("mir.zig");
+const Mir = @import("Mir.zig");
 const simparam = @import("simparam.zig");
+/// A folded constant (§4.2 constant_expression), the shared kernel's.
+pub const Const = @import("kernels").fold.Const;
 
-/// Lowering's output; later stages read it through `*const Lowered`.
+// ---- the source, for diagnostics and host facts -----------------------------
+// The AST itself is not here: the VPI, the one reader after lowering, takes it
+// from `vera.CompileResult`.
+/// Preprocessed source, kept only so a token index can become a `diag.Span`
+/// (`tokenSpan`).
+src: []const u8 = "",
+/// The lexer's `.start` column: token i begins at `src[tok_starts[i]]`.
+tok_starts: []const u32 = &.{},
+/// Returns a token's byte range from `src` and `tok_starts`: the lexer's
+/// `tokenSpan`, which lowering sets, so `tokenSpan` re-lexes a token
+/// without `ir` importing the frontend. Diagnostics only (cold).
+// A function pointer, not a comptime parameter: the axis is "who can lex",
+// the two cases today are the lexer's and `noTokens` (a test's `Lowered`),
+// and `ir` sits below `frontend` in `module_specs`, so it cannot call the
+// lexer directly. One indirect call per diagnostic.
+token_span: *const fn (src: []const u8, starts: []const u32, tok: u32) diag.Span = &noTokens,
+/// §10.3 the `default_transition events (`Preprocessor.Directives.transitions`),
+/// in text-stream order: codegen's `transition()` default at a call's offset.
+default_transitions: []const DefaultTransition = &.{},
+/// IEEE 1364 §19.8 the `timescale in force at the end of the stream
+/// (`Preprocessor.Directives.timescale`), or null: §9.15's `timeUnit` and
+/// `timePrecision`.
+timescale: ?Timescale = null,
+/// IEEE 1364 §19.8 every `timescale event (`Preprocessor.Directives.timescales`),
+/// at offsets into `src`: each module runs in the one written before it, so
+/// the mixed-signal testbench hands the digital half all of them.
+timescales: []const TimescaleEvent = &.{},
+/// §2.9 every attribute_spec on a declaration, in source order (instance,
+/// then spec), over the whole file. `--emit-verilog` reads `vera_pin` and
+/// `vera_delay` from them.
+decl_attrs: []const DeclAttr = &.{},
+
+// ---- the elaborated hierarchy (§6), for the VPI -----------------------------
+/// §6.7 path → flat name, from elaboration. Lowering reads it in `flatName`,
+/// the VPI to resolve a path.
+hier_names: std.StringHashMapUnmanaged([]const u8) = .empty,
+/// §3.4 the constant table as lowering left it: every module parameter's
+/// folded value, by flat name. The VPI's `vpiParameter` values.
+consts: std.StringHashMapUnmanaged(Const) = .empty,
+/// §3.6.3 declared vector nets and §3.12 vector branches, by base name.
+/// Vectors are scalarised (`electrical [3:0] p` interns nodes `p[3]`..`p[0]`), so
+/// this map is the only place a range survives. It answers whether a name is a
+/// vector and whether an index is one of its elements (E0351, E0352).
+vectors: std.StringHashMapUnmanaged(VecRange) = .empty,
+
+// ---- §1.3.1 the unknown table -----------------------------------------------
+/// The U-enum index space, one row per solver unknown: ports (§6.5) first,
+/// then internal nodes (§3.6.3), then branch-flow unknowns (§5.4.2).
+/// Append-only, so row indices are stable. SoA because every consumer reads one column.
+///
+/// A row index is a `u32` everywhere (`ground` sits above every row); the
+/// emitted `U`'s tag is as wide as the row count needs (`emitTopology`).
+nodes: std.MultiArrayList(Node) = .{},
+/// §6.5 the port rows are `nodes[0..num_ports]`. A `u32` because it is a row
+/// index (see `nodes`).
+num_ports: u32 = 0,
+/// §5.4.2 branch-flow identity: the node pair → its unknown's `nodes` row.
+/// Keyed on the pair, so `I(a)` and `I(a,gnd)` stay distinct when a plain net is
+/// spelled `gnd` (see `flowUnknown`).
+flow_unknowns: std.AutoHashMapUnmanaged(FlowKey, u32) = .empty,
+/// §5.4.3 ports read with `I(<p>)`, in first-probe order, deduped. Each needs
+/// its own solver unknown (`u`) and a row pinning it to the module's KCL sum
+/// at `port`; codegen emits that row. Append-only, so the order is deterministic.
+port_probes: std.ArrayList(PortProbe) = .empty,
+/// §3.6.3.2 the net_decl_assignments of this module, in declaration order and
+/// already folded. Sparse (most modules declare none), so codegen emits the
+/// optional `u_nodeset` table only when this is non-empty.
+nodesets: std.ArrayList(Nodeset) = .empty,
+/// §2.9.2 the `desc`/`units` rows, parameters then variables then nets, each
+/// in declaration order (`lower_param.collectDeclMeta`). Sparse, so codegen
+/// emits the optional `decl_meta` table only when this is non-empty.
+decl_meta: std.ArrayList(DeclMeta) = .empty,
+/// The operating-point variables (`OpVar`), in `decl_meta` order. Empty
+/// when no module-scope variable carries a `desc` or `units`.
+op_vars: std.ArrayList(OpVar) = .empty,
+/// The parameters whose last `type` attribute is "instance", in declaration
+/// order (`lower_param.collectDeclMeta`): OpenVAF's convention for the ones
+/// an instance line sets. Empty when the module marks none.
+instance_params: std.ArrayList([]const u8) = .empty,
+disciplines: std.StringHashMapUnmanaged(DisciplineInfo) = .empty, // §3.6.2
+
+// ---- §3.4 the model card and §5.6 the equations -----------------------------
+params: std.ArrayList(ParamInfo) = .empty, // §3.4
+/// §3.4.7 parameter aliases, in declaration order, for the model card. An alias
+/// carries an override (`#(.trise(5))` and `#(.dtemp(5))` mean the same thing), so it
+/// needs its own card field; `params` has one entry per real parameter, and
+/// `param_index` does not say which name is the alias.
+aliases: std.ArrayList(Alias) = .empty,
+contributions: std.ArrayList(Contribution) = .empty, // §5.6
+/// §5.4.1 the OTHER instances whose `<+` a row accumulated
+/// (`Contribution.shared`): `row` is a `contributions` index, `unit` the
+/// instance. The row's own `unit` is not repeated here. Each still declares its
+/// own unnamed branch (§5.4.2), which the VPI's §11.6.6 model lists.
+contrib_sharers: std.ArrayList(ContribSharer) = .empty,
+/// Every instance's share of a shared row (`ContribShare`), sorted by row,
+/// then unit. Nothing in the device reads them; a VPI device publishes them
+/// (`codegen.Options.vpi_contribs`, `vpiShares`) by this index.
+contrib_shares: std.ArrayList(ContribShare) = .empty,
+/// §5.6.1.2 every charge site, in source order (`ChargeSite`).
+charge_sites: std.ArrayList(ChargeSite) = .empty,
+
+// ---- instance state ---------------------------------------------------------
+/// §5.10 module variables assigned inside an `@(<event>)` body, in declaration
+/// order. Such a variable retains its value between analog evaluations
+/// (`@(cross(...)) x = V(p);`), which an SSA place re-initialised every evaluation
+/// cannot express, so each gets a persistent `Instance` slot.
+held_vars: std.ArrayList(HeldVar) = .empty,
+/// §5.10.3.3 final start/period expressions, distinct from the call operands
+/// which decided whether to execute the event body. Only changed controls
+/// have a row; codegen reads these for the following breakpoint.
+timer_controls: std.AutoHashMapUnmanaged(Mir.Inst, [2]Mir.Value) = .empty,
+/// §2.8.3/§12.32 the user system TASK calls: each `$name(...)` statement's
+/// `.systf` call. A `.systf` call not in it is a function call in an
+/// expression. Codegen publishes the difference (`contract.Systf.task`).
+systf_tasks: std.AutoHashMapUnmanaged(Mir.Inst, void) = .empty,
+/// §3.2.2 the arrays some subscript indexes at run time. Each is ONE storage
+/// of `len` elements (dimensions flattened in declaration order), reached
+/// through `Mir.Opcode.anew`/`fload`/`iload`/`store` instead of one SSA place
+/// per element; `anew` names its array by index into this list.
+mem_arrays: std.ArrayList(MemArray) = .empty,
+/// §9.17.3 the user-function `$limit` state, one entry per ACCESS FUNCTION.
+/// Collected by `scanCallSites` before the analog block is lowered.
+limit_slots: std.ArrayList(LimitSlot) = .empty,
+/// VerA's `vera_timepoint` statements (§2.9), in source order: each one's
+/// per-timepoint cache in `Instance` (`TpBlock`).
+timepoints: std.ArrayList(TpBlock) = .empty,
+/// First-call sample counts, one entry per array-source call site.
+table_samples: std.ArrayList(u32) = .empty,
+/// §9.13.1 implementation-chosen starting seeds for omitted-seed call sites.
+/// Each `Instance` latch advances on the accepted step. Explicit constant and
+/// parameter seeds instead use held SSA storage, updated by the executed call.
+rng_auto_seeds: std.ArrayList(i64) = .empty,
+
+// ---- live roots: values no contribution reads, kept alive by codegen --------
+/// §9.4 display tasks, in source order. Nothing reads a display call's result, so
+/// `display_root` keeps them live (see `finishDisplays`).
+displays: std.ArrayList(Display) = .empty,
+/// The chain root over every unconditional entry of `displays`, or `.f_zero`
+/// when the model prints nothing. codegen turns it into ONE unit function whose
+/// body is the prints, in source order.
+display_root: Mir.Value = .f_zero,
+/// Source-order chain over table captures and required runtime checks; a core
+/// live-out.
+table_effect: Mir.Value = .f_zero,
+/// §9.17.1 rejection belongs to the Newton iteration, not timestep history:
+/// the final value of the rejection flag, meaningful when
+/// `uses.contains(.reject_iteration)`.
+reject_iteration: Mir.Value = .zero,
+/// VerA's `$vera_reject_step`: the earliest retry time any call asked for
+/// (+inf when none ran), or `.undef` when the module never calls it.
+/// `updateState` turns it into `contract.UpdateResult.request_reject_at`.
+reject_step: Mir.Value = .undef,
+/// §9.7.3 `$fatal`/`$error` in the analog context, in source order: a
+/// device (`--display=drop`) reports the first one an evaluation reaches
+/// through `Instance.vera_status__` (`contract.StatusSite`).
+status_sites: std.ArrayList(StatusSite) = .empty,
+/// The status code the evaluation ends with: 0 when no site ran, else the
+/// FIRST site's `(severity << 24) | (site + 1)`. `.undef` without sites.
+status: Mir.Value = .undef,
+/// The first site's numeric arguments, after its format string (0 past
+/// its count, and for a string argument).
+status_args: [status_arg_max]Mir.Value = @splat(.undef),
+
+// ---- which kernels the device needs -----------------------------------------
+/// The device-side facilities the model needs (see `Kernel`).
+uses: std.EnumSet(Kernel) = .empty,
+
+// ---- §7.3.6.5/§8 the discrete half ------------------------------------------
+/// §7.3.6.5/§8.5 a mixed module's digital-owned values the analog block may
+/// read, name → declaring token, in first-write order.
+discrete_inputs: std.StringArrayHashMapUnmanaged(u32) = .empty,
+/// §8.5 / §8.5.3.6 explicit D2A: every digital event term of an analog event
+/// control, keyed by the term's expression. Each is a host-written `Model`
+/// flag (`DiscreteEvent.param`), nonzero for the solve at the digital tick the
+/// event occurred in.
+discrete_events: std.AutoArrayHashMapUnmanaged(base.ExprId, DiscreteEvent) = .empty,
+/// §8.5.3.6 the digital values read INSIDE a statement guarded by an explicit
+/// D2A event: each is read from a `<name>__1b` `Model` field holding the value
+/// after region 1 of the event's tick, not the live one region 3b sees.
+discrete_snaps: std.StringArrayHashMapUnmanaged(u32) = .empty,
+/// §7.3.2 the `discrete_inputs` the analog block reads through `===`, `!==`
+/// or a `case` subject: their unknown plane arrives in a `<name>__xz` `Model`
+/// field beside the value plane, and an x or z there is not an error.
+discrete_xz: std.StringArrayHashMapUnmanaged(void) = .empty,
+/// IEEE 1364-2005 §5.4 every `WideNode` the `$wide`/`$wide$int` call
+/// roots reach, and the 32-bit words of their literals (`WideNode.arg`).
+wide_nodes: std.ArrayList(WideNode) = .empty,
+wide_lits: std.ArrayList(u32) = .empty,
+/// §7.3.1 the `discrete_inputs` that are a `reg` wider than 32 bits, name →
+/// its number of 32-bit words: word 0 (bits 0 to 31) arrives in the `<name>`
+/// `Model` field, word k in `<name>__w<k>`, so a part-select anywhere in the
+/// `reg` reads exact bits.
+discrete_words: std.StringArrayHashMapUnmanaged(u32) = .empty,
+/// §7.3.6.4 / §7.3.1 the other direction: module variables a digital
+/// expression reads and the discrete context does not assign (the analog
+/// block's), name → first reading token. The mixed runner copies each one's
+/// §5.10 held value into the digital engine after every accepted solution.
+discrete_reads: std.StringArrayHashMapUnmanaged(u32) = .empty,
+/// §7.3.3 / §6.7.1 each terminal a digital `V(...)` probe names, spelled as
+/// the digital half spells it (a hierarchical name's parts joined by `.`),
+/// → the node pair whose potential difference it reads, `""` for ground: a
+/// named branch's terminals, or the net and ground. The mixed runner reads a
+/// probe through it (`probe_terminals`).
+discrete_probes: std.StringArrayHashMapUnmanaged([2][]const u8) = .empty,
+/// §6.3.4 scalar parameters read by the discrete source, including defaults
+/// they depend on. The mixed host transports selected real values from the
+/// derived model card; unrelated analog parameters need no digital storage.
+discrete_params: std.StringArrayHashMapUnmanaged(u32) = .empty,
+/// The module's discrete half needs the event queue (`lower_context.isMixed`).
+mixed_signal: bool = false,
+/// §7.8.4 the connect modules elaboration inserted (see `Elaborate.Design.inserts`).
+inserts: []const Inserted = &.{},
+/// §9.18 Table 9-29 domains of card-dependent system parameters
+/// (`Elaborate.SystemCheck`), each value lowered over the parameters.
+/// Codegen's `checkCard` names the first one the card puts outside.
+system_checks: std.ArrayList(SystemCheck) = .empty,
+
+/// This type, for callers that bind the file under another name
+/// (`const Lower = @import("ir").Lowered; const Lowered = Lower.Lowered;`).
 pub const Lowered = @This();
 
 // ---- row types: the model card ----------------------------------------------
 
-/// A folded constant (§4.2 constant_expression), the shared kernel's.
-pub const Const = @import("kernels").fold.Const;
 /// §3.1 a parameter's declared type (`base`'s, which `Ast.Type` aliases).
 pub const Type = base.Type;
 
@@ -83,7 +330,7 @@ pub const ParamInfo = struct {
 /// `lower_param.paramRanges`), so a bound written over another parameter,
 /// whose default the card can override, is no evidence.
 pub const Range = struct {
-    kind: enum(u8) { from, exclude },
+    kind: Form,
     /// The folded lower bound, or null: it does not fold over literals, it
     /// folds to a string or a NaN, or the range is the string-set form.
     lo: ?f64,
@@ -94,6 +341,9 @@ pub const Range = struct {
     hi_inclusive: bool = true,
     /// A.2.5 `value_range_type '{ string {, string} }`: no numeric bounds.
     strings: bool = false,
+
+    /// §3.4.2 `from` (an allowed range) or `exclude` (a forbidden one).
+    pub const Form = enum(u8) { from, exclude };
 };
 
 /// §3.4.7 one `aliasparam`: the alias's spelling and the `params` index it names.
@@ -162,10 +412,13 @@ pub const Nodeset = struct { node: u32, value: f64, tok: u32 };
 /// declaration of the device's own module and its last `desc` and `units`
 /// (§2.9), each null when absent. Metadata for a host; reaches no residual.
 pub const DeclMeta = struct {
-    kind: enum(u8) { parameter, variable, net },
+    kind: Decl,
     name: []const u8,
     desc: ?[]const u8 = null,
     units: ?[]const u8 = null,
+
+    /// What the declaration declares.
+    pub const Decl = enum(u8) { parameter, variable, net };
 };
 
 /// One operating-point variable, §3.2.1's output variable: a `decl_meta`
@@ -206,7 +459,7 @@ pub const VecRange = struct {
     /// "in a parallel one-to-one fashion" for a vector branch.
     /// Asserts that `k` is below `size()`.
     pub fn at(v: VecRange, k: u32) i64 {
-        std.debug.assert(k < v.size());
+        assert(k < v.size());
         const d: i64 = @intCast(k);
         return if (v.msb <= v.lsb) v.msb + d else v.msb - d;
     }
@@ -298,6 +551,10 @@ pub const Contribution = struct {
     /// `contrib_shares` entry instead.
     shared: bool = false,
 };
+
+/// §5.4.1 one OTHER instance whose `<+` a shared row accumulated
+/// (`contrib_sharers`): `row` is a `contributions` index, `unit` the instance.
+pub const ContribSharer = struct { row: u32, unit: u32 };
 
 /// §5.4.1 one instance's own share of a `Contribution.shared` row: what its
 /// unnamed branch carries (its `<+`, and §5.6.8.2's hierarchical ones aimed at
@@ -704,9 +961,12 @@ pub const Kernel = enum {
 pub const DiscreteEvent = struct {
     /// The digital variable, net or named event the term watches.
     name: []const u8,
-    edge: enum { any, posedge, negedge },
+    edge: Edge,
     /// The `Model` field the host sets for the solve the event is delivered to.
     param: []const u8,
+
+    /// §7.3.4 the term's edge: a bare expression (`any`), `posedge` or `negedge`.
+    pub const Edge = enum(u8) { any, posedge, negedge };
 };
 
 /// §7.8.4 one port an automatic connect module was inserted on (`inserts`).
@@ -720,10 +980,12 @@ pub const ParamOverride = base.ParamOverride;
 /// §7.4.4 basic or detail discipline resolution, which the testbench passes
 /// to lowering (`Elaborate.DisciplineResolution`).
 pub const DisciplineResolution = base.DisciplineResolution;
-/// Reports whether a §9.15 simulation parameter is answered at run time.
-pub const simparamIsRuntime = simparam.simparamIsRuntime;
-/// The §9.15 simulation parameters a host supplies, in `Model` field order.
-pub const host_simparams = simparam.host_simparams;
+/// Reports whether a §9.15 simulation parameter is answered at run time
+/// (`simparam.isRuntime`).
+pub const simparamIsRuntime = simparam.isRuntime;
+/// The §9.15 simulation parameters a host supplies, in `Model` field order
+/// (`simparam.host_params`).
+pub const host_simparams = simparam.host_params;
 /// §10.3 one `default_transition event (`Preprocessor.DefaultTransition`).
 pub const DefaultTransition = base.Region(?f64);
 /// A `timescale's two operands, in seconds (`Preprocessor.Timescale`).
@@ -737,250 +999,14 @@ pub const TimescaleEvent = base.Region(?Timescale);
 // docs/seams/s1-lower.md at 2c3f565d has the narrower shapes the readers outside
 // lowering would have to accept.
 comptime {
-    std.debug.assert(@sizeOf(ParamInfo) <= 88); // ~850 rows on a compact model
-    std.debug.assert(@sizeOf(Node) <= 72); // SoA (`nodes` is a MultiArrayList)
-    std.debug.assert(@sizeOf(Contribution) <= 56); // u32 node rows (#29)
-    std.debug.assert(@sizeOf(ChargeSite) == 24);
-    std.debug.assert(@sizeOf(HeldVar) <= 56);
-    std.debug.assert(@sizeOf(NoiseSrc) <= 56);
+    assert(@sizeOf(ParamInfo) <= 88); // ~850 rows on a compact model
+    assert(@sizeOf(Node) <= 72); // SoA (`nodes` is a MultiArrayList)
+    assert(@sizeOf(Contribution) <= 56); // u32 node rows (#29)
+    assert(@sizeOf(ChargeSite) == 24);
+    assert(@sizeOf(HeldVar) <= 56);
+    assert(@sizeOf(NoiseSrc) <= 56);
     // The node sentinels: `ground` is never "absent" (`none_u32`).
-    std.debug.assert(ground < none_u32);
-}
-
-// ---- the source, for diagnostics and host facts -----------------------------
-// The AST itself is not here: the VPI, the one reader after lowering, takes it
-// from `vera.CompileResult`.
-/// Preprocessed source and the lexer's `.start` column, kept only so a token
-/// index can become a `diag.Span` (`tokenSpan`).
-src: []const u8 = "",
-tok_starts: []const u32 = &.{},
-/// Returns a token's byte range from `src` and `tok_starts`: the lexer's
-/// `tokenSpan`, which lowering sets, so `tokenSpan` re-lexes a token
-/// without `ir` importing the frontend. Diagnostics only (cold).
-token_span: *const fn (src: []const u8, starts: []const u32, tok: u32) diag.Span = &noTokens,
-/// §10.3 the `default_transition events (`Preprocessor.Directives.transitions`),
-/// in text-stream order: codegen's `transition()` default at a call's offset.
-default_transitions: []const DefaultTransition = &.{},
-/// IEEE 1364 §19.8 the `timescale in force at the end of the stream
-/// (`Preprocessor.Directives.timescale`), or null: §9.15's `timeUnit` and
-/// `timePrecision`.
-timescale: ?Timescale = null,
-/// IEEE 1364 §19.8 every `timescale event (`Preprocessor.Directives.timescales`),
-/// at offsets into `src`: each module runs in the one written before it, so
-/// the mixed-signal testbench hands the digital half all of them.
-timescales: []const TimescaleEvent = &.{},
-/// §2.9 every attribute_spec on a declaration, in source order (instance,
-/// then spec), over the whole file. `--emit-verilog` reads `vera_pin` and
-/// `vera_delay` from them.
-decl_attrs: []const DeclAttr = &.{},
-
-// ---- the elaborated hierarchy (§6), for the VPI -----------------------------
-/// §6.7 path → flat name, from elaboration. Lowering reads it in `flatName`,
-/// the VPI to resolve a path.
-hier_names: std.StringHashMapUnmanaged([]const u8) = .empty,
-/// §3.4 the constant table as lowering left it: every module parameter's
-/// folded value, by flat name. The VPI's `vpiParameter` values.
-consts: std.StringHashMapUnmanaged(Const) = .empty,
-/// §3.6.3 declared vector nets and §3.12 vector branches, by base name.
-/// Vectors are scalarised (`electrical [3:0] p` interns nodes `p[3]`..`p[0]`), so
-/// this map is the only place a range survives. It answers whether a name is a
-/// vector and whether an index is one of its elements (E0351, E0352).
-vectors: std.StringHashMapUnmanaged(VecRange) = .empty,
-
-// ---- §1.3.1 the unknown table -----------------------------------------------
-/// The U-enum index space, one row per solver unknown: ports (§6.5) first,
-/// then internal nodes (§3.6.3), then branch-flow unknowns (§5.4.2).
-/// Append-only, so row indices are stable. SoA because every consumer reads one column.
-///
-/// A row index is a `u32` everywhere (`ground` sits above every row); the
-/// emitted `U`'s tag is as wide as the row count needs (`emitTopology`).
-nodes: std.MultiArrayList(Node) = .{},
-/// §6.5 the port rows are `nodes[0..num_ports]`. A `u32` because it is a row
-/// index (see `nodes`).
-num_ports: u32 = 0,
-/// §5.4.2 branch-flow identity: the node pair → its unknown's `nodes` row.
-/// Keyed on the pair, so `I(a)` and `I(a,gnd)` stay distinct when a plain net is
-/// spelled `gnd` (see `flowUnknown`).
-flow_unknowns: std.AutoHashMapUnmanaged(FlowKey, u32) = .empty,
-/// §5.4.3 ports read with `I(<p>)`, in first-probe order, deduped. Each needs
-/// its own solver unknown (`u`) and a row pinning it to the module's KCL sum
-/// at `port`; codegen emits that row. Append-only, so the order is deterministic.
-port_probes: std.ArrayList(PortProbe) = .empty,
-/// §3.6.3.2 the net_decl_assignments of this module, in declaration order and
-/// already folded. Sparse (most modules declare none), so codegen emits the
-/// optional `u_nodeset` table only when this is non-empty.
-nodesets: std.ArrayList(Nodeset) = .empty,
-/// §2.9.2 the `desc`/`units` rows, parameters then variables then nets, each
-/// in declaration order (`lower_param.collectDeclMeta`). Sparse, so codegen
-/// emits the optional `decl_meta` table only when this is non-empty.
-decl_meta: std.ArrayList(DeclMeta) = .empty,
-/// The operating-point variables (`OpVar`), in `decl_meta` order. Empty
-/// when no module-scope variable carries a `desc` or `units`.
-op_vars: std.ArrayList(OpVar) = .empty,
-/// The parameters whose last `type` attribute is "instance", in declaration
-/// order (`lower_param.collectDeclMeta`): OpenVAF's convention for the ones
-/// an instance line sets. Empty when the module marks none.
-instance_params: std.ArrayList([]const u8) = .empty,
-disciplines: std.StringHashMapUnmanaged(DisciplineInfo) = .empty, // §3.6.2
-
-// ---- §3.4 the model card and §5.6 the equations -----------------------------
-params: std.ArrayList(ParamInfo) = .empty, // §3.4
-/// §3.4.7 parameter aliases, in declaration order, for the model card. An alias
-/// carries an override (`#(.trise(5))` and `#(.dtemp(5))` mean the same thing), so it
-/// needs its own card field; `params` has one entry per real parameter, and
-/// `param_index` does not say which name is the alias.
-aliases: std.ArrayList(Alias) = .empty,
-contributions: std.ArrayList(Contribution) = .empty, // §5.6
-/// §5.4.1 the OTHER instances whose `<+` a row accumulated
-/// (`Contribution.shared`): `row` is a `contributions` index, `unit` the
-/// instance. The row's own `unit` is not repeated here. Each still declares its
-/// own unnamed branch (§5.4.2), which the VPI's §11.6.6 model lists.
-contrib_sharers: std.ArrayList(struct { row: u32, unit: u32 }) = .empty,
-/// Every instance's share of a shared row (`ContribShare`), sorted by row,
-/// then unit. Nothing in the device reads them; a VPI device publishes them
-/// (`codegen.Options.vpi_contribs`, `vpiShares`) by this index.
-contrib_shares: std.ArrayList(ContribShare) = .empty,
-/// §5.6.1.2 every charge site, in source order (`ChargeSite`).
-charge_sites: std.ArrayList(ChargeSite) = .empty,
-
-// ---- instance state ---------------------------------------------------------
-/// §5.10 module variables assigned inside an `@(<event>)` body, in declaration
-/// order. Such a variable retains its value between analog evaluations
-/// (`@(cross(...)) x = V(p);`), which an SSA place re-initialised every evaluation
-/// cannot express, so each gets a persistent `Instance` slot.
-held_vars: std.ArrayList(HeldVar) = .empty,
-/// §5.10.3.3 final start/period expressions, distinct from the call operands
-/// which decided whether to execute the event body. Only changed controls
-/// have a row; codegen reads these for the following breakpoint.
-timer_controls: std.AutoHashMapUnmanaged(Mir.Inst, [2]Mir.Value) = .empty,
-/// §2.8.3/§12.32 the user system TASK calls: each `$name(...)` statement's
-/// `.systf` call. A `.systf` call not in it is a function call in an
-/// expression. Codegen publishes the difference (`contract.Systf.task`).
-systf_tasks: std.AutoHashMapUnmanaged(Mir.Inst, void) = .empty,
-/// §3.2.2 the arrays some subscript indexes at run time. Each is ONE storage
-/// of `len` elements (dimensions flattened in declaration order), reached
-/// through `Mir.Opcode.anew`/`fload`/`iload`/`store` instead of one SSA place
-/// per element; `anew` names its array by index into this list.
-mem_arrays: std.ArrayList(MemArray) = .empty,
-/// §9.17.3 the user-function `$limit` state, one entry per ACCESS FUNCTION.
-/// Collected by `scanCallSites` before the analog block is lowered.
-limit_slots: std.ArrayList(LimitSlot) = .empty,
-/// VerA's `vera_timepoint` statements (§2.9), in source order: each one's
-/// per-timepoint cache in `Instance` (`TpBlock`).
-timepoints: std.ArrayList(TpBlock) = .empty,
-/// First-call sample counts, one entry per array-source call site.
-table_samples: std.ArrayList(u32) = .empty,
-/// §9.13.1 implementation-chosen starting seeds for omitted-seed call sites.
-/// Each `Instance` latch advances on the accepted step. Explicit constant and
-/// parameter seeds instead use held SSA storage, updated by the executed call.
-rng_auto_seeds: std.ArrayList(i64) = .empty,
-
-// ---- live roots: values no contribution reads, kept alive by codegen --------
-/// §9.4 display tasks, in source order. Nothing reads a display call's result, so
-/// `display_root` keeps them live (see `finishDisplays`).
-displays: std.ArrayList(Display) = .empty,
-/// The chain root over every unconditional entry of `displays`, or `.f_zero`
-/// when the model prints nothing. codegen turns it into ONE unit function whose
-/// body is the prints, in source order.
-display_root: Mir.Value = .f_zero,
-/// Source-order chain over table captures and required runtime checks; a core
-/// live-out.
-table_effect: Mir.Value = .f_zero,
-/// §9.17.1 rejection belongs to the Newton iteration, not timestep history:
-/// the final value of the rejection flag, meaningful when
-/// `uses.contains(.reject_iteration)`.
-reject_iteration: Mir.Value = .zero,
-/// VerA's `$vera_reject_step`: the earliest retry time any call asked for
-/// (+inf when none ran), or `.undef` when the module never calls it.
-/// `updateState` turns it into `contract.UpdateResult.request_reject_at`.
-reject_step: Mir.Value = .undef,
-/// §9.7.3 `$fatal`/`$error` in the analog context, in source order: a
-/// device (`--display=drop`) reports the first one an evaluation reaches
-/// through `Instance.vera_status__` (`contract.StatusSite`).
-status_sites: std.ArrayList(StatusSite) = .empty,
-/// The status code the evaluation ends with: 0 when no site ran, else the
-/// FIRST site's `(severity << 24) | (site + 1)`. `.undef` without sites.
-status: Mir.Value = .undef,
-/// The first site's numeric arguments, after its format string (0 past
-/// its count, and for a string argument).
-status_args: [status_arg_max]Mir.Value = @splat(.undef),
-
-// ---- which kernels the device needs -----------------------------------------
-/// The device-side facilities the model needs (see `Kernel`).
-uses: std.EnumSet(Kernel) = .empty,
-
-// ---- §7.3.6.5/§8 the discrete half ------------------------------------------
-/// §7.3.6.5/§8.5 a mixed module's digital-owned values the analog block may
-/// read, name → declaring token, in first-write order.
-discrete_inputs: std.StringArrayHashMapUnmanaged(u32) = .empty,
-/// §8.5 / §8.5.3.6 explicit D2A: every digital event term of an analog event
-/// control, keyed by the term's expression. Each is a host-written `Model`
-/// flag (`DiscreteEvent.param`), nonzero for the solve at the digital tick the
-/// event occurred in.
-discrete_events: std.AutoArrayHashMapUnmanaged(base.ExprId, DiscreteEvent) = .empty,
-/// §8.5.3.6 the digital values read INSIDE a statement guarded by an explicit
-/// D2A event: each is read from a `<name>__1b` `Model` field holding the value
-/// after region 1 of the event's tick, not the live one region 3b sees.
-discrete_snaps: std.StringArrayHashMapUnmanaged(u32) = .empty,
-/// §7.3.2 the `discrete_inputs` the analog block reads through `===`, `!==`
-/// or a `case` subject: their unknown plane arrives in a `<name>__xz` `Model`
-/// field beside the value plane, and an x or z there is not an error.
-discrete_xz: std.StringArrayHashMapUnmanaged(void) = .empty,
-/// IEEE 1364-2005 §5.4 every `WideNode` the `$wide`/`$wide$int` call
-/// roots reach, and the 32-bit words of their literals (`WideNode.arg`).
-wide_nodes: std.ArrayList(WideNode) = .empty,
-wide_lits: std.ArrayList(u32) = .empty,
-/// §7.3.1 the `discrete_inputs` that are a `reg` wider than 32 bits, name →
-/// its number of 32-bit words: word 0 (bits 0 to 31) arrives in the `<name>`
-/// `Model` field, word k in `<name>__w<k>`, so a part-select anywhere in the
-/// `reg` reads exact bits.
-discrete_words: std.StringArrayHashMapUnmanaged(u32) = .empty,
-/// §7.3.6.4 / §7.3.1 the other direction: module variables a digital
-/// expression reads and the discrete context does not assign (the analog
-/// block's), name → first reading token. The mixed runner copies each one's
-/// §5.10 held value into the digital engine after every accepted solution.
-discrete_reads: std.StringArrayHashMapUnmanaged(u32) = .empty,
-/// §7.3.3 / §6.7.1 each terminal a digital `V(...)` probe names, spelled as
-/// the digital half spells it (a hierarchical name's parts joined by `.`),
-/// → the node pair whose potential difference it reads, `""` for ground: a
-/// named branch's terminals, or the net and ground. The mixed runner reads a
-/// probe through it (`probe_terminals`).
-discrete_probes: std.StringArrayHashMapUnmanaged([2][]const u8) = .empty,
-/// §6.3.4 scalar parameters read by the discrete source, including defaults
-/// they depend on. The mixed host transports selected real values from the
-/// derived model card; unrelated analog parameters need no digital storage.
-discrete_params: std.StringArrayHashMapUnmanaged(u32) = .empty,
-/// The module's discrete half needs the event queue (`lower_context.isMixed`).
-mixed_signal: bool = false,
-/// §7.8.4 the connect modules elaboration inserted (see `Elaborate.Design.inserts`).
-inserts: []const Inserted = &.{},
-/// §9.18 Table 9-29 domains of card-dependent system parameters
-/// (`Elaborate.SystemCheck`), each value lowered over the parameters.
-/// Codegen's `checkCard` names the first one the card puts outside.
-system_checks: std.ArrayList(SystemCheck) = .empty,
-
-/// Returns the byte range of token `tok`, for a diagnostic.
-pub fn tokenSpan(self: *const Lowered, tok: u32) diag.Span {
-    return self.token_span(self.src, self.tok_starts, tok);
-}
-
-/// `token_span` until lowering sets it: a `Lowered` with no token list
-/// (a test's) points every token at the end of `src`, as the lexer's
-/// `tokenSpan` does past its last token. Asserts that there is no list.
-fn noTokens(src: []const u8, starts: []const u32, tok: u32) diag.Span {
-    std.debug.assert(tok >= starts.len);
-    const end: u32 = @intCast(src.len);
-    return .{ .start = end, .end = end };
-}
-
-/// Returns the name codegen prints for a `nodes` row, or "gnd" for `ground`.
-pub fn nodeName(self: *const Lowered, idx: u32) []const u8 {
-    return if (idx == ground) "gnd" else self.nodes.items(.name)[idx];
-}
-
-/// Returns the compile-time value of `$simparam(name)`, or null (LRM §9.15 Table 9-27).
-pub fn simparamValue(self: *const Lowered, name: []const u8) ?f64 {
-    return simparam.simparamValueIn(self.timescale, name);
+    assert(ground < none_u32);
 }
 
 /// Where a §9.15 `$simparam(name [, expression])` gets its value. One owner,
@@ -1001,14 +1027,54 @@ pub const SimparamAnswer = union(enum) {
     unknown,
 };
 
+/// Returns the byte range of token `tok`, for a diagnostic. A token past
+/// `tok_starts` (or any token of a `Lowered` with no token list) points at
+/// the end of `src`. Asserts that the span lies within `src`.
+pub fn tokenSpan(self: *const Lowered, tok: u32) diag.Span {
+    const span = self.token_span(self.src, self.tok_starts, tok);
+    assert(span.start <= span.end);
+    assert(span.end <= self.src.len);
+    return span;
+}
+
+/// Returns the name codegen prints for a `nodes` row, or "gnd" for `ground`.
+/// Asserts that `idx` is `ground` or a row.
+pub fn nodeName(self: *const Lowered, idx: u32) []const u8 {
+    if (idx == ground) return "gnd";
+    assert(idx < self.nodes.len);
+    return self.nodes.items(.name)[idx];
+}
+
+/// Returns the compile-time value of `$simparam(name)`, or null (LRM §9.15 Table 9-27).
+pub fn simparamValue(self: *const Lowered, name: []const u8) ?f64 {
+    return simparam.valueIn(self.timescale, name);
+}
+
 /// Classifies `$simparam(name)` per §9.15: known names first (run-time,
 /// host field, VerA's constant), then the fallback when the call has one.
 pub fn simparamAnswer(self: *const Lowered, name: []const u8, has_fallback: bool) SimparamAnswer {
-    if (simparam.simparamIsRuntime(name)) return .runtime;
-    const v = self.simparamValue(name);
-    if (simparam.simparamHostField(name)) |f| return .{ .host = .{ .field = f, .default = v.? } };
-    if (v) |x| return .{ .value = x };
-    return if (has_fallback) .fallback else .unknown;
+    const answer: SimparamAnswer = if (simparam.source(name)) |s| switch (s) {
+        .runtime => .runtime,
+        .host => |i| .{ .host = .{ .field = simparam.host_params[i].field, .default = simparam.host_params[i].default } },
+        .constant, .time_unit, .time_precision => if (self.simparamValue(name)) |x|
+            .{ .value = x }
+        else if (has_fallback) .fallback else .unknown,
+    } else if (has_fallback) .fallback else .unknown;
+    if (answer == .fallback) assert(has_fallback);
+    if (answer == .unknown) assert(!has_fallback);
+    return answer;
+}
+
+// ---- private ----
+
+/// `token_span` until lowering sets it: a `Lowered` with no token list
+/// (a test's) points every token at the end of `src`, as the lexer's
+/// `tokenSpan` does past its last token. Asserts that there is no list.
+fn noTokens(src: []const u8, starts: []const u32, tok: u32) diag.Span {
+    assert(tok >= starts.len);
+    const end: u32 = @intCast(src.len);
+    assert(end == src.len);
+    return .{ .start = end, .end = end };
 }
 
 test VecRange {
