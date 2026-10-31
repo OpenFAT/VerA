@@ -1,0 +1,155 @@
+//! The interpreter's bytecode: one `Instruction` row per step of a process, and the expression `Type` every row and slot carries.
+//! Cites: IEEE 1364-2005 §4.8.1, §5.5.1, §9 (the statements the rows encode).
+//!
+//! Contents:
+//! - `pub const Type = struct`
+//! - `pub const real_type: Type`
+//! - `pub const Instruction = union`
+//! AST -> bytecode: one process body or driver expression, in its instance
+//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
+//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
+//! before any process has run.
+//! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
+//! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to
+//! §9.7.7, §9.8.2, §10.2.2/§10.2.3, §10.4.4/§10.4.5, §12.7, §17.1 to §17.11,
+//! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
+//! §9.22 driver access.
+const std = @import("std");
+const Front = @import("frontend");
+const Ast = Front.Ast;
+const exec = @import("exec.zig");
+const evaluate = @import("evaluate.zig");
+const deep = @import("base").deep_stack;
+const display = @import("display.zig");
+const driver = @import("driver.zig");
+const system = @import("system.zig");
+const elab = @import("elab.zig");
+const evcd = @import("evcd.zig");
+const vcd = @import("vcd.zig");
+const root = @import("root.zig");
+const Error = root.Error;
+const Run = root.Run;
+const SpecExpr = root.SpecExpr;
+const expectRun = root.expectRun;
+const expectRejected = root.expectRejected;
+const filled = @import("net.zig").filled;
+const compile_holds = @import("compile_holds.zig");
+const Bits = compile_holds.Bits;
+const Slice = compile_holds.Slice;
+
+/// An expression's type (§5.5.1): a width and a signedness, or IEEE 1364-2005
+/// §4.8's `real`, a double held in a slot as its 64 bits.
+pub const Type = struct { width: u32, signed: bool, real: bool = false };
+
+/// §4.8 `real`: 64 bits, signed, `real` set. The one real type there is.
+pub const real_type: Type = .{ .width = 64, .signed = true, .real = true };
+
+/// One bytecode row, consumed whole by one dispatch; expressions stay in the
+/// AST. Each statement kind is decided here, so `exec.execute` is one switch
+/// and never goes back to the statement.
+pub const Instruction = union(enum(u5)) {
+    /// A.6.2 a blocking or nonblocking assignment with no intra-assignment
+    /// timing control (those are `sample`/`deposit`).
+    assign: struct { target: Ast.ExprId, value: Ast.ExprId, nonblocking: bool },
+    /// §9.7.1 `#d stmt`: suspend for the delay, resume at the next pc.
+    delay: struct { amount: Ast.ExprId, tok: u32 },
+    /// One §17 system task, resolved against `display.tasks` at compile time.
+    task: struct { task: display.Task, args: []const Ast.ExprId, tok: u32 },
+    /// §6.1 continuous assignment `n`: evaluate, drive, resolve, then suspend
+    /// on its own operands, resuming at its own pc.
+    continuous: u32,
+    /// §9.4 continue at the next pc when `condition` is true, else at
+    /// `otherwise`; x and z are false.
+    branch: struct { condition: Ast.ExprId, otherwise: u32 },
+    /// Continue at this pc.
+    jump: u32,
+    /// §9.5 the first arm whose label matches `statement`'s scrutinee, both in
+    /// `ty`, continues at `Run.case_targets[targets + arm]`; no match continues
+    /// at `fallback` (the `default` arm, or past the statement).
+    case_select: struct { statement: Ast.StmtId, targets: u32, fallback: u32, ty: Type },
+    /// A count of x, z or below 0 runs nothing, at any width; past 64 bits
+    /// it saturates (`exec`, `rt.repeatCount`).
+    repeat_start: struct { count: Ast.ExprId, counter: u32, end: u32 },
+    /// The end of a `repeat` body: one count spent from `Run.repeats[counter]`;
+    /// while some remain, the body runs again from `body`.
+    repeat_next: struct { counter: u32, body: u32 },
+    /// §5.10.1 suspend until one watched variable takes a matching edge.
+    wait_event: Ast.ExprId,
+    /// A.6.5 `@*`: §9.7.5's implicit list, resolved to slots at compile time.
+    /// A resumption is the same `.any` waiter `@(a or b)` installs.
+    wait_slots: []const u32,
+    /// A.6.5 `wait_statement`, level sensitive: `cond` is tested on arrival
+    /// and on every resumption, and only a true reading falls through.
+    /// `slots` (its operands) says when to re-test.
+    wait_level: struct { cond: Ast.ExprId, slots: []const u32 },
+    /// §8.5.3.3 the first half of an intra-assignment timing control: the
+    /// right-hand side, evaluated when the statement is reached, is parked in
+    /// `cell`, then the timing applies. A nonblocking one schedules its write
+    /// here, does not suspend, and has no `deposit`.
+    sample: struct { statement: Ast.StmtId, cell: u32 },
+    /// The second half: on resumption the target is resolved ("the values at
+    /// the time the process resumes are used to determine the target(s)") and
+    /// the parked value written.
+    deposit: struct { statement: Ast.StmtId, cell: u32 },
+    /// A.6.5 `-> named_event`. §5.10 events "do not hold any data", so this
+    /// stores nothing: it resumes whoever waits on the slot now, and a
+    /// trigger nobody waits for is gone.
+    trigger: union(enum) { slot: u32, indexed: Ast.ExprId },
+    /// §9.9.2 an `always` body returning to its own start.
+    restart: struct { target: u32, tok: u32 },
+    /// A.6.5 `disable` of a named block, whose activity is its pc range
+    /// [start, end): terminating it drops every resumption into that range.
+    /// Patched in after every process is compiled, since a `disable` may
+    /// name a block written later.
+    disable_block: struct { start: u32, end: u32 },
+    /// §6.2.1 a variable declaration assignment: one blocking write of a
+    /// whole declared variable, which has a slot and no expression naming it.
+    init_var: struct { slot: u32, value: Ast.ExprId },
+    /// §10.2.2 a task enable or function call run to completion in place:
+    /// copy in, the body at `Sub.entry`, copy out.
+    call: struct { sub: u32, args: []const Ast.ExprId, tok: u32 },
+    /// §10.2.2 an inlined enable's copy-out: formal `slot` is assigned to
+    /// the caller's lvalue `target`, resolved in the caller's scope.
+    copy_out: struct { target: Ast.ExprId, slot: u32 },
+    /// §10.3 `disable` naming a task: every activation of it ends.
+    disable_task: u32,
+    /// §10.2.3 enable of a task that suspends and reaches itself: a new
+    /// activation of its out-of-line body (`Sub.body`).
+    call_timed: struct { sub: u32, args: []const Ast.ExprId },
+    /// The end of a `call_timed` activation of task `n`.
+    task_return: u32,
+    /// Start a process of its own at `at`: §17.5 an asynchronous PLA's, or
+    /// §9.7.7 the wait of a nonblocking assignment's event control, which
+    /// (`now`) runs at once, up to its wait: "the right-hand expressions are
+    /// evaluated when the assignment statements are encountered, but the
+    /// assignments are delayed until" the event, so an event the parent
+    /// triggers next is one it sees.
+    pla_start: struct { at: u32, now: bool = false },
+    /// §9.8.2 `fork`: start every arm as a process of its own; join cell
+    /// `join` counts them back, and the parent resumes at `end`.
+    fork: struct { arms: []const u32, join: u32, end: u32 },
+    /// One `fork` arm finished; the last one resumes the parent at `end`.
+    join_arm: struct { join: u32, end: u32 },
+    /// §9.3 install a procedural continuous assignment on `slot`: its
+    /// out-of-line process [start, end) keeps the slot equal to its expression.
+    /// `bits`: §9.3.2's constant select of a vector net, which the override
+    /// holds alone (`override_eval` and `override_off` alike).
+    override_on: struct { slot: u32, force: bool, start: u32, end: u32, bits: ?Bits = null },
+    /// That process's one step: write `value` into `slot` past the guard.
+    /// An operand of a §9.3 concatenation target takes bits [lo, lo + its
+    /// width) of the value evaluated `of` bits wide.
+    override_eval: struct { slot: u32, value: Ast.ExprId, force: bool, slice: ?Slice = null, bits: ?Bits = null },
+    /// §9.3 `deassign` / `release`.
+    override_off: struct { slot: u32, force: bool, bits: ?Bits = null },
+    /// §7.6 a controlled pass switch: read the control, re-resolve both
+    /// sides, and wait on the control's operands.
+    switch_ctrl: struct { tran: u32, slots: []const u32 },
+    /// The end of a process, a subroutine body or an out-of-line helper.
+    stop,
+
+    // Budget: one row per pc, read by every dispatch of `exec.execute`. The
+    // largest payloads are two slices (`task`, `switch_ctrl`).
+    comptime {
+        std.debug.assert(@sizeOf(Instruction) == 40);
+    }
+};
