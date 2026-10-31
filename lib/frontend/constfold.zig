@@ -6,27 +6,182 @@
 //! `kernels.fold`'s, re-exported here. §9.14 / IEEE §§5.4–5.5 size the
 //! self-determined `$clog2` operand.
 //! §3.4/A.2.4 and §6.3 share the syntactic check for reads of simulation state.
+//!
+//! Contents:
+//! - `pub const Const = fold_k.Const`
+//! - `pub const wrap32 = fold_k.wrap32`
+//! - `pub const unary = fold_k.unary`
+//! - `pub const binary = fold_k.binary`
+//! - `pub const MathFn = fold_k.MathFn`
+//! - `pub const math = fold_k.math`
+//! - `pub const clog2 = fold_k.clog2`
+//! - `pub fn parameterValue(ty: Ast.Type, value: Const) Const`
+//! - `pub fn parameterCardValue(ty: Ast.Type, declared: ?Const, value: f64) Const`
+//! - `pub fn firstStateRead(file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl) ?[]const u8`
+//! - `pub fn fold(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const`
+//! - `pub fn foldSized(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const`
+//! - `pub const UnsignedCompare = struct`: `Side`, `extend`
+//! - `pub fn unsignedCompare(file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) ?UnsignedCompare`
+//! - `pub fn operandWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32`
+//! - `pub fn clog2Width(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32`
+//! - `pub fn clog2Signed(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?bool`
+//! - `pub const IntContext = struct`: `normalize`
+//! - `pub const IntPlan = struct`: `resize`
+//! - `pub fn intPlan(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) ?IntPlan`
+//! - `pub const literal_env: LiteralEnv = .`
+//! - the `env` interface `fold` reads, which the private `LiteralEnv` and
+//!   `TestEnv` implement: `leaf`, `signed`, `width`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("ast.zig");
 const fold_k = @import("kernels").fold;
+const testing = std.testing;
 
 /// The value folds, in `kernels.fold`: re-exported for the callers that
 /// reach them through `frontend.constfold`.
 pub const Const = fold_k.Const;
+
 pub const wrap32 = fold_k.wrap32;
+
 pub const unary = fold_k.unary;
+
 pub const binary = fold_k.binary;
+
 pub const MathFn = fold_k.MathFn;
+
 pub const math = fold_k.math;
+
 pub const clog2 = fold_k.clog2;
+
+/// §4.2.9 on the i64 carrier: "When one or both operands are unsigned, the
+/// expression shall be interpreted as a comparison between unsigned values. If
+/// the operands are of unequal bit lengths, the smaller operand shall be
+/// zero-extended to the size of the larger operand." Each operand is extended
+/// from its OWN width: `a` at -1 against `40'hFF_FFFF_FFFF` is
+/// 40'h00_FFFF_FFFF. Both signed, the carrier already holds the sign-extended
+/// values and the signed compare stands.
+pub const UnsignedCompare = struct {
+    /// Each operand's own-width mask; null at 64 bits or wider, or an unknown
+    /// width, where the carrier's value is taken as it stands.
+    mask: [2]?i64,
+    /// An operand is 64 bits or wider: order the pair as u64 by flipping bit 63
+    /// of both before the signed compare.
+    flip: bool,
+
+    /// The comparison's operand; its backing integer indexes `mask`.
+    pub const Side = enum { lhs, rhs };
+
+    /// Returns operand `side`'s value as the i64 the signed compare orders as
+    /// §4.2.9's unsigned comparison.
+    pub fn extend(u: UnsignedCompare, side: Side, v: i64) i64 {
+        // A mask is an own-width mask below 64 bits: positive, low bits set.
+        if (u.mask[@backingInt(side)]) |m| assert(m > 0);
+        const z = if (u.mask[@backingInt(side)]) |m| v & m else v;
+        return if (u.flip) z ^ std.math.minInt(i64) else z;
+    }
+};
+
+/// One IEEE §5.5.2 type/size context, over the existing i64 carrier.
+pub const IntContext = struct {
+    /// Bits; 64 or more leaves the carrier as it is.
+    width: u32,
+    signed: bool,
+
+    /// Returns `value` cut to `width` bits and re-extended by `signed`.
+    /// `width` is at least 1: every context comes from an operand width.
+    pub fn normalize(c: IntContext, value: i64) i64 {
+        assert(c.width >= 1);
+        if (c.width >= 64) return value;
+        const mask = (@as(u64, 1) << @intCast(c.width)) - 1;
+        var bits = @as(u64, @bitCast(value)) & mask;
+        if (c.signed and bits & (@as(u64, 1) << @intCast(c.width - 1)) != 0) bits |= ~mask;
+        // Unsigned below 64 bits is never negative on the carrier.
+        if (!c.signed) assert(@as(i64, @bitCast(bits)) >= 0);
+        return @bitCast(bits);
+    }
+};
+
+/// Shared by folding and lowering: where context propagates, where it stops,
+/// and how the result enters its parent. No changes to ordinary analog ops.
+pub const IntPlan = struct {
+    /// The context the node's value enters its parent in.
+    result: IntContext,
+    /// The width the node computes at, before `resize` converts it.
+    from_width: u32,
+    /// The context each operand is folded in (`lhs`, `rhs`, the `?:` else
+    /// arm); null where the operand is self-determined.
+    operands: [3]?IntContext = .{ null, null, null },
+    /// False when the result is wider than the i64 carrier can compute.
+    supported: bool = true,
+
+    /// Returns `value`, computed at `from_width`, converted to `result`.
+    pub fn resize(p: IntPlan, value: i64) i64 {
+        assert(p.from_width >= 1);
+        assert(p.result.width >= 1);
+        const source: IntContext = .{ .width = p.from_width, .signed = p.result.signed };
+        return p.result.normalize(source.normalize(value));
+    }
+};
+
+/// The `env` that knows nothing: `fold(file, e, literal_env)` folds literals
+/// and the operators over them, and declines an identifier and `>>>`.
+pub const literal_env: LiteralEnv = .{};
+
+/// The type of `literal_env`: every query answers null.
+const LiteralEnv = struct {
+    pub fn leaf(_: LiteralEnv, _: Ast.ExprId) ?Const {
+        return null;
+    }
+    pub fn signed(_: LiteralEnv, _: Ast.ExprId) ?bool {
+        return null;
+    }
+    pub fn width(_: LiteralEnv, _: Ast.ExprId) ?u32 {
+        return null;
+    }
+};
+
+/// `fold`'s environment in these tests: `a` is a signed 32-bit integer
+/// holding -1 and `u` an unsigned 8-bit one holding 255; a literal reports its
+/// own signedness, as lowering's environment does.
+const TestEnv = struct {
+    file: *const Ast.SourceFile,
+
+    fn name(env: TestEnv, e: Ast.ExprId) ?[]const u8 {
+        if (env.file.exprs.tag(e) != .ident) return null;
+        return env.file.str(env.file.exprs.strOf(e));
+    }
+    pub fn leaf(env: TestEnv, e: Ast.ExprId) ?Const {
+        const n = env.name(e) orelse return null;
+        if (std.mem.eql(u8, n, "a")) return .{ .int = -1 };
+        if (std.mem.eql(u8, n, "u")) return .{ .int = 255 };
+        return null;
+    }
+    pub fn signed(env: TestEnv, e: Ast.ExprId) ?bool {
+        const ex = &env.file.exprs;
+        if (ex.tag(e) == .int_literal) return ex.intLiteral(e).signed;
+        if (ex.tag(e) == .logic_literal) return ex.logicValue(e).signed;
+        const n = env.name(e) orelse return null;
+        if (std.mem.eql(u8, n, "a")) return true;
+        if (std.mem.eql(u8, n, "u")) return false;
+        return null;
+    }
+    pub fn width(env: TestEnv, e: Ast.ExprId) ?u32 {
+        const n = env.name(e) orelse return null;
+        if (std.mem.eql(u8, n, "a")) return 32;
+        if (std.mem.eql(u8, n, "u")) return 8;
+        return null;
+    }
+};
+
+const TestExpr = struct { file: Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl };
 
 /// §3.4.1 applies the declared parameter type before another expression reads
 /// its value. Shared by elaboration's paramset selection and lowering, so the
 /// selected member sees the same real/integer conversion as the emitted model.
 /// Invalid real-to-integer inputs remain real for the caller's diagnostic.
 pub fn parameterValue(ty: Ast.Type, value: Const) Const {
-    return switch (ty) {
+    const out: Const = switch (ty) {
         .real => if (value == .str) value else .{ .real = value.asReal() },
         .integer => switch (value) {
             .int => |n| .{ .int = wrap32(n) },
@@ -35,6 +190,10 @@ pub fn parameterValue(ty: Ast.Type, value: Const) Const {
         },
         .string, .unspecified => value,
     };
+    // A real parameter holds a real unless the value is a string the caller reports.
+    if (ty == .real and value != .str) assert(out == .real);
+    if (ty == .integer and value == .int) assert(out == .int);
+    return out;
 }
 
 /// Numeric host cards carry no new HDL type or width. Preserve an inferred
@@ -56,6 +215,7 @@ pub fn parameterCardValue(ty: Ast.Type, declared: ?Const, value: f64) Const {
 /// searched through its `children`, first in source order.
 pub fn firstStateRead(file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl) ?[]const u8 {
     if (e == .none) return null;
+    assert(@backingInt(e) < file.exprs.len());
     const ex = &file.exprs;
     const tag = ex.tag(e);
     switch (tag) {
@@ -74,25 +234,11 @@ pub fn firstStateRead(file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const 
         else => {}, // else: a state read only through its children
     }
     var buf: [3]Ast.ExprId = undefined;
-    for (ex.children(e, &buf)) |c| if (firstStateRead(file, c, vars)) |w| return w;
-    return null;
-}
-
-/// The `$` (and `analysis`) names whose value belongs to a solve: time, the
-/// ambient temperature pair, the RNG family, and the analysis type. §9.13's
-/// distributions are matched by their two prefixes.
-///
-/// `$simparam` is deliberately NOT here: §9.15's table is the HOST's, constant
-/// for a whole run, and a default reading it is the documented W1050 contract
-/// — the field ships as 0 and the host writes it (codegen's "§3.4 a default
-/// with no compile-time value is W1050" test pins exactly that shape).
-fn simStateName(n: []const u8) bool {
-    const names = [_][]const u8{
-        "$abstime", "$realtime", "$temperature", "$vt",
-        "$random",  "$arandom",  "analysis",
+    for (ex.children(e, &buf)) |c| if (firstStateRead(file, c, vars)) |w| {
+        assert(w.len > 0);
+        return w;
     };
-    for (names) |s| if (std.mem.eql(u8, n, s)) return true;
-    return std.mem.startsWith(u8, n, "$dist_") or std.mem.startsWith(u8, n, "$rdist_");
+    return null;
 }
 
 /// Folds `e` over `file`'s expression store, or returns null when it is not
@@ -105,18 +251,173 @@ fn simStateName(n: []const u8) bool {
 ///   signed(e) ?bool    an operand's signedness (`>>>`, §4.2.9 comparisons)
 ///   width(e) ?u32      a name's bit length (§4.2.9 comparisons)
 /// `literal_env` answers none of them: a fold over literals only.
+/// Recurses once per expression level, so the caller runs it on a stack
+/// sized for the parse's nesting (`Parser.deepest`, through `deep_stack.run`
+/// as `Parser.walk` does). Asserts that `e` is `.none` or a row of `file`.
 pub fn fold(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const {
+    assert(e == .none or @backingInt(e) < file.exprs.len());
     return foldContext(file, e, env, false, null);
 }
 
 /// IEEE §§5.4–5.5: a system-function operand is self-determined, but its
 /// type and size propagate into its context-dependent subexpressions.
 pub fn foldSized(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const {
+    assert(e == .none or @backingInt(e) < file.exprs.len());
     return foldContext(file, e, env, true, null);
+}
+
+/// The §4.2.9 extension of comparison `l` vs `r` under `env` (`fold`'s), or
+/// null when neither operand is known unsigned.
+pub fn unsignedCompare(file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) ?UnsignedCompare {
+    assert(l != .none);
+    assert(r != .none);
+    if ((env.signed(l) orelse true) and (env.signed(r) orelse true)) return null;
+    const w = [2]?u32{ operandWidth(file, l, env), operandWidth(file, r, env) };
+    var u: UnsignedCompare = .{ .mask = undefined, .flip = false };
+    for (w, &u.mask) |wi, *m| {
+        const n = wi orelse {
+            m.* = null;
+            continue;
+        };
+        u.flip = u.flip or n >= 64;
+        m.* = if (n >= 64) null else (@as(i64, 1) << @intCast(n)) - 1;
+    }
+    // A flip comes from a 64-bit operand, whose mask is the carrier's own.
+    if (u.flip) assert(u.mask[0] == null or u.mask[1] == null);
+    return u;
+}
+
+/// The bit length §4.2.9 extends an operand from: a §2.6.1 literal's size and
+/// a name's (`env.width`) as written; any other integer expression is §3.2's
+/// 32 bits, since the analog operators compute at that width, or the carrier's
+/// wider value where a sign, a complement, a bitwise operator or `?:` passes a
+/// wide operand through. Null when unknown.
+pub fn operandWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32 {
+    assert(e != .none);
+    const w = expressionWidth(file, e, env, false);
+    // Not self-determined: an operator result is at least §3.2's 32 bits.
+    if (w) |x| if (file.exprs.tag(e) == .binary) assert(x >= 32);
+    return w;
+}
+
+/// IEEE 1364-2005 §5.4.1 / §17.11.1: `$clog2`'s self-determined operand
+/// keeps the size of a sized unary or arithmetic expression; no assignment
+/// context widens it to the analog integer carrier's 32 bits.
+pub fn clog2Width(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32 {
+    assert(e != .none);
+    assert(@backingInt(e) < file.exprs.len());
+    return expressionWidth(file, e, env, true);
+}
+
+/// IEEE §5.5.1 signedness before the unsigned `$clog2` boundary. Names are
+/// the environment's; a function call keeps its own argument contexts.
+pub fn clog2Signed(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?bool {
+    assert(e != .none);
+    const ex = &file.exprs;
+    assert(@backingInt(e) < ex.len());
+    return switch (ex.tag(e)) {
+        .int_literal => ex.intLiteral(e).signed,
+        .logic_literal => ex.logicValue(e).signed,
+        .ident => env.signed(e),
+        .unary => switch (ex.unOp(e)) {
+            .plus, .minus, .bit_not => clog2Signed(file, ex.lhs(e), env),
+            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => false,
+        },
+        .binary => switch (ex.binOp(e)) {
+            .shl, .shr, .ashl, .ashr, .pow => clog2Signed(file, ex.lhs(e), env),
+            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => clog2OperandsSigned(file, ex.lhs(e), ex.rhs(e), env),
+            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => false,
+        },
+        .ternary => clog2OperandsSigned(file, ex.rhs(e), ex.ternaryElse(e), env),
+        .sys_call => !std.mem.eql(u8, file.str(ex.strOf(e)), "$realtobits"),
+        .call, .index => true, // analog function/array integral results are §3.2 integers
+        else => null, // else: not an integral expression in the analog context
+    };
+}
+
+/// Returns how `e` is sized inside `parent` (null: `e` is self-determined).
+/// IEEE Table 5-22 and §5.5.2: logical operands, a shift/power's RHS, and a
+/// conditional's condition are self-determined. Comparisons share a context
+/// between their operands, independent of their one-bit result. Null when
+/// `env` cannot give a width or signedness the plan needs.
+pub fn intPlan(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) ?IntPlan {
+    const ex = &file.exprs;
+    const own: IntContext = .{ .width = clog2Width(file, e, env) orelse return null, .signed = clog2Signed(file, e, env) orelse return null };
+    const result: IntContext = if (parent) |p| .{ .width = @max(p.width, own.width), .signed = p.signed } else own;
+    var plan: IntPlan = .{ .result = result, .from_width = own.width };
+    assert(plan.result.width >= own.width);
+    switch (ex.tag(e)) {
+        .unary => switch (ex.unOp(e)) {
+            .plus, .minus, .bit_not => {
+                plan.from_width = result.width;
+                plan.operands[0] = result;
+                plan.supported = result.width <= (if (ex.unOp(e) == .minus) @as(u32, 32) else 64);
+            },
+            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => {},
+        },
+        .binary => switch (ex.binOp(e)) {
+            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => {
+                plan.from_width = result.width;
+                plan.operands[0] = result;
+                plan.operands[1] = result;
+                const bitwise = switch (ex.binOp(e)) {
+                    .bit_and, .bit_or, .bit_xor, .bit_xnor => true,
+                    else => false, // else: the enclosing prong's five arithmetic operations wrap at 32
+                };
+                plan.supported = result.width <= (if (bitwise) @as(u32, 64) else 32);
+            },
+            .pow, .shl, .shr, .ashl, .ashr => {
+                plan.from_width = result.width;
+                plan.operands[0] = result;
+                plan.supported = result.width <= 32;
+            },
+            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => {
+                const comparison: IntContext = .{
+                    .width = @max(clog2Width(file, ex.lhs(e), env) orelse return null, clog2Width(file, ex.rhs(e), env) orelse return null),
+                    .signed = clog2OperandsSigned(file, ex.lhs(e), ex.rhs(e), env) orelse return null,
+                };
+                plan.operands[0] = comparison;
+                plan.operands[1] = comparison;
+                plan.supported = comparison.width <= 64;
+            },
+            .logical_and, .logical_or => {},
+        },
+        .ternary => {
+            plan.from_width = result.width;
+            plan.operands[1] = result;
+            plan.operands[2] = result;
+            plan.supported = result.width <= 64;
+        },
+        else => {}, // else: a primary keeps its own width until converted to its parent
+    }
+    // A self-determined result carries no context of its own into operands.
+    if (plan.operands[0]) |c| assert(c.width >= 1);
+    return plan;
+}
+
+// ---- private ----
+
+/// The `$` (and `analysis`) names whose value belongs to a solve: time, the
+/// ambient temperature pair, the RNG family, and the analysis type. §9.13's
+/// distributions are matched by their two prefixes.
+///
+/// `$simparam` is deliberately NOT here: §9.15's table is the HOST's, constant
+/// for a whole run, and a default reading it is the documented W1050 contract
+/// — the field ships as 0 and the host writes it (codegen's "§3.4 a default
+/// with no compile-time value is W1050" test pins exactly that shape).
+fn simStateName(n: []const u8) bool {
+    assert(n.len > 0);
+    const names = [_][]const u8{
+        "$abstime", "$realtime", "$temperature", "$vt",
+        "$random",  "$arandom",  "analysis",
+    };
+    for (names) |s| if (std.mem.eql(u8, n, s)) return true;
+    return std.mem.startsWith(u8, n, "$dist_") or std.mem.startsWith(u8, n, "$rdist_");
 }
 
 fn foldContext(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, comptime sized: bool, parent: ?IntContext) ?Const {
     if (e == .none) return null;
+    if (!sized) assert(parent == null);
     const ex = &file.exprs;
     const plan: ?IntPlan = if (sized) intPlan(file, e, env, parent) else null;
     if (plan) |p| if (!p.supported) return null;
@@ -176,69 +477,12 @@ fn foldContext(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, comptim
     if (value == .int) if (plan) |p| {
         value.int = p.resize(value.int);
     };
+    if (!sized) assert(plan == null);
     return value;
 }
 
-/// §4.2.9 on the i64 carrier: "When one or both operands are unsigned, the
-/// expression shall be interpreted as a comparison between unsigned values. If
-/// the operands are of unequal bit lengths, the smaller operand shall be
-/// zero-extended to the size of the larger operand." Each operand is extended
-/// from its OWN width: `a` at -1 against `40'hFF_FFFF_FFFF` is
-/// 40'h00_FFFF_FFFF. Both signed, the carrier already holds the sign-extended
-/// values and the signed compare stands.
-pub const UnsignedCompare = struct {
-    /// Each operand's own-width mask; null at 64 bits or wider, or an unknown
-    /// width, where the carrier's value is taken as it stands.
-    mask: [2]?i64,
-    /// An operand is 64 bits or wider: order the pair as u64 by flipping bit 63
-    /// of both before the signed compare.
-    flip: bool,
-
-    /// The comparison's operand; its backing integer indexes `mask`.
-    pub const Side = enum { lhs, rhs };
-
-    /// Returns operand `side`'s value as the i64 the signed compare orders as
-    /// §4.2.9's unsigned comparison.
-    pub fn extend(u: UnsignedCompare, side: Side, v: i64) i64 {
-        const z = if (u.mask[@backingInt(side)]) |m| v & m else v;
-        return if (u.flip) z ^ std.math.minInt(i64) else z;
-    }
-};
-
-/// The §4.2.9 extension of comparison `l` vs `r` under `env` (`fold`'s), or
-/// null when neither operand is known unsigned.
-pub fn unsignedCompare(file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) ?UnsignedCompare {
-    if ((env.signed(l) orelse true) and (env.signed(r) orelse true)) return null;
-    const w = [2]?u32{ operandWidth(file, l, env), operandWidth(file, r, env) };
-    var u: UnsignedCompare = .{ .mask = undefined, .flip = false };
-    for (w, &u.mask) |wi, *m| {
-        const n = wi orelse {
-            m.* = null;
-            continue;
-        };
-        u.flip = u.flip or n >= 64;
-        m.* = if (n >= 64) null else (@as(i64, 1) << @intCast(n)) - 1;
-    }
-    return u;
-}
-
-/// The bit length §4.2.9 extends an operand from: a §2.6.1 literal's size and
-/// a name's (`env.width`) as written; any other integer expression is §3.2's
-/// 32 bits, since the analog operators compute at that width, or the carrier's
-/// wider value where a sign, a complement, a bitwise operator or `?:` passes a
-/// wide operand through. Null when unknown.
-pub fn operandWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32 {
-    return expressionWidth(file, e, env, false);
-}
-
-/// IEEE 1364-2005 §5.4.1 / §17.11.1: `$clog2`'s self-determined operand
-/// keeps the size of a sized unary or arithmetic expression; no assignment
-/// context widens it to the analog integer carrier's 32 bits.
-pub fn clog2Width(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32 {
-    return expressionWidth(file, e, env, true);
-}
-
 fn expressionWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, comptime self_determined: bool) ?u32 {
+    assert(e != .none);
     const ex = &file.exprs;
     return switch (ex.tag(e)) {
         .int_literal => literalWidth(ex, e),
@@ -266,6 +510,7 @@ fn expressionWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, com
 // bits: §3.2's 32 when they hold the value, the carrier's 64 when they do
 // not. `expressionWidth` and `reduction` must agree on it.
 fn literalWidth(ex: *const Ast.ExprStore, e: Ast.ExprId) u32 {
+    assert(ex.tag(e) == .int_literal);
     const w = ex.intLiteral(e).width;
     if (w != 0) return w;
     const v = ex.intValue(e);
@@ -273,148 +518,18 @@ fn literalWidth(ex: *const Ast.ExprStore, e: Ast.ExprId) u32 {
 }
 
 fn widthFloor(w: u32, comptime self_determined: bool) u32 {
-    return if (self_determined) w else @max(w, 32);
-}
-
-/// IEEE §5.5.1 signedness before the unsigned `$clog2` boundary. Names are
-/// the environment's; a function call keeps its own argument contexts.
-pub fn clog2Signed(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?bool {
-    const ex = &file.exprs;
-    return switch (ex.tag(e)) {
-        .int_literal => ex.intLiteral(e).signed,
-        .logic_literal => ex.logicValue(e).signed,
-        .ident => env.signed(e),
-        .unary => switch (ex.unOp(e)) {
-            .plus, .minus, .bit_not => clog2Signed(file, ex.lhs(e), env),
-            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => false,
-        },
-        .binary => switch (ex.binOp(e)) {
-            .shl, .shr, .ashl, .ashr, .pow => clog2Signed(file, ex.lhs(e), env),
-            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => clog2OperandsSigned(file, ex.lhs(e), ex.rhs(e), env),
-            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => false,
-        },
-        .ternary => clog2OperandsSigned(file, ex.rhs(e), ex.ternaryElse(e), env),
-        .sys_call => !std.mem.eql(u8, file.str(ex.strOf(e)), "$realtobits"),
-        .call, .index => true, // analog function/array integral results are §3.2 integers
-        else => null, // else: not an integral expression in the analog context
-    };
+    const out = if (self_determined) w else @max(w, 32);
+    assert(out >= w);
+    return out;
 }
 
 fn clog2OperandsSigned(file: *const Ast.SourceFile, a: Ast.ExprId, b: Ast.ExprId, env: anytype) ?bool {
+    assert(a != .none);
+    assert(b != .none);
     const sa = clog2Signed(file, a, env) orelse return null;
     const sb = clog2Signed(file, b, env) orelse return null;
     return sa and sb;
 }
-
-/// One IEEE §5.5.2 type/size context, over the existing i64 carrier.
-pub const IntContext = struct {
-    /// Bits; 64 or more leaves the carrier as it is.
-    width: u32,
-    signed: bool,
-
-    /// Returns `value` cut to `width` bits and re-extended by `signed`.
-    /// `width` is at least 1: every context comes from an operand width.
-    pub fn normalize(c: IntContext, value: i64) i64 {
-        if (c.width >= 64) return value;
-        const mask = (@as(u64, 1) << @intCast(c.width)) - 1;
-        var bits = @as(u64, @bitCast(value)) & mask;
-        if (c.signed and bits & (@as(u64, 1) << @intCast(c.width - 1)) != 0) bits |= ~mask;
-        return @bitCast(bits);
-    }
-};
-
-/// Shared by folding and lowering: where context propagates, where it stops,
-/// and how the result enters its parent. No changes to ordinary analog ops.
-pub const IntPlan = struct {
-    /// The context the node's value enters its parent in.
-    result: IntContext,
-    /// The width the node computes at, before `resize` converts it.
-    from_width: u32,
-    /// The context each operand is folded in (`lhs`, `rhs`, the `?:` else
-    /// arm); null where the operand is self-determined.
-    operands: [3]?IntContext = .{ null, null, null },
-    /// False when the result is wider than the i64 carrier can compute.
-    supported: bool = true,
-
-    /// Returns `value`, computed at `from_width`, converted to `result`.
-    pub fn resize(p: IntPlan, value: i64) i64 {
-        const source: IntContext = .{ .width = p.from_width, .signed = p.result.signed };
-        return p.result.normalize(source.normalize(value));
-    }
-};
-
-/// Returns how `e` is sized inside `parent` (null: `e` is self-determined).
-/// IEEE Table 5-22 and §5.5.2: logical operands, a shift/power's RHS, and a
-/// conditional's condition are self-determined. Comparisons share a context
-/// between their operands, independent of their one-bit result. Null when
-/// `env` cannot give a width or signedness the plan needs.
-pub fn intPlan(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) ?IntPlan {
-    const ex = &file.exprs;
-    const own: IntContext = .{ .width = clog2Width(file, e, env) orelse return null, .signed = clog2Signed(file, e, env) orelse return null };
-    const result: IntContext = if (parent) |p| .{ .width = @max(p.width, own.width), .signed = p.signed } else own;
-    var plan: IntPlan = .{ .result = result, .from_width = own.width };
-    switch (ex.tag(e)) {
-        .unary => switch (ex.unOp(e)) {
-            .plus, .minus, .bit_not => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.supported = result.width <= (if (ex.unOp(e) == .minus) @as(u32, 32) else 64);
-            },
-            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => {},
-        },
-        .binary => switch (ex.binOp(e)) {
-            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.operands[1] = result;
-                const bitwise = switch (ex.binOp(e)) {
-                    .bit_and, .bit_or, .bit_xor, .bit_xnor => true,
-                    else => false, // else: the enclosing prong's five arithmetic operations wrap at 32
-                };
-                plan.supported = result.width <= (if (bitwise) @as(u32, 64) else 32);
-            },
-            .pow, .shl, .shr, .ashl, .ashr => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.supported = result.width <= 32;
-            },
-            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => {
-                const comparison: IntContext = .{
-                    .width = @max(clog2Width(file, ex.lhs(e), env) orelse return null, clog2Width(file, ex.rhs(e), env) orelse return null),
-                    .signed = clog2OperandsSigned(file, ex.lhs(e), ex.rhs(e), env) orelse return null,
-                };
-                plan.operands[0] = comparison;
-                plan.operands[1] = comparison;
-                plan.supported = comparison.width <= 64;
-            },
-            .logical_and, .logical_or => {},
-        },
-        .ternary => {
-            plan.from_width = result.width;
-            plan.operands[1] = result;
-            plan.operands[2] = result;
-            plan.supported = result.width <= 64;
-        },
-        else => {}, // else: a primary keeps its own width until converted to its parent
-    }
-    return plan;
-}
-
-/// The `env` that knows nothing: `fold(file, e, literal_env)` folds literals
-/// and the operators over them, and declines an identifier and `>>>`.
-pub const literal_env: LiteralEnv = .{};
-/// The type of `literal_env`: every query answers null.
-const LiteralEnv = struct {
-    pub fn leaf(_: LiteralEnv, _: Ast.ExprId) ?Const {
-        return null;
-    }
-    pub fn signed(_: LiteralEnv, _: Ast.ExprId) ?bool {
-        return null;
-    }
-    pub fn width(_: LiteralEnv, _: Ast.ExprId) ?u32 {
-        return null;
-    }
-};
 
 // ponytail: literal operands only. A parameter's width is 32 unless A.2.1.1's
 // `[ range ]` sized it, and an expression's is §5.4's sizing rules; carry a
@@ -428,6 +543,7 @@ const LiteralEnv = struct {
 /// and a size past 64, declines. §4.2.10 bars these operators from the analog
 /// block, not from a parameter declaration.
 fn reduction(ex: *const Ast.ExprStore, op: Ast.UnaryOp, operand: Ast.ExprId, a: Const) ?Const {
+    assert(operand != .none);
     if (a != .int) return null;
     if (ex.tag(operand) != .int_literal) return null;
     const w = literalWidth(ex, operand);
@@ -446,8 +562,6 @@ fn reduction(ex: *const Ast.ExprStore, op: Ast.UnaryOp, operand: Ast.ExprId, a: 
     return .{ .int = @intFromBool(r) };
 }
 
-const testing = std.testing;
-
 fn expectInt(want: i64, got: ?Const) !void {
     const c = got orelse return error.TestExpectedEqual;
     try testing.expect(c == .int);
@@ -458,6 +572,22 @@ fn expectReal(want: f64, got: ?Const) !void {
     const c = got orelse return error.TestExpectedEqual;
     try testing.expect(c == .real);
     try testing.expectEqual(want, c.real);
+}
+
+/// Parses `module m; <decls> parameter p = <src>; endmodule` with the real
+/// lexer and parser, and returns `p`'s default.
+fn testParse(arena: std.mem.Allocator, decls: []const u8, src: []const u8) !TestExpr {
+    const text = try arena.print("module m; {s} parameter p = {s}; endmodule\n", .{ decls, src });
+    const r = try @import("parser.zig").parseForTest(arena, text);
+    try testing.expectEqual(@as(u32, 0), r.bag.err_count);
+    const m = r.file.modules[0];
+    return .{ .file = r.file, .e = m.params[0].default, .vars = m.vars };
+}
+
+fn testFold(arena: std.mem.Allocator, src: []const u8, comptime sized: bool) !?Const {
+    const t = try testParse(arena, "", src);
+    const env: TestEnv = .{ .file = &t.file };
+    return if (sized) foldSized(&t.file, t.e, env) else fold(&t.file, t.e, env);
 }
 
 test "§3.4.1 parameterValue converts to the declared type; a host card does not impose `integer`'s wrap" {
@@ -509,57 +639,6 @@ test "UnsignedCompare.extend masks each side at its own width and orders 64-bit 
     try testing.expectEqual(@as(i64, -1), u.extend(.rhs, -1));
     const f: UnsignedCompare = .{ .mask = .{ null, null }, .flip = true };
     try testing.expect(f.extend(.lhs, -1) > f.extend(.rhs, 1));
-}
-
-/// `fold`'s environment in these tests: `a` is a signed 32-bit integer
-/// holding -1 and `u` an unsigned 8-bit one holding 255; a literal reports its
-/// own signedness, as lowering's environment does.
-const TestEnv = struct {
-    file: *const Ast.SourceFile,
-
-    fn name(env: TestEnv, e: Ast.ExprId) ?[]const u8 {
-        if (env.file.exprs.tag(e) != .ident) return null;
-        return env.file.str(env.file.exprs.strOf(e));
-    }
-    pub fn leaf(env: TestEnv, e: Ast.ExprId) ?Const {
-        const n = env.name(e) orelse return null;
-        if (std.mem.eql(u8, n, "a")) return .{ .int = -1 };
-        if (std.mem.eql(u8, n, "u")) return .{ .int = 255 };
-        return null;
-    }
-    pub fn signed(env: TestEnv, e: Ast.ExprId) ?bool {
-        const ex = &env.file.exprs;
-        if (ex.tag(e) == .int_literal) return ex.intLiteral(e).signed;
-        if (ex.tag(e) == .logic_literal) return ex.logicValue(e).signed;
-        const n = env.name(e) orelse return null;
-        if (std.mem.eql(u8, n, "a")) return true;
-        if (std.mem.eql(u8, n, "u")) return false;
-        return null;
-    }
-    pub fn width(env: TestEnv, e: Ast.ExprId) ?u32 {
-        const n = env.name(e) orelse return null;
-        if (std.mem.eql(u8, n, "a")) return 32;
-        if (std.mem.eql(u8, n, "u")) return 8;
-        return null;
-    }
-};
-
-const TestExpr = struct { file: Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl };
-
-/// Parses `module m; <decls> parameter p = <src>; endmodule` with the real
-/// lexer and parser, and returns `p`'s default.
-fn testParse(arena: std.mem.Allocator, decls: []const u8, src: []const u8) !TestExpr {
-    const text = try arena.print("module m; {s} parameter p = {s}; endmodule\n", .{ decls, src });
-    const r = try @import("parser.zig").parseForTest(arena, text);
-    try testing.expectEqual(@as(u32, 0), r.bag.err_count);
-    const m = r.file.modules[0];
-    return .{ .file = r.file, .e = m.params[0].default, .vars = m.vars };
-}
-
-fn testFold(arena: std.mem.Allocator, src: []const u8, comptime sized: bool) !?Const {
-    const t = try testParse(arena, "", src);
-    const env: TestEnv = .{ .file = &t.file };
-    return if (sized) foldSized(&t.file, t.e, env) else fold(&t.file, t.e, env);
 }
 
 test "fold over parsed constant expressions: literals, operators, a lazy ?:, §4.3 calls and names" {

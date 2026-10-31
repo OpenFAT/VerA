@@ -5,20 +5,30 @@
 //! inside the block) as local parameters.
 //!
 //! LRM clauses cited: §1.1, §2.6.2, §2.8, §3.4.1, §3.4.5, §8, §11.6.15, §14.2.6.
+//!
+//! Contents:
+//! - `pub fn parseSpecifyBlock(self: *Parser, b: *parse_module.Body) Error!void`
+//! - `pub fn checkPaths(self: *Parser, b: *const parse_module.Body) Error!void`
+//! - `pub fn parseSpecparamDecl(self: *Parser, b: *parse_module.Body, in_specify: bool) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_decl = @import("decl.zig");
 const parse_expr = @import("expr.zig");
 const parse_module = @import("module.zig");
+const parse_timing = @import("timing_check.zig");
 const lexer = @import("../lexer.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
-// -----------------------------------------------------------------------
-// A.7 specify blocks: LRM §1.1 (1364 is part of the language), §8
-// -----------------------------------------------------------------------
+/// A.7.1's `pulsestyle_declaration` and `showcancelled_declaration` keywords,
+/// all `.kw_reserved`, so the spelling is the test.
+const pulse_words = std.StaticStringMap(void).initComptime(.{ .{"pulsestyle_onevent"}, .{"pulsestyle_ondetect"}, .{"showcancelled"}, .{"noshowcancelled"} });
+
+/// How a path terminal names its port (§14.2.4.3).
+const Reference = enum { whole, bit, part };
 
 /// Parses one A.7.1 `specify_block ::= specify { specify_item } endspecify`
 /// into `b.paths`, `b.timing_checks` and `b.pulses`, then, in an analog
@@ -31,6 +41,9 @@ const Error = parser.Error;
 /// block is parsed rather than skipped so a typo in a path declaration is
 /// still an error.
 pub fn parseSpecifyBlock(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const open = self.pos;
     const first = b.timing_checks.items.len;
     self.pos += 1; // `specify`
@@ -68,9 +81,121 @@ pub fn parseSpecifyBlock(self: *Parser, b: *parse_module.Body) Error!void {
     );
 }
 
-/// A.7.1's `pulsestyle_declaration` and `showcancelled_declaration` keywords,
-/// all `.kw_reserved`, so the spelling is the test.
-const pulse_words = std.StaticStringMap(void).initComptime(.{ .{"pulsestyle_onevent"}, .{"pulsestyle_ondetect"}, .{"showcancelled"}, .{"noshowcancelled"} });
+/// IEEE 1364-2005 §14.2-§14.3's rules on the module's paths that need its
+/// ports and drivers, so run once the whole module is parsed. Each broken
+/// rule is reported (E0245) and the parse goes on; only OOM propagates.
+pub fn checkPaths(self: *Parser, b: *const parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const ex = &self.file.exprs;
+    for (b.paths.items, 0..) |p, i| {
+        for (p.ins) |t| {
+            const port = portNamed(b, terminalName(self, t));
+            if (port == null or (port.?.direction != .input and port.?.direction != .inout))
+                try self.report(ex.mainTok(t), .E0245, "module path source `{s}` is not an input or inout port (§14.2.1)", .{self.file.str(terminalName(self, t))});
+        }
+        for (p.outs) |t| {
+            const name = terminalName(self, t);
+            const port = portNamed(b, name);
+            if (port == null or (port.?.direction != .output and port.?.direction != .inout))
+                try self.report(ex.mainTok(t), .E0245, "module path destination `{s}` is not an output or inout port (§14.2.1)", .{self.file.str(name)});
+            // One driver per bit: `buf b0(P[0], ...); buf b1(P[1], ...);`
+            // drive P once each. A select that does not fold covers it all.
+            const n_drv = b.assigns.items.len + b.gates.items.len;
+            const shared = outer: for (0..n_drv) |j| {
+                const dj = driverTarget(b, j);
+                if (terminalName(self, dj) != name) continue;
+                for (0..j) |k| {
+                    const dk = driverTarget(b, k);
+                    if (terminalName(self, dk) == name and bitsOverlap(driverBits(self, dj), driverBits(self, dk))) break :outer true;
+                }
+            } else false;
+            if (shared) try self.report(ex.mainTok(t), .E0245, "module path destination `{s}` has more than one driver on a bit; §14.2.1 allows only one driver inside the module", .{self.file.str(name)});
+        }
+        if (!p.full) {
+            const src = p.ins[0];
+            const dst = p.outs[0];
+            if (p.data != .none) {
+                if (reference(self, dst) != .bit and (terminalWidth(self, b, dst) orelse 1) != 1)
+                    try self.report(ex.mainTok(dst), .E0245, "the destination of a parallel edge-sensitive path is a scalar port or a bit-select (§14.2.3)", .{});
+            } else if (terminalWidth(self, b, src)) |ws| if (terminalWidth(self, b, dst)) |wd| if (ws != wd)
+                try self.report(p.main_tok, .E0245, "a parallel path joins terminals of the same number of bits (§14.2.5), not {d} and {d}", .{ ws, wd });
+        }
+        for (p.delays) |d| if (try self.walk(self.pos, readsSignal, .{ self, b, d })) |at|
+            try self.report(ex.mainTok(at), .E0245, "a module path delay is a constant expression (§14.3); `{s}` is a signal", .{self.file.str(ex.strOf(at))});
+        for (b.paths.items[0..i]) |q| {
+            // §14.2.4.3: the declarations of one edge-sensitive path name
+            // each port the same way.
+            if (p.data != .none and q.data != .none and p.ins.len == 1 and q.ins.len == 1 and p.outs.len == 1 and q.outs.len == 1 and
+                terminalName(self, p.ins[0]) == terminalName(self, q.ins[0]) and terminalName(self, p.outs[0]) == terminalName(self, q.outs[0]) and
+                (reference(self, p.ins[0]) != reference(self, q.ins[0]) or reference(self, p.outs[0]) != reference(self, q.outs[0])))
+                try self.report(p.main_tok, .E0245, "a port is referenced in the same way in all declarations of one edge-sensitive path (§14.2.4.3)", .{});
+            // §14.2.4.4: not both `ifnone` and an unconditional simple path.
+            if (p.ifnone != q.ifnone and p.data == .none and q.data == .none and samePath(self, p, q) and
+                (if (p.ifnone) q.cond == .none else p.cond == .none))
+                try self.report(p.main_tok, .E0245, "an ifnone path and an unconditional path for the same module path (§14.2.4.4)", .{});
+        }
+    }
+}
+
+/// Parses one A.2.1.1 `specparam_declaration ::= specparam [ range ]
+/// list_of_specparam_assignments ;` with A.2.4's assignments:
+///
+///     specparam_assignment ::=
+///             specparam_identifier = constant_mintypmax_expression
+///             | pulse_control_specparam
+///
+/// Into `b.params`, for both the Syntax 6-1 module-item form and an A.7.1
+/// `specify_item`: each specparam becomes a §3.4.5 `localparam` (a constant
+/// with a mandatory default that no `parameter_value_assignment` can name;
+/// the digital engine's SDF annotator writes its slot, §16.2.3).
+///
+/// A.2.4's `pulse_control_specparam`, `PATHPULSE$[input$output] = (
+/// reject_limit_value [ , error_limit_value ] )`, declares no constant: it
+/// goes to `b.pulses`, the §14.6.1 limits the digital engine applies.
+pub fn parseSpecparamDecl(self: *Parser, b: *parse_module.Body, in_specify: bool) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const out = &b.params;
+    self.pos += 1; // `specparam`
+    const packed_range: ?Ast.Dim = try parse_decl.optDim(self);
+    while (true) {
+        const tok = self.pos;
+        const name = try self.expectIdent();
+        _ = try self.expect(.assign_eq);
+        if (std.mem.startsWith(u8, self.file.str(name), "PATHPULSE$")) {
+            // §14.6.1's own example writes `PATHPULSE$ = 3;`, one limit and no
+            // parentheses, beside A.2.4's parenthesized form.
+            var reject: Ast.ExprId = undefined;
+            var err: Ast.ExprId = .none;
+            if (self.eat(.lparen)) {
+                reject = try parse_expr.parseMinTypMax(self);
+                if (self.eat(.comma)) err = try parse_expr.parseMinTypMax(self);
+                _ = try self.expect(.rparen);
+            } else reject = try parse_expr.parseMinTypMax(self);
+            try b.pulses.append(self.arena, .{ .kind = .limits, .name = name, .reject = reject, .err = err, .main_tok = tok });
+            if (!self.eat(.comma)) break;
+            continue;
+        }
+        const default = try parse_expr.parseMinTypMax(self);
+        try out.append(self.arena, .{
+            .name = name,
+            .ty = .unspecified, // §3.4.1: derived from the default, as for `parameter`
+            .default = default,
+            .is_local = true,
+            .is_spec = true,
+            .in_specify = in_specify,
+            .packed_range = packed_range,
+            .main_tok = tok,
+        });
+        if (!self.eat(.comma)) break;
+    }
+    _ = try self.expect(.semicolon);
+}
+
+// ---- private ----
 
 /// Parses one A.7.1 `specify_item`, any of the five arms:
 ///
@@ -81,6 +206,9 @@ const pulse_words = std.StaticStringMap(void).initComptime(.{ .{"pulsestyle_onev
 ///             | path_declaration
 ///             | system_timing_check
 fn parseSpecifyItem(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     switch (self.peek()) {
         .kw_reserved => {
             const w = self.tokenText(self.pos);
@@ -128,7 +256,7 @@ fn parseSpecifyItem(self: *Parser, b: *parse_module.Body) Error!void {
             return parsePathDeclaration(self, b, cond, false);
         },
         .lparen => return parsePathDeclaration(self, b, .none, false),
-        .system_identifier => return parseTimingCheck(self, b),
+        .system_identifier => return parse_timing.parseTimingCheck(self, b),
         else => return self.failAt(self.pos, .E0207, "found {s}, which begins no A.7.1 specify_item", .{self.found(self.pos)}), // else: begins no A.7.1 specify_item: E0207
     }
 }
@@ -138,6 +266,9 @@ fn parseSpecifyItem(self: *Parser, b: *parse_module.Body) Error!void {
 /// in which port directions the name may have, which is judged where the
 /// ports are known, not here.
 fn parseSpecifyTerminal(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     const name = try self.expectIdent();
     const e = try self.file.exprs.add(self.arena, .{ .tag = .ident, .main_tok = tok, .str = name });
@@ -148,6 +279,9 @@ fn parseSpecifyTerminal(self: *Parser) Error!Ast.ExprId {
 /// comma-separated run of A.7.3 descriptors under two names. Returns an
 /// arena slice of at least one descriptor.
 fn parseSpecifyTerminalList(self: *Parser) Error![]const Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var out: std.ArrayList(Ast.ExprId) = .empty;
     while (true) {
         try out.append(self.arena, try parseSpecifyTerminal(self));
@@ -172,6 +306,9 @@ fn parseSpecifyTerminalList(self: *Parser) Error![]const Ast.ExprId {
 /// chooses edge-sensitive from simple. The caller has consumed any
 /// `if (…)` or `ifnone` prefix, passed as `cond` and `ifnone`.
 fn parsePathDeclaration(self: *Parser, b: *parse_module.Body, cond: Ast.ExprId, ifnone: bool) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     _ = try self.expect(.lparen);
     // A.7.4 `edge_identifier ::= posedge | negedge`, present only on the
@@ -284,9 +421,6 @@ fn badOperator(self: *const Parser, e: Ast.ExprId) ?Ast.ExprId {
     return null;
 }
 
-/// How a path terminal names its port (§14.2.4.3).
-const Reference = enum { whole, bit, part };
-
 fn reference(self: *const Parser, t: Ast.ExprId) Reference {
     const ex = &self.file.exprs;
     if (ex.tag(t) != .index) return .whole;
@@ -339,61 +473,6 @@ fn readsSignal(self: *const Parser, b: *const parse_module.Body, e: Ast.ExprId) 
     return null;
 }
 
-/// IEEE 1364-2005 §14.2-§14.3's rules on the module's paths that need its
-/// ports and drivers, so run once the whole module is parsed. Each broken
-/// rule is reported (E0245) and the parse goes on; only OOM propagates.
-pub fn checkPaths(self: *Parser, b: *const parse_module.Body) Error!void {
-    const ex = &self.file.exprs;
-    for (b.paths.items, 0..) |p, i| {
-        for (p.ins) |t| {
-            const port = portNamed(b, terminalName(self, t));
-            if (port == null or (port.?.direction != .input and port.?.direction != .inout))
-                try self.report(ex.mainTok(t), .E0245, "module path source `{s}` is not an input or inout port (§14.2.1)", .{self.file.str(terminalName(self, t))});
-        }
-        for (p.outs) |t| {
-            const name = terminalName(self, t);
-            const port = portNamed(b, name);
-            if (port == null or (port.?.direction != .output and port.?.direction != .inout))
-                try self.report(ex.mainTok(t), .E0245, "module path destination `{s}` is not an output or inout port (§14.2.1)", .{self.file.str(name)});
-            // One driver per bit: `buf b0(P[0], ...); buf b1(P[1], ...);`
-            // drive P once each. A select that does not fold covers it all.
-            const n_drv = b.assigns.items.len + b.gates.items.len;
-            const shared = outer: for (0..n_drv) |j| {
-                const dj = driverTarget(b, j);
-                if (terminalName(self, dj) != name) continue;
-                for (0..j) |k| {
-                    const dk = driverTarget(b, k);
-                    if (terminalName(self, dk) == name and bitsOverlap(driverBits(self, dj), driverBits(self, dk))) break :outer true;
-                }
-            } else false;
-            if (shared) try self.report(ex.mainTok(t), .E0245, "module path destination `{s}` has more than one driver on a bit; §14.2.1 allows only one driver inside the module", .{self.file.str(name)});
-        }
-        if (!p.full) {
-            const src = p.ins[0];
-            const dst = p.outs[0];
-            if (p.data != .none) {
-                if (reference(self, dst) != .bit and (terminalWidth(self, b, dst) orelse 1) != 1)
-                    try self.report(ex.mainTok(dst), .E0245, "the destination of a parallel edge-sensitive path is a scalar port or a bit-select (§14.2.3)", .{});
-            } else if (terminalWidth(self, b, src)) |ws| if (terminalWidth(self, b, dst)) |wd| if (ws != wd)
-                try self.report(p.main_tok, .E0245, "a parallel path joins terminals of the same number of bits (§14.2.5), not {d} and {d}", .{ ws, wd });
-        }
-        for (p.delays) |d| if (try self.walk(self.pos, readsSignal, .{ self, b, d })) |at|
-            try self.report(ex.mainTok(at), .E0245, "a module path delay is a constant expression (§14.3); `{s}` is a signal", .{self.file.str(ex.strOf(at))});
-        for (b.paths.items[0..i]) |q| {
-            // §14.2.4.3: the declarations of one edge-sensitive path name
-            // each port the same way.
-            if (p.data != .none and q.data != .none and p.ins.len == 1 and q.ins.len == 1 and p.outs.len == 1 and q.outs.len == 1 and
-                terminalName(self, p.ins[0]) == terminalName(self, q.ins[0]) and terminalName(self, p.outs[0]) == terminalName(self, q.outs[0]) and
-                (reference(self, p.ins[0]) != reference(self, q.ins[0]) or reference(self, p.outs[0]) != reference(self, q.outs[0])))
-                try self.report(p.main_tok, .E0245, "a port is referenced in the same way in all declarations of one edge-sensitive path (§14.2.4.3)", .{});
-            // §14.2.4.4: not both `ifnone` and an unconditional simple path.
-            if (p.ifnone != q.ifnone and p.data == .none and q.data == .none and samePath(self, p, q) and
-                (if (p.ifnone) q.cond == .none else p.cond == .none))
-                try self.report(p.main_tok, .E0245, "an ifnone path and an unconditional path for the same module path (§14.2.4.4)", .{});
-        }
-    }
-}
-
 /// The `j`th driver inside the module: the continuous assignments, then the
 /// gate outputs.
 fn driverTarget(b: *const parse_module.Body, j: usize) Ast.ExprId {
@@ -433,298 +512,10 @@ fn samePath(self: *const Parser, p: Ast.SpecPath, q: Ast.SpecPath) bool {
 }
 
 fn eatPolarity(self: *Parser) Ast.SpecPolarity {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (self.eat(.plus)) return .positive;
     if (self.eat(.minus)) return .negative;
     return .none;
-}
-
-/// A.7.5.1's twelve `system_timing_check` commands and their argument
-/// counts `{ mandatory, mandatory + optional }`, counted off A.7.5.1: e.g.
-/// `$setup ( data_event , reference_event , timing_check_limit
-/// [ , [ notifier ] ] ) ;` is 3 and 4.
-pub const timing_checks = std.StaticStringMap(struct { u8, u8 }).initComptime(.{
-    .{ "$setup", .{ 3, 4 } },
-    .{ "$hold", .{ 3, 4 } },
-    .{ "$setuphold", .{ 4, 9 } },
-    .{ "$recovery", .{ 3, 4 } },
-    .{ "$removal", .{ 3, 4 } },
-    .{ "$recrem", .{ 4, 9 } },
-    .{ "$skew", .{ 3, 4 } },
-    .{ "$timeskew", .{ 3, 6 } },
-    .{ "$fullskew", .{ 4, 7 } },
-    .{ "$period", .{ 2, 3 } },
-    .{ "$width", .{ 2, 4 } },
-    .{ "$nochange", .{ 4, 5 } },
-});
-
-/// The widest `timing_checks` arity.
-const max_timing_args = blk: {
-    var m: u8 = 0;
-    for (timing_checks.values()) |a| m = @max(m, a[1]);
-    break :blk m;
-};
-
-/// The two commands whose first argument is a `controlled_reference_event`.
-const controlled_first = std.StaticStringMap(void).initComptime(.{ .{"$period"}, .{"$width"} });
-
-/// Parses one A.7.5.1 `system_timing_check` into `b.timing_checks`. A.7.1
-/// admits no other system task in a specify block, so a name not in
-/// `timing_checks` is E0207, as is a wrong argument count.
-fn parseTimingCheck(self: *Parser, b: *parse_module.Body) Error!void {
-    const tok = self.pos;
-    // Past the widest arity the count is refused below, so those slots are
-    // only counted.
-    var args: [max_timing_args]Ast.ExprId = undefined;
-    var edges: [max_timing_args]Ast.SpecEdge = undefined;
-    var masks: [max_timing_args]u8 = undefined;
-    var conds: [max_timing_args]Ast.ExprId = undefined;
-    const arity = timing_checks.get(self.tokenText(tok)) orelse return self.failAt(
-        tok,
-        .E0207,
-        "found {s}: A.7.1 admits only A.7.5.1's twelve timing checks inside a specify block",
-        .{self.found(tok)},
-    );
-    self.pos += 1;
-    _ = try self.expect(.lparen);
-    var n: u8 = 0;
-    if (self.peek() != .rparen) while (true) {
-        // A.7.5.1 writes the optional arguments `[ , [ notifier ] ]`, the
-        // comma outside the inner bracket, so a slot may be present and
-        // empty. That is why an argument is counted before it is read.
-        n +|= 1;
-        const arg = self.pos;
-        var slot: Ast.ExprId = .none;
-        var ev: Ast.SpecEdge = .none;
-        var mask: u8 = 0;
-        var cond: Ast.ExprId = .none;
-        const controlled = self.peek() != .comma and self.peek() != .rparen and
-            try parseTimingCheckArg(self, &slot, &ev, &mask, &cond, mintypmaxArg(self.tokenText(tok), n));
-        if (n <= max_timing_args) {
-            args[n - 1] = slot;
-            edges[n - 1] = ev;
-            masks[n - 1] = mask;
-            conds[n - 1] = cond;
-        }
-        // A.7.5.2: only `reference_event`, `data_event` and
-        // `controlled_reference_event` are `timing_check_event`s. Every
-        // command's are its first one (`$period`, `$width`) or two; the
-        // limits, flags, offsets and notifier after them are expressions
-        // and identifiers that take no event control and no `&&&`.
-        if (n > eventArgs(self.tokenText(tok)) and (ev != .none or cond != .none)) return self.failAt(
-            arg,
-            .E0207,
-            "found {s}: argument {d} of `{s}` is not an event, so it takes no event control or `&&&` condition (A.7.5.2)",
-            .{ self.found(arg), n, self.tokenText(tok) },
-        );
-        // A.7.5.1's mandatory arguments are not bracketed, so none of them
-        // may be left empty (only `[ , [ notifier ] ]` and its kin may).
-        if (n <= arity[0] and slot == .none) return self.failAt(
-            arg,
-            .E0207,
-            "found {s}: argument {d} of `{s}` is required (A.7.5.1)",
-            .{ self.found(arg), n, self.tokenText(tok) },
-        );
-        // A.7.5.1 `$width ( controlled_reference_event , timing_check_limit
-        // [ , threshold [ , notifier ] ] )` brackets neither of its two
-        // optional arguments on its own, and §15.3.4: "If the notifier is
-        // present, a non-null value for the threshold shall also be
-        // present", calling `$width ( negedge clr, lim, , notif );` illegal.
-        if (n > arity[0] and slot == .none and std.mem.eql(u8, self.tokenText(tok), "$width")) return self.failAt(
-            arg,
-            .E0207,
-            "found {s}: `$width`'s threshold and notifier are not null arguments (A.7.5.1, §15.3.4)",
-            .{self.found(arg)},
-        );
-        // A.7.5.1: `$period` and `$width` open with a
-        // `controlled_reference_event`, and A.7.5.3's
-        // `controlled_timing_check_event` makes its event control
-        // mandatory, unlike `timing_check_event`'s bracketed one.
-        if (n == 1 and !controlled and controlled_first.has(self.tokenText(tok))) return self.failAt(
-            arg,
-            .E0207,
-            "`{s}` timing check requires an event control (posedge, negedge or edge) on its reference event (A.7.5.3 controlled_timing_check_event)",
-            .{self.tokenText(tok)},
-        );
-        // A.7.5.2 `notifier ::= variable_identifier`, the reg a violation
-        // toggles. A.7.5.1 puts it first among the optional arguments of
-        // every command, except `$width`, whose optional `threshold` comes
-        // before it.
-        const notifier: u8 = if (std.mem.eql(u8, self.tokenText(tok), "$width")) 4 else arity[0] + 1;
-        if (n == notifier and self.pos != arg and
-            !(self.pos == arg + 1 and (self.tags[arg] == .identifier or self.tags[arg] == .escaped_identifier)))
-            return self.failAt(arg, .E0207, "found {s}: the notifier argument of `{s}` names a variable (A.7.5.2 notifier ::= variable_identifier)", .{ self.found(arg), self.tokenText(tok) });
-        if (!self.eat(.comma)) break;
-    };
-    _ = try self.expect(.rparen);
-    _ = try self.expect(.semicolon);
-    if (n < arity[0] or n > arity[1]) return self.failAt(
-        tok,
-        .E0207,
-        "`{s}` takes {d} to {d} arguments, not {d}",
-        .{ self.tokenText(tok), arity[0], arity[1], n },
-    );
-    try b.timing_checks.append(self.arena, .{
-        .name = try self.internTok(tok),
-        .args = try self.arena.dupe(Ast.ExprId, args[0..n]),
-        .edges = try self.arena.dupe(Ast.SpecEdge, edges[0..n]),
-        .masks = try self.arena.dupe(u8, masks[0..n]),
-        .conds = try self.arena.dupe(Ast.ExprId, conds[0..n]),
-        .main_tok = tok,
-    });
-}
-
-/// How many of a command's leading arguments are A.7.5.2 events: one for
-/// the `controlled_reference_event` commands, two (reference and data) for
-/// the rest.
-fn eventArgs(name: []const u8) u8 {
-    return if (controlled_first.has(name)) 1 else 2;
-}
-
-/// Parses one argument of an A.7.5.1 command into `slot` and `ev`, and
-/// returns whether it had an event control. A.7.5.2's argument productions
-/// are all `expression` except the two event slots, which A.7.5.3 gives a
-/// prefix and a suffix:
-///
-///     timing_check_event ::= [ timing_check_event_control ]
-///             specify_terminal_descriptor [ &&& timing_check_condition ]
-///     timing_check_event_control ::= posedge | negedge | edge_control_specifier
-///
-/// Every argument accepts that union; `parseTimingCheck` enforces the
-/// mandatory control of a `controlled_reference_event` (`$period`,
-/// `$width`) and refuses one on an argument that is no event. `mask` is the
-/// control's `TimingCheck.masks` entry, `cond` its `&&&` condition.
-fn parseTimingCheckArg(self: *Parser, slot: *Ast.ExprId, ev: *Ast.SpecEdge, mask: *u8, cond: *Ast.ExprId, mtm: MinTypMaxArg) Error!bool {
-    ev.* = if (self.eat(.kw_posedge)) .posedge else if (self.eat(.kw_negedge)) .negedge else .none;
-    mask.* = switch (ev.*) {
-        .posedge => Ast.TimingCheck.posedge_mask,
-        .negedge => Ast.TimingCheck.negedge_mask,
-        .none, .edge => 0,
-    };
-    var controlled = ev.* != .none;
-    if (!controlled and self.reservedIs(self.pos, "edge")) {
-        controlled = true;
-        ev.* = .edge;
-        // A.7.5.3 `edge_control_specifier ::= edge [ edge_descriptor
-        // { , edge_descriptor } ]`. The descriptors are two-character
-        // symbols (`01`, `z1`, `0x`) that lex as numbers or identifiers
-        // depending on their characters, so each is read as the characters
-        // of its tokens up to the next `,` or `]`.
-        self.pos += 1;
-        // The brackets are the production's own (§15.4: "the keyword edge
-        // followed by a square-bracketed list"), so a bare `edge clk`
-        // names no transition and is refused.
-        _ = try self.expect(.lbracket);
-        while (true) {
-            const at = self.pos;
-            var d: [3]u8 = undefined;
-            var n: usize = 0;
-            while (self.peek() != .comma and self.peek() != .rbracket) : (self.pos += 1) {
-                if (self.peek() == .eof) return self.failAt(self.pos, .E0210, "found {s}", .{self.found(self.pos)});
-                for (self.tokenText(self.pos)) |c| {
-                    if (n < d.len) d[n] = std.ascii.toLower(c);
-                    n += 1;
-                }
-            }
-            if (n != 2 or !edgeDescriptor(d[0], d[1])) return self.failAt(at, .E0207, "found {s}, not an A.7.5.3 edge descriptor (01, 10, or 0 or 1 paired with x or z)", .{self.found(at)});
-            mask.* |= Ast.TimingCheck.transition(d[0], d[1]);
-            if (self.eat(.rbracket)) break;
-            self.pos += 1; // `,`
-        }
-    }
-    slot.* = switch (mtm) {
-        .no => try parse_expr.parseExpr(self),
-        .yes => try parse_expr.parseMinTypMax(self),
-        // `terminal_identifier [ constant_mintypmax_expression ]`.
-        .select => if (self.identLike(self.pos) and self.peekAt(1) == .lbracket) sel: {
-            const base = try parse_expr.parsePrimary(self);
-            const at = try self.expect(.lbracket);
-            const i = try parse_expr.parseMinTypMax(self);
-            _ = try self.expect(.rbracket);
-            break :sel try self.file.exprs.add(self.arena, .{ .tag = .index, .main_tok = at, .lhs = base, .rhs = i });
-        } else try parse_expr.parseExpr(self),
-    };
-    // A.7.5.3's `&&&`, which is three tokens' worth of `&` in a stream that
-    // has no tag for it.
-    cond.* = if (self.eatSymbol("&&&")) try parse_expr.parseExpr(self) else .none;
-    return controlled;
-}
-
-const MinTypMaxArg = enum { no, yes, select };
-
-/// Which A.7.5.2 argument productions are `mintypmax_expression`: the
-/// stamptime and checktime conditions (6th, 7th) of `$setuphold` and
-/// `$recrem`, whose delayed reference and data (8th, 9th) take one as their
-/// select, and `$nochange`'s two edge offsets (3rd, 4th). The rest are
-/// `expression` or narrower.
-fn mintypmaxArg(name: []const u8, n: u8) MinTypMaxArg {
-    if (std.mem.eql(u8, name, "$nochange")) return if (n == 3 or n == 4) .yes else .no;
-    if (!std.mem.eql(u8, name, "$setuphold") and !std.mem.eql(u8, name, "$recrem")) return .no;
-    return switch (n) {
-        6, 7 => .yes,
-        8, 9 => .select,
-        else => .no,
-    };
-}
-
-/// A.7.5.3 `edge_descriptor ::= 01 | 10 | z_or_x zero_or_one | zero_or_one
-/// z_or_x`, its two characters lower-cased.
-fn edgeDescriptor(a: u8, b: u8) bool {
-    const a01 = a == '0' or a == '1';
-    const b01 = b == '0' or b == '1';
-    const axz = a == 'x' or a == 'z';
-    const bxz = b == 'x' or b == 'z';
-    return (a01 and b01 and a != b) or (axz and b01) or (a01 and bxz);
-}
-
-/// Parses one A.2.1.1 `specparam_declaration ::= specparam [ range ]
-/// list_of_specparam_assignments ;` with A.2.4's assignments:
-///
-///     specparam_assignment ::=
-///             specparam_identifier = constant_mintypmax_expression
-///             | pulse_control_specparam
-///
-/// Into `b.params`, for both the Syntax 6-1 module-item form and an A.7.1
-/// `specify_item`: each specparam becomes a §3.4.5 `localparam` (a constant
-/// with a mandatory default that no `parameter_value_assignment` can name;
-/// the digital engine's SDF annotator writes its slot, §16.2.3).
-///
-/// A.2.4's `pulse_control_specparam`, `PATHPULSE$[input$output] = (
-/// reject_limit_value [ , error_limit_value ] )`, declares no constant: it
-/// goes to `b.pulses`, the §14.6.1 limits the digital engine applies.
-pub fn parseSpecparamDecl(self: *Parser, b: *parse_module.Body, in_specify: bool) Error!void {
-    const out = &b.params;
-    self.pos += 1; // `specparam`
-    const packed_range: ?Ast.Dim = try parse_decl.optDim(self);
-    while (true) {
-        const tok = self.pos;
-        const name = try self.expectIdent();
-        _ = try self.expect(.assign_eq);
-        if (std.mem.startsWith(u8, self.file.str(name), "PATHPULSE$")) {
-            // §14.6.1's own example writes `PATHPULSE$ = 3;`, one limit and no
-            // parentheses, beside A.2.4's parenthesized form.
-            var reject: Ast.ExprId = undefined;
-            var err: Ast.ExprId = .none;
-            if (self.eat(.lparen)) {
-                reject = try parse_expr.parseMinTypMax(self);
-                if (self.eat(.comma)) err = try parse_expr.parseMinTypMax(self);
-                _ = try self.expect(.rparen);
-            } else reject = try parse_expr.parseMinTypMax(self);
-            try b.pulses.append(self.arena, .{ .kind = .limits, .name = name, .reject = reject, .err = err, .main_tok = tok });
-            if (!self.eat(.comma)) break;
-            continue;
-        }
-        const default = try parse_expr.parseMinTypMax(self);
-        try out.append(self.arena, .{
-            .name = name,
-            .ty = .unspecified, // §3.4.1: derived from the default, as for `parameter`
-            .default = default,
-            .is_local = true,
-            .is_spec = true,
-            .in_specify = in_specify,
-            .packed_range = packed_range,
-            .main_tok = tok,
-        });
-        if (!self.eat(.comma)) break;
-    }
-    _ = try self.expect(.semicolon);
 }

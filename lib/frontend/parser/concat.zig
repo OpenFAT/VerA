@@ -8,8 +8,13 @@
 //!
 //! LRM clauses cited: §3.2.1, §3.3, §3.4.4, §3.4.8, §3.6.3.2, §4.2.1,
 //! §4.2.1.1, §4.2.13, §4.2.14, §4.5.6, §4.5.11.
+//!
+//! Contents:
+//! - `pub fn parseConcat(self: *Parser, tok: u32) Error!Ast.ExprId`
+//! - `pub fn parseAssignPattern(self: *Parser, tok: u32) Error!Ast.ExprId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_expr = @import("expr.zig");
@@ -20,6 +25,9 @@ const Error = parser.Error;
 /// §4.2.13 / A.8.1 `analog_concatenation` or `analog_multiple_concatenation`,
 /// cursor on the `{` (token `tok`).
 pub fn parseConcat(self: *Parser, tok: u32) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var items: std.ArrayList(Ast.ExprId) = .empty;
     const count = try braceOperands(self, &items);
     if (count) |n| return multiConcat(self, tok, n, items.items);
@@ -32,6 +40,9 @@ pub fn parseConcat(self: *Parser, tok: u32) Error!Ast.ExprId {
 /// filter coefficient arguments), cursor on the `'{` (token `tok`). An empty
 /// element is `.none`.
 pub fn parseAssignPattern(self: *Parser, tok: u32) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     self.pos += 1;
     var items: std.ArrayList(Ast.ExprId) = .empty;
     if (self.peek() != .rbrace) {
@@ -78,6 +89,8 @@ pub fn parseAssignPattern(self: *Parser, tok: u32) Error!Ast.ExprId {
     return self.file.exprs.add(self.arena, .{ .tag = .assign_pattern, .main_tok = tok, .extra = off });
 }
 
+// ---- private ----
+
 /// A.8.1, both brace forms at once:
 ///
 ///     analog_concatenation          ::= { analog_expression
@@ -100,6 +113,9 @@ pub fn parseAssignPattern(self: *Parser, tok: u32) Error!Ast.ExprId {
 /// for a string, `{i{"Hi"}}`).
 /// Digital mode keeps every group and count unflattened.
 fn braceOperands(self: *Parser, items: *std.ArrayList(Ast.ExprId)) Error!?Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     // An analog `{{{...` recurses here through `braceGroup` without passing
     // `parseUnary`, so each brace is a level of its own.
     if (self.segmentDue()) return self.segment(braceOperands, .{ self, items });
@@ -159,6 +175,9 @@ fn braceOperands(self: *Parser, items: *std.ArrayList(Ast.ExprId)) Error!?Ast.Ex
 /// `braceOperands` for positions that cannot pass a count upwards: a
 /// nonconstant replication stays one operand instead of being returned.
 fn braceGroup(self: *Parser, items: *std.ArrayList(Ast.ExprId)) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const at = self.pos;
     var g: std.ArrayList(Ast.ExprId) = .empty;
     if (try braceOperands(self, &g)) |c| {
@@ -173,6 +192,9 @@ fn braceGroup(self: *Parser, items: *std.ArrayList(Ast.ExprId)) Error!void {
 /// multiplier). `rhs` is the inner `.concat`, exactly as `Ast.ExprTag`
 /// documents the tag.
 fn multiConcat(self: *Parser, tok: u32, count: Ast.ExprId, items: []const Ast.ExprId) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const off = try self.file.exprs.addExprList(self.arena, items);
     const inner = try self.file.exprs.add(self.arena, .{ .tag = .concat, .main_tok = tok, .extra = off });
     return self.file.exprs.add(self.arena, .{ .tag = .multi_concat, .main_tok = tok, .lhs = count, .rhs = inner });
@@ -226,6 +248,9 @@ fn concatReplCount(self: *const Parser, e: Ast.ExprId) ?u32 {
 /// `.concat` for §4.5.11 filter coefficients, §3.2.2 array assignment and the
 /// §3.3 Table 3-3 string form, which lowering handles.
 fn foldBitConcat(self: *Parser, tok: u32, items: []const Ast.ExprId) Error!?Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (self.digital) return null;
     const ex = &self.file.exprs;
     var any_sized = false;
@@ -247,7 +272,7 @@ fn foldBitConcat(self: *Parser, tok: u32, items: []const Ast.ExprId) Error!?Ast.
     var total: u64 = 0;
     for (items) |it| {
         if (std.mem.findScalar(Ast.ExprId, effects.items, it) != null) continue;
-        const lit: ?lexer.IntLiteral = if (ex.tag(it) == .int_literal and ex.intLiteral(it).width != 0)
+        const lit: ?Ast.IntLiteral = if (ex.tag(it) == .int_literal and ex.intLiteral(it).width != 0)
             ex.intLiteral(it)
         else
             null;

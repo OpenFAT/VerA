@@ -5,8 +5,15 @@
 //!
 //! LRM clauses cited: §2.6.2, §4.7.1, §4.7.2.2, §5.6, §5.7, §5.8, §5.8.3, §5.9, §5.9.1,
 //! §5.9.2, §5.10, §5.10.4, §5.11.
+//!
+//! Contents:
+//! - `pub fn parseStmtNoNull(self: *Parser) Error!Ast.StmtId`
+//! - `pub fn parseStmt(self: *Parser) Error!Ast.StmtId`
+//! - `pub fn parseCase(self: *Parser, kind: Ast.CaseKind, gen: ?*parse_module.Body) Error!Ast.StmtId`
+//! - `pub fn parseAssignNoSemi(self: *Parser) Error!Ast.StmtId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_decl = @import("decl.zig");
@@ -15,14 +22,11 @@ const parse_expr = @import("expr.zig");
 const parse_literal = @import("literal.zig");
 const parse_generate = @import("generate.zig");
 const parse_module = @import("module.zig");
-const parse_specify = @import("specify.zig");
+const parse_timing = @import("timing_check.zig");
+const parse_event = @import("event.zig");
 const parse_hier = @import("hier.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
-
-// -----------------------------------------------------------------------
-// A.6.4 analog_statement, LRM Clause 5
-// -----------------------------------------------------------------------
 
 /// Parses one statement where A.6.4 admits no null statement, reporting a
 /// bare `;` as E0219 in an analog source and then parsing on (the `;` is
@@ -33,6 +37,9 @@ const Error = parser.Error;
 /// those sites call `parseStmt`. `analog_seq_block` (A.6.3) and
 /// `analog_construct` (A.6.2) take `analog_statement`, so they call this.
 pub fn parseStmtNoNull(self: *Parser) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (!self.digital and self.peek() == .semicolon)
         try self.report(self.pos, .E0219, "", .{});
     return parseStmt(self);
@@ -46,6 +53,9 @@ pub fn parseStmtNoNull(self: *Parser) Error!Ast.StmtId {
 /// A task enable falls through to the expression statement. `casex`/`casez`
 /// parse everywhere: §7.3.2 makes them analog statements in Verilog-AMS.
 pub fn parseStmt(self: *Parser) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (self.segmentDue()) return self.segment(parseStmt, .{self});
     self.enter();
     defer self.leave();
@@ -61,14 +71,90 @@ pub fn parseStmt(self: *Parser) Error!Ast.StmtId {
     return id;
 }
 
+/// Parses a §5.8.3 / A.6.7 case statement of `kind`, or, when `gen` is
+/// non-null, a Syntax 6-8 `case_generate_construct ::= case
+/// ( constant_expression ) case_generate_item { case_generate_item }
+/// endcase` whose arm bodies are generate blocks appended to `gen`. The two
+/// productions differ only in what an arm body is.
+pub fn parseCase(self: *Parser, kind: Ast.CaseKind, gen: ?*parse_module.Body) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const tok = self.pos;
+    self.pos += 1; // 'case' / 'casex' / 'casez'
+    _ = try self.expect(.lparen);
+    const scrutinee = try parse_expr.parseExpr(self);
+    _ = try self.expect(.rparen);
+
+    var arms: std.ArrayList(Ast.CaseArm) = .empty;
+    var arm_at: u32 = undefined;
+    while (self.peek() != .kw_endcase and self.peek() != .eof) : (std.debug.assert(self.pos > arm_at)) {
+        arm_at = self.pos;
+        // A.6.7 gives a case item no attribute prefix (its statement_or_null
+        // carries one); an instance before an item is still read and dropped,
+        // but one that runs into `endcase` prefixes nothing: §2.9, E0207 (#69).
+        const past = self.pastAttributes();
+        if (past != arm_at and (self.tags[past] == .kw_endcase or self.tags[past] == .eof)) {
+            try self.skipAttributes();
+            try self.attributesEnd(arm_at);
+            break;
+        }
+        try self.skipAttributes();
+        const mark = self.scratch_exprs.items.len;
+        defer self.scratch_exprs.shrinkRetainingCapacity(mark);
+        if (self.eat(.kw_default)) {
+            _ = self.eat(.colon); // A.6.7: `default [ : ]`
+        } else {
+            while (true) {
+                const label = try parse_expr.parseExpr(self);
+                try self.scratch_exprs.append(self.arena, label);
+                if (!self.eat(.comma)) break;
+            }
+            _ = try self.expect(.colon);
+        }
+        const labels = try self.arena.dupe(Ast.ExprId, self.scratch_exprs.items[mark..]);
+        const body = if (gen) |b| try parse_generate.parseGenerateBlock(self, b) else try parseStmt(self);
+        try arms.append(self.arena, .{ .labels = labels, .body = body });
+    }
+    _ = try self.expect(.kw_endcase);
+    return self.file.addStmt(
+        self.arena,
+        .{ .case_stmt = .{
+            .kind = kind,
+            .scrutinee = scrutinee,
+            .arms = arms.items,
+            .is_generate = gen != null,
+        } },
+        tok,
+    );
+}
+
+/// Parses an A.6.8 `for` header assignment: an analog_variable_assignment
+/// with no terminating `;`.
+pub fn parseAssignNoSemi(self: *Parser) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const tok = self.pos;
+    const target = try parse_expr.parseExpr(self);
+    _ = try self.expect(.assign_eq);
+    const value = try parse_expr.parseExpr(self);
+    return self.file.addStmt(self.arena, .{ .assign = .{ .target = target, .value = value } }, tok);
+}
+
+// ---- private ----
+
 fn parseStmtBody(self: *Parser) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     const event_block = self.analog_event_block;
     self.analog_event_block = false;
     defer self.analog_event_block = event_block;
     if (self.eat(.hash)) {
         if (!self.discreteGrammar()) try self.report(tok, .E0254, "", .{});
-        const delay = try parseDelay(self);
+        const delay = try parse_event.parseDelay(self);
         const body = try parseStmt(self);
         return self.file.addStmt(self.arena, .{ .event_control = .{ .event = delay, .body = body, .kind = .delay } }, tok);
     }
@@ -160,7 +246,7 @@ fn parseStmtBody(self: *Parser) Error!Ast.StmtId {
             const body = try parseStmt(self);
             return self.file.addStmt(self.arena, .{ .repeat_stmt = .{ .count = count, .body = body } }, tok);
         },
-        .at => return parseEventControl(self), // §5.10 / A.6.5
+        .at => return parse_event.parseEventControl(self), // §5.10 / A.6.5
         // A.6.5 `event_trigger ::= -> hierarchical_event_identifier
         // { [ expression ] } ;` (§5.10.4). The executor checks that the
         // expression names one event rather than a value or whole array.
@@ -215,6 +301,9 @@ fn parseStmtBody(self: *Parser) Error!Ast.StmtId {
 /// Parses a §5.3.2 / A.6.3 analog_seq_block, or a digital `fork … join`.
 /// Local declarations are only legal on a named block (E0290).
 fn parseSeqBlock(self: *Parser) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     const event_block = self.analog_event_block;
     self.analog_event_block = false;
@@ -345,205 +434,15 @@ fn blockCloser(self: *const Parser, parallel: bool, i: u32) bool {
     return self.tags[i] == .eof or (if (parallel) self.reservedIs(i, "join") else self.tags[i] == .kw_end);
 }
 
-/// Parses a §5.8.3 / A.6.7 case statement of `kind`, or, when `gen` is
-/// non-null, a Syntax 6-8 `case_generate_construct ::= case
-/// ( constant_expression ) case_generate_item { case_generate_item }
-/// endcase` whose arm bodies are generate blocks appended to `gen`. The two
-/// productions differ only in what an arm body is.
-pub fn parseCase(self: *Parser, kind: Ast.CaseKind, gen: ?*parse_module.Body) Error!Ast.StmtId {
-    const tok = self.pos;
-    self.pos += 1; // 'case' / 'casex' / 'casez'
-    _ = try self.expect(.lparen);
-    const scrutinee = try parse_expr.parseExpr(self);
-    _ = try self.expect(.rparen);
-
-    var arms: std.ArrayList(Ast.CaseArm) = .empty;
-    var arm_at: u32 = undefined;
-    while (self.peek() != .kw_endcase and self.peek() != .eof) : (std.debug.assert(self.pos > arm_at)) {
-        arm_at = self.pos;
-        // A.6.7 gives a case item no attribute prefix (its statement_or_null
-        // carries one); an instance before an item is still read and dropped,
-        // but one that runs into `endcase` prefixes nothing: §2.9, E0207 (#69).
-        const past = self.pastAttributes();
-        if (past != arm_at and (self.tags[past] == .kw_endcase or self.tags[past] == .eof)) {
-            try self.skipAttributes();
-            try self.attributesEnd(arm_at);
-            break;
-        }
-        try self.skipAttributes();
-        const mark = self.scratch_exprs.items.len;
-        defer self.scratch_exprs.shrinkRetainingCapacity(mark);
-        if (self.eat(.kw_default)) {
-            _ = self.eat(.colon); // A.6.7: `default [ : ]`
-        } else {
-            while (true) {
-                const label = try parse_expr.parseExpr(self);
-                try self.scratch_exprs.append(self.arena, label);
-                if (!self.eat(.comma)) break;
-            }
-            _ = try self.expect(.colon);
-        }
-        const labels = try self.arena.dupe(Ast.ExprId, self.scratch_exprs.items[mark..]);
-        const body = if (gen) |b| try parse_generate.parseGenerateBlock(self, b) else try parseStmt(self);
-        try arms.append(self.arena, .{ .labels = labels, .body = body });
-    }
-    _ = try self.expect(.kw_endcase);
-    return self.file.addStmt(
-        self.arena,
-        .{ .case_stmt = .{
-            .kind = kind,
-            .scrutinee = scrutinee,
-            .arms = arms.items,
-            .is_generate = gen != null,
-        } },
-        tok,
-    );
-}
-
-/// Parses an A.6.5 analog_event_control_statement (§5.10) from its `@`.
-fn parseEventControl(self: *Parser) Error!Ast.StmtId {
-    const tok = self.pos;
-    self.pos += 1; // '@'
-    // A.6.5 `event_control ::= … | @* | @ (*)`. Both spellings mean the
-    // same implicit list and carry no expression, so the statement records
-    // `.none` (`Ast.Stmt.event_control`). The §2.9 attribute tokens split
-    // `(*)` three ways: `(*` `)`, `(` `*)`, `(` `*` `)`.
-    if (eatImplicitEvent(self))
-        return self.file.addStmt(self.arena, .{ .event_control = .{ .event = .none, .body = try parseStmt(self) } }, tok);
-    const event = try parseEvent(self);
-    // A.6.4 `analog_event_control_statement ::= analog_event_control
-    // analog_event_statement`.
-    self.analog_event_block = !self.discreteGrammar();
-    const body = try parseStmt(self);
-    return self.file.addStmt(self.arena, .{ .event_control = .{ .event = event, .body = body } }, tok);
-}
-
-/// Consumes A.6.5's `*` or `(*)` after an `@`, the implicit event list, and
-/// returns whether it was there. The §2.9 attribute tokens split `(*)` three
-/// ways: `(*` `)`, `(` `*)`, `(` `*` `)`.
-fn eatImplicitEvent(self: *Parser) bool {
-    const star_toks: u32 = switch (self.peek()) {
-        .star => 1,
-        .attr_open => if (self.peekAt(1) == .rparen) 2 else 0,
-        .lparen => if (self.peekAt(1) == .attr_close) 2 else if (self.peekAt(1) == .star and self.peekAt(2) == .rparen) 3 else 0,
-        else => 0, // else: any other token after `@` starts an event expression or a name
-    };
-    self.pos += star_toks;
-    return star_toks != 0;
-}
-
-/// Parses an A.6.5 `delay_control` after the `#`: `( mintypmax_expression )`
-/// or a `delay_value`.
-fn parseDelay(self: *Parser) Error!Ast.ExprId {
-    const saved_delay = self.in_digital_delay;
-    self.in_digital_delay = true;
-    defer self.in_digital_delay = saved_delay;
-    if (!self.eat(.lparen)) return parse_net.parseDelayValue(self);
-    const value = try parse_expr.parseMinTypMax(self);
-    _ = try self.expect(.rparen);
-    return value;
-}
-
-/// Parses an A.6.5 `event_control` after the `@`: `( event_expression )` or
-/// `hierarchical_event_identifier`.
-fn parseEvent(self: *Parser) Error!Ast.ExprId {
-    if (self.eat(.lparen)) {
-        const e = try parseEventExpr(self);
-        _ = try self.expect(.rparen);
-        return e;
-    }
-    // A.9.3 `hierarchical_event_identifier`: `c.e`, `$root.top.e`. Its final
-    // segment takes no index, so an event-array element is `@(ev[0])`.
-    if (self.peekAt(1) == .dot) return parse_expr.parsePrimary(self);
-    const id_tok = self.pos;
-    const name = try self.expectIdent();
-    return self.file.exprs.add(self.arena, .{ .tag = .ident, .main_tok = id_tok, .str = name });
-}
-
-/// Parses an A.6.5 analog_event_expression. `or` and `,` both build
-/// `.event_or` (§4.2.2 puts them at the `||` level, below everything else).
-fn parseEventExpr(self: *Parser) Error!Ast.ExprId {
-    var lhs = try parseEventTerm(self);
-    // Each `or` nests the tree one level, as an operator does.
-    const base = self.depth;
-    defer self.depth = base;
-    while (self.peek() == .kw_or or self.peek() == .comma) {
-        const tok = self.pos;
-        self.nest();
-        self.pos += 1;
-        const rhs = try parseEventTerm(self);
-        lhs = try self.file.exprs.add(self.arena, .{
-            .tag = .event_or,
-            .main_tok = tok,
-            .lhs = lhs,
-            .rhs = rhs,
-        });
-    }
-    return lhs;
-}
-
-/// Parses one term of an event expression. §5.10.2 step events carry a list
-/// of analysis name strings, not expressions (A.6.5); anything else is an
-/// ordinary expression, and `cross`/`above`/`timer`/`absdelta` become
-/// `.event_function` in `parsePrimary`.
-pub fn parseEventTerm(self: *Parser) Error!Ast.ExprId {
-    const tok = self.pos;
-    // A.6.5 `event_expression ::= … | driver_update expression` is digital,
-    // absent from `analog_event_expression`, and legal only in a §7.6
-    // connect module (§9.22, E0818), where VerA also reads it in an analog
-    // event. Any other analog event falls through to `parseExpr`, which
-    // finds no expression (§2.8.2).
-    if (self.peek() == .kw_driver_update and (self.in_connect_module or self.discreteGrammar())) {
-        if (!self.in_connect_module) {
-            var d = self.failWith(tok, .E0818);
-            d.msg("`driver_update` in a module that is not a connect module", .{});
-            d.note("§9.22: \"Driver access functions can only be called from connect modules\", and driver_update \"is used in combination with the driver access functions\"", .{});
-            try d.emit();
-        }
-        self.pos += 1;
-        const sig = try parse_expr.parseExpr(self);
-        return self.file.exprs.add(self.arena, .{ .tag = .event_driver_update, .main_tok = tok, .lhs = sig });
-    }
-    // A.6.5 `event_expression ::= posedge expression | negedge expression`,
-    // digital like `driver_update` but legal in any discrete event
-    // expression.
-    if (self.peek() == .kw_posedge or self.peek() == .kw_negedge) {
-        const edge: Ast.ExprTag = if (self.peek() == .kw_posedge) .event_posedge else .event_negedge;
-        self.pos += 1;
-        const sig = try parse_expr.parseExpr(self);
-        return self.file.exprs.add(self.arena, .{ .tag = edge, .main_tok = tok, .lhs = sig });
-    }
-    const tag: Ast.ExprTag = switch (self.peek()) {
-        .kw_initial_step => .event_initial_step,
-        .kw_final_step => .event_final_step,
-        else => return parse_expr.parseExpr(self), // else: not a §5.10.2 global event, so an event expression
-    };
-    self.pos += 1;
-    var names: std.ArrayList(Ast.StrId) = .empty;
-    if (self.eat(.lparen)) {
-        // A.6.5 makes the analysis list non-empty and the parenthesised
-        // group optional, so `final_step()` has no derivation (annex G
-        // Table G.2 item 13: "without arguments should not have
-        // parenthesis").
-        if (self.peek() == .rparen)
-            try self.report(self.pos, .E0220, "after `{s}`", .{@tagName(tag)[6..]});
-        if (self.peek() != .rparen) while (true) {
-            const s = try self.expect(.string_literal);
-            try names.append(self.arena, try parse_literal.internString(self, s));
-            if (!self.eat(.comma)) break;
-        };
-        _ = try self.expect(.rparen);
-    }
-    const off = try self.file.exprs.addStrList(self.arena, names.items);
-    return self.file.exprs.add(self.arena, .{ .tag = tag, .main_tok = tok, .extra = off });
-}
-
 /// Parses an A.6.9 `$task [ ( [expr] {, [expr]} ) ] ;` (Clause 9). The name
 /// keeps its `$` so lowering reports it as written.
 fn parseSysTask(self: *Parser) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     // IEEE 1364-2005 §15.1: "no timing check can appear in procedural code".
-    if (parse_specify.timing_checks.has(self.tokenText(tok)))
+    if (parse_timing.timing_checks.has(self.tokenText(tok)))
         return self.failAt(tok, .E0207, "`{s}` is a timing check, which only a specify block holds (§15.1)", .{self.tokenText(tok)});
     const name = try self.internTok(tok);
     self.pos += 1;
@@ -559,6 +458,9 @@ fn parseSysTask(self: *Parser) Error!Ast.StmtId {
 /// decides. In the discrete grammar also a nonblocking assignment or a task
 /// enable. Anything else after the expression is E0214.
 fn parseExprOrContributeStmt(self: *Parser) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     // A.6.9: a call heading a discrete statement is a task enable.
     self.task_enable_head = self.discreteGrammar();
@@ -570,7 +472,7 @@ fn parseExprOrContributeStmt(self: *Parser) Error!Ast.StmtId {
     if ((self.peek() == .assign_eq or (self.discreteGrammar() and self.peek() == .lt_eq)) and isLiteral(self.file.exprs.tag(lhs)))
         return self.failAt(tok, .E0207, "found {s}: an A.8.5 assignment target is a variable, never a literal", .{self.found(tok)});
     if (self.discreteGrammar() and self.eat(.lt_eq)) {
-        const timing = try parseIntraTiming(self);
+        const timing = try parse_event.parseIntraTiming(self);
         const value = try parse_expr.parseExpr(self);
         _ = try self.expect(.semicolon);
         return self.file.addStmt(self.arena, .{ .assign = .{
@@ -608,7 +510,7 @@ fn parseExprOrContributeStmt(self: *Parser) Error!Ast.StmtId {
         },
         .assign_eq => { // §5.7 / A.6.2
             self.pos += 1;
-            const timing = try parseIntraTiming(self);
+            const timing = try parse_event.parseIntraTiming(self);
             const value = try parse_expr.parseExpr(self);
             _ = try self.expect(.semicolon);
             return self.file.addStmt(self.arena, .{ .assign = .{
@@ -642,44 +544,4 @@ fn isLiteral(tag: Ast.ExprTag) bool {
         .int_literal, .logic_literal, .real_literal, .str_literal, .pos_inf, .neg_inf => true,
         else => false, // else: a name, call, select or operator node: lowering judges it as a target
     };
-}
-
-/// Parses A.6.2's optional `delay_or_event_control` after the assignment
-/// operator: A.6.5 `delay_control | event_control`. Analog has no such
-/// production, so outside the discrete grammar this reads nothing and the
-/// expression parser reports a `#` or `@`.
-fn parseIntraTiming(self: *Parser) Error!struct { expr: Ast.ExprId, is_delay: bool, count: Ast.ExprId = .none, implicit: bool = false } {
-    if (!self.discreteGrammar()) return .{ .expr = .none, .is_delay = false };
-    switch (self.peek()) {
-        .hash => {
-            self.pos += 1;
-            return .{ .expr = try parseDelay(self), .is_delay = true };
-        },
-        .at => {
-            self.pos += 1;
-            if (eatImplicitEvent(self)) return .{ .expr = .none, .is_delay = false, .implicit = true };
-            return .{ .expr = try parseEvent(self), .is_delay = false };
-        },
-        // A.6.5 `repeat ( expression ) event_control`.
-        .kw_repeat => {
-            self.pos += 1;
-            _ = try self.expect(.lparen);
-            const count = try parse_expr.parseExpr(self);
-            _ = try self.expect(.rparen);
-            _ = try self.expect(.at);
-            if (eatImplicitEvent(self)) return .{ .expr = .none, .is_delay = false, .count = count, .implicit = true };
-            return .{ .expr = try parseEvent(self), .is_delay = false, .count = count };
-        },
-        else => return .{ .expr = .none, .is_delay = false }, // else: no intra-assignment timing control
-    }
-}
-
-/// Parses an A.6.8 `for` header assignment: an analog_variable_assignment
-/// with no terminating `;`.
-pub fn parseAssignNoSemi(self: *Parser) Error!Ast.StmtId {
-    const tok = self.pos;
-    const target = try parse_expr.parseExpr(self);
-    _ = try self.expect(.assign_eq);
-    const value = try parse_expr.parseExpr(self);
-    return self.file.addStmt(self.arena, .{ .assign = .{ .target = target, .value = value } }, tok);
 }

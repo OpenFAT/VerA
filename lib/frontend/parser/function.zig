@@ -5,8 +5,13 @@
 //!
 //! LRM clauses cited: §4.7, §4.7.1, §4.7.2.3; IEEE 1364-2005 §10.2, §10.2.1,
 //! §10.4.
+//!
+//! Contents:
+//! - `pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_analog: bool) Error!void`
+//! - `pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_decl = @import("decl.zig");
@@ -16,10 +21,6 @@ const parse_stmt = @import("stmt.zig");
 const parse_expr = @import("expr.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
-
-// -----------------------------------------------------------------------
-// A.2.6 analog_function_declaration: LRM §4.7.1
-// -----------------------------------------------------------------------
 
 /// LRM §4.7.1: `analog function [type] name ; items stmt endfunction`, cursor
 /// on `function`. Argument types come from a matching variable declaration
@@ -36,6 +37,9 @@ const Error = parser.Error;
 /// to it (E0436), and the mixed-signal kernel runs it from its own digital
 /// parse.
 pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_analog: bool) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     self.pos += 1; // 'function'
     const ret_ty: Ast.Type = if (!is_analog) digital: {
         if (self.reservedIs(self.pos, "automatic")) self.pos += 1;
@@ -214,64 +218,6 @@ pub fn parseFuncDecl(self: *Parser, b: *parse_module.Body, main_tok: u32, is_ana
     });
 }
 
-/// A.2.6 `function_item_declaration ::= block_item_declaration | {
-/// attribute_instance } tf_input_declaration ;` and `function_port_list`: a
-/// function without `analog` declares inputs only (IEEE 1364-2005 §10.4.1),
-/// so its `output`/`inout`, cursor on the keyword, is E0207. The digital
-/// engine refuses the same text by §10.4.4 (E1100).
-fn inputOnly(self: *Parser, dir: Ast.Direction) error{OutOfMemory}!void {
-    if (dir == .input) return;
-    try self.report(self.pos, .E0207, "found {s}: A.2.6 gives a function `input` formals only; an `analog function` or a task takes `{s}`", .{ self.found(self.pos), @tagName(dir) });
-}
-
-/// A function formal after its direction: `input real x` (A.2.7
-/// task_port_type, a digital function's only; an analog function's is E0291
-/// but for A.2.1.2's `output output_variable_type`) or bare `input x`, then
-/// A.2.6 `input [ range ] list_of_ports`: one range, before the names, shared
-/// by all of them
-/// (§4.7.2.3 `output [0:1] out;`, §4.7.1 Example 3 `inout [0:1]a;`).
-/// `list` reads `, name` onward, as a body declaration does; a port-list
-/// entry names one formal.
-///
-/// After a discipline, A.2.1.2's `output [ discipline_identifier ] reg
-/// [ signed ] [ range ]` and A.2.7's `tf_*_declaration` write `reg [ signed ]`:
-/// read, and no data type for an analog function (§4.7.1 types a formal by a
-/// block item declaration: E0225). A digital function's formal takes
-/// `tfPortType`'s A.2.7 types, its range a packed width, not dimensions.
-fn analogFormals(self: *Parser, args: *std.ArrayList(Ast.FuncArg), dir: Ast.Direction, list: bool, is_analog: bool) Error!void {
-    var ty = parse_decl.varType(self.peek()) orelse .unspecified;
-    // A.2.6's analog_function_item_declaration takes A.2.1.2's port
-    // declarations, which carry no data type: §4.7.1 types a formal by a
-    // block item declaration. `output integer`/`output time` is the one
-    // typed arm (`output output_variable_type`). Reported, then read as
-    // before, so the body still parses.
-    if (is_analog and ty != .unspecified and !(dir == .output and (self.peek() == .kw_integer or self.peek() == .kw_time)))
-        try self.report(self.pos, .E0291, "`{s} {s}`", .{ @tagName(dir), self.tokenText(self.pos) });
-    if (ty != .unspecified) self.pos += 1 else _ = try parse_net.optDiscipline(self);
-    var dims: []const Ast.Dim = &.{};
-    if (ty == .unspecified and !is_analog) {
-        if (tfTypeAhead(self)) ty = (try tfPortType(self)).ty;
-    } else {
-        if (ty == .unspecified and self.eat(.kw_reg)) _ = self.eat(.kw_signed);
-        dims = try parse_decl.parseDims(self);
-    }
-    while (true) {
-        const at = self.pos;
-        try args.append(self.arena, .{
-            .name = try self.expectIdent(),
-            .ty = ty,
-            .direction = dir,
-            .dims = dims,
-            .main_tok = at,
-        });
-        if (!list or !self.eat(.comma)) break;
-    }
-}
-
-// -----------------------------------------------------------------------
-// IEEE 1364-2005 A.2.6/A.2.7 function and task declarations, digital parse
-// -----------------------------------------------------------------------
-
 /// IEEE 1364-2005 §10.2/§10.4, A.2.6 and A.2.7, for a digital parse:
 ///
 ///     task [ automatic ] name [ ( tf_port_list ) ] ; { tf_item } statement endtask
@@ -281,6 +227,9 @@ fn analogFormals(self: *Parser, args: *std.ArrayList(Ast.FuncArg), dir: Ast.Dire
 /// A formal's direction sticks to the names after it until another one is
 /// written, in the port list and in a body declaration alike.
 pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     self.pos += 1; // `task` / `function`
     const automatic = self.reservedIs(self.pos, "automatic");
@@ -435,6 +384,68 @@ pub fn parseSubroutine(self: *Parser, b: *parse_module.Body, is_function: bool) 
     });
 }
 
+// ---- private ----
+
+/// A.2.6 `function_item_declaration ::= block_item_declaration | {
+/// attribute_instance } tf_input_declaration ;` and `function_port_list`: a
+/// function without `analog` declares inputs only (IEEE 1364-2005 §10.4.1),
+/// so its `output`/`inout`, cursor on the keyword, is E0207. The digital
+/// engine refuses the same text by §10.4.4 (E1100).
+fn inputOnly(self: *Parser, dir: Ast.Direction) error{OutOfMemory}!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    if (dir == .input) return;
+    try self.report(self.pos, .E0207, "found {s}: A.2.6 gives a function `input` formals only; an `analog function` or a task takes `{s}`", .{ self.found(self.pos), @tagName(dir) });
+}
+
+/// A function formal after its direction: `input real x` (A.2.7
+/// task_port_type, a digital function's only; an analog function's is E0291
+/// but for A.2.1.2's `output output_variable_type`) or bare `input x`, then
+/// A.2.6 `input [ range ] list_of_ports`: one range, before the names, shared
+/// by all of them
+/// (§4.7.2.3 `output [0:1] out;`, §4.7.1 Example 3 `inout [0:1]a;`).
+/// `list` reads `, name` onward, as a body declaration does; a port-list
+/// entry names one formal.
+///
+/// After a discipline, A.2.1.2's `output [ discipline_identifier ] reg
+/// [ signed ] [ range ]` and A.2.7's `tf_*_declaration` write `reg [ signed ]`:
+/// read, and no data type for an analog function (§4.7.1 types a formal by a
+/// block item declaration: E0225). A digital function's formal takes
+/// `tfPortType`'s A.2.7 types, its range a packed width, not dimensions.
+fn analogFormals(self: *Parser, args: *std.ArrayList(Ast.FuncArg), dir: Ast.Direction, list: bool, is_analog: bool) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    var ty = parse_decl.varType(self.peek()) orelse .unspecified;
+    // A.2.6's analog_function_item_declaration takes A.2.1.2's port
+    // declarations, which carry no data type: §4.7.1 types a formal by a
+    // block item declaration. `output integer`/`output time` is the one
+    // typed arm (`output output_variable_type`). Reported, then read as
+    // before, so the body still parses.
+    if (is_analog and ty != .unspecified and !(dir == .output and (self.peek() == .kw_integer or self.peek() == .kw_time)))
+        try self.report(self.pos, .E0291, "`{s} {s}`", .{ @tagName(dir), self.tokenText(self.pos) });
+    if (ty != .unspecified) self.pos += 1 else _ = try parse_net.optDiscipline(self);
+    var dims: []const Ast.Dim = &.{};
+    if (ty == .unspecified and !is_analog) {
+        if (tfTypeAhead(self)) ty = (try tfPortType(self)).ty;
+    } else {
+        if (ty == .unspecified and self.eat(.kw_reg)) _ = self.eat(.kw_signed);
+        dims = try parse_decl.parseDims(self);
+    }
+    while (true) {
+        const at = self.pos;
+        try args.append(self.arena, .{
+            .name = try self.expectIdent(),
+            .ty = ty,
+            .direction = dir,
+            .dims = dims,
+            .main_tok = at,
+        });
+        if (!list or !self.eat(.comma)) break;
+    }
+}
+
 /// Whether token `i` closes a digital function or task body: `endfunction`,
 /// `end_word`, or end of file.
 fn subroutineCloser(self: *const Parser, end_word: []const u8, i: u32) bool {
@@ -444,6 +455,9 @@ fn subroutineCloser(self: *const Parser, end_word: []const u8, i: u32) bool {
 /// One A.2.8 `block_item_declaration` of variables (`reg`, `integer`,
 /// `time`, `real`, `realtime`), cursor on the keyword, through its `;`.
 fn parseBlockVars(self: *Parser, out: *std.ArrayList(Ast.VarDecl)) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const decl_tok = self.pos;
     const ty = try tfPortType(self);
     while (true) {
@@ -460,6 +474,9 @@ fn parseBlockVars(self: *Parser, out: *std.ArrayList(Ast.VarDecl)) Error!void {
 }
 
 fn tfFormal(self: *Parser, dir: Ast.Direction, ty: Ast.VarDecl) Error!Ast.TfPort {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var v = ty;
     v.main_tok = self.pos;
     v.name = try self.expectIdent();
@@ -470,6 +487,9 @@ fn tfFormal(self: *Parser, dir: Ast.Direction, ty: Ast.VarDecl) Error!Ast.TfPort
 /// `integer`, `time`, `real` or `realtime`. A bare direction is a 1-bit
 /// unsigned `reg` (IEEE 1364-2005 §10.2.1).
 fn tfPortType(self: *Parser) Error!Ast.VarDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var v = tfType(self);
     if (v.storage == .reg and self.peek() == .lbracket) v.packed_range = try parse_decl.parseDim(self);
     return v;
@@ -487,6 +507,9 @@ fn tfTypeAhead(self: *const Parser) bool {
 
 /// The keyword half of `tfPortType`, which a function's result shares.
 fn tfType(self: *Parser) Ast.VarDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     switch (self.peek()) {
         .kw_integer => {
             self.pos += 1;

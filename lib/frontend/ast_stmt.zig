@@ -2,8 +2,24 @@
 //! them: `Stmt` in, its expression edges and child statements, or the
 //! variables it writes (§5.7, §4.7.2.3, §9.5, §9.13), out. Statements live in
 //! `SourceFile`'s pool, addressed by `StmtId`.
+//!
+//! Contents:
+//! - `pub const Timing = enum`
+//! - `pub const Stmt = union(enum)`: `JumpKind`
+//! - `pub const BlockId = enum(u32)`
+//! - `pub const StmtRow = row:`
+//! - `pub const ProcContinuous = enum(u8)`
+//! - `pub const CaseKind = enum(u8)`
+//! - `pub const CaseArm = struct`
+//! - `pub const GenItems = struct`
+//! - `pub const SeqBlock = struct`
+//! - `pub const Edge = enum`
+//! - `pub fn stmtEdges(self: *const SourceFile, id: StmtId, v: anytype) !void`
+//! - `pub fn stmtWrites(self: *const SourceFile, funcs: []const FuncDecl, id: StmtId, gpa: std.mem.Allocator, out: *std.ArrayList(ExprId)) !void`: `expr`, `stmt`
+//! - `pub fn lvalueBase(self: *const SourceFile, e: ExprId) ExprId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ast = @import("ast.zig");
 const ExprId = ast.ExprId;
 const StmtId = ast.StmtId;
@@ -150,8 +166,8 @@ pub const StmtRow = row: {
 // Budget: the widest non-block arm (24 B) plus the tag; `SeqBlock`, the arm
 // kept out of the row, is the 104 B `StmtRow`'s doc names.
 comptime {
-    std.debug.assert(@sizeOf(StmtRow) <= 32);
-    std.debug.assert(@sizeOf(SeqBlock) <= 104);
+    assert(@sizeOf(StmtRow) <= 32);
+    assert(@sizeOf(SeqBlock) <= 104);
 }
 
 /// IEEE 1364-2005 §9.3 A.6.2 `procedural_continuous_assignments`.
@@ -230,6 +246,25 @@ pub const Edge = enum {
     branch,
 };
 
+/// One `stmtEdges` callback, as a test records it.
+const Visit = union(enum) {
+    expr: struct { e: ExprId, edge: Edge },
+    stmt: StmtId,
+};
+
+/// A `stmtEdges` visitor that records every callback in order.
+const Recorder = struct {
+    gpa: std.mem.Allocator,
+    seen: std.ArrayList(Visit) = .empty,
+
+    pub fn expr(r: *Recorder, e: ExprId, edge: Edge) std.mem.Allocator.Error!void {
+        try r.seen.append(r.gpa, .{ .expr = .{ .e = e, .edge = edge } });
+    }
+    pub fn stmt(r: *Recorder, s: StmtId) std.mem.Allocator.Error!void {
+        try r.seen.append(r.gpa, .{ .stmt = s });
+    }
+};
+
 /// Visits every edge of statement `id`: `v.expr(e, edge)` for each of its own
 /// expressions and `v.stmt(s)` for each child statement, in source order,
 /// except that an assignment's intra-assignment timing (its `repeat` count,
@@ -241,7 +276,7 @@ pub const Edge = enum {
 /// statement counterpart of `ExprStore.children`. Asserts that `id` is not
 /// `.none`: a missing child is the caller's to skip.
 pub fn stmtEdges(self: *const SourceFile, id: StmtId, v: anytype) !void {
-    std.debug.assert(id != .none);
+    assert(id != .none);
     switch (self.stmt(id)) {
         .empty, .disable => {},
         .event_trigger => |s| try eventIndexEdges(self, s.target, v),
@@ -317,8 +352,10 @@ pub fn stmtEdges(self: *const SourceFile, id: StmtId, v: anytype) !void {
 /// The appended ids are the lvalues as written (`x[i]` stays `x[i]`); see
 /// `lvalueBase` for the declaration it names. A `.none` `id` appends nothing.
 /// Invalidates `out`'s element pointers if it grows; `out` is grown with `gpa`.
-pub fn stmtWrites(self: *const SourceFile, funcs: []const FuncDecl, id: StmtId, gpa: std.mem.Allocator, out: *std.ArrayList(ExprId)) !void {
+pub fn stmtWrites(self: *const SourceFile, funcs: []const FuncDecl, id: StmtId, gpa: std.mem.Allocator, out: *std.ArrayList(ExprId)) std.mem.Allocator.Error!void {
     if (id == .none) return;
+    const out_before = out.items.len;
+    defer assert(out.items.len >= out_before);
     if (self.stmt(id) == .sys_task) {
         const s = self.stmt(id).sys_task;
         for (sysWrites(self.str(s.name), s.args)) |w| try addLvalue(self, w, gpa, out);
@@ -341,9 +378,29 @@ pub fn stmtWrites(self: *const SourceFile, funcs: []const FuncDecl, id: StmtId, 
     try stmtEdges(self, id, Writes{ .file = self, .funcs = funcs, .gpa = gpa, .out = out });
 }
 
+/// Returns the declared name an lvalue writes: `x`, `x[i]`, `x[i][j]` and a part
+/// select `x[3:0]` (an `.index` whose index is a `.range`) all write the
+/// declaration `x`. `.none` when the lvalue is not rooted in a plain
+/// identifier.
+pub fn lvalueBase(self: *const SourceFile, e: ExprId) ExprId {
+    var t = e;
+    // Each `.index` is a distinct row, so the chain is no longer than the store.
+    var hops: u32 = 0;
+    while (t != .none and self.exprs.tag(t) == .index) : (hops += 1) {
+        assert(hops < self.exprs.len());
+        t = self.exprs.lhs(t);
+    }
+    if (t == .none or self.exprs.tag(t) != .ident) return .none;
+    assert(self.exprs.tag(t) == .ident);
+    return t;
+}
+
+// ---- private ----
+
 /// The event target is an identity, not a value read or written. Its
 /// index expressions are reads, visited leftmost first like the source.
 fn eventIndexEdges(self: *const SourceFile, target: ExprId, v: anytype) @TypeOf(v.expr(target, .read)) {
+    assert(target != .none);
     if (self.exprs.tag(target) != .index) return;
     try eventIndexEdges(self, self.exprs.lhs(target), v);
     try v.expr(self.exprs.rhs(target), .read);
@@ -405,15 +462,19 @@ fn sysWrites(name: []const u8, args: []const ExprId) []const ExprId {
     return &.{};
 }
 
-/// Returns the declared name an lvalue writes: `x`, `x[i]`, `x[i][j]` and a part
-/// select `x[3:0]` (an `.index` whose index is a `.range`) all write the
-/// declaration `x`. `.none` when the lvalue is not rooted in a plain
-/// identifier.
-pub fn lvalueBase(self: *const SourceFile, e: ExprId) ExprId {
-    var t = e;
-    while (t != .none and self.exprs.tag(t) == .index) t = self.exprs.lhs(t);
-    if (t == .none or self.exprs.tag(t) != .ident) return .none;
-    return t;
+fn expectEdges(f: *const SourceFile, id: StmtId, want: []const Visit) !void {
+    var r: Recorder = .{ .gpa = std.testing.allocator };
+    defer r.seen.deinit(std.testing.allocator);
+    try stmtEdges(f, id, &r);
+    try std.testing.expectEqualSlices(Visit, want, r.seen.items);
+}
+
+fn identExpr(f: *SourceFile, gpa: std.mem.Allocator, name: []const u8) !ExprId {
+    return f.exprs.add(gpa, .{ .tag = .ident, .str = try f.intern(gpa, name) });
+}
+
+fn read(e: ExprId) Visit {
+    return .{ .expr = .{ .e = e, .edge = .read } };
 }
 
 test "statement pool keeps handles and token column in lockstep" {
@@ -445,40 +506,6 @@ test "statement pool keeps handles and token column in lockstep" {
     try std.testing.expectEqual(name, it.next().?.gen_name);
     try std.testing.expectEqual(null, it.next());
     try std.testing.expectEqual(name, f.stmt(blk).block.gen_name);
-}
-
-/// One `stmtEdges` callback, as a test records it.
-const Visit = union(enum) {
-    expr: struct { e: ExprId, edge: Edge },
-    stmt: StmtId,
-};
-
-/// A `stmtEdges` visitor that records every callback in order.
-const Recorder = struct {
-    gpa: std.mem.Allocator,
-    seen: std.ArrayList(Visit) = .empty,
-
-    pub fn expr(r: *Recorder, e: ExprId, edge: Edge) std.mem.Allocator.Error!void {
-        try r.seen.append(r.gpa, .{ .expr = .{ .e = e, .edge = edge } });
-    }
-    pub fn stmt(r: *Recorder, s: StmtId) std.mem.Allocator.Error!void {
-        try r.seen.append(r.gpa, .{ .stmt = s });
-    }
-};
-
-fn expectEdges(f: *const SourceFile, id: StmtId, want: []const Visit) !void {
-    var r: Recorder = .{ .gpa = std.testing.allocator };
-    defer r.seen.deinit(std.testing.allocator);
-    try stmtEdges(f, id, &r);
-    try std.testing.expectEqualSlices(Visit, want, r.seen.items);
-}
-
-fn identExpr(f: *SourceFile, gpa: std.mem.Allocator, name: []const u8) !ExprId {
-    return f.exprs.add(gpa, .{ .tag = .ident, .str = try f.intern(gpa, name) });
-}
-
-fn read(e: ExprId) Visit {
-    return .{ .expr = .{ .e = e, .edge = .read } };
 }
 
 test "stmtEdges: an assignment's edges, its repeat count included, in the documented order" {
