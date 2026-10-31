@@ -2657,8 +2657,9 @@ const Digital = struct {
 
     /// The `vera` arguments a digital case passes after its own path, from the
     /// suite's `//@` lines (`harness/conform.c`): `//@ std SPEC` is `--std=SPEC`;
-    /// `//@ libmap FILE` is `--libmap FILE` and `//@ files FILE...` more sources
-    /// after the fixture, both relative to the fixture's directory `dir`; and
+    /// `//@ libmap FILE` is `--libmap FILE`, `//@ protect-keys FILE` is
+    /// `--protect-keys FILE` and `//@ files FILE...` more sources after the
+    /// fixture, all relative to the fixture's directory `dir`; and
     /// `//@ liblist LIB...` is `-L LIB` each. Any other `//@` word is
     /// `error.BadDirective`, as the suite's harness refuses it. VerA's own
     /// `//! event-budget N` is `--event-budget=N` (the harness ignores `//!`
@@ -2682,6 +2683,8 @@ const Digital = struct {
                 try out.append(arena, try std.mem.concat(arena, u8, &.{ "--std=", words.next() orelse return error.BadDirective }));
             } else if (std.mem.eql(u8, key, "libmap")) {
                 try out.appendSlice(arena, &.{ "--libmap", try std.fs.path.join(arena, &.{ dir, words.next() orelse return error.BadDirective }) });
+            } else if (std.mem.eql(u8, key, "protect-keys")) {
+                try out.appendSlice(arena, &.{ "--protect-keys", try std.fs.path.join(arena, &.{ dir, words.next() orelse return error.BadDirective }) });
             } else if (std.mem.eql(u8, key, "liblist")) {
                 while (words.next()) |lib| try out.appendSlice(arena, &.{ "-L", lib });
             } else if (std.mem.eql(u8, key, "files")) {
@@ -2916,6 +2919,12 @@ const Digital = struct {
         const budget = try runnerArgs(arena.allocator(), "//! event-budget 1000\n//! reject E1100\n", "d");
         try std.testing.expectEqual(1, budget.len);
         try std.testing.expectEqualStrings("--event-budget=1000", budget[0]);
+        // tests/conformance/README.md: `//@ protect-keys K.json` names the §28 key file.
+        const keys = try runnerArgs(arena.allocator(), "//@ protect-keys ../28/known_keys.json\n", "d");
+        try std.testing.expectEqual(2, keys.len);
+        try std.testing.expectEqualStrings("--protect-keys", keys[0]);
+        try std.testing.expectEqualStrings("d" ++ sep ++ "../28/known_keys.json", keys[1]);
+        try std.testing.expectError(error.BadDirective, runnerArgs(arena.allocator(), "//@ protect-keys\n", "d"));
     }
 };
 
