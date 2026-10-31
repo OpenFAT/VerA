@@ -16,7 +16,8 @@ nix profile add 'github:OpenFAT/VerA#"0.13.0"'     # a release binary, pinned
 
 The packaged `vera` is wrapped with the Zig it generates code for, so
 `--run` and `--emit-so` work with no Zig of your own, and it installs the
-device contract of its own version as `share/vera/contract.zig`. As a flake
+device contract of its own version as `share/vera/contract.zig` (from 0.21.0
+with the `share/vera/contract/` it imports). As a flake
 input, take `vera.packages.${system}.default` (built from source) or
 `."0.13.0"` and `latest` (release binaries, listed in the repository's
 `sources.json`), or apply `vera.overlays.default` to get `pkgs.vera` and
@@ -43,7 +44,8 @@ tar xzf vera-v0.13.0-x86_64-linux-gnu.tar.gz      # one file: vera
 Install the Zig that release targets beside it, from
 <https://ziglang.org/download/>: 0.18.0-dev.349+d924f83bf for v0.13.0 (the repository's
 `sources.json` records each release's). The release's device contract is
-`lib/contract.zig` at its tag.
+`lib/contract.zig` at its tag, with `lib/contract/` beside it from 0.21.0:
+keep the two together.
 
 ## From source
 
@@ -54,8 +56,8 @@ zig build -Doptimize=ReleaseFast
 
 The binary is `zig-out/bin/vera`. The build also installs the device
 contract your simulator compiles against at
-`zig-out/share/vera/contract.zig` (`--prefix DIR` installs both under
-`DIR`). The repository's `nix develop` shell has the exact Zig.
+`zig-out/share/vera/contract.zig`, with the `contract/` it imports beside it
+(`--prefix DIR` installs them under `DIR`). The repository's `nix develop` shell has the exact Zig.
 
 ## Checking the install
 

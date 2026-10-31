@@ -134,8 +134,11 @@ values, LRM §9.17.3), `//! abstol` (the tolerance of an unknown, LRM
 §2.9.2) and `//! limit` (a `$limit` clamp, old values to new). `noise`,
 `acstim`, `qsite`, `seed` and `meta` also take `none`: the device publishes
 no such row, which is a claim, where an absent directive claims nothing.
-Their exact syntax is in the header of
-[`src/codegen/exe/tb/directive.zig`](https://github.com/OpenFAT/VerA/blob/main/src/codegen/exe/tb/directive.zig).
+Their exact syntax is in
+[`src/codegen/exe/parse.zig`](https://github.com/OpenFAT/VerA/blob/main/src/codegen/exe/parse.zig)
+(the keywords) and
+[`src/codegen/exe/operands.zig`](https://github.com/OpenFAT/VerA/blob/main/src/codegen/exe/operands.zig)
+(each one's operands).
 
 ## Directives the fixture suite grades
 

@@ -24,11 +24,11 @@ const module_specs = [_]struct {
     .{ .name = "zigbuild", .path = "src/zigbuild/root.zig", .imports = &.{ "contract", "dynlib" } },
     .{ .name = "device", .path = "src/codegen/device/root.zig", .imports = &.{ "diag", "dynlib", "frontend", "ir", "analog", "prove", "kernels", "zigbuild" } },
     .{ .name = "verilog", .path = "src/codegen/verilog/root.zig", .imports = &.{ "ir", "prove" } },
-    .{ .name = "exe", .path = "src/codegen/exe/root.zig", .imports = &.{ "diag", "frontend", "ir", "zigbuild" } },
+    .{ .name = "exe", .path = "src/codegen/exe/root.zig", .imports = &.{ "diag", "frontend", "ir" } },
     .{ .name = "vera", .path = "src/Compilation.zig", .imports = &.{ "base", "diag", "frontend", "elab", "ir", "analog", "prove", "device", "verilog", "exe", "kernels", "zigbuild" } },
     .{ .name = "sim", .path = "lib/sim/root.zig", .imports = &.{ "contract", "base", "diag", "frontend", "kernels" } },
     .{ .name = "digital", .path = "src/codegen/digital/root.zig", .imports = &.{ "sim", "frontend", "diag", "contract", "kernels", "base" } },
-    .{ .name = "vpi", .path = "src/vpi/root.zig", .imports = &.{ "frontend", "ir", "vera", "sim" }, .c = "src/vpi/varargs.c" },
+    .{ .name = "vpi", .path = "src/vpi/root.zig", .imports = &.{ "frontend", "elab", "ir", "vera", "sim" }, .c = "src/vpi/varargs.c" },
 };
 
 const M = struct {
@@ -148,7 +148,7 @@ pub fn build(b: *Build) void {
     b.step("test-unit", "Run tests/unit.zig, the cross-module claims, only").dependOn(&all_run.step);
 
     // LLVM: the self-hosted backend emits no coverage, so the fuzzer sees no PCs.
-    const fuzz_test = b.addTest(.{ .name = "fuzz", .root_module = m.make("tests/fuzz.zig", &.{ .{ .name = "vera", .module = vera }, .{ .name = "sim", .module = sim } }), .use_llvm = true });
+    const fuzz_test = b.addTest(.{ .name = "fuzz", .root_module = m.make("tests/fuzz.zig", &.{ .{ .name = "vera", .module = vera }, .{ .name = "exe", .module = byName(mods, "exe") }, .{ .name = "sim", .module = sim } }), .use_llvm = true });
     b.step("fuzz", "The in-process fuzz targets on the stock runner (`zig build fuzz --fuzz[=N]`: coverage-guided)").dependOn(&b.addRunArtifact(fuzz_test).step);
 
     const rng_ref = m.make("tests/rng_reference.zig", &.{.{ .name = "kernels", .module = kernels }});
@@ -183,12 +183,15 @@ pub fn build(b: *Build) void {
     const o = b.addOptions();
     o.addOption([]const u8, "fixture_root", pathFromRoot(b, "tests/conformance/tests"));
     o.addOption([]const u8, "repo_root", pathFromRoot(b, "."));
-    o.addOption([]const u8, "work_root", pathFromRoot(b, ".zig-cache/vera-suite"));
+    o.addOption([]const u8, "work_root", checkoutWorkDir(b, "vera-suite"));
     o.addOption([]const u8, "contract", pathFromRoot(b, "lib/contract.zig"));
     o.addOption([]const u8, "vpi_include", pathFromRoot(b, "src/vpi"));
     o.addOption([]const u8, "zig_exe", b.graph.zig_exe);
     const suite_mod = m.make("tests/suite.zig", &.{
         .{ .name = "vera", .module = vera },
+        .{ .name = "frontend", .module = byName(mods, "frontend") },
+        .{ .name = "exe", .module = byName(mods, "exe") },
+        .{ .name = "zigbuild", .module = byName(mods, "zigbuild") },
         .{ .name = "sim", .module = sim },
         .{ .name = "digital", .module = byName(mods, "digital") },
     });
@@ -682,7 +685,8 @@ fn cliExe(b: *Build, target: Build.ResolvedTarget, optimize: std.lang.Optimize, 
 
 /// `files`: every source under `lib/`, the tree `vera --emit-exe` and
 /// `--emit-so` build against: the runtime (`sim`), the contract, the OSDI dyn
-/// and the modules they import. `src/main.zig`'s `simTree` writes it out.
+/// and the modules they import. `src/main.zig`'s `simTree` writes it out;
+/// `src/vpi/host.zig` writes the contract's files beside a VPI device.
 fn simSources(b: *Build) *Module {
     const wf = b.addWriteFiles();
     var root: std.Io.Writer.Allocating = .init(b.allocator);
@@ -707,10 +711,7 @@ fn vpiApp(b: *Build, target: Build.ResolvedTarget, optimize: std.lang.Optimize, 
     b.top_level_steps.get("build-all").?.step.dependOn(&app.step);
     const run = b.addRunArtifact(app);
     run.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
-    // Keyed by checkout: worktrees share one symlinked .zig-cache, and two
-    // building the same application in one work dir at once corrupt it.
-    const root_key = std.hash.Wyhash.hash(0, pathFromRoot(b, "."));
-    run.setEnvironmentVariable("VERA_VPI_WORK", pathFromRoot(b, b.fmt(".zig-cache/vera-vpi/{x}", .{root_key})));
+    run.setEnvironmentVariable("VERA_VPI_WORK", checkoutWorkDir(b, "vera-vpi"));
     return run;
 }
 
@@ -719,12 +720,16 @@ fn vpiApp(b: *Build, target: Build.ResolvedTarget, optimize: std.lang.Optimize, 
 fn vpiHost(b: *Build, m: M, mods: []const Import, vera: *Module, sim: *Module, dynlib: *Module) *Build.Step.Compile {
     const mod = m.make("src/vpi/host.zig", &.{
         .{ .name = "vera", .module = vera },
+        .{ .name = "frontend", .module = byName(mods, "frontend") },
+        .{ .name = "exe", .module = byName(mods, "exe") },
+        .{ .name = "zigbuild", .module = byName(mods, "zigbuild") },
         .{ .name = "vpi", .module = byName(mods, "vpi") },
         .{ .name = "sim", .module = sim },
         .{ .name = "dynlib", .module = dynlib },
     });
     mod.link_libc = true;
-    mod.addAnonymousImport("contract_source", .{ .root_source_file = b.path("lib/contract.zig") });
+    // The contract the device is built against: `lib/contract.zig` and `lib/contract/`.
+    mod.addImport("sim_sources", simSources(b));
     return b.addLibrary(.{ .name = "vera-vpi", .linkage = .static, .root_module = mod });
 }
 
@@ -826,6 +831,14 @@ fn defineModules(b: *Build, target: Build.ResolvedTarget, exported: bool) []cons
         created.append(b.allocator, .{ .name = spec.name, .module = mod }) catch @panic("OOM");
     }
     return created.items;
+}
+
+/// `.zig-cache/<name>/<checkout>`: worktrees share one symlinked .zig-cache,
+/// and two checkouts building and running in one work dir at once corrupt it
+/// (ETXTBSY: `suite -- ams` failed with FileBusy beside another worktree's).
+fn checkoutWorkDir(b: *Build, name: []const u8) []u8 {
+    const key = std.hash.Wyhash.hash(0, pathFromRoot(b, "."));
+    return pathFromRoot(b, b.fmt(".zig-cache/{s}/{x}", .{ name, key }));
 }
 
 fn pathFromRoot(b: *Build, sub_path: []const u8) []u8 {

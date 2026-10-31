@@ -102,7 +102,18 @@
           dontStrip = true;
           installPhase = ''
             install -Dm755 vera $out/bin/vera
-            install -Dm644 ${fetchurl { inherit (contract) url sha256; }} $out/share/vera/contract.zig
+            ${
+              # From 0.21.0 the contract is a root and the `contract/` it
+              # imports from: both come out of the tag's source archive.
+              if contract.archive or false then
+                ''
+                  mkdir -p $out/share/vera
+                  tar -xzf ${fetchurl { inherit (contract) url sha256; }} -C $out/share/vera --strip-components=2 \
+                    VerA-${version}/lib/contract.zig VerA-${version}/lib/contract
+                ''
+              else
+                "install -Dm644 ${fetchurl { inherit (contract) url sha256; }} $out/share/vera/contract.zig"
+            }
             ${wrapZig zig}
           '';
           meta = {
@@ -154,6 +165,10 @@
           export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
           vera --help > /dev/null
           test -s ${vera}/share/vera/contract.zig
+          # Every file the contract root imports sits beside it.
+          for f in $(sed -n 's|.*@import("\(contract/[^"]*\)").*|\1|p' ${vera}/share/vera/contract.zig); do
+            test -s ${vera}/share/vera/$f
+          done
           cat > r.va <<'EOF'
           `include "disciplines.vams"
           module r(p, n);

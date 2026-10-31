@@ -11,16 +11,19 @@ provides=('vera')
 conflicts=('vera')
 optdepends=('zig: simulating a design (VerA @VERSION@ runs Zig @ZIG@)')
 source=("LICENSE-$pkgver::https://raw.githubusercontent.com/OpenFAT/VerA/v$pkgver/LICENSE"
-        "contract-$pkgver.zig::https://raw.githubusercontent.com/OpenFAT/VerA/v$pkgver/lib/contract.zig")
+        "VerA-$pkgver.tar.gz::https://github.com/OpenFAT/VerA/archive/refs/tags/v$pkgver.tar.gz")
 source_x86_64=("https://github.com/OpenFAT/VerA/releases/download/v$pkgver/vera-v$pkgver-x86_64-linux-gnu.tar.gz")
 source_aarch64=("https://github.com/OpenFAT/VerA/releases/download/v$pkgver/vera-v$pkgver-aarch64-linux-gnu.tar.gz")
 sha256sums=('@LICENSE_SHA256@'
-            '@CONTRACT_SHA256@')
+            '@CONTRACT_ARCHIVE_SHA256@')
 sha256sums_x86_64=('@X86_64_LINUX_SHA256@')
 sha256sums_aarch64=('@AARCH64_LINUX_SHA256@')
 
 package() {
   install -Dm755 vera "$pkgdir/usr/bin/vera"
-  install -Dm644 "contract-$pkgver.zig" "$pkgdir/usr/share/vera/contract.zig"
+  # The contract: its root and the contract/ directory it imports from.
+  cd "VerA-$pkgver/lib"
+  find contract.zig contract -type f -exec install -Dm644 {} "$pkgdir/usr/share/vera/{}" \;
+  cd "$srcdir"
   install -Dm644 "LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

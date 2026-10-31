@@ -113,6 +113,6 @@ Be clear about these before choosing the contract:
 ## What adopting it costs
 
 A host in Zig, or a Zig shim in your build; a compile step per device (VerA,
-then Zig); a matching contract file (`share/vera/contract.zig` from the same
-VerA); and the hooks your devices need, which this part documents one at a
+then Zig); a matching contract (`share/vera/contract.zig` and the
+`contract/` beside it, from the same VerA); and the hooks your devices need, which this part documents one at a
 time. The [minimal host](minimal-host.md) is the place to start.

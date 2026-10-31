@@ -196,8 +196,9 @@ Laid out like the Zig compiler: `src/` is the compiler, `lib/` is what it
 ships, `tests/` the tests, `tools/` the scripts.
 
 - `lib/`: everything a `vera` artifact links or a host compiles against, and
-  nothing else. `contract.zig` (the device ABI, installed as
-  `share/vera/contract.zig`), `osdi_dyn.zig` (the OSDI 0.4 dyn), `sim/` (the
+  nothing else. `contract.zig` and `contract/` (the device ABI, installed as
+  `share/vera/contract.zig` and `share/vera/contract/`), `osdi_dyn.zig` and
+  `osdi_dyn/` (the OSDI 0.4 dyn), `sim/` (the
   runtime of `--emit-exe` executables and `.v` devices) and the modules the
   runtime imports: `base/`, `diag/`, `frontend/`, `kernels/`. `build.zig`
   embeds the whole of `lib/` into `vera` (`simSources`), which writes it out

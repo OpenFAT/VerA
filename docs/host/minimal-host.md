@@ -61,8 +61,8 @@ Step by step:
 
 The host compiles against two modules: the generated device, and the
 contract. `contract.zig` is installed as `share/vera/contract.zig` by `zig
-build install`; in the repository it is `lib/contract.zig`, which the
-command below uses. `zig run` binds modules with `--dep` (which applies to the
+build install`, with the `contract/` it imports beside it; in the repository
+it is `lib/contract.zig` (and `lib/contract/`), which the command below uses. `zig run` binds modules with `--dep` (which applies to the
 next `-M`) and `-M` (the first one is the root):
 
 ```console

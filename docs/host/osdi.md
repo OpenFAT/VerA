@@ -17,8 +17,8 @@ vera --emit-osdi design.v              # a Verilog module's contract device, the
 ```
 
 It is `--emit-so` under a `dyn` module VerA ships, `lib/osdi_dyn.zig`,
-which `vera` carries inside it and writes beside its own copy of
-`contract.zig` in the work directory (`.zig-cache/vera-tb` unless
+which `vera` carries inside it and writes beside its own copy of the
+contract (`contract.zig` and `contract/`) in the work directory (`.zig-cache/vera-tb` unless
 `--work-dir` says otherwise). So it takes neither `--dyn` nor `--emit-zig`,
 `--emit-exe` or `--run`; each of those is refused with exit status 2. The
 library holds one OSDI 0.4 descriptor, named after the module, which is the

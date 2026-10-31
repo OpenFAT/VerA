@@ -5,10 +5,11 @@ top level, and a simulator (the *host*) imports it as a module and calls
 them. Nothing is behind a vtable: every entry point is a generic Zig
 function the host instantiates at compile time with its own arithmetic.
 
-The rules every device follows are one file, `lib/contract.zig` in the
-repository, installed as `share/vera/contract.zig` by `zig build install`.
-The generated device imports it as the module `contract`, and so does your
-host. The rest of this part quotes it by declaration name; when this book
+The rules every device follows are the contract: `lib/contract.zig` in the
+repository and the `lib/contract/` files it imports, installed as
+`share/vera/contract.zig` and `share/vera/contract/` by `zig build install`.
+The generated device imports the root as the module `contract`, and so does
+your host; Zig finds the files under `contract/` beside it. The rest of this part quotes it by declaration name; when this book
 and that file disagree, the file is right.
 
 Here is everything the diode from the [minimal host](minimal-host.md)

@@ -29,13 +29,14 @@ class Vera < Formula
   end
 
   resource "contract" do
-    url "https://raw.githubusercontent.com/OpenFAT/VerA/v@VERSION@/lib/contract.zig"
-    sha256 "@CONTRACT_SHA256@"
+    url "https://github.com/OpenFAT/VerA/archive/refs/tags/v@VERSION@.tar.gz"
+    sha256 "@CONTRACT_ARCHIVE_SHA256@"
   end
 
   def install
     bin.install "vera"
-    resource("contract").stage { (share/"vera").install "contract.zig" }
+    # The contract's root and the contract/ directory it imports from.
+    resource("contract").stage { (share/"vera").install "lib/contract.zig", "lib/contract" }
   end
 
   def caveats

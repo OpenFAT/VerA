@@ -30,6 +30,9 @@ contents:
       mode: 0755
   - src: pkg/share/vera/contract.zig
     dst: /usr/share/vera/contract.zig
+  - src: pkg/share/vera/contract
+    dst: /usr/share/vera/contract
+    type: tree
   - src: pkg/lib/libvera-vpi.a
     dst: /usr/lib/vera/libvera-vpi.a
   - src: pkg/include/vpi_user.h

@@ -14,8 +14,10 @@
 #   PKGBUILD                                  (AUR vera-bin, packaging/aur/)
 #   vera.rb                                   (Homebrew, packaging/homebrew/)
 # The PKGBUILD and the formula download the release tarballs, so their
-# sha256 fields are those tarballs' own; the contract and LICENSE fields are
-# this tree's files, which the tag serves from raw.githubusercontent.com.
+# sha256 fields are those tarballs' own; the LICENSE field is this tree's file,
+# which the tag serves from raw.githubusercontent.com, and the contract field is
+# the tag's source archive (lib/contract.zig and the lib/contract/ it imports),
+# downloaded here: the tag must already be pushed.
 # Needs nfpm on PATH (`nix shell nixpkgs#nfpm`).
 set -euo pipefail
 check=; [ "${1:-}" = --check ] && { check=1; shift; }
@@ -46,6 +48,7 @@ rm -rf pkg
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 tarball() { local f="vera-v$v-$1.tar.gz"; [ -f "$f" ] || { echo "package.sh: $f is missing" >&2; exit 1; }; sha "$f"; }
+archive=$(curl -fsSL "https://github.com/OpenFAT/VerA/archive/refs/tags/v$v.tar.gz" | sha256sum | cut -d' ' -f1)
 zig=$(sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' "$root/build.zig.zon")
 render() {
   sed -e "s|@VERSION@|$v|g" -e "s|@ZIG@|$zig|g" \
@@ -53,7 +56,7 @@ render() {
       -e "s|@AARCH64_LINUX_SHA256@|$(tarball aarch64-linux-gnu)|g" \
       -e "s|@X86_64_MACOS_SHA256@|$(tarball x86_64-macos)|g" \
       -e "s|@AARCH64_MACOS_SHA256@|$(tarball aarch64-macos)|g" \
-      -e "s|@CONTRACT_SHA256@|$(sha "$root/lib/contract.zig")|g" \
+      -e "s|@CONTRACT_ARCHIVE_SHA256@|$archive|g" \
       -e "s|@LICENSE_SHA256@|$(sha "$root/LICENSE")|g" "$1"
 }
 render "$root/packaging/aur/PKGBUILD.in" > PKGBUILD
