@@ -99,8 +99,8 @@ pub const Times = struct {
 /// root's when the scope is not a module instance (a UDP's).
 pub fn timeOf(self: *const Run, scope: u32) ModuleTime {
     const root_time: ModuleTime = .{ .scale = self.time.scale.?, .unit_exp = self.time.unit_exp };
-    if (scope >= self.scope_info.items.len) return root_time;
-    return self.time.modules[self.scope_info.items[self.instanceOf(scope)].def];
+    if (scope >= self.hier.scopes.items.len) return root_time;
+    return self.time.modules[self.hier.scopes.items[self.instanceOf(scope)].def];
 }
 
 /// A constant expression's value at elaboration (IEEE 1364-2005 §5.2 /

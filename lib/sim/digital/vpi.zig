@@ -80,7 +80,7 @@ pub fn vpiEval(r: *Run, a: std.mem.Allocator, instance: u32, e: Ast.ExprId) Erro
     assert(e != .none);
     const saved = r.scope;
     defer r.scope = saved;
-    r.scope = r.vpi_expr_scopes.get(.{ instance, @backingInt(e) }) orelse instance;
+    r.scope = r.hier.vpi_expr_scopes.get(.{ instance, @backingInt(e) }) orelse instance;
     try compile.checkExpr(r, e);
     if (compile.typeOf(r, e).real) return .{ .real = try evaluate.evalReal(r, a, e) };
     return .{ .bits = try evaluate.eval(r, a, e, 0) };
@@ -90,7 +90,7 @@ pub fn vpiEval(r: *Run, a: std.mem.Allocator, instance: u32, e: Ast.ExprId) Erro
 /// element. Canonicalizing it must never evaluate a variable index or an
 /// application's function (whose value is only requested at run time).
 pub fn vpiConstantIndex(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprId) Error!?i64 {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     assert(e != .none);
     const saved = r.scope;
     defer r.scope = saved;
@@ -125,7 +125,7 @@ pub fn vpiPutUdp(r: *Run, at: u32, bit: Int.Bit) Error!void {
 /// IEEE §3.8 / AMS §2.9: attribute values are constant expressions in
 /// the decorated element's lexical scope, after parameter elaboration.
 pub fn vpiAttributeValue(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprId) Error!VpiValue {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     assert(e != .none);
     const saved = r.scope;
     defer r.scope = saved;

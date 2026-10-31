@@ -194,13 +194,13 @@ pub fn compileSub(self: *Run, idx: u32) Error!void {
 /// continues to search higher level modules until found" (ivtest
 /// sv_task_call_instance_lookup: each `child` calls its own parent's task).
 pub fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     var s = scope;
-    while (true) : (s = self.scope_info.items[s].parent) {
+    while (true) : (s = self.hier.scopes.items[s].parent) {
         if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
-        if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
+        if (self.hier.prim_names.contains(.{ .scope = s, .str = name })) return null;
         // A root is its own parent (`elaborate`'s other top-level modules).
-        if (self.scope_info.items[s].parent == s) return null;
+        if (self.hier.scopes.items[s].parent == s) return null;
     }
 }
 
@@ -229,7 +229,7 @@ pub fn checkArgs(self: *Run, decl: *const Ast.Subroutine, args: []const Ast.Expr
 /// instances as a §12.5 reference's do, and the task is the last part,
 /// declared in the final one. Fails at `tok` when `report`, else is null.
 pub fn enabledTask(self: *Run, scope: u32, name: Ast.StrId, tok: u32, comptime report: bool) Error!?u32 {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     assert(tok < self.starts.len);
     const saved = self.scope;
     defer self.scope = saved;
@@ -257,13 +257,13 @@ pub fn enabledTask(self: *Run, scope: u32, name: Ast.StrId, tok: u32, comptime r
             while (base) |b| {
                 found = element(self, from, b, v);
                 if (found != null or k != 0 or from == 0) break;
-                from = self.scope_info.items[from].parent;
+                from = self.hier.scopes.items[from].parent;
             }
             inst = found orelse return if (report) self.fail(tok, "§12.5: `{s}`: an instance select out of range, or of no array", .{part}) else null;
             continue;
         }
         const str = if (std.mem.find(u8, part, "[]") != null) try self.foldSelects(tok, part, indices, &used) else self.file.strings.find(part);
-        inst = (if (str) |n| (if (k == 0) self.upward(n) else self.instances.get(.{ .scope = inst, .str = n })) else null) orelse
+        inst = (if (str) |n| (if (k == 0) self.upward(n) else self.hier.instances.get(.{ .scope = inst, .str = n })) else null) orelse
             return if (report) self.fail(tok, "undeclared instance `{s}` in a hierarchical task name", .{part}) else null;
     }
     const leaf = self.file.strings.find(text[dot + 1 ..]);
@@ -274,7 +274,7 @@ pub fn enabledTask(self: *Run, scope: u32, name: Ast.StrId, tok: u32, comptime r
 /// The scope of element `v` of instance array or loop generate `name`
 /// directly under `parent`, or null.
 pub fn element(self: *const Run, parent: u32, name: Ast.StrId, v: i64) ?u32 {
-    for (self.scope_info.items, 0..) |info, at| {
+    for (self.hier.scopes.items, 0..) |info, at| {
         if (at != parent and info.parent == parent and info.name == name and info.index == v) return @intCast(at);
     }
     return null;

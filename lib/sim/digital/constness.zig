@@ -65,7 +65,7 @@ pub fn attributeConstantExpression(self: *Run, e: Ast.ExprId) bool {
 /// (`ModuleDecl.attrs`), read in its instance `scope`, whose parameters are
 /// constants.
 pub fn checkAttributes(self: *Run, attrs: []const Ast.NatureAttr, scope: u32) Error!void {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     const saved = self.scope;
     defer self.scope = saved;
     self.scope = scope;

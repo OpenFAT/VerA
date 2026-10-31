@@ -93,7 +93,7 @@ pub fn isGenerate(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, s: Ast.
 /// A block's events, drivers and processes are declared in the scope it is
 /// elaborated in (`Ast.GenItems`), which is the block's own (`armScope`).
 pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.StmtId, depth: u32) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     // A digital parse keeps a generate block's nets on the block
     // (`parseGenerateBlock`), so the `.block` arm declares one set per loop
     // iteration, in that iteration's scope. ponytail: a part-select bound
@@ -140,9 +140,9 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
             if (r.file.exprs.tag(step.target) != .ident or r.file.exprs.strOf(step.target) != gv)
                 return r.fail(tok, "§12.4.1: a loop generate's iteration assigns its genvar", .{});
             r.scope = scope;
-            if (r.scope_info.items[scope].index != null and r.names.contains(.{ .scope = scope, .str = gv }))
+            if (r.hier.scopes.items[scope].index != null and r.hier.names.contains(.{ .scope = scope, .str = gv }))
                 return r.fail(tok, "§12.4.1: two nested loop generate constructs cannot use the same genvar", .{});
-            const at = r.names.get(.{ .scope = scope, .str = gv }) orelse try genvarSlot(r, e, gv, tok);
+            const at = r.hier.names.get(.{ .scope = scope, .str = gv }) orelse try genvarSlot(r, e, gv, tok);
             try setGenvar(r, e, at, try r.constant(r.file.stmt(f.init).assign.value, tok));
             // §12.4.3 an unnamed block's external name, genblk<n>.
             const name: Ast.StrId, const implicit = switch (r.file.stmt(f.body)) {
@@ -158,7 +158,7 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
                 const value = e.values.items[at].asInt() orelse return r.fail(tok, "§12.4.1: a genvar shall not be x or z", .{});
                 if ((try seen.fetchPut(r.arena, value, {})) != null) return r.fail(tok, "§12.4.1: a genvar value is repeated, so this loop generate does not terminate", .{});
                 const iter = try newScope(r, tok);
-                try r.scope_info.append(r.arena, .{ .parent = scope, .name = name, .def = defOf(r, m), .lexical = true, .index = value, .implicit = implicit });
+                try r.hier.scopes.append(r.arena, .{ .parent = scope, .name = name, .def = defOf(r, m), .lexical = true, .index = value, .implicit = implicit });
                 try selectable(r, scope, name, value, iter);
                 r.scope = iter;
                 try setGenvar(r, e, try genvarSlot(r, e, gv, tok), e.values.items[at]);
@@ -184,7 +184,7 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
             for (r.subs.items[sub_first..]) |*sub| {
                 sub.frame = try frame(r, sub.decl, scope);
                 sub.framed = true;
-                if (!sub.decl.automatic) try r.instances.put(r.arena, .{ .scope = scope, .str = sub.decl.name }, sub.frame.scope);
+                if (!sub.decl.automatic) try r.hier.instances.put(r.arena, .{ .scope = scope, .str = sub.decl.name }, sub.frame.scope);
                 try blockScopes(r, sub.frame.scope, sub.decl.body);
             }
             r.scope = scope;
@@ -220,7 +220,7 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
 /// One A.2.1.3 net declaration of `scope`: the net, or a §4.9.1 net
 /// array's elements, and a net_decl_assignment's driver.
 pub fn declareNet(r: *Run, e: *Elab, scope: u32, n: Ast.NetDecl) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const arena = r.arena;
     // §7.2.1: a disciplined net is continuous, the analog solver's.
     if (r.analog.mixed and (n.is_ground or continuous(r.file, n.discipline))) return;
@@ -267,11 +267,11 @@ pub fn declareNet(r: *Run, e: *Elab, scope: u32, n: Ast.NetDecl) Error!void {
 /// `scope`, reachable as `name[k]` (the spelling the parser gives an
 /// instance select) when the source writes one.
 pub fn selectable(r: *Run, scope: u32, name: Ast.StrId, k: i64, at: u32) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     if (name == .none) return;
     var buf: [256]u8 = undefined;
     const text = std.mem.print(&buf, "{s}[{d}]", .{ r.file.str(name), k }) catch return;
-    if (r.file.strings.find(text)) |str| try r.instances.put(r.arena, .{ .scope = scope, .str = str }, at);
+    if (r.file.strings.find(text)) |str| try r.hier.instances.put(r.arena, .{ .scope = scope, .str = str }, at);
 }
 
 /// Every module a generate construct instantiates, in either arm.
@@ -312,7 +312,7 @@ fn genvarOf(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, f: anytype) ?
 /// `genblk<n>`, unless `s` is no block or a directly nested construct (the
 /// parser leaves those unnamed), which is not a scope.
 fn armScope(r: *Run, scope: u32, s: Ast.StmtId, tok: u32) Error!u32 {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     assert(tok < r.starts.len);
     if (s == .none) return scope;
     const name = switch (r.file.stmt(s)) {
@@ -321,10 +321,10 @@ fn armScope(r: *Run, scope: u32, s: Ast.StmtId, tok: u32) Error!u32 {
     };
     if (name == .none) return scope;
     const at = try newScope(r, tok);
-    try r.scope_info.append(r.arena, .{ .parent = scope, .name = name, .def = r.scope_info.items[scope].def, .lexical = true });
+    try r.hier.scopes.append(r.arena, .{ .parent = scope, .name = name, .def = r.hier.scopes.items[scope].def, .lexical = true });
     // §12.4.3: "an unnamed generate block has no name that can be used in a
     // hierarchical name".
-    if (r.file.stmt(s).block.name != .none) try r.instances.put(r.arena, .{ .scope = scope, .str = name }, at);
+    if (r.file.stmt(s).block.name != .none) try r.hier.instances.put(r.arena, .{ .scope = scope, .str = name }, at);
     return at;
 }
 

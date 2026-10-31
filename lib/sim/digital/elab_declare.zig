@@ -105,7 +105,7 @@ pub const size_mismatch = "§6.5.7.1: the sizes of the port and the net connecte
 /// Recurses into child instances AFTER its own nets exist, so a port connection
 /// always resolves against a parent that is fully declared.
 pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, over: []const Ast.ParamOverride, depth: u32) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     try declareHead(r, e, m, scope, over, depth);
     return declareBody(r, e, m, scope, binds, depth);
 }
@@ -114,7 +114,7 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
 /// and parameters, which an instance's parent needs before it binds the
 /// ports (a port range may name a parameter, IEEE 1364-2005 §12.2).
 pub fn declareHead(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, over: []const Ast.ParamOverride, depth: u32) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const arena = r.arena;
     if (deep.exhausted()) return r.deepFail(m.main_tok);
     // §12.1.3: a module may instantiate itself only under a generate that
@@ -199,7 +199,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
         // §12.5: a task or function is a scope a hierarchical name reaches;
         // §10.2.1: "Automatic task items cannot be accessed by hierarchical
         // references" (`slot` names why).
-        if (!sub.decl.automatic) try r.instances.put(r.arena, .{ .scope = scope, .str = sub.decl.name }, sub.frame.scope);
+        if (!sub.decl.automatic) try r.hier.instances.put(r.arena, .{ .scope = scope, .str = sub.decl.name }, sub.frame.scope);
         try blockScopes(r, sub.frame.scope, sub.decl.body);
     }
     for (m.discrete) |d| try blockScopes(r, scope, d.body);
@@ -235,7 +235,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
         // IEEE 1364-2005 §12.3.3: an output port "declared as a variable"
         // (`output q; reg q;`) is that variable, and it drives the net it
         // is connected to: one driver of it, as a continuous assignment is.
-        if (r.names.get(.{ .scope = scope, .str = p.name })) |var_slot| {
+        if (r.hier.names.get(.{ .scope = scope, .str = p.name })) |var_slot| {
             // §12.3.3: the parser folded the first net declaration into the
             // port (`Port.typed`), so a net already bound here is a second
             // one, unless it is the entry a folded `wire p = e;` leaves for
@@ -378,7 +378,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
     }
     // §10.4.2: "It is illegal to declare another object with the same name
     // as the function in the scope where the function is declared."
-    for (r.subs.items[r.sub_base.get(scope).?..]) |sub| if (r.names.contains(.{ .scope = scope, .str = sub.decl.name }))
+    for (r.subs.items[r.sub_base.get(scope).?..]) |sub| if (r.hier.names.contains(.{ .scope = scope, .str = sub.decl.name }))
         return r.fail(sub.decl.main_tok, "§10.4.2: duplicate declaration of `{s}`, a task or function name in this scope", .{r.file.str(sub.decl.name)});
     try implicitNets(r, e, scope, m);
     // §3.8: every attribute value is a constant expression, judged once the
@@ -424,7 +424,7 @@ pub fn declareEvents(r: *Run, events: []const Ast.EventDecl) Error!void {
 /// compiled first (`b.mod_1.x` from a sibling block) finds them. `compile`
 /// enters the scope `block_scopes` records.
 pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     if (s == .none) return;
     const W = struct {
         r: *Run,
@@ -436,7 +436,7 @@ pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
     };
     var inner = scope;
     switch (r.file.stmt(s)) {
-        .block => |b| if (b.name != .none and !r.block_scopes.contains(.{ .scope = scope, .stmt = s }) and declares(r.file, s)) {
+        .block => |b| if (b.name != .none and !r.hier.block_scopes.contains(.{ .scope = scope, .stmt = s }) and declares(r.file, s)) {
             inner = try blockScope(r, scope, s);
         },
         else => {}, // else: only a block is a scope
@@ -447,13 +447,13 @@ pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
 /// Block `s`'s scope under `scope`, its parameters, events and variables
 /// declared there. Pass two calls it for an automatic activation's copy.
 pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const b = r.file.stmt(s).block;
     const tok = r.file.stmtTok(s);
     const at = try newScope(r, tok);
-    try r.scope_info.append(r.arena, .{ .parent = scope, .name = b.name, .def = r.scope_info.items[scope].def, .lexical = true });
-    try r.block_scopes.put(r.arena, .{ .scope = scope, .stmt = s }, at);
-    if (b.name != .none) try r.instances.put(r.arena, .{ .scope = scope, .str = b.name }, at);
+    try r.hier.scopes.append(r.arena, .{ .parent = scope, .name = b.name, .def = r.hier.scopes.items[scope].def, .lexical = true });
+    try r.hier.block_scopes.put(r.arena, .{ .scope = scope, .stmt = s }, at);
+    if (b.name != .none) try r.hier.instances.put(r.arena, .{ .scope = scope, .str = b.name }, at);
     const saved = r.scope;
     defer r.scope = saved;
     r.scope = at;
@@ -499,7 +499,7 @@ fn namesIn(r: *const Run, e: Ast.ExprId, name: Ast.StrId) bool {
 /// A terminal's identifiers count wherever they stand in its expression
 /// (`.r(!r)`); an assignment's target only as the whole of it.
 fn implicitNets(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     for (m.instances) |inst| for (inst.ports) |c| try implicitTerminal(r, e, scope, m, c.expr);
     for (m.gates) |g| {
         try implicitNet(r, e, scope, m, g.out);
@@ -512,7 +512,7 @@ fn implicitNets(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl) Error!v
 
 /// Every identifier of terminal expression `x` through `implicitNet`.
 fn implicitTerminal(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.ExprId) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const ex = &r.file.exprs;
     if (x == .none) return;
     if (ex.tag(x) == .ident) return implicitNet(r, e, scope, m, x);
@@ -521,11 +521,11 @@ fn implicitTerminal(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: 
 }
 
 fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.ExprId) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const ex = &r.file.exprs;
     if (x == .none or ex.tag(x) != .ident) return;
     const tok = ex.mainTok(x);
-    if (r.names.contains(.{ .scope = scope, .str = ex.strOf(x) })) {
+    if (r.hier.names.contains(.{ .scope = scope, .str = ex.strOf(x) })) {
         // §4.5: "has not been declared previously". A net declared after
         // this use was already implicitly declared here, so it declares
         // the name a second time.
@@ -538,7 +538,7 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
     _ = try mintNet(r, e, kind, 1, false, ex.strOf(x), tok);
     // §4.5's implicit net is the scope's from its start, so a terminal
     // before the one that declares it reads it (`lookupAt`).
-    try r.bound_at.put(r.arena, .{ .scope = scope, .str = ex.strOf(x) }, 0);
+    try r.hier.bound_at.put(r.arena, .{ .scope = scope, .str = ex.strOf(x) }, 0);
 }
 
 /// Does statement `s` hold a named block with declarations of its own?

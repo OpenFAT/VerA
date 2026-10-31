@@ -415,12 +415,12 @@ pub fn target(r: *Run, e: Ast.ExprId) Error!Target {
     var first = true;
     for (parts, 0..) |p, i| {
         const last = i + 1 == parts.len;
-        if (r.instances.get(.{ .scope = scope, .str = p })) |child| {
+        if (r.hier.instances.get(.{ .scope = scope, .str = p })) |child| {
             scope = child;
         } else if (if (first) rootNamed(r, p) else null) |t| {
             scope = t;
         } else if (last) {
-            const at = (if (parts.len == 1) r.lookup(scope, p) else r.names.get(.{ .scope = scope, .str = p })) orelse
+            const at = (if (parts.len == 1) r.lookup(scope, p) else r.hier.names.get(.{ .scope = scope, .str = p })) orelse
                 return r.exprFail(e, "$dumpvars names a module instance or a variable");
             return .{ .slot = at };
         } else return r.exprFail(e, "undeclared instance in a hierarchical reference");
@@ -432,7 +432,7 @@ pub fn target(r: *Run, e: Ast.ExprId) Error!Target {
 /// `r`'s `Catalog`: `offs` gives each slot's first plane word (a native
 /// executable's layout), or is empty.
 pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
-    const scopes = try a.alloc(Scope, r.scope_info.items.len);
+    const scopes = try a.alloc(Scope, r.hier.scopes.items.len);
     const var_start = try a.alloc(u32, scopes.len + 1);
     var vars: std.ArrayList(Var) = .empty;
     // §18.2.3.4 a static task's or function's frame is a scope of its own.
@@ -441,7 +441,7 @@ pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
     for (r.subs.items) |sub| if (sub.framed and !sub.decl.automatic) {
         subs[sub.frame.scope] = sub.decl;
     };
-    for (r.scope_info.items, scopes, subs, 0..) |info, *sc, sub, s| {
+    for (r.hier.scopes.items, scopes, subs, 0..) |info, *sc, sub, s| {
         var line: std.Io.Writer.Allocating = .init(a);
         const kind = if (sub) |t| (if (t.is_function) "function" else "task") else if (info.lexical) "begin" else "module";
         try line.writer.print("$scope {s} {s}", .{ kind, r.file.str(info.name) });
@@ -470,7 +470,7 @@ pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
         std.debug.assert(names.items.len == names.capacity);
         for (names.items, 0..) |name, i| {
             if (std.mem.findScalar(Ast.StrId, names.items[0..i], name) != null) continue;
-            const at = r.names.get(.{ .scope = @intCast(s), .str = name }) orelse continue;
+            const at = r.hier.names.get(.{ .scope = @intCast(s), .str = name }) orelse continue;
             if (r.arrays.contains(at) or r.params.contains(at)) continue;
             try vars.append(a, try variable(r, a, decls.items, name, at, if (offs.len == 0) 0 else offs[at]));
         }
@@ -490,9 +490,9 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
         },
         .vars => {
             var levels: u32 = 0;
-            const targets = try a.alloc(Target, if (args.len == 0) r.roots.len else args.len - 1);
+            const targets = try a.alloc(Target, if (args.len == 0) r.hier.roots.len else args.len - 1);
             if (args.len == 0) {
-                for (r.roots, targets) |s, *t| t.* = .{ .scope = s };
+                for (r.hier.roots, targets) |s, *t| t.* = .{ .scope = s };
             } else {
                 levels = std.math.lossyCast(u32, (try evaluate.eval(r, a, args[0], 0)).asInt() orelse 0);
                 for (args[1..], targets) |e, *t| t.* = try target(r, e);
@@ -589,7 +589,7 @@ fn strip(s: []const u8) []const u8 {
 
 /// The top-level module named `name`.
 fn rootNamed(r: *const Run, name: Ast.StrId) ?u32 {
-    for (r.roots) |t| if (r.scope_info.items[t].name == name) return t;
+    for (r.hier.roots) |t| if (r.hier.scopes.items[t].name == name) return t;
     return null;
 }
 

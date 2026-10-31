@@ -151,42 +151,7 @@ text: []const u8 = "",
 starts: []const u32,
 bag: *diag.Bag,
 out: *std.Io.Writer,
-/// §6.2.2 names are per INSTANCE, not per module: two instances of one
-/// definition declare the same identifiers over different storage, so the
-/// key is the scope the name was declared in plus the interned name. The
-/// scope in force is `self.scope`, which the executing process carries.
-names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
-/// Each `names` entry's declaration token, for `lookupAt` (by name, not
-/// slot: a port's slot is its connection's, declared in another module).
-bound_at: std.AutoHashMapUnmanaged(Name, u32) = .empty,
 scope: u32 = 0,
-/// IEEE 1364-2005 §26.6.19(e): the lexical scope of an expression a
-/// VPI application may evaluate later, keyed by (instance, expression).
-/// Populated only for a host with `systf`; obtaining an argument handle
-/// does not evaluate its expression.
-vpi_expr_scopes: std.AutoHashMapUnmanaged([2]u32, u32) = .empty,
-/// The highest scope id handed out; the root is 0.
-scopes: u32 = 0,
-/// Per scope id: the instance that minted it, its name and its module
-/// (§17.1.1.6's `%m` path and §13.6's `%l` binding). Row 0 is the root,
-/// named after its module.
-/// `lexical` marks a scope nested inside its parent's module, a task or
-/// function (§12.7), whose unresolved names are searched for in the
-/// parent; an instance is a hierarchy boundary and is searched no further.
-/// `index` marks one iteration of a §12.4.1 loop generate, the `[i]` of
-/// its block name; `implicit`, one whose block is unnamed (§12.4.3's
-/// `genblk<n>`, IEEE 1364-2005 §26.6.44's vpiImplicitDecl).
-scope_info: std.ArrayList(struct { parent: u32, name: Ast.StrId, def: u32, lexical: bool = false, index: ?i64 = null, implicit: bool = false }) = .empty,
-/// IEEE 1364-2005 §13.2.3 per `file.modules` row, the library its source
-/// file maps into; per `file.configs` row, the same.
-def_lib: []const Ast.StrId = &.{},
-cfg_lib: []const Ast.StrId = &.{},
-/// §13.5.1/§13.7.1 the library search order with no configuration.
-search: []const Ast.StrId = &.{},
-/// Per instance scope, the §13.3 state its children bind under.
-binds: std.AutoHashMapUnmanaged(u32, binding.Ctx) = .empty,
-/// The top-level modules' scopes (`isRoot`), 0 first.
-roots: []const u32 = &.{0},
 /// IEEE 1364-2005 §10 the tasks and functions of every instance.
 subs: std.ArrayList(Sub) = .empty,
 /// A subroutine by its name in the instance that declares it.
@@ -204,9 +169,6 @@ term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) 
 /// The always constructs `processes` starts first at time 0
 /// (`levelControlled`), in source order, by the pc each starts at.
 early: std.ArrayList(u32) = .empty,
-/// The token each scope after the root was made at (`elab.newScope`),
-/// which orders a scope's children as the source does (`processOrder`).
-scope_toks: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 /// §9.7.2 an expression term that reads a timed automatic task's
 /// variables, by scope, and the slots it reads: a hidden slot would be
 /// shared by every activation (§10.2.1), so each waiter instead tests
@@ -222,20 +184,6 @@ auto_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
 /// The instruction a system task is running from, so `%m` can name the
 /// §5.3.2 named blocks around it.
 pc: u32 = 0,
-/// §12.4 one instance NAME, keyed by the scope that instantiated it, to the
-/// scope it minted. `names` cannot carry this: an instance is not storage,
-/// and a downward hierarchical reference walks these before it reaches a
-/// slot at all.
-instances: std.AutoHashMapUnmanaged(Name, u32) = .empty,
-/// IEEE 1364-2005 §12.7 the gate, switch and UDP instance names of each
-/// scope, each to its token: no storage, but declared there, so they hide
-/// an outer name of the same spelling from `lookupAt`, `upward` and a call
-/// (iverilog refuses the hidden use the same way); `lookupAt` from the
-/// instance on, a call and `upward` wherever it is.
-prim_names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
-/// §12.5 the scope of each named block that declares something, keyed by
-/// the scope it runs in and its statement (`blockScope`).
-block_scopes: std.AutoHashMapUnmanaged(struct { scope: u32, stmt: Ast.StmtId }, u32) = .empty,
 /// IEEE 1364 §19.9's regions, in text-stream order. Read once per
 /// unconnected input port; `src/analog/node.zig`'s `applyUnconnectedDrive` is
 /// the analog half of the same directive.
@@ -364,6 +312,8 @@ dumps: vcd_file.Dumps = .{},
 tasks: system.TaskState = .{},
 /// IEEE 1364-2005 §19.8 the design's timescales and §17.3 `$timeformat` (`declared.Times`).
 time: declared.Times = .{},
+/// The elaborated hierarchy and every name bound in it (`name_search.Hierarchy`).
+hier: name_search.Hierarchy = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.

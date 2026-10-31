@@ -195,9 +195,9 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
 pub fn upward(self: *const Run, name: Ast.StrId) ?u32 {
     var s = self.scope;
     while (true) {
-        if (self.instances.get(.{ .scope = s, .str = name })) |child| return child;
-        if (self.prim_names.contains(.{ .scope = s, .str = name })) return null;
-        const info = self.scope_info.items[s];
+        if (self.hier.instances.get(.{ .scope = s, .str = name })) |child| return child;
+        if (self.hier.prim_names.contains(.{ .scope = s, .str = name })) return null;
+        const info = self.hier.scopes.items[s];
         if (info.lexical) {
             if (info.name == name and info.index == null) return s;
             s = info.parent;
@@ -207,9 +207,9 @@ pub fn upward(self: *const Run, name: Ast.StrId) ?u32 {
         // §12.5: a top-level module's name starts a hierarchical name
         // anywhere in the design.
         if (isRoot(self, s)) {
-            for (self.roots) |t| if (self.scope_info.items[t].name == name) return t;
+            for (self.hier.roots) |t| if (self.hier.scopes.items[t].name == name) return t;
             return null;
         }
-        s = self.instanceOf(self.scope_info.items[s].parent);
+        s = self.instanceOf(self.hier.scopes.items[s].parent);
     }
 }

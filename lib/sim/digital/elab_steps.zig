@@ -74,8 +74,8 @@ pub fn bindDisables(r: *Run, from: usize) Error!void {
                 r.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
                 continue :disabling;
             }
-            if (!r.scope_info.items[s].lexical) break;
-            s = r.scope_info.items[s].parent;
+            if (!r.hier.scopes.items[s].lexical) break;
+            s = r.hier.scopes.items[s].parent;
         }
         const idx = r.sub_by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
             return r.fail(d.tok, "undeclared named block or task", .{});
@@ -152,24 +152,24 @@ pub fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: 
 /// walk from the roots reaches its scope.
 pub fn processOrder(r: *Run, e: *const elab.Elab) Error![]const u32 {
     const a = r.arena;
-    const n = r.scope_info.items.len;
+    const n = r.hier.scopes.items.len;
     const groups = try a.alloc(std.ArrayList(u32), n);
     @memset(groups, .empty);
     for (e.insts.items, 0..) |inst, k| try groups[inst.scope].append(a, @intCast(k));
     for (e.procs.items, 0..) |p, k| try groups[p.scope].append(a, @intCast(e.insts.items.len + k));
     const children = try a.alloc(std.ArrayList(u32), n);
     @memset(children, .empty);
-    for (r.scope_info.items, 0..) |info, k| if (info.parent != k and k != 0) try children[info.parent].append(a, @intCast(k));
+    for (r.hier.scopes.items, 0..) |info, k| if (info.parent != k and k != 0) try children[info.parent].append(a, @intCast(k));
     const BySource = struct {
         fn less(toks: *const std.AutoHashMapUnmanaged(u32, u32), x: u32, y: u32) bool {
             return (toks.get(x) orelse 0) < (toks.get(y) orelse 0);
         }
     };
-    for (children) |c| std.sort.block(u32, c.items, &r.scope_toks, BySource.less);
+    for (children) |c| std.sort.block(u32, c.items, &r.hier.scope_toks, BySource.less);
     var out: std.ArrayList(u32) = .empty;
     // An explicit stack: (scope, next child to visit).
     var stack: std.ArrayList([2]u32) = .empty;
-    for (r.roots) |root_scope| {
+    for (r.hier.roots) |root_scope| {
         try stack.append(a, .{ root_scope, 0 });
         while (stack.items.len != 0) {
             const top = &stack.items[stack.items.len - 1];
@@ -219,7 +219,7 @@ pub fn driverBits(d: Driver, width: u32) [2]u32 {
 /// and were never declared here.
 pub fn initVars(r: *Run, vars: []const Ast.VarDecl) Error!void {
     for (vars) |v| if (v.init != .none) {
-        const at = r.names.get(.{ .scope = r.scope, .str = v.name }) orelse continue;
+        const at = r.hier.names.get(.{ .scope = r.scope, .str = v.name }) orelse continue;
         try compile.checkExpr(r, v.init);
         // §6.2.1: "The assignment shall be to a constant expression."
         if (!compile.constantExpression(r, v.init)) return r.exprFail(v.init, "§6.2.1: a constant expression is required here");

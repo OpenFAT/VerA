@@ -64,7 +64,7 @@ const size_mismatch = elab_declare.size_mismatch;
 /// the port's low bits.
 pub fn sendPort(r: *Run, e: *Elab, operands: []const Sink, tok: u32, src: u32, width: u32, scope: u32) Error!void {
     assert(tok < r.starts.len);
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     var lo: u32 = 0;
     var k = operands.len;
     while (k != 0) {

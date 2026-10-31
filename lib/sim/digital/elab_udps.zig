@@ -66,9 +66,9 @@ pub fn findUdp(file: *const Ast.SourceFile, name: Ast.StrId) ?*const Ast.UdpDecl
 /// state starts at its `initial` value, or x, and that value is on the output
 /// at time 0 whatever the instance delay.
 pub fn declareUdp(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, u: *const Ast.UdpDecl) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const tok = inst.main_tok;
-    try r.prim_names.put(r.arena, .{ .scope = scope, .str = inst.name }, inst.main_tok);
+    try r.hier.prim_names.put(r.arena, .{ .scope = scope, .str = inst.name }, inst.main_tok);
     if (inst.ports.len != u.ports.len) return r.fail(tok, "§8: a UDP instance connects its output and every input, in order", .{});
     for (inst.ports) |c| if (c.name != .none or c.expr == .none)
         return r.fail(c.main_tok, "§8: a UDP instance connects its terminals by position, none left open", .{});

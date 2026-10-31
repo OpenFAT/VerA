@@ -91,9 +91,9 @@ pub fn segregate(r: *Run, e: *elab.Elab) Error!void {
     for (r.inserts, r.insert_segs) |row, seg| {
         const parent = scopeAt(r, row.path) orelse continue;
         // A continuous lower port minted no segment: nothing digital to split.
-        const slot = r.names.get(.{ .scope = parent, .str = r.file.exprs.strOf(seg) }) orelse continue;
+        const slot = r.hier.names.get(.{ .scope = parent, .str = r.file.exprs.strOf(seg) }) orelse continue;
         const d = r.net_of.get(slot) orelse continue;
-        const is_gate = if (r.file.strings.find(row.inst)) |n| r.instances.get(.{ .scope = parent, .str = n }) == null else true;
+        const is_gate = if (r.file.strings.find(row.inst)) |n| r.hier.instances.get(.{ .scope = parent, .str = n }) == null else true;
         if (is_gate) try gate_reads.append(r.arena, .{ .scope = parent, .str = r.file.exprs.strOf(seg), .net = d });
         if (r.drv.receivers.contains(d)) continue; // a merged group's later port
         var driven = false;
@@ -106,14 +106,14 @@ pub fn segregate(r: *Run, e: *elab.Elab) Error!void {
             w.net = rx;
         };
         const rx_slot = e.nets.items[rx].slot;
-        var it = r.names.iterator();
+        var it = r.hier.names.iterator();
         while (it.next()) |entry| if (entry.value_ptr.* == slot and ordinaryInput(r, entry.key_ptr.scope, entry.key_ptr.str)) {
             entry.value_ptr.* = rx_slot;
         };
         try r.drv.receivers.put(r.arena, d, rx);
     }
     for (gate_reads.items) |g| if (r.drv.receivers.get(g.net)) |rx| {
-        r.names.getPtr(.{ .scope = g.scope, .str = g.str }).?.* = e.nets.items[rx].slot;
+        r.hier.names.getPtr(.{ .scope = g.scope, .str = g.str }).?.* = e.nets.items[rx].slot;
     };
 }
 
@@ -277,7 +277,7 @@ fn scopeAt(r: *const Run, path: []const u8) ?u32 {
     var parts = std.mem.tokenizeScalar(u8, path, '.');
     while (parts.next()) |part| {
         const name = r.file.strings.find(part) orelse return null;
-        scope = r.instances.get(.{ .scope = scope, .str = name }) orelse return null;
+        scope = r.hier.instances.get(.{ .scope = scope, .str = name }) orelse return null;
     }
     return scope;
 }
@@ -285,8 +285,8 @@ fn scopeAt(r: *const Run, path: []const u8) ?u32 {
 /// §9.22 ¶3: is `scope` inside a connect module, whose drivers "the driver
 /// access functions … only access drivers found in ordinary modules" skip?
 fn isConnect(r: *const Run, scope: u32) bool {
-    assert(scope < r.scope_info.items.len);
-    return r.file.modules[r.scope_info.items[r.instanceOf(scope)].def].is_connect;
+    assert(scope < r.hier.scopes.items.len);
+    return r.file.modules[r.hier.scopes.items[r.instanceOf(scope)].def].is_connect;
 }
 
 /// §9.22.1 the `i`'th ordinary driver of `net`, "arbitrarily numbered from 0
@@ -339,7 +339,7 @@ fn pending(r: *Run, a: std.mem.Allocator, di: u32) Error!?Pend {
 fn receivers(r: *const Run, slot: u32) u32 {
     assert(slot < r.values.len);
     var n: u32 = 0;
-    var it = r.names.iterator();
+    var it = r.hier.names.iterator();
     while (it.next()) |entry| n += @intFromBool(entry.value_ptr.* == slot and ordinaryInput(r, entry.key_ptr.scope, entry.key_ptr.str));
     return n;
 }
@@ -347,9 +347,9 @@ fn receivers(r: *const Run, slot: u32) u32 {
 /// Whether name `str` in `scope` is an input port of an ordinary module
 /// instance (not a connect module's, not a block's local).
 fn ordinaryInput(r: *const Run, scope: u32, str: Ast.StrId) bool {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     if (isConnect(r, scope)) return false;
-    const info = r.scope_info.items[scope];
+    const info = r.hier.scopes.items[scope];
     if (info.lexical) return false;
     for (r.file.modules[info.def].ports) |p| if (p.name == str) return p.direction == .input;
     return false;

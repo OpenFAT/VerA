@@ -419,7 +419,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     // waiters. §6.2.2 elaboration walks the instance tree parent-first, which
     // is what lets a port connection resolve against nets that already exist.
     var e: elab.Elab = .{};
-    try r.scope_info.append(arena, .{ .parent = 0, .name = m.name, .def = elab.defOf(&r, m) });
+    try r.hier.scopes.append(arena, .{ .parent = 0, .name = m.name, .def = elab.defOf(&r, m) });
     // IEEE 1364-2005 §12.1.1 every other top-level module is a root of its
     // own, scoped before any instance so a defparam in it that names another
     // top's parameter (§12.2.1) is registered when that parameter is set.
@@ -429,13 +429,13 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         for (tops[1..], roots[1..]) |d, *s| {
             const t = &file.modules[d];
             s.* = try elab.newScope(&r, t.main_tok);
-            try r.scope_info.append(arena, .{ .parent = s.*, .name = t.name, .def = d });
+            try r.hier.scopes.append(arena, .{ .parent = s.*, .name = t.name, .def = d });
             for (t.defparams) |dp| try elab.bindDefparam(&r, s.*, dp, t.instances);
         }
-        r.roots = roots;
+        r.hier.roots = roots;
     }
-    for (r.roots, 0..) |s, k| if (r.binds.get(0)) |b| if (b.cfg) |c|
-        try r.binds.put(arena, s, binding.rootCtx(&r, c, if (tops.len == 0) elab.defOf(&r, m) else tops[k]));
+    for (r.hier.roots, 0..) |s, k| if (r.hier.binds.get(0)) |b| if (b.cfg) |c|
+        try r.hier.binds.put(arena, s, binding.rootCtx(&r, c, if (tops.len == 0) elab.defOf(&r, m) else tops[k]));
     if (opts.mixed) |mx| {
         // VAMS §7.8.4 each bridge's segment, spelled as the flatten spells it
         // (`bridged` declares it), for the connections re-pointed at it.
@@ -461,7 +461,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     @memset(r.sys_calls, null);
     r.growing = &e.values;
     try elab.declare(&r, &e, m, 0, &.{}, &.{}, 0);
-    if (tops.len > 1) for (r.roots[1..], tops[1..]) |s, d| try elab.declare(&r, &e, &file.modules[d], s, &.{}, &.{}, 0);
+    if (tops.len > 1) for (r.hier.roots[1..], tops[1..]) |s, d| try elab.declare(&r, &e, &file.modules[d], s, &.{}, &.{}, 0);
     try elab.checkDefparams(&r);
     // A misspelt `--param` would otherwise run the default design.
     for (opts.params) |o| {
@@ -1210,7 +1210,7 @@ test "§12.7 a name resolves outward through blocks and stops at the instance" {
     const a_str = r.file.strings.find("a").?;
     const b_str = r.file.strings.find("b").?;
     const c_str = r.file.strings.find("c").?;
-    const block = r.instances.get(.{ .scope = 0, .str = b_str }).?;
+    const block = r.hier.instances.get(.{ .scope = 0, .str = b_str }).?;
     // From the block, `a` is the instance's; from the instance, `c` is no
     // name at all (§12.7: a block's names are not its parent's).
     try std.testing.expectEqual(r.slotOf("a"), r.lookup(block, a_str));
@@ -1232,12 +1232,12 @@ test "§12.1.1 every module nothing instantiates is a root of its own" {
         \\module a; reg x; endmodule
         \\module b; reg y; endmodule
     , .{}, &bag, &output.writer);
-    try std.testing.expectEqual(@as(usize, 2), r.roots.len);
-    for (r.roots) |s| try std.testing.expect(isRoot(&r, s));
+    try std.testing.expectEqual(@as(usize, 2), r.hier.roots.len);
+    for (r.hier.roots) |s| try std.testing.expect(isRoot(&r, s));
     // From inside one root, the other is found by its module's name.
-    r.scope = r.roots[0];
-    const other = r.upward(r.scope_info.items[r.roots[1]].name).?;
-    try std.testing.expectEqual(r.roots[1], other);
+    r.scope = r.hier.roots[0];
+    const other = r.upward(r.hier.scopes.items[r.hier.roots[1]].name).?;
+    try std.testing.expectEqual(r.hier.roots[1], other);
 }
 
 test "§3.3 a packed range wider than u32 bits is refused, not wrapped" {

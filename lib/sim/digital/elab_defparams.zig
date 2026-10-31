@@ -101,7 +101,7 @@ pub fn checkDefparams(r: *Run) Error!void {
         else
             return r.failWith(.E0901, b.tok, "§12.2.1: this defparam's hierarchical name `{s}` names nothing in the design", .{b.path});
         const leaf = b.rest[if (std.mem.findScalarLast(u8, b.rest, '.')) |d| d + 1 else 0..];
-        const slot = if (r.file.strings.find(leaf)) |str| r.names.get(.{ .scope = target, .str = str }) else null;
+        const slot = if (r.file.strings.find(leaf)) |str| r.hier.names.get(.{ .scope = target, .str = str }) else null;
         // A mixed design leaves the analog block's parameters unbound here.
         if (!r.analog.mixed and (slot == null or !r.params.contains(slot.?))) {
             if (slot == null and target == b.at and std.mem.findScalar(u8, b.rest, '.') == null)
@@ -109,8 +109,8 @@ pub fn checkDefparams(r: *Run) Error!void {
             return r.failWith(.E0907, b.tok, "§12.2.1: this defparam names `{s}`, which is no parameter of its module", .{leaf});
         }
         var s = b.decl;
-        while (true) : (s = r.scope_info.items[s].parent) {
-            const info = r.scope_info.items[s];
+        while (true) : (s = r.hier.scopes.items[s].parent) {
+            const info = r.hier.scopes.items[s];
             if ((info.index != null or info.lexical) and !within(r, target, s)) {
                 var name: std.ArrayList(u8) = .empty;
                 try name.appendSlice(r.arena, r.file.str(info.name));
@@ -133,11 +133,11 @@ fn defparamBase(r: *Run, decl: u32, path: []const u8, children: ?[]const Ast.Ins
     const name, const index = segment(path[0..dot]);
     if (children) |list| {
         for (list) |c| if (c.name != .none and std.mem.eql(u8, r.file.str(c.name), name)) return .{ .at = decl, .rest = path };
-    } else for (r.scope_info.items, 0..) |info, s| if (s != decl and info.parent == decl and isScope(r, @intCast(s), name, index)) return .{ .at = decl, .rest = path };
+    } else for (r.hier.scopes.items, 0..) |info, s| if (s != decl and info.parent == decl and isScope(r, @intCast(s), name, index)) return .{ .at = decl, .rest = path };
     var s = decl;
     while (true) {
         if (isScope(r, s, name, index)) return .{ .at = s, .rest = path[dot + 1 ..] };
-        const info = r.scope_info.items[s];
+        const info = r.hier.scopes.items[s];
         // §12.2.1: "a defparam statement in a hierarchy in or under a
         // generate block instance ... or an array of instances ... shall
         // not change a parameter value outside that hierarchy."
@@ -146,7 +146,7 @@ fn defparamBase(r: *Run, decl: u32, path: []const u8, children: ?[]const Ast.Ins
         if (isRoot(r, s)) break;
         s = info.parent;
     }
-    for (r.roots) |t| if (isScope(r, t, name, index)) return .{ .at = t, .rest = path[dot + 1 ..] };
+    for (r.hier.roots) |t| if (isScope(r, t, name, index)) return .{ .at = t, .rest = path[dot + 1 ..] };
     return .{ .at = decl, .rest = path };
 }
 
@@ -167,7 +167,7 @@ fn defparamScope(r: *const Run, at: u32, rest: []const u8) ?u32 {
     // per defparam. A (parent, name, index) map if designs grow huge.
     next: while (it.next()) |seg| {
         const name, const index = segment(seg);
-        for (r.scope_info.items, 0..) |info, c| if (c != s and info.parent == s and isScope(r, @intCast(c), name, index)) {
+        for (r.hier.scopes.items, 0..) |info, c| if (c != s and info.parent == s and isScope(r, @intCast(c), name, index)) {
             s = @intCast(c);
             continue :next;
         };
@@ -179,6 +179,6 @@ fn defparamScope(r: *const Run, at: u32, rest: []const u8) ?u32 {
 /// Whether scope `s` is `outer` or lies under it.
 fn within(r: *const Run, s: u32, outer: u32) bool {
     var at = s;
-    while (at != outer) : (at = r.scope_info.items[at].parent) if (isRoot(r, at)) return false;
+    while (at != outer) : (at = r.hier.scopes.items[at].parent) if (isRoot(r, at)) return false;
     return true;
 }

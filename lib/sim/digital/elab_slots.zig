@@ -160,7 +160,7 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
         if (t.ports.len == 0) return r.fail(t.main_tok, "§10.4.1: a function shall have at least one input declared", .{});
     }
     const scope = try newScope(r, t.main_tok);
-    try r.scope_info.append(r.arena, .{ .parent = inst, .name = t.name, .def = r.scope_info.items[inst].def, .lexical = true });
+    try r.hier.scopes.append(r.arena, .{ .parent = inst, .name = t.name, .def = r.hier.scopes.items[inst].def, .lexical = true });
     const saved = r.scope;
     r.scope = scope;
     defer r.scope = saved;

@@ -274,7 +274,7 @@ pub fn notAutomatic(self: *Run, e: Ast.ExprId, comptime what: []const u8) Error!
 /// writes or waits on, and a procedural continuous assignment's target and
 /// value, in the scope `scope` its names resolve in.
 pub fn deferredReads(self: *Run, scope: u32, s: Ast.StmtId) Error!void {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     if (s == .none) return;
     const W = struct {
         r: *Run,
@@ -288,7 +288,7 @@ pub fn deferredReads(self: *Run, scope: u32, s: Ast.StmtId) Error!void {
     defer self.scope = saved;
     self.scope = scope;
     switch (self.file.stmt(s)) {
-        .block => self.scope = self.block_scopes.get(.{ .scope = scope, .stmt = s }) orelse scope,
+        .block => self.scope = self.hier.block_scopes.get(.{ .scope = scope, .stmt = s }) orelse scope,
         .assign => |a| if (a.continuous != .none) {
             try notAutomatic(self, a.target, "a procedural continuous assignment");
             try readsNoAutomatic(self, a.value, "a procedural continuous assignment");

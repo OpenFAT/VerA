@@ -332,7 +332,7 @@ fn cell(c: *Ctx, h: Node, scope: u32) Error!void {
             if (k.kids.len == 1) {
                 try targets.append(c.a, scope);
             } else if (std.mem.eql(u8, k.kids[1].atom orelse "", "*")) {
-                for (r.scope_info.items, 0..) |info, s| {
+                for (r.hier.scopes.items, 0..) |info, s| {
                     if (info.lexical or s == scope or !below(r, @intCast(s), scope)) continue;
                     if (std.mem.eql(u8, r.file.str(r.file.modules[info.def].name), celltype)) try targets.append(c.a, @intCast(s));
                 }
@@ -368,7 +368,7 @@ fn cell(c: *Ctx, h: Node, scope: u32) Error!void {
 fn below(r: *const Run, s: u32, top: u32) bool {
     var at = s;
     while (at != top) {
-        const p = r.scope_info.items[at].parent;
+        const p = r.hier.scopes.items[at].parent;
         if (p == at) return false;
         at = p;
     }
@@ -377,10 +377,10 @@ fn below(r: *const Run, s: u32, top: u32) bool {
 
 /// The instance `parts` names from `scope` down, one instance per part.
 fn child(r: *const Run, scope: u32, parts: []const []const u8) ?u32 {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     var at = scope;
     for (parts) |p| {
-        at = for (r.scope_info.items, 0..) |info, s| {
+        at = for (r.hier.scopes.items, 0..) |info, s| {
             if (s != at and info.parent == at and !info.lexical and std.mem.eql(u8, r.file.str(info.name), p)) break @intCast(s);
         } else return null;
     }
@@ -389,9 +389,9 @@ fn child(r: *const Run, scope: u32, parts: []const []const u8) ?u32 {
 
 /// The slot port `name` of instance `scope` is bound to.
 fn portSlot(r: *const Run, scope: u32, name: []const u8) ?u32 {
-    assert(scope < r.scope_info.items.len);
-    const m = r.file.modules[r.scope_info.items[scope].def];
-    for (m.ports) |p| if (std.mem.eql(u8, r.file.str(p.name), name)) return r.names.get(.{ .scope = scope, .str = p.name });
+    assert(scope < r.hier.scopes.items.len);
+    const m = r.file.modules[r.hier.scopes.items[scope].def];
+    for (m.ports) |p| if (std.mem.eql(u8, r.file.str(p.name), name)) return r.hier.names.get(.{ .scope = scope, .str = p.name });
     return null;
 }
 
@@ -512,8 +512,8 @@ fn label(c: *Ctx, s: u32, e: Node, increment: bool) Error!void {
     const r = c.r;
     if (e.kids.len != 2 or e.kids[0].atom == null) return c.warn(e.line, "a LABEL entry is (specparam value)", .{});
     const name = try unescape(c.a, e.kids[0].atom.?);
-    const slot = for (r.file.modules[r.scope_info.items[s].def].params) |p| {
-        if (p.is_spec and std.mem.eql(u8, r.file.str(p.name), name)) break r.names.get(.{ .scope = s, .str = p.name });
+    const slot = for (r.file.modules[r.hier.scopes.items[s].def].params) |p| {
+        if (p.is_spec and std.mem.eql(u8, r.file.str(p.name), name)) break r.hier.names.get(.{ .scope = s, .str = p.name });
     } else null;
     const at = slot orelse return c.warn(e.line, "LABEL {s} is no specparam of this instance", .{name});
     const v = (rvalue(e.kids[1], c.mtm) catch return c.warn(e.line, "LABEL {s} has a malformed value", .{name})) orelse return;

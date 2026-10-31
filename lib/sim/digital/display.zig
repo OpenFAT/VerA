@@ -452,19 +452,19 @@ pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!TimescaleTarget {
     var scope: u32 = blk: {
         var at = self.scope;
         while (true) {
-            if (self.instances.get(.{ .scope = at, .str = parts[0] })) |child| break :blk child;
-            if (parts.len == 1 and (self.names.contains(.{ .scope = at, .str = parts[0] }) or namedBlock(self, at, parts[0]))) return .{ .scope = at, .leaf = parts[0] };
-            if (!self.scope_info.items[at].lexical) break;
-            at = self.scope_info.items[at].parent;
+            if (self.hier.instances.get(.{ .scope = at, .str = parts[0] })) |child| break :blk child;
+            if (parts.len == 1 and (self.hier.names.contains(.{ .scope = at, .str = parts[0] }) or namedBlock(self, at, parts[0]))) return .{ .scope = at, .leaf = parts[0] };
+            if (!self.hier.scopes.items[at].lexical) break;
+            at = self.hier.scopes.items[at].parent;
         }
-        for (self.roots) |t| if (self.scope_info.items[t].name == parts[0]) break :blk t;
+        for (self.hier.roots) |t| if (self.hier.scopes.items[t].name == parts[0]) break :blk t;
         if (parts.len == 1) return self.exprFail(e, "§17.3.1: $printtimescale names no object of this design");
         return self.exprFail(e, "undeclared instance in a hierarchical reference");
     };
     for (parts[1..], 1..) |p, i| {
-        if (self.instances.get(.{ .scope = scope, .str = p })) |child| {
+        if (self.hier.instances.get(.{ .scope = scope, .str = p })) |child| {
             scope = child;
-        } else if (i + 1 == parts.len and (self.names.contains(.{ .scope = scope, .str = p }) or namedBlock(self, scope, p))) {
+        } else if (i + 1 == parts.len and (self.hier.names.contains(.{ .scope = scope, .str = p }) or namedBlock(self, scope, p))) {
             return .{ .scope = scope, .leaf = p };
         } else if (i + 1 == parts.len) {
             return self.exprFail(e, "§17.3.1: $printtimescale names no object of this design");
@@ -610,8 +610,8 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                     continue;
                 },
                 'l', 'L' => {
-                    const def = self.scope_info.items[self.scope].def;
-                    if (allocator != null) try self.out.print("{s}.{s}", .{ self.file.str(self.def_lib[def]), self.file.str(self.file.modules[def].name) });
+                    const def = self.hier.scopes.items[self.scope].def;
+                    if (allocator != null) try self.out.print("{s}.{s}", .{ self.file.str(self.hier.def_lib[def]), self.file.str(self.file.modules[def].name) });
                     continue;
                 },
                 // §17.1.1.5 `%v`: "the strength of scalar nets".
@@ -724,7 +724,7 @@ fn unformatted(out: *std.Io.Writer, v: Int.Literal, four: bool) Error!void {
 
 /// Scope `s`'s hierarchical name, root first.
 fn emitPath(self: *Run, s: u32) Error!void {
-    const info = self.scope_info.items[s];
+    const info = self.hier.scopes.items[s];
     if (info.parent != s and s != 0) {
         try emitPath(self, info.parent);
         try self.out.writeByte('.');
@@ -738,8 +738,8 @@ fn emitPath(self: *Run, s: u32) Error!void {
 /// its own (`elab.blockScopes`), is in module instance `scope`'s
 /// initial and always constructs.
 fn namedBlock(self: *const Run, scope: u32, name: Ast.StrId) bool {
-    assert(scope < self.scope_info.items.len);
-    if (self.scope_info.items[scope].lexical) return false;
+    assert(scope < self.hier.scopes.items.len);
+    if (self.hier.scopes.items[scope].lexical) return false;
     const V = struct {
         f: *const Ast.SourceFile,
         name: Ast.StrId,
@@ -755,7 +755,7 @@ fn namedBlock(self: *const Run, scope: u32, name: Ast.StrId) bool {
             try v.f.stmtEdges(c, v);
         }
     };
-    for (self.file.modules[self.scope_info.items[scope].def].discrete) |d|
+    for (self.file.modules[self.hier.scopes.items[scope].def].discrete) |d|
         (V{ .f = self.file, .name = name }).stmt(d.body) catch return true;
     return false;
 }

@@ -496,7 +496,7 @@ fn leafType(self: *Run, e: Ast.ExprId) Error!Type {
 /// requiring a value from scope/array/event arguments.
 fn rememberVpiScope(self: *Run, e: Ast.ExprId) Error!void {
     assert(e != .none);
-    try self.vpi_expr_scopes.put(self.arena, .{ self.instanceOf(self.scope), @backingInt(e) }, self.scope);
+    try self.hier.vpi_expr_scopes.put(self.arena, .{ self.instanceOf(self.scope), @backingInt(e) }, self.scope);
 }
 
 fn inferValue(self: *Run, e: Ast.ExprId) Error!Type {

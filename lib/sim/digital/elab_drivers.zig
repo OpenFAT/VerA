@@ -90,7 +90,7 @@ const LaneSeg = struct { row: usize, j: usize, term: u32, seg: Ast.ExprId };
 /// `items.discrete` are not read. `lanes` re-points single lanes of
 /// `items.gates`' instance arrays (`bridged`).
 pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: []const LaneSeg) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     r.scope = scope;
     for (items.assigns) |a| {
         const net = try drivenNet(r, e, scope, a.target, a.main_tok, .assign, .{ a.strength0, a.strength1 });
@@ -106,7 +106,7 @@ pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_
             if (seen.found_existing and seen.value_ptr.* != g.main_tok)
                 return r.fail(g.main_tok, "§7.1.5: `{s}` names two instances; one instance identifier has one range", .{r.file.str(g.name)});
             seen.value_ptr.* = g.main_tok;
-            try r.prim_names.put(r.arena, .{ .scope = scope, .str = g.name }, g.main_tok);
+            try r.hier.prim_names.put(r.arena, .{ .scope = scope, .str = g.name }, g.main_tok);
         }
         const net = try drivenNet(r, e, scope, g.out, g.main_tok, .gate, .{ g.strength0, g.strength1 });
         const width = e.nets.items[net].resolved.width;
@@ -150,7 +150,7 @@ pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_
     // p-type sharing data and output. A pass switch joins its two nets into
     // one resolution while it conducts.
     for (items.switches) |sw| {
-        if (sw.name != .none) try r.prim_names.put(r.arena, .{ .scope = scope, .str = sw.name }, sw.main_tok);
+        if (sw.name != .none) try r.hier.prim_names.put(r.arena, .{ .scope = scope, .str = sw.name }, sw.main_tok);
         const resistive = switch (sw.kind) {
             .rcmos, .rnmos, .rpmos, .rtran, .rtranif0, .rtranif1 => true,
             .cmos, .nmos, .pmos, .tran, .tranif0, .tranif1 => false,
@@ -241,7 +241,7 @@ pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_
 // parameters are the analog block's), and a generate scope's path is not
 // matched: insertion under a generate block reaches only the analog half.
 pub fn bridged(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!Bridged {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     var b: Bridged = .{ .instances = m.instances, .gates = m.gates, .pulls = m.pulls, .switches = m.switches };
     if (r.inserts.len == 0) return b;
     const arena = r.arena;
@@ -310,7 +310,7 @@ pub fn bridged(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!Br
                 // The segment is the scope's from its start, as an implicit
                 // net is: every re-pointed terminal reads it, wherever the
                 // source spells its instance (`lookupAt`).
-                try r.bound_at.put(r.arena, .{ .scope = scope, .str = r.file.exprs.strOf(seg) }, 0);
+                try r.hier.bound_at.put(r.arena, .{ .scope = scope, .str = r.file.exprs.strOf(seg) }, 0);
             };
             const conns = try arena.alloc(Ast.PortConn, 2);
             conns[0] = .{ .name = try interned(r, row.upper_port), .expr = up.expr, .main_tok = up.main_tok };
@@ -332,7 +332,7 @@ pub fn bridged(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!Br
 /// the analog compile's flatten gives the names declared there.
 pub fn scopePath(r: *Run, scope: u32) Error![]const u8 {
     if (scope == 0) return "";
-    const info = r.scope_info.items[scope];
+    const info = r.hier.scopes.items[scope];
     return r.arena.print("{s}{s}.", .{ try scopePath(r, info.parent), r.file.str(info.name) });
 }
 
@@ -440,7 +440,7 @@ fn switchTerminal(r: *Run, e: *Elab, t: Ast.ExprId, tok: u32, lanes: u32, lane: 
 /// The bridges drive at the driver's `strength` (§7.10), since the hidden
 /// net's one driver is all their value comes from.
 fn drivenNet(r: *Run, e: *Elab, scope: u32, target: Ast.ExprId, tok: u32, comptime who: SinkOf, strength: [2]Ast.Strength) Error!u32 {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     assert(target != .none);
     assert(tok < r.starts.len);
     var leaves: std.ArrayList(Ast.ExprId) = .empty;

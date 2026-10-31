@@ -115,14 +115,14 @@ pub fn groupByName(m: *const Ast.ModuleDecl, name: Ast.StrId) ?usize {
 /// one net (or output variable) per port name, then each external port's
 /// connection split among its references, leftmost the most significant.
 pub fn groupPorts(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     for (m.ports, 0..) |p, i| {
         if (p.name == .none) continue; // A.1.3: a null port declares no internal net
         if (for (m.ports[0..i]) |q| {
             if (q.name == p.name) break true;
         } else false) continue;
         if (p.direction == .unspecified) return r.fail(p.main_tok, "§12.3.3: port `{s}` has no direction declaration", .{r.file.str(p.name)});
-        if (r.names.contains(.{ .scope = scope, .str = p.name })) {
+        if (r.hier.names.contains(.{ .scope = scope, .str = p.name })) {
             if (p.direction != .output) return r.fail(p.main_tok, "§12.3.3: only an output port may be declared as a variable", .{});
             continue;
         }
@@ -176,7 +176,7 @@ pub fn childPortWidth(r: *Run, child: u32, p: Ast.Port) Error!u32 {
 
 /// §6.5.7 one port connection, decided in the PARENT's scope.
 pub fn bindPort(r: *Run, e: *Elab, port: Ast.Port, conn: Ast.PortConn, scope: u32) Error!PortBind {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     if (conn.expr == .none) return .open;
     const ex = &r.file.exprs;
     // §12.3.7: "The real data type shall not be directly connected to a port."
@@ -268,7 +268,7 @@ fn groupEnd(m: *const Ast.ModuleDecl, i: usize) usize {
 /// connected nets, and an inout one is joined to them bit by bit, as a
 /// `tran` joins two nets (§7.6).
 fn connectGroup(r: *Run, e: *Elab, refs: []const Ast.Port, conn: Ast.PortConn, parent: u32, scope: u32) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     if (conn.expr == .none) return;
     const Ref = struct { slot: u32, lo: u32, width: u32, at: u32, dir: Ast.Direction };
     const list = try r.arena.alloc(Ref, refs.len);
@@ -278,7 +278,7 @@ fn connectGroup(r: *Run, e: *Elab, refs: []const Ast.Port, conn: Ast.PortConn, p
     while (k != 0) {
         k -= 1;
         const p = refs[k];
-        const slot = r.names.get(.{ .scope = scope, .str = p.name }).?; // `groupPorts` declared every name
+        const slot = r.hier.names.get(.{ .scope = scope, .str = p.name }).?; // `groupPorts` declared every name
         var lo: u32 = 0;
         var w = e.values.items[slot].width;
         if (p.select) |sel| {

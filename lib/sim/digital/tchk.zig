@@ -262,7 +262,7 @@ pub fn arm(r: *Run) Error!void {
 /// check is there.
 pub fn putLimits(r: *Run, scope: u32, tok: u32, ticks: []const u64) bool {
     assert(ticks.len <= 2);
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     var hit = false;
     for (r.checks.rows.items) |*c| {
         if (c.scope != scope or c.tok != tok or ticks.len == 0) continue;
@@ -381,7 +381,7 @@ fn matches(mask: u8, bit: u8) bool {
 /// `==` and `!=` against a scalar constant are not.
 fn enabled(r: *Run, scope: u32, cond: Ast.ExprId) Error!bool {
     if (cond == .none) return true;
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const ex = &r.file.exprs;
     const saved = r.scope;
     defer r.scope = saved;

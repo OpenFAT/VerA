@@ -2,6 +2,7 @@
 //! Cites: IEEE 1364-2005 §4.9, §5.2.1, §12.5, §12.6, §12.7.
 //!
 //! Contents:
+//! - `pub const Hierarchy = struct`
 //! - `pub fn slotOf(self: *const Run, name: []const u8) ?u32`
 //! - `pub fn slot(self: *Run, e: Ast.ExprId) Error!u32`
 //! - `pub fn resolveSlot(self: *Run, e: Ast.ExprId) Error!u32`
@@ -65,17 +66,74 @@ const filled = @import("net.zig").filled;
 const setBit = @import("net.zig").setBit;
 const Show = display.Show;
 const TimeFormat = display.TimeFormat;
-
 // ---- the public surface -----------------------------------------------------
 const root = @import("root.zig");
+const Name = root.Name;
 const Run = root.Run;
 const Error = root.Error;
 const Array = root.Array;
 const VecRange = root.VecRange;
 const memo_bits = root.memo_bits;
-
 /// The descriptor table a `Run` with no `file_io` opens files through.
 const own_files = system.own;
+
+/// A design's elaborated hierarchy: the scope tree (row 0 the first root),
+/// every name bound in each scope, the instances, primitives and named
+/// blocks, and the §13 library binding each instance came from.
+pub const Hierarchy = struct {
+    /// §6.2.2 names are per INSTANCE, not per module: two instances of one
+    /// definition declare the same identifiers over different storage, so the
+    /// key is the scope the name was declared in plus the interned name. The
+    /// scope in force is `self.scope`, which the executing process carries.
+    names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// Each `names` entry's declaration token, for `lookupAt` (by name, not
+    /// slot: a port's slot is its connection's, declared in another module).
+    bound_at: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// IEEE 1364-2005 §26.6.19(e): the lexical scope of an expression a
+    /// VPI application may evaluate later, keyed by (instance, expression).
+    /// Populated only for a host with `systf`; obtaining an argument handle
+    /// does not evaluate its expression.
+    vpi_expr_scopes: std.AutoHashMapUnmanaged([2]u32, u32) = .empty,
+    /// The highest scope id handed out; the root is 0.
+    scope_count: u32 = 0,
+    /// Per scope id: the instance that minted it, its name and its module
+    /// (§17.1.1.6's `%m` path and §13.6's `%l` binding). Row 0 is the root,
+    /// named after its module.
+    /// `lexical` marks a scope nested inside its parent's module, a task or
+    /// function (§12.7), whose unresolved names are searched for in the
+    /// parent; an instance is a hierarchy boundary and is searched no further.
+    /// `index` marks one iteration of a §12.4.1 loop generate, the `[i]` of
+    /// its block name; `implicit`, one whose block is unnamed (§12.4.3's
+    /// `genblk<n>`, IEEE 1364-2005 §26.6.44's vpiImplicitDecl).
+    scopes: std.ArrayList(struct { parent: u32, name: Ast.StrId, def: u32, lexical: bool = false, index: ?i64 = null, implicit: bool = false }) = .empty,
+    /// IEEE 1364-2005 §13.2.3 per `file.modules` row, the library its source
+    /// file maps into; per `file.configs` row, the same.
+    def_lib: []const Ast.StrId = &.{},
+    cfg_lib: []const Ast.StrId = &.{},
+    /// §13.5.1/§13.7.1 the library search order with no configuration.
+    search: []const Ast.StrId = &.{},
+    /// Per instance scope, the §13.3 state its children bind under.
+    binds: std.AutoHashMapUnmanaged(u32, binding.Ctx) = .empty,
+    /// The top-level modules' scopes (`isRoot`), 0 first.
+    roots: []const u32 = &.{0},
+    /// The token each scope after the root was made at (`elab.newScope`),
+    /// which orders a scope's children as the source does (`processOrder`).
+    scope_toks: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// §12.4 one instance NAME, keyed by the scope that instantiated it, to the
+    /// scope it minted. `names` cannot carry this: an instance is not storage,
+    /// and a downward hierarchical reference walks these before it reaches a
+    /// slot at all.
+    instances: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// IEEE 1364-2005 §12.7 the gate, switch and UDP instance names of each
+    /// scope, each to its token: no storage, but declared there, so they hide
+    /// an outer name of the same spelling from `lookupAt`, `upward` and a call
+    /// (iverilog refuses the hidden use the same way); `lookupAt` from the
+    /// instance on, a call and `upward` wherever it is.
+    prim_names: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// §12.5 the scope of each named block that declares something, keyed by
+    /// the scope it runs in and its statement (`blockScope`).
+    block_scopes: std.AutoHashMapUnmanaged(struct { scope: u32, stmt: Ast.StmtId }, u32) = .empty,
+};
 
 /// The slot a name is stored in, or null when the design declares no such
 /// variable or net. `name` is a root-scope name or a §6.7 downward path
@@ -89,10 +147,10 @@ pub fn slotOf(self: *const Run, name: []const u8) ?u32 {
     var part = parts.first();
     while (parts.next()) |next| : (part = next) {
         const inst = self.file.strings.find(part) orelse return null;
-        scope = self.instances.get(.{ .scope = scope, .str = inst }) orelse return null;
+        scope = self.hier.instances.get(.{ .scope = scope, .str = inst }) orelse return null;
     }
     const str = self.file.strings.find(part) orelse return null;
-    return self.names.get(.{ .scope = scope, .str = str });
+    return self.hier.names.get(.{ .scope = scope, .str = str });
 }
 
 /// §12.5 a hierarchical reference: the first part is a scope `upward`
@@ -130,7 +188,7 @@ pub fn resolveSlot(self: *Run, e: Ast.ExprId) Error!u32 {
                 continue;
             }
             const part = if (std.mem.find(u8, text, "[]") == null) spelled else try self.foldSelects(ex.mainTok(e), text, indices, &used);
-            const next = if (k == 0) self.upward(part) else self.instances.get(.{ .scope = scope, .str = part });
+            const next = if (k == 0) self.upward(part) else self.hier.instances.get(.{ .scope = scope, .str = part });
             scope = next orelse return if (std.mem.findScalar(u8, self.file.str(part), '[') != null)
                 self.fail(self.file.exprs.mainTok(e), "§12.5: `{s}`: an instance select out of range, or of no array", .{self.file.str(part)})
             else if (self.sub_by_name.get(.{ .scope = if (k == 0) self.instanceOf(self.scope) else scope, .str = part })) |idx| if (self.subs.items[idx].decl.automatic)
@@ -138,7 +196,7 @@ pub fn resolveSlot(self: *Run, e: Ast.ExprId) Error!u32 {
             else
                 self.exprFail(e, "undeclared instance in a hierarchical reference") else self.exprFail(e, "undeclared instance in a hierarchical reference");
         }
-        return self.names.get(.{ .scope = scope, .str = parts[parts.len - 1] }) orelse
+        return self.hier.names.get(.{ .scope = scope, .str = parts[parts.len - 1] }) orelse
             self.exprFail(e, "undeclared digital variable");
     }
     if (ex.tag(e) != .ident) return self.exprFail(e, "only whole-variable lvalues are implemented");
@@ -178,9 +236,9 @@ pub fn elementScope(self: *Run, tok: u32, base: []const u8, parent: ?u32, indice
         const name = self.file.strings.find(base) orelse break :blk null;
         if (parent) |p| break :blk compile.element(self, p, name, v);
         var s = self.scope;
-        while (true) : (s = self.scope_info.items[s].parent) {
+        while (true) : (s = self.hier.scopes.items[s].parent) {
             if (compile.element(self, s, name, v)) |at| break :blk at;
-            if (self.scope_info.items[s].parent == s) break :blk null;
+            if (self.hier.scopes.items[s].parent == s) break :blk null;
         }
     };
     return found orelse self.fail(tok, "§12.5: `{s}[{d}]`: an instance select out of range, or of no array", .{ base, v });
@@ -209,16 +267,16 @@ pub fn slotType(self: *const Run, at: u32) compile.Type {
 /// the same hides the outer name from the instance on (iverilog's
 /// gate_instance_shadow_fail and gate_instance_reference_order).
 pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     assert(tok < self.starts.len);
     var s = scope;
     while (true) {
-        if (self.names.get(.{ .scope = s, .str = str })) |at| {
+        if (self.hier.names.get(.{ .scope = s, .str = str })) |at| {
             // Elaboration's constant contexts (a range over a parameter
             // declared later, §12.2) see the whole scope.
-            if (self.growing != null or (self.bound_at.get(.{ .scope = s, .str = str }) orelse 0) <= tok) return at;
-        } else if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return null;
-        const info = self.scope_info.items[s];
+            if (self.growing != null or (self.hier.bound_at.get(.{ .scope = s, .str = str }) orelse 0) <= tok) return at;
+        } else if (self.hier.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return null;
+        const info = self.hier.scopes.items[s];
         if (!info.lexical) return null;
         s = info.parent;
     }
@@ -227,13 +285,13 @@ pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
 /// Whether `lookupAt` found nothing because a primitive instance of
 /// that name, at or before `tok`, hides the outer one.
 pub fn instanceHides(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) bool {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     assert(tok < self.starts.len);
     var s = scope;
     while (true) {
-        if (self.names.contains(.{ .scope = s, .str = str })) return false;
-        if (self.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return true;
-        const info = self.scope_info.items[s];
+        if (self.hier.names.contains(.{ .scope = s, .str = str })) return false;
+        if (self.hier.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return true;
+        const info = self.hier.scopes.items[s];
         if (!info.lexical) return false;
         s = info.parent;
     }
@@ -241,11 +299,11 @@ pub fn instanceHides(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) boo
 
 /// Returns the slot `str` names in `scope` or a scope around it, or null.
 pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     var s = scope;
     while (true) {
-        if (self.names.get(.{ .scope = s, .str = str })) |at| return at;
-        const info = self.scope_info.items[s];
+        if (self.hier.names.get(.{ .scope = s, .str = str })) |at| return at;
+        const info = self.hier.scopes.items[s];
         if (!info.lexical) return null;
         s = info.parent;
     }
@@ -257,10 +315,10 @@ pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
 /// it. A named block or a task frame declares names from its instance's
 /// parameters, so it shares its instance's types.
 pub fn specOf(self: *const Run, scope: u32) u32 {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     var s = scope;
-    while (s < self.scope_info.items.len) {
-        const info = self.scope_info.items[s];
+    while (s < self.hier.scopes.items.len) {
+        const info = self.hier.scopes.items[s];
         if (!info.lexical or info.index != null) break;
         s = info.parent;
     }
@@ -269,9 +327,9 @@ pub fn specOf(self: *const Run, scope: u32) u32 {
 
 /// The instance a (possibly nested) scope belongs to.
 pub fn instanceOf(self: *const Run, scope: u32) u32 {
-    assert(scope < self.scope_info.items.len);
+    assert(scope < self.hier.scopes.items.len);
     var s = scope;
-    while (self.scope_info.items[s].lexical) s = self.scope_info.items[s].parent;
+    while (self.hier.scopes.items[s].lexical) s = self.hier.scopes.items[s].parent;
     return s;
 }
 
@@ -341,8 +399,8 @@ pub fn indexedArray(self: *Run, e: Ast.ExprId) Error!?Array {
 /// declaration of one name in one scope fails at `tok` (E1100).
 pub fn bind(self: *Run, name: Ast.StrId, at: u32, tok: u32) Error!void {
     assert(tok < self.starts.len);
-    const entry = try self.names.getOrPut(self.arena, .{ .scope = self.scope, .str = name });
+    const entry = try self.hier.names.getOrPut(self.arena, .{ .scope = self.scope, .str = name });
     if (entry.found_existing) return self.fail(tok, "duplicate digital variable", .{});
     entry.value_ptr.* = at;
-    try self.bound_at.put(self.arena, entry.key_ptr.*, tok);
+    try self.hier.bound_at.put(self.arena, entry.key_ptr.*, tok);
 }

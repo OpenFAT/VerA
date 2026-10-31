@@ -69,7 +69,7 @@ pub fn ieee1364(r: *const Run) bool {
 /// §12.5 named block, which `over` never reaches), in declaration order so a
 /// default may name an earlier one.
 pub fn declareParams(r: *Run, scope: u32, declared_params: []const Ast.ParamDecl, over: []const Ast.ParamOverride) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const arena = r.arena;
     const params = try specifyOrder(r, declared_params);
     const g = r.growing.?;
@@ -190,12 +190,12 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
                 if (p.is_local) return r.fail(dp.d.main_tok, "§12.2: `{s}` is a local parameter, which a defparam cannot override", .{r.file.str(p.name)});
                 break :blk .{ .e = dp.d.value, .scope = dp.decl };
             }
-            const info = r.scope_info.items[at];
+            const info = r.hier.scopes.items[at];
             if (isRoot(r, at)) {
                 // §12.2.1: a defparam in one top-level module may name a
                 // parameter under another by its full hierarchical name.
                 const full = try r.arena.print("{s}.{s}", .{ r.file.str(info.name), path });
-                for (r.roots) |t| {
+                for (r.hier.roots) |t| {
                     if (t == at) continue;
                     if (r.defparams.get(.{ .scope = t, .path = full })) |dp| break :blk .{ .e = dp.d.value, .scope = dp.decl };
                 }
@@ -209,7 +209,7 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
         }
         if (!p.is_local) for (over, 0..) |o, i| {
             if (o.value != .none and (o.name == p.name or (o.name == .none and i == pos)))
-                break :blk .{ .e = o.value, .scope = r.scope_info.items[scope].parent };
+                break :blk .{ .e = o.value, .scope = r.hier.scopes.items[scope].parent };
         };
         break :blk .{ .e = p.default, .scope = scope };
     };

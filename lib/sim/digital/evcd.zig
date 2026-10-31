@@ -207,12 +207,12 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
         if (scopes.items.len == 0) scopes.appendAssumeCapacity(r.instanceOf(r.scope));
         for (d.files.items) |f| if (std.mem.eql(u8, f.name, name)) return r.fail(tok, "§18.3.1: the same file_pathname shall not be given to two $dumpports calls", .{});
         var n_ports: usize = 0;
-        for (scopes.items) |sc| n_ports += r.file.modules[r.scope_info.items[sc].def].ports.len;
+        for (scopes.items) |sc| n_ports += r.file.modules[r.hier.scopes.items[sc].def].ports.len;
         var ports: std.ArrayList(Port) = try .initCapacity(r.arena, n_ports);
         for (scopes.items) |sc| {
-            const m = &r.file.modules[r.scope_info.items[sc].def];
+            const m = &r.file.modules[r.hier.scopes.items[sc].def];
             for (m.ports) |p| {
-                const slot = r.names.get(.{ .scope = sc, .str = p.name }) orelse continue;
+                const slot = r.hier.names.get(.{ .scope = sc, .str = p.name }) orelse continue;
                 ports.appendAssumeCapacity(.{ .inst = sc, .slot = slot, .net = r.net_of.get(slot), .dir = p.direction });
                 r.watch[slot].insert(.ports);
             }
@@ -308,8 +308,8 @@ pub fn close(r: *Run) Error!void {
 
 /// The instance path of `scope` from its root, `top.u`.
 pub fn path(r: *Run, w: *std.Io.Writer, scope: u32) std.Io.Writer.Error!void {
-    assert(scope < r.scope_info.items.len);
-    const info = r.scope_info.items[scope];
+    assert(scope < r.hier.scopes.items.len);
+    const info = r.hier.scopes.items[scope];
     if (!root.isRoot(r, scope)) {
         try path(r, w, info.parent);
         try w.writeByte('.');
@@ -370,12 +370,12 @@ pub fn writeChanges(d: anytype, at: u64) !void {
 
 /// Is `scope` the instance `inst` or inside it?
 pub fn below(r: *Run, scope: u32, inst: u32) bool {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     var s = scope;
     while (true) {
         if (s == inst) return true;
         if (root.isRoot(r, s)) return false;
-        s = r.scope_info.items[s].parent;
+        s = r.hier.scopes.items[s].parent;
     }
 }
 
@@ -393,8 +393,8 @@ fn fileName(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?[]const u8 {
 }
 
 fn portName(r: *Run, p: Port) []const u8 {
-    const m = &r.file.modules[r.scope_info.items[p.inst].def];
-    for (m.ports) |mp| if (r.names.get(.{ .scope = p.inst, .str = mp.name }) == p.slot) return r.file.str(mp.name);
+    const m = &r.file.modules[r.hier.scopes.items[p.inst].def];
+    for (m.ports) |mp| if (r.hier.names.get(.{ .scope = p.inst, .str = mp.name }) == p.slot) return r.file.str(mp.name);
     unreachable; // `task` found the slot by a port's name
 }
 

@@ -316,5 +316,5 @@ const PartForce = struct { bits: compile.Bits, range: PcRange };
 /// Is `scope` a top-level module's instance? The first is scope 0; every
 /// other is its own parent.
 pub fn isRoot(r: *const Run, scope: u32) bool {
-    return scope == 0 or r.scope_info.items[scope].parent == scope;
+    return scope == 0 or r.hier.scopes.items[scope].parent == scope;
 }

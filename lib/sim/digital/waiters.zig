@@ -541,7 +541,7 @@ fn eventContext(self: *const Run, declared: u32, from: u32) u32 {
             var scope = declared;
             while (true) {
                 if (scope == frame_scope) return ctx;
-                const info = self.scope_info.items[scope];
+                const info = self.hier.scopes.items[scope];
                 if (!info.lexical) break;
                 scope = info.parent;
             }

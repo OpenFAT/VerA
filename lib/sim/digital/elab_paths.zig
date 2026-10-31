@@ -57,7 +57,7 @@ const Elab = elab.Elab;
 /// net, and a parallel path as a full one: the net takes the smallest delay
 /// its changed bits select.
 pub fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     // ponytail: per-bit destinations would time each bit on its own.
     const ex = &r.file.exprs;
     r.scope = scope;

@@ -99,7 +99,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             // named blocks around it.
             const outer = self.scope;
             defer self.scope = outer;
-            if (self.block_scopes.get(.{ .scope = outer, .stmt = id })) |inner| {
+            if (self.hier.block_scopes.get(.{ .scope = outer, .stmt = id })) |inner| {
                 self.scope = inner;
             } else if (b.vars.len != 0 or b.params.len != 0 or b.events.len != 0) {
                 self.scope = try elab.blockScope(self, outer, id);

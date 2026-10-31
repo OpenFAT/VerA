@@ -245,8 +245,8 @@ pub fn pickTops(r: *Run, modules: []const Ast.ModuleDecl) Error![]const u32 {
         if (std.mem.findScalar(Ast.StrId, generated.items, candidate.name) != null) continue;
         // §13.2.1.1: a later same-named cell of its library replaces it.
         const d = defOf(r, candidate);
-        if (for (modules[d + 1 ..], r.def_lib[d + 1 ..]) |later, l| {
-            if (later.name == candidate.name and l == r.def_lib[d]) break true;
+        if (for (modules[d + 1 ..], r.hier.def_lib[d + 1 ..]) |later, l| {
+            if (later.name == candidate.name and l == r.hier.def_lib[d]) break true;
         } else false) continue;
         tops.appendAssumeCapacity(d);
     }
@@ -256,7 +256,7 @@ pub fn pickTops(r: *Run, modules: []const Ast.ModuleDecl) Error![]const u32 {
 
 /// Whether scope `s` is named `n`, with array or generate index `k`.
 pub fn isScope(r: *const Run, s: u32, n: []const u8, k: ?i64) bool {
-    const info = r.scope_info.items[s];
+    const info = r.hier.scopes.items[s];
     return info.name != .none and std.mem.eql(u8, r.file.str(info.name), n) and std.meta.eql(info.index, k);
 }
 
@@ -275,7 +275,7 @@ pub fn defOf(r: *const Run, m: *const Ast.ModuleDecl) u32 {
 /// §12.1.2's array of them, one instance per element from the lower index
 /// up, each a scope named `u[k]` (the same order the analog elaborator uses).
 pub fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, depth: u32) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     r.scope = scope;
     if (findUdp(r.file, inst.module)) |u| return declareUdp(r, e, scope, inst, u);
     // IEEE 1364-2005 A.4.1.1: a module_instantiation's `#` is a
@@ -293,10 +293,10 @@ pub fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dep
 /// row `id` (ids are dense, root 0). Fails at 2^32 - 1 scopes.
 pub fn newScope(r: *Run, tok: u32) Error!u32 {
     assert(tok < r.starts.len);
-    r.scopes += 1;
-    if (r.scopes == std.math.maxInt(u32)) return r.fail(tok, "too many digital instances", .{});
-    try r.scope_toks.put(r.arena, r.scopes, tok);
-    return r.scopes;
+    r.hier.scope_count += 1;
+    if (r.hier.scope_count == std.math.maxInt(u32)) return r.fail(tok, "too many digital instances", .{});
+    try r.hier.scope_toks.put(r.arena, r.hier.scope_count, tok);
+    return r.hier.scope_count;
 }
 
 // ---- private ----
@@ -363,7 +363,7 @@ fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, child_scope: u32, por
 }
 
 fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, depth: u32, index: ?i64) Error!void {
-    assert(scope < r.scope_info.items.len);
+    assert(scope < r.hier.scopes.items.len);
     const arena = r.arena;
     r.scope = scope;
     const bound = try binding.child(r, scope, inst);
@@ -373,8 +373,8 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
     @memset(binds_out, .open);
     // The child's scope and parameters first: its port ranges may name them.
     const child_scope = try newScope(r, inst.main_tok);
-    try r.scope_info.append(arena, .{ .parent = scope, .name = inst.name, .def = bound.def, .index = index });
-    try r.binds.put(arena, child_scope, bound.ctx);
+    try r.hier.scopes.append(arena, .{ .parent = scope, .name = inst.name, .def = bound.def, .index = index });
+    try r.hier.binds.put(arena, child_scope, bound.ctx);
     try declareHead(r, e, child, child_scope, inst.params, depth + 1);
     r.scope = scope;
     const grouped = !r.analog.mixed and expressionPorts(child);
@@ -431,7 +431,7 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
     // §12.4's path is walked by name, so the instance's own identifier has
     // to outlive the recursion that consumes it. An array element's path
     // carries its index, which that walk does not read: not registered.
-    if (inst.name != .none) if (index) |k| try selectable(r, scope, inst.name, k, child_scope) else try r.instances.put(arena, .{ .scope = scope, .str = inst.name }, child_scope);
+    if (inst.name != .none) if (index) |k| try selectable(r, scope, inst.name, k, child_scope) else try r.hier.instances.put(arena, .{ .scope = scope, .str = inst.name }, child_scope);
     try declareBody(r, e, child, child_scope, binds_out, depth + 1);
     r.scope = scope;
 }
