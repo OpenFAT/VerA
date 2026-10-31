@@ -89,18 +89,25 @@ pub fn literalWidth(n: IntLiteral) u32 {
     if (n.width != 0) return n.width;
     // VD-131: an unsized based one is as wide as its digits past 32 bits.
     if (n.digit_bits != 0) return @max(32, n.digit_bits);
+    assert(n.width == 0);
+    assert(n.digit_bits == 0);
     const fits = if (n.signed) n.value >= std.math.minInt(i32) and n.value <= std.math.maxInt(i32) else n.value >= 0 and n.value <= std.math.maxInt(u32);
     return if (fits) 32 else 64;
 }
 
 /// §3.6 a string literal's width: eight bits per character, and 8 for "".
 pub fn stringWidth(text: []const u8) u32 {
-    return @intCast(@max(1, text.len) * 8);
+    assert(text.len <= std.math.maxInt(u32) / 8);
+    const w: u32 = @intCast(@max(1, text.len) * 8);
+    assert(w % 8 == 0); // §3.6: eight bits per character, an empty string one NUL.
+    return w;
 }
 
 /// §5.5.1/§4.8.1: an operator with a real operand is real.
 pub fn common(a: Type, b: Type) Type {
     if (a.real or b.real) return real_type;
+    assert(!a.real);
+    assert(!b.real);
     return .{ .width = @max(a.width, b.width), .signed = a.signed and b.signed };
 }
 
@@ -110,6 +117,7 @@ pub fn common(a: Type, b: Type) Type {
 pub fn typeOf(self: *Run, e: Ast.ExprId) Type {
     assert(e != .none);
     const i = @backingInt(e);
+    assert(i < self.typing.state.len);
     return switch (self.typing.state[i]) {
         .one => self.typing.types[i],
         .many => self.typing.by_scope.get(.{ .spec = self.specOf(self.scope), .e = e }).?,
@@ -123,13 +131,16 @@ pub fn typeOf(self: *Run, e: Ast.ExprId) Type {
 /// any evaluation of `e`.
 pub fn checkExpr(self: *Run, e: Ast.ExprId) Error!void {
     assert(e != .none);
-    _ = try inferValue(self, e);
+    const ty = try inferValue(self, e);
+    assert(ty.width > 0 or ty.real);
 }
 
 pub fn rememberVpiArgument(self: *Run, e: Ast.ExprId) Error!void {
     if (e == .none) return;
+    assert(self.scope < self.hier.scopes.items.len);
     if (deep.exhausted()) return self.deepFail(self.file.exprs.mainTok(e));
     try rememberVpiScope(self, e);
+    assert(self.hier.vpi_expr_scopes.contains(.{ self.instanceOf(self.scope), @backingInt(e) }));
     var buf: [3]Ast.ExprId = undefined;
     for (self.file.exprs.children(e, &buf)) |arg| try rememberVpiArgument(self, arg);
 }
@@ -142,6 +153,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
     if (self.host.systf != null) try rememberVpiScope(self, e);
     const key: SpecExpr = .{ .spec = self.specOf(self.scope), .e = e };
     if (self.typing.by_scope.get(key)) |ty| return ty;
+    assert(@backingInt(e) < self.typing.state.len);
     const ex = &self.file.exprs;
     const ty: Type = switch (ex.tag(e)) {
         .int_literal, .logic_literal, .str_literal, .real_literal, .ident, .hier_ident => try leafType(self, e),
@@ -469,6 +481,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
         },
         .many => {},
     }
+    assert(self.typing.state[i] != .untyped);
     return ty;
 }
 
@@ -520,6 +533,7 @@ fn leafType(self: *Run, e: Ast.ExprId) Error!Type {
 /// requiring a value from scope/array/event arguments.
 fn rememberVpiScope(self: *Run, e: Ast.ExprId) Error!void {
     assert(e != .none);
+    assert(self.scope < self.hier.scopes.items.len);
     try self.hier.vpi_expr_scopes.put(self.arena, .{ self.instanceOf(self.scope), @backingInt(e) }, self.scope);
 }
 
@@ -527,6 +541,7 @@ fn inferValue(self: *Run, e: Ast.ExprId) Error!Type {
     assert(e != .none);
     const ty = try infer(self, e);
     if (ty.width == 0) return self.exprFail(e, "zero replication requires an immediately enclosing concatenation with a positive-width operand");
+    assert(ty.width > 0);
     return ty;
 }
 
@@ -540,6 +555,7 @@ fn replicationCount(self: *Run, e: Ast.ExprId) Error!u32 {
     if (value.signed and value.bit(value.width - 1) == .one) return self.exprFail(e, "replication count cannot be negative");
     for (value.values()[1..]) |word| if (word != 0) return self.exprFail(e, "replication count exceeds the supported u32 range");
     if (value.values()[0] > std.math.maxInt(u32)) return self.exprFail(e, "replication count exceeds the supported u32 range");
+    assert(!value.hasUnknown());
     return @intCast(value.values()[0]);
 }
 
@@ -550,6 +566,7 @@ fn partBound(self: *Run, e: Ast.ExprId) Error!i64 {
     const v = try self.constant(e, self.file.exprs.mainTok(e));
     if (typeOf(self, e).real) return self.exprFail(e, "§4.8.1: a real is not a part-select bound");
     if (v.hasUnknown()) return self.exprFail(e, "a part-select bound cannot contain x or z");
+    assert(!typeOf(self, e).real);
     return evaluate.indexInt(v) orelse self.exprFail(e, "a part-select bound is outside the supported i64 range");
 }
 
@@ -565,5 +582,6 @@ fn plusargFormat(self: *Run, e: Ast.ExprId) Error!void {
         if (i == text.len or std.mem.findScalar(u8, "dohbefgsDOHBEFGS", text[i]) == null)
             return self.fail(self.file.exprs.mainTok(e), "§17.10.2: a $value$plusargs format is one of %d %o %h %b %e %f %g %s, not `%{s}`", .{text[@min(i, text.len)..@min(i + 1, text.len)]});
         i += 1;
+        assert(i <= text.len);
     }
 }

@@ -65,6 +65,8 @@ const waitIntra = wait_lists.waitIntra;
 const watch = wait_lists.watch;
 
 pub fn position(self: *Run) u32 {
+    assert(self.program.code.items.len < std.math.maxInt(u32));
+    assert(self.program.scope_of.items.len == self.program.code.items.len); // One scope row per instruction.
     return @intCast(self.program.code.items.len);
 }
 
@@ -75,6 +77,8 @@ pub fn append(self: *Run, instruction: Instruction) Error!u32 {
     const at = position(self);
     try self.program.code.append(self.arena, instruction);
     try self.program.scope_of.append(self.arena, self.scope);
+    assert(self.program.code.items.len == at + 1);
+    assert(self.scope < self.hier.scopes.items.len);
     return at;
 }
 
@@ -83,6 +87,9 @@ pub fn append(self: *Run, instruction: Instruction) Error!u32 {
 /// by the stack `deep.runGuarded` reserved. Every expression is type-checked here,
 /// so nothing a process runs can fail to type at run time.
 pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
+    assert(id != .none);
+    const scope = self.scope;
+    defer assert(self.scope == scope); // A block's own scope is left on its way out.
     const tok = self.file.stmtTok(id);
     if (deep.exhausted()) return self.deepFail(tok);
     try site(self, id);
@@ -494,6 +501,8 @@ pub fn watcher(self: *Run, step: Instruction, watched: []const u32) Error!u32 {
     _ = try append(self, .{ .wait_slots = try self.program.addWords(self.arena, watched) });
     _ = try append(self, .{ .jump = start });
     self.program.code.items[skip].jump = position(self);
+    assert(self.program.code.items[skip].jump == start + 3);
+    assert(self.program.code.items[start + 1] == .wait_slots);
     return start;
 }
 
@@ -502,14 +511,18 @@ pub fn watcher(self: *Run, step: Instruction, watched: []const u32) Error!u32 {
 /// Records that statement `id` is reached at the next instruction
 /// (`Run.stmt_sites`).
 fn site(self: *Run, id: Ast.StmtId) Error!void {
+    assert(id != .none);
     const sites = &(self.host.stmt_sites orelse return);
+    assert(self.scope < self.hier.scopes.items.len);
     try sites.append(self.arena, .{ .scope = self.instanceOf(self.scope), .stmt = id, .pc = position(self) });
 }
 
 /// Records statement `id`, compiled from `first` to the last instruction so
 /// far, for `Run.done_hook` (`Run.done_sites`).
 fn doneSite(self: *Run, id: Ast.StmtId, first: u32) Error!void {
+    assert(id != .none);
     if (self.host.stmt_sites == null) return;
+    assert(first < position(self));
     try self.host.done_sites.put(self.arena, position(self) - 1, .{ .scope = self.instanceOf(self.scope), .stmt = id, .pc = first });
 }
 
@@ -519,6 +532,7 @@ fn repeatCounter(self: *Run, tok: u32) Error!u32 {
     assert(tok < self.starts.len);
     if (self.rows.repeats.items.len == std.math.maxInt(u32)) return self.fail(tok, "too many repeat counters", .{});
     try self.rows.repeats.append(self.arena, 0);
+    assert(self.rows.repeats.items.len > 0);
     return @intCast(self.rows.repeats.items.len - 1);
 }
 
@@ -526,6 +540,7 @@ fn repeatCounter(self: *Run, tok: u32) Error!u32 {
 /// arm ending in `.join_arm`; `.fork` starts them all and suspends the parent
 /// until the last one is back, which resumes it at the end of the block.
 fn compileFork(self: *Run, body: []const Ast.StmtId, depth: u32) Error!void {
+    assert(self.rows.joins.items.len < std.math.maxInt(u32));
     const join: u32 = @intCast(self.rows.joins.items.len);
     try self.rows.joins.append(self.arena, 0);
     const arms = try self.arena.alloc(u32, body.len);
@@ -541,4 +556,5 @@ fn compileFork(self: *Run, body: []const Ast.StmtId, depth: u32) Error!void {
     self.program.code.items[at].fork.arms = try self.program.addWords(self.arena, arms);
     self.program.code.items[at].fork.end = position(self);
     for (ends) |e| self.program.code.items[e].join_arm.end = position(self);
+    assert(self.program.wordsOf(self.program.code.items[at].fork.arms).len == body.len);
 }

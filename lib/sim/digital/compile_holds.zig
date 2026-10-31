@@ -121,6 +121,8 @@ pub fn compileProcContinuous(self: *Run, target: Ast.ExprId, value: Ast.ExprId, 
 // ---- private ----
 
 fn overWidth(self: *Run, t: OverTarget) u32 {
+    assert(t.at < self.values.len);
+    if (t.bits) |b| assert(b.lo + b.width <= self.values[t.at].width);
     return if (t.bits) |b| b.width else self.values[t.at].width;
 }
 
@@ -184,4 +186,5 @@ fn override(self: *Run, target: Ast.ExprId, t: OverTarget, value: Ast.ExprId, ki
     // reports the §12.31.1 cbForce/cbAssign (`exec.doneFlush`).
     _ = try append(self, .{ .override_eval = .{ .slot = at, .value = value, .force = force, .slice = .from(slice), .bits = .from(t.bits) } });
     _ = try append(self, .{ .override_on = .{ .slot = at, .force = force, .start = start, .end = end, .bits = .from(t.bits) } });
+    assert(start < end);
 }
