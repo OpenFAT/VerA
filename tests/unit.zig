@@ -16777,23 +16777,22 @@ pub const digital_tests = struct {
     const diag = @import("diag");
     const Front = @import("frontend");
     const digital = @import("digital");
-    const emit = digital.emit;
 
     /// `source` elaborated, its transcript discarded, and emitted as
     /// `vera --emit-exe` would under `schedule` and `logic`. In `arena`.
-    fn emitted(arena: std.mem.Allocator, source: []const u8, schedule: emit.Schedule, logic: emit.Logic) !emit.Program {
+    fn emitted(arena: std.mem.Allocator, source: []const u8, schedule: digital.Schedule, logic: digital.Logic) !digital.Program {
         return emittedAs(arena, source, "<digital>", schedule, logic);
     }
 
-    fn emittedAs(arena: std.mem.Allocator, source: []const u8, file_name: []const u8, schedule: emit.Schedule, logic: emit.Logic) !emit.Program {
+    fn emittedAs(arena: std.mem.Allocator, source: []const u8, file_name: []const u8, schedule: digital.Schedule, logic: digital.Logic) !digital.Program {
         var bag = diag.Bag.init(arena);
         var sink: std.Io.Writer.Discarding = .init(&.{});
         var r = try sim.digital.elaborate(arena, source, .{}, &bag, &sink.writer);
-        return emit.program(arena, &r, .{ .source = source, .file_name = file_name, .include_dirs = &.{}, .language = Front.token.default_keyword_set }, schedule, logic);
+        return digital.program(arena, &r, .{ .source = source, .file_name = file_name, .include_dirs = &.{}, .language = Front.token.default_keyword_set }, schedule, logic);
     }
 
     /// The native `.auto` root of `source`; fails when it falls back.
-    fn native(arena: std.mem.Allocator, source: []const u8, schedule: emit.Schedule) ![]const u8 {
+    fn native(arena: std.mem.Allocator, source: []const u8, schedule: digital.Schedule) ![]const u8 {
         const p = try emitted(arena, source, schedule, .auto);
         try testing.expectEqual(@as(?[]const u8, null), p.fallback);
         return p.text;
@@ -16813,12 +16812,12 @@ pub const digital_tests = struct {
         }
     }
 
-    /// `source`'s top module through `emit.device`: its root, or why not.
-    fn device(arena: std.mem.Allocator, source: []const u8) !emit.Device {
+    /// `source`'s top module through `digital.device`: its root, or why not.
+    fn device(arena: std.mem.Allocator, source: []const u8) !digital.Device {
         var bag = diag.Bag.init(arena);
         var sink: std.Io.Writer.Discarding = .init(&.{});
         var r = try sim.digital.elaborate(arena, source, .{}, &bag, &sink.writer);
-        return emit.device(arena, &r, "<digital>", .static);
+        return digital.device(arena, &r, "<digital>", .static);
     }
 
     test "program: a native design gets an rt main, no interpreter" {
@@ -16855,7 +16854,7 @@ pub const digital_tests = struct {
         var bag = diag.Bag.init(a);
         var sink: std.Io.Writer.Discarding = .init(&.{});
         var r = try sim.digital.elaborate(a, source, .{ .defines = &.{"R=1.0"} }, &bag, &sink.writer);
-        const p = try emit.program(a, &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .defines = &.{"R=1.0"}, .language = Front.token.default_keyword_set }, .static, .auto);
+        const p = try digital.program(a, &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .defines = &.{"R=1.0"}, .language = Front.token.default_keyword_set }, .static, .auto);
         try testing.expectEqualStrings("a real value", p.fallback.?);
         try has(p.text, ".defines = &.{ \"R=1.0\", }");
     }
@@ -17070,7 +17069,7 @@ pub const digital_tests = struct {
         var r = try sim.digital.elaborate(el.allocator(), source, .{}, &bag, &sink.writer);
         var each: EachAlloc = .{ .parent = gpa };
         defer each.deinit();
-        const p = try emit.program(each.allocator(), &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .language = Front.token.default_keyword_set }, .static, .auto);
+        const p = try digital.program(each.allocator(), &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .language = Front.token.default_keyword_set }, .static, .auto);
         try testing.expectEqual(@as(?[]const u8, null), p.fallback);
     }
 
