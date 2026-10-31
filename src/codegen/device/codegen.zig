@@ -50,13 +50,11 @@ pub const Error = Allocator.Error || error{
 /// Sentinel for "no index" in the u32 columns (`Hoist.idx`, a non-held array).
 pub const none_u32: u32 = std.math.maxInt(u32);
 
-
 /// §9.4: whether display tasks are dropped, recorded or emitted (plan/args.zig).
 pub const Display = plan_args.Display;
 
 /// The value-type lattice lives with the analysis that computes it.
 pub const VTy = Analysis.VTy;
-
 
 /// Settings that change what is generated.
 pub const Options = struct {
