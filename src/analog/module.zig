@@ -13,7 +13,7 @@
 //! §19.1, §19.2, §19.8, §19.9.
 //!
 //! Contents:
-//! - `pub fn lowerFile(self: *Lower) Lower.Error!Lowered`
+//! - `pub fn lowerFile(self: *Lower) Error!Lowered`
 
 const std = @import("std");
 const assert = std.debug.assert;

@@ -1,13 +1,29 @@
+//! §4.4 signal access: an access-function call (`V(a, b)`, `I(br)`, `I(<p>)`)
+//! in, the `TypedValue` it reads out. A potential is the difference of two
+//! node unknowns; a flow read is a §5.4.2 branch-flow unknown, the §5.6.1.2
+//! value retained on a flow source, or for a port (§5.4.3) a port-flow
+//! unknown or, through a hierarchical port, the sum the instance contributed.
+//!
+//! Cites: A.8.9, §1.3.1.2, §2.9, §3.6.1.2, §3.12.1, §4.4, §4.4.1, §4.4.2,
+//! §5.2.1, §5.4.1, §5.4.2, §5.4.2.1, §5.4.2.2, §5.4.3, §5.5.4, §5.5.5,
+//! §5.6.1.2, §5.6.6, §5.6.7, §5.6.8.1, §5.6.8.2, §5.8.1, §6.7.1, §9.4, §9.20.
+//!
+//! Contents:
+//! - `pub fn lowerBranchAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn lowerPortAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn ammeterFlow(self: *Lower, internal: []const u8) Oom!?TypedValue`
+
 const std = @import("std");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const Mir = @import("ir").Mir;
+const Elaborate = @import("elab").Elaborate;
+const diag = @import("diag");
 const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_hier_name = @import("hier_name.zig");
 const lower_node = @import("node.zig");
-const Ast = @import("frontend").Ast;
-const Mir = @import("ir").Mir;
-const Elaborate = @import("elab").Elaborate;
-const diag = @import("diag");
 const lower_expr = @import("expr.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
@@ -19,6 +35,8 @@ const poison = Lower.poison;
 /// A potential is the difference of two node unknowns; a flow that is *read*
 /// makes the branch current an unknown of its own (§5.4.2).
 pub fn lowerBranchAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     if (self.restrict) |ctx| {
         try self.err(self.file.exprs.mainTok(e), .E0421, "not allowed in {s}", .{ctx});
         return poison;
@@ -106,6 +124,53 @@ pub fn lowerBranchAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     }
 }
 
+/// LRM §5.4.3 port access — `I(<p>)`.
+///
+/// "The port access function accesses the flow into a port of a module. ...
+/// However (<>) is used to delimit the port name, e.g., I(<a>) accesses the
+/// current through module port a."
+///
+/// By KCL that current is the sum of everything this module stamps at `p`, the
+/// residual codegen is assembling, so it cannot be an expression over the other
+/// units without a cycle. It becomes its own solver unknown, like the §5.4.2
+/// branch-flow unknown, and codegen pins it with the row `x[u] − Σ stamps at p`.
+pub fn lowerPortAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    if (self.restrict) |ctx| {
+        try self.err(self.file.exprs.mainTok(e), .E0421, "not allowed in {s}", .{ctx});
+        return poison;
+    }
+    // VerA's `vera_timepoint` (§2.9): a probe is the iterate.
+    if (self.tp_cur != null) {
+        try self.err(self.file.exprs.mainTok(e), .E0530, "a probe (§4.4)", .{});
+        return poison;
+    }
+    assert(self.file.exprs.tag(e) == .port_access);
+    if (try instancePortFlow(self, e)) |tv| return tv;
+    const p = try nodeUnrefused(self, self.file.exprs.lhs(e)) orelse return poison;
+    return portFlowRead(self, e, p);
+}
+
+/// §5.4.3 the flow into an instance port elaboration split onto its own net
+/// `internal` (`Lower.port_ammeters`), or null when it was not split: the
+/// current of the branch from the parent's net into it. Nothing contributes
+/// to that branch, so it is a §5.4.2.1 flow probe, Figure 5-1's ammeter,
+/// and its unknown is keyed on the pair as `branchOf` orders it.
+pub fn ammeterFlow(self: *Lower, internal: []const u8) Oom!?TypedValue {
+    assert(self.blockValid(self.cur));
+    const am = for (self.design.port_ammeters) |am| {
+        if (std.mem.eql(u8, am.internal, internal)) break am;
+    } else return null;
+    const into = try lower_node.internNode(self, am.internal, "");
+    const from = try lower_node.internNode(self, am.bound, "");
+    const u = try lower_node.flowUnknown(self, @min(from, into), @max(from, into));
+    const v = try lower_node.probe(self, u);
+    assert(from != into); // the split put the port on a net of its own
+    return .{ .v = if (from > into) try self.emit(.fneg, &.{v}) else v, .ty = .real };
+}
+
+// ---- private ----
+
 /// The §5.6.1.2 retained-flow accumulator of the branch (hi, lo), if a `<+` has
 /// already made it a flow source. Keyed exactly like `contribIndex` — on the
 /// canonicalised pair, so `I(n,p)` finds the one entry `I(p,n)` created.
@@ -118,7 +183,10 @@ pub fn lowerBranchAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// — see `potentialSourceHere` for the case where this unit's OWN source is the
 /// branch being read.
 fn flowAccum(self: *const Lower, t: lower_contrib.Target) ?Accum {
+    assert(self.nodeValid(t.hi));
+    assert(self.nodeValid(t.lo));
     const i = lower_contrib.directRow(self, .{ .access = .flow, .hi = t.hi, .lo = t.lo, .br = t.br }) orelse return null;
+    assert(i < self.accum.items.len); // `newContrib` keeps `accum` parallel to `contributions`
     // §5.6.8.2/§6.7.1 an instance's own unnamed branch, when several share
     // the row. An instance that contributed nothing to the pair reads the
     // row, as a parent reading its child's flow always has.
@@ -130,8 +198,10 @@ fn flowAccum(self: *const Lower, t: lower_contrib.Target) ?Accum {
 /// §3.6.1.2 the flow tolerance of the discipline at node `n`, which is what
 /// codegen's `abstolOf` gives a branch current; annex D's 1e-12 without one.
 fn flowAbstol(self: *const Lower, n: u32) f64 {
+    assert(self.nodeValid(n));
     if (n == ground) return 1e-12;
     const info = self.out.disciplines.get(self.out.nodes.items(.disc)[n]) orelse return 1e-12;
+    assert(!std.math.isNan(info.flow_abstol));
     return info.flow_abstol;
 }
 
@@ -152,6 +222,8 @@ fn flowAbstol(self: *const Lower, n: u32) f64 {
 /// accumulator instead — two ideal potential sources in parallel is a degenerate
 /// topology the clause does not describe either way.
 fn potentialSourceHere(self: *const Lower, t: lower_contrib.Target) bool {
+    assert(self.nodeValid(t.hi));
+    assert(self.nodeValid(t.lo));
     for (self.out.contributions.items) |c| {
         if (c.kind == .direct and c.access == .potential and c.hi == t.hi and c.lo == t.lo and
             c.br == t.br and c.unit == self.cur_unit) return true;
@@ -159,40 +231,17 @@ fn potentialSourceHere(self: *const Lower, t: lower_contrib.Target) bool {
     return false;
 }
 
-/// LRM §5.4.3 port access — `I(<p>)`.
-///
-/// "The port access function accesses the flow into a port of a module. ...
-/// However (<>) is used to delimit the port name, e.g., I(<a>) accesses the
-/// current through module port a."
-///
-/// By KCL that current is the sum of everything this module stamps at `p`, the
-/// residual codegen is assembling, so it cannot be an expression over the other
-/// units without a cycle. It becomes its own solver unknown, like the §5.4.2
-/// branch-flow unknown, and codegen pins it with the row `x[u] − Σ stamps at p`.
-pub fn lowerPortAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
-    if (self.restrict) |ctx| {
-        try self.err(self.file.exprs.mainTok(e), .E0421, "not allowed in {s}", .{ctx});
-        return poison;
-    }
-    // VerA's `vera_timepoint` (§2.9): a probe is the iterate.
-    if (self.tp_cur != null) {
-        try self.err(self.file.exprs.mainTok(e), .E0530, "a probe (§4.4)", .{});
-        return poison;
-    }
-    if (try instancePortFlow(self, e)) |tv| return tv;
-    const p = try nodeUnrefused(self, self.file.exprs.lhs(e)) orelse return poison;
-    return portFlowRead(self, e, p);
-}
-
 /// `nodeOf`, or null when it refused the terminal (E0351/E0352). It stands
 /// ground in for a refused one, and ground is no port: a caller that went on
 /// would report the same mistake a second time, as E0508.
 fn nodeUnrefused(self: *Lower, e: Ast.ExprId) Oom!?u32 {
+    assert(e == .none or self.exprValid(e));
     const had = self.had_error;
     self.had_error = false;
     const p = try lower_node.nodeOf(self, e);
     const refused = self.had_error;
     self.had_error = had or refused;
+    if (!refused) assert(self.nodeValid(p));
     return if (refused) null else p;
 }
 
@@ -212,6 +261,8 @@ fn nodeUnrefused(self: *Lower, e: Ast.ExprId) Oom!?u32 {
 /// source: a potential source's or an indirect branch's current is a solver
 /// unknown whose static retention codegen decides. Either case is E0997.
 fn instancePortFlow(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const lhs = ex.lhs(e);
     if (ex.tag(lhs) != .hier_ident) return null;
@@ -282,24 +333,11 @@ fn instancePortFlow(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
     return .{ .v = resist, .ty = .real };
 }
 
-/// §5.4.3 the flow into an instance port elaboration split onto its own net
-/// `internal` (`Lower.port_ammeters`), or null when it was not split: the
-/// current of the branch from the parent's net into it. Nothing contributes
-/// to that branch, so it is a §5.4.2.1 flow probe, Figure 5-1's ammeter,
-/// and its unknown is keyed on the pair as `branchOf` orders it.
-pub fn ammeterFlow(self: *Lower, internal: []const u8) Oom!?TypedValue {
-    const am = for (self.design.port_ammeters) |am| {
-        if (std.mem.eql(u8, am.internal, internal)) break am;
-    } else return null;
-    const into = try lower_node.internNode(self, am.internal, "");
-    const from = try lower_node.internNode(self, am.bound, "");
-    const u = try lower_node.flowUnknown(self, @min(from, into), @max(from, into));
-    const v = try lower_node.probe(self, u);
-    return .{ .v = if (from > into) try self.emit(.fneg, &.{v}) else v, .ty = .real };
-}
-
 /// `acc ± v`, folding a zero on either side.
 fn addSigned(self: *Lower, acc: Mir.Value, v: Mir.Value, neg: bool) Oom!Mir.Value {
+    assert(self.valueValid(acc));
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
     if (v == .f_zero) return acc;
     if (acc == .f_zero) return if (neg) try self.emit(.fneg, &.{v}) else v;
     return self.emit(if (neg) .fsub else .fadd, &.{ acc, v });
@@ -311,6 +349,8 @@ fn addSigned(self: *Lower, acc: Mir.Value, v: Mir.Value, neg: bool) Oom!Mir.Valu
 /// resolved by the caller, because the two spellings name it differently (an
 /// argument expression here, a branch declaration there).
 fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.nodeValid(p));
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
     // An instance's own port, split onto its own net: the probe's current.

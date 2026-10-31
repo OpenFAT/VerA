@@ -5,11 +5,12 @@
 //! Cites: none (VerA's test harness); the cases that use it cite their clauses.
 //!
 //! Contents:
-//! - `pub const InitError`, `pub const VerdictError`
+//! - `pub const InitError = Preprocessor.Error || Parser.Error`
+//! - `pub const VerdictError = InitError || Error || error{TestUnexpectedResult}`
+//! - `pub const Case = struct`
 //! - `pub const Harness = struct` (`init`, `lower`, `count`, `dump`, `deinit`)
 //! - `pub fn expectVerdict(src: []const u8, want: ?diag.Code) VerdictError!void`
 //! - `pub fn expectBodyVerdict(decls: []const u8, body: []const u8, want: ?diag.Code) VerdictError!void`
-//! - `pub const Case = struct`
 //! - `pub fn expectBodies(cases: []const Case) VerdictError!void`
 
 const std = @import("std");
@@ -27,10 +28,17 @@ const Error = Lower.Error;
 /// Every way `Harness.init` fails: the source did not preprocess or parse
 /// (its diagnostics are in the harness's bag), or memory ran out.
 pub const InitError = Preprocessor.Error || Parser.Error;
+
 /// Every way the `expect*` checks fail: `TestUnexpectedResult` when the
 /// verdict differs from the one wanted (both are printed), or the harness's
 /// own `InitError` and `Lower.Error`.
 pub const VerdictError = InitError || Error || error{TestUnexpectedResult};
+
+/// Test support: one rule case for `expectBodies`, a module body and the code
+/// it must report, or null for a body that must lower with no error at all.
+/// The oracle is the LRM sentence each case cites: every refusal has a legal
+/// neighbour beside it, so a blanket refusal fails the table.
+pub const Case = struct { src: []const u8, code: ?diag.Code };
 
 /// Test support for the `analog/*.zig` tests: one source file preprocessed
 /// (the annex E prelude included), parsed and ready to lower, with the arena
@@ -109,6 +117,7 @@ pub const Harness = struct {
 /// lowers with no error at all; a code means at least one diagnostic of that
 /// code was reported. On a mismatch, prints the source and every diagnostic.
 pub fn expectVerdict(src: []const u8, want: ?diag.Code) VerdictError!void {
+    assert(src.len != 0);
     var h: Harness = undefined;
     try h.init(std.testing.allocator, src);
     defer h.deinit();
@@ -125,6 +134,7 @@ pub fn expectVerdict(src: []const u8, want: ?diag.Code) VerdictError!void {
 /// module-scope declarations are `decls` and whose analog block is `body`,
 /// followed by one `I(p, n) <+ V(p, n)` so the module has an equation.
 pub fn expectBodyVerdict(decls: []const u8, body: []const u8, want: ?diag.Code) VerdictError!void {
+    if (want) |code| assert(@tagName(code)[0] == 'E'); // a verdict is an error code or none
     const src = try std.testing.allocator.print(
         \\module m(p, n);
         \\  inout p, n;
@@ -140,17 +150,12 @@ pub fn expectBodyVerdict(decls: []const u8, body: []const u8, want: ?diag.Code) 
     return expectVerdict(src, want);
 }
 
-/// Test support: one rule case for `expectBodies`, a module body and the code
-/// it must report, or null for a body that must lower with no error at all.
-/// The oracle is the LRM sentence each case cites: every refusal has a legal
-/// neighbour beside it, so a blanket refusal fails the table.
-pub const Case = struct { src: []const u8, code: ?diag.Code };
-
 /// Test support: `expectVerdict` over every case, stopping at the first that
 /// fails. Each `src` is a module body with electrical ports `p` and `q`, a real
 /// parameter `g`, and the variables `x`, `r` (real), `iv`, `seed` (integer)
 /// and `sv` (string).
 pub fn expectBodies(cases: []const Case) VerdictError!void {
+    assert(cases.len != 0);
     const gpa = std.testing.allocator;
     for (cases) |c| {
         const src = try gpa.print(
@@ -168,3 +173,5 @@ pub fn expectBodies(cases: []const Case) VerdictError!void {
         try expectVerdict(src, c.code);
     }
 }
+
+// ---- private ----

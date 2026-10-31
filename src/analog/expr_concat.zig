@@ -1,12 +1,23 @@
+//! §4.2.13 concatenation and replication in a value position: a `.concat` or
+//! `.multi_concat` in, a string (§3.3 Table 3-3: folded where constant,
+//! `$str$cat`/`$str$repeat` where not) or an integer function call's 32-bit
+//! value out. The sized-integer form is the parser's.
+//!
+//! Cites: §3.2, §3.3 (Table 3-3), §3.4, §4.2.1, §4.2.13, §4.7.1.
+//!
+//! Contents:
+//! - `pub fn lowerConcat(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+
 const std = @import("std");
-const Lower = @import("Lower.zig");
-const lower_constfold = @import("constfold.zig");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
-const Const = constfold.Const;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
+const Lower = @import("Lower.zig");
+const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
+const Const = constfold.Const;
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
@@ -34,6 +45,8 @@ const poison = Lower.poison;
 /// nonconstant case, and `$str$repeat`
 /// makes the N copies while the device runs (`str_kernels.zStrRepeat`).
 pub fn lowerConcat(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const repl = ex.tag(e) == .multi_concat;
     const elems = ex.args(if (repl) ex.rhs(e) else e);
@@ -147,6 +160,8 @@ pub fn lowerConcat(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     return .{ .v = try self.mir.addStrConst(self.arena, try out.toOwnedSlice(self.arena)), .ty = .string };
 }
 
+// ---- private ----
+
 /// §4.2.13's integer form over integer function calls, the operands the
 /// parser cannot fold but whose width the declaration fixes: an
 /// `analog_function_type` `integer` (§4.7.1) is 32 bits (§3.2). `first` is
@@ -155,6 +170,8 @@ pub fn lowerConcat(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// evaluated once however many `copies` there are. Every operand is 32 bits
 /// wide, so the integer the result is held in is its low 32: the last one.
 fn intCallConcat(self: *Lower, e: Ast.ExprId, elems: []const Ast.ExprId, copies: i64, first: TypedValue) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.valueValid(first.v));
     const ex = &self.file.exprs;
     var last = first;
     for (elems, 0..) |el, i| {

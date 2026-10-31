@@ -1,12 +1,29 @@
+//! §4.2 operators: a unary or binary expression in, the opcode its operand
+//! types pick (§4.2.1: one real operand makes the operation real) out, or a
+//! diagnostic for an operator the analog context does not carry (§4.2.10's
+//! reductions, §4.2.11's arithmetic shifts, a string operand §3.3 gives no
+//! arithmetic).
+//!
+//! Cites: A.8.6, §2.6.3, §2.7, §3.2, §3.3 (Table 3-3), §4.2, §4.2.1 (Table
+//! 4-2, Table 4-3), §4.2.1.3, §4.2.3, §4.2.4, §4.2.5, §4.2.6, §4.2.7, §4.2.8,
+//! §4.2.9, §4.2.10, §4.2.11, §4.3.1, §7.3.2; IEEE 1364-2005 §5.1.8.
+//!
+//! Contents:
+//! - `pub fn lowerUnary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue`
+//! - `pub fn lowerBinary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue`
+//! - `pub fn resizeInt(self: *Lower, v: Mir.Value, context: constfold.IntContext) Oom!Mir.Value`
+//! - `pub fn cmp(self: *Lower, op: Ast.BinaryOp, a: TypedValue, b: TypedValue) Oom!Mir.Value`
+
 const std = @import("std");
-const Lower = @import("Lower.zig");
-const lower_constfold = @import("constfold.zig");
-const lower_sysfunc = @import("sysfunc.zig");
-const lower_systask = @import("systask.zig");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
+const Lower = @import("Lower.zig");
+const lower_constfold = @import("constfold.zig");
+const lower_sysfunc = @import("sysfunc.zig");
+const lower_systask = @import("systask.zig");
 const lower_expr = @import("expr.zig");
 const lower_expr_case = @import("expr_case.zig");
 const lower_expr_cond = @import("expr_cond.zig");
@@ -17,6 +34,8 @@ const unify = Lower.unify;
 
 /// A.8.6 unary operators. §4.2.3 (+/-), §4.2.7 (!), §4.2.9 (~).
 pub fn lowerUnary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     var a = try lower_expr.lowerOperand(self, ex.lhs(e), plan, sized, 0);
     switch (ex.unOp(e)) {
@@ -84,6 +103,8 @@ pub fn lowerUnary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: 
 /// A.8.6 binary operators. LRM Table 4-3 precedence is the parser's job; this
 /// only picks the opcode family from the operand types (§4.2.1).
 pub fn lowerBinary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const op = ex.binOp(e);
     // §4.2.7 && and || short-circuit: the rhs must not be evaluated when the
@@ -247,6 +268,8 @@ pub fn lowerBinary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized:
 
 /// IntContext.normalize without any width-erasing arithmetic opcode.
 pub fn resizeInt(self: *Lower, v: Mir.Value, context: constfold.IntContext) Oom!Mir.Value {
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
     if (context.width >= 64) return v;
     const mask: i64 = @intCast((@as(u64, 1) << @intCast(context.width)) - 1);
     const bits = try self.emit(.bitand, &.{ v, try self.mir.addIntConst(self.arena, mask) });
@@ -257,16 +280,11 @@ pub fn resizeInt(self: *Lower, v: Mir.Value, context: constfold.IntContext) Oom!
     return self.emit(.select, &.{ try self.toBool(.{ .v = sign, .ty = .integer }), negative, bits });
 }
 
-/// `constfold.UnsignedCompare.extend` as MIR.
-fn extendUnsigned(self: *Lower, v: Mir.Value, mask: ?i64, flip: bool) Oom!Mir.Value {
-    var z = v;
-    if (mask) |m| z = try self.emit(.bitand, &.{ z, try self.mir.addIntConst(self.arena, m) });
-    if (flip) z = try self.emit(.bitxor, &.{ z, try self.mir.addIntConst(self.arena, std.math.minInt(i64)) });
-    return z;
-}
-
 /// §4.2.4 relational / §4.2.5 equality — integer 0/1 result either way.
 pub fn cmp(self: *Lower, op: Ast.BinaryOp, a: TypedValue, b: TypedValue) Oom!Mir.Value {
+    assert(self.valueValid(a.v));
+    assert(self.valueValid(b.v));
+    assert(self.blockValid(self.cur));
     const real = unify(a.ty, b.ty) == .real;
     const opc: Mir.Opcode = switch (op) {
         .eq => if (real) .feq else .ieq,
@@ -280,6 +298,18 @@ pub fn cmp(self: *Lower, op: Ast.BinaryOp, a: TypedValue, b: TypedValue) Oom!Mir
     const lv = if (real) try self.toReal(a) else a.v;
     const rv = if (real) try self.toReal(b) else b.v;
     return self.emit(opc, &.{ lv, rv });
+}
+
+// ---- private ----
+
+/// `constfold.UnsignedCompare.extend` as MIR.
+fn extendUnsigned(self: *Lower, v: Mir.Value, mask: ?i64, flip: bool) Oom!Mir.Value {
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
+    var z = v;
+    if (mask) |m| z = try self.emit(.bitand, &.{ z, try self.mir.addIntConst(self.arena, m) });
+    if (flip) z = try self.emit(.bitxor, &.{ z, try self.mir.addIntConst(self.arena, std.math.minInt(i64)) });
+    return z;
 }
 
 test "lowerUnary/lowerBinary: §4.2 an operator takes only the operand types its table lists" {

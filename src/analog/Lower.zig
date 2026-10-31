@@ -33,7 +33,7 @@
 //! - `pub const ParamOverride`, `pub const BranchInfo = struct`
 //! - `pub const TypedValue = struct`, `pub const poison: TypedValue`
 //! - `pub const VarSlot = struct`, `pub const RegRange = struct`,
-//!   `pub const ArrayInfo = struct`, `pub const Accum = struct`
+//!   `pub const ArrayInfo = struct` (with `pub const Mem = struct`), `pub const Accum = struct`
 //! - `pub const Options = struct`, `pub const Output = struct`
 //! - `pub const lowerFile`, `strToInt`, `strNum`, `toReal`, `toInt`,
 //!   `coerceTo`, `toBool`, `unify`, `astTy` (methods from module.zig, coerce.zig)
@@ -111,12 +111,8 @@ const lower_func = @import("func.zig");
 // Constant evaluation: §4.2 constant_expression, §6.6.1 generate bounds.
 const lower_constfold = @import("constfold.zig");
 
-const Lower = @This();
-
 /// What lowering produces (`ir`'s `Lowered`).
 pub const Lowered = @import("ir").Lowered;
-const lower_expr_name = @import("expr_name.zig");
-const lower_expr_select = @import("expr_select.zig");
 /// The one error that unwinds a lowering step: everything else goes in the
 /// shared `diag.Bag` and lowering continues with a poison value, so one run
 /// reports many errors.
@@ -563,6 +559,11 @@ event_arrays: std.StringHashMapUnmanaged([]const lower_shape.Bounds) = .empty,
 /// unknown of the implicit equation, not the §5.6.1.2 accumulator, which
 /// mid-statement still lacks this statement's term. See `lowerBranchAccess`.
 contrib_target: ?lower_contrib.Target = null,
+/// The number of `lowerExpr` frames on the stack: the walk's recursion depth,
+/// asserted below the expression table's size (expr.zig's header).
+expr_depth: u32 = 0,
+
+const Lower = @This();
 
 /// §5.4.2.1 one access function read, kept for the end-of-module probe sweep.
 const BranchRead = struct { access: Access, hi: u32, lo: u32, tok: u32 };
@@ -601,6 +602,7 @@ pub fn lower(
         assert(self.builder.dir.items.len == 0);
     }
     const out = try lower_module.lowerFile(&self);
+    assert(out.num_ports <= out.nodes.len);
     return .{ .lowered = out, .module = self.module, .unit_paths = self.design.units };
 }
 
@@ -616,6 +618,8 @@ pub fn init(
     bag: *diag.Bag,
 ) Lower {
     assert(mir.blockCount() == 0);
+    // Every token starts inside the text it was lexed from.
+    if (tok_starts.len != 0) assert(tok_starts[tok_starts.len - 1] <= src.len);
     return .{
         .arena = arena,
         .mir = mir,
@@ -631,12 +635,17 @@ pub fn init(
 /// Frees the SSA builder's `(place, block)` map, the one table an arena
 /// cannot reclaim. Every other table lives in `arena`.
 pub fn deinit(self: *Lower) void {
+    assert(self.expr_depth == 0); // no expression walk is mid-flight
+    assert(self.static_cond_depth <= self.cond_depth);
     self.builder.deinit();
 }
 
 /// Returns the byte range of a token, the unit every diagnostic reports in.
 pub fn tokenSpan(self: *const Lower, tok: u32) diag.Span {
-    return Lexer.tokenSpan(self.src, self.tok_starts, tok);
+    const span = Lexer.tokenSpan(self.src, self.tok_starts, tok);
+    assert(span.start <= span.end);
+    assert(span.end <= self.src.len);
+    return span;
 }
 
 /// Returns where `tok` starts in the preprocessed text, the offset §10.1's
@@ -644,40 +653,58 @@ pub fn tokenSpan(self: *const Lower, tok: u32) diag.Span {
 /// Zero for a token index never lexed, which answers with each directive's
 /// default.
 pub fn tokStart(self: *const Lower, tok: u32) u32 {
-    return if (tok < self.tok_starts.len) self.tok_starts[tok] else 0;
+    const start = if (tok < self.tok_starts.len) self.tok_starts[tok] else 0;
+    assert(start <= self.src.len);
+    if (tok >= self.tok_starts.len) assert(start == 0);
+    return start;
 }
 
 /// Records an error and keeps going. Callers substitute a poison value;
 /// nothing downstream runs because `lowerFile` fails at the end.
 pub fn err(self: *Lower, tok: u32, code: diag.Code, comptime fmt: []const u8, args: anytype) Oom!void {
+    assert(@tagName(code)[0] == 'E'); // a warning goes to `bag` directly: it fails nothing
     self.had_error = true;
-    return self.bag.add(.lower, code, self.tokenSpan(tok), fmt, args);
+    try self.bag.add(.lower, code, self.tokenSpan(tok), fmt, args);
+    assert(self.had_error);
 }
 
 /// Starts an error that wants a label, a note or a suggestion. The caller
 /// must `emit()` it.
 pub fn errWith(self: *Lower, tok: u32, code: diag.Code) diag.Builder {
+    assert(@tagName(code)[0] == 'E'); // as `err`
     self.had_error = true;
-    return self.bag.build(.lower, code, self.tokenSpan(tok));
+    const b = self.bag.build(.lower, code, self.tokenSpan(tok));
+    assert(self.had_error);
+    return b;
 }
 
 /// Appends `op` to the current block (`Mir.emit`).
 pub fn emit(self: *Lower, op: Mir.Opcode, ops: []const Mir.Value) Oom!Mir.Value {
-    return self.mir.emit(self.arena, self.cur, op, ops);
+    assert(self.blockValid(self.cur));
+    for (ops) |o| assert(self.valueValid(o));
+    const v = try self.mir.emit(self.arena, self.cur, op, ops);
+    assert(self.valueValid(v));
+    return v;
 }
 
 /// Appends a call to `name` in the current block (`Mir.emitCall`).
 pub fn call(self: *Lower, name: []const u8, args: []const Mir.Value) Oom!Mir.Value {
     // §2.8.3 a `$name` no clause defines is the host's: the device owes it
     // an `Instance.systf` binding (`Uses.systf`).
+    assert(name.len != 0);
+    assert(self.blockValid(self.cur));
     if (Mir.Callee.fromName(name) == .systf) self.out.uses.insert(.systf);
     const callee = try self.mir.internString(self.arena, name);
-    return self.mir.emitCall(self.arena, self.cur, callee, args);
+    const v = try self.mir.emitCall(self.arena, self.cur, callee, args);
+    assert(self.valueValid(v));
+    return v;
 }
 
 /// Closes `self.cur` with a jump and registers the CFG edge. `target` must not
 /// be sealed yet.
 pub fn gotoBlock(self: *Lower, target: Mir.Block) Oom!void {
+    assert(self.blockValid(target));
+    assert(self.blockValid(self.cur));
     _ = try self.mir.emitJump(self.arena, self.cur, target);
     try self.builder.addPredecessor(target, self.cur);
 }
@@ -686,6 +713,9 @@ pub fn gotoBlock(self: *Lower, target: Mir.Block) Oom!void {
 /// (and `else_b` when `seal_else`). A loop leaves its exit unsealed until its
 /// body has registered any `break` predecessors.
 pub inline fn branchTo(self: *Lower, cond: Mir.Value, then_b: Mir.Block, else_b: Mir.Block, comptime seal_else: bool) Oom!void {
+    assert(self.valueValid(cond));
+    assert(self.blockValid(then_b));
+    assert(self.blockValid(else_b));
     _ = try self.mir.emitBranch(self.arena, self.cur, cond, then_b, else_b);
     try self.builder.addPredecessor(then_b, self.cur);
     try self.builder.addPredecessor(else_b, self.cur);
@@ -697,9 +727,12 @@ pub inline fn branchTo(self: *Lower, cond: Mir.Value, then_b: Mir.Block, else_b:
 /// (post-`break`/`return` code, §5.9/§4.7.1); sealing it immediately keeps the
 /// SSA builder from ever waiting on an edge that will not arrive.
 pub fn startUnreachable(self: *Lower) Oom!void {
+    const blocks = self.mir.blockCount();
     const b = try self.mir.addBlock(self.arena);
     try self.builder.sealBlock(b);
     self.cur = b;
+    assert(self.mir.blockCount() == blocks + 1);
+    assert(@backingInt(self.cur) == blocks);
 }
 
 /// Returns `table_effect_place`, creating it on first use seeded `.f_zero` in
@@ -707,9 +740,11 @@ pub fn startUnreachable(self: *Lower) Oom!void {
 /// dependencies and CFG edges it carries (`Lowered.table_effect`).
 pub fn effectPlace(self: *Lower) Oom!Ssa.Place {
     if (self.table_effect_place) |p| return p;
+    assert(self.mir.blockCount() != 0); // the entry block the seed goes in
     const p = self.builder.newPlace();
     try self.builder.writeVariable(p, .entry, .f_zero);
     self.table_effect_place = p;
+    assert(self.table_effect_place != null);
     return p;
 }
 

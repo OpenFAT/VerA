@@ -1,12 +1,24 @@
+//! The short-circuit operators: `?:`, `&&` and `||` in, their value out, with
+//! the unselected operand on a branch that never runs (§4.2.3, §4.2.7,
+//! §4.2.12), unless §4.5.15 needs an analog operator in it evaluated every
+//! iteration, when both sides run and `imin`/`imax` combine them.
+//!
+//! Cites: §4.2.1, §4.2.3, §4.2.7, §4.2.12, §4.5.15, §4.7, §4.7.2.4.
+//!
+//! Contents:
+//! - `pub fn lowerTernary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue`
+//! - `pub fn lowerShortCircuit(self: *Lower, e: Ast.ExprId, op: Ast.BinaryOp, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue`
+
 const std = @import("std");
-const Lower = @import("Lower.zig");
-const lower_analog_op = @import("analog_op.zig");
-const lower_control = @import("control.zig");
-const lower_hier_name = @import("hier_name.zig");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
 const Mir = @import("ir").Mir;
 const naming = @import("ir").names;
+const Lower = @import("Lower.zig");
+const lower_analog_op = @import("analog_op.zig");
+const lower_control = @import("control.zig");
+const lower_hier_name = @import("hier_name.zig");
 const lower_expr = @import("expr.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
@@ -29,6 +41,8 @@ const unify = Lower.unify;
 /// Nothing between the two reads the then-arm's terminator: the SSA builder
 /// walks predecessors, and the else-arm has none of the then-arm's blocks.
 pub fn lowerTernary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const cond = ex.lhs(e);
     const c = try self.toBool(try lower_expr.lowerOperand(self, cond, plan, sized, 0));
@@ -80,27 +94,11 @@ pub fn lowerTernary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized
     return .{ .v = try self.builder.readVariable(place, join), .ty = ty };
 }
 
-/// §4.5.15 "It is important to ensure that all analog operators are evaluated
-/// every iteration of a simulation to ensure that the internal state is
-/// maintained." Whether this subtree holds one of the operators that rule protects.
-/// `ddx` and `limexp` are the clause's own exceptions (see `isHistoryless`).
-///
-/// ponytail: syntactic, and it does not look inside a §4.7 analog function
-/// body. An operator there is already E0422; if one becomes legal, compute a
-/// per-function flag when the function lowers.
-fn hasStatefulOp(self: *const Lower, e: Ast.ExprId) bool {
-    if (e == .none) return false;
-    const ex = &self.file.exprs;
-    const tag = ex.tag(e);
-    if (tag == .filter_call and !lower_analog_op.isHistoryless(self.file.str(ex.strOf(e)))) return true;
-    var buf: [3]Ast.ExprId = undefined;
-    for (ex.children(e, &buf)) |c| if (hasStatefulOp(self, c)) return true;
-    return false;
-}
-
 /// §4.2.7 `&&` / `||` with LRM short-circuit evaluation. The rhs gets its own
 /// block, so a guard like `(x != 0) && (1/x > k)` never divides by zero.
 pub fn lowerShortCircuit(self: *Lower, e: Ast.ExprId, op: Ast.BinaryOp, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     // §4.5.15's evaluate-every-iteration rule wins over §4.2.7's skip when the
     // rhs holds an analog operator: a skipped step would feed that operator the
@@ -109,7 +107,7 @@ pub fn lowerShortCircuit(self: *Lower, e: Ast.ExprId, op: Ast.BinaryOp, plan: ?c
     // effects and runtime errors, and advancing a required operator is neither.
     // §4.5.15's restriction names only `if`, `case` and `?:`, so this spelling
     // is legal and not diagnosed.
-    if (hasStatefulOp(self, ex.rhs(e))) {
+    if (hasStatefulOp(self, ex.rhs(e), 0)) {
         const l = try self.toBool(try lower_expr.lowerOperand(self, ex.lhs(e), plan, sized, 0));
         const r = try self.toBool(try lower_expr.lowerOperand(self, ex.rhs(e), plan, sized, 1));
         // `toBool` normalises both to 0/1, so max is `||` and min is `&&`.
@@ -142,6 +140,28 @@ pub fn lowerShortCircuit(self: *Lower, e: Ast.ExprId, op: Ast.BinaryOp, plan: ?c
     try self.builder.sealBlock(join);
     self.cur = join;
     return .{ .v = try self.builder.readVariable(place, join), .ty = .integer };
+}
+
+// ---- private ----
+
+/// §4.5.15 "It is important to ensure that all analog operators are evaluated
+/// every iteration of a simulation to ensure that the internal state is
+/// maintained." Whether this subtree holds one of the operators that rule protects.
+/// `ddx` and `limexp` are the clause's own exceptions (see `isHistoryless`).
+///
+/// ponytail: syntactic, and it does not look inside a §4.7 analog function
+/// body. An operator there is already E0422; if one becomes legal, compute a
+/// per-function flag when the function lowers.
+fn hasStatefulOp(self: *const Lower, e: Ast.ExprId, depth: u32) bool {
+    assert(e == .none or self.exprValid(e));
+    assert(depth <= self.file.exprs.len()); // a tree is shallower than its node count
+    if (e == .none) return false;
+    const ex = &self.file.exprs;
+    const tag = ex.tag(e);
+    if (tag == .filter_call and !lower_analog_op.isHistoryless(self.file.str(ex.strOf(e)))) return true;
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| if (hasStatefulOp(self, c, depth + 1)) return true;
+    return false;
 }
 
 test "lowerShortCircuit: §4.2.7 skips the rhs, unless §4.5.15 must evaluate its operator" {

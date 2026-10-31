@@ -8,7 +8,7 @@
 //! §4.2.8, §4.2.13.
 //!
 //! Contents:
-//! - `pub const strToInt` (`kernels.fold.strToInt`)
+//! - `pub const strToInt = @import("kernels").fold.strToInt`
 //! - `pub fn strNum(self: *Lower, tv: TypedValue) Oom!TypedValue`
 //! - `pub fn toReal(self: *Lower, tv0: TypedValue) Oom!Mir.Value`
 //! - `pub fn toInt(self: *Lower, tv0: TypedValue) Oom!Mir.Value`
@@ -27,7 +27,6 @@ const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
 const expectBodyVerdict = Lower.expectBodyVerdict;
-
 /// §2.7 a string literal's integer value: `kernels.fold.strToInt`.
 pub const strToInt = @import("kernels").fold.strToInt;
 

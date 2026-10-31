@@ -1,7 +1,21 @@
-const Lower = @import("Lower.zig");
+//! §7.3.2 four-state comparison: two case operands in, the integer 0/1 their
+//! `===`/`!==` or `case`/`casez`/`casex` match leaves out. A four-state
+//! operand (an x/z literal, a discrete input's planes) is compared as its
+//! value and unknown planes; when neither side is four-state the callers fall
+//! back to two-state `==`.
+//!
+//! Cites: §4.2.1 (Table 4-2), §7.3.2; IEEE 1364-2005 §5.1.8, §9.5.1.
+//!
+//! Contents:
+//! - `pub fn caseEquality(self: *Lower, l: Ast.ExprId, r: Ast.ExprId) Oom!?Mir.Value`
+//! - `pub fn caseMatch(self: *Lower, kind: Ast.CaseKind, l: Ast.ExprId, r: Ast.ExprId) Oom!?Mir.Value`
+
+const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const naming = @import("ir").names;
+const Lower = @import("Lower.zig");
 const lower_expr = @import("expr.zig");
 const lower_expr_name = @import("expr_name.zig");
 const lower_expr_op = @import("expr_op.zig");
@@ -12,32 +26,13 @@ const Oom = Lower.Oom;
 /// `===`/`!==`/`case` (`Lowered.discrete_xz`). Null for anything two-state.
 const Planes = struct { value: Mir.Value, unknown: Mir.Value };
 
-fn fourState(self: *Lower, e: Ast.ExprId) Oom!?Planes {
-    const ex = &self.file.exprs;
-    switch (ex.tag(e)) {
-        .logic_literal => {
-            const lit = ex.logicValue(e);
-            if (lit.width > 63) return null; // the E0130 the ordinary lowering reports
-            const value: i64 = lit.asInt() orelse @bitCast(lit.values()[0]);
-            return .{
-                .value = try self.mir.addIntConst(self.arena, value),
-                .unknown = try self.mir.addIntConst(self.arena, @bitCast(lit.unknowns()[0])),
-            };
-        },
-        .ident => {
-            const name = self.file.str(ex.strOf(e));
-            if (self.in_d2a_body or !self.out.discrete_xz.contains(name)) return null;
-            const xz = self.param_index.get(try naming.xzField(self.arena, name)).?;
-            return .{ .value = (try lower_expr_name.lookupName(self, e, name)).v, .unknown = self.param_values.items[xz] };
-        },
-        else => return null, // else: every other operand is two-state
-    }
-}
-
 /// §7.3.2 / IEEE 1364 §5.1.8 `a === b` when either side is four-state: both
 /// planes compare, and the result is never x. A two-state side has no unknown
 /// bits. Null when neither side is four-state (the ordinary `==` path).
 pub fn caseEquality(self: *Lower, l: Ast.ExprId, r: Ast.ExprId) Oom!?Mir.Value {
+    assert(l == .none or self.exprValid(l));
+    assert(r == .none or self.exprValid(r));
+    assert(self.blockValid(self.cur));
     const pl = try fourState(self, l);
     const pr = try fourState(self, r);
     if (pl == null and pr == null) return null;
@@ -54,6 +49,9 @@ pub fn caseEquality(self: *Lower, l: Ast.ExprId, r: Ast.ExprId) Oom!?Mir.Value {
 /// Null when neither side is four-state: two-state operands have no
 /// don't-care bits, so all three are `==`.
 pub fn caseMatch(self: *Lower, kind: Ast.CaseKind, l: Ast.ExprId, r: Ast.ExprId) Oom!?Mir.Value {
+    assert(l == .none or self.exprValid(l));
+    assert(r == .none or self.exprValid(r));
+    assert(self.blockValid(self.cur));
     if (kind == .normal) return caseEquality(self, l, r);
     const pl = try fourState(self, l);
     const pr = try fourState(self, r);
@@ -74,10 +72,38 @@ pub fn caseMatch(self: *Lower, kind: Ast.CaseKind, l: Ast.ExprId, r: Ast.ExprId)
     return try lower_expr_op.cmp(self, .eq, .{ .v = masked, .ty = .integer }, .{ .v = .zero, .ty = .integer });
 }
 
+// ---- private ----
+
+fn fourState(self: *Lower, e: Ast.ExprId) Oom!?Planes {
+    assert(e == .none or self.exprValid(e));
+    const ex = &self.file.exprs;
+    switch (ex.tag(e)) {
+        .logic_literal => {
+            const lit = ex.logicValue(e);
+            if (lit.width > 63) return null; // the E0130 the ordinary lowering reports
+            const value: i64 = lit.asInt() orelse @bitCast(lit.values()[0]);
+            return .{
+                .value = try self.mir.addIntConst(self.arena, value),
+                .unknown = try self.mir.addIntConst(self.arena, @bitCast(lit.unknowns()[0])),
+            };
+        },
+        .ident => {
+            const name = self.file.str(ex.strOf(e));
+            if (self.in_d2a_body or !self.out.discrete_xz.contains(name)) return null;
+            const xz = self.param_index.get(try naming.xzField(self.arena, name)).?;
+            assert(xz < self.param_values.items.len); // `declareDiscreteInputs` added the plane's `Model` field
+            return .{ .value = (try lower_expr_name.lookupName(self, e, name)).v, .unknown = self.param_values.items[xz] };
+        },
+        else => return null, // else: every other operand is two-state
+    }
+}
+
 /// §4.2.1 Table 4-2: `===` is not an operator on reals (E0369, as on the
 /// two-state path).
 fn twoState(self: *Lower, e: Ast.ExprId) Oom!Mir.Value {
+    assert(e == .none or self.exprValid(e));
     const tv = try lower_expr.lowerExpr(self, e);
+    assert(tv.ty != .wide);
     if (tv.ty != .real) return self.toInt(tv);
     var d = self.errWith(self.file.exprs.mainTok(e), .E0369);
     d.help("use `==`; for reals prefer `abs(a - b) < tol`", .{});

@@ -1,19 +1,31 @@
-//! §4.2 expressions, §4.3 math functions, §4.4 signal access.
+//! §4.2 expressions: an `Ast.ExprId` in, a `TypedValue` (a `Mir.Value` and
+//! the LRM type that picks its consumer's opcode family) out, emitted into
+//! the current block. This file is the dispatch: each construct is lowered by
+//! the file named for it (expr_name, expr_op, expr_cond, expr_case,
+//! expr_select, expr_concat, expr_access, math), and every operand comes back
+//! through `lowerExpr`, so the walk's depth is the expression's.
 //!
-//! In: expression AST. Out: typed MIR values (`TypedValue`).
+//! Recursion: the walk recurses on expression depth. The parser measured that
+//! depth and the driver runs lowering on a `deep_stack` reserved for it;
+//! `Lower.expr_depth` asserts each frame stays below the expression table's
+//! size (a tree is shallower than its node count), so a cycle crashes here
+//! instead of exhausting the stack.
 //!
-//! LRM clauses this file's code cites: §1.3.1.2, §2.6.1, §2.6.2, §2.7, §2.8,
-//! §2.9, §3.2, §3.2.1, §3.3, §3.4, §3.4.4, §3.5, §3.6.1.2, §3.12.1, §3.13.2,
-//! §4, §4.2.1, §4.2.1.1, §4.2.1.3, §4.2.3, §4.2.4, §4.2.5, §4.2.7, §4.2.8,
-//! §4.2.9, §4.2.10, §4.2.11, §4.2.12, §4.2.13, §4.3, §4.3.1, §4.3.2, §4.4,
-//! §4.5, §4.5.15, §4.6, §4.7, §4.7.2, §4.7.2.4, §5.2.1, §5.3.2, §5.4.1, §5.4.2,
-//! §5.4.2.1, §5.4.2.2, §5.4.3, §5.5.3, §5.5.4, §5.5.5, §5.6.1.2, §5.6.6,
-//! §5.6.8.1, §5.6.8.2, §5.8.1, §6.6.1, §6.6.2, §6.6.3, §6.7, §6.7.1, §6.8,
-//! §7.3.1, §8.5.3.6, §9.4, §9.20, A.8.9.
-//! IEEE 1364-2005 clauses cited: §4.2.1, §5.1.8, §5.5.1, §9.5.1, §12.7.
-//! §9.14 / IEEE §§5.4–5.5 size the self-determined `$clog2` operand.
+//! Cites: §2.6.1, §2.6.2, §2.7, §4.2, §4.2.1, §4.2.13, §4.3, §4.4, §4.5,
+//! §4.6, §4.7, §5.10, §6.7, §9, A.2.5, A.6.5, A.8.2; IEEE 1364-2005 §5.4,
+//! §5.5 (the self-determined `$clog2` operand, §9.14).
+//!
+//! Contents:
+//! - `pub const test_decls`
+//! - `pub fn lowerExpr(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn lowerClog2Arg(self: *Lower, e: Ast.ExprId, parent: ?constfold.IntContext) Oom!TypedValue`
+//! - `pub fn lowerOperand(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool, index: usize) Oom!TypedValue`
 
 const std = @import("std");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const constfold = @import("frontend").constfold;
+const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
 const lower_constfold = @import("constfold.zig");
@@ -21,9 +33,6 @@ const lower_func = @import("func.zig");
 const lower_event = @import("event.zig");
 const lower_sysfunc = @import("sysfunc.zig");
 const lower_wide = @import("wide.zig");
-const Ast = @import("frontend").Ast;
-const constfold = @import("frontend").constfold;
-const Mir = @import("ir").Mir;
 const lower_expr_name = @import("expr_name.zig");
 const lower_expr_select = @import("expr_select.zig");
 const lower_expr_concat = @import("expr_concat.zig");
@@ -35,15 +44,34 @@ const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
 
+/// Test support: the declarations every expression case here and in the
+/// expr_* files reads.
+pub const test_decls =
+    \\  electrical q;
+    \\  real r, y, y0;
+    \\  integer k, j;
+    \\  string s;
+    \\  reg [7:0] rg;
+    \\  parameter integer cnt = 2;
+    \\  parameter integer neg = -1;
+    \\  parameter integer big = 5000;
+    \\  parameter real huge = 1e15;
+;
+
 /// Lowers an expression, returning its value and its LRM type; every
 /// operator's opcode family depends on the type (LRM §4, §4.2.1.1–§4.2.1.3).
+/// A refused expression reports its diagnostic and returns `poison`; only
+/// running out of memory fails. Never returns a `.wide` type: a whole wide
+/// `reg` read is E0222. `e == .none` is an omitted A.8.2 slot, E0894.
 pub fn lowerExpr(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     return lowerExprRaw(self, e, null, false);
 }
 
 /// IEEE §§5.4–5.5 inside a self-determined `$clog2` argument. Function
 /// calls still lower their bodies and arguments on their own ordinary path.
 pub fn lowerClog2Arg(self: *Lower, e: Ast.ExprId, parent: ?constfold.IntContext) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     if (e == .none) return poison;
     const plan = lower_constfold.clog2Plan(self, e, parent);
     if (plan) |p| if (!p.supported) {
@@ -59,23 +87,38 @@ pub fn lowerClog2Arg(self: *Lower, e: Ast.ExprId, parent: ?constfold.IntContext)
         value.v = try lower_expr_op.resizeInt(self, value.v, .{ .width = p.from_width, .signed = p.result.signed });
         if (p.from_width != p.result.width) value.v = try lower_expr_op.resizeInt(self, value.v, p.result);
     };
+    assert(self.valueValid(value.v));
     return value;
 }
 
+/// Lowers operand `index` of a `$clog2` plan when `sized`, else as `lowerExpr`:
+/// the one call the operator files make for each operand, so a self-determined
+/// operand keeps its IEEE width (§9.14) wherever it sits in the tree.
 pub fn lowerOperand(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool, index: usize) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     return if (sized) lowerClog2Arg(self, e, if (plan) |p| p.operands[index] else null) else lowerExpr(self, e);
 }
+
+// ---- private ----
 
 // Timer capture belongs on both ordinary and width-aware expression paths.
 // A $clog2 operand must retain its dependency when its timer is rescheduled.
 fn lowerExprRaw(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     if (lower_event.replayedExpr(self, e)) |value| return value;
+    self.expr_depth += 1;
+    defer self.expr_depth -= 1;
+    assert(self.expr_depth <= self.file.exprs.len() + 1); // see the header: depth below node count
     const value = try lowerExprInner(self, e, plan, sized);
+    assert(self.valueValid(value.v));
+    assert(value.ty != .wide);
     try lower_event.captureExpr(self, e, value);
     return value;
 }
 
 fn lowerExprInner(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue {
+    assert(self.expr_depth != 0); // only `lowerExprRaw` calls this
+    assert(e == .none or self.exprValid(e));
     // An omitted A.8.2 slot reaches here only when its function gave it no
     // meaning: every slot with a default is read before lowering. The cursor
     // is still the enclosing call's token.
@@ -117,54 +160,7 @@ fn lowerExprInner(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: 
         .neg_inf => return .{ .v = try self.mir.addFloatConst(self.arena, -std.math.inf(f64)), .ty = .real },
 
         .ident => return lower_expr_name.lookupName(self, e, self.file.str(ex.strOf(e))),
-        .hier_ident => {
-            // §5.5.3 Syntax 5-4 first: a nature attribute reference is a
-            // CONSTANT this module can resolve, unlike a §6.8 hierarchical name,
-            // which needs an instance tree (E0901).
-            if (lower_analog_op.natureAttrRef(self, e)) |r| switch (r) {
-                .value => |c| return switch (c) {
-                    .real, .int => .{ .v = try self.mir.addFloatConst(self.arena, c.asReal()), .ty = .real },
-                    .str => .{ .v = try self.mir.addStrConst(self.arena, c.str), .ty = .string },
-                },
-                .banned => |attr| {
-                    var b = self.errWith(self.file.exprs.mainTok(e), .E0359);
-                    b.msg("`{s}`", .{attr});
-                    b.note("§5.5.3: \"This syntax shall not be used for the access, ddt_nature, or idt_nature attributes of a nature, nor any other attribute whose value is not a constant expression\"", .{});
-                    try b.emit();
-                    return poison;
-                },
-            };
-            // §6.7 "access of parameters can be done hierarchically", and
-            // §6.7.1 extends it to variables. The path IS the flat name
-            // elaboration gave the child's entity, so once the join resolves
-            // there is nothing hierarchical left to do; E0901 is what is left
-            // when it does not.
-            if (try lower_expr_name.refuseUnnamedGen(self, e)) return poison;
-            const name = try lower_expr_name.flatName(self, e);
-            // §6.7.1's fifth bullet, and the only one of the list that is a
-            // prohibition: "It shall be an error to access analog variables
-            // hierarchically." It has to be tested before the resolution below,
-            // because the resolution succeeds — a flattened child's variable is
-            // an ordinary variable of the flat design under its path name, so
-            // nothing else would stop the read.
-            // Except a §5.3.2 named-block local, which the LRM spells out the
-            // other way: "All identifiers declared within a named sequential
-            // block can be accessed outside the scope in which they are
-            // declared." §6.7.1 is about reaching into another INSTANCE;
-            // `publishBlockLocals` bound only labels of this analog block.
-            if (self.vars.contains(name) and !self.block_locals.contains(name)) {
-                var vb = self.errWith(self.file.exprs.mainTok(e), .E0910);
-                vb.msg("`{s}`", .{name});
-                vb.note("§6.7.1 permits a hierarchical parameter, branch probe or analog function; a variable is the one entry on that list it forbids", .{});
-                try vb.emit();
-                return poison;
-            }
-            if (self.param_index.contains(name) or self.consts.contains(name) or
-                self.node_voltages.contains(name) or self.block_locals.contains(name))
-                return lower_expr_name.lookupName(self, e, name);
-            try self.err(self.file.exprs.mainTok(e), .E0901, "`{s}` names nothing in the elaborated design", .{name});
-            return poison;
-        },
+        .hier_ident => return lower_expr_name.lowerHierIdent(self, e), // §6.7, §5.5.3
 
         .unary => return lower_expr_op.lowerUnary(self, e, plan, sized),
         .binary => return lower_expr_op.lowerBinary(self, e, plan, sized),
@@ -211,18 +207,3 @@ fn lowerExprInner(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: 
         },
     }
 }
-
-// ---- §4.3 math functions (Tables 4-14 and 4-15) ----------------------------
-
-/// The declarations every expression case below reads.
-pub const test_decls =
-    \\  electrical q;
-    \\  real r, y, y0;
-    \\  integer k, j;
-    \\  string s;
-    \\  reg [7:0] rg;
-    \\  parameter integer cnt = 2;
-    \\  parameter integer neg = -1;
-    \\  parameter integer big = 5000;
-    \\  parameter real huge = 1e15;
-;

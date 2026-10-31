@@ -1,4 +1,27 @@
+//! Selects: `name[i]` and `name[hi:lo]` in, the element or bit grouping
+//! out. A §3.2.2 array element (scalarized, or one `$idx` switch / memory
+//! load for a run-time subscript), a §3.4.4 parameter array element, a
+//! §7.3.1 constant bit- or part-select of a `reg`, or an element of a
+//! digital array the analog block reads.
+//!
+//! Cites: §2.8, §3.2, §3.2.1, §3.2.2, §3.4, §3.4.4, §4.2.1, §4.2.1.1, §4.4,
+//! §7.3.1 (Table 7-1); IEEE 1364-2005 §4.2.1, §5.5.1.
+//!
+//! Contents:
+//! - `pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn selectBound(self: *Lower, e: Ast.ExprId) ?i64`
+//! - `pub fn selectPos(r: Lower.RegRange, k: i64) ?u32`
+//! - `pub fn regWordValue(self: *Lower, name: []const u8, k: u32) Oom!Mir.Value`
+//! - `pub fn outsideRange(self: *Lower, sub: Ast.ExprId, name: []const u8, k: i64, w: u32) Oom!TypedValue`
+//! - `pub fn arrayElemValue(self: *Lower, name: []const u8, idx: []const i64) Oom!?TypedValue`
+
 const std = @import("std");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const constfold = @import("frontend").constfold;
+const Mir = @import("ir").Mir;
+const naming = @import("ir").names;
+const diag = @import("diag");
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_event = @import("event.zig");
@@ -6,11 +29,6 @@ const lower_stmt = @import("stmt.zig");
 const lower_shape = @import("shape.zig");
 const lower_var = @import("var.zig");
 const lower_wide = @import("wide.zig");
-const Ast = @import("frontend").Ast;
-const constfold = @import("frontend").constfold;
-const Mir = @import("ir").Mir;
-const naming = @import("ir").names;
-const diag = @import("diag");
 const lower_expr = @import("expr.zig");
 const lower_expr_name = @import("expr_name.zig");
 const Oom = Lower.Oom;
@@ -24,6 +42,8 @@ const astTy = Lower.astTy;
 /// codegen renders as ONE `switch` — a jump table, so the read is O(1) in the
 /// array's extent (the array is scalarized, so there is no memory to index).
 pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
     const chain = (try lower_stmt.indexChain(self, e, &subs)) orelse {
         try self.err(self.file.exprs.mainTok(e), .E0330, "only `name[<index>]` is supported", .{});
@@ -92,6 +112,62 @@ pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     return .{ .v = try self.call(callee, vals.items), .ty = ty };
 }
 
+/// A select bound: a constant the folder can make an integer of, or null.
+pub fn selectBound(self: *Lower, e: Ast.ExprId) ?i64 {
+    assert(e == .none or self.exprValid(e));
+    const c = lower_constfold.foldExpr(self, e, false) orelse return null;
+    assert(e != .none); // `.none` folds to nothing
+    return c.asIntExact();
+}
+
+/// Where bit `k` of a `reg` with range `r` sits above its LSB (IEEE 1364
+/// §4.2.1), or null outside the range.
+pub fn selectPos(r: Lower.RegRange, k: i64) ?u32 {
+    assert(r.width != 0); // a declared range holds at least one bit
+    const d = if (r.asc) r.right - k else k - r.right;
+    if (d < 0 or d >= r.width) return null;
+    assert(d < r.width);
+    return @intCast(d);
+}
+
+/// Word `k` of a discrete `reg` input: the `Model` field the host writes it in.
+pub fn regWordValue(self: *Lower, name: []const u8, k: u32) Oom!Mir.Value {
+    assert(name.len != 0);
+    const key = if (k == 0) name else try naming.wordField(self.arena, name, k);
+    const pi = self.param_index.get(key).?; // `declareDiscreteInputs` added every word
+    assert(pi < self.param_values.items.len);
+    return self.param_values.items[pi];
+}
+
+/// E0310: bit `k` lies outside `name`'s `w`-bit range.
+pub fn outsideRange(self: *Lower, sub: Ast.ExprId, name: []const u8, k: i64, w: u32) Oom!TypedValue {
+    assert(sub == .none or self.exprValid(sub));
+    assert(w != 0); // a declared range holds at least one bit
+    try self.err(self.file.exprs.mainTok(sub), .E0310, "bit {d} lies outside `{s}`'s {d}-bit range", .{ k, name, w });
+    return poison;
+}
+
+/// The Value of one scalarized element — a variable array (§3.2.2) or a
+/// parameter array (§3.4.4).
+pub fn arrayElemValue(self: *Lower, name: []const u8, idx: []const i64) Oom!?TypedValue {
+    assert(self.blockValid(self.cur));
+    assert(idx.len != 0); // one subscript per dimension, and an array has one
+    try lower_event.captureTimerArray(self, name);
+    if (self.arrays.get(name)) |info| if (info.mem) |m| return .{
+        .v = try lower_var.loadElem(self, m, info.ty, try self.mir.addIntConst(self.arena, lower_shape.flatIndex(info.dims, idx))),
+        .ty = info.ty,
+    };
+    var key_buf: [lower_shape.elem_key_len]u8 = undefined;
+    const key = try lower_shape.elemKey(self, &key_buf, name, idx);
+    if (self.vars.get(key)) |slot|
+        return .{ .v = try lower_var.analogRead(self, try self.builder.readVariable(slot.place, self.cur), slot.reg_width), .ty = slot.ty };
+    if (self.param_index.get(key)) |pi|
+        return .{ .v = self.param_values.items[pi], .ty = astTy(self.out.params.items[pi].ty) };
+    return null;
+}
+
+// ---- private ----
+
 /// §7.3.1 a constant bit- or part-select of a `reg` read from the analog
 /// context: the selected grouping, shifted to bit 0 and zero-extended by
 /// `analogRead`, which judges the GROUPING's width against Table 7-1's
@@ -107,6 +183,9 @@ pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// analysis (`Lower.reg_consts`), or every bit of a wide `reg` the analog
 /// context computes (`Ty.wide`, `lower_wide.select`).
 fn lowerRegSelect(self: *Lower, e: Ast.ExprId, name: []const u8, src: union(enum) { slot: VarSlot, input }, rr: Lower.RegRange, sub: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(sub == .none or self.exprValid(sub));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const ranged = ex.tag(sub) == .range;
     const hi_e, const lo_e = if (ranged) .{ ex.lhs(sub), ex.rhs(sub) } else .{ sub, sub };
@@ -168,28 +247,9 @@ fn lowerRegSelect(self: *Lower, e: Ast.ExprId, name: []const u8, src: union(enum
     }
 }
 
-/// A select bound: a constant the folder can make an integer of, or null.
-pub fn selectBound(self: *Lower, e: Ast.ExprId) ?i64 {
-    const c = lower_constfold.foldExpr(self, e, false) orelse return null;
-    return c.asIntExact();
-}
-
-/// Where bit `k` of a `reg` with range `r` sits above its LSB (IEEE 1364
-/// §4.2.1), or null outside the range.
-pub fn selectPos(r: Lower.RegRange, k: i64) ?u32 {
-    const d = if (r.asc) r.right - k else k - r.right;
-    if (d < 0 or d >= r.width) return null;
-    return @intCast(d);
-}
-
-/// Word `k` of a discrete `reg` input: the `Model` field the host writes it in.
-pub fn regWordValue(self: *Lower, name: []const u8, k: u32) Oom!Mir.Value {
-    const key = if (k == 0) name else try naming.wordField(self.arena, name, k);
-    return self.param_values.items[self.param_index.get(key).?];
-}
-
 /// Bit `k` of the literal initializer `lit` (`.none`: zero) of a `reg`.
 fn literalBit(self: *Lower, lit: Ast.ExprId, k: u32) bool {
+    assert(lit == .none or self.exprValid(lit));
     if (lit == .none) return false;
     const ex = &self.file.exprs;
     if (ex.tag(lit) == .int_literal) {
@@ -197,31 +257,9 @@ fn literalBit(self: *Lower, lit: Ast.ExprId, k: u32) bool {
         return (x >> @as(u6, @intCast(@min(k, 63)))) & 1 != 0;
     }
     const l = ex.logicValue(lit);
+    assert(l.width != 0);
     if (k < l.width) return l.bit(k) == .one;
     return l.signed and l.bit(l.width - 1) == .one;
-}
-
-/// E0310: bit `k` lies outside `name`'s `w`-bit range.
-pub fn outsideRange(self: *Lower, sub: Ast.ExprId, name: []const u8, k: i64, w: u32) Oom!TypedValue {
-    try self.err(self.file.exprs.mainTok(sub), .E0310, "bit {d} lies outside `{s}`'s {d}-bit range", .{ k, name, w });
-    return poison;
-}
-
-/// The Value of one scalarized element — a variable array (§3.2.2) or a
-/// parameter array (§3.4.4).
-pub fn arrayElemValue(self: *Lower, name: []const u8, idx: []const i64) Oom!?TypedValue {
-    try lower_event.captureTimerArray(self, name);
-    if (self.arrays.get(name)) |info| if (info.mem) |m| return .{
-        .v = try lower_var.loadElem(self, m, info.ty, try self.mir.addIntConst(self.arena, lower_shape.flatIndex(info.dims, idx))),
-        .ty = info.ty,
-    };
-    var key_buf: [lower_shape.elem_key_len]u8 = undefined;
-    const key = try lower_shape.elemKey(self, &key_buf, name, idx);
-    if (self.vars.get(key)) |slot|
-        return .{ .v = try lower_var.analogRead(self, try self.builder.readVariable(slot.place, self.cur), slot.reg_width), .ty = slot.ty };
-    if (self.param_index.get(key)) |pi|
-        return .{ .v = self.param_values.items[pi], .ty = astTy(self.out.params.items[pi].ty) };
-    return null;
 }
 
 /// §7.3.1 `name[index]` of a digital array the analog block reads, one
@@ -229,6 +267,8 @@ pub fn arrayElemValue(self: *Lower, name: []const u8, idx: []const i64) Oom!?Typ
 /// element, a run-time one a select over all of them. An index outside
 /// `[lo, hi]` reads 0, as an analog array's out-of-range read does.
 fn discreteElem(self: *Lower, name: []const u8, lo: i64, hi: i64, sub: Ast.ExprId) Oom!TypedValue {
+    assert(sub == .none or self.exprValid(sub));
+    assert(self.blockValid(self.cur));
     std.debug.assert(lo <= hi);
     const elem = struct {
         fn read(l: *Lower, base: []const u8, k: i64) Oom!Mir.Value {
