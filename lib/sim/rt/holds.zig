@@ -51,11 +51,11 @@ pub fn stop(self: *State, lo: u32, hi: u32) Error!bool {
         hit = true;
     };
     if (self.sched.cancelRange(lo, hi) catch |e| return self.schedFail(e)) hit = true;
-    if (activations) for (self.resumes.items, 0..) |*row, k| if (row.live and row.pc >= lo and row.pc < hi) {
+    if (activations) for (self.calls.resumes.items, 0..) |*row, k| if (row.live and row.pc >= lo and row.pc < hi) {
         const at = resume_base + @as(u32, @intCast(k));
         _ = self.sched.cancelRange(at, at + 1) catch |e| return self.schedFail(e);
         row.live = false;
-        try self.free_resumes.append(self.gpa, @intCast(k));
+        try self.calls.free_resumes.append(self.gpa, @intCast(k));
         hit = true;
     };
     return hit;

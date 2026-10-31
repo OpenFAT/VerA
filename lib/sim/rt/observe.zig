@@ -3,6 +3,7 @@
 //! Cites: IEEE 1364-2005 §17.1.2, §17.1.3, §18.1, §18.2.2.
 //!
 //! Contents:
+//! - `pub const Dumps = struct`
 //! - `pub fn strobe(self: *State, site: u32) Error!void`
 //! - `pub fn monitor(self: *State, site: u32, slots: []const u32) Error!void`
 //! - `pub fn monitorEnable(self: *State, on: bool) ?u32`
@@ -18,6 +19,7 @@
 //! - `pub fn dumpSlot(self: *State, slot: u32) void`
 
 const std = @import("std");
+const evcd = @import("evcd.zig");
 const assert = std.debug.assert;
 const vcd = @import("../digital/vcd.zig");
 const State = @import("State.zig");
@@ -35,6 +37,22 @@ const W = logic.W;
 const two = logic.two;
 const quietState = State.quietState;
 const testing = std.testing;
+
+/// A native run's §18 dumps: the VCD and the design's catalog of what
+/// `$dumpvars` can select, the extended dump's files and what each has
+/// written, and per slot whether a change is dumped. Outside a snapshot.
+pub const Dumps = struct {
+    /// §18 the dump, the design's catalog, and per slot (empty without a
+    /// catalog) whether a change is dumped.
+    vcd: vcd.Vcd = .{},
+    catalog: ?*const vcd.Catalog,
+    /// §18.3 the extended dump: the files, what each has written, and the
+    /// time its `$dumpports` calls ran at. Outside a snapshot, as `dump` is.
+    port_files: []const evcd.File = &.{},
+    port_live: []evcd.Live = &.{},
+    ports_at: ?u64 = null,
+    dumped: []bool,
+};
 
 const no_limit = std.math.maxInt(u64);
 
@@ -78,14 +96,14 @@ pub fn dumpFile(self: *State, name: anytype, comptime w: u32, call: []const u8) 
     if (self.quiet) return;
     var arena: std.heap.ArenaAllocator = .init(self.gpa);
     defer arena.deinit();
-    self.dump.setFile(self.gpa, try State.chars(arena.allocator(), name, w), call) catch |e| return self.dumpFail(e);
+    self.dumps.vcd.setFile(self.gpa, try State.chars(arena.allocator(), name, w), call) catch |e| return self.dumpFail(e);
 }
 
 /// §18.1.2 one `$dumpvars` (`vcd.Vcd.select`); its dump starts at the
 /// end of the step.
 pub fn dumpVars(self: *State, levels: ?i64, targets: []const vcd.Target) Error!void {
     if (self.quiet) return;
-    self.dump.select(self.gpa, self.sched.now, 0, std.math.lossyCast(u32, levels orelse 0), targets) catch |e| return self.dumpFail(e);
+    self.dumps.vcd.select(self.gpa, self.sched.now, 0, std.math.lossyCast(u32, levels orelse 0), targets) catch |e| return self.dumpFail(e);
     try self.requestDump();
 }
 
@@ -94,21 +112,21 @@ pub fn dumpControl(self: *State, op: vcd.Op) Error!void {
     if (self.quiet) return;
     var arena: std.heap.ArenaAllocator = .init(self.gpa);
     defer arena.deinit();
-    self.dump.control(arena.allocator(), self.io, self.catalog.?, self, self.sched.now, op) catch |e| return self.dumpFail(e);
+    self.dumps.vcd.control(arena.allocator(), self.io, self.dumps.catalog.?, self, self.sched.now, op) catch |e| return self.dumpFail(e);
 }
 
 /// The §18 dump's end-of-step event: every dumped change of the step written.
 pub fn dumpTick(self: *State) Error!void {
     var arena: std.heap.ArenaAllocator = .init(self.gpa);
     defer arena.deinit();
-    self.dump.tick(self.gpa, arena.allocator(), self.io, self.catalog.?, self, self.sched.now) catch |e| return self.dumpFail(e);
+    self.dumps.vcd.tick(self.gpa, arena.allocator(), self.io, self.dumps.catalog.?, self, self.sched.now) catch |e| return self.dumpFail(e);
 }
 
 /// One dump event per step however many dumped values moved.
 pub fn requestDump(self: *State) Error!void {
-    if (self.dump.pending or self.quiet) return;
-    assert(self.catalog != null); // Only a dumped slot asks.
-    self.dump.pending = true;
+    if (self.dumps.vcd.pending or self.quiet) return;
+    assert(self.dumps.catalog != null); // Only a dumped slot asks.
+    self.dumps.vcd.pending = true;
     _ = self.sched.schedule(self.gpa, .monitor, vcd_payload) catch |e| return self.schedFail(e);
 }
 
@@ -117,7 +135,7 @@ pub fn dumpFail(self: *State, e: vcd.Failure) Error {
     return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.DumpvarsTime => self.fail(vcd.message(error.DumpvarsTime), .{}),
-        inline else => |f| self.fail(comptime vcd.message(f), .{self.dump.name}),
+        inline else => |f| self.fail(comptime vcd.message(f), .{self.dumps.vcd.name}),
     };
 }
 
@@ -134,13 +152,13 @@ pub fn dumpPlanes(self: *const State, v: vcd.Var, out: []u64) void {
 /// `wake` that follows asks for the dump event.
 pub fn fire(self: *State, slot: u32) void {
     if (self.quiet) return;
-    if (self.dumped.len != 0 and self.dumped[slot]) self.dump.fire(self.catalog.?, slot);
+    if (self.dumps.dumped.len != 0 and self.dumps.dumped[slot]) self.dumps.vcd.fire(self.dumps.catalog.?, slot);
 }
 
 /// `vcd.Vcd`'s hook: a change of `slot` asks for a dump event.
 pub fn dumpSlot(self: *State, slot: u32) void {
-    assert(slot < self.dumped.len);
-    self.dumped[slot] = true;
+    assert(slot < self.dumps.dumped.len);
+    self.dumps.dumped[slot] = true;
 }
 
 test "§17.1.3 one $monitor line per time step however many watched stores" {

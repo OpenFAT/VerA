@@ -3,6 +3,7 @@
 //! Cites: IEEE 1364-2005 §17.1.1.2 to §17.1.1.7, §17.3, §9.4.7.
 //!
 //! Contents:
+//! - `pub const Buffers = struct`
 //! - `pub fn capture(self: *State) void`
 //! - `pub fn captured(self: *State) []const u8`
 //! - `pub fn chars(a: std.mem.Allocator, v: anytype, comptime w: u32) Error!?[]const u8`
@@ -34,19 +35,33 @@ const W = logic.W;
 const quietState = State.quietState;
 const testing = std.testing;
 
+/// A native run's transcript buffers, out of line from the hot `State`
+/// fields: the stdout writer and its buffer, the sink the transcript goes to
+/// (stdout unless redirected), a `capture`'s buffer, and a '0'-flag field in
+/// progress (`zeroBegin`): where `out` pointed, and the field's text.
+pub const Buffers = struct {
+    stdout: std.Io.File.Writer,
+    sink: *std.Io.Writer,
+    /// `capture`'s buffer, and `scan`'s characters.
+    cap: std.Io.Writer.Allocating,
+    zero_out: ?*std.Io.Writer = null,
+    zero_field: std.Io.Writer.Allocating = undefined,
+    buf: [1 << 16]u8,
+};
+
 /// Everything printed until `captured` or `fshow` goes to a buffer.
 pub fn capture(self: *State) void {
-    assert(self.out == self.sink); // Captures do not nest.
-    self.cap.clearRetainingCapacity();
-    self.out = &self.cap.writer;
-    assert(self.cap.written().len == 0);
+    assert(self.out == self.buffers.sink); // Captures do not nest.
+    self.buffers.cap.clearRetainingCapacity();
+    self.out = &self.buffers.cap.writer;
+    assert(self.buffers.cap.written().len == 0);
 }
 
 /// Ends a `capture`: the bytes printed since, valid until the next one.
 pub fn captured(self: *State) []const u8 {
-    assert(self.out == &self.cap.writer); // Pair of `capture`.
-    self.out = self.sink;
-    return self.cap.written();
+    assert(self.out == &self.buffers.cap.writer); // Pair of `capture`.
+    self.out = self.buffers.sink;
+    return self.buffers.cap.written();
 }
 
 /// `system.text` of a `w`-bit value.
@@ -81,21 +96,21 @@ pub fn literal(buf: []u64, w: u32, signed: bool) Int.Literal {
 /// The next field is a `%05d`/`%04t`: written aside until `zeroEnd`
 /// (`display.zeroFilled`, the interpreter's rule).
 pub fn zeroBegin(self: *State) void {
-    assert(self.zero_out == null); // Zero-filled fields do not nest.
-    self.zero_field = .init(self.gpa);
-    self.zero_out = self.out;
-    self.out = &self.zero_field.writer;
-    assert(self.zero_out != null);
+    assert(self.buffers.zero_out == null); // Zero-filled fields do not nest.
+    self.buffers.zero_field = .init(self.gpa);
+    self.buffers.zero_out = self.out;
+    self.out = &self.buffers.zero_field.writer;
+    assert(self.buffers.zero_out != null);
 }
 
 /// Ends a `zeroBegin`: the field written aside goes to the transcript,
 /// padded with zeros to `f`'s width (`display.fillField`).
 pub fn zeroEnd(self: *State, f: display.Fill) Error!void {
-    assert(self.out == &self.zero_field.writer); // Pair of `zeroBegin`.
-    self.out = self.zero_out.?;
-    self.zero_out = null;
-    defer self.zero_field.deinit();
-    try display.fillField(self.out, self.zero_field.written(), f);
+    assert(self.out == &self.buffers.zero_field.writer); // Pair of `zeroBegin`.
+    self.out = self.buffers.zero_out.?;
+    self.buffers.zero_out = null;
+    defer self.buffers.zero_field.deinit();
+    try display.fillField(self.out, self.buffers.zero_field.written(), f);
 }
 
 /// One `%b`/`%o`/`%h`/`%d` operand (§17.1.1.3).

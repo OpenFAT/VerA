@@ -123,12 +123,12 @@ pub fn select(s: *State, k: u32) Error!void {
     if (s.quiet) return;
     // "the execution of all $dumpports tasks shall be at the same
     // simulation time" (§18.3.1).
-    if (s.ports_at) |t| if (t != s.sched.now) return s.fail("§18.3.1: every $dumpports shall execute at the same simulation time", .{});
-    s.ports_at = s.sched.now;
-    const f = &s.port_live[k];
+    if (s.dumps.ports_at) |t| if (t != s.sched.now) return s.fail("§18.3.1: every $dumpports shall execute at the same simulation time", .{});
+    s.dumps.ports_at = s.sched.now;
+    const f = &s.dumps.port_live[k];
     if (f.selected) return s.fail("§18.3.1: the same file_pathname shall not be given to two $dumpports calls", .{});
     f.selected = true;
-    f.last = try s.gpa.alloc([]u8, s.port_files[k].ports.len);
+    f.last = try s.gpa.alloc([]u8, s.dumps.port_files[k].ports.len);
     @memset(f.last, &.{});
 }
 
@@ -136,7 +136,7 @@ pub fn select(s: *State, k: u32) Error!void {
 /// or of every file when `k` is null (`devcd.task`).
 pub fn control(s: *State, op: Op, k: ?u32, size: u64) Error!void {
     if (s.quiet) return;
-    for (s.port_live, s.port_files, 0..) |*f, file, i| {
+    for (s.dumps.port_live, s.dumps.port_files, 0..) |*f, file, i| {
         if (k) |want| if (want != i) continue;
         if (!f.selected) continue;
         switch (op) {
@@ -164,7 +164,7 @@ pub fn control(s: *State, op: Op, k: ?u32, size: u64) Error!void {
 /// `$dumpports` section, and each running file's changes.
 pub fn tick(s: *State, at: u64) Error!void {
     if (s.quiet) return;
-    for (s.port_live, s.port_files) |*f, file| {
+    for (s.dumps.port_live, s.dumps.port_files) |*f, file| {
         if (!f.selected) continue;
         if (f.started) {
             try changes(s, f, file, at);
@@ -184,9 +184,9 @@ pub fn tick(s: *State, at: u64) Error!void {
 /// The run is over at tick `at`: the step's changes, then §18.3.6.1's
 /// `$vcdclose`.
 pub fn close(s: *State, at: u64) Error!void {
-    if (s.quiet or s.port_live.len == 0) return;
+    if (s.quiet or s.dumps.port_live.len == 0) return;
     try tick(s, at);
-    for (s.port_live, s.port_files) |*f, file| if (f.started) {
+    for (s.dumps.port_live, s.dumps.port_files) |*f, file| if (f.started) {
         var buf: [64]u8 = undefined;
         try put(s, f, file, std.mem.print(&buf, "$vcdclose #{d} $end\n", .{at}) catch unreachable);
     };

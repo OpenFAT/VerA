@@ -48,7 +48,7 @@ pub fn save(s: *const State, w: *std.Io.Writer) std.Io.Writer.Error!void {
     std.debug.assert(s.settle == .idle);
     std.debug.assert(s.rows.items.len == 0);
     std.debug.assert(s.changed.items.len == 0);
-    std.debug.assert(s.depth == 0);
+    std.debug.assert(s.calls.depth == 0);
     std.debug.assert(s.unwind == null);
     std.debug.assert(!s.overriding);
     try s.sched.save(w);
@@ -77,12 +77,12 @@ pub fn save(s: *const State, w: *std.Io.Writer) std.Io.Writer.Error!void {
     };
     // §10.2.3 the activations in progress, each with its saved frame.
     if (design.activations) {
-        try list(w, s.resident);
-        try list(w, s.free_acts.items);
-        try list(w, s.resumes.items);
-        try list(w, s.free_resumes.items);
-        try count(w, s.acts.items.len);
-        for (s.acts.items) |a| {
+        try list(w, s.calls.resident);
+        try list(w, s.calls.free_acts.items);
+        try list(w, s.calls.resumes.items);
+        try list(w, s.calls.free_resumes.items);
+        try count(w, s.calls.acts.items.len);
+        for (s.calls.acts.items) |a| {
             try w.writeAll(std.mem.asBytes(&[5]u32{ a.sub, a.ret_pc, a.ret_ctx, a.lo, a.n }));
             try list(w, a.storage);
         }
@@ -178,7 +178,7 @@ pub fn twice(s: *State, comptime four: Dispatch, comptime two_: ?Dispatch, stats
     defer at.deinit();
     var drop_buf: [64]u8 = undefined;
     var drop: std.Io.Writer.Discarding = .init(&drop_buf);
-    const sink = s.sink;
+    const sink = s.buffers.sink;
     while (true) {
         const t = s.sched.peekTime() orelse return null;
         at.clearRetainingCapacity();
@@ -186,11 +186,11 @@ pub fn twice(s: *State, comptime four: Dispatch, comptime two_: ?Dispatch, stats
         stats.ticks += 1;
         stats.bytes = @max(stats.bytes, at.written().len);
         s.quiet = true;
-        s.sink = &drop.writer;
-        s.out = s.sink;
+        s.buffers.sink = &drop.writer;
+        s.out = s.buffers.sink;
         _ = entry.loop(s, four, two_, t);
         s.quiet = false;
-        s.sink = sink;
+        s.buffers.sink = sink;
         s.out = sink;
         restore(s, at.written()) catch |e| return e;
         if (entry.loop(s, four, two_, t)) |e| return e;
@@ -251,14 +251,14 @@ fn load(s: *State, r: *std.Io.Reader) (std.Io.Reader.Error || std.mem.Allocator.
         try s.terms[slot].append(gpa, t);
     }
     if (design.activations) {
-        if (try take(r) != s.resident.len) return error.EndOfStream;
-        try r.readSliceAll(std.mem.sliceAsBytes(s.resident));
-        try reload(r, gpa, &s.free_acts);
-        try reload(r, gpa, &s.resumes);
-        try reload(r, gpa, &s.free_resumes);
-        for (s.acts.items) |a| gpa.free(a.storage);
-        try s.acts.resize(gpa, try take(r));
-        for (s.acts.items) |*a| {
+        if (try take(r) != s.calls.resident.len) return error.EndOfStream;
+        try r.readSliceAll(std.mem.sliceAsBytes(s.calls.resident));
+        try reload(r, gpa, &s.calls.free_acts);
+        try reload(r, gpa, &s.calls.resumes);
+        try reload(r, gpa, &s.calls.free_resumes);
+        for (s.calls.acts.items) |a| gpa.free(a.storage);
+        try s.calls.acts.resize(gpa, try take(r));
+        for (s.calls.acts.items) |*a| {
             var h: [5]u32 = undefined;
             try r.readSliceAll(std.mem.asBytes(&h));
             const storage = try gpa.alloc(u64, try take(r));

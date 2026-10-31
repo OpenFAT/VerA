@@ -59,7 +59,7 @@ pub inline fn wakeOf(self: *State, comptime reach: Reach, slot: u32, before: Bit
     assert(slot < self.terms.len);
     if (reach.path) net.pathSeen(self, slot);
     if (reach.mon and self.monitored.len != 0 and self.monitored[slot]) try self.requestMonitor();
-    if (reach.dump and self.dumped.len != 0 and self.dumped[slot]) try self.requestDump();
+    if (reach.dump and self.dumps.dumped.len != 0 and self.dumps.dumped[slot]) try self.requestDump();
     if (reach.fan and slot + 1 < self.fan_start.len) for (self.fan[self.fan_start[slot]..self.fan_start[slot + 1]]) |pc| if (self.armed[pc]) {
         self.armed[pc] = false;
         try self.runPlain(pc, null);
@@ -79,7 +79,7 @@ pub fn wakeTerms(self: *State, comptime reach: Reach, slot: u32, before: Bit, af
     const len_before = list.items.len;
     // §10.2.1: an automatic task's event is one per activation, so only
     // a waiter in the activation that triggers it wakes.
-    const owner: u32 = if (activations and self.act_events.len != 0) self.act_events[slot] else 0;
+    const owner: u32 = if (activations and self.calls.act_events.len != 0) self.calls.act_events[slot] else 0;
     const event_ctx = if (owner != 0) self.eventContext(owner - 1, self.ctx) else 0;
     var keep: usize = 0;
     for (list.items) |t| {

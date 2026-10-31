@@ -204,6 +204,11 @@ const loop = main.loop;
 const testing = std.testing;
 
 /// The allocator every table is allocated from; nothing is freed (`initIn`).
+/// §18 the dumps (`observe.Dumps`), out of line: cold, touched only when a
+/// dump task runs or a dumped slot changes.
+/// §10 the subroutine activations (`processes.Calls`).
+calls: processes.Calls = .{},
+dumps: *observe.Dumps,
 gpa: std.mem.Allocator,
 v: []u64,
 x: []u64,
@@ -247,13 +252,7 @@ joins: []u32,
 /// has no words.
 late: std.ArrayList(Late) = .empty,
 free_late: std.ArrayList(u32) = .empty,
-/// §10: per subroutine, its synchronous activations running; the one a
-/// `disable` is unwinding; how deep they nest; the automatic frames
-/// they set aside, both planes, innermost last.
-active: []u32,
 unwind: ?u32 = null,
-depth: u32 = 0,
-saved: std.ArrayList(u64) = .empty,
 /// §10.2.3 (`activations`): the activation the running process is in
 /// (0 for none); every one in progress (row 0 unused) and the rows free;
 /// per task, the activation its automatic frame holds; the queued
@@ -261,12 +260,6 @@ saved: std.ArrayList(u64) = .empty,
 /// the pc `dispatch` runs next, without queueing (a call or a return),
 /// `returned` says the call site at that pc is being returned to.
 ctx: u32 = 0,
-acts: std.ArrayList(Act) = .empty,
-free_acts: std.ArrayList(u32) = .empty,
-resident: []u32 = &.{},
-resumes: std.ArrayList(Resume) = .empty,
-free_resumes: std.ArrayList(u32) = .empty,
-act_events: []const u32 = &.{},
 jump: ?u32 = null,
 returned: bool = false,
 /// §17.1.3: the standing monitor's site and the slots it watches.
@@ -286,20 +279,8 @@ layers: []Layers,
 part_start: []const u32 = &.{},
 parts: []Part,
 overriding: bool = false,
-/// §18 the dump, the design's catalog, and per slot (empty without a
-/// catalog) whether a change is dumped.
-dump: vcd.Vcd = .{},
-catalog: ?*const vcd.Catalog,
-/// §18.3 the extended dump: the files, what each has written, and the
-/// time its `$dumpports` calls ran at. Outside a snapshot, as `dump` is.
-port_files: []const evcd.File = &.{},
-port_live: []evcd.Live = &.{},
-ports_at: ?u64 = null,
-dumped: []bool,
 /// §7.9 resolution state (`net.zig`).
 nets: net.Nets,
-/// `capture`'s buffer, and `scan`'s characters.
-cap: std.Io.Writer.Allocating,
 scratch: std.heap.ArenaAllocator,
 time_format: fmt.TimeFormat,
 budget_time: u64 = 0,
@@ -313,21 +294,17 @@ two: bool = false,
 two_at: u64 = 0,
 steps: u64 = 0,
 look_at: u64 = 1,
-stdout: std.Io.File.Writer,
-/// Where the transcript goes (`stdout`, unless redirected), and where
-/// it goes now: `sink`, or a `capture`.
-sink: *std.Io.Writer,
+/// Where the transcript goes now: `buffers.sink`, or a `capture` or a
+/// '0'-flag field (`transcript.Buffers`).
 out: *std.Io.Writer,
-/// A '0'-flag field in progress (`zeroBegin`): where `out` pointed, and
-/// the field's text.
-zero_out: ?*std.Io.Writer = null,
-zero_field: std.Io.Writer.Allocating = undefined,
+/// The transcript's buffers, out of line (`transcript.Buffers`).
+buffers: *transcript.Buffers,
+
 /// A run whose effects outside `State` are dropped (`snapshot.twice`):
 /// no transcript, no diagnostic, no file opened, read or written, no
 /// dump. Every file descriptor reads as unknown.
 quiet: bool = false,
 io: std.Io,
-buf: [1 << 16]u8,
 
 // `stores.zig`.
 /// `stores.get`: The value of at most 64 bits at word `off`
@@ -737,6 +714,17 @@ pub fn initIn(self: *State, gpa: std.mem.Allocator, io: std.Io, d: *const Design
     assert(d.v.len == d.x.len);
     assert(d.code_len < show_base); // Every pc is a payload below the display band.
     if (d.nodes != 0) assert(d.comb_start.len == d.slots + 1);
+    // Cold: out of line, so the hot fields share fewer cache lines.
+    const dumps = try gpa.create(observe.Dumps);
+    dumps.* = .{
+        .catalog = d.vcd,
+        .port_files = d.ports_dump,
+        .port_live = try gpa.alloc(evcd.Live, d.ports_dump.len),
+        .dumped = try gpa.alloc(bool, if (d.vcd != null) d.slots else 0),
+    };
+    // Cold and large (a 64 KiB buffer): out of line.
+    const buffers = try gpa.create(transcript.Buffers);
+    buffers.* = .{ .stdout = undefined, .sink = undefined, .cap = .init(gpa), .buf = undefined };
     self.* = .{
         .gpa = gpa,
         .v = try gpa.dupe(u64, d.v),
@@ -756,31 +744,27 @@ pub fn initIn(self: *State, gpa: std.mem.Allocator, io: std.Io, d: *const Design
         .waiting = try gpa.alloc(u64, d.triggered),
         .repeats = try gpa.alloc(u64, d.repeats),
         .joins = try gpa.alloc(u32, d.joins),
-        .active = try gpa.alloc(u32, d.subs),
-        .resident = try gpa.alloc(u32, if (activations) d.subs else 0),
-        .act_events = d.act_events,
+        .calls = .{
+            .active = try gpa.alloc(u32, d.subs),
+            .resident = try gpa.alloc(u32, if (activations) d.subs else 0),
+            .act_events = d.act_events,
+        },
         .monitored = try gpa.alloc(bool, d.slots),
         .time_format = .{ .units = time_units },
-        .cap = .init(gpa),
         .layers = try gpa.alloc(Layers, if (overrides) d.slots else 0),
         .part_start = d.part_start,
         .parts = try gpa.alloc(Part, if (d.part_start.len == 0) 0 else d.part_start[d.part_start.len - 1]),
-        .catalog = d.vcd,
-        .port_files = d.ports_dump,
-        .port_live = try gpa.alloc(evcd.Live, d.ports_dump.len),
-        .dumped = try gpa.alloc(bool, if (d.vcd != null) d.slots else 0),
+        .dumps = dumps,
         .nets = try .init(gpa, d.nets, d.drivers, d.udps, d.trans),
         .scratch = .init(gpa),
-        .stdout = undefined,
-        .sink = undefined,
         .out = undefined,
         .io = io,
-        .buf = undefined,
+        .buffers = buffers,
     };
-    self.stdout = std.Io.File.stdout().writerStreaming(io, &self.buf);
+    buffers.stdout = std.Io.File.stdout().writerStreaming(io, &buffers.buf);
     try net.seedPaths(&self.nets, gpa, d.v, d.x);
-    self.sink = &self.stdout.interface;
-    self.out = self.sink;
+    self.buffers.sink = &self.buffers.stdout.interface;
+    self.out = self.buffers.sink;
     @memset(self.terms, .empty);
     @memset(self.armed, false);
     @memset(self.pending, false);
@@ -791,18 +775,18 @@ pub fn initIn(self: *State, gpa: std.mem.Allocator, io: std.Io, d: *const Design
     @memset(self.waiting, 0);
     @memset(self.repeats, 0);
     @memset(self.joins, 0);
-    @memset(self.active, 0);
-    @memset(self.resident, 0);
+    @memset(self.calls.active, 0);
+    @memset(self.calls.resident, 0);
     @memset(self.monitored, false);
     @memset(self.layers, .{});
     @memset(self.parts, .{});
-    @memset(self.dumped, false);
-    @memset(self.port_live, .{});
+    @memset(self.dumps.dumped, false);
+    @memset(self.dumps.port_live, .{});
     // §7.11: the switch groups `Run.elaborate` settled, again, so each
     // has its signal (`Nets.sig0`, `%v`) before any process runs.
     for (self.nets.on_net, 0..) |l, k| if (l.len != 0) try net.resolve(self, @intCast(k));
     for (d.order) |pc| try self.runPlain(pc, null);
-    assert(self.out == self.sink);
+    assert(self.out == self.buffers.sink);
     assert(self.sched.now == 0);
 }
 
@@ -830,10 +814,10 @@ pub fn next(self: *State, limit: u64) Error!?u32 {
         }
         if (activations and event.payload >= resume_base) {
             const k = event.payload - resume_base;
-            const row = self.resumes.items[k];
+            const row = self.calls.resumes.items[k];
             assert(row.live);
-            self.resumes.items[k].live = false;
-            try self.free_resumes.append(self.gpa, k);
+            self.calls.resumes.items[k].live = false;
+            try self.calls.free_resumes.append(self.gpa, k);
             self.ctx = row.ctx;
             try self.makeResident(row.ctx);
             return row.pc;
@@ -913,8 +897,8 @@ pub fn quietState(a: std.mem.Allocator, d: *const Design, time_units: i32) Error
     const memory = try a.create(std.Io.Writer.Allocating);
     memory.* = .init(a);
     s.quiet = true;
-    s.sink = &memory.writer;
-    s.out = s.sink;
+    s.buffers.sink = &memory.writer;
+    s.out = s.buffers.sink;
     assert(s.quiet);
     return s;
 }
@@ -927,7 +911,7 @@ inline fn count(self: *State, at: u64) Error!void {
     assert(at >= self.budget_time);
     if (at != self.budget_time) {
         // §18.4: the extended dump's changes at the end of the step.
-        if (self.port_live.len != 0) try evcd.tick(self, self.budget_time);
+        if (self.dumps.port_live.len != 0) try evcd.tick(self, self.budget_time);
         self.budget_time = at;
         self.budget_used = 0;
         if (self.live.len != 0 and !self.two) self.boundary(at);

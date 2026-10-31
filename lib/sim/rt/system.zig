@@ -221,10 +221,10 @@ test "§17.2.3 a held format: text, %% and %m print, a conversion is returned, a
     try testing.expectEqual(@as(u8, 'f'), sp.conv);
     try testing.expectEqual(@as(?u64, 5), sp.width);
     try testing.expectEqual(@as(i64, 2), sp.precision);
-    try testing.expectEqualStrings("a%b", s.sink.buffered());
+    try testing.expectEqualStrings("a%b", s.buffers.sink.buffered());
     // The rest prints; the format ends inside a conversion (W1153).
     try s.endFormat(&f, "top.u", "work");
-    try testing.expectEqualStrings("a%bctop.u", s.sink.buffered());
+    try testing.expectEqualStrings("a%bctop.u", s.buffers.sink.buffered());
     try testing.expect(f.bad);
     // No conversion left for an argument: null (W1153).
     var plain: State.Format = .{ .text = "" };

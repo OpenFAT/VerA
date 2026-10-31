@@ -403,7 +403,7 @@ pub fn Device(comptime spec: Spec) type {
         /// wake it, and its boundary as this step's work; a boundary longer
         /// than `cap` fails.
         fn keep(inst: *Instance, st: *State, s: *RtState) !void {
-            const said = s.sink.buffered();
+            const said = s.buffers.sink.buffered();
             if (said.len <= say_cap) {
                 @memcpy(st.say[0..said.len], said);
                 st.say_len = @intCast(said.len);

@@ -109,14 +109,14 @@ fn autoDeep(init_: std.process.Init, d: *const Design, units: i32, comptime four
     }
     report(init_, "vera-state: 2-state from tick {d}, rerun 4-state at tick {d}\n", .{ s.two_at, s.budget_time });
     s.out.flush() catch return 1;
-    const printed = s.stdout.pos;
+    const printed = s.buffers.stdout.pos;
     var r: State = undefined;
     r.init(init_, d, units) catch |e| return r.exit(e);
     // ponytail: the rerun's whole transcript in memory; a writer that drops
     // the first `printed` bytes if a transcript outgrows it.
     var mem: std.Io.Writer.Allocating = .init(r.gpa);
-    r.sink = &mem.writer;
-    r.out = r.sink;
+    r.buffers.sink = &mem.writer;
+    r.out = r.buffers.sink;
     const again = run(init_, &r, four, null);
     const code = r.exit(again);
     const text = mem.written();
