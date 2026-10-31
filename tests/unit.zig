@@ -7796,6 +7796,17 @@ pub const rtlil_tests = struct {
         }
     }
 
+    test "vera -D reaches --emit-rtlil: `ifdef picks the inverter (1364 §19.4)" {
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const src = "module m(input a, output y); `ifdef INV assign y = ~a; `else assign y = a; `endif endmodule";
+        var bag: diag.Bag = .init(arena);
+        var why: []const u8 = "";
+        try expectHas(try digital.rtlil.emit(arena, src, .{ .defines = &.{"INV"} }, &bag, &why), "$not");
+        try std.testing.expect(std.mem.find(u8, try digital.rtlil.emit(arena, src, .{}, &bag, &why), "$not") == null);
+    }
+
     test "the counter: ports in order, a process per always block, edge and level syncs, cells, a named instance, gates" {
         var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena_state.deinit();
@@ -11645,6 +11656,20 @@ pub const sim_digital_tests = struct {
     const system = root.system;
     const filled = root.for_emitter.net.filled;
     const expectRun = root.expectRun;
+
+    test "vera -D defines a .v design's macros: a bare NAME is 1, NAME=TEXT is TEXT (1364 §19.3.1, §19.4)" {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var bag = diag.Bag.init(a);
+        var out = std.Io.Writer.Allocating.init(a);
+        try root.run(a,
+            \\module m; initial begin
+            \\`ifdef FAST $display("fast %0d", `FAST); `else $display("slow"); `endif
+            \\$display("%0d", `W); end endmodule
+        , .{ .defines = &.{ "FAST", "W=4" } }, &bag, &out.writer);
+        try std.testing.expectEqualStrings("fast 1\n4\n", out.written());
+    }
 
     test "vera --param sets a top-level parameter: integer, real, string, and a misspelling refused" {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -16820,6 +16845,19 @@ pub const digital_tests = struct {
         ;
         const tchk = try emitted(a, tchk_source, .static, .auto);
         try testing.expectEqualStrings("IEEE 1364-2005 §15 timing checks", tchk.fallback.?);
+    }
+
+    test "program: an interpreted executable keeps the -D macros it was built with" {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const source = "module m; real r; initial begin r = `R; case (r) 1.0: $display(\"one\"); endcase end endmodule";
+        var bag = diag.Bag.init(a);
+        var sink: std.Io.Writer.Discarding = .init(&.{});
+        var r = try sim.digital.elaborate(a, source, .{ .defines = &.{"R=1.0"} }, &bag, &sink.writer);
+        const p = try emit.program(a, &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .defines = &.{"R=1.0"}, .language = Front.token.default_keyword_set }, .static, .auto);
+        try testing.expectEqualStrings("a real value", p.fallback.?);
+        try has(p.text, ".defines = &.{ \"R=1.0\", }");
     }
 
     test "program: a file name is one comment line and one string literal, natively or not" {

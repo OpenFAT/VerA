@@ -46,7 +46,7 @@ pub fn run(
     defer arena.deinit();
     var digital_bag = diag.Bag.init(arena.allocator());
     digital_bag.levels = cli.levels;
-    var opts: digital.Options = .{ .file_name = in_path, .include_dirs = cli.include_dirs.items, .io = io, .language = cli.language, .event_budget = cli.event_budget, .params = cli.overrides.items, .negative_timing = cli.negative_timing };
+    var opts: digital.Options = .{ .file_name = in_path, .include_dirs = cli.include_dirs.items, .defines = cli.defines.items, .io = io, .language = cli.language, .event_budget = cli.event_budget, .params = cli.overrides.items, .negative_timing = cli.negative_timing };
     if (!try libraries(arena.allocator(), io, cli.paths.items, cli.libmaps.items, cli.search.items, &opts, err, json, use_color)) return 1;
     if (cli.protect_keys) |p| {
         const text = vera.Preprocessor.readText(io, .cwd(), p, arena.allocator()) catch |e| {
@@ -166,6 +166,7 @@ fn emitDigital(
         .source = source,
         .file_name = opts.file_name,
         .include_dirs = opts.include_dirs,
+        .defines = opts.defines,
         .language = opts.language,
         .lib = opts.lib,
         .more = opts.more,

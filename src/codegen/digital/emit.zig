@@ -35,6 +35,8 @@ const Embed = struct {
     file_name: []const u8,
     /// `-I` directories, searched by `` `include ``.
     include_dirs: []const []const u8,
+    /// `-D` macros.
+    defines: []const []const u8 = &.{},
     /// `--std=`'s keyword set.
     language: Front.token.KeywordSet,
     /// §13.2.3 the library the source maps into.
@@ -183,6 +185,8 @@ fn interpreted(arena: std.mem.Allocator, embed: Embed, why: []const u8) std.mem.
         \\    return @import("sim").rt.interpret(init, .{{ .file_name = "{f}", .language = .{t}, .include_dirs = &.{{
     , .{ std.zig.fmtString(embed.file_name), why, std.zig.fmtString(embed.file_name), embed.language }) catch return error.OutOfMemory;
     for (embed.include_dirs) |d| w.print(" \"{f}\",", .{std.zig.fmtString(d)}) catch return error.OutOfMemory;
+    w.writeAll(" }, .defines = &.{") catch return error.OutOfMemory;
+    for (embed.defines) |d| w.print(" \"{f}\",", .{std.zig.fmtString(d)}) catch return error.OutOfMemory;
     w.print(" }}, .lib = \"{f}\", .more = &.{{", .{std.zig.fmtString(embed.lib)}) catch return error.OutOfMemory;
     for (embed.more) |u| w.print(" .{{ .name = \"{f}\", .text = \"{f}\", .lib = \"{f}\" }},", .{ std.zig.fmtString(u.name), std.zig.fmtString(u.text), std.zig.fmtString(u.lib) }) catch return error.OutOfMemory;
     w.writeAll(" }, .search = &.{") catch return error.OutOfMemory;

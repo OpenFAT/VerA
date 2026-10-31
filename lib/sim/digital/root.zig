@@ -79,6 +79,9 @@ pub const Error = error{DigitalFailed} || std.mem.Allocator.Error || std.Io.Writ
 pub const Options = struct {
     file_name: []const u8 = "<digital>",
     include_dirs: []const []const u8 = &.{},
+    /// `vera -D` macros, each `NAME` or `NAME=TEXT`, as
+    /// `Preprocessor.Options.defines` reads them.
+    defines: []const []const u8 = &.{},
     /// Only IEEE 1364-2005 §17.2.9's `$readmemb`/`$readmemh` read files while
     /// a process runs; without an `Io` those two fail with a diagnostic and
     /// nothing else changes.
@@ -1639,7 +1642,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     const pp: Front.Preprocessor.Output = if (opts.mixed) |mx| .{
         .text = source,
         .directives = .{ .timescales = try mixedTimescales(arena, mx.timescales) },
-    } else Front.Preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .std_defs = false, .more = more: {
+    } else Front.Preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .defines = opts.defines, .std_defs = false, .more = more: {
         const more = try arena.alloc(Front.Preprocessor.File, opts.more.len);
         for (opts.more, more) |u, *f| f.* = .{ .name = u.name, .text = u.text };
         break :more more;

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`-D NAME[=TEXT]` reaches a `.v` design** under `--run`, `--elab`,
+  `--emit-rtlil`, `--emit-exe` (the interpreted executable keeps them) and
+  the contract device; it was refused.
 - **The conformance suite is tool-neutral**: VerA runs it through its
   `conform` harness like any other tool (`zig build conformance`,
   `tools/vera.xfail`). VerA's own test inputs moved from the suite's `vera/`

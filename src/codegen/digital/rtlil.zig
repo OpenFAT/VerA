@@ -51,7 +51,7 @@ pub const Error = error{ OutOfMemory, WriteFailed, Refused, DigitalFailed };
 /// the subset is `error.Refused` with `why` set (`line N: ...`), and nothing
 /// is emitted.
 pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag, why: *[]const u8) Error![]const u8 {
-    const pp = Front.Preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .std_defs = false, .more = more: {
+    const pp = Front.Preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .defines = opts.defines, .std_defs = false, .more = more: {
         const more = try arena.alloc(Front.Preprocessor.File, opts.more.len);
         for (opts.more, more) |u, *f| f.* = .{ .name = u.name, .text = u.text };
         break :more more;

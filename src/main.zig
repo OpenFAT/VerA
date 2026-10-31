@@ -155,12 +155,6 @@ pub fn main(init: std.process.Init) !u8 {
         try err.print("error: {s}: --emit-rtlil takes an IEEE 1364 design (.v)\n", .{in_path});
         return 2;
     }
-    // ponytail: the digital runner's preprocessor takes no -D yet; refused,
-    // not ignored. Pass `cli.defines` through `digital.Options` to lift it.
-    if (digital_source and cli.defines.items.len != 0) {
-        try err.print("error: {s}: -D takes a Verilog-A/AMS source; a .v design defines its macros in the source\n", .{in_path});
-        return 2;
-    }
     if (!digital_source and cli.elab) {
         try err.print("error: {s}: --elab takes an IEEE 1364 design (.v); --lint elaborates a Verilog-A/AMS source\n", .{in_path});
         return 2;
