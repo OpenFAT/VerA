@@ -10,17 +10,38 @@
 //!     A2D: rising through vth + vhys/2 -> 1, falling through vth - vhys/2 -> 0;
 //!          a static solve reads 1 above the band, 0 below, x inside it
 //!
-//! The engine is `root.State` rebuilt from a saved tick boundary
+//! The engine is `State.zig` rebuilt from a saved tick boundary
 //! (`snapshot.save`) whenever it has work, run, and saved again: `State`
 //! holds two boundaries, the accepted one and the one this step made.
 //! Clauses: VAMS §7.3.6 (synchronization), §7.8, §8.4.3.3 (an A2D event at
 //! the nearest tick), §4.5.8 (the ramps), §5.10.3.1 (`cross`); IEEE 1364-2005
 //! §9.7.2 (which edges wake a process), §11.4 (a tick boundary).
+//!
+//! Contents:
+//! - `pub const Pin = struct`
+//! - `pub const Spec = struct`
+//! - `pub fn Device(comptime spec: Spec) type`
+//! - `Device.U`
+//! - `Device.Model = struct`
+//! - `Device.Instance = struct`
+//! - `Device.State = struct`
+//! - `Device.state_class: contract.StateClass`
+//! - `Device.deriv_reads: M`
+//! - `Device.ddx_reads: M`
+//! - `Device.jac_pattern: [n_u]M`
+//! - `Device.eval(comptime S: type, x: *const [n_u]S.V, _: *const Model, inst: *const Instance, sim: contract.SimState) contract.Rows(Self, S)`
+//! - `Device.initState(m: *const Model, inst: *Instance) State`
+//! - `Device.updateState(comptime S: type, m: *const Model, inst: *Instance, x: [n_u]f64, st: *State, sim: contract.SimState) contract.UpdateResult`
+//! - `Device.stateCtl(_: *const Model, inst: *Instance, st: *State, op: contract.StateCtlOp) bool`
+//! - `Device.pendingBreakpoint(inst: *const Instance, t: f64) ?f64`
+
 const std = @import("std");
 const contract = @import("contract");
-const root = @import("root.zig");
+const design = @import("design.zig");
+const entry = @import("main.zig");
+const RtState = @import("State.zig");
 const snapshot = @import("snapshot.zig");
-const logic = @import("logic.zig");
+const logic = @import("logic/root.zig");
 const time = @import("../time.zig");
 
 /// One pin: bit `bit` of the top module's port slot `slot`, whose first word
@@ -31,8 +52,8 @@ pub const Pin = struct { out: bool, slot: u32, off: u32, bit: u32 };
 pub const Spec = struct {
     /// The pins' enum, `U` of the device.
     U: type,
-    design: *const root.Design,
-    dispatch: root.Dispatch,
+    design: *const design.Design,
+    dispatch: design.Dispatch,
     /// In `U` order: the ports in declaration order, a vector's bits from
     /// its left index to its right.
     pins: []const Pin,
@@ -327,21 +348,21 @@ pub fn Device(comptime spec: Spec) type {
         }
 
         /// The engine at the boundary `saved`, or at time 0 for null, with
-        /// no file or dump (`root.State.quiet`) and its transcript in memory
+        /// no file or dump (`State.quiet`) and its transcript in memory
         /// until `keep` holds it in `State.say`.
-        fn open(a: std.mem.Allocator, saved: ?[]const u8) !*root.State {
-            const s = try root.quietState(a, spec.design, spec.units);
+        fn open(a: std.mem.Allocator, saved: ?[]const u8) !*RtState {
+            const s = try RtState.quietState(a, spec.design, spec.units);
             if (saved) |b| try s.restore(b);
             return s;
         }
 
         /// Every event at a tick up to `limit`.
-        fn run(s: *root.State, limit: u64) !void {
-            if (root.loop(s, spec.dispatch, null, limit)) |e| return e;
+        fn run(s: *RtState, limit: u64) !void {
+            if (entry.loop(s, spec.dispatch, null, limit)) |e| return e;
         }
 
         /// The A2D store of `bit` into pin `p`, with every wake it causes.
-        fn drive(s: *root.State, p: Pin, bit: logic.Bit) !void {
+        fn drive(s: *RtState, p: Pin, bit: logic.Bit) !void {
             const one = @as(u64, 1) << @intCast(p.bit % 64);
             const b: u2 = @backingInt(bit);
             // (v, x) planes: 0 = 00, 1 = 10, z = 01, x = 11.
@@ -352,7 +373,7 @@ pub fn Device(comptime spec: Spec) type {
 
         /// Each output's level and conductance from the engine: the static
         /// ones when `static`, else a ramp from its value at `t`.
-        fn outputs(m: *const Model, inst: *Instance, s: *const root.State, t: f64, static_: bool) void {
+        fn outputs(m: *const Model, inst: *Instance, s: *const RtState, t: f64, static_: bool) void {
             for (outs, 0..) |u, k| {
                 const p = spec.pins[u];
                 const w = s.get(p.off + p.bit / 64);
@@ -381,7 +402,7 @@ pub fn Device(comptime spec: Spec) type {
         /// The engine's next event, whether it stopped, which input edges
         /// wake it, and its boundary as this step's work; a boundary longer
         /// than `cap` fails.
-        fn keep(inst: *Instance, st: *State, s: *root.State) !void {
+        fn keep(inst: *Instance, st: *State, s: *RtState) !void {
             const said = s.sink.buffered();
             if (said.len <= say_cap) {
                 @memcpy(st.say[0..said.len], said);

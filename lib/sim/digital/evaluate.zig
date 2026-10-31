@@ -354,7 +354,7 @@ pub fn realLiteral(a: std.mem.Allocator, r: f64) Error!Int.Literal {
 /// A wider operand converts whole (`logic.wordsToReal`).
 fn realOfInt(v: Int.Literal) f64 {
     const lo = v.values()[0] & ~v.unknowns()[0];
-    if (v.width > 64) return @import("../rt/logic.zig").wordsToReal(v.values(), v.unknowns(), v.width, v.signed);
+    if (v.width > 64) return @import("../rt/logic/root.zig").wordsToReal(v.values(), v.unknowns(), v.width, v.signed);
     if (!v.signed) return @floatFromInt(lo);
     const shift: u6 = @intCast(64 - v.width);
     return @floatFromInt(@as(i64, @bitCast(lo << shift)) >> shift);
@@ -445,7 +445,7 @@ pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
                 .realtime => self.timeOf(self.scope).scale.realAt(self.scheduler.now),
                 .abstime => @import("../time.zig").secondsAt(self.scheduler.now, self.finest),
                 .itor => if (compile.typeOf(self, args[0]).real)
-                    @import("../rt/logic.zig").itorReal(try evalReal(self, a, args[0]))
+                    @import("../rt/logic/root.zig").itorReal(try evalReal(self, a, args[0]))
                 else
                     realOfInt(try eval(self, a, args[0], 0)),
                 .bitstoreal => @bitCast((try eval(self, a, args[0], 64)).values()[0]),
@@ -767,7 +767,7 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
 // ---- tests ------------------------------------------------------------------
 
 test "§4.8.2 rt's ofRealTo is intOfReal truncated to the target, at every width" {
-    const logic = @import("../rt/logic.zig");
+    const logic = @import("../rt/logic/root.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
