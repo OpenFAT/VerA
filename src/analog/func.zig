@@ -8,12 +8,20 @@
 //! `$limit`, through `inlineUserFuncPre`) per call. `scanCallSites` is the one
 //! statement walk both share.
 //!
-//! LRM clauses this file's code cites: §3.2, §3.2.2, §4.7, §4.7.1, §4.7.2, §4.7.2.3,
-//! §4.7.2.4, §4.7.3, §5.7, §5.11, §6.8, §7.3.7, §9.17.3.
-//! IEEE 1364-2005 clauses cited: §10.4.1.
+//! Cites: §3.2, §3.2.2, §4.7, §4.7.1, §4.7.2, §4.7.2.3, §4.7.2.4, §4.7.3,
+//! §5.7, §5.11, §6.8, §7.3.7, §9.17.3, §10.4.1.
+//!
+//! Contents:
+//! - `pub fn checkFuncRecursion(self: *Lower, fns: []const Ast.FuncDecl) Oom!void`
+//! - `pub fn scanCallSites(self: *Lower, id: Ast.StmtId, comptime limits: bool, fns: if (limits) void else []const Ast.FuncDecl, out: if (limits) void else *std.ArrayList(u32)) Oom!void` (`expr`, `stmt`)
+//! - `pub fn lowerUserCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn inlineUserFuncPre(self: *Lower, fd: *const Ast.FuncDecl, pre: []const Mir.Value, arg_exprs: []const Ast.ExprId, site: Ast.ExprId) Oom!TypedValue`
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const Mir = @import("ir").Mir;
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_event = @import("event.zig");
 const lower_expr = @import("expr.zig");
@@ -21,8 +29,12 @@ const lower_limit = @import("limit.zig");
 const lower_stmt = @import("stmt.zig");
 const lower_shape = @import("shape.zig");
 const lower_var = @import("var.zig");
-const Ast = @import("frontend").Ast;
-const Mir = @import("ir").Mir;
+const lower_expr_select = @import("expr_select.zig");
+const lower_math = @import("math.zig");
+const lower_assign = @import("assign.zig");
+const lower_slice = @import("slice.zig");
+const lower_lvalue = @import("lvalue.zig");
+const lower_timer = @import("timer.zig");
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
@@ -30,6 +42,9 @@ const Const = Lower.Const;
 const VarSlot = Lower.VarSlot;
 const poison = Lower.poison;
 const astTy = Lower.astTy;
+
+// One `consts` entry a function scope replaced or removed, and what it held.
+const Shadow = struct { name: []const u8, prev: ?Const };
 
 /// Reports E0510 on every analog function in `fns` that calls itself directly
 /// or indirectly: "recursive functions are not permitted" (LRM §4.7.3, of an
@@ -81,6 +96,7 @@ pub fn scanCallSites(
     fns: if (limits) void else []const Ast.FuncDecl,
     out: if (limits) void else *std.ArrayList(u32),
 ) Oom!void {
+    assert(id == .none or @backingInt(id) < self.stmtCount());
     if (id == .none) return;
     // Every edge of the statement (`SourceFile.stmtEdges`): a `$limit` or a
     // call is a site wherever it is written, a for-loop's init and step, a
@@ -99,38 +115,11 @@ pub fn scanCallSites(
     try self.file.stmtEdges(id, Walk{ .l = self, .fns = fns, .out = out });
 }
 
-fn scanCallSitesExpr(
-    self: *Lower,
-    e: Ast.ExprId,
-    comptime limits: bool,
-    fns: if (limits) void else []const Ast.FuncDecl,
-    out: if (limits) void else *std.ArrayList(u32),
-) Oom!void {
-    if (e == .none) return;
-    const ex = &self.file.exprs;
-    const tag = ex.tag(e);
-    if (limits) {
-        if (tag == .sys_call and std.mem.eql(u8, self.file.str(ex.strOf(e)), "$limit")) {
-            const args = if (ex.extraOf(e) < ex.poolLen()) ex.args(e) else &[_]Ast.ExprId{};
-            if (args.len >= 2) {
-                if (lower_limit.limitUserFunc(self, args[1]) != null) try lower_limit.addLimitSlot(self, args[0]);
-            }
-        }
-    } else if (tag == .call) {
-        // StrIds are interned, so identity is name equality.
-        for (fns, 0..) |*fd, k| if (fd.name == ex.strOf(e)) {
-            try out.append(self.arena, @intCast(k));
-            break;
-        };
-    }
-    var buf: [3]Ast.ExprId = undefined;
-    for (ex.children(e, &buf)) |c| try scanCallSitesExpr(self, c, limits, fns, out);
-}
-
 /// Lowers a call to a §4.7 user function by inlining its body. An undeclared name
 /// reports through `unknownCall`; a digital function called from analog context
 /// reports E0436 and is inlined anyway (LRM §7.3.7).
 pub fn lowerUserCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
     const m = self.module orelse return poison;
@@ -148,7 +137,7 @@ pub fn lowerUserCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         return inlineUserFuncPre(self, fd, &.{}, ex.args(e), e);
     }
     // vpi_* and every other unresolved name lands here.
-    try lower_expr.unknownCall(self, e, name);
+    try lower_math.unknownCall(self, e, name);
     return poison;
 }
 
@@ -261,13 +250,13 @@ pub fn inlineUserFuncPre(
         }}));
     }
 
-    std.debug.assert(actuals.items.len == fd.args.len); // one per formal, `pre` ones included
+    assert(actuals.items.len == fd.args.len); // one per formal, `pre` ones included
 
     // Timer scheduling captures caller dependencies, not this call's private
     // locals. Pure functions are recomputed with new actuals; effectful ones
     // keep their original result and never execute a second time.
-    const timer_capture = lower_event.suspendCapture(self);
-    defer lower_event.resumeCapture(self, timer_capture);
+    const timer_capture = lower_timer.suspendCapture(self);
+    defer lower_timer.resumeCapture(self, timer_capture);
 
     // ---- enter the function scope (§4.7.1) ----
     const saved_vars = self.vars;
@@ -371,7 +360,7 @@ pub fn inlineUserFuncPre(
             const idx = try lower_shape.subscriptBuf(self, &sub, info.dims.len);
             for (vals, 0..) |*v, k| {
                 lower_shape.shapeSubscripts(info.dims, k, idx);
-                v.* = (try lower_expr.arrayElemValue(self, self.file.str(formal.name), idx)).?.v;
+                v.* = (try lower_expr_select.arrayElemValue(self, self.file.str(formal.name), idx)).?.v;
             }
             try writeback.append(self.arena, vals);
             continue;
@@ -383,9 +372,9 @@ pub fn inlineUserFuncPre(
 
     // ---- leave the function scope ----
     const left = self.inlining.pop().?;
-    std.debug.assert(std.mem.eql(u8, left, name)); // a nested call popped its own
-    std.debug.assert(self.loops.items.len == 0); // the body's loops popped their own
-    std.debug.assert(log_mark <= self.scope_log.items.len);
+    assert(std.mem.eql(u8, left, name)); // a nested call popped its own
+    assert(self.loops.items.len == 0); // the body's loops popped their own
+    assert(log_mark <= self.scope_log.items.len);
     self.scope_log.shrinkRetainingCapacity(log_mark);
     self.vars.deinit(self.arena);
     self.arrays.deinit(self.arena);
@@ -421,12 +410,43 @@ pub fn inlineUserFuncPre(
         // §3.2 a runtime subscript names no single storage slot, so the writeback
         // is the same masked one `a[i] = ...` takes. §4.7.2.3 puts no
         // constant-expression condition on the "analog variable reference".
-        if (try lower_stmt.writeRuntimeIndex(self, actual, actual, .{ .v = vals[0], .ty = astTy(formal.ty) })) continue;
-        const slot = try lower_stmt.resolveLvalue(self, actual) orelse continue;
-        try lower_stmt.writeLvalue(self, slot, vals[0]);
+        if (try lower_assign.writeRuntimeIndex(self, actual, actual, .{ .v = vals[0], .ty = astTy(formal.ty) })) continue;
+        const slot = try lower_lvalue.resolveLvalue(self, actual) orelse continue;
+        try lower_lvalue.writeLvalue(self, slot, vals[0]);
     }
-    std.debug.assert(w == writeback.items.len); // one writeback per output/inout formal
+    assert(w == writeback.items.len); // one writeback per output/inout formal
     return result;
+}
+
+// ---- private ----
+
+fn scanCallSitesExpr(
+    self: *Lower,
+    e: Ast.ExprId,
+    comptime limits: bool,
+    fns: if (limits) void else []const Ast.FuncDecl,
+    out: if (limits) void else *std.ArrayList(u32),
+) Oom!void {
+    assert(e == .none or self.exprValid(e));
+    if (e == .none) return;
+    const ex = &self.file.exprs;
+    const tag = ex.tag(e);
+    if (limits) {
+        if (tag == .sys_call and std.mem.eql(u8, self.file.str(ex.strOf(e)), "$limit")) {
+            const args = if (ex.extraOf(e) < ex.poolLen()) ex.args(e) else &[_]Ast.ExprId{};
+            if (args.len >= 2) {
+                if (lower_limit.limitUserFunc(self, args[1]) != null) try lower_limit.addLimitSlot(self, args[0]);
+            }
+        }
+    } else if (tag == .call) {
+        // StrIds are interned, so identity is name equality.
+        for (fns, 0..) |*fd, k| if (fd.name == ex.strOf(e)) {
+            try out.append(self.arena, @intCast(k));
+            break;
+        };
+    }
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| try scanCallSitesExpr(self, c, limits, fns, out);
 }
 
 /// The value an `output` formal and the return variable start from: §4.7.1
@@ -436,9 +456,6 @@ pub fn inlineUserFuncPre(
 fn startOf(self: *Lower, ty: Ty) Oom!Mir.Value {
     return if (ty == .string) try self.mir.addStrConst(self.arena, "") else lower_var.zeroOf(ty);
 }
-
-// One `consts` entry a function scope replaced or removed, and what it held.
-const Shadow = struct { name: []const u8, prev: ?Const };
 
 // Installs the constants `fd`'s body sees (§4.7.1, §6.8): the caller's
 // `genvars` taken out (a genvar is neither a local nor a module parameter),
@@ -471,13 +488,14 @@ fn leaveFuncConsts(self: *Lower, shadowed: *std.ArrayList(Shadow)) Oom!void {
 /// analog variable or an array assignment pattern of analog variables", or null
 /// for anything else.
 fn arrayActualCells(self: *Lower, actual: Ast.ExprId) Oom!?usize {
+    assert(actual == .none or self.exprValid(actual));
     const ex = &self.file.exprs;
     return switch (ex.tag(actual)) {
         .ident => if (self.arrays.get(self.file.str(ex.strOf(actual)))) |info| lower_shape.shapeCells(info.dims) else null,
         .assign_pattern, .concat => (try lower_shape.patternElems(self, actual)).len,
         .index => blk: {
             var buf: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
-            const s = (try lower_stmt.arrayRef(self, actual, &buf)) orelse break :blk null;
+            const s = (try lower_slice.arrayRef(self, actual, &buf)) orelse break :blk null;
             break :blk lower_shape.shapeCells(s.info.dims[s.subs.len..]);
         },
         else => null, // else: §4.7.2.3 admits no third shape
@@ -490,6 +508,7 @@ fn arrayActualCells(self: *Lower, actual: Ast.ExprId) Oom!?usize {
 /// wrong size or is not one of those two shapes. Pattern elements lower as
 /// expressions; `funcArrayOut` is where write-back needs storage.
 fn funcArrayIn(self: *Lower, actual: Ast.ExprId, ty: Ty, out: []Mir.Value) Oom!bool {
+    assert(actual == .none or self.exprValid(actual));
     const ex = &self.file.exprs;
     switch (ex.tag(actual)) {
         .ident => {
@@ -500,7 +519,7 @@ fn funcArrayIn(self: *Lower, actual: Ast.ExprId, ty: Ty, out: []Mir.Value) Oom!b
             const idx = try lower_shape.subscriptBuf(self, &sub, info.dims.len);
             for (out, 0..) |*v, k| {
                 lower_shape.shapeSubscripts(info.dims, k, idx);
-                const el = (try lower_expr.arrayElemValue(self, aname, idx)) orelse return false;
+                const el = (try lower_expr_select.arrayElemValue(self, aname, idx)) orelse return false;
                 v.* = if (ty == .real) try self.toReal(el) else el.v;
             }
             return true;
@@ -521,12 +540,12 @@ fn funcArrayIn(self: *Lower, actual: Ast.ExprId, ty: Ty, out: []Mir.Value) Oom!b
         // way `copyArraySlice` copies one.
         .index => {
             var buf: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
-            const s = (try lower_stmt.arrayRef(self, actual, &buf)) orelse return false;
+            const s = (try lower_slice.arrayRef(self, actual, &buf)) orelse return false;
             const sd = s.info.dims[s.subs.len..];
             if (lower_shape.shapeCells(sd) != out.len) return false;
             // False only after E0310 on a folded subscript: that is the
             // diagnostic, so the call is still well-shaped.
-            if (!try lower_stmt.readSliceCells(self, actual, s, sd, out)) @memset(out, lower_var.zeroOf(ty));
+            if (!try lower_slice.readSliceCells(self, actual, s, sd, out)) @memset(out, lower_var.zeroOf(ty));
             if (ty == .real) for (out) |*v| {
                 v.* = try self.toReal(.{ .v = v.*, .ty = s.info.ty });
             };
@@ -540,6 +559,7 @@ fn funcArrayIn(self: *Lower, actual: Ast.ExprId, ty: Ty, out: []Mir.Value) Oom!b
 /// ordinary lvalue, so a pattern element that is not writable reports the usual
 /// E0313/E0316 from `resolveLvalue` (§4.7.2.3 says "analog variables").
 fn funcArrayOut(self: *Lower, actual: Ast.ExprId, vals: []const Mir.Value) Oom!void {
+    assert(actual == .none or self.exprValid(actual));
     const ex = &self.file.exprs;
     switch (ex.tag(actual)) {
         .ident => {
@@ -556,16 +576,16 @@ fn funcArrayOut(self: *Lower, actual: Ast.ExprId, vals: []const Mir.Value) Oom!v
         },
         .assign_pattern, .concat => {
             for (try lower_shape.patternElems(self, actual), vals) |e, v| {
-                const slot = try lower_stmt.resolveLvalue(self, e) orelse continue;
-                try lower_stmt.writeLvalue(self, slot, v);
+                const slot = try lower_lvalue.resolveLvalue(self, e) orelse continue;
+                try lower_lvalue.writeLvalue(self, slot, v);
             }
         },
         // §5.7 "the array on the LHS of the assignment shall be an array
         // variable, a slice of an array variable ...": the slice receives.
         .index => {
             var buf: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
-            const s = (try lower_stmt.arrayRef(self, actual, &buf)) orelse return;
-            _ = try lower_stmt.writeSliceCells(self, actual, s, s.info.dims[s.subs.len..], vals);
+            const s = (try lower_slice.arrayRef(self, actual, &buf)) orelse return;
+            _ = try lower_slice.writeSliceCells(self, actual, s, s.info.dims[s.subs.len..], vals);
         },
         else => unreachable, // else: the call refused any other shape (`arrayActualCells`, `funcArrayIn`)
     }

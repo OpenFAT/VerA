@@ -7,22 +7,49 @@
 //! before the body lowers; `lowerLimitUser` then lowers each user-function
 //! site. `AliasResult` is §9.20's, kept here for `hier_name.zig`.
 //!
-//! LRM clauses this file's code cites: §2.8, §4.5.15, §4.7, §9.17.3, §9.20.
+//! Cites: §2.8, §4.5.15, §4.7, §9.17.3, §9.20.
+//!
+//! Contents:
+//! - `pub fn limitUserFunc(self: *Lower, a: Ast.ExprId) ?*const Ast.FuncDecl`
+//! - `pub fn lowerLimitUser(self: *Lower, e: Ast.ExprId, fd: *const Ast.FuncDecl, args: []const Ast.ExprId) Oom!TypedValue`
+//! - `pub fn addLimitSlot(self: *Lower, a: Ast.ExprId) Oom!void`
+//! - `pub const AliasResult = enum`
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const Lower = @import("Lower.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_func = @import("func.zig");
 const lower_node = @import("node.zig");
 const lower_sysfunc = @import("sysfunc.zig");
-const Ast = @import("frontend").Ast;
+const lower_branch = @import("branch.zig");
+const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
+
+/// §9.20's outcome for one `$analog_node_alias()` / `$analog_port_alias()`
+/// call: the six validity rules are errors, and what survives them is the
+/// clause's own return value.
+pub const AliasResult = enum {
+    /// One of §9.20's six "shall be an error" sentences (E0812). The call has
+    /// no value; lowering poisons it.
+    refused,
+    /// "the hierarchical_reference_string points to a valid continuous node":
+    /// the analog_net_reference now names that node's unknown, and the call
+    /// returns 1.
+    bound,
+    /// The string resolves to nothing this design contains. §9.20: the call
+    /// returns 0 and "the node referenced by the analog_net_reference shall be
+    /// treated as a normal continuous node declared in the module".
+    unresolved,
+};
 
 /// Returns the §4.7 function a `$limit` second argument names, or null when it names
 /// none (Syntax 9-12's other two forms put a string there, or nothing).
 /// A variable or parameter with the same name wins over the function (LRM §2.8).
 pub fn limitUserFunc(self: *Lower, a: Ast.ExprId) ?*const Ast.FuncDecl {
+    assert(a == .none or self.exprValid(a));
     // ponytail: lookup only; add an error set if resolution ever does fallible work.
     const ex = &self.file.exprs;
     if (a == .none or ex.tag(a) != .ident) return null;
@@ -45,9 +72,11 @@ pub fn limitUserFunc(self: *Lower, a: Ast.ExprId) ?*const Ast.FuncDecl {
 /// clamped region. `$limit$uf` (codegen `zLimitUf`) shifts `vlim.val()` onto the probe.
 /// Asserts that `args` holds at least the access function and the function name.
 pub fn lowerLimitUser(self: *Lower, e: Ast.ExprId, fd: *const Ast.FuncDecl, args: []const Ast.ExprId) Oom!TypedValue {
-    std.debug.assert(args.len >= 2);
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
+    assert(args.len >= 2);
     // §9.17.3 the first argument is an ACCESS FUNCTION, never a net.
-    const vnew = try self.toReal(try lower_sysfunc.lowerSysArg(self, args[0], false));
+    const vnew = try self.toReal(try lower_sysfunc_args.lowerSysArg(self, args[0], false));
     const slot = try limitSlotOf(self, args[0]) orelse {
         // No access function to key state on (`$limit(x, f)` with an ordinary
         // expression). §4.5.15 lets a simulator decline any limiting request;
@@ -66,38 +95,13 @@ pub fn lowerLimitUser(self: *Lower, e: Ast.ExprId, fd: *const Ast.FuncDecl, args
     return .{ .v = try self.call("$limit$uf", &.{ vnew, res }), .ty = .real };
 }
 
-/// The `limit_slots` index for this access function, minting nothing: `scanCallSites`
-/// created every slot before the body was lowered. Null when `a` is not an access function.
-fn limitSlotOf(self: *Lower, a: Ast.ExprId) Oom!?usize {
-    const t = try limitSlotKey(self, a) orelse return null;
-    return findSlot(self, t);
-}
-
-/// The `limit_slots` row keyed on branch `t`, or null. One slot per access
-/// function: the spelling (`neg`) is part of the key, as `addLimitSlot` mints it.
-fn findSlot(self: *const Lower, t: lower_contrib.Target) ?usize {
-    for (self.out.limit_slots.items, 0..) |s, i| {
-        if (s.access == t.access and s.hi == t.hi and s.lo == t.lo and s.neg == t.neg and s.br == t.br)
-            return i;
-    }
-    return null;
-}
-
-/// The branch an access function names, or null for anything that is not one.
-/// Called twice per expression; the bag dedupes `branchOf`'s diagnostics by
-/// `(code, span)`, so a malformed access function is reported once.
-fn limitSlotKey(self: *Lower, a: Ast.ExprId) Oom!?lower_contrib.Target {
-    if (a == .none or self.file.exprs.tag(a) != .branch_access) return null;
-    return lower_contrib.branchOf(self, a);
-}
-
 /// Creates the `LimitSlot` for access function `a` unless one with the same branch
 /// exists, seeding its state place in the current block (LRM §9.17.3). Does nothing
 /// when `a` is not an access function.
 pub fn addLimitSlot(self: *Lower, a: Ast.ExprId) Oom!void {
     const t = try limitSlotKey(self, a) orelse return;
     if (findSlot(self, t) != null) return;
-    std.debug.assert(self.limit_places.items.len == self.out.limit_slots.items.len); // one place per slot
+    assert(self.limit_places.items.len == self.out.limit_slots.items.len); // one place per slot
     const k: i64 = @intCast(self.out.limit_slots.items.len);
     // A `call`, so `analysis.foldConst` cannot fold the previous iterate into a constant.
     const seed = try self.call("$limit$old", &.{try self.mir.addIntConst(self.arena, k)});
@@ -115,25 +119,37 @@ pub fn addLimitSlot(self: *Lower, a: Ast.ExprId) Oom!void {
         .seed = seed,
     });
     try self.limit_places.append(self.arena, place);
-    std.debug.assert(self.limit_places.items.len == self.out.limit_slots.items.len);
+    assert(self.limit_places.items.len == self.out.limit_slots.items.len);
 }
 
-/// §9.20's outcome for one `$analog_node_alias()` / `$analog_port_alias()`
-/// call: the six validity rules are errors, and what survives them is the
-/// clause's own return value.
-pub const AliasResult = enum {
-    /// One of §9.20's six "shall be an error" sentences (E0812). The call has
-    /// no value; lowering poisons it.
-    refused,
-    /// "the hierarchical_reference_string points to a valid continuous node":
-    /// the analog_net_reference now names that node's unknown, and the call
-    /// returns 1.
-    bound,
-    /// The string resolves to nothing this design contains. §9.20: the call
-    /// returns 0 and "the node referenced by the analog_net_reference shall be
-    /// treated as a normal continuous node declared in the module".
-    unresolved,
-};
+// ---- private ----
+
+/// The `limit_slots` index for this access function, minting nothing: `scanCallSites`
+/// created every slot before the body was lowered. Null when `a` is not an access function.
+fn limitSlotOf(self: *Lower, a: Ast.ExprId) Oom!?usize {
+    assert(a == .none or self.exprValid(a));
+    const t = try limitSlotKey(self, a) orelse return null;
+    return findSlot(self, t);
+}
+
+/// The `limit_slots` row keyed on branch `t`, or null. One slot per access
+/// function: the spelling (`neg`) is part of the key, as `addLimitSlot` mints it.
+fn findSlot(self: *const Lower, t: lower_branch.Target) ?usize {
+    for (self.out.limit_slots.items, 0..) |s, i| {
+        if (s.access == t.access and s.hi == t.hi and s.lo == t.lo and s.neg == t.neg and s.br == t.br)
+            return i;
+    }
+    return null;
+}
+
+/// The branch an access function names, or null for anything that is not one.
+/// Called twice per expression; the bag dedupes `branchOf`'s diagnostics by
+/// `(code, span)`, so a malformed access function is reported once.
+fn limitSlotKey(self: *Lower, a: Ast.ExprId) Oom!?lower_branch.Target {
+    assert(a == .none or self.exprValid(a));
+    if (a == .none or self.file.exprs.tag(a) != .branch_access) return null;
+    return lower_branch.branchOf(self, a);
+}
 
 test "§9.17.3 one $limit state slot per access function, whatever the site count" {
     const cases = [_]struct { second: []const u8, slots: usize }{

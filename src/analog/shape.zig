@@ -7,15 +7,34 @@
 //! per cell of a pattern (`flattenPattern`). Owns no table: everything here is
 //! a pure function of the shape, or allocates its answer in the arena.
 //!
-//! LRM clauses this file's code cites: §2.7, §3.2, §3.2.2, §3.3, §3.4, §3.4.4,
-//! §3.4.8, §3.6.3.2, §4.2.1.1, §4.2.13, §4.2.14.
+//! Cites: §2.7, §3.2, §3.2.2, §3.3, §3.4, §3.4.4, §3.4.8, §3.6.3.2, §4.2.1.1,
+//! §4.2.13, §4.2.14, A.8.1.
+//!
+//! Contents:
+//! - `pub const Bounds = struct` (`count`)
+//! - `pub fn dimsBounds(self: *Lower, dims: []const Ast.Dim, tok: u32, name: []const u8) Oom!?[]const Bounds`
+//! - `pub fn shapeCells(dims: []const Bounds) usize`
+//! - `pub fn shapeSubscripts(dims: []const Bounds, k: usize, out: []i64) void`
+//! - `pub fn flatIndex(dims: []const Bounds, idx: []const i64) i64`
+//! - `pub const max_stack_dims = 8`
+//! - `pub fn subscriptBuf(self: *Lower, buf: *[max_stack_dims]i64, n: usize) Oom![]i64`
+//! - `pub fn elemName(self: *Lower, name: []const u8, idx: []const i64) Oom![]const u8`
+//! - `pub const elem_key_len = 1024 + 22 * 4`
+//! - `pub fn elemKey(self: *Lower, buf: *[elem_key_len]u8, name: []const u8, idx: []const i64) Oom![]const u8`
+//! - `pub fn packedShapeWidth(self: *Lower, range: Ast.Dim) ?u32`
+//! - `pub fn flattenPattern(self: *Lower, e: Ast.ExprId, dims: []const Bounds, holes_ok: bool) Oom![]const Ast.ExprId`
+//! - `pub fn patternElems(self: *Lower, e: Ast.ExprId) Oom![]const Ast.ExprId`
 
 const std = @import("std");
-const Lower = @import("lower.zig");
-const lower_constfold = @import("constfold.zig");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
+const Lower = @import("Lower.zig");
+const lower_constfold = @import("constfold.zig");
+const lower_assign = @import("assign.zig");
+const lower_lvalue = @import("lvalue.zig");
 const Oom = Lower.Oom;
+
 /// One declared array dimension, normalized so `lo <= hi`.
 pub const Bounds = struct {
     lo: i64,
@@ -29,9 +48,26 @@ pub const Bounds = struct {
     }
 };
 
+/// How many subscripts fit on the stack. NOT a proved bound — §3.2 puts no limit
+/// on a declaration's dimension count, though its own examples go two deep — so
+/// this is the spill shape and not a fixed buffer: eight covers everything real
+/// and anything wider allocates. `indexChain` uses the same spill threshold.
+pub const max_stack_dims = 8;
+
+/// Widest `name[i][j]…` formatted without spilling: §2.7's 1024-character
+/// identifier plus four subscripts of `[`, a 20-character `i64` and `]`. A
+/// deeper array spills to the arena (see `elemKey`).
+pub const elem_key_len = 1024 + 22 * 4;
+
 comptime {
-    std.debug.assert(@sizeOf(Bounds) == 24); // one per dimension, read per subscript
+    assert(@sizeOf(Bounds) == 24); // one per dimension, read per subscript
 }
+
+/// E1016's bound on an array's or a pattern's cells: a cell is indexed by a
+/// `u32` (`MemArray.len`). Not a design limit: each cell is at least a
+/// scalar of lowering state, so an array reaching it has run out of memory
+/// first (#29; the bound was 2^20 cells).
+const max_cells = std.math.maxInt(u32);
 
 /// §3.2/§3.2.2/§3.4.4 `{ [msb:lsb] }` — one `Bounds` per declared dimension,
 /// outermost first, so `flag_array[0:8][0:3]` is `{{0,8},{0,3}}`.
@@ -39,6 +75,7 @@ comptime {
 /// §3.2 puts no limit on the count: a multidimensional array is scalarized
 /// cell by cell (see `shapeCells`). Returns null after reporting E0307/E0308.
 pub fn dimsBounds(self: *Lower, dims: []const Ast.Dim, tok: u32, name: []const u8) Oom!?[]const Bounds {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     if (dims.len == 0) {
         try self.err(tok, .E0307, "`{s}` has no dimensions", .{name});
         return null;
@@ -78,12 +115,6 @@ pub fn dimsBounds(self: *Lower, dims: []const Ast.Dim, tok: u32, name: []const u
     return out;
 }
 
-/// E1016's bound on an array's or a pattern's cells: a cell is indexed by a
-/// `u32` (`MemArray.len`). Not a design limit: each cell is at least a
-/// scalar of lowering state, so an array reaching it has run out of memory
-/// first (#29; the bound was 2^20 cells).
-const max_cells = std.math.maxInt(u32);
-
 /// How many scalars a declared shape becomes.
 pub fn shapeCells(dims: []const Bounds) usize {
     var n: usize = 1;
@@ -98,7 +129,7 @@ pub fn shapeCells(dims: []const Bounds) usize {
 /// `k` is below `shapeCells(dims)`; a larger one wraps in the outermost
 /// dimension. Asserts that `out` has one slot per dimension.
 pub fn shapeSubscripts(dims: []const Bounds, k: usize, out: []i64) void {
-    std.debug.assert(out.len == dims.len);
+    assert(out.len == dims.len);
     var rest = k;
     var i = dims.len;
     while (i > 0) {
@@ -112,20 +143,14 @@ pub fn shapeSubscripts(dims: []const Bounds, k: usize, out: []i64) void {
 
 /// The flat element index of an in-range subscript tuple: row-major, each
 /// dimension counted from its left bound — `shapeSubscripts`' inverse and
-/// `lower_stmt.runtimeArrayIndex`'s order. Asserts one subscript per dimension;
-/// the caller has range-checked them (`lower_stmt.checkSubscripts`), since an
+/// `lower_assign.runtimeArrayIndex`'s order. Asserts one subscript per dimension;
+/// the caller has range-checked them (`lower_lvalue.checkSubscripts`), since an
 /// out-of-range subscript can alias another cell.
 pub fn flatIndex(dims: []const Bounds, idx: []const i64) i64 {
     var flat: i64 = 0;
     for (dims, idx) |d, i| flat = flat * d.count() + (if (d.descending) d.hi - i else i - d.lo);
     return flat;
 }
-
-/// How many subscripts fit on the stack. NOT a proved bound — §3.2 puts no limit
-/// on a declaration's dimension count, though its own examples go two deep — so
-/// this is the spill shape and not a fixed buffer: eight covers everything real
-/// and anything wider allocates. `indexChain` uses the same spill threshold.
-pub const max_stack_dims = 8;
 
 /// Returns scratch for one cell's `n` subscripts: `buf` when it fits, else an
 /// arena slice. Call once per `shapeSubscripts` walk, not once per cell.
@@ -145,11 +170,6 @@ pub fn elemName(self: *Lower, name: []const u8, idx: []const i64) Oom![]const u8
     for (idx) |i| try out.print(self.arena, "[{d}]", .{i});
     return out.toOwnedSlice(self.arena);
 }
-
-/// Widest `name[i][j]…` formatted without spilling: §2.7's 1024-character
-/// identifier plus four subscripts of `[`, a 20-character `i64` and `]`. A
-/// deeper array spills to the arena (see `elemKey`).
-pub const elem_key_len = 1024 + 22 * 4;
 
 /// `name[i][j]` for a *lookup*, formatted into the caller's stack buffer.
 ///
@@ -197,13 +217,49 @@ pub fn packedShapeWidth(self: *Lower, range: Ast.Dim) ?u32 {
 /// Everywhere else A.8.1's assignment_pattern has no empty element, and one is
 /// E0894 rather than a silent zero.
 pub fn flattenPattern(self: *Lower, e: Ast.ExprId, dims: []const Bounds, holes_ok: bool) Oom![]const Ast.ExprId {
+    assert(e == .none or self.exprValid(e));
     if (!holes_ok) try refuseHoles(self, e);
     const out = try self.arena.alloc(Ast.ExprId, shapeCells(dims));
     try fillPattern(self, e, dims, out);
     return out;
 }
 
+/// The elements of a pattern (or brace list), with A.8.1's replication form
+/// unrolled when the parser could not: `'{N{a, b}}` whose count is a
+/// constant_expression rather than a literal (§4.2.14), carried as one
+/// `.pattern_repl` element. The count folds like an array bound — parameters
+/// included (§3.4) — and must be a non-negative integer (§4.2.13), else E0223
+/// and no elements, so every cell keeps its §3.2 zero default.
+pub fn patternElems(self: *Lower, e: Ast.ExprId) Oom![]const Ast.ExprId {
+    assert(e == .none or self.exprValid(e));
+    const ex = &self.file.exprs;
+    const elems = ex.args(e);
+    if (elems.len != 1 or ex.tag(elems[0]) != .pattern_repl) return elems;
+    const count = ex.lhs(elems[0]);
+    const group = ex.args(ex.rhs(elems[0]));
+    const c = lower_constfold.shapeEval(self, count);
+    const n = if (c) |v| switch (v) {
+        .int => |i| i,
+        else => null,
+    } else null;
+    if (n == null or n.? < 0) {
+        try self.err(ex.mainTok(count), .E0223, "", .{});
+        return &.{};
+    }
+    const cells = @as(i128, n.?) * group.len;
+    if (cells > max_cells) {
+        try self.err(ex.mainTok(count), .E1016, "the pattern has {d} elements", .{cells});
+        return &.{};
+    }
+    const out = try self.arena.alloc(Ast.ExprId, @intCast(cells));
+    for (0..@intCast(n.?)) |k| @memcpy(out[k * group.len ..][0..group.len], group);
+    return out;
+}
+
+// ---- private ----
+
 fn refuseHoles(self: *Lower, e: Ast.ExprId) Oom!void {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     if (e == .none or ex.tag(e) != .assign_pattern) return;
     for (ex.args(e)) |el| {
@@ -228,42 +284,11 @@ fn fillPattern(self: *Lower, e: Ast.ExprId, dims: []const Bounds, out: []Ast.Exp
     else
         &.{};
     const stride = shapeCells(dims[1..]);
-    std.debug.assert(out.len == stride * @as(usize, @intCast(dims[0].count()))); // `flattenPattern` sized it
+    assert(out.len == stride * @as(usize, @intCast(dims[0].count()))); // `flattenPattern` sized it
     for (0..@intCast(dims[0].count())) |k| {
         const child = if (k < elems.len) elems[k] else Ast.ExprId.none;
         try fillPattern(self, child, dims[1..], out[k * stride ..][0..stride]);
     }
-}
-
-/// The elements of a pattern (or brace list), with A.8.1's replication form
-/// unrolled when the parser could not: `'{N{a, b}}` whose count is a
-/// constant_expression rather than a literal (§4.2.14), carried as one
-/// `.pattern_repl` element. The count folds like an array bound — parameters
-/// included (§3.4) — and must be a non-negative integer (§4.2.13), else E0223
-/// and no elements, so every cell keeps its §3.2 zero default.
-pub fn patternElems(self: *Lower, e: Ast.ExprId) Oom![]const Ast.ExprId {
-    const ex = &self.file.exprs;
-    const elems = ex.args(e);
-    if (elems.len != 1 or ex.tag(elems[0]) != .pattern_repl) return elems;
-    const count = ex.lhs(elems[0]);
-    const group = ex.args(ex.rhs(elems[0]));
-    const c = lower_constfold.shapeEval(self, count);
-    const n = if (c) |v| switch (v) {
-        .int => |i| i,
-        else => null,
-    } else null;
-    if (n == null or n.? < 0) {
-        try self.err(ex.mainTok(count), .E0223, "", .{});
-        return &.{};
-    }
-    const cells = @as(i128, n.?) * group.len;
-    if (cells > max_cells) {
-        try self.err(ex.mainTok(count), .E1016, "the pattern has {d} elements", .{cells});
-        return &.{};
-    }
-    const out = try self.arena.alloc(Ast.ExprId, @intCast(cells));
-    for (0..@intCast(n.?)) |k| @memcpy(out[k * group.len ..][0..group.len], group);
-    return out;
 }
 
 test "lower: §3.2 a multidimensional array is scalarized row-major" {

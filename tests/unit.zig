@@ -6938,7 +6938,7 @@ pub const lower_tests = struct {
         try h.init(gpa, src);
         defer h.deinit();
         const dirs = [_][]const u8{dir};
-        h.low.include_dirs = &dirs;
+        h.low.opts.include_dirs = &dirs;
         if (try h.lower() != null) return null;
         return h.bag.at(0).code;
     }
@@ -7022,7 +7022,7 @@ pub const lower_tests = struct {
             var overrides: [1]Lower.ParamOverride = undefined;
             if (override) |value| {
                 overrides[0] = .{ .name = "enabled", .value = value };
-                h.low.param_overrides = &overrides;
+                h.low.opts.param_overrides = &overrides;
             }
             if (override != null and override.? == 0) {
                 const out = try h.low.lowerFile();
