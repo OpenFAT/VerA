@@ -3273,7 +3273,10 @@ pub const kernel_tests = struct {
     const tab = @import("kernels").table_kernels;
     const rng = @import("kernels").rng_kernels;
     const timer = @import("kernels").timer_kernels;
-    const str_k = @import("kernels").str_kernels;
+    const str_scan = @import("kernels").str_scan;
+    const str_real = @import("kernels").str_real;
+    const str_format = @import("kernels").str_format;
+    const str_store = @import("kernels").str_store;
     const file_k = @import("kernels").file_kernels;
 
     /// A one-derivative stand-in for the device's scalar family: the slice of the
@@ -4014,7 +4017,7 @@ pub const kernel_tests = struct {
     // ---------------------------------------------------------------- held string
 
     test "zStrHeld: a held string owns its bytes, so rewriting the source leaves it (#19)" {
-        const str = @import("kernels").str_kernels;
+        const str = @import("kernels").str_store;
         var site: [8]u8 = "t=10    ".*;
         const held = str.zStrHeld(site[0..4]);
         @memcpy(site[0..4], "t=20");
@@ -4031,7 +4034,7 @@ pub const kernel_tests = struct {
 
     test "zStrHeld: exactly one 4096-byte row fits" {
         const full: [4096]u8 = @splat('a');
-        const h = str_k.zStrHeld(&full);
+        const h = str_store.zStrHeld(&full);
         try std.testing.expectEqual(@as(usize, 4096), h.get().len);
     }
 
@@ -4040,104 +4043,104 @@ pub const kernel_tests = struct {
     test "§9.5.4.2 zScan: %c keeps white space, %s and the radix codes take their fields" {
         // "%c Matches a single character. The normal skip over white space is
         // suppressed"; a width takes that many.
-        const c = str_k.zScan(" x", "%c", 0);
+        const c = str_scan.zScan(" x", "%c", 0);
         try std.testing.expectEqual(@as(i64, 1), c.n);
         try std.testing.expectEqual(@as(i64, ' '), c.i);
         try std.testing.expectEqual(@as(usize, 1), c.used);
-        try std.testing.expectEqualStrings("abc", str_k.zScanS("abcdef", "%3c", 0));
-        try std.testing.expectEqualStrings("ab", str_k.zScanS("ab", "%5c", 0));
+        try std.testing.expectEqualStrings("abc", str_scan.zScanS("abcdef", "%3c", 0));
+        try std.testing.expectEqualStrings("ab", str_scan.zScanS("ab", "%5c", 0));
         // %s stops at white space or the width, and the next field resumes there.
-        try std.testing.expectEqualStrings("hel", str_k.zScanS("hello world", "%3s", 0));
-        try std.testing.expectEqualStrings("lo", str_k.zScanS("hello world", "%3s%s", 1));
+        try std.testing.expectEqualStrings("hel", str_scan.zScanS("hello world", "%3s", 0));
+        try std.testing.expectEqualStrings("lo", str_scan.zScanS("hello world", "%3s%s", 1));
         // §2.7: a string read as a number is base 256.
-        try std.testing.expectEqual(@as(i64, 0x4142), str_k.zScanI("AB", "%s", 0));
+        try std.testing.expectEqual(@as(i64, 0x4142), str_scan.zScanI("AB", "%s", 0));
         // The radices, an optional sign, and §2.6.1's `_` separator skipped.
-        try std.testing.expectEqual(@as(i64, 511), str_k.zScanI("777", "%o", 0));
-        try std.testing.expectEqual(@as(i64, 5), str_k.zScanI("1_01", "%b", 0));
-        try std.testing.expectEqual(@as(i64, 255), str_k.zScanI("fF", "%h", 0));
-        try std.testing.expectEqual(@as(i64, -26), str_k.zScanI("-1A", "%x", 0));
-        try std.testing.expectEqual(@as(i64, 12), str_k.zScanI("+12", "%d", 0));
-        try std.testing.expectEqual(@as(f64, 12.0), str_k.zScanR("+12", "%d", 0));
+        try std.testing.expectEqual(@as(i64, 511), str_scan.zScanI("777", "%o", 0));
+        try std.testing.expectEqual(@as(i64, 5), str_scan.zScanI("1_01", "%b", 0));
+        try std.testing.expectEqual(@as(i64, 255), str_scan.zScanI("fF", "%h", 0));
+        try std.testing.expectEqual(@as(i64, -26), str_scan.zScanI("-1A", "%x", 0));
+        try std.testing.expectEqual(@as(i64, 12), str_scan.zScanI("+12", "%d", 0));
+        try std.testing.expectEqual(@as(f64, 12.0), str_scan.zScanR("+12", "%d", 0));
         // A digit outside the radix ends the field and is left unread.
-        const o = str_k.zScan("78", "%o", 0);
+        const o = str_scan.zScan("78", "%o", 0);
         try std.testing.expectEqual(@as(i64, 7), o.i);
         try std.testing.expectEqual(@as(usize, 1), o.used);
         // A sign or a separator alone is a matching failure: 0 items, not EOF.
-        try std.testing.expectEqual(@as(i64, 0), str_k.zScanN("+", "%d"));
-        try std.testing.expectEqual(@as(i64, 0), str_k.zScanN("_", "%d"));
+        try std.testing.expectEqual(@as(i64, 0), str_scan.zScanN("+", "%d"));
+        try std.testing.expectEqual(@as(i64, 0), str_scan.zScanN("_", "%d"));
     }
 
     test "§9.5.4.2 zScan: the C real shape, and %r's optional Table 2-1 symbol" {
-        try std.testing.expectEqual(@as(f64, -0.5), str_k.zScanR("-.5", "%f", 0));
-        try std.testing.expectEqual(@as(f64, 25.0), str_k.zScanR("2.5e1", "%e", 0));
-        try std.testing.expectEqual(@as(f64, 300.0), str_k.zScanR("3.e2x", "%g", 0));
+        try std.testing.expectEqual(@as(f64, -0.5), str_scan.zScanR("-.5", "%f", 0));
+        try std.testing.expectEqual(@as(f64, 25.0), str_scan.zScanR("2.5e1", "%e", 0));
+        try std.testing.expectEqual(@as(f64, 300.0), str_scan.zScanR("3.e2x", "%g", 0));
         // An `e` with no digit after it is not an exponent, and is left unread.
-        const e = str_k.zScan("1e", "%f", 0);
+        const e = str_scan.zScan("1e", "%f", 0);
         try std.testing.expectEqual(@as(f64, 1.0), e.r);
         try std.testing.expectEqual(@as(usize, 1), e.used);
         // No digit at all is a matching failure, and so is a word, `inf` included.
-        try std.testing.expectEqual(@as(i64, 0), str_k.zScanN(".", "%f"));
-        try std.testing.expectEqual(@as(i64, 0), str_k.zScanN("inf", "%f"));
+        try std.testing.expectEqual(@as(i64, 0), str_scan.zScanN(".", "%f"));
+        try std.testing.expectEqual(@as(i64, 0), str_scan.zScanN("inf", "%f"));
         // The integer view of a real truncates toward zero.
-        try std.testing.expectEqual(@as(i64, -2), str_k.zScanI("-2.75", "%f", 0));
+        try std.testing.expectEqual(@as(i64, -2), str_scan.zScanI("-2.75", "%f", 0));
         // §2.6.2: the symbol follows with no space, and 1e3 is spelled K or k.
-        try std.testing.expectEqual(@as(f64, 2500.0), str_k.zScanR("2.5k", "%r", 0));
-        try std.testing.expectEqual(@as(f64, 2500.0), str_k.zScanR("2.5K", "%r", 0));
-        try std.testing.expectEqual(@as(f64, 1.5), str_k.zScanR("1.5", "%r", 0));
-        const spaced = str_k.zScan("3 k", "%r", 0);
+        try std.testing.expectEqual(@as(f64, 2500.0), str_scan.zScanR("2.5k", "%r", 0));
+        try std.testing.expectEqual(@as(f64, 2500.0), str_scan.zScanR("2.5K", "%r", 0));
+        try std.testing.expectEqual(@as(f64, 1.5), str_scan.zScanR("1.5", "%r", 0));
+        const spaced = str_scan.zScan("3 k", "%r", 0);
         try std.testing.expectEqual(@as(f64, 3.0), spaced.r);
         try std.testing.expectEqual(@as(usize, 1), spaced.used);
     }
 
     test "§9.5.4.2 zScan: white space, literals, %%, %m, and what a scan leaves unread" {
         // Control-string white space matches any run, newlines included, or none.
-        try std.testing.expectEqual(@as(i64, 2), str_k.zScanN("1\n\t 2", "%d %d"));
-        try std.testing.expectEqual(@as(i64, 2), str_k.zScanI("1\n\t 2", "%d %d", 1));
-        try std.testing.expectEqual(@as(i64, 1), str_k.zScanN("12", "%d %d"));
+        try std.testing.expectEqual(@as(i64, 2), str_scan.zScanN("1\n\t 2", "%d %d"));
+        try std.testing.expectEqual(@as(i64, 2), str_scan.zScanI("1\n\t 2", "%d %d", 1));
+        try std.testing.expectEqual(@as(i64, 1), str_scan.zScanN("12", "%d %d"));
         // "trailing white space (including newline characters) is left unread
         // unless matched by a directive".
-        try std.testing.expectEqual(@as(usize, 1), str_k.zScan("7  \n", "%d", -1).used);
-        try std.testing.expectEqual(@as(usize, 4), str_k.zScan("7  \n", "%d ", -1).used);
-        try std.testing.expectEqual(@as(usize, 2), str_k.zScan("12 ab", "%d", -1).used);
+        try std.testing.expectEqual(@as(usize, 1), str_scan.zScan("7  \n", "%d", -1).used);
+        try std.testing.expectEqual(@as(usize, 4), str_scan.zScan("7  \n", "%d ", -1).used);
+        try std.testing.expectEqual(@as(usize, 2), str_scan.zScan("12 ab", "%d", -1).used);
         // The leading white space a conversion skips stays consumed when the
         // conversion then fails on the character after it.
-        try std.testing.expectEqual(@as(usize, 2), str_k.zScan("  x", "%d", -1).used);
+        try std.testing.expectEqual(@as(usize, 2), str_scan.zScan("  x", "%d", -1).used);
         // Literal text must be there; `%%` is a literal percent, not an item.
-        try std.testing.expectEqual(@as(i64, 1), str_k.zScanN("a=5", "a=%d"));
-        try std.testing.expectEqual(@as(i64, 0), str_k.zScanN("b=5", "a=%d"));
-        try std.testing.expectEqual(@as(i64, 1), str_k.zScanN("5%", "%d%%"));
+        try std.testing.expectEqual(@as(i64, 1), str_scan.zScanN("a=5", "a=%d"));
+        try std.testing.expectEqual(@as(i64, 0), str_scan.zScanN("b=5", "a=%d"));
+        try std.testing.expectEqual(@as(i64, 1), str_scan.zScanN("5%", "%d%%"));
         // "%m ... Does not read data": an assignment even with no input left.
-        try std.testing.expectEqual(@as(i64, 1), str_k.zScanN("", "%m"));
-        try std.testing.expectEqualStrings("", str_k.zScanS("", "%m", 0));
-        try std.testing.expectEqual(@as(i64, 2), str_k.zScanN("4", "%m%d"));
-        try std.testing.expectEqual(@as(i64, 4), str_k.zScanI("4", "%m%d", 1));
+        try std.testing.expectEqual(@as(i64, 1), str_scan.zScanN("", "%m"));
+        try std.testing.expectEqualStrings("", str_scan.zScanS("", "%m", 0));
+        try std.testing.expectEqual(@as(i64, 2), str_scan.zScanN("4", "%m%d"));
+        try std.testing.expectEqual(@as(i64, 4), str_scan.zScanI("4", "%m%d", 1));
         // An invalid conversion character stops the scan with the items so far,
         // and so does a control string that ends inside a specification.
-        try std.testing.expectEqual(@as(i64, 1), str_k.zScanN("5 6", "%d %q"));
-        try std.testing.expectEqual(@as(i64, 1), str_k.zScanN("5", "%d%"));
-        try std.testing.expectEqual(@as(i64, 1), str_k.zScanN("5", "%d%5"));
+        try std.testing.expectEqual(@as(i64, 1), str_scan.zScanN("5 6", "%d %q"));
+        try std.testing.expectEqual(@as(i64, 1), str_scan.zScanN("5", "%d%"));
+        try std.testing.expectEqual(@as(i64, 1), str_scan.zScanN("5", "%d%5"));
         // `want` counts ASSIGNED items, so a suppressed field has no index, and
         // an item the scan never reached has a zero payload.
-        try std.testing.expectEqual(@as(i64, 3), str_k.zScanI("1 2 3", "%d %*d %d", 1));
-        try std.testing.expectEqual(@as(i64, 0), str_k.zScanI("1", "%d %d", 1));
-        try std.testing.expectEqual(@as(f64, 0.0), str_k.zScanR("1", "%d %d", 1));
-        try std.testing.expectEqualStrings("", str_k.zScanS("1", "%d %d", 1));
+        try std.testing.expectEqual(@as(i64, 3), str_scan.zScanI("1 2 3", "%d %*d %d", 1));
+        try std.testing.expectEqual(@as(i64, 0), str_scan.zScanI("1", "%d %d", 1));
+        try std.testing.expectEqual(@as(f64, 0.0), str_scan.zScanR("1", "%d %d", 1));
+        try std.testing.expectEqualStrings("", str_scan.zScanS("1", "%d %d", 1));
         // EOF: the input ends before any conversion was tried.
-        try std.testing.expectEqual(@as(i64, -1), str_k.zScanN("   ", "%d"));
-        try std.testing.expectEqual(@as(i64, -1), str_k.zScanN("", "%c"));
+        try std.testing.expectEqual(@as(i64, -1), str_scan.zScanN("   ", "%d"));
+        try std.testing.expectEqual(@as(i64, -1), str_scan.zScanN("", "%c"));
     }
 
     test "§9.5.4.2 $sscanf: a null character is white space, for it only" {
         // "For $sscanf, null characters shall also be considered white space."
         // Between two fields, in the format's white-space run, and as a `%s`
         // terminator.
-        try std.testing.expectEqual(@as(i64, 2), str_k.zScanNulN("1\x002", "%d %d"));
-        try std.testing.expectEqual(@as(i64, 7), str_k.zScanNulI("1\x00 7", "%d %d", 1));
-        try std.testing.expectEqualStrings("ab", str_k.zScanNulS("ab\x00cd", "%s", 0));
+        try std.testing.expectEqual(@as(i64, 2), str_scan.zScanNulN("1\x002", "%d %d"));
+        try std.testing.expectEqual(@as(i64, 7), str_scan.zScanNulI("1\x00 7", "%d %d", 1));
+        try std.testing.expectEqualStrings("ab", str_scan.zScanNulS("ab\x00cd", "%s", 0));
         // `$fscanf` keeps C's set: the same input stops it.
-        try std.testing.expectEqual(@as(i64, 1), str_k.zScanN("1\x002", "%d %d"));
-        try std.testing.expectEqualStrings("ab\x00cd", str_k.zScanS("ab\x00cd", "%s", 0));
-        try std.testing.expectEqual(@as(i64, -1), str_k.zScanN("a", "a%d"));
+        try std.testing.expectEqual(@as(i64, 1), str_scan.zScanN("1\x002", "%d %d"));
+        try std.testing.expectEqualStrings("ab\x00cd", str_scan.zScanS("ab\x00cd", "%s", 0));
+        try std.testing.expectEqual(@as(i64, -1), str_scan.zScanN("a", "a%d"));
     }
 
     test "§9.5.4.2 zScan: EOF when the input ends before the first matching failure" {
@@ -4146,9 +4149,9 @@ pub const kernel_tests = struct {
         // character; an input that has ended offers none, so a control string
         // that opens with literal text answers EOF on it (C11 7.21.6.2p16 calls
         // this an input failure before the first conversion).
-        try std.testing.expectEqual(@as(i64, -1), str_k.zScanN("", "x%d"));
-        try std.testing.expectEqual(@as(i64, -1), str_k.zScanN("", "%%"));
-        try std.testing.expectEqual(@as(i64, -1), str_k.zScanN("  ", " x%d"));
+        try std.testing.expectEqual(@as(i64, -1), str_scan.zScanN("", "x%d"));
+        try std.testing.expectEqual(@as(i64, -1), str_scan.zScanN("", "%%"));
+        try std.testing.expectEqual(@as(i64, -1), str_scan.zScanN("  ", " x%d"));
     }
 
     test "§9.4.3 zCReal: special values, zero, the extremes, flags and widths (C11 7.21.6.1)" {
@@ -4185,7 +4188,7 @@ pub const kernel_tests = struct {
             .{ 1.0, 'e', 0, 3, -1, "1.000000e+00" }, // a width below the text
         };
         inline for (rows) |row| {
-            try std.testing.expectEqualStrings(row[5], str_k.zCReal(&b, row[0], row[1], row[2], row[3], row[4]));
+            try std.testing.expectEqualStrings(row[5], str_real.zCReal(&b, row[0], row[1], row[2], row[3], row[4]));
         }
     }
 
@@ -4207,20 +4210,20 @@ pub const kernel_tests = struct {
         //   %g      1234.5678  no precision: C's six significant digits, "1234.57"
         const contract = @import("contract");
         const rows = .{
-            // fmt, value, conv, flags (`str_kernels.zc_*`), width, precision, want
+            // fmt, value, conv, flags (`str_real.zc_*`), width, precision, want
             .{ "%.3g", 1234.5678, 'g', @as(u8, 0), @as(usize, 0), @as(i64, 3), "1234.568" },
             .{ "%10.3g", 1234.5678, 'g', 0, 10, 3, "  1234.568" },
             .{ "%.2g", 0.012345, 'g', 0, 0, 2, "0.01" },
             .{ "%.0g", 7.25, 'g', 0, 0, 0, "7" },
             .{ "%.6g", 1.5, 'g', 0, 0, 6, "1.500000" },
-            .{ "%#.0g", 3.0, 'g', str_k.zc_alt, 0, 0, "3." },
-            .{ "%-8.1G", 2.375, 'G', str_k.zc_left, 8, 1, "2.4     " },
-            .{ "%+.2g", 0.5, 'g', str_k.zc_plus, 0, 2, "+0.50" },
+            .{ "%#.0g", 3.0, 'g', str_real.zc_alt, 0, 0, "3." },
+            .{ "%-8.1G", 2.375, 'G', str_real.zc_left, 8, 1, "2.4     " },
+            .{ "%+.2g", 0.5, 'g', str_real.zc_plus, 0, 2, "+0.50" },
             .{ "%g", 1234.5678, 'g', 0, 0, -1, "1234.57" },
         };
         inline for (rows) |row| {
             var b: [64]u8 = undefined;
-            try std.testing.expectEqualStrings(row[6], str_k.zCReal(&b, row[1], row[2], row[3], row[4], row[5]));
+            try std.testing.expectEqualStrings(row[6], str_real.zCReal(&b, row[1], row[2], row[3], row[4], row[5]));
             const D = struct {
                 pub const say_sites = [_]contract.SaySite{.{ .fmt = row[0], .file = "", .line = 0, .nargs = 1 }};
             };
@@ -4246,7 +4249,7 @@ pub const kernel_tests = struct {
             .{ 1500.0, 2, "1.50K" },
         };
         inline for (rows) |row| {
-            try std.testing.expectEqualStrings(row[2], str_k.zCReal(&b, row[0], 'r', 0, 0, row[1]));
+            try std.testing.expectEqualStrings(row[2], str_real.zCReal(&b, row[0], 'r', 0, 0, row[1]));
         }
     }
 
@@ -4255,21 +4258,21 @@ pub const kernel_tests = struct {
         // exponent: 1.5e-20 is 0.015a and 1e-21 is 0.001a. With no precision the
         // kernel means to print every shortest round-trip digit, as it does above.
         var b: [64]u8 = undefined;
-        try std.testing.expectEqualStrings("0.015a", str_k.zCReal(&b, 1.5e-20, 'r', 0, 0, -1));
-        try std.testing.expectEqualStrings("0.001a", str_k.zCReal(&b, 1e-21, 'r', 0, 0, -1));
+        try std.testing.expectEqualStrings("0.015a", str_real.zCReal(&b, 1.5e-20, 'r', 0, 0, -1));
+        try std.testing.expectEqualStrings("0.001a", str_real.zCReal(&b, 1e-21, 'r', 0, 0, -1));
     }
 
     test "§2.6.2 zCReal %r: a precision keeps the rounded mantissa in [1, 1000)" {
         // 999.96 to one fractional digit is 1000.0, which engineering notation
         // writes 1.0K; 999999 to two is 1.00M, not 1000.00K.
         var b: [64]u8 = undefined;
-        try std.testing.expectEqualStrings("1.0K", str_k.zCReal(&b, 999.96, 'r', 0, 0, 1));
-        try std.testing.expectEqualStrings("1.00M", str_k.zCReal(&b, 999999.0, 'r', 0, 0, 2));
+        try std.testing.expectEqualStrings("1.0K", str_real.zCReal(&b, 999.96, 'r', 0, 0, 1));
+        try std.testing.expectEqualStrings("1.00M", str_real.zCReal(&b, 999999.0, 'r', 0, 0, 2));
     }
 
     test "§9.5.3 zSFormatRt: a run-time format walks the §9.4.3 conversions" {
         var b: [256]u8 = undefined;
-        try std.testing.expectEqualStrings("-42| 3.14|ab|ff", str_k.zSFormatRt(&b, "%d|%5.2f|%s|%x", "top", .{
+        try std.testing.expectEqualStrings("-42| 3.14|ab|ff", str_format.zSFormatRt(&b, "%d|%5.2f|%s|%x", "top", .{
             @as(i64, -42),
             @as(f64, 3.14159),
             @as([]const u8, "ab"),
@@ -4277,9 +4280,9 @@ pub const kernel_tests = struct {
         }));
         // %m is the scope, %l its library binding, %% a percent; a field width
         // and '-' apply to %m as to any conversion.
-        try std.testing.expectEqualStrings("[top][work.top][%][top ][7]", str_k.zSFormatRt(&b, "[%m][%l][%%][%-4m][%d]", "top", .{@as(i64, 7)}));
+        try std.testing.expectEqualStrings("[top][work.top][%][top ][7]", str_format.zSFormatRt(&b, "[%m][%l][%%][%-4m][%d]", "top", .{@as(i64, 7)}));
         // C 7.21.6.1's flags on the integer conversions, and the radices.
-        try std.testing.expectEqualStrings("-0042|-42  |+5| 5|10|101|000000ff|ff|A|AB", str_k.zSFormatRt(&b, "%05d|%-5d|%+d|% d|%o|%b|%08x|%h|%c|%s", "m", .{
+        try std.testing.expectEqualStrings("-0042|-42  |+5| 5|10|101|000000ff|ff|A|AB", str_format.zSFormatRt(&b, "%05d|%-5d|%+d|% d|%o|%b|%08x|%h|%c|%s", "m", .{
             @as(i64, -42),
             @as(i64, -42),
             @as(i64, 5),
@@ -4293,7 +4296,7 @@ pub const kernel_tests = struct {
         }));
         // §4.2.1.1 rounds a real half away from zero for an integer conversion,
         // §2.7 reads a string as base 256, and a real conversion takes an integer.
-        try std.testing.expectEqualStrings("3 -3 16706 2.000000e+00 A", str_k.zSFormatRt(&b, "%d %d %d %e %c", "m", .{
+        try std.testing.expectEqualStrings("3 -3 16706 2.000000e+00 A", str_format.zSFormatRt(&b, "%d %d %d %e %c", "m", .{
             @as(f64, 2.5),
             @as(f64, -2.5),
             @as([]const u8, "AB"),
@@ -4302,78 +4305,78 @@ pub const kernel_tests = struct {
         }));
         // A '%' that ends the string is text, and so is a specification the
         // string ends inside.
-        try std.testing.expectEqualStrings("50%", str_k.zSFormatRt(&b, "%d%", "m", .{@as(i64, 50)}));
-        try std.testing.expectEqualStrings("1a%5", str_k.zSFormatRt(&b, "%da%5", "m", .{@as(i64, 1)}));
+        try std.testing.expectEqualStrings("50%", str_format.zSFormatRt(&b, "%d%", "m", .{@as(i64, 50)}));
+        try std.testing.expectEqualStrings("1a%5", str_format.zSFormatRt(&b, "%da%5", "m", .{@as(i64, 1)}));
         // "If not enough arguments are supplied ... issue a warning and continue
         // execution": the specification with no argument prints nothing.
-        try std.testing.expectEqualStrings("a1bc", str_k.zSFormatRt(&b, "a%db%dc", "m", .{@as(i64, 1)}));
+        try std.testing.expectEqualStrings("a1bc", str_format.zSFormatRt(&b, "a%db%dc", "m", .{@as(i64, 1)}));
     }
 
     test "§3.3 zStringStore/zStrCat/zStrRepeat: NULs dropped, aliasing pieces, N <= 0 copies" {
         var raw = "a\x00b\x00".*;
-        try std.testing.expectEqualStrings("ab", str_k.zStringStore(&raw));
+        try std.testing.expectEqualStrings("ab", str_store.zStringStore(&raw));
         var buf: [8]u8 = undefined;
         @memcpy(buf[0..2], "ab");
         // A piece may be this same site's previous result (`s = {s, "x"}`).
-        try std.testing.expectEqualStrings("abx", str_k.zStrCat(&buf, &.{ buf[0..2], "x" }));
-        try std.testing.expectEqualStrings("ababab", str_k.zStrRepeat(&buf, 3, "ab"));
-        try std.testing.expectEqualStrings("", str_k.zStrRepeat(&buf, 0, "ab"));
-        try std.testing.expectEqualStrings("", str_k.zStrRepeat(&buf, -2, "ab"));
-        try std.testing.expectEqualStrings("", str_k.zStrRepeat(&buf, 5, ""));
+        try std.testing.expectEqualStrings("abx", str_store.zStrCat(&buf, &.{ buf[0..2], "x" }));
+        try std.testing.expectEqualStrings("ababab", str_store.zStrRepeat(&buf, 3, "ab"));
+        try std.testing.expectEqualStrings("", str_store.zStrRepeat(&buf, 0, "ab"));
+        try std.testing.expectEqualStrings("", str_store.zStrRepeat(&buf, -2, "ab"));
+        try std.testing.expectEqualStrings("", str_store.zStrRepeat(&buf, 5, ""));
     }
 
     test "§9.4.1 zMonitor: nothing before the invocation, then one report per change" {
         const site = 4242;
-        try std.testing.expect(str_k.zMonitor(site, &[_]u64{ 1, 2 }, "t") == null);
-        try std.testing.expectEqual(@as(f64, 0.0), str_k.zMonitorArm(site));
+        try std.testing.expect(str_store.zMonitor(site, &[_]u64{ 1, 2 }, "t") == null);
+        try std.testing.expectEqual(@as(f64, 0.0), str_store.zMonitorArm(site));
         // The first accepted step has no "last accepted step" to equal.
-        try std.testing.expectEqualStrings("t", str_k.zMonitor(site, &[_]u64{ 1, 2 }, "t").?);
-        try std.testing.expect(str_k.zMonitor(site, &[_]u64{ 1, 2 }, "t") == null);
-        try std.testing.expectEqualStrings("t", str_k.zMonitor(site, &[_]u64{ 1, 3 }, "t").?);
-        try std.testing.expectEqualStrings("t", str_k.zMonitor(site, &[_]u64{1}, "t").?);
-        try std.testing.expect(str_k.zMonitor(site, &[_]u64{1}, "t") == null);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &[_]u64{ 1, 2 }, "t").?);
+        try std.testing.expect(str_store.zMonitor(site, &[_]u64{ 1, 2 }, "t") == null);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &[_]u64{ 1, 3 }, "t").?);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &[_]u64{1}, "t").?);
+        try std.testing.expect(str_store.zMonitor(site, &[_]u64{1}, "t") == null);
         // The latch is as wide as the site watches: past 64 values it still
         // compares, and reports only the change.
         var many: [65]u64 = @splat(0);
-        try std.testing.expectEqualStrings("t", str_k.zMonitor(site, &many, "t").?);
-        try std.testing.expect(str_k.zMonitor(site, &many, "t") == null);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &many, "t").?);
+        try std.testing.expect(str_store.zMonitor(site, &many, "t") == null);
         many[64] = 1;
-        try std.testing.expectEqualStrings("t", str_k.zMonitor(site, &many, "t").?);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &many, "t").?);
     }
 
     test "§9.5.3 zSBuf/zSRow: one row per call site and slot, of the size asked" {
-        try std.testing.expect(str_k.zSBuf(9001) != str_k.zSBuf(9002));
-        try std.testing.expect(str_k.zSBuf(9001) == str_k.zSBuf(9001));
-        try std.testing.expectEqual(@as(usize, 4096), str_k.zSBuf(9001).len);
-        try std.testing.expectEqual(@as(usize, 100_000), str_k.zSRow(9001, 0, 100_000).len);
-        try std.testing.expect(@intFromPtr(str_k.zSRow(9001, 0, 5000)) != @intFromPtr(str_k.zSRow(9001, 1, 5000)));
+        try std.testing.expect(str_store.zSBuf(9001) != str_store.zSBuf(9002));
+        try std.testing.expect(str_store.zSBuf(9001) == str_store.zSBuf(9001));
+        try std.testing.expectEqual(@as(usize, 4096), str_store.zSBuf(9001).len);
+        try std.testing.expectEqual(@as(usize, 100_000), str_store.zSRow(9001, 0, 100_000).len);
+        try std.testing.expect(@intFromPtr(str_store.zSRow(9001, 0, 5000)) != @intFromPtr(str_store.zSRow(9001, 1, 5000)));
     }
 
     test "§3.3 zStrCat/zStrRepeat: a row past 4096 bytes composes whole" {
-        const row = str_k.zSRow(9003, 0, 10_000);
+        const row = str_store.zSRow(9003, 0, 10_000);
         const a: [4096]u8 = @splat('a');
-        const t = str_k.zStrCat(row, &.{ &a, &a, "xy" });
+        const t = str_store.zStrCat(row, &.{ &a, &a, "xy" });
         try std.testing.expectEqual(@as(usize, 8194), t.len);
         try std.testing.expectEqualStrings("xy", t[8192..]);
         // The previous result as a piece of the next (`s = {s, s}`).
-        try std.testing.expectEqual(@as(usize, 16388), str_k.zStrCat(str_k.zSRow(9004, 0, 16388), &.{ t, t }).len);
-        try std.testing.expectEqual(@as(usize, 9000), str_k.zStrRepeat(row, 3000, "abc").len);
+        try std.testing.expectEqual(@as(usize, 16388), str_store.zStrCat(str_store.zSRow(9004, 0, 16388), &.{ t, t }).len);
+        try std.testing.expectEqual(@as(usize, 9000), str_store.zStrRepeat(row, 3000, "abc").len);
     }
 
     test "§9.5.3 zSFormatRt: a width past 4096 fills a row that holds it" {
-        const row = str_k.zSRow(9005, 0, 16_000);
-        const t = str_k.zSFormatRt(row, "%5000d|%-4999.1f|%-4800l|", "m", .{ @as(i64, 7), @as(f64, 0.25) });
+        const row = str_store.zSRow(9005, 0, 16_000);
+        const t = str_format.zSFormatRt(row, "%5000d|%-4999.1f|%-4800l|", "m", .{ @as(i64, 7), @as(f64, 0.25) });
         try std.testing.expectEqual(@as(usize, 5001 + 5000 + 4801), t.len);
         try std.testing.expectEqualStrings("7|0.2", t[4999..5004]);
         try std.testing.expectEqualStrings(" |work.m ", t[9999..10008]);
         // A precision past 4096 is the field's, not a clamp's.
-        const p = str_k.zSFormatRt(str_k.zSRow(9006, 0, 6000), "%.5000f", "m", .{@as(f64, 1)});
+        const p = str_format.zSFormatRt(str_store.zSRow(9006, 0, 6000), "%.5000f", "m", .{@as(f64, 1)});
         try std.testing.expectEqual(@as(usize, 5002), p.len);
     }
 
     test "zStrHeldN: a field past 4096 bytes holds its text" {
         const big: [70_000]u8 = @splat('q');
-        const h = str_k.zStrHeldN(70_000, &big);
+        const h = str_store.zStrHeldN(70_000, &big);
         try std.testing.expectEqual(@as(usize, 70_000), h.get().len);
     }
 
@@ -4384,19 +4387,19 @@ pub const kernel_tests = struct {
     test "§9.5.4.2 zScan: the most negative integer, and a width no usize holds" {
         // The accumulation wraps, so "-9223372036854775808" arrives as minInt, and
         // its negation must wrap as well rather than trap.
-        try std.testing.expectEqual(@as(i64, std.math.minInt(i64)), str_k.zScanI("-9223372036854775808", "%d", 0));
+        try std.testing.expectEqual(@as(i64, std.math.minInt(i64)), str_scan.zScanI("-9223372036854775808", "%d", 0));
         // A width saturates, and past the input it is the whole input.
-        try std.testing.expectEqual(@as(i64, 12), str_k.zScanI("12", "%99999999999999999999999d", 0));
-        try std.testing.expectEqualStrings("ab", str_k.zScanS("ab", "%99999999999999999999999c", 0));
-        try std.testing.expectEqualStrings("ab", str_k.zScanS("ab cd", "%18446744073709551615s", 0));
+        try std.testing.expectEqual(@as(i64, 12), str_scan.zScanI("12", "%99999999999999999999999d", 0));
+        try std.testing.expectEqualStrings("ab", str_scan.zScanS("ab", "%99999999999999999999999c", 0));
+        try std.testing.expectEqualStrings("ab", str_scan.zScanS("ab cd", "%18446744073709551615s", 0));
     }
 
     test "§9.4.3 zCReal: a field wider than the row returns what fits, '-' or not" {
         // The writer drops an overrun ("1.000000" keeps four bytes), and the left
         // pad must not wait for a width the row cannot reach.
         var b: [4]u8 = undefined;
-        try std.testing.expectEqualStrings("1.00", str_k.zCReal(&b, 1.0, 'f', 1, 10, -1));
-        try std.testing.expectEqualStrings("1.00", str_k.zCReal(&b, 1.0, 'f', 0, 10, -1));
+        try std.testing.expectEqualStrings("1.00", str_real.zCReal(&b, 1.0, 'f', 1, 10, -1));
+        try std.testing.expectEqualStrings("1.00", str_real.zCReal(&b, 1.0, 'f', 0, 10, -1));
     }
 
     // -------------------------------------------------------------------- file
@@ -4664,7 +4667,7 @@ pub const kernel_tests = struct {
         // cg_display's loop: scan, and again over a wider window while it asks.
         var rounds: usize = 0;
         const n = while (true) : (rounds += 1) {
-            const sc = str_k.zScan(file_k.zFWindow(r), "%d", 0);
+            const sc = str_scan.zScan(file_k.zFWindow(r), "%d", 0);
             if (file_k.zFMore(r, sc.used)) continue;
             try std.testing.expectEqual(@as(i64, 42), sc.i);
             break file_k.zFTake(r, sc.n, @intCast(sc.used));
@@ -4741,7 +4744,7 @@ pub const kernel_tests = struct {
             .{ .n = 1, .used = 3, .pos = 5 }, // " 34"; the newline is left unread
             .{ .n = -1, .used = 1, .pos = 6 }, // white space to the end: EOF
         }) |want| {
-            const sc = str_k.zScan(file_k.zFWindow(r), "%d", 0);
+            const sc = str_scan.zScan(file_k.zFWindow(r), "%d", 0);
             try std.testing.expectEqual(want.n, sc.n);
             try std.testing.expectEqual(want.used, sc.used);
             try std.testing.expectEqual(want.n, file_k.zFTake(r, sc.n, @intCast(sc.used)));
