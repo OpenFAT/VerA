@@ -10,6 +10,8 @@ const CollapsePair = @import("plan/topology.zig").CollapsePair;
 const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_call = @import("call.zig");
+const call_operator = @import("call_operator.zig");
+const operator_ctrl = @import("operator_ctrl.zig");
 const cg_strcap = @import("../cg_strcap.zig");
 const gen_host = @import("host_expr.zig");
 const gen_dispatch = @import("dispatch.zig");
@@ -46,8 +48,8 @@ fn scanAccept(self: *Gen) Error!Accept {
         if (u.role != .analog_op) continue;
         const k = u.op;
         a.uses_dt = a.uses_dt or opdb.get(k).needs_dt;
-        if (k == .absdelay and (try gen_call.absdelayFreezes(self, self.names.opArgs(self.mir, i)) or
-            try gen_call.absdelayMaxdSampled(self, self.names.opArgs(self.mir, i)))) a.reads_t_prev = true;
+        if (k == .absdelay and (try operator_ctrl.absdelayFreezes(self, self.names.opArgs(self.mir, i)) or
+            try operator_ctrl.absdelayMaxdSampled(self, self.names.opArgs(self.mir, i)))) a.reads_t_prev = true;
         if (k == .none) continue;
         a.uses_core = a.uses_core or gen_unit.opInputIdx(self, @intCast(i)) != none_u32;
     }
@@ -67,7 +69,7 @@ fn secStep(self: *Gen, n: []const u8, p: cg_filters.FilterPlan, dt: []const u8) 
     try self.w("        if (!({s} > 0.0)) inst.{s}__k = .{{ ", .{ dt, n });
     for (p.sampled, 0..) |v, j| {
         if (j != 0) try self.w(", ", .{});
-        try self.w("{s}", .{try gen_call.ctrlStep(self, &.{v}, 0, "0.0")});
+        try self.w("{s}", .{try operator_ctrl.ctrlStep(self, &.{v}, 0, "0.0")});
     }
     try self.w(" }};\n", .{});
     return self.arena.print("{s}__sec(model, inst.{s}__k)", .{ n, n });
@@ -396,7 +398,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
         \\    inst.discontinuity_order = -1; // §9.17.1
         \\
     , .{});
-    if (try gen_call.anyCrossLocated(self)) try self.w("    inst.vera_cross_retry__ = std.math.inf(f64); // §5.10.3.1\n", .{});
+    if (try operator_ctrl.anyCrossLocated(self)) try self.w("    inst.vera_cross_retry__ = std.math.inf(f64); // §5.10.3.1\n", .{});
     // §9.13.1 the internal seed advances only here, once per accepted point,
     // so the residual it feeds is fixed across the Newton loop.
     if (self.lowered.rng_auto_seeds.items.len != 0) try self.w(
@@ -416,7 +418,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
         const args: []const Mir.Value = if (latest) |*v| v else original_args;
         const lo = gen_unit.opInputIdx(self, @intCast(i));
         if (latest != null) {
-            try self.w("    {{\n        const in = {s};\n", .{try gen_call.ctrlStep(self, args, 0, "0.0")});
+            try self.w("    {{\n        const in = {s};\n", .{try operator_ctrl.ctrlStep(self, args, 0, "0.0")});
         } else if (lo == none_u32) {
             try self.w("    {{\n        const in: f64 = 0.0;\n", .{});
         } else {
@@ -428,12 +430,12 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
             // was nonzero": the row holds s still while assert is nonzero,
             // and the offset latched then makes the value ic(ta) + ∫ from ta.
             .idt_hold => try self.w("        if (({s}) != 0.0) inst.{s}__off = in - ({s});\n", .{
-                try gen_call.ctrlStep(self, args, 2, "0.0"), n, try gen_call.ctrlStep(self, args, 1, "0.0"),
+                try operator_ctrl.ctrlStep(self, args, 2, "0.0"), n, try operator_ctrl.ctrlStep(self, args, 1, "0.0"),
             }),
             .idtmod => try self.w("        inst.{s}__acc = zWrap(zIdtAcc(in, inst.{s}__acc, dt, {s}), {s}, {s});\n", .{
-                n,                                           n,
-                try gen_call.ctrlStep(self, args, 1, "0.0"), try gen_call.ctrlStep(self, args, 2, "0.0"),
-                try gen_call.ctrlStep(self, args, 3, "0.0"),
+                n,                                                n,
+                try operator_ctrl.ctrlStep(self, args, 1, "0.0"), try operator_ctrl.ctrlStep(self, args, 2, "0.0"),
+                try operator_ctrl.ctrlStep(self, args, 3, "0.0"),
             }),
             .absdelay => {
                 // §4.5.7 a full ring keeps its window (`zHistThin`); a revert
@@ -443,24 +445,24 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
                 // §4.5.7 the window a full ring keeps (`zHistThin`): maxdelay
                 // bounds every lookback; without one, td is the lookback.
                 try self.w("        inst.{s}__w = {s};\n", .{ n, if (args.len >= 3)
-                    (if (try gen_call.absdelayMaxdSampled(self, args))
+                    (if (try operator_ctrl.absdelayMaxdSampled(self, args))
                         try self.arena.print("inst.{s}__maxd", .{n})
                     else
                         try gen_host.argF64(self, args, 2, "0.0"))
                 else
-                    try gen_call.absdelayTd(self, n, args, true) });
+                    try operator_ctrl.absdelayTd(self, n, args, true) });
                 // §4.5.7 "the value of td when the absdelay() is first
                 // evaluated shall be used": the static point is that first
                 // evaluation, and `zAbsdelay` passes its input through there.
-                if (try gen_call.absdelayFreezes(self, args)) try self.w(
+                if (try operator_ctrl.absdelayFreezes(self, args)) try self.w(
                     "        if (sim.t <= state.t_prev) inst.{s}__td = {s};\n",
-                    .{ n, try gen_call.ctrlStep(self, args, 1, "0.0") },
+                    .{ n, try operator_ctrl.ctrlStep(self, args, 1, "0.0") },
                 );
                 // §4.5.14 a dynamic maxdelay: its value at the start of the
                 // analysis, latched at the same first evaluation.
-                if (try gen_call.absdelayMaxdSampled(self, args)) try self.w(
+                if (try operator_ctrl.absdelayMaxdSampled(self, args)) try self.w(
                     "        if (sim.t <= state.t_prev) inst.{s}__maxd = {s};\n",
-                    .{ n, try gen_call.ctrlStep(self, args, 2, "0.0") },
+                    .{ n, try operator_ctrl.ctrlStep(self, args, 2, "0.0") },
                 );
                 // §9.17.2 bound the step at td, as the §4.5.12 filter does
                 // with its period: a wider step flattens the delay and the
@@ -469,11 +471,11 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
                 // time; only a positive one binds, since 0 would stop time.
                 try self.w(
                     "        const zad_td = {s};\n        if (zad_td > 0.0) inst.bound_step = @min(inst.bound_step, zad_td);\n",
-                    .{try gen_call.absdelayTd(self, n, args, true)},
+                    .{try operator_ctrl.absdelayTd(self, n, args, true)},
                 );
             },
             .transition => {
-                const t = try gen_call.transitionTimes(self, args);
+                const t = try call_operator.transitionTimes(self, args);
                 try self.w(
                     "        zTransStep(in, &inst.{0s}__from, &inst.{0s}__to, &inst.{0s}__t0, " ++
                         "sim.t, dt, {1s}, {2s}, {3s});\n",
@@ -481,7 +483,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
                 );
             },
             .slew => {
-                const r = try gen_call.slewRates(self, args);
+                const r = try call_operator.slewRates(self, args);
                 try self.w("        inst.{s}__prev = zSlew(zL(S, 0), zL(S, 0).con(in), inst.{s}__prev, dt, {s}, @abs({s})).val();\n", .{
                     n, n, r[0], r[1],
                 });
@@ -499,7 +501,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
                 \\        if (dt > 0.0 and ({1s})) inst.{0s}__t_last = {2s};
                 \\        inst.{0s}__prev = in;
                 \\
-            , .{ n, try gen_call.crossTest(self, n, args, "in", true), try gen_call.lastCrossTime(self, n, "in") }),
+            , .{ n, try operator_ctrl.crossTest(self, n, args, "in", true), try operator_ctrl.lastCrossTime(self, n, "in") }),
             // §5.10.3 only the history moves here; `eval` raises the event,
             // so nothing is observed one timepoint late. `enable` gates the
             // event, not the record, so a re-enabled operator never compares
@@ -508,16 +510,16 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
             // an event this point found outside the box should have fired,
             // read against `__prev` before it moves.
             .cross, .above => {
-                if (k == .cross and try gen_call.crossLocated(self, args)) try self.w(
+                if (k == .cross and try operator_ctrl.crossLocated(self, args)) try self.w(
                     \\        if (sim.kind == .tran and sim.dt > 0.0 and ({1s})) if (zCrossRetry(inst.{0s}__prev, in, sim.t, sim.dt, {2s}, {3s})) |r| {{
                     \\            inst.vera_cross_retry__ = @min(inst.vera_cross_retry__, r);
                     \\        }};
                     \\
                 , .{
                     n,
-                    try gen_call.crossTest(self, n, args, "in", true),
-                    try gen_call.ctrlStep(self, args, 2, "0.0"),
-                    try gen_call.ctrlStep(self, args, 3, "0.0"),
+                    try operator_ctrl.crossTest(self, n, args, "in", true),
+                    try operator_ctrl.ctrlStep(self, args, 2, "0.0"),
+                    try operator_ctrl.ctrlStep(self, args, 3, "0.0"),
                 });
                 try self.w("        inst.{s}__prev = in;\n", .{n});
             },
@@ -530,7 +532,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
                 \\        inst.{0s}__per = period;
                 \\        inst.{0s}__next = zNextTimer(in, period, sim.t) orelse z_inf;
                 \\
-            , .{ n, try gen_call.timerPeriod(self, args) }),
+            , .{ n, try operator_ctrl.timerPeriod(self, args) }),
             // §9.17.2 "no larger than the smallest $bound_step() argument
             // currently active". `in` is already the minimum over every
             // executed `$bound_step` (lowering accumulates it); `@min` folds

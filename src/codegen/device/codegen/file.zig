@@ -13,6 +13,7 @@ const kt = @import("kernel_text.zig");
 const gen_mask = @import("mask.zig");
 const Gen = codegen.Gen;
 const gen_call = @import("call.zig");
+const call_systf = @import("call_systf.zig");
 const gen_host = @import("host_expr.zig");
 const gen_dispatch = @import("dispatch.zig");
 const gen_noise = @import("noise.zig");
@@ -154,7 +155,7 @@ pub fn emitFile(self: *Gen) Error!void {
     try gen_noise.emitNoiseTable(self);
     try gen_noise.emitAcTable(self);
     try gen_opvars.emitOpVarTable(self);
-    try gen_call.emitSystfTable(self);
+    try call_systf.emitSystfTable(self);
     // §4.5.2's accepted-step sweep also carries §9.13.1's internal-seed
     // advance, the only place a stream may move: a per-iteration draw makes
     // the residual non-deterministic and Newton never converges.

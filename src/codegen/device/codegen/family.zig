@@ -22,6 +22,7 @@ const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const codegen = @import("../codegen.zig");
 const gen_call = @import("call.zig");
+const call_analysis = @import("call_analysis.zig");
 const gen_dispatch = @import("dispatch.zig");
 const gen_mask = @import("mask.zig");
 const Gen = codegen.Gen;
@@ -148,7 +149,7 @@ pub fn emitLaneMasks(self: *Gen, deriv_reads: []const u64) Error!void {
 /// card constant, a sum or negation of affine values, an affine value times or
 /// divided by a card constant, or a select or join on a card constant over
 /// affine arms. A card constant varies with neither x nor host-rewritten state
-/// (`gen_call.readsHostState`): `$abstime * V` has a constant partial at every
+/// (`call_analysis.readsHostState`): `$abstime * V` has a constant partial at every
 /// x and a different one at every time. Two `nv`-long scratch columns live
 /// on `g.gpa` for the call. Asserts that the value table holds every
 /// builtin value.
@@ -223,7 +224,7 @@ fn hostStep(self: *const Gen, v: Mir.Value, host: []const bool) bool {
     var g = self.mir.guardConds(inst);
     while (g.next()) |c| if (in(self, host, c)) return true;
     return switch (self.mir.instData(inst)) {
-        .call => |c| gen_call.readsHostState(self, inst) or for (c.args) |a| {
+        .call => |c| call_analysis.readsHostState(self, inst) or for (c.args) |a| {
             if (in(self, host, a)) break true;
         } else false,
         .unary => |u| in(self, host, u.operand),

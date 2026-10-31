@@ -12,6 +12,7 @@ const std = @import("std");
 const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_call = @import("call.zig");
+const operator_ctrl = @import("operator_ctrl.zig");
 const gen_dispatch = @import("dispatch.zig");
 const gen_file = @import("file.zig");
 const gen_render = @import("render.zig");
@@ -98,7 +99,7 @@ pub fn emitInstance(self: *Gen) Error!void {
     // `State` twins would be dead copies.
     if (writesSchedule(self, .bound_step)) try self.hist.append(self.arena, "bound_step");
     if (writesSchedule(self, .discontinuity)) try self.hist.append(self.arena, "discontinuity_order");
-    if (try gen_call.anyCrossLocated(self)) {
+    if (try operator_ctrl.anyCrossLocated(self)) {
         try self.w(
             \\    /// §5.10.3.1 the earliest time inside its own tolerance box at
             \\    /// which a `cross` the accepted step found late should have
@@ -196,11 +197,11 @@ pub fn emitInstance(self: *Gen) Error!void {
                 // §4.5.7 the frozen td of the two-argument form. Emitted only
                 // for a signal-valued td; a constant or parameter one is
                 // already its own first value.
-                if (try gen_call.absdelayFreezes(self, self.names.opArgs(self.mir, i))) {
+                if (try operator_ctrl.absdelayFreezes(self, self.names.opArgs(self.mir, i))) {
                     try self.w("    {s}__td: f64 = 0.0, // §4.5.7 td, frozen at the first evaluation\n", .{n});
                     try keepHist(self, "{s}__td", .{n});
                 }
-                if (try gen_call.absdelayMaxdSampled(self, self.names.opArgs(self.mir, i))) {
+                if (try operator_ctrl.absdelayMaxdSampled(self, self.names.opArgs(self.mir, i))) {
                     try self.w("    {s}__maxd: f64 = 0.0, // §4.5.14 maxdelay, sampled at the start of the analysis\n", .{n});
                     try keepHist(self, "{s}__maxd", .{n});
                 }
