@@ -1,3 +1,19 @@
+//! The module-wide source sweeps, run once the analog blocks are lowered:
+//! the contributions and access-function reads in, a diagnostic out for a
+//! probe branch whose two quantities are both read (§1.3.1, E0423) and for a
+//! loop of potential sources across module instances (§5.6.8.1, E0477).
+//!
+//! Cites: §1.3.1, §1.3.1.2, §5.4.2.1, §5.4.2.2, §5.6.1, §5.6.5, §5.6.7,
+//! §5.6.7.2, §5.6.8.1, §5.6.8.2.
+//!
+//! Contents:
+//! - `pub fn checkProbeBranches(self: *Lower) Oom!void`
+//! - `pub fn pairKey(hi: u32, lo: u32) u64`
+//! - `pub const HierPotential = struct`
+//! - `pub fn checkHierParallel(self: *Lower, lhs: Ast.ExprId, target: Target) Oom!bool`
+//! - `pub fn checkSourceLoops(self: *Lower) Oom!void`
+//! - `pub fn samePair(a_hi: u32, a_lo: u32, b_hi: u32, b_lo: u32) bool`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -8,6 +24,9 @@ const Target = lower_branch.Target;
 const Oom = Lower.Oom;
 const unnamed_branch = Lower.unnamed_branch;
 const ground = Lower.ground;
+
+/// §5.6.8.1 one potential `<+` written through hierarchical net references.
+pub const HierPotential = struct { hi: u32, lo: u32, unit: u32, tok: u32 };
 
 /// §1.3.1: "The potential and flow of a probe branch may not both appear in
 /// expressions in a given module." §5.4.2.1 states it as the ban — "using both
@@ -20,6 +39,8 @@ const ground = Lower.ground;
 /// if nothing is ever contributed to it (§1.3.1). A source branch is exempt:
 /// §5.4.2.2 makes both of its quantities accessible.
 pub fn checkProbeBranches(self: *Lower) Oom!void {
+    assert(self.module != null); // a sweep over the whole module's reads
+    assert(self.accum.items.len == self.out.contributions.items.len);
     // The first read of each quantity per unordered node pair: linear in the
     // reads (a generate loop of 10^5 blocks reads 10^5 times). The report is
     // the earliest read `a` with a later read `b` of the other quantity, at the
@@ -57,21 +78,10 @@ pub fn checkProbeBranches(self: *Lower) Oom!void {
 
 /// `samePair`'s unordered pair as one map key.
 pub fn pairKey(hi: u32, lo: u32) u64 {
-    return @as(u64, @min(hi, lo)) << 32 | @max(hi, lo);
-}
-
-/// §5.6.8.1 one potential `<+` written through hierarchical net references.
-pub const HierPotential = struct { hi: u32, lo: u32, unit: u32, tok: u32 };
-
-/// Does the left-hand side reach another instance's nets by §5.6.8.1's spelling
-/// — a hierarchical NET reference — rather than §5.6.8.2's `inst.branch(...)`?
-fn hierNetForm(self: *const Lower, lhs: Ast.ExprId) bool {
-    const ex = &self.file.exprs;
-    if (ex.extraOf(lhs) == Ast.branch_ref_hier_unnamed) return false;
-    for ([_]Ast.ExprId{ ex.lhs(lhs), ex.rhs(lhs) }) |t| {
-        if (t != .none and ex.tag(t) == .hier_ident) return true;
-    }
-    return false;
+    assert(hi != lo or hi == ground); // `branchOf` refuses `V(n, n)` (E0315)
+    const key = @as(u64, @min(hi, lo)) << 32 | @max(hi, lo);
+    assert(key >> 32 <= key & 0xffff_ffff); // the low word is the larger row
+    return key;
 }
 
 /// §5.6.8.1 "In these cases, a new unnamed branch is created in the module
@@ -86,6 +96,9 @@ fn hierNetForm(self: *const Lower, lhs: Ast.ExprId) bool {
 /// lowering order. Conditional statements count too. Returns true when it
 /// reported.
 pub fn checkHierParallel(self: *Lower, lhs: Ast.ExprId, target: Target) Oom!bool {
+    assert(lhs == .none or self.exprValid(lhs));
+    assert(self.nodeValid(target.hi));
+    assert(self.nodeValid(target.lo));
     if (target.access != .potential or target.br != unnamed_branch) return false;
     const hier = hierNetForm(self, lhs);
     const clash: ?u32 = blk: {
@@ -127,6 +140,8 @@ pub fn checkHierParallel(self: *Lower, lhs: Ast.ExprId, target: Target) Oom!bool
 /// (`Contribution.unit`), the case these clauses create and no single module's
 /// author can see. A loop inside one module is not reported.
 pub fn checkSourceLoops(self: *Lower) Oom!void {
+    assert(self.accum.items.len == self.out.contributions.items.len);
+    assert(self.module != null);
     const Edge = struct { a: u32, b: u32, unit: u32 };
     const n_nodes: u32 = @intCast(self.out.nodes.len + 1); // the last row is ground
     const Ix = struct {
@@ -199,6 +214,30 @@ pub fn checkSourceLoops(self: *Lower) Oom!void {
     }
 }
 
+/// §5.6.7.2 "the same pair of analog nets (or any of its parallel branches)" —
+/// unordered, since (a,b) and (b,a) are the same pair with opposite reference
+/// directions (§1.3.1.2).
+pub fn samePair(a_hi: u32, a_lo: u32, b_hi: u32, b_lo: u32) bool {
+    const same = (a_hi == b_hi and a_lo == b_lo) or (a_hi == b_lo and a_lo == b_hi);
+    if (same) assert(pairKey(a_hi, a_lo) == pairKey(b_hi, b_lo)); // the two spellings of one pair key alike
+    return same;
+}
+
+// ---- private ----
+
+/// Does the left-hand side reach another instance's nets by §5.6.8.1's spelling
+/// — a hierarchical NET reference — rather than §5.6.8.2's `inst.branch(...)`?
+fn hierNetForm(self: *const Lower, lhs: Ast.ExprId) bool {
+    assert(lhs == .none or self.exprValid(lhs));
+    assert(self.file.exprs.tag(lhs) == .branch_access);
+    const ex = &self.file.exprs;
+    if (ex.extraOf(lhs) == Ast.branch_ref_hier_unnamed) return false;
+    for ([_]Ast.ExprId{ ex.lhs(lhs), ex.rhs(lhs) }) |t| {
+        if (t != .none and ex.tag(t) == .hier_ident) return true;
+    }
+    return false;
+}
+
 fn find(root: []u32, x: u32) u32 {
     assert(x < root.len);
     var r = x;
@@ -211,13 +250,6 @@ fn find(root: []u32, x: u32) u32 {
     }
     assert(root[x] == r); // compressed: `x` points straight at its root
     return r;
-}
-
-/// §5.6.7.2 "the same pair of analog nets (or any of its parallel branches)" —
-/// unordered, since (a,b) and (b,a) are the same pair with opposite reference
-/// directions (§1.3.1.2).
-pub fn samePair(a_hi: u32, a_lo: u32, b_hi: u32, b_lo: u32) bool {
-    return (a_hi == b_hi and a_lo == b_lo) or (a_hi == b_lo and a_lo == b_hi);
 }
 
 test find {

@@ -1,3 +1,17 @@
+//! Contribution rows and their accumulators: a `Target` in, its
+//! `Lowered.contributions` row and the SSA places that accumulate it out.
+//! One `.direct` row per (access, pair, branch), per-instance shares of a
+//! shared unnamed row (§5.4.1), and §5.6.1.3's discard of the opposite
+//! quantity.
+//!
+//! Cites: §5.4.1, §5.6.1.3, §5.6.5, §5.6.7.2, §5.6.8.1, §5.6.8.2, §5.8.
+//!
+//! Contents:
+//! - `pub fn contribIndex(self: *Lower, t: Target, tok: u32) Oom!u32`
+//! - `pub fn unitAccum(self: *Lower, row: u32, unit: u32) Oom!Accum`
+//! - `pub fn newContrib(self: *Lower, kind: Kind, t: Target, tok: u32) Oom!u32`
+//! - `pub fn discardOpposite(self: *Lower, t: Target) Oom!void`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Lower = @import("Lower.zig");
@@ -56,6 +70,7 @@ pub fn contribIndex(self: *Lower, t: Target, tok: u32) Oom!u32 {
 /// holding everything the row accumulated so far, which was all its.
 /// Asserts that `row` is shared.
 pub fn unitAccum(self: *Lower, row: u32, unit: u32) Oom!Accum {
+    assert(self.blockValid(self.cur));
     assert(self.out.contributions.items[row].shared);
     const first = self.out.contributions.items[row].unit;
     if (!self.unit_accum.contains(.{ .row = row, .unit = first })) {
@@ -65,28 +80,6 @@ pub fn unitAccum(self: *Lower, row: u32, unit: u32) Oom!Accum {
         try self.builder.writeVariable(own.react, self.cur, try self.builder.readVariable(full.react, self.cur));
     }
     return unitAccumSeeded(self, row, unit);
-}
-
-fn unitAccumSeeded(self: *Lower, row: u32, unit: u32) Oom!Accum {
-    const gop = try self.unit_accum.getOrPut(self.arena, .{ .row = row, .unit = unit });
-    if (!gop.found_existing) gop.value_ptr.* = try newAccum(self);
-    return gop.value_ptr.*;
-}
-
-/// Three fresh places, each seeded 0 in the entry block, which dominates
-/// everything: a contribution that only happens on one arm of an `if` reads 0
-/// on the other (§5.8), and per §5.6.1.3 retains nothing there, which is what
-/// `wrote` starts as.
-fn newAccum(self: *Lower) Oom!Accum {
-    const acc: Accum = .{
-        .resist = self.builder.newPlace(),
-        .react = self.builder.newPlace(),
-        .wrote = self.builder.newPlace(),
-    };
-    try self.builder.writeVariable(acc.resist, .entry, .f_zero);
-    try self.builder.writeVariable(acc.react, .entry, .f_zero);
-    try self.builder.writeVariable(acc.wrote, .entry, .f_zero);
-    return acc;
 }
 
 /// Appends a contribution and its accumulator; the two lists stay parallel, so
@@ -125,6 +118,9 @@ pub fn newContrib(self: *Lower, kind: Kind, t: Target, tok: u32) Oom!u32 {
 /// the cleared `wrote` flag survive as phis, which is the §5.6.5 switch branch:
 /// codegen picks the row's content at run time from both flags.
 pub fn discardOpposite(self: *Lower, t: Target) Oom!void {
+    assert(self.nodeValid(t.hi));
+    assert(self.site_places.items.len == self.out.charge_sites.items.len); // `addSite` keeps them parallel
+    assert(self.blockValid(self.cur));
     // §5.6.1.3 is stated of "a branch", so only the OTHER quantity of THIS
     // branch is discarded: `br` is in the key, and a parallel named branch over
     // the same pair is a different source that keeps what it retained.
@@ -146,4 +142,33 @@ pub fn discardOpposite(self: *Lower, t: Target) Oom!void {
     for (self.out.charge_sites.items, self.site_places.items) |s, p| {
         if (s.contrib == ci) try self.builder.writeVariable(p, self.cur, .f_zero);
     }
+}
+
+// ---- private ----
+
+fn unitAccumSeeded(self: *Lower, row: u32, unit: u32) Oom!Accum {
+    assert(row < self.out.contributions.items.len);
+    const gop = try self.unit_accum.getOrPut(self.arena, .{ .row = row, .unit = unit });
+    if (!gop.found_existing) gop.value_ptr.* = try newAccum(self);
+    assert(self.unit_accum.contains(.{ .row = row, .unit = unit }));
+    return gop.value_ptr.*;
+}
+
+/// Three fresh places, each seeded 0 in the entry block, which dominates
+/// everything: a contribution that only happens on one arm of an `if` reads 0
+/// on the other (§5.8), and per §5.6.1.3 retains nothing there, which is what
+/// `wrote` starts as.
+fn newAccum(self: *Lower) Oom!Accum {
+    assert(self.blockValid(self.cur));
+    const acc: Accum = .{
+        .resist = self.builder.newPlace(),
+        .react = self.builder.newPlace(),
+        .wrote = self.builder.newPlace(),
+    };
+    try self.builder.writeVariable(acc.resist, .entry, .f_zero);
+    try self.builder.writeVariable(acc.react, .entry, .f_zero);
+    try self.builder.writeVariable(acc.wrote, .entry, .f_zero);
+    assert(acc.resist != acc.react); // three distinct places
+    assert(acc.react != acc.wrote);
+    return acc;
 }

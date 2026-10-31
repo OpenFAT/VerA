@@ -1,4 +1,17 @@
+//! §5.9 loops: `while`, `repeat` and `for` in, a CFG loop out (header
+//! sealed after its back edge, Braun SSA), and §6.6.1's genvar `for`
+//! unrolled instead, its scheme folded and refused when it never ends.
+//!
+//! Cites: §3.4, §3.5, §4.2.7, §5.9, §5.9.1, §5.9.2, §5.11, §6.6.1, §9.15.
+//!
+//! Contents:
+//! - `pub fn lowerWhile(self: *Lower, cond: Ast.ExprId, body: Ast.StmtId) Oom!void`
+//! - `pub fn lowerRepeat(self: *Lower, count: Ast.ExprId, body: Ast.StmtId) Oom!void`
+//! - `pub fn lowerFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.StmtId, body: Ast.StmtId) Oom!void`
+//! - private `tryUnrollFor` (`holds`, `next`, `same`)
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
 const Elaborate = @import("elab").Elaborate;
@@ -12,6 +25,8 @@ const Oom = Lower.Oom;
 
 /// Lowers a §5.9.1 `while` loop. The header is sealed only after the back edge (Braun SSA).
 pub fn lowerWhile(self: *Lower, cond: Ast.ExprId, body: Ast.StmtId) Oom!void {
+    assert(cond == .none or self.exprValid(cond));
+    assert(self.blockValid(self.cur));
     const header = try self.mir.addBlock(self.arena);
     try self.gotoBlock(header);
     self.cur = header;
@@ -38,6 +53,8 @@ pub fn lowerWhile(self: *Lower, cond: Ast.ExprId, body: Ast.StmtId) Oom!void {
 
 /// Lowers a §5.9 `repeat (n)` loop as an integer countdown.
 pub fn lowerRepeat(self: *Lower, count: Ast.ExprId, body: Ast.StmtId) Oom!void {
+    assert(count == .none or self.exprValid(count));
+    assert(self.blockValid(self.cur));
     const n = try self.toInt(try lower_expr.lowerExpr(self, count));
     const place = self.builder.newPlace();
     try self.builder.writeVariable(place, self.cur, n);
@@ -74,6 +91,8 @@ pub fn lowerRepeat(self: *Lower, count: Ast.ExprId, body: Ast.StmtId) Oom!void {
 /// Lowers a §5.9.2 `for` loop. A genvar loop (§3.5) is unrolled instead (§6.6.1),
 /// which is what makes `genvar`-indexed nets work.
 pub fn lowerFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.StmtId, body: Ast.StmtId) Oom!void {
+    assert(cond == .none or self.exprValid(cond));
+    assert(self.blockValid(self.cur));
     if (try tryUnrollFor(self, init_s, cond, step, body)) return;
 
     try lower_stmt.lowerStmt(self, init_s);
@@ -106,11 +125,15 @@ pub fn lowerFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
     self.cur = exit;
 }
 
+// ---- private ----
+
 /// §3.5/§6.6.1 genvar loop-generate. Returns false when this is an ordinary
 /// procedural `for` (which `lowerFor` then lowers as a CFG loop). The bounds
 /// fold with `shapeEval`: a parameter in them fixes how many copies of the body
 /// exist, so it is a §3.4 shape parameter like an array bound.
 fn tryUnrollFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.StmtId, body: Ast.StmtId) Oom!bool {
+    assert(cond == .none or self.exprValid(cond));
+    assert(cond == .none or self.exprValid(cond));
     const gv = genvarOf(self, init_s) orelse return false;
     // §6.6.1 "Both the initialization and iteration assignments shall assign
     // to the same genvar": a property of the text, so judged before any trip
@@ -200,6 +223,7 @@ fn tryUnrollFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
 
 /// Returns the genvar a `for` init statement assigns, or null (LRM §3.5).
 fn genvarOf(self: *const Lower, init_s: Ast.StmtId) ?[]const u8 {
+    assert(init_s == .none or @backingInt(init_s) < self.stmtCount());
     const m = self.module orelse return null;
     if (init_s == .none) return null;
     const s = self.file.stmt(init_s);
@@ -208,6 +232,7 @@ fn genvarOf(self: *const Lower, init_s: Ast.StmtId) ?[]const u8 {
     if (self.file.exprs.tag(t) != .ident) return null;
     const name_id = self.file.exprs.strOf(t);
     for (m.genvars) |g| if (g == name_id) return self.file.str(name_id);
+    assert(name_id != .none);
     return null;
 }
 
@@ -216,6 +241,8 @@ fn genvarOf(self: *const Lower, init_s: Ast.StmtId) ?[]const u8 {
 /// genvar assignment's value from folding. `markDiscreteExprs` exempts these
 /// literals from E0130, since the scheme is folded, never executed.
 fn unknownLiteral(self: *const Lower, e: Ast.ExprId) ?Ast.ExprId {
+    assert(e == .none or self.exprValid(e));
+    assert(self.file.exprs.len() != 0 or e == .none);
     if (e == .none) return null;
     const ex = &self.file.exprs;
     if (ex.tag(e) == .logic_literal) return if (ex.logicValue(e).hasUnknown()) e else null;
@@ -225,9 +252,12 @@ fn unknownLiteral(self: *const Lower, e: Ast.ExprId) ?Ast.ExprId {
 }
 
 fn assignValueOf(self: *const Lower, s: Ast.StmtId) ?Ast.ExprId {
+    assert(s == .none or @backingInt(s) < self.stmtCount());
     if (s == .none) return null;
     const st = self.file.stmt(s);
-    return if (st == .assign) st.assign.value else null;
+    const v = if (st == .assign) st.assign.value else null;
+    if (v) |e| assert(e == .none or self.exprValid(e));
+    return v;
 }
 
 test "tryUnrollFor: §6.6.1 a genvar loop's scheme folds, assigns one genvar, holds no x" {

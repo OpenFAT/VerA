@@ -1,14 +1,20 @@
-//! §5 analog statements: blocks, assignments, named blocks.
+//! §5 analog statements: a statement in, its MIR in the current block out.
+//! `lowerStmt` is the dispatch: blocks, triggers, `disable` and jumps are
+//! here; assignments, contributions, conditionals, loops, events and system
+//! tasks are lowered by the file named for them. The walk recurses on
+//! statement nesting; `Lower.stmt_depth` asserts its bound.
 //!
-//! In: statement AST. Out: MIR instructions in the current block.
+//! Cites: §2.9, §3.3, §4.7.1, §5, §5.3, §5.3.2, §5.6, §5.6.7, §5.7, §5.8,
+//! §5.8.3, §5.9, §5.9.1, §5.9.2, §5.10, §5.10.4, §5.11, §6.3, A.6.4, A.6.5,
+//! §6.6, §6.6.1, §6.6.3, §6.7, §9.15.
 //!
-//! LRM clauses this file's code cites: §2.9, §3.2, §3.2.2, §3.3, §4.2.1.1,
-//! §4.2.1.2, §4.2.13, §4.7.1, §4.7.2.3, §5, §5.3, §5.3.2, §5.6, §5.6.7, §5.7,
-//! §5.8, §5.8.3, §5.9, §5.9.1, §5.9.2, §5.10, §5.10.4, §5.11, §6.3, §6.6,
-//! §6.6.1, §6.6.3, §6.7, §9.7.3, §9.15.
-//! IEEE 1364-2005 clauses cited: §5.5.3.
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn lowerStmt(self: *Lower, id: Ast.StmtId) Oom!void`
+//! - `pub fn stopping(self: *const Lower) bool`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Elaborate = @import("elab").Elaborate;
@@ -43,6 +49,14 @@ const NamedBlockCtx = struct { name: []const u8, exit: Mir.Block };
 /// Lowers one statement into the current block (LRM §5).
 pub fn lowerStmt(self: *Lower, id: Ast.StmtId) Oom!void {
     if (id == .none) return;
+    assert(@backingInt(id) < self.stmtCount());
+    // The walk recurses on statement nesting, which the parser measured and
+    // the driver reserved a stack for. A statement is on the walk at most
+    // twice (`lowerTimepoint` lowers its own statement again), so the depth
+    // stays below twice the statement count; a cycle crashes here.
+    self.stmt_depth += 1;
+    defer self.stmt_depth -= 1;
+    assert(self.stmt_depth <= 2 * self.stmtCount() + 1);
     const tok = self.file.stmtTok(id);
     // Same provenance cursor as `lowerExpr`, for the instructions a statement
     // emits outside any expression (phis, jumps, accumulator writes).
@@ -111,6 +125,17 @@ pub fn lowerStmt(self: *Lower, id: Ast.StmtId) Oom!void {
     }
 }
 
+/// Is the innermost enclosing `vera_nodiff` on?
+pub fn stopping(self: *const Lower) bool {
+    assert(self.nodiff_stack.items.len <= self.stmtCount());
+    const s = self.nodiff_stack.items;
+    const on = s.len != 0 and s[s.len - 1];
+    if (on) assert(s.len != 0);
+    return on;
+}
+
+// ---- private ----
+
 /// §5.10.4 / A.6.5 `event_trigger ::= -> hierarchical_event_identifier ;`.
 /// Sets the event's flag for this timepoint; `@(ev)` reads it.
 ///
@@ -118,6 +143,8 @@ pub fn lowerStmt(self: *Lower, id: Ast.StmtId) Oom!void {
 /// `analog_statement`, so a trigger outside an event control is refused, as
 /// `disable` (E0401) is.
 fn lowerEventTrigger(self: *Lower, tok: u32, target: Ast.ExprId) Oom!void {
+    assert(target == .none or self.exprValid(target));
+    assert(self.blockValid(self.cur));
     const tag = self.file.exprs.tag(target);
     if (tag != .ident and tag != .index) return self.err(tok, .E0235, "§5.10.4: a hierarchical named event trigger in an analog block", .{});
     if (!self.in_event_stmt) {
@@ -139,6 +166,8 @@ fn lowerEventTrigger(self: *Lower, tok: u32, target: Ast.ExprId) Oom!void {
 /// `@(<event>) disable <block>;` is the only form an analog block can contain.
 /// Clause 5 has no section for `disable`, so annex A is the citation.
 fn lowerDisable(self: *Lower, tok: u32, name: []const u8) Oom!void {
+    assert(self.blockValid(self.cur));
+    assert(name.len != 0);
     if (!self.in_event_stmt) {
         var b = self.errWith(tok, .E0401);
         b.help("only `@(<event>) disable <block>;` is legal", .{});
@@ -170,6 +199,7 @@ fn lowerDisable(self: *Lower, tok: u32, name: []const u8) Oom!void {
 
 /// §5.3.2 named sequential block: its declarations shadow for the block only.
 fn lowerSeqBlock(self: *Lower, b: Ast.SeqBlock) Oom!void {
+    assert(self.blockValid(self.cur));
     const mark = self.scope_log.items.len;
     defer lower_var.closeScope(self, mark);
     // §5.3.2's key for a local's static location, in step with `scanHeld`'s.
@@ -209,6 +239,7 @@ fn lowerSeqBlock(self: *Lower, b: Ast.SeqBlock) Oom!void {
 /// elaboration flattened onto the instance path (`joinLocal`) and which is
 /// read back here relative to that instance.
 fn scopeElem(self: *Lower, b: Ast.SeqBlock) Oom!?[]const u8 {
+    assert(self.cur_unit < self.design.units.len or self.design.units.len == 0);
     const iter = self.gen_iter;
     self.gen_iter = null; // this block's alone, never a nested one's
     if (b.gen_name != .none) {
@@ -232,6 +263,8 @@ fn scopeElem(self: *Lower, b: Ast.SeqBlock) Oom!?[]const u8 {
 /// unrolled `for` body). Nothing can name one iteration's copy apart from
 /// another, so there is nothing for an ordinal to disambiguate yet.
 fn publishBlockLocals(self: *Lower, label: []const u8, b: Ast.SeqBlock) Oom!void {
+    assert(label.len != 0);
+    assert(self.block_path.len != 0); // `lowerSeqBlock` set it for this labelled block
     for (b.vars) |v| {
         const local = self.file.str(v.name);
         // Arrays are scalarized into `name[i]` entries, which have no scalar
@@ -256,24 +289,22 @@ fn publishBlockLocals(self: *Lower, label: []const u8, b: Ast.SeqBlock) Oom!void
 /// that folds without the model card, since it picks what the device computes.
 /// E0525 otherwise, and the statement keeps its derivatives.
 fn nodiffValue(self: *Lower, a: Ast.LteAttr) Oom!bool {
+    assert(a.value == .none or self.exprValid(a.value));
     if (a.value == .none) return true;
     const c = lower_constfold.foldExpr(self, a.value, false) orelse {
         try self.err(a.main_tok, .E0525, "", .{});
+        assert(self.had_error);
         return false;
     };
     return c.isTrue();
-}
-
-/// Is the innermost enclosing `vera_nodiff` on?
-pub fn stopping(self: *const Lower) bool {
-    const s = self.nodiff_stack.items;
-    return s.len != 0 and s[s.len - 1];
 }
 
 /// §4.7.1 `return`, §5.9 `break` / `continue`. All three close the current
 /// block and continue into dead code, so statements after them are lowered but
 /// unreachable (and dropped by codegen).
 fn lowerJump(self: *Lower, tok: u32, kind: Ast.Stmt.JumpKind, value: Ast.ExprId) Oom!void {
+    assert(value == .none or self.exprValid(value));
+    assert(self.blockValid(self.cur));
     switch (kind) {
         .ret => {
             const rc = self.ret orelse {

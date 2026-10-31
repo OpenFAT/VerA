@@ -1,4 +1,17 @@
+//! §4.6.4 noise generators: an expression in, the small-signal sources it
+//! declares (`NoiseSrc`, deduplicated by generator identity) out, including
+//! those a variable carries from an earlier assignment (§4.6.4.6).
+//!
+//! Cites: §4.6.3, §4.6.4, §4.6.4.1, §4.6.4.2, §4.6.4.3, §4.6.4.4, §4.6.4.6,
+//! A.8.2.
+//!
+//! Contents:
+//! - `pub fn noteVarNoise(self: *Lower, name: []const u8, value: Ast.ExprId) Oom!void`
+//! - `pub fn noiseSrcsOf(self: *const Lower, e: Ast.ExprId, out: *std.ArrayList(NoiseSrc)) error`
+//! - `pub fn addNoiseSrc(arena: std.mem.Allocator, out: *std.ArrayList(NoiseSrc), s: NoiseSrc) error`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -6,41 +19,13 @@ const Oom = Lower.Oom;
 const NoiseKind = Lower.NoiseKind;
 const NoiseSrc = Lower.NoiseSrc;
 
-/// §4.6.4.1/.2/.3 the optional `name`, read straight off the AST: the label is
-/// a string literal, so the call node still carries it.
-///
-/// The name is the trailing string argument of a call with more than one,
-/// the rule all three forms share: `white_noise(pwr, name)`,
-/// `flicker_noise(pwr, exp, name)`, `noise_table(input, name)`. The arity test
-/// keeps §4.6.4.3's one-argument `noise_table("file.tbl")` a filename.
-fn noiseName(self: *const Lower, e: Ast.ExprId) []const u8 {
-    const ex = &self.file.exprs;
-    const args = ex.args(e);
-    if (args.len < 2) return "";
-    const last = args[args.len - 1];
-    if (last == .none or ex.tag(last) != .str_literal) return "";
-    return self.file.str(ex.strOf(last));
-}
-
-/// §4.6.3 `ac_stim`'s LEADING string argument — the analysis the stimulus is
-/// active in. A.8.2 puts the quotation marks inside the production
-/// (`ac_stim ( [ " analysis_identifier " …`), so a literal is the only spelling
-/// there is; "ac" is the clause's own default for the absent one.
-///
-/// The opposite end of the call from `noiseName`: §4.6.4's label is trailing
-/// and optional, §4.6.3's analysis name is leading.
-fn acAnalysisName(self: *const Lower, e: Ast.ExprId) []const u8 {
-    const ex = &self.file.exprs;
-    const args = ex.args(e);
-    if (args.len == 0 or args[0] == .none or ex.tag(args[0]) != .str_literal) return "ac";
-    return self.file.str(ex.strOf(args[0]));
-}
-
 /// §4.6.4: remembers that variable `name` now carries the noise sources of
 /// `value`, so a later `I(a,b) <+ n;` still exports their generators. Called
 /// after `value` is lowered, by an assignment and by a declaration
 /// initializer (`real n = white_noise(pwr);`) alike.
 pub fn noteVarNoise(self: *Lower, name: []const u8, value: Ast.ExprId) Oom!void {
+    assert(value == .none or self.exprValid(value));
+    assert(name.len != 0);
     var srcs: std.ArrayList(NoiseSrc) = .empty;
     try noiseSrcsOf(self, value, &srcs);
     if (srcs.items.len == 0) return;
@@ -60,6 +45,8 @@ pub fn noteVarNoise(self: *Lower, name: []const u8, value: Ast.ExprId) Oom!void 
 /// which is uncorrelated"); a variable read in both arms of a ?: counts once.
 /// Allocates into `self.arena`.
 pub fn noiseSrcsOf(self: *const Lower, e: Ast.ExprId, out: *std.ArrayList(NoiseSrc)) error{OutOfMemory}!void {
+    assert(e == .none or self.exprValid(e));
+    assert(out.items.len <= self.file.exprs.len()); // one generator per noise call at most
     if (e == .none) return;
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
@@ -114,7 +101,45 @@ pub fn noiseSrcsOf(self: *const Lower, e: Ast.ExprId, out: *std.ArrayList(NoiseS
 /// Append one generator unless its identity is already in the list.
 pub fn addNoiseSrc(arena: std.mem.Allocator, out: *std.ArrayList(NoiseSrc), s: NoiseSrc) error{OutOfMemory}!void {
     for (out.items) |x| if (x.id == s.id) return;
+    const len = out.items.len;
     try out.append(arena, s);
+    assert(out.items.len == len + 1);
+}
+
+// ---- private ----
+
+/// §4.6.4.1/.2/.3 the optional `name`, read straight off the AST: the label is
+/// a string literal, so the call node still carries it.
+///
+/// The name is the trailing string argument of a call with more than one,
+/// the rule all three forms share: `white_noise(pwr, name)`,
+/// `flicker_noise(pwr, exp, name)`, `noise_table(input, name)`. The arity test
+/// keeps §4.6.4.3's one-argument `noise_table("file.tbl")` a filename.
+fn noiseName(self: *const Lower, e: Ast.ExprId) []const u8 {
+    assert(e == .none or self.exprValid(e));
+    assert(self.file.exprs.tag(e) == .noise_call);
+    const ex = &self.file.exprs;
+    const args = ex.args(e);
+    if (args.len < 2) return "";
+    const last = args[args.len - 1];
+    if (last == .none or ex.tag(last) != .str_literal) return "";
+    return self.file.str(ex.strOf(last));
+}
+
+/// §4.6.3 `ac_stim`'s LEADING string argument — the analysis the stimulus is
+/// active in. A.8.2 puts the quotation marks inside the production
+/// (`ac_stim ( [ " analysis_identifier " …`), so a literal is the only spelling
+/// there is; "ac" is the clause's own default for the absent one.
+///
+/// The opposite end of the call from `noiseName`: §4.6.4's label is trailing
+/// and optional, §4.6.3's analysis name is leading.
+fn acAnalysisName(self: *const Lower, e: Ast.ExprId) []const u8 {
+    assert(e == .none or self.exprValid(e));
+    assert(self.file.exprs.tag(e) == .noise_call);
+    const ex = &self.file.exprs;
+    const args = ex.args(e);
+    if (args.len == 0 or args[0] == .none or ex.tag(args[0]) != .str_literal) return "ac";
+    return self.file.str(ex.strOf(args[0]));
 }
 
 test addNoiseSrc {

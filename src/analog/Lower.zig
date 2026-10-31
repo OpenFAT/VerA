@@ -55,6 +55,7 @@
 //! - `pub fn effectPlace(self: *Lower) Oom!Ssa.Place`
 //! - `pub fn exprValid(self: *const Lower, e: Ast.ExprId) bool`
 //! - `pub fn valueValid(self: *const Lower, v: Mir.Value) bool`
+//! - `pub fn stmtCount(self: *const Lower) usize`
 //! - `pub fn blockValid(self: *const Lower, b: Mir.Block) bool`
 //! - `pub fn nodeValid(self: *const Lower, n: u32) bool`
 
@@ -70,6 +71,7 @@ const Ssa = @import("ssa.zig");
 const lower_module = @import("module.zig");
 const coerce = @import("coerce.zig");
 const harness = @import("harness.zig");
+
 // §7.2.2 the discrete context: which statements and nets are digital.
 const lower_context = @import("context.zig");
 // §3.6 disciplines and natures, §3.11 net compatibility.
@@ -568,6 +570,9 @@ contrib_target: ?lower_branch.Target = null,
 /// The number of `lowerExpr` frames on the stack: the walk's recursion depth,
 /// asserted below the expression table's size (expr.zig's header).
 expr_depth: u32 = 0,
+/// The number of `lowerStmt` frames on the stack, asserted below twice the
+/// statement table's size (stmt.zig's `lowerStmt`).
+stmt_depth: u32 = 0,
 
 const Lower = @This();
 
@@ -642,6 +647,7 @@ pub fn init(
 /// cannot reclaim. Every other table lives in `arena`.
 pub fn deinit(self: *Lower) void {
     assert(self.expr_depth == 0); // no expression walk is mid-flight
+    assert(self.stmt_depth == 0);
     assert(self.static_cond_depth <= self.cond_depth);
     self.builder.deinit();
 }
@@ -764,6 +770,13 @@ pub fn exprValid(self: *const Lower, e: Ast.ExprId) bool {
 /// numbered. For the sub-files' exit asserts.
 pub fn valueValid(self: *const Lower, v: Mir.Value) bool {
     return @backingInt(v) < Mir.Value.first_dynamic + self.mir.defs.len;
+}
+
+/// Returns how many statement rows `file` holds, its parse's included (an
+/// overlay's `StmtId`s number the base's rows first).
+pub fn stmtCount(self: *const Lower) usize {
+    const base = if (self.file.base) |b| b.stmts.items.len else 0;
+    return base + self.file.stmts.items.len;
 }
 
 /// Reports whether `b` is a block this pass's `mir` holds.

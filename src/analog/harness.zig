@@ -8,7 +8,7 @@
 //! - `pub const InitError = Preprocessor.Error || Parser.Error`
 //! - `pub const VerdictError = InitError || Error || error{TestUnexpectedResult}`
 //! - `pub const Case = struct`
-//! - `pub const Harness = struct` (`init`, `lower`, `count`, `dump`, `deinit`)
+//! - `pub const Harness = struct` (`init`, `lower`, `lowerOnStack`, `count`, `dump`, `deinit`)
 //! - `pub fn expectVerdict(src: []const u8, want: ?diag.Code) VerdictError!void`
 //! - `pub fn expectBodyVerdict(decls: []const u8, body: []const u8, want: ?diag.Code) VerdictError!void`
 //! - `pub fn expectBodies(cases: []const Case) VerdictError!void`
@@ -87,6 +87,22 @@ pub const Harness = struct {
             error.DiagnosticsReported => return null,
             else => |other| return other, // else: anything but a verdict fails the test
         };
+    }
+
+    /// Lowers the file as `lower` does, on a thread whose stack is
+    /// `stack_bytes`: for a test of a walk whose depth the input controls,
+    /// sized so a walk that recursed on that depth would overflow it.
+    /// Errors: `lower`'s, or `std.Thread.SpawnError` when no thread starts.
+    pub fn lowerOnStack(h: *Harness, stack_bytes: usize) (Error || std.Thread.SpawnError)!?Lowered {
+        assert(stack_bytes >= 64 << 10); // below that no lowering fits, recursive or not
+        var result: Error!?Lowered = error.NoModule;
+        const t = try std.Thread.spawn(.{ .stack_size = stack_bytes }, lowerInto, .{ h, &result });
+        t.join();
+        return result;
+    }
+
+    fn lowerInto(h: *Harness, out: *Error!?Lowered) void {
+        out.* = h.lower();
     }
 
     /// Returns how many diagnostics of `code` were recorded.

@@ -1,9 +1,38 @@
+//! §7.3.2.1 non-finite contributions: a contributed `Mir.Value` in, E0424
+//! out when a constant subtree of it folds to NaN or an infinity. A
+//! post-order worklist over the value's operands, memoized per statement.
+//!
+//! Cites: §7.3.2.1.
+//!
+//! Contents:
+//! - `pub fn checkFiniteContribution(self: *Lower, lhs: Ast.ExprId, v: Mir.Value) Oom!void`
+//! - `pub const FiniteScan = struct`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
 const Const = Lower.Const;
 const Oom = Lower.Oom;
+
+/// One visited value: its fold, and the first non-finite fold met in its
+/// subtree, in the scan's order.
+pub const FiniteScan = struct { r: ?Const, bad: ?f64 };
+
+/// At most two operands, in order: what `scanFinite` walks under one value.
+const Operands = struct {
+    items: [2]Mir.Value = undefined,
+    len: u8 = 0,
+
+    fn slice(o: *const Operands) []const Mir.Value {
+        return o.items[0..o.len];
+    }
+    fn push(o: *Operands, v: Mir.Value) void {
+        o.items[o.len] = v;
+        o.len += 1;
+    }
+};
 
 /// §7.3.2.1: "While use of these special numbers in digital expressions is not
 /// an error, it is illegal to assign these values to a branch through
@@ -18,6 +47,8 @@ const Oom = Lower.Oom;
 /// fold as a unit, so the scan folds every subtree it can and reports the first
 /// non-finite one.
 pub fn checkFiniteContribution(self: *Lower, lhs: Ast.ExprId, v: Mir.Value) Oom!void {
+    assert(lhs == .none or self.exprValid(lhs));
+    assert(self.valueValid(v));
     self.finite_scan.clearRetainingCapacity();
     var bad: ?f64 = null;
     _ = try scanFinite(self, v, &bad);
@@ -27,9 +58,7 @@ pub fn checkFiniteContribution(self: *Lower, lhs: Ast.ExprId, v: Mir.Value) Oom!
     });
 }
 
-/// One visited value: its fold, and the first non-finite fold met in its
-/// subtree, in the scan's order.
-pub const FiniteScan = struct { r: ?Const, bad: ?f64 };
+// ---- private ----
 
 /// Fold `v0` where it is constant, recording the first non-finite result in
 /// `bad`. Returns null for anything not constant — a probe, a parameter (the
@@ -42,6 +71,7 @@ pub const FiniteScan = struct { r: ?Const, bad: ?f64 };
 /// exist until lowering has finished, and this rule has to be reported on the
 /// `<+` that broke it.
 fn scanFinite(self: *Lower, v0: Mir.Value, bad: *?f64) Oom!?Const {
+    assert(self.valueValid(v0));
     // ponytail: arithmetic and sign only (`accuses`). `exp(1000)` overflows to
     // +inf as well, but §7.3.2.1's examples are IEEE division and every operator
     // added here widens the surface for a false accusation. Add transcendentals
@@ -75,23 +105,10 @@ fn scanFinite(self: *Lower, v0: Mir.Value, bad: *?f64) Oom!?Const {
     return s.r;
 }
 
-/// At most two operands, in order: what `scanFinite` walks under one value.
-const Operands = struct {
-    items: [2]Mir.Value = undefined,
-    len: u8 = 0,
-
-    fn slice(o: *const Operands) []const Mir.Value {
-        return o.items[0..o.len];
-    }
-    fn push(o: *Operands, v: Mir.Value) void {
-        o.items[o.len] = v;
-        o.len += 1;
-    }
-};
-
 /// The operands `scanFinite` walks under `v`, aliases resolved: those of a
 /// unary or binary instruction, in order. Everything else is a leaf.
 fn finiteOperands(self: *Lower, v: Mir.Value) Operands {
+    assert(self.valueValid(v));
     var out: Operands = .{};
     switch (self.mir.valueDef(v)) {
         .inst_result => |inst| switch (self.mir.instData(inst)) {
@@ -111,6 +128,8 @@ fn finiteOperands(self: *Lower, v: Mir.Value) Operands {
 /// IEEE arithmetic and sign (`accuses`), and the first non-finite value met,
 /// operands before the value itself and lhs before rhs.
 fn scanOne(self: *Lower, v: Mir.Value, ops: Operands) FiniteScan {
+    assert(self.valueValid(v));
+    assert(ops.len <= 2);
     var sub: ?f64 = null;
     for (ops.slice()) |o| if (sub == null) {
         sub = self.finite_scan.get(o).?.bad;

@@ -1,3 +1,16 @@
+//! §4.5.15/§5.8.1 static conditions: an expression or a lowered value in,
+//! whether it can change during the simulation out. `isAnalysisOrConst` reads
+//! the spelling (A.8.3); `isStaticValue` follows the value's dependences
+//! with a worklist, since those are as long as the code before it.
+//!
+//! Cites: §3.2.2, §3.4, §3.4.4, §4.4, §4.5.15, §5.5.3, §5.8.1, §6.8, A.8.2,
+//! A.8.3, A.8.4, §9.10, §9.15, §9.18, §9.19.
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn isAnalysisOrConst(self: *const Lower, e: Ast.ExprId) bool`
+//! - `pub fn isStaticValue(self: *Lower, v: Mir.Value) Oom!bool`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -32,11 +45,22 @@ pub const State = struct {
 /// or a block whose deciding branches are.
 const WalkItem = union(enum) { value: Mir.Value, block: Mir.Block };
 
+/// The calls whose value is fixed for the whole simulation: A.8.2's
+/// `analysis()`, §9.15's `$temperature` and `$vt`, §9.18's six system
+/// parameters, and the runtime array read (a pure selection over its operands).
+const static_calls = std.StaticStringMap(void).initComptime(.{
+    .{"analysis"},   .{"$temperature"}, .{"$vt"},    .{"$mfactor"}, .{"$xposition"},
+    .{"$yposition"}, .{"$angle"},       .{"$hflip"}, .{"$vflip"},   .{"$idx"},
+    .{"$idx$int"},   .{"$idx$str"},
+});
+
 /// Reports whether `e` is an A.8.3 `analysis_or_constant_expression` (the §5.8.1
 /// carve-out): literals, parameters and `analysis()` calls combined with operators,
 /// none of which can change between Newton iterations. Unlike `foldExpr(..., false)`,
 /// a parameter qualifies: the card may override it, but not mid-solve.
 pub fn isAnalysisOrConst(self: *const Lower, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
+    assert(self.file.exprs.len() != 0 or e == .none);
     if (e == .none) return false;
     const ex = &self.file.exprs;
     return switch (ex.tag(e)) {
@@ -144,6 +168,8 @@ pub fn isAnalysisOrConst(self: *const Lower, e: Ast.ExprId) bool {
 /// variable is dynamic even when every write to it is static, for the same
 /// reason.
 pub fn isStaticValue(self: *Lower, v: Mir.Value) Oom!bool {
+    assert(self.valueValid(v));
+    assert(self.static_state.work.items.len == 0); // walks never nest
     const st = &self.static_state;
     st.seen.clearRetainingCapacity();
     st.blocks.clearRetainingCapacity();
@@ -158,14 +184,7 @@ pub fn isStaticValue(self: *Lower, v: Mir.Value) Oom!bool {
     return true;
 }
 
-/// The calls whose value is fixed for the whole simulation: A.8.2's
-/// `analysis()`, §9.15's `$temperature` and `$vt`, §9.18's six system
-/// parameters, and the runtime array read (a pure selection over its operands).
-const static_calls = std.StaticStringMap(void).initComptime(.{
-    .{"analysis"},   .{"$temperature"}, .{"$vt"},    .{"$mfactor"}, .{"$xposition"},
-    .{"$yposition"}, .{"$angle"},       .{"$hflip"}, .{"$vflip"},   .{"$idx"},
-    .{"$idx$int"},   .{"$idx$str"},
-});
+// ---- private ----
 
 /// Judges `root` and everything it depends on, through operands and the
 /// branches deciding each phi's incoming edges: true when every one is static.
@@ -305,4 +324,24 @@ test isAnalysisOrConst {
             return e;
         };
     }
+}
+
+test "isStaticValue: a 5000-statement dependence chain is judged on a 1 MiB stack" {
+    // Width, not nesting: `y = y + 1.0;` 5000 times is a 5000-deep chain of
+    // `fadd` values that no parse nesting measures, so the recursive walk from
+    // the `if` overflowed the stack (crashed at 20000 under `vera --emit-zig`,
+    // and at 5000 here). Oracle: the module lowers with no diagnostic.
+    const gpa = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    try src.appendSlice(gpa, "module m(p, n);\n  inout p, n;\n  electrical p, n;\n  real y;\n  analog begin\n    y = V(p, n);\n");
+    for (0..5000) |_| try src.appendSlice(gpa, "    y = y + 1.0;\n");
+    try src.appendSlice(gpa, "    if (y > 0.0) y = 2.0;\n    I(p, n) <+ y;\n  end\nendmodule\n");
+    var h: Lower.Harness = undefined;
+    try h.init(gpa, src.items);
+    defer h.deinit();
+    _ = try h.lowerOnStack(1 << 20) orelse {
+        h.dump();
+        return error.TestUnexpectedResult;
+    };
 }

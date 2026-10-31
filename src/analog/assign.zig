@@ -1,4 +1,18 @@
+//! §5.7 procedural assignment: a target and a value in, the store out, for
+//! scalars, constant and run-time array elements (§3.2.2), whole arrays and
+//! assignment patterns, wide `reg`s (IEEE 1364-2005 §5.5.3), with the value
+//! coerced to the target's type (§4.2.1).
+//!
+//! Cites: §3.2.2, §3.3, §4.2.1.1, §4.2.1.2, §4.2.13, §4.7.1, §4.7.2.3,
+//! §5.4.1, §5.5.3, §5.7, A.8.5; IEEE 1364-2005 §5.5.3.
+//!
+//! Contents:
+//! - `pub fn lowerAssign(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!void`
+//! - `pub fn writeRuntimeIndex(self: *Lower, target: Ast.ExprId, at_e: Ast.ExprId, tv: TypedValue) Oom!bool`
+//! - `pub fn runtimeArrayIndex(self: *Lower, subs: []const Ast.ExprId, dims: []const lower_shape.Bounds) Oom!Mir.Value`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
@@ -17,20 +31,13 @@ const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const ArrayInfo = Lower.ArrayInfo;
 
-/// The right-hand side of an assignment: its value, with no derivative under
-/// `vera_nodiff`. Only a real carries one.
-// ponytail: an array-to-array copy (`A = B`, a slice) keeps its elements'
-// derivatives; stop them where they are assigned, or route those copies here.
-fn assignValue(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
-    const tv = try lower_expr.lowerExpr(self, e);
-    if (!lower_stmt.stopping(self) or tv.ty != .real) return tv;
-    return .{ .v = try self.emit(.dstop, &.{tv.v}), .ty = .real };
-}
-
 /// §5.7 procedural assignment. The target is an lvalue expression so array
 /// elements (§3.2.2) work; the value is coerced to the target's type
 /// (§4.2.1.1/§4.2.1.2).
 pub fn lowerAssign(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!void {
+    assert(target == .none or self.exprValid(target));
+    assert(value == .none or self.exprValid(value));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     // The rhs is not lowered: a whole array there is no scalar value (E0314).
     if (try paramArrayTarget(self, target)) return;
@@ -96,53 +103,14 @@ pub fn lowerAssign(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!void
     if (ex.tag(target) == .ident) try lower_noise_src.noteVarNoise(self, self.file.str(ex.strOf(target)), value);
 }
 
-/// §5.7 "The array on the LHS of the assignment shall be an array variable,
-/// a slice of an array variable or an array parameter (when the default value
-/// of the parameter is assigned)": past its declaration an array parameter is
-/// no target, whole, sliced or one element. Reports E0312 and returns true
-/// for one.
-fn paramArrayTarget(self: *Lower, target: Ast.ExprId) Oom!bool {
-    var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
-    const chain = (try lower_lvalue.indexChain(self, target, &subs)) orelse return false;
-    const name = self.file.str(chain.name);
-    const info = self.arrays.get(name) orelse return false;
-    if (!info.param) return false;
-    var b = self.errWith(self.file.exprs.mainTok(target), .E0312);
-    b.msg("array parameter `{s}`", .{name});
-    b.help("declare an array variable if the values change during the solve", .{});
-    try b.emit();
-    return true;
-}
-
-/// Runtime scalar-element assignment. Each cell receives `select(index == k,
-/// value, old)`, leaving all other cells unchanged, including on an invalid index.
-/// ponytail: N masked writes per assignment; replace scalarization with explicit
-/// array storage if large mutable arrays make this compile-time expansion costly.
-fn assignRuntimeIndex(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!bool {
-    // Asked before the rhs is lowered: `false` falls through to the scalar path,
-    // which lowers `value` itself, and lowering it twice would repeat side effects.
-    if (!try isRuntimeElem(self, target)) return false;
-    return writeRuntimeIndex(self, target, value, try assignValue(self, value));
-}
-
-/// Reports whether `target` is an element of a declared array whose subscript is
-/// only known at run time; the precondition `assignRuntimeIndex` and §4.7.2.3's
-/// output-argument writeback share.
-fn isRuntimeElem(self: *Lower, target: Ast.ExprId) Oom!bool {
-    var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
-    const chain = (try lower_lvalue.indexChain(self, target, &subs)) orelse return false;
-    for (chain.subs) |s| {
-        if (lower_constfold.foldExpr(self, s, false) != null) continue;
-        return self.arrays.contains(self.file.str(chain.name));
-    }
-    return false;
-}
-
 /// Writes an already lowered value to an array element with a runtime subscript,
 /// as masked writes; §4.7.2.3's writeback has a `Mir.Value` and no expression.
 /// Returns false when `target` is not such an element. `at_e` is only the
 /// diagnostic site for §3.3's string conversion.
 pub fn writeRuntimeIndex(self: *Lower, target: Ast.ExprId, at_e: Ast.ExprId, tv: TypedValue) Oom!bool {
+    assert(target == .none or self.exprValid(target));
+    assert(at_e == .none or self.exprValid(at_e));
+    assert(self.valueValid(tv.v));
     if (!try isRuntimeElem(self, target)) return false;
     var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
     const chain = (try lower_lvalue.indexChain(self, target, &subs)).?;
@@ -180,6 +148,7 @@ pub fn writeRuntimeIndex(self: *Lower, target: Ast.ExprId, at_e: Ast.ExprId, tv:
 /// -1, which every masked write leaves untouched. Asserts that `subs` has one
 /// subscript per dimension of `dims`.
 pub fn runtimeArrayIndex(self: *Lower, subs: []const Ast.ExprId, dims: []const lower_shape.Bounds) Oom!Mir.Value {
+    assert(self.blockValid(self.cur));
     std.debug.assert(subs.len == dims.len);
     var flat = Mir.Value.zero;
     var valid = Mir.Value.one;
@@ -206,6 +175,68 @@ pub fn runtimeArrayIndex(self: *Lower, subs: []const Ast.ExprId, dims: []const l
     return self.emit(.select, &.{ valid, flat, try self.mir.addIntConst(self.arena, -1) });
 }
 
+// ---- private ----
+
+/// The right-hand side of an assignment: its value, with no derivative under
+/// `vera_nodiff`. Only a real carries one.
+// ponytail: an array-to-array copy (`A = B`, a slice) keeps its elements'
+// derivatives; stop them where they are assigned, or route those copies here.
+fn assignValue(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
+    const tv = try lower_expr.lowerExpr(self, e);
+    if (!lower_stmt.stopping(self) or tv.ty != .real) return tv;
+    return .{ .v = try self.emit(.dstop, &.{tv.v}), .ty = .real };
+}
+
+/// §5.7 "The array on the LHS of the assignment shall be an array variable,
+/// a slice of an array variable or an array parameter (when the default value
+/// of the parameter is assigned)": past its declaration an array parameter is
+/// no target, whole, sliced or one element. Reports E0312 and returns true
+/// for one.
+fn paramArrayTarget(self: *Lower, target: Ast.ExprId) Oom!bool {
+    assert(target == .none or self.exprValid(target));
+    assert(self.blockValid(self.cur));
+    var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
+    const chain = (try lower_lvalue.indexChain(self, target, &subs)) orelse return false;
+    const name = self.file.str(chain.name);
+    const info = self.arrays.get(name) orelse return false;
+    if (!info.param) return false;
+    var b = self.errWith(self.file.exprs.mainTok(target), .E0312);
+    b.msg("array parameter `{s}`", .{name});
+    b.help("declare an array variable if the values change during the solve", .{});
+    try b.emit();
+    return true;
+}
+
+/// Runtime scalar-element assignment. Each cell receives `select(index == k,
+/// value, old)`, leaving all other cells unchanged, including on an invalid index.
+/// ponytail: N masked writes per assignment; replace scalarization with explicit
+/// array storage if large mutable arrays make this compile-time expansion costly.
+fn assignRuntimeIndex(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!bool {
+    assert(target == .none or self.exprValid(target));
+    assert(value == .none or self.exprValid(value));
+    // Asked before the rhs is lowered: `false` falls through to the scalar path,
+    // which lowers `value` itself, and lowering it twice would repeat side effects.
+    if (!try isRuntimeElem(self, target)) return false;
+    return writeRuntimeIndex(self, target, value, try assignValue(self, value));
+}
+
+/// Reports whether `target` is an element of a declared array whose subscript is
+/// only known at run time; the precondition `assignRuntimeIndex` and §4.7.2.3's
+/// output-argument writeback share.
+fn isRuntimeElem(self: *Lower, target: Ast.ExprId) Oom!bool {
+    assert(target == .none or self.exprValid(target));
+    assert(self.blockValid(self.cur));
+    var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
+    const chain = (try lower_lvalue.indexChain(self, target, &subs)) orelse return false;
+    for (chain.subs) |s| {
+        if (lower_constfold.foldExpr(self, s, false) != null) continue;
+        return self.arrays.contains(self.file.str(chain.name));
+    }
+    return false;
+}
+
 /// §5.7 unpacked array assignment, `A = B`: "Array assignments shall only be
 /// done with arrays that are compatible. An array, or a slice of such an array,
 /// shall be assignment compatible with any other such array or slice if all the
@@ -224,6 +255,8 @@ fn copyWholeArray(
     dst_name: []const u8,
     dst: ArrayInfo,
 ) Oom!bool {
+    assert(target == .none or self.exprValid(target));
+    assert(value == .none or self.exprValid(value));
     const src_name = self.file.str(self.file.exprs.strOf(value));
     const src = self.arrays.get(src_name) orelse return false;
 

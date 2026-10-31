@@ -1,4 +1,17 @@
+//! §5.7 / A.8.5 array slices: a short subscript list in, the row it names
+//! out, read into values (`readSliceCells`) or written from them
+//! (`writeSliceCells`), with a run-time prefix as one select per cell.
+//!
+//! Cites: §3.2.2, §4.2.1.1, §5.7, A.8.5.
+//!
+//! Contents:
+//! - `pub fn arrayRef(self: *Lower, e: Ast.ExprId, buf: *[lower_shape.max_stack_dims]Ast.ExprId) Oom!?ArraySlice`
+//! - `pub fn copyArraySlice(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!bool`
+//! - `pub fn readSliceCells(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, sd: []const lower_shape.Bounds, out: []Mir.Value) Oom!bool`
+//! - `pub fn writeSliceCells(self: *Lower, at_e: Ast.ExprId, d: ArraySlice, dd: []const lower_shape.Bounds, vals: []const Mir.Value) Oom!bool`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -19,6 +32,8 @@ const ArraySlice = struct { name: []const u8, info: ArrayInfo, subs: []const Ast
 /// Returns `e` as a whole-array or slice reference, or null for anything else,
 /// including a full subscript list. `subs` may point into `buf`.
 pub fn arrayRef(self: *Lower, e: Ast.ExprId, buf: *[lower_shape.max_stack_dims]Ast.ExprId) Oom!?ArraySlice {
+    assert(e == .none or self.exprValid(e));
+    assert(buf.len == lower_shape.max_stack_dims);
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
         .ident => {
@@ -58,6 +73,8 @@ pub fn arrayRef(self: *Lower, e: Ast.ExprId, buf: *[lower_shape.max_stack_dims]A
 /// Returns false when neither side is a slice, so the whole-array and
 /// runtime-element paths keep their own diagnostics.
 pub fn copyArraySlice(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!bool {
+    assert(target == .none or self.exprValid(target));
+    assert(value == .none or self.exprValid(value));
     var tbuf: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
     var vbuf: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
     const dst = (try arrayRef(self, target, &tbuf)) orelse return false;
@@ -151,6 +168,8 @@ pub fn readSliceCells(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, sd: []const
 /// The mirror image: writes `vals` into every cell of `d`'s slice. Asserts
 /// that `dd` is the dimensions `d.subs` leaves.
 pub fn writeSliceCells(self: *Lower, at_e: Ast.ExprId, d: ArraySlice, dd: []const lower_shape.Bounds, vals: []const Mir.Value) Oom!bool {
+    assert(at_e == .none or self.exprValid(at_e));
+    assert(self.blockValid(self.cur));
     std.debug.assert(d.subs.len + dd.len == d.info.dims.len);
     var key_buf: [lower_shape.elem_key_len]u8 = undefined;
     var full: [lower_shape.max_stack_dims]i64 = undefined;
@@ -187,10 +206,15 @@ pub fn writeSliceCells(self: *Lower, at_e: Ast.ExprId, d: ArraySlice, dd: []cons
     return true;
 }
 
+// ---- private ----
+
 /// The slice's leading subscripts, if every one of them folds: true when they
 /// are also in range, false when §3.2.2 has been reported on them, null when at
 /// least one is only known during the solve.
 fn constPrefix(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, out: []i64) Oom!?bool {
+    assert(at_e == .none or self.exprValid(at_e));
+    assert(out.len == s.subs.len);
+    assert(s.subs.len <= s.info.dims.len);
     for (s.subs, out) |e, *o| {
         const c = lower_constfold.foldExpr(self, e, false) orelse return null;
         // As `resolveLvalue`: a subscript with no §4.2.1.1 integer names no row.

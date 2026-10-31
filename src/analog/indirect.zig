@@ -1,4 +1,15 @@
+//! §5.6.7 indirect contributions: `V(out) : V(in) == e;` in, one
+//! `.indirect` contribution row whose resistive half is `probe - equation`
+//! out, after the clause's context and target rules.
+//!
+//! Cites: §5.6.1.3, §5.6.7, §5.6.7.1, §5.6.7.2, A.8.3.
+//!
+//! Contents:
+//! - `pub fn lowerIndirect(self: *Lower, tok: u32, lhs: Ast.ExprId, probe_e: Ast.ExprId, eqn: Ast.ExprId) Oom!void`
+//! - `pub fn indirectOn(self: *const Lower, hi: u32, lo: u32) bool`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
@@ -23,6 +34,9 @@ const Kind = Lower.Kind;
 /// equation. Branches in the equation are only probed, because only the entry
 /// appended here reaches codegen's stamping loop.
 pub fn lowerIndirect(self: *Lower, tok: u32, lhs: Ast.ExprId, probe_e: Ast.ExprId, eqn: Ast.ExprId) Oom!void {
+    assert(lhs == .none or self.exprValid(lhs));
+    assert(probe_e == .none or self.exprValid(probe_e));
+    assert(eqn == .none or self.exprValid(eqn));
     if (self.restrict) |ctx| {
         try self.err(self.file.exprs.mainTok(lhs), .E0410, "not allowed in {s}", .{ctx});
         return;
@@ -77,10 +91,22 @@ pub fn lowerIndirect(self: *Lower, tok: u32, lhs: Ast.ExprId, probe_e: Ast.ExprI
     try self.builder.writeVariable(self.accum.items[idx].resist, self.cur, row);
 }
 
+/// Reports whether an indirect contribution (§5.6.7) already defines the
+/// unordered pair (`hi`, `lo`): §5.6.7.2 then refuses a `<+` on it.
+pub fn indirectOn(self: *const Lower, hi: u32, lo: u32) bool {
+    assert(self.nodeValid(hi));
+    assert(self.nodeValid(lo));
+    return self.contrib_state.indirect.contains(lower_source_check.pairKey(hi, lo));
+}
+
+// ---- private ----
+
 /// A.8.3 `indirect_expression`: a branch/port probe, or ddt/idt/idtmod of one.
 /// The optional tolerance/initial-condition arguments are ordinary expressions
 /// and are not restricted.
 fn isIndirectProbe(self: *const Lower, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
+    assert(self.module != null);
     const ex = &self.file.exprs;
     if (e == .none) return false;
     switch (ex.tag(e)) {
@@ -99,10 +125,6 @@ fn isIndirectProbe(self: *const Lower, e: Ast.ExprId) bool {
         .branch_access, .port_access => true,
         else => false, // else: A.8.3 takes the operator OF a probe only
     };
-}
-
-pub fn indirectOn(self: *const Lower, hi: u32, lo: u32) bool {
-    return self.contrib_state.indirect.contains(lower_source_check.pairKey(hi, lo));
 }
 
 test "lower: §5.6.7 indirect contribution is a nullor entry, one per statement" {

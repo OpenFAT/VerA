@@ -1,4 +1,18 @@
+//! VerA's `vera_timepoint` (§2.9): one statement in, a diamond on
+//! `$tp_hit(b)` out whose hit arm reads every variable the statement writes
+//! from cache `b` (`Lowered.timepoints`), and the refusals of what a cached
+//! statement may not hold (E0529, E0530, E0532).
+//!
+//! Cites: §2.9, §5.6, §5.10, §9.7.3.
+//!
+//! Contents:
+//! - `pub fn timepointOn(self: *Lower, a: Ast.LteAttr) Oom!bool`
+//! - `pub fn timepointRefuses(self: *const Lower, id: Ast.StmtId) ?[]const u8`
+//! - `pub fn lowerTimepoint(self: *Lower, id: Ast.StmtId) Oom!void`
+//! - private `TpWrites` (`expr`, `stmt`)
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
@@ -9,6 +23,19 @@ const Ssa = @import("ssa.zig");
 const lower_stmt = @import("stmt.zig");
 const Oom = Lower.Oom;
 
+/// `Ast.SourceFile.stmtWrites` of a statement and every statement under it.
+const TpWrites = struct {
+    l: *Lower,
+    out: *std.ArrayList(Ast.ExprId),
+    pub fn expr(_: TpWrites, _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
+    pub fn stmt(w: TpWrites, s: Ast.StmtId) Oom!void {
+        if (s == .none) return;
+        const funcs: []const Ast.FuncDecl = if (w.l.module) |m| m.functions else &.{};
+        try w.l.file.stmtWrites(funcs, s, w.l.arena, w.out);
+        try w.l.file.stmtEdges(s, w);
+    }
+};
+
 /// A `vera_timepoint` value: §2.9's default 1 when absent, otherwise a
 /// constant that folds without the model card, since it picks the code the
 /// device is built with (E0529). The statement must run at most once per
@@ -16,6 +43,8 @@ const Oom = Lower.Oom;
 /// or an `analog initial` block (E0532). Either refusal, or `= 0`, lowers it
 /// uncached.
 pub fn timepointOn(self: *Lower, a: Ast.LteAttr) Oom!bool {
+    assert(a.value == .none or self.exprValid(a.value));
+    assert(self.tp_cur == null); // `lowerStmt` asks only outside a cached statement
     if (a.value != .none) {
         const c = lower_constfold.foldExpr(self, a.value, false) orelse {
             try self.err(a.main_tok, .E0529, "", .{});
@@ -38,6 +67,8 @@ pub fn timepointOn(self: *Lower, a: Ast.LteAttr) Oom!bool {
 /// hold (E0530), or null. Probes, `$limit` and stateful operators are refused
 /// where they are lowered (`lower_expr`, `lower_sysfunc`, `lower_analog_op`).
 pub fn timepointRefuses(self: *const Lower, id: Ast.StmtId) ?[]const u8 {
+    assert(id != .none);
+    assert(self.tp_cur != null); // asked only inside a cached statement
     return switch (self.file.stmt(id)) {
         .contribute, .indirect => "a contribution (§5.6)",
         .event_control => "an event control (§5.10)",
@@ -114,11 +145,15 @@ pub fn lowerTimepoint(self: *Lower, id: Ast.StmtId) Oom!void {
     try self.tp_marks.append(self.arena, mark);
 }
 
+// ---- private ----
+
 /// The variables statement `id` writes (`Ast.SourceFile.stmtWrites`), resolved
 /// in the scope it starts in: one slot per scalar, per element of a scalarized
 /// array, and per memory-backed array. A name declared inside the statement
 /// resolves to nothing here and is not cached; no read outside sees it.
 fn timepointSlots(self: *Lower, id: Ast.StmtId, slots: *std.ArrayList(Lower.TpSlot), places: *std.ArrayList(Ssa.Place)) Oom!void {
+    assert(id != .none);
+    assert(slots.items.len == places.items.len);
     var writes: std.ArrayList(Ast.ExprId) = .empty;
     try (TpWrites{ .l = self, .out = &writes }).stmt(id);
     var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -149,20 +184,8 @@ fn timepointSlots(self: *Lower, id: Ast.StmtId, slots: *std.ArrayList(Lower.TpSl
     }
 }
 
-/// `Ast.SourceFile.stmtWrites` of a statement and every statement under it.
-const TpWrites = struct {
-    l: *Lower,
-    out: *std.ArrayList(Ast.ExprId),
-    pub fn expr(_: TpWrites, _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
-    pub fn stmt(w: TpWrites, s: Ast.StmtId) Oom!void {
-        if (s == .none) return;
-        const funcs: []const Ast.FuncDecl = if (w.l.module) |m| m.functions else &.{};
-        try w.l.file.stmtWrites(funcs, s, w.l.arena, w.out);
-        try w.l.file.stmtEdges(s, w);
-    }
-};
-
 fn timepointScalar(self: *Lower, w: Ast.ExprId, name: []const u8, v: Lower.VarSlot, slots: *std.ArrayList(Lower.TpSlot), places: *std.ArrayList(Ssa.Place)) Oom!void {
+    assert(w == .none or self.exprValid(w));
     if (v.ty == .string) return self.err(self.file.exprs.mainTok(w), .E0530, "an assignment to string `{s}`", .{name});
     try slots.append(self.arena, .{ .name = name, .ty = v.ty, .width = if (v.ty == .wide) v.reg_width.? else 0 });
     try places.append(self.arena, v.place);

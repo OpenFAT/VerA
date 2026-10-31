@@ -1,22 +1,20 @@
-//! §5.6 contributions: `<+`, indirect contributions, switch branches.
+//! §5.6 direct contributions: one `<+` statement in, its value accumulated
+//! into the target's `Lowered.contributions` row out. The spine checks the
+//! statement's context and target, resolves the branch (branch.zig), finds
+//! or opens its row (accum.zig), splits the right-hand side into resistive
+//! and reactive halves (reactive.zig), discards the opposite quantity
+//! (§5.6.1.3), and collects the §4.6.4 noise generators (noise_src.zig).
 //!
-//! In: contribution statements. Out: `Lowered.contributions` (one per access
-//! and branch; the unit order proof.zig and names.zig index by), their
-//! accumulators (`Lower.accum`), the §5.6.1.2 charge sites, the §4.6.4 noise
-//! generators each row carries, and the module-level sweeps
-//! (`checkProbeBranches`, `checkSourceLoops`).
+//! Cites: §1.3.1, §1.3.1.2, §1.3.4.1, §1.3.4.2, §3.4.7, §4.4, §4.5.12,
+//! §4.6.4, §4.6.4.6, §5.4.1, §5.4.2.2, §5.4.3, §5.6, §5.6.1.2, §5.6.1.3,
+//! §5.6.5, §5.6.6, §5.6.7.2, §5.6.8.2, §5.9, §5.9.3, §5.10, §6.3.6, A.6.4,
+//! §7.3.2.1, A.8.2, §9.18.
 //!
-//! Spine: `lowerContribute` per `<+` (checks, `branchOf`, `contribIndex`,
-//! `splitContribution`, `discardOpposite`, lower_reactive.accumulate, sites, noise);
-//! `lowerIndirect` per `V(o) : e == f;`.
-//!
-//! LRM clauses this file's code cites: §1.3.1, §1.3.1.1, §1.3.1.2, §1.3.4, §1.3.4.1,
-//! §1.3.4.2, §2.9, §3.4.7, §3.6.1.2, §3.6.2.4, §3.6.3, §3.6.5, §3.11, §3.12, §3.12.1,
-//! §4.4, §4.4.1, §4.5.2, §4.5.3, §4.5.6, §4.5.12, §4.5.14, §4.6.3, §4.6.4, §4.6.4.1,
-//! §4.6.4.2, §4.6.4.3, §4.6.4.4, §4.6.4.6, §5.4.1, §5.4.2.1, §5.4.2.2, §5.4.3, §5.5.1,
-//! §5.5.5, §5.6, §5.6.1, §5.6.1.2, §5.6.1.3, §5.6.5, §5.6.6, §5.6.7, §5.6.7.1, §5.6.7.2,
-//! §5.6.8.1, §5.6.8.2, §5.8, §5.9, §5.9.3, §5.10, §6.3.6, §6.5.2.1, §6.6.2, §6.7.1,
-//! §7.3.2.1, §9.18.
+//! Contents:
+//! - `pub const State = struct` (`Key`)
+//! - `pub fn directRow(self: *const Lower, key: State.Key) ?u32`
+//! - `pub fn oppositeKey(t: Target) State.Key`
+//! - `pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -63,11 +61,15 @@ pub const State = struct {
 /// The `.direct` contribution entry of a (access, pair, branch), if a `<+`
 /// has made one: `contribIndex`'s lookup, without creating it.
 pub fn directRow(self: *const Lower, key: State.Key) ?u32 {
+    assert(self.nodeValid(key.hi));
+    assert(self.nodeValid(key.lo));
     return self.contrib_state.direct.get(key);
 }
 
 /// `direct`'s key for the other quantity of `t`'s branch.
 pub fn oppositeKey(t: Target) State.Key {
+    assert(t.hi <= t.lo); // `canonical` ordered the pair
+    assert(t.access == .potential or t.access == .flow);
     return .{ .access = if (t.access == .potential) .flow else .potential, .hi = t.hi, .lo = t.lo, .br = t.br };
 }
 
@@ -76,6 +78,9 @@ pub fn oppositeKey(t: Target) State.Key {
 /// The reference direction (§1.3.1.2) is carried by the (hi, lo) order alone:
 /// codegen stamps `+val` at hi and `-val` at lo. (LRM §5.6)
 pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void {
+    assert(lhs == .none or self.exprValid(lhs));
+    assert(rhs == .none or self.exprValid(rhs));
+    assert(self.blockValid(self.cur));
     if (self.restrict) |ctx| {
         try self.err(self.file.exprs.mainTok(lhs), .E0405, "not allowed in {s}", .{ctx});
         return;
@@ -236,8 +241,12 @@ pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void 
     }
 }
 
+// ---- private ----
+
 /// `place += v` in the current block.
 fn addInto(self: *Lower, place: Ssa.Place, v: Mir.Value) Oom!void {
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
     const old = try self.builder.readVariable(place, self.cur);
     try self.builder.writeVariable(place, self.cur, try self.emit(.fadd, &.{ old, v }));
 }
@@ -253,6 +262,8 @@ fn addInto(self: *Lower, place: Ssa.Place, v: Mir.Value) Oom!void {
 /// `*` or `/` in the contributed value; dividing by it is the same misuse.
 /// Potential contributions are not scaled, so only flow is checked.
 fn checkMfactorDoubleScaling(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void {
+    assert(lhs == .none or self.exprValid(lhs));
+    assert(rhs == .none or self.exprValid(rhs));
     // ponytail: misses a flattened child whose ancestor specified `.$mfactor(...)`,
     // where elaboration (`rewriteSysCall`) has already substituted the product and
     // no `sys_call` is left. The upgrade is to run this scan in the clone, which
@@ -273,6 +284,8 @@ fn checkMfactorDoubleScaling(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom
 /// (`mfactor.va` writes `I(p) <+ V(p) + 0.0 * $mfactor;` on purpose). The known
 /// hole is `I <+ V/r * $mfactor + off`; the LRM gives no rule for the mixed case.
 fn scalesByMfactor(self: *Lower, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
+    assert(self.module != null);
     if (e == .none) return false;
     const ex = &self.file.exprs;
     return switch (ex.tag(e)) {
@@ -293,6 +306,8 @@ fn scalesByMfactor(self: *Lower, e: Ast.ExprId) bool {
 /// function itself, or the §3.4.7 `aliasparam m = $mfactor;` name for it — the
 /// alias is a second name for one location, so it is the same read.
 fn isMfactorRead(self: *Lower, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
+    assert(self.module != null);
     if (e == .none) return false;
     const ex = &self.file.exprs;
     return switch (ex.tag(e)) {
@@ -315,6 +330,8 @@ fn isMfactorRead(self: *Lower, e: Ast.ExprId) bool {
 /// right-hand side: `V(x) <+ 2*zi_zp(…)` is not reached. An absent τ is the
 /// simulator's default, not "specified as zero".
 fn checkZeroTransitionZFilter(self: *Lower, rhs: Ast.ExprId) Oom!void {
+    assert(rhs == .none or self.exprValid(rhs));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     if (ex.tag(rhs) != .filter_call) return;
     if (!std.mem.startsWith(u8, self.file.str(ex.strOf(rhs)), "zi_")) return;
