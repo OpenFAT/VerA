@@ -13,11 +13,49 @@
 //! application's requests). The native emitter over a `Run` is the
 //! `digital` module (src/codegen/digital/), which reads the files it names below.
 //!
+//! The caller's settings live in options.zig, Run's row types in run_rows.zig
+//! and the elaboration steps after pass one in elab_steps.zig; this file
+//! re-exports every name the other modules reach as `sim.digital.<name>`.
+//!
 //! Contents:
 //! - `pub const Tick`
 //! - `pub const exec`
 //! - `pub const system`
 //! - `pub const Run`
+//! - `pub const own_files`
+//! - `pub const Options`
+//! - `pub const StmtSite`
+//! - `pub const StmtHook`
+//! - `pub const DoneHook`
+//! - `pub const UserSystf`
+//! - `pub const UserKind`
+//! - `pub const Unit`
+//! - `pub const Mixed`
+//! - `pub const Param`
+//! - `pub const Insert`
+//! - `pub const Name`
+//! - `pub const SpecExpr`
+//! - `pub const TyState`
+//! - `pub const Array`
+//! - `pub const Span`
+//! - `pub const VecRange`
+//! - `pub const Standing`
+//! - `pub const Watcher`
+//! - `pub const Stop`
+//! - `pub const Monitor`
+//! - `pub const MonitorKind`
+//! - `pub const D2aSite`
+//! - `pub const PathKey`
+//! - `pub const Sub`
+//! - `pub const SlotMemo`
+//! - `pub const memo_bits`
+//! - `pub const ModuleTime`
+//! - `pub const Overrides`
+//! - `pub const PcRange`
+//! - `pub const Frame`
+//! - `pub const SlotNets`
+//! - `pub const isRoot`
+//! - `pub const bindDisables`
 //! - `pub const for_emitter = struct`
 //! - `for_emitter.compile`
 //! - `for_emitter.evaluate`
@@ -25,52 +63,11 @@
 //! - `for_emitter.net`
 //! - `for_emitter.vcd`
 //! - `for_emitter.evcd`
-//! - `pub const own_files`
 //! - `pub const Error = error`
-//! - `pub const Options = struct`
-//! - `pub const StmtSite = struct`
-//! - `pub const StmtHook = struct`
-//! - `pub const DoneHook`
-//! - `pub const UserSystf = struct`
-//! - `pub const UserKind = union(enum)`
-//! - `pub const Unit = struct`
-//! - `pub const Mixed = struct`
-//! - `pub const Param = struct`
-//! - `pub const Insert = struct`
-//! - `pub const Name = struct`
-//! - `pub const SpecExpr = struct`
-//! - `pub const TyState = enum(u8)`
-//! - `pub const Array = struct`
-//! - `pub const Span = struct`
-//! - `pub const VecRange = struct`
-//! - `VecRange.position(r: VecRange, index: i64) i64`
-//! - `pub const Standing = struct`
-//! - `pub const Watcher = enum`
-//! - `pub const Stop = enum`
-//! - `pub const Monitor = struct`
-//! - `pub const MonitorKind = enum`
-//! - `pub const D2aSite = struct`
 //! - `pub const max_events_per_tick: u64`
 //! - `pub const analog_payload: u32`
-//! - `pub const PathKey = struct`
-//! - `PathKey.Ctx = struct`
-//! - `PathKey.Ctx.hash(_: Ctx, k: PathKey) u64`
-//! - `PathKey.Ctx.eql(_: Ctx, a: PathKey, b: PathKey) bool`
-//! - `pub const Sub = struct`
-//! - `pub const SlotMemo = struct`
-//! - `pub const memo_bits`
-//! - `pub const ModuleTime = struct`
-//! - `pub const Overrides = struct`
-//! - `pub const PcRange = struct`
-//! - `pub const Frame = struct`
-//! - `pub const SlotNets = struct`
-//! - `SlotNets.get(self: *const SlotNets, slot: u32) ?u32`
-//! - `SlotNets.contains(self: *const SlotNets, slot: u32) bool`
-//! - `SlotNets.put(self: *SlotNets, arena: std.mem.Allocator, slot: u32, net: u32) Error!void`
-//! - `pub fn isRoot(r: *const Run, scope: u32) bool`
 //! - `pub fn run(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *diag.Bag, out: *std.Io.Writer) Error!void`
 //! - `pub fn elaborate(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *diag.Bag, out: *std.Io.Writer) Error!Run`
-//! - `pub fn bindDisables(r: *Run, from: usize) Error!void`
 //! - `pub fn expectRun(source: []const u8, expected: []const u8) !void`
 //! - `pub fn expectRejected(source: []const u8, message: []const u8) !void`
 //! - `N.expr(w: @This(), x: Ast.ExprId, _: Ast.SourceFile.Edge) Error!void`
@@ -118,10 +115,123 @@ const filled = @import("net.zig").filled;
 const setBit = @import("net.zig").setBit;
 const Show = display.Show;
 const TimeFormat = display.TimeFormat;
-
-// ---- the public surface -----------------------------------------------------
 /// One elaborated design and its whole simulation state (`Run.zig`).
 pub const Run = @import("Run.zig");
+const elab_steps = @import("elab_steps.zig");
+const options = @import("options.zig");
+const run_rows = @import("run_rows.zig");
+const calls = elab_steps.calls;
+const constantDelay = elab_steps.constantDelay;
+const default_quantum = run_rows.default_quantum;
+const driverBits = elab_steps.driverBits;
+const initVars = elab_steps.initVars;
+const mixedTimescales = elab_steps.mixedTimescales;
+const netRuns = elab_steps.netRuns;
+const processOrder = elab_steps.processOrder;
+const processes = elab_steps.processes;
+const topDeclares = elab_steps.topDeclares;
+
+/// The descriptor table a `Run` with no `file_io` opens files through.
+pub const own_files = system.own;
+
+/// `options.Options`.
+pub const Options = options.Options;
+
+/// `options.StmtSite`.
+pub const StmtSite = options.StmtSite;
+
+/// `options.StmtHook`.
+pub const StmtHook = options.StmtHook;
+
+/// `options.DoneHook`.
+pub const DoneHook = options.DoneHook;
+
+/// `options.UserSystf`.
+pub const UserSystf = options.UserSystf;
+
+/// `options.UserKind`.
+pub const UserKind = options.UserKind;
+
+/// `options.Unit`.
+pub const Unit = options.Unit;
+
+/// `options.Mixed`.
+pub const Mixed = options.Mixed;
+
+/// `options.Param`.
+pub const Param = options.Param;
+
+/// `options.Insert`.
+pub const Insert = options.Insert;
+
+/// `run_rows.Name`.
+pub const Name = run_rows.Name;
+
+/// `run_rows.SpecExpr`.
+pub const SpecExpr = run_rows.SpecExpr;
+
+/// `run_rows.TyState`.
+pub const TyState = run_rows.TyState;
+
+/// `run_rows.Array`.
+pub const Array = run_rows.Array;
+
+/// `run_rows.Span`.
+pub const Span = run_rows.Span;
+
+/// `run_rows.VecRange`.
+pub const VecRange = run_rows.VecRange;
+
+/// `run_rows.Standing`.
+pub const Standing = run_rows.Standing;
+
+/// `run_rows.Watcher`.
+pub const Watcher = run_rows.Watcher;
+
+/// `run_rows.Stop`.
+pub const Stop = run_rows.Stop;
+
+/// `run_rows.Monitor`.
+pub const Monitor = run_rows.Monitor;
+
+/// `run_rows.MonitorKind`.
+pub const MonitorKind = run_rows.MonitorKind;
+
+/// `run_rows.D2aSite`.
+pub const D2aSite = run_rows.D2aSite;
+
+/// `run_rows.PathKey`.
+pub const PathKey = run_rows.PathKey;
+
+/// `run_rows.Sub`.
+pub const Sub = run_rows.Sub;
+
+/// `run_rows.SlotMemo`.
+pub const SlotMemo = run_rows.SlotMemo;
+
+/// `run_rows.memo_bits`.
+pub const memo_bits = run_rows.memo_bits;
+
+/// `run_rows.ModuleTime`.
+pub const ModuleTime = run_rows.ModuleTime;
+
+/// `run_rows.Overrides`.
+pub const Overrides = run_rows.Overrides;
+
+/// `run_rows.PcRange`.
+pub const PcRange = run_rows.PcRange;
+
+/// `run_rows.Frame`.
+pub const Frame = run_rows.Frame;
+
+/// `run_rows.SlotNets`.
+pub const SlotNets = run_rows.SlotNets;
+
+/// `run_rows.isRoot`.
+pub const isRoot = run_rows.isRoot;
+
+/// `elab_steps.bindDisables`.
+pub const bindDisables = elab_steps.bindDisables;
 
 /// The files the native emitter (the `digital` module: `vera --emit-exe` and
 /// `.v` devices) reads besides `Run`, until B4 gives it IR of its own. A
@@ -135,258 +245,10 @@ pub const for_emitter = struct {
     pub const evcd = @import("evcd.zig");
 };
 
-/// The descriptor table a `Run` with no `file_io` opens files through.
-pub const own_files = system.own;
-
 /// `DigitalFailed`: a diagnostic is already in the `bag` (E1100 by default,
 /// or the rule's own code through `Run.failWith`); the run stops there.
 /// `WriteFailed`: the transcript writer `out` failed.
 pub const Error = error{DigitalFailed} || std.mem.Allocator.Error || std.Io.Writer.Error;
-
-/// How `run`, `elaborate` and `digital.emitDevice` read the source.
-pub const Options = struct {
-    file_name: []const u8 = "<digital>",
-    include_dirs: []const []const u8 = &.{},
-    /// `vera -D` macros, each `NAME` or `NAME=TEXT`, as
-    /// `Preprocessor.Options.defines` reads them.
-    defines: []const []const u8 = &.{},
-    /// Only IEEE 1364-2005 §17.2.9's `$readmemb`/`$readmemh` read files while
-    /// a process runs; without an `Io` those two fail with a diagnostic and
-    /// nothing else changes.
-    io: ?std.Io = null,
-    /// VAMS §7: elaborate the DIGITAL half of a mixed-signal module. See `Mixed`.
-    mixed: ?Mixed = null,
-    /// The source language, `vera --std=`. See `Parser.setLanguage`.
-    language: Front.token.KeywordSet = Front.token.default_keyword_set,
-    /// IEEE 1364-2005 §13.2.3 the library `source`'s cells are compiled into.
-    lib: []const u8 = "work",
-    /// The source files after `source`, in command-line order (§13.4.1), in
-    /// one text stream with it.
-    more: []const Unit = &.{},
-    /// §13.5.1/§13.7.1 the libraries searched, in order, for the cell of an
-    /// instance no configuration binds. Empty: every library, in the order
-    /// the files first name them.
-    search: []const []const u8 = &.{},
-    /// Events at one time step before a zero-delay loop is refused
-    /// (`vera --event-budget=`).
-    event_budget: u64 = max_events_per_tick,
-    /// A PLI application's system tasks and functions, which the design's
-    /// `$name` calls reach before any built-in of that name.
-    systf: ?UserSystf = null,
-    /// Record where each statement starts (`Run.stmt_sites`), for a host's
-    /// statement callbacks (IEEE 1364-2005 §27.33.1.1).
-    stmt_sites: bool = false,
-    /// `vera --param NAME=VALUE`: a top-level module's parameter set as an
-    /// instance's `#( … )` would set it. A number's text reads as one, any
-    /// other as a §3.6 string.
-    params: []const @import("base").ParamOverride = &.{},
-    /// IEEE 1364-2005 §28.2 decryption keys (`vera --protect-keys`).
-    protect_keys: Front.Preprocessor.protect.Keys = .{},
-    /// IEEE 1364-2005 §15.5.4's invocation option (`vera --negative-timing`):
-    /// `$setuphold` and `$recrem` take negative limits, through delayed
-    /// signals (`tchk.solveNegative`). Off, a negative limit is 0.
-    negative_timing: bool = false,
-};
-
-/// Where statement `stmt` of instance `scope` is reached: its first
-/// instruction, or a `for`'s increment or a `repeat`'s next-iteration test,
-/// which Table 27-6 also calls it at.
-pub const StmtSite = struct { scope: u32, stmt: Ast.StmtId, pc: u32 };
-
-/// A host's statement callbacks (IEEE 1364-2005 §27.33.1.1): `fire` runs
-/// "just before the indicated statement executes", at each pc set in `at`.
-pub const StmtHook = struct {
-    at: *const std.bit_set.Dynamic,
-    fire: *const fn (r: *Run, pc: u32) Error!void,
-};
-
-/// A host's callback after a statement IEEE 1364-2005 §27.33.1 reports
-/// completed: a §9.3 `assign`, `deassign`, `force` or `release` (cbAssign,
-/// cbDeassign, cbForce, cbRelease: "after ... has been executed") or a §10.3
-/// `disable` (cbDisable). `pc` is the statement's last instruction, a key of
-/// `Run.done_sites`. An `assign`/`force` reports once its process has written
-/// the target, so the value the host reads is the one it put there; one
-/// undone or replaced before its process ran reports then (`exec.doneFlush`).
-pub const DoneHook = *const fn (r: *Run, pc: u32) Error!void;
-
-/// A PLI application's system tasks and functions (IEEE 1364-2005 §20.3):
-/// "the user-provided C application shall override the built-in system
-/// task/function" of its name (§20.4).
-pub const UserSystf = struct {
-    /// What `name` is registered as, or null when it is not.
-    kind: *const fn (name: []const u8) ?UserKind,
-    /// Runs the application behind the call whose main token is `tok`, in
-    /// instance `scope`. A function's value is written into `result`, which
-    /// arrives x (0.0 for a real) and as wide as its `UserKind` says.
-    call: *const fn (r: *Run, scope: u32, tok: u32, result: ?Int.Literal) Error!void,
-};
-
-/// A registered PLI name: a task, or a function and the type its call
-/// returns (§20.3's sized function).
-pub const UserKind = union(enum) { task, func: Type };
-
-/// One more source file and the library it maps into (`vera --libmap`).
-pub const Unit = struct { name: []const u8, text: []const u8, lib: []const u8 };
-
-/// The digital half of a design an analog compile already accepted (VAMS
-/// §7.2.2's discrete context of an analog module). Elaboration then skips
-/// what belongs to the continuous side instead of refusing it: `analog`
-/// blocks, disciplined (continuous) nets and ports, analog-only parameters, analog
-/// functions, and every variable the digital engine cannot hold. A digital
-/// process that names one of those still fails, as an undeclared name.
-pub const Mixed = struct {
-    /// The module the analog compile lowered: the design's root.
-    top: []const u8,
-    /// `source` is the analog compile's own PREPROCESSED text, so it is not
-    /// preprocessed again and the `timescale events it consumed come in
-    /// here, at their offsets into `source`.
-    timescales: []const Front.Preprocessor.TimescaleEvent,
-    /// VAMS §7.8.4 the connect modules the analog compile inserted: they are
-    /// in its flattened design and not in `source`'s hierarchy.
-    inserts: []const Insert = &.{},
-    /// VAMS §7.3.6.4 / §7.3.1: the root's analog variables a digital
-    /// expression reads. Each is declared here anyway, and the coordinator
-    /// writes it (`a2dWrite`) after every accepted analog solution.
-    reads: []const []const u8 = &.{},
-    /// VAMS §6.3 the root's parameters as the host's card set them (the
-    /// values the device's `Model` holds), so both halves read one value.
-    params: []const Param = &.{},
-    /// §6.3.4 effective real parameters the discrete source reads, copied
-    /// from the derived Model at the start of this analysis. Their defaults
-    /// may use analog constant functions outside this executor's subset.
-    /// Names use the flattened instance path, like `u.delta`.
-    real_params: []const Param = &.{},
-};
-
-/// One numeric parameter value from the host (`Mixed.params` / `real_params`).
-pub const Param = struct { name: []const u8, value: f64 };
-
-/// One port VAMS §7.8.4 re-pointed at an inserted connect module, as the
-/// analog compile's flatten reports it (`ir` `Lowered.Inserted`, the same
-/// fields, since `sim` cannot import `ir`). In the instance at `path`
-/// (instance prefix, `.` included, empty at the root), port `port` of child
-/// `inst` connects to the segment `name.lower_port` instead of its upper
-/// connection, and the bridge `name`, an instance of `module`, takes that
-/// upper connection on `upper_port`. Merged ports repeat `name`.
-pub const Insert = struct {
-    path: []const u8,
-    inst: []const u8,
-    port: []const u8,
-    module: []const u8,
-    name: []const u8,
-    upper_port: []const u8,
-    lower_port: []const u8,
-};
-
-// ---- engine state and name resolution (§6.2.2, §12.4, §3.9) -----------------
-
-/// One declared identifier, qualified by the §6.2.2 instance that declared it.
-pub const Name = struct { scope: u32, str: Ast.StrId };
-
-/// One expression in one specialization (`Run.specOf`).
-pub const SpecExpr = struct { spec: u32, e: Ast.ExprId };
-
-/// How many distinct types the specializations that typed a row gave it.
-pub const TyState = enum(u8) { untyped, one, many };
-
-/// §3.9 an unpacked array is `count` consecutive element slots; the declared
-/// name maps to the first. `low`/`high` are the first dimension's address
-/// bounds sorted, `low <= high`, whichever order the declaration wrote them
-/// in: element `k` of that dimension is address `low + k`.
-///
-/// §4.9 a multidimensional array keeps its first dimension in `low`/`high`
-/// and the others in `rest`, addressed row-major.
-/// `left`/`right`: the first dimension's bounds as declared, `[left:right]`
-/// (IEEE 1364-2005 §26.6.10's vpiLeftRange/vpiRightRange).
-pub const Array = struct { count: u32, low: i64, high: i64, left: i64, right: i64, rest: []const Span = &.{} };
-
-/// Sorted bounds for addressing, plus the declared direction for VPI ranges.
-pub const Span = struct { low: i64, high: i64, descending: bool = false };
-
-/// A packed vector's declared `[msb:lsb]` (§3.3).
-pub const VecRange = struct {
-    msb: i64,
-    lsb: i64,
-
-    /// The bit position, counted from the least significant, that declared
-    /// index `index` names; outside `[0, width)` it names no bit.
-    pub fn position(r: VecRange, index: i64) i64 {
-        // A distant legal integer index names no bit; it cannot overflow
-        // the host while deciding that (§5.2.1).
-        return if (r.msb >= r.lsb) index -| r.lsb else r.lsb -| index;
-    }
-};
-
-/// §17.1.3 a standing `$monitor`, or a §17.2.2 `$fmonitor`, whose
-/// arguments start after its descriptor `fd`. `values` is what each argument
-/// read when last evaluated (`display.monitorChanged`), null for one that
-/// is never compared: a string, an empty argument or a clock query, the
-/// clause's "with the exception of $time, $stime or $realtime". An
-/// `$fmonitor` keeps its own watched `slots` and `hit`; `$monitor`'s are
-/// `Run.monitor_slots` and `Run.monitor_slot_hit`.
-pub const Standing = struct {
-    args: []const Ast.ExprId,
-    show: Show,
-    scope: u32,
-    pc: u32,
-    values: []?[]u64 = &.{},
-    slots: []const u32 = &.{},
-    /// The slots its arguments that are not compared read: a change of one
-    /// reports without a comparison.
-    loose: []const u32 = &.{},
-    hit: bool = false,
-    fd: i64 = 0,
-};
-
-/// Who is told when a slot's value changes: one member of a slot's
-/// `Run.watch` set each.
-pub const Watcher = enum {
-    /// IEEE 1364-2005 §17.1.3: the standing `$monitor` or an `$fmonitor`
-    /// reads the slot.
-    monitor,
-    /// VAMS §8.5's implicit D2A: the slot is read by an analog block, so a
-    /// change posts a region-3b macro-process event (`Run.watchAnalog`).
-    analog,
-    /// VAMS §12.31.1's cbValueChange: an application watches the slot, and a
-    /// change calls `Run.vpi_change`.
-    vpi,
-    /// IEEE 1364-2005 §18's value change dump: the slot is dumped, so a
-    /// change asks for the end-of-step section (`vcd.zig`).
-    vcd,
-    /// VAMS §8.5's explicit D2A: the slot is the operand of a digital event
-    /// term in an analog event control (`Run.watchEvent`).
-    d2a,
-    /// VAMS §9.22.5: the slot feeds a driver some `@(driver_update …)`
-    /// watches (`driver.arm`).
-    driver_update,
-    /// IEEE 1364-2005 §18.3: the slot is a port `$dumpports` dumps
-    /// (`evcd.zig`).
-    ports,
-    /// IEEE 1364-2005 §15: a timing check's event names the slot
-    /// (`tchk.changed`).
-    tchk,
-    /// IEEE 1364-2005 §14.3.3: the slot is a module path's source, whose last
-    /// transition picks the path delay (`Run.path_changed`).
-    path,
-};
-
-/// Why `runUntil` returned. `analog` is a region-3b event (VAMS §8.5.1): every
-/// active, explicit D2A, inactive and nonblocking event of the current tick has
-/// run, and an analog-read value changed. The caller solves NOW and calls
-/// `runUntil` again, which resumes the same tick at its monitor region.
-/// `explicit_d2a` is region 1b (§8.5.3.6): region 1 of the tick is done, and
-/// `d2a_fired` names the analog event terms that occurred. The caller takes the
-/// values the guarded statements read NOW; the tick's region-3b stop follows.
-pub const Stop = enum { idle, analog, explicit_d2a, vpi_sync };
-
-/// One analog event a digital event control waits on (`Run.registerMonitor`).
-pub const Monitor = struct { expr: Ast.ExprId, scope: u32, slot: u32, kind: MonitorKind };
-
-/// A.6.5 `analog_event_functions`, the four VAMS §5.10.3 events a monitor is.
-pub const MonitorKind = enum { cross, above, timer, absdelta };
-
-/// One digital event term of an analog event control (`Run.watchEvent`).
-pub const D2aSite = struct { slot: u32, edge: waiters.Edge, site: u6 };
 
 /// The events one time step may dispatch before `runUntil` calls it a
 /// zero-delay loop. Far above any design's settling activity per step.
@@ -396,137 +258,6 @@ pub const max_events_per_tick: u64 = 10_000_000;
 /// row: the event carries no data, and the scheduler coalesces repeats of it
 /// (§8.5.3.7) by payload.
 pub const analog_payload: u32 = std.math.maxInt(u32);
-
-/// A defparam path relative to a scope, spelled as `Ast.Defparam.path` is.
-pub const PathKey = struct {
-    scope: u32,
-    path: []const u8,
-    /// Hashes and compares the path's bytes, not its pointer.
-    pub const Ctx = struct {
-        pub fn hash(_: Ctx, k: PathKey) u64 {
-            return std.hash.Wyhash.hash(k.scope, k.path);
-        }
-        pub fn eql(_: Ctx, a: PathKey, b: PathKey) bool {
-            return a.scope == b.scope and std.mem.eql(u8, a.path, b.path);
-        }
-    };
-};
-
-/// §10 one subroutine as the engine runs it: the declaration, the instance
-/// that declared it, and its static frame. `entry` is the pc of its body
-/// compiled for a synchronous call; a task with timing controls has none,
-/// and is inlined at each enable instead (`ranges` are those copies, for
-/// §10.3's `disable`).
-pub const Sub = struct {
-    decl: *const Ast.Subroutine,
-    inst: u32,
-    frame: Frame,
-    /// `frame` is minted: every sub is once its instance is declared.
-    framed: bool = false,
-    entry: u32 = 0,
-    /// `entry` is set: `compile.compileSub` has run.
-    compiled: bool = false,
-    timed: ?bool = null,
-    /// A §10.4.5 constant function, once asked (`compile.constantFunction`).
-    constant: ?bool = null,
-    /// Synchronous activations in progress.
-    active: u32 = 0,
-    /// Being inlined right now, which a timed task reaching itself would be.
-    inlining: bool = false,
-    /// A timed task that reaches itself: its body compiled once out of line,
-    /// over a frame of its own, entered by `.call_timed` (§10.2.3). The
-    /// activation whose storage the frame holds is `resident`.
-    body: ?struct { entry: u32, frame: Frame } = null,
-    resident: u32 = 0,
-    ranges: std.ArrayList(struct { start: u32, end: u32 }) = .empty,
-};
-
-/// One `Run.slot_memo` entry; `scope` maxInt(u32) is empty.
-pub const SlotMemo = struct {
-    scope: u32 = std.math.maxInt(u32),
-    e: Ast.ExprId = .none,
-    at: u32 = 0,
-
-    // Budget: 4096 rows of 12 B, 48 KiB, inside L2.
-    comptime {
-        std.debug.assert(@sizeOf(SlotMemo) == 12);
-    }
-};
-
-/// log2 of `Run.slot_memo`'s length: 4096 entries, 48 KiB.
-pub const memo_bits = 12;
-
-/// A module's §19.8 time scale, and its unit as a power of ten of a second.
-pub const ModuleTime = struct { scale: Time.Scale, unit_exp: i32 };
-
-/// §9.3 one slot's procedural continuous assignments: the pc range of the
-/// process maintaining each.
-pub const Overrides = struct {
-    assign: ?PcRange = null,
-    force: ?PcRange = null,
-    /// IEEE 1364-2005 §9.3.2 forces of constant selects of the net, each
-    /// holding its own bits.
-    parts: std.ArrayList(PartForce) = .empty,
-};
-
-/// A half-open range of `Run.code` pcs, `[start, end)`: one process body.
-/// Empty for a VPI force, which no process maintains (`waiters.forceValue`).
-pub const PcRange = struct { start: u32, end: u32 };
-
-/// One activation's storage: a scope, a slot per formal, the result slot of
-/// a function, and the contiguous slot range an automatic activation saves.
-pub const Frame = struct { scope: u32, ports: []const u32, result: u32, first: u32, count: u32 };
-
-/// `Run.net_of`: the net a slot is, as one `u32` a slot up to the last net's
-/// slot (`none` for a variable's). Dense rather than a hash map: one net per
-/// element of an unpacked net array makes nets the common slot, and a map
-/// row costs twice an entry here plus the rehash garbage, for a lookup that
-/// is a load instead of a probe.
-pub const SlotNets = struct {
-    of: std.ArrayList(u32) = .empty,
-
-    const none = std.math.maxInt(u32);
-
-    /// The net slot `slot` is, or null for a variable's slot.
-    pub fn get(self: *const SlotNets, slot: u32) ?u32 {
-        if (slot >= self.of.items.len) return null;
-        const net = self.of.items[slot];
-        return if (net == none) null else net;
-    }
-
-    /// Is slot `slot` a net's?
-    pub fn contains(self: *const SlotNets, slot: u32) bool {
-        return self.get(slot) != null;
-    }
-
-    /// Records that `slot` is net `net`, growing the table to `slot + 1`
-    /// rows from `arena`. Asserts `net` is not the reserved maxInt(u32).
-    pub fn put(self: *SlotNets, arena: std.mem.Allocator, slot: u32, net: u32) Error!void {
-        std.debug.assert(net != none);
-        const len = self.of.items.len;
-        if (slot >= len) try self.of.appendNTimes(arena, none, slot + 1 - len);
-        self.of.items[slot] = net;
-    }
-};
-
-// ---- the driver (§6.2.2, §6.1, §7.9, §17.3) ---------------------------------
-
-/// One `force` of a constant select (§9.3.2): the bits it holds and the
-/// process maintaining them.
-const PartForce = struct { bits: compile.Bits, range: PcRange };
-
-/// IEEE 1364-2005 §19.8: "If there is no `timescale specified or it has been
-/// reset by a `resetall directive, the time unit and precision are
-/// simulator-specific." Not an error: this simulator's are one second,
-/// unit and precision alike, which makes every delay a whole count of units
-/// and `$time`, `$realtime` and `%t` print the numbers the source wrote.
-const default_quantum: Time.Quantum = .s;
-
-/// Is `scope` a top-level module's instance? The first is scope 0; every
-/// other is its own parent.
-pub fn isRoot(r: *const Run, scope: u32) bool {
-    return scope == 0 or r.scope_info.items[scope].parent == scope;
-}
 
 /// Runs `source` to completion: `elaborate`, then every event. `arena` and
 /// `bag` must outlive the call; the transcript goes to `out`.
@@ -541,27 +272,6 @@ pub fn run(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *di
 /// lives, as a mixed-signal coordinator does.
 pub fn elaborate(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *diag.Bag, out: *std.Io.Writer) Error!Run {
     return deep.runGuarded(0, elaborateDeep, .{ arena, source, opts, bag, out });
-}
-
-/// Binds `r.disables[from..]` to their blocks' pc ranges or their tasks.
-/// A function compiled early for a §10.4.5 constant call binds its own at
-/// once (`elab.earlyFrame`): it runs before the other processes exist.
-pub fn bindDisables(r: *Run, from: usize) Error!void {
-    disabling: for (r.disables.items[from..]) |d| {
-        var s = d.name.scope;
-        while (true) {
-            if (r.blocks.get(.{ .scope = s, .str = d.name.str })) |range| {
-                r.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
-                continue :disabling;
-            }
-            if (!r.scope_info.items[s].lexical) break;
-            s = r.scope_info.items[s].parent;
-        }
-        const idx = r.sub_by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
-            return r.fail(d.tok, "undeclared named block or task", .{});
-        if (r.subs.items[idx].decl.is_function) return r.fail(d.tok, "§10.3: `disable` cannot name a function, only a named block within one", .{});
-        r.code.items[d.at] = .{ .disable_task = idx };
-    }
 }
 
 /// Test helper: runs `source` and expects its transcript to be `expected`
@@ -601,16 +311,6 @@ fn runDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *di
     // Nothing is `watchAnalog`ed in a digital-only run, so it never stops early.
     _ = try r.runUntil(std.math.maxInt(Tick));
     try @import("evcd.zig").close(&r);
-}
-
-/// `Mixed.timescales` with the first event moved to offset 0. The analog
-/// compile's text opens with VerA's own Annex D/E prelude, ahead of every
-/// directive the source wrote, and §19.8's "some modules have a `timescale
-/// specified and others do not" is about the source's modules, not those.
-fn mixedTimescales(arena: std.mem.Allocator, events: []const Front.Preprocessor.TimescaleEvent) Error![]const Front.Preprocessor.TimescaleEvent {
-    const out = try arena.dupe(Front.Preprocessor.TimescaleEvent, events);
-    if (out.len != 0) out[0].at = 0;
-    return out;
 }
 
 fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *diag.Bag, out: *std.Io.Writer) Error!Run {
@@ -1037,180 +737,6 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     r.diag_stage = .run;
     return r;
 }
-
-/// The rows of `rows` grouped by net, as one counting sort: `items` holds
-/// each row index once per net `netOf(row, k)` names (`k` < `per_row`), and
-/// net `n`'s run is `items[start[n]..start[n + 1]]`, in row order. The
-/// caller frees `start` when it has cut the runs; `items` is what they borrow.
-fn netRuns(
-    arena: std.mem.Allocator,
-    n_nets: usize,
-    n_items: usize,
-    rows: anytype,
-    comptime netOf: anytype,
-    comptime per_row: usize,
-) Error!struct { start: []u32, items: []u32 } {
-    const start = try arena.alloc(u32, n_nets + 1);
-    @memset(start, 0);
-    for (rows) |row| inline for (0..per_row) |k| {
-        start[netOf(row, k) + 1] += 1;
-    };
-    for (1..n_nets + 1) |i| start[i] += start[i - 1];
-    const items = try arena.alloc(u32, n_items);
-    const fill = try arena.dupe(u32, start[0..n_nets]);
-    defer arena.free(fill);
-    for (rows, 0..) |row, i| inline for (0..per_row) |k| {
-        const net = netOf(row, k);
-        items[fill[net]] = @intCast(i);
-        fill[net] += 1;
-    };
-    return .{ .start = start, .items = items };
-}
-
-/// Whether every value of `d` is a constant expression. A.2.2.3's
-/// `delay_value` and the `mintypmax_expression` in `delay3`'s parentheses may
-/// read a variable too (`Run.driver_delays`).
-fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
-    // Every value is checked, not only those before the first variable one:
-    // `exec.variableDelay` types each of them at run time.
-    var constant = true;
-    for ([_]Ast.ExprId{ d.rise, d.fall, d.off }) |x| if (x != .none) {
-        try compile.checkExpr(r, x);
-        constant = constant and compile.constantExpression(r, x);
-    };
-    return constant;
-}
-
-/// Whether top-level module `m` declares a parameter `--param` may set,
-/// `name`: one that is not a localparam.
-fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool {
-    for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) return true;
-    return false;
-}
-
-/// The bits [lo, hi) of its `width`-bit net that driver `d` drives: a port
-/// window's, or an instance-array member's one output bit; else all of them.
-/// The order `elaborateDeep` queues the process groups of `e` in: index k
-/// below `e.insts.items.len` is that instance's module body, the rest are
-/// `e.procs` (generate blocks), each visited when the scope tree's post-order
-/// walk from the roots reaches its scope.
-fn processOrder(r: *Run, e: *const elab.Elab) Error![]const u32 {
-    const a = r.arena;
-    const n = r.scope_info.items.len;
-    const groups = try a.alloc(std.ArrayList(u32), n);
-    @memset(groups, .empty);
-    for (e.insts.items, 0..) |inst, k| try groups[inst.scope].append(a, @intCast(k));
-    for (e.procs.items, 0..) |p, k| try groups[p.scope].append(a, @intCast(e.insts.items.len + k));
-    const children = try a.alloc(std.ArrayList(u32), n);
-    @memset(children, .empty);
-    for (r.scope_info.items, 0..) |info, k| if (info.parent != k and k != 0) try children[info.parent].append(a, @intCast(k));
-    const BySource = struct {
-        fn less(toks: *const std.AutoHashMapUnmanaged(u32, u32), x: u32, y: u32) bool {
-            return (toks.get(x) orelse 0) < (toks.get(y) orelse 0);
-        }
-    };
-    for (children) |c| std.sort.block(u32, c.items, &r.scope_toks, BySource.less);
-    var out: std.ArrayList(u32) = .empty;
-    // An explicit stack: (scope, next child to visit).
-    var stack: std.ArrayList([2]u32) = .empty;
-    for (r.roots) |root_scope| {
-        try stack.append(a, .{ root_scope, 0 });
-        while (stack.items.len != 0) {
-            const top = &stack.items[stack.items.len - 1];
-            const kids = children[top[0]].items;
-            if (top[1] < kids.len) {
-                const c = kids[top[1]];
-                top[1] += 1;
-                try stack.append(a, .{ c, 0 });
-                continue;
-            }
-            try out.appendSlice(a, groups[top[0]].items);
-            _ = stack.pop();
-        }
-    }
-    std.debug.assert(out.items.len == e.insts.items.len + e.procs.items.len);
-    return out.items;
-}
-
-/// Whether expression `e` calls a function, user or system.
-fn calls(ex: *const Ast.ExprStore, e: Ast.ExprId) bool {
-    if (e == .none) return false;
-    switch (ex.tag(e)) {
-        .call, .sys_call => return true,
-        else => {}, // else: an operator or operand, whose operands are searched
-    }
-    var buf: [3]Ast.ExprId = undefined;
-    for (ex.children(e, &buf)) |c| if (calls(ex, c)) return true;
-    return false;
-}
-
-fn driverBits(d: Driver, width: u32) [2]u32 {
-    const bit: ?u32 = switch (d.source) {
-        .bridge => |b| return .{ b.dst_lo, b.dst_lo + b.width + b.ext },
-        .gate => |g| g.out_bit,
-        .mos => |m| m.out_bit,
-        .udp => |u| u.out_bit,
-        .expr, .pull => null,
-    };
-    return if (bit) |b| .{ b, b + 1 } else .{ 0, width };
-}
-
-/// Compiles each of `blocks` in `r.scope` and queues it at time 0.
-/// IEEE 1364-2005 §6.2.1: a variable declaration assignment "shall be the
-/// same as" an initial block making the assignment, so each initializer of
-/// `vars`, declared in `r.scope`, is one, queued ahead of the scope's own
-/// processes. A mixed module's initialized variables are the analog block's
-/// and were never declared here.
-fn initVars(r: *Run, vars: []const Ast.VarDecl) Error!void {
-    for (vars) |v| if (v.init != .none) {
-        const at = r.names.get(.{ .scope = r.scope, .str = v.name }) orelse continue;
-        try compile.checkExpr(r, v.init);
-        // §6.2.1: "The assignment shall be to a constant expression."
-        if (!compile.constantExpression(r, v.init)) return r.exprFail(v.init, "§6.2.1: a constant expression is required here");
-        const start = try compile.append(r, .{ .init_var = .{ .slot = at, .value = v.init } });
-        _ = try compile.append(r, .stop);
-        _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
-    };
-}
-
-fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
-    for (blocks) |process| {
-        const start: u32 = @intCast(r.code.items.len);
-        try compile.compileStmt(r, process.body, 0);
-        _ = try compile.append(r, if (process.is_always)
-            .{ .restart = .{ .target = start, .tok = process.main_tok } }
-        else
-            .stop);
-        if (process.is_always and try levelControlled(r, process.body)) {
-            try r.early.append(r.arena, start);
-        } else _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
-    }
-}
-
-/// Whether `body`, an always construct's, starts with an event control on
-/// levels only (`@(a or b[0])`, `@*`): no posedge or negedge, no named event.
-/// §9.9 gives initial and always constructs no order; VerA starts these
-/// first at time 0, ahead of every driver and process (`Run.early`), so
-/// they see the time-0 changes the others make, as iverilog does (ivtest
-/// pr1026, pr1956211, pr2986528).
-fn levelControlled(r: *Run, body: Ast.StmtId) Error!bool {
-    const st = r.file.stmt(body);
-    if (st != .event_control or st.event_control.kind != .event) return false;
-    const L = struct {
-        fn level(rr: *Run, e: Ast.ExprId) Error!bool {
-            const ex = &rr.file.exprs;
-            return switch (ex.tag(e)) {
-                .event_or => try level(rr, ex.lhs(e)) and try level(rr, ex.rhs(e)),
-                .event_posedge, .event_negedge, .event_function, .event_driver_update => false,
-                .ident, .hier_ident, .index => (try compile.eventReference(rr, e)) == null,
-                else => true, // else: an expression term
-            };
-        }
-    };
-    return st.event_control.event == .none or try L.level(r, st.event_control.event);
-}
-
-// ---- tests ------------------------------------------------------------------
 
 fn testConcatRunAllocation(allocator: std.mem.Allocator) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
