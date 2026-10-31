@@ -3,12 +3,23 @@
 //! compiled into.
 //!
 //! IEEE 1364-2005 clauses cited: §13.2.1, §13.2.1.1, §13.2.2, §13.2.3, §13.5.1.
+//!
+//! Contents:
+//! - `pub const Class = enum(u2)`
+//! - `pub const Spec = struct`
+//! - `pub const Library = struct`
+//! - `pub const Map = struct`: `libraryOf`, `order`, `declares`
+//! - `pub const Error = error`
+//! - `pub fn load(arena: std.mem.Allocator, io: Io, bag: *diag.Bag, paths: []const []const u8) Error!Map`
+//! - `pub fn matches(pattern: []const u8, file: []const u8) bool`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const diag = @import("diag");
 const Preprocessor = @import("preprocessor.zig");
 const deep_stack = @import("base").deep_stack;
 const Io = std.Io;
+const testing = std.testing;
 
 /// §13.2.1.1's resolution order, most specific first: a specification that
 /// ends with an explicit filename, a wildcarded filename, or a directory.
@@ -25,13 +36,6 @@ pub const Spec = struct {
 /// One §13.2.1 `library` declaration: its name and every file path
 /// specification it lists, in order. Slices live in `load`'s arena.
 pub const Library = struct { name: []const u8, specs: []const Spec };
-
-/// Where §13.2.1.1 puts a source file.
-const Placement = union(enum) {
-    lib: []const u8,
-    /// Two libraries whose best matching specifications tie: an error.
-    ambiguous: [2][]const u8,
-};
 
 /// Every library map file read, merged; built by `load`, all slices in its
 /// arena.
@@ -64,7 +68,7 @@ pub const Map = struct {
             } else if (c == best.? and tie == null) tie = l.name;
         }
         // A tie is only ever recorded against a best match.
-        std.debug.assert(best != null or tie == null);
+        assert(best != null or tie == null);
         if (tie) |t| return .{ .ambiguous = .{ lib, t } };
         return .{ .lib = lib };
     }
@@ -77,12 +81,17 @@ pub const Map = struct {
         const out = try arena.alloc([]const u8, map.libraries.len + @intFromBool(work));
         for (map.libraries, out[0..map.libraries.len]) |l, *o| o.* = l.name;
         if (work) out[map.libraries.len] = "work";
+        assert(out.len >= map.libraries.len);
         return out;
     }
 
     /// Returns the index of the library called `name` in `libraries`, or null.
     pub fn declares(map: Map, name: []const u8) ?usize {
-        for (map.libraries, 0..) |l, i| if (std.mem.eql(u8, l.name, name)) return i;
+        assert(name.len > 0);
+        for (map.libraries, 0..) |l, i| if (std.mem.eql(u8, l.name, name)) {
+            assert(i < map.libraries.len);
+            return i;
+        };
         return null;
     }
 };
@@ -90,22 +99,12 @@ pub const Map = struct {
 /// `load`'s errors: `MapFailed` after a refusal reported as E0244.
 pub const Error = error{ MapFailed, OutOfMemory };
 
-/// Reads the map files at `paths`, in order (§13.2.1: "If multiple map files
-/// are specified, then they shall be read in the order in which they are
-/// specified"). A refusal is E0244 in `bag`, whose files it registers, and
-/// `error.MapFailed`: an unreadable file, a statement other than `library`
-/// or `include` (§13.2.2), a malformed one (Syntax 13-2), or an `include`
-/// cycle (a map file that includes itself, directly or through others,
-/// which would never end; any finite nesting is read). Every slice of the
-/// `Map` lives in `arena`.
-pub fn load(arena: std.mem.Allocator, io: Io, bag: *diag.Bag, paths: []const []const u8) Error!Map {
-    var l: Loader = .{ .arena = arena, .io = io, .bag = bag };
-    for (paths) |p| try l.read(p, null);
-    std.debug.assert(l.open.items.len == 0); // every `read` pops what it pushed
-    const out = try arena.alloc(Library, l.libs.items.len);
-    for (l.libs.items, out) |b, *o| o.* = .{ .name = b.name, .specs = b.specs.items };
-    return .{ .libraries = out, .incdirs = l.incdirs.items };
-}
+/// Where §13.2.1.1 puts a source file.
+const Placement = union(enum) {
+    lib: []const u8,
+    /// Two libraries whose best matching specifications tie: an error.
+    ambiguous: [2][]const u8,
+};
 
 const Loader = struct {
     arena: std.mem.Allocator,
@@ -121,7 +120,7 @@ const Loader = struct {
     /// file cannot be read. Asserts that `at` is null exactly when no map
     /// file is open: `load` reads the outermost ones, an `include` the rest.
     fn read(l: *Loader, path: []const u8, at: ?Site) Error!void {
-        std.debug.assert((at == null) == (l.open.items.len == 0));
+        assert((at == null) == (l.open.items.len == 0));
         const text = Preprocessor.readText(l.io, .cwd(), path, l.arena) catch |e|
             return l.fail(at, "cannot read library map `{s}`: {t}", .{ path, e });
         const real = Io.Dir.cwd().realPathFileAlloc(l.io, path, l.arena) catch |e|
@@ -210,6 +209,7 @@ const Loader = struct {
 };
 
 const Site = struct { file: diag.FileId, tok: Token };
+
 const Token = struct { text: []const u8, start: u32 };
 
 /// Words of map text: a quoted string, `,`, `;`, or a run of anything else
@@ -223,7 +223,7 @@ const Tokens = struct {
     /// cursor is within the text and that a token advanced it.
     fn next(t: *Tokens) ?Token {
         const s = t.text;
-        std.debug.assert(t.pos <= s.len);
+        assert(t.pos <= s.len);
         while (t.pos < s.len) {
             if (std.ascii.isWhitespace(s[t.pos])) {
                 t.pos += 1;
@@ -242,11 +242,48 @@ const Tokens = struct {
         } else while (t.pos < s.len and !std.ascii.isWhitespace(s[t.pos]) and s[t.pos] != ',' and s[t.pos] != ';') t.pos += 1;
         // A word starts on a byte that is neither blank nor punctuation, so
         // each arm takes one byte at least.
-        std.debug.assert(t.pos > start);
-        std.debug.assert(t.pos <= s.len);
+        assert(t.pos > start);
+        assert(t.pos <= s.len);
         return .{ .text = s[start..t.pos], .start = @intCast(start) };
     }
 };
+
+const test_map =
+    \\// §13.2.1: a library declaration, then an include.
+    \\library rtl rtl/*.v, "q/x.v" -incdir inc, "inc 2";
+    \\include sub/more.map;
+    \\
+;
+
+/// Reads the map files at `paths`, in order (§13.2.1: "If multiple map files
+/// are specified, then they shall be read in the order in which they are
+/// specified"). A refusal is E0244 in `bag`, whose files it registers, and
+/// `error.MapFailed`: an unreadable file, a statement other than `library`
+/// or `include` (§13.2.2), a malformed one (Syntax 13-2), or an `include`
+/// cycle (a map file that includes itself, directly or through others,
+/// which would never end; any finite nesting is read). Every slice of the
+/// `Map` lives in `arena`.
+pub fn load(arena: std.mem.Allocator, io: Io, bag: *diag.Bag, paths: []const []const u8) Error!Map {
+    var l: Loader = .{ .arena = arena, .io = io, .bag = bag };
+    for (paths) |p| try l.read(p, null);
+    assert(l.open.items.len == 0); // every `read` pops what it pushed
+    const out = try arena.alloc(Library, l.libs.items.len);
+    for (l.libs.items, out) |b, *o| o.* = .{ .name = b.name, .specs = b.specs.items };
+    return .{ .libraries = out, .incdirs = l.incdirs.items };
+}
+
+/// Reports whether `file` matches `pattern`, both absolute. §13.2.1's
+/// wildcards: `?` one character, `*` any run within one name, `...` any
+/// number of directories. `pattern` is `/`-separated (`resolveSpec`); `file`
+/// is a host path, split on the host's separators. Each name is matched in
+/// time linear in the product of its pattern and name lengths.
+pub fn matches(pattern: []const u8, file: []const u8) bool {
+    var f = file;
+    while (f.len != 0 and std.fs.path.isSep(f[0])) f = f[1..];
+    return segments(std.mem.trimStart(u8, pattern, "/"), f);
+}
+
+// ---- private ----
 
 fn isPunct(w: []const u8) bool {
     return std.mem.eql(u8, w, ",") or std.mem.eql(u8, w, ";");
@@ -259,7 +296,9 @@ fn isIdentifier(w: []const u8) bool {
 }
 
 fn unquote(w: []const u8) []const u8 {
-    return if (w.len >= 2 and w[0] == '"' and w[w.len - 1] == '"') w[1 .. w.len - 1] else w;
+    const out = if (w.len >= 2 and w[0] == '"' and w[w.len - 1] == '"') w[1 .. w.len - 1] else w;
+    assert(out.len <= w.len);
+    return out;
 }
 
 /// Returns `raw`, a `file_path_spec`, resolved against `dir` (absolute,
@@ -269,6 +308,8 @@ fn unquote(w: []const u8) []const u8 {
 /// specified directory. Identical to /*." The pattern is allocated in
 /// `arena`.
 fn resolveSpec(arena: std.mem.Allocator, dir: []const u8, raw: []const u8) error{OutOfMemory}!Spec {
+    assert(raw.len > 0);
+    assert(dir.len > 0);
     const base = std.fs.path.basenamePosix(raw);
     const class: Class = if (std.mem.endsWith(u8, raw, "/"))
         .directory
@@ -286,22 +327,15 @@ fn slashed(arena: std.mem.Allocator, path: []const u8) error{OutOfMemory}![]cons
     if (std.fs.path.sep == '/') return path;
     const out = try arena.dupe(u8, path);
     std.mem.replaceScalar(u8, out, std.fs.path.sep, '/');
+    assert(std.mem.findScalar(u8, out, std.fs.path.sep) == null);
     return out;
 }
 
-/// Reports whether `file` matches `pattern`, both absolute. §13.2.1's
-/// wildcards: `?` one character, `*` any run within one name, `...` any
-/// number of directories. `pattern` is `/`-separated (`resolveSpec`); `file`
-/// is a host path, split on the host's separators. Each name is matched in
-/// time linear in the product of its pattern and name lengths.
-pub fn matches(pattern: []const u8, file: []const u8) bool {
-    var f = file;
-    while (f.len != 0 and std.fs.path.isSep(f[0])) f = f[1..];
-    return segments(std.mem.trimStart(u8, pattern, "/"), f);
-}
-
 fn nextSep(f: []const u8) ?usize {
-    for (f, 0..) |c, i| if (std.fs.path.isSep(c)) return i;
+    for (f, 0..) |c, i| if (std.fs.path.isSep(c)) {
+        assert(i < f.len);
+        return i;
+    };
     return null;
 }
 
@@ -311,11 +345,13 @@ fn segments(p: []const u8, f: []const u8) bool {
     const p_rest = if (p_end == p.len) "" else p[p_end + 1 ..];
     if (std.mem.eql(u8, p[0..p_end], "...")) {
         var rest = f;
-        while (true) {
+        // Each pass drops one directory of `f`.
+        for (0..f.len + 1) |_| {
             if (segments(p_rest, rest)) return true;
             const slash = nextSep(rest) orelse return false;
             rest = rest[slash + 1 ..];
         }
+        unreachable;
     }
     if (f.len == 0) return false;
     const f_end = nextSep(f) orelse f.len;
@@ -331,7 +367,11 @@ fn glob(p: []const u8, s: []const u8) bool {
     var si: usize = 0;
     var star: ?usize = null;
     var taken: usize = 0;
-    while (si < s.len) {
+    // Each pass moves `si`, or moves `pi` past a `*`, or retries a star one
+    // byte further: (len(p) + 1) * (len(s) + 1) passes bound it.
+    var passes: usize = 0;
+    while (si < s.len) : (passes += 1) {
+        assert(passes <= (p.len + 1) * (s.len + 1));
         if (pi < p.len and p[pi] != '*' and (p[pi] == '?' or p[pi] == s[si])) {
             pi += 1;
             si += 1;
@@ -346,10 +386,40 @@ fn glob(p: []const u8, s: []const u8) bool {
         } else return false;
     }
     while (pi < p.len and p[pi] == '*') pi += 1;
+    assert(pi <= p.len);
     return pi == p.len;
 }
 
-const testing = std.testing;
+/// Independent oracle for `glob`: the textbook dynamic program, `dp[i][j]`
+/// true when the first `i` pattern characters match the first `j` of `s`.
+fn testGlobOracle(p: []const u8, s: []const u8) bool {
+    var dp: [8][8]bool = @splat(@splat(false));
+    dp[0][0] = true;
+    for (1..p.len + 1) |i| {
+        dp[i][0] = p[i - 1] == '*' and dp[i - 1][0];
+        for (1..s.len + 1) |j| {
+            if (p[i - 1] == '*') {
+                dp[i][j] = dp[i - 1][j] or dp[i][j - 1];
+            } else {
+                dp[i][j] = dp[i - 1][j - 1] and (p[i - 1] == '?' or p[i - 1] == s[j - 1]);
+            }
+        }
+    }
+    return dp[p.len][s.len];
+}
+
+/// Loads `text` as `bad.map` in `tmp`, requires one E0244 refusal, and
+/// returns its message (allocated in `a`).
+fn testLoadRefusal(a: std.mem.Allocator, tmp: *std.testing.TmpDir, name: []const u8, text: []const u8) ![]const u8 {
+    const io = testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = text });
+    const path: []const u8 = try tmp.dir.realPathFileAlloc(io, name, a);
+    var bag: diag.Bag = .init(a);
+    try testing.expectError(error.MapFailed, load(a, io, &bag, &.{path}));
+    try testing.expectEqual(@as(usize, 1), bag.count());
+    try testing.expectEqual(diag.Code.E0244, bag.at(0).code);
+    return bag.at(0).message;
+}
 
 test "§13.7.2 file path specification examples" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
@@ -467,24 +537,6 @@ test "matches: `?` is one character, `*` stays inside one name, `...` spans any 
     }) |c| try testing.expectEqual(c[2], matches(c[0], c[1]));
 }
 
-/// Independent oracle for `glob`: the textbook dynamic program, `dp[i][j]`
-/// true when the first `i` pattern characters match the first `j` of `s`.
-fn testGlobOracle(p: []const u8, s: []const u8) bool {
-    var dp: [8][8]bool = @splat(@splat(false));
-    dp[0][0] = true;
-    for (1..p.len + 1) |i| {
-        dp[i][0] = p[i - 1] == '*' and dp[i - 1][0];
-        for (1..s.len + 1) |j| {
-            if (p[i - 1] == '*') {
-                dp[i][j] = dp[i - 1][j] or dp[i][j - 1];
-            } else {
-                dp[i][j] = dp[i - 1][j - 1] and (p[i - 1] == '?' or p[i - 1] == s[j - 1]);
-            }
-        }
-    }
-    return dp[p.len][s.len];
-}
-
 test "glob agrees with a dynamic-programming oracle on every short pattern and name" {
     // Exhaustive: patterns of up to 4 characters over `a b * ?` against
     // names of up to 5 over `a b`.
@@ -558,13 +610,6 @@ test "§13.5.1 order is declaration order, with `work` last unless a map declare
     try testing.expectEqual(@as(?usize, null), map.declares("work"));
 }
 
-const test_map =
-    \\// §13.2.1: a library declaration, then an include.
-    \\library rtl rtl/*.v, "q/x.v" -incdir inc, "inc 2";
-    \\include sub/more.map;
-    \\
-;
-
 test "§13.2.2 load reads library and include statements, and a library declared twice holds both" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
@@ -609,19 +654,6 @@ test "§13.2.2 include nesting has no depth bound: a chain of 40 map files, past
     const map = try load(a, io, &bag, &.{try tmp.dir.realPathFileAlloc(io, "m0.map", a)});
     try testing.expectEqual(@as(usize, 0), bag.count());
     try testing.expectEqualStrings("deep39", map.libraries[0].name);
-}
-
-/// Loads `text` as `bad.map` in `tmp`, requires one E0244 refusal, and
-/// returns its message (allocated in `a`).
-fn testLoadRefusal(a: std.mem.Allocator, tmp: *std.testing.TmpDir, name: []const u8, text: []const u8) ![]const u8 {
-    const io = testing.io;
-    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = text });
-    const path: []const u8 = try tmp.dir.realPathFileAlloc(io, name, a);
-    var bag: diag.Bag = .init(a);
-    try testing.expectError(error.MapFailed, load(a, io, &bag, &.{path}));
-    try testing.expectEqual(@as(usize, 1), bag.count());
-    try testing.expectEqual(diag.Code.E0244, bag.at(0).code);
-    return bag.at(0).message;
 }
 
 test "§13.2.2 Syntax 13-2: every malformed statement is E0244 naming what it found" {
