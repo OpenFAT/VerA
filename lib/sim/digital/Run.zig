@@ -353,6 +353,8 @@ armed: []bool = &.{},
 event_budget: run_until.EventBudget = .{},
 /// §10 the subroutine activations in progress (`activations.Calls`).
 calls: activations.Calls = .{},
+/// What a VPI application attached to the run (`vpi.Host`).
+host: vpi.Host = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
@@ -429,23 +431,6 @@ monitors: std.ArrayList(Monitor) = .empty,
 /// a digital process that probes without it fails.
 probe: ?*const fn (ctx: *anyopaque, a: []const u8, b: ?[]const u8) Error!f64 = null,
 probe_ctx: *anyopaque = undefined,
-/// `Options.systf`.
-systf: ?UserSystf = null,
-/// Every statement's sites in compile order, outer before inner, while
-/// `Options.stmt_sites`; null otherwise.
-stmt_sites: ?std.ArrayList(StmtSite) = null,
-/// Set while a host has statement callbacks. A run recording statement
-/// sites checks it before each instruction, including after a calltf
-/// registers the first callback during a process run.
-stmt_hook: ?StmtHook = null,
-/// `DoneHook`'s statements while `Options.stmt_sites`: each one's last
-/// instruction, to the site it starts at.
-done_sites: std.AutoHashMapUnmanaged(u32, StmtSite) = .empty,
-/// The host's `DoneHook` (VPI's, set when it binds the run).
-done_hook: ?DoneHook = null,
-/// An `assign`/`force` `done_hook` will report: its process's first pc
-/// (an `override_eval`) to the statement's last pc.
-done_pending: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 /// Some digital expression probes the analog solution (`probe`).
 has_probes: bool = false,
 /// Elaborating the digital half of a mixed-signal module (`Options.mixed`).
@@ -462,9 +447,6 @@ drv: driver.State = .{},
 /// bit-select can name its bit (IEEE 1364-2005 §5.2.1). A slot absent from
 /// here is `[width-1:0]`.
 vec_ranges: std.AutoHashMapUnmanaged(u32, VecRange) = .empty,
-/// Called after a `.vpi`-watched slot changed value and its waiters were
-/// woken. The VPI installs it; nothing else in the engine reads it.
-vpi_change: ?*const fn (r: *Run, slot: u32) void = null,
 /// IEEE 1364-2005 §12.3.11 "the sign attribute shall not cross
 /// hierarchy": a port that COLLAPSED onto its parent's net shares the
 /// parent's slot but keeps its own declaration's signedness. Keyed by the
@@ -520,10 +502,6 @@ ports_dump: @import("evcd.zig").Check = .{},
 evcd: @import("evcd.zig").Evcd = .{},
 /// IEEE 1364-2005 §15 the timing checks (`tchk.Checks`).
 checks: tchk.Checks = .{},
-/// Called after a run-time error the run survives (IEEE 1364-2005
-/// §17.2.9's terminated `$readmem` load, VD-134). The VPI installs it
-/// (VAMS 12.31.4 cbError); nothing in the engine reads it.
-error_hook: ?*const fn (r: *Run) void = null,
 /// The source and options `elaborate` ran, which IEEE 1364-2005 C.7's
 /// reset elaborates again (`reset`).
 source: []const u8 = "",
@@ -715,11 +693,11 @@ pub fn reset(self: *Run) Error!void {
     if (fresh.watch.len != self.watch.len or fresh.drivers.len != self.drivers.len or fresh.checks.rows.items.len != self.checks.rows.items.len)
         return self.fail(0, "IEEE 1364-2005 C.7: the design elaborated again into a different shape", .{});
     fresh.bag = self.bag;
-    fresh.vpi_change = self.vpi_change;
-    fresh.done_hook = self.done_hook;
-    fresh.stmt_hook = self.stmt_hook;
+    fresh.host.change = self.host.change;
+    fresh.host.done_hook = self.host.done_hook;
+    fresh.host.stmt_hook = self.host.stmt_hook;
     fresh.checks.hook = self.checks.hook;
-    fresh.error_hook = self.error_hook;
+    fresh.host.error_hook = self.host.error_hook;
     fresh.file_io = self.file_io;
     fresh.probe = self.probe;
     fresh.probe_ctx = self.probe_ctx;

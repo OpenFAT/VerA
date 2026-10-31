@@ -105,7 +105,7 @@ pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "
         .pla => |p| try system.pla(self, scratch, p, s.args),
         .fclose => try system.fclose(self, scratch, s.args),
         .fflush => {},
-        .user => try self.systf.?.call(self, self.instanceOf(self.scope), s.tok, null),
+        .user => try self.host.systf.?.call(self, self.instanceOf(self.scope), s.tok, null),
         .fshow => |sh| try system.fdisplay(self, scratch, s.args, sh),
         .sshow => |sh| try system.sformat(self, scratch, s.args, sh),
         .sformat => try system.sformat(self, scratch, s.args, null),
@@ -213,7 +213,7 @@ pub fn overrideOn(self: *Run, o: @FieldType(Instruction, "override_on"), pc: u32
             break;
         } else try parts.append(self.arena, .{ .bits = bits, .range = range });
         _ = try enqueue(self, .{ .run_process = o.start }, null, false);
-        if (self.done_hook != null and self.done_sites.contains(pc)) try self.done_pending.put(self.arena, o.start, pc);
+        if (self.host.done_hook != null and self.host.done_sites.contains(pc)) try self.host.done_pending.put(self.arena, o.start, pc);
         return;
     }
     const layer = if (o.force) &entry.value_ptr.force else &entry.value_ptr.assign;
@@ -225,7 +225,7 @@ pub fn overrideOn(self: *Run, o: @FieldType(Instruction, "override_on"), pc: u32
     _ = try enqueue(self, .{ .run_process = o.start }, null, false);
     // The host hears of it once the process has written the
     // target (`doneFlush`).
-    if (self.done_hook != null and self.done_sites.contains(pc)) try self.done_pending.put(self.arena, o.start, pc);
+    if (self.host.done_hook != null and self.host.done_sites.contains(pc)) try self.host.done_pending.put(self.arena, o.start, pc);
     return;
 }
 
@@ -268,6 +268,6 @@ pub fn overrideOff(self: *Run, o: @FieldType(Instruction, "override_off"), pc: u
         } else if (if (o.force) layers.force else layers.assign) |layer| try doneFlush(self, layer.start);
     }
     if (o.bits) |bits| try waiters.releaseBits(self, o.slot, bits) else try waiters.release(self, o.slot, o.force);
-    if (self.done_hook) |h| if (self.done_sites.contains(pc)) try h(self, pc);
+    if (self.host.done_hook) |h| if (self.host.done_sites.contains(pc)) try h(self, pc);
     return;
 }

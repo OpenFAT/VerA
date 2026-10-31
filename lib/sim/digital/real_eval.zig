@@ -189,7 +189,7 @@ pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
                 .driver_delay => try driver.evalReal(self, a, e),
                 .user => blk2: {
                     const v = try filled(a, 64, true, .zero);
-                    try self.systf.?.call(self, self.instanceOf(self.scope), ex.mainTok(e), v);
+                    try self.host.systf.?.call(self, self.instanceOf(self.scope), ex.mainTok(e), v);
                     break :blk2 @bitCast(v.values()[0]);
                 },
                 else => unreachable, // else: the integral system functions are not real-typed

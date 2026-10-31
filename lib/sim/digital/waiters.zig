@@ -198,7 +198,7 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
     try wake(self, target, before, dest.bit(0));
     // IEEE 1364-2005 §15: a timing check whose event this slot is.
     if (watchers.contains(.tchk)) try tchk.changed(self, target, before, dest.bit(0));
-    if (watchers.contains(.vpi)) if (self.vpi_change) |f| f(self, target);
+    if (watchers.contains(.vpi)) if (self.host.change) |f| f(self, target);
     // After `wake`, so a `driver_update` process runs after the driver it
     // watches has re-evaluated (both join the same active-region FIFO).
     try driver.stored(self, target, true);

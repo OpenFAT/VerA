@@ -3,6 +3,7 @@
 //!
 //! Contents:
 //! - `pub const Act = struct`
+//! - `pub const Calls = struct`
 //! - `pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.ExprId) Error!Int.Literal`
 //! - `pub fn makeResident(self: *Run, ctx: u32) Error!void`
 //! - `pub fn callTimed(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.ExprId, pc: u32) Error!u32`

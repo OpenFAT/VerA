@@ -9,6 +9,7 @@
 //!
 //! Contents:
 //! - `pub const VpiValue = union(enum)`
+//! - `pub const Host = struct`
 //! - `pub fn vpiEval(r: *Run, a: std.mem.Allocator, instance: u32, e: Ast.ExprId) Error!VpiValue`
 //! - `pub fn vpiConstantIndex(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprId) Error!?i64`
 //! - `pub fn vpiPutUdp(r: *Run, at: u32, bit: Int.Bit) Error!void`
@@ -20,6 +21,10 @@ const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
 const root = @import("root.zig");
+const UserSystf = root.UserSystf;
+const StmtSite = root.StmtSite;
+const StmtHook = root.StmtHook;
+const DoneHook = root.DoneHook;
 const Run = root.Run;
 const Error = root.Error;
 const compile = @import("compile.zig");
@@ -31,6 +36,36 @@ const setBit = @import("net.zig").setBit;
 
 /// A value a VPI application reads: a real's double, else the 4-state bits.
 pub const VpiValue = union(enum) { bits: Int.Literal, real: f64 };
+
+/// A VPI application's attachments to a run: its system tasks and functions,
+/// the statement and `force`/`assign` callbacks it registered, and the
+/// value-change and error hooks. The engine calls them; only src/vpi sets them.
+pub const Host = struct {
+    /// `Options.systf`.
+    systf: ?UserSystf = null,
+    /// Every statement's sites in compile order, outer before inner, while
+    /// `Options.stmt_sites`; null otherwise.
+    stmt_sites: ?std.ArrayList(StmtSite) = null,
+    /// Set while a host has statement callbacks. A run recording statement
+    /// sites checks it before each instruction, including after a calltf
+    /// registers the first callback during a process run.
+    stmt_hook: ?StmtHook = null,
+    /// `DoneHook`'s statements while `Options.stmt_sites`: each one's last
+    /// instruction, to the site it starts at.
+    done_sites: std.AutoHashMapUnmanaged(u32, StmtSite) = .empty,
+    /// The host's `DoneHook` (VPI's, set when it binds the run).
+    done_hook: ?DoneHook = null,
+    /// An `assign`/`force` `done_hook` will report: its process's first pc
+    /// (an `override_eval`) to the statement's last pc.
+    done_pending: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Called after a `.vpi`-watched slot changed value and its waiters were
+    /// woken. The VPI installs it; nothing else in the engine reads it.
+    change: ?*const fn (r: *Run, slot: u32) void = null,
+    /// Called after a run-time error the run survives (IEEE 1364-2005
+    /// §17.2.9's terminated `$readmem` load, VD-134). The VPI installs it
+    /// (VAMS 12.31.4 cbError); nothing in the engine reads it.
+    error_hook: ?*const fn (r: *Run) void = null,
+};
 
 /// IEEE 1364-2005 §26.6.19(e): evaluate a retained VPI expression in
 /// its original scope, when its value is requested. Arguments to user

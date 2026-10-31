@@ -672,7 +672,7 @@ fn partBound(self: *Run, e: Ast.ExprId) Error!i64 {
 fn infer(self: *Run, e: Ast.ExprId) Error!Type {
     if (e == .none) return self.fail(0, "omitted expressions are not implemented", .{});
     if (deep.exhausted()) return self.deepFail(self.file.exprs.mainTok(e));
-    if (self.systf != null) try rememberVpiScope(self, e);
+    if (self.host.systf != null) try rememberVpiScope(self, e);
     const key: SpecExpr = .{ .spec = self.specOf(self.scope), .e = e };
     if (self.spec_types.get(key)) |ty| return ty;
     const ex = &self.file.exprs;
@@ -779,7 +779,7 @@ fn infer(self: *Run, e: Ast.ExprId) Error!Type {
             // IEEE 1364-2005 §20.4: an application's function replaces the
             // built-in of its name. A task called here keeps the built-in, for
             // the host to refuse (§20.3).
-            if (self.systf) |u| if (u.kind(name)) |k| switch (k) {
+            if (self.host.systf) |u| if (u.kind(name)) |k| switch (k) {
                 .func => |t| {
                     for (ex.args(e)) |arg| try rememberVpiArgument(self, arg);
                     self.sys_calls[@backingInt(e)] = .user;
@@ -1028,15 +1028,15 @@ fn position(self: *Run) u32 {
 /// Records that statement `id` is reached at the next instruction
 /// (`Run.stmt_sites`).
 fn site(self: *Run, id: Ast.StmtId) Error!void {
-    const sites = &(self.stmt_sites orelse return);
+    const sites = &(self.host.stmt_sites orelse return);
     try sites.append(self.arena, .{ .scope = self.instanceOf(self.scope), .stmt = id, .pc = position(self) });
 }
 
 /// Records statement `id`, compiled from `first` to the last instruction so
 /// far, for `Run.done_hook` (`Run.done_sites`).
 fn doneSite(self: *Run, id: Ast.StmtId, first: u32) Error!void {
-    if (self.stmt_sites == null) return;
-    try self.done_sites.put(self.arena, position(self) - 1, .{ .scope = self.instanceOf(self.scope), .stmt = id, .pc = first });
+    if (self.host.stmt_sites == null) return;
+    try self.host.done_sites.put(self.arena, position(self) - 1, .{ .scope = self.instanceOf(self.scope), .stmt = id, .pc = first });
 }
 
 /// A new `Run.repeats` counter, for one `repeat` loop or §9.7.7 repeat
@@ -1291,7 +1291,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             const name = self.file.str(s.name);
             if (name[0] != '$') return compileEnable(self, s.name, s.args, tok, depth);
             // IEEE 1364-2005 §20.4, as for a function (`infer`).
-            if (self.systf) |u| if (u.kind(name)) |k| if (k == .task) {
+            if (self.host.systf) |u| if (u.kind(name)) |k| if (k == .task) {
                 for (s.args) |arg| try rememberVpiArgument(self, arg);
                 _ = try append(self, .{ .task = .{ .task = .user, .args = s.args, .tok = tok } });
                 return;

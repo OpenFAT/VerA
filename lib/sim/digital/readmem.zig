@@ -436,7 +436,7 @@ fn validateMemWord(token: []const u8, radix: Radix) !void {
 /// on takes this one path, in both engines.
 fn loadEnded(self: *Run, site: diag.Span, comptime why: []const u8, args: anytype) Error!void {
     try self.bag.add(self.stage(), .W1157, site, why ++ load_ended, args);
-    if (self.error_hook) |hook| hook(self);
+    if (self.host.error_hook) |hook| hook(self);
 }
 
 test "readmem validates high token characters beyond destination width" {

@@ -2,6 +2,7 @@
 //! Cites: IEEE 1364-2005 §17.1.3, §17.2.2.
 //!
 //! Contents:
+//! - `pub const Monitoring = struct`
 //! - `pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void`
 //! - `pub fn monitorDue(self: *Run, a: std.mem.Allocator) Error!bool`
 //! - `pub fn install(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show: Show, pc: u32) Error!void`
@@ -9,12 +10,7 @@
 //! - `pub fn comparedOperand(self: *Run, e: Ast.ExprId) bool`
 //! - `pub fn monitorChanged(self: *Run, slot: u32) Error!void`
 //! - `pub fn fmonitorPrint(self: *Run, a: std.mem.Allocator) Error!void`
-//! §17 display, strobe, monitor, `%t` and memory-load formatting: a task's
-//! arguments and the values they name (or a memory file's text) in; bytes on
-//! `Run.out` (or words stored into an unpacked array) out. With a null
-//! allocator the same walk validates the call without printing.
-//! Clauses: §9.4.1 Table 9-1, §9.4.3 Table 9-22; IEEE 1364-2005 §17.1.1.3,
-//! §17.1.1.4, §17.1.2, §17.1.3, §17.2.9, §17.3, §17.7.2.
+
 const std = @import("std");
 const Front = @import("frontend");
 const Ast = Front.Ast;

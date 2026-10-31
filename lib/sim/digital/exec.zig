@@ -295,7 +295,7 @@ pub fn execute(self: *Run, scratch: *Scratch, start: u32) Error!void {
     // A VPI calltf may register the first cbStmt while this process is
     // running. Recorded sites therefore keep dispatch available before a
     // hook exists; ordinary runs still use the branch without callbacks.
-    return if (self.stmt_sites != null or self.stmt_hook != null) run(self, scratch, start, true) else run(self, scratch, start, false);
+    return if (self.host.stmt_sites != null or self.host.stmt_hook != null) run(self, scratch, start, true) else run(self, scratch, start, false);
 }
 
 /// A driver's `delay3` that reads a variable (`Run.driver_delays`), its
@@ -312,8 +312,8 @@ pub fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok:
 /// `Run.done_hook`, once: when the process first writes the target, or when
 /// the override is undone or replaced before it ran.
 pub fn doneFlush(self: *Run, start: u32) Error!void {
-    const h = self.done_hook orelse return;
-    if (self.done_pending.fetchRemove(start)) |kv| try h(self, kv.value);
+    const h = self.host.done_hook orelse return;
+    if (self.host.done_pending.fetchRemove(start)) |kv| try h(self, kv.value);
 }
 
 // ---- private ----
@@ -461,7 +461,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
         self.scope = self.code_scope.items[pc];
         // ponytail: a `wait` whose level is false resumes at its own pc, so
         // each re-test is one more visit.
-        if (hooked) if (self.stmt_hook) |h| if (pc < h.at.bit_length and h.at.isSet(pc)) try h.fire(self, pc);
+        if (hooked) if (self.host.stmt_hook) |h| if (pc < h.at.bit_length and h.at.isSet(pc)) try h.fire(self, pc);
         // Each instruction completes its copies/captures before scratch is
         // reused; an untimed loop therefore retains no iteration temporaries.
         per_instruction.reset();
@@ -684,7 +684,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             .disable_block => |b| {
                 const inside = pc >= b.start and pc < b.end;
                 const resumed = try disable(self, b.start, b.end) and inside;
-                if (self.done_hook) |h| if (self.done_sites.contains(pc)) try h(self, pc);
+                if (self.host.done_hook) |h| if (self.host.done_sites.contains(pc)) try h(self, pc);
                 if (resumed) return;
                 // IEEE1364 §10.3: self/ancestor disable resumes AFTER the
                 // target block, while a sibling disable continues here.

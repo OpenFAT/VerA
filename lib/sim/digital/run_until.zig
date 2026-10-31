@@ -2,6 +2,7 @@
 //! Cites: IEEE 1364-2005 §11, §11.4; VAMS §8.5.1.
 //!
 //! Contents:
+//! - `pub const EventBudget = struct`
 //! - `pub fn runUntil(r: *Run, limit: Tick) Error!Stop`
 //! - `pub fn upward(self: *const Run, name: Ast.StrId) ?u32`
 

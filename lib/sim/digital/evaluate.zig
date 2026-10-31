@@ -423,7 +423,7 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
             .user => {
                 const natural = compile.typeOf(self, e);
                 const v = try filled(a, natural.width, natural.signed, .x);
-                try self.systf.?.call(self, self.instanceOf(self.scope), ex.mainTok(e), v);
+                try self.host.systf.?.call(self, self.instanceOf(self.scope), ex.mainTok(e), v);
                 return normalize(a, v, ty);
             },
             else => unreachable, // else: the real-valued functions left through the real path above

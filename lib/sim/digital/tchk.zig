@@ -33,6 +33,7 @@
 //! - `pub const Event = struct`
 //! - `pub const Stamp = struct`
 //! - `pub const Flags = packed struct(u8)`
+//! - `pub const Checks = struct`
 //! - `pub const Tchk = struct`
 //! - `pub fn flag(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!bool`
 //! - `pub fn notifier(r: *Run, e: Ast.ExprId) Error!?u32`
