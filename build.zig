@@ -183,7 +183,7 @@ pub fn build(b: *Build) void {
     const o = b.addOptions();
     o.addOption([]const u8, "fixture_root", pathFromRoot(b, "tests/conformance/tests"));
     o.addOption([]const u8, "repo_root", pathFromRoot(b, "."));
-    o.addOption([]const u8, "work_root", pathFromRoot(b, ".zig-cache/vera-suite"));
+    o.addOption([]const u8, "work_root", checkoutWorkDir(b, "vera-suite"));
     o.addOption([]const u8, "contract", pathFromRoot(b, "lib/contract.zig"));
     o.addOption([]const u8, "vpi_include", pathFromRoot(b, "src/vpi"));
     o.addOption([]const u8, "zig_exe", b.graph.zig_exe);
@@ -711,10 +711,7 @@ fn vpiApp(b: *Build, target: Build.ResolvedTarget, optimize: std.lang.Optimize, 
     b.top_level_steps.get("build-all").?.step.dependOn(&app.step);
     const run = b.addRunArtifact(app);
     run.setEnvironmentVariable("VERA_ZIG", b.graph.zig_exe);
-    // Keyed by checkout: worktrees share one symlinked .zig-cache, and two
-    // building the same application in one work dir at once corrupt it.
-    const root_key = std.hash.Wyhash.hash(0, pathFromRoot(b, "."));
-    run.setEnvironmentVariable("VERA_VPI_WORK", pathFromRoot(b, b.fmt(".zig-cache/vera-vpi/{x}", .{root_key})));
+    run.setEnvironmentVariable("VERA_VPI_WORK", checkoutWorkDir(b, "vera-vpi"));
     return run;
 }
 
@@ -834,6 +831,14 @@ fn defineModules(b: *Build, target: Build.ResolvedTarget, exported: bool) []cons
         created.append(b.allocator, .{ .name = spec.name, .module = mod }) catch @panic("OOM");
     }
     return created.items;
+}
+
+/// `.zig-cache/<name>/<checkout>`: worktrees share one symlinked .zig-cache,
+/// and two checkouts building and running in one work dir at once corrupt it
+/// (ETXTBSY: `suite -- ams` failed with FileBusy beside another worktree's).
+fn checkoutWorkDir(b: *Build, name: []const u8) []u8 {
+    const key = std.hash.Wyhash.hash(0, pathFromRoot(b, "."));
+    return pathFromRoot(b, b.fmt(".zig-cache/{s}/{x}", .{ name, key }));
 }
 
 fn pathFromRoot(b: *Build, sub_path: []const u8) []u8 {
