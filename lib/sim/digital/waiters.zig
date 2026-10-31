@@ -311,7 +311,7 @@ pub fn forceValue(self: *Run, slot: u32, planes: []const u64) Error!void {
 pub fn requestAnalog(self: *Run) Error!void {
     if (self.analog_pending) return;
     self.analog_pending = true;
-    _ = self.scheduler.schedule(.analog, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
+    _ = self.scheduler.schedule(self.arena, .analog, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
 }
 
 test "ams_implicit_d2a_queues_only_the_macro_process" {
@@ -346,7 +346,7 @@ fn requestD2a(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!vo
     };
     if (self.d2a_fired == 0 or self.d2a_pending) return;
     self.d2a_pending = true;
-    _ = self.scheduler.schedule(.explicit_d2a, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
+    _ = self.scheduler.schedule(self.arena, .explicit_d2a, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
 }
 
 /// §17.1.3: "the entire argument list is displayed at the end of the time

@@ -294,7 +294,7 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
 /// inactive and NBA.
 pub fn enqueueMonitor(self: *Run, item: Pending) Error!void {
     const at = try claim(self, item);
-    self.pending.items[at].handle = self.scheduler.schedule(.monitor, at) catch |e| return scheduleFailure(self, e, "scheduling");
+    self.pending.items[at].handle = self.scheduler.schedule(self.arena, .monitor, at) catch |e| return scheduleFailure(self, e, "scheduling");
 }
 
 /// A row for `item`: a recycled one when there is one. A `.write` value is
@@ -369,9 +369,9 @@ pub fn resumption(pc: u32, ctx: u32) Pending {
 pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle {
     const at = try claim(self, item);
     const h = (if (delay) |d|
-        self.scheduler.scheduleAfter(d, if (nba) .nba else .inactive, at) catch |e| return scheduleFailure(self, e, "timing")
+        self.scheduler.scheduleAfter(self.arena, d, if (nba) .nba else .inactive, at) catch |e| return scheduleFailure(self, e, "timing")
     else
-        self.scheduler.schedule(if (nba) .nba else .active, at) catch |e| return scheduleFailure(self, e, "scheduling"));
+        self.scheduler.schedule(self.arena, if (nba) .nba else .active, at) catch |e| return scheduleFailure(self, e, "scheduling"));
     self.pending.items[at].handle = h;
     if (item == .write) try driver.scheduled(self, item.write.target);
     return h;
@@ -380,7 +380,7 @@ pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle {
 /// `enqueue` at now in the active region, ahead of everything queued there.
 pub fn enqueueFirst(self: *Run, item: Pending) Error!void {
     const at = try claim(self, item);
-    self.pending.items[at].handle = self.scheduler.scheduleFirst(.active, at) catch |e| return scheduleFailure(self, e, "scheduling");
+    self.pending.items[at].handle = self.scheduler.scheduleFirst(self.arena, .active, at) catch |e| return scheduleFailure(self, e, "scheduling");
 }
 
 fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool {

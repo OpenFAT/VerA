@@ -171,7 +171,7 @@ pub fn restore(s: *State, b: []const u8) Error!void {
 
 fn load(s: *State, r: *std.Io.Reader) (std.Io.Reader.Error || std.mem.Allocator.Error)!void {
     const gpa = s.gpa;
-    try s.sched.restore(r);
+    try s.sched.restore(s.gpa, r);
     inline for (fixed) |f| try r.readSliceAll(bytes(&@field(s, f)));
     if (!root.logic.two) try r.readSliceAll(bytes(&s.x));
     inline for (nets) |f| try r.readSliceAll(bytes(&@field(s.nets, f)));

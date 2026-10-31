@@ -727,7 +727,7 @@ pub const State = struct {
             .gpa = gpa,
             .v = try gpa.dupe(u64, d.v),
             .x = try gpa.dupe(u64, d.x),
-            .sched = .init(gpa),
+            .sched = .empty,
             .terms = try gpa.alloc(std.ArrayList(Term), d.slots),
             .fan_start = d.fan_start,
             .fan = d.fan,
@@ -942,7 +942,7 @@ pub const State = struct {
                 self.pending[slot] = true;
                 self.changed.appendAssumeCapacity(slot);
                 self.settle = .queued;
-                _ = self.sched.schedule(.active, settle_payload) catch |e| return self.schedFail(e);
+                _ = self.sched.schedule(self.gpa, .active, settle_payload) catch |e| return self.schedFail(e);
             },
         }
     }
@@ -1124,7 +1124,7 @@ pub const State = struct {
             try self.words.appendSlice(self.gpa, &(a.v ++ a.x ++ m));
             try self.rows.append(self.gpa, .{ .slot = slot, .off = off, .n = a.v.len, .at = at, .quiet = quiet, .real = is_real });
         }
-        if (self.rows.items.len == 1) _ = self.sched.schedule(.nba, nba_payload) catch |e| return self.schedFail(e);
+        if (self.rows.items.len == 1) _ = self.sched.schedule(self.gpa, .nba, nba_payload) catch |e| return self.schedFail(e);
     }
 
     /// §9.2.2 `<= #d`: `nba` of the update `after` ticks later. At 0 it
@@ -1148,7 +1148,7 @@ pub const State = struct {
             break :blk @as(u32, @intCast(self.late.items.len - 1));
         };
         self.late.items[k] = .{ .slot = slot, .off = off, .n = n, .real = is_real, .words = words };
-        _ = self.sched.scheduleAfter(after, .nba, late_base + k) catch |e| return self.timeFail(e);
+        _ = self.sched.scheduleAfter(self.gpa, after, .nba, late_base + k) catch |e| return self.timeFail(e);
     }
 
     /// §10.3 `disable` of the named block or task copy at pcs `[lo, hi)`:
@@ -1394,7 +1394,7 @@ pub const State = struct {
 
     /// §17.1.2 `$strobe` site `site`: its line at the end of this timestep.
     pub fn strobe(self: *State, site: u32) Error!void {
-        _ = self.sched.schedule(.monitor, show_base + site) catch |e| return self.schedFail(e);
+        _ = self.sched.schedule(self.gpa, .monitor, show_base + site) catch |e| return self.schedFail(e);
     }
 
     /// §17.1.3 `$monitor` site `site`, watching `slots`, replaces the
@@ -1416,7 +1416,7 @@ pub const State = struct {
     fn requestMonitor(self: *State) Error!void {
         if (self.mon_site == null or !self.mon_on or self.mon_pending) return;
         self.mon_pending = true;
-        _ = self.sched.schedule(.monitor, monitor_payload) catch |e| return self.schedFail(e);
+        _ = self.sched.schedule(self.gpa, .monitor, monitor_payload) catch |e| return self.schedFail(e);
     }
 
     /// Queues the running process's continuation at `pc`, in its activation
@@ -1434,18 +1434,18 @@ pub const State = struct {
         };
         self.resumes.items[k] = .{ .pc = pc, .ctx = ctx, .live = true };
         _ = (if (after) |t|
-            self.sched.scheduleAfter(t, .inactive, resume_base + k) catch |e| return self.timeFail(e)
+            self.sched.scheduleAfter(self.gpa, t, .inactive, resume_base + k) catch |e| return self.timeFail(e)
         else
-            self.sched.schedule(.active, resume_base + k) catch |e| return self.schedFail(e));
+            self.sched.schedule(self.gpa, .active, resume_base + k) catch |e| return self.schedFail(e));
     }
 
     /// Queues the process at `pc` outside any activation: now (active), or
     /// `after` ticks later (inactive).
     fn runPlain(self: *State, pc: u32, after: ?u64) Error!void {
         _ = (if (after) |t|
-            self.sched.scheduleAfter(t, .inactive, pc) catch |e| return self.timeFail(e)
+            self.sched.scheduleAfter(self.gpa, t, .inactive, pc) catch |e| return self.timeFail(e)
         else
-            self.sched.schedule(.active, pc) catch |e| return self.schedFail(e));
+            self.sched.schedule(self.gpa, .active, pc) catch |e| return self.schedFail(e));
     }
 
     /// A scheduling failure as `error.OutOfMemory`, or an E1100 refusal.
@@ -1774,7 +1774,7 @@ pub const State = struct {
     fn requestDump(self: *State) Error!void {
         if (self.dump.pending or self.quiet) return;
         self.dump.pending = true;
-        _ = self.sched.schedule(.monitor, vcd_payload) catch |e| return self.schedFail(e);
+        _ = self.sched.schedule(self.gpa, .monitor, vcd_payload) catch |e| return self.schedFail(e);
     }
 
     fn dumpFail(self: *State, e: vcd.Failure) Error {

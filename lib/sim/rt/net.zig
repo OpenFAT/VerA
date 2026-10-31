@@ -332,7 +332,7 @@ pub fn drive(s: *State, i: u32, planes: []const u64, or_z: bool) Error!void {
         if (!try inertial(s, &t.flight[i], tgt, &t.tgt_or_z[i], cur[0..h], cur[h..], t.or_z[i], planes, or_z)) return;
         const w = t.nets[d.net].width;
         const ticks = if (d.delay_bit) |b| d.delay.to(bitAt(tgt, b)) else d.delay.continuous(literal(cur, w).truth(), literal(tgt, w));
-        t.flight[i] = s.sched.scheduleAfter(ticks, .inactive, drive_base + i) catch |e| return s.timeFail(e);
+        t.flight[i] = s.sched.scheduleAfter(s.gpa, ticks, .inactive, drive_base + i) catch |e| return s.timeFail(e);
         return;
     }
     @memcpy(cur, planes);
@@ -542,7 +542,7 @@ pub fn resolve(s: *State, k: u32) Error!void {
             } else .zero;
             const own: u64 = if (n.delay.present) n.delay.continuous(from, literal(tgt, n.width)) else 0;
             const ticks = @max(own, path orelse 0);
-            t.nflight[k] = s.sched.scheduleAfter(ticks, .inactive, net_base + k) catch |e| return s.timeFail(e);
+            t.nflight[k] = s.sched.scheduleAfter(s.gpa, ticks, .inactive, net_base + k) catch |e| return s.timeFail(e);
         }
         return;
     }
@@ -765,7 +765,7 @@ fn switchAfter(s: *State, i: u32, next: dnet.Tran.State) Error!void {
         .off => .zero,
         .unknown => .x,
     };
-    t.tpending[i] = s.sched.scheduleAfter(t.trans[i].delay.to(to), .inactive, tran_base + i) catch |e| return s.timeFail(e);
+    t.tpending[i] = s.sched.scheduleAfter(s.gpa, t.trans[i].delay.to(to), .inactive, tran_base + i) catch |e| return s.timeFail(e);
 }
 
 /// `resolution.chargeState`: the §3.8 decay countdown restarts on each entry
@@ -779,7 +779,7 @@ fn chargeState(s: *State, k: u32, floating: bool) Error!void {
     t.decay_ev[k] = null;
     if (!floating) return;
     const after = t.nets[k].decay orelse return;
-    t.decay_ev[k] = s.sched.scheduleAfter(after, .inactive, decay_base + k) catch |e| return s.timeFail(e);
+    t.decay_ev[k] = s.sched.scheduleAfter(s.gpa, after, .inactive, decay_base + k) catch |e| return s.timeFail(e);
 }
 
 /// `resolution.schedule`, §6.1.3's inertial rule: whether a transition to `to`
