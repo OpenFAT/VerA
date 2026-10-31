@@ -69,6 +69,7 @@ const sameRange = elab_declare.sameRange;
 /// task inlined at a call site gets fresh storage while pass two compiles it.
 pub fn mintVar(r: *Run, v: Ast.VarDecl) Error!u32 {
     const g = r.growing.?;
+    assert(r.scope < r.hier.scopes.items.len);
     if (v.ty == .string) return r.fail(v.main_tok, "string variables are not implemented", .{});
     const real = v.ty == .real;
     // §4.8: `integer` is 32 signed bits and `time` 64 unsigned ones.
@@ -95,6 +96,8 @@ pub fn mintVar(r: *Run, v: Ast.VarDecl) Error!u32 {
         if (real) try r.decls.reals.put(r.arena, base + @as(u32, @intCast(i)), {});
     }
     r.values = g.items;
+    assert(r.values.len == base + count);
+    assert(r.values[base].width == width);
     return base;
 }
 
@@ -119,6 +122,8 @@ pub fn declareArray(r: *Run, base: u32, dims: []const Ast.Dim, tok: u32) Error!u
         count = std.math.mul(u32, count, size) catch return r.fail(tok, "unpacked array size is outside the supported u32 range", .{});
     }
     try r.decls.arrays.put(r.arena, base, .{ .count = count, .low = spans[0].low, .high = spans[0].high, .left = left, .right = right, .rest = spans[1..] });
+    assert(count >= 1);
+    assert(spans[0].low <= spans[0].high);
     return count;
 }
 
@@ -143,6 +148,7 @@ pub fn netSlot(r: *Run, e: Ast.ExprId, tok: u32) Error!u32 {
 }
 
 pub fn usesReal(t: *const Ast.Subroutine) bool {
+    assert(t.name != .none);
     if (t.is_function and t.result.ty != .integer) return true;
     for (t.ports) |p| if (p.v.ty != .integer) return true;
     for (t.vars) |v| if (v.ty != .integer) return true;
@@ -153,6 +159,7 @@ pub fn usesReal(t: *const Ast.Subroutine) bool {
 /// an automatic task's per-call-site one in pass two.
 pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
     const g = r.growing.?;
+    assert(inst < r.hier.scopes.items.len);
     // §10.4.4 c) and d): at least one input, and no output or inout.
     if (t.is_function) {
         for (t.ports) |p| if (p.direction != .input)
@@ -190,6 +197,8 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
         try r.routines.auto_scopes.put(r.arena, scope, {});
         for (first..g.items.len) |at| try r.routines.auto_slots.put(r.arena, @intCast(at), {});
     }
+    assert(r.hier.scopes.items[scope].parent == inst);
+    assert(g.items.len >= first + ports.len);
     return .{ .scope = scope, .ports = ports, .result = result, .first = first, .count = @as(u32, @intCast(g.items.len)) - first };
 }
 
@@ -209,12 +218,14 @@ pub fn earlyFrame(r: *Run, idx: u32, tok: u32) Error!void {
     const first = r.program.disables.items.len;
     try compile.compileSub(r, idx);
     try root.bindDisables(r, first);
+    assert(r.routines.rows.items[idx].compiled);
 }
 
 /// VAMS §3.7's port merge: a wire or tri joined to a wreal port becomes one
 /// wreal net, for every other connection to it too. `Front.wreal.check` has
 /// already refused the net types §3.7 does not call compatible.
 pub fn promoteWreal(r: *Run, e: *Elab, net: u32) Error!void {
+    assert(net < e.nets.items.len);
     const n = &e.nets.items[net];
     if (n.kind == .wreal) return;
     n.kind = .wreal;
@@ -222,6 +233,7 @@ pub fn promoteWreal(r: *Run, e: *Elab, net: u32) Error!void {
     e.values.items[n.slot] = try filled(r.arena, 64, true, .zero);
     r.values = e.values.items;
     try r.decls.reals.put(r.arena, n.slot, {});
+    assert(e.values.items[n.slot].width == 64);
 }
 
 /// One new net and its slot, `name` (unless `.none`) bound to it in the
@@ -244,6 +256,8 @@ pub fn mintNet(r: *Run, e: *Elab, kind: Ast.NetKind, width: u32, signed: bool, n
     try e.signals.appendNTimes(r.arena, .{}, width);
     try e.nets.append(r.arena, .{ .kind = kind, .slot = slot, .resolved = try filled(r.arena, if (wreal) 64 else width, false, .z), .signal = signal, .tok = tok });
     try r.netlist.slot_nets.put(r.arena, slot, at);
+    assert(e.nets.items.len == at + 1);
+    assert(e.values.items.len == slot + 1);
     return at;
 }
 
@@ -261,6 +275,8 @@ pub fn mintNet(r: *Run, e: *Elab, kind: Ast.NetKind, width: u32, signed: bool, n
 fn redeclaredPort(r: *Run, p: Ast.TfPort) Error!void {
     const d = p.redecl;
     if (d.count == 0) return;
+    assert(d.count >= 1);
+    assert(d.tok < r.starts.len);
     if (d.typed) return r.fail(d.tok, "§12.3.3: a port declared with a type is completely declared; this is a duplicate declaration of it", .{});
     if (d.count > 1) return r.fail(d.tok, "§12.3.3: a duplicate declaration of a port's variable; a port is declared again at most once", .{});
     if (p.v.storage != .reg) {

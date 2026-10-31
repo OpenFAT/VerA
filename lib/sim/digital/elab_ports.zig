@@ -80,6 +80,7 @@ pub const SinkOf = enum { port, assign, gate };
 /// than one port reference names)? Its ports are then connected one external
 /// port at a time (`groupPorts`).
 pub fn expressionPorts(m: *const Ast.ModuleDecl) bool {
+    if (m.ports.len != 0) assert(!m.ports[0].concat_rest); // A concatenation continues a port before it.
     for (m.ports, 0..) |p, i| {
         if (p.name == .none) continue; // A.1.3: null ports name no shared internal net
         if (p.select != null or p.concat_rest) return true;
@@ -95,7 +96,9 @@ pub fn nthGroup(m: *const Ast.ModuleDecl, n: usize) ?usize {
     while (i < m.ports.len) : (i = groupEnd(m, i)) {
         if (k == n) return i;
         k += 1;
+        assert(k <= m.ports.len); // A group holds one port at least.
     }
+    assert(k <= n);
     return null;
 }
 
@@ -107,7 +110,9 @@ pub fn groupByName(m: *const Ast.ModuleDecl, name: Ast.StrId) ?usize {
         const p = m.ports[i];
         const own = if (p.external_name != .none) p.external_name else if (groupEnd(m, i) == i + 1 and p.select == null) p.name else .none;
         if (own == name) return i;
+        assert(!p.concat_rest); // Groups are walked by their heads.
     }
+    assert(i == m.ports.len);
     return null;
 }
 
@@ -136,6 +141,7 @@ pub fn groupPorts(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds
         const end = groupEnd(m, i);
         if (m.ports[i].name != .none and i < binds.len and binds[i] == .group)
             try connectGroup(r, e, m.ports[i..end], binds[i].group.conn, binds[i].group.scope, scope);
+        assert(end > i);
         i = end;
     }
 }
@@ -144,6 +150,7 @@ pub fn groupPorts(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds
 /// gave it no external name. A concatenation with no external name has none
 /// (§12.3.6: it connects by position only).
 pub fn portByName(m: *const Ast.ModuleDecl, name: Ast.StrId) ?usize {
+    assert(name != .none);
     for (m.ports, 0..) |p, k| {
         if (p.concat_rest or (k + 1 < m.ports.len and m.ports[k + 1].concat_rest)) continue;
         if (if (p.external_name == .none) p.name == name else p.external_name == name) return k;
@@ -154,21 +161,28 @@ pub fn portByName(m: *const Ast.ModuleDecl, name: Ast.StrId) ?usize {
 /// Records `slot`'s declared `[msb:lsb]` (`Run.vec_ranges`).
 pub fn putRange(r: *Run, slot: u32, range: Ast.Dim, tok: u32) Error!void {
     assert(tok < r.starts.len);
+    assert(range.msb != .none);
     try r.typing.vec_ranges.put(r.arena, slot, .{ .msb = try r.declaredBound(range.msb, tok), .lsb = try r.declaredBound(range.lsb, tok) });
+    assert(r.typing.vec_ranges.contains(slot));
 }
 
 /// A port's declared width, evaluated in the scope being elaborated: a
 /// child port's range is read before the child's parameters exist.
 pub fn portWidth(r: *Run, p: Ast.Port) Error!u32 {
-    if (p.kind == .wreal) return 64;
-    return if (p.range orelse p.type_range) |range| r.declaredWidth(range, p.main_tok) else 1;
+    assert(p.main_tok < r.starts.len);
+    if (p.kind == .wreal) return 64; // VAMS §3.7: a wreal holds a real's 64 bits.
+    const w = if (p.range orelse p.type_range) |range| try r.declaredWidth(range, p.main_tok) else 1;
+    assert(w >= 1);
+    return w;
 }
 
 /// `portWidth` of a child's port, its range read in `child`, the child
 /// instance's scope with its parameters already valued (`declareHead`), not
 /// in the parent's, where the same name may be another parameter or none.
 pub fn childPortWidth(r: *Run, child: u32, p: Ast.Port) Error!u32 {
+    assert(child < r.hier.scopes.items.len);
     const saved = r.scope;
+    defer assert(r.scope == saved); // Runs after the restore below.
     defer r.scope = saved;
     r.scope = child;
     return portWidth(r, p);
@@ -186,6 +200,7 @@ pub fn bindPort(r: *Run, e: *Elab, port: Ast.Port, conn: Ast.PortConn, scope: u3
     // the child's drive strengths reach the parent's resolution unchanged
     // (IEEE 1364 clause 12: a port is a connection). `declare` size-checks
     // it once the port's own width is known.
+    assert(conn.expr != .none);
     if (ex.tag(conn.expr) == .ident) {
         if (r.netlist.slot_nets.get(try r.scalarSlot(conn.expr))) |net| return .{ .collapse = .{ .net = net, .expr = conn.expr, .scope = scope, .tok = conn.main_tok } };
     }
@@ -214,7 +229,9 @@ pub fn concatLeaves(r: *Run, e: Ast.ExprId, out: *std.ArrayList(Ast.ExprId)) Err
     assert(e != .none);
     const ex = &r.file.exprs;
     if (ex.tag(e) != .concat) return out.append(r.arena, e);
+    const before = out.items.len;
     for (ex.args(e)) |x| try concatLeaves(r, x, out);
+    assert(out.items.len >= before + ex.args(e).len); // One leaf per operand at least.
 }
 
 /// IEEE 1364-2005 §12.3.9.2 one operand of a structural net expression: a
@@ -257,8 +274,10 @@ pub fn sink(r: *Run, e: *Elab, arg: Ast.ExprId, tok: u32, comptime who: SinkOf) 
 
 /// One past the last reference of the external port starting at `i`.
 fn groupEnd(m: *const Ast.ModuleDecl, i: usize) usize {
+    assert(i < m.ports.len);
     var end = i + 1;
     while (end < m.ports.len and m.ports[end].concat_rest) end += 1;
+    assert(end <= m.ports.len);
     return end;
 }
 
@@ -270,6 +289,8 @@ fn groupEnd(m: *const Ast.ModuleDecl, i: usize) usize {
 fn connectGroup(r: *Run, e: *Elab, refs: []const Ast.Port, conn: Ast.PortConn, parent: u32, scope: u32) Error!void {
     assert(scope < r.hier.scopes.items.len);
     if (conn.expr == .none) return;
+    assert(parent < r.hier.scopes.items.len);
+    assert(refs.len >= 1);
     const Ref = struct { slot: u32, lo: u32, width: u32, at: u32, dir: Ast.Direction };
     const list = try r.arena.alloc(Ref, refs.len);
     var total: u32 = 0;

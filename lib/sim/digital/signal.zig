@@ -206,14 +206,16 @@ pub fn reduceSignal(sig: Signal, hops: u32, resistive: u32) Signal {
 /// strength it passes; a non-resistive one only turns supply into strong.
 pub fn reduce(s: Ast.Strength, resistive: bool) Ast.Strength {
     assert(@backingInt(s) <= strength_max);
-    if (!resistive) return if (s == .supply) .strong else s;
-    return switch (s) {
+    const out: Ast.Strength = if (!resistive) (if (s == .supply) .strong else s) else switch (s) {
         .supply, .strong => .pull,
         .pull => .weak,
         .large, .weak => .medium,
         .medium, .small => .small,
         .highz => .highz,
     };
+    assert(@backingInt(out) <= @backingInt(s)); // A switch never strengthens.
+    if (s != .highz) assert(out != .highz);
+    return out;
 }
 
 /// §7.9/§7.10 the resolution of drivers that all assert one strength on
@@ -251,7 +253,7 @@ pub fn foldUniform(out: Int.Literal, drivers: []const Driver, ids: []const u32) 
 /// `tri0` because pull(5) beats weak(3), and nothing an `assign` can write
 /// beats a supply net's supply(7).
 pub fn netPull(kind: Ast.NetKind) Signal {
-    return switch (kind) {
+    const pull: Signal = switch (kind) {
         .supply0 => .of(.zero, .supply, .highz),
         .supply1 => .of(.one, .highz, .supply),
         .tri0 => .of(.zero, .pull, .highz),
@@ -259,6 +261,9 @@ pub fn netPull(kind: Ast.NetKind) Signal {
         // No pull of its own; a wreal resolves as a real and never gets here.
         .wire, .tri, .triand, .trior, .trireg, .wand, .wor, .uwire, .wreal => .{},
     };
+    assert(pull.lo <= pull.hi);
+    if (wiredLogic(kind) != null) assert(pull.none()); // §7.13: a wired net has no pull of its own.
+    return pull;
 }
 
 /// Which §7.9 table a net folds its drivers through, null for every net type
@@ -275,13 +280,17 @@ pub fn wiredLogic(kind: Ast.NetKind) ?Wired {
 /// `tri0`/`tri1`, the constant of a supply net, the X a `trireg` starts at
 /// before it has any charge to hold, and Z for everything else.
 pub fn undriven(kind: Ast.NetKind) Int.Bit {
-    return switch (kind) {
+    const b: Int.Bit = switch (kind) {
         .supply0, .tri0 => .zero,
         .supply1, .tri1 => .one,
         .trireg => .x,
         // A wreal reads 0.0 undriven, which `mintNet` gives it directly.
         .wire, .tri, .triand, .trior, .wand, .wor, .uwire, .wreal => .z,
     };
+    // §3.7: the undriven value is what the net type's own pull resolves to,
+    // save a trireg's, which holds its x until a driver charges it.
+    if (kind != .trireg) assert(netPull(kind).collapse() == b);
+    return b;
 }
 
 test "an undriven net reads Z where a variable reads X" {
