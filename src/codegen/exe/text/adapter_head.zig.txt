@@ -1,0 +1,90 @@
+
+const Analog = struct {
+    model: *D.Model,
+    inst: *D.Instance,
+    x: *[n_u]f64,
+    forced: *[n_u]?f64,
+    state: *State,
+    dout: *std.Io.Writer.Allocating,
+    n: *usize,
+    slots: [input_ports.len]u32,
+    snap_slots: [snap_ports.len]u32,
+    /// §7.3.6.4 the digital slots `a2d_ports` are copied into.
+    dig: *sim.digital.Run,
+    a2d_slots: [a2d_ports.len]u32,
+    /// §8.5.3.6 the region-1b values of the last explicit D2A event.
+    snaps: [snap_ports.len]f64 = @splat(0),
+    /// §7.3.6.1 each `a2d_ports` count as the last finished solution left it.
+    counts: [a2d_ports.len]i64 = @splat(0),
+    t: f64 = 0.0,
+    solved: bool = false,
+    /// The last finished solution, for §7.3.6.3's interpolation.
+    x_prev: [n_u]f64 = @splat(0.0),
+    t_prev: ?f64 = null,
+
+    /// §7.3.6.5 / Table 7-1: every input as the integer the digital
+    /// engine holds for the latest tick, the guarded reads' snapshot, and
+    /// the explicit D2A terms delivered to this solve. The fields are
+    /// parameters to the device, so its parameter-only prep is redone.
+    pub fn setInputs(a: *Analog, dig: *sim.digital.Run, fired: u64) !void {
+        a.flush();
+        // A `reg` past 32 bits is one port per word (`Lowered.discrete_words`).
+        @setEvalBranchQuota(1000 + 100 * input_ports.len);
+        inline for (input_ports, 0..) |p, i| if (p.xz) |xz| {
+            // §7.3.2 read four-state: both planes, and x or z is a value.
+            const v = dig.values[a.slots[i]];
+            setField(a.model, p.field, v.asInt() orelse @as(i64, @bitCast(v.values()[0])));
+            setField(a.model, xz, @as(i64, @bitCast(v.unknowns()[0])));
+        } else if (p.word) |k| {
+            setField(a.model, p.field, mixedWord(dig, a.slots[i], p.name, k));
+        } else setField(a.model, p.field, mixedInput(dig, a.slots[i], p.name));
+        inline for (snap_ports, 0..) |p, i| setField(a.model, p.field, a.snaps[i]);
+        inline for (event_ports, 0..) |p, k| setField(a.model, p.field, @intFromBool(fired >> k & 1 != 0));
+        if (comptime @hasDecl(D, "setup")) D.setup(Dual, a.model);
+        if (comptime @hasDecl(D, "setupInstance")) D.setupInstance(a.model, a.inst);
+    }
+
+    /// §5.10.3.3 the device's next timer instant after `t`, if it has one.
+    pub fn breakpoint(a: *Analog, t: f64) ?f64 {
+        const m: ?f64 = if (comptime @hasDecl(D, "nextBreakpoint")) D.nextBreakpoint(a.model, t) else null;
+        const i: ?f64 = if (comptime @hasDecl(D, "pendingBreakpoint")) D.pendingBreakpoint(a.inst, t) else null;
+        return if (m != null and i != null) @min(m.?, i.?) else m orelse i;
+    }
+
+    pub fn snapshot(a: *Analog, dig: *sim.digital.Run) !void {
+        inline for (snap_ports, 0..) |p, i| a.snaps[i] = mixedInput(dig, a.snap_slots[i], p.name);
+    }
+
+    /// §8.5.3.6 one region-1b evaluation: what the tentative solution's
+    /// explicit D2A event statements assigned (`d2a_held`) is committed,
+    /// and no other history moves, so the tick's own solution still
+    /// steps from the last finished one.
+    pub fn latch(a: *Analog) !void {
+        if (comptime State != void and d2a_held.len != 0) {
+            const inst = a.accepted();
+            inline for (d2a_held) |f| @field(a.inst, f) = @field(inst, f);
+        }
+    }
+
+    /// The `Instance` the tentative solution would leave if accepted.
+    fn accepted(a: *const Analog) D.Instance {
+        var inst = a.inst.*;
+        var state = a.state.*;
+        _ = D.updateState(Val, a.model, &inst, a.x.*, &state, sim_state);
+        return inst;
+    }
+
+    /// VAMS §7.3.3 / §7.3.6.3 a continuous variable no event statement
+    /// assigns, read by a digital expression: its value on the tentative
+    /// solution, which `sim.mixed.run` steps to every digital event
+    /// time (`has_probes`) before the digital engine runs it.
+    // ponytail: the solution's value, not one interpolated to the
+    // tick: they differ only where an A2D crossing rounds to a tick.
+    fn publish(a: *Analog) !void {
+        if (comptime State != void and has_free_reads) {
+            const inst = a.accepted();
+            inline for (a2d_ports, 0..) |p, i| if (p.free) try a2dPut(a.dig, a.a2d_slots[i], @field(inst, p.field), false);
+        }
+    }
+
+    pub fn solveAt(a: *Analog, t: f64, dt: f64, first: bool, last: bool) !void {

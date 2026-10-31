@@ -1,0 +1,56 @@
+const sim = @import("sim");
+const diag = @import("diag");
+const TimescaleEvent = @typeInfo(@FieldType(sim.digital.Mixed, "timescales")).pointer.child;
+
+/// VAMS §7.3.1 Table 7-1: a bit grouping, a net and an `integer` all reach
+/// the continuous context as an integer. §7.3.2: "It is an error if these
+/// operands return x or z bit values when solved" — and a solve is exactly
+/// where this is read, so an x or z bit fails the run by name.
+/// VAMS §7.3.1 word `k` (bits 32k to 32k + 31) of a `reg` input wider
+/// than 32 bits, exact at any width (`mixedInput` passes an f64).
+fn mixedWord(dig: *sim.digital.Run, slot: u32, name: []const u8, k: u32) i64 {
+    const v = dig.values[slot];
+    if (v.hasUnknown()) {
+        std.debug.print("{s}: FAIL §7.3.2: the discrete input `{s}` holds an x or z bit when the analog block reads it\n", .{ title, name });
+        std.process.exit(1);
+    }
+    const words = v.values();
+    const w64: u64 = if (k / 2 < words.len) words[k / 2] else 0;
+    return @intCast((w64 >> @intCast(32 * (k % 2))) & 0xffff_ffff);
+}
+
+fn mixedInput(dig: *sim.digital.Run, slot: u32, name: []const u8) f64 {
+    // Table 7-1's real row: "no conversion".
+    if (dig.reals.contains(slot)) return @bitCast(dig.values[slot].values()[0]);
+    const v = dig.values[slot].asInt() orelse {
+        std.debug.print("{s}: FAIL §7.3.2: the discrete input `{s}` holds an x or z bit when the analog block reads it\n", .{ title, name });
+        std.process.exit(1);
+    };
+    return @floatFromInt(v);
+}
+
+/// The potential of terminal `n1` (minus `n2`) in `x`.
+fn potential(x: *const [n_u]f64, n1: []const u8, n2: ?[]const u8) !f64 {
+    return terminal(x, n1) - if (n2) |b| terminal(x, b) else 0.0;
+}
+/// A probe terminal: the node pair lowering resolved it to (a named
+/// branch, a hierarchical net), else a node by name; a name that is no
+/// unknown of the device is ground.
+fn terminal(x: *const [n_u]f64, name: []const u8) f64 {
+    const pair = probe_terminals.get(name) orelse return nodeValue(x, name);
+    return nodeValue(x, pair[0]) - nodeValue(x, pair[1]);
+}
+fn nodeValue(x: *const [n_u]f64, name: []const u8) f64 {
+    return x[u_index.get(name) orelse return 0.0];
+}
+/// `u_names` back to positions, built at comptime: a digital probe's name
+/// arrives at run time (`sim.mixed`'s probe hook).
+const u_index = std.StaticStringMap(usize).initComptime(blk: {
+    var kvs: [u_names.len]struct { []const u8, usize } = undefined;
+    for (u_names, &kvs, 0..) |u, *kv, i| kv.* = .{ u, i };
+    break :blk kvs;
+});
+
+/// A `//! wave`, piecewise linear over the declared `//! time`s. At a
+/// declared point it is the fixed-grid runner's value, a short list holds its
+/// last entry, and an inserted point between two declared ones interpolates.

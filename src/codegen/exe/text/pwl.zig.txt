@@ -1,0 +1,7 @@
+fn pwl(values: []const f64, t: f64) f64 {
+    var k: usize = 0;
+    while (k + 1 < times.len and times[k + 1] <= t) k += 1;
+    const v0 = values[@min(k, values.len - 1)];
+    if (k + 1 >= times.len or k + 1 >= values.len) return v0;
+    return v0 + (values[k + 1] - v0) * (t - times[k]) / (times[k + 1] - times[k]);
+}

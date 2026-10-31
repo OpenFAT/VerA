@@ -1,0 +1,49 @@
+        atPoint(t, dt);
+        sim_state.initial_step = first;
+        sim_state.final_step = last;
+        sim_state.analog_initial = first;
+        a.solved = solve(a.x, a.forced, a.model, a.inst);
+        a.t = t;
+        try a.publish();
+    }
+
+    pub fn finish(a: *Analog) !void {
+        a.flush();
+        point(a.n.*, a.x, a.model, a.inst);
+        if (stepPost(a.model, a.inst, a.x, a.state, a.solved)) |r| retryUnsupported(r);
+        // §7.3.6.4: what the accepted solution left in each held variable.
+        inline for (a2d_ports, 0..) |p, i| {
+            const assigned = if (p.count) |c| blk: {
+                const n: i64 = @field(a.inst, c);
+                defer a.counts[i] = n;
+                break :blk n != a.counts[i];
+            } else false;
+            try a2dPut(a.dig, a.a2d_slots[i], @field(a.inst, p.field), assigned);
+        }
+        a.n.* += 1;
+        a.x_prev = a.x.*;
+        a.t_prev = a.t;
+    }
+
+    /// VAMS §7.3.6.3 `V(n1)` / `V(n1, n2)` for a digital expression: the
+    /// tentative solution (`t` null), or the value "calculated for the
+    /// time corresponding to a real promotion of the digital time",
+    /// linear between the last finished solution and the tentative one.
+    pub fn probe(a: *Analog, t: ?f64, n1: []const u8, n2: ?[]const u8) !f64 {
+        const now = try potential(a.x, n1, n2);
+        const tq = t orelse return now;
+        const tp = a.t_prev orelse return now;
+        if (tq >= a.t or a.t <= tp) return now;
+        const before = try potential(&a.x_prev, n1, n2);
+        if (tq <= tp) return before;
+        return before + (now - before) * (tq - tp) / (a.t - tp);
+    }
+
+    /// The digital half's own §17 output, in time order with the analog
+    /// points: everything it printed up to the tick being solved.
+    fn flush(a: *Analog) void {
+        std.debug.print("{s}", .{a.dout.written()});
+        a.dout.clearRetainingCapacity();
+    }
+};
+
