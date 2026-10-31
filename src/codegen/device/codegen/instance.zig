@@ -16,6 +16,7 @@ const operator_ctrl = @import("operator_ctrl.zig");
 const gen_dispatch = @import("dispatch.zig");
 const gen_file = @import("file.zig");
 const gen_render = @import("render.zig");
+const render_array = @import("render_array.zig");
 const gen_state = @import("state.zig");
 const gen_unit = @import("unit.zig");
 const gen_wide = @import("wide.zig");
@@ -452,7 +453,7 @@ fn emitTpFields(self: *Gen) Error!void {
 /// in the core's result are what put txl's 2048-deep history at 165 KB of
 /// GPU stack, and the coupled lines' at 307-612 KB (#82).
 pub fn tpInPlace(self: *const Gen, sl: Lowered.TpSlot) bool {
-    if (sl.array == none_u32 or !gen_render.cow(self, sl.array)) return false;
+    if (sl.array == none_u32 or !render_array.cow(self, sl.array)) return false;
     // The slot's field exists only when the full core carries the final
     // version (`emitTpFields`); a slice's `plan.lo_idx` is its own.
     const v = self.an.rv(sl.final);
@@ -532,7 +533,7 @@ pub fn emitTpFills(self: *Gen, bi: u32, depth: u32) Error!void {
             try self.ind(depth);
             // `updateState`'s slice stores the array in its field
             // (`render.inPlace`): a hit's cached version is copied there.
-            if (gen_render.inPlace(self, sl.array)) {
+            if (render_array.inPlace(self, sl.array)) {
                 const f = self.names.held_names[m.held];
                 if (dirtyTracked(self, sl.array))
                     try self.b("zTpHeld({s}, {d}, &inst.{s}, &p{d}, &inst.{s}__dirty);\n", .{ ty, m.len, f, sl.array, f })

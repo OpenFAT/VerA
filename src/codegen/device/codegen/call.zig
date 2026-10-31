@@ -22,6 +22,8 @@ const gen_dispatch = @import("dispatch.zig");
 const gen_mask = @import("mask.zig");
 const gen_file = @import("file.zig");
 const gen_render = @import("render.zig");
+const render_sysfunc = @import("render_sysfunc.zig");
+const render_op = @import("render_op.zig");
 const gen_host = @import("host_expr.zig");
 const gen_wide = @import("wide.zig");
 const Mir = @import("ir").Mir;
@@ -101,7 +103,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // `eval` sees one iterate and never the previous one, so the only
         // limiting it can do that still converges to exp is none: limexp is
         // `exp`'s own text (docs/specification/Vague_Decisions.md VD-121).
-        .limexp => return gen_render.renderOp(self, .exp, if (args.len > 0) args[0] else .f_zero, .f_zero, .real),
+        .limexp => return render_op.renderOp(self, .exp, if (args.len > 0) args[0] else .f_zero, .f_zero, .real),
 
         // §4.5.14 ddx(f, V(node)); the unknown index is an int literal. Pins:
         // `.ddxAt` reads one scalar partial.
@@ -448,12 +450,12 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             // `zLimitUf` reads `.val()` of both.
             float_lanes.pinLanes(self, args[0]);
             float_lanes.pinLanes(self, args[1]);
-            return gen_render.helper2(self, "zLimitUf", args[0], args[1]);
+            return render_op.helper2(self, "zLimitUf", args[0], args[1]);
         },
         .@"$limit$old" => {
             self.cur.uses.inst = true;
             float_lanes.instPin(self);
-            return self.b("S.con(inst.limiter_previous[{d}])", .{gen_render.intArg(self, args, 0) orelse unreachable});
+            return self.b("S.con(inst.limiter_previous[{d}])", .{render_sysfunc.intArg(self, args, 0) orelse unreachable});
         },
         // §4.5.15 the host owns the limiting algorithm (contract `limit`), so
         // the device returns the access function unchanged.
@@ -517,11 +519,11 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             try gen_render.renderVal(self, args[1], .str);
             return self.b(")", .{});
         },
-        .@"$table_model" => return gen_render.emitTable(self, inst, args), // §9.21
+        .@"$table_model" => return render_sysfunc.emitTable(self, inst, args), // §9.21
         // Lowered to a running minimum (`lower_event.lowerKernelCtl`), never a call.
         .@"$vera_reject_step" => unreachable,
         // §3.2/§5.7 runtime array index (`emitIdx`), typed by the callee.
-        .@"$idx", .@"$idx$int", .@"$idx$str" => return gen_render.emitIdx(self, args, Mir.callee.ty(c)),
+        .@"$idx", .@"$idx$int", .@"$idx$str" => return render_sysfunc.emitIdx(self, args, Mir.callee.ty(c)),
         // §9.13 Table 9-10 as `Lower.lowerRandom` shapes it: the seed, then
         // the distribution's parameters. A variate is a pure function of the
         // seed and carries no derivative.
@@ -545,16 +547,16 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$rng$t_next",
         .@"$rng$erlang",
         .@"$rng$erlang_next",
-        => return gen_render.emitRng(self, c, args),
+        => return render_sysfunc.emitRng(self, c, args),
         // §9.5.4.2 `$sscanf`: the count and three item flavours, each a pure
         // function of the two strings. `Lower.lowerScan` guards each
         // destination write with count > index.
         // §9.5.4.2 "For $sscanf, null characters shall also be considered
         // white space" — the `Nul` kernels, not the `$fscanf` ones.
-        .@"$sscanf" => return gen_render.emitScan(self, "zScanNulN", args, .int),
-        .@"$sscanf$int" => return gen_render.emitScan(self, "zScanNulI", args, .int),
-        .@"$sscanf$real" => return gen_render.emitScan(self, "zScanNulR", args, .real),
-        .@"$sscanf$str" => return gen_render.emitScan(self, "zScanNulS", args, .str),
+        .@"$sscanf" => return render_sysfunc.emitScan(self, "zScanNulN", args, .int),
+        .@"$sscanf$int" => return render_sysfunc.emitScan(self, "zScanNulI", args, .int),
+        .@"$sscanf$real" => return render_sysfunc.emitScan(self, "zScanNulR", args, .real),
+        .@"$sscanf$str" => return render_sysfunc.emitScan(self, "zScanNulS", args, .str),
         // IEEE 1364 §17.11 math functions are their bare spellings, resolved at
         // comptime. A wrong arity is an unregistered `$name`.
         inline .@"$sqrt",
@@ -609,8 +611,8 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
                 .@"$atan2" => .atan2,
                 else => unreachable, // else: `t` is one of this prong's callees, each mapped above
             };
-            if (Mir.opClass(op) == .unary and args.len >= 1) return gen_render.renderOp(self, op, args[0], .f_zero, .real);
-            if (Mir.opClass(op) == .binary and args.len >= 2) return gen_render.renderOp(self, op, args[0], args[1], .real);
+            if (Mir.opClass(op) == .unary and args.len >= 1) return render_op.renderOp(self, op, args[0], .f_zero, .real);
+            if (Mir.opClass(op) == .binary and args.len >= 2) return render_op.renderOp(self, op, args[0], args[1], .real);
             return call_systf.emitUnregistered(self, inst, name, args);
         },
         // §12.22.2 an output argument of the user system task `args[0]` calls.

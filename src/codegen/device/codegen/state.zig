@@ -20,6 +20,7 @@ const gen_instance = @import("instance.zig");
 const gen_setup = @import("setup.zig");
 const gen_unit = @import("unit.zig");
 const gen_render = @import("render.zig");
+const render_array = @import("render_array.zig");
 const Mir = @import("ir").Mir;
 const opdb = @import("op_zig.zig");
 const cg_filters = @import("../cg_filters.zig");
@@ -135,7 +136,7 @@ pub fn inPlaceArrays(self: *Gen) Error![]const bool {
     if (self.lowered.table_samples.items.len != 0) return &.{};
     const n = self.lowered.mem_arrays.items.len;
     const flags = try self.arena.alloc(bool, n);
-    for (flags, 0..) |*f, id| f.* = gen_render.cow(self, @intCast(id));
+    for (flags, 0..) |*f, id| f.* = render_array.cow(self, @intCast(id));
     for (0..self.mir.insts.len) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         if (self.mir.instOp(inst) != .anew) continue;
@@ -643,7 +644,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
         } else if (h.array != none_u32) {
             // §3.2.2 a held array's core field is already its plain values;
             // an in-place one is already in `inst`.
-            if (gen_render.inPlace(self, h.array)) continue;
+            if (render_array.inPlace(self, h.array)) continue;
             try self.w("    inst.{s} = m.f{d};\n", .{ n, k });
             if (gen_instance.dirtyTracked(self, h.array))
                 try self.w("    inst.{s}__dirty = .{{ 0, {d} }};\n", .{ n, self.lowered.mem_arrays.items[h.array].len - 1 });

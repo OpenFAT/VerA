@@ -17,6 +17,7 @@ const gen_cfg = @import("cfg.zig");
 const gen_setup = @import("setup.zig");
 const gen_state = @import("state.zig");
 const gen_render = @import("render.zig");
+const render_array = @import("render_array.zig");
 const gen_wide = @import("wide.zig");
 const family = @import("family.zig");
 const gen_mask = @import("mask.zig");
@@ -287,7 +288,7 @@ fn emitCoreDecl(self: *Gen, name: []const u8, doc: []const u8) Error!void {
         // §3.2.2 a held array's end-of-block version: its plain values,
         // unless the slice already stored them in place.
         if (self.an.arrOf(v)) |id| {
-            if (gen_render.inPlace(self, id)) continue;
+            if (render_array.inPlace(self, id)) continue;
             const m = self.lowered.mem_arrays.items[id];
             try self.w("    f{d}: [{d}]{s},\n", .{ k, m.len, if (m.ty == .integer) "i64" else "f64" });
         } else if (self.an.vty[@backingInt(v)] == .real) {
@@ -738,13 +739,13 @@ fn declareArrays(self: *Gen) Error!void {
     for (seen, stored, 0..) |s, st, id| {
         if (!s) continue;
         const len = self.lowered.mem_arrays.items[id].len;
-        const ty = try gen_render.arrElemTy(self, @intCast(id));
-        if (gen_render.inPlace(self, @intCast(id))) {
+        const ty = try render_array.arrElemTy(self, @intCast(id));
+        if (render_array.inPlace(self, @intCast(id))) {
             try self.ind(1);
             try self.b("var p{d}: *[{d}]{s} = undefined;\n", .{ id, len, ty });
             continue;
         }
-        if (gen_render.cow(self, @intCast(id))) {
+        if (render_array.cow(self, @intCast(id))) {
             try self.ind(1);
             try self.b("var p{d}: *const [{d}]{s} = undefined;\n", .{ id, len, ty });
             if (!st) continue;

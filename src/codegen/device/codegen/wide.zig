@@ -18,6 +18,7 @@ const Lowered = @import("ir").Lowered;
 const codegen = @import("../codegen.zig");
 const float_lanes = @import("float/lanes.zig");
 const gen_render = @import("render.zig");
+const render_sysfunc = @import("render_sysfunc.zig");
 
 const Gen = codegen.Gen;
 const Error = codegen.Error;
@@ -52,7 +53,7 @@ pub fn zigTy(self: *Gen, width: u32) Error![]const u8 {
 /// Invalidates slices of `out.items` if additional memory is needed.
 pub fn emitWide(self: *Gen, args: []const Mir.Value, read: Read) Error!void {
     assert(args.len >= 1);
-    const root = gen_render.intArg(self, args, 0).?;
+    const root = render_sysfunc.intArg(self, args, 0).?;
     assert(root < self.lowered.wide_nodes.items.len);
     const len_before = self.out.items.len;
     const n = self.lowered.wide_nodes.items[root];

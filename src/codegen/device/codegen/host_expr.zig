@@ -24,6 +24,7 @@ const float_lanes = @import("float/lanes.zig");
 const gen_call = @import("call.zig");
 const gen_file = @import("file.zig");
 const gen_render = @import("render.zig");
+const render_op = @import("render_op.zig");
 const gen_setup = @import("setup.zig");
 const gen_unit = @import("unit.zig");
 const opcode_zig = @import("opcode_zig.zig");
@@ -412,13 +413,13 @@ fn binaryI64(self: *Gen, op: Mir.Opcode, a: []const u8, rhs: []const u8) Error!?
         // i65 holds minInt(i64)/-1 before the wrap. A zero divisor
         // yields 0, as `renderOp`'s `.idiv` does (W0653).
         .idiv => try self.arena.print("(if (({s}) == 0) @as(i64, 0) else @as(i64, @as(i32, @truncate(@divTrunc(@as(i65, {s}), @as(i65, {s}))))))", .{ rhs, a, rhs }),
-        .imod => try self.arena.print("{s}({s}, {s})", .{ gen_render.imodFn(self), a, rhs }),
+        .imod => try self.arena.print("{s}({s}, {s})", .{ render_op.imodFn(self), a, rhs }),
         .logand, .logor => try self.arena.print("@as(i64, @intFromBool((({s}) != 0) {s} (({s}) != 0)))", .{ a, if (op == .logand) "and" else "or", rhs }),
         .shl => try self.arena.print("@as(i64, @as(i32, @truncate(zShl({s}, {s}))))", .{ a, rhs }),
         .shr => try self.arena.print("zShr({s}, {s})", .{ a, rhs }),
         .imin, .imax => try self.arena.print("@as(i64, {s}({s}, {s}))", .{ if (op == .imin) "@min" else "@max", a, rhs }),
         // `fold.ipow32` as device text, as in `renderOp`.
-        .ipow => try self.arena.print("{s}({s}, {s})", .{ gen_render.ipow_fn, a, rhs }),
+        .ipow => try self.arena.print("{s}({s}, {s})", .{ render_op.ipow_fn, a, rhs }),
         // Real-valued binaries: `tyOf(v) == .real` and the float
         // comparisons both returned in `i64Const`.
         .fadd, .fsub, .fmul, .fdiv, .fmod, .flt, .fgt, .fle, .fge, .feq, .fne, .pow, .hypot, .fmin, .fmax, .atan2 => null,

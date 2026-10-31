@@ -13,6 +13,7 @@ const Gen = codegen.Gen;
 const gen_setup = @import("setup.zig");
 const gen_instance = @import("instance.zig");
 const gen_render = @import("render.zig");
+const render_array = @import("render_array.zig");
 const gen_unit = @import("unit.zig");
 const family = @import("family.zig");
 const gen_mask = @import("mask.zig");
@@ -34,13 +35,13 @@ pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void {
     try self.b("return .{{\n", .{});
     for (self.core.lo_vals, 0..) |v, k| {
         const arr = self.an.arrOf(v);
-        if (arr) |id| if (gen_render.inPlace(self, id)) continue;
+        if (arr) |id| if (render_array.inPlace(self, id)) continue;
         try self.ind(depth + 1);
         try self.b(".f{d} = ", .{k});
         const wrap = arr == null and self.an.vty[@backingInt(v)] == .real;
         if (wrap) try family.openTo(self, family.mask(self, v));
         if (arr != null)
-            try gen_render.renderArrayOut(self, v)
+            try render_array.renderArrayOut(self, v)
         else
             try gen_render.renderVal(self, v, self.an.vty[@backingInt(v)]);
         if (wrap) try self.b(")", .{});
@@ -76,7 +77,7 @@ fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!v
     if (!self.cur.plan.needed.isSet(i)) return;
     // §3.2.2 an `anew`/`store` is a statement on its storage, not a slot.
     if (self.an.arr_of[i] != none_u32) {
-        if (!self.cur.plan.cached(@fromBackingInt(@intCast(i)))) try gen_render.emitArrayStmt(self, inst, depth);
+        if (!self.cur.plan.cached(@fromBackingInt(@intCast(i)))) try render_array.emitArrayStmt(self, inst, depth);
         return;
     }
     if (self.cur.plan.slot[i] == none_u32) return;
