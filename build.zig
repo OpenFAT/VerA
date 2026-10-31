@@ -60,6 +60,8 @@ pub fn build(b: *Build) void {
     const exe = cliExe(b, target, optimize, mods, "vera", language == .ams);
     b.installArtifact(exe);
     b.installFile("lib/contract.zig", "share/vera/contract.zig");
+    // The contract root imports its files from `contract/` beside it.
+    b.installDirectory(.{ .source_dir = b.path("lib/contract"), .install_dir = .prefix, .install_subdir = "share/vera/contract" });
     // The VPI simulator a C application links (src/vpi/host.zig), where
     // `zig cc` finds it: `-I<prefix>/include <prefix>/lib/libvera-vpi.a`.
     const vpi_host = vpiHost(b, m, mods, vera, sim, dynlib);
@@ -414,6 +416,7 @@ pub fn build(b: *Build) void {
         const so = genRun(b, va_gen, src_path);
         so.addArgs(&.{ "--emit-so", "--contract" });
         so.addFileArg(b.path("lib/contract.zig"));
+        for (globFiles(b, "lib/contract", ".zig")) |f| so.addFileInput(b.path(f));
         so.addArg("--dyn");
         so.addFileArg(b.path("tests/host/vdev_dyn.zig"));
         so.addArg("--work-dir");
@@ -618,6 +621,7 @@ fn genRun(b: *Build, gen: Gen, src: []const u8) *Run {
     // The device embeds contract.zig's `vera_version` and targets its
     // contract: a release bump or a contract edit regenerates it.
     run.addFileInput(b.path("lib/contract.zig"));
+    for (globFiles(b, "lib/contract", ".zig")) |f| run.addFileInput(b.path(f));
     return run;
 }
 
