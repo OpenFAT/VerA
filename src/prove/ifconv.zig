@@ -9,12 +9,22 @@
 //! its domain only where the source ran it. Moved rows are relinked; orphaned
 //! terminators and emptied arm blocks stay behind, unreachable.
 //!
-//! LRM clauses this file's code cites: §2.9, §4.2.4, §4.2.5, §4.2.8, §4.3.2,
-//! §5.2.1, §5.10.2.
+//! LRM clauses this file's code cites: §2.9, §3.2.2, §4.2.3, §4.2.4, §4.2.5,
+//! §4.2.8, §4.2.12, §4.3.2, §5.2.1, §5.10.2.
+//!
+//! Contents:
+//! - `pub const Mode = enum { pure, speculate }`
+//! - `pub const Error = Allocator.Error`
+//! - `pub fn run(gpa: Allocator, mir: *Mir, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) Error!u32`
+//! - `pub fn keepSlice(gpa: Allocator, mir: *const Mir, roots: []const Mir.Value) Error!std.DynamicBitSetUnmanaged`
 
 const std = @import("std");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
 const Mir = @import("ir").Mir;
-const proof = @import("proof.zig");
+const Lowered = @import("ir").Lowered;
+const guards = @import("guards.zig");
+const verify = @import("verify.zig");
 
 /// Which arms a pass converts.
 pub const Mode = enum {
@@ -29,19 +39,88 @@ pub const Mode = enum {
     speculate,
 };
 
-/// Converts every pure diamond, to a fixpoint, and returns how many converted.
-/// Blocks are visited in index order, so equal MIR converts identically.
-/// `gpa` backs one temporary per-block pred count and the emitted rows.
-/// Invalidates every `Mir.InstIterator` and any `Analysis` built over `mir`.
-pub fn run(gpa: std.mem.Allocator, mir: *Mir) !u32 {
-    return runMode(gpa, mir, .pure, null);
-}
+/// Fails only on allocation. A failed `run` may leave some diamonds
+/// converted: each conversion is whole, and the MIR stays well formed.
+pub const Error = Allocator.Error;
 
-/// `run` under `mode`. `.speculate` also writes `mir.guard_of`, and leaves
-/// a diamond alone when `keep` holds one of its join phis (`keepSlice`).
-pub fn runMode(gpa: std.mem.Allocator, mir: *Mir, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) !u32 {
+/// Most values `cardOnly` visits before it answers "not card-only".
+const card_visits_max: u32 = 256;
+
+/// One side of a diamond: the blocks from the arm's head to `last`, which
+/// jumps to `join`.
+const Side = struct { last: Mir.Block, join: Mir.Block };
+
+/// Test scaffold: `entry: branch (p > 0) then else; arm: one row, jump join;
+/// join: phi`. An arm of kind `.direct` is the edge straight to the join (a
+/// triangle), carrying a value computed in the entry block.
+const Shape = struct {
+    mir: Mir = .{},
+    entry: Mir.Block = .entry,
+    then_b: Mir.Block = .entry,
+    else_b: Mir.Block = .entry,
+    join: Mir.Block = .entry,
+    phi: Mir.Value = .undef,
+    then_val: Mir.Value = .undef,
+    else_val: Mir.Value = .undef,
+
+    const Arm = enum { direct, value, call, store, barrier, sqrt, fmod, fdiv };
+
+    fn init(a: Allocator, then_arm: Arm, else_arm: Arm) !Shape {
+        var s: Shape = .{};
+        errdefer s.mir.deinit(a);
+        const m = &s.mir;
+        s.entry = try m.addBlock(a);
+        const p = try m.addBlockParam(a, 0);
+        const c = try m.emit(a, s.entry, .fgt, &.{ p, .f_zero });
+        const entry_val = try m.emit(a, s.entry, .fneg, &.{p});
+        s.join = try m.addBlock(a);
+        s.then_b = if (then_arm == .direct) s.join else try m.addBlock(a);
+        s.else_b = if (else_arm == .direct) s.join else try m.addBlock(a);
+        _ = try m.emitBranch(a, s.entry, c, s.then_b, s.else_b);
+        s.then_val = if (then_arm == .direct) entry_val else try fillArm(a, m, s.then_b, s.join, p, then_arm);
+        s.else_val = if (else_arm == .direct) entry_val else try fillArm(a, m, s.else_b, s.join, p, else_arm);
+        s.phi = try m.emitPhi(a, s.join, &.{
+            .{ .block = if (then_arm == .direct) s.entry else s.then_b, .value = s.then_val },
+            .{ .block = if (else_arm == .direct) s.entry else s.else_b, .value = s.else_val },
+        });
+        return s;
+    }
+
+    fn fillArm(a: Allocator, m: *Mir, arm: Mir.Block, join: Mir.Block, p: Mir.Value, kind: Arm) !Mir.Value {
+        const v = switch (kind) {
+            .direct => unreachable,
+            .value => try m.emit(a, arm, .fmul, &.{ p, .f_two }),
+            .call => try m.emitCall(a, arm, try m.internString(a, "$abstime"), &.{}),
+            // The pass reads only the opcode, so the operands need not be an
+            // array version.
+            .store => try m.emit(a, arm, .store, &.{ p, .zero, p }),
+            .barrier => try m.emit(a, arm, .opt_barrier, &.{p}),
+            .sqrt => try m.emit(a, arm, .sqrt, &.{p}),
+            .fmod => try m.emit(a, arm, .fmod, &.{ p, .f_two }),
+            .fdiv => try m.emit(a, arm, .fdiv, &.{ .f_one, p }),
+        };
+        _ = try m.emitJump(a, arm, join);
+        return v;
+    }
+
+    /// The select the join phi now aliases to, or null if it is still a phi.
+    fn select(s: *const Shape) ?Mir.InstData {
+        const r = s.mir.resolveAlias(s.phi);
+        if (r == s.phi) return null;
+        return s.mir.instData(s.mir.valueDef(r).inst_result);
+    }
+};
+
+/// Converts every diamond `mode` admits, to a fixpoint, and returns how many
+/// converted. Blocks are visited in index order, so equal MIR converts
+/// identically. `.speculate` also writes `mir.guard_of`, and leaves a diamond
+/// alone when `keep` holds one of its join phis (`keepSlice`). `gpa` backs
+/// one temporary per-block predecessor count and the emitted rows.
+/// Invalidates every `Mir.InstIterator` and any `Analysis` built over `mir`.
+pub fn run(gpa: Allocator, mir: *Mir, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) Error!u32 {
     const nb = mir.blockCount();
     if (nb == 0) return 0;
+    if (keep) |k| assert(k.bit_length >= mir.defs.len + Mir.Value.first_dynamic);
     const preds = try gpa.alloc(u32, nb);
     defer gpa.free(preds);
 
@@ -50,16 +129,16 @@ pub fn runMode(gpa: std.mem.Allocator, mir: *Mir, mode: Mode, keep: ?*const std.
     while (changed) {
         changed = false;
         countPreds(mir, preds);
-        var b: u32 = 0;
-        while (b < nb) : (b += 1) {
-            if (try tryConvert(gpa, mir, @fromBackingInt(@intCast(b)), preds, mode, keep)) {
-                converted += 1;
-                // Each conversion retires one block's branch and adds none.
-                std.debug.assert(converted <= nb);
-                changed = true;
-            }
+        for (0..nb) |b| {
+            if (!try tryConvert(gpa, mir, @fromBackingInt(@intCast(b)), preds, mode, keep)) continue;
+            converted += 1;
+            // Each conversion retires one block's branch and adds none, so
+            // this also bounds the fixpoint's rounds.
+            assert(converted <= nb);
+            changed = true;
         }
     }
+    assert(mir.blockCount() == nb); // conversion adds no block
     return converted;
 }
 
@@ -67,8 +146,9 @@ pub fn runMode(gpa: std.mem.Allocator, mir: *Mir, mode: Mode, keep: ?*const std.
 /// incomings, one bit per `Mir.Value`. `src/Compilation.zig` passes it to
 /// `.speculate` for the `.optimized` units' contributions, whose code may
 /// run a speculated arm under fast-math, where an out-of-domain NaN is
-/// poison. Caller owns the set.
-pub fn keepSlice(gpa: std.mem.Allocator, mir: *const Mir, roots: []const Mir.Value) !std.DynamicBitSetUnmanaged {
+/// poison. Caller owns the set and frees it with `deinit(gpa)`. Linear in
+/// the slice: each Value is expanded once.
+pub fn keepSlice(gpa: Allocator, mir: *const Mir, roots: []const Mir.Value) Error!std.DynamicBitSetUnmanaged {
     var seen = try std.DynamicBitSetUnmanaged.initEmpty(gpa, mir.defs.len + Mir.Value.first_dynamic);
     errdefer seen.deinit(gpa);
     var stack: std.ArrayList(Mir.Value) = .empty;
@@ -93,8 +173,11 @@ pub fn keepSlice(gpa: std.mem.Allocator, mir: *const Mir, roots: []const Mir.Val
             .anew, .branch, .jump => {},
         }
     }
+    for (roots) |r| assert(seen.isSet(@backingInt(mir.resolveAlias(r))));
     return seen;
 }
+
+// ---- private ----
 
 /// §5.2.1 `analog initial` and §5.10.2 `initial_step`: the branch on the
 /// first-evaluation flag stays a branch. Its join phi, `phi(held read,
@@ -146,10 +229,6 @@ fn countPreds(mir: *const Mir, preds: []u32) void {
     }
 }
 
-/// One side of a diamond: the blocks from the arm's head to `last`, which
-/// jumps to `join`.
-const Side = struct { last: Mir.Block, join: Mir.Block };
-
 /// Validate one side: a single-pred all-pure block ending in a jump, or under
 /// `.speculate` a chain of them (each jumping to the next, the next entered
 /// only from there). Returns null on any disqualifier. Does not mutate: both
@@ -197,21 +276,21 @@ fn classifyArm(mir: *const Mir, x: Mir.Block, arm: Mir.Block, preds: []const u32
         // value it dominates, which `Prover.markSelectArms` cannot, and the
         // proof's verdict (a unit's float mode, an E06xx refusal) reads that
         // evidence. After it, `.speculate` moves the op and guards it.
-        if (mode == .pure and proof.domainOf(mir.instOp(inst)) != .all) return null;
+        if (mode == .pure and Mir.opcode.get(mir.instOp(inst)).domain != .all) return null;
     }
     const j = join orelse return null;
     if (j == x or j == arm) return null;
     return j;
 }
 
-fn tryConvert(gpa: std.mem.Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) !bool {
+fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) !bool {
     const term = terminator(mir, x) orelse return false;
     if (mir.instOp(term) != .branch) return false;
     const br = mir.instData(term).branch;
     if (br.then_block == br.else_block) return false;
     if (firstPoint(mir, br.cond)) return false;
     if (mode == .speculate) {
-        var budget: u32 = 256;
+        var budget: u32 = card_visits_max;
         if (cardOnly(mir, br.cond, &budget)) return false;
     }
 
@@ -233,7 +312,7 @@ fn tryConvert(gpa: std.mem.Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mod
         join = br.then_block; // triangle: then edge is direct
         else_arm = else_c;
     } else return false;
-    std.debug.assert(join != x); // `classifyArm` refuses a join back into X
+    assert(join != x); // `classifyArm` refuses a join back into X
 
     // Validate every live phi in the join: it must carry a pair for each side
     // of this diamond, or the conversion cannot rewrite it.
@@ -274,7 +353,7 @@ fn tryConvert(gpa: std.mem.Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mod
             const next = mir.instData(jmp).jump.target;
             if (mode == .speculate) {
                 var it = mir.blockInsts(b);
-                while (it.next()) |inst| if (proof.domainOf(mir.instOp(inst)) != .all)
+                while (it.next()) |inst| if (Mir.opcode.get(mir.instOp(inst)).domain != .all)
                     try mir.addGuardLit(gpa, inst, cond, taken);
             }
             mir.unlink(b, jmp);
@@ -308,13 +387,16 @@ fn tryConvert(gpa: std.mem.Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mod
 /// `b != 0 ? a/b : 0`.
 fn peelToBool(mir: *const Mir, cond0: Mir.Value) Mir.Value {
     var cond = cond0;
-    while (true) {
+    // Bound: each peel moves to an operand SSA defines before its user.
+    var peels: usize = 0;
+    while (true) : (peels += 1) {
+        assert(peels <= mir.defs.len);
         const def = mir.valueDef(mir.resolveAlias(cond));
         if (def != .inst_result) return cond;
         if (mir.instOp(def.inst_result) != .ine) return cond;
         const d = mir.instData(def.inst_result).binary;
         if (mir.resolveAlias(d.rhs) != .zero) return cond;
-        if (!proof.isPredicateValue(mir, d.lhs)) return cond;
+        if (!guards.isPredicateValue(mir, d.lhs)) return cond;
         cond = d.lhs;
     }
 }
@@ -335,7 +417,7 @@ fn terminator(mir: *const Mir, b: Mir.Block) ?Mir.Inst {
 /// single incoming value the phi collapses to an alias, exactly like ssa.zig's
 /// trivial-phi removal.
 fn rewritePhi(mir: *Mir, phi: Mir.Inst, then_key: Mir.Block, else_key: Mir.Block, x: Mir.Block, sel: Mir.Value) void {
-    std.debug.assert(then_key != else_key); // two distinct edges into the join
+    assert(then_key != else_key); // two distinct edges into the join
     const d = mir.instData(phi).phi;
     var count: u32 = 0;
     // Validation found both edges: replacing them by one always fits. Payload
@@ -347,7 +429,7 @@ fn rewritePhi(mir: *Mir, phi: Mir.Inst, then_key: Mir.Block, else_key: Mir.Block
         mir.extra.items[d.start + count * 2 + 1] = @backingInt(p.value);
         count += 1;
     }
-    std.debug.assert(count + 2 <= d.count); // both edges' pairs were dropped
+    assert(count + 2 <= d.count); // both edges' pairs were dropped
     mir.extra.items[d.start + count * 2] = @backingInt(x);
     mir.extra.items[d.start + count * 2 + 1] = @backingInt(sel);
     mir.insts.items(.a)[@backingInt(phi)] = count + 1; // a phi's pair count
@@ -411,7 +493,7 @@ test "if conversion refreshes phi iterator when select emission grows instructio
     try mir.insts.setCapacity(a, mir.insts.len);
     const old_capacity = mir.insts.capacity;
     try std.testing.expectEqual(mir.insts.len, old_capacity);
-    try std.testing.expectEqual(@as(u32, 1), try run(a, &mir));
+    try std.testing.expectEqual(@as(u32, 1), try run(a, &mir, .pure, null));
     try std.testing.expect(mir.insts.capacity > old_capacity);
 
     for (results, left_values, right_values) |result, l, r| {
@@ -453,7 +535,7 @@ test "a phi row after the branch neither blocks the conversion nor leaves the ch
     _ = try mir.emitJump(a, right, join);
     _ = try mir.emitPhi(a, join, &.{ .{ .block = left, .value = lv }, .{ .block = right, .value = rv } });
 
-    try std.testing.expectEqual(@as(u32, 1), try run(a, &mir));
+    try std.testing.expectEqual(@as(u32, 1), try run(a, &mir, .pure, null));
     var saw_late = false;
     var it = mir.blockInsts(entry);
     while (it.next()) |inst| {
@@ -464,81 +546,20 @@ test "a phi row after the branch neither blocks the conversion nor leaves the ch
     try std.testing.expectEqual(join, mir.instData(terminator(&mir, entry).?).jump.target);
 }
 
-/// Test scaffold: `entry: branch (p > 0) then else; arm: one row, jump join;
-/// join: phi`. An arm of kind `.direct` is the edge straight to the join (a
-/// triangle), carrying a value computed in the entry block.
-const Shape = struct {
-    mir: Mir = .{},
-    entry: Mir.Block = .entry,
-    then_b: Mir.Block = .entry,
-    else_b: Mir.Block = .entry,
-    join: Mir.Block = .entry,
-    phi: Mir.Value = .undef,
-    then_val: Mir.Value = .undef,
-    else_val: Mir.Value = .undef,
-
-    const Arm = enum { direct, value, call, store, barrier, sqrt, fmod, fdiv };
-
-    fn init(a: std.mem.Allocator, then_arm: Arm, else_arm: Arm) !Shape {
-        var s: Shape = .{};
-        errdefer s.mir.deinit(a);
-        const m = &s.mir;
-        s.entry = try m.addBlock(a);
-        const p = try m.addBlockParam(a, 0);
-        const c = try m.emit(a, s.entry, .fgt, &.{ p, .f_zero });
-        const entry_val = try m.emit(a, s.entry, .fneg, &.{p});
-        s.join = try m.addBlock(a);
-        s.then_b = if (then_arm == .direct) s.join else try m.addBlock(a);
-        s.else_b = if (else_arm == .direct) s.join else try m.addBlock(a);
-        _ = try m.emitBranch(a, s.entry, c, s.then_b, s.else_b);
-        s.then_val = if (then_arm == .direct) entry_val else try fillArm(a, m, s.then_b, s.join, p, then_arm);
-        s.else_val = if (else_arm == .direct) entry_val else try fillArm(a, m, s.else_b, s.join, p, else_arm);
-        s.phi = try m.emitPhi(a, s.join, &.{
-            .{ .block = if (then_arm == .direct) s.entry else s.then_b, .value = s.then_val },
-            .{ .block = if (else_arm == .direct) s.entry else s.else_b, .value = s.else_val },
-        });
-        return s;
-    }
-
-    fn fillArm(a: std.mem.Allocator, m: *Mir, arm: Mir.Block, join: Mir.Block, p: Mir.Value, kind: Arm) !Mir.Value {
-        const v = switch (kind) {
-            .direct => unreachable,
-            .value => try m.emit(a, arm, .fmul, &.{ p, .f_two }),
-            .call => try m.emitCall(a, arm, try m.internString(a, "$abstime"), &.{}),
-            // The pass reads only the opcode, so the operands need not be an
-            // array version.
-            .store => try m.emit(a, arm, .store, &.{ p, .zero, p }),
-            .barrier => try m.emit(a, arm, .opt_barrier, &.{p}),
-            .sqrt => try m.emit(a, arm, .sqrt, &.{p}),
-            .fmod => try m.emit(a, arm, .fmod, &.{ p, .f_two }),
-            .fdiv => try m.emit(a, arm, .fdiv, &.{ .f_one, p }),
-        };
-        _ = try m.emitJump(a, arm, join);
-        return v;
-    }
-
-    /// The select the join phi now aliases to, or null if it is still a phi.
-    fn select(s: *const Shape) ?Mir.InstData {
-        const r = s.mir.resolveAlias(s.phi);
-        if (r == s.phi) return null;
-        return s.mir.instData(s.mir.valueDef(r).inst_result);
-    }
-};
-
 test "if-conversion: a diamond and both triangles become one select" {
     const a = std.testing.allocator;
     // §4.2.12: `cond ? then : else`, with a direct edge's value read in X.
     for ([_][2]Shape.Arm{ .{ .value, .value }, .{ .value, .direct }, .{ .direct, .value } }) |arms| {
         var s = try Shape.init(a, arms[0], arms[1]);
         defer s.mir.deinit(a);
-        try std.testing.expectEqual(@as(u32, 1), try run(a, &s.mir));
+        try std.testing.expectEqual(@as(u32, 1), try run(a, &s.mir, .pure, null));
         const sel = s.select().?.ternary;
         try std.testing.expectEqual(s.then_val, sel.then_val);
         try std.testing.expectEqual(s.else_val, sel.else_val);
         // X now jumps to the join, and no branch is left in it.
         try std.testing.expectEqual(s.join, s.mir.instData(terminator(&s.mir, .entry).?).jump.target);
         // A second run finds nothing more: the pass is at its fixpoint.
-        try std.testing.expectEqual(@as(u32, 0), try run(a, &s.mir));
+        try std.testing.expectEqual(@as(u32, 0), try run(a, &s.mir, .pure, null));
     }
 }
 
@@ -558,7 +579,7 @@ test "if-conversion: an arm that is not pure value code keeps its branch" {
         errdefer std.debug.print("arm `{s}`\n", .{@tagName(c[0])});
         var s = try Shape.init(a, c[0], .value);
         defer s.mir.deinit(a);
-        try std.testing.expectEqual(c[1], try run(a, &s.mir));
+        try std.testing.expectEqual(c[1], try run(a, &s.mir, .pure, null));
         try std.testing.expectEqual(c[1] == 1, s.select() != null);
     }
 }
@@ -567,13 +588,13 @@ test "if-conversion: a first-evaluation guard stays a branch" {
     // §5.2.1 `analog initial`, VerA's `$tp_hit` cache, and an argument-less
     // §5.10.2 `initial_step`; `initial_step("tran")` is an ordinary condition.
     const a = std.testing.allocator;
-    const guards = [_]struct { []const u8, bool, u32 }{
+    const first_point_guards = [_]struct { []const u8, bool, u32 }{
         .{ "analog_initial", false, 0 },
         .{ "$tp_hit", true, 0 },
         .{ "initial_step", false, 0 },
         .{ "initial_step", true, 1 },
     };
-    for (guards) |g| {
+    for (first_point_guards) |g| {
         errdefer std.debug.print("guard `{s}`\n", .{g[0]});
         var mir: Mir = .{};
         defer mir.deinit(a);
@@ -591,7 +612,7 @@ test "if-conversion: a first-evaluation guard stays a branch" {
         const ev = try mir.emit(a, e, .fmul, &.{ p, p });
         _ = try mir.emitJump(a, e, j);
         _ = try mir.emitPhi(a, j, &.{ .{ .block = t, .value = tv }, .{ .block = e, .value = ev } });
-        try std.testing.expectEqual(g[2], try run(a, &mir));
+        try std.testing.expectEqual(g[2], try run(a, &mir, .pure, null));
     }
 }
 
@@ -612,7 +633,7 @@ test "if-conversion: shapes that are not a diamond are left alone" {
     _ = try mir.emitJump(a, e, j);
     // The join phi has no pair for the else arm: there is nothing to select.
     _ = try mir.emitPhi(a, j, &.{ .{ .block = t, .value = tv }, .{ .block = other, .value = ev } });
-    try std.testing.expectEqual(@as(u32, 0), try run(a, &mir));
+    try std.testing.expectEqual(@as(u32, 0), try run(a, &mir, .pure, null));
 
     // Both edges to one block; an arm that loops back to X; an arm another
     // block also jumps into.
@@ -632,7 +653,7 @@ test "if-conversion: shapes that are not a diamond are left alone" {
     _ = try m2.emitJump(a, y, z);
     _ = try m2.emitJump(a, shared, z);
     _ = try m2.emitJump(a, w, shared); // `shared` now has two predecessors
-    try std.testing.expectEqual(@as(u32, 0), try run(a, &m2));
+    try std.testing.expectEqual(@as(u32, 0), try run(a, &m2, .pure, null));
 }
 
 test "if-conversion: a `toBool` wrapper on a comparison is peeled off the select" {
@@ -655,7 +676,7 @@ test "if-conversion: a `toBool` wrapper on a comparison is peeled off the select
         const tv = try mir.emit(a, t, .fneg, &.{p});
         _ = try mir.emitJump(a, t, j);
         const phi = try mir.emitPhi(a, j, &.{ .{ .block = t, .value = tv }, .{ .block = entry, .value = p } });
-        try std.testing.expectEqual(@as(u32, 1), try run(a, &mir));
+        try std.testing.expectEqual(@as(u32, 1), try run(a, &mir, .pure, null));
         const sel = mir.instData(mir.valueDef(mir.resolveAlias(phi)).inst_result).ternary;
         try std.testing.expectEqual(if (predicate) inner else cond, sel.cond);
     }
@@ -667,8 +688,6 @@ test "if-conversion preserves what the module computes (differential)" {
     // arm of a diamond, every input sign combination. The converted MIR must
     // also still pass `verify`.
     const a = std.testing.allocator;
-    const Lowered = @import("ir").Lowered;
-    const verify = @import("verify.zig");
     const T = struct {
         fn build(m: *Mir, shape: u32) !Mir.Value {
             const al = std.testing.allocator;
@@ -783,7 +802,7 @@ test "if-conversion preserves what the module computes (differential)" {
         defer conv.deinit(a);
         const out_plain = try T.build(&plain, @intCast(shape));
         const out_conv = try T.build(&conv, @intCast(shape));
-        try std.testing.expect(try run(a, &conv) >= 1);
+        try std.testing.expect(try run(a, &conv, .pure, null) >= 1);
         var lw: Lowered = .{};
         defer lw.nodes.deinit(a);
         for (0..2) |_| try lw.nodes.append(a, .{ .name = "n", .kind = .net, .disc = "", .dir = .unspecified });
@@ -805,8 +824,8 @@ test "if-conversion is deterministic: equal MIR converts to equal MIR" {
     defer s1.mir.deinit(a);
     var s2 = try Shape.init(a, .value, .direct);
     defer s2.mir.deinit(a);
-    _ = try run(a, &s1.mir);
-    _ = try run(a, &s2.mir);
+    _ = try run(a, &s1.mir, .pure, null);
+    _ = try run(a, &s2.mir, .pure, null);
     inline for (.{ .op, .a, .b, .result, .next, .block }) |col|
         try std.testing.expectEqualSlices(@TypeOf(s1.mir.insts.items(col)[0]), s1.mir.insts.items(col), s2.mir.insts.items(col));
     try std.testing.expectEqualSlices(u32, s1.mir.extra.items, s2.mir.extra.items);
@@ -843,7 +862,7 @@ test "if-conversion: .speculate flattens a nested domain-restricted arm and guar
         _ = try m.emitJump(a, b2, j);
         const out = try m.emitPhi(a, j, &.{ .{ .block = ij, .value = v1 }, .{ .block = b2, .value = v2 } });
 
-        const n = try runMode(a, &m, mode, null);
+        const n = try run(a, &m, mode, null);
         const sqrt_row = m.valueDef(iv).inst_result;
         if (mode == .pure) {
             try std.testing.expectEqual(@as(u32, 0), n);
@@ -873,11 +892,11 @@ test "if-conversion: .speculate keeps a branch the model card alone decides, and
         if (card) s.mir.insts.items(.a)[@backingInt(br)] = @backingInt(try s.mir.emit(a, s.entry, .fgt, &.{ .f_one, .f_zero }));
         var keep = try std.DynamicBitSetUnmanaged.initEmpty(a, s.mir.defs.len + Mir.Value.first_dynamic);
         defer keep.deinit(a);
-        try std.testing.expectEqual(@as(u32, if (card) 0 else 1), try runMode(a, &s.mir, .speculate, &keep));
+        try std.testing.expectEqual(@as(u32, if (card) 0 else 1), try run(a, &s.mir, .speculate, &keep));
     }
     var s = try Shape.init(a, .sqrt, .value);
     defer s.mir.deinit(a);
     var keep = try keepSlice(a, &s.mir, &.{s.phi});
     defer keep.deinit(a);
-    try std.testing.expectEqual(@as(u32, 0), try runMode(a, &s.mir, .speculate, &keep));
+    try std.testing.expectEqual(@as(u32, 0), try run(a, &s.mir, .speculate, &keep));
 }

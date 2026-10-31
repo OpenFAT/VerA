@@ -17,15 +17,21 @@
 //! row whose result is aliased away, none of which codegen emits.
 //!
 //! LRM clauses this file's code cites: §4.5.14.
+//!
+//! Contents:
+//! - `pub const Invariant = enum`
+//! - `pub const Violation = struct { invariant: Invariant, block: ?Mir.Block, inst: Mir.Inst, what: []const u8 }`
+//! - `pub const Error = Allocator.Error`
+//! - `pub fn check(mir: *const Mir, lowered: *const Lowered, pass: []const u8) Error!void`
+//! - `pub fn verify(mir: *const Mir, lowered: *const Lowered) Error!?Violation`
 
 const std = @import("std");
 const builtin = @import("builtin");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Mir = @import("ir").Mir;
 const Lowered = @import("ir").Lowered;
-const Analysis = @import("analysis.zig");
-
-const none = std.math.maxInt(u32);
+const Analysis = @import("Analysis.zig");
 const fd = Mir.Value.first_dynamic;
 
 /// One rule `verify` checks.
@@ -68,7 +74,7 @@ pub const Invariant = enum {
 };
 
 /// The first broken invariant `verify` found, and where.
-const Violation = struct {
+pub const Violation = struct {
     invariant: Invariant,
     /// The block it was found in, or null for a table-wide rule.
     block: ?Mir.Block = null,
@@ -78,10 +84,33 @@ const Violation = struct {
     what: []const u8,
 };
 
+/// Fails only on allocation, in the verifier's own scratch.
+pub const Error = Allocator.Error;
+
+const none = std.math.maxInt(u32);
+
+/// The handles a breaker needs from `sample`.
+const Sample = struct {
+    then_b: Mir.Block,
+    else_b: Mir.Block,
+    join: Mir.Block,
+    t: Mir.Value,
+    e: Mir.Value,
+    p: Mir.Value,
+    phi: Mir.Inst,
+    ddx: Mir.Inst,
+    anew: Mir.Inst,
+    store: Mir.Inst,
+    load: Mir.Inst,
+    seed: Mir.Inst,
+};
+
+const Breaker = *const fn (Allocator, *Mir, *Lowered, Sample) anyerror!void;
+
 /// Runs `verify` and panics on a violation, naming `pass`, the stage whose
 /// output `mir` is. Does nothing without runtime safety (ReleaseFast,
 /// ReleaseSmall), so those builds pay nothing. Fails only on allocation.
-pub fn check(mir: *const Mir, lowered: *const Lowered, pass: []const u8) Allocator.Error!void {
+pub fn check(mir: *const Mir, lowered: *const Lowered, pass: []const u8) Error!void {
     // This module's own optimize mode (0.17: `std.debug.runtime_safety` is
     // deprecated and reports the standard library's).
     if (!builtin.mode.runtimeSafety()) return;
@@ -103,8 +132,9 @@ pub fn check(mir: *const Mir, lowered: *const Lowered, pass: []const u8) Allocat
 /// compression (`Mir.resolveAlias`). The structural rules run first, so the
 /// CFG the dominance rules build is known to be well formed. Fails only on
 /// allocation.
-pub fn verify(mir: *const Mir, lowered: *const Lowered) Allocator.Error!?Violation {
+pub fn verify(mir: *const Mir, lowered: *const Lowered) Error!?Violation {
     if (mir.blockCount() == 0) return null;
+    assert(mir.blockCount() < Analysis.blocks_max);
     // Scratch outside the caller's allocator, as ssa.zig's `map_gpa`: an
     // arena grows by in-place resizes whose success depends on the address
     // space, so on the compile's gpa it would make tests/unit.zig's
@@ -121,10 +151,13 @@ pub fn verify(mir: *const Mir, lowered: *const Lowered) Allocator.Error!?Violati
     if (try values(a, mir, lowered)) |v| return v;
     // Every handle is in range and every alias chain ends: the CFG and
     // dominator tree can be built.
-    const an = try Analysis.buildStructure(a, mir, lowered);
+    const an = try Analysis.buildStructure(a, mir);
+    assert(an.nb == mir.blockCount());
     if (uses(mir, lowered, &an, pos)) |v| return v;
     return held(mir, lowered, &an);
 }
+
+// ---- private ----
 
 fn bad(invariant: Invariant, block: ?Mir.Block, inst: Mir.Inst, what: []const u8) Violation {
     return .{ .invariant = invariant, .block = block, .inst = inst, .what = what };
@@ -300,12 +333,12 @@ fn uses(mir: *const Mir, lowered: *const Lowered, an: *const Analysis, pos: []co
                     for (0..d.count) |k| {
                         const p = mir.phiPair(inst, @intCast(k));
                         const pb = @backingInt(p.block);
-                        if (std.mem.findScalar(u32, an.succs[pb], bi) == null)
+                        if (std.mem.findScalar(u32, an.succsOf(pb), bi) == null)
                             return bad(.phi_edges, b, inst, "a pair names a block with no edge to the phi's");
                         if (an.rpo_num[pb] == none) continue; // never taken
                         if (available(mir, an, pos, p.value, pb, none)) |why| return bad(.dominance, b, inst, why);
                     }
-                    for (an.preds[bi]) |pb| {
+                    for (an.predsOf(bi)) |pb| {
                         for (0..d.count) |k| {
                             if (@backingInt(mir.phiPair(inst, @intCast(k)).block) == pb) break;
                         } else return bad(.phi_edges, b, inst, "a reachable predecessor has no pair");
@@ -401,24 +434,6 @@ fn held(mir: *const Mir, lowered: *const Lowered, an: *const Analysis) ?Violatio
     return null;
 }
 
-// -------------------------------------------------------------------------
-
-/// The handles a breaker needs from `sample`.
-const Sample = struct {
-    then_b: Mir.Block,
-    else_b: Mir.Block,
-    join: Mir.Block,
-    t: Mir.Value,
-    e: Mir.Value,
-    p: Mir.Value,
-    phi: Mir.Inst,
-    ddx: Mir.Inst,
-    anew: Mir.Inst,
-    store: Mir.Inst,
-    load: Mir.Inst,
-    seed: Mir.Inst,
-};
-
 /// A well-formed module touching every invariant:
 ///   entry: seed = $held_real(0); c = V(a) > 0; branch c then else
 ///   then:  t = V(a) * k; jump join          else: e = -V(a); jump join
@@ -463,218 +478,216 @@ fn sample(a: Allocator, mir: *Mir, lw: *Lowered) !Sample {
     };
 }
 
-const Breaker = *const fn (Allocator, *Mir, *Lowered, Sample) anyerror!void;
-
-const cases = [_]struct { want: ?Invariant, name: []const u8, f: Breaker }{
-    .{ .want = null, .name = "untouched", .f = struct {
-        fn f(_: Allocator, _: *Mir, _: *Lowered, _: Sample) anyerror!void {}
-    }.f },
-    .{ .want = .chain, .name = "a row's block column disagrees with its chain", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.block)[@backingInt(s.load)] = s.then_b;
-        }
-    }.f },
-    .{ .want = .result, .name = "a Value's defs row points at another row", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.defs.items(.payload)[@backingInt(s.t) - fd] = @backingInt(s.load);
-        }
-    }.f },
-    .{ .want = .handle, .name = "an operand past the defs table", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.b)[@backingInt(s.load)] = 9999;
-        }
-    }.f },
-    .{ .want = .handle, .name = "an alias cycle", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.setAlias(s.t, s.e);
-            mir.setAlias(s.e, s.t);
-        }
-    }.f },
-    .{ .want = .terminator, .name = "a second terminator", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            _ = try mir.emitJump(a, s.then_b, s.else_b);
-        }
-    }.f },
-    .{ .want = null, .name = "a row after the terminator", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            _ = try mir.emit(a, s.then_b, .fneg, &.{s.p});
-        }
-    }.f },
-    .{ .want = .terminator, .name = "an edge into the entry block", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            _ = try mir.emitJump(a, s.join, .entry);
-        }
-    }.f },
-    .{ .want = .callee, .name = "a callee its name does not resolve to", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            const a = &mir.insts.items(.a)[@backingInt(s.ddx)];
-            a.* = a.* >> Mir.callee_bits << Mir.callee_bits | @backingInt(Mir.Callee.limexp);
-        }
-    }.f },
-    .{
-        .want = .dominance,
-        .name = "a use in a sibling arm",
-        .f = struct {
-            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-                // Before the else arm's jump: the arm's own value is not in scope.
-                const tail = mir.blockLast(s.else_b);
-                mir.unlink(s.else_b, tail);
-                _ = try mir.emit(a, s.else_b, .fadd, &.{ s.t, s.e });
-                _ = try mir.emitJump(a, s.else_b, s.join);
-            }
-        }.f,
-    },
-    .{ .want = .dominance, .name = "a use of an orphaned row", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.unlink(s.then_b, mir.valueDef(s.t).inst_result);
-        }
-    }.f },
-    .{ .want = .phi_edges, .name = "a phi missing a predecessor", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            try mir.setPhiPairs(a, s.phi, &.{.{ .block = s.then_b, .value = s.t }});
-        }
-    }.f },
-    .{ .want = .unknown, .name = "a probe past the unknowns", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
-            _ = try mir.addBlockParam(a, 1);
-        }
-    }.f },
-    .{ .want = .unknown, .name = "a ddx lane past the unknowns", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            const at = mir.insts.items(.b)[@backingInt(s.ddx)];
-            mir.extra.items[at + 2] = @backingInt(try mir.addIntConst(a, 1));
-        }
-    }.f },
-    .{ .want = .table, .name = "a param_ref past the params", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
-            _ = try mir.addParamRef(a, 1);
-        }
-    }.f },
-    .{ .want = .table, .name = "a held row whose seed reads another row", .f = struct {
-        fn f(a: Allocator, _: *Mir, lw: *Lowered, _: Sample) anyerror!void {
-            try lw.held_vars.insert(a, 0, .{ .name = "g", .ty = .real, .init = .f_zero, .seed = lw.held_vars.items[0].seed });
-        }
-    }.f },
-    .{ .want = .array, .name = "a load from a scalar", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.a)[@backingInt(s.load)] = @backingInt(s.p);
-        }
-    }.f },
-    .{ .want = .array, .name = "a store into a scalar", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.a)[@backingInt(s.store)] = @backingInt(s.p);
-        }
-    }.f },
-    .{ .want = .chain, .name = "a chain that cycles", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.next)[@backingInt(mir.blockLast(s.else_b))] = mir.valueDef(s.e).inst_result;
-        }
-    }.f },
-    .{ .want = .chain, .name = "`last` is not the end of the chain", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.blocks.items(.last)[@backingInt(s.join)] = s.phi;
-        }
-    }.f },
-    .{ .want = .result, .name = "a terminator defines a Value", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.result)[@backingInt(mir.blockLast(s.then_b))] = s.t;
-        }
-    }.f },
-    .{ .want = .handle, .name = "a phi pair names no block", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.extra.items[mir.insts.items(.b)[@backingInt(s.phi)]] = 999;
-        }
-    }.f },
-    .{ .want = .handle, .name = "a branch target names no block", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
-            mir.extra.items[mir.insts.items(.b)[@backingInt(mir.blockLast(.entry))] + 1] = 99;
-        }
-    }.f },
-    .{ .want = .handle, .name = "a call's callee is not a `Callee` tag", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.a)[@backingInt(s.ddx)] = 255;
-        }
-    }.f },
-    .{ .want = .handle, .name = "a call's name is not an interned string", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.extra.items[mir.insts.items(.b)[@backingInt(s.ddx)]] = 9999;
-        }
-    }.f },
-    .{ .want = .handle, .name = "a string constant names no interned string", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
-            _ = try mir.addStrConst(a, "x");
-            mir.defs.items(.payload)[mir.defs.len - 1] = 9999;
-        }
-    }.f },
-    .{ .want = .handle, .name = "an alias names no Value", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.alias.items[@backingInt(s.t) - fd] = @fromBackingInt(99_999);
-        }
-    }.f },
-    .{ .want = .handle, .name = "the alias table is shorter than `defs`", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
-            _ = mir.alias.pop();
-        }
-    }.f },
-    .{ .want = .table, .name = "an `anew` past the `mem_arrays` rows", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.a)[@backingInt(s.anew)] = 5;
-        }
-    }.f },
-    .{ .want = .table, .name = "an `anew` past the `timepoints` slots", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            mir.insts.items(.b)[@backingInt(s.anew)] = 1;
-        }
-    }.f },
-    .{ .want = .table, .name = "a held array whose `mem_arrays` row names another", .f = struct {
-        fn f(a: Allocator, mir: *Mir, lw: *Lowered, s: Sample) anyerror!void {
-            try lw.held_vars.append(a, .{ .name = "arr", .ty = .real, .init = .f_zero, .seed = mir.instResult(s.anew), .array = 0 });
-        }
-    }.f },
-    .{ .want = .table, .name = "a held seed that is a constant", .f = struct {
-        fn f(_: Allocator, _: *Mir, lw: *Lowered, _: Sample) anyerror!void {
-            lw.held_vars.items[0].seed = .f_zero;
-        }
-    }.f },
-    .{ .want = .handle, .name = "a held seed past the Values", .f = struct {
-        fn f(_: Allocator, _: *Mir, lw: *Lowered, _: Sample) anyerror!void {
-            lw.held_vars.items[0].seed = @fromBackingInt(99_999);
-        }
-    }.f },
-    .{ .want = .dominance, .name = "a use before its definition in the same block", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            const late = try mir.emit(a, s.join, .fneg, &.{s.p});
-            mir.insts.items(.b)[@backingInt(s.load)] = @backingInt(late);
-        }
-    }.f },
-    .{ .want = .phi_edges, .name = "a phi pair from a block with no edge to it", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            try mir.setPhiPairs(a, s.phi, &.{
-                .{ .block = s.then_b, .value = s.t },
-                .{ .block = s.else_b, .value = s.e },
-                .{ .block = .entry, .value = s.p },
-            });
-        }
-    }.f },
-    .{ .want = .unknown, .name = "a ddx with no lane argument", .f = struct {
-        fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            const a = &mir.insts.items(.a)[@backingInt(s.ddx)];
-            a.* = @as(u8, @truncate(a.*)) | @as(u32, 1) << Mir.callee_bits;
-        }
-    }.f },
-    // What the header leaves out on purpose: an unreachable block is never
-    // emitted, so its uses and its phis go unchecked.
-    .{ .want = null, .name = "an unreachable block may use anything", .f = struct {
-        fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
-            const dead = try mir.addBlock(a);
-            _ = try mir.emit(a, dead, .fadd, &.{ s.t, s.e });
-            _ = try mir.emitPhi(a, dead, &.{});
-            _ = try mir.emitJump(a, dead, s.join);
-        }
-    }.f },
-};
-
 test "verify: a well-formed MIR passes, and each broken invariant is named" {
+    const cases = [_]struct { want: ?Invariant, name: []const u8, f: Breaker }{
+        .{ .want = null, .name = "untouched", .f = struct {
+            fn f(_: Allocator, _: *Mir, _: *Lowered, _: Sample) anyerror!void {}
+        }.f },
+        .{ .want = .chain, .name = "a row's block column disagrees with its chain", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.block)[@backingInt(s.load)] = s.then_b;
+            }
+        }.f },
+        .{ .want = .result, .name = "a Value's defs row points at another row", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.defs.items(.payload)[@backingInt(s.t) - fd] = @backingInt(s.load);
+            }
+        }.f },
+        .{ .want = .handle, .name = "an operand past the defs table", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.b)[@backingInt(s.load)] = 9999;
+            }
+        }.f },
+        .{ .want = .handle, .name = "an alias cycle", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.setAlias(s.t, s.e);
+                mir.setAlias(s.e, s.t);
+            }
+        }.f },
+        .{ .want = .terminator, .name = "a second terminator", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                _ = try mir.emitJump(a, s.then_b, s.else_b);
+            }
+        }.f },
+        .{ .want = null, .name = "a row after the terminator", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                _ = try mir.emit(a, s.then_b, .fneg, &.{s.p});
+            }
+        }.f },
+        .{ .want = .terminator, .name = "an edge into the entry block", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                _ = try mir.emitJump(a, s.join, .entry);
+            }
+        }.f },
+        .{ .want = .callee, .name = "a callee its name does not resolve to", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                const a = &mir.insts.items(.a)[@backingInt(s.ddx)];
+                a.* = a.* >> Mir.callee_bits << Mir.callee_bits | @backingInt(Mir.Callee.limexp);
+            }
+        }.f },
+        .{
+            .want = .dominance,
+            .name = "a use in a sibling arm",
+            .f = struct {
+                fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                    // Before the else arm's jump: the arm's own value is not in scope.
+                    const tail = mir.blockLast(s.else_b);
+                    mir.unlink(s.else_b, tail);
+                    _ = try mir.emit(a, s.else_b, .fadd, &.{ s.t, s.e });
+                    _ = try mir.emitJump(a, s.else_b, s.join);
+                }
+            }.f,
+        },
+        .{ .want = .dominance, .name = "a use of an orphaned row", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.unlink(s.then_b, mir.valueDef(s.t).inst_result);
+            }
+        }.f },
+        .{ .want = .phi_edges, .name = "a phi missing a predecessor", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                try mir.setPhiPairs(a, s.phi, &.{.{ .block = s.then_b, .value = s.t }});
+            }
+        }.f },
+        .{ .want = .unknown, .name = "a probe past the unknowns", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
+                _ = try mir.addBlockParam(a, 1);
+            }
+        }.f },
+        .{ .want = .unknown, .name = "a ddx lane past the unknowns", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                const at = mir.insts.items(.b)[@backingInt(s.ddx)];
+                mir.extra.items[at + 2] = @backingInt(try mir.addIntConst(a, 1));
+            }
+        }.f },
+        .{ .want = .table, .name = "a param_ref past the params", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
+                _ = try mir.addParamRef(a, 1);
+            }
+        }.f },
+        .{ .want = .table, .name = "a held row whose seed reads another row", .f = struct {
+            fn f(a: Allocator, _: *Mir, lw: *Lowered, _: Sample) anyerror!void {
+                try lw.held_vars.insert(a, 0, .{ .name = "g", .ty = .real, .init = .f_zero, .seed = lw.held_vars.items[0].seed });
+            }
+        }.f },
+        .{ .want = .array, .name = "a load from a scalar", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.a)[@backingInt(s.load)] = @backingInt(s.p);
+            }
+        }.f },
+        .{ .want = .array, .name = "a store into a scalar", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.a)[@backingInt(s.store)] = @backingInt(s.p);
+            }
+        }.f },
+        .{ .want = .chain, .name = "a chain that cycles", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.next)[@backingInt(mir.blockLast(s.else_b))] = mir.valueDef(s.e).inst_result;
+            }
+        }.f },
+        .{ .want = .chain, .name = "`last` is not the end of the chain", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.blocks.items(.last)[@backingInt(s.join)] = s.phi;
+            }
+        }.f },
+        .{ .want = .result, .name = "a terminator defines a Value", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.result)[@backingInt(mir.blockLast(s.then_b))] = s.t;
+            }
+        }.f },
+        .{ .want = .handle, .name = "a phi pair names no block", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.extra.items[mir.insts.items(.b)[@backingInt(s.phi)]] = 999;
+            }
+        }.f },
+        .{ .want = .handle, .name = "a branch target names no block", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
+                mir.extra.items[mir.insts.items(.b)[@backingInt(mir.blockLast(.entry))] + 1] = 99;
+            }
+        }.f },
+        .{ .want = .handle, .name = "a call's callee is not a `Callee` tag", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.a)[@backingInt(s.ddx)] = 255;
+            }
+        }.f },
+        .{ .want = .handle, .name = "a call's name is not an interned string", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.extra.items[mir.insts.items(.b)[@backingInt(s.ddx)]] = 9999;
+            }
+        }.f },
+        .{ .want = .handle, .name = "a string constant names no interned string", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
+                _ = try mir.addStrConst(a, "x");
+                mir.defs.items(.payload)[mir.defs.len - 1] = 9999;
+            }
+        }.f },
+        .{ .want = .handle, .name = "an alias names no Value", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.alias.items[@backingInt(s.t) - fd] = @fromBackingInt(99_999);
+            }
+        }.f },
+        .{ .want = .handle, .name = "the alias table is shorter than `defs`", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, _: Sample) anyerror!void {
+                _ = mir.alias.pop();
+            }
+        }.f },
+        .{ .want = .table, .name = "an `anew` past the `mem_arrays` rows", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.a)[@backingInt(s.anew)] = 5;
+            }
+        }.f },
+        .{ .want = .table, .name = "an `anew` past the `timepoints` slots", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                mir.insts.items(.b)[@backingInt(s.anew)] = 1;
+            }
+        }.f },
+        .{ .want = .table, .name = "a held array whose `mem_arrays` row names another", .f = struct {
+            fn f(a: Allocator, mir: *Mir, lw: *Lowered, s: Sample) anyerror!void {
+                try lw.held_vars.append(a, .{ .name = "arr", .ty = .real, .init = .f_zero, .seed = mir.instResult(s.anew), .array = 0 });
+            }
+        }.f },
+        .{ .want = .table, .name = "a held seed that is a constant", .f = struct {
+            fn f(_: Allocator, _: *Mir, lw: *Lowered, _: Sample) anyerror!void {
+                lw.held_vars.items[0].seed = .f_zero;
+            }
+        }.f },
+        .{ .want = .handle, .name = "a held seed past the Values", .f = struct {
+            fn f(_: Allocator, _: *Mir, lw: *Lowered, _: Sample) anyerror!void {
+                lw.held_vars.items[0].seed = @fromBackingInt(99_999);
+            }
+        }.f },
+        .{ .want = .dominance, .name = "a use before its definition in the same block", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                const late = try mir.emit(a, s.join, .fneg, &.{s.p});
+                mir.insts.items(.b)[@backingInt(s.load)] = @backingInt(late);
+            }
+        }.f },
+        .{ .want = .phi_edges, .name = "a phi pair from a block with no edge to it", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                try mir.setPhiPairs(a, s.phi, &.{
+                    .{ .block = s.then_b, .value = s.t },
+                    .{ .block = s.else_b, .value = s.e },
+                    .{ .block = .entry, .value = s.p },
+                });
+            }
+        }.f },
+        .{ .want = .unknown, .name = "a ddx with no lane argument", .f = struct {
+            fn f(_: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                const a = &mir.insts.items(.a)[@backingInt(s.ddx)];
+                a.* = @as(u8, @truncate(a.*)) | @as(u32, 1) << Mir.callee_bits;
+            }
+        }.f },
+        // What the header leaves out on purpose: an unreachable block is never
+        // emitted, so its uses and its phis go unchecked.
+        .{ .want = null, .name = "an unreachable block may use anything", .f = struct {
+            fn f(a: Allocator, mir: *Mir, _: *Lowered, s: Sample) anyerror!void {
+                const dead = try mir.addBlock(a);
+                _ = try mir.emit(a, dead, .fadd, &.{ s.t, s.e });
+                _ = try mir.emitPhi(a, dead, &.{});
+                _ = try mir.emitJump(a, dead, s.join);
+            }
+        }.f },
+    };
+
     for (cases) |case| {
         var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena.deinit();

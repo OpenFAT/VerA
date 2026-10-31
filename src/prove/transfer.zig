@@ -1,217 +1,74 @@
 //! The prover's transfer functions: an opcode and its operands' intervals in,
 //! the result's interval and finite bit out (`Abstract`). Pure arithmetic on
-//! `lattice.Interval`: no MIR walk, no allocation, no diagnostics.
+//! `Interval`: no MIR walk, no allocation, no diagnostics. A bound is the
+//! value the device computes: exp, log and pow are `contract.gm`'s.
 //!
 //! LRM clauses this file's code cites: §2.7, §2.9, §3.2, §3.4.2, §4.2.4,
 //! §4.2.5, §4.2.8, §4.3.1, §4.3.2, §4.5.4, §4.5.13, §4.6.1, §5.2.1, §5.10.2,
 //! §5.10.3, §9.5, §9.5.1, §9.10, §9.13, §9.15, §9.18; Tables 4-14 (§4.3.1) and
 //! 4-15 (§4.3.2).
 //! IEEE 1364-2005 clauses cited: §5.4.
+//!
+//! Contents:
+//! - `pub const Abstract = struct { iv: Interval, finite: bool }`
+//! - `pub fn integerIv(op: Mir.Opcode) Interval`
+//! - `pub fn unaryTransfer(op: Mir.Opcode, a: Interval, af: bool) Abstract`
+//! - `pub fn binaryTransfer(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract`
+//! - `pub fn callAbstract(c: Mir.Callee) Abstract`
+//! - `pub fn combine(x: Interval, y: Interval, f: *const fn (f64, f64) f64) Interval`
+//! - `pub fn mulOp(a: f64, b: f64) f64`
 
 const std = @import("std");
-const proof_lattice = @import("lattice.zig");
-const Mir = @import("ir").Mir;
+const assert = std.debug.assert;
 const math = std.math;
+const Mir = @import("ir").Mir;
+/// The devices' exp/log/pow, so a bound is the value a device computes.
+const gm = @import("contract").gm;
+const Interval = @import("Interval.zig");
 
 /// A value's abstract state: its interval for the domain proof, and the
 /// separate finiteness fact (the rules on `proof.FloatMode`) that sets the
 /// float mode.
-pub const Abstract = struct { iv: proof_lattice.Interval, finite: bool };
+pub const Abstract = struct { iv: Interval, finite: bool };
+
+// §3.2 an integer is an i64 in the device: every one lies in this range.
+const int_range: Interval = .{ .lo = -9.223372036854776e18, .hi = 9.223372036854776e18 };
 
 /// Integer results (§3.2): clamp to the i64 range so an integer expression
 /// can never make a unit `.strict`. Relational/logical results are 0/1.
-pub fn integerIv(op: Mir.Opcode) proof_lattice.Interval {
+pub fn integerIv(op: Mir.Opcode) Interval {
+    assert(Mir.opIsInteger(op));
     if (Mir.opcode.get(op).bool01) return .{ .lo = 0, .hi = 1 };
     return int_range;
 }
 
-// §3.2 an integer is an i64 in the device: every one lies in this range.
-const int_range: proof_lattice.Interval = .{ .lo = -9.223372036854776e18, .hi = 9.223372036854776e18 };
-
-// f(x) for each unary op the device computes as a non-decreasing function,
-// null for every other op. NaN means x is outside f's domain.
-fn monotoneAt(op: Mir.Opcode, x: f64) ?f64 {
-    return switch (op) {
-        .exp => gm.exp(x),
-        .expm1 => math.expm1(x),
-        .ln => gm.log(x),
-        .ln1p => math.log1p(x),
-        .log10 => gm.log10(x),
-        .sqrt => @sqrt(x),
-        .sinh => math.sinh(x),
-        .tanh => math.tanh(x),
-        .asinh => gm.asinh(x),
-        .atan => math.atan(x),
-        .asin => math.asin(x),
-        .atanh => gm.atanh(x),
-        .acosh => gm.acosh(x),
-        .floor => @floor(x),
-        .ceil => @ceil(x),
-        // .path_prev/.path_acc take `else` (unbounded): the latch holds a
-        // value from an EARLIER solve, which current branch guards do not
-        // constrain, so an identity interval here would be too narrow.
-        // `dstop` (§2.9 `vera_nodiff`) is its operand's value with no
-        // derivative lanes.
-        .if_cast, .opt_barrier, .dstop => x,
-        else => null, // else: not monotone, or no transfer: `unaryTransfer`'s switch
-    };
-}
-
 /// Returns unary `op` over an operand with interval `a` and finite bit `af`.
 /// A monotone function maps the endpoints; an opcode with no rule answers
-/// top and not finite, which is sound and only loses precision.
-pub fn unaryTransfer(op: Mir.Opcode, a: proof_lattice.Interval, af: bool) Abstract {
-    if (monotoneAt(op, a.lo)) |lo| {
-        const hi = monotoneAt(op, a.hi).?;
-        // A NaN endpoint means the operand straddles the function's domain
-        // edge (ln(-1), sqrt(-4), asin(2), acosh(0.5)), and the endpoints
-        // then do not span the in-domain range: sqrt over [-4,9] is [0,3],
-        // not [3,+inf]. checkDomain has already refused to prove this
-        // operand, so the only sound interval is top. Endpoints at the edge
-        // stay exact and wide: ln(0) = -inf and atanh(1) = +inf are not NaN.
-        if (math.isNan(lo) or math.isNan(hi)) return .{ .iv = .top, .finite = false };
-        // An open end stays open only where the device's rounding keeps it
-        // open. f is non-decreasing as computed, so every double past an open
-        // end maps past f(end) exactly when the next double does. Underflow
-        // (exp(-800) = 0), saturation (tanh(20) = 1) and flat steps (floor)
-        // all close the end; a NaN there (past the domain edge) closes it too.
-        // ponytail: trusts the computed f to be monotone. A faithful libm may
-        // step back one ulp; covering that means widening every end by an ulp.
-        const inf = math.inf(f64);
-        const iv: proof_lattice.Interval = .{
-            .lo = @min(lo, hi),
-            .hi = @max(lo, hi),
-            .lo_open = a.lo_open and monotoneAt(op, math.nextAfter(f64, a.lo, inf)).? > lo,
-            .hi_open = a.hi_open and monotoneAt(op, math.nextAfter(f64, a.hi, -inf)).? < hi,
-        };
-        const overflows = op == .exp or op == .expm1 or op == .sinh;
-        return .{ .iv = iv, .finite = af and (!overflows or iv.bounded()) };
-    }
-    return switch (op) {
-        .fneg => .{ .iv = .{
-            .lo = -a.hi,
-            .hi = -a.lo,
-            .lo_open = a.hi_open,
-            .hi_open = a.lo_open,
-        }, .finite = af },
-        .fabs => .{ .iv = absIv(a), .finite = af },
-        // §4.3.2 acos is decreasing on [-1,1]. Same straddle rule as the
-        // monotone path above: an out-of-domain endpoint (acos(2) = NaN)
-        // voids the endpoint claim.
-        .acos => blk: {
-            const lo = math.acos(a.hi);
-            const hi = math.acos(a.lo);
-            if (math.isNan(lo) or math.isNan(hi)) break :blk .{ .iv = .top, .finite = false };
-            break :blk .{ .iv = .{ .lo = lo, .hi = hi }, .finite = af };
-        },
-        // §4.3.2 cosh is even and grows: bounded only if |x| is bounded.
-        .cosh => blk: {
-            const m = absIv(a);
-            const iv: proof_lattice.Interval = .{ .lo = 1, .hi = math.cosh(m.hi) };
-            break :blk .{ .iv = iv, .finite = af and iv.bounded() };
-        },
-        .sin, .cos => .{ .iv = .{ .lo = -1, .hi = 1 }, .finite = af },
-        // §4.3.2 tan is unbounded between poles; the domain check has
-        // already run, so only finiteness is left and it is not provable.
-        .tan => .{ .iv = .top, .finite = false },
-        else => .{ .iv = .top, .finite = false }, // else: ⊤, not finite, is sound for any opcode; only precision is lost
-    };
+/// top and not finite, which is sound and only loses precision. A NaN-free
+/// operand gives a NaN-free result.
+pub fn unaryTransfer(op: Mir.Opcode, a: Interval, af: bool) Abstract {
+    const out = unaryRaw(op, a, af);
+    if (out.finite) assert(af); // finiteness flows only from a finite operand
+    if (nanFree(a)) assert(nanFree(out.iv));
+    return out;
 }
 
 /// Returns binary `op` over `x` and `y`; `f` is both operands' finite bit.
 /// Rule 3 on `proof.FloatMode` keeps `+ - * /` finite on finite operands,
-/// except a divisor that can be zero. No rule: top, not finite.
-pub fn binaryTransfer(op: Mir.Opcode, x: proof_lattice.Interval, y: proof_lattice.Interval, f: bool) Abstract {
-    // Rule 3 on `FloatMode`: `+ - * /` on finite operands stay finite.
-    switch (op) {
-        // A sum's end is open only if the smallest (largest) sum the open
-        // operand ends admit still rounds past it: the rounded sum is
-        // monotone in each operand, so testing the doubles just inside the
-        // open ends decides it. 0.5 + 1e20 rounds to 1e20, so (0:1] + 1e20 is
-        // [1e20, 1e20], not (1e20, 1e20].
-        .fadd => {
-            const lo = addLo(x.lo, y.lo);
-            const hi = addHi(x.hi, y.hi);
-            const iv: proof_lattice.Interval = .{
-                .lo = lo,
-                .hi = hi,
-                .lo_open = (x.lo_open or y.lo_open) and addLo(inLo(x), inLo(y)) > lo,
-                .hi_open = (x.hi_open or y.hi_open) and addHi(inHi(x), inHi(y)) < hi,
-            };
-            return .{ .iv = iv, .finite = f };
-        },
-        .fsub => {
-            const lo = addLo(x.lo, -y.hi);
-            const hi = addHi(x.hi, -y.lo);
-            const iv: proof_lattice.Interval = .{
-                .lo = lo,
-                .hi = hi,
-                .lo_open = (x.lo_open or y.hi_open) and addLo(inLo(x), -inHi(y)) > lo,
-                .hi_open = (x.hi_open or y.lo_open) and addHi(inHi(x), -inLo(y)) < hi,
-            };
-            return .{ .iv = iv, .finite = f };
-        },
-        .fmul => {
-            const iv = combine(x, y, mulOp);
-            return .{ .iv = iv, .finite = f };
-        },
-        .fdiv => {
-            // A divisor that can be zero yields ±inf (§4.2.4 permits it;
-            // only `%` errors). That is not an overflow, so rule 3
-            // must not apply, or an
-            // inf-producing value would be marked finite under `.optimized`.
-            if (!y.excludesZero()) return .{ .iv = .top, .finite = false };
-            // A §3.4.2 puncture (`exclude 0` on a sign-spanning range)
-            // proves the divisor nonzero but not one-signed, and corner
-            // combination is sound for `/` only on a one-signed divisor:
-            // 1/y over [-10,10]\{0} is (-inf,-0.1] ∪ [0.1,+inf), while the
-            // corners 1/±10 give its complement [-0.1,0.1]. The nonzero fact
-            // still stands for finiteness (±inf only via overflow, rule 3);
-            // only the interval claim is void.
-            // An open end at 0 is approached from the divisor's own side, so
-            // its corner divides by that signed zero: 1/(-inf, 0) is
-            // (0, +inf], and a +0 end would give the corner -inf instead.
-            var yd = y;
-            if (y.lt(0) and y.hi == 0) yd.hi = -0.0;
-            if (y.gt(0) and y.lo == 0) yd.lo = 0.0;
-            const iv = if (y.gt(0) or y.lt(0)) combine(x, yd, divOp) else proof_lattice.Interval.top;
-            return .{ .iv = iv, .finite = f };
-        },
-        // §4.2.4 modulus: |result| < |divisor|, sign of the dividend.
-        .fmod => {
-            const m = absIv(y).hi;
-            const iv: proof_lattice.Interval = if (math.isFinite(m))
-                .{ .lo = if (x.ge(0)) 0 else -m, .hi = if (x.le(0)) 0 else m }
-            else
-                .top;
-            return .{ .iv = iv, .finite = f };
-        },
-        .pow => {
-            const iv = powIv(x, y);
-            return .{ .iv = iv, .finite = f and iv.bounded() };
-        },
-        .hypot => {
-            const iv: proof_lattice.Interval = .{ .lo = 0, .hi = addHi(absIv(x).hi, absIv(y).hi) };
-            return .{ .iv = iv, .finite = f };
-        },
-        .atan2 => return .{ .iv = .{ .lo = -math.pi, .hi = math.pi }, .finite = f },
-        .fmin => return .{ .iv = .{
-            .lo = @min(x.lo, y.lo),
-            .hi = @min(x.hi, y.hi),
-        }, .finite = f },
-        .fmax => return .{ .iv = .{
-            .lo = @max(x.lo, y.lo),
-            .hi = @max(x.hi, y.hi),
-        }, .finite = f },
-        else => return .{ .iv = .top, .finite = false }, // else: ⊤, not finite, is sound for any opcode; only precision is lost
-    }
+/// except a divisor that can be zero. No rule: top, not finite. NaN-free
+/// operands give a NaN-free result.
+pub fn binaryTransfer(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract {
+    const out = binaryRaw(op, x, y, f);
+    if (out.finite) assert(f);
+    if (nanFree(x) and nanFree(y)) assert(nanFree(out.iv));
+    return out;
 }
 
 /// Returns the abstract value of a `call` whose range the LRM fixes. Everything else is top
 /// and not finite: an unmodelled call costs `.strict`, never a wrong `.optimized`.
 pub fn callAbstract(c: Mir.Callee) Abstract {
-    const positive: proof_lattice.Interval = .{ .lo = 0, .lo_open = true, .nonzero = true };
-    const non_negative: proof_lattice.Interval = .{ .lo = 0 };
+    const positive: Interval = .{ .lo = 0, .lo_open = true, .nonzero = true };
+    const non_negative: Interval = .{ .lo = 0 };
     // §9.5 the descriptor family is finite: every §9.5 call is integer-valued
     // (`callee.ty`), and in a residual unit, the only kind `proof` rates,
     // the emitter renders it as the literal 0 §9.5.1 reserves; the descriptor
@@ -248,6 +105,210 @@ pub fn callAbstract(c: Mir.Callee) Abstract {
     };
 }
 
+/// Returns the hull of `f` at the four corners of the box, closed (openness does not carry
+/// through a product). A NaN corner (0*inf, 0/0, inf/inf) returns `top`.
+/// Precondition: `f` is monotone in each argument separately over the box. `*` always is;
+/// `/` only for a one-signed divisor (the `.fdiv` transfer checks); `pow` only for x >= 0
+/// (`powIv` checks).
+pub fn combine(x: Interval, y: Interval, f: *const fn (f64, f64) f64) Interval {
+    const c: @Vector(4, f64) = .{ f(x.lo, y.lo), f(x.lo, y.hi), f(x.hi, y.lo), f(x.hi, y.hi) };
+    if (@reduce(.Or, c != c)) return .top; // a NaN corner
+    const r: Interval = .{ .lo = @reduce(.Min, c), .hi = @reduce(.Max, c) };
+    assert(r.lo <= r.hi); // four non-NaN corners
+    assert(!r.lo_open and !r.hi_open);
+    return r;
+}
+
+/// `a * b`, the `combine` kernel of `*`.
+pub fn mulOp(a: f64, b: f64) f64 {
+    return a * b;
+}
+
+// ---- private ----
+
+// Returns unary `op` over an operand with interval `a` and finite bit `af`.
+// A monotone function maps the endpoints; an opcode with no rule answers
+// top and not finite, which is sound and only loses precision.
+fn unaryRaw(op: Mir.Opcode, a: Interval, af: bool) Abstract {
+    if (monotoneAt(op, a.lo)) |lo| {
+        const hi = monotoneAt(op, a.hi).?;
+        // A NaN endpoint means the operand straddles the function's domain
+        // edge (ln(-1), sqrt(-4), asin(2), acosh(0.5)), and the endpoints
+        // then do not span the in-domain range: sqrt over [-4,9] is [0,3],
+        // not [3,+inf]. checkDomain has already refused to prove this
+        // operand, so the only sound interval is top. Endpoints at the edge
+        // stay exact and wide: ln(0) = -inf and atanh(1) = +inf are not NaN.
+        if (math.isNan(lo) or math.isNan(hi)) return .{ .iv = .top, .finite = false };
+        // An open end stays open only where the device's rounding keeps it
+        // open. f is non-decreasing as computed, so every double past an open
+        // end maps past f(end) exactly when the next double does. Underflow
+        // (exp(-800) = 0), saturation (tanh(20) = 1) and flat steps (floor)
+        // all close the end; a NaN there (past the domain edge) closes it too.
+        // ponytail: trusts the computed f to be monotone. A faithful libm may
+        // step back one ulp; covering that means widening every end by an ulp.
+        const inf = math.inf(f64);
+        const iv: Interval = .{
+            .lo = @min(lo, hi),
+            .hi = @max(lo, hi),
+            .lo_open = a.lo_open and monotoneAt(op, math.nextAfter(f64, a.lo, inf)).? > lo,
+            .hi_open = a.hi_open and monotoneAt(op, math.nextAfter(f64, a.hi, -inf)).? < hi,
+        };
+        const overflows = op == .exp or op == .expm1 or op == .sinh;
+        return .{ .iv = iv, .finite = af and (!overflows or iv.bounded()) };
+    }
+    return switch (op) {
+        .fneg => .{ .iv = .{
+            .lo = -a.hi,
+            .hi = -a.lo,
+            .lo_open = a.hi_open,
+            .hi_open = a.lo_open,
+        }, .finite = af },
+        .fabs => .{ .iv = absIv(a), .finite = af },
+        // §4.3.2 acos is decreasing on [-1,1]. Same straddle rule as the
+        // monotone path above: an out-of-domain endpoint (acos(2) = NaN)
+        // voids the endpoint claim.
+        .acos => blk: {
+            const lo = math.acos(a.hi);
+            const hi = math.acos(a.lo);
+            if (math.isNan(lo) or math.isNan(hi)) break :blk .{ .iv = .top, .finite = false };
+            break :blk .{ .iv = .{ .lo = lo, .hi = hi }, .finite = af };
+        },
+        // §4.3.2 cosh is even and grows: bounded only if |x| is bounded.
+        .cosh => blk: {
+            const m = absIv(a);
+            const iv: Interval = .{ .lo = 1, .hi = math.cosh(m.hi) };
+            break :blk .{ .iv = iv, .finite = af and iv.bounded() };
+        },
+        .sin, .cos => .{ .iv = .{ .lo = -1, .hi = 1 }, .finite = af },
+        // §4.3.2 tan is unbounded between poles; the domain check has
+        // already run, so only finiteness is left and it is not provable.
+        .tan => .{ .iv = .top, .finite = false },
+        else => .{ .iv = .top, .finite = false }, // else: ⊤, not finite, is sound for any opcode; only precision is lost
+    };
+}
+
+// Returns binary `op` over `x` and `y`; `f` is both operands' finite bit.
+// Rule 3 on `proof.FloatMode` keeps `+ - * /` finite on finite operands,
+// except a divisor that can be zero. No rule: top, not finite.
+fn binaryRaw(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract {
+    // Rule 3 on `FloatMode`: `+ - * /` on finite operands stay finite.
+    switch (op) {
+        // A sum's end is open only if the smallest (largest) sum the open
+        // operand ends admit still rounds past it: the rounded sum is
+        // monotone in each operand, so testing the doubles just inside the
+        // open ends decides it. 0.5 + 1e20 rounds to 1e20, so (0:1] + 1e20 is
+        // [1e20, 1e20], not (1e20, 1e20].
+        .fadd => {
+            const lo = addLo(x.lo, y.lo);
+            const hi = addHi(x.hi, y.hi);
+            const iv: Interval = .{
+                .lo = lo,
+                .hi = hi,
+                .lo_open = (x.lo_open or y.lo_open) and addLo(inLo(x), inLo(y)) > lo,
+                .hi_open = (x.hi_open or y.hi_open) and addHi(inHi(x), inHi(y)) < hi,
+            };
+            return .{ .iv = iv, .finite = f };
+        },
+        .fsub => {
+            const lo = addLo(x.lo, -y.hi);
+            const hi = addHi(x.hi, -y.lo);
+            const iv: Interval = .{
+                .lo = lo,
+                .hi = hi,
+                .lo_open = (x.lo_open or y.hi_open) and addLo(inLo(x), -inHi(y)) > lo,
+                .hi_open = (x.hi_open or y.lo_open) and addHi(inHi(x), -inLo(y)) < hi,
+            };
+            return .{ .iv = iv, .finite = f };
+        },
+        .fmul => {
+            const iv = combine(x, y, mulOp);
+            return .{ .iv = iv, .finite = f };
+        },
+        .fdiv => {
+            // A divisor that can be zero yields ±inf (§4.2.4 permits it;
+            // only `%` errors). That is not an overflow, so rule 3
+            // must not apply, or an
+            // inf-producing value would be marked finite under `.optimized`.
+            if (!y.excludesZero()) return .{ .iv = .top, .finite = false };
+            // A §3.4.2 puncture (`exclude 0` on a sign-spanning range)
+            // proves the divisor nonzero but not one-signed, and corner
+            // combination is sound for `/` only on a one-signed divisor:
+            // 1/y over [-10,10]\{0} is (-inf,-0.1] ∪ [0.1,+inf), while the
+            // corners 1/±10 give its complement [-0.1,0.1]. The nonzero fact
+            // still stands for finiteness (±inf only via overflow, rule 3);
+            // only the interval claim is void.
+            // An open end at 0 is approached from the divisor's own side, so
+            // its corner divides by that signed zero: 1/(-inf, 0) is
+            // (0, +inf], and a +0 end would give the corner -inf instead.
+            var yd = y;
+            if (y.lt(0) and y.hi == 0) yd.hi = -0.0;
+            if (y.gt(0) and y.lo == 0) yd.lo = 0.0;
+            const iv = if (y.gt(0) or y.lt(0)) combine(x, yd, divOp) else Interval.top;
+            return .{ .iv = iv, .finite = f };
+        },
+        // §4.2.4 modulus: |result| < |divisor|, sign of the dividend.
+        .fmod => {
+            const m = absIv(y).hi;
+            const iv: Interval = if (math.isFinite(m))
+                .{ .lo = if (x.ge(0)) 0 else -m, .hi = if (x.le(0)) 0 else m }
+            else
+                .top;
+            return .{ .iv = iv, .finite = f };
+        },
+        .pow => {
+            const iv = powIv(x, y);
+            return .{ .iv = iv, .finite = f and iv.bounded() };
+        },
+        .hypot => {
+            const iv: Interval = .{ .lo = 0, .hi = addHi(absIv(x).hi, absIv(y).hi) };
+            return .{ .iv = iv, .finite = f };
+        },
+        .atan2 => return .{ .iv = .{ .lo = -math.pi, .hi = math.pi }, .finite = f },
+        .fmin => return .{ .iv = .{
+            .lo = @min(x.lo, y.lo),
+            .hi = @min(x.hi, y.hi),
+        }, .finite = f },
+        .fmax => return .{ .iv = .{
+            .lo = @max(x.lo, y.lo),
+            .hi = @max(x.hi, y.hi),
+        }, .finite = f },
+        else => return .{ .iv = .top, .finite = false }, // else: ⊤, not finite, is sound for any opcode; only precision is lost
+    }
+}
+
+fn nanFree(i: Interval) bool {
+    return !math.isNan(i.lo) and !math.isNan(i.hi);
+}
+
+// f(x) for each unary op the device computes as a non-decreasing function,
+// null for every other op. NaN means x is outside f's domain.
+fn monotoneAt(op: Mir.Opcode, x: f64) ?f64 {
+    return switch (op) {
+        .exp => gm.exp(x),
+        .expm1 => math.expm1(x),
+        .ln => gm.log(x),
+        .ln1p => math.log1p(x),
+        .log10 => gm.log10(x),
+        .sqrt => @sqrt(x),
+        .sinh => math.sinh(x),
+        .tanh => math.tanh(x),
+        .asinh => gm.asinh(x),
+        .atan => math.atan(x),
+        .asin => math.asin(x),
+        .atanh => gm.atanh(x),
+        .acosh => gm.acosh(x),
+        .floor => @floor(x),
+        .ceil => @ceil(x),
+        // .path_prev/.path_acc take `else` (unbounded): the latch holds a
+        // value from an EARLIER solve, which current branch guards do not
+        // constrain, so an identity interval here would be too narrow.
+        // `dstop` (§2.9 `vera_nodiff`) is its operand's value with no
+        // derivative lanes.
+        .if_cast, .opt_barrier, .dstop => x,
+        else => null, // else: not monotone, or no transfer: `unaryTransfer`'s switch
+    };
+}
+
 // Endpoint arithmetic: a NaN sum (inf-inf) folds to the wide side. A unary NaN
 // endpoint is not folded: it means the operand straddles the domain edge, and
 // `unaryTransfer` answers top.
@@ -264,26 +325,19 @@ fn addHi(a: f64, b: f64) f64 {
 
 // The least member of `i` as a double: `lo`, or the next double up when `lo`
 // is open. `inHi` is the greatest.
-fn inLo(i: proof_lattice.Interval) f64 {
+fn inLo(i: Interval) f64 {
     return if (i.lo_open) math.nextAfter(f64, i.lo, math.inf(f64)) else i.lo;
 }
-fn inHi(i: proof_lattice.Interval) f64 {
+fn inHi(i: Interval) f64 {
     return if (i.hi_open) math.nextAfter(f64, i.hi, -math.inf(f64)) else i.hi;
 }
 
-/// `a * b`, the `combine` kernel of `*`.
-pub fn mulOp(a: f64, b: f64) f64 {
-    return a * b;
-}
 fn divOp(a: f64, b: f64) f64 {
     return a / b;
 }
 fn powOp(a: f64, b: f64) f64 {
     return gm.pow(a, b);
 }
-
-/// The devices' exp/log/pow, so a bound is the value a device computes.
-const gm = @import("contract").gm;
 
 /// §4.3.1 Table 4-14 pow(x,y) over a box. Corner combination is sound only where pow is
 /// monotone in each argument separately, which fails in the ways a negative base admits:
@@ -293,7 +347,7 @@ const gm = @import("contract").gm;
 ///     which corners at integer endpoints never see;
 ///   - negative exponent: pole at x = 0, and IEEE pow(+0,-odd) = +inf is the wrong side of
 ///     the two-sided pole a base interval reaching 0 straddles.
-fn powIv(x: proof_lattice.Interval, y: proof_lattice.Interval) proof_lattice.Interval {
+fn powIv(x: Interval, y: Interval) Interval {
     // x >= 0: pow = exp(y·ln x) is monotone in x for fixed y and in y for
     // fixed x, so box extrema sit at corners; IEEE fills the x = 0 edge
     // (pow(0,neg)=+inf, pow(0,0)=1) on the corners too. `combine`'s NaN guard
@@ -327,39 +381,18 @@ fn powIv(x: proof_lattice.Interval, y: proof_lattice.Interval) proof_lattice.Int
     return .top;
 }
 
-/// Returns the hull of `f` at the four corners of the box, closed (openness does not carry
-/// through a product). A NaN corner (0*inf, 0/0, inf/inf) returns `top`.
-/// Precondition: `f` is monotone in each argument separately over the box. `*` always is;
-/// `/` only for a one-signed divisor (the `.fdiv` transfer checks); `pow` only for x >= 0
-/// (`powIv` checks).
-pub fn combine(x: proof_lattice.Interval, y: proof_lattice.Interval, f: *const fn (f64, f64) f64) proof_lattice.Interval {
-    const c: @Vector(4, f64) = .{ f(x.lo, y.lo), f(x.lo, y.hi), f(x.hi, y.lo), f(x.hi, y.hi) };
-    if (@reduce(.Or, c != c)) return .top; // a NaN corner
-    return .{ .lo = @reduce(.Min, c), .hi = @reduce(.Max, c) };
-}
-
-fn absIv(a: proof_lattice.Interval) proof_lattice.Interval {
+fn absIv(a: Interval) Interval {
     if (a.ge(0)) return a;
     if (a.le(0)) return .{ .lo = -a.hi, .hi = -a.lo, .lo_open = a.hi_open, .hi_open = a.lo_open };
     return .{ .lo = 0, .hi = @max(@abs(a.lo), @abs(a.hi)) };
 }
 
-test "proof: random distribution names do not prove finite results" {
-    for ([_][]const u8{ "$rng$uniform", "$rng$normal", "$rng$exponential", "$rng$poisson", "$rng$chi_square", "$rng$t", "$rng$erlang" }) |name|
-        try std.testing.expect(!callAbstract(Mir.Callee.fromName(name)).finite);
-}
+// Test support. The oracle is the device: each transfer's interval must hold
+// every value the device computes (`opcode_zig.zig`'s host spelling) at points
+// inside its operands' intervals, and a `finite` claim must hold at every
+// in-domain point.
 
-// ---------------------------------------------------------------- tests --
-//
-// The oracle is the device: each transfer's interval must hold every value
-// the device computes (`opcode_zig.zig`'s host spelling) at points inside its
-// operands' intervals, and a `finite` claim must hold at every in-domain point.
-
-const Interval = proof_lattice.Interval;
-
-const member = proof_lattice.member;
-
-/// `member`, with one double of slack past a closed end: exp, log and pow are
+/// `Interval.contains`, with one double of slack past a closed end: exp, log and pow are
 /// faithful (< 1 ulp), not correctly rounded, so a value between two corners
 /// may round one double past the corners' own rounding. An open end gets no
 /// slack: the bugs it guards are device values landing exactly on it.
@@ -377,11 +410,11 @@ fn samplePoints(a: Interval, extra: []const f64, buf: []f64) []const f64 {
     const inf = math.inf(f64);
     var n: usize = 0;
     const ends = [_]f64{ a.lo, a.hi, math.nextAfter(f64, a.lo, inf), math.nextAfter(f64, a.hi, -inf), a.lo / 2 + a.hi / 2 };
-    for (ends) |x| if (!math.isNan(x) and member(a, x) and n < buf.len) {
+    for (ends) |x| if (!math.isNan(x) and a.contains(x) and n < buf.len) {
         buf[n] = x;
         n += 1;
     };
-    for (extra) |x| if (member(a, x) and n < buf.len) {
+    for (extra) |x| if (a.contains(x) and n < buf.len) {
         buf[n] = x;
         n += 1;
     };
@@ -400,10 +433,6 @@ fn intervals(ends: []const f64, opens: []const [2]bool, buf: []Interval) []const
     };
     return buf[0..n];
 }
-
-const all_opens = [_][2]bool{ .{ false, false }, .{ true, false }, .{ false, true }, .{ true, true } };
-
-const unary_ops = [_]Mir.Opcode{ .exp, .expm1, .ln, .ln1p, .log10, .sqrt, .sinh, .cosh, .tanh, .asinh, .acosh, .atanh, .asin, .acos, .atan, .sin, .cos, .floor, .ceil, .fneg, .fabs, .if_cast, .opt_barrier, .dstop };
 
 /// The device's value of unary `op` at `x`.
 fn device1(op: Mir.Opcode, x: f64) f64 {
@@ -436,7 +465,7 @@ fn device1(op: Mir.Opcode, x: f64) f64 {
 
 /// Whether `x` is in the LRM domain of unary `op` (Tables 4-14/4-15).
 fn inDomain1(op: Mir.Opcode, x: f64) bool {
-    return switch (proof_lattice.domainOf(op)) {
+    return switch (Mir.opcode.get(op).domain) {
         .all => true,
         .positive => x > 0,
         .gt_neg_one => x > -1,
@@ -448,7 +477,26 @@ fn inDomain1(op: Mir.Opcode, x: f64) bool {
     };
 }
 
+/// The device's value of binary `op` at `(x, y)`.
+fn device2(op: Mir.Opcode, x: f64, y: f64) f64 {
+    return switch (op) {
+        .fadd => x + y,
+        .fsub => x - y,
+        .fmul => x * y,
+        .fdiv => x / y,
+        .fmod => @rem(x, y),
+        .pow => gm.pow(x, y),
+        .hypot => math.hypot(x, y),
+        .atan2 => gm.atan2(x, y),
+        .fmin => if (x < y) x else y, // `zMinF`
+        .fmax => if (x > y) x else y, // `zMaxF`
+        else => unreachable, // else: a test helper, called only with `binary_ops`
+    };
+}
+
 test unaryTransfer {
+    const all_opens = [_][2]bool{ .{ false, false }, .{ true, false }, .{ false, true }, .{ true, true } };
+    const unary_ops = [_]Mir.Opcode{ .exp, .expm1, .ln, .ln1p, .log10, .sqrt, .sinh, .cosh, .tanh, .asinh, .acosh, .atanh, .asin, .acos, .atan, .sin, .cos, .floor, .ceil, .fneg, .fabs, .if_cast, .opt_barrier, .dstop };
     // Ends where the device's rounding collapses an open bound: exp and expm1
     // underflow below about -745, tanh saturates to ±1 past about ±19.1, floor
     // and ceil are flat between integers, atan reaches ±pi/2 at ±maxFloat.
@@ -478,26 +526,8 @@ test "unaryTransfer: dstop is its operand's value (vera_nodiff, §2.9)" {
     try std.testing.expect(out.finite);
 }
 
-const binary_ops = [_]Mir.Opcode{ .fadd, .fsub, .fmul, .fdiv, .fmod, .pow, .hypot, .atan2, .fmin, .fmax };
-
-/// The device's value of binary `op` at `(x, y)`.
-fn device2(op: Mir.Opcode, x: f64, y: f64) f64 {
-    return switch (op) {
-        .fadd => x + y,
-        .fsub => x - y,
-        .fmul => x * y,
-        .fdiv => x / y,
-        .fmod => @rem(x, y),
-        .pow => gm.pow(x, y),
-        .hypot => math.hypot(x, y),
-        .atan2 => gm.atan2(x, y),
-        .fmin => if (x < y) x else y, // `zMinF`
-        .fmax => if (x > y) x else y, // `zMaxF`
-        else => unreachable, // else: a test helper, called only with `binary_ops`
-    };
-}
-
 test binaryTransfer {
+    const binary_ops = [_]Mir.Opcode{ .fadd, .fsub, .fmul, .fdiv, .fmod, .pow, .hypot, .atan2, .fmin, .fmax };
     // 1e20 absorbs every operand below 2^14 in a sum, so an open end next to it
     // is not open after rounding.
     const inf = math.inf(f64);
@@ -558,4 +588,9 @@ test callAbstract {
     }
     // An unmodelled real call stays unknown.
     try std.testing.expect(!callAbstract(.@"$simparam").finite);
+}
+
+test "proof: random distribution names do not prove finite results" {
+    for ([_][]const u8{ "$rng$uniform", "$rng$normal", "$rng$exponential", "$rng$poisson", "$rng$chi_square", "$rng$t", "$rng$erlang" }) |name|
+        try std.testing.expect(!callAbstract(Mir.Callee.fromName(name)).finite);
 }
