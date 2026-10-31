@@ -27,6 +27,7 @@
 //! - `Scratch.allocator(self: *Scratch) std.mem.Allocator`
 //! - `Scratch.reset(self: *Scratch) void`
 //! - `pub const scratch_fixed_bytes: usize`
+//! - `pub const Rows = struct`
 //! - `pub fn cancel(self: *Run, h: Handle) Error!void`
 //! - `pub fn scheduleFailure(self: *Run, e: anyerror, comptime what: []const u8) Error`
 //! - `pub fn enqueueMonitor(self: *Run, item: Pending) Error!void`
@@ -221,12 +222,34 @@ pub const Scratch = struct {
 /// `Run.scratch_buf`'s size: the fixed half of `runUntil`'s `Scratch`.
 pub const scratch_fixed_bytes: usize = 64 << 10;
 
+/// What a run's scheduled events and lexical sites hold: one `Row` per
+/// scheduler payload (recycled through `free`), one §9.6 counter per
+/// `repeat`, one §9.8.2 counter per `fork`, and one §8.5.3.3 parked
+/// right-hand side per intra-assignment timing control.
+pub const Rows = struct {
+    /// One counter per lexical `repeat`: no process re-enters its own.
+    repeats: std.ArrayList(u64) = .empty,
+    /// §9.8.2 one counter per lexical `fork`: the arms still running. One per
+    /// site is enough, since the parent waits at the site, except inside a
+    /// recursive timed task's out-of-line body, which every activation runs
+    /// (§10.2.3): there the counter is the activation's (`act_joins`).
+    joins: std.ArrayList(u32) = .empty,
+    /// §8.5.3.3 one parked right-hand side per lexical intra-assignment timing
+    /// control. One cell per site is enough: the process that reached it is
+    /// suspended there until the `deposit` consumes the value.
+    holds: std.ArrayList(Int.Literal) = .empty,
+    /// Payload rows, indexed by the scheduler's `payload`. Recycled through
+    /// `free_rows`, so this is bounded by the most events queued at once.
+    pending: std.ArrayList(Row) = .empty,
+    free: std.ArrayList(u32) = .empty,
+};
+
 /// Cancels one queued event and gives its row back. A handle no longer
 /// pending (dispatched, or cancelled already) is a no-op.
 pub fn cancel(self: *Run, h: Handle) Error!void {
     const row = self.scheduler.payloadOf(h) orelse return;
     _ = self.scheduler.cancel(h) catch |e| return scheduleFailure(self, e, "scheduling");
-    try self.free_rows.append(self.arena, row);
+    try self.rows.free.append(self.arena, row);
 }
 
 /// A scheduler error as the run's: `OutOfMemory` passes through, any other
@@ -241,7 +264,7 @@ pub fn scheduleFailure(self: *Run, e: anyerror, comptime what: []const u8) Error
 /// inactive and NBA.
 pub fn enqueueMonitor(self: *Run, item: Pending) Error!void {
     const at = try claim(self, item);
-    self.pending.items[at].handle = self.scheduler.schedule(self.arena, .monitor, at) catch |e| return scheduleFailure(self, e, "scheduling");
+    self.rows.pending.items[at].handle = self.scheduler.schedule(self.arena, .monitor, at) catch |e| return scheduleFailure(self, e, "scheduling");
 }
 
 /// Drop every resumption point in [start, end): the waiters parked there and
@@ -254,7 +277,7 @@ pub fn stopRange(self: *Run, start: u32, end: u32) Error!bool {
     };
     // Only live rows: a free row's handle is stale, and so is the handle of
     // the row now dispatching, which the scheduler released before returning.
-    for (self.pending.items) |row| switch (row.item) {
+    for (self.rows.pending.items) |row| switch (row.item) {
         .run_process => |at| if (at >= start and at < end and self.scheduler.payloadOf(row.handle) != null) {
             try cancel(self, row.handle);
             hit = true;
@@ -281,7 +304,7 @@ pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle {
         self.scheduler.scheduleAfter(self.arena, d, if (nba) .nba else .inactive, at) catch |e| return scheduleFailure(self, e, "timing")
     else
         self.scheduler.schedule(self.arena, if (nba) .nba else .active, at) catch |e| return scheduleFailure(self, e, "scheduling"));
-    self.pending.items[at].handle = h;
+    self.rows.pending.items[at].handle = h;
     if (item == .write) try driver.scheduled(self, item.write.target);
     return h;
 }
@@ -289,7 +312,7 @@ pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle {
 /// `enqueue` at now in the active region, ahead of everything queued there.
 pub fn enqueueFirst(self: *Run, item: Pending) Error!void {
     const at = try claim(self, item);
-    self.pending.items[at].handle = self.scheduler.scheduleFirst(self.arena, .active, at) catch |e| return scheduleFailure(self, e, "scheduling");
+    self.rows.pending.items[at].handle = self.scheduler.scheduleFirst(self.arena, .active, at) catch |e| return scheduleFailure(self, e, "scheduling");
 }
 
 /// Runs the process at `start` until it suspends, stops or finishes;
@@ -359,12 +382,12 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
 /// A row for `item`: a recycled one when there is one. A `.write` value is
 /// copied into the row's own planes, so the caller's may be scratch.
 fn claim(self: *Run, item: Pending) Error!u32 {
-    const at: u32 = self.free_rows.pop() orelse blk: {
-        if (self.pending.items.len == std.math.maxInt(u32)) return self.fail(0, "too many digital events", .{});
-        try self.pending.append(self.arena, .{ .item = item });
-        break :blk @intCast(self.pending.items.len - 1);
+    const at: u32 = self.rows.free.pop() orelse blk: {
+        if (self.rows.pending.items.len == std.math.maxInt(u32)) return self.fail(0, "too many digital events", .{});
+        try self.rows.pending.append(self.arena, .{ .item = item });
+        break :blk @intCast(self.rows.pending.items.len - 1);
     };
-    const row = &self.pending.items[at];
+    const row = &self.rows.pending.items[at];
     row.item = item;
     switch (item) {
         .write => |w| {
@@ -500,7 +523,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 // resumption. It outlives this dispatch, so it lives in the
                 // cell's own planes, sized once per site.
                 const parked = try evaluate.evalFor(self, scratch, a.value, try evaluate.targetType(self, a.target));
-                const cell = &self.holds.items[s.cell];
+                const cell = &self.rows.holds.items[s.cell];
                 if (cell.planes.len != parked.planes.len) cell.planes = try self.arena.alloc(u64, parked.planes.len);
                 @memcpy(cell.planes, parked.planes);
                 cell.width = parked.width;
@@ -513,7 +536,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 if (a.nonblocking) {
                     // §8.5.3.4 the process does not suspend; the write is
                     // one more NBA update, delayed if the control was one.
-                    try evaluate.put(self, scratch, a.target, self.holds.items[s.cell], true, if (a.timing_is_delay) try delayOf(self, scratch, a.timing, tok) else null);
+                    try evaluate.put(self, scratch, a.target, self.rows.holds.items[s.cell], true, if (a.timing_is_delay) try delayOf(self, scratch, a.timing, tok) else null);
                     pc += 1;
                     continue;
                 }
@@ -530,7 +553,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 const a = self.file.stmt(s.statement).assign;
                 // §3.9: an out-of-range or X/Z index names no element, so
                 // the write is discarded rather than landing somewhere.
-                try evaluate.put(self, scratch, a.target, self.holds.items[s.cell], a.nonblocking, null);
+                try evaluate.put(self, scratch, a.target, self.rows.holds.items[s.cell], a.nonblocking, null);
                 pc += 1;
                 continue;
             },
@@ -586,14 +609,14 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     continue;
                 }
                 if (self.calls.ctx == 0)
-                    self.joins.items[f.join] = @intCast(f.arms.len)
+                    self.rows.joins.items[f.join] = @intCast(f.arms.len)
                 else
                     try self.calls.joins.put(self.arena, .{ .join = f.join, .ctx = self.calls.ctx }, @intCast(f.arms.len));
                 for (f.arms) |arm| _ = try enqueue(self, resumption(arm, self.calls.ctx), null, false);
                 return;
             },
             .join_arm => |j| {
-                const left = if (self.calls.ctx == 0) &self.joins.items[j.join] else self.calls.joins.getPtr(.{ .join = j.join, .ctx = self.calls.ctx }).?;
+                const left = if (self.calls.ctx == 0) &self.rows.joins.items[j.join] else self.calls.joins.getPtr(.{ .join = j.join, .ctx = self.calls.ctx }).?;
                 left.* -= 1;
                 if (left.* == 0) _ = try enqueue(self, resumption(j.end, self.calls.ctx), null, false);
                 return;
@@ -697,14 +720,14 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 const count: u64 = if (value.hasUnknown() or (value.signed and value.bit(value.width - 1) == .one))
                     0
                 else if (std.mem.allEqual(u64, words[1..], 0)) words[0] else std.math.maxInt(u64);
-                self.repeats.items[s.counter] = count;
+                self.rows.repeats.items[s.counter] = count;
                 pc = if (count == 0) s.end else pc + 1;
                 continue;
             },
             .repeat_next => |s| {
-                self.repeats.items[s.counter] -= 1;
-                if (self.repeats.items[s.counter] != 0) try loopIteration(self);
-                pc = if (self.repeats.items[s.counter] != 0) s.body else pc + 1;
+                self.rows.repeats.items[s.counter] -= 1;
+                if (self.rows.repeats.items[s.counter] != 0) try loopIteration(self);
+                pc = if (self.rows.repeats.items[s.counter] != 0) s.body else pc + 1;
                 continue;
             },
             .case_select => |s| {

@@ -106,7 +106,7 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
             try waiters.requestAnalog(r);
             return .explicit_d2a;
         }
-        const item = r.pending.items[event.payload].item;
+        const item = r.rows.pending.items[event.payload].item;
         switch (item) {
             .run_process => |start| {
                 r.calls.ctx = 0;
@@ -173,7 +173,7 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
         }
         // Freed only now: the `.write` planes above are this row's own, and
         // nothing dispatched may reuse them before `store` has copied them.
-        try r.free_rows.append(r.arena, event.payload);
+        try r.rows.free.append(r.arena, event.payload);
     }
     // `Scheduler.sync_at`: the queue stopped at that time's inactive point.
     if (r.scheduler.synced) {

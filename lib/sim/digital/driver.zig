@@ -321,8 +321,8 @@ fn pending(r: *Run, a: std.mem.Allocator, di: u32) Error!?Pend {
     var best: ?Pend = null;
     for (live.items) |ev| {
         // `root.analog_payload` indexes no row.
-        if (ev.payload >= r.pending.items.len) continue;
-        const bit: Int.Bit = switch (r.pending.items[ev.payload].item) {
+        if (ev.payload >= r.rows.pending.items.len) continue;
+        const bit: Int.Bit = switch (r.rows.pending.items[ev.payload].item) {
             .drive => |at| if (at == di) r.transitions.items[dr.transition].target.bit(0) else continue,
             .write => |w| switch (dr.source) {
                 .bridge => |b| if (w.target == b.src and w.sel == null) w.value.bit(b.src_lo) else continue,

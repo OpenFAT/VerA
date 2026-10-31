@@ -222,9 +222,9 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                 if (!s.timing_implicit) try checkEvent(self, s.timing);
                 if (s.timing_repeat != .none) try checkExpr(self, s.timing_repeat);
             }
-            if (self.holds.items.len == std.math.maxInt(u32)) return self.fail(tok, "too many intra-assignment timing controls", .{});
-            const cell: u32 = @intCast(self.holds.items.len);
-            try self.holds.append(self.arena, try filled(self.arena, 1, false, .x));
+            if (self.rows.holds.items.len == std.math.maxInt(u32)) return self.fail(tok, "too many intra-assignment timing controls", .{});
+            const cell: u32 = @intCast(self.rows.holds.items.len);
+            try self.rows.holds.append(self.arena, try filled(self.arena, 1, false, .x));
             _ = try append(self, .{ .sample = .{ .statement = id, .cell = cell } });
             // §8.5.3.4: a nonblocking one with a delay schedules the update
             // and falls through, so it has no resumption point and needs no
@@ -517,17 +517,17 @@ fn doneSite(self: *Run, id: Ast.StmtId, first: u32) Error!void {
 /// event control. Fails at 2^32 - 1 counters.
 fn repeatCounter(self: *Run, tok: u32) Error!u32 {
     assert(tok < self.starts.len);
-    if (self.repeats.items.len == std.math.maxInt(u32)) return self.fail(tok, "too many repeat counters", .{});
-    try self.repeats.append(self.arena, 0);
-    return @intCast(self.repeats.items.len - 1);
+    if (self.rows.repeats.items.len == std.math.maxInt(u32)) return self.fail(tok, "too many repeat counters", .{});
+    try self.rows.repeats.append(self.arena, 0);
+    return @intCast(self.rows.repeats.items.len - 1);
 }
 
 /// IEEE 1364-2005 §9.8.2 a parallel block: each statement is compiled as an
 /// arm ending in `.join_arm`; `.fork` starts them all and suspends the parent
 /// until the last one is back, which resumes it at the end of the block.
 fn compileFork(self: *Run, body: []const Ast.StmtId, depth: u32) Error!void {
-    const join: u32 = @intCast(self.joins.items.len);
-    try self.joins.append(self.arena, 0);
+    const join: u32 = @intCast(self.rows.joins.items.len);
+    try self.rows.joins.append(self.arena, 0);
     const arms = try self.arena.alloc(u32, body.len);
     const at = try append(self, .{ .fork = .{ .arms = arms, .join = join, .end = 0 } });
     const ends = try self.arena.alloc(u32, body.len);

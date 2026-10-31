@@ -197,27 +197,12 @@ gen_nets: std.AutoHashMapUnmanaged(u32, []const Ast.NetDecl) = .empty,
 /// there, because §5.10's events "do not hold any data". Each scalar or
 /// array element maps to its declaration's token and lexical scope.
 events: std.AutoHashMapUnmanaged(u32, struct { tok: u32, scope: u32 }) = .empty,
-/// One counter per lexical `repeat`: no process re-enters its own.
-repeats: std.ArrayList(u64) = .empty,
-/// §9.8.2 one counter per lexical `fork`: the arms still running. One per
-/// site is enough, since the parent waits at the site, except inside a
-/// recursive timed task's out-of-line body, which every activation runs
-/// (§10.2.3): there the counter is the activation's (`act_joins`).
-joins: std.ArrayList(u32) = .empty,
 /// §9.3 the procedural continuous assignments in effect, by slot: the
 /// process range of an `assign` and of a `force`. While one is, ordinary
 /// writes to the slot do not land (`store`); a force outranks an assign.
 overrides: std.AutoHashMapUnmanaged(u32, Overrides) = .empty,
 /// `store` from an override's own process, which the guard lets through.
 overriding: bool = false,
-/// §8.5.3.3 one parked right-hand side per lexical intra-assignment timing
-/// control. One cell per site is enough: the process that reached it is
-/// suspended there until the `deposit` consumes the value.
-holds: std.ArrayList(Int.Literal) = .empty,
-/// Payload rows, indexed by the scheduler's `payload`. Recycled through
-/// `free_rows`, so this is bounded by the most events queued at once.
-pending: std.ArrayList(Row) = .empty,
-free_rows: std.ArrayList(u32) = .empty,
 /// The zero-delay-loop guard: events dispatched at one tick (`run_until.EventBudget`).
 event_budget: run_until.EventBudget = .{},
 /// §10 the subroutine activations in progress (`activations.Calls`).
@@ -242,6 +227,8 @@ program: bytecode.Program = .{},
 typing: expr_types.Typing = .{},
 /// Who waits on which slot (`waiters.Waits`): the write path reads this on every store.
 waits: waiters.Waits = .{},
+/// The scheduler's payload rows and the per-site cells processes use (`exec.Rows`).
+rows: exec.Rows = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
