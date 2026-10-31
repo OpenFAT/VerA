@@ -24,6 +24,7 @@ const kt = @import("kernel_text.zig");
 const Gen = codegen.Gen;
 const gen_render = @import("render.zig");
 const gen_unit = @import("unit.zig");
+const gen_unit_body = @import("unit_body.zig");
 const gen_cfg = @import("cfg.zig");
 const gen_instance = @import("instance.zig");
 const plan_setup = @import("prove").setup;
@@ -250,7 +251,7 @@ pub fn emitSetup(self: *Gen) Error!void {
     self.su.merge = false;
     defer self.su.merge = false;
     const at_body = self.out.items.len;
-    try gen_unit.emitUnitBody(self, .undef);
+    try gen_unit_body.emitUnitBody(self, .undef);
     try self.w("}}\n\n", .{});
     // A body of integer roots alone never names `S`, and an unused local is
     // a Zig error: then the scalar is discarded instead.
@@ -345,9 +346,9 @@ pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void {
     if (!self.su.merge) return gen_cfg.emitTree(self, 0, 1, target);
     try self.ind(1);
     try self.b("zs_done: {{\n", .{});
-    try gen_unit.scopeOpen(self);
+    try gen_unit_body.scopeOpen(self);
     try gen_cfg.emitTree(self, 0, 2, target);
-    gen_unit.scopeClose(self, self.out.items.len);
+    gen_unit_body.scopeClose(self, self.out.items.len);
     try self.ind(1);
     try self.b("}}\n", .{});
     self.su.merge = false;

@@ -47,6 +47,7 @@ const cg_display = @import("cg_display.zig");
 const gen_setup = @import("codegen/setup.zig");
 const gen_file = @import("codegen/file.zig");
 const gen_unit = @import("codegen/unit.zig");
+const gen_unit_body = @import("codegen/unit_body.zig");
 const gen_render = @import("codegen/render.zig");
 const gen_host = @import("codegen/host_expr.zig");
 const gen_call = @import("codegen/call.zig");
@@ -275,9 +276,9 @@ pub const Decl = struct {
     /// is the only record that one is needed.
     core_wanted: bool = false,
     /// The dry run that places each slot's declaration (`unit.Probe`).
-    probe: gen_unit.Probe = .{},
+    probe: gen_unit_body.Probe = .{},
     /// The surviving hoisted slots and their arrays (`unit.Hoist`).
-    hoist: gen_unit.Hoist = .{},
+    hoist: gen_unit_body.Hoist = .{},
 };
 
 /// One `systf_names` entry: a `$name` call, the token it was lowered from,

@@ -27,6 +27,7 @@ const gen_render = @import("render.zig");
 const render_op = @import("render_op.zig");
 const gen_setup = @import("setup.zig");
 const gen_unit = @import("unit.zig");
+const gen_unit_body = @import("unit_body.zig");
 const opcode_zig = @import("opcode_zig.zig");
 const Gen = codegen.Gen;
 const Error = codegen.Error;
@@ -71,8 +72,8 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
             if (i < self.an.nv and self.cur.plan.cached(v))
                 return try self.arena.print("c.f{d}.val()", .{self.core.lo_idx[i]});
             if (i < self.an.nv and self.cur.plan.slot[i] != none_u32) {
-                gen_unit.probeUse(self, self.cur.plan.slot[i]);
-                return try self.arena.print("{s}.val()", .{try gen_unit.slotRefStr(self, i)});
+                gen_unit_body.probeUse(self, self.cur.plan.slot[i]);
+                return try self.arena.print("{s}.val()", .{try gen_unit_body.slotRefStr(self, i)});
             }
         }
         // A planner literal (`UnitPlan.literal`) is a leaf whose operands the

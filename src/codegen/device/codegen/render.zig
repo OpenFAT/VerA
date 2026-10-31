@@ -24,6 +24,7 @@ const gen_file = @import("file.zig");
 const gen_setup = @import("setup.zig");
 const gen_cfg = @import("cfg.zig");
 const gen_unit = @import("unit.zig");
+const gen_unit_body = @import("unit_body.zig");
 const family = @import("family.zig");
 const Mir = @import("ir").Mir;
 const Analysis = @import("prove").Analysis;
@@ -66,7 +67,7 @@ pub fn renderVal(self: *Gen, v0: Mir.Value, want: VTy) Error!void {
         // operand is undefined.
         if (want == .wide) return gen_call.abort(self, .E1020, "VerA: an undefined wide integer operand", .{});
         // ponytail: undefined operands share the slot initializer's spelling.
-        try self.b("{s}", .{gen_unit.zeroOf(want)});
+        try self.b("{s}", .{gen_unit_body.zeroOf(want)});
         return;
     }
     if (self.an.tyOf(v) == want) return renderValueRef(self, v);
@@ -130,8 +131,8 @@ pub fn renderValueRef(self: *Gen, v: Mir.Value) Error!void {
         return self.b("c.f{d}", .{self.core.lo_idx[i]});
     }
     if (i < self.an.nv and self.cur.plan.slot[i] != none_u32) {
-        gen_unit.probeUse(self, self.cur.plan.slot[i]);
-        try gen_unit.writeSlotRef(self, i);
+        gen_unit_body.probeUse(self, self.cur.plan.slot[i]);
+        try gen_unit_body.writeSlotRef(self, i);
         return;
     }
     switch (self.mir.valueDef(v)) {

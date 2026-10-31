@@ -18,6 +18,7 @@ const Gen = codegen.Gen;
 const gen_call = @import("call.zig");
 const gen_mask = @import("mask.zig");
 const gen_unit = @import("unit.zig");
+const gen_unit_body = @import("unit_body.zig");
 const family = @import("family.zig");
 const Mir = @import("ir").Mir;
 const Error = codegen.Error;
@@ -196,8 +197,8 @@ pub fn emitIdx(self: *Gen, args: []const Mir.Value, want: VTy) Error!void {
     // default, which §3.2 makes zero in an analog context. The read must
     // neither alias another element (clamp, wrap) nor abort (§4.3.2
     // reserves "shall report an error" for named cases).
-    if (widen) return self.b(" else => zTo(S, 0x{f}, {s}) }}", .{ gen_mask.hex(m, false), gen_unit.zeroOf(want) });
-    try self.b(" else => {s} }}", .{gen_unit.zeroOf(want)});
+    if (widen) return self.b(" else => zTo(S, 0x{f}, {s}) }}", .{ gen_mask.hex(m, false), gen_unit_body.zeroOf(want) });
+    try self.b(" else => {s} }}", .{gen_unit_body.zeroOf(want)});
 }
 
 /// Returns the non-negative integer literal lowering put at `args[i]`, or

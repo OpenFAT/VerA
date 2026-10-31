@@ -21,6 +21,7 @@ const gen_instance = @import("instance.zig");
 const gen_render = @import("render.zig");
 const render_array = @import("render_array.zig");
 const gen_unit = @import("unit.zig");
+const gen_unit_body = @import("unit_body.zig");
 const family = @import("family.zig");
 const gen_mask = @import("mask.zig");
 const Mir = @import("ir").Mir;
@@ -153,7 +154,7 @@ fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!v
     if (self.cur.plan.slot[i] == none_u32) return;
     // The straight-line path runs without a probe, so it never reads `place`.
     if (!decl) assert(self.cur.plan.slot[i] < self.cur.probe.place.items.len);
-    gen_unit.probeDef(self, self.cur.plan.slot[i], true);
+    gen_unit_body.probeDef(self, self.cur.plan.slot[i], true);
     // `or` short-circuits, so the straight-line path (`decl`, which runs
     // without a probe) never touches `place`.
     const at_def = decl or self.cur.probe.place.items[self.cur.plan.slot[i]].at_def;
@@ -164,11 +165,11 @@ fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!v
             // Zig types it from the expression; `lane_masks` counts it.
             try family.note(self, family.mask(self, @fromBackingInt(@intCast(i))));
             try self.b("const t{d} = ", .{self.cur.plan.slot[i]});
-        } else try self.b("const t{d}: {s} = ", .{ self.cur.plan.slot[i], try gen_unit.slotTy(self, i) });
+        } else try self.b("const t{d}: {s} = ", .{ self.cur.plan.slot[i], try gen_unit_body.slotTy(self, i) });
     } else {
-        try gen_unit.writeSlotRef(self, i);
+        try gen_unit_body.writeSlotRef(self, i);
         try self.b(" = ", .{});
-        m = gen_unit.slotMask(self, i);
+        m = gen_unit_body.slotMask(self, i);
         if (m) |k| try family.openTo(self, k);
     }
     try gen_render.renderInst(self, inst);
@@ -193,7 +194,7 @@ fn emitStep(self: *Gen, s: Step, stack: *std.ArrayList(Resume), target: Mir.Valu
             }
             try self.ind(t.depth);
             try self.b("L{d}: while (true) {{\n", .{t.bi});
-            try gen_unit.scopeOpen(self);
+            try gen_unit_body.scopeOpen(self);
             try stack.append(self.gpa, .{ .loop_end = .{ .depth = t.depth, .was_dead = was_dead } });
             return .{ .code = .{ .bi = t.bi, .depth = t.depth + 1 } };
         },
@@ -216,7 +217,7 @@ fn emitStep(self: *Gen, s: Step, stack: *std.ArrayList(Resume), target: Mir.Valu
 fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step {
     switch (r) {
         .loop_end => |l| {
-            gen_unit.scopeClose(self, self.out.items.len);
+            gen_unit_body.scopeClose(self, self.out.items.len);
             try self.ind(l.depth);
             try self.b("}}\n", .{});
             self.su.dead = l.was_dead;
@@ -224,17 +225,17 @@ fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step 
         },
         .else_arm => |e| {
             if (e.init_at) |at| try self.cur.init_arms.append(self.arena, .{ at, self.out.items.len });
-            gen_unit.scopeClose(self, self.out.items.len);
+            gen_unit_body.scopeClose(self, self.out.items.len);
             try self.ind(e.depth);
             try self.b("}} else {{\n", .{});
-            try gen_unit.scopeOpen(self);
+            try gen_unit_body.scopeOpen(self);
             const was_dead = self.su.dead;
             self.su.dead = e.else_dead;
             try stack.append(self.gpa, .{ .if_end = .{ .depth = e.depth, .was_dead = was_dead } });
             return .{ .edge = .{ .from = e.from, .to = e.to, .depth = e.depth + 1 } };
         },
         .if_end => |e| {
-            gen_unit.scopeClose(self, self.out.items.len);
+            gen_unit_body.scopeClose(self, self.out.items.len);
             try self.ind(e.depth);
             try self.b("}}\n", .{});
             self.su.dead = e.was_dead;
@@ -256,7 +257,7 @@ fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step 
                     assert(m.at_inner <= m.body_start);
                     assert(m.depth > 0);
                     self.out.shrinkRetainingCapacity(m.at_inner);
-                    gen_unit.scopeClose(self, m.at_inner);
+                    gen_unit_body.scopeClose(self, m.at_inner);
                     m.depth -= 1;
                 }
             }
@@ -265,7 +266,7 @@ fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step 
             if (m.j != 0 or !m.dropped) {
                 assert(m.depth > 0);
                 m.depth -= 1;
-                gen_unit.scopeClose(self, self.out.items.len);
+                gen_unit_body.scopeClose(self, self.out.items.len);
                 try self.ind(m.depth);
                 try self.b("}}\n", .{});
             }
@@ -301,7 +302,7 @@ fn emitCode(self: *Gen, bi0: u32, depth0: u32, stack: *std.ArrayList(Resume), ta
             if (i == 0) at_inner = self.out.items.len;
             try self.ind(depth);
             try self.b("B{d}: {{\n", .{mc[i]});
-            try gen_unit.scopeOpen(self);
+            try gen_unit_body.scopeOpen(self);
             depth += 1;
         }
         const body_start = self.out.items.len;
@@ -391,7 +392,7 @@ fn emitTerm(self: *Gen, bi: u32, depth: u32, stack: *std.ArrayList(Resume), targ
                 try self.b("zs_stop", .{});
             } else try renderCond(self, d.cond);
             try self.b(") {{\n", .{});
-            try gen_unit.scopeOpen(self);
+            try gen_unit_body.scopeOpen(self);
             const init_at: ?usize = if (!self.su.mode and initialStep(self, d.cond)) self.out.items.len else null;
             try stack.append(self.gpa, .{ .else_arm = .{ .from = bi, .to = @backingInt(d.else_block), .depth = depth, .else_dead = else_dead, .init_at = init_at } });
             return .{ .edge = .{ .from = bi, .to = @backingInt(d.then_block), .depth = depth + 1 } };
@@ -444,12 +445,12 @@ fn emitPhiCopies(self: *Gen, from: u32, to: u32, depth: u32) Error!void {
             if (self.an.vty[i] == .real)
                 try self.b("const c{d} = ", .{k})
             else
-                try self.b("const c{d}: {s} = ", .{ k, try gen_unit.slotTy(self, i) });
+                try self.b("const c{d}: {s} = ", .{ k, try gen_unit_body.slotTy(self, i) });
         } else {
-            gen_unit.probeDef(self, self.cur.plan.slot[i], false);
-            try gen_unit.writeSlotRef(self, i);
+            gen_unit_body.probeDef(self, self.cur.plan.slot[i], false);
+            try gen_unit_body.writeSlotRef(self, i);
             try self.b(" = ", .{});
-            m = gen_unit.slotMask(self, i);
+            m = gen_unit_body.slotMask(self, i);
             if (m) |mk| try family.openTo(self, mk);
         }
         try gen_render.renderVal(self, self.mir.phiIn(inst, @fromBackingInt(from)) orelse .undef, self.an.vty[i]);
@@ -464,9 +465,9 @@ fn emitPhiCopies(self: *Gen, from: u32, to: u32, depth: u32) Error!void {
         if (!slotted(self, inst)) continue;
         try self.ind(d2);
         const i = @backingInt(self.an.i_res[@backingInt(inst)]);
-        gen_unit.probeDef(self, self.cur.plan.slot[i], false);
-        try gen_unit.writeSlotRef(self, i);
-        if (gen_unit.slotMask(self, i)) |mk|
+        gen_unit_body.probeDef(self, self.cur.plan.slot[i], false);
+        try gen_unit_body.writeSlotRef(self, i);
+        if (gen_unit_body.slotMask(self, i)) |mk|
             try self.b(" = zTo(S, 0x{f}, c{d});\n", .{ gen_mask.hex(mk, false), k })
         else
             try self.b(" = c{d};\n", .{k});
