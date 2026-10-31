@@ -7,6 +7,10 @@
 //! §7.4.4.3, §7.7.2, §7.7.2.1, Annex F.2.1.
 //!
 //! Contents:
+//! - `pub const State = struct`
+//! - `pub const Segs = struct`
+//! - `pub const PrimPort = struct`
+//! - `pub const PendingAttribute = struct`
 //! - `pub fn addNets(self: *Flatten, nets: []const Ast.NetDecl) design.Error!void`
 //! - `pub fn addNet(self: *Flatten, n: Ast.NetDecl) design.Error!void`
 //! - `pub fn noteDiscipline(self: *Flatten, name: Ast.StrId, disc: Ast.StrId) design.Error!void`
@@ -24,6 +28,7 @@ const Flatten = @import("Flatten.zig");
 const ooc = @import("ooc.zig");
 const discipline = @import("discipline_rules.zig");
 const sep = design.sep;
+const fixture = @import("fixture.zig");
 
 /// `Flatten.res`: what Annex F.2 resolution knows about every flat net.
 pub const State = struct {
@@ -497,21 +502,6 @@ fn levelOf(paths: []const []const u8, i: usize) ?usize {
     return best;
 }
 
-const fixture = @import("fixture.zig");
-
-test levelOf {
-    // An arrival's level is the arrival whose instance path is its longest
-    // PROPER prefix. Every path ends in `sep`, so `u1.` is not below `u.`.
-    const paths = [_][]const u8{ "u.", "u.v.", "w.", "u.v.x.", "u1.", "u." };
-    try std.testing.expectEqual(@as(?usize, null), levelOf(&paths, 0));
-    try std.testing.expectEqual(@as(?usize, 0), levelOf(&paths, 1));
-    try std.testing.expectEqual(@as(?usize, null), levelOf(&paths, 2));
-    try std.testing.expectEqual(@as(?usize, 1), levelOf(&paths, 3));
-    try std.testing.expectEqual(@as(?usize, null), levelOf(&paths, 4));
-    // A repeated path is the same level, never its own parent.
-    try std.testing.expectEqual(@as(?usize, null), levelOf(&paths, 5));
-}
-
 /// Checks every level of `lv` against the `levelOf` oracle: each arrival sits
 /// in exactly the level `levelOf` names, and each level is in arrival order.
 fn expectLevelsMatchOracle(paths: []const []const u8, lv: *const Levels) !void {
@@ -524,6 +514,19 @@ fn expectLevelsMatchOracle(paths: []const []const u8, lv: *const Levels) !void {
             prev = i;
         }
     }
+}
+
+test levelOf {
+    // An arrival's level is the arrival whose instance path is its longest
+    // PROPER prefix. Every path ends in `sep`, so `u1.` is not below `u.`.
+    const paths = [_][]const u8{ "u.", "u.v.", "w.", "u.v.x.", "u1.", "u." };
+    try std.testing.expectEqual(@as(?usize, null), levelOf(&paths, 0));
+    try std.testing.expectEqual(@as(?usize, 0), levelOf(&paths, 1));
+    try std.testing.expectEqual(@as(?usize, null), levelOf(&paths, 2));
+    try std.testing.expectEqual(@as(?usize, 1), levelOf(&paths, 3));
+    try std.testing.expectEqual(@as(?usize, null), levelOf(&paths, 4));
+    // A repeated path is the same level, never its own parent.
+    try std.testing.expectEqual(@as(?usize, null), levelOf(&paths, 5));
 }
 
 test levelsOf {

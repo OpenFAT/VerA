@@ -10,14 +10,16 @@
 //! IEEE 1364-2005 §5.2.1, §12.3.3, §19.9.
 //!
 //! Contents:
-//! - `pub const Error = error{ OutOfMemory, NoModule, DiagnosticsReported }`
-//! - `pub const sep: u8 = '.'`
-//! - `pub const Ctx = struct`
 //! - `pub const DisciplineResolution`
 //! - `pub const ParamOverride`
 //! - `pub const Inserted`
+//! - `pub const Error`
+//! - `pub const sep: u8`
+//! - `pub const Ctx = struct`
 //! - `pub const UnitId = enum(u32)`
-//! - `pub const ModuleId = enum(u32)`, `fn of(file, m) ModuleId`, `fn get(id, file) *const Ast.ModuleDecl`
+//! - `pub const ModuleId = enum(u32)`
+//! -   `pub fn of(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl) ModuleId`
+//! -   `pub fn get(id: ModuleId, file: *const Ast.SourceFile) *const Ast.ModuleDecl`
 //! - `pub const Design = struct`
 //! - `pub const Unit = struct`
 //! - `pub const NameSite = struct`
@@ -27,8 +29,10 @@
 //! - `pub const PortWidth = struct`
 //! - `pub const SignalDiscipline = struct`
 //! - `pub const PortConcat = struct`
-//! - `pub const PartRange = struct`, `fn of(r, parts) []const NetPart`
+//! - `pub const PartRange = struct`
+//! -   `pub fn of(r: PartRange, parts: []const NetPart) []const NetPart`
 //! - `pub const NetPart = struct`
+//! -   `pub const Select = enum(u8)`
 //! - `pub const SystemCheck = struct`
 
 const std = @import("std");
@@ -37,6 +41,16 @@ const Ast = @import("frontend").Ast;
 const Preprocessor = @import("frontend").Preprocessor;
 const diag = @import("diag");
 const hier_param = @import("hier_param.zig");
+
+/// §7.4.4 basic or detail discipline resolution (`base`'s).
+pub const DisciplineResolution = @import("base").DisciplineResolution;
+
+/// §3.4 compile-time overrides, shared with Lower.Options (`base`'s).
+pub const ParamOverride = @import("base").ParamOverride;
+
+/// One port §7.8.4 re-pointed at a connect module (`base`'s, which
+/// documents the fields).
+pub const Inserted = @import("base").Inserted;
 
 /// Every way `elaborate` fails. The bag holds whatever was diagnosed; no
 /// `Design` is returned and the rows appended to `Ctx.file` stay (they are
@@ -86,16 +100,6 @@ pub const Ctx = struct {
     /// with the one in force at the primitive (`insert.plan`).
     default_disciplines: []const Preprocessor.DefaultDiscipline = &.{},
 };
-
-/// §7.4.4 basic or detail discipline resolution (`base`'s).
-pub const DisciplineResolution = @import("base").DisciplineResolution;
-
-/// §3.4 compile-time overrides, shared with Lower.Options (`base`'s).
-pub const ParamOverride = @import("base").ParamOverride;
-
-/// One port §7.8.4 re-pointed at a connect module (`base`'s, which
-/// documents the fields).
-pub const Inserted = @import("base").Inserted;
 
 /// A row of `Design.units`, and the value `Ast.AnalogBlock.unit` holds: 0 is
 /// the top, each inlined instance the next id in walk order. `none` is no

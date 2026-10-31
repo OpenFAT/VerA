@@ -7,7 +7,7 @@
 //!
 //! Contents:
 //! - `pub const ParamBinding = struct`
-//! - `pub fn collectOverrides(`
+//! - `pub fn collectOverrides(...)`
 //! - `pub fn overridableCount(params: []const Ast.ParamDecl) usize`
 //! - `pub fn parameterBinding(self: *Flatten, inst: *const Ast.Instance, params: []const Ast.ParamDecl, aliases: []const Ast.AliasParam, index: usize, path: []const u8, consume: bool) design.Error!?ParamBinding`
 //! - `pub fn constReal(self: *Flatten, e: Ast.ExprId) ?f64`
@@ -28,6 +28,7 @@ const flat_name = @import("flat_name.zig");
 const defparam = @import("defparam.zig");
 const hier_param = @import("hier_param.zig");
 const Unit = Flatten.Unit;
+const fixture = @import("fixture.zig");
 
 /// One effective §6.3 override. A defparam value was cloned in its DECLARING
 /// module; an inline value is still in the instantiating module's namespace.
@@ -275,8 +276,6 @@ fn collectSystemDefparam(self: *Flatten, path: []const u8, kind: hier_param.Kind
     specified.set(kind, dp.value);
     spellings.set(kind, name);
 }
-
-const fixture = @import("fixture.zig");
 
 test overridableCount {
     // §3.4.5: a localparam takes no override.

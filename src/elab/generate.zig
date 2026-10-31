@@ -9,6 +9,13 @@
 //! - `pub fn genInstanceList(file: *Ast.SourceFile, id: Ast.StmtId, arena: std.mem.Allocator, out: *std.ArrayList(Ast.Instance)) design.Error!void`
 //! - `pub fn genvarLoop(comptime T: type, scheme: anytype, first: T) !LoopRun(T)`
 //! - `pub fn substIdent(self: *Flatten, e: Ast.ExprId, name: Ast.StrId, with: Ast.ExprId) design.Error!Ast.ExprId`
+//! -     `pub fn ident(sb: @This(), _: *Flatten, id: Ast.ExprId, n: Ast.StrId) design.Error!Ast.ExprId`
+//! - `pub fn genInstances(self: *Flatten, id: Ast.StmtId, gate: Ast.ExprId, prefix: []const u8, locals: []const Ast.ParamDecl, out: *std.ArrayList(Ast.Instance), gates: *std.ArrayList(Ast.ExprId)) design.Error!void`
+//! - `pub fn conj(self: *Flatten, a: Ast.ExprId, c: Ast.ExprId, negate: bool) design.Error!Ast.ExprId`
+//! -     `pub fn ident(b: @This(), fl: *Flatten, id: Ast.ExprId, name: Ast.StrId) design.Error!Ast.ExprId`
+//! -     `pub fn holds(sc: @This(), at: i64) design.Error!?bool`
+//! -     `pub fn next(sc: @This(), at: i64) design.Error!?i64`
+//! -     `pub fn same(a: i64, b: i64) bool`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -19,15 +26,7 @@ const elaborate = @import("elaborate.zig");
 const clone_expr = @import("clone_expr.zig");
 const fold = @import("fold.zig");
 const sep = design.sep;
-
-/// How a §6.6.1 loop generate scheme runs, followed from its first genvar
-/// value without its body: it `ends` after that many iterations, it
-/// `repeats` a value with the condition true and so never ends, or it is
-/// `unfolded`: the condition or step did not fold at some iteration, which
-/// the unroll then reports.
-fn LoopRun(comptime T: type) type {
-    return union(enum) { ends: u64, repeats: T, unfolded };
-}
+const fixture = @import("fixture.zig");
 
 /// Appends to `out` every module instance in a generate block under `id`
 /// (§6.6), schemes aside, each renamed into its enclosing generate scopes
@@ -80,8 +79,6 @@ pub fn substIdent(self: *Flatten, e: Ast.ExprId, name: Ast.StrId, with: Ast.Expr
     return mapIdents(self, e, Subst{ .name = name, .with = with });
 }
 
-// ---- private ----
-
 /// §6.6 appends a generate block's module instances to `out` and, in
 /// parallel, the scheme that brings each into existence to `gates`, cloned
 /// into this unit's flat namespace.
@@ -128,6 +125,37 @@ pub fn genInstances(self: *Flatten, id: Ast.StmtId, gate: Ast.ExprId, prefix: []
     assert(out.items.len - gates.items.len == lead);
 }
 
+/// `a && c` (or `a && !c`), `a` = `.none` meaning true.
+pub fn conj(self: *Flatten, a: Ast.ExprId, c: Ast.ExprId, negate: bool) design.Error!Ast.ExprId {
+    const ex = &self.ctx.file.exprs;
+    const tok = ex.mainTok(c);
+    const t = if (!negate) c else try ex.add(self.ctx.arena, .{
+        .tag = .unary,
+        .main_tok = tok,
+        .lhs = c,
+        .extra = @backingInt(Ast.UnaryOp.logical_not),
+    });
+    if (a == .none) return t;
+    return ex.add(self.ctx.arena, .{
+        .tag = .binary,
+        .main_tok = tok,
+        .lhs = a,
+        .rhs = t,
+        .extra = @backingInt(Ast.BinaryOp.logical_and),
+    });
+}
+
+// ---- private ----
+
+/// How a §6.6.1 loop generate scheme runs, followed from its first genvar
+/// value without its body: it `ends` after that many iterations, it
+/// `repeats` a value with the condition true and so never ends, or it is
+/// `unfolded`: the condition or step did not fold at some iteration, which
+/// the unroll then reports.
+fn LoopRun(comptime T: type) type {
+    return union(enum) { ends: u64, repeats: T, unfolded };
+}
+
 fn genInstanceListIn(file: *Ast.SourceFile, id: Ast.StmtId, arena: std.mem.Allocator, prefix: []const u8, out: *std.ArrayList(Ast.Instance)) design.Error!void {
     if (id == .none) return;
     switch (file.stmt(id)) {
@@ -163,26 +191,6 @@ fn scoped(file: *Ast.SourceFile, arena: std.mem.Allocator, prefix: []const u8, i
     var out = inst;
     out.name = try file.intern(arena, try arena.print("{s}{s}", .{ prefix, file.str(inst.name) }));
     return out;
-}
-
-/// `a && c` (or `a && !c`), `a` = `.none` meaning true.
-pub fn conj(self: *Flatten, a: Ast.ExprId, c: Ast.ExprId, negate: bool) design.Error!Ast.ExprId {
-    const ex = &self.ctx.file.exprs;
-    const tok = ex.mainTok(c);
-    const t = if (!negate) c else try ex.add(self.ctx.arena, .{
-        .tag = .unary,
-        .main_tok = tok,
-        .lhs = c,
-        .extra = @backingInt(Ast.UnaryOp.logical_not),
-    });
-    if (a == .none) return t;
-    return ex.add(self.ctx.arena, .{
-        .tag = .binary,
-        .main_tok = tok,
-        .lhs = a,
-        .rhs = t,
-        .extra = @backingInt(Ast.BinaryOp.logical_and),
-    });
 }
 
 /// §6.6.2 a generate block's localparams are declared in the block's scope,
@@ -340,8 +348,6 @@ fn refuseGen(self: *Flatten, id: Ast.StmtId) design.Error!void {
     try genInstanceList(self.ctx.file, id, self.ctx.arena, &all);
     for (all.items) |inst| try self.err(inst.main_tok, .E0235, "a module instance in a loop or case generate", .{});
 }
-
-const fixture = @import("fixture.zig");
 
 test genvarLoop {
     // f(v) = (v + 1) % m from 0 under `v < lim`: the scheme of

@@ -2,6 +2,11 @@
 //! diagnostics. Binding names remain legal; value expressions must use the
 //! original parameter. Source checking precedes folding and flattening;
 //! the second check uses the alias paths recorded while instances are cloned.
+//!
+//! Contents:
+//! - `pub fn original(file: *const Ast.SourceFile, params: []const Ast.ParamDecl, aliases: []const Ast.AliasParam, alias: Ast.AliasParam) ?Ast.StrId`
+//! - `pub fn checkSource(ctx: Ctx) Error!void`
+//! - `pub fn checkFlat(ctx: Ctx, top: *const Ast.ModuleDecl, aliases: []const Ast.AliasParam) Error!void`
 
 const std = @import("std");
 const design = @import("design.zig");
@@ -11,52 +16,8 @@ const Ast = @import("frontend").Ast;
 const Lexer = @import("frontend").Lexer;
 const Ctx = design.Ctx;
 const Error = design.Error;
-
-/// Returns the original parameter `alias` names, following a chain of
-/// aliases, or null when the alias shadows a parameter, the chain names
-/// nothing, or it is a cycle. A §9.18 system parameter is an original.
-/// Invalid declarations remain the E0303/E0331 checks' job (lowering).
-pub fn original(file: *const Ast.SourceFile, params: []const Ast.ParamDecl, aliases: []const Ast.AliasParam, alias: Ast.AliasParam) ?Ast.StrId {
-    for (params) |p| if (p.name == alias.alias) return null;
-    var target = alias.target;
-    for (0..aliases.len + 1) |_| {
-        for (params) |p| if (p.name == target) return target;
-        if (Kind.fromName(file.str(target)) != null) return target;
-        target = for (aliases) |a| {
-            if (a.alias == target) break a.target;
-        } else return null;
-    }
-    return null; // cyclic alias declarations have no original parameter
-}
-
-/// §3.4.7 reports E0373 for every expression that reads an aliasparam
-/// instead of its original, in every user module and paramset, before
-/// anything is folded or cloned. Returns `error.DiagnosticsReported` if the
-/// bag holds any error afterwards, including one reported earlier.
-pub fn checkSource(ctx: Ctx) Error!void {
-    for (ctx.file.userModules()) |*m| {
-        if (m.aliasparams.len == 0) continue;
-        var scan: Scan = .{ .ctx = ctx, .aliases = m.aliasparams, .params = m.params };
-        try scan.walk(m.*);
-    }
-    for (ctx.file.paramsets) |*ps| {
-        if (ps.aliasparams.len == 0) continue;
-        var scan: Scan = .{ .ctx = ctx, .aliases = ps.aliasparams, .params = ps.params };
-        try scan.walk(ps.*);
-    }
-    if (ctx.bag.failed()) return error.DiagnosticsReported;
-}
-
-/// §3.4.7 the flattened half of `checkSource`: reports E0373 for every
-/// hierarchical read (`u.alias`) of one of `aliases`, given in their flat
-/// names. Local reads were judged in their source scope already. Returns
-/// `error.DiagnosticsReported` if the bag holds any error afterwards.
-pub fn checkFlat(ctx: Ctx, top: *const Ast.ModuleDecl, aliases: []const Ast.AliasParam) Error!void {
-    if (aliases.len == 0) return;
-    var scan: Scan = .{ .ctx = ctx, .aliases = aliases, .top = top };
-    try scan.walk(top.*);
-    if (ctx.bag.failed()) return error.DiagnosticsReported;
-}
+const fixture = @import("fixture.zig");
+const elaborate = @import("elaborate.zig");
 
 const Scan = struct {
     ctx: Ctx,
@@ -127,8 +88,51 @@ const Scan = struct {
 // Tests
 // ---------------------------------------------------------------------------
 
-const fixture = @import("fixture.zig");
-const elaborate = @import("elaborate.zig");
+/// Returns the original parameter `alias` names, following a chain of
+/// aliases, or null when the alias shadows a parameter, the chain names
+/// nothing, or it is a cycle. A §9.18 system parameter is an original.
+/// Invalid declarations remain the E0303/E0331 checks' job (lowering).
+pub fn original(file: *const Ast.SourceFile, params: []const Ast.ParamDecl, aliases: []const Ast.AliasParam, alias: Ast.AliasParam) ?Ast.StrId {
+    for (params) |p| if (p.name == alias.alias) return null;
+    var target = alias.target;
+    for (0..aliases.len + 1) |_| {
+        for (params) |p| if (p.name == target) return target;
+        if (Kind.fromName(file.str(target)) != null) return target;
+        target = for (aliases) |a| {
+            if (a.alias == target) break a.target;
+        } else return null;
+    }
+    return null; // cyclic alias declarations have no original parameter
+}
+
+/// §3.4.7 reports E0373 for every expression that reads an aliasparam
+/// instead of its original, in every user module and paramset, before
+/// anything is folded or cloned. Returns `error.DiagnosticsReported` if the
+/// bag holds any error afterwards, including one reported earlier.
+pub fn checkSource(ctx: Ctx) Error!void {
+    for (ctx.file.userModules()) |*m| {
+        if (m.aliasparams.len == 0) continue;
+        var scan: Scan = .{ .ctx = ctx, .aliases = m.aliasparams, .params = m.params };
+        try scan.walk(m.*);
+    }
+    for (ctx.file.paramsets) |*ps| {
+        if (ps.aliasparams.len == 0) continue;
+        var scan: Scan = .{ .ctx = ctx, .aliases = ps.aliasparams, .params = ps.params };
+        try scan.walk(ps.*);
+    }
+    if (ctx.bag.failed()) return error.DiagnosticsReported;
+}
+
+/// §3.4.7 the flattened half of `checkSource`: reports E0373 for every
+/// hierarchical read (`u.alias`) of one of `aliases`, given in their flat
+/// names. Local reads were judged in their source scope already. Returns
+/// `error.DiagnosticsReported` if the bag holds any error afterwards.
+pub fn checkFlat(ctx: Ctx, top: *const Ast.ModuleDecl, aliases: []const Ast.AliasParam) Error!void {
+    if (aliases.len == 0) return;
+    var scan: Scan = .{ .ctx = ctx, .aliases = aliases, .top = top };
+    try scan.walk(top.*);
+    if (ctx.bag.failed()) return error.DiagnosticsReported;
+}
 
 test original {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

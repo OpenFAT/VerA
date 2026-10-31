@@ -23,6 +23,10 @@ const defparam = @import("defparam.zig");
 const paramset_select = @import("paramset_select.zig");
 const decl_check = @import("decl_check.zig");
 const alias = @import("alias.zig");
+const fixture = @import("fixture.zig");
+const Fixture = fixture.Fixture;
+const parse = fixture.parse;
+const parseWithPrelude = fixture.parseWithPrelude;
 
 /// Elaborates `ctx.file` into the design lowering walks. Every pointer in the
 /// result points into `ctx.arena`. A top with no instances, defparams or
@@ -166,11 +170,6 @@ fn lastNamed(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl) *const Ast.M
     };
     return last;
 }
-
-const fixture = @import("fixture.zig");
-const Fixture = fixture.Fixture;
-const parse = fixture.parse;
-const parseWithPrelude = fixture.parseWithPrelude;
 
 test "a tree of one elaborates to that one, by pointer" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

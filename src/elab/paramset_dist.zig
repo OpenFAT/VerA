@@ -4,6 +4,7 @@
 //! Cites: LRM §4.2.1.1, §9.13.1, §9.13.2, Syntax 9-8, Table 9-10.
 //!
 //! Contents:
+//! - `pub fn rewriteParamsetDist(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.ExprId`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
@@ -13,8 +14,6 @@ const Flatten = @import("Flatten.zig");
 const clone_expr = @import("clone_expr.zig");
 const override = @import("override.zig");
 const dist = @import("dist.zig");
-
-// ---- private ----
 
 /// §9.13.1/§9.13.2 a distribution call written inside a §6.4 paramset body,
 /// the one scope whose calls may carry the optional trailing `type_string`.
@@ -126,6 +125,8 @@ pub fn rewriteParamsetDist(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.Expr
     n.extra = try clone_expr.cloneArgs(self, eff);
     return try self.ctx.file.exprs.add(self.ctx.arena, n);
 }
+
+// ---- private ----
 
 /// §9.13.1 Syntax 9-8's literal seed form, `[ sign ] decimal_number`. A real
 /// is not one: "the seed argument shall be an integer" is lowering's E0816 to

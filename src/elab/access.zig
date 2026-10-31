@@ -7,7 +7,7 @@
 //! Contents:
 //! - `pub fn localAccess(self: *Flatten, access: Ast.StrId, net: Ast.ExprId, flat_net: Ast.ExprId, tok: u32) design.Error!LocalAccess`
 //! - `pub fn checkTypedPort(self: *Flatten, access: Ast.StrId, net: Ast.ExprId, tok: u32) design.Error!void`
-//! - `pub fn mfactorScale(`
+//! - `pub fn mfactorScale(...)`
 //! - `pub fn mfactorNoise(self: *Flatten, call: Ast.ExprId) design.Error!Ast.ExprId`
 
 const std = @import("std");
@@ -18,6 +18,7 @@ const Flatten = @import("Flatten.zig");
 const elaborate = @import("elaborate.zig");
 const lookup = @import("lookup.zig");
 const discipline = @import("discipline_rules.zig");
+const fixture = @import("fixture.zig");
 
 /// `localAccess`'s answer: the spelling, and whether only the child's
 /// declaration can judge it.
@@ -164,8 +165,6 @@ fn accessNet(self: *Flatten, net: Ast.ExprId) Ast.ExprId {
     for (self.decls.branches.items) |b| if (b.name == x.strOf(base)) return b.hi;
     return net;
 }
-
-const fixture = @import("fixture.zig");
 
 test checkTypedPort {
     // §6.5.2.1: an untyped port "can be passed to instances of modules, but

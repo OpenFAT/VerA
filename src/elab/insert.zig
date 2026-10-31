@@ -24,6 +24,7 @@ const resolve = @import("resolve.zig");
 const segment = @import("segment.zig");
 const connect_rule = @import("connect_rule.zig");
 const sep = design.sep;
+const fixture = @import("fixture.zig");
 
 /// One mixed port that matched exactly one rule.
 const Hit = struct {
@@ -370,8 +371,6 @@ fn segmentName(
 fn ident(self: *Flatten, name: Ast.StrId, tok: u32) design.Error!Ast.ExprId {
     return self.ctx.file.exprs.add(self.ctx.arena, .{ .tag = .ident, .main_tok = tok, .str = name });
 }
-
-const fixture = @import("fixture.zig");
 
 test "§7.8.4 mixed ports on one signal share one merged bridge, and split gives each its own (§7.8.5 names)" {
     // Two `dd` input ports of `din` on the `ca` signal `a`: each is mixed,

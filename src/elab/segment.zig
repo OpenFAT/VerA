@@ -7,11 +7,14 @@
 //! IEEE 1364-2005 §12.1.2.
 //!
 //! Contents:
+//! - `pub const State = struct`
 //! - `pub const Seg = struct`
 //! - `pub const PortOn = struct`
 //! - `pub const UnitIndex = struct`
 //! - `pub fn up(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: Ast.StrId, depth: u32) design.Error!Seg`
 //! - `pub fn down(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: Ast.StrId, parent: Seg) design.Error!Seg`
+//! -     `pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) error{}!void`
+//! -     `pub fn stmt(w: @This(), s: Ast.StmtId) error{}!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -27,6 +30,7 @@ const insert = @import("insert.zig");
 const connect_rule = @import("connect_rule.zig");
 const discipline = @import("discipline_rules.zig");
 const sep = design.sep;
+const fixture = @import("fixture.zig");
 
 /// `Flatten.seg`: `up`'s memos for the level `insert.plan` is planning
 /// (cleared per level), and `down`'s answers, which outlive the level.
@@ -70,6 +74,42 @@ pub const UnitIndex = struct {
     /// Each net → the child ports on it.
     ports: std.AutoHashMapUnmanaged(Ast.StrId, std.ArrayList(PortOn)) = .empty,
 };
+
+/// One open segment of `up`'s climb: the segment, its children's answers so
+/// far, and where it is in its list of child ports.
+const Frame = struct {
+    module: *const Ast.ModuleDecl,
+    path: []const u8,
+    net: Ast.StrId,
+    depth: u32,
+    behavioral: bool,
+    /// The wide unit's table (`indexOf`), whose ports on `net` are visited;
+    /// null for a narrow unit, whose `kids` are scanned.
+    ports: []const PortOn,
+    kids: []const walk.TreeKid,
+    /// The next entry of `ports`, or of `kids` and that kid's port list.
+    next: u32 = 0,
+    port: u32 = 0,
+    /// The answers of the child segments of known domain.
+    below: std.ArrayList(Seg) = .empty,
+};
+
+/// What `enter` made of a segment: answered at once, or open.
+const Entered = union(enum) { done: Seg, open: Frame };
+
+/// One module per F.2 case, each with the segment `s` under test at path "".
+const cases_src =
+    \\discipline ca; domain continuous; enddiscipline
+    \\discipline dd; domain discrete; enddiscipline
+    \\module m_mixed(s); inout s; la x(s); ld y(s); endmodule
+    \\module m_dig(s); inout s; ld y(s); endmodule
+    \\module m_beh(s); inout s; reg r; initial r = s; la x(s); endmodule
+    \\module m_unk(s); inout s; nd z(s); endmodule
+    \\module m_decl(s); inout s; ca s; ld y(s); endmodule
+    \\module la(p); inout p; ca p; endmodule
+    \\module ld(p); inout p; dd p; endmodule
+    \\module nd(p); inout p; endmodule
+;
 
 /// F.2.1 step 4 and F.2.2 step 4, the depth-first pass, which the two modes
 /// share: a declared segment is its declaration; otherwise the segment is
@@ -165,28 +205,6 @@ pub fn down(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net
 }
 
 // ---- private ----
-
-/// One open segment of `up`'s climb: the segment, its children's answers so
-/// far, and where it is in its list of child ports.
-const Frame = struct {
-    module: *const Ast.ModuleDecl,
-    path: []const u8,
-    net: Ast.StrId,
-    depth: u32,
-    behavioral: bool,
-    /// The wide unit's table (`indexOf`), whose ports on `net` are visited;
-    /// null for a narrow unit, whose `kids` are scanned.
-    ports: []const PortOn,
-    kids: []const walk.TreeKid,
-    /// The next entry of `ports`, or of `kids` and that kid's port list.
-    next: u32 = 0,
-    port: u32 = 0,
-    /// The answers of the child segments of known domain.
-    below: std.ArrayList(Seg) = .empty,
-};
-
-/// What `enter` made of a segment: answered at once, or open.
-const Entered = union(enum) { done: Seg, open: Frame };
 
 /// `up`'s memo for segment `path ++ net`, if this level has answered it.
 fn memo(self: *Flatten, path: []const u8, net: Ast.StrId) ?Seg {
@@ -374,22 +392,6 @@ fn declaredIn(module: *const Ast.ModuleDecl, net: Ast.StrId) ?Ast.StrId {
     for (module.nets) |n| if (n.name == net and n.discipline != .none) return n.discipline;
     return null;
 }
-
-const fixture = @import("fixture.zig");
-
-/// One module per F.2 case, each with the segment `s` under test at path "".
-const cases_src =
-    \\discipline ca; domain continuous; enddiscipline
-    \\discipline dd; domain discrete; enddiscipline
-    \\module m_mixed(s); inout s; la x(s); ld y(s); endmodule
-    \\module m_dig(s); inout s; ld y(s); endmodule
-    \\module m_beh(s); inout s; reg r; initial r = s; la x(s); endmodule
-    \\module m_unk(s); inout s; nd z(s); endmodule
-    \\module m_decl(s); inout s; ca s; ld y(s); endmodule
-    \\module la(p); inout p; ca p; endmodule
-    \\module ld(p); inout p; dd p; endmodule
-    \\module nd(p); inout p; endmodule
-;
 
 /// `up` for `module`'s `s`. Every module of `cases_src` sits at path "",
 /// the key `up` memoizes under, so the memo is cleared first, as

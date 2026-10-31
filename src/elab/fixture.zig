@@ -3,6 +3,19 @@
 //! parser and (for Annex E's prelude) preprocessor the compiler runs, so a
 //! test of any `elab/` file starts from Verilog-AMS text. Test-only:
 //! only `test` blocks reach it. LRM Annex E (the prelude).
+//!
+//! Contents:
+//! - `pub const Fixture = struct`
+//! -   `pub fn deinit(self: *Fixture) void`
+//! -   `pub fn ctx(self: *Fixture) design.Ctx`
+//! - `pub fn parse(out: *Fixture, text: []const u8) !void`
+//! - `pub fn parseWithPrelude(out: *Fixture, text: []const u8) !void`
+//! - `pub fn flatten(f: *Fixture) !Flatten`
+//! - `pub fn hasCode(bag: *const diag.Bag, code: diag.Code) bool`
+//! - `pub fn moduleNamed(file: *const Ast.SourceFile, name: []const u8) ?*const Ast.ModuleDecl`
+//! - `pub fn paramNamed(file: *const Ast.SourceFile, top: *const Ast.ModuleDecl, name: []const u8) ?Ast.ParamDecl`
+//! - `pub fn netNamed(file: *const Ast.SourceFile, top: *const Ast.ModuleDecl, name: []const u8) ?Ast.NetDecl`
+//! - `pub fn id(file: *const Ast.SourceFile, s: []const u8) ?Ast.StrId`
 
 const std = @import("std");
 const design = @import("design.zig");

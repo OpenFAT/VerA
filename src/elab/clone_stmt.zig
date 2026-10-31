@@ -18,6 +18,7 @@ const clone_expr = @import("clone_expr.zig");
 const flat_name = @import("flat_name.zig");
 const access = @import("access.zig");
 const sep = design.sep;
+const fixture = @import("fixture.zig");
 
 /// Copies one statement and everything under it into the pool, renamed into
 /// the unit's flat namespace, scaling flow contributions by $mfactor (§6.3.6).
@@ -173,8 +174,6 @@ fn joinLocal(self: *Flatten, name: Ast.StrId) design.Error!Ast.StrId {
     // top), and two instances' labels collided.
     return flat_name.join(self, self.unit.path, name);
 }
-
-const fixture = @import("fixture.zig");
 
 test "§6.7 a child's block label joins its own instance path, whatever else the child declares" {
     // `kid` declares nothing but a port, bound to the top's `p`. Two

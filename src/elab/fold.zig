@@ -5,7 +5,12 @@
 //! Cites: LRM §3.4, §6.2.2, §6.4.2, §6.6.2.
 //!
 //! Contents:
-//! - `pub const ParamValue = union`
+//! - `pub const Cache = struct`
+//! - `pub const ParamValue = union(enum)`
+//! - `pub const ParamEnv = struct`
+//! -   `pub fn leaf(env: ParamEnv, e: Ast.ExprId) ?constfold.Const`
+//! -   `pub fn signed(_: ParamEnv, _: Ast.ExprId) ?bool`
+//! -   `pub fn width(_: ParamEnv, _: Ast.ExprId) ?u32`
 //! - `pub fn constInt(self: *Flatten, e: Ast.ExprId) ?i64`
 //! - `pub fn constIntFlat(self: *Flatten, e: Ast.ExprId) ?i64`
 //! - `pub fn gateHolds(self: *Flatten, gate: Ast.ExprId) bool`
@@ -20,6 +25,7 @@ const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
 const elaborate = @import("elaborate.zig");
 const flat_name = @import("flat_name.zig");
+const fixture = @import("fixture.zig");
 
 /// `Flatten.folds`: each flat parameter's folded value, one row per
 /// `Flatten.decls.params` row (`syncParamValues`), how many leading rows are
@@ -169,8 +175,6 @@ fn paramValue(self: *Flatten, i: usize, depth: u8) ?constfold.Const {
     rows[i] = if (v) |c| .{ .done = c } else .unknown;
     return v;
 }
-
-const fixture = @import("fixture.zig");
 
 /// Elaborates `text` on a `deep_stack` thread reserved for `depth` levels,
 /// as `compileInArena` runs lowering (and so elaboration) for the parser's

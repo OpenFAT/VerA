@@ -7,31 +7,53 @@
 //! Cites: none (VerA's own API history).
 //!
 //! Contents:
+//! - `pub const flatReference`
+//! - `pub const unnamedGenScopes`
+//! - `pub const spiceCase`
+//! - `pub const genvarLoop`
+//! - `pub const Ctx`
+//! - `pub const Error`
+//! - `pub const sep`
+//! - `pub const ParamsetDefparam`
+//! - `pub const SystemCheck`
+//! - `pub const Inserted`
+//! - `pub const DisciplineResolution`
+//! - `pub const ParamOverride`
+//! - `pub const Design = struct`
+//! - `pub const UnitPath = struct`
+//! - `pub const NameSite = struct`
+//! - `pub const PortAmmeter = struct`
+//! - `pub const PsOutput = struct`
+//! - `pub const PortWidth = struct`
+//! - `pub const SignalDiscipline = struct`
+//! - `pub const PortConcat = struct`
+//! - `pub const NetPart = struct`
 //! - `pub fn elaborate(ctx: Ctx) Error!Design`
-//! - `pub const Design = struct`, `pub const UnitPath = struct`, `pub const NameSite = struct`
-//! - `pub const PortAmmeter = struct`, `pub const PsOutput = struct`, `pub const PortWidth = struct`
-//! - `pub const SignalDiscipline = struct`, `pub const PortConcat = struct`, `pub const NetPart = struct`
-//! - `pub const Ctx`, `pub const Error`, `pub const sep`, `pub const ParamsetDefparam`, `pub const SystemCheck`
-//! - `pub const Inserted`, `pub const DisciplineResolution`, `pub const ParamOverride`
-//! - `pub const flatReference`, `pub const unnamedGenScopes`, `pub const spiceCase`, `pub const genvarLoop`
 
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const design = @import("design.zig");
-
-pub const Ctx = design.Ctx;
-pub const Error = design.Error;
-pub const sep = design.sep;
-pub const ParamsetDefparam = design.ParamsetDefparam;
-pub const SystemCheck = design.SystemCheck;
-pub const Inserted = design.Inserted;
-pub const DisciplineResolution = design.DisciplineResolution;
-pub const ParamOverride = design.ParamOverride;
 pub const flatReference = @import("flat_name.zig").flatReference;
 pub const unnamedGenScopes = @import("flat_name.zig").unnamedGenScopes;
 pub const spiceCase = @import("spice_case.zig").spiceCase;
 pub const genvarLoop = @import("generate.zig").genvarLoop;
+
+pub const Ctx = design.Ctx;
+
+pub const Error = design.Error;
+
+pub const sep = design.sep;
+
+pub const ParamsetDefparam = design.ParamsetDefparam;
+
+pub const SystemCheck = design.SystemCheck;
+
+pub const Inserted = design.Inserted;
+
+pub const DisciplineResolution = design.DisciplineResolution;
+
+pub const ParamOverride = design.ParamOverride;
 
 /// The old `Design`: every flat name as bytes, units as rows.
 pub const Design = struct {
@@ -58,18 +80,25 @@ pub const Design = struct {
 
 /// The old `design.Unit` row, with the declaration by pointer.
 pub const UnitPath = struct { module: []const u8, path: []const u8, decl: *const Ast.ModuleDecl };
+
 /// The old `design.NameSite`.
 pub const NameSite = struct { name: []const u8, main_tok: u32 };
+
 /// The old `design.PortAmmeter`.
 pub const PortAmmeter = struct { internal: []const u8, bound: []const u8 };
+
 /// The old `design.PsOutput`.
 pub const PsOutput = struct { report: []const u8, flat: []const u8 };
+
 /// The old `design.PortWidth`.
 pub const PortWidth = struct { net: []const u8, range: ?Ast.Dim, main_tok: u32 };
+
 /// The old `design.SignalDiscipline`.
 pub const SignalDiscipline = struct { net: []const u8, discipline: []const u8 };
+
 /// The old `design.PortConcat`, its parts a slice of its own.
 pub const PortConcat = struct { name: []const u8, range: ?Ast.Dim, parts: []const NetPart, main_tok: u32 };
+
 /// The old `design.NetPart`.
 pub const NetPart = struct {
     net: []const u8,

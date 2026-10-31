@@ -9,6 +9,7 @@
 //!
 //! Contents:
 //! - `pub fn cloneExpr(self: *Flatten, e: Ast.ExprId) design.Error!Ast.ExprId`
+//! - `pub inline fn cloneArgs(self: *Flatten, src: []const Ast.ExprId) design.Error!u32`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -23,6 +24,7 @@ const primitive = @import("primitive.zig");
 const access = @import("access.zig");
 const fold = @import("fold.zig");
 const hier_param = @import("hier_param.zig");
+const fixture = @import("fixture.zig");
 
 /// What `upward` made of a dotted name's first part.
 const Upward = union(enum) {
@@ -173,13 +175,13 @@ pub fn cloneExpr(self: *Flatten, e: Ast.ExprId) design.Error!Ast.ExprId {
     return out;
 }
 
-// ---- private ----
-
 pub inline fn cloneArgs(self: *Flatten, src: []const Ast.ExprId) design.Error!u32 {
     const out = try self.ctx.arena.alloc(Ast.ExprId, src.len);
     for (src, out) |s, *o| o.* = try cloneExpr(self, s);
     return self.ctx.file.exprs.addExprList(self.ctx.arena, out);
 }
+
+// ---- private ----
 
 /// §6.4.1: "The right-hand side can be composed of numbers, parameters, and
 /// hierarchical out-of-module references to local parameters of a different
@@ -367,8 +369,6 @@ fn rewriteSysCall(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.ExprId {
     const answer = table.get(local) orelse return null;
     return try self.ctx.file.exprs.addInt(self.ctx.arena, tok, @intFromBool(answer));
 }
-
-const fixture = @import("fixture.zig");
 
 test readsName {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

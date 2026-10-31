@@ -6,7 +6,7 @@
 //! §6.8, §7.2.2, §9.15; IEEE 1364-2005 §12.3.3.
 //!
 //! Contents:
-//! - `pub fn inlineInstance(self: *Flatten, inst: *const Ast.Instance, child: *const Ast.ModuleDecl, ps: ?*const Ast.ParamsetDecl, path: []const u8, gate: Ast.ExprId) Error!*const Unit`
+//! - `pub fn inlineInstance(...)`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -27,6 +27,8 @@ const resolve = @import("resolve.zig");
 const Error = design.Error;
 const sep = design.sep;
 const Unit = Flatten.Unit;
+const elaborate = @import("elaborate.zig");
+const fixture = @import("fixture.zig");
 
 /// Inlines ONE instance: binds its ports, applies its §6.3 overrides, renames
 /// its declarations into the flat namespace and clones its body, leaving its
@@ -279,9 +281,6 @@ fn cloneDiscrete(self: *Flatten, unit: *const Unit, inst: *const Ast.Instance, c
     }
     assert(self.decls.gates.items.len == gates_before + child.gates.len);
 }
-
-const elaborate = @import("elaborate.zig");
-const fixture = @import("fixture.zig");
 
 test "§6.6 a module instance with discrete behavior under a generate scheme is E0235" {
     var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };

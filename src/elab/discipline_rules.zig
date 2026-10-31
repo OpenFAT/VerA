@@ -4,6 +4,15 @@
 //! spellings (`accessOf`), nature derivation (`baseNatureOf`/`parentDerivNatureOf`)
 //! and §3.11.1 compatibility (`disciplineConflict`). Elaboration and lowering
 //! both call them.
+//!
+//! Contents:
+//! - `pub fn baseNatureOf(file: *const Ast.SourceFile, name: Ast.StrId) Ast.StrId`
+//! - `pub fn parentDerivNatureOf(file: *const Ast.SourceFile, nat: *const Ast.NatureDecl, attr: []const u8) Ast.StrId`
+//! - `pub fn domainOf(d: *const Ast.DisciplineDecl) ?Ast.DisciplineDecl.Domain`
+//! - `pub fn declOf(file: *const Ast.SourceFile, name: Ast.StrId) ?*const Ast.DisciplineDecl`
+//! - `pub fn isContinuous(file: *const Ast.SourceFile, name: Ast.StrId) bool`
+//! - `pub fn accessOf(file: *const Ast.SourceFile, name: Ast.StrId, half: Ast.PotentialOrFlow) ?Ast.StrId`
+//! - `pub fn disciplineConflict(file: *const Ast.SourceFile, an: Ast.StrId, bn: Ast.StrId) ?[]const u8`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
@@ -27,20 +36,6 @@ pub fn baseNatureOf(file: *const Ast.SourceFile, name: Ast.StrId) Ast.StrId {
     return want;
 }
 
-/// A.1.6 `parent_nature ::= nature_identifier | discipline_identifier .
-/// potential_or_flow`: the nature a derived nature derives from, the one
-/// the discipline binds to that half in the second form (§3.6.2.6). `.none`
-/// for a base nature, or a discipline that binds nothing there.
-fn parentNatureOf(file: *const Ast.SourceFile, nat: *const Ast.NatureDecl) Ast.StrId {
-    if (nat.parent == .none) return .none;
-    const half = nat.parent_access orelse return nat.parent;
-    const d = declOf(file, nat.parent) orelse return .none;
-    return switch (half) {
-        .potential => d.potential,
-        .flow => d.flow,
-    };
-}
-
 /// §3.6.1.2 the nature derived nature `nat`'s parent "uses for its"
 /// `idt_nature` or `ddt_nature` (`attr`): the value the parent gives or
 /// inherits (§3.6.1.1), else the parent itself, since "the default value is
@@ -51,41 +46,6 @@ pub fn parentDerivNatureOf(file: *const Ast.SourceFile, nat: *const Ast.NatureDe
     if (parent == .none) return .none;
     const v = file.natureAttrExpr(parent, attr) orelse return parent;
     return if (file.exprs.tag(v) == .ident) file.exprs.strOf(v) else .none;
-}
-
-/// §3.11.1's five NATURE rules, in the order that makes each one's job visible.
-///
-///   Non-Existent Binding Rule  "A nature is compatible with a non-existent
-///                              discipline binding."
-///   Self Rule (Nature)         "A nature is compatible with itself."
-///   Base Nature Rule           "A derived nature is compatible with its base."
-///   Derived Nature Rule        "Two natures are compatible if they are derived
-///                              from the same base nature."
-///   Units Value Rule           "Two natures are compatible if they have the
-///                              same value for the units attribute."
-///
-/// The Non-Existent Binding Rule is also what makes §3.11.1's Natureless
-/// Discipline Rule fall out with no arm of its own: a discipline that binds no
-/// nature is `.none` on both halves, so it conflicts with nobody.
-fn naturesCompatible(file: *const Ast.SourceFile, a: Ast.StrId, b: Ast.StrId) bool {
-    if (a == .none or b == .none) return true;
-    if (a == b) return true;
-    // The Base and Derived Nature Rules are ONE comparison: `baseNatureOf`
-    // answers a base nature with itself, so "derived from its base" and
-    // "derived from a common base" are the same equality.
-    const base = baseNatureOf(file, a);
-    if (base != .none and base == baseNatureOf(file, b)) return true;
-    const ua = unitsOf(file, a) orelse return false;
-    const ub = unitsOf(file, b) orelse return false;
-    return std.mem.eql(u8, ua, ub);
-}
-
-/// §3.6.1.2 a nature's `units` string, inherited (§3.6.1.1): what
-/// `natureOf(...).units` answers, without the `Lower` that `abstol` needs.
-fn unitsOf(file: *const Ast.SourceFile, name: Ast.StrId) ?[]const u8 {
-    const v = file.natureAttrExpr(name, "units") orelse return null;
-    if (file.exprs.tag(v) != .str_literal) return null;
-    return file.str(file.exprs.strOf(v));
 }
 
 /// §3.6.2.2 the domain a discipline is IN, or null when it is domainless.
@@ -171,6 +131,57 @@ pub fn disciplineConflict(file: *const Ast.SourceFile, an: Ast.StrId, bn: Ast.St
     if (!naturesCompatible(file, a.flow, b.flow))
         return "3.11.1 Flow Incompatibility Rule: the two flow natures are " ++ unrelated;
     return null;
+}
+
+// ---- private ----
+
+/// A.1.6 `parent_nature ::= nature_identifier | discipline_identifier .
+/// potential_or_flow`: the nature a derived nature derives from, the one
+/// the discipline binds to that half in the second form (§3.6.2.6). `.none`
+/// for a base nature, or a discipline that binds nothing there.
+fn parentNatureOf(file: *const Ast.SourceFile, nat: *const Ast.NatureDecl) Ast.StrId {
+    if (nat.parent == .none) return .none;
+    const half = nat.parent_access orelse return nat.parent;
+    const d = declOf(file, nat.parent) orelse return .none;
+    return switch (half) {
+        .potential => d.potential,
+        .flow => d.flow,
+    };
+}
+
+/// §3.11.1's five NATURE rules, in the order that makes each one's job visible.
+///
+///   Non-Existent Binding Rule  "A nature is compatible with a non-existent
+///                              discipline binding."
+///   Self Rule (Nature)         "A nature is compatible with itself."
+///   Base Nature Rule           "A derived nature is compatible with its base."
+///   Derived Nature Rule        "Two natures are compatible if they are derived
+///                              from the same base nature."
+///   Units Value Rule           "Two natures are compatible if they have the
+///                              same value for the units attribute."
+///
+/// The Non-Existent Binding Rule is also what makes §3.11.1's Natureless
+/// Discipline Rule fall out with no arm of its own: a discipline that binds no
+/// nature is `.none` on both halves, so it conflicts with nobody.
+fn naturesCompatible(file: *const Ast.SourceFile, a: Ast.StrId, b: Ast.StrId) bool {
+    if (a == .none or b == .none) return true;
+    if (a == b) return true;
+    // The Base and Derived Nature Rules are ONE comparison: `baseNatureOf`
+    // answers a base nature with itself, so "derived from its base" and
+    // "derived from a common base" are the same equality.
+    const base = baseNatureOf(file, a);
+    if (base != .none and base == baseNatureOf(file, b)) return true;
+    const ua = unitsOf(file, a) orelse return false;
+    const ub = unitsOf(file, b) orelse return false;
+    return std.mem.eql(u8, ua, ub);
+}
+
+/// §3.6.1.2 a nature's `units` string, inherited (§3.6.1.1): what
+/// `natureOf(...).units` answers, without the `Lower` that `abstol` needs.
+fn unitsOf(file: *const Ast.SourceFile, name: Ast.StrId) ?[]const u8 {
+    const v = file.natureAttrExpr(name, "units") orelse return null;
+    if (file.exprs.tag(v) != .str_literal) return null;
+    return file.str(file.exprs.strOf(v));
 }
 
 test "discipline rules: §3.6 lookups and §3.11.1 compatibility on a hand-built table" {

@@ -7,6 +7,7 @@
 //! §12.8.2.
 //!
 //! Contents:
+//! - `pub const Table = struct`
 //! - `pub const Defparam = struct`
 //! - `pub fn collectDefparams(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8) design.Error!void`
 //! - `pub fn mayBindEarly(file: *const Ast.SourceFile) bool`
@@ -27,6 +28,7 @@ const generate = @import("generate.zig");
 const clone_expr = @import("clone_expr.zig");
 const flat_name = @import("flat_name.zig");
 const sep = design.sep;
+const fixture = @import("fixture.zig");
 
 /// `Flatten.defparams`: §6.3.1 every `defparam` seen so far, keyed by the
 /// absolute flat name of the parameter it overrides (the declaring module's
@@ -365,8 +367,6 @@ fn boundEarlier(self: *Flatten, key: []const u8) bool {
     };
     return false;
 }
-
-const fixture = @import("fixture.zig");
 
 test rootedPath {
     var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };

@@ -8,8 +8,9 @@
 //! IEEE 1364-2005 §7.1.5.
 //!
 //! Contents:
+//! - `pub const Tree = struct`
 //! - `pub const TreeKid = struct`
-//! - `pub fn walkInstances(`
+//! - `pub fn walkInstances(...)`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -31,6 +32,7 @@ const resolve = @import("resolve.zig");
 const insert = @import("insert.zig");
 const sep = design.sep;
 const Unit = Flatten.Unit;
+const fixture = @import("fixture.zig");
 
 /// `Flatten.tree`: §7.8.4 "a complete hierarchical examination of each
 /// signal". The first walk, which inserts no connect module
@@ -412,8 +414,6 @@ fn expandInstanceArrays(self: *Flatten, insts: []const Ast.Instance) design.Erro
     }
     return out.items;
 }
-
-const fixture = @import("fixture.zig");
 
 test "§6.2.2 an instance tree of any finite depth elaborates; a cycle is E0905, named" {
     const gpa = std.testing.allocator;

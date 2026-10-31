@@ -49,7 +49,6 @@ const segment = @import("segment.zig");
 const walk = @import("walk.zig");
 const Design = design.Design;
 const Error = design.Error;
-const Flatten = @This();
 
 ctx: design.Ctx,
 /// Set by `err` and by the pre-walk checks; `run` turns it into
@@ -191,6 +190,8 @@ pub const Out = struct {
     selection_params: std.ArrayList(Ast.StrId) = .empty,
     system_checks: std.ArrayList(design.SystemCheck) = .empty,
 };
+
+const Flatten = @This();
 
 /// One name binding in the flattened namespace: what a child's local name is
 /// called after the join. §6.7's path table, in the direction the clone needs.

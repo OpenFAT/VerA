@@ -1,6 +1,12 @@
 //! §9.13 Table 9-10's probabilistic distributions: one row per source
 //! spelling. Read by lowering (`Lower.lowerRandom`) and by elaboration
 //! (`rewriteParamsetDist`), which judge the same argument rules.
+//!
+//! Contents:
+//! - `pub const Dist = struct`
+//! - `pub const dists`
+//! - `pub fn of(name: []const u8) ?*const Dist`
+//! - `pub fn paramName(d: *const Dist, i: usize) []const u8`
 
 const std = @import("std");
 
@@ -66,17 +72,17 @@ comptime {
     }
 }
 
-/// The Table 9-10 row `name` spells, or null.
-pub fn of(name: []const u8) ?*const Dist {
-    return &dists[by_name.get(name) orelse return null];
-}
-
 /// Each row's `name` -> its index in `dists`.
 const by_name = std.StaticStringMap(u8).initComptime(blk: {
     var kvs: [dists.len]struct { []const u8, u8 } = undefined;
     for (dists, &kvs, 0..) |d, *kv, i| kv.* = .{ d.name, i };
     break :blk kvs;
 });
+
+/// The Table 9-10 row `name` spells, or null.
+pub fn of(name: []const u8) ?*const Dist {
+    return &dists[by_name.get(name) orelse return null];
+}
 
 /// The name §9.13.2 gives parameter `i` of `d`, for the diagnostics.
 /// Asserts that `i` is a parameter of `d` (`i < d.nparam`): both callers

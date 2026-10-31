@@ -5,7 +5,7 @@
 //! Cites: LRM §6.3, §6.3.6, §6.4, §6.4.1, §6.4.3, §9.18, §9.19.
 //!
 //! Contents:
-//! - `pub fn paramsetOverrides(`
+//! - `pub fn paramsetOverrides(...)`
 
 const std = @import("std");
 const assert = std.debug.assert;

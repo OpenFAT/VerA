@@ -16,6 +16,7 @@ const elaborate = @import("elaborate.zig");
 const lookup = @import("lookup.zig");
 const connect_rule = @import("connect_rule.zig");
 const discipline = @import("discipline_rules.zig");
+const fixture = @import("fixture.zig");
 
 /// Checks the names every §7.7 `connectrules` statement uses (E0915, E0916,
 /// E0923, E0982, E0907), once per compilation. Not the parser's job: A.1.2
@@ -115,8 +116,6 @@ fn hiddenDiscipline(self: *Flatten, name: Ast.StrId, decl_name: Ast.StrId, tok: 
     if (index >= file.hidden_disciplines) return;
     try self.err(tok, .E0371, "`{s}` in the declaration of `{s}` is annex D.1's: add `include \"disciplines.vams\"", .{ file.str(name), file.str(decl_name) });
 }
-
-const fixture = @import("fixture.zig");
 
 test checkNetDisciplines {
     // A.2.1.3: `kid c1;` is a net of discipline `kid`, a module instance

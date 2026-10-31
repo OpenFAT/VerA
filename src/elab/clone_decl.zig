@@ -5,12 +5,17 @@
 //! Cites: LRM §3.4.4, §3.4.7, §4.7.1, §5.3.2, §6.3, §9.18.
 //!
 //! Contents:
-//! - `pub fn cloneParams(`
+//! - `pub const HiddenName = struct`
+//! - `pub fn cloneParams(...)`
 //! - `pub fn cloneDim(self: *Flatten, d: ?Ast.Dim) design.Error!?Ast.Dim`
 //! - `pub fn cloneDelay(self: *Flatten, d: Ast.Delay3) design.Error!Ast.Delay3`
 //! - `pub fn cloneEvent(self: *Flatten, e: Ast.EventDecl) design.Error!Ast.EventDecl`
 //! - `pub fn cloneVar(self: *Flatten, v: Ast.VarDecl) design.Error!Ast.VarDecl`
 //! - `pub fn cloneFunc(self: *Flatten, fd: Ast.FuncDecl) design.Error!Ast.FuncDecl`
+//! - `pub fn hide(self: *Flatten, list: *std.ArrayList(HiddenName), name: Ast.StrId) void`
+//! - `pub fn unhide(self: *Flatten, list: []const HiddenName) void`
+//! - `pub fn cloneLocalParams(self: *Flatten, ps: []const Ast.ParamDecl) design.Error![]const Ast.ParamDecl`
+//! - `pub fn cloneLocalVars(self: *Flatten, vs: []const Ast.VarDecl) design.Error![]const Ast.VarDecl`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -24,6 +29,7 @@ const flat_name = @import("flat_name.zig");
 const fold = @import("fold.zig");
 const alias = @import("alias.zig");
 const hier_param = @import("hier_param.zig");
+const fixture = @import("fixture.zig");
 
 /// A rename-map entry `hide` removed, restored by `unhide`.
 pub const HiddenName = struct { name: Ast.StrId, was: ?Ast.StrId };
@@ -130,8 +136,6 @@ pub fn cloneFunc(self: *Flatten, fd: Ast.FuncDecl) design.Error!Ast.FuncDecl {
     return out;
 }
 
-// ---- private ----
-
 /// Removes `name` from the unit's rename map for a local scope and records
 /// the old binding in `list`, which the caller sized for every local it hides.
 /// The caller restores the whole list with `unhide`, in reverse order.
@@ -181,6 +185,8 @@ pub fn cloneLocalVars(self: *Flatten, vs: []const Ast.VarDecl) design.Error![]co
     }
     return out;
 }
+
+// ---- private ----
 
 /// §3.4.4: "An array assigned to an instance of a module to override the
 /// default value of an array parameter shall be of the exact size of the
@@ -242,8 +248,6 @@ fn cloneRanges(self: *Flatten, rs: []const Ast.ValueRange) design.Error![]const 
     }
     return out;
 }
-
-const fixture = @import("fixture.zig");
 
 test "§4.7.1 a function's formal hides a module name for the function body only" {
     var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };

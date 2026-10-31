@@ -8,7 +8,7 @@
 //! - `pub fn findModule(self: *Flatten, name: Ast.StrId) ?*const Ast.ModuleDecl`
 //! - `pub fn unknownModule(self: *Flatten, inst: *const Ast.Instance) design.Error!void`
 //! - `pub fn netRefName(self: *Flatten, e: Ast.ExprId) ?Ast.StrId`
-//! - `pub fn paramsetChain(`
+//! - `pub fn paramsetChain(...)`
 //! - `pub fn chainEnd(self: *Flatten, ps: *const Ast.ParamsetDecl) design.Error!?*const Ast.ModuleDecl`
 //! - `pub fn isPrimitive(self: *Flatten, m: *const Ast.ModuleDecl) bool`
 //! - `pub fn warnRedefinedModules(self: *Flatten) design.Error!void`
@@ -20,6 +20,7 @@ const Lexer = @import("frontend").Lexer;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
 const elaborate = @import("elaborate.zig");
+const fixture = @import("fixture.zig");
 
 /// Returns the module `name` denotes, or null. Lookup order: user modules,
 /// the LAST of several same-named ones (IEEE 1364-2005 §13.2.1.1, see
@@ -182,8 +183,6 @@ pub fn warnSpiceShadows(self: *Flatten) design.Error!void {
 fn spiceShadowWarning(self: *Flatten, name: Ast.StrId, tok: u32, kind: []const u8) design.Error!void {
     try self.ctx.bag.add(.lower, .W0951, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, tok), "{s} `{s}` is used instead of the SPICE model or subcircuit when this name is instantiated", .{ kind, self.ctx.file.str(name) });
 }
-
-const fixture = @import("fixture.zig");
 
 test findModule {
     var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };

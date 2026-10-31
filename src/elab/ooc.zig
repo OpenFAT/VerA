@@ -5,6 +5,7 @@
 //! Cites: LRM §3.6.2, §3.6.3.2, §3.10, §3.11.1, Annex F.2.1.
 //!
 //! Contents:
+//! - `pub const State = struct`
 //! - `pub const OocDecl = struct`
 //! - `pub const OocInit = struct`
 //! - `pub fn isOoc(name: []const u8) bool`
@@ -27,6 +28,7 @@ const defparam = @import("defparam.zig");
 const resolve = @import("resolve.zig");
 const discipline = @import("discipline_rules.zig");
 const sep = design.sep;
+const fixture = @import("fixture.zig");
 
 /// `Flatten.oocs`: Annex F.2.1 step 3 / §3.10 precedence order 1.
 pub const State = struct {
@@ -185,8 +187,6 @@ fn checkOocOverride(self: *Flatten, path: []const u8, local: Ast.StrId, declared
         path, file.str(local), file.str(declared), file.str(o.disc), why,
     });
 }
-
-const fixture = @import("fixture.zig");
 
 test isOoc {
     try std.testing.expect(isOoc("m.l.p"));

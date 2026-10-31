@@ -7,11 +7,14 @@
 //!
 //! Contents:
 //! - `pub const Unbridged = struct`
+//! - `pub const Rule = struct`
 //! - `pub fn ruleOf(self: *Flatten, ins: *const Ast.ConnectInsertion, report: bool) design.Error!?Rule`
 //! - `pub fn checkDirections(self: *Flatten, r: Rule) design.Error!void`
 //! - `pub fn paramsDeclared(self: *Flatten, ins: *const Ast.ConnectInsertion, m: *const Ast.ModuleDecl, report: bool) design.Error!bool`
 //! - `pub fn connIndex(inst: *const Ast.Instance, p: Ast.Port, pi: usize) ?usize`
 //! - `pub fn checkUnbridged(self: *Flatten) design.Error!void`
+//! - `pub fn matchRules(file: *const Ast.SourceFile, rules: []const Rule, dir: Ast.Direction, upper: Ast.StrId, lower: Ast.StrId) struct { ?usize, usize }`
+//! - `pub fn domain(file: *const Ast.SourceFile, d: Ast.StrId) ?Ast.DisciplineDecl.Domain`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
@@ -23,6 +26,7 @@ const override = @import("override.zig");
 const segment = @import("segment.zig");
 const hier_param = @import("hier_param.zig");
 const discipline = @import("discipline_rules.zig");
+const fixture = @import("fixture.zig");
 
 /// A child port `plan` bridged with nothing, as `checkUnbridged` reads it.
 pub const Unbridged = struct {
@@ -195,8 +199,6 @@ pub fn checkUnbridged(self: *Flatten) design.Error!void {
     }
 }
 
-// ---- private ----
-
 /// The first of `rules` that `matches` the port, and how many do: §7.8.4's
 /// "one (and only one)" is a count of one.
 pub fn matchRules(file: *const Ast.SourceFile, rules: []const Rule, dir: Ast.Direction, upper: Ast.StrId, lower: Ast.StrId) struct { ?usize, usize } {
@@ -208,6 +210,12 @@ pub fn matchRules(file: *const Ast.SourceFile, rules: []const Rule, dir: Ast.Dir
     };
     return .{ found, count };
 }
+
+pub fn domain(file: *const Ast.SourceFile, d: Ast.StrId) ?Ast.DisciplineDecl.Domain {
+    return discipline.domainOf(discipline.declOf(file, d) orelse return null);
+}
+
+// ---- private ----
 
 /// Does connect rule `r` bridge a port of direction `dir` whose upper and
 /// lower connections have these disciplines? §7.6's three examples, which
@@ -250,10 +258,6 @@ fn matches(file: *const Ast.SourceFile, r: Rule, dir: Ast.Direction, upper: Ast.
     return compat(file, in_side.discipline, source) and compat(file, out_side.discipline, sink);
 }
 
-pub fn domain(file: *const Ast.SourceFile, d: Ast.StrId) ?Ast.DisciplineDecl.Domain {
-    return discipline.domainOf(discipline.declOf(file, d) orelse return null);
-}
-
 /// E0927 for a mixed port no connect statement matches.
 fn unmatched(self: *Flatten, tok: u32, port: Ast.StrId, inst: Ast.StrId, lower: Ast.StrId, net: Ast.StrId, upper: Ast.StrId) design.Error!void {
     const file = self.ctx.file;
@@ -271,8 +275,6 @@ fn discName(file: *const Ast.SourceFile, d: Ast.StrId) []const u8 {
 fn q(d: Ast.StrId) []const u8 {
     return if (d == .none) "" else "`";
 }
-
-const fixture = @import("fixture.zig");
 
 test connIndex {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

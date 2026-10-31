@@ -6,8 +6,18 @@
 //! A.1.3; IEEE 1364-2005 §5.2.1, §12.3.6.
 //!
 //! Contents:
+//! - `pub const PartBinding = struct`
+//! - `pub const WidthBinding = struct`
+//! - `pub const Bindings = struct`
 //! - `pub fn connectionFor(inst: *const Ast.Instance, port: Ast.Port, i: usize) ?Ast.PortConn`
 //! - `pub fn checkPortDirections(self: *Flatten) design.Error!void`
+//! - `pub fn bindPorts(...)`
+//! - `pub fn checkVariableActuals(self: *Flatten, module: *const Ast.ModuleDecl, declared: *const std.AutoHashMapUnmanaged(Ast.StrId, void), inst: *const Ast.Instance) design.Error!void`
+//! - `pub fn checkConnectionShape(self: *Flatten, inst: *const Ast.Instance, child: *const Ast.ModuleDecl) design.Error!void`
+//! - `pub fn portFlowRead(self: *Flatten, child: *const Ast.ModuleDecl, parent: ?*const Ast.ModuleDecl, inst: Ast.StrId, port: Ast.StrId) design.Error!bool`
+//! -     `pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) design.Error!void`
+//! -     `pub fn stmt(w: @This(), s: Ast.StmtId) design.Error!void`
+//! - `pub fn netPart(self: *Flatten, parent: *const Unit, e: Ast.ExprId, out: *std.ArrayList(design.NetPart)) design.Error!bool`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -25,29 +35,7 @@ const resolve = @import("resolve.zig");
 const discipline = @import("discipline_rules.zig");
 const sep = design.sep;
 const Unit = Flatten.Unit;
-
-/// Returns the connection that binds `port`, the i'th declared port, or
-/// null when the list does not mention it (§6.2.2). The first entry decides
-/// between named and ordered binding; a named list takes the first match.
-pub fn connectionFor(inst: *const Ast.Instance, port: Ast.Port, i: usize) ?Ast.PortConn {
-    // One binding rule for the walk and for `insert.plan`, which needs the index.
-    return inst.ports[connect_rule.connIndex(inst, port, i) orelse return null];
-}
-
-/// §6.5.2.2 "Each port shall be declared as input, output, or inout
-/// (bidirectional), in addition to any other declaration" (E0376), in every
-/// user module, instantiated or not, once per compilation. A null port
-/// (A.1.3, `nullPortName`'s tab-led name) names no net, so it has nothing
-/// to declare.
-pub fn checkPortDirections(self: *Flatten) design.Error!void {
-    const file = self.ctx.file;
-    for (file.userModules()) |*m| for (m.ports) |p| {
-        if (p.direction != .unspecified) continue;
-        const name = file.str(p.name);
-        if (name.len > 0 and name[0] == '\t') continue;
-        try self.err(p.main_tok, .E0376, "port `{s}` of module `{s}` is not declared `input`, `output` or `inout`", .{ name, file.str(m.name) });
-    };
-}
+const fixture = @import("fixture.zig");
 
 /// One child port bound to parts of parent nets (§6.5.7.1): its parts are a
 /// run of `Flatten.out.net_parts`, its `PortConcat` row published once the
@@ -60,45 +48,6 @@ pub const WidthBinding = struct { port: Ast.Port, net: Ast.StrId, tok: u32 };
 /// `bindPorts`' answer: the rows whose ranges must be cloned in the child's
 /// names, which do not exist yet when the ports are bound.
 pub const Bindings = struct { parts: []const PartBinding, widths: []const WidthBinding };
-
-/// §6.2.2 binds every port of `child` for instance `inst` at `path`, resolved
-/// in the PARENT's namespace (`parent.rename`: an actual naming a net of a
-/// mid-level module was flattened to `u.n` already). Writes `unit`'s
-/// `connected`, `rename` and `port_disc` rows, the published path rows
-/// (`Design.names`, `port_disciplines`, `port_ammeters`,
-/// `unconnected_inputs`), the nets a port needs (`resolve.addNet`) and
-/// §7.4's discipline answers (`resolve.resolveDiscipline`). Reports E0906 for
-/// an actual that is not a net reference. Asserts that `path` is a child path
-/// (`parent ++ leaf ++ sep`) and that `unit` binds nothing yet.
-pub fn bindPorts(
-    self: *Flatten,
-    inst: *const Ast.Instance,
-    child: *const Ast.ModuleDecl,
-    parent: *const Unit,
-    unit: *Unit,
-    path: []const u8,
-) design.Error!Bindings {
-    assert(path.len != 0);
-    assert(path[path.len - 1] == sep);
-    assert(unit.rename.count() == 0);
-    var b: Binder = .{
-        .self = self,
-        .inst = inst,
-        .child = child,
-        .parent = parent,
-        .unit = unit,
-        .path = path,
-        // At most one of each per child port.
-        .parts = try .initCapacity(self.ctx.arena, child.ports.len),
-        .widths = try .initCapacity(self.ctx.arena, child.ports.len),
-    };
-    for (child.ports, 0..) |p, i| try b.bind(p, connectionFor(inst, p, i));
-    assert(b.parts.items.len + b.widths.items.len <= child.ports.len);
-    assert(unit.connected.count() <= child.ports.len);
-    return .{ .parts = b.parts.items, .widths = b.widths.items };
-}
-
-// ---- private ----
 
 /// One instance's port binding (`bindPorts`): what every port's case reads,
 /// and the two row lists it fills.
@@ -262,6 +211,66 @@ const Binder = struct {
         if (p.direction == .input) try self.out.unconnected_inputs.append(self.ctx.arena, .{ .name = internal, .main_tok = p.main_tok });
     }
 };
+
+/// Returns the connection that binds `port`, the i'th declared port, or
+/// null when the list does not mention it (§6.2.2). The first entry decides
+/// between named and ordered binding; a named list takes the first match.
+pub fn connectionFor(inst: *const Ast.Instance, port: Ast.Port, i: usize) ?Ast.PortConn {
+    // One binding rule for the walk and for `insert.plan`, which needs the index.
+    return inst.ports[connect_rule.connIndex(inst, port, i) orelse return null];
+}
+
+/// §6.5.2.2 "Each port shall be declared as input, output, or inout
+/// (bidirectional), in addition to any other declaration" (E0376), in every
+/// user module, instantiated or not, once per compilation. A null port
+/// (A.1.3, `nullPortName`'s tab-led name) names no net, so it has nothing
+/// to declare.
+pub fn checkPortDirections(self: *Flatten) design.Error!void {
+    const file = self.ctx.file;
+    for (file.userModules()) |*m| for (m.ports) |p| {
+        if (p.direction != .unspecified) continue;
+        const name = file.str(p.name);
+        if (name.len > 0 and name[0] == '\t') continue;
+        try self.err(p.main_tok, .E0376, "port `{s}` of module `{s}` is not declared `input`, `output` or `inout`", .{ name, file.str(m.name) });
+    };
+}
+
+/// §6.2.2 binds every port of `child` for instance `inst` at `path`, resolved
+/// in the PARENT's namespace (`parent.rename`: an actual naming a net of a
+/// mid-level module was flattened to `u.n` already). Writes `unit`'s
+/// `connected`, `rename` and `port_disc` rows, the published path rows
+/// (`Design.names`, `port_disciplines`, `port_ammeters`,
+/// `unconnected_inputs`), the nets a port needs (`resolve.addNet`) and
+/// §7.4's discipline answers (`resolve.resolveDiscipline`). Reports E0906 for
+/// an actual that is not a net reference. Asserts that `path` is a child path
+/// (`parent ++ leaf ++ sep`) and that `unit` binds nothing yet.
+pub fn bindPorts(
+    self: *Flatten,
+    inst: *const Ast.Instance,
+    child: *const Ast.ModuleDecl,
+    parent: *const Unit,
+    unit: *Unit,
+    path: []const u8,
+) design.Error!Bindings {
+    assert(path.len != 0);
+    assert(path[path.len - 1] == sep);
+    assert(unit.rename.count() == 0);
+    var b: Binder = .{
+        .self = self,
+        .inst = inst,
+        .child = child,
+        .parent = parent,
+        .unit = unit,
+        .path = path,
+        // At most one of each per child port.
+        .parts = try .initCapacity(self.ctx.arena, child.ports.len),
+        .widths = try .initCapacity(self.ctx.arena, child.ports.len),
+    };
+    for (child.ports, 0..) |p, i| try b.bind(p, connectionFor(inst, p, i));
+    assert(b.parts.items.len + b.widths.items.len <= child.ports.len);
+    assert(unit.connected.count() <= child.ports.len);
+    return .{ .parts = b.parts.items, .widths = b.widths.items };
+}
 
 /// §6.5 "Ports provide a means of interconnecting instances of modules. If a
 /// module A instantiates module B, the ports of module B are associated with
@@ -428,8 +437,6 @@ pub fn netPart(self: *Flatten, parent: *const Unit, e: Ast.ExprId, out: *std.Arr
     });
     return true;
 }
-
-const fixture = @import("fixture.zig");
 
 test connectionFor {
     const e1: Ast.ExprId = @fromBackingInt(@as(u32, 1));

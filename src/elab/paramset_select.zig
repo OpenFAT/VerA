@@ -5,6 +5,9 @@
 //! Cites: LRM §3.4.2, §3.4.5, §6.4, §6.4.2, §6.9.3, §9.18.
 //!
 //! Contents:
+//! -   `pub fn leaf(env: ParamsetEnv, e: Ast.ExprId) ?constfold.Const`
+//! -   `pub fn signed(_: ParamsetEnv, _: Ast.ExprId) ?bool`
+//! -   `pub fn width(_: ParamsetEnv, _: Ast.ExprId) ?u32`
 //! - `pub fn selectParamset(self: *Flatten, inst: *const Ast.Instance, path: []const u8) design.Error!?*const Ast.ParamsetDecl`
 //! - `pub fn matchingParamsets(self: *Flatten, inst: *const Ast.Instance, path: []const u8, live: *std.ArrayList(*const Ast.ParamsetDecl)) design.Error!usize`
 //! - `pub fn checkRanges(self: *Flatten) design.Error!void`
@@ -22,6 +25,7 @@ const fold = @import("fold.zig");
 const override = @import("override.zig");
 const hier_param = @import("hier_param.zig");
 const sep = design.sep;
+const fixture = @import("fixture.zig");
 
 /// The three §6.4.2 tie-breaking rules, in the clause's order.
 const TieRule = enum { un_overridden, ranged_locals, unconnected_ports };
@@ -347,8 +351,6 @@ fn strInRanges(self: *Flatten, s: []const u8, ranges: []const Ast.ValueRange) bo
     }
     return !has_from or in_from;
 }
-
-const fixture = @import("fixture.zig");
 
 test "§6.4.2 ties: the greatest number of ranged localparams, then the fewest unconnected ports; still tied is E0914" {
     // Rule 1 ties both pairs below (each leaves its one parameter `l` at its

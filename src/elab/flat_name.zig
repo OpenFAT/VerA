@@ -7,6 +7,9 @@
 //!
 //! Contents:
 //! - `pub const PathKey = struct`
+//! -   `pub const Context = struct`
+//! -     `pub fn hash(_: Context, k: PathKey) u64`
+//! -     `pub fn eql(_: Context, k: PathKey, stored: []const u8) bool`
 //! - `pub fn flatReference(file: *const Ast.SourceFile, arena: std.mem.Allocator, module: ?*const Ast.ModuleDecl, e: Ast.ExprId) std.mem.Allocator.Error![]const u8`
 //! - `pub fn unnamedGenScopes(file: *const Ast.SourceFile, arena: std.mem.Allocator, m: *const Ast.ModuleDecl, path: []const u8, out: *std.ArrayList([]const u8)) std.mem.Allocator.Error!void`
 //! - `pub fn namesUnnamedGen(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: Ast.StrId) bool`
@@ -179,6 +182,13 @@ fn unnamedGenIn(file: *const Ast.SourceFile, id: Ast.StmtId, name: Ast.StrId) bo
     return false;
 }
 
+/// A `.hier_ident` row over `parts`, interned into `file`.
+fn hierIdent(file: *Ast.SourceFile, a: std.mem.Allocator, parts: []const []const u8) !Ast.ExprId {
+    const ids = try a.alloc(Ast.StrId, parts.len);
+    for (parts, ids) |p, *i| i.* = try file.intern(a, p);
+    return file.exprs.add(a, .{ .tag = .hier_ident, .extra = try file.exprs.addStrList(a, ids) });
+}
+
 test PathKey {
     // Oracle: the hash a stored `path ++ local` key got, `StringContext`'s.
     // Every split of strings around Wyhash's 48-byte block boundary must
@@ -201,13 +211,6 @@ test PathKey {
     try std.testing.expect(!PathKey.Context.eql(.{}, key, "u."));
     try std.testing.expect(!PathKey.Context.eql(.{}, key, "v.g"));
     try std.testing.expect(!PathKey.Context.eql(.{}, key, "u.h"));
-}
-
-/// A `.hier_ident` row over `parts`, interned into `file`.
-fn hierIdent(file: *Ast.SourceFile, a: std.mem.Allocator, parts: []const []const u8) !Ast.ExprId {
-    const ids = try a.alloc(Ast.StrId, parts.len);
-    for (parts, ids) |p, *i| i.* = try file.intern(a, p);
-    return file.exprs.add(a, .{ .tag = .hier_ident, .extra = try file.exprs.addStrList(a, ids) });
 }
 
 test flatReference {
