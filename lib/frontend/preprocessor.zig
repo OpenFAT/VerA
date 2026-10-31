@@ -289,9 +289,10 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
 /// Reads the whole file at `path` (relative to `dir`) into `gpa` memory.
 /// `error.StreamTooLong` for a file past `max_text_bytes`, known from its
 /// size before anything is read; a stream with no size (a pipe, /dev/zero)
-/// is read until it passes the bound.
+/// is read until it passes the bound. An empty `path` (user-typed: `vera ""`,
+/// `--spice=`) is `error.FileNotFound`, the error the OS gave before.
 pub fn readText(io: std.Io, dir: std.Io.Dir, path: []const u8, gpa: Allocator) ReadError![]u8 {
-    assert(path.len > 0);
+    if (path.len == 0) return error.FileNotFound;
     var file = try dir.openFile(io, path, .{});
     defer file.close(io);
     const st = try file.stat(io);
@@ -303,6 +304,11 @@ pub fn readText(io: std.Io, dir: std.Io.Dir, path: []const u8, gpa: Allocator) R
     };
     assert(text.len <= max_text_bytes);
     return text;
+}
+
+test "readText: an empty path is FileNotFound, not an assert" {
+    // Oracle: development's readText passed "" to openFile, which the OS refuses as not found.
+    try std.testing.expectError(error.FileNotFound, readText(std.testing.io, .cwd(), "", std.testing.allocator));
 }
 
 test {
