@@ -9,6 +9,7 @@
 //! - members: `Names.opInstOf`, `Names.opArgs`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const Analysis = @import("prove").Analysis;
 const Lowered = @import("ir").Lowered;
@@ -53,6 +54,7 @@ pub const Names = struct {
     /// The operator `call` unit `unit` was enumerated from (`naming` records
     /// it), or null for a contribution unit. Asserts `unit` indexes `units`.
     pub fn opInstOf(self: *const Names, unit: u32) ?Mir.Inst {
+        assert(unit < self.units.len);
         const inst = self.units[unit].inst;
         return if (inst == .none) null else inst;
     }
@@ -61,6 +63,7 @@ pub const Names = struct {
     /// contribution unit). The slice borrows `mir.extra` and is invalidated
     /// by any later append to it (`Mir.instData`).
     pub fn opArgs(self: *const Names, mir: *const Mir, i: usize) []const Mir.Value {
+        assert(i < self.units.len);
         const inst = self.opInstOf(@intCast(i)) orelse return &.{};
         return mir.instData(inst).call.args;
     }
@@ -73,6 +76,7 @@ const none_u32 = std.math.maxInt(u32);
 /// canonical-order contract `unitMode` depends on is asserted here, where all
 /// three tables are in hand. Fails only on allocation.
 pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
+    assert(in.lowered.nodes.len <= std.math.maxInt(u32));
     const a = in.arena;
     const mir = in.mir;
     const an = in.an;
@@ -169,6 +173,9 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
         b.* = if (g) self.n_given else none_u32;
         if (g) self.n_given += 1;
     }
+    assert(self.u_names.len == self.n_u);
+    assert(self.given_bit.len == lowered.params.items.len);
+    assert(self.n_given <= lowered.params.items.len);
     return self;
 }
 
@@ -178,6 +185,7 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
 /// escapes `#`, so the emitted U member stays a legal, injective name. O(k ·
 /// unknowns); `k` is the number of existing spellings it collides with.
 fn freshUName(a: std.mem.Allocator, lowered: *const Lowered, nm: []const u8, extra: []const []const u8) Error![]const u8 {
+    assert(nm.len != 0);
     var name = nm;
     var k: u32 = 1;
     while (uNameTaken(lowered, name, extra)) : (k += 1) {
@@ -188,6 +196,8 @@ fn freshUName(a: std.mem.Allocator, lowered: *const Lowered, nm: []const u8, ext
 
 /// Does any `nodes` row or already-appended unknown spell `nm`?
 fn uNameTaken(lowered: *const Lowered, nm: []const u8, extra: []const []const u8) bool {
+    assert(nm.len != 0);
+    assert(extra.len <= std.math.maxInt(u32));
     for (lowered.nodes.items(.name)) |n| {
         if (std.mem.eql(u8, n, nm)) return true;
     }

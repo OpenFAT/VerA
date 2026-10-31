@@ -13,6 +13,7 @@
 //! - members: `Noise.Refusal`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const Lower = @import("ir").Lowered;
 const diag = @import("diag");
@@ -97,6 +98,7 @@ const names_none = std.math.maxInt(u32);
 /// `ac_rows`: it is a stimulus, not a generator. Refusals are recorded, not
 /// reported.
 pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
+    assert(branch_u.len <= self.lowered.contributions.items.len);
     var out: Noise = .{};
     var rows: std.ArrayList(NoiseRow) = .empty;
     var ac: std.ArrayList(NoiseRow) = .empty;
@@ -126,6 +128,7 @@ pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
         // is decided per instance at run time, so the generator stays on
         // the nodes, where a host folds it into KCL either way.
         const series = c.kind == .direct and c.access == .potential and plan_topo.switchFlowOf(self, ci) == null;
+        if (series) assert(ci < branch_u.len);
         const row = if (series) branch_u[ci] else if (c.hi != Lower.ground) c.hi else c.lo;
         const col = if (series) row else if (c.lo != Lower.ground) c.lo else row;
         for (c.noise_srcs) |s| {
@@ -197,6 +200,7 @@ pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
 
 /// Returns `v` as a compile-time f64, or null when only the core can answer.
 pub fn psdConst(mir: *const Mir, v: Mir.Value) ?f64 {
+    assert(mir.defs.len <= std.math.maxInt(u32));
     return switch (mir.valueDef(v)) {
         .float_const => |x| x,
         .int_const => |x| @floatFromInt(x),

@@ -88,6 +88,7 @@ const Mark = struct {
     blk_work: std.ArrayList(u32) = .empty,
 
     fn mark(m: *Mark, v0: Mir.Value) Error!void {
+        assert(m.need.len == m.in.an.nv);
         const v = m.in.an.rv(v0);
         if (m.need[@backingInt(v)]) return;
         m.need[@backingInt(v)] = true;
@@ -98,6 +99,7 @@ const Mark = struct {
     /// A worklist, not a recursion: a chain of control dependences is as
     /// deep as the source nests its `if`s, which has no bound.
     fn block(m: *Mark, b: u32) Error!void {
+        assert(m.blk.len == m.in.an.nb);
         try m.pushBlock(b);
         while (m.blk_work.pop()) |bb| for (m.cds.cd[m.cds.off[bb]..m.cds.off[bb + 1]]) |c| {
             try m.mark(plan_setup.branchCond(m.in, c.a).?);
@@ -106,12 +108,14 @@ const Mark = struct {
     }
 
     fn pushBlock(m: *Mark, b: u32) Error!void {
+        assert(m.blk.len == m.in.an.nb);
         if (b >= m.blk.len or m.blk[b]) return;
         m.blk[b] = true;
         try m.blk_work.append(m.in.arena, b);
     }
 
     fn visit(m: *Mark, v: Mir.Value) Error!void {
+        assert(m.need[@backingInt(v)]); // Only a marked value is queued.
         const def = m.in.mir.valueDef(v);
         if (def != .inst_result) return;
         const inst = def.inst_result;
@@ -160,6 +164,7 @@ const Mark = struct {
 /// declaration names: adding a contribution at the end of a module appends
 /// fields and renumbers none. Fails only on allocation.
 pub fn plan(in: Input, jobs: []const Job) Error!Core {
+    assert(in.an.vty.len == in.an.nv);
     const a = in.arena;
     var self: Core = .{};
     self.lo_idx = try a.alloc(u32, in.an.nv);
@@ -249,6 +254,8 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
 /// phi edge is control-dependent on. A store nothing needed reads is
 /// skippable.
 fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
+    assert(out.held_only.len == 0);
+    assert(out.lo_vals.len != 0);
     const a = in.arena;
     const n: u32 = @intCast(in.mir.insts.len);
     var any = false;

@@ -11,6 +11,7 @@
 //! - members: `Job.Kind`, `always.isDynamic`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const proof = @import("prove").proof;
 const OpKind = @import("ir").op.OpKind;
@@ -136,6 +137,8 @@ const always = struct {
 /// renders only off the core, so a test can pass a stub. Fails on
 /// allocation or with `dyn`'s error.
 pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
+    if (!@hasDecl(@TypeOf(dyn), "isDynamic")) @compileError(@typeName(@TypeOf(dyn)) ++ " has no pub fn isDynamic");
+    assert(from.names.units.len == from.names.unit_names.len);
     var out: Jobs = .{};
     var jobs: std.ArrayList(Job) = .empty;
     for (self.lowered.contributions.items, 0..) |c, i| {
@@ -405,6 +408,8 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
 
 /// Queues `v`, a value of contribution `row`, as a `.vpi` job unless it is 0.
 fn queueVpi(self: Input, jobs: *std.ArrayList(Job), from: From, v: Mir.Value, row: usize) !void {
+    assert(from.vpi);
+    assert(row < self.lowered.contributions.items.len);
     const t = self.an.rv(v);
     if (t == .f_zero) return;
     try jobs.append(self.arena, .{
@@ -418,6 +423,7 @@ fn queueVpi(self: Input, jobs: *std.ArrayList(Job), from: From, v: Mir.Value, ro
 /// instructions count: the answer only has to be a superset. One sweep of
 /// every instruction, O(instructions).
 fn readSet(self: Input, queued: []const Job) ![]bool {
+    assert(queued.len <= std.math.maxInt(u32));
     const read = try self.arena.alloc(bool, self.an.nv);
     @memset(read, false);
     for (queued) |j| read[@backingInt(self.an.rv(j.target))] = true;
@@ -453,6 +459,7 @@ fn readSet(self: Input, queued: []const Job) ![]bool {
 /// Returns the prover's float mode for unit `i`, or `.strict` for a unit
 /// the prover did not rate.
 fn unitMode(unit_modes: []const proof.FloatMode, i: usize) proof.FloatMode {
+    assert(unit_modes.len <= std.math.maxInt(u32));
     // proof.zig rates the CONTRIBUTION units only (proof.unitCount ==
     // lower.contributions.len); an analog-operator unit is not covered, so
     // it takes the safe side.
