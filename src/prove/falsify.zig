@@ -87,7 +87,7 @@ fn build(a: Allocator, r: std.Random, prog: *Program) !void {
     var cur: Mir.Block = .entry;
     prog.out = try body(a, r, prog, &cur, 0);
     try prog.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .resist_val = prog.out });
-    assert(m.defs.len + Mir.Value.first_dynamic <= values_max);
+    assert(m.valueCount() <= values_max);
 }
 
 /// Emits a run of rows into `cur.*`, maybe a diamond, and returns the last
@@ -96,7 +96,7 @@ fn body(a: Allocator, r: std.Random, prog: *Program, cur: *Mir.Block, depth: u32
     const m = &prog.mir;
     var last = pick(r, prog);
     for (0..1 + r.uintLessThan(u32, 3)) |_| {
-        if (prog.pool.items.len + 8 > rows_max + 10 or m.defs.len + Mir.Value.first_dynamic + 16 > values_max) break;
+        if (prog.pool.items.len + 8 > rows_max + 10 or m.valueCount() + 16 > values_max) break;
         if (depth < 2 and r.uintLessThan(u32, 3) == 0) {
             // `if (x REL c) v = <arm> else v = <arm>`, joined by a phi.
             const x = pick(r, prog);
@@ -308,7 +308,7 @@ fn checkProgram(gpa: Allocator, r: std.Random, round: usize) !void {
     var runs: [values_max]u32 = @splat(0);
     var inside: [values_max]u32 = @splat(0);
     var domain_row: [values_max]bool = @splat(false);
-    for (0..prog.mir.insts.len) |k| {
+    for (0..prog.mir.instCount()) |k| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(k));
         domain_row[@backingInt(prog.mir.instResult(inst))] = Mir.opcode.get(prog.mir.instOp(inst)).domain != .all;
     }
@@ -320,7 +320,7 @@ fn checkProgram(gpa: Allocator, r: std.Random, round: usize) !void {
         var run: Run = .{};
         evaluate(&prog, params, probes, &run);
         if (overflows(&prog, params, probes, &run)) continue;
-        for (0..prog.mir.insts.len) |k| {
+        for (0..prog.mir.instCount()) |k| {
             const inst: Mir.Inst = @fromBackingInt(@intCast(k));
             const res = @backingInt(prog.mir.instResult(inst));
             if (res == 0 or !run.ran[res]) continue;
@@ -394,7 +394,7 @@ fn dump(prog: *const Program, runs: []const u32, inside: []const u32, bag: *cons
 /// the prover must see it coming (`Interval.excludesZero`).
 fn overflows(prog: *const Program, params: [3]f64, probes: [2]f64, run: *const Run) bool {
     const m = &prog.mir;
-    for (0..m.insts.len) |k| {
+    for (0..m.instCount()) |k| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(k));
         const res = @backingInt(m.instResult(inst));
         if (res == 0 or !run.ran[res]) continue;

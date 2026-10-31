@@ -115,7 +115,7 @@ pub fn handleInclude(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!voi
     if (std.mem.eql(u8, base, "disciplines.vams") or std.mem.eql(u8, base, "discipline.h")) pp.disciplines_included = true;
     // Registered under the opened path, so `__FILE__` and every diagnostic
     // inside the file name the file that was read (§10.7).
-    try pp.nested(name_span, Pp.runFile, .{ pp, inc.text, inc.path, null });
+    try pp.nested(name_span, Pp.runFile, .{ pp, inc.text, inc.path, diag.FileId.none });
     try pp.checkTextSize(name_span);
     // `scan` resyncs the map back to the parent file when `directive` returns.
 }

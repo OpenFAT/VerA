@@ -718,7 +718,7 @@ pub const HeldVar = struct {
         /// write of the same evaluation.
         retained,
         /// §3.2 retention that only a card-varying write could make
-        /// observable. `prove`'s `pruneHeld` drops it when every merge
+        /// observable. `prove`'s `held.prune` drops it when every merge
         /// of the held value is solve-invariant.
         unless_invariant,
         /// §7.3.3 a discrete context reads it (`Lowered.discrete_reads`): the
@@ -911,7 +911,7 @@ pub const status_arg_max = 4;
 /// A device-side facility the model uses. Each gates a kernel file or an
 /// `Instance`/`Model` field in codegen; `uses` is the set.
 pub const Kernel = enum {
-    /// §9.5.3/§9.5.4.2 `$sformat`/`$swrite`/`$sscanf` → `str_kernels.zig`.
+    /// §9.5.3/§9.5.4.2 `$sformat`/`$swrite`/`$sscanf` → `str_format.zig`, `str_scan.zig`.
     /// A flag, not a site list: codegen finds each site by its MIR instruction.
     str_tasks,
     /// §9.5.1-§9.5.8 the file-descriptor family → `file_kernels.zig`, only in the

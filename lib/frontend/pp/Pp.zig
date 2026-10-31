@@ -31,11 +31,12 @@
 //! - `pub fn currentLine(pp: *const Pp, at: usize) u64`
 //! - `pub fn failWith(pp: *Pp, span: diag.Span, code: diag.Code) diag.Builder`
 //! - `pub fn fail(pp: *Pp, span: diag.Span, code: diag.Code, comptime fmt: []const u8, args: anytype) Error`
+//! - `pub fn addFile(pp: *Pp, name: []const u8, text: []const u8) Error!diag.FileId`
 //! - `pub fn resync(pp: *Pp, at: usize) Error!void`
 //! - `pub fn runStdDefs(pp: *Pp) Error!void`
 //! - `pub fn runSpicePrimitives(pp: *Pp) Error!void`
 //! - `pub fn replayStdDefs(pp: *Pp) Error!void`
-//! - `pub fn runFile(pp: *Pp, raw: []const u8, file: []const u8, existing: ?diag.FileId) Error!void`
+//! - `pub fn runFile(pp: *Pp, raw: []const u8, file: []const u8, existing: diag.FileId) Error!void`
 //! - `pub fn joinChain(pp: *Pp, stack: []const []const u8, last: []const u8) Error![]const u8`
 
 const std = @import("std");
@@ -297,6 +298,25 @@ pub fn fail(pp: *Pp, span: diag.Span, code: diag.Code, comptime fmt: []const u8,
     return error.PreprocessFailed;
 }
 
+/// Registers `name` and `text` in the bag and returns its id. The file table
+/// holds `diag.files_max` files, and an include tree is input, so a file past
+/// it is E0154 (`error.PreprocessFailed`), never a crash.
+pub fn addFile(pp: *Pp, name: []const u8, text: []const u8) Error!diag.FileId {
+    const before = pp.opts.bag.files.items.len;
+    const id = pp.opts.bag.addFile(name, text) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.TooManyFiles => {
+            assert(before == diag.files_max);
+            var b = pp.opts.bag.build(.preprocess, .E0154, .none);
+            b.msg("`{s}` would be file {d}", .{ name, before + 1 });
+            try b.emit();
+            return error.PreprocessFailed;
+        },
+    };
+    assert(@backingInt(id) == before);
+    return id;
+}
+
 /// Records that the output continues from `at` in the current file. Called
 /// after every directive, because a directive that collapses to its
 /// newlines makes the output shorter than the file it came from.
@@ -321,11 +341,11 @@ pub fn runStdDefs(pp: *Pp) Error!void {
     // constants are pure directives (they contribute only newlines here).
     pp.in_std_defs = true;
     defer pp.in_std_defs = false;
-    try pp.runFile(pp_annex_d.constants_vams, "constants.vams", null);
+    try pp.runFile(pp_annex_d.constants_vams, "constants.vams", .none);
     // Every macro so far but the §10.5 predefined ones is D.2's.
     var it = pp.macros.valueIterator();
     while (it.next()) |m| m.annex_d2 = !m.predefined;
-    try pp.runFile(pp_annex_d.disciplines_vams, "disciplines.vams", null);
+    try pp.runFile(pp_annex_d.disciplines_vams, "disciplines.vams", .none);
     // What D.1 added (its own guard) is D.1's, for the same rule.
     var d1 = pp.macros.valueIterator();
     while (d1.next()) |m| m.annex_d1 = !m.predefined and !m.annex_d2;
@@ -333,7 +353,7 @@ pub fn runStdDefs(pp: *Pp) Error!void {
     // disciplines.vams declares, and the source rows read `M_TWO_PI, which
     // constants.vams defines. Before the user's source, so nothing the user
     // `defines can reach into a shipped standard file.
-    try pp.runFile(pp_annex_e.spice_primitives, "spice_primitives.vams", null);
+    try pp.runFile(pp_annex_e.spice_primitives, "spice_primitives.vams", .none);
 }
 
 /// Table E.1 alone (`Options.spice_primitives`): its source rows read
@@ -344,7 +364,7 @@ pub fn runSpicePrimitives(pp: *Pp) Error!void {
     defer pp.in_std_defs = false;
     try pp.putMacro("M_TWO_PI", .{ .body = "6.28318530717958647693" });
     defer pp.removeMacro("M_TWO_PI");
-    try pp.runFile(pp_annex_e.spice_primitives, "spice_primitives.vams", null);
+    try pp.runFile(pp_annex_e.spice_primitives, "spice_primitives.vams", .none);
 }
 
 /// Copies `runStdDefs`' result out of the process-lifetime snapshot. Must
@@ -352,7 +372,7 @@ pub fn runSpicePrimitives(pp: *Pp) Error!void {
 pub fn replayStdDefs(pp: *Pp) Error!void {
     const p = try pp_prelude.preludeSnapshot();
     for (p.files, 1..) |f, want_id| {
-        const id = try pp.opts.bag.addFile(f.name, f.raw);
+        const id = try pp.addFile(f.name, f.raw);
         // `Prelude.segs` names files by index, so the three must land at
         // 1, 2, 3: only the compilation unit (`.root`) is registered yet.
         assert(@backingInt(id) == want_id);
@@ -369,8 +389,8 @@ pub fn replayStdDefs(pp: *Pp) Error!void {
 /// Registers `raw`, strips its comments and scans it. Saves and restores
 /// the file context, so an error inside an `include names the right file.
 /// `existing` is the id of an already-registered file (the compilation
-/// unit), or null to register a new one. Fails as `process` does.
-pub fn runFile(pp: *Pp, raw: []const u8, file: []const u8, existing: ?diag.FileId) Error!void {
+/// unit), or `.none` to register a new one. Fails as `process` does.
+pub fn runFile(pp: *Pp, raw: []const u8, file: []const u8, existing: diag.FileId) Error!void {
     assert(raw.len <= max_text_bytes);
     const segs_before = pp.segs.items.len;
     const saved_id = pp.cur_file_id;
@@ -404,7 +424,7 @@ pub fn runFile(pp: *Pp, raw: []const u8, file: []const u8, existing: ?diag.FileI
         pp.file_override = saved_override;
     }
 
-    const id = existing orelse try pp.opts.bag.addFile(file, raw);
+    const id = if (existing != .none) existing else try pp.addFile(file, raw);
     pp.cur_file_id = id;
 
     // Registered raw first so a stripComments failure resolves, then

@@ -49,7 +49,7 @@ pub fn build(an: *Analysis, arena: Allocator) Analysis.Error!void {
 /// load-bearing.
 fn flattenChains(an: *Analysis, arena: Allocator) Analysis.Error!void {
     const nb = an.nb;
-    const rows_max = an.mir.insts.len;
+    const rows_max = an.mir.instCount();
     an.inst_off = try arena.alloc(u32, nb + 1);
     var n: u32 = 0;
     for (0..nb) |bi| {

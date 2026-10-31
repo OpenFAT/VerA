@@ -51,7 +51,7 @@ pub fn prune(arena: Allocator, mir: *Mir, lowered: *const Lowered) Error!?[]cons
     const in: Input = .{ .arena = arena, .mir = mir, .an = &an, .lowered = lowered };
     const s = try invariance.solve(in, .invariance_only);
     // At most one merge per instruction: sized once, never grown.
-    var merges: std.ArrayList(Mir.Inst) = try .initCapacity(arena, mir.insts.len);
+    var merges: std.ArrayList(Mir.Inst) = try .initCapacity(arena, mir.instCount());
     for (an.inst_pool) |inst| switch (mir.instOp(inst)) {
         .phi, .select => merges.appendAssumeCapacity(inst),
         else => {}, // else: only a phi or a select merges a held value with a write

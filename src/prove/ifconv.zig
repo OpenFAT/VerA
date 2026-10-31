@@ -120,7 +120,7 @@ const Shape = struct {
 pub fn run(gpa: Allocator, mir: *Mir, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) Error!u32 {
     const nb = mir.blockCount();
     if (nb == 0) return 0;
-    if (keep) |k| assert(k.bit_length >= mir.defs.len + Mir.Value.first_dynamic);
+    if (keep) |k| assert(k.bit_length >= mir.valueCount());
     const preds = try gpa.alloc(u32, nb);
     defer gpa.free(preds);
 
@@ -149,7 +149,7 @@ pub fn run(gpa: Allocator, mir: *Mir, mode: Mode, keep: ?*const std.DynamicBitSe
 /// poison. Caller owns the set and frees it with `deinit(gpa)`. Linear in
 /// the slice: each Value is expanded once.
 pub fn keepSlice(gpa: Allocator, mir: *const Mir, roots: []const Mir.Value) Error!std.DynamicBitSetUnmanaged {
-    var seen = try std.DynamicBitSetUnmanaged.initEmpty(gpa, mir.defs.len + Mir.Value.first_dynamic);
+    var seen = try std.DynamicBitSetUnmanaged.initEmpty(gpa, mir.valueCount());
     errdefer seen.deinit(gpa);
     var stack: std.ArrayList(Mir.Value) = .empty;
     defer stack.deinit(gpa);
@@ -184,7 +184,7 @@ pub fn keepSlice(gpa: Allocator, mir: *const Mir, roots: []const Mir.Value) Erro
 /// assigned value)`, is what codegen's setup split recognises as initial-only
 /// work and computes once; a `select` on the flag would run every evaluation.
 fn firstPoint(mir: *const Mir, cond: Mir.Value) bool {
-    assert(@backingInt(cond) < mir.defs.len + Mir.Value.first_dynamic);
+    assert(@backingInt(cond) < mir.valueCount());
     const def = mir.valueDef(mir.resolveAlias(cond));
     if (def != .inst_result or mir.instOp(def.inst_result) != .call) return false;
     const d = mir.instData(def.inst_result).call;
@@ -743,7 +743,7 @@ test "if-conversion preserves what the module computes (differential)" {
         }
 
         fn interpret(m: *const Mir, x: [2]f64, out: Mir.Value) !f64 {
-            const vals = try std.testing.allocator.alloc(f64, m.defs.len + Mir.Value.first_dynamic);
+            const vals = try std.testing.allocator.alloc(f64, m.valueCount());
             defer std.testing.allocator.free(vals);
             @memset(vals, std.math.nan(f64));
             var prev: Mir.Block = .entry;
@@ -900,7 +900,7 @@ test "if-conversion: .speculate keeps a branch the model card alone decides, and
         // Re-point the branch at a card-only condition: `1 > 0`.
         const br = terminator(&s.mir, s.entry).?;
         if (card) s.mir.insts.items(.a)[@backingInt(br)] = @backingInt(try s.mir.emit(a, s.entry, .fgt, &.{ .f_one, .f_zero }));
-        var keep = try std.DynamicBitSetUnmanaged.initEmpty(a, s.mir.defs.len + Mir.Value.first_dynamic);
+        var keep = try std.DynamicBitSetUnmanaged.initEmpty(a, s.mir.valueCount());
         defer keep.deinit(a);
         try std.testing.expectEqual(@as(u32, if (card) 0 else 1), try run(a, &s.mir, .speculate, &keep));
     }

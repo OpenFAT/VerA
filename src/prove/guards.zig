@@ -49,9 +49,9 @@ pub fn buildClasses(p: *Prover) Error!void {
     const Key = struct { op: Mir.Opcode, a: u32, b: u32, c: u32 };
     // At most one key per instruction: sized once, never rehashed.
     var map: std.AutoHashMapUnmanaged(Key, u32) = .empty;
-    try map.ensureTotalCapacity(p.arena, @intCast(p.mir.insts.len));
+    try map.ensureTotalCapacity(p.arena, p.mir.instCount());
     var n_classes: u32 = 0;
-    for (0..p.mir.insts.len) |i| {
+    for (0..p.mir.instCount()) |i| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(i));
         const op = p.mir.instOp(inst);
         // §3.2.2 two `anew`s of one array, or two equal stores, are two
@@ -85,7 +85,7 @@ pub fn buildClasses(p: *Prover) Error!void {
     @memset(p.civ, Interval.top);
     p.ctop = try p.arena.alloc(u32, n_classes + n);
     @memset(p.ctop, none);
-    assert(n_classes <= p.mir.insts.len);
+    assert(n_classes <= p.mir.instCount());
     assert(p.saved.items.len == 0);
 }
 
@@ -100,7 +100,7 @@ pub fn markSelectArms(p: *Prover) Error!void {
     assert(p.class_of.len == p.an.nv);
     assert(p.facts.items.len == 0);
     countUses(p);
-    for (0..p.mir.insts.len) |i| {
+    for (0..p.mir.instCount()) |i| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(i));
         if (p.mir.instOp(inst) != .select) continue;
         const t = p.mir.instData(inst).ternary;

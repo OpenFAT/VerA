@@ -217,7 +217,7 @@ fn cReal(buf: *[buf_len]u8, v: f64, conv: u8, prec: ?usize, alt: bool) []const u
         'r' => return cEng(buf, v, prec),
         else => {
             // An explicit %g precision counts FRACTIONAL digits, as the
-            // device's `str_kernels.zCReal` prints it: §9.4.3's own example
+            // device's `str_real.zCReal` prints it: §9.4.3's own example
             // reads "%10.3g" as "three (3) fractional digits", where C11
             // counts significant ones, and VerA follows the example (#44).
             // So `%.3g` of 1234.5678 is `1234.568`, the `%.3f` text.
@@ -266,7 +266,7 @@ fn withPoint(alt: bool, buf: *[buf_len]u8, out: []const u8) []const u8 {
     return buf[0 .. out.len + 1];
 }
 
-// `cReal`'s `%r`, as `str_kernels.zCReal` prints it: the value's shortest
+// `cReal`'s `%r`, as `str_real.zCReal` prints it: the value's shortest
 // round-trip digits with the point moved to the multiple-of-three exponent
 // Table 2-1 has a letter for (clamped to a..T, the mantissa absorbing the
 // rest), rounded to `prec` fractional digits, ties to the even digit, when a
@@ -469,7 +469,7 @@ test "formatC: the C11 7.21.6.1 corners a model's format can reach" {
 
 test "formatC %r: §2.6.2 engineering notation, as the display kernels print it" {
     // The mantissa is in [1, 1000) and the scale letter picks the exponent,
-    // a multiple of three (`str_kernels.zCReal`). Without a precision the
+    // a multiple of three (`str_real.zCReal`). Without a precision the
     // mantissa is the value's shortest digits; with one, that many fractional
     // digits, ties to even.
     const cases = [_]struct { fmt: []const u8, v: f64, want: []const u8 }{

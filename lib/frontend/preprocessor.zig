@@ -169,7 +169,7 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
 
     // First, so the compilation unit is `.root`. The prelude files register
     // after it, even though they are processed before it.
-    const root = try opts.bag.addFile(opts.file_name, source);
+    const root = try pp.addFile(opts.file_name, source);
 
     for (predefined_macros) |name| {
         try pp.putMacro(name, .{ .body = "1", .predefined = true });
@@ -189,11 +189,11 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
         if (cards.refused.len != 0) {
             // E.1.2: a card inside a definition outside VerA's claimed SPICE
             // subset is refused, not skipped (see `spice_cards`).
-            const ids = try pp.scratch.alloc(?diag.FileId, cards.files.len);
-            @memset(ids, null);
+            const ids = try pp.scratch.alloc(diag.FileId, cards.files.len);
+            @memset(ids, .none);
             for (cards.refused) |r| {
-                const id = ids[r.file] orelse try opts.bag.addFile(cards.files[r.file].name, cards.files[r.file].text);
-                ids[r.file] = id;
+                if (ids[r.file] == .none) ids[r.file] = try pp.addFile(cards.files[r.file].name, cards.files[r.file].text);
+                const id = ids[r.file];
                 var b = opts.bag.build(.preprocess, switch (r.code) {
                     .E0928 => .E0928,
                     .E0953 => .E0953,
@@ -208,7 +208,7 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
         if (cards.modules != 0) {
             pp.in_std_defs = true;
             defer pp.in_std_defs = false;
-            try pp.runFile(cards.text, "spice_netlist.vams", null);
+            try pp.runFile(cards.text, "spice_netlist.vams", .none);
             netlist_modules = cards.modules;
         }
         netlist_unsupported = cards.unsupported;
@@ -229,7 +229,7 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
         // the next file's first.
         try pp.out.append(pp.scratch, '\n');
         at.* = @intCast(pp.out.items.len);
-        try pp.runFile(f.text, f.name, null);
+        try pp.runFile(f.text, f.name, .none);
     }
     // HSPICE `.HDL "model.va"` in the netlist: a Verilog-A source of the
     // design, read after the compilation unit like a file given beside it on
@@ -248,7 +248,7 @@ pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output
             },
         };
         try pp.out.append(pp.scratch, '\n');
-        try pp.runFile(text, path, null);
+        try pp.runFile(text, path, .none);
     }
 
     if (pp.conds.items.len != 0) {

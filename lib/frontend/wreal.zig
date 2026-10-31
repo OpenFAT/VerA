@@ -124,8 +124,9 @@ fn ident(f: *Ast.SourceFile, a: std.mem.Allocator, name: []const u8) !Ast.ExprId
 
 /// Expects exactly `want` diagnostics, as (code, span start) pairs in order.
 fn expectReports(bag: *const diag.Bag, want: []const struct { diag.Code, u32 }) !void {
-    try testing.expectEqual(want.len, bag.records.items.len);
-    for (want, bag.records.items) |w, r| {
+    try testing.expectEqual(want.len, bag.count());
+    for (want, 0..) |w, i| {
+        const r = bag.at(i);
         try testing.expectEqual(w[0], r.code);
         try testing.expectEqual(w[1], r.span.start);
     }

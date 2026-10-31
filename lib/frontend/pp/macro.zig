@@ -178,7 +178,7 @@ pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []c
         }
         var b = pp.failWith(sp, .E0115);
         b.msg("`{s}", .{name});
-        if (diag.didYouMeanMap(name, pp.macros)) |near| {
+        if (diag.didYouMeanMap(Macro, name, pp.macros)) |near| {
             // `sp` includes the backtick, so the replacement restores it.
             const repl = try pp.arena.print("`{s}", .{near});
             b.suggest(.{ .span = sp, .replacement = repl }, "did you mean `{s}`?", .{near});

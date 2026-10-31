@@ -193,7 +193,7 @@ pub fn build(arena: Allocator, mir: *const Mir, lowered: *const Lowered) Error!A
 /// measured slower. Same preconditions as `build`.
 pub fn buildStructure(arena: Allocator, mir: *const Mir) Error!Analysis {
     var an: Analysis = .{ .mir = mir };
-    an.nv = @intCast(mir.defs.len + Mir.Value.first_dynamic);
+    an.nv = mir.valueCount();
     an.alias = try arena.alloc(Mir.Value, an.nv);
     for (an.alias, 0..) |*p, v| p.* = mir.resolveAlias(@fromBackingInt(@intCast(v)));
     try cfg.build(&an, arena);

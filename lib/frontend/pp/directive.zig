@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const diag = @import("diag");
 const lexer = @import("../lexer.zig");
 const Pp = @import("Pp.zig");
 const Error = Pp.Error;
@@ -277,7 +278,7 @@ fn decryptionEnvelope(pp: *Pp, text: []const u8, at: usize, end: usize, list: []
     };
     switch (r.opened) {
         .fail => |f| return pp.fail(span, f.code, "{s}", .{f.why}),
-        .text => |clear| try pp.nested(span, Pp.runFile, .{ pp, clear, pp_protect.file_name, null }),
+        .text => |clear| try pp.nested(span, Pp.runFile, .{ pp, clear, pp_protect.file_name, diag.FileId.none }),
     }
     try pp.checkTextSize(span);
     try pp.putNewlines(text[at..r.end]);

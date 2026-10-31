@@ -131,7 +131,11 @@ pub fn buildPrelude() Allocator.Error!*const Prelude {
     // The same starting state `process` has: the compilation unit is file 0 and
     // the §10.5 predefined macros are already in scope. Both are observable to a
     // `ifdef in a prelude file, so neither may be skipped here.
-    _ = try bag.addFile("<source>", "");
+    // A fresh bag holds no file, so only memory can run out.
+    _ = bag.addFile("<source>", "") catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.TooManyFiles => unreachable,
+    };
     for (predefined_macros) |name| {
         try pp.putMacro(name, .{ .body = "1", .predefined = true });
     }

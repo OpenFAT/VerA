@@ -1,7 +1,7 @@
 //! MIR verifier: a `Mir` and the `Lowered` it indexes in, the first broken
 //! invariant out, with the block and row it was found at. The postcondition of
 //! lowering and of each MIR pass: src/Compilation.zig runs `check` after lowering,
-//! `pruneHeld` and if-conversion when the module has runtime safety (Debug,
+//! `held.prune` and if-conversion when the module has runtime safety (Debug,
 //! ReleaseSafe). The proof and codegen take `*const Mir`, so nothing later
 //! can break one. The invariants are VerA's own, not an LRM rule.
 //!
@@ -66,7 +66,7 @@ pub const Invariant = enum {
     /// Rows of the `Lowered` tables the MIR indexes exist: a `param_ref`'s
     /// parameter, an `anew`'s array and timepoint slot. `held_vars` row i's
     /// seed is the `$held_*` call reading row i, or the `anew` of the array
-    /// whose `held` is i (what `pruneHeld` renumbers).
+    /// whose `held` is i (what `held.prune` renumbers).
     table,
     /// A load's or store's array operand is an array version: an `anew`, a
     /// `store` or a phi (`Analysis.arrOf(..).?` relies on it).
@@ -115,7 +115,7 @@ pub fn check(mir: *const Mir, lowered: *const Lowered, pass: []const u8) Error!v
     // deprecated and reports the standard library's).
     if (!builtin.mode.runtimeSafety()) return;
     const v = try verify(mir, lowered) orelse return;
-    const op: []const u8 = if (v.inst != .none and @backingInt(v.inst) < mir.insts.len) @tagName(mir.instOp(v.inst)) else "-";
+    const op: []const u8 = if (v.inst != .none and @backingInt(v.inst) < mir.instCount()) @tagName(mir.instOp(v.inst)) else "-";
     std.debug.panic("MIR verifier: after {s}, `{s}` broken in module `{s}`: {s} (block {?d}, inst {d} `{s}`)", .{
         pass,
         @tagName(v.invariant),
@@ -144,7 +144,7 @@ pub fn verify(mir: *const Mir, lowered: *const Lowered) Error!?Violation {
     const a = arena_state.allocator();
 
     // Each row's position in its block's chain; `none` for an orphan.
-    const pos = try a.alloc(u32, mir.insts.len);
+    const pos = try a.alloc(u32, mir.instCount());
     @memset(pos, none);
     if (chains(mir, pos)) |v| return v;
     if (rows(mir, lowered)) |v| return v;
@@ -163,10 +163,6 @@ fn bad(invariant: Invariant, block: ?Mir.Block, inst: Mir.Inst, what: []const u8
     assert(what.len != 0);
     if (block == null) assert(inst == .none); // a table-wide rule names no row
     return .{ .invariant = invariant, .block = block, .inst = inst, .what = what };
-}
-
-fn valueCount(mir: *const Mir) usize {
-    return mir.defs.len + fd;
 }
 
 fn blockOf(bi: usize) Mir.Block {
@@ -199,7 +195,7 @@ fn chains(mir: *const Mir, pos: []u32) ?Violation {
 
 /// Per linked row: its result, its handles, its place after the terminator.
 fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
-    const nv = valueCount(mir);
+    const nv = mir.valueCount();
     const nb = mir.blockCount();
     assert(nb > 0);
     assert(nv >= fd);
@@ -262,7 +258,7 @@ fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
                     const n_args = row.a >> Mir.callee_bits;
                     if (@as(u8, @truncate(row.a)) >= n_callees) return bad(.handle, b, inst, "not a `Callee` tag");
                     if (@as(u64, row.b) + 1 + n_args > extra.len) return bad(.handle, b, inst, "the call's payload runs past `extra`");
-                    if (extra[row.b] >= mir.strings.strings.items.len) return bad(.handle, b, inst, "the call's name is not an interned string");
+                    if (extra[row.b] >= mir.strings.len()) return bad(.handle, b, inst, "the call's name is not an interned string");
                     for (extra[row.b + 1 ..][0..n_args]) |arg| if (arg >= nv) return bad(.handle, b, inst, "an argument names no Value");
                     const d = mir.instData(inst).call;
                     if (Mir.Callee.fromName(d.name) != d.callee) return bad(.callee, b, inst, "the `Callee` is not the one the call's name resolves to");
@@ -282,8 +278,7 @@ fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
 
 /// Per dynamic Value: its payload names a row, and its alias chain ends.
 fn values(a: Allocator, mir: *const Mir, lowered: *const Lowered) Allocator.Error!?Violation {
-    const nv = valueCount(mir);
-    assert(nv == mir.defs.len + fd);
+    const nv = mir.valueCount();
     const results = mir.insts.items(.result);
     const alias = mir.alias.items;
     if (alias.len != mir.defs.len) return bad(.handle, null, .none, "the alias table is not parallel to `defs`");
@@ -291,7 +286,7 @@ fn values(a: Allocator, mir: *const Mir, lowered: *const Lowered) Allocator.Erro
         const v: Mir.Value = @fromBackingInt(@intCast(i + fd));
         switch (kind) {
             .undef, .float_const, .int_const => {},
-            .str_const => if (payload >= mir.strings.strings.items.len) return bad(.handle, null, .none, "a string constant names no interned string"),
+            .str_const => if (payload >= mir.strings.len()) return bad(.handle, null, .none, "a string constant names no interned string"),
             .param_ref => if (payload >= lowered.params.items.len) return bad(.table, null, .none, "a `param_ref` names no `params` row"),
             .block_param => if (payload >= lowered.nodes.len) return bad(.unknown, null, .none, "a probe names no solver unknown"),
             .inst_result => if (payload >= results.len or results[@intCast(payload)] != v)

@@ -200,7 +200,7 @@ pub const Callee = enum(u8) {
     @"$sscanf$real",
     @"$sscanf$str",
     // §9.5.3 `$sformat` whose format_string is a string variable: (format,
-    // operands...), formatted at run time (`str_kernels.zSFormatRt`).
+    // operands...), formatted at run time (`str_format.zSFormatRt`).
     @"$sformat$rt",
     // §9.12 / IEEE 1364 §17.10.2 `Lower.lowerValuePlusargs`: the first
     // matching plusarg, which `$sscanf$<ty>` then converts.

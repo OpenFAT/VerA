@@ -364,7 +364,7 @@ test "mir: string, parameter and probe Values round-trip their payloads" {
     const b = try mir.addStrConst(gpa, "tran");
     try std.testing.expect(a != b);
     try std.testing.expectEqualStrings("tran", mir.valueDef(a).str_const);
-    try std.testing.expectEqual(@as(usize, 1), mir.strings.strings.items.len);
+    try std.testing.expectEqual(@as(usize, 1), mir.strings.texts.items.len);
 
     const p = try mir.addParamRef(gpa, 7);
     const u = try mir.addBlockParam(gpa, std.math.maxInt(u32));

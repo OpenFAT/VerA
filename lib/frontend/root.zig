@@ -5,11 +5,10 @@
 //!
 //! Contents:
 //! - `pub const Integer = @import("kernels").Integer`
-//! - `pub const token = compat.token`
+//! - `pub const token = @import("token.zig")`
 //! - `pub const keyword = @import("keyword.zig")`
 //! - `pub const lexer = @import("lexer.zig")`
 //! - `pub const token_value = @import("token_value.zig")`
-//! - `pub const Preprocessor = compat.Preprocessor`
 //! - `pub const preprocessor = @import("preprocessor.zig")`
 //! - `pub const directive_events = @import("pp/events.zig")`
 //! - `pub const prelude = @import("pp/prelude.zig")`
@@ -20,7 +19,6 @@
 //! - `pub const pp_scan = @import("pp/scan.zig")`
 //! - `pub const pp_comments = @import("pp/comments.zig")`
 //! - `pub const pp_directive = @import("pp/directive.zig")`
-//! - `pub const Lexer = compat.Lexer`
 //! - `pub const Ast = @import("ast.zig")`
 //! - `pub const Parser = @import("parser.zig")`
 //! - `pub const constfold = @import("constfold.zig")`
@@ -34,7 +32,9 @@
 /// through `frontend`.
 pub const Integer = @import("kernels").Integer;
 
-const compat = @import("compat.zig");
+/// Token tags and the per-tag facts (`Tag`, `Stored`, `isKeyword`, `callGroup`).
+pub const token = @import("token.zig");
+
 /// The annex B keyword table and the §10.6 reserved-word sets.
 pub const keyword = @import("keyword.zig");
 
@@ -85,7 +85,7 @@ pub const Parser = @import("parser.zig");
 pub const constfold = @import("constfold.zig");
 
 /// SPICE `.MODEL`/`.SUBCKT` card synthesis (annex E.2). The pipeline reaches
-/// it through `Preprocessor`; exported so a caller can synthesize without
+/// it through `preprocessor`; exported so a caller can synthesize without
 /// running the preprocessor.
 pub const spice_cards = @import("spice_cards.zig");
 
@@ -100,18 +100,6 @@ pub const libmap = @import("libmap.zig");
 /// nesting is bounded by memory: `base.deep_stack`, re-exported for callers
 /// that reach it through `frontend`.
 pub const deep_stack = @import("base").deep_stack;
-
-/// Token tags and the per-tag facts (token.zig). The old merged namespace
-/// with keyword.zig's names, until pass 2 points it at token.zig.
-pub const token = compat.token;
-
-/// The old preprocessor namespace (compat.zig), until pass 2.
-pub const Preprocessor = compat.Preprocessor;
-
-/// The old lexer namespace (compat.zig): use `lexer` and `token_value`.
-pub const Lexer = compat.Lexer;
-
-// ---- private ----
 
 test {
     @import("std").testing.refAllDecls(@This());

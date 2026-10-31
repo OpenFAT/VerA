@@ -489,7 +489,7 @@ pub const SourceFile = struct {
     /// Asserts `src` is a parse, not an overlay.
     pub fn seedFrom(self: *SourceFile, gpa: std.mem.Allocator, src: *const SourceFile) std.mem.Allocator.Error!void {
         assert(src.base == null and self.base == null);
-        assert(self.strings.strings.items.len == 0);
+        assert(self.strings.len() == 0);
         assert(self.exprs.nodes.len == 0);
         assert(self.stmts.items.len == 0);
         self.strings = try src.strings.clone(gpa);

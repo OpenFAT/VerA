@@ -116,6 +116,8 @@ pub const Code = enum(u16) {
     W0151,
     E0152,
     E0153,
+    // Engine limit — preprocessor.zig's file table.
+    E0154,
 
     // ---------------------------------------------------------------- class 2
     // Syntax / annex A — parser.zig.
@@ -1316,6 +1318,20 @@ const table: std.enums.EnumArray(Code, Info) = .init(.{
         \\or IV), the digest_block does not match the decrypted data
         \\(28.4.12), or a block does not decode to the bytes its encoding
         \\says (28.4.3). Nothing of the envelope is compiled.
+        ,
+    },
+    .E0154 = .{
+        .title = "more than 65535 source files",
+        .lrm = "",
+        .explain =
+        \\The compilation registered more source files than a diagnostic can
+        \\name: every location carries a 16-bit file id, so a compilation
+        \\holds at most 65535 files. Each `include registers the file it
+        \\reads again, so a header included tens of thousands of times (in
+        \\a loop of generated `include lines, say) is the usual way to
+        \\reach it. This is a bound of VerA's representation, not a
+        \\language rule. Include the file once, or split the design into
+        \\files compiled separately.
         ,
     },
 
@@ -2918,7 +2934,7 @@ const table: std.enums.EnumArray(Code, Info) = .init(.{
         \\Retired: 3.3 Table 3-3 makes both a string-typed concatenation
         \\operand and a nonconstant replication multiplier legal, and the
         \\device now builds such a string while it runs (`$str$cat`,
-        \\`$str$repeat`, str_kernels.zig). A nonconstant multiplier that is
+        \\`$str$repeat`, str_store.zig). A nonconstant multiplier that is
         \\not of integral type is E0327. The number is not reused.
     ),
     .E0329 = .{

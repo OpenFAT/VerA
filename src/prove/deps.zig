@@ -88,13 +88,13 @@ pub fn build(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis.
     an.deps = try fixDeps(an, arena, g, .deriv);
     an.xdeps = try fixDeps(an, arena, g, .value);
     an.pdeps = an.xdeps;
-    for (0..an.mir.insts.len) |i| {
+    for (0..an.mir.instCount()) |i| {
         if (!readsInstance(an, @fromBackingInt(@intCast(i)))) continue;
         an.pdeps = try fixDeps(an, arena, g, .point);
         break;
     }
     // After `deps`, which an operator's `acdyn` reads.
-    for (0..an.mir.insts.len) |i| {
+    for (0..an.mir.instCount()) |i| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(i));
         if (an.mir.instOp(inst) != .call) continue;
         if (!op_kind.acDynamic(Mir.callee.opKind(an.mir.instData(inst).call.callee))) continue;

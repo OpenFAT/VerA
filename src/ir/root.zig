@@ -18,13 +18,11 @@ pub const op = @import("op.zig");
 /// What lowering hands every later stage, and the row types of its tables.
 pub const Lowered = @import("Lowered.zig");
 /// §9.15 simulation parameters: where each name's value comes from.
-// compat: pass 2 makes this `@import("simparam.zig")` and deletes compat.zig.
-pub const simparam = @import("compat.zig").simparam;
+pub const simparam = @import("simparam.zig");
 /// Stable emitted names, the canonical unit order, and the one speller of
 /// each field name two stages share (`__1b`, `__w<k>`, `__xz`, `__held__`).
 pub const names = @import("names.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
-    _ = @import("simparam.zig");
 }

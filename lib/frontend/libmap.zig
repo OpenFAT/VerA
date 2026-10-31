@@ -135,7 +135,10 @@ const Loader = struct {
         try l.open.append(l.arena, real);
         defer _ = l.open.pop();
         const dir = try slashed(l.arena, std.fs.path.dirname(real) orelse "/");
-        const file = try l.bag.addFile(path, text);
+        const file = l.bag.addFile(path, text) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.TooManyFiles => return l.fail(at, "cannot register library map `{s}`: past {d} source files", .{ path, diag.files_max }),
+        };
         var t: Tokens = .{ .text = text };
         while (t.next()) |kw| {
             const here: Site = .{ .file = file, .tok = kw };
