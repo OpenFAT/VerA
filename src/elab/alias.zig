@@ -4,13 +4,13 @@
 //! the second check uses the alias paths recorded while instances are cloned.
 
 const std = @import("std");
-const elaborate = @import("elaborate.zig");
-const names = @import("names.zig");
+const design = @import("design.zig");
+const flat_name = @import("flat_name.zig");
 const Kind = @import("hier_param.zig").Kind;
 const Ast = @import("frontend").Ast;
 const Lexer = @import("frontend").Lexer;
-const Ctx = elaborate.Ctx;
-const Error = elaborate.Error;
+const Ctx = design.Ctx;
+const Error = design.Error;
 
 /// Returns the original parameter `alias` names, following a chain of
 /// aliases, or null when the alias shadows a parameter, the chain names
@@ -73,7 +73,7 @@ const Scan = struct {
         const x = &file.exprs;
         if (self.top) |top| {
             if (x.tag(e) == .hier_ident) {
-                const path = try names.flatReference(file, self.ctx.arena, top, e);
+                const path = try flat_name.flatReference(file, self.ctx.arena, top, e);
                 for (self.aliases) |al| if (file.strings.eql(al.alias, path)) {
                     try self.reject(e, al.alias, al.target);
                     break;
@@ -128,6 +128,7 @@ const Scan = struct {
 // ---------------------------------------------------------------------------
 
 const fixture = @import("fixture.zig");
+const elaborate = @import("elaborate.zig");
 
 test original {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
