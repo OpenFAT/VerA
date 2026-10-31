@@ -70,8 +70,9 @@ Building a device needs the Zig VerA is built with, Zig master (0.18.0-dev,
 from [zig-overlay](https://github.com/mitchellh/zig-overlay)), on `PATH`; the
 Nix packages bring their own. The packages, the install script, Homebrew, Nix
 and `zig build install` also install the device contract,
-`share/vera/contract.zig`, and every device declares the VerA release that
-generated it (`vera_version`), which the contract checks at compile time.
+`share/vera/contract.zig` and the `share/vera/contract/` it imports, and every
+device declares the VerA release that generated it (`vera_version`), which the
+contract checks at compile time.
 
 ## Dependencies
 
