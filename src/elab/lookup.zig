@@ -17,7 +17,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
+const lexer = @import("frontend").lexer;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
 const elaborate = @import("elaborate.zig");
@@ -167,7 +167,7 @@ pub fn warnRedefinedModules(self: *Flatten) design.Error!void {
     const user = self.ctx.file.userModules();
     for (user, 0..) |m, i| for (user[i + 1 ..]) |later| {
         if (later.name != m.name) continue;
-        try self.ctx.bag.add(.lower, .W1152, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, later.main_tok), "`{s}` is defined again; this later definition is the module", .{self.ctx.file.str(m.name)});
+        try self.ctx.bag.add(.lower, .W1152, lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, later.main_tok), "`{s}` is defined again; this later definition is the module", .{self.ctx.file.str(m.name)});
         break;
     };
 }
@@ -193,7 +193,7 @@ pub fn warnSpiceShadows(self: *Flatten) design.Error!void {
 fn spiceShadowWarning(self: *Flatten, name: Ast.StrId, tok: u32, kind: []const u8) design.Error!void {
     assert(name != .none);
     assert(kind.len != 0);
-    try self.ctx.bag.add(.lower, .W0951, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, tok), "{s} `{s}` is used instead of the SPICE model or subcircuit when this name is instantiated", .{ kind, self.ctx.file.str(name) });
+    try self.ctx.bag.add(.lower, .W0951, lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, tok), "{s} `{s}` is used instead of the SPICE model or subcircuit when this name is instantiated", .{ kind, self.ctx.file.str(name) });
 }
 
 test findModule {

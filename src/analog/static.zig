@@ -195,7 +195,7 @@ fn staticWalk(self: *Lower, root: Mir.Value) Oom!bool {
     assert(st.work.items.len == 0);
     // Every push is an operand, phi pair or predecessor edge of a node judged
     // once, so the walk ends within their total.
-    const pushes_max = 3 * self.mir.insts.len + 2 * self.mir.extra.items.len + self.builder.pred_pool.items.len + 1;
+    const pushes_max = 3 * self.mir.instCount() + 2 * self.mir.extra.items.len + self.builder.pred_pool.items.len + 1;
     var steps: usize = 0;
     try st.work.append(self.arena, .{ .value = root });
     while (st.work.pop()) |item| : (steps += 1) {

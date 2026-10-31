@@ -521,7 +521,7 @@ fn regWrites(self: *Lower, funcs: []const Ast.FuncDecl, id: Ast.StmtId, sh: *Sha
         if (t == .none) continue;
         const name = self.file.str(ex.strOf(t));
         if (sh.hides(name)) continue;
-        const reg = if (self.vars.get(name)) |v| v.reg_width != null else if (self.arrays.get(name)) |arr| (if (arr.mem) |m| m.reg_width != null else false) else false;
+        const reg = if (self.vars.get(name)) |v| v.regWidth() != null else if (self.arrays.get(name)) |arr| (if (arr.mem) |m| m.reg_width != null else false) else false;
         if (reg) try self.err(ex.mainTok(t), .E0316, "`{s}` is a reg: an analog procedural assignment targets an integer, real or string (§5.7)", .{name});
     }
     const Walk = struct {

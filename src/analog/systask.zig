@@ -221,7 +221,7 @@ fn systfOutputs(self: *Lower, call: Mir.Value, live: []const Ast.ExprId, vals: [
         if (a == .none or ex.tag(a) != .ident) continue;
         const s = self.vars.get(self.file.str(ex.strOf(a))) orelse continue;
         // A `reg` (§7.3.1) keeps its width rule; a string has no partials.
-        if (s.ty == .string or s.reg_width != null) continue;
+        if (s.ty == .string or s.regWidth() != null) continue;
         const args = try self.arena.alloc(Mir.Value, vals.len + 2);
         args[0] = call;
         args[1] = try self.mir.addIntConst(self.arena, @intCast(j + 1));

@@ -487,7 +487,7 @@ fn replayTimerExpr(self: *Lower, e: Ast.ExprId, captured: *const TimerCapture, r
         const stored = try self.builder.readVariable(slot.place, self.cur);
         // §7.3.1 applies to this later read too: a packed reg's analog value
         // is zero-extended from its declaration width, not its raw SSA slot.
-        const after = try lower_var.analogRead(self, stored, slot.reg_width);
+        const after = try lower_var.analogRead(self, stored, slot.regWidth());
         changed.* = changed.* or self.mir.resolveAlias(after) != self.mir.resolveAlias(before.value.v);
         return replay.put(self.arena, e, .{ .v = after, .ty = slot.ty });
     }

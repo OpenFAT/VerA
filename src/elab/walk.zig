@@ -15,7 +15,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
+const lexer = @import("frontend").lexer;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
 const elaborate = @import("elaborate.zig");
@@ -341,7 +341,7 @@ fn startInstance(self: *Flatten, lv: *Level) design.Error!bool {
         if (inst.params.len > 2 or (inst.params.len != 0 and inst.params[0].name != .none))
             try self.err(inst.main_tok, .E0239, "`{s} #(…) {s}`: {d} value(s)", .{ self.ctx.file.str(inst.module), self.ctx.file.str(inst.name), inst.params.len })
         else
-            try self.ctx.bag.add(.lower, .W0252, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, inst.main_tok), "`{s}` primitive", .{self.ctx.file.str(inst.module)});
+            try self.ctx.bag.add(.lower, .W0252, lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, inst.main_tok), "`{s}` primitive", .{self.ctx.file.str(inst.module)});
         return false;
     }
     // §6.2.2 `name_of_module_instance ::= module_instance_identifier

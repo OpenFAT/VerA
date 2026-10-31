@@ -16,7 +16,6 @@
 //! - `pub const dist`
 //! - `pub const discipline_rules`
 //! - `pub const hier_param`
-//! - `pub const Elaborate`
 //! - `pub const Ctx`
 //! - `pub const Design`
 //! - `pub const Error`
@@ -48,10 +47,6 @@ pub const discipline_rules = @import("discipline_rules.zig");
 
 /// §6.3.6/§9.18 hierarchical system-parameter names (Table 9-29).
 pub const hier_param = @import("hier_param.zig");
-
-/// The old `Elaborate` namespace over the new files: pass-1 shim for the
-/// modules not migrated yet. Delete in pass 2 (see `compat.zig`).
-pub const Elaborate = @import("compat.zig");
 
 /// What `elaborate` reads from the compilation.
 pub const Ctx = design.Ctx;

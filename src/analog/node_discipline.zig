@@ -18,8 +18,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const discipline_rules = @import("elab").discipline_rules;
 const Ast = @import("frontend").Ast;
+const directive_events = @import("frontend").directive_events;
 const Mir = @import("ir").Mir;
-const Preprocessor = @import("frontend").Preprocessor;
 const Lower = @import("Lower.zig");
 const lower_discipline = @import("discipline.zig");
 const lower_shape = @import("shape.zig");
@@ -131,7 +131,7 @@ pub fn isSignalFlow(self: *const Lower, dname: []const u8) bool {
 /// net type on `Ast.NetDecl`.
 pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void {
     assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
-    if (Preprocessor.NetTypeRegion.inForce(self.opts.directives.nettypes, self.tokStart(main_tok), .default) != .none) return;
+    if (directive_events.NetTypeRegion.inForce(self.opts.directives.nettypes, self.tokStart(main_tok), .default) != .none) return;
     var b = self.errWith(main_tok, .E0367);
     b.msg("`{s}` was never declared, and `default_nettype none is in force", .{name});
     b.note("§3.6.5 would make it an implicit net; IEEE 1364 §19.2's `none` is what withdraws that", .{});
@@ -151,9 +151,9 @@ pub fn applyUnconnectedDrive(self: *Lower) Oom!void {
     assert(self.blockValid(self.cur));
     if (self.opts.directives.drives.len == 0) return;
     for (self.design.unconnected_inputs) |site| {
-        const drive = Preprocessor.DriveRegion.inForce(self.opts.directives.drives, self.tokStart(site.main_tok), .default);
+        const drive = directive_events.DriveRegion.inForce(self.opts.directives.drives, self.tokStart(site.main_tok), .default);
         if (drive == .float) continue;
-        const idx = self.node_voltages.get(site.name) orelse continue;
+        const idx = self.node_voltages.get(self.file.str(site.name)) orelse continue;
         if (idx == ground) continue;
         const info = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse continue;
         if (!info.has_potential) continue;
@@ -171,7 +171,7 @@ pub fn applyUnconnectedDrive(self: *Lower) Oom!void {
 
 /// Applies the `default_discipline in force at `main_tok` for a `q` signal to
 /// net `name`, or to each scalarised element when it is a §3.6.3 vector (LRM §10.2).
-fn applyDefaultToAll(self: *Lower, name: []const u8, main_tok: u32, q: ?Preprocessor.Qualifier) Oom!void {
+fn applyDefaultToAll(self: *Lower, name: []const u8, main_tok: u32, q: ?directive_events.Qualifier) Oom!void {
     assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     const r = self.out.vectors.get(name) orelse
         return applyDefaultDiscipline(self, try lower_node_ref.netKey(self, name, main_tok), main_tok, q);
@@ -182,15 +182,15 @@ fn applyDefaultToAll(self: *Lower, name: []const u8, main_tok: u32, q: ?Preproce
 
 /// §10.2 the Syntax 10-1 `qualifier` a net of type `kind` answers to. Null for
 /// `uwire`, which the list lacks, so only an unqualified default applies.
-fn qualifierOf(kind: Ast.NetKind) ?Preprocessor.Qualifier {
-    return std.meta.stringToEnum(Preprocessor.Qualifier, @tagName(kind));
+fn qualifierOf(kind: Ast.NetKind) ?directive_events.Qualifier {
+    return std.meta.stringToEnum(directive_events.Qualifier, @tagName(kind));
 }
 
 /// §10.2: "The default discipline is applied ... to all discrete signals without a
 /// discipline declaration that appear in the text stream following the use of the
 /// `default_discipline directive." So only a net that still has none, and only a
 /// directive preceding its declaration, qualified for its type `q` or unqualified.
-fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?Preprocessor.Qualifier) Oom!void {
+fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?directive_events.Qualifier) Oom!void {
     assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     if (self.opts.directives.disciplines.len == 0) return;
     const idx = self.node_voltages.get(name) orelse return;
@@ -204,10 +204,10 @@ fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?Pre
 }
 
 /// §10.2 the `default_discipline in force for a `q` signal at token `main_tok`, or null.
-fn defaultDisciplineAt(self: *const Lower, main_tok: u32, q: ?Preprocessor.Qualifier) ?[]const u8 {
+fn defaultDisciplineAt(self: *const Lower, main_tok: u32, q: ?directive_events.Qualifier) ?[]const u8 {
     assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     if (main_tok >= self.tok_starts.len) return null;
-    return Preprocessor.DefaultDiscipline.inForce(self.opts.directives.disciplines, self.tok_starts[main_tok], q);
+    return directive_events.DefaultDiscipline.inForce(self.opts.directives.disciplines, self.tok_starts[main_tok], q);
 }
 
 /// §3.9 "For digital primitives the domain is discrete and thus the discipline

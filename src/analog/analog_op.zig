@@ -449,7 +449,7 @@ fn readsUnknown(self: *Lower, v: Mir.Value) Oom!bool {
     // The answer is the disjunction over the reachable set, so the visit
     // order is free; each value is judged once, so the walk ends within the
     // MIR's operand edges.
-    const steps_max = 3 * self.mir.insts.len + self.mir.extra.items.len + 1;
+    const steps_max = 3 * self.mir.instCount() + self.mir.extra.items.len + 1;
     var steps: usize = 0;
     while (st.unknown_work.pop()) |v0| : (steps += 1) {
         assert(steps <= steps_max);

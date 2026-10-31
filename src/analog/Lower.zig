@@ -32,7 +32,7 @@
 //!   `NoiseSrc`, `ChargeSite`, `Ty`, `HeldVar`, `TpSlot`, `Const` (`Lowered`'s rows)
 //! - `pub const ParamOverride`, `pub const BranchInfo = struct`
 //! - `pub const TypedValue = struct`, `pub const poison: TypedValue`
-//! - `pub const VarSlot = struct`, `pub const RegRange = struct`,
+//! - `pub const VarSlot = struct` (`not_reg`, `regWidth`), `pub const RegRange = struct`,
 //!   `pub const ArrayInfo = struct` (with `pub const Mem = struct`), `pub const Accum = struct`
 //! - `pub const Options = struct`, `pub const Output = struct`
 //! - `pub const lowerFile`, `strToInt`, `strNum`, `toReal`, `toInt`,
@@ -62,10 +62,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
-const Preprocessor = @import("frontend").Preprocessor;
+const lexer = @import("frontend").lexer;
+const directive_events = @import("frontend").directive_events;
 const Mir = @import("ir").Mir;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const diag = @import("diag");
 const Ssa = @import("ssa.zig");
 const lower_module = @import("module.zig");
@@ -160,7 +160,7 @@ pub const Const = Lowered.Const;
 /// §3.4 "parameters can be modified at compilation time": the value a
 /// `--param name=value` gives the top module's parameter `name`, in place of
 /// its declaration value. A card is written in reals; `lowerParamDecl` converts.
-pub const ParamOverride = Elaborate.ParamOverride;
+pub const ParamOverride = elab.design.ParamOverride;
 
 /// A §3.12 named branch: a node pair carrying a flow and a potential.
 pub const BranchInfo = struct {
@@ -186,10 +186,25 @@ pub const VarSlot = struct {
     place: Ssa.Place,
     ty: Ty,
     /// §7.3.1: retained declaration width, checked and zero-extended when
-    /// analog code reads it. A register used only by digital code may be wider.
-    reg_width: ?u32 = null,
+    /// analog code reads it; `not_reg` for a variable that is no `reg`. A
+    /// register used only by digital code may be wider. Read it as `regWidth`.
+    reg_width: u32 = not_reg,
     /// IEEE 1364-2005 §5.5.1: the `reg` was declared `signed`.
     reg_signed: bool = false,
+
+    /// The `reg_width` of a variable that is no `reg`: a `reg` is at least
+    /// one bit wide, so 0 names none.
+    pub const not_reg: u32 = 0;
+
+    /// Returns the declared width of a `reg`, or null for any other variable.
+    pub fn regWidth(slot: VarSlot) ?u32 {
+        return if (slot.reg_width == not_reg) null else slot.reg_width;
+    }
+
+    comptime {
+        // One row per visible variable: a place, a width, a type and a flag.
+        assert(@sizeOf(VarSlot) == 12);
+    }
 };
 /// A `reg`'s packed range as a select reads it (§7.3.1): the right-hand
 /// bound (its LSB in either direction, IEEE 1364-2005 §4.2.1), the direction,
@@ -222,13 +237,13 @@ pub const Accum = struct { resist: Ssa.Place, react: Ssa.Place, wrote: Ssa.Place
 /// nothing": no directives, no include path, no overrides.
 pub const Options = struct {
     /// The positional directive events the preprocessor published
-    /// (`Preprocessor.Directives`). A text stage cannot apply them itself:
+    /// (`directive_events.Directives`). A text stage cannot apply them itself:
     /// §10.2's default discipline needs the module's declarations, §10.3's
     /// default transition reaches only codegen (`defaultTransition`), and §9.15
     /// reads the timescale back. So they record where each took effect, and
     /// lowering applies them. Empty when the text never came through the
     /// preprocessor.
-    directives: Preprocessor.Directives = .{},
+    directives: directive_events.Directives = .{},
     /// Where a §9.21.1 `$table_model` data file is looked for, in order: the
     /// `include` search path. Empty means the working directory only.
     include_dirs: []const []const u8 = &.{},
@@ -240,7 +255,7 @@ pub const Options = struct {
     /// hold that only a print could observe is no hold.
     displays_dropped: bool = false,
     /// §7.4.4's resolution mode.
-    discipline_resolution: Elaborate.DisciplineResolution = .basic,
+    discipline_resolution: elab.design.DisciplineResolution = .basic,
     /// §12.32.1 the user analog system functions a VPI application registered
     /// with sysfunctype vpiIntFunc: a call to one is an integer. Every other
     /// unresolved `$name` is real.
@@ -255,8 +270,9 @@ pub const Output = struct {
     /// The module lowered (§6.2): elaboration's flattened top.
     module: ?*const Ast.ModuleDecl,
     /// §9.15/§9.16, indexed by `Ast.AnalogBlock.unit`: the module a block was
-    /// written in and the instance path it was inlined at (`Design.units`).
-    unit_paths: []const Elaborate.UnitPath,
+    /// written in, the instance path it was inlined at and the declaration it
+    /// was inlined from (`elab.Design.units`, read by column).
+    unit_paths: std.MultiArrayList(elab.design.Unit).Slice,
 };
 
 /// The pass's spine over an `init`ed Lower (module.zig): elaborates the file,
@@ -279,7 +295,7 @@ pub const Case = harness.Case;
 pub const expectBodies = harness.expectBodies;
 /// A node's §1.3.1 display name, for diagnostics and tests.
 pub const nodeName = lower_node.nodeName;
-/// Applies `prove.setup.pruneHeld`'s held-row mask to `Lowered`.
+/// Applies `prove.held.prune`'s held-row mask to `Lowered`.
 pub const dropHeld = lower_held.dropHeld;
 /// Reports whether a §9.15 simulation parameter is answered at run time.
 pub const simparamIsRuntime = Lowered.simparamIsRuntime;
@@ -291,7 +307,7 @@ mir: *Mir,
 /// Everything a later stage reads, built in place and returned by `lowerFile`
 /// (lowered.zig). The fields below it are lowering's own.
 out: Lowered,
-/// Mutable only because `Elaborate.elaborate` appends to its stores (§6.7 flat
+/// Mutable only because `elab.elaborate` appends to its stores (§6.7 flat
 /// names, cloned rows) as the first step of `lowerFile`, before anything
 /// caches an index into them. An overlay of the parse
 /// (`Ast.SourceFile.overlay`), so those appends never reach the parse.
@@ -312,7 +328,7 @@ opts: Options = .{},
 /// selection parameters, §9.18's card-time checks and IEEE 1364 §19.9's
 /// unconnected inputs. Before `lowerFile` every table is empty: the test
 /// harness reaches constant folding without elaborating.
-design: Elaborate.Design = .{ .top = undefined },
+design: elab.Design = .{ .top = undefined },
 builder: Ssa.SsaBuilder,
 /// The block statements are currently being appended to.
 cur: Mir.Block = .entry,
@@ -468,7 +484,7 @@ in_analog_initial: bool = false,
 /// wrote it. Read by `discardOpposite` only; see `newContrib`.
 cur_unit: u32 = 0,
 /// §6.6.2 the flat prefixes of every unnamed generate block in the design
-/// (`Elaborate.unnamedGenScopes`), built on the first hierarchical name
+/// (`elab.unnamedGenScopes`), built on the first hierarchical name
 /// `lower_expr_name.refuseUnnamedGen` judges.
 unnamed_gen: ?[]const []const u8 = null,
 /// Index into the flat module's `analog` of the block being lowered, so a
@@ -657,7 +673,7 @@ pub fn deinit(self: *Lower) void {
 
 /// Returns the byte range of a token, the unit every diagnostic reports in.
 pub fn tokenSpan(self: *const Lower, tok: u32) diag.Span {
-    const span = Lexer.tokenSpan(self.src, self.tok_starts, tok);
+    const span = lexer.tokenSpan(self.src, self.tok_starts, tok);
     assert(span.start <= span.end);
     assert(span.end <= self.src.len);
     return span;
@@ -772,7 +788,7 @@ pub fn exprValid(self: *const Lower, e: Ast.ExprId) bool {
 /// Reports whether `v` is a sentinel constant or a row this pass's `mir`
 /// numbered. For the sub-files' exit asserts.
 pub fn valueValid(self: *const Lower, v: Mir.Value) bool {
-    return @backingInt(v) < Mir.Value.first_dynamic + self.mir.defs.len;
+    return @backingInt(v) < self.mir.valueCount();
 }
 
 /// Returns how many statement rows `file` holds, its parse's included (an
@@ -811,6 +827,7 @@ test {
     _ = @import("discrete_input.zig");
     _ = @import("discrete_mark.zig");
     _ = @import("display.zig");
+    _ = @import("dom_tree.zig");
     _ = @import("event.zig");
     _ = @import("event_args.zig");
     _ = @import("expr.zig");

@@ -163,7 +163,7 @@ pub fn queueDisplay(self: *Lower, tok: u32, name: []const u8, args: []const Ast.
 /// under its guards: this call, `$monitor$arm(k)`, latches site `k` on. The
 /// report is `queueDisplay`'s end-of-block call with `k` prepended and runs at
 /// the end of every accepted step from then on; codegen joins the two on `k`
-/// (`str_kernels.zMonitor`). A monitor armed once under `@(initial_step)` keeps
+/// (`str_store.zMonitor`). A monitor armed once under `@(initial_step)` keeps
 /// reporting.
 ///
 /// The arm rides `display_cond_place`, not `displays`: the report already has

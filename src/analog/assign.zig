@@ -90,7 +90,7 @@ pub fn lowerAssign(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!void
     // IEEE 1364-2005 §5.5.3 a `reg` wider than 32 bits takes the right-hand
     // side at the width §5.4.1 sizes it to (`lower_wide`).
     if (ex.tag(target) == .ident) if (self.vars.get(self.file.str(ex.strOf(target)))) |s| if (s.ty == .wide) {
-        try self.builder.writeVariable(s.place, self.cur, try lower_wide.rhs(self, s.reg_width.?, value));
+        try self.builder.writeVariable(s.place, self.cur, try lower_wide.rhs(self, s.regWidth().?, value));
         try lower_var.countAssign(self, s.place);
         return;
     };

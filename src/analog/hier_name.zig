@@ -20,7 +20,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
@@ -277,7 +277,7 @@ pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // containing the $simprobe() expression." The name is relative, so the
     // flat key is the caller's parent path joined to it.
     const path = try std.mem.concat(self.arena, u8, &.{
-        callerParentPath(self), inst.?, &[_]u8{Elaborate.sep}, param.?,
+        callerParentPath(self), inst.?, &[_]u8{elab.sep}, param.?,
     });
     if (try resolveProbe(self, path)) |tv| return tv;
     return unresolvedProbe(self, e, inst, param);
@@ -389,7 +389,7 @@ fn bindAlias(self: *Lower, fname: []const u8, ref_name: []const u8, local: u32, 
 /// `direct` says the name was a node of the flat design itself rather than a
 /// child port that flattening bound to one (see `bindAlias`'s port rule).
 ///
-/// Flattened names join path parts with `Elaborate.sep`, a period, so this is a map
+/// Flattened names join path parts with `elab.sep`, a period, so this is a map
 /// lookup. A leading `$root.` is stripped (§6.2.1); the unstripped name is tried
 /// first and the device's own module name stripped only after it fails, since §6.7
 /// resolves the ambiguity "by giving priority to the local scope".
@@ -399,7 +399,7 @@ fn resolveAliasNode(self: *Lower, path: []const u8) ?AliasHit {
     if (std.mem.startsWith(u8, p, "$root.")) p = p["$root.".len..];
     if (self.module) |m| {
         const mn = self.file.str(m.name);
-        if (p.len > mn.len + 1 and p[mn.len] == Elaborate.sep and std.mem.startsWith(u8, p, mn))
+        if (p.len > mn.len + 1 and p[mn.len] == elab.sep and std.mem.startsWith(u8, p, mn))
             p = p[mn.len + 1 ..];
     }
     if (p.len == path.len) return null; // nothing stripped; already looked up
@@ -410,8 +410,8 @@ fn lookupFlatNode(self: *Lower, p: []const u8) ?AliasHit {
     if (self.node_voltages.get(p)) |i| return .{ .idx = i, .direct = true };
     // A child port bound to a parent net is the same signal as that net, and
     // `Design.names` holds exactly those aliases (`flatName`'s one exception).
-    if (self.out.hier_names.get(p)) |flat| {
-        if (self.node_voltages.get(flat)) |i| return .{ .idx = i, .direct = false };
+    if (self.design.names.get(p)) |flat| {
+        if (self.node_voltages.get(self.file.str(flat))) |i| return .{ .idx = i, .direct = false };
     }
     return null;
 }
@@ -421,11 +421,11 @@ fn lookupFlatNode(self: *Lower, p: []const u8) ?AliasHit {
 /// an `inst_name` it gives the flat name of a sibling.
 fn callerParentPath(self: *const Lower) []const u8 {
     if (self.cur_unit >= self.design.units.len) return "";
-    const p = self.design.units[self.cur_unit].path;
+    const p = self.design.units.items(.path)[self.cur_unit];
     if (p.len == 0) return p;
     // `path` ends with the separator, so the caller's own segment is the text
     // between the previous separator and the last one.
-    const cut = std.mem.findScalarLast(u8, p[0 .. p.len - 1], Elaborate.sep) orelse return "";
+    const cut = std.mem.findScalarLast(u8, p[0 .. p.len - 1], elab.sep) orelse return "";
     return p[0 .. cut + 1];
 }
 
@@ -440,7 +440,7 @@ fn resolveProbe(self: *Lower, path: []const u8) Oom!?TypedValue {
     while (k > 0) {
         k -= 1;
         if (!std.mem.eql(u8, self.design.ps_outputs[k].report, path)) continue;
-        const slot = self.vars.get(self.design.ps_outputs[k].flat) orelse break;
+        const slot = self.vars.get(self.file.str(self.design.ps_outputs[k].flat)) orelse break;
         return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
     }
     if (self.param_index.get(path)) |pi|
@@ -510,10 +510,10 @@ fn lowerSimprobeRuntime(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?
     for (keys.items, 0..) |key, i| {
         if (i > 0 and std.mem.eql(u8, key, keys.items[i - 1])) continue;
         const rest = std.mem.cutPrefix(u8, key, parent) orelse continue;
-        const dot = std.mem.findScalar(u8, rest, Elaborate.sep) orelse continue;
+        const dot = std.mem.findScalar(u8, rest, elab.sep) orelse continue;
         const ci = rest[0..dot];
         const cp = rest[dot + 1 ..];
-        if (ci.len == 0 or cp.len == 0 or std.mem.findScalar(u8, cp, Elaborate.sep) != null) continue;
+        if (ci.len == 0 or cp.len == 0 or std.mem.findScalar(u8, cp, elab.sep) != null) continue;
         if (inst) |n| if (!std.mem.eql(u8, n, ci)) continue;
         if (param) |n| if (!std.mem.eql(u8, n, cp)) continue;
         const tv = try resolveProbe(self, key) orelse continue;
@@ -559,12 +559,11 @@ test callerParentPath {
     var h: Lower.Harness = undefined;
     try h.init(std.testing.allocator, "module m; endmodule");
     defer h.deinit();
-    const units = [_]Elaborate.UnitPath{
-        .{ .module = "top", .path = "", .decl = undefined },
-        .{ .module = "a", .path = "u1.", .decl = undefined },
-        .{ .module = "b", .path = "u1.u2.", .decl = undefined },
-    };
-    h.low.design.units = &units;
+    var units: std.MultiArrayList(elab.design.Unit) = .empty;
+    defer units.deinit(std.testing.allocator);
+    for ([_][]const u8{ "", "u1.", "u1.u2." }) |path|
+        try units.append(std.testing.allocator, .{ .module = .none, .path = path, .decl = .none });
+    h.low.design.units = units.slice();
     const want = [_][]const u8{ "", "", "u1.", "" };
     for (want, 0..) |w, unit| {
         h.low.cur_unit = @intCast(unit);

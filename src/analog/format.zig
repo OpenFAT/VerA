@@ -16,7 +16,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
-const str_k = @import("kernels").str_kernels;
+const str_real = @import("kernels").str_real;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_expr_name = @import("expr_name.zig");
@@ -33,7 +33,7 @@ const Conv = struct { letter: u8, alt: bool, prefixed: bool = false, field: u64 
 
 /// The largest field width or precision an analog-context format may
 /// write (#45; `docs/specification/Vague_Decisions.md` §7): 2^30. The device
-/// kernel `str_kernels.zCReal` indexes digits as i32, the precision plus
+/// kernel `str_real.zCReal` indexes digits as i32, the precision plus
 /// f64's 309 integer digits and its rounding position, and `cg_display`
 /// sizes each field's scratch as width + precision + 328 bytes in a u64;
 /// at 2^30 both are exact with room to spare. Past it is E0828.
@@ -125,7 +125,7 @@ pub fn prepareFormatArgs(self: *Lower, tok: u32, live: []const Ast.ExprId, tys: 
             if (cv.field > max_format_field)
                 try self.err(tok, .E0828, "`%{c}` has a field width or precision past {d}", .{ cv.letter, max_format_field });
             // §9.4.3 grants C's '#' to Table 9-23's real conversions only.
-            if (cv.alt and !str_k.zcAltOk(cv.letter))
+            if (cv.alt and !str_real.zcAltOk(cv.letter))
                 try self.err(tok, .E0825, "`%#{c}`: '#' is C's alternative form, which §9.4.3 grants only to %e, %f and %g", .{cv.letter});
             if (!consumes(cv.letter)) continue;
             const conv = cv.letter;
@@ -213,7 +213,7 @@ pub fn messageStart(c: Mir.Callee, tys: []const Ty) usize {
 
 /// §9.4.3 `%[flags][width][.precision]conv`: the next conversion at or after
 /// `i.*`, `%%` included (letter '%'), with `i.*` moved past it; null when
-/// the format ends first. The flags are `str_kernels.zcFlag`'s set, the one
+/// the format ends first. The flags are `str_real.zcFlag`'s set, the one
 /// `cg_display` and `zSFormatRt` read, so a flag is never taken for the
 /// letter (#41); of them only '#' is reported. A digit is read as a digit
 /// before as a flag, so the '0' of `%10d` is part of the width while a
@@ -232,8 +232,8 @@ fn nextConv(fmt: []const u8, i: *usize) ?Conv {
             field = @max(field, run);
         } else if (c == '.') {
             run = 0;
-        } else if (str_k.zcFlag(c)) |f| {
-            alt = alt or f == str_k.zc_alt;
+        } else if (str_real.zcFlag(c)) |f| {
+            alt = alt or f == str_real.zc_alt;
             run = 0;
         } else break;
     }
@@ -359,7 +359,7 @@ fn identSize(self: *Lower, name: []const u8) ?IntSize {
     var w: u32 = 32;
     var signed = true;
     if (self.vars.get(name)) |slot| {
-        if (slot.reg_width) |rw| {
+        if (slot.regWidth()) |rw| {
             w = rw;
             signed = slot.reg_signed;
         }

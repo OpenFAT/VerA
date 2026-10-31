@@ -21,8 +21,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
+const token_value = @import("frontend").token_value;
 const Mir = @import("ir").Mir;
-const Lexer = @import("frontend").Lexer;
 const fopen_types = @import("kernels").fopen_types;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
@@ -149,7 +149,7 @@ pub fn outputLiteral(self: *Lower, e: Ast.ExprId) Oom!?[]const u8 {
     const raw = self.src[span.start..span.end];
     if (raw.len < 2 or raw[0] != '"' or raw[raw.len - 1] != '"' or
         std.mem.findScalar(u8, raw, '\\') == null) return null;
-    return try Lexer.stringContents(self.arena, raw);
+    return try token_value.stringContents(self.arena, raw);
 }
 
 /// Lowers a format-string argument, keeping a literal's lexical bytes (see `outputLiteral`).

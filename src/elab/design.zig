@@ -38,7 +38,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Preprocessor = @import("frontend").Preprocessor;
+const directive_events = @import("frontend").directive_events;
 const diag = @import("diag");
 const hier_param = @import("hier_param.zig");
 
@@ -98,7 +98,7 @@ pub const Ctx = struct {
     discipline_resolution: DisciplineResolution = .basic,
     /// §10.2's directives: §3.9 names a digital primitive's side of a net
     /// with the one in force at the primitive (`insert.plan`).
-    default_disciplines: []const Preprocessor.DefaultDiscipline = &.{},
+    default_disciplines: []const directive_events.DefaultDiscipline = &.{},
 };
 
 /// A row of `Design.units`, and the value `Ast.AnalogBlock.unit` holds: 0 is

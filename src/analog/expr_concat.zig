@@ -33,7 +33,7 @@ const poison = Lower.poison;
 /// type string", so one known only while the device runs is legal: each run
 /// of constant operands still folds, and the pieces are joined by the
 /// synthetic `$str$cat`, which builds the string in its call site's scratch
-/// (`str_kernels.zStrCat`) exactly as `$sformat` does.
+/// (`str_store.zStrCat`) exactly as `$sformat` does.
 ///
 /// A `.multi_concat` arrives here for two reasons: §4.2.13 evaluates a
 /// non-literal operand once, so the parser does not unroll one; and §3.3
@@ -43,7 +43,7 @@ const poison = Lower.poison;
 /// parser unrolls only a literal count (see `replCount`). A multiplier the
 /// folder can make a number of is unrolled here; one it cannot is the row's
 /// nonconstant case, and `$str$repeat`
-/// makes the N copies while the device runs (`str_kernels.zStrRepeat`).
+/// makes the N copies while the device runs (`str_store.zStrRepeat`).
 pub fn lowerConcat(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     assert(e == .none or self.exprValid(e));
     assert(self.blockValid(self.cur));

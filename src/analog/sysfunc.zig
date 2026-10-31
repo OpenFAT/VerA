@@ -17,7 +17,7 @@ const assert = std.debug.assert;
 const hier_param = @import("elab").hier_param;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const simparam = @import("ir").simparam;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
@@ -32,9 +32,6 @@ const lower_string_io = @import("string_io.zig");
 const lower_clog2 = @import("clog2.zig");
 const lower_sysfunc_args = @import("sysfunc_args.zig");
 const lower_sysfunc_context = @import("sysfunc_context.zig");
-const simparamValueIn = simparam.simparamValueIn;
-const simparamIsRuntime = simparam.simparamIsRuntime;
-const host_simparams = simparam.host_simparams;
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
@@ -120,7 +117,7 @@ fn refuseContext(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bool {
         // function reads "Supported in analog context of connectmodule: No"
         // ($receiver_count alone reads Yes). This call is in a connect module's
         // analog block, so the fence it hits is §9.2's analog column.
-        const in_cm = self.cur_unit < self.design.units.len and self.design.units[self.cur_unit].decl.is_connect;
+        const in_cm = self.cur_unit < self.design.units.len and self.design.units.items(.decl)[self.cur_unit].get(self.file).is_connect;
         if (in_cm and !std.mem.eql(u8, name, "$receiver_count")) {
             var b = self.errWith(self.file.exprs.mainTok(e), .E0806);
             b.msg("`{s}` in the analog block of a connect module", .{name});
@@ -262,7 +259,7 @@ fn simparamStr(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
             // A design with no instances has no unit table: its one unit is the
             // top module, at the root.
             const u: struct { module: []const u8, path: []const u8 } = if (self.cur_unit < self.design.units.len)
-                .{ .module = self.design.units[self.cur_unit].module, .path = self.design.units[self.cur_unit].path }
+                .{ .module = self.file.str(self.design.units.items(.module)[self.cur_unit]), .path = self.design.units.items(.path)[self.cur_unit] }
             else
                 .{ .module = self.file.str(self.module.?.name), .path = "" };
             if (std.mem.eql(u8, nm, "module"))
@@ -271,11 +268,11 @@ fn simparamStr(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
             // module's instance name is its module name, and the path is joined
             // to it by §6.7's period. `path` already carries the separator.
             if (std.mem.eql(u8, nm, "instance") or std.mem.eql(u8, nm, "path")) {
-                const top = if (self.design.units.len != 0) self.design.units[0].module else u.module;
+                const top = if (self.design.units.len != 0) self.file.str(self.design.units.items(.module)[0]) else u.module;
                 const inst = if (u.path.len == 0)
                     top
                 else
-                    try self.arena.print("{s}{c}{s}", .{ top, Elaborate.sep, u.path[0 .. u.path.len - 1] });
+                    try self.arena.print("{s}{c}{s}", .{ top, elab.sep, u.path[0 .. u.path.len - 1] });
                 // "path" is "the hierarchical path to the $simparam$str
                 // function": the instance, then every scope inside it that
                 // encloses the call (§6.7 named blocks, §6.6.3 generate blocks
@@ -286,7 +283,7 @@ fn simparamStr(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
                 const full = if (std.mem.eql(u8, nm, "instance") or self.scope_path.len == 0)
                     inst
                 else
-                    try self.arena.print("{s}{c}{s}", .{ inst, Elaborate.sep, self.scope_path });
+                    try self.arena.print("{s}{c}{s}", .{ inst, elab.sep, self.scope_path });
                 return .{ .v = try self.mir.addStrConst(self.arena, full), .ty = .string };
             }
         };
@@ -323,7 +320,7 @@ fn refuseSimparam(self: *Lower, e: Ast.ExprId) Oom!bool {
     const args = self.file.exprs.args(e);
     if (args.len == 1) {
         if (lower_constfold.constEval(self, args[0])) |c| switch (c) {
-            .str => |s| if (simparamValueIn(self.opts.directives.timescale(), s) == null and !simparamIsRuntime(s)) {
+            .str => |s| if (simparam.valueIn(self.opts.directives.timescale(), s) == null and !simparam.isRuntime(s)) {
                 var b = self.errWith(self.file.exprs.mainTok(e), .E0811);
                 b.msg("`\"{s}\"`", .{s});
                 b.note("$simparam(\"{s}\", <expression>) supplies the value to use instead, and §9.15 makes that form legal for any name", .{s});
@@ -338,7 +335,7 @@ fn refuseSimparam(self: *Lower, e: Ast.ExprId) Oom!bool {
     // reads `iteration`.
     if (args.len >= 1) if (lower_sysfunc_args.constStrArg(self, args[0])) |s| {
         if (std.mem.eql(u8, s, "iteration")) self.out.uses.insert(.newton_iter);
-        for (host_simparams) |h| if (std.mem.eql(u8, h.name, s)) self.out.uses.insert(h.use);
+        for (simparam.host_params) |h| if (std.mem.eql(u8, h.name, s)) self.out.uses.insert(h.use);
     };
     return false;
 }

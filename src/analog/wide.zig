@@ -156,8 +156,8 @@ pub fn zero(self: *Lower, width: u32) Oom!Mir.Value {
 pub fn select(self: *Lower, slot: VarSlot, lo: u32, width: u32) Oom!Mir.Value {
     assert(self.blockValid(self.cur));
     var b: Build = .{ .l = self };
-    const base = try b.node(.{ .op = .leaf_wide, .width = slot.reg_width.?, .signed = slot.reg_signed, .arg = try b.arg(try self.builder.readVariable(slot.place, self.cur)) });
-    return b.finish("$wide$int", try selectNode(&b, base, slot.reg_width.?, lo, width));
+    const base = try b.node(.{ .op = .leaf_wide, .width = slot.regWidth().?, .signed = slot.reg_signed, .arg = try b.arg(try self.builder.readVariable(slot.place, self.cur)) });
+    return b.finish("$wide$int", try selectNode(&b, base, slot.regWidth().?, lo, width));
 }
 
 /// A two-state logic literal's low 64 bits as an i64 (its exact value when
@@ -276,8 +276,8 @@ fn identType(b: *Build, e: Ast.ExprId, name: []const u8) Oom!T {
     const l = b.l;
     if (l.in_d2a_body and l.out.discrete_snaps.contains(name)) return opaqueType(b, e);
     if (l.vars.get(name)) |slot| return switch (slot.ty) {
-        .wide => .{ .w = slot.reg_width.?, .s = slot.reg_signed },
-        .integer => if (slot.reg_width) |w| .{ .w = w, .s = slot.reg_signed } else int32,
+        .wide => .{ .w = slot.regWidth().?, .s = slot.reg_signed },
+        .integer => if (slot.regWidth()) |w| .{ .w = w, .s = slot.reg_signed } else int32,
         .real => .real,
         .string => opaqueType(b, e),
     };
@@ -484,7 +484,7 @@ fn identNode(b: *Build, name: []const u8, st: T) Oom!?u32 {
         .wide => return try b.node(.{ .op = .leaf_wide, .width = st.w, .signed = st.s, .arg = try b.arg(try l.builder.readVariable(slot.place, l.cur)) }),
         // A `reg` past 32 bits the analog context never assigns holds its
         // literal for the whole analysis (`Lower.reg_consts`).
-        .integer => if (slot.reg_width != null and slot.reg_width.? > 32) {
+        .integer => if ((slot.regWidth() orelse 0) > 32) {
             return try constReg(b, name, st);
         } else {
             // The slot's own value: the `reg`'s bits, no Table 7-1 conversion.

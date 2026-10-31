@@ -163,7 +163,7 @@ pub fn arrayElemValue(self: *Lower, name: []const u8, idx: []const i64) Oom!?Typ
     var key_buf: [lower_shape.elem_key_len]u8 = undefined;
     const key = try lower_shape.elemKey(self, &key_buf, name, idx);
     if (self.vars.get(key)) |slot|
-        return .{ .v = try lower_var.analogRead(self, try self.builder.readVariable(slot.place, self.cur), slot.reg_width), .ty = slot.ty };
+        return .{ .v = try lower_var.analogRead(self, try self.builder.readVariable(slot.place, self.cur), slot.regWidth()), .ty = slot.ty };
     if (self.param_index.get(key)) |pi|
         return .{ .v = self.param_values.items[pi], .ty = astTy(self.out.params.items[pi].ty) };
     return null;

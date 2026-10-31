@@ -24,7 +24,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const hier_param = @import("elab").hier_param;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
 const Mir = @import("ir").Mir;
@@ -126,7 +126,7 @@ pub fn declareAliasParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void 
         } else {
             var b = self.errWith(module.main_tok, .E0303);
             b.msg("`{s}`", .{target});
-            if (diag.didYouMeanMap(target, self.param_index)) |s|
+            if (diag.didYouMeanMap(u32, target, self.param_index)) |s|
                 b.help("did you mean `{s}`?", .{s});
             try b.emit();
         }
@@ -228,7 +228,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     // card field is the scoped name, `off.ww`, and the bare name reads the
     // block being lowered.
     const card_name = if (self.scope_path.len != 0 and self.param_index.contains(name))
-        try self.arena.print("{s}{c}{s}", .{ self.scope_path, Elaborate.sep, name })
+        try self.arena.print("{s}{c}{s}", .{ self.scope_path, elab.sep, name })
     else
         name;
     try addParam(self, card_name, ty, default, folded, try paramRanges(self, decl.ranges), decl.is_local, decl.main_tok);
@@ -372,7 +372,7 @@ pub fn checkAttributes(self: *Lower, attrs: []const Ast.NatureAttr) Oom!void {
 /// (§3.6.3.1, `desc` only: §2.9.2 gives `units` to parameters and variables).
 /// A named block's declarations "shall be ignored" (§3.2.1, §3.4.3) and live
 /// in the block, not in `module`; a flattened child's carry its instance path
-/// (`Elaborate.sep`) and are not the device's own. Runs after
+/// (`elab.sep`) and are not the device's own. Runs after
 /// `checkAttributes`, so a value that is not a string was already refused
 /// (E0358) and is skipped here.
 pub fn collectDeclMeta(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
@@ -676,7 +676,7 @@ fn metaRow(
     toks: []const u32,
 ) Oom!void {
     const name = self.file.str(name_id);
-    if (std.mem.findScalar(u8, name, Elaborate.sep) != null) return;
+    if (std.mem.findScalar(u8, name, elab.sep) != null) return;
     var specs: MetaSpecs = .{};
     for (toks) |t| if (last.get(t)) |l| {
         if (l.desc) |s| laterSpec(&specs.desc, s);
