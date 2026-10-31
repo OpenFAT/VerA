@@ -28,7 +28,7 @@ fn mixedSlot(dig: *sim.digital.Run, name: []const u8) u32 {
     if (name.len != 0 and name[name.len - 1] == ']') if (std.mem.findScalarLast(u8, name, '[')) |open| {
         const k = std.fmt.parseInt(i64, name[open + 1 .. name.len - 1], 10) catch unreachable; // `declareDiscreteArray` spelled it
         const base = mixedSlot(dig, name[0..open]);
-        const arr = dig.arrays.get(base) orelse unreachable; // lowering declared it an array
+        const arr = dig.decls.arrays.get(base) orelse unreachable; // lowering declared it an array
         return base + @as(u32, @intCast(k - arr.low));
     };
     return dig.slotOf(name) orelse {
@@ -59,12 +59,12 @@ fn runMixed(model: *D.Model, inst: *D.Instance, x: *[n_u]f64, forced: *[n_u]?f64
     var dig = sim.digital.elaborate(arena, mixed_source, .{ .mixed = .{ .top = mixed_top, .timescales = &mixed_timescales, .inserts = &mixed_inserts, .reads = &mixed_reads, .params = &mixed_params, .real_params = &real_params } }, &bag, &dout.writer) catch |e| mixedFail(&bag, e);
     // VAMS §9.5.1.2 one descriptor table for both contexts: the device's,
     // when it has one, so a descriptor either opens names one file.
-    if (comptime contract.fileIo(D)) |f| dig.file_io = f;
+    if (comptime contract.fileIo(D)) |f| dig.tasks.file_io = f;
     var a: Analog = .{ .model = model, .inst = inst, .x = x, .forced = forced, .state = state, .dout = &dout, .n = n, .slots = undefined, .snap_slots = undefined, .dig = &dig, .a2d_slots = undefined };
     inline for (a2d_ports, 0..) |p, i| a.a2d_slots[i] = mixedSlot(&dig, p.name);
     // §7.3.6.3 a free variable is an analog primary like a probe: read at
     // the promoted digital time, so the analog steps to each digital event.
-    if (has_free_reads) dig.has_probes = true;
+    if (has_free_reads) dig.analog.has_probes = true;
     // §8.4.3.2: an unguarded read makes the block implicitly sensitive.
     for (input_ports, 0..) |p, i| {
         a.slots[i] = mixedSlot(&dig, p.name);
@@ -73,7 +73,7 @@ fn runMixed(model: *D.Model, inst: *D.Instance, x: *[n_u]f64, forced: *[n_u]?f64
     inline for (snap_ports, 0..) |p, i| a.snap_slots[i] = mixedSlot(&dig, p.name);
     inline for (event_ports, 0..) |p, k| dig.watchEvent(mixedSlot(&dig, p.name), p.edge, k) catch |e| mixedFail(&bag, e);
     // IEEE 1364 §19.8 the digital half's tick: the finest precision of all.
-    sim.mixed.run(Analog, &a, &dig, .{ .times = &times, .tick = sim.time.secondsAt(1, dig.finest) }) catch |e| mixedFail(&bag, e);
+    sim.mixed.run(Analog, &a, &dig, .{ .times = &times, .tick = sim.time.secondsAt(1, dig.time.finest) }) catch |e| mixedFail(&bag, e);
     a.flush();
 }
 

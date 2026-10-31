@@ -29,9 +29,6 @@
 //! - from `facts.zig`: `compileFacts`, `shapeCards`, `memBytes`, `opStates`, `mixedPlan`, `warnGridEvents`
 //! - from `points.zig`: `pointCount`, `Row`
 //! - from `runner.zig`: `writeRunner`; from `vpi.zig`: `writeVpiLib`
-//! - from `compat.zig` (delete in pass 2): `Directives`, `Error`, `max_points`, `parse`, `renderRunner`,
-//!   `renderVpiLib`, `expand`, `shapeOverrides`, `BuildOptions`, `BuildResult`, `buildExe`, `Staged`,
-//!   `stageExe`, `buildBatch`, `batch_argv0`
 
 const spec = @import("spec.zig");
 const operands = @import("operands.zig");
@@ -39,7 +36,6 @@ const facts = @import("facts.zig");
 const points = @import("points.zig");
 const runner = @import("runner.zig");
 const vpi = @import("vpi.zig");
-const compat = @import("compat.zig");
 
 pub const Spec = spec.Spec;
 pub const Bench = spec.Bench;
@@ -73,23 +69,6 @@ pub const Row = points.Row;
 
 pub const writeRunner = runner.writeRunner;
 pub const writeVpiLib = vpi.writeVpiLib;
-
-// Compat, delete in pass 2: the pre-rewrite names (api file `exe.md`).
-pub const Directives = compat.Directives;
-pub const Error = compat.Error;
-pub const max_points = compat.max_points;
-pub const parse = compat.parse;
-pub const renderRunner = compat.renderRunner;
-pub const renderVpiLib = compat.renderVpiLib;
-pub const expand = compat.expand;
-pub const shapeOverrides = compat.shapeOverrides;
-pub const BuildOptions = compat.BuildOptions;
-pub const BuildResult = compat.BuildResult;
-pub const buildExe = compat.buildExe;
-pub const Staged = compat.Staged;
-pub const stageExe = compat.stageExe;
-pub const buildBatch = compat.buildBatch;
-pub const batch_argv0 = compat.batch_argv0;
 
 test {
     _ = @import("parse.zig");

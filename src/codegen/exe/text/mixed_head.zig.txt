@@ -21,7 +21,7 @@ fn mixedWord(dig: *sim.digital.Run, slot: u32, name: []const u8, k: u32) i64 {
 
 fn mixedInput(dig: *sim.digital.Run, slot: u32, name: []const u8) f64 {
     // Table 7-1's real row: "no conversion".
-    if (dig.reals.contains(slot)) return @bitCast(dig.values[slot].values()[0]);
+    if (dig.decls.reals.contains(slot)) return @bitCast(dig.values[slot].values()[0]);
     const v = dig.values[slot].asInt() orelse {
         std.debug.print("{s}: FAIL §7.3.2: the discrete input `{s}` holds an x or z bit when the analog block reads it\n", .{ title, name });
         std.process.exit(1);

@@ -62,7 +62,7 @@ comptime {
 /// has one entry per `lw.nodes` row and must outlive the interpreter.
 pub fn init(scratch: Allocator, mir: *const Mir, lw: *const Lowered, volts: []const f64, refusal: *Refusal) Error!Interp {
     assert(volts.len == lw.nodes.len);
-    const n_values = Mir.Value.first_dynamic + mir.defs.len;
+    const n_values = mir.valueCount();
     const in: Interp = .{
         .mir = mir,
         .lw = lw,
@@ -82,7 +82,7 @@ pub fn init(scratch: Allocator, mir: *const Mir, lw: *const Lowered, volts: []co
 /// blocks.
 pub fn run(in: *Interp) Error!void {
     const mir = in.mir;
-    assert(in.vals.len == Mir.Value.first_dynamic + mir.defs.len);
+    assert(in.vals.len == mir.valueCount());
     assert(in.volts.len == in.lw.nodes.len);
     in.written.unsetAll();
     var block: Mir.Block = .entry;
