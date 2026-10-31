@@ -70,6 +70,7 @@
 //! - `pub fn reset(self: *Run) Error!void`
 
 const std = @import("std");
+const vcd_file = @import("vcd.zig");
 const activations = @import("activations.zig");
 const monitor = @import("monitor.zig");
 const Tick = @import("../scheduler.zig").Time;
@@ -357,6 +358,10 @@ calls: activations.Calls = .{},
 host: vpi.Host = .{},
 /// The run's side of a mixed-signal analysis (`analog_link.Link`).
 analog: analog_link.Link = .{},
+/// IEEE 1364-2005 §18 the value change dumps (`vcd.Dumps`).
+dumps: vcd_file.Dumps = .{},
+/// The state §17 system tasks keep across calls (`system.TaskState`).
+tasks: system.TaskState = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
@@ -455,26 +460,8 @@ specparams: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 /// holding a double's 64 bits, which typing, conversion and change
 /// detection read as a real.
 reals: std.AutoHashMapUnmanaged(u32, void) = .empty,
-/// §17.6 the stochastic queues, by `q_id`.
-queues: std.AutoHashMapUnmanaged(i64, system.Queue) = .empty,
-/// §17.9.1 the seed of a `$random` called without one. §17.9.3's
-/// listing starts from 0, which its `uniform` reads as 259341593.
-random_seed: i32 = 0,
-/// VAMS §9.5.1.2 the host's descriptor table, when the simulation shares
-/// one between this engine and an analog device (the mixed runner
-/// installs the device's `file_io`); null, this engine's own
-/// (`system.table`).
-file_io: ?@import("contract").FileIo = null,
 /// §5.2.1 each part-select's constant `[msb:lsb]`, folded once by `infer`.
 part_selects: std.AutoHashMapUnmanaged(SpecExpr, VecRange) = .empty,
-/// §18 the value change dump.
-vcd: @import("vcd.zig").Vcd = .{},
-/// `vcd.catalog` of this run, built at the first dump.
-vcd_catalog: ?@import("vcd.zig").Catalog = null,
-/// §18.3 the `$dumpports` calls compile has checked.
-ports_dump: @import("evcd.zig").Check = .{},
-/// §18.3 the extended dump.
-evcd: @import("evcd.zig").Evcd = .{},
 /// IEEE 1364-2005 §15 the timing checks (`tchk.Checks`).
 checks: tchk.Checks = .{},
 /// The source and options `elaborate` ran, which IEEE 1364-2005 C.7's
@@ -673,7 +660,7 @@ pub fn reset(self: *Run) Error!void {
     fresh.host.stmt_hook = self.host.stmt_hook;
     fresh.checks.hook = self.checks.hook;
     fresh.host.error_hook = self.host.error_hook;
-    fresh.file_io = self.file_io;
+    fresh.tasks.file_io = self.tasks.file_io;
     fresh.analog.probe = self.analog.probe;
     fresh.analog.probe_ctx = self.analog.probe_ctx;
     for (self.watch, fresh.watch) |old, *w| if (old.contains(.vpi)) w.insert(.vpi);

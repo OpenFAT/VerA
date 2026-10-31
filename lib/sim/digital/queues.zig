@@ -90,7 +90,7 @@ pub fn queueTask(self: *Run, a: std.mem.Allocator, op: QueueOp, args: []const As
     const id = try int(self, a, args[0]);
     const in1: ?i64 = if (op == .initialize or op == .add or op == .exam) try int(self, a, args[1]) else null;
     const in2: ?i64 = if (op == .initialize or op == .add) try int(self, a, args[2]) else null;
-    const r = try queueStep(&self.queues, self.arena, op, id, in1, in2, now(self));
+    const r = try queueStep(&self.tasks.queues, self.arena, op, id, in1, in2, now(self));
     if (r.out[0]) |v| try evaluate.assignInt(self, a, args[1], v);
     if (r.out[1]) |v| try evaluate.assignInt(self, a, args[2], v);
     try evaluate.assignInt(self, a, args[3], r.status);
@@ -165,7 +165,7 @@ pub fn queueStep(queues: *Queues, gpa: std.mem.Allocator, op: QueueOp, id: ?i64,
 
 /// §17.6.4 `$q_full(q_id, status)`: 1 when the queue holds its maximum.
 pub fn queueFull(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId) Error!i64 {
-    const r = queueIsFull(&self.queues, try int(self, a, args[0]));
+    const r = queueIsFull(&self.tasks.queues, try int(self, a, args[0]));
     try evaluate.assignInt(self, a, args[1], r.status);
     return r.full;
 }

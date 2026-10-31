@@ -22,6 +22,7 @@
 //! - `Vcd.tick(self: *Vcd, gpa: std.mem.Allocator, a: std.mem.Allocator, io: ?std.Io, cat: *const Catalog, src: anytype, now: u64) Failure!void`
 //! - `Values.dumpPlanes(self: Values, v: Var, out: []u64) void`
 //! - `Values.dumpSlot(self: Values, slot: u32) void`
+//! - `pub const Dumps = struct`
 //! - `pub fn message(e: Failure) []const u8`
 //! - `pub fn callText(text: []const u8, start: u32) []const u8`
 //! - `pub fn preamble(w: *std.Io.Writer, io: std.Io, call: []const u8, finest: i32) std.Io.Writer.Error!void`
@@ -288,6 +289,19 @@ pub const Vcd = struct {
     }
 };
 
+/// IEEE 1364-2005 §18 a run's dumps: the four-state VCD with what `$dumpvars`
+/// can select, and the extended (`$dumpports`) one with its compile-time check.
+pub const Dumps = struct {
+    /// §18 the value change dump.
+    vcd: @import("vcd.zig").Vcd = .{},
+    /// `vcd.catalog` of this run, built at the first dump.
+    catalog: ?@import("vcd.zig").Catalog = null,
+    /// §18.3 the `$dumpports` calls compile has checked.
+    ports_check: @import("evcd.zig").Check = .{},
+    /// §18.3 the extended dump.
+    evcd: @import("evcd.zig").Evcd = .{},
+};
+
 /// One identifier code (§18.2.1): a catalog variable and the value last
 /// written for it, both planes. Two references to one slot (a port
 /// collapsed onto its parent's net) share the code, which §18.2.3.7 b)
@@ -468,7 +482,7 @@ pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
 /// The interpreter's run of one §18.1 task.
 pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
     assert(tok < r.starts.len);
-    const v = &r.vcd;
+    const v = &r.dumps.vcd;
     switch (op) {
         .file => if (args.len == 1 and !v.started) {
             const name = try @import("system.zig").text(a, try evaluate.eval(r, a, args[0], 0));
@@ -498,8 +512,8 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
 /// The step's `.vcd_tick` serves the four-state dump, once `$dumpvars`
 /// selected it, and the extended one (`evcd.tick`).
 pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
-    r.vcd.pending = false;
-    if (r.vcd.selected_at != null) r.vcd.tick(r.arena, a, r.io, try catalogOf(r), Values{ .r = r }, r.scheduler.now) catch |e| return failed(r, e);
+    r.dumps.vcd.pending = false;
+    if (r.dumps.vcd.selected_at != null) r.dumps.vcd.tick(r.arena, a, r.io, try catalogOf(r), Values{ .r = r }, r.scheduler.now) catch |e| return failed(r, e);
     try @import("evcd.zig").tick(r, a);
 }
 
@@ -606,15 +620,15 @@ fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast
 }
 
 fn catalogOf(r: *Run) Error!*const Catalog {
-    if (r.vcd_catalog == null) r.vcd_catalog = try catalog(r, r.arena, &.{});
-    return &r.vcd_catalog.?;
+    if (r.dumps.catalog == null) r.dumps.catalog = try catalog(r, r.arena, &.{});
+    return &r.dumps.catalog.?;
 }
 
 fn failed(r: *Run, e: Failure) Error {
     return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
-        error.DumpvarsTime => r.fail(r.vcd.tok, message(error.DumpvarsTime), .{}),
-        inline else => |f| r.fail(r.vcd.tok, comptime message(f), .{r.vcd.name}),
+        error.DumpvarsTime => r.fail(r.dumps.vcd.tok, message(error.DumpvarsTime), .{}),
+        inline else => |f| r.fail(r.dumps.vcd.tok, comptime message(f), .{r.dumps.vcd.name}),
     };
 }
 

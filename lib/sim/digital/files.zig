@@ -355,7 +355,7 @@ pub fn channels(t: ?contract.FileIo, io: ?std.Io, out: *std.Io.Writer, d: i64, b
 /// own, which only an engine given filesystem access (`Options.io`) opens
 /// files through.
 fn table(self: *Run) ?contract.FileIo {
-    return self.file_io orelse if (self.io != null) own else null;
+    return self.tasks.file_io orelse if (self.io != null) own else null;
 }
 
 fn low32(d: ?i64) ?i64 {

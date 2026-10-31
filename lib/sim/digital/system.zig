@@ -38,17 +38,14 @@
 //! - `pub const dist_warning`
 //! - `pub const Pla = struct`
 //! - `pub const pla_tasks`
+//! - `pub const TaskState = struct`
 //! - `pub fn dist(f: Dist, seed: i32, a: i32, b: i32) ?Draw`
 //! - `pub fn random(self: *Run, a: std.mem.Allocator, f: Dist, args: []const Ast.ExprId, tok: u32) Error!i32`
 //! - `pub fn text(a: std.mem.Allocator, v: Int.Literal) Error!?[]const u8`
 //! - `pub fn sformat(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show: ?display.Show) Error!void`
 //! - `pub fn pla(self: *Run, a: std.mem.Allocator, p: Pla, args: []const Ast.ExprId) Error!void`
 //! - `pub fn plaEval(p: Pla, rows: []const Int.Literal, in: Int.Literal, out: Int.Literal) void`
-//! IEEE 1364-2005 §17 system tasks that keep state of their own: a task's
-//! argument expressions and the `Run` in; values written to its output
-//! arguments (and, for queues, `Run.queues`) out.
-//! Clauses: §17.2 file input and output, §17.2.3 string output, §17.5
-//! programmable logic arrays, §17.6 stochastic queues, §17.9 distributions.
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Front = @import("frontend");
@@ -184,6 +181,22 @@ pub const pla_tasks = blk: {
     break :blk list;
 };
 
+/// What a run's §17 system tasks keep between calls: the §17.6 queues by
+/// `q_id`, §17.9.1's seedless `$random` stream, and the host's file I/O
+/// (null: the run opens files itself, `files.own`).
+pub const TaskState = struct {
+    /// §17.6 the stochastic queues, by `q_id`.
+    queues: std.AutoHashMapUnmanaged(i64, Queue) = .empty,
+    /// §17.9.1 the seed of a `$random` called without one. §17.9.3's
+    /// listing starts from 0, which its `uniform` reads as 259341593.
+    random_seed: i32 = 0,
+    /// VAMS §9.5.1.2 the host's descriptor table, when the simulation shares
+    /// one between this engine and an analog device (the mixed runner
+    /// installs the device's `file_io`); null, this engine's own
+    /// (`system.table`).
+    file_io: ?@import("contract").FileIo = null,
+};
+
 /// §17.9.3's `rtl_dist_*` over the listing's 32-bit `long` seed; `a` and `b`
 /// are the arguments after the seed. Null where the listing prints its
 /// "must have positive" warning instead of drawing: the value is 0 and the
@@ -223,8 +236,8 @@ pub fn dist(f: Dist, seed: i32, a: i32, b: i32) ?Draw {
 pub fn random(self: *Run, a: std.mem.Allocator, f: Dist, args: []const Ast.ExprId, tok: u32) Error!i32 {
     assert(tok < self.starts.len);
     if (args.len == 0) {
-        const d = dist(.random, self.random_seed, 0, 0).?;
-        self.random_seed = d.seed;
+        const d = dist(.random, self.tasks.random_seed, 0, 0).?;
+        self.tasks.random_seed = d.seed;
         return d.value;
     }
     const seed = try long(self, a, args[0]);

@@ -155,9 +155,9 @@ pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
             const last = i + 1 == given.len;
             if (last and ex.tag(a) == .str_literal) {
                 const f = ex.strOf(a);
-                if (std.mem.findScalar(Ast.StrId, r.ports_dump.files.items, f) != null)
+                if (std.mem.findScalar(Ast.StrId, r.dumps.ports_check.files.items, f) != null)
                     return r.exprFail(a, "§18.3.1: the same file_pathname shall not be given to two $dumpports calls");
-                try r.ports_dump.files.append(r.arena, f);
+                try r.dumps.ports_check.files.append(r.arena, f);
                 continue;
             }
             if (ex.tag(a) != .ident and ex.tag(a) != .hier_ident) {
@@ -168,9 +168,9 @@ pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
                 .scope => |sc| sc,
                 .slot => if (last) continue else return r.exprFail(a, "§18.3.1: a $dumpports scope is a module instance: only modules are allowed, not variables"),
             };
-            if (std.mem.findScalar(u32, r.ports_dump.scopes.items, sc) != null)
+            if (std.mem.findScalar(u32, r.dumps.ports_check.scopes.items, sc) != null)
                 return r.exprFail(a, "§18.3.1: each $dumpports scope shall be unique");
-            try r.ports_dump.scopes.append(r.arena, sc);
+            try r.dumps.ports_check.scopes.append(r.arena, sc);
         },
         .off, .on, .all, .flush => if (given.len > 1) return r.fail(tok, "$dumpportsoff, $dumpportson, $dumpportsall and $dumpportsflush take at most one file_pathname argument", .{}),
         // "The filesize argument is required".
@@ -184,7 +184,7 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
     assert(tok < r.starts.len);
     const ex = &r.file.exprs;
     const given = present(args);
-    const d = &r.evcd;
+    const d = &r.dumps.evcd;
     if (op == .ports) {
         // "the execution of all $dumpports tasks shall be at the same
         // simulation time".
@@ -263,7 +263,7 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
 /// step: each new file's header and `$dumpports` section, and each running
 /// file's changes.
 pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
-    for (r.evcd.files.items) |*f| {
+    for (r.dumps.evcd.files.items) |*f| {
         if (f.started) {
             try changes(r, a, f);
             continue;
@@ -300,7 +300,7 @@ pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
 
 /// §18.3.6.1 `$vcdclose <final time> $end`, once the run is over.
 pub fn close(r: *Run) Error!void {
-    for (r.evcd.files.items) |*f| if (f.started) {
+    for (r.dumps.evcd.files.items) |*f| if (f.started) {
         var buf: [64]u8 = undefined;
         try put(r, f, std.mem.print(&buf, "$vcdclose #{d} $end\n", .{r.scheduler.now}) catch unreachable);
     };

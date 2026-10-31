@@ -209,7 +209,7 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
 pub fn trigger(self: *Run, at: u32) Error!void {
     if (self.watch[at].contains(.d2a)) try requestD2a(self, at, .x, .x);
     if (self.watch[at].contains(.vcd)) {
-        self.vcd.fire(&self.vcd_catalog.?, at);
+        self.dumps.vcd.fire(&self.dumps.catalog.?, at);
         try requestVcd(self);
     }
     try wake(self, at, .x, .x);
@@ -285,8 +285,8 @@ pub fn requestMonitor(self: *Run) Error!void {
 
 /// §18.1.3/§18.1.4 the dump is written at the end of the time step, once.
 pub fn requestVcd(self: *Run) Error!void {
-    if (self.vcd.pending) return;
-    self.vcd.pending = true;
+    if (self.dumps.vcd.pending) return;
+    self.dumps.vcd.pending = true;
     try exec.enqueueMonitor(self, .vcd_tick);
 }
 
