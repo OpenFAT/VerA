@@ -108,11 +108,11 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
         const item = r.pending.items[event.payload].item;
         switch (item) {
             .run_process => |start| {
-                r.ctx = 0;
+                r.calls.ctx = 0;
                 try exec.execute(r, &scratch, start);
             },
             .@"resume" => |x| {
-                r.ctx = x.ctx;
+                r.calls.ctx = x.ctx;
                 try @import("activations.zig").makeResident(r, x.ctx);
                 try exec.execute(r, &scratch, x.pc);
             },

@@ -2,11 +2,6 @@
 //! Cites: IEEE 1364-2005 §10.2.2, §10.2.3, §10.3, §10.4.2.
 //!
 //! Contents:
-//! - `pub const address`
-//! - `pub const store`
-//! - `pub const trigger`
-//! - `pub const release`
-//! - `pub const forceValue`
 //! - `pub const Act = struct`
 //! - `pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.ExprId) Error!Int.Literal`
 //! - `pub fn makeResident(self: *Run, ctx: u32) Error!void`
@@ -46,24 +41,32 @@ const execute = exec.execute;
 
 // ---- scheduler rows (§6.1.3, §17.1.2, §17.1.3) -------------------------------
 /// `evaluate.address`: the element an lvalue names right now.
-pub const address = evaluate.address;
-
 /// `waiters.store`: the one write path, which wakes what watches the slot.
-pub const store = waiters.store;
-
 /// `waiters.trigger`: §5.10.4 `-> e`.
-pub const trigger = waiters.trigger;
-
 /// `waiters.release`: §9.3 `deassign` or `release`.
-pub const release = waiters.release;
-
 /// `waiters.forceValue`: a VPI force of a constant.
-pub const forceValue = waiters.forceValue;
-
 /// One activation of a task that suspends and reaches itself: where its
 /// caller resumes, the actuals its outputs copy back to, and its own storage,
 /// saved while another activation of the same automatic task is resident.
 pub const Act = struct { sub: u32, ret_pc: u32, ret_ctx: u32, args: []const Ast.ExprId, storage: []u64 = &.{} };
+
+/// §10 a run's subroutine activations: §10.3 the disable unwinding synchronous
+/// ones, the automatic frames set aside, and §10.2.3 the timed activations of
+/// recursive tasks with their `fork` counters.
+pub const Calls = struct {
+    /// §10.3 a `disable` of a subroutine with synchronous activations in
+    /// progress: every activation returns at once until the outermost one.
+    unwind: ?u32 = null,
+    /// The saved storage of the automatic activations in progress.
+    saved: std.ArrayList(u64) = .empty,
+    /// §10.2.3 the activations of recursive timed tasks: the one the
+    /// executing process is in (0 for none), every one in progress, and the
+    /// rows free for reuse.
+    ctx: u32 = 0,
+    acts: std.ArrayList(Act) = .empty,
+    free: std.ArrayList(u32) = .empty,
+    joins: std.AutoHashMapUnmanaged(struct { join: u32, ctx: u32 }, u32) = .empty,
+};
 
 /// Runs subroutine `idx` to completion as one activation (§10.2.2, §10.4) and
 /// returns a function's result, in `a`. The arguments are evaluated in the
@@ -97,14 +100,14 @@ pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.Ex
         // overwrites.
         in.* = try copyLiteral(a, try evaluate.evalFor(self, a, arg, self.slotType(slot)));
     }
-    const saved_len = self.saved_planes.items.len;
+    const saved_len = self.calls.saved.items.len;
     // §10.4.5: a call elaboration folds "has no effect on the initial values
     // of the variables used either at simulation time or among multiple
     // invocations of a function at elaboration time", so it runs as an
     // automatic one does.
     const fresh = decl.automatic or self.growing != null or self.folding_constant;
     if (fresh) {
-        for (f.first..f.first + f.count) |s| try self.saved_planes.appendSlice(self.arena, self.values[s].planes);
+        for (f.first..f.first + f.count) |s| try self.calls.saved.appendSlice(self.arena, self.values[s].planes);
         try resetFrame(self, a, f);
     }
     for (inputs, f.ports) |in, slot| if (in) |v| @memcpy(self.values[slot].planes, v.planes);
@@ -127,14 +130,14 @@ pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.Ex
     // Reuse the input copies, which are no longer needed after the body.
     // §10.3: a disabled task's outputs are not copied back.
     for (decl.ports, inputs, f.ports) |p, *out, slot|
-        out.* = if (p.direction != .input and self.unwind == null) try copyLiteral(a, self.values[slot]) else null;
+        out.* = if (p.direction != .input and self.calls.unwind == null) try copyLiteral(a, self.values[slot]) else null;
     if (fresh) {
-        loadFrame(self, f, self.saved_planes.items[saved_len..]);
-        self.saved_planes.shrinkRetainingCapacity(saved_len);
+        loadFrame(self, f, self.calls.saved.items[saved_len..]);
+        self.calls.saved.shrinkRetainingCapacity(saved_len);
     }
     for (args, inputs, f.ports) |arg, out, slot| if (out) |v|
         try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
-    if (self.unwind == idx and sub.active == 0) self.unwind = null;
+    if (self.calls.unwind == idx and sub.active == 0) self.calls.unwind = null;
     return result;
 }
 
@@ -143,7 +146,7 @@ pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.Ex
 /// Put activation `ctx`'s storage in its task's frame, if it is not there.
 pub fn makeResident(self: *Run, ctx: u32) Error!void {
     if (ctx == 0) return;
-    const act = self.acts.items[ctx];
+    const act = self.calls.acts.items[ctx];
     const sub = &self.subs.items[act.sub];
     if (!sub.decl.automatic or sub.resident == ctx) return;
     try evict(self, act.sub);
@@ -162,14 +165,14 @@ pub fn callTimed(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.E
     const inputs = try a.alloc(?Int.Literal, args.len);
     for (sub.decl.ports, args, inputs, f.ports) |p, arg, *in, slot|
         in.* = if (p.direction == .output) null else try copyLiteral(a, try evaluate.evalFor(self, a, arg, self.slotType(slot)));
-    if (self.acts.items.len == 0) try self.acts.append(self.arena, undefined); // 0 is "no activation"
-    const act: Act = .{ .sub = idx, .ret_pc = pc + 1, .ret_ctx = self.ctx, .args = args };
-    const id: u32 = if (self.free_acts.pop()) |k| blk: {
-        self.acts.items[k] = act;
+    if (self.calls.acts.items.len == 0) try self.calls.acts.append(self.arena, undefined); // 0 is "no activation"
+    const act: Act = .{ .sub = idx, .ret_pc = pc + 1, .ret_ctx = self.calls.ctx, .args = args };
+    const id: u32 = if (self.calls.free.pop()) |k| blk: {
+        self.calls.acts.items[k] = act;
         break :blk k;
     } else blk: {
-        try self.acts.append(self.arena, act);
-        break :blk @intCast(self.acts.items.len - 1);
+        try self.calls.acts.append(self.arena, act);
+        break :blk @intCast(self.calls.acts.items.len - 1);
     };
     if (sub.decl.automatic) {
         try evict(self, idx);
@@ -177,7 +180,7 @@ pub fn callTimed(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.E
         sub.resident = id;
     }
     for (inputs, f.ports) |in, slot| if (in) |v| @memcpy(self.values[slot].planes, v.planes);
-    self.ctx = id;
+    self.calls.ctx = id;
     return sub.body.?.entry;
 }
 
@@ -187,14 +190,14 @@ pub fn callTimed(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.E
 pub fn returnTimed(self: *Run, a: std.mem.Allocator, idx: u32) Error!u32 {
     const sub = &self.subs.items[idx];
     const f = sub.body.?.frame;
-    const done = self.ctx;
-    const act = self.acts.items[done];
+    const done = self.calls.ctx;
+    const act = self.calls.acts.items[done];
     const outs = try a.alloc(Int.Literal, f.ports.len);
     for (f.ports, outs) |slot, *o| o.* = try copyLiteral(a, self.values[slot]);
     if (sub.resident == done) sub.resident = 0; // dead: nothing to save
-    try self.free_acts.append(self.arena, done);
-    self.ctx = act.ret_ctx;
-    try makeResident(self, self.ctx);
+    try self.calls.free.append(self.arena, done);
+    self.calls.ctx = act.ret_ctx;
+    try makeResident(self, self.calls.ctx);
     self.scope = self.code_scope.items[act.ret_pc - 1];
     for (sub.decl.ports, act.args, f.ports, outs) |p, arg, slot, v| if (p.direction != .input)
         try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
@@ -208,7 +211,7 @@ fn evict(self: *Run, idx: u32) Error!void {
     const sub = &self.subs.items[idx];
     if (sub.resident == 0) return;
     const f = sub.body.?.frame;
-    const act = &self.acts.items[sub.resident];
+    const act = &self.calls.acts.items[sub.resident];
     var len: usize = 0;
     for (f.first..f.first + f.count) |s| len += self.values[s].planes.len;
     if (act.storage.len != len) act.storage = try self.arena.alloc(u64, len);

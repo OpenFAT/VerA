@@ -70,6 +70,7 @@
 //! - `pub fn reset(self: *Run) Error!void`
 
 const std = @import("std");
+const activations = @import("activations.zig");
 const monitor = @import("monitor.zig");
 const Tick = @import("../scheduler.zig").Time;
 const exec = @import("exec.zig");
@@ -194,9 +195,6 @@ sub_by_name: std.AutoHashMapUnmanaged(Name, u32) = .empty,
 /// (`call_subs`) and each instance adds its own base.
 sub_base: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 call_subs: std.AutoHashMapUnmanaged(Ast.ExprId, u32) = .empty,
-/// §10.3 a `disable` of a subroutine with synchronous activations in
-/// progress: every activation returns at once until the outermost one.
-unwind: ?u32 = null,
 /// Compiling a function body, which §10.4.4 restricts.
 in_function: bool = false,
 /// §9.7.2 each event term that is an expression, by the scope it is
@@ -220,14 +218,6 @@ auto_slots: std.AutoHashMapUnmanaged(u32, void) = .empty,
 /// function's frame, and the named blocks inside it (§10.2.1: "all
 /// items declared inside automatic tasks" are allocated per call).
 auto_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
-/// The saved storage of the automatic activations in progress.
-saved_planes: std.ArrayList(u64) = .empty,
-/// §10.2.3 the activations of recursive timed tasks: the one the
-/// executing process is in (0 for none), every one in progress, and the
-/// rows free for reuse.
-ctx: u32 = 0,
-acts: std.ArrayList(@import("activations.zig").Act) = .empty,
-free_acts: std.ArrayList(u32) = .empty,
 /// The instruction a system task is running from, so `%m` can name the
 /// §5.3.2 named blocks around it.
 pc: u32 = 0,
@@ -324,7 +314,6 @@ repeats: std.ArrayList(u64) = .empty,
 /// recursive timed task's out-of-line body, which every activation runs
 /// (§10.2.3): there the counter is the activation's (`act_joins`).
 joins: std.ArrayList(u32) = .empty,
-act_joins: std.AutoHashMapUnmanaged(struct { join: u32, ctx: u32 }, u32) = .empty,
 /// §9.3 the procedural continuous assignments in effect, by slot: the
 /// process range of an `assign` and of a `force`. While one is, ordinary
 /// writes to the slot do not land (`store`); a force outranks an assign.
@@ -362,6 +351,8 @@ fan: []u32 = &.{},
 armed: []bool = &.{},
 /// The zero-delay-loop guard: events dispatched at one tick (`run_until.EventBudget`).
 event_budget: run_until.EventBudget = .{},
+/// §10 the subroutine activations in progress (`activations.Calls`).
+calls: activations.Calls = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.

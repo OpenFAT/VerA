@@ -317,11 +317,11 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
     };
     const list = termsOf(self, target) orelse return;
     const event = self.events.get(target);
-    const event_ctx = if (event) |e| eventContext(self, e.scope, self.ctx) else 0;
+    const event_ctx = if (event) |e| eventContext(self, e.scope, self.calls.ctx) else 0;
     // §10.2.1: an automatic task's variables, too, are each activation's
     // own; a write in one activation is no change in another's.
     const auto = event == null and self.auto_slots.contains(target);
-    const slot_ctx = if (auto) slotContext(self, target, self.ctx) else 0;
+    const slot_ctx = if (auto) slotContext(self, target, self.calls.ctx) else 0;
     // Compacts as it goes: a matched term leaves with its suspension, and a
     // stale one (its suspension resumed through another slot, or was
     // disabled) is dropped.
@@ -374,7 +374,7 @@ pub fn park(self: *Run, pc: u32) Error!u32 {
     };
     const s = &self.susps.items[id];
     s.pc = pc;
-    s.ctx = self.ctx;
+    s.ctx = self.calls.ctx;
     s.alive = true;
     return id;
 }
@@ -457,12 +457,12 @@ fn extHit(self: *Run, t: Term, target: u32, before: Int.Bit, after: Int.Bit) Err
         var scratch = std.heap.ArenaAllocator.init(self.arena);
         defer scratch.deinit();
         const scope = self.scope;
-        const ctx = self.ctx;
+        const ctx = self.calls.ctx;
         defer self.scope = scope;
-        defer self.ctx = ctx;
+        defer self.calls.ctx = ctx;
         self.scope = e.scope;
-        self.ctx = self.susps.items[t.susp].ctx;
-        try @import("activations.zig").makeResident(self, self.ctx);
+        self.calls.ctx = self.susps.items[t.susp].ctx;
+        try @import("activations.zig").makeResident(self, self.calls.ctx);
         const value = try evaluate.eval(self, scratch.allocator(), e.expr, 0);
         try @import("activations.zig").makeResident(self, ctx);
         return selectChanged(e, t.edge, value);
@@ -529,7 +529,7 @@ fn requestD2a(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!vo
 fn eventContext(self: *const Run, declared: u32, from: u32) u32 {
     var ctx = from;
     while (ctx != 0) {
-        const act = self.acts.items[ctx];
+        const act = self.calls.acts.items[ctx];
         const sub = self.subs.items[act.sub];
         if (sub.decl.automatic) {
             const frame_scope = sub.body.?.frame.scope;
@@ -551,7 +551,7 @@ fn eventContext(self: *const Run, declared: u32, from: u32) u32 {
 fn slotContext(self: *const Run, slot: u32, from: u32) u32 {
     var ctx = from;
     while (ctx != 0) {
-        const act = self.acts.items[ctx];
+        const act = self.calls.acts.items[ctx];
         const sub = self.subs.items[act.sub];
         if (sub.decl.automatic) {
             const f = sub.body.?.frame;
@@ -570,12 +570,12 @@ fn selectedEvent(self: *Run, e: TermExt, susp: u32, target: u32) Error!bool {
     var scratch = std.heap.ArenaAllocator.init(self.arena);
     defer scratch.deinit();
     const scope = self.scope;
-    const ctx = self.ctx;
+    const ctx = self.calls.ctx;
     defer self.scope = scope;
-    defer self.ctx = ctx;
+    defer self.calls.ctx = ctx;
     self.scope = e.scope;
-    self.ctx = self.susps.items[susp].ctx;
-    try @import("activations.zig").makeResident(self, self.ctx);
+    self.calls.ctx = self.susps.items[susp].ctx;
+    try @import("activations.zig").makeResident(self, self.calls.ctx);
     const selected = try evaluate.address(self, scratch.allocator(), e.event_select);
     try @import("activations.zig").makeResident(self, ctx);
     return selected != null and selected.? == target;

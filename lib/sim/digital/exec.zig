@@ -455,7 +455,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
     while (true) {
         // §10.3: a disabled subroutine's synchronous activations return at
         // once, each back into its caller, until `callSync` ends the unwind.
-        if (self.unwind != null) return;
+        if (self.calls.unwind != null) return;
         // §6.2.2 / §12.7: the names an instruction reads are those of the
         // scope it was compiled in: its instance's, or an inlined task's.
         self.scope = self.code_scope.items[pc];
@@ -481,7 +481,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 continue;
             },
             .delay => |s| {
-                _ = try enqueue(self, resumption(pc + 1, self.ctx), try delayOf(self, scratch, s.amount, s.tok), false);
+                _ = try enqueue(self, resumption(pc + 1, self.calls.ctx), try delayOf(self, scratch, s.amount, s.tok), false);
                 return;
             },
             .task => |s| {
@@ -542,7 +542,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     continue;
                 }
                 if (a.timing_is_delay)
-                    _ = try enqueue(self, resumption(pc + 1, self.ctx), try delayOf(self, scratch, a.timing, tok), false)
+                    _ = try enqueue(self, resumption(pc + 1, self.calls.ctx), try delayOf(self, scratch, a.timing, tok), false)
                 else
                     try suspendOn(self, a.timing, try waiters.park(self, pc + 1));
                 return;
@@ -609,17 +609,17 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     pc = f.end;
                     continue;
                 }
-                if (self.ctx == 0)
+                if (self.calls.ctx == 0)
                     self.joins.items[f.join] = @intCast(f.arms.len)
                 else
-                    try self.act_joins.put(self.arena, .{ .join = f.join, .ctx = self.ctx }, @intCast(f.arms.len));
-                for (f.arms) |arm| _ = try enqueue(self, resumption(arm, self.ctx), null, false);
+                    try self.calls.joins.put(self.arena, .{ .join = f.join, .ctx = self.calls.ctx }, @intCast(f.arms.len));
+                for (f.arms) |arm| _ = try enqueue(self, resumption(arm, self.calls.ctx), null, false);
                 return;
             },
             .join_arm => |j| {
-                const left = if (self.ctx == 0) &self.joins.items[j.join] else self.act_joins.getPtr(.{ .join = j.join, .ctx = self.ctx }).?;
+                const left = if (self.calls.ctx == 0) &self.joins.items[j.join] else self.calls.joins.getPtr(.{ .join = j.join, .ctx = self.calls.ctx }).?;
                 left.* -= 1;
-                if (left.* == 0) _ = try enqueue(self, resumption(j.end, self.ctx), null, false);
+                if (left.* == 0) _ = try enqueue(self, resumption(j.end, self.calls.ctx), null, false);
                 return;
             },
             // §17.5 an asynchronous PLA: its own process, which evaluates and
@@ -633,9 +633,9 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     var nested_scratch: Scratch = .init(&.{}, &nested);
                     // A process of its own, outside any activation, as a
                     // queued `.run_process` starts.
-                    const ctx = self.ctx;
-                    self.ctx = 0;
-                    defer self.ctx = ctx;
+                    const ctx = self.calls.ctx;
+                    self.calls.ctx = 0;
+                    defer self.calls.ctx = ctx;
                     try execute(self, &nested_scratch, p.at);
                 } else _ = try enqueue(self, .{ .run_process = p.at }, null, false);
                 pc += 1;
@@ -674,7 +674,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     if (try disable(self, rg.start, rg.end) and inside) resumed = true;
                 }
                 if (sub.active != 0) {
-                    self.unwind = idx;
+                    self.calls.unwind = idx;
                     return;
                 }
                 if (resumed) return;
