@@ -29,9 +29,16 @@
 //! that yield x for known operands (`/` or `%` by zero, zero to a negative
 //! power) yield 0, as the analog integer `/` does (W0653).
 //!
-//! LRM clauses this file's code cites: §2.6.1, §3.2, §7.3.1, §7.3.2, §9.11.
-//! IEEE 1364-2005 clauses cited: §3.5.1, §4.1, §4.2.1, §4.8.2, §5.1.5, §5.1.7-§5.1.14,
-//! §5.4.1, §5.5.1-§5.5.3, Table 5-6 and Table 5-22.
+//! Cites: §2.6.1, §3.2, §3.5.1, §4.1, §4.2.1, §5.1, §5.1.7, §5.1.8, §5.1.14,
+//! §5.4.1, §5.5.1, §5.5.2, §5.5.3, §7.3.1, §7.3.2, §9.11; IEEE 1364-2005
+//! §4.1, §4.2.1, §5.1, §5.5.1.
+//!
+//! Contents:
+//! - `pub fn rhs(self: *Lower, width: u32, value: Ast.ExprId) Oom!Mir.Value`
+//! - `pub fn fromInt(self: *Lower, width: u32, v: Mir.Value) Oom!Mir.Value`
+//! - `pub fn zero(self: *Lower, width: u32) Oom!Mir.Value`
+//! - `pub fn select(self: *Lower, slot: VarSlot, lo: u32, width: u32) Oom!Mir.Value`
+//! - `pub fn literalLow64(self: *Lower, e: Ast.ExprId) i64`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -106,7 +113,9 @@ const Build = struct {
     }
 };
 
-// ---- entry points -----------------------------------------------------------
+/// A resolved constant select `name[hi:lo]` / `name[k]` of a `reg` (IEEE
+/// 1364 §4.2.1): its offset from the `reg`'s LSB and its bits.
+const Sel = struct { name: []const u8, lo: u32, width: u32 };
 
 /// §5.5.3 `r = value` for wide `reg` `r` of `width` bits: its new bits.
 pub fn rhs(self: *Lower, width: u32, value: Ast.ExprId) Oom!Mir.Value {
@@ -151,7 +160,16 @@ pub fn select(self: *Lower, slot: VarSlot, lo: u32, width: u32) Oom!Mir.Value {
     return b.finish("$wide$int", try selectNode(&b, base, slot.reg_width.?, lo, width));
 }
 
-// ---- §5.4.1/§5.5.1 self-determined types ------------------------------------
+/// A two-state logic literal's low 64 bits as an i64 (its exact value when
+/// an i64 holds it, `Integer.Literal.asExactInt`).
+pub fn literalLow64(self: *Lower, e: Ast.ExprId) i64 {
+    assert(e == .none or self.exprValid(e));
+    const n = self.file.exprs.logicValue(e);
+    if (n.asExactInt()) |v| return v;
+    return @bitCast(n.values()[0]);
+}
+
+// ---- private ----
 
 /// `e`'s self-determined IEEE 1364 type. Lowers an operand this file does
 /// not size (`opaque`) to learn its analog type. A form with none is E0329.
@@ -304,8 +322,6 @@ fn lowerOpaque(b: *Build, e: Ast.ExprId) Oom!TypedValue {
     if (tv.v == .undef) b.ok = false;
     return tv;
 }
-
-// ---- §5.5.2 building at a propagated type -----------------------------------
 
 /// `e` computed at integer type `ctx`: a context-determined operator at
 /// `ctx` itself, any other form at its own type and then converted (§5.5.2).
@@ -460,8 +476,6 @@ fn real(b: *Build, e: Ast.ExprId) Oom!u32 {
     return b.node(.{ .op = .leaf_real, .width = 0, .arg = try b.arg(tv.v) });
 }
 
-// ---- operands -----------------------------------------------------------------
-
 /// A name's node at its type `st`, or null for an analog operand (`opaque`).
 fn identNode(b: *Build, name: []const u8, st: T) Oom!?u32 {
     const l = b.l;
@@ -506,10 +520,6 @@ fn inputNode(b: *Build, name: []const u8, st: T) Oom!u32 {
     for (1..words) |k| _ = try b.arg(try lower_expr_select.regWordValue(l, name, @intCast(k)));
     return b.node(.{ .op = .leaf_words, .width = st.w, .signed = st.s, .arg = first });
 }
-
-/// A resolved constant select `name[hi:lo]` / `name[k]` of a `reg` (IEEE
-/// 1364 §4.2.1): its offset from the `reg`'s LSB and its bits.
-const Sel = struct { name: []const u8, lo: u32, width: u32 };
 
 /// The `reg` `e` selects from, when `e` is `name[...]` of a `reg` this file
 /// reads whole (a variable or a discrete input), else null.
@@ -583,15 +593,6 @@ fn literal(b: *Build, e: Ast.ExprId, st: T) Oom!u32 {
     const node = try lit(b, words, st.w);
     b.l.out.wide_nodes.items[node].signed = st.s;
     return node;
-}
-
-/// A two-state logic literal's low 64 bits as an i64 (its exact value when
-/// an i64 holds it, `Integer.Literal.asExactInt`).
-pub fn literalLow64(self: *Lower, e: Ast.ExprId) i64 {
-    assert(e == .none or self.exprValid(e));
-    const n = self.file.exprs.logicValue(e);
-    if (n.asExactInt()) |v| return v;
-    return @bitCast(n.values()[0]);
 }
 
 /// A literal node of `width` bits, its 32-bit words `words` (missing ones

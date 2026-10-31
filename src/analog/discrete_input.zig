@@ -1,3 +1,15 @@
+//! §7.3.6.5 a mixed module's digital-owned values: the module's digital
+//! declarations and the analog reads of them in, one host-written `Model`
+//! input per value (`Lowered.discrete_inputs`, its 32-bit words, its x/z
+//! plane, its region-1b snapshot) out, a digital array one input per element.
+//!
+//! Cites: §1.1, A.2.7, §3.4, §3.6.2.2, §3.7, §5.10.4, §5.10.5, A.6.1, §6.1,
+//! §6.3.4, §6.8, §7.2, §7.2.2, §7.3, §7.3.1, §7.3.2, §7.3.4, §7.3.6.4,
+//! §7.3.6.5, §8.5, §8.5.3.5, §8.5.3.6, §12.3.3; IEEE 1364-2005 §6.1.
+//!
+//! Contents:
+//! - `pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!void` (`expr`, `stmt`)
+
 const std = @import("std");
 const assert = std.debug.assert;
 const discipline_rules = @import("elab").discipline_rules;
@@ -16,6 +28,10 @@ const lower_node_ref = @import("node_ref.zig");
 const Reads = lower_discrete_mark.Reads;
 const EventRefs = lower_context.EventRefs;
 const Oom = Lower.Oom;
+
+/// The most elements a digital array the analog block reads may have: each
+/// is a `Model` field the mixed runner copies at every digital tick.
+const max_discrete_elems = 4096;
 
 /// Declares the analog block's view of a mixed module's digital half
 /// (§7.3.1, §7.3.6.5, §8.5). Every variable a discrete process writes and every
@@ -211,9 +227,7 @@ pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!vo
     }
 }
 
-/// The most elements a digital array the analog block reads may have: each
-/// is a `Model` field the mixed runner copies at every digital tick.
-const max_discrete_elems = 4096;
+// ---- private ----
 
 /// §7.3.1 one input per element of the digital array `name` (one dimension,
 /// constant bounds), `name[k]` for each declared `k`, read as its scalar

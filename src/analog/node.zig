@@ -9,12 +9,26 @@
 //! states), so a row index, once handed out, is stable. A row is a `u32`;
 //! past its index space (`max_nodes`), E1015.
 //!
-//! LRM clauses this file's code cites: §1, §1.3.1.1, §1.3.4, §1.3.4.1,
-//! §1.3.4.2, §2.7, §2.8.1, §3.4, §3.4.4, §3.6.1.2, §3.6.2.1, §3.6.2.2, §3.6.3,
-//! §3.6.3.2, §3.6.4, §3.6.5, §3.9, §3.11, §3.12, §3.12.1, §3.13.3, §4.2.1.1,
-//! §4.4, §5.4.1, §5.4.3, §5.5.2, §5.5.3, §5.6.1.3, §5.9.3, §6.5, §6.5.2,
-//! §6.5.2.2, §6.5.5, §6.5.7.1, §6.7.1, §7.2.4, §7.4, §7.4.4, §10.2.
-//! IEEE 1364-2005 clauses cited: §5.2.1, §19.2, §19.9.
+//! Cites: §1.3.1.1, §1.3.4.1, §1.3.4.2, A.2.2.1, §2.7, §2.8.1, §3.4, §3.4.4,
+//! §3.6.1.2, §3.6.2.2, §3.6.3, §3.6.3.2, §3.6.4, §3.6.5, §3.9, §3.12.1, §4.4,
+//! §4.5.2, §5.2.1, §5.4.1, §5.4.2, §5.4.3, §5.5.3, §6.1.3, §6.5, §6.5.2,
+//! §6.5.2.2, §6.5.5, §6.5.7.1, §7.2.4, §7.4.4; IEEE 1364-2005 §5.2.1.
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub const max_nodes = ground`
+//! - `pub fn declarePorts(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - `pub fn declareNets(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - `pub fn bindPortConnections(self: *Lower) Oom!void`
+//! - `pub fn indexedRange(decl: VecRange, base: i64, width: i64, down: bool) VecRange`
+//! - `pub fn partOf(decl: VecRange, r: VecRange) bool`
+//! - `pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!u32`
+//! - `pub fn collectSignalAbstols(self: *Lower, segments: []const Elaborate.SignalDiscipline) Oom!void`
+//! - `pub fn opStateNode(self: *Lower, op: []const u8, abstol: f64) Oom!u32`
+//! - `pub fn nodeName(self: *const Lower, idx: u32) []const u8`
+//! - `pub fn probe(self: *Lower, idx: u32) Oom!Mir.Value`
+//! - `pub fn flowUnknown(self: *Lower, hi: u32, lo: u32) Oom!u32`
+//! - `pub fn portFlowUnknown(self: *Lower, p: u32) Oom!u32`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -55,7 +69,9 @@ pub const State = struct {
 /// reaching it has run out of memory first (#29).
 pub const max_nodes = ground;
 
-// ---- the module's declarations, in `lowerModule`'s order ---------------------
+/// Widest spelling `uniqueSpelling` builds without spilling: two 1024-character
+/// identifiers (the bound `elem_key_len` uses), punctuation, and `#` with a `u32`.
+const spelling_buf_len = 2 * 1024 + 32;
 
 /// §6.5 interns the module's ports as the first `nodes` rows, in declaration
 /// order, which is the host device's terminal order; a §3.6.3 vector port is
@@ -235,41 +251,6 @@ pub fn bindPortConnections(self: *Lower) Oom!void {
     }
 }
 
-/// Appends the nodes of one member of a port connection, msb first: every
-/// element of a vector net (a concatenation's operand, §6.5.7.1), one net,
-/// or the elements a constant select names (§6.5.5), which must be a part of
-/// the net's declared range (E0351 on a net with none, E0352 outside it).
-/// Returns false after the diagnostic.
-fn partNodes(self: *Lower, part: Elaborate.NetPart, tok: u32, out: *std.ArrayList(u32)) Oom!bool {
-    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    const decl = self.out.vectors.get(part.net) orelse {
-        if (part.sel == .whole) {
-            try out.append(self.arena, try internNode(self, part.net, ""));
-            return true;
-        }
-        try self.err(tok, .E0351, "`{s}` was not declared with a range", .{part.net});
-        return false;
-    };
-    const r: VecRange = switch (part.sel) {
-        .whole => decl, // §6.5.7.1 a vector net in a concatenation: all of it
-        .bit => .{ .msb = part.a, .lsb = part.a },
-        .range => .{ .msb = part.a, .lsb = part.b },
-        .up, .down => if (part.b < 1) {
-            try self.err(tok, .E0352, "the indexed part-select of `{s}` is {d} wide", .{ part.net, part.b });
-            return false;
-        } else indexedRange(decl, part.a, part.b, part.sel == .down),
-    };
-    if (!partOf(decl, r)) {
-        if (part.sel == .bit)
-            try self.err(tok, .E0352, "`{s}` is [{d}:{d}], so {d} is not one of its elements", .{ part.net, decl.msb, decl.lsb, part.a })
-        else
-            try self.err(tok, .E0352, "`{s}` is [{d}:{d}], so [{d}:{d}] is not a part of it", .{ part.net, decl.msb, decl.lsb, r.msb, r.lsb });
-        return false;
-    }
-    for (0..r.size()) |k| try out.append(self.arena, try lower_node_ref.internNodeElem(self, part.net, r.at(@intCast(k))));
-    return true;
-}
-
 /// IEEE 1364-2005 §5.2.1's `base +: width` (`down` false) or `base -: width`
 /// on a net declared `decl`: `+:` counts up from the base, `-:` down, and the
 /// part reads in the declaration's direction. Saturates rather than overflow;
@@ -285,8 +266,6 @@ pub fn indexedRange(decl: VecRange, base: i64, width: i64, down: bool) VecRange 
 pub fn partOf(decl: VecRange, r: VecRange) bool {
     return decl.has(r.msb) and decl.has(r.lsb) and (r.msb == r.lsb or (r.msb < r.lsb) == (decl.msb < decl.lsb));
 }
-
-// ---- nodes --------------------------------------------------------------------
 
 /// Returns the `nodes` row of net `name`, creating it on first use. Undeclared names
 /// are implicit nets (§3.6.5); rows are created in source order.
@@ -319,35 +298,6 @@ pub fn collectSignalAbstols(self: *Lower, segments: []const Elaborate.SignalDisc
     }
 }
 
-fn collectNodeAbstol(self: *Lower, name: []const u8, abstol: f64) void {
-    const idx = self.node_voltages.get(name) orelse return;
-    if (idx == ground) return;
-    const local = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse return;
-    if (local.is_discrete or !local.has_potential) return;
-    const slot = &self.out.nodes.items(.potential_abstol)[idx];
-    slot.* = @min(slot.* orelse local.potential_abstol, abstol);
-}
-
-/// Folds one §3.6.3.2 net_decl_assignment into a nodeset value for `node`.
-/// "The initializer shall be a constant_expression": a failed fold reports E0365.
-/// Parameters fold (§3.4). A string folds to 0.0, the unknown's own start value.
-///
-/// ponytail: the value is frozen at the parameter's declared default, so a card
-/// override leaves a stale initial guess (never a wrong answer). Upgrade: keep the
-/// `Ast.ExprId` and export `nodeset(model)` the way `derive()` is.
-fn recordNodeset(self: *Lower, node: u32, e: Ast.ExprId, tok: u32, name: []const u8) Oom!void {
-    assert(self.nodeValid(node));
-    assert(e == .none or self.exprValid(e));
-    const c = lower_constfold.constEval(self, e) orelse {
-        var b = self.errWith(tok, .E0365);
-        b.msg("the initializer of `{s}` is not a constant expression", .{name});
-        b.note("§3.6.3.2 gives it to the analog solver as a nodeset value for the potential of `{s}`, which is fixed before the solve starts", .{name});
-        try b.emit();
-        return;
-    };
-    try self.out.nodesets.append(self.arena, .{ .node = node, .value = c.asReal(), .tok = tok });
-}
-
 /// Mints the §4.5.2 unknown one analog operator site introduces, spelled
 /// `<op>$<k>`. Never deduped: each site owns its own unknown and row.
 pub fn opStateNode(self: *Lower, op: []const u8, abstol: f64) Oom!u32 {
@@ -355,49 +305,6 @@ pub fn opStateNode(self: *Lower, op: []const u8, abstol: f64) Oom!u32 {
     self.node_state.op_states += 1;
     return appendNode(self, name, "", .{ .op_state = abstol });
 }
-
-/// The one place a `nodes` row is created, fixing its kind and spelling together.
-/// Does not dedupe: each caller owns identity (`node_voltages` for a net,
-/// `flow_unknowns` for a branch, `port_probes` for a port), and two distinct
-/// unknowns may ask for one name.
-fn appendNode(self: *Lower, name: []const u8, discipline: []const u8, kind: NodeKind) Oom!u32 {
-    if (self.out.nodes.len == max_nodes) {
-        const m = self.module.?;
-        if (!self.node_state.full) try self.err(m.main_tok, .E1015, "`{s}` needs more than {d} nets and unknowns", .{ self.file.str(m.name), max_nodes });
-        self.node_state.full = true;
-        return 0; // stands in for the row, so lowering reports the rest
-    }
-    assert(self.node_state.probe_cache.items.len == self.out.nodes.len); // one cache slot per row
-    const idx: u32 = @intCast(self.out.nodes.len);
-    const spelling = try uniqueSpelling(self, name);
-    try self.node_state.spellings.put(self.arena, spelling, {});
-    try self.out.nodes.append(self.arena, .{ .name = spelling, .kind = kind, .disc = discipline, .dir = .unspecified });
-    try self.node_state.probe_cache.append(self.arena, .undef);
-    assert(self.node_state.probe_cache.items.len == self.out.nodes.len);
-    assert(idx < ground); // a row never spells the reference node
-    return idx;
-}
-
-/// `name`, or the first `name#k` nobody has taken, since each slot is one `U` member.
-/// Two slots can want one spelling: a net named `gnd` (§2.7) against the reference
-/// node, or an escaped net `\flow(p,n)` (§2.8.1) against branch (p,n). `#` is not a
-/// §2.7 identifier character, so a suffixed name cannot collide with a source one.
-/// The suffix falls on the later slot, so it depends only on source order.
-fn uniqueSpelling(self: *Lower, name: []const u8) Oom![]const u8 {
-    if (!self.node_state.spellings.contains(name)) return name;
-    // Losing candidates are built on the stack; only the winner reaches the arena.
-    var buf: [spelling_buf_len]u8 = undefined;
-    var k: u32 = 1;
-    while (true) : (k += 1) {
-        const cand = std.mem.print(&buf, "{s}#{d}", .{ name, k }) catch
-            try self.arena.print("{s}#{d}", .{ name, k });
-        if (!self.node_state.spellings.contains(cand)) return self.arena.dupe(u8, cand);
-    }
-}
-
-/// Widest spelling `uniqueSpelling` builds without spilling: two 1024-character
-/// identifiers (the bound `elem_key_len` uses), punctuation, and `#` with a `u32`.
-const spelling_buf_len = 2 * 1024 + 32;
 
 /// Returns the name codegen prints for a `nodes` row, or "gnd" for `ground`.
 pub fn nodeName(self: *const Lower, idx: u32) []const u8 {
@@ -442,6 +349,111 @@ pub fn portFlowUnknown(self: *Lower, p: u32) Oom!u32 {
     const u = try appendNode(self, name, "", .{ .port_flow = p });
     try self.out.port_probes.append(self.arena, .{ .port = p, .u = u });
     return u;
+}
+
+// ---- private ----
+
+/// Appends the nodes of one member of a port connection, msb first: every
+/// element of a vector net (a concatenation's operand, §6.5.7.1), one net,
+/// or the elements a constant select names (§6.5.5), which must be a part of
+/// the net's declared range (E0351 on a net with none, E0352 outside it).
+/// Returns false after the diagnostic.
+fn partNodes(self: *Lower, part: Elaborate.NetPart, tok: u32, out: *std.ArrayList(u32)) Oom!bool {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    const decl = self.out.vectors.get(part.net) orelse {
+        if (part.sel == .whole) {
+            try out.append(self.arena, try internNode(self, part.net, ""));
+            return true;
+        }
+        try self.err(tok, .E0351, "`{s}` was not declared with a range", .{part.net});
+        return false;
+    };
+    const r: VecRange = switch (part.sel) {
+        .whole => decl, // §6.5.7.1 a vector net in a concatenation: all of it
+        .bit => .{ .msb = part.a, .lsb = part.a },
+        .range => .{ .msb = part.a, .lsb = part.b },
+        .up, .down => if (part.b < 1) {
+            try self.err(tok, .E0352, "the indexed part-select of `{s}` is {d} wide", .{ part.net, part.b });
+            return false;
+        } else indexedRange(decl, part.a, part.b, part.sel == .down),
+    };
+    if (!partOf(decl, r)) {
+        if (part.sel == .bit)
+            try self.err(tok, .E0352, "`{s}` is [{d}:{d}], so {d} is not one of its elements", .{ part.net, decl.msb, decl.lsb, part.a })
+        else
+            try self.err(tok, .E0352, "`{s}` is [{d}:{d}], so [{d}:{d}] is not a part of it", .{ part.net, decl.msb, decl.lsb, r.msb, r.lsb });
+        return false;
+    }
+    for (0..r.size()) |k| try out.append(self.arena, try lower_node_ref.internNodeElem(self, part.net, r.at(@intCast(k))));
+    return true;
+}
+
+fn collectNodeAbstol(self: *Lower, name: []const u8, abstol: f64) void {
+    const idx = self.node_voltages.get(name) orelse return;
+    if (idx == ground) return;
+    const local = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse return;
+    if (local.is_discrete or !local.has_potential) return;
+    const slot = &self.out.nodes.items(.potential_abstol)[idx];
+    slot.* = @min(slot.* orelse local.potential_abstol, abstol);
+}
+
+/// Folds one §3.6.3.2 net_decl_assignment into a nodeset value for `node`.
+/// "The initializer shall be a constant_expression": a failed fold reports E0365.
+/// Parameters fold (§3.4). A string folds to 0.0, the unknown's own start value.
+///
+/// ponytail: the value is frozen at the parameter's declared default, so a card
+/// override leaves a stale initial guess (never a wrong answer). Upgrade: keep the
+/// `Ast.ExprId` and export `nodeset(model)` the way `derive()` is.
+fn recordNodeset(self: *Lower, node: u32, e: Ast.ExprId, tok: u32, name: []const u8) Oom!void {
+    assert(self.nodeValid(node));
+    assert(e == .none or self.exprValid(e));
+    const c = lower_constfold.constEval(self, e) orelse {
+        var b = self.errWith(tok, .E0365);
+        b.msg("the initializer of `{s}` is not a constant expression", .{name});
+        b.note("§3.6.3.2 gives it to the analog solver as a nodeset value for the potential of `{s}`, which is fixed before the solve starts", .{name});
+        try b.emit();
+        return;
+    };
+    try self.out.nodesets.append(self.arena, .{ .node = node, .value = c.asReal(), .tok = tok });
+}
+
+/// The one place a `nodes` row is created, fixing its kind and spelling together.
+/// Does not dedupe: each caller owns identity (`node_voltages` for a net,
+/// `flow_unknowns` for a branch, `port_probes` for a port), and two distinct
+/// unknowns may ask for one name.
+fn appendNode(self: *Lower, name: []const u8, discipline: []const u8, kind: NodeKind) Oom!u32 {
+    if (self.out.nodes.len == max_nodes) {
+        const m = self.module.?;
+        if (!self.node_state.full) try self.err(m.main_tok, .E1015, "`{s}` needs more than {d} nets and unknowns", .{ self.file.str(m.name), max_nodes });
+        self.node_state.full = true;
+        return 0; // stands in for the row, so lowering reports the rest
+    }
+    assert(self.node_state.probe_cache.items.len == self.out.nodes.len); // one cache slot per row
+    const idx: u32 = @intCast(self.out.nodes.len);
+    const spelling = try uniqueSpelling(self, name);
+    try self.node_state.spellings.put(self.arena, spelling, {});
+    try self.out.nodes.append(self.arena, .{ .name = spelling, .kind = kind, .disc = discipline, .dir = .unspecified });
+    try self.node_state.probe_cache.append(self.arena, .undef);
+    assert(self.node_state.probe_cache.items.len == self.out.nodes.len);
+    assert(idx < ground); // a row never spells the reference node
+    return idx;
+}
+
+/// `name`, or the first `name#k` nobody has taken, since each slot is one `U` member.
+/// Two slots can want one spelling: a net named `gnd` (§2.7) against the reference
+/// node, or an escaped net `\flow(p,n)` (§2.8.1) against branch (p,n). `#` is not a
+/// §2.7 identifier character, so a suffixed name cannot collide with a source one.
+/// The suffix falls on the later slot, so it depends only on source order.
+fn uniqueSpelling(self: *Lower, name: []const u8) Oom![]const u8 {
+    if (!self.node_state.spellings.contains(name)) return name;
+    // Losing candidates are built on the stack; only the winner reaches the arena.
+    var buf: [spelling_buf_len]u8 = undefined;
+    var k: u32 = 1;
+    while (true) : (k += 1) {
+        const cand = std.mem.print(&buf, "{s}#{d}", .{ name, k }) catch
+            try self.arena.print("{s}#{d}", .{ name, k });
+        if (!self.node_state.spellings.contains(cand)) return self.arena.dupe(u8, cand);
+    }
 }
 
 test "lower: §6.5 the ports are the first rows, in declaration order, a vector msb first" {

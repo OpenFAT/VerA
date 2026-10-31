@@ -3,13 +3,31 @@
 //! In: the module AST. Out: per-net and per-statement access/context marks on `Lower`,
 //! and a diagnostic for every analog construct used in a discrete context.
 //!
-//! LRM clauses this file's code cites: §1.1, §3.2.2, §3.4, §3.6.2.2, §3.7,
-//! §4.3, §4.4, §4.5.15, §4.7.1, §4.7.3, §5.2.1, §5.10, §5.10.3, §5.10.4,
-//! §5.10.5, §6.3.4, §6.5.3, §6.6.1, §6.8, §7.2, §7.2.2, §7.3, §7.3.1, §7.3.2,
-//! §7.3.3, §7.3.4, §7.3.5, §7.3.6.1, §7.3.6.2, §7.3.6.3, §7.3.6.4, §7.3.6.5,
-//! §7.3.7, §7.6, §8.4.3.2, §8.5, §8.5.1, §8.5.3.2, §8.5.3.4, §8.5.3.5,
-//! §8.5.3.6, §9.2, §9.4.3, §9.4.7, §9.5.1.2, §9.7.
-//! IEEE 1364-2005 clauses cited: §6.1, §9.9.1, §10.2, §17.8.
+//! Cites: §1.1, A.3.3, §3.4, §3.6.2.2, §3.7, §4.3, §4.5.15, §4.7.1, §4.7.3,
+//! §5.2.1, §5.7, §5.10.4, A.6.1, §6.1, A.6.2, §6.3.4, A.6.4, §6.5.3, §6.6,
+//! §6.8, §7.2.1, §7.2.2, §7.3, §7.3.2, §7.3.3, §7.3.4, §7.3.7, §7.6, §8.5,
+//! §8.5.3.2, §8.5.3.4, §8.5.3.5, §9.2, §9.5.1.2, §9.9.1, §10.2, §12.3.3,
+//! §12.6, §17.8; IEEE 1364-2005 §6.1, §9.9.1, §10.2, §12.3.3, §12.6, §17.8.
+//!
+//! Contents:
+//! - `pub const DiscreteCtx = struct`
+//! - `pub const Shadows = struct` (`enter`, `leave`, `hides`)
+//! - `pub fn isMixed(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl) bool`
+//! - `pub fn analogDiscreteNets(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, id: Ast.StmtId, out: ?struct` (`expr`, `stmt`)
+//! - private `usesFiles` (`expr`, `stmt`)
+//! - private `writesFourState` (`expr`, `stmt`)
+//! - private `suspends` (`expr`, `stmt`)
+//! - `pub fn checkWrealDrivers(self: *Lower, module: *const Ast.ModuleDecl, name: Ast.StrId, declared: bool) Oom!void`
+//! - `pub fn d2aTerm(file: *const Ast.SourceFile, e: Ast.ExprId, digital: *const std.StringHashMapUnmanaged(void)) ?struct`
+//! - `pub fn discreteNet(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, e: Ast.ExprId) ?Ast.ExprId`
+//! - `pub fn isNetName(module: *const Ast.ModuleDecl, name: Ast.StrId) bool`
+//! - `pub fn isNetSpelling(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, name: []const u8) bool`
+//! - `pub fn checkSwitchTerminals(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - `pub fn netOf(module: *const Ast.ModuleDecl, name: Ast.StrId) ?*const Ast.NetDecl`
+//! - `pub fn collectWrites(self: *Lower, id: Ast.StmtId, out: *std.ArrayList(Ast.ExprId)) Oom!void` (`expr`, `stmt`)
+//! - `pub const EventRefs = struct` (`stmt`, `expr`)
+//! - `pub fn checkRegWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - private `regWrites` (`expr`, `stmt`)
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -23,8 +41,6 @@ const lower_constfold = @import("constfold.zig");
 const lower_sysfunc_context = @import("sysfunc_context.zig");
 const Edge = lower_discrete_mark.Edge;
 const Oom = Lower.Oom;
-
-// ---- §7.2.2 the discrete context -------------------------------------------
 
 /// §7.2.2's two contexts, and the four rules the LRM states across them.
 ///
@@ -92,6 +108,50 @@ pub const Shadows = struct {
     }
 };
 
+/// Every §5.10.4 named event of `module` a statement tree triggers or waits on,
+/// name → first token.
+pub const EventRefs = struct {
+    l: *Lower,
+    module: *const Ast.ModuleDecl,
+    names: std.StringArrayHashMapUnmanaged(u32) = .empty,
+    /// Only `-> e`, not `@(e)`.
+    triggers_only: bool = false,
+    /// Skip a trigger the mixed-signal kernel carries to the digital context:
+    /// the statement of a `cross`/`above`/`timer` event control, or a
+    /// top-level statement of its block (`digital.Run.analogTriggers`).
+    skip_carried: bool = false,
+    fn isEvent(w: *const EventRefs, s: Ast.StrId) bool {
+        for (w.module.events) |ev| if (ev.name == s) return true;
+        return false;
+    }
+    pub fn stmt(w: *EventRefs, s: Ast.StmtId) Oom!void {
+        if (s == .none) return;
+        const f = w.l.file;
+        switch (f.stmt(s)) {
+            .event_trigger => |t| if (f.exprs.tag(t.target) == .ident and w.isEvent(f.exprs.strOf(t.target))) try w.names.put(w.l.arena, f.str(f.exprs.strOf(t.target)), f.stmtTok(s)),
+            .event_control => |c| if (w.skip_carried and c.event != .none and f.exprs.tag(c.event) == .event_function and
+                !std.mem.eql(u8, f.str(f.exprs.strOf(c.event)), "absdelta"))
+            {
+                const body: []const Ast.StmtId = switch (f.stmt(c.body)) {
+                    .block => |b| b.body,
+                    else => &.{c.body}, // else: a single statement is its own body
+                };
+                for (body) |t| if (f.stmt(t) != .event_trigger) try w.stmt(t);
+                return;
+            },
+            else => {}, // else: only a trigger names an event outside an expression
+        }
+        try f.stmtEdges(s, w);
+    }
+    pub fn expr(w: *EventRefs, e: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {
+        if (e == .none or w.triggers_only) return;
+        const ex = &w.l.file.exprs;
+        if (ex.tag(e) == .ident and w.isEvent(ex.strOf(e))) try w.names.put(w.l.arena, w.l.file.str(ex.strOf(e)), ex.mainTok(e));
+        var buf: [3]Ast.ExprId = undefined;
+        for (ex.children(e, &buf)) |c| try w.expr(c, .read);
+    }
+};
+
 /// §8.5: does this module's discrete half need the event queue? An `always`
 /// block and a continuous assignment are processes: each re-runs whenever
 /// what it reads changes. Every `initial` block is a process too (IEEE
@@ -120,6 +180,188 @@ pub fn isMixed(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl) bool 
     for (module.analog) |blk| if (analogDiscreteNets(file, module, blk.body, null) catch unreachable) return true;
     return false;
 }
+
+/// Whether the analog statement `id` reads a discrete net by name (§7.3: a
+/// net of a discrete discipline, or one with none). With `out`, every such
+/// read is appended to it and the walk does not stop at the first. An access
+/// function's operands are nodes, not values, and are not reads.
+pub fn analogDiscreteNets(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, id: Ast.StmtId, out: ?struct { a: std.mem.Allocator, list: *std.ArrayList(Ast.ExprId) }) Oom!bool {
+    // Only a net or port of no continuous discipline can be such a read
+    // (`discreteName`), and most modules have none: then the walk (13% of a
+    // large compact model's lint) is skipped. One pass, not `discreteName`
+    // per net, which scans the nets again: quadratic in a flattened design.
+    const any = for (module.nets) |n| {
+        if (!discipline_rules.isContinuous(file, n.discipline)) break true;
+    } else for (module.ports) |p| {
+        if (p.kind != .wreal and !discipline_rules.isContinuous(file, p.discipline)) break true;
+    } else false;
+    if (!any) return false;
+    const Walk = struct {
+        file: *const Ast.SourceFile,
+        module: *const Ast.ModuleDecl,
+        out: @TypeOf(out),
+        hit: *bool,
+        pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {
+            if (e == .none or (w.hit.* and w.out == null)) return;
+            const ex = &w.file.exprs;
+            switch (ex.tag(e)) {
+                .branch_access, .port_access => return,
+                else => {}, // else: every other expression is walked for reads
+            }
+            if (ex.tag(e) == .ident and discreteName(w.file, w.module, ex.strOf(e))) {
+                w.hit.* = true;
+                if (w.out) |o| try o.list.append(o.a, e);
+            }
+            var buf: [3]Ast.ExprId = undefined;
+            for (ex.children(e, &buf)) |c| try w.expr(c, .read);
+        }
+        pub fn stmt(w: @This(), s: Ast.StmtId) Oom!void {
+            if (s != .none) try w.file.stmtEdges(s, w);
+        }
+    };
+    var hit = false;
+    try (Walk{ .file = file, .module = module, .out = out, .hit = &hit }).stmt(id);
+    return hit;
+}
+
+/// §6.5.3 "There can be a maximum of one driver of a real-valued net." A
+/// continuous assignment is a driver, and so is a net_decl_assignment
+/// (`wreal w = a;`). The digital runner makes the same check for a `.v`
+/// design (`lib/sim/digital`); this is the analog compile's copy, so a mixed
+/// `.va` is refused before a device is built rather than when its digital
+/// half first runs.
+pub fn checkWrealDrivers(self: *Lower, module: *const Ast.ModuleDecl, name: Ast.StrId, declared: bool) Oom!void {
+    assert(module.name != .none);
+    const ex = &self.file.exprs;
+    var count: u32 = @intFromBool(declared);
+    for (module.assigns) |a| {
+        if (a.target == .none or ex.tag(a.target) != .ident or ex.strOf(a.target) != name) continue;
+        count += 1;
+        if (count == 2) try self.err(a.main_tok, .E0918, "`{s}` is already driven", .{self.file.str(name)});
+    }
+}
+
+/// §7.3.4 a digital event term over one name: `posedge d`, `negedge d`, or a
+/// bare `d` (a change of a digital value, or a digitally triggered named
+/// event). Null for anything else, which stays an analog event.
+pub fn d2aTerm(file: *const Ast.SourceFile, e: Ast.ExprId, digital: *const std.StringHashMapUnmanaged(void)) ?struct { name: []const u8, edge: Edge } {
+    const ex = &file.exprs;
+    const tag = ex.tag(e);
+    const operand = switch (tag) {
+        .event_posedge, .event_negedge => ex.lhs(e),
+        else => e, // else: a bare term; only a name qualifies, checked below
+    };
+    if (operand == .none or ex.tag(operand) != .ident) return null;
+    const name = file.str(ex.strOf(operand));
+    if (!digital.contains(name)) return null;
+    return .{
+        .name = name,
+        .edge = switch (tag) {
+            .event_posedge => .posedge,
+            .event_negedge => .negedge,
+            else => .any, // else: the bare-name term
+        },
+    };
+}
+
+/// `e` when it names a net of `module` with no continuous discipline, else null.
+pub fn discreteNet(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, e: Ast.ExprId) ?Ast.ExprId {
+    if (e == .none or file.exprs.tag(e) != .ident) return null;
+    const n = netOf(module, file.exprs.strOf(e)) orelse return null;
+    return if (discipline_rules.isContinuous(file, n.discipline)) null else e;
+}
+
+/// Is `name` a net of `module`: a declared net, or a port no variable
+/// declaration re-declares (an undeclared port is an implicit wire)? A name
+/// declared as both a discipline net and a `reg` (`ddiscrete cm; reg cm;`,
+/// §7.6's connect modules) is the variable. Undeclared names are §6.8's.
+pub fn isNetName(module: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+    for (module.vars) |v| if (v.name == name) return false;
+    if (netOf(module, name) != null) return true;
+    for (module.ports) |p| if (p.name == name) return true;
+    return false;
+}
+
+/// Whether `name` is a net of `module` (`isNetName` by spelling, for the tables
+/// keyed by string).
+pub fn isNetSpelling(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, name: []const u8) bool {
+    for (module.vars) |v| if (std.mem.eql(u8, file.str(v.name), name)) return false;
+    for (module.nets) |n| if (std.mem.eql(u8, file.str(n.name), name)) return true;
+    for (module.ports) |p| if (std.mem.eql(u8, file.str(p.name), name)) return true;
+    return false;
+}
+
+/// Reports E0483 for a variable in a switch terminal slot. A.3.3
+/// `inout_terminal ::= net_lvalue` (both terminals of a pass switch) and
+/// `output_terminal ::= net_lvalue` (the first terminal of a MOS/CMOS switch):
+/// §8.5.3.5 resolves a switch as a driver of the nets it joins.
+pub fn checkSwitchTerminals(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
+    const ex = &self.file.exprs;
+    for (module.switches) |sw| {
+        const nets: usize = switch (sw.kind) {
+            .tran, .rtran, .tranif0, .tranif1, .rtranif0, .rtranif1 => 2,
+            .cmos, .rcmos, .nmos, .pmos, .rnmos, .rpmos => 1,
+        };
+        for (sw.terms[0..@min(nets, sw.terms.len)]) |t| {
+            const base = self.file.lvalueBase(t);
+            if (base == .none or ex.tag(base) != .ident) continue;
+            for (module.vars) |v| if (v.name == ex.strOf(base)) {
+                try self.err(ex.mainTok(base), .E0483, "`{s}` is a variable, on a terminal of `{t}`", .{ self.file.str(v.name), sw.kind });
+                break;
+            };
+        }
+    }
+}
+
+/// The net `name` declares in `module`, of any discipline, or null (a
+/// variable, or undeclared). Its domain is the caller's question.
+pub fn netOf(module: *const Ast.ModuleDecl, name: Ast.StrId) ?*const Ast.NetDecl {
+    for (module.nets) |*n| if (n.name == name) return n;
+    return null;
+}
+
+/// Appends to `out` the base identifier of every lvalue the statement tree
+/// `id` writes (`Ast.SourceFile.stmtWrites`: assignment targets, output
+/// actuals, inout seeds), child statements included, in walk order with
+/// repeats. `out` grows in `self.arena`.
+pub fn collectWrites(self: *Lower, id: Ast.StmtId, out: *std.ArrayList(Ast.ExprId)) Oom!void {
+    assert(id == .none or @backingInt(id) < self.stmtCount());
+    if (id == .none) return;
+    const funcs: []const Ast.FuncDecl = if (self.module) |m| m.functions else &.{};
+    var writes: std.ArrayList(Ast.ExprId) = .empty;
+    try self.file.stmtWrites(funcs, id, self.arena, &writes);
+    for (writes.items) |w| {
+        const t = self.file.lvalueBase(w);
+        if (t != .none) try out.append(self.arena, t);
+    }
+    const Walk = struct {
+        l: *Lower,
+        out: *std.ArrayList(Ast.ExprId),
+        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
+        pub fn stmt(w: @This(), s: Ast.StmtId) Oom!void {
+            try collectWrites(w.l, s, w.out);
+        }
+    };
+    try self.file.stmtEdges(id, Walk{ .l = self, .out = out });
+}
+
+/// Reports the §7.2.2 discrete-context rules listed on `DiscreteCtx` (E0422,
+/// E0430, E0431, E0432) and the A/D boundary cases VerA refuses. No-op for a
+/// module with no discrete block.
+/// §5.7 "The left-hand side of a procedural assignment shall be scalar,
+/// either an integer, real, or string identifier or an element of an
+/// integer, real or string array": an analog write to a `reg`, of any width,
+/// or to a bit, part or element of one, is E0316. Every write counts, not
+/// only `=` (`stmtWrites`: output actuals and `$random` seeds too). A reg is
+/// the discrete domain's (§7.2.1); the analog side may only read it (§7.3).
+pub fn checkRegWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
+    var sh: Shadows = .{};
+    for (module.analog) |blk| try regWrites(self, module.functions, blk.body, &sh);
+}
+
+// ---- private ----
 
 /// A.6.2 / §7.2.2: is an untimed `initial` body `collectInitialState`'s
 /// constant shape? Blocking writes, to scalar module variables, of what
@@ -173,49 +415,6 @@ fn constantExpr(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, e: A
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (!constantExpr(file, module, c)) return false;
     return true;
-}
-
-/// Whether the analog statement `id` reads a discrete net by name (§7.3: a
-/// net of a discrete discipline, or one with none). With `out`, every such
-/// read is appended to it and the walk does not stop at the first. An access
-/// function's operands are nodes, not values, and are not reads.
-pub fn analogDiscreteNets(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, id: Ast.StmtId, out: ?struct { a: std.mem.Allocator, list: *std.ArrayList(Ast.ExprId) }) Oom!bool {
-    // Only a net or port of no continuous discipline can be such a read
-    // (`discreteName`), and most modules have none: then the walk (13% of a
-    // large compact model's lint) is skipped. One pass, not `discreteName`
-    // per net, which scans the nets again: quadratic in a flattened design.
-    const any = for (module.nets) |n| {
-        if (!discipline_rules.isContinuous(file, n.discipline)) break true;
-    } else for (module.ports) |p| {
-        if (p.kind != .wreal and !discipline_rules.isContinuous(file, p.discipline)) break true;
-    } else false;
-    if (!any) return false;
-    const Walk = struct {
-        file: *const Ast.SourceFile,
-        module: *const Ast.ModuleDecl,
-        out: @TypeOf(out),
-        hit: *bool,
-        pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {
-            if (e == .none or (w.hit.* and w.out == null)) return;
-            const ex = &w.file.exprs;
-            switch (ex.tag(e)) {
-                .branch_access, .port_access => return,
-                else => {}, // else: every other expression is walked for reads
-            }
-            if (ex.tag(e) == .ident and discreteName(w.file, w.module, ex.strOf(e))) {
-                w.hit.* = true;
-                if (w.out) |o| try o.list.append(o.a, e);
-            }
-            var buf: [3]Ast.ExprId = undefined;
-            for (ex.children(e, &buf)) |c| try w.expr(c, .read);
-        }
-        pub fn stmt(w: @This(), s: Ast.StmtId) Oom!void {
-            if (s != .none) try w.file.stmtEdges(s, w);
-        }
-    };
-    var hit = false;
-    try (Walk{ .file = file, .module = module, .out = out, .hit = &hit }).stmt(id);
-    return hit;
 }
 
 /// VAMS §9.5.1.2 a descriptor either context opens is usable in the other,
@@ -295,53 +494,6 @@ fn suspends(file: *const Ast.SourceFile, id: Ast.StmtId) bool {
     return hit;
 }
 
-/// §6.5.3 "There can be a maximum of one driver of a real-valued net." A
-/// continuous assignment is a driver, and so is a net_decl_assignment
-/// (`wreal w = a;`). The digital runner makes the same check for a `.v`
-/// design (`lib/sim/digital`); this is the analog compile's copy, so a mixed
-/// `.va` is refused before a device is built rather than when its digital
-/// half first runs.
-pub fn checkWrealDrivers(self: *Lower, module: *const Ast.ModuleDecl, name: Ast.StrId, declared: bool) Oom!void {
-    assert(module.name != .none);
-    const ex = &self.file.exprs;
-    var count: u32 = @intFromBool(declared);
-    for (module.assigns) |a| {
-        if (a.target == .none or ex.tag(a.target) != .ident or ex.strOf(a.target) != name) continue;
-        count += 1;
-        if (count == 2) try self.err(a.main_tok, .E0918, "`{s}` is already driven", .{self.file.str(name)});
-    }
-}
-
-/// §7.3.4 a digital event term over one name: `posedge d`, `negedge d`, or a
-/// bare `d` (a change of a digital value, or a digitally triggered named
-/// event). Null for anything else, which stays an analog event.
-pub fn d2aTerm(file: *const Ast.SourceFile, e: Ast.ExprId, digital: *const std.StringHashMapUnmanaged(void)) ?struct { name: []const u8, edge: Edge } {
-    const ex = &file.exprs;
-    const tag = ex.tag(e);
-    const operand = switch (tag) {
-        .event_posedge, .event_negedge => ex.lhs(e),
-        else => e, // else: a bare term; only a name qualifies, checked below
-    };
-    if (operand == .none or ex.tag(operand) != .ident) return null;
-    const name = file.str(ex.strOf(operand));
-    if (!digital.contains(name)) return null;
-    return .{
-        .name = name,
-        .edge = switch (tag) {
-            .event_posedge => .posedge,
-            .event_negedge => .negedge,
-            else => .any, // else: the bare-name term
-        },
-    };
-}
-
-/// `e` when it names a net of `module` with no continuous discipline, else null.
-pub fn discreteNet(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, e: Ast.ExprId) ?Ast.ExprId {
-    if (e == .none or file.exprs.tag(e) != .ident) return null;
-    const n = netOf(module, file.exprs.strOf(e)) orelse return null;
-    return if (discipline_rules.isContinuous(file, n.discipline)) null else e;
-}
-
 /// Whether a read of `name` reads a discrete net: a net of `module` with no
 /// continuous discipline, or else a port that is one and no variable
 /// re-declares (`input dnet; wire dnet;` declares the port, not a `NetDecl`).
@@ -351,140 +503,6 @@ fn discreteName(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, name
     for (module.ports) |p| if (p.name == name)
         return p.kind != .wreal and !discipline_rules.isContinuous(file, p.discipline);
     return false;
-}
-
-/// Is `name` a net of `module`: a declared net, or a port no variable
-/// declaration re-declares (an undeclared port is an implicit wire)? A name
-/// declared as both a discipline net and a `reg` (`ddiscrete cm; reg cm;`,
-/// §7.6's connect modules) is the variable. Undeclared names are §6.8's.
-pub fn isNetName(module: *const Ast.ModuleDecl, name: Ast.StrId) bool {
-    for (module.vars) |v| if (v.name == name) return false;
-    if (netOf(module, name) != null) return true;
-    for (module.ports) |p| if (p.name == name) return true;
-    return false;
-}
-
-/// Whether `name` is a net of `module` (`isNetName` by spelling, for the tables
-/// keyed by string).
-pub fn isNetSpelling(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, name: []const u8) bool {
-    for (module.vars) |v| if (std.mem.eql(u8, file.str(v.name), name)) return false;
-    for (module.nets) |n| if (std.mem.eql(u8, file.str(n.name), name)) return true;
-    for (module.ports) |p| if (std.mem.eql(u8, file.str(p.name), name)) return true;
-    return false;
-}
-
-/// Reports E0483 for a variable in a switch terminal slot. A.3.3
-/// `inout_terminal ::= net_lvalue` (both terminals of a pass switch) and
-/// `output_terminal ::= net_lvalue` (the first terminal of a MOS/CMOS switch):
-/// §8.5.3.5 resolves a switch as a driver of the nets it joins.
-pub fn checkSwitchTerminals(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    assert(module.name != .none);
-    const ex = &self.file.exprs;
-    for (module.switches) |sw| {
-        const nets: usize = switch (sw.kind) {
-            .tran, .rtran, .tranif0, .tranif1, .rtranif0, .rtranif1 => 2,
-            .cmos, .rcmos, .nmos, .pmos, .rnmos, .rpmos => 1,
-        };
-        for (sw.terms[0..@min(nets, sw.terms.len)]) |t| {
-            const base = self.file.lvalueBase(t);
-            if (base == .none or ex.tag(base) != .ident) continue;
-            for (module.vars) |v| if (v.name == ex.strOf(base)) {
-                try self.err(ex.mainTok(base), .E0483, "`{s}` is a variable, on a terminal of `{t}`", .{ self.file.str(v.name), sw.kind });
-                break;
-            };
-        }
-    }
-}
-
-/// The net `name` declares in `module`, of any discipline, or null (a
-/// variable, or undeclared). Its domain is the caller's question.
-pub fn netOf(module: *const Ast.ModuleDecl, name: Ast.StrId) ?*const Ast.NetDecl {
-    for (module.nets) |*n| if (n.name == name) return n;
-    return null;
-}
-
-/// Appends to `out` the base identifier of every lvalue the statement tree
-/// `id` writes (`Ast.SourceFile.stmtWrites`: assignment targets, output
-/// actuals, inout seeds), child statements included, in walk order with
-/// repeats. `out` grows in `self.arena`.
-pub fn collectWrites(self: *Lower, id: Ast.StmtId, out: *std.ArrayList(Ast.ExprId)) Oom!void {
-    assert(id == .none or @backingInt(id) < self.stmtCount());
-    if (id == .none) return;
-    const funcs: []const Ast.FuncDecl = if (self.module) |m| m.functions else &.{};
-    var writes: std.ArrayList(Ast.ExprId) = .empty;
-    try self.file.stmtWrites(funcs, id, self.arena, &writes);
-    for (writes.items) |w| {
-        const t = self.file.lvalueBase(w);
-        if (t != .none) try out.append(self.arena, t);
-    }
-    const Walk = struct {
-        l: *Lower,
-        out: *std.ArrayList(Ast.ExprId),
-        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
-        pub fn stmt(w: @This(), s: Ast.StmtId) Oom!void {
-            try collectWrites(w.l, s, w.out);
-        }
-    };
-    try self.file.stmtEdges(id, Walk{ .l = self, .out = out });
-}
-
-/// Every §5.10.4 named event of `module` a statement tree triggers or waits on,
-/// name → first token.
-pub const EventRefs = struct {
-    l: *Lower,
-    module: *const Ast.ModuleDecl,
-    names: std.StringArrayHashMapUnmanaged(u32) = .empty,
-    /// Only `-> e`, not `@(e)`.
-    triggers_only: bool = false,
-    /// Skip a trigger the mixed-signal kernel carries to the digital context:
-    /// the statement of a `cross`/`above`/`timer` event control, or a
-    /// top-level statement of its block (`digital.Run.analogTriggers`).
-    skip_carried: bool = false,
-    fn isEvent(w: *const EventRefs, s: Ast.StrId) bool {
-        for (w.module.events) |ev| if (ev.name == s) return true;
-        return false;
-    }
-    pub fn stmt(w: *EventRefs, s: Ast.StmtId) Oom!void {
-        if (s == .none) return;
-        const f = w.l.file;
-        switch (f.stmt(s)) {
-            .event_trigger => |t| if (f.exprs.tag(t.target) == .ident and w.isEvent(f.exprs.strOf(t.target))) try w.names.put(w.l.arena, f.str(f.exprs.strOf(t.target)), f.stmtTok(s)),
-            .event_control => |c| if (w.skip_carried and c.event != .none and f.exprs.tag(c.event) == .event_function and
-                !std.mem.eql(u8, f.str(f.exprs.strOf(c.event)), "absdelta"))
-            {
-                const body: []const Ast.StmtId = switch (f.stmt(c.body)) {
-                    .block => |b| b.body,
-                    else => &.{c.body}, // else: a single statement is its own body
-                };
-                for (body) |t| if (f.stmt(t) != .event_trigger) try w.stmt(t);
-                return;
-            },
-            else => {}, // else: only a trigger names an event outside an expression
-        }
-        try f.stmtEdges(s, w);
-    }
-    pub fn expr(w: *EventRefs, e: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {
-        if (e == .none or w.triggers_only) return;
-        const ex = &w.l.file.exprs;
-        if (ex.tag(e) == .ident and w.isEvent(ex.strOf(e))) try w.names.put(w.l.arena, w.l.file.str(ex.strOf(e)), ex.mainTok(e));
-        var buf: [3]Ast.ExprId = undefined;
-        for (ex.children(e, &buf)) |c| try w.expr(c, .read);
-    }
-};
-
-/// Reports the §7.2.2 discrete-context rules listed on `DiscreteCtx` (E0422,
-/// E0430, E0431, E0432) and the A/D boundary cases VerA refuses. No-op for a
-/// module with no discrete block.
-/// §5.7 "The left-hand side of a procedural assignment shall be scalar,
-/// either an integer, real, or string identifier or an element of an
-/// integer, real or string array": an analog write to a `reg`, of any width,
-/// or to a bit, part or element of one, is E0316. Every write counts, not
-/// only `=` (`stmtWrites`: output actuals and `$random` seeds too). A reg is
-/// the discrete domain's (§7.2.1); the analog side may only read it (§7.3).
-pub fn checkRegWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    assert(module.name != .none);
-    var sh: Shadows = .{};
-    for (module.analog) |blk| try regWrites(self, module.functions, blk.body, &sh);
 }
 
 /// `checkRegWrites` on statement `id` and, through `stmtEdges`, every

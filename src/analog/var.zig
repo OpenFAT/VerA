@@ -16,12 +16,30 @@
 //! `pruneHeld` found unobservable: lowering stays the one writer of
 //! `held_vars`.
 //!
-//! LRM clauses this file's code cites: §2.9, §3.2, §3.2.2, §3.3, §3.4, §3.4.4,
-//! §3.4.8, §3.5, §4.2.7, §4.7.2.3, §5.2.1, §5.3.2, §5.6.1.3, §5.9, §5.9.2,
-//! §5.10, §5.11, §6.6.1, §6.8, §7, §7.2.2, §7.3.1, §7.3.2, §7.3.6.1, §7.3.6.4,
-//! §8.5, §9.4.
-//! IEEE 1364-2005 clauses cited: §4.2.2, §5.4.
-//! §9.13.1/§9.13.2 hidden seed storage (`hiddenHeldInt`) uses the same retained SSA mechanism.
+//! Cites: A.2.7, §2.9, §3.2, §3.2.2, §3.3, §3.4.4, §3.4.8, §3.6.2, §4.2.2,
+//! §4.2.7, §5.3.2, §5.4, §5.10, §6.6.1, §6.8, §7, §7.2.2, §7.3.1, §7.3.6.1,
+//! §7.3.6.4, §9.4; IEEE 1364-2005 §4.2.2, §5.4.
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub const ScopeEntry = struct`
+//! - `pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: []const Ast.VarDecl, nets: []const Ast.NetDecl, ports: []const Ast.Port) Oom!void`
+//! - `pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) Oom!void`
+//! - `pub fn literalReg(self: *const Lower, decl: *const Ast.VarDecl, scope: VarScope) bool`
+//! - `pub fn countAssign(self: *Lower, place: Ssa.Place) Oom!void`
+//! - `pub fn hiddenHeldInt(self: *Lower, name: []const u8) Oom!VarSlot`
+//! - `pub fn closeScope(self: *Lower, mark: usize) void`
+//! - `pub fn declareArray(self: *Lower, name: []const u8, info: ArrayInfo) Oom!void`
+//! - `pub fn declareVar(self: *Lower, name: []const u8, ty: Ty) Oom!VarSlot`
+//! - `pub fn isMemArray(self: *const Lower, name: Ast.StrId, ty: Ty) bool`
+//! - `pub fn declareMemArray(self: *Lower, name: []const u8, dims: []const lower_shape.Bounds, ty: Ty, zero: bool) Oom!Ssa.Place`
+//! - `pub fn storeElem(self: *Lower, place: Ssa.Place, index: Mir.Value, v: Mir.Value) Oom!void`
+//! - `pub fn loadElem(self: *Lower, mem: ArrayInfo.Mem, ty: Ty, index: Mir.Value) Oom!Mir.Value`
+//! - `pub fn analogRead(self: *Lower, value: Mir.Value, width: ?u32) Oom!Mir.Value`
+//! - `pub fn writeElem(self: *Lower, name: []const u8, info: ArrayInfo, idx: []const i64, v: Mir.Value) Oom!void`
+//! - `pub fn analogWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!std.AutoHashMapUnmanaged(Ast.StrId, void)` (`expr`, `stmt`)
+//! - `pub fn checkScratchOwners(self: *Lower, module: *const Ast.ModuleDecl) Oom!void` (`expr`, `stmt`)
+//! - `pub fn zeroOf(ty: Ty) Mir.Value`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -98,14 +116,18 @@ pub const State = struct {
 /// One `scope_log` row: a declared name and what it shadowed, as rows of
 /// `State.shadowed_vars`/`shadowed_arrays` (`none_u32`: nothing).
 pub const ScopeEntry = struct { name: []const u8, prev_var: u32, prev_array: u32 };
+
 // Budget: a name and two handles. It was 88 B with the bindings inline.
 comptime {
     assert(@sizeOf(ScopeEntry) <= 24);
 }
 
-// ---- before any declaration: which variables need what storage -------------
+/// Where a `declareVarDecl` sits. §5.3.2 gives a persistent §5.10 slot to a
+/// module variable and to a NAMED block's local; an unnamed `begin`'s
+/// declaration is neither, and `block_path` is "" for it.
+const VarScope = enum { module, local };
 
-// ---- declarations ----------------------------------------------------------
+const Scratch = enum { off, zero, uninit };
 
 /// §6.8: "An identifier shall be used to declare only one item within a scope.
 /// This rule means it is illegal to declare two or more variables which have the
@@ -160,19 +182,6 @@ pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: [
         if (param_names.contains(n.name)) try dupItem(self, n.main_tok, n.name);
     }
 }
-
-fn dupItem(self: *Lower, tok: u32, name: Ast.StrId) Oom!void {
-    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    var b = self.errWith(tok, .E0362);
-    b.msg("`{s}`", .{self.file.str(name)});
-    b.note("§6.8: one identifier declares one item in a scope — the earlier declaration is unreachable", .{});
-    try b.emit();
-}
-
-/// Where a `declareVarDecl` sits. §5.3.2 gives a persistent §5.10 slot to a
-/// module variable and to a NAMED block's local; an unnamed `begin`'s
-/// declaration is neither, and `block_path` is "" for it.
-const VarScope = enum { module, local };
 
 /// §3.2 declare and initialize. Verilog-AMS variables start at zero, so a read
 /// on a path that never assigned is 0 rather than the SSA builder's `.undef`
@@ -340,96 +349,6 @@ pub fn countAssign(self: *Lower, place: Ssa.Place) Oom!void {
     try self.builder.writeVariable(c.place, self.cur, try self.emit(.iadd, &.{ n, try self.mir.addIntConst(self.arena, 1) }));
 }
 
-/// VerA's `vera_scratch` (§2.9) on the variable declared at token `tok`: the
-/// last spec wins; §2.9's default 1 when it has no value, otherwise a
-/// constant that folds without the model card, since it decides whether the
-/// device keeps a slot (E0534, and the variable is held where observable).
-/// The string `"uninit"` drops the zero start too; any other string is E0538.
-fn scratchOn(self: *Lower, tok: u32) Oom!Scratch {
-    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    const a = try scratchSpec(self, tok) orelse return .off;
-    if (a.value == .none) return .zero;
-    const c = lower_constfold.foldExpr(self, a.value, false) orelse {
-        try self.err(a.main_tok, .E0534, "", .{});
-        return .off;
-    };
-    return scratchMode(c) orelse {
-        try self.err(a.main_tok, .E0538, "`\"{s}\"`", .{c.str});
-        return .off;
-    };
-}
-
-const Scratch = enum { off, zero, uninit };
-
-/// The mode a folded `vera_scratch` value names; null for a string other than
-/// `"uninit"` (E0538).
-fn scratchMode(c: Const) ?Scratch {
-    return switch (c) {
-        .str => |s| if (std.mem.eql(u8, s, "uninit")) .uninit else null,
-        .int, .real => if (c.isTrue()) .zero else .off,
-    };
-}
-
-/// The `Instance` field name of a held slot carries the block path too, because
-/// codegen derives one struct field per `held_vars` entry from it and two
-/// blocks may spell a local the same way (§5.3.2's whole point).
-fn qualifyHeld(self: *Lower, prefix: []const u8, name: []const u8) Oom![]const u8 {
-    if (prefix.len == 0) return name;
-    return self.arena.print("{s}{s}", .{ prefix, name });
-}
-
-/// Codegen makes one `Instance` field per `held_vars` entry out of its name, so
-/// the name has to be unique. It is — until a §6.6.1 unrolled `for` lowers the
-/// SAME named block twice, which is two executions of one source declaration
-/// and so, by §5.3.2, two locations that happen to share a path.
-fn uniqueHeld(self: *Lower, name: []const u8, idx: u32) Oom![]const u8 {
-    const used = &self.var_state.held_used;
-    const unique = if (used.contains(name)) try self.arena.print("{s}.{d}", .{ name, idx }) else name;
-    try used.put(self.arena, unique, {});
-    return unique;
-}
-
-/// §5.10. Give one event-assigned variable its persistent `Instance` slot and
-/// return the Value that READS that slot.
-///
-/// The read replaces the declared initializer AT THE DECLARATION, which is the
-/// whole reason the decision is made here and not at the assignment that
-/// reveals it: a read of the variable that lexically precedes the `@(...)` must
-/// also see the retained value, and by the time lowering reaches that
-/// assignment the earlier read has already been resolved against the
-/// initializer and memoized. Patching the entry def afterwards would leave it
-/// stale.
-///
-/// `$held_real` / `$held_int` are synthetic callees with no op kind
-/// (`callee.opKind`), so they create no unit and renumber no `Instance` state.
-/// The single argument is the index into `held_vars`, which is how codegen
-/// recovers the field.
-fn holdSlot(self: *Lower, name: []const u8, ty: Ty, init_val: Mir.Value, place: Ssa.Place, why: Lower.HeldVar.Why, d2a: bool) Oom!Mir.Value {
-    // Emitted into the DECLARATION's block — `.entry`, unless the initializer
-    // itself opened a diamond (§4.2.7 `&&`/`||` short-circuit), in which case it
-    // is that diamond's join. Either way it dominates every statement of the
-    // module, which is all the seed has to do.
-    assert(self.held_places.items.len == self.out.held_vars.items.len); // one place per held row
-    const idx: i64 = @intCast(self.out.held_vars.items.len);
-    const seed = try self.call(switch (ty) {
-        .integer => "$held_int",
-        .real => "$held_real",
-        .string => "$held_str",
-        .wide => "$held_wide",
-    }, &.{try self.mir.addIntConst(self.arena, idx)});
-    try self.out.held_vars.append(self.arena, .{
-        .name = try uniqueHeld(self, name, @intCast(idx)),
-        .ty = ty,
-        .init = init_val,
-        .seed = seed,
-        .why = why,
-        .d2a = d2a,
-    });
-    try self.held_places.append(self.arena, place);
-    assert(self.held_places.items.len == self.out.held_vars.items.len);
-    return seed;
-}
-
 /// A compiler-owned retained integer discovered during expression lowering.
 /// Seed it in entry so even a branch that skips its first use has a value.
 pub fn hiddenHeldInt(self: *Lower, name: []const u8) Oom!VarSlot {
@@ -442,31 +361,6 @@ pub fn hiddenHeldInt(self: *Lower, name: []const u8) Oom!VarSlot {
     try self.builder.writeVariable(place, .entry, seed);
     return .{ .place = place, .ty = .integer };
 }
-
-/// §5.10 `holdSlot` for a memory-backed array: ONE held row whose seed is the
-/// array's `anew` (which codegen fills from the `Instance` field) and whose
-/// final value is the array version the block ends with.
-fn holdArray(self: *Lower, name: []const u8, ty: Ty, id: u32, inits: []const Mir.Value, place: Ssa.Place, d2a: bool) Oom!Mir.Value {
-    assert(self.held_places.items.len == self.out.held_vars.items.len); // one place per held row
-    assert(id < self.out.mem_arrays.items.len);
-    const idx: u32 = @intCast(self.out.held_vars.items.len);
-    const seed = try self.mir.emitAnew(self.arena, self.cur, id);
-    self.out.mem_arrays.items[id].held = idx;
-    try self.out.held_vars.append(self.arena, .{
-        .name = try uniqueHeld(self, name, idx),
-        .ty = ty,
-        .init = zeroOf(ty),
-        .seed = seed,
-        .array = id,
-        .inits = inits,
-        .d2a = d2a,
-    });
-    try self.held_places.append(self.arena, place);
-    assert(self.held_places.items.len == self.out.held_vars.items.len);
-    return seed;
-}
-
-// ---- §5.3.2 scopes ----------------------------------------------------------
 
 /// Pops the scope log back to `mark`, restoring each variable and array binding
 /// the scope shadowed. Asserts that `mark` is a length the log has had.
@@ -487,22 +381,6 @@ pub fn closeScope(self: *Lower, mark: usize) void {
     }
 }
 
-fn shadowName(self: *Lower, name: []const u8) Oom!void {
-    const st = &self.var_state;
-    var e: ScopeEntry = .{ .name = name, .prev_var = none_u32, .prev_array = none_u32 };
-    if (self.vars.get(name)) |p| {
-        e.prev_var = @intCast(st.shadowed_vars.items.len);
-        try st.shadowed_vars.append(self.arena, p);
-    }
-    if (self.arrays.get(name)) |a| {
-        e.prev_array = @intCast(st.shadowed_arrays.items.len);
-        try st.shadowed_arrays.append(self.arena, a);
-    }
-    try self.scope_log.append(self.arena, e);
-    _ = self.vars.remove(name);
-    _ = self.arrays.remove(name);
-}
-
 /// Binds `name` to an array, remembering what it shadowed (§5.3.2).
 pub fn declareArray(self: *Lower, name: []const u8, info: ArrayInfo) Oom!void {
     try shadowName(self, name);
@@ -516,8 +394,6 @@ pub fn declareVar(self: *Lower, name: []const u8, ty: Ty) Oom!VarSlot {
     try self.vars.put(self.arena, name, slot);
     return slot;
 }
-
-// ---- §3.2.2 element storage -------------------------------------------------
 
 /// §3.2.2 is `name` a memory-backed array? A string array never is: a string
 /// has no runtime storage (§3.3), so its runtime reads stay `$idx$str`.
@@ -608,8 +484,6 @@ pub fn analogWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!std.AutoHas
     return out;
 }
 
-// ---- after every declaration -----------------------------------------------
-
 /// §2.9 E0535: every `vera_scratch` in `module` decorates a variable
 /// declaration (§3.2), the only item with a value an evaluation assigns.
 pub fn checkScratchOwners(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
@@ -651,6 +525,153 @@ pub fn checkScratchOwners(self: *Lower, module: *const Ast.ModuleDecl) Oom!void 
     for (module.tasks) |t| try walk.stmt(t.body);
 }
 
+/// Returns a variable's §3.2 zero start; a string's is `.undef`.
+pub fn zeroOf(ty: Ty) Mir.Value {
+    return switch (ty) {
+        .real => .f_zero,
+        .integer => .zero,
+        .string => .undef,
+        .wide => unreachable, // its zero has a width (`lower_wide.zero`)
+    };
+}
+
+// ---- private ----
+
+fn dupItem(self: *Lower, tok: u32, name: Ast.StrId) Oom!void {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    var b = self.errWith(tok, .E0362);
+    b.msg("`{s}`", .{self.file.str(name)});
+    b.note("§6.8: one identifier declares one item in a scope — the earlier declaration is unreachable", .{});
+    try b.emit();
+}
+
+/// VerA's `vera_scratch` (§2.9) on the variable declared at token `tok`: the
+/// last spec wins; §2.9's default 1 when it has no value, otherwise a
+/// constant that folds without the model card, since it decides whether the
+/// device keeps a slot (E0534, and the variable is held where observable).
+/// The string `"uninit"` drops the zero start too; any other string is E0538.
+fn scratchOn(self: *Lower, tok: u32) Oom!Scratch {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    const a = try scratchSpec(self, tok) orelse return .off;
+    if (a.value == .none) return .zero;
+    const c = lower_constfold.foldExpr(self, a.value, false) orelse {
+        try self.err(a.main_tok, .E0534, "", .{});
+        return .off;
+    };
+    return scratchMode(c) orelse {
+        try self.err(a.main_tok, .E0538, "`\"{s}\"`", .{c.str});
+        return .off;
+    };
+}
+
+/// The mode a folded `vera_scratch` value names; null for a string other than
+/// `"uninit"` (E0538).
+fn scratchMode(c: Const) ?Scratch {
+    return switch (c) {
+        .str => |s| if (std.mem.eql(u8, s, "uninit")) .uninit else null,
+        .int, .real => if (c.isTrue()) .zero else .off,
+    };
+}
+
+/// The `Instance` field name of a held slot carries the block path too, because
+/// codegen derives one struct field per `held_vars` entry from it and two
+/// blocks may spell a local the same way (§5.3.2's whole point).
+fn qualifyHeld(self: *Lower, prefix: []const u8, name: []const u8) Oom![]const u8 {
+    if (prefix.len == 0) return name;
+    return self.arena.print("{s}{s}", .{ prefix, name });
+}
+
+/// Codegen makes one `Instance` field per `held_vars` entry out of its name, so
+/// the name has to be unique. It is — until a §6.6.1 unrolled `for` lowers the
+/// SAME named block twice, which is two executions of one source declaration
+/// and so, by §5.3.2, two locations that happen to share a path.
+fn uniqueHeld(self: *Lower, name: []const u8, idx: u32) Oom![]const u8 {
+    const used = &self.var_state.held_used;
+    const unique = if (used.contains(name)) try self.arena.print("{s}.{d}", .{ name, idx }) else name;
+    try used.put(self.arena, unique, {});
+    return unique;
+}
+
+/// §5.10. Give one event-assigned variable its persistent `Instance` slot and
+/// return the Value that READS that slot.
+///
+/// The read replaces the declared initializer AT THE DECLARATION, which is the
+/// whole reason the decision is made here and not at the assignment that
+/// reveals it: a read of the variable that lexically precedes the `@(...)` must
+/// also see the retained value, and by the time lowering reaches that
+/// assignment the earlier read has already been resolved against the
+/// initializer and memoized. Patching the entry def afterwards would leave it
+/// stale.
+///
+/// `$held_real` / `$held_int` are synthetic callees with no op kind
+/// (`callee.opKind`), so they create no unit and renumber no `Instance` state.
+/// The single argument is the index into `held_vars`, which is how codegen
+/// recovers the field.
+fn holdSlot(self: *Lower, name: []const u8, ty: Ty, init_val: Mir.Value, place: Ssa.Place, why: Lower.HeldVar.Why, d2a: bool) Oom!Mir.Value {
+    // Emitted into the DECLARATION's block — `.entry`, unless the initializer
+    // itself opened a diamond (§4.2.7 `&&`/`||` short-circuit), in which case it
+    // is that diamond's join. Either way it dominates every statement of the
+    // module, which is all the seed has to do.
+    assert(self.held_places.items.len == self.out.held_vars.items.len); // one place per held row
+    const idx: i64 = @intCast(self.out.held_vars.items.len);
+    const seed = try self.call(switch (ty) {
+        .integer => "$held_int",
+        .real => "$held_real",
+        .string => "$held_str",
+        .wide => "$held_wide",
+    }, &.{try self.mir.addIntConst(self.arena, idx)});
+    try self.out.held_vars.append(self.arena, .{
+        .name = try uniqueHeld(self, name, @intCast(idx)),
+        .ty = ty,
+        .init = init_val,
+        .seed = seed,
+        .why = why,
+        .d2a = d2a,
+    });
+    try self.held_places.append(self.arena, place);
+    assert(self.held_places.items.len == self.out.held_vars.items.len);
+    return seed;
+}
+
+/// §5.10 `holdSlot` for a memory-backed array: ONE held row whose seed is the
+/// array's `anew` (which codegen fills from the `Instance` field) and whose
+/// final value is the array version the block ends with.
+fn holdArray(self: *Lower, name: []const u8, ty: Ty, id: u32, inits: []const Mir.Value, place: Ssa.Place, d2a: bool) Oom!Mir.Value {
+    assert(self.held_places.items.len == self.out.held_vars.items.len); // one place per held row
+    assert(id < self.out.mem_arrays.items.len);
+    const idx: u32 = @intCast(self.out.held_vars.items.len);
+    const seed = try self.mir.emitAnew(self.arena, self.cur, id);
+    self.out.mem_arrays.items[id].held = idx;
+    try self.out.held_vars.append(self.arena, .{
+        .name = try uniqueHeld(self, name, idx),
+        .ty = ty,
+        .init = zeroOf(ty),
+        .seed = seed,
+        .array = id,
+        .inits = inits,
+        .d2a = d2a,
+    });
+    try self.held_places.append(self.arena, place);
+    assert(self.held_places.items.len == self.out.held_vars.items.len);
+    return seed;
+}
+
+fn shadowName(self: *Lower, name: []const u8) Oom!void {
+    const st = &self.var_state;
+    var e: ScopeEntry = .{ .name = name, .prev_var = none_u32, .prev_array = none_u32 };
+    if (self.vars.get(name)) |p| {
+        e.prev_var = @intCast(st.shadowed_vars.items.len);
+        try st.shadowed_vars.append(self.arena, p);
+    }
+    if (self.arrays.get(name)) |a| {
+        e.prev_array = @intCast(st.shadowed_arrays.items.len);
+        try st.shadowed_arrays.append(self.arena, a);
+    }
+    try self.scope_log.append(self.arena, e);
+    _ = self.vars.remove(name);
+    _ = self.arrays.remove(name);
+}
+
 /// `vera_scratch` on `v`, when on, and a discrete process writes `v` (E0537).
 /// A value that does not fold (E0534) or names no mode (E0538) is reported at
 /// the declaration.
@@ -689,16 +710,6 @@ fn isVarTok(self: *const Lower, module: *const Ast.ModuleDecl, tok: u32) bool {
     var blocks = self.file.seqBlocks();
     while (blocks.next()) |b| for (b.vars) |v| if (v.main_tok == tok) return true;
     return false;
-}
-
-/// Returns a variable's §3.2 zero start; a string's is `.undef`.
-pub fn zeroOf(ty: Ty) Mir.Value {
-    return switch (ty) {
-        .real => .f_zero,
-        .integer => .zero,
-        .string => .undef,
-        .wide => unreachable, // its zero has a width (`lower_wide.zero`)
-    };
 }
 
 test zeroOf {

@@ -1,3 +1,12 @@
+//! A.6.2 the digital `initial` block: its constant assignments in, the
+//! value each variable starts every evaluation with out (`Lower.initial_state`),
+//! applied at the variable's declaration.
+//!
+//! Cites: A.2.2.1, §3.2.2, A.6.2, A.6.3, §6.8, §7.2.2, §9.2.
+//!
+//! Contents:
+//! - `pub fn collectInitialState(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -33,6 +42,8 @@ pub fn collectInitialState(self: *Lower, module: *const Ast.ModuleDecl) Oom!void
         try collectInitialStmt(self, blk.body);
     }
 }
+
+// ---- private ----
 
 fn collectInitialStmt(self: *Lower, id: Ast.StmtId) Oom!void {
     assert(id == .none or @backingInt(id) < self.stmtCount());

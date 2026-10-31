@@ -1,3 +1,19 @@
+//! §5.10 held variables: the module's analog blocks in, the set of
+//! variables whose value another evaluation can observe out (event writes,
+//! reads before writes), decided before any declaration lowers; and §3.2.2's
+//! memory-backed arrays (a subscript known only at run time).
+//!
+//! Cites: §3.2, §3.2.2, §3.4, §3.5, §4.7.2.3, §5.2.1, §5.3.2, §5.6.1.3, §5.9,
+//! §5.9.2, §5.10, §5.11, §7.3.2, A.8.1, §8.5, §9.4.
+//!
+//! Contents:
+//! - `pub const HeldFrame = struct`
+//! - `pub fn markHeldVars(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - private `Exposed` (`expr`, `stmt`)
+//! - private `Held` (`expr`, `stmt`)
+//! - `pub fn markMemArrays(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - `pub fn dropHeld(lowered: *Lower.Lowered, keep: []const bool) void`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -13,43 +29,6 @@ const none_u32 = Lower.none_u32;
 /// its locals are keyed under, and the declarations that say which names those
 /// are.
 pub const HeldFrame = struct { prefix: []const u8, vars: []const Ast.VarDecl };
-
-/// §5.10. Collect the variables assigned inside an `@(<event>)` body, before
-/// any of them is declared.
-pub fn markHeldVars(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    assert(module.name != .none);
-    for (module.analog) |blk| try scanHeld(self, blk.body, .none);
-    self.var_state.held_frames.clearRetainingCapacity();
-    // §3.2 retention, beside the §5.10 rule above: see `Exposed`.
-    var x: Exposed = .{ .l = self };
-    for (module.vars) |*v| if (v.dims.len != 0) try x.arrays.put(self.arena, v.name, v);
-    for (module.analog) |blk| {
-        // §5.2.1 an `analog initial` body runs on the first evaluation only,
-        // so what it assigns is not assigned on the later ones.
-        x.in_initial = blk.is_initial;
-        if (blk.is_initial) try x.maybe(blk.body, .none) else try x.stmt(blk.body);
-    }
-    self.var_state.held_frames.clearRetainingCapacity();
-    // `held_names` and `carried` are only probed, never walked, so the order
-    // these loops visit the keys in does not reach the output.
-    var it = x.marks.iterator();
-    while (it.next()) |e| if (e.value_ptr.read and e.value_ptr.write) {
-        const gop = try self.var_state.held_names.getOrPut(self.arena, e.key_ptr.*);
-        if (gop.found_existing) continue;
-        // Otherwise the held value is observable only when a write's
-        // placement varies from one evaluation to the next, which only
-        // codegen's solve-invariance can say.
-        gop.value_ptr.* = if (e.value_ptr.reach or e.value_ptr.initial) .retained else .unless_invariant;
-    };
-    it = x.marks.iterator();
-    while (it.next()) |e| if (e.value_ptr.read and
-        (e.value_ptr.initial or self.var_state.held_names.get(e.key_ptr.*) == .event))
-        try self.var_state.carried.put(self.arena, e.key_ptr.*, {});
-    for (self.out.discrete_reads.keys()) |name| {
-        const gop = try self.var_state.held_names.getOrPut(self.arena, name);
-        if (!gop.found_existing or gop.value_ptr.* == .unless_invariant) gop.value_ptr.* = .a2d;
-    }
-}
 
 /// §3.2: "Real variables are initialized to zero (0) at the start of a
 /// simulation" — once, not per evaluation — and §5.6.1.3: "Unlike variables,
@@ -359,6 +338,111 @@ const Exposed = struct {
     }
 };
 
+/// Where `scanHeld` is: outside any event body, or in one whose terms are all
+/// explicit D2A events (§8.5), or in any other.
+const Body = enum { none, d2a, analog };
+
+const Held = struct {
+    l: *Lower,
+    in_event: Body,
+    pub fn expr(_: Held, _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
+    pub fn stmt(h: Held, s: Ast.StmtId) Oom!void {
+        try scanHeld(h.l, s, h.in_event);
+    }
+};
+
+/// §5.10. Collect the variables assigned inside an `@(<event>)` body, before
+/// any of them is declared.
+pub fn markHeldVars(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
+    for (module.analog) |blk| try scanHeld(self, blk.body, .none);
+    self.var_state.held_frames.clearRetainingCapacity();
+    // §3.2 retention, beside the §5.10 rule above: see `Exposed`.
+    var x: Exposed = .{ .l = self };
+    for (module.vars) |*v| if (v.dims.len != 0) try x.arrays.put(self.arena, v.name, v);
+    for (module.analog) |blk| {
+        // §5.2.1 an `analog initial` body runs on the first evaluation only,
+        // so what it assigns is not assigned on the later ones.
+        x.in_initial = blk.is_initial;
+        if (blk.is_initial) try x.maybe(blk.body, .none) else try x.stmt(blk.body);
+    }
+    self.var_state.held_frames.clearRetainingCapacity();
+    // `held_names` and `carried` are only probed, never walked, so the order
+    // these loops visit the keys in does not reach the output.
+    var it = x.marks.iterator();
+    while (it.next()) |e| if (e.value_ptr.read and e.value_ptr.write) {
+        const gop = try self.var_state.held_names.getOrPut(self.arena, e.key_ptr.*);
+        if (gop.found_existing) continue;
+        // Otherwise the held value is observable only when a write's
+        // placement varies from one evaluation to the next, which only
+        // codegen's solve-invariance can say.
+        gop.value_ptr.* = if (e.value_ptr.reach or e.value_ptr.initial) .retained else .unless_invariant;
+    };
+    it = x.marks.iterator();
+    while (it.next()) |e| if (e.value_ptr.read and
+        (e.value_ptr.initial or self.var_state.held_names.get(e.key_ptr.*) == .event))
+        try self.var_state.carried.put(self.arena, e.key_ptr.*, {});
+    for (self.out.discrete_reads.keys()) |name| {
+        const gop = try self.var_state.held_names.getOrPut(self.arena, name);
+        if (!gop.found_existing or gop.value_ptr.* == .unless_invariant) gop.value_ptr.* = .a2d;
+    }
+}
+
+/// §3.2.2 which arrays does some subscript index at run time? Lowering decides
+/// that per reference (`lower_expr_select.lowerIndex`: a subscript `foldExpr(.., false)`
+/// cannot fold), after the declaration has already chosen a representation, so
+/// this answers it ahead of time, by NAME and over the whole source, with the
+/// same rule: a subscript reading a variable, a parameter (a model card can
+/// override it) or a call is runtime; a literal, a genvar (§3.5: an unrolled
+/// loop binds it) and a local constant are not.
+///
+/// The answer only picks a representation (both lower every access), so a
+/// wrong guess costs speed, never meaning: a runtime-indexed array kept scalar
+/// reads through a `$idx` switch and writes one masked select per element.
+pub fn markMemArrays(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
+    var vars: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty;
+    defer vars.deinit(self.arena);
+    for (module.vars) |v| try vars.put(self.arena, v.name, {});
+    for (module.functions) |f| {
+        for (f.vars) |v| try vars.put(self.arena, v.name, {});
+        for (f.args) |a| try vars.put(self.arena, a.name, {});
+    }
+    var blocks = self.file.seqBlocks();
+    while (blocks.next()) |b| for (b.vars) |v| try vars.put(self.arena, v.name, {});
+    const ex = &self.file.exprs;
+    for (0..ex.len()) |i| {
+        const e: Ast.ExprId = @fromBackingInt(@intCast(i));
+        if (ex.tag(e) != .index or !runtimeSub(self, &vars, module.genvars, ex.rhs(e))) continue;
+        var base = ex.lhs(e);
+        while (ex.tag(base) == .index) base = ex.lhs(base);
+        if (ex.tag(base) == .ident) try self.var_state.mem_names.put(self.arena, ex.strOf(base), {});
+    }
+}
+
+/// §3.2 applies `prove.setup.pruneHeld`'s mask: drops every `held_vars` row
+/// whose `keep` flag is false and renumbers the `mem_arrays` rows that point
+/// at a kept one. The MIR side (the seeds' row arguments) is already
+/// renumbered the same way, densely over the kept rows in order. Asserts the
+/// mask has one flag per row and no dropped row is an array's.
+pub fn dropHeld(lowered: *Lower.Lowered, keep: []const bool) void {
+    const held = &lowered.held_vars;
+    assert(keep.len == held.items.len);
+    var kept: usize = 0;
+    for (held.items, keep) |h, k| {
+        if (!k) {
+            std.debug.assert(h.array == none_u32);
+            continue;
+        }
+        if (h.array != none_u32) lowered.mem_arrays.items[h.array].held = @intCast(kept);
+        held.items[kept] = h;
+        kept += 1;
+    }
+    held.shrinkRetainingCapacity(kept);
+}
+
+// ---- private ----
+
 /// Opens block `b`'s `held_frames` frame and returns true, or returns false
 /// for an unnamed block: §5.3.2 makes only a NAMED block's locals static, so
 /// only a label opens a frame; an unnamed `begin`'s declarations are ordinary.
@@ -433,10 +517,6 @@ fn scanHeld(self: *Lower, id: Ast.StmtId, in_event: Body) Oom!void {
     }
 }
 
-/// Where `scanHeld` is: outside any event body, or in one whose terms are all
-/// explicit D2A events (§8.5), or in any other.
-const Body = enum { none, d2a, analog };
-
 /// Is every term of event expression `e` an explicit D2A event?
 fn d2aOnly(self: *const Lower, e: Ast.ExprId) bool {
     assert(e == .none or self.exprValid(e));
@@ -444,47 +524,6 @@ fn d2aOnly(self: *const Lower, e: Ast.ExprId) bool {
     if (e == .none) return false;
     if (ex.tag(e) == .event_or) return d2aOnly(self, ex.lhs(e)) and d2aOnly(self, ex.rhs(e));
     return self.out.discrete_events.contains(e);
-}
-
-const Held = struct {
-    l: *Lower,
-    in_event: Body,
-    pub fn expr(_: Held, _: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {}
-    pub fn stmt(h: Held, s: Ast.StmtId) Oom!void {
-        try scanHeld(h.l, s, h.in_event);
-    }
-};
-
-/// §3.2.2 which arrays does some subscript index at run time? Lowering decides
-/// that per reference (`lower_expr_select.lowerIndex`: a subscript `foldExpr(.., false)`
-/// cannot fold), after the declaration has already chosen a representation, so
-/// this answers it ahead of time, by NAME and over the whole source, with the
-/// same rule: a subscript reading a variable, a parameter (a model card can
-/// override it) or a call is runtime; a literal, a genvar (§3.5: an unrolled
-/// loop binds it) and a local constant are not.
-///
-/// The answer only picks a representation (both lower every access), so a
-/// wrong guess costs speed, never meaning: a runtime-indexed array kept scalar
-/// reads through a `$idx` switch and writes one masked select per element.
-pub fn markMemArrays(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    assert(module.name != .none);
-    var vars: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty;
-    defer vars.deinit(self.arena);
-    for (module.vars) |v| try vars.put(self.arena, v.name, {});
-    for (module.functions) |f| {
-        for (f.vars) |v| try vars.put(self.arena, v.name, {});
-        for (f.args) |a| try vars.put(self.arena, a.name, {});
-    }
-    var blocks = self.file.seqBlocks();
-    while (blocks.next()) |b| for (b.vars) |v| try vars.put(self.arena, v.name, {});
-    const ex = &self.file.exprs;
-    for (0..ex.len()) |i| {
-        const e: Ast.ExprId = @fromBackingInt(@intCast(i));
-        if (ex.tag(e) != .index or !runtimeSub(self, &vars, module.genvars, ex.rhs(e))) continue;
-        var base = ex.lhs(e);
-        while (ex.tag(base) == .index) base = ex.lhs(base);
-        if (ex.tag(base) == .ident) try self.var_state.mem_names.put(self.arena, ex.strOf(base), {});
-    }
 }
 
 fn runtimeSub(self: *const Lower, vars: *const std.AutoHashMapUnmanaged(Ast.StrId, void), genvars: []const Ast.StrId, e: Ast.ExprId) bool {
@@ -503,27 +542,6 @@ fn runtimeSub(self: *const Lower, vars: *const std.AutoHashMapUnmanaged(Ast.StrI
             return false;
         },
     }
-}
-
-/// §3.2 applies `prove.setup.pruneHeld`'s mask: drops every `held_vars` row
-/// whose `keep` flag is false and renumbers the `mem_arrays` rows that point
-/// at a kept one. The MIR side (the seeds' row arguments) is already
-/// renumbered the same way, densely over the kept rows in order. Asserts the
-/// mask has one flag per row and no dropped row is an array's.
-pub fn dropHeld(lowered: *Lower.Lowered, keep: []const bool) void {
-    const held = &lowered.held_vars;
-    assert(keep.len == held.items.len);
-    var kept: usize = 0;
-    for (held.items, keep) |h, k| {
-        if (!k) {
-            std.debug.assert(h.array == none_u32);
-            continue;
-        }
-        if (h.array != none_u32) lowered.mem_arrays.items[h.array].held = @intCast(kept);
-        held.items[kept] = h;
-        kept += 1;
-    }
-    held.shrinkRetainingCapacity(kept);
 }
 
 test "markHeldVars: an array too large to count is judged by its declaration, not by a crash" {

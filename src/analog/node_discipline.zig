@@ -1,3 +1,19 @@
+//! §3.6 disciplines on nodes: the declared nets in, each `nodes` row's
+//! discipline out, with §10.2's `default_discipline` applied, the §3.6.2
+//! primitive-terminal checks, IEEE 1364 §19.2's `default_nettype none` and
+//! §19.9's unconnected-input drive.
+//!
+//! Cites: §1.3.4, §1.3.4.1, §1.3.4.2, §3.6.2.1, §3.6.2.2, §3.6.3, §3.6.3.2,
+//! §3.6.5, §3.9, §5.6.1.3, §6.2.2, §6.5.2, §7.4, §7.4.4, §10.2, §19.2, §19.9;
+//! IEEE 1364-2005 §19.2, §19.9.
+//!
+//! Contents:
+//! - `pub fn resolveDisciplines(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - `pub fn strOrEmpty(self: *const Lower, id: Ast.StrId) []const u8`
+//! - `pub fn isSignalFlow(self: *const Lower, dname: []const u8) bool`
+//! - `pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void`
+//! - `pub fn applyUnconnectedDrive(self: *Lower) Oom!void`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const discipline_rules = @import("elab").discipline_rules;
@@ -106,6 +122,53 @@ pub fn isSignalFlow(self: *const Lower, dname: []const u8) bool {
     return d.has_potential != d.has_flow;
 }
 
+/// Reports an error when IEEE 1364 §19.2 `` `default_nettype none `` is in force at
+/// `main_tok`, on a name about to become a §3.6.5 implicit net. Other net types are
+/// a no-op: VerA's analog nets have a discipline, not a net type.
+///
+/// ponytail: the other ten values are accepted and dropped; they differ only in
+/// how multiple drivers resolve, which VerA does not model. Upgrade: a discrete
+/// net type on `Ast.NetDecl`.
+pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void {
+    assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
+    if (Preprocessor.NetTypeRegion.inForce(self.opts.directives.nettypes, self.tokStart(main_tok), .default) != .none) return;
+    var b = self.errWith(main_tok, .E0367);
+    b.msg("`{s}` was never declared, and `default_nettype none is in force", .{name});
+    b.note("§3.6.5 would make it an implicit net; IEEE 1364 §19.2's `none` is what withdraws that", .{});
+    b.help("declare it — `electrical {s};` — or go back to `default_nettype wire", .{name});
+    try b.emit();
+}
+
+/// Applies IEEE 1364 §19.9 `unconnected_drive to the internal nets §6.2.2 gave
+/// unconnected `input` ports: `pull0` holds the port at potential 0 and `pull1` at 1,
+/// in its discipline's potential units, through a potential source. Must run after
+/// the declarations are interned and before the analog blocks lower. Skips a net
+/// whose discipline binds no potential.
+///
+/// ponytail: 1.0 stands in for §19.9's Pu1 strength; the upgrade is discrete net
+/// resolution, where a pull is a driver rather than a potential.
+pub fn applyUnconnectedDrive(self: *Lower) Oom!void {
+    assert(self.blockValid(self.cur));
+    if (self.opts.directives.drives.len == 0) return;
+    for (self.design.unconnected_inputs) |site| {
+        const drive = Preprocessor.DriveRegion.inForce(self.opts.directives.drives, self.tokStart(site.main_tok), .default);
+        if (drive == .float) continue;
+        const idx = self.node_voltages.get(site.name) orelse continue;
+        if (idx == ground) continue;
+        const info = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse continue;
+        if (!info.has_potential) continue;
+        const target: lower_branch.Target = .{ .access = .potential, .hi = idx, .lo = ground };
+        const acc = self.accum.items[try lower_accum.contribIndex(self, target, site.main_tok)];
+        const old = try self.builder.readVariable(acc.resist, self.cur);
+        const level: Mir.Value = if (drive == .pull1) .f_one else .f_zero;
+        try self.builder.writeVariable(acc.resist, self.cur, try self.emit(.fadd, &.{ old, level }));
+        // §5.6.1.3: retained on every path, like an unconditional `<+`.
+        try self.builder.writeVariable(acc.wrote, self.cur, .f_one);
+    }
+}
+
+// ---- private ----
+
 /// Applies the `default_discipline in force at `main_tok` for a `q` signal to
 /// net `name`, or to each scalarised element when it is a §3.6.3 vector (LRM §10.2).
 fn applyDefaultToAll(self: *Lower, name: []const u8, main_tok: u32, q: ?Preprocessor.Qualifier) Oom!void {
@@ -189,49 +252,4 @@ fn checkPrimitiveTerminal(self: *Lower, term: Ast.ExprId, prim_tok: u32, what: [
     b.note("the primitive's side of the net is discrete, so the net is mixed, and no `default_discipline is in force to name that side's discipline", .{});
     b.help("put `default_discipline logic (or another discrete discipline) before the primitive", .{});
     try b.emit();
-}
-
-/// Reports an error when IEEE 1364 §19.2 `` `default_nettype none `` is in force at
-/// `main_tok`, on a name about to become a §3.6.5 implicit net. Other net types are
-/// a no-op: VerA's analog nets have a discipline, not a net type.
-///
-/// ponytail: the other ten values are accepted and dropped; they differ only in
-/// how multiple drivers resolve, which VerA does not model. Upgrade: a discrete
-/// net type on `Ast.NetDecl`.
-pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void {
-    assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
-    if (Preprocessor.NetTypeRegion.inForce(self.opts.directives.nettypes, self.tokStart(main_tok), .default) != .none) return;
-    var b = self.errWith(main_tok, .E0367);
-    b.msg("`{s}` was never declared, and `default_nettype none is in force", .{name});
-    b.note("§3.6.5 would make it an implicit net; IEEE 1364 §19.2's `none` is what withdraws that", .{});
-    b.help("declare it — `electrical {s};` — or go back to `default_nettype wire", .{name});
-    try b.emit();
-}
-
-/// Applies IEEE 1364 §19.9 `unconnected_drive to the internal nets §6.2.2 gave
-/// unconnected `input` ports: `pull0` holds the port at potential 0 and `pull1` at 1,
-/// in its discipline's potential units, through a potential source. Must run after
-/// the declarations are interned and before the analog blocks lower. Skips a net
-/// whose discipline binds no potential.
-///
-/// ponytail: 1.0 stands in for §19.9's Pu1 strength; the upgrade is discrete net
-/// resolution, where a pull is a driver rather than a potential.
-pub fn applyUnconnectedDrive(self: *Lower) Oom!void {
-    assert(self.blockValid(self.cur));
-    if (self.opts.directives.drives.len == 0) return;
-    for (self.design.unconnected_inputs) |site| {
-        const drive = Preprocessor.DriveRegion.inForce(self.opts.directives.drives, self.tokStart(site.main_tok), .default);
-        if (drive == .float) continue;
-        const idx = self.node_voltages.get(site.name) orelse continue;
-        if (idx == ground) continue;
-        const info = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse continue;
-        if (!info.has_potential) continue;
-        const target: lower_branch.Target = .{ .access = .potential, .hi = idx, .lo = ground };
-        const acc = self.accum.items[try lower_accum.contribIndex(self, target, site.main_tok)];
-        const old = try self.builder.readVariable(acc.resist, self.cur);
-        const level: Mir.Value = if (drive == .pull1) .f_one else .f_zero;
-        try self.builder.writeVariable(acc.resist, self.cur, try self.emit(.fadd, &.{ old, level }));
-        // §5.6.1.3: retained on every path, like an unconditional `<+`.
-        try self.builder.writeVariable(acc.wrote, self.cur, .f_one);
-    }
 }

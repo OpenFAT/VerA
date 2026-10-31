@@ -11,12 +11,23 @@
 //! `lowerNoise` per small-signal call; `noiseCoeff` runs when `contrib.zig`
 //! accumulates a `<+` that carries a generator.
 //!
-//! LRM clauses this file's code cites: §1.3.1.2, §2, §2.8, §2.9, §3.2.2, §3.4,
-//! §3.4.4, §3.6.1.2, §3.6.2.3, §3.13.1, §4.2, §4.2.12, §4.2.13, §4.5, §4.5.1,
-//! §4.5.2, §4.5.3, §4.5.4, §4.5.5, §4.5.6, §4.5.7, §4.5.8, §4.5.9, §4.5.10,
-//! §4.5.11, §4.5.12, §4.5.13, §4.5.14, §4.5.15, §4.6.3, §4.6.4, §4.6.4.1,
-//! §4.6.4.2, §4.6.4.3, §4.6.4.6, §5.5.3, §5.8, §5.8.1, §5.9, §5.9.3, §6.8,
-//! §9.21.
+//! Cites: §1.3.1.2, §2.8, §2.9, §3.4, §3.4.4, §3.6.1.2, §3.6.2.3, §3.11,
+//! §3.12, §3.13.1, §4.2, §4.2.13, §4.5, §4.5.1, §4.5.2, §4.5.3, §4.5.4,
+//! §4.5.5, §4.5.6, §4.5.7, §4.5.8, §4.5.9, §4.5.10, §4.5.11, §4.5.12,
+//! §4.5.13, §4.5.14, §4.5.15, §4.6.4, §5.5.3, §5.8.1, §5.9, §5.9.3, §6.8,
+//! A.8.2, A.8.3, §9.21.
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn isHistoryless(name: []const u8) bool`
+//! - `pub fn checkOperatorPlace(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bool`
+//! - `pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn opDdt(self: *Lower, tok: u32, x: Mir.Value, abstol: f64, lte: bool) Oom!Mir.Value`
+//! - `pub fn interpQuad(self: *Lower, a: Ast.LteAttr) Oom!bool`
+//! - `pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value`
+//! - `pub const NatureRef = union`
+//! - `pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef`
+//! - `pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.ExprId) Oom!bool`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -50,6 +61,16 @@ pub const State = struct {
     /// dependences are as long as the straight-line code before it, which no
     /// parse nesting measures (`y = y + 1.0;` 5000 times overflowed the stack).
     unknown_work: std.ArrayList(Mir.Value) = .empty,
+};
+
+/// A resolved §5.5.3 `nature_attribute_reference` (`a.potential.abstol`): its
+/// constant value, or the attribute name when Syntax 5-4 bans it ("shall not be
+/// used for the access, ddt_nature, or idt_nature attributes ... nor any other
+/// attribute whose value is not a constant expression").
+pub const NatureRef = union(enum) {
+    value: Const,
+    /// The attribute named, for the message.
+    banned: []const u8,
 };
 
 /// Reports whether `name` is one of the two A.8.2 `analog_filter_function_call`
@@ -242,6 +263,152 @@ pub fn opDdt(self: *Lower, tok: u32, x: Mir.Value, abstol: f64, lte: bool) Oom!M
     return v;
 }
 
+/// Returns whether a `vera_interp` value selects quadratic (2) over linear (1, the
+/// §2.9 default when absent). It must fold without the model card because it picks
+/// the emitted kernel; otherwise reports E0524 and returns false.
+pub fn interpQuad(self: *Lower, a: Ast.LteAttr) Oom!bool {
+    if (a.value == .none) return false;
+    const c = lower_constfold.foldExpr(self, a.value, false) orelse {
+        try self.err(a.main_tok, .E0524, "the value depends on the model card", .{});
+        return false;
+    };
+    const v = c.asReal(); // a string is 0
+    if (v != 1 and v != 2) {
+        try self.err(a.main_tok, .E0524, "", .{});
+        return false;
+    }
+    return v == 2;
+}
+
+/// Returns the value in operator `name`'s tolerance slot, A.8.3's
+/// `abstol_expression ::= constant_expression | nature_identifier`, or null
+/// after reporting E0515 for an expression that moves during the analysis:
+/// Table 4-20 lists abstol among each operator's "Constant expression
+/// arguments", and "The constant expressions remain static throughout an
+/// analysis" (§4.5.14). Judged on what the value depends on, so a tolerance
+/// held in a variable that only literals and parameters reach still passes.
+pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value {
+    assert(e == .none or self.exprValid(e));
+    if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
+    // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
+    const tv = try lower_expr.lowerExpr(self, e);
+    if (tv.ty != .string and !try lower_static.isStaticValue(self, tv.v)) {
+        try self.err(self.file.exprs.mainTok(e), .E0515, "`{s}()` abstol is a constant expression argument (Table 4-20), and this one moves during the analysis", .{name});
+        return null;
+    }
+    return if (tv.ty == .string) tv.v else try self.toReal(tv);
+}
+
+/// Resolves `e` as `net.potential.attr` or `net.flow.attr` through the net's
+/// discipline, or returns null when it is a §6.8 hierarchical name instead.
+/// `abstol` comes from `DisciplineInfo`, where a §3.6.2.3 discipline override is applied.
+pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
+    assert(e == .none or self.exprValid(e));
+    const parts = self.file.exprs.nameParts(e);
+    if (parts.len != 3) return null;
+    const half = self.file.str(parts[1]);
+    const is_potential = std.mem.eql(u8, half, "potential");
+    if (!is_potential and !std.mem.eql(u8, half, "flow")) return null;
+
+    const dname = if (self.design.attribute_disciplines.get(e)) |disc| self.file.str(disc) else blk: {
+        const net = self.file.str(parts[0]);
+        // §5.5.3 "the attributes for a net or a branch": a §3.12 branch reads
+        // the discipline of its terminals, which §3.11 makes compatible; the
+        // lo terminal when hi is ground.
+        const idx = self.node_voltages.get(net) orelse if (self.branches.get(net)) |b|
+            (if (b.hi == ground) b.lo else b.hi)
+        else
+            self.port_branches.get(net) orelse return null;
+        if (idx == ground) return null;
+        break :blk self.out.nodes.items(.disc)[idx];
+    };
+    const attr = self.file.str(parts[2]);
+
+    if (std.mem.eql(u8, attr, "abstol")) {
+        const info = self.out.disciplines.get(dname) orelse return null;
+        return .{ .value = .{ .real = if (is_potential) info.potential_abstol else info.flow_abstol } };
+    }
+    // ponytail: reuse compatibility's first-declaration lookup.
+    const d = lower_discipline.disciplineDecl(self, dname) orelse return null;
+    const nat = if (is_potential) d.potential else d.flow;
+    if (nat == .none) return null;
+    const v = self.file.natureAttrExpr(nat, attr) orelse return .{ .banned = attr };
+    return .{ .value = lower_constfold.constEval(self, v) orelse return .{ .banned = attr } };
+}
+
+/// Appends a vector argument to `out` as `<count>, e0, e1, ...`: a §4.5.11/§4.5.12
+/// filter coefficient vector or §9.21/§4.6.4 data vector, spelled as an assignment
+/// pattern `'{a,b}` or an array name (§3.4.4). Returns false when `a` is a scalar,
+/// appending nothing. Invalidates element pointers of `out` if it grows.
+pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.ExprId) Oom!bool {
+    assert(a == .none or self.exprValid(a));
+    const ex = &self.file.exprs;
+    switch (ex.tag(a)) {
+        .assign_pattern, .concat => {
+            const elems = try lower_shape.patternElems(self, a);
+            try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(elems.len)));
+            for (elems) |el|
+                try out.append(self.arena, try self.toReal(try lower_expr.lowerExpr(self, el)));
+            return true;
+        },
+        .ident => {
+            const name = self.file.str(ex.strOf(a));
+            const info = self.arrays.get(name) orelse return false;
+            // §4.5.11's coefficient slot is a flat vector: a multidimensional
+            // array has no reading as a list of poles and is left to the
+            // ordinary path, which reports it (E0356).
+            if (info.dims.len != 1) return false;
+            const d = info.dims[0];
+            try out.append(self.arena, try self.mir.addIntConst(self.arena, d.count()));
+            var index: [1]i64 = undefined;
+            for (0..@intCast(d.count())) |k| {
+                lower_shape.shapeSubscripts(info.dims, k, &index);
+                const el = (try lower_expr_select.arrayElemValue(self, name, &index)) orelse return true;
+                try out.append(self.arena, try self.toReal(el));
+            }
+            return true;
+        },
+        // A.8.2's third shape, for both `analog_filter_function_arg` and
+        // `noise_table_input_arg`: `parameter_identifier [ msb_constant_expression
+        // : lsb_constant_expression ]`, the elements from msb to lsb.
+        .index => {
+            const sel = ex.rhs(a);
+            if (ex.tag(ex.lhs(a)) != .ident or ex.tag(sel) != .range) return false;
+            const name = self.file.str(ex.strOf(ex.lhs(a)));
+            const info = self.arrays.get(name) orelse return false;
+            if (info.dims.len != 1) return false;
+            const d = info.dims[0];
+            // A refused select is still a vector, of no elements, so the
+            // caller's `<count>, elements` slice stays well formed.
+            var ends: [2]i64 = undefined;
+            for ([2]Ast.ExprId{ ex.lhs(sel), ex.rhs(sel) }, &ends) |b, *end| {
+                const c = lower_constfold.shapeEval(self, b) orelse {
+                    try self.err(ex.mainTok(b), .E0308, "in the part select of `{s}`", .{name});
+                    try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
+                    return true;
+                };
+                end.* = c.asInt();
+                if (end.* < d.lo or end.* > d.hi) {
+                    try self.err(ex.mainTok(b), .E0310, "index {d} is outside `{s}[{d}:{d}]`", .{ end.*, name, d.lo, d.hi });
+                    try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
+                    return true;
+                }
+            }
+            const n = @abs(ends[1] - ends[0]) + 1;
+            const step: i64 = if (ends[1] >= ends[0]) 1 else -1;
+            try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(n)));
+            for (0..@as(usize, @intCast(n))) |k| {
+                const el = (try lower_expr_select.arrayElemValue(self, name, &.{ends[0] + step * @as(i64, @intCast(k))})) orelse return true;
+                try out.append(self.arena, try self.toReal(el));
+            }
+            return true;
+        },
+        else => return false, // else: not one of A.8.2's vector shapes; the ordinary path lowers or reports it
+    }
+}
+
+// ---- private ----
+
 /// §4.5.4 `idt` as the unknown §4.5.2 introduces: s, whose charge is s
 /// itself and whose resistive half is -x, so the host solves ds/dt = x. The
 /// static solve swaps that half for s - ic, since idt() "returns the initial
@@ -327,23 +494,6 @@ fn absdelayQuad(self: *Lower, e: Ast.ExprId) Oom!bool {
     return self.interp_stack.last() orelse false;
 }
 
-/// Returns whether a `vera_interp` value selects quadratic (2) over linear (1, the
-/// §2.9 default when absent). It must fold without the model card because it picks
-/// the emitted kernel; otherwise reports E0524 and returns false.
-pub fn interpQuad(self: *Lower, a: Ast.LteAttr) Oom!bool {
-    if (a.value == .none) return false;
-    const c = lower_constfold.foldExpr(self, a.value, false) orelse {
-        try self.err(a.main_tok, .E0524, "the value depends on the model card", .{});
-        return false;
-    };
-    const v = c.asReal(); // a string is 0
-    if (v != 1 and v != 2) {
-        try self.err(a.main_tok, .E0524, "", .{});
-        return false;
-    }
-    return v == 2;
-}
-
 /// Which argument of an analog operator is its tolerance, or null for an
 /// operator that has none. §5.5.3, last sentence: "The abstol attribute of a
 /// nature may also be accessed simply by using the nature's identifier as the
@@ -378,25 +528,6 @@ fn abstolSlot(name: []const u8) ?usize {
     return null;
 }
 
-/// Returns the value in operator `name`'s tolerance slot, A.8.3's
-/// `abstol_expression ::= constant_expression | nature_identifier`, or null
-/// after reporting E0515 for an expression that moves during the analysis:
-/// Table 4-20 lists abstol among each operator's "Constant expression
-/// arguments", and "The constant expressions remain static throughout an
-/// analysis" (§4.5.14). Judged on what the value depends on, so a tolerance
-/// held in a variable that only literals and parameters reach still passes.
-pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value {
-    assert(e == .none or self.exprValid(e));
-    if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
-    // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
-    const tv = try lower_expr.lowerExpr(self, e);
-    if (tv.ty != .string and !try lower_static.isStaticValue(self, tv.v)) {
-        try self.err(self.file.exprs.mainTok(e), .E0515, "`{s}()` abstol is a constant expression argument (Table 4-20), and this one moves during the analysis", .{name});
-        return null;
-    }
-    return if (tv.ty == .string) tv.v else try self.toReal(tv);
-}
-
 /// The abstol a bare `nature_identifier` or `net.potential.abstol` in a tolerance
 /// slot stands for, or null. A variable or parameter with the same name wins (§2.8).
 fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
@@ -428,52 +559,6 @@ fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
         return lower_discipline.natureOf(self, id).abstol orelse 0;
     }
     return null;
-}
-
-/// A resolved §5.5.3 `nature_attribute_reference` (`a.potential.abstol`): its
-/// constant value, or the attribute name when Syntax 5-4 bans it ("shall not be
-/// used for the access, ddt_nature, or idt_nature attributes ... nor any other
-/// attribute whose value is not a constant expression").
-pub const NatureRef = union(enum) {
-    value: Const,
-    /// The attribute named, for the message.
-    banned: []const u8,
-};
-/// Resolves `e` as `net.potential.attr` or `net.flow.attr` through the net's
-/// discipline, or returns null when it is a §6.8 hierarchical name instead.
-/// `abstol` comes from `DisciplineInfo`, where a §3.6.2.3 discipline override is applied.
-pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
-    assert(e == .none or self.exprValid(e));
-    const parts = self.file.exprs.nameParts(e);
-    if (parts.len != 3) return null;
-    const half = self.file.str(parts[1]);
-    const is_potential = std.mem.eql(u8, half, "potential");
-    if (!is_potential and !std.mem.eql(u8, half, "flow")) return null;
-
-    const dname = if (self.design.attribute_disciplines.get(e)) |disc| self.file.str(disc) else blk: {
-        const net = self.file.str(parts[0]);
-        // §5.5.3 "the attributes for a net or a branch": a §3.12 branch reads
-        // the discipline of its terminals, which §3.11 makes compatible; the
-        // lo terminal when hi is ground.
-        const idx = self.node_voltages.get(net) orelse if (self.branches.get(net)) |b|
-            (if (b.hi == ground) b.lo else b.hi)
-        else
-            self.port_branches.get(net) orelse return null;
-        if (idx == ground) return null;
-        break :blk self.out.nodes.items(.disc)[idx];
-    };
-    const attr = self.file.str(parts[2]);
-
-    if (std.mem.eql(u8, attr, "abstol")) {
-        const info = self.out.disciplines.get(dname) orelse return null;
-        return .{ .value = .{ .real = if (is_potential) info.potential_abstol else info.flow_abstol } };
-    }
-    // ponytail: reuse compatibility's first-declaration lookup.
-    const d = lower_discipline.disciplineDecl(self, dname) orelse return null;
-    const nat = if (is_potential) d.potential else d.flow;
-    if (nat == .none) return null;
-    const v = self.file.natureAttrExpr(nat, attr) orelse return .{ .banned = attr };
-    return .{ .value = lower_constfold.constEval(self, v) orelse return .{ .banned = attr } };
 }
 
 /// §4.5.5-§4.5.10 control-argument bounds (E0516). Only folded operands are judged:
@@ -562,77 +647,6 @@ fn nullZerosOk(name: []const u8) bool {
         if (std.mem.eql(u8, name, f)) return true;
     }
     return false;
-}
-
-/// Appends a vector argument to `out` as `<count>, e0, e1, ...`: a §4.5.11/§4.5.12
-/// filter coefficient vector or §9.21/§4.6.4 data vector, spelled as an assignment
-/// pattern `'{a,b}` or an array name (§3.4.4). Returns false when `a` is a scalar,
-/// appending nothing. Invalidates element pointers of `out` if it grows.
-pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.ExprId) Oom!bool {
-    assert(a == .none or self.exprValid(a));
-    const ex = &self.file.exprs;
-    switch (ex.tag(a)) {
-        .assign_pattern, .concat => {
-            const elems = try lower_shape.patternElems(self, a);
-            try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(elems.len)));
-            for (elems) |el|
-                try out.append(self.arena, try self.toReal(try lower_expr.lowerExpr(self, el)));
-            return true;
-        },
-        .ident => {
-            const name = self.file.str(ex.strOf(a));
-            const info = self.arrays.get(name) orelse return false;
-            // §4.5.11's coefficient slot is a flat vector: a multidimensional
-            // array has no reading as a list of poles and is left to the
-            // ordinary path, which reports it (E0356).
-            if (info.dims.len != 1) return false;
-            const d = info.dims[0];
-            try out.append(self.arena, try self.mir.addIntConst(self.arena, d.count()));
-            var index: [1]i64 = undefined;
-            for (0..@intCast(d.count())) |k| {
-                lower_shape.shapeSubscripts(info.dims, k, &index);
-                const el = (try lower_expr_select.arrayElemValue(self, name, &index)) orelse return true;
-                try out.append(self.arena, try self.toReal(el));
-            }
-            return true;
-        },
-        // A.8.2's third shape, for both `analog_filter_function_arg` and
-        // `noise_table_input_arg`: `parameter_identifier [ msb_constant_expression
-        // : lsb_constant_expression ]`, the elements from msb to lsb.
-        .index => {
-            const sel = ex.rhs(a);
-            if (ex.tag(ex.lhs(a)) != .ident or ex.tag(sel) != .range) return false;
-            const name = self.file.str(ex.strOf(ex.lhs(a)));
-            const info = self.arrays.get(name) orelse return false;
-            if (info.dims.len != 1) return false;
-            const d = info.dims[0];
-            // A refused select is still a vector, of no elements, so the
-            // caller's `<count>, elements` slice stays well formed.
-            var ends: [2]i64 = undefined;
-            for ([2]Ast.ExprId{ ex.lhs(sel), ex.rhs(sel) }, &ends) |b, *end| {
-                const c = lower_constfold.shapeEval(self, b) orelse {
-                    try self.err(ex.mainTok(b), .E0308, "in the part select of `{s}`", .{name});
-                    try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
-                    return true;
-                };
-                end.* = c.asInt();
-                if (end.* < d.lo or end.* > d.hi) {
-                    try self.err(ex.mainTok(b), .E0310, "index {d} is outside `{s}[{d}:{d}]`", .{ end.*, name, d.lo, d.hi });
-                    try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
-                    return true;
-                }
-            }
-            const n = @abs(ends[1] - ends[0]) + 1;
-            const step: i64 = if (ends[1] >= ends[0]) 1 else -1;
-            try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(n)));
-            for (0..@as(usize, @intCast(n))) |k| {
-                const el = (try lower_expr_select.arrayElemValue(self, name, &.{ends[0] + step * @as(i64, @intCast(k))})) orelse return true;
-                try out.append(self.arena, try self.toReal(el));
-            }
-            return true;
-        },
-        else => return false, // else: not one of A.8.2's vector shapes; the ordinary path lowers or reports it
-    }
 }
 
 test isHistoryless {

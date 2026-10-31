@@ -1,3 +1,16 @@
+//! §7.2.2 the discrete context's rules: the module's digital statements in,
+//! a diagnostic out for every analog construct used there (probes outside an
+//! event function, analog operators, contributions, analog-only system
+//! calls), judged against the names the digital side writes.
+//!
+//! Cites: §4.4, §4.5.15, §4.7.3, §5.2.1, §5.10, §5.10.3, A.6.2, §6.7.1,
+//! §7.2.2, §7.3, §7.3.1, §7.3.3, §7.3.5, §7.3.6.1, §7.3.6.2, §7.3.6.3,
+//! §7.3.7, §8.5.1, §8.5.3.2, §8.5.3.3, §8.5.3.4, §9.2, §9.4.3, §9.4.7, §9.7.
+//!
+//! Contents:
+//! - `pub fn checkDiscreteContext(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - private `scanContext` (`expr`, `stmt`)
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -52,6 +65,8 @@ pub fn checkDiscreteContext(self: *Lower, module: *const Ast.ModuleDecl) Oom!voi
     // is reported at the analog statement.
     for (module.analog) |blk| try scanContext(self, blk.body, false, blk.is_initial, &ctx);
 }
+
+// ---- private ----
 
 /// Collect discrete §7.2.2 assignment targets, then check the continuous side
 /// for both-context assignments and §5.2.1 digital reads in `analog initial`.

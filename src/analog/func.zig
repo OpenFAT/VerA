@@ -8,9 +8,14 @@
 //! `$limit`, through `inlineUserFuncPre`) per call. `scanCallSites` is the one
 //! statement walk both share.
 //!
-//! LRM clauses this file's code cites: §3.2, §3.2.2, §4.7, §4.7.1, §4.7.2, §4.7.2.3,
-//! §4.7.2.4, §4.7.3, §5.7, §5.11, §6.8, §7.3.7, §9.17.3.
-//! IEEE 1364-2005 clauses cited: §10.4.1.
+//! Cites: §3.2, §3.2.2, §4.7, §4.7.1, §4.7.2, §4.7.2.3, §4.7.2.4, §4.7.3,
+//! §5.7, §5.11, §6.8, §7.3.7, §9.17.3, §10.4.1.
+//!
+//! Contents:
+//! - `pub fn checkFuncRecursion(self: *Lower, fns: []const Ast.FuncDecl) Oom!void`
+//! - `pub fn scanCallSites(self: *Lower, id: Ast.StmtId, comptime limits: bool, fns: if (limits) void else []const Ast.FuncDecl, out: if (limits) void else *std.ArrayList(u32)) Oom!void` (`expr`, `stmt`)
+//! - `pub fn lowerUserCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn inlineUserFuncPre(self: *Lower, fd: *const Ast.FuncDecl, pre: []const Mir.Value, arg_exprs: []const Ast.ExprId, site: Ast.ExprId) Oom!TypedValue`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -37,6 +42,9 @@ const Const = Lower.Const;
 const VarSlot = Lower.VarSlot;
 const poison = Lower.poison;
 const astTy = Lower.astTy;
+
+// One `consts` entry a function scope replaced or removed, and what it held.
+const Shadow = struct { name: []const u8, prev: ?Const };
 
 /// Reports E0510 on every analog function in `fns` that calls itself directly
 /// or indirectly: "recursive functions are not permitted" (LRM §4.7.3, of an
@@ -105,35 +113,6 @@ pub fn scanCallSites(
         }
     };
     try self.file.stmtEdges(id, Walk{ .l = self, .fns = fns, .out = out });
-}
-
-fn scanCallSitesExpr(
-    self: *Lower,
-    e: Ast.ExprId,
-    comptime limits: bool,
-    fns: if (limits) void else []const Ast.FuncDecl,
-    out: if (limits) void else *std.ArrayList(u32),
-) Oom!void {
-    assert(e == .none or self.exprValid(e));
-    if (e == .none) return;
-    const ex = &self.file.exprs;
-    const tag = ex.tag(e);
-    if (limits) {
-        if (tag == .sys_call and std.mem.eql(u8, self.file.str(ex.strOf(e)), "$limit")) {
-            const args = if (ex.extraOf(e) < ex.poolLen()) ex.args(e) else &[_]Ast.ExprId{};
-            if (args.len >= 2) {
-                if (lower_limit.limitUserFunc(self, args[1]) != null) try lower_limit.addLimitSlot(self, args[0]);
-            }
-        }
-    } else if (tag == .call) {
-        // StrIds are interned, so identity is name equality.
-        for (fns, 0..) |*fd, k| if (fd.name == ex.strOf(e)) {
-            try out.append(self.arena, @intCast(k));
-            break;
-        };
-    }
-    var buf: [3]Ast.ExprId = undefined;
-    for (ex.children(e, &buf)) |c| try scanCallSitesExpr(self, c, limits, fns, out);
 }
 
 /// Lowers a call to a §4.7 user function by inlining its body. An undeclared name
@@ -439,6 +418,37 @@ pub fn inlineUserFuncPre(
     return result;
 }
 
+// ---- private ----
+
+fn scanCallSitesExpr(
+    self: *Lower,
+    e: Ast.ExprId,
+    comptime limits: bool,
+    fns: if (limits) void else []const Ast.FuncDecl,
+    out: if (limits) void else *std.ArrayList(u32),
+) Oom!void {
+    assert(e == .none or self.exprValid(e));
+    if (e == .none) return;
+    const ex = &self.file.exprs;
+    const tag = ex.tag(e);
+    if (limits) {
+        if (tag == .sys_call and std.mem.eql(u8, self.file.str(ex.strOf(e)), "$limit")) {
+            const args = if (ex.extraOf(e) < ex.poolLen()) ex.args(e) else &[_]Ast.ExprId{};
+            if (args.len >= 2) {
+                if (lower_limit.limitUserFunc(self, args[1]) != null) try lower_limit.addLimitSlot(self, args[0]);
+            }
+        }
+    } else if (tag == .call) {
+        // StrIds are interned, so identity is name equality.
+        for (fns, 0..) |*fd, k| if (fd.name == ex.strOf(e)) {
+            try out.append(self.arena, @intCast(k));
+            break;
+        };
+    }
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| try scanCallSitesExpr(self, c, limits, fns, out);
+}
+
 /// The value an `output` formal and the return variable start from: §4.7.1
 /// and §4.7.2.3 "zero (0) if numeric, empty string ("") if a string". A
 /// string's start is a real `""`, never `zeroOf`'s `.undef`: an unwritten
@@ -446,9 +456,6 @@ pub fn inlineUserFuncPre(
 fn startOf(self: *Lower, ty: Ty) Oom!Mir.Value {
     return if (ty == .string) try self.mir.addStrConst(self.arena, "") else lower_var.zeroOf(ty);
 }
-
-// One `consts` entry a function scope replaced or removed, and what it held.
-const Shadow = struct { name: []const u8, prev: ?Const };
 
 // Installs the constants `fd`'s body sees (§4.7.1, §6.8): the caller's
 // `genvars` taken out (a genvar is neither a local nor a module parameter),

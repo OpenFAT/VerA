@@ -7,10 +7,19 @@
 //! read of a parameter goes. A row's `ranges` reach proof.zig as bound
 //! evidence.
 //!
-//! LRM clauses this file's code cites: §2.9, §2.9.2, §3.2.1, §3.4, §3.4.1,
-//! §3.4.2, §3.4.3, §3.4.4, §3.4.5, §3.4.7, §3.6.3.1, §4.2.1.1, §4.2.4, §4.2.13,
-//! §5.3.2, §5.5.3, §6.3, §6.3.4, §6.3.6, §6.4.2, §6.5.2.2, §6.6, §6.6.1,
-//! §6.7.1, §9.18.
+//! Cites: A.2.4, A.2.5, §2.9, §2.9.2, §3.2.1, §3.4, §3.4.1, §3.4.2, §3.4.3,
+//! §3.4.4, §3.4.5, §3.4.7, §3.6.3.1, §4.2.1.1, §4.2.4, §4.2.13, §5.3.2,
+//! §5.5.3, §6.3, §6.3.4, §6.3.6, §6.4.2, §6.5.2.2, §6.6, §6.6.1, §6.7.1,
+//! A.8.4, §9.18.
+//!
+//! Contents:
+//! - `pub fn lowerParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - `pub fn declareAliasParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - `pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void`
+//! - `pub fn aliasSystemParam(self: *Lower, alias: []const u8, target: []const u8) Oom!bool`
+//! - `pub fn addParam(self: *Lower, name: []const u8, ty: Ast.Type, default: Mir.Value, folded: ?Const, ranges: []const Lower.Lowered.Range, is_local: bool, tok: u32) Oom!void`
+//! - `pub fn checkAttributes(self: *Lower, attrs: []const Ast.NatureAttr) Oom!void`
+//! - `pub fn collectDeclMeta(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -29,6 +38,16 @@ const lower_expr_name = @import("expr_name.zig");
 const Oom = Lower.Oom;
 const Const = Lower.Const;
 const astTy = Lower.astTy;
+/// Apply an explicit parameter type before a later default infers its own type.
+/// Out-of-i64 real conversion retains the existing saturation policy; deciding
+/// that implementation-defined domain is separate from preserving integral bits.
+const parameterConst = constfold.parameterValue;
+
+const MetaSpecs = struct { desc: ?Ast.NatureAttr = null, units: ?Ast.NatureAttr = null, type: ?Ast.NatureAttr = null };
+
+const meta_specs: std.StaticStringMap(std.meta.FieldEnum(MetaSpecs)) = .initComptime(.{
+    .{ "desc", .desc }, .{ "units", .units }, .{ "type", .type },
+});
 
 /// §3.4 every parameter of the module, in source order, so a default may read
 /// an earlier one (§6.3.4): the §6.3.6 geometry aliases first, then each
@@ -113,6 +132,7 @@ pub fn declareAliasParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void 
         }
     }
 }
+
 /// Registers a parameter: infers its type (§3.4.1), folds its default, and
 /// copies `decl.ranges` into `ParamInfo.ranges` for the prover (LRM §3.4, §3.4.2).
 pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
@@ -229,6 +249,184 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     else
         lower_constfold.clog2Signed(self, decl.default);
 }
+
+/// §3.4.7/§9.18 permits aliases of all six system parameters. The first
+/// alias supplies a model-card slot with Table 9-29's top-level default;
+/// additional aliases share that slot. A child alias is resolved earlier,
+/// by elaboration, so it never replaces the top-level system value here.
+///
+/// As before, a host overriding the `$mfactor` alias must also keep the
+/// `Instance.mfactor` scaling field consistent with that model-card value.
+pub fn aliasSystemParam(self: *Lower, alias: []const u8, target: []const u8) Oom!bool {
+    const kind = hier_param.Kind.fromName(target) orelse return false;
+    if (self.hier_params.get(kind)) |idx| {
+        try self.param_index.put(self.arena, alias, idx);
+        try self.out.aliases.append(self.arena, .{ .name = alias, .param = idx });
+        return true;
+    }
+    self.hier_params.set(kind, @intCast(self.out.params.items.len));
+    const value = kind.initial();
+    try addParam(self, alias, .real, try self.mir.addFloatConst(self.arena, value), .{ .real = value }, &.{}, false, Mir.no_tok);
+    assert(self.hier_params.get(kind).? == self.out.params.items.len - 1);
+    return true;
+}
+
+/// Appends a model-card parameter and binds `name` to its index. An integer
+/// localparam with a constant default reads as that constant; everything else
+/// reads the card. Asserts that `out.params` and `param_values` stay parallel.
+pub fn addParam(
+    self: *Lower,
+    name: []const u8,
+    ty: Ast.Type,
+    default: Mir.Value,
+    folded: ?Const,
+    ranges: []const Lower.Lowered.Range,
+    is_local: bool,
+    tok: u32,
+) Oom!void {
+    assert(self.param_values.items.len == self.out.params.items.len);
+    const idx: u32 = @intCast(self.out.params.items.len);
+    try self.out.params.append(self.arena, .{
+        .name = name,
+        .tok = tok, // §3.4.2 diagnostics point back at the declaration
+        .ty = ty,
+        .default = default,
+        .folded = folded, // §3.4 the value under the declared defaults
+        .ranges = ranges, // §3.4.2 — MUST reach proof.zig
+        .is_local = is_local,
+    });
+    // §3.4.5 a localparam "shall not be directly modified", and `derive`
+    // rewrites its field unconditionally: one whose default folds without
+    // reading a parameter (`parameterDefault` returned a constant) holds that
+    // number at every read. Reading an INTEGER one as the number is what lets
+    // a loop bounded by it (`for (i = 0; i < n; ...)`) and a subscript over
+    // it fold. ponytail: integers only — a real constant would also hand the
+    // prover a point interval, and a unit it newly proves finite changes float
+    // mode, so its bits; widen once that is wanted.
+    const ref = switch (self.mir.valueDef(default)) {
+        .int_const => if (is_local) default else null,
+        else => null, // else: a real or string, or a default that reads a parameter or the operating point, stays a card read
+    };
+    try self.param_values.append(self.arena, ref orelse try self.mir.addParamRef(self.arena, idx));
+    try self.param_index.put(self.arena, name, idx);
+    assert(self.param_values.items.len == idx + 1);
+    assert(self.out.params.items.len == idx + 1);
+}
+
+/// §2.9's two rules about an attribute VALUE, and §2.9.2's four value domains.
+///
+/// In lowering because "constant expression" depends on the declaration
+/// tables. The parser (`Parser.parseAttributes`) checks the nesting ban. The
+/// attribute's target is not needed: neither rule is about the decorated item.
+pub fn checkAttributes(self: *Lower, attrs: []const Ast.NatureAttr) Oom!void {
+    for (attrs) |a| {
+        // §2.9: "If the value is not specified, then ... the default value is 1"
+        // — a name on its own is complete, so there is nothing to judge.
+        if (a.value == .none) continue;
+        const name = self.file.str(a.name);
+        const c = lower_constfold.constEval(self, a.value) orelse {
+            var b = self.errWith(a.main_tok, .E0357);
+            b.msg("`{s}`", .{name});
+            b.note("§2.9 Syntax 2-4: `attr_spec ::= attr_name [ = constant_expression ]`", .{});
+            try b.emit();
+            continue;
+        };
+        // §2.9.2 fixes the value of exactly four names, with a "must" each.
+        // Every OTHER name is a tool convention with no stated domain, so it is
+        // not checked — inventing one would refuse conforming source.
+        const want: ?[]const []const u8 = if (std.mem.eql(u8, name, "desc") or
+            std.mem.eql(u8, name, "units"))
+            // "The attribute must be assigned a string" — any string.
+            &.{}
+        else if (std.mem.eql(u8, name, "op"))
+            &.{ "yes", "no" }
+        else if (std.mem.eql(u8, name, "multiplicity"))
+            &.{ "multiply", "divide", "none" }
+        else
+            null;
+        const allowed = want orelse continue;
+        const got = switch (c) {
+            .str => |sv| sv,
+            // `desc = 7` fails on this arm: not a string at all.
+            else => {
+                try self.err(a.main_tok, .E0358, "`{s}` must be assigned a string", .{name});
+                continue;
+            },
+        };
+        if (allowed.len == 0) continue; // desc/units: a string is the whole rule
+        const in_domain = for (allowed) |ok| {
+            if (std.mem.eql(u8, got, ok)) break true;
+        } else false;
+        if (!in_domain) {
+            var b = self.errWith(a.main_tok, .E0358);
+            b.msg("`{s} = \"{s}\"`", .{ name, got });
+            b.help("§2.9.2 lists the values for `{s}`: {s}", .{ name, try joinQuoted(self.arena, allowed) });
+            try b.emit();
+        }
+    }
+}
+
+/// §2.9.2's `desc` and `units` on the device module's own module-scope
+/// declarations, into `Lowered.decl_meta` (`contract.DeclMeta`): parameters
+/// (§3.4.3), variables (§3.2.1's output variables), then nets and ports
+/// (§3.6.3.1, `desc` only: §2.9.2 gives `units` to parameters and variables).
+/// A named block's declarations "shall be ignored" (§3.2.1, §3.4.3) and live
+/// in the block, not in `module`; a flattened child's carry its instance path
+/// (`Elaborate.sep`) and are not the device's own. Runs after
+/// `checkAttributes`, so a value that is not a string was already refused
+/// (E0358) and is skipped here.
+pub fn collectDeclMeta(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
+    // Declaration token -> its last `desc` and `units` spec. "Last" is source
+    // order (§2.9), not binding order: a declaration list copies an earlier
+    // prefix after a later one was parsed.
+    var last: std.AutoHashMapUnmanaged(u32, MetaSpecs) = .empty;
+    for (self.file.attributes.items) |b| {
+        if (b.owner.kind != .declaration) continue;
+        for (b.specs) |s| {
+            const n = self.file.str(s.name);
+            const slot = meta_specs.get(n) orelse continue;
+            const g = try last.getOrPut(self.arena, b.owner.tok);
+            if (!g.found_existing) g.value_ptr.* = .{};
+            laterSpec(switch (slot) {
+                .desc => &g.value_ptr.desc,
+                .units => &g.value_ptr.units,
+                .type => &g.value_ptr.type,
+            }, s);
+        }
+    }
+    if (last.count() == 0) return;
+    // `type = "instance"`: the parameter an instance line may set (OpenVAF's
+    // convention, `instance_params`). A tool convention, not §2.9.2's.
+    for (module.params) |p| if (last.get(p.main_tok)) |l| {
+        const ty = metaString(self, l.type) orelse continue;
+        if (std.mem.eql(u8, ty, "instance")) try self.out.instance_params.append(self.arena, self.file.str(p.name));
+    };
+    for (module.params) |p| try metaRow(self, &last, .parameter, p.name, &.{p.main_tok});
+    for (module.vars) |v| try metaRow(self, &last, .variable, v.name, &.{v.main_tok});
+    // A port typed by a later net declaration owns both lines' prefixes
+    // (`parseNetNames`); a port or net declared twice is one row whose
+    // tokens are every declaration of the name.
+    var toks: std.ArrayList(u32) = .empty;
+    var seen: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty;
+    for (module.ports) |p| {
+        if ((try seen.getOrPut(self.arena, p.name)).found_existing) continue;
+        toks.clearRetainingCapacity();
+        try toks.append(self.arena, p.main_tok);
+        for (module.nets) |n| if (n.name == p.name) try toks.append(self.arena, n.main_tok);
+        try metaRow(self, &last, .net, p.name, toks.items);
+    }
+    for (module.nets) |n| {
+        if ((try seen.getOrPut(self.arena, n.name)).found_existing) continue;
+        toks.clearRetainingCapacity();
+        // ponytail: O(nets²) over one module's nets; a map by name when a
+        // device declares thousands.
+        for (module.nets) |m| if (m.name == n.name) try toks.append(self.arena, m.main_tok);
+        try metaRow(self, &last, .net, n.name, toks.items);
+    }
+}
+
+// ---- private ----
 
 /// §6.7.1 "parameter declaration statements shall not make out-of-module
 /// references": the first hierarchical name in `e`, or null. A §5.5.3 nature
@@ -353,27 +551,6 @@ fn checkParamType(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8, fo
     });
 }
 
-/// §3.4.7/§9.18 permits aliases of all six system parameters. The first
-/// alias supplies a model-card slot with Table 9-29's top-level default;
-/// additional aliases share that slot. A child alias is resolved earlier,
-/// by elaboration, so it never replaces the top-level system value here.
-///
-/// As before, a host overriding the `$mfactor` alias must also keep the
-/// `Instance.mfactor` scaling field consistent with that model-card value.
-pub fn aliasSystemParam(self: *Lower, alias: []const u8, target: []const u8) Oom!bool {
-    const kind = hier_param.Kind.fromName(target) orelse return false;
-    if (self.hier_params.get(kind)) |idx| {
-        try self.param_index.put(self.arena, alias, idx);
-        try self.out.aliases.append(self.arena, .{ .name = alias, .param = idx });
-        return true;
-    }
-    self.hier_params.set(kind, @intCast(self.out.params.items.len));
-    const value = kind.initial();
-    try addParam(self, alias, .real, try self.mir.addFloatConst(self.arena, value), .{ .real = value }, &.{}, false, Mir.no_tok);
-    assert(self.hier_params.get(kind).? == self.out.params.items.len - 1);
-    return true;
-}
-
 /// Returns `ranges` (§3.4.2) as the prover reads them (`Lowered.Range`).
 /// Each bound folds literally, through the one constant kernel, so a bound
 /// means what lowering enforces (`[1/2:1]` is [0,1], §4.2.4), and never
@@ -413,53 +590,6 @@ fn foldBound(self: *const Lower, e: Ast.ExprId) ?f64 {
     const x = c.asReal();
     return if (std.math.isNan(x)) null else x;
 }
-
-/// Appends a model-card parameter and binds `name` to its index. An integer
-/// localparam with a constant default reads as that constant; everything else
-/// reads the card. Asserts that `out.params` and `param_values` stay parallel.
-pub fn addParam(
-    self: *Lower,
-    name: []const u8,
-    ty: Ast.Type,
-    default: Mir.Value,
-    folded: ?Const,
-    ranges: []const Lower.Lowered.Range,
-    is_local: bool,
-    tok: u32,
-) Oom!void {
-    assert(self.param_values.items.len == self.out.params.items.len);
-    const idx: u32 = @intCast(self.out.params.items.len);
-    try self.out.params.append(self.arena, .{
-        .name = name,
-        .tok = tok, // §3.4.2 diagnostics point back at the declaration
-        .ty = ty,
-        .default = default,
-        .folded = folded, // §3.4 the value under the declared defaults
-        .ranges = ranges, // §3.4.2 — MUST reach proof.zig
-        .is_local = is_local,
-    });
-    // §3.4.5 a localparam "shall not be directly modified", and `derive`
-    // rewrites its field unconditionally: one whose default folds without
-    // reading a parameter (`parameterDefault` returned a constant) holds that
-    // number at every read. Reading an INTEGER one as the number is what lets
-    // a loop bounded by it (`for (i = 0; i < n; ...)`) and a subscript over
-    // it fold. ponytail: integers only — a real constant would also hand the
-    // prover a point interval, and a unit it newly proves finite changes float
-    // mode, so its bits; widen once that is wanted.
-    const ref = switch (self.mir.valueDef(default)) {
-        .int_const => if (is_local) default else null,
-        else => null, // else: a real or string, or a default that reads a parameter or the operating point, stays a card read
-    };
-    try self.param_values.append(self.arena, ref orelse try self.mir.addParamRef(self.arena, idx));
-    try self.param_index.put(self.arena, name, idx);
-    assert(self.param_values.items.len == idx + 1);
-    assert(self.out.params.items.len == idx + 1);
-}
-
-/// Apply an explicit parameter type before a later default infers its own type.
-/// Out-of-i64 real conversion retains the existing saturation policy; deciding
-/// that implementation-defined domain is separate from preserving integral bits.
-const parameterConst = constfold.parameterValue;
 
 /// The MIR must contain the same declared-type conversion as `folded` metadata.
 /// Later defaults and operator controls follow this MIR, not the Model field.
@@ -530,124 +660,6 @@ fn lowerParamArray(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8) O
         try addParam(self, try lower_shape.elemName(self, name, idx), ty, default, if (folded) |c| parameterConst(ty, c) else null, ranges, decl.is_local, decl.main_tok);
     }
 }
-
-/// §2.9's two rules about an attribute VALUE, and §2.9.2's four value domains.
-///
-/// In lowering because "constant expression" depends on the declaration
-/// tables. The parser (`Parser.parseAttributes`) checks the nesting ban. The
-/// attribute's target is not needed: neither rule is about the decorated item.
-pub fn checkAttributes(self: *Lower, attrs: []const Ast.NatureAttr) Oom!void {
-    for (attrs) |a| {
-        // §2.9: "If the value is not specified, then ... the default value is 1"
-        // — a name on its own is complete, so there is nothing to judge.
-        if (a.value == .none) continue;
-        const name = self.file.str(a.name);
-        const c = lower_constfold.constEval(self, a.value) orelse {
-            var b = self.errWith(a.main_tok, .E0357);
-            b.msg("`{s}`", .{name});
-            b.note("§2.9 Syntax 2-4: `attr_spec ::= attr_name [ = constant_expression ]`", .{});
-            try b.emit();
-            continue;
-        };
-        // §2.9.2 fixes the value of exactly four names, with a "must" each.
-        // Every OTHER name is a tool convention with no stated domain, so it is
-        // not checked — inventing one would refuse conforming source.
-        const want: ?[]const []const u8 = if (std.mem.eql(u8, name, "desc") or
-            std.mem.eql(u8, name, "units"))
-            // "The attribute must be assigned a string" — any string.
-            &.{}
-        else if (std.mem.eql(u8, name, "op"))
-            &.{ "yes", "no" }
-        else if (std.mem.eql(u8, name, "multiplicity"))
-            &.{ "multiply", "divide", "none" }
-        else
-            null;
-        const allowed = want orelse continue;
-        const got = switch (c) {
-            .str => |sv| sv,
-            // `desc = 7` fails on this arm: not a string at all.
-            else => {
-                try self.err(a.main_tok, .E0358, "`{s}` must be assigned a string", .{name});
-                continue;
-            },
-        };
-        if (allowed.len == 0) continue; // desc/units: a string is the whole rule
-        const in_domain = for (allowed) |ok| {
-            if (std.mem.eql(u8, got, ok)) break true;
-        } else false;
-        if (!in_domain) {
-            var b = self.errWith(a.main_tok, .E0358);
-            b.msg("`{s} = \"{s}\"`", .{ name, got });
-            b.help("§2.9.2 lists the values for `{s}`: {s}", .{ name, try joinQuoted(self.arena, allowed) });
-            try b.emit();
-        }
-    }
-}
-
-/// §2.9.2's `desc` and `units` on the device module's own module-scope
-/// declarations, into `Lowered.decl_meta` (`contract.DeclMeta`): parameters
-/// (§3.4.3), variables (§3.2.1's output variables), then nets and ports
-/// (§3.6.3.1, `desc` only: §2.9.2 gives `units` to parameters and variables).
-/// A named block's declarations "shall be ignored" (§3.2.1, §3.4.3) and live
-/// in the block, not in `module`; a flattened child's carry its instance path
-/// (`Elaborate.sep`) and are not the device's own. Runs after
-/// `checkAttributes`, so a value that is not a string was already refused
-/// (E0358) and is skipped here.
-pub fn collectDeclMeta(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    assert(module.name != .none);
-    // Declaration token -> its last `desc` and `units` spec. "Last" is source
-    // order (§2.9), not binding order: a declaration list copies an earlier
-    // prefix after a later one was parsed.
-    var last: std.AutoHashMapUnmanaged(u32, MetaSpecs) = .empty;
-    for (self.file.attributes.items) |b| {
-        if (b.owner.kind != .declaration) continue;
-        for (b.specs) |s| {
-            const n = self.file.str(s.name);
-            const slot = meta_specs.get(n) orelse continue;
-            const g = try last.getOrPut(self.arena, b.owner.tok);
-            if (!g.found_existing) g.value_ptr.* = .{};
-            laterSpec(switch (slot) {
-                .desc => &g.value_ptr.desc,
-                .units => &g.value_ptr.units,
-                .type => &g.value_ptr.type,
-            }, s);
-        }
-    }
-    if (last.count() == 0) return;
-    // `type = "instance"`: the parameter an instance line may set (OpenVAF's
-    // convention, `instance_params`). A tool convention, not §2.9.2's.
-    for (module.params) |p| if (last.get(p.main_tok)) |l| {
-        const ty = metaString(self, l.type) orelse continue;
-        if (std.mem.eql(u8, ty, "instance")) try self.out.instance_params.append(self.arena, self.file.str(p.name));
-    };
-    for (module.params) |p| try metaRow(self, &last, .parameter, p.name, &.{p.main_tok});
-    for (module.vars) |v| try metaRow(self, &last, .variable, v.name, &.{v.main_tok});
-    // A port typed by a later net declaration owns both lines' prefixes
-    // (`parseNetNames`); a port or net declared twice is one row whose
-    // tokens are every declaration of the name.
-    var toks: std.ArrayList(u32) = .empty;
-    var seen: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty;
-    for (module.ports) |p| {
-        if ((try seen.getOrPut(self.arena, p.name)).found_existing) continue;
-        toks.clearRetainingCapacity();
-        try toks.append(self.arena, p.main_tok);
-        for (module.nets) |n| if (n.name == p.name) try toks.append(self.arena, n.main_tok);
-        try metaRow(self, &last, .net, p.name, toks.items);
-    }
-    for (module.nets) |n| {
-        if ((try seen.getOrPut(self.arena, n.name)).found_existing) continue;
-        toks.clearRetainingCapacity();
-        // ponytail: O(nets²) over one module's nets; a map by name when a
-        // device declares thousands.
-        for (module.nets) |m| if (m.name == n.name) try toks.append(self.arena, m.main_tok);
-        try metaRow(self, &last, .net, n.name, toks.items);
-    }
-}
-
-const MetaSpecs = struct { desc: ?Ast.NatureAttr = null, units: ?Ast.NatureAttr = null, type: ?Ast.NatureAttr = null };
-const meta_specs: std.StaticStringMap(std.meta.FieldEnum(MetaSpecs)) = .initComptime(.{
-    .{ "desc", .desc }, .{ "units", .units }, .{ "type", .type },
-});
 
 /// Keeps in `slot` whichever of it and `s` comes later in the source.
 fn laterSpec(slot: *?Ast.NatureAttr, s: Ast.NatureAttr) void {

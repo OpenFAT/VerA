@@ -1,3 +1,16 @@
+//! §4.6 small-signal sources: a noise or `ac_stim` call in, its result
+//! value and PSD operands (`Lower.noise_psd`, `noise_tab`, `noise_val`) out;
+//! and §4.6.4.6's per-use coefficient, the linear factor a contribution
+//! carries its generator with (`noiseCoeff`).
+//!
+//! Cites: §2.9, §3.2.2, §4.2.12, §4.6, §4.6.3, §4.6.4, §4.6.4.1, §4.6.4.2,
+//! §4.6.4.3, §4.6.4.6, §5.8, A.8.2.
+//!
+//! Contents:
+//! - `pub fn lowerNoise(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn coeffNeg(self: *Lower, v: Mir.Value) Oom!Mir.Value`
+//! - `pub fn noiseCoeff(self: *Lower, v: Mir.Value, n: Mir.Value) Oom!Coeff`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -10,6 +23,22 @@ const lower_analog_op = @import("analog_op.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
+
+/// A §4.6.4.6 noise coefficient, `∂contribution/∂generator`. A noise function is an
+/// amplitude combined linearly, so for correlated noise ("the output of one noise
+/// function for more than one noise source") the derivative is the constant factor
+/// the branch applies to it:
+///   absent     the generator does not occur here, so its coefficient is 0 and
+///              this statement adds nothing to the branch's total;
+///   nonlinear  it occurs in a shape no single factor describes (squared, in a
+///              denominator, inside a call), so there is no coefficient;
+///   value      the factor.
+const Coeff = union(enum) { absent, nonlinear, value: Mir.Value };
+
+/// The phis the walk is inside, innermost first. A loop-header phi reaches
+/// itself again through its back edge; meeting one already on the path is a
+/// generator fed back into itself, which no single factor describes.
+const PhiPath = struct { inst: Mir.Inst, up: ?*const PhiPath };
 
 /// Lowers a §4.6.4 noise source call. It contributes only in a small-signal noise
 /// analysis; codegen decides that from the call name (the value is 0 in DC).
@@ -138,17 +167,6 @@ pub fn lowerNoise(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     return .{ .v = result, .ty = .real };
 }
 
-/// A §4.6.4.6 noise coefficient, `∂contribution/∂generator`. A noise function is an
-/// amplitude combined linearly, so for correlated noise ("the output of one noise
-/// function for more than one noise source") the derivative is the constant factor
-/// the branch applies to it:
-///   absent     the generator does not occur here, so its coefficient is 0 and
-///              this statement adds nothing to the branch's total;
-///   nonlinear  it occurs in a shape no single factor describes (squared, in a
-///              denominator, inside a call), so there is no coefficient;
-///   value      the factor.
-const Coeff = union(enum) { absent, nonlinear, value: Mir.Value };
-
 /// Returns `-v`, folded when `v` is a literal so the coefficient renders inline in
 /// `noisePsd` instead of taking a core live-out slot.
 pub fn coeffNeg(self: *Lower, v: Mir.Value) Oom!Mir.Value {
@@ -157,18 +175,6 @@ pub fn coeffNeg(self: *Lower, v: Mir.Value) Oom!Mir.Value {
     if (self.mir.valueDef(self.mir.resolveAlias(v)) == .float_const)
         return self.mir.addFloatConst(self.arena, -self.mir.valueDef(self.mir.resolveAlias(v)).float_const);
     return self.emit(.fneg, &.{v});
-}
-
-/// `a · b`, with the identity folded away. The derivative of `c * n` is
-/// `c * 1`, and emitting that multiply would hide the constant from
-/// `psdConst`.
-fn coeffMul(self: *Lower, a: Mir.Value, b: Mir.Value) Oom!Mir.Value {
-    assert(self.valueValid(a));
-    assert(self.valueValid(b));
-    assert(self.blockValid(self.cur));
-    if (a == .f_one) return b;
-    if (b == .f_one) return a;
-    return self.emit(.fmul, &.{ a, b });
 }
 
 /// Returns the coefficient of generator `n` in contribution value `v`, emitting the
@@ -181,6 +187,20 @@ pub fn noiseCoeff(self: *Lower, v: Mir.Value, n: Mir.Value) Oom!Coeff {
     var reach = try reachOf(self, gen, v);
     defer reach.deinit(self.arena);
     return coeffAt(self, v, gen, &reach, 0, null);
+}
+
+// ---- private ----
+
+/// `a · b`, with the identity folded away. The derivative of `c * n` is
+/// `c * 1`, and emitting that multiply would hide the constant from
+/// `psdConst`.
+fn coeffMul(self: *Lower, a: Mir.Value, b: Mir.Value) Oom!Mir.Value {
+    assert(self.valueValid(a));
+    assert(self.valueValid(b));
+    assert(self.blockValid(self.cur));
+    if (a == .f_one) return b;
+    if (b == .f_one) return a;
+    return self.emit(.fmul, &.{ a, b });
 }
 
 /// The Values of `v`'s cone whose operands, along the edges `coeffAt` follows,
@@ -273,11 +293,6 @@ fn operandReaches(mir: *const Mir, inst: Mir.Inst, reach: *const std.bit_set.Dyn
         .store => |st| reached(mir, reach, st.arr) or reached(mir, reach, st.index) or reached(mir, reach, st.value),
     };
 }
-
-/// The phis the walk is inside, innermost first. A loop-header phi reaches
-/// itself again through its back edge; meeting one already on the path is a
-/// generator fed back into itself, which no single factor describes.
-const PhiPath = struct { inst: Mir.Inst, up: ?*const PhiPath };
 
 fn coeffAt(self: *Lower, v: Mir.Value, gen: Mir.Value, reach: *const std.bit_set.Dynamic, depth: u16, path: ?*const PhiPath) Oom!Coeff {
     assert(self.valueValid(v));

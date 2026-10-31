@@ -1,3 +1,22 @@
+//! Node references: a net, port or branch expression in, its `nodes` row
+//! out (`nodeOf`), interning implicit nets and vector elements; and §3.12
+//! branch declarations, scalar and vector, into `Lower.branches`.
+//!
+//! Cites: A.2.1.3, A.2.3, §2.8.1, §3.6.3, §3.6.5, §3.11, §3.12, §3.12.1,
+//! §3.13.3, §4.2.1.1, §5.2.1, §5.4.1, §5.5.2, §6.5.2.2, §6.7.1, §19.2; IEEE
+//! 1364-2005 §5.2.1, §19.2.
+//!
+//! Contents:
+//! - `pub fn declareBranches(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
+//! - `pub fn checkPortBranchDecls(self: *Lower) Oom!void`
+//! - `pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32`
+//! - `pub fn netKey(self: *Lower, name: []const u8, tok: u32) Oom![]const u8`
+//! - `pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!u32`
+//! - `pub fn foldDim(self: *Lower, d: Ast.Dim, tok: u32) Oom!?VecRange`
+//! - `pub fn portRange(self: *Lower, p: *const Ast.Port) Oom!?VecRange`
+//! - `pub fn vecTerminal(self: *Lower, e: Ast.ExprId, tok: u32) Oom!?VecTerm`
+//! - `pub fn declareVectorBranch(self: *Lower, b: *const Ast.BranchDecl, hv: ?VecTerm, lv: ?VecTerm) Oom!void`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -11,6 +30,9 @@ const lower_node_discipline = @import("node_discipline.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const VecRange = Lower.VecRange;
+
+/// A vector branch terminal: the vector `name` and the elements it covers.
+const VecTerm = struct { name: []const u8, range: VecRange };
 
 /// §3.12 the module's named branches: a node pair with a fresh `BranchInfo.id`
 /// each (an A.2.3 branch array is one pair and several ids), a §3.12.1 port
@@ -243,13 +265,6 @@ pub fn foldDim(self: *Lower, d: Ast.Dim, tok: u32) Oom!?VecRange {
     return r;
 }
 
-// E0352 for a range bound that folded to a real with no integer value.
-fn refuseBound(self: *Lower, tok: u32, which: []const u8, c: Lower.Const) Oom!?VecRange {
-    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    try self.err(tok, .E0352, "the {s} of the range is {e}, which is no integer", .{ which, c.asReal() });
-    return null;
-}
-
 /// Returns a port's range from whichever of its two declarations carries one. When
 /// both do, "the range specification between the two declarations of a port shall
 /// be identical" (LRM §6.5.2.2), compared after folding: `input [0:3] in;
@@ -265,17 +280,6 @@ pub fn portRange(self: *Lower, p: *const Ast.Port) Oom!?VecRange {
     };
     return dir_r orelse ty_r;
 }
-
-/// Whether branch terminal `e` is a part-select, `a[2:1]` or `a[b +: w]`.
-fn partSelect(self: *const Lower, e: Ast.ExprId) bool {
-    assert(e == .none or self.exprValid(e));
-    const ex = &self.file.exprs;
-    if (e == .none or ex.tag(e) != .index) return false;
-    return ex.tag(ex.rhs(e)) == .range or ex.tag(ex.rhs(e)) == .indexed_range;
-}
-
-/// A vector branch terminal: the vector `name` and the elements it covers.
-const VecTerm = struct { name: []const u8, range: VecRange };
 
 /// The vector a branch terminal names, or null when it is a scalar
 /// (`branch (a[1], b)` is two scalars) or not a net reference at all. A.2.1.3's
@@ -363,6 +367,23 @@ pub fn declareVectorBranch(self: *Lower, b: *const Ast.BranchDecl, hv: ?VecTerm,
         });
     }
     try self.out.vectors.put(self.arena, name, .{ .msb = 0, .lsb = @as(i64, size) - 1 });
+}
+
+// ---- private ----
+
+// E0352 for a range bound that folded to a real with no integer value.
+fn refuseBound(self: *Lower, tok: u32, which: []const u8, c: Lower.Const) Oom!?VecRange {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    try self.err(tok, .E0352, "the {s} of the range is {e}, which is no integer", .{ which, c.asReal() });
+    return null;
+}
+
+/// Whether branch terminal `e` is a part-select, `a[2:1]` or `a[b +: w]`.
+fn partSelect(self: *const Lower, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
+    const ex = &self.file.exprs;
+    if (e == .none or ex.tag(e) != .index) return false;
+    return ex.tag(ex.rhs(e)) == .range or ex.tag(ex.rhs(e)) == .indexed_range;
 }
 
 /// Returns a fresh §5.4.1 branch identity, one per declared branch name (array

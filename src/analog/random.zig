@@ -5,8 +5,12 @@
 //! the seed; a hidden held seed slot for a seed that is no variable; a row in
 //! `Lowered.rng_auto_seeds` for an omitted one.
 //!
-//! LRM clauses this file's code cites: §4.2.3, §6.4, §9.13, §9.13.1, §9.13.2, §9.13.3.
-//! IEEE 1364-2005 clauses cited: §17.9.3.
+//! Cites: §4.2.3, §6.4, A.6.9, §9.13, §9.13.1, §9.13.2, §9.13.3, §17.9.3;
+//! IEEE 1364-2005 §17.9.3.
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!?TypedValue`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -35,6 +39,7 @@ pub const State = struct {
 
 /// The two held integers behind a seed that is not a variable.
 const InternalSeed = struct { seed: VarSlot, ready: VarSlot };
+
 /// §9.13 Table 9-10, whose "supported in analog context" column reads Yes for
 /// every one of the 17 names. One source call becomes TWO pure calls over the
 /// seed's incoming value — the variate, and the updated seed §9.13.1/§9.13.2
@@ -213,6 +218,8 @@ pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.E
         .integer => .integer,
     } };
 }
+
+// ---- private ----
 
 /// Repeated execution of one source site shares its hidden seed. A first-call
 /// flag defers a model-card parameter's initialization until the call runs;
