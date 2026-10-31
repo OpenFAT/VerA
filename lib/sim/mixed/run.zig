@@ -1,22 +1,38 @@
-//! A digital `Run` and an analog solver -> one mixed-signal analysis on a
-//! common global time (VAMS §8.4.4, §7.3.6).
-//!
+//! A digital `Run` and an analog solver in, one mixed-signal analysis on a
+//! common global time out (VAMS §8.4.4, §7.3.6): `run`, the spine that walks
+//! the declared timepoints and hands each step to `coordinator.State(A)`.
 //! The analog side is a comptime interface (`run`'s `A`), so the tests below
 //! drive the real digital engine against a fake solver.
-//! Clauses: VAMS §7.3.5, §7.3.6, §8.4, §8.5, §5.10.3; IEEE 1364-2005 §17.1.3.
-// ponytail: the analog never steps past the next digital event (Figure 8-7's
-// conservative half), so nothing is ever rolled back (§8.4.6) and an A2D is
-// delivered once, from the solution that is kept. A step the analog device
-// itself would reject (an analog-context `cross`) is not cut here: only the
-// monitored events cut, through the host's own re-solve.
+//! Cites: VAMS §7.3.5, §7.3.6, §8.4, §8.5, §5.10.3; IEEE 1364-2005 §17.1.3.
+//!
+//! Contents:
+//! - `pub const Options = struct`
+//! - `pub const max_rejects`
+//! - `pub const max_secant`
+//! - `pub const max_cuts`
+//! - `pub const default_time_tol`
+//! - `pub const default_expr_tol`
+//! - `Fake.setInputs(f: *Fake, dig: *digital.Run, fired: u64) !void`
+//! - `Fake.snapshot(f: *Fake, dig: *digital.Run) !void`
+//! - `Fake.latch(f: *Fake) !void`
+//! - `Fake.solveAt(f: *Fake, t: f64, dt: f64, first: bool, last: bool) !void`
+//! - `Fake.probe(f: *Fake, t: ?f64, _: []const u8, _: ?[]const u8) !f64`
+//! - `Fake.finish(f: *Fake) !void`
+//! - `Fake.breakpoint(f: *Fake, t: f64) ?f64`
+//! - `pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void`
+
 const std = @import("std");
-const digital = @import("digital/root.zig");
-const Tick = digital.Tick;
-const time = @import("time.zig");
+const assert = std.debug.assert;
+const digital = @import("../digital/root.zig");
+const time = @import("../time.zig");
 const tickAtOrBefore = time.tickAtOrBefore;
-const crosses = time.crosses;
-const ulps = time.ulps;
 const timer = @import("kernels").timer_kernels;
+const coordinator = @import("coordinator.zig");
+const monitors = @import("monitors.zig");
+const State = coordinator.State;
+const Mon = monitors.Mon;
+const testing = std.testing;
+const diag = @import("diag");
 
 /// One analysis's timeline, as `run` reads it.
 pub const Options = struct {
@@ -26,6 +42,78 @@ pub const Options = struct {
     times: []const f64,
     /// One scheduler tick, in seconds: the design's finest time precision.
     tick: f64,
+};
+
+/// Rejections of one tentative solution `solve` backs up from before it
+/// gives up, as the VPI walk does (`src/vpi/analog.zig`).
+pub const max_rejects = 60;
+
+/// Secant cuts `step` tries before it halves the step instead.
+pub const max_secant = 64;
+
+/// Cuts one step can take: `max_secant`, then bisections. Each bisection
+/// halves acc - base or ends the loop, and an f64 interval shrinks to one ulp
+/// in at most 2098 + 52 halvings (the exponent range plus the mantissa).
+pub const max_cuts = max_secant + 2150;
+
+/// §5.10.3.1 leaves an absent `time_tol` to the tool.
+pub const default_time_tol = 1e-12;
+
+/// §5.10.3.4 lets the tool choose an absent/zero expression tolerance.
+pub const default_expr_tol = 1e-12;
+
+/// Test support: an analog side that reads one digital variable and
+/// records every solve and every finish.
+const Fake = struct {
+    slot: u32,
+    input: i64 = -1,
+    fired: u64 = 0,
+    snap: i64 = -1,
+    slope: f64 = 0,
+    power: f64 = 1,
+    /// When set, the node is a step instead: -1 V before `jump`, 3 V from it.
+    jump: ?f64 = null,
+    timer_grid: ?struct { start: f64, period: f64 } = null,
+    t: f64 = 0,
+    solves: std.ArrayList(Point) = .empty,
+    points: std.ArrayList(Point) = .empty,
+    latched: std.ArrayList(Point) = .empty,
+    gpa: std.mem.Allocator,
+    const Point = struct { t: f64, dt: f64, v: i64, first: bool, last: bool, fired: u64 = 0, snap: i64 = -1 };
+
+    /// `run`'s `A.setInputs`, recorded.
+    pub fn setInputs(f: *Fake, dig: *digital.Run, fired: u64) !void {
+        f.input = dig.values[f.slot].asInt() orelse -1;
+        f.fired = fired;
+    }
+    /// `run`'s `A.snapshot`, recorded.
+    pub fn snapshot(f: *Fake, dig: *digital.Run) !void {
+        f.snap = dig.values[f.slot].asInt() orelse -1;
+    }
+    /// `run`'s `A.latch`, recorded.
+    pub fn latch(f: *Fake) !void {
+        try f.latched.append(f.gpa, f.solves.items[f.solves.items.len - 1]);
+    }
+    /// `run`'s `A.solveAt`, recorded.
+    pub fn solveAt(f: *Fake, t: f64, dt: f64, first: bool, last: bool) !void {
+        f.t = t;
+        try f.solves.append(f.gpa, .{ .t = t, .dt = dt, .v = f.input, .first = first, .last = last, .fired = f.fired, .snap = f.snap });
+    }
+    /// The fake analog's one node follows `slope` volts per second, raised
+    /// to `power`.
+    pub fn probe(f: *Fake, t: ?f64, _: []const u8, _: ?[]const u8) !f64 {
+        if (f.jump) |j| return if ((t orelse f.t) >= j) 3 else -1;
+        return std.math.pow(f64, f.slope * (t orelse f.t), f.power);
+    }
+    /// `run`'s `A.finish`, recorded.
+    pub fn finish(f: *Fake) !void {
+        try f.points.append(f.gpa, f.solves.items[f.solves.items.len - 1]);
+    }
+    /// `run`'s `A.breakpoint`, recorded.
+    pub fn breakpoint(f: *Fake, t: f64) ?f64 {
+        const grid = f.timer_grid orelse return null;
+        return timer.zNextTimer(grid.start, grid.period, t);
+    }
 };
 
 /// Runs one analysis over `opts.times`.
@@ -185,522 +273,7 @@ pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void {
     try a.finish();
 }
 
-/// Rejections of one tentative solution `solve` backs up from before it
-/// gives up, as the VPI walk does (`src/vpi/analog.zig`).
-const max_rejects = 60;
-
-/// Secant cuts `step` tries before it halves the step instead.
-const max_secant = 64;
-/// Cuts one step can take: `max_secant`, then bisections. Each bisection
-/// halves acc - base or ends the loop, and an f64 interval shrinks to one ulp
-/// in at most 2098 + 52 halvings (the exponent range plus the mantissa).
-const max_cuts = max_secant + 2150;
-
-/// §5.10.3.1 leaves an absent `time_tol` to the tool.
-const default_time_tol = 1e-12;
-/// §5.10.3.4 lets the tool choose an absent/zero expression tolerance.
-const default_expr_tol = 1e-12;
-
-/// One monitored analog event (`digital.Run.monitors`): what its kind needs,
-/// and its value on the last final solution (`v0`, unused by a timer).
-const Mon = struct {
-    v0: f64 = 0,
-    kind: union(enum) {
-        /// §5.10.3.1 cross / §5.10.3.2 above: the direction, the time and
-        /// expression tolerances (`etol` inf when absent), and the argument
-        /// index of `enable`, whose zero makes the event inactive.
-        crossing: struct { dir: f64, tol: f64, etol: f64, enable: u8 },
-        /// §5.10.3.3 the latest absolute grid and its pending event. A digital
-        /// body can change controls at this point after the event was already
-        /// delivered; consumed prevents that change from delivering it twice.
-        timer: struct {
-            start: f64 = std.math.nan(f64),
-            period: f64 = std.math.nan(f64),
-            next: f64 = std.math.inf(f64),
-            consumed: f64 = std.math.nan(f64),
-        },
-        /// §5.10.3.4: event history is distinct from observed extrema, so
-        /// reversals smaller than expr_tol accumulate without losing a peak.
-        absdelta: struct {
-            initialized: bool = false,
-            enabled: bool = false,
-            last: f64 = 0,
-            last_time: f64 = 0,
-            direction: f64 = 0,
-            extreme: f64 = 0,
-            observed_event: bool = false,
-        },
-    },
-
-    // Budget: every analog step walks `mons` reading `v0` and the tag; the
-    // largest payload (absdelta, 4 f64 + 3 bools) sets 40 + tag 8 + v0 8.
-    comptime {
-        std.debug.assert(@sizeOf(Mon) == 56);
-    }
-};
-
-fn State(comptime A: type) type {
-    return struct {
-        const Self = @This();
-        a: *A,
-        dig: *digital.Run,
-        opts: Options,
-        final: f64,
-        /// The declared point being stepped toward (`timeOf`'s `target`).
-        target: f64 = 0,
-        /// Settling the activity at or before the first time into its DC point.
-        dc: bool = false,
-        /// `settleA2d` is running: the tentative solution is already finished.
-        settling: bool = false,
-        /// Time of the tentative, not yet finished, solution.
-        acc: ?f64 = null,
-        /// Time of the last finished solution: the base of `dt`.
-        prev: ?f64 = null,
-        /// Explicit D2A terms (bit = site) that occurred since the last solve,
-        /// and those delivered to the tentative solution at `acc`. A term is
-        /// delivered to exactly one finished solution: a re-solve at the same
-        /// time keeps it, the next time point drops it.
-        pending: u64 = 0,
-        fired: u64 = 0,
-        mons: []Mon = &.{},
-        /// A monitor is being evaluated: probes read the tentative solution.
-        mon_eval: bool = false,
-        /// An absdelta enable transition at a consumed digital event reads
-        /// the interpolated analog value at that event, not the future endpoint.
-        mon_time: ?f64 = null,
-
-        fn timeOf(s: *const Self, k: Tick, target: f64, horizon: Tick) f64 {
-            const tk = @as(f64, @floatFromInt(k)) * s.opts.tick;
-            return if (k == horizon and @abs(tk - target) <= ulps * target) target else tk;
-        }
-
-        /// The analog time of the digital tick being run: the tentative
-        /// solution's when that is at or past this tick (time never runs
-        /// back), else as `run` would solve it
-        /// (§8.4.2: the DC point's before it opens the analysis).
-        fn nowTime(s: *const Self) f64 {
-            if (s.dc) return s.target;
-            const k = s.dig.scheduler.now;
-            if (s.acc) |ta| if (tickAtOrBefore(ta, s.opts.tick) >= k) return ta;
-            return s.timeOf(k, s.target, tickAtOrBefore(s.target, s.opts.tick));
-        }
-
-        /// A solution at `t`, tentative: `acc` moves, `prev` does not. One
-        /// the host rejects (`A.rejected`) halves the step from `prev` and is
-        /// solved again; the first solution of the analysis has no earlier
-        /// time to back up to.
-        fn solve(s: *Self, t: f64) !void {
-            var at = t;
-            var tries: u32 = 0;
-            while (true) : (tries += 1) {
-                try s.a.setInputs(s.dig, s.fired);
-                try s.a.solveAt(at, if (s.prev) |p| at - p else 0.0, s.prev == null, at == s.final);
-                if (comptime !@hasDecl(A, "rejected")) break;
-                const p = s.prev orelse break;
-                if (!try s.a.rejected()) break;
-                if (tries == max_rejects) return error.BackupExhausted;
-                at = p + (at - p) / 2;
-            }
-            s.acc = at;
-        }
-
-        /// The solution at `t`: a new time finishes the tentative one first.
-        fn accept(s: *Self, t: f64) !void {
-            return s.solveCarrying(t, true);
-        }
-
-        /// A solution at `t` carrying the pending explicit D2A terms. A new
-        /// time finishes the tentative one first and, when `settle`, runs
-        /// the A2D writes of that finished point (`settleA2d`).
-        fn solveCarrying(s: *Self, t: f64, comptime settle: bool) !void {
-            if (s.acc) |ta| if (ta != t) {
-                try s.a.finish();
-                s.prev = ta;
-                s.fired = 0;
-                if (settle) try s.settleA2d(tickAtOrBefore(ta, s.opts.tick));
-            };
-            s.fired |= s.pending;
-            s.pending = 0;
-            try s.solve(t);
-        }
-
-        /// VAMS §7.3.6.4: `finish` wrote the analog variables a digital
-        /// expression reads (`digital.Run.a2dWrite`), each an A2D event at the
-        /// finished time. The digital engine runs them now, so the next solve
-        /// reads what they drive.
-        // ponytail: the finished point is not re-solved for an implicit D2A
-        // they cause (§8.4.3.2 "accept at wake-up time"); the next point is.
-        fn settleA2d(s: *Self, horizon: Tick) !void {
-            s.settling = true;
-            defer s.settling = false;
-            while (true) switch (try s.dig.runUntil(horizon)) {
-                .idle => break,
-                .explicit_d2a => try s.explicitD2a(),
-                .analog => {},
-                .vpi_sync => unreachable, // only `src/vpi` queues the marker
-            };
-        }
-
-        /// §8.5.3.6 "An explicit D2A event is processed by evaluating the
-        /// analog block": one evaluation per region-1b event. The terms of
-        /// one 1b are delivered together to the next solve, so an earlier 1b
-        /// of this tick still pending (a #0 delta cycle later) is evaluated
-        /// first, with its own snapshot, and what its statements assigned is
-        /// committed before this one's values replace the snapshot. That is
-        /// `solveCarrying` without `settleA2d`: the tick is mid-flight, so the A2D
-        /// writes of a point it finishes run with the rest of the tick.
-        // ponytail: that evaluation reads the unguarded inputs as they are now,
-        // not as they were at its 1b, and one pending while the finished point
-        // settles its A2D writes stays coalesced with the next.
-        fn explicitD2a(s: *Self) anyerror!void {
-            if (s.pending != 0 and !s.settling) {
-                try s.solveCarrying(s.nowTime(), false);
-                try s.a.latch();
-                s.fired = 0;
-            }
-            s.pending |= s.dig.d2a_fired;
-            s.dig.d2a_fired = 0;
-            try s.a.snapshot(s.dig);
-        }
-
-        fn monValue(s: *Self, j: usize) !f64 {
-            return (try s.monArgAt(j, 0, null)).?;
-        }
-
-        fn monArgAt(s: *Self, j: usize, k: usize, t: ?f64) !?f64 {
-            s.mon_eval = true;
-            defer s.mon_eval = false;
-            s.mon_time = t;
-            defer s.mon_time = null;
-            return s.dig.monitorArg(j, k);
-        }
-
-        /// Refresh after each analog solve and digital control change. With
-        /// unchanged controls a point just beyond the deadline still delivers
-        /// the pending event. A changed start/period first replaces that
-        /// deadline from its latest absolute grid, which may cancel an old
-        /// event or place a new one at this very time (§5.10.3.3).
-        fn refreshTimers(s: *Self, t: f64) !bool {
-            var posted = false;
-            for (s.mons, 0..) |*m, j| if (m.kind == .timer) {
-                const tm = &m.kind.timer;
-                const start = (try s.monArgAt(j, 0, t)).?;
-                const period = (try s.monArgAt(j, 1, t)) orelse 0;
-                const ttol = (try s.monArgAt(j, 2, t)) orelse 0;
-                const enable = (try s.monArgAt(j, 3, t)) orelse 1;
-                const tok = s.dig.file.exprs.mainTok(s.dig.monitors.items[j].expr);
-                if (!(ttol >= 0))
-                    return s.dig.failWith(.E0517, tok, "`timer()` time_tol shall be non-negative", .{});
-                if (!std.math.isFinite(enable) or enable != @round(enable))
-                    return s.dig.failWith(.E0517, tok, "`timer()` enable shall evaluate to an integer", .{});
-                // We choose the deadline itself, satisfying every positive
-                // tolerance and the absent/zero at-or-just-beyond default.
-                tm.next = timer.zTimerPending(start, period, t, tm.start, tm.period, tm.next);
-                tm.start = start;
-                tm.period = period;
-                if (t < tm.next) continue;
-                tm.next = timer.zNextTimer(start, period, t) orelse std.math.inf(f64);
-                if (tm.consumed == t) continue;
-                tm.consumed = t;
-                if (enable == 0) continue;
-                try s.dig.deliverA2d(j, @intFromFloat(@round(t / s.opts.tick)));
-                posted = true;
-            };
-            return posted;
-        }
-
-        const AbsdeltaArgs = struct { delta: f64, time_tol: f64, expr_tol: f64, enabled: bool };
-
-        fn absdeltaArgs(s: *Self, j: usize, t: ?f64) !AbsdeltaArgs {
-            const delta = (try s.monArgAt(j, 1, t)).?;
-            const ttol = (try s.monArgAt(j, 2, t)) orelse 0;
-            const etol = (try s.monArgAt(j, 3, t)) orelse 0;
-            const enable = (try s.monArgAt(j, 4, t)) orelse 1;
-            const tok = s.dig.file.exprs.mainTok(s.dig.monitors.items[j].expr);
-            if (!(delta >= 0 and ttol >= 0 and etol >= 0))
-                return s.dig.failWith(.E0517, tok, "`absdelta()` delta and tolerances shall be non-negative", .{});
-            if (!std.math.isFinite(enable) or enable != @round(enable))
-                return s.dig.failWith(.E0517, tok, "`absdelta()` enable shall evaluate to an integer", .{});
-            return .{
-                .delta = delta,
-                .time_tol = @max(if (ttol > 0) ttol else default_time_tol, s.opts.tick),
-                .expr_tol = if (etol > 0) etol else default_expr_tol,
-                .enabled = enable != 0,
-            };
-        }
-
-        /// Initialization and 0 -> nonzero enable are events even when expr
-        /// has not moved. Disabled observations never advance the event baseline.
-        fn refreshAbsdelta(s: *Self, t: f64) !bool {
-            var posted = false;
-            for (s.mons, 0..) |*m, j| if (m.kind == .absdelta) {
-                const ad = &m.kind.absdelta;
-                if (!ad.initialized) continue;
-                const args = try s.absdeltaArgs(j, t);
-                if (args.enabled == ad.enabled) continue;
-                ad.enabled = args.enabled;
-                ad.observed_event = false;
-                if (!args.enabled) continue;
-                ad.last = (try s.monArgAt(j, 0, t)).?;
-                ad.last_time = t;
-                ad.direction = 0;
-                ad.extreme = ad.last;
-                try s.dig.deliverA2d(j, @intFromFloat(@round(t / s.opts.tick)));
-                posted = true;
-            };
-            return posted;
-        }
-
-        /// Record only observed changes here. A numeric control changing while
-        /// expr is constant must not itself create an event (§5.10.3.4).
-        fn observeAbsdelta(s: *Self, j: usize) !void {
-            const m = &s.mons[j];
-            const ad = &m.kind.absdelta;
-            ad.observed_event = false;
-            const args = try s.absdeltaArgs(j, null);
-            if (!ad.enabled or !args.enabled) return;
-            const v = try s.monValue(j);
-            if (args.delta == 0) {
-                ad.observed_event = v != m.v0;
-                ad.direction = 0;
-                ad.extreme = v;
-                return;
-            }
-            // A smaller expr_tol can make an old, ignored excursion large
-            // enough. It still needs a NEW change of expr to cause an event.
-            if (v == m.v0) return;
-            const change = v - ad.extreme;
-            if (change == 0) return;
-            const dir = std.math.sign(change);
-            if (ad.direction == 0 or dir == ad.direction) {
-                ad.direction = dir;
-                ad.extreme = v;
-            } else if (@abs(change) >= args.expr_tol) {
-                ad.observed_event = true;
-                ad.direction = dir;
-                ad.extreme = v;
-            }
-        }
-
-        const AbsdeltaEvent = struct { monitor: usize, t: f64, value: f64, observed: bool = false };
-
-        fn nextAbsdelta(s: *Self, j: usize, base: f64, cursor: f64) !?AbsdeltaEvent {
-            const m = &s.mons[j];
-            const ad = &m.kind.absdelta;
-            if (!ad.enabled) return null;
-            const args = try s.absdeltaArgs(j, null);
-            if (!args.enabled) return null;
-            const end = s.acc.?;
-            const v1 = try s.monValue(j);
-            const observed: ?AbsdeltaEvent = if (ad.observed_event)
-                .{ .monitor = j, .t = end, .value = v1, .observed = true }
-            else
-                null;
-            if (args.delta == 0 or cursor >= end or v1 == m.v0 or @abs(v1 - ad.last) <= args.delta)
-                return observed;
-            const level = ad.last + std.math.sign(v1 - ad.last) * args.delta;
-            const frac = std.math.clamp((level - m.v0) / (v1 - m.v0), 0, 1);
-            // time_tol filters minimum event spacing. Pick the exact delta
-            // crossing when eligible, otherwise the first eligible time. No
-            // solver breakpoint is requested for either interpolated time.
-            const t = @max(@max(base + frac * (end - base), ad.last_time + args.time_tol), cursor);
-            if (t > end) return observed;
-            const value = m.v0 + (v1 - m.v0) * ((t - base) / (end - base));
-            return .{ .monitor = j, .t = t, .value = value, .observed = t == end and ad.observed_event };
-        }
-
-        /// Consume one candidate at a time, interleaved with existing digital
-        /// work. A monitor body can disable itself or change its controls;
-        /// pre-queuing the rest of the ramp would execute stale events.
-        fn drainAbsdelta(s: *Self, base: f64, horizon: Tick) !void {
-            var cursor = base;
-            while (true) {
-                var next: ?AbsdeltaEvent = null;
-                for (s.mons, 0..) |m, j| if (m.kind == .absdelta) {
-                    if (try s.nextAbsdelta(j, base, cursor)) |candidate| {
-                        if (next == null or candidate.t < next.?.t) next = candidate;
-                    }
-                };
-                const event_tick: ?Tick = if (next) |e| @intFromFloat(@round(e.t / s.opts.tick)) else null;
-                if (s.dig.scheduler.peekTime()) |queued| {
-                    if (queued <= horizon and (event_tick == null or queued < event_tick.?)) {
-                        try s.runDigital(queued);
-                        cursor = @max(cursor, @as(f64, @floatFromInt(queued)) * s.opts.tick);
-                        continue;
-                    }
-                }
-                const e = next orelse break;
-                const ad = &s.mons[e.monitor].kind.absdelta;
-                ad.last = e.value;
-                ad.last_time = e.t;
-                if (e.observed) ad.observed_event = false;
-                try s.dig.deliverA2d(e.monitor, event_tick.?);
-                if (event_tick.? <= horizon) try s.runDigital(event_tick.?);
-                cursor = @max(cursor, e.t);
-            }
-            _ = try s.refreshAbsdelta(s.acc.?);
-            try s.runDigital(horizon);
-        }
-
-        /// §5.10.3.1: "If enable argument is specified and it is zero, then
-        /// cross() is inactive, meaning that it does not generate an event at
-        /// threshold crossings and does not act to control the timestep."
-        fn active(s: *Self, enable: u8, j: usize) !bool {
-            return ((try s.monArgAt(j, enable, null)) orelse 1) != 0;
-        }
-
-        /// One analog step toward `t_end`, which lies before the next digital
-        /// event: §5.10.3.1 / §8.4.7 cut it at the first monitored crossing,
-        /// deliver the A2D events it carries (§7.3.6.1, rounded per §8.4.3.3),
-        /// then run the digital ticks at or before the step and re-solve at
-        /// it for every D2A they cause (§8.4.3.2 "accept at wake-up time"),
-        /// and re-check a `$monitor` that probes the solution at its tick.
-        fn step(s: *Self, t_end: f64) !void {
-            const base = s.acc.?;
-            for (s.mons, 0..) |*m, j| if (m.kind != .timer) {
-                m.v0 = try s.monValue(j);
-            };
-            try s.accept(t_end);
-            // Secant cuts: a linear crossing is found by the first. A curve the
-            // secant only creeps toward is halved instead after `max_secant`,
-            // which closes on any sign change, so every crossing is cut to
-            // within its time_tol, and its expr_tol: "both tolerances shall be
-            // satisfied at the crossing" (§5.10.3.1). A cut must land strictly
-            // inside (base, acc): when none does, base and acc are adjacent
-            // floats and no tighter box exists, so the crossing is delivered
-            // from acc (a time_tol below one ulp of the time; Vague_Decisions
-            // §7). Each cut then moves acc down, and each bisection at least
-            // halves acc - base, so the loop ends within `max_cuts`.
-            var cuts: u32 = 0;
-            while (true) : (cuts += 1) {
-                std.debug.assert(cuts <= max_cuts);
-                var cut: ?f64 = null;
-                for (s.mons, 0..) |m, j| {
-                    const c = switch (m.kind) {
-                        .crossing => |c| c,
-                        .timer, .absdelta => continue,
-                    };
-                    if (!try s.active(c.enable, j)) continue;
-                    const v1 = try s.monValue(j);
-                    if (!crosses(c.dir, m.v0, v1)) continue;
-                    const tc = base + m.v0 / (m.v0 - v1) * (s.acc.? - base);
-                    const late = s.acc.? - tc;
-                    // ponytail: expr_tol stops binding within a few ulps of
-                    // tc, where a jump in the expression can never meet it.
-                    const off = @abs(v1) > c.etol and late > 4 * std.math.floatEps(f64) * @abs(tc);
-                    if (late > c.tol or off) {
-                        const slope = @abs(v1 - m.v0) / (s.acc.? - base);
-                        const at = tc + @min(c.tol, c.etol / slope) / 2;
-                        cut = @min(cut orelse at, at);
-                    }
-                }
-                const c = cut orelse break;
-                const t = if (cuts < max_secant) c else base + (s.acc.? - base) / 2;
-                // Also false for a NaN `t`.
-                if (!(t > base and t < s.acc.?)) break;
-                try s.solve(t);
-            }
-            const tick: Tick = @intFromFloat(@round(s.acc.? / s.opts.tick));
-            for (s.mons, 0..) |*m, j| switch (m.kind) {
-                .timer => {}, // Refreshed together below, using current controls.
-                .absdelta => try s.observeAbsdelta(j),
-                .crossing => |c| if (try s.active(c.enable, j) and crosses(c.dir, m.v0, try s.monValue(j))) try s.dig.deliverA2d(j, tick),
-            };
-            _ = try s.refreshTimers(s.acc.?);
-            const k = tickAtOrBefore(s.acc.?, s.opts.tick);
-            try s.drainAbsdelta(base, k);
-            // §8.4, IEEE 1364-2005 §17.1.3: this solution may move what a
-            // probing `$monitor` reads although no digital event shares its
-            // tick, so the tick is a time step of its own (`analogPoint`).
-            // ponytail: a solution between ticks whose lower tick has run
-            // is reported at the next tick a solution reaches.
-            if (try s.dig.analogPoint(k)) try s.runDigital(k);
-        }
-
-        /// The digital ticks at or before `horizon`, re-solving at the current
-        /// analog time for every D2A they cause.
-        // ponytail: a D2A caused by interpolated A2D still re-solves the
-        // endpoint; §8.4.6 needs rollback to the event and rejection of later
-        // interpolated events from the old solution.
-        fn runDigital(s: *Self, horizon: Tick) !void {
-            while (true) switch (try s.dig.runUntil(horizon)) {
-                .idle => {
-                    const t = @as(f64, @floatFromInt(s.dig.scheduler.now)) * s.opts.tick;
-                    const absdelta_posted = try s.refreshAbsdelta(t);
-                    // A timer controls analog timepoints. Its probes read the
-                    // current solution, even when the last digital tick was
-                    // earlier (or rounded just before this analog time).
-                    const timer_posted = try s.refreshTimers(s.acc.?);
-                    if (absdelta_posted or timer_posted) continue;
-                    break;
-                },
-                .explicit_d2a => try s.explicitD2a(),
-                .analog => try s.accept(s.acc.?),
-                .vpi_sync => unreachable, // only `src/vpi` queues the marker
-            };
-        }
-
-        fn probeHook(ctx: *anyopaque, n1: []const u8, n2: ?[]const u8) digital.Error!f64 {
-            const s: *Self = @ptrCast(@alignCast(ctx));
-            // §7.3.6.3 "the analog value calculated for the time corresponding
-            // to a real promotion of the digital time".
-            const t: ?f64 = if (s.mon_eval) s.mon_time else if (s.acc == null) null else @as(f64, @floatFromInt(s.dig.scheduler.now)) * s.opts.tick;
-            return s.a.probe(t, n1, n2) catch |e| s.dig.fail(0, "the analog solution has no V({s}{s}{s}): {t}", .{ n1, if (n2 != null) ", " else "", n2 orelse "", e });
-        }
-    };
-}
-
-// ---- tests: the real digital engine against a fake analog --------------------
-
-const testing = std.testing;
-const diag = @import("diag");
-
-/// Reads one digital variable, and records every solve and every finish.
-const Fake = struct {
-    slot: u32,
-    input: i64 = -1,
-    fired: u64 = 0,
-    snap: i64 = -1,
-    slope: f64 = 0,
-    power: f64 = 1,
-    /// When set, the node is a step instead: -1 V before `jump`, 3 V from it.
-    jump: ?f64 = null,
-    timer_grid: ?struct { start: f64, period: f64 } = null,
-    t: f64 = 0,
-    solves: std.ArrayList(Point) = .empty,
-    points: std.ArrayList(Point) = .empty,
-    latched: std.ArrayList(Point) = .empty,
-    gpa: std.mem.Allocator,
-    const Point = struct { t: f64, dt: f64, v: i64, first: bool, last: bool, fired: u64 = 0, snap: i64 = -1 };
-
-    pub fn setInputs(f: *Fake, dig: *digital.Run, fired: u64) !void {
-        f.input = dig.values[f.slot].asInt() orelse -1;
-        f.fired = fired;
-    }
-    pub fn snapshot(f: *Fake, dig: *digital.Run) !void {
-        f.snap = dig.values[f.slot].asInt() orelse -1;
-    }
-    pub fn latch(f: *Fake) !void {
-        try f.latched.append(f.gpa, f.solves.items[f.solves.items.len - 1]);
-    }
-    pub fn solveAt(f: *Fake, t: f64, dt: f64, first: bool, last: bool) !void {
-        f.t = t;
-        try f.solves.append(f.gpa, .{ .t = t, .dt = dt, .v = f.input, .first = first, .last = last, .fired = f.fired, .snap = f.snap });
-    }
-    /// The fake analog's one node follows `slope` volts per second, raised
-    /// to `power`.
-    pub fn probe(f: *Fake, t: ?f64, _: []const u8, _: ?[]const u8) !f64 {
-        if (f.jump) |j| return if ((t orelse f.t) >= j) 3 else -1;
-        return std.math.pow(f64, f.slope * (t orelse f.t), f.power);
-    }
-    pub fn finish(f: *Fake) !void {
-        try f.points.append(f.gpa, f.solves.items[f.solves.items.len - 1]);
-    }
-    pub fn breakpoint(f: *Fake, t: f64) ?f64 {
-        const grid = f.timer_grid orelse return null;
-        return timer.zNextTimer(grid.start, grid.period, t);
-    }
-};
+// ---- private ----
 
 fn drive(arena: std.mem.Allocator, source: []const u8, name: []const u8, times: []const f64) !Fake {
     var bag = diag.Bag.init(arena);
