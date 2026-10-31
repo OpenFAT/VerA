@@ -1489,7 +1489,7 @@ fn isSpiceName(t: []const u8) bool {
 /// and would otherwise be scanned into the identifier.
 fn spell(arena: Allocator, t: []const u8) Allocator.Error![]const u8 {
     // ponytail: share the lexer's keyword lookup; extend the common table for new keywords.
-    if (isIdent(t) and token.lookupKeyword(t) == null) return t;
+    if (isIdent(t) and @import("keyword.zig").lookupKeyword(t) == null) return t;
     return arena.print("\\{s} ", .{t});
 }
 

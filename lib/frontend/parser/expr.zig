@@ -338,20 +338,18 @@ pub fn parsePrimary(self: *Parser) Error!Ast.ExprId {
 
     // Keyword-named calls. The groups are disjoint (token.zig's annex
     // A.8.2/A.6.5 test) and map one to one onto `ExprTag`.
-    const call_tag: Ast.ExprTag = if (token.isMathFunction(t))
-        .builtin_call // §4.3
-    else if (token.isFilterFunction(t))
-        .filter_call // §4.5
-    else if (token.isSmallSignalFunction(t))
-        .noise_call // §4.6
-    else if (token.isEventFunction(t))
-        .event_function // §5.10.3
-    else if (t == .kw_analysis)
-        .sys_call // §4.6.1 analysis_function_call
-    else if (t == .kw_initial_step or t == .kw_final_step)
-        return parse_stmt.parseEventTerm(self) // §5.10.2
-    else
-        return self.failAt(self.pos, .E0209, "found {s}", .{self.found(self.pos)});
+    const call_tag: Ast.ExprTag = switch (token.callGroup(t)) {
+        .math => .builtin_call, // §4.3
+        .filter => .filter_call, // §4.5
+        .small_signal => .noise_call, // §4.6
+        .event => .event_function, // §5.10.3
+        .none => if (t == .kw_analysis)
+            .sys_call // §4.6.1 analysis_function_call
+        else if (t == .kw_initial_step or t == .kw_final_step)
+            return parse_stmt.parseEventTerm(self) // §5.10.2
+        else
+            return self.failAt(self.pos, .E0209, "found {s}", .{self.found(self.pos)}),
+    };
 
     const name = try self.file.intern(self.arena, token.Tag.lexeme(t).?);
     self.pos += 1;

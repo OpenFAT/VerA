@@ -8,11 +8,32 @@
 
 const std = @import("std");
 const Integer = @import("kernels").Integer;
-const IntLiteral = @import("lexer.zig").IntLiteral;
 const ast = @import("ast.zig");
 const ExprId = ast.ExprId;
 const StrId = ast.StrId;
 const SourceFile = ast.SourceFile;
+
+/// A decoded §2.6.1 integer constant, one per `.int_literal` row. `width` is
+/// the declared size in bits, or 0 for an unsized constant, which §4.2.13
+/// forbids in a concatenation.
+pub const IntLiteral = struct {
+    value: i64,
+    width: u32,
+    signed: bool,
+    /// §2.6.1 the radix the base format names (2, 8, 10 or 16); 10 for a
+    /// literal written without one. IEEE 1364-2005 §26.6.26's vpiConstType.
+    radix: u8 = 10,
+    /// An unsized based constant's digit count times its digit's bits
+    /// (`'h0001` is 16), saturating; 0 for any other. The digital engine
+    /// sizes the constant by it past 32 bits (specification/Vague_Decisions.md
+    /// VD-131).
+    digit_bits: u16 = 0,
+
+    // 16 bytes, one per `.int_literal` row (4,750 on hisimhv_va).
+    comptime {
+        std.debug.assert(@sizeOf(IntLiteral) == 16);
+    }
+};
 
 /// A.8.6 unary_operator, stored in the `extra` column of a `.unary` node:
 /// `kernels.fold.UnaryOp`, the operator the value folds take.

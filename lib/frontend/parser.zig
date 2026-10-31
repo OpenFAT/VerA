@@ -16,6 +16,7 @@
 const std = @import("std");
 const token = @import("token.zig");
 const lexer = @import("lexer.zig");
+const keyword = @import("keyword.zig");
 const Ast = @import("ast.zig");
 const diag = @import("diag");
 const deep_stack = @import("base").deep_stack;
@@ -65,14 +66,14 @@ pub const Parser = struct {
     access_names: std.StringHashMapUnmanaged(void) = .empty,
     /// §10.6 reserved-keyword set in effect, and the sets saved by each open
     /// `begin_keywords directive. See `keywordsDirective` and `identLike`.
-    kw_set: token.KeywordSet = token.default_keyword_set,
-    kw_stack: std.ArrayList(token.KeywordSet) = .empty,
+    kw_set: keyword.KeywordSet = keyword.default_keyword_set,
+    kw_stack: std.ArrayList(keyword.KeywordSet) = .empty,
     /// The language this parse accepts (`vera --std=`), which is also §10.6's
     /// "implementation's default set of reserved keywords". Unlike `kw_set` it
     /// changes what parses: under a 1364 set a Verilog-AMS construct is E0242,
     /// because IEEE 1364-2005 annex A has no production for it. Set it with
     /// `setLanguage`.
-    language: token.KeywordSet = token.default_keyword_set,
+    language: keyword.KeywordSet = keyword.default_keyword_set,
     /// Parsing annex C's Verilog-A subset (`vera --sim=verilogA`): a digital
     /// or mixed-signal construct is E0250 (`refuseDigital`). The annex D
     /// prelude is seeded from a parse without it, so its `discrete`
@@ -254,7 +255,7 @@ pub const Parser = struct {
 
     /// Parses as `set`'s language: it becomes the §10.6 default keyword set and
     /// the ceiling on `begin_keywords` and on Verilog-AMS constructs (E0242).
-    pub fn setLanguage(self: *Parser, set: token.KeywordSet) void {
+    pub fn setLanguage(self: *Parser, set: keyword.KeywordSet) void {
         self.language = set;
         self.kw_set = set;
     }
@@ -266,9 +267,9 @@ pub const Parser = struct {
     /// construct is then parsed anyway, so the one error is the only one.
     pub fn refuseAms(self: *Parser) error{OutOfMemory}!void {
         const t = self.peek();
-        if (@backingInt(self.language) >= @backingInt(token.KeywordSet.vams_2_3) or !token.isKeyword(t)) return;
+        if (@backingInt(self.language) >= @backingInt(keyword.KeywordSet.vams_2_3) or !token.isKeyword(t)) return;
         const w = self.tokenText(self.pos);
-        if (token.isReserved(w, self.language)) return;
+        if (keyword.isReserved(w, self.language)) return;
         try self.report(self.pos, .E0242, "`{s}` under \"{s}\"", .{ w, self.language.specifier() });
     }
 
@@ -424,8 +425,7 @@ pub const Parser = struct {
             while (end < self.src.len and lexer.isIdentChar(self.src[end])) end += 1;
             return self.src[start..end];
         }
-        const lx: lexer.Lexer = .{ .src = self.src };
-        const text = lx.tokenText(self.starts[i]);
+        const text = lexer.tokenText(self.src, self.starts[i]);
         // §2.8.1: the `\` opens the identifier but is not part of the name.
         // The terminator is not in the span, so only the head is stripped.
         return if (self.tags[i] == .escaped_identifier) text[1..] else text;
@@ -499,12 +499,12 @@ pub const Parser = struct {
         const j = @min(i, self.tags.len - 1);
         return switch (self.tags[j]) {
             .identifier, .escaped_identifier => true,
-            .kw_expm1 => self.own_math_fns & 1 != 0 or !token.isReserved("expm1", self.kw_set),
-            .kw_ln1p => self.own_math_fns & 2 != 0 or !token.isReserved("ln1p", self.kw_set),
+            .kw_expm1 => self.own_math_fns & 1 != 0 or !keyword.isReserved("expm1", self.kw_set),
+            .kw_ln1p => self.own_math_fns & 2 != 0 or !keyword.isReserved("ln1p", self.kw_set),
             // Default set ⇒ every keyword is reserved: no text to fetch.
-            else => |t| self.kw_set != token.default_keyword_set and // else: a keyword is an identifier only when the keyword set frees it
+            else => |t| self.kw_set != keyword.default_keyword_set and // else: a keyword is an identifier only when the keyword set frees it
                 token.isKeyword(t) and
-                !token.isReserved(self.tokenText(j), self.kw_set),
+                !keyword.isReserved(self.tokenText(j), self.kw_set),
         };
     }
 
@@ -514,7 +514,7 @@ pub const Parser = struct {
         const t = self.peek();
         if (t != .kw_expm1 and t != .kw_ln1p) return;
         const w = self.tokenText(self.pos);
-        if (!token.isReserved(w, self.kw_set)) return;
+        if (!keyword.isReserved(w, self.kw_set)) return;
         try self.bag.add(.parse, .W0259, lexer.tokenSpan(self.src, self.starts, self.pos), "`{s}` is a built-in under \"{s}\"; calls in this file reach the declared function", .{ w, self.kw_set.specifier() });
     }
 
@@ -551,7 +551,7 @@ pub const Parser = struct {
         if (self.tags[i] != .escaped_identifier) return self.file.intern(self.arena, text);
         // IEEE 1364-2005 §3.7.3: a system task or function "shall not be
         // escaped", so `\$display` keeps its `\` and names no system task.
-        if (text[0] == '$') return self.file.intern(self.arena, (lexer.Lexer{ .src = self.src }).tokenText(self.starts[i]));
+        if (text[0] == '$') return self.file.intern(self.arena, lexer.tokenText(self.src, self.starts[i]));
         if (std.mem.findScalar(u8, text, '.') == null)
             return self.file.intern(self.arena, text);
         const buf = try self.arena.dupe(u8, text);
@@ -893,7 +893,7 @@ pub const Parser = struct {
     /// Checked here in the funnel because the token is reachable from both
     /// statement and module-item position. Returns whether it emitted.
     fn failRunawayString(self: *Parser, span: diag.Span) Error!bool {
-        const kind = lexer.stringRunaway(self.src, span);
+        const kind = @import("token_value.zig").stringRunaway(self.src, span);
         if (kind == .none) return false;
 
         var d = self.bag.build(.parse, .E0138, span);
@@ -996,7 +996,7 @@ pub fn newBag(arena: std.mem.Allocator, src: []const u8) !*diag.Bag {
 /// the partial file, so a test can inspect both it and the diagnostics.
 /// For tests (`tests/unit.zig`, `constfold.zig`'s).
 pub fn parseForTest(arena: std.mem.Allocator, src: []const u8) !TestResult {
-    var list = try lexer.Lexer.tokenize(arena, src);
+    var list = try lexer.tokenize(arena, src, null);
     const bag = try newBag(arena, src);
     var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
     const file = p.parseSourceFile() catch |e| switch (e) {

@@ -9,6 +9,7 @@ const std = @import("std");
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const lexer = @import("../lexer.zig");
+const token_value = @import("../token_value.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
@@ -53,12 +54,12 @@ pub fn parseNumber(self: *Parser) Error!Ast.ExprId {
     }
 
     const text = self.tokenText(tok);
-    if (self.in_digital_delay and self.attr_depth == 0 and lexer.scaleExp(text[text.len - 1]) != null)
+    if (self.in_digital_delay and self.attr_depth == 0 and token_value.scaleExp(text[text.len - 1]) != null)
         try self.report(tok, .E0247, "`{s}` in a digital delay; use decimal or scientific notation in the module's time units", .{text});
     // §2.6.2 decoding (`_` removal, the Table 2-1 scale factor) has one home,
     // `lexer.parseReal`. It applies the scale to the text and rounds once;
     // `mantissa * scale` would round twice and can be off by 1 ulp.
-    const v = lexer.parseReal(self.arena, text) catch |e| return switch (e) {
+    const v = token_value.parseReal(self.arena, text) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.Overflow => self.failAt(tok, .E0133, "`{s}`", .{text}),
     };
@@ -125,7 +126,7 @@ pub fn internString(self: *Parser, tok: u32) Error!Ast.StrId {
     if (std.mem.findScalar(u8, body, '\\') == null) {
         return self.file.intern(self.arena, body);
     }
-    const decoded = try lexer.stringContents(self.arena, raw);
+    const decoded = try token_value.stringContents(self.arena, raw);
     // Direct display formats retain octal NUL bytes (§9.4.2). Digital
     // string-variable conversion is not part of this executor yet.
     if (self.digital) return self.file.intern(self.arena, decoded);

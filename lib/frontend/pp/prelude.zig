@@ -10,6 +10,7 @@ const pp_annex_e = @import("annex_e.zig");
 const Allocator = std.mem.Allocator;
 const diag = @import("diag");
 const Lexer = @import("../lexer.zig");
+const keyword = @import("../keyword.zig");
 const token = @import("../token.zig");
 const Parser = @import("../parser.zig");
 const predefined_macros = Preprocessor.predefined_macros;
@@ -74,7 +75,7 @@ var prelude_snapshot: std.atomic.Value(?*const Prelude) = .init(null);
 /// byte-exact prefix of every preprocessed text with `std_defs`, and
 /// `Lexer.next` reads no state but the cursor. The columns are
 /// process-lifetime and immutable (see `Prelude`); the caller copies them.
-pub fn preludeTokens(std_defs: bool) Allocator.Error!?Lexer.Lexer.Seed {
+pub fn preludeTokens(std_defs: bool) Allocator.Error!?Lexer.Seed {
     if (!std_defs) return null;
     const p = try preludeSnapshot();
     return .{ .tags = p.tags, .starts = p.starts, .len = @intCast(p.text.len) };
@@ -154,7 +155,7 @@ pub fn buildPrelude() Allocator.Error!*const Prelude {
     std.debug.assert(macros.items.len == n_macros);
 
     // Lex the same bytes.
-    var toks = try Lexer.Lexer.tokenize(arena, pp.out.items);
+    var toks = try Lexer.tokenize(arena, pp.out.items, null);
     std.debug.assert(toks.len > 0 and toks.items(.tag)[toks.len - 1] == .eof);
 
     // Parse the whole token list including `.eof`, which `Parser.init`
@@ -171,7 +172,7 @@ pub fn buildPrelude() Allocator.Error!*const Prelude {
     // connect module open. A prelude file that does must extend `Parser.Seed`.
     std.debug.assert(!parser.failed and bag.isEmpty());
     std.debug.assert(parser.pos == toks.len - 1);
-    std.debug.assert(parser.kw_set == token.default_keyword_set);
+    std.debug.assert(parser.kw_set == keyword.default_keyword_set);
     std.debug.assert(parser.kw_stack.items.len == 0);
     std.debug.assert(parser.attrs.items.len == 0 and parser.attr_depth == 0);
     std.debug.assert(!parser.in_analog_fn and !parser.analog_expr and !parser.analog_event_block and !parser.in_connect_module and !parser.in_discrete and !parser.in_digital_delay);

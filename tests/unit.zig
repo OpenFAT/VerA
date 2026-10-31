@@ -146,7 +146,7 @@ pub const parser_tests = struct {
     const frontend = @import("frontend");
     const parser = frontend.Parser;
     const token = frontend.token;
-    const lexer = frontend.Lexer;
+    const lexer = frontend.lexer;
     const Ast = frontend.Ast;
     const diag = @import("diag");
     const Parser = parser.Parser;
@@ -161,7 +161,7 @@ pub const parser_tests = struct {
         const arena = arena_state.allocator();
         const Case = struct {
             fn parse(a: std.mem.Allocator, src: []const u8, digital: bool) !TestResult {
-                var list = try lexer.Lexer.tokenize(a, src);
+                var list = try lexer.tokenize(a, src, null);
                 const bag = try newBag(a, src);
                 var p = Parser.init(a, src, list.items(.tag), list.items(.start), bag);
                 p.digital = digital;
@@ -380,7 +380,7 @@ pub const parser_tests = struct {
 
         const Case = struct {
             fn parse(a: std.mem.Allocator, src: []const u8, set: token.KeywordSet) !TestResult {
-                var list = try lexer.Lexer.tokenize(a, src);
+                var list = try lexer.tokenize(a, src, null);
                 const bag = try newBag(a, src);
                 var p = Parser.init(a, src, list.items(.tag), list.items(.start), bag);
                 p.setLanguage(set);
@@ -427,7 +427,7 @@ pub const parser_tests = struct {
         const arena = arena_state.allocator();
         const Case = struct {
             fn parse(a: std.mem.Allocator, src: []const u8) !TestResult {
-                var list = try lexer.Lexer.tokenize(a, src);
+                var list = try lexer.tokenize(a, src, null);
                 const bag = try newBag(a, src);
                 var p = Parser.init(a, src, list.items(.tag), list.items(.start), bag);
                 p.verilog_a = true;
@@ -746,7 +746,7 @@ pub const parser_tests = struct {
         // A digital parse reads the same text through A.2.1.2
         // `[ net_type | wreal ]` and A.2.1.3's two `wreal` arms, both to
         // `NetKind.wreal`.
-        var list = try lexer.Lexer.tokenize(arena, src);
+        var list = try lexer.tokenize(arena, src, null);
         const bag = try newBag(arena, src);
         var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
         p.digital = true;
@@ -1598,7 +1598,7 @@ pub const parser_tests = struct {
 
     /// Lexes and parses `src` the way `vera --run` does (`Parser.digital`).
     fn parseDigitalForTest(arena: std.mem.Allocator, src: []const u8) !TestResult {
-        const list = try lexer.Lexer.tokenize(arena, src);
+        const list = try lexer.tokenize(arena, src, null);
         const bag = try newBag(arena, src);
         var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
         p.digital = true;
@@ -1640,7 +1640,7 @@ pub const parser_tests = struct {
         const arena = arena_state.allocator();
 
         const src = "\\a.b  specify => z";
-        const list = try lexer.Lexer.tokenize(arena, src);
+        const list = try lexer.tokenize(arena, src, null);
         const bag = try newBag(arena, src);
         var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
         // §2.8.1: "the leading backslash character is not considered to be part
@@ -1665,7 +1665,7 @@ pub const parser_tests = struct {
         // IEEE 1364-2005 §3.7.3: a system task "shall not be escaped", so the
         // escaped name keeps its `\` and can name no system task.
         const src2 = "\\$display x";
-        const list2 = try lexer.Lexer.tokenize(arena, src2);
+        const list2 = try lexer.tokenize(arena, src2, null);
         var q = Parser.init(arena, src2, list2.items(.tag), list2.items(.start), try newBag(arena, src2));
         try std.testing.expectEqualStrings("\\$display", q.file.str(try q.internTok(0)));
     }
@@ -1684,14 +1684,13 @@ pub const parser_tests = struct {
         };
         try src.appendSlice(arena, "specify wreal pullup a _b c$d e9 abc_$1 \\esc.x  $sys `begin_keywords 12 3.5e-3 2.2n 4'hF \"s\" (* *) <+ >>> ;");
         for (mutation_corpus) |c| try src.appendSlice(arena, c);
-        const list = try lexer.Lexer.tokenize(arena, src.items);
+        const list = try lexer.tokenize(arena, src.items, null);
         const p = Parser.init(arena, src.items, list.items(.tag), list.items(.start), try newBag(arena, src.items));
-        const lx: lexer.Lexer = .{ .src = src.items };
         var fast: usize = 0;
         for (p.tags, p.starts, 0..) |t, start, i| {
             if (t == .escaped_identifier) continue; // `tokenText` strips its `\`
             if (t == .identifier or token.isKeyword(t)) fast += 1;
-            try std.testing.expectEqualStrings(lx.tokenText(start), p.tokenText(@intCast(i)));
+            try std.testing.expectEqualStrings(lexer.tokenText(src.items, start), p.tokenText(@intCast(i)));
         }
         try std.testing.expect(fast > 200);
     }
@@ -1702,7 +1701,7 @@ pub const parser_tests = struct {
         const arena = arena_state.allocator();
 
         const src = "module ;";
-        const list = try lexer.Lexer.tokenize(arena, src);
+        const list = try lexer.tokenize(arena, src, null);
         const bag = try newBag(arena, src);
         var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
 
@@ -1731,7 +1730,7 @@ pub const parser_tests = struct {
         try src.appendSlice(arena, middle);
         for (0..n) |_| try src.appendSlice(arena, close);
         try src.appendSlice(arena, suffix);
-        const list = try lexer.Lexer.tokenize(arena, src.items);
+        const list = try lexer.tokenize(arena, src.items, null);
         const bag = try newBag(arena, src.items);
         var p = Parser.init(arena, src.items, list.items(.tag), list.items(.start), bag);
         _ = try p.parseSourceFile();
@@ -1824,7 +1823,7 @@ pub const parser_tests = struct {
         const arena = arena_state.allocator();
 
         const src = "(* vera_lte = 0, vera_lte = 1 *) x";
-        const list = try lexer.Lexer.tokenize(arena, src);
+        const list = try lexer.tokenize(arena, src, null);
         const bag = try newBag(arena, src);
         var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
 
@@ -2999,7 +2998,7 @@ pub const parser_tests = struct {
     /// or preceded by a `mutation_vocab` token. A token's span runs to the next
     /// token's start, so the white space and comments after it travel with it.
     fn mutateOnce(arena: std.mem.Allocator, src: []const u8, rand: std.Random) ![]const u8 {
-        const list = try lexer.Lexer.tokenize(arena, src);
+        const list = try lexer.tokenize(arena, src, null);
         const starts = list.items(.start);
         const n = starts.len - 1; // the tokens before the final `.eof`
         if (n < 2) return src;
@@ -3038,7 +3037,7 @@ pub const parser_tests = struct {
     /// exactly when `Parser.failed` is set and exactly when the bag holds an
     /// error, and every save/restore flag and scratch stack is back at rest.
     fn checkParserContract(arena: std.mem.Allocator, src: []const u8, digital: bool) !void {
-        const list = try lexer.Lexer.tokenize(arena, src);
+        const list = try lexer.tokenize(arena, src, null);
         const bag = try newBag(arena, src);
         var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
         p.digital = digital;
@@ -3065,7 +3064,7 @@ pub const parser_tests = struct {
         try std.testing.expectEqual(@as(usize, 0), p.scratch_stmts.items.len);
         try checkAstShape(&p.file, @intCast(list.len));
         // Determinism: the same tokens give the same rows and ids.
-        const again = try lexer.Lexer.tokenize(arena, src);
+        const again = try lexer.tokenize(arena, src, null);
         var q = Parser.init(arena, src, again.items(.tag), again.items(.start), try newBag(arena, src));
         q.digital = digital;
         _ = q.parseSourceFile() catch |e| if (e == error.OutOfMemory) return e;
@@ -3151,7 +3150,7 @@ pub const parser_tests = struct {
     /// Lexes and parses `src` with every allocation on `gpa`, the parser's arena
     /// included, so each one is a point `checkAllAllocationFailures` can fail.
     fn parseAllOn(gpa: std.mem.Allocator, src: []const u8, digital: bool) !void {
-        const list = try lexer.Lexer.tokenize(gpa, src);
+        const list = try lexer.tokenize(gpa, src, null);
         const bag = try newBag(gpa, src);
         var p = Parser.init(gpa, src, list.items(.tag), list.items(.start), bag);
         p.digital = digital;
@@ -9484,7 +9483,7 @@ pub const preprocessor_tests = struct {
     const Preprocessor = @import("frontend").Preprocessor;
     const Allocator = std.mem.Allocator;
     const diag = @import("diag");
-    const Lexer = @import("frontend").Lexer;
+    const lexer = @import("frontend").lexer;
     const token = @import("frontend").token;
     const Parser = @import("frontend").Parser;
     const DefaultDiscipline = Preprocessor.DefaultDiscipline;
@@ -10486,8 +10485,8 @@ pub const preprocessor_tests = struct {
             , .{ .bag = &bag, .spice_netlist = netlist })).text;
 
             // The long way: no seed, one scan of the whole buffer.
-            const long = try Lexer.Lexer.tokenize(arena, text);
-            const seeded = try Lexer.Lexer.tokenizeSeeded(arena, text, try Preprocessor.preludeTokens(true));
+            const long = try lexer.tokenize(arena, text, null);
+            const seeded = try lexer.tokenize(arena, text, try Preprocessor.preludeTokens(true));
 
             try testing.expectEqual(long.len, seeded.len);
             try testing.expectEqualSlices(token.Tag, long.items(.tag), seeded.items(.tag));
@@ -10510,10 +10509,10 @@ pub const preprocessor_tests = struct {
         var bag: diag.Bag = .init(arena);
         const text = (try process(arena, "module m; endmodule\n", .{ .std_defs = false, .bag = &bag })).text;
 
-        try testing.expectEqual(@as(?Lexer.Lexer.Seed, null), try Preprocessor.preludeTokens(false));
+        try testing.expectEqual(@as(?lexer.Seed, null), try Preprocessor.preludeTokens(false));
         try testing.expectEqual(@as(?*const Parser.Parser.Seed, null), try Preprocessor.preludeAst(false));
-        const long = try Lexer.Lexer.tokenize(arena, text);
-        const seeded = try Lexer.Lexer.tokenizeSeeded(arena, text, try Preprocessor.preludeTokens(false));
+        const long = try lexer.tokenize(arena, text, null);
+        const seeded = try lexer.tokenize(arena, text, try Preprocessor.preludeTokens(false));
         try testing.expectEqualSlices(token.Tag, long.items(.tag), seeded.items(.tag));
         try testing.expectEqualSlices(u32, long.items(.start), seeded.items(.start));
     }
@@ -10582,7 +10581,7 @@ pub const preprocessor_tests = struct {
                 \\endmodule
             , .{ .bag = &bag, .spice_netlist = netlist })).text;
 
-            var toks = try Lexer.Lexer.tokenize(arena, text);
+            var toks = try lexer.tokenize(arena, text, null);
             const tags = toks.items(.tag);
             const starts = toks.items(.start);
 
@@ -10766,7 +10765,7 @@ pub const preprocessor_tests = struct {
         const arena = state.allocator();
         const prefix = "(* module_attr = 3 *) module first; (* item_attr *) integer x; endmodule\n";
         const source = prefix ++ "(* module_attr = 4 *) module second; analog (* stmt_attr *) begin end endmodule\n";
-        var pt = try Lexer.Lexer.tokenize(arena, prefix);
+        var pt = try lexer.tokenize(arena, prefix, null);
         var pb: diag.Bag = .init(arena);
         var pp = Parser.Parser.init(arena, prefix, pt.items(.tag), pt.items(.start), &pb);
         const seed: Parser.Parser.Seed = .{
@@ -10775,7 +10774,7 @@ pub const preprocessor_tests = struct {
             .pos = pp.pos,
             .gen_construct = pp.gen_construct,
         };
-        var tokens = try Lexer.Lexer.tokenize(arena, source);
+        var tokens = try lexer.tokenize(arena, source, null);
         var sb: diag.Bag = .init(arena);
         var sp = try Parser.Parser.initSeeded(arena, source, tokens.items(.tag), tokens.items(.start), &sb, &seed);
         const resumed = try sp.parseSourceFile();

@@ -18,6 +18,8 @@ const parse_paramset = @import("paramset.zig");
 const parse_connectrules = @import("connectrules.zig");
 const token = @import("../token.zig");
 const lexer = @import("../lexer.zig");
+const token_value = @import("../token_value.zig");
+const keyword = @import("../keyword.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 const diag = @import("diag");
@@ -167,7 +169,7 @@ fn checkEscapes(self: *Parser) error{OutOfMemory}!void {
         const span = lexer.tokenSpan(self.src, self.starts, @intCast(tok));
         const text = self.src[span.start..span.end];
         var from: u32 = 0;
-        while (lexer.badEscape(text, from)) |b| : (from = b.end) {
+        while (token_value.badEscape(text, from)) |b| : (from = b.end) {
             const at: diag.Span = .{ .start = span.start + b.start, .end = span.start + b.end };
             if (b.above_377) self.failed = true;
             try self.bag.add(.parse, if (b.above_377) .E0148 else .W0149, at, "`{s}`", .{text[b.start..b.end]});
@@ -191,7 +193,7 @@ pub fn keywordsDirective(self: *Parser) Error!void {
     const str = try self.expect(.string_literal);
     const raw = self.tokenText(str);
     const spec = if (raw.len >= 2) raw[1 .. raw.len - 1] else "";
-    const known = token.KeywordSet.fromSpecifier(spec);
+    const known = keyword.KeywordSet.fromSpecifier(spec);
     // A 1364 language has no Verilog-AMS specifier to name. "1364-2001-noconfig"
     // reserves a subset of "1364-2001" (IEEE 1364-2005 §19.11), so it is no newer.
     const age = if (known == .v1364_2001_noconfig) .v1364_2001 else known;

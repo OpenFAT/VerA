@@ -50,6 +50,7 @@ pub const branch_ref_hier_unnamed = expr_file.branch_ref_hier_unnamed;
 pub const ExprTag = expr_file.ExprTag;
 pub const Node = expr_file.Node;
 pub const ExprStore = expr_file.ExprStore;
+pub const IntLiteral = expr_file.IntLiteral;
 
 // Declarations: LRM ch3, §4.7, ch6, §7.7, A.5, IEEE 1364-2005 §13.3 (ast_decl.zig).
 pub const Dim = decl_file.Dim;

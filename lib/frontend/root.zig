@@ -7,13 +7,20 @@
 /// on them: `kernels.Integer`, re-exported for callers that reach it
 /// through `frontend`.
 pub const Integer = @import("kernels").Integer;
-/// Token tags, the annex B keyword table and the §10.6 keyword sets.
-pub const token = @import("token.zig");
+const compat = @import("compat.zig");
+/// Token tags and the per-tag facts (token.zig). The old merged namespace
+/// with keyword.zig's names, until pass 2 points it at token.zig.
+pub const token = compat.token;
+/// The annex B keyword table and the §10.6 reserved-word sets.
+pub const keyword = @import("keyword.zig");
+/// Preprocessed text in, `{tag, start}` token rows out.
+pub const lexer = @import("lexer.zig");
+/// Token text in, §2.6.2 reals and §2.7 strings out.
+pub const token_value = @import("token_value.zig");
 /// Clause 10 directives and comment stripping: source files in, one text out.
 pub const Preprocessor = @import("preprocessor.zig");
-/// The lexer file; its cursor type is `Lexer.Lexer`, its token list
-/// `Lexer.TokenList`.
-pub const Lexer = @import("lexer.zig");
+/// The old lexer namespace (compat.zig): use `lexer` and `token_value`.
+pub const Lexer = compat.Lexer;
 /// The AST; `Ast.SourceFile` is the root every later stage reads.
 pub const Ast = @import("ast.zig");
 /// The parser file; its state type is `Parser.Parser`.

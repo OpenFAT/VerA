@@ -247,7 +247,7 @@ fn foldBitConcat(self: *Parser, tok: u32, items: []const Ast.ExprId) Error!?Ast.
     var total: u64 = 0;
     for (items) |it| {
         if (std.mem.findScalar(Ast.ExprId, effects.items, it) != null) continue;
-        const lit: ?lexer.IntLiteral = if (ex.tag(it) == .int_literal and ex.intLiteral(it).width != 0)
+        const lit: ?Ast.IntLiteral = if (ex.tag(it) == .int_literal and ex.intLiteral(it).width != 0)
             ex.intLiteral(it)
         else
             null;

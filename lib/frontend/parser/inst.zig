@@ -14,6 +14,7 @@ const parse_module = @import("module.zig");
 const parse_stmt = @import("stmt.zig");
 const parse_net = @import("net.zig");
 const lexer = @import("../lexer.zig");
+const token_value = @import("../token_value.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
@@ -136,7 +137,7 @@ fn scaledLiteral(self: *const Parser, start: u32, end: u32) ?u32 {
         .attr_close => in_attr = false,
         .real_literal => if (!in_attr) {
             const text = self.tokenText(@intCast(at));
-            if (lexer.scaleExp(text[text.len - 1]) != null) return @intCast(at);
+            if (token_value.scaleExp(text[text.len - 1]) != null) return @intCast(at);
         },
         else => {}, // else: only a real literal can carry a §2.6.2 scale factor
     };

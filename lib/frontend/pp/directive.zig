@@ -519,7 +519,7 @@ fn handleDefaultTransition(pp: *Pp, rest: []const u8, off: usize) Error!void {
     const tag = lx.next().tag;
     if ((tag != .int_literal and tag != .real_literal) or lx.pos != num.len)
         return pp.fail(pp.spanAt(off + start, off + r.i), .E0129, "`{s}` is not a transition time", .{text});
-    const t = Lexer.parseReal(pp.scratch, text) catch |e| {
+    const t = @import("../token_value.zig").parseReal(pp.scratch, text) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory;
         return pp.fail(pp.spanAt(off + start, off + r.i), .E0129, "`{s}` is not a transition time", .{text});
     };

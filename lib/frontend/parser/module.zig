@@ -22,6 +22,7 @@ const parse_net = @import("net.zig");
 const parse_stmt = @import("stmt.zig");
 const parse_udp = @import("udp.zig");
 const token = @import("../token.zig");
+const keyword = @import("../keyword.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
@@ -389,7 +390,7 @@ fn parseModuleItemBody(self: *Parser, b: *Body) Error!void {
     // annex B reserves no Verilog-AMS word, so `connect u(a, b);` instantiates
     // `connect`). Under Verilog-AMS the construct wins: §10.6's own example
     // keeps `analog I(sin, n) <+ ...` under "1364-2005".
-    const freed = @backingInt(self.language) < @backingInt(token.KeywordSet.vams_2_3) and
+    const freed = @backingInt(self.language) < @backingInt(keyword.KeywordSet.vams_2_3) and
         token.isKeyword(self.peek()) and self.identLike(self.pos) and
         (self.identLike(self.pos + 1) or self.peekAt(1) == .hash);
     if (!freed) try self.refuseAms();
