@@ -70,6 +70,7 @@
 //! - `pub fn reset(self: *Run) Error!void`
 
 const std = @import("std");
+const expr_types = @import("expr_types.zig");
 const bytecode = @import("bytecode.zig");
 const vcd_file = @import("vcd.zig");
 const activations = @import("activations.zig");
@@ -153,9 +154,6 @@ starts: []const u32,
 bag: *diag.Bag,
 out: *std.Io.Writer,
 scope: u32 = 0,
-/// §9.7.2 each event term that is an expression, by the scope it is
-/// compiled in: the hidden slot `compile.exprTerm` keeps equal to it.
-term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) = .empty,
 /// The instruction a system task is running from, so `%m` can name the
 /// §5.3.2 named blocks around it.
 pc: u32 = 0,
@@ -199,19 +197,6 @@ gen_nets: std.AutoHashMapUnmanaged(u32, []const Ast.NetDecl) = .empty,
 /// there, because §5.10's events "do not hold any data". Each scalar or
 /// array element maps to its declaration's token and lexical scope.
 events: std.AutoHashMapUnmanaged(u32, struct { tok: u32, scope: u32 }) = .empty,
-/// Natural types (§5.5.1), indexed by AST ExprId. An ExprId is shared by
-/// every instance of its module, and IEEE 1364-2005 §12.2 gives each
-/// instance its own parameter values, so the truth is `spec_types`, keyed
-/// by `specOf`. `types` is the dense copy for a row every specialization
-/// typed alike (`ty_state` `.one`); `.many` rows are read from the map.
-types: []Type = &.{},
-ty_state: []TyState = &.{},
-spec_types: std.AutoHashMapUnmanaged(SpecExpr, Type) = .empty,
-/// Which system function each `.sys_call` is, indexed by AST ExprId and
-/// written by `infer`, so evaluation switches on it instead of hashing
-/// the name again. Null for every other node.
-sys_calls: []?compile.SysFn = &.{},
-replications: std.AutoHashMapUnmanaged(SpecExpr, u32) = .empty,
 /// One counter per lexical `repeat`: no process re-enters its own.
 repeats: std.ArrayList(u64) = .empty,
 /// §9.8.2 one counter per lexical `fork`: the arms still running. One per
@@ -274,6 +259,8 @@ hier: name_search.Hierarchy = .{},
 routines: compile.Routines = .{},
 /// The compiled processes (`bytecode.Program`).
 program: bytecode.Program = .{},
+/// Every expression's checked type and folded facts (`expr_types.Typing`).
+typing: expr_types.Typing = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
@@ -322,10 +309,6 @@ inserts: []const Insert = &.{},
 insert_segs: []const Ast.ExprId = &.{},
 /// VAMS §9.22 driver access and §9.22.6 segregation (`driver.zig`).
 drv: driver.State = .{},
-/// §3.3 the declared `[msb:lsb]` of every packed vector, by slot, so a
-/// bit-select can name its bit (IEEE 1364-2005 §5.2.1). A slot absent from
-/// here is `[width-1:0]`.
-vec_ranges: std.AutoHashMapUnmanaged(u32, VecRange) = .empty,
 /// IEEE 1364-2005 §12.3.11 "the sign attribute shall not cross
 /// hierarchy": a port that COLLAPSED onto its parent's net shares the
 /// parent's slot but keeps its own declaration's signedness. Keyed by the
@@ -355,8 +338,6 @@ specparams: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 /// holding a double's 64 bits, which typing, conversion and change
 /// detection read as a real.
 reals: std.AutoHashMapUnmanaged(u32, void) = .empty,
-/// §5.2.1 each part-select's constant `[msb:lsb]`, folded once by `infer`.
-part_selects: std.AutoHashMapUnmanaged(SpecExpr, VecRange) = .empty,
 /// IEEE 1364-2005 §15 the timing checks (`tchk.Checks`).
 checks: tchk.Checks = .{},
 /// The source and options `elaborate` ran, which IEEE 1364-2005 C.7's

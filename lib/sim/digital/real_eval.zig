@@ -153,7 +153,7 @@ pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
             },
         },
         .sys_call => blk: {
-            const f = self.sys_calls[@backingInt(e)].?;
+            const f = self.typing.sys_calls[@backingInt(e)].?;
             const args = ex.args(e);
             break :blk switch (f) {
                 .realtime => self.timeOf(self.scope).scale.realAt(self.scheduler.now),

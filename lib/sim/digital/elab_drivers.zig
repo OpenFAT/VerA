@@ -428,7 +428,7 @@ fn switchTerminal(r: *Run, e: *Elab, t: Ast.ExprId, tok: u32, lanes: u32, lane: 
     const net = r.net_of.get(at) orelse return r.fail(tok, "a switch's output and inout terminals are nets", .{});
     const index = try r.declaredBound(ex.rhs(t), tok);
     const width: i64 = e.nets.items[net].resolved.width;
-    const range = r.vec_ranges.get(at) orelse VecRange{ .msb = width - 1, .lsb = 0 };
+    const range = r.typing.vec_ranges.get(at) orelse VecRange{ .msb = width - 1, .lsb = 0 };
     const pos = range.position(index);
     if (pos < 0 or pos >= width) return r.fail(tok, "a pass switch terminal selects a bit outside its net", .{});
     return .{ .net = net, .bit = @intCast(pos) };

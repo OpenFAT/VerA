@@ -124,7 +124,7 @@ pub fn selection(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?Sel {
     var count: u32 = 1;
     switch (ex.tag(rg)) {
         .range => {
-            const b = self.part_selects.get(.{ .spec = self.specOf(self.scope), .e = e }).?; // infer folded it
+            const b = self.typing.part_selects.get(.{ .spec = self.specOf(self.scope), .e = e }).?; // infer folded it
             first = range.position(b.lsb);
             count = @intCast(@abs(b.msb - b.lsb) + 1);
         },
@@ -132,7 +132,7 @@ pub fn selection(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?Sel {
         // ascending the bit range", `-:` descending; which selected end
         // is least significant follows the vector declaration's direction.
         .indexed_range => {
-            count = @intCast(self.part_selects.get(.{ .spec = self.specOf(self.scope), .e = e }).?.msb + 1); // infer folded it
+            count = @intCast(self.typing.part_selects.get(.{ .spec = self.specOf(self.scope), .e = e }).?.msb + 1); // infer folded it
             const base = (try eval(self, a, ex.lhs(rg), 0)).asIndex() orelse return null;
             const p = if (range.msb >= range.lsb) base -| range.lsb else range.lsb -| base;
             first = std.math.lossyCast(i64, if ((range.msb >= range.lsb) == (ex.extraOf(rg) == 0)) p else p -| (count - 1));

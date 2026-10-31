@@ -2,6 +2,7 @@
 //! Cites: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.4, §5.5.1 Table 5-22, §5.5.2, A.8.
 //!
 //! Contents:
+//! - `pub const Typing = struct`
 //! - `pub fn literalWidth(n: IntLiteral) u32`
 //! - `pub fn stringWidth(text: []const u8) u32`
 //! - `pub fn common(a: Type, b: Type) Type`
@@ -9,16 +10,10 @@
 //! - `pub fn checkExpr(self: *Run, e: Ast.ExprId) Error!void`
 //! - `pub fn rememberVpiArgument(self: *Run, e: Ast.ExprId) Error!void`
 //! - `pub fn infer(self: *Run, e: Ast.ExprId) Error!Type`
-//! AST -> bytecode: one process body or driver expression, in its instance
-//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
-//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
-//! before any process has run.
-//! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
-//! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to
-//! §9.7.7, §9.8.2, §10.2.2/§10.2.3, §10.4.4/§10.4.5, §12.7, §17.1 to §17.11,
-//! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
-//! §9.22 driver access.
+
 const std = @import("std");
+const VecRange = @import("root.zig").VecRange;
+const TyState = @import("root.zig").TyState;
 const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
@@ -56,6 +51,35 @@ const sys_fns = system_functions.sys_fns;
 const unsizedConcatOperand = constness.unsizedConcatOperand;
 const vams_digital_unrun = system_functions.vams_digital_unrun;
 
+/// A design's expression facts, filled once before any process runs: each
+/// expression's §5.4 type (per scope where it differs), the system function
+/// it calls, replication counts, folded part-select bounds, each vector's
+/// declared range and the hidden slot of each expression event term.
+pub const Typing = struct {
+    /// §9.7.2 each event term that is an expression, by the scope it is
+    /// compiled in: the hidden slot `compile.exprTerm` keeps equal to it.
+    term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) = .empty,
+    /// Natural types (§5.5.1), indexed by AST ExprId. An ExprId is shared by
+    /// every instance of its module, and IEEE 1364-2005 §12.2 gives each
+    /// instance its own parameter values, so the truth is `spec_types`, keyed
+    /// by `specOf`. `types` is the dense copy for a row every specialization
+    /// typed alike (`ty_state` `.one`); `.many` rows are read from the map.
+    types: []Type = &.{},
+    state: []TyState = &.{},
+    by_scope: std.AutoHashMapUnmanaged(SpecExpr, Type) = .empty,
+    /// Which system function each `.sys_call` is, indexed by AST ExprId and
+    /// written by `infer`, so evaluation switches on it instead of hashing
+    /// the name again. Null for every other node.
+    sys_calls: []?compile.SysFn = &.{},
+    replications: std.AutoHashMapUnmanaged(SpecExpr, u32) = .empty,
+    /// §3.3 the declared `[msb:lsb]` of every packed vector, by slot, so a
+    /// bit-select can name its bit (IEEE 1364-2005 §5.2.1). A slot absent from
+    /// here is `[width-1:0]`.
+    vec_ranges: std.AutoHashMapUnmanaged(u32, VecRange) = .empty,
+    /// §5.2.1 each part-select's constant `[msb:lsb]`, folded once by `infer`.
+    part_selects: std.AutoHashMapUnmanaged(SpecExpr, VecRange) = .empty,
+};
+
 /// The lexer's literal row, which the frontend does not re-export.
 const IntLiteral = @typeInfo(@TypeOf(Ast.ExprStore.intLiteral)).@"fn".return_type.?;
 
@@ -86,9 +110,9 @@ pub fn common(a: Type, b: Type) Type {
 pub fn typeOf(self: *Run, e: Ast.ExprId) Type {
     assert(e != .none);
     const i = @backingInt(e);
-    return switch (self.ty_state[i]) {
-        .one => self.types[i],
-        .many => self.spec_types.get(.{ .spec = self.specOf(self.scope), .e = e }).?,
+    return switch (self.typing.state[i]) {
+        .one => self.typing.types[i],
+        .many => self.typing.by_scope.get(.{ .spec = self.specOf(self.scope), .e = e }).?,
         .untyped => unreachable, // infer runs before any evaluation
     };
 }
@@ -117,7 +141,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
     if (deep.exhausted()) return self.deepFail(self.file.exprs.mainTok(e));
     if (self.host.systf != null) try rememberVpiScope(self, e);
     const key: SpecExpr = .{ .spec = self.specOf(self.scope), .e = e };
-    if (self.spec_types.get(key)) |ty| return ty;
+    if (self.typing.by_scope.get(key)) |ty| return ty;
     const ex = &self.file.exprs;
     const ty: Type = switch (ex.tag(e)) {
         .int_literal, .logic_literal, .str_literal, .real_literal, .ident, .hier_ident => try leafType(self, e),
@@ -147,7 +171,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                         const range = self.vecRange(at);
                         if (msb != lsb and (msb > lsb) != (range.msb >= range.lsb))
                             return self.exprFail(rg, "§5.2.1: a part-select names its more significant bit first");
-                        try self.part_selects.put(self.arena, key, .{ .msb = msb, .lsb = lsb });
+                        try self.typing.part_selects.put(self.arena, key, .{ .msb = msb, .lsb = lsb });
                         break :blk .{ .width = @intCast(@abs(msb - lsb) + 1), .signed = false };
                     },
                     .indexed_range => {
@@ -158,7 +182,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                         // `[width-1:0]`, which only its width is read from.
                         const width = try partBound(self, ex.rhs(rg));
                         if (width < 1 or width >= std.math.maxInt(u32)) return self.exprFail(ex.rhs(rg), "§5.2.1: an indexed part-select's width is a positive constant");
-                        try self.part_selects.put(self.arena, key, .{ .msb = width - 1, .lsb = 0 });
+                        try self.typing.part_selects.put(self.arena, key, .{ .msb = width - 1, .lsb = 0 });
                         break :blk .{ .width = @intCast(width), .signed = false };
                     },
                     else => { // else: any other expression is a bit-select's index
@@ -225,7 +249,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
             if (self.host.systf) |u| if (u.kind(name)) |k| switch (k) {
                 .func => |t| {
                     for (ex.args(e)) |arg| try rememberVpiArgument(self, arg);
-                    self.sys_calls[@backingInt(e)] = .user;
+                    self.typing.sys_calls[@backingInt(e)] = .user;
                     break :blk t;
                 },
                 .task => {},
@@ -237,7 +261,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                     return self.failWith(.E0829, ex.mainTok(e), "VAMS §9.2 Table {s}: `{s}` is supported in the digital context, and VerA's digital engine does not run it", .{ table, name });
                 return self.exprFail(e, "this digital expression form is not implemented");
             };
-            self.sys_calls[@backingInt(e)] = f;
+            self.typing.sys_calls[@backingInt(e)] = f;
             const args = ex.args(e);
             switch (f) {
                 // §17.7.1 gives `$time` the 64-bit `time` type and
@@ -419,7 +443,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
             const operand = try inferValue(self, ex.rhs(e));
             const count = try replicationCount(self, ex.lhs(e));
             const width = std.math.mul(u32, count, operand.width) catch return self.exprFail(e, "replication width exceeds the supported u32 range");
-            try self.replications.put(self.arena, key, count);
+            try self.typing.replications.put(self.arena, key, count);
             break :blk .{ .width = width, .signed = false };
         },
         // VAMS §7.3.3 / §7.3.6.3 a potential probe of a continuous net, read
@@ -433,15 +457,15 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
         },
         else => return self.exprFail(e, "this digital expression form is not implemented"), // else: the analog-only forms (access functions, filters, patterns, events), refused out loud
     };
-    try self.spec_types.put(self.arena, key, ty);
+    try self.typing.by_scope.put(self.arena, key, ty);
     const i = @backingInt(e);
-    switch (self.ty_state[i]) {
+    switch (self.typing.state[i]) {
         .untyped => {
-            self.types[i] = ty;
-            self.ty_state[i] = .one;
+            self.typing.types[i] = ty;
+            self.typing.state[i] = .one;
         },
-        .one => if (!std.meta.eql(self.types[i], ty)) {
-            self.ty_state[i] = .many;
+        .one => if (!std.meta.eql(self.typing.types[i], ty)) {
+            self.typing.state[i] = .many;
         },
         .many => {},
     }

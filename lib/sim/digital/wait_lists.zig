@@ -439,7 +439,7 @@ fn exprTerm(self: *Run, e: Ast.ExprId) Error!void {
         for (reads.items) |at| if (self.routines.auto_slots.contains(at))
             return self.routines.auto_terms.put(self.arena, .{ .scope = self.scope, .e = e }, reads.items);
     }
-    const entry = try self.term_slots.getOrPut(self.arena, .{ .scope = self.scope, .e = e });
+    const entry = try self.typing.term_slots.getOrPut(self.arena, .{ .scope = self.scope, .e = e });
     if (entry.found_existing) return;
     const g = self.growing.?;
     const at: u32 = @intCast(g.items.len);

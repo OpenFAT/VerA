@@ -372,7 +372,7 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
             };
         },
         // `infer` resolved every call it typed.
-        .sys_call => switch (self.sys_calls[@backingInt(e)].?) {
+        .sys_call => switch (self.typing.sys_calls[@backingInt(e)].?) {
             .make_signed, .make_unsigned => |cast| {
                 var value = try eval(self, a, ex.args(e)[0], 0);
                 value.signed = cast == .make_signed;
@@ -451,7 +451,7 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
         },
         .multi_concat => {
             const value = try eval(self, a, ex.rhs(e), 0);
-            const repeated = value.replicate(a, self.replications.get(.{ .spec = self.specOf(self.scope), .e = e }).?) catch |err| switch (err) {
+            const repeated = value.replicate(a, self.typing.replications.get(.{ .spec = self.specOf(self.scope), .e = e }).?) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.ZeroSize, error.Overflow => unreachable, // zero only consumed by .concat above
             };

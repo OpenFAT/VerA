@@ -154,7 +154,7 @@ pub fn portByName(m: *const Ast.ModuleDecl, name: Ast.StrId) ?usize {
 /// Records `slot`'s declared `[msb:lsb]` (`Run.vec_ranges`).
 pub fn putRange(r: *Run, slot: u32, range: Ast.Dim, tok: u32) Error!void {
     assert(tok < r.starts.len);
-    try r.vec_ranges.put(r.arena, slot, .{ .msb = try r.declaredBound(range.msb, tok), .lsb = try r.declaredBound(range.lsb, tok) });
+    try r.typing.vec_ranges.put(r.arena, slot, .{ .msb = try r.declaredBound(range.msb, tok), .lsb = try r.declaredBound(range.lsb, tok) });
 }
 
 /// A port's declared width, evaluated in the scope being elaborated: a
@@ -282,7 +282,7 @@ fn connectGroup(r: *Run, e: *Elab, refs: []const Ast.Port, conn: Ast.PortConn, p
         var lo: u32 = 0;
         var w = e.values.items[slot].width;
         if (p.select) |sel| {
-            const range = r.vec_ranges.get(slot) orelse VecRange{ .msb = @as(i64, w) - 1, .lsb = 0 };
+            const range = r.typing.vec_ranges.get(slot) orelse VecRange{ .msb = @as(i64, w) - 1, .lsb = 0 };
             const a = range.position(try r.declaredBound(sel.msb, p.main_tok));
             const b = range.position(try r.declaredBound(sel.lsb, p.main_tok));
             if (@min(a, b) < 0 or @max(a, b) >= w) return r.fail(p.main_tok, "§12.3.2: a port reference's select is outside its net", .{});

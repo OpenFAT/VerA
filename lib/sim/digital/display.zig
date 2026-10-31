@@ -698,7 +698,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
 fn bareReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!void {
     assert(e != .none);
     const r = try evaluate.evalReal(self, a, e);
-    if (self.file.exprs.tag(e) == .sys_call and self.sys_calls[@backingInt(e)].? == .realtime) {
+    if (self.file.exprs.tag(e) == .sys_call and self.typing.sys_calls[@backingInt(e)].? == .realtime) {
         const digits = std.math.log10_int(@as(u64, self.timeOf(self.scope).scale.local_per_unit));
         return real(self.out, a, r, 'f', 0, digits, null);
     }

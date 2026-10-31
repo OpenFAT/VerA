@@ -614,7 +614,7 @@ fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast
     const head = try a.print("$var {s} {d} ", .{ kind, width });
     var tail: std.Io.Writer.Allocating = .init(a);
     try tail.writer.print(" {s}", .{r.file.str(name)});
-    if (r.vec_ranges.get(at)) |range| try tail.writer.print(" [{d}:{d}]", .{ range.msb, range.lsb });
+    if (r.typing.vec_ranges.get(at)) |range| try tail.writer.print(" [{d}:{d}]", .{ range.msb, range.lsb });
     try tail.writer.writeAll(" $end\n");
     return .{ .slot = at, .off = off, .width = width, .real = r.reals.contains(at), .event = event, .head = head, .tail = tail.written() };
 }

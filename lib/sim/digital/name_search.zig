@@ -248,7 +248,7 @@ pub fn elementScope(self: *Run, tok: u32, base: []const u8, parent: ?u32, indice
 /// §9.7.2 expression term keeps (`term_slots`).
 pub fn termSlot(self: *Run, e: Ast.ExprId) Error!u32 {
     assert(e != .none);
-    return self.term_slots.get(.{ .scope = self.scope, .e = e }) orelse self.slot(e);
+    return self.typing.term_slots.get(.{ .scope = self.scope, .e = e }) orelse self.slot(e);
 }
 
 /// The type a slot's value has, for an assignment to it.
@@ -336,13 +336,13 @@ pub fn instanceOf(self: *const Run, scope: u32) u32 {
 /// A vector slot's declared `[msb:lsb]` (an array's first element's is
 /// every element's), `[w-1:0]` when it declares none.
 pub fn vecRange(self: *const Run, at: u32) VecRange {
-    return self.vec_ranges.get(at) orelse .{ .msb = @as(i64, self.values[at].width) - 1, .lsb = 0 };
+    return self.typing.vec_ranges.get(at) orelse .{ .msb = @as(i64, self.values[at].width) - 1, .lsb = 0 };
 }
 
 /// §4.3: "A net or reg declaration without a range specification shall
 /// be considered 1 bit wide and is known as a scalar."
 pub fn isScalar(self: *const Run, at: u32) bool {
-    return self.values[at].width == 1 and !self.vec_ranges.contains(at) and !self.params.contains(at);
+    return self.values[at].width == 1 and !self.typing.vec_ranges.contains(at) and !self.params.contains(at);
 }
 
 /// The slot an lvalue's width comes from: an array element reference is as
