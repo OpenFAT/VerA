@@ -198,6 +198,7 @@ pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) O
         // The limit applies to an analog access, not a declaration. A mixed
         // module can keep wider registers entirely in its digital processes.
         // Retain the folded width so analogRead checks the actual access.
+        assert(width != VarSlot.not_reg); // a packed range spans at least one bit
         break :blk width;
     } else null;
     // §5.3.2: "All named block variables are static — that is, an unique
@@ -276,7 +277,7 @@ pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) O
             // element takes a slot, since the index may be a runtime `case`.
             const en = try lower_shape.elemName(self, name, idx);
             const slot = try declareVar(self, en, ty);
-            self.vars.getPtr(en).?.reg_width = reg_width;
+            self.vars.getPtr(en).?.reg_width = reg_width orelse VarSlot.not_reg;
             // §3.2 an element the pattern does not reach keeps the zero start.
             const init_val: Mir.Value = if (elem != .none)
                 try self.coerceTo(elem, ty, try lower_expr.lowerExpr(self, elem))
@@ -300,7 +301,7 @@ pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) O
     if (wide_w != null and scope == .module and self.out.discrete_reads.contains(name))
         try self.err(decl.main_tok, .E0329, "a digital process reads `{s}`, a `reg` wider than 32 bits the analog context computes; its bits do not reach the digital engine", .{name});
     const slot = try declareVar(self, name, vty);
-    self.vars.getPtr(name).?.reg_width = reg_width;
+    self.vars.getPtr(name).?.reg_width = reg_width orelse VarSlot.not_reg;
     self.vars.getPtr(name).?.reg_signed = decl.storage == .reg and decl.is_signed;
     if (decl.storage == .reg) if (decl.packed_range) |range| if (lower_constfold.constEval(self, range.msb)) |m| if (lower_constfold.constEval(self, range.lsb)) |l| {
         const right = l.asIntExact() orelse 0;

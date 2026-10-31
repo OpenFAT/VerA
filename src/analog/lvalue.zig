@@ -88,7 +88,7 @@ pub fn resolveLvalue(self: *Lower, e: Ast.ExprId) Oom!?Lvalue {
         .ident => {
             const name = self.file.str(ex.strOf(e));
             if (self.vars.get(name)) |s| {
-                if (s.ty == .wide) return .{ .ty = .integer, .at = .{ .wide = .{ .place = s.place, .width = s.reg_width.? } } };
+                if (s.ty == .wide) return .{ .ty = .integer, .at = .{ .wide = .{ .place = s.place, .width = s.regWidth().? } } };
                 return .{ .ty = s.ty, .at = .{ .place = s.place } };
             }
             if (self.param_index.contains(name)) {

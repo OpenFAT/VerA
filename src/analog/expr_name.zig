@@ -159,7 +159,7 @@ pub fn lookupName(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!TypedValue 
     }
     if (self.vars.get(name)) |slot|
         // A wide `reg` read whole is a Table 7-1 grouping past 31 bits (E0222).
-        return .{ .v = try lower_var.analogRead(self, try self.builder.readVariable(slot.place, self.cur), slot.reg_width), .ty = if (slot.ty == .wide) .integer else slot.ty };
+        return .{ .v = try lower_var.analogRead(self, try self.builder.readVariable(slot.place, self.cur), slot.regWidth()), .ty = if (slot.ty == .wide) .integer else slot.ty };
     // §4.7.2/§6.8: inside a function body, a function-local `parameter` of the
     // same name shadows the module's, so `param_index` is masked and the local
     // value is found in `consts` (where `inlineUserFuncPre` folded it).

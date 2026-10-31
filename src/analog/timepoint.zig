@@ -187,6 +187,6 @@ fn timepointSlots(self: *Lower, id: Ast.StmtId, slots: *std.ArrayList(Lower.TpSl
 fn timepointScalar(self: *Lower, w: Ast.ExprId, name: []const u8, v: Lower.VarSlot, slots: *std.ArrayList(Lower.TpSlot), places: *std.ArrayList(Ssa.Place)) Oom!void {
     assert(w == .none or self.exprValid(w));
     if (v.ty == .string) return self.err(self.file.exprs.mainTok(w), .E0530, "an assignment to string `{s}`", .{name});
-    try slots.append(self.arena, .{ .name = name, .ty = v.ty, .width = if (v.ty == .wide) v.reg_width.? else 0 });
+    try slots.append(self.arena, .{ .name = name, .ty = v.ty, .width = if (v.ty == .wide) v.regWidth().? else 0 });
     try places.append(self.arena, v.place);
 }

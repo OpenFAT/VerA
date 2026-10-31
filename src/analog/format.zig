@@ -359,7 +359,7 @@ fn identSize(self: *Lower, name: []const u8) ?IntSize {
     var w: u32 = 32;
     var signed = true;
     if (self.vars.get(name)) |slot| {
-        if (slot.reg_width) |rw| {
+        if (slot.regWidth()) |rw| {
             w = rw;
             signed = slot.reg_signed;
         }

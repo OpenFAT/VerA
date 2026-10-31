@@ -186,10 +186,25 @@ pub const VarSlot = struct {
     place: Ssa.Place,
     ty: Ty,
     /// §7.3.1: retained declaration width, checked and zero-extended when
-    /// analog code reads it. A register used only by digital code may be wider.
-    reg_width: ?u32 = null,
+    /// analog code reads it; `not_reg` for a variable that is no `reg`. A
+    /// register used only by digital code may be wider. Read it as `regWidth`.
+    reg_width: u32 = not_reg,
     /// IEEE 1364-2005 §5.5.1: the `reg` was declared `signed`.
     reg_signed: bool = false,
+
+    /// The `reg_width` of a variable that is no `reg`: a `reg` is at least
+    /// one bit wide, so 0 names none.
+    pub const not_reg: u32 = 0;
+
+    /// Returns the declared width of a `reg`, or null for any other variable.
+    pub fn regWidth(slot: VarSlot) ?u32 {
+        return if (slot.reg_width == not_reg) null else slot.reg_width;
+    }
+
+    comptime {
+        // One row per visible variable: a place, a width, a type and a flag.
+        assert(@sizeOf(VarSlot) == 12);
+    }
 };
 /// A `reg`'s packed range as a select reads it (§7.3.1): the right-hand
 /// bound (its LSB in either direction, IEEE 1364-2005 §4.2.1), the direction,
