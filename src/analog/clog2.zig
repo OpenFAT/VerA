@@ -1,4 +1,14 @@
+//! §9.14 `$clog2`: an integral argument in, a `$clog2(value, width)` call
+//! out, the operand lowered at its IEEE 1364-2005 self-determined width and,
+//! for a parameter a model card may size, again at 32 and 64 bits (VD-089).
+//!
+//! Cites: §9.14, §17.11.1; IEEE 1364-2005 §17.11.1.
+//!
+//! Contents:
+//! - `pub fn lowerClog2(self: *Lower, tok: u32, arg: Ast.ExprId) Oom!TypedValue`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -8,9 +18,15 @@ const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
 
+/// `lowerClog2`'s card facts over the `hostSizedParam`s an operand reads:
+/// whether the card set any of them, and whether every value fits 32 bits.
+const HostSized = struct { given: ?Mir.Value = null, fits: ?Mir.Value = null };
+
 /// §9.14 / IEEE 1364-2005 §17.11.1's integral argument and its source width,
 /// shared by expression and statement calls (the latter discard the result).
 pub fn lowerClog2(self: *Lower, tok: u32, arg: Ast.ExprId) Oom!TypedValue {
+    assert(arg == .none or self.exprValid(arg));
+    assert(self.blockValid(self.cur));
     const tv = try lower_expr.lowerClog2Arg(self, arg, null);
     if (tv.ty != .integer or arg == .none) {
         // A poisoned argument was reported where it failed (E0130).
@@ -47,11 +63,11 @@ pub fn lowerClog2(self: *Lower, tok: u32, arg: Ast.ExprId) Oom!TypedValue {
     return .{ .v = try self.call("$clog2", &.{ v, w }), .ty = .integer };
 }
 
-/// `lowerClog2`'s card facts over the `hostSizedParam`s an operand reads:
-/// whether the card set any of them, and whether every value fits 32 bits.
-const HostSized = struct { given: ?Mir.Value = null, fits: ?Mir.Value = null };
+// ---- private ----
 
 fn hostSized(self: *Lower, e: Ast.ExprId, acc: *HostSized) Oom!void {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     if (e == .none) return;
     const ex = &self.file.exprs;
     if (ex.tag(e) == .ident) if (lower_constfold.hostSizedParam(self, self.file.str(ex.strOf(e)))) |pi| {

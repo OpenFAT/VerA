@@ -1,3 +1,18 @@
+//! §9.5 string and file I/O that writes through an argument: `$swrite`,
+//! `$sformat`, `$sscanf`, `$fgets`, `$fscanf`, `$ferror` and §9.12's
+//! `$value$plusargs` in, the count call plus one assignment per destination
+//! out, every file call sequenced into the per-point I/O phase.
+//!
+//! Cites: §4.2.1.1, §5.10, §9.4.3, §9.5, §9.5.3, §9.5.4.1, §9.5.4.2, §9.5.7,
+//! §9.5.9, §9.7.3, §9.12, §17.10.2; IEEE 1364-2005 §17.10.2.
+//!
+//! Contents:
+//! - `pub fn lowerStringWrite(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!void`
+//! - `pub fn lowerScan(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!Mir.Value`
+//! - `pub fn lowerValuePlusargs(self: *Lower, args: []const Ast.ExprId) Oom!Mir.Value`
+//! - `pub fn sequenceFileCall(self: *Lower, tok: u32, name: []const u8, v: Mir.Value) Oom!void`
+//! - `pub fn lowerFileRead(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!?Mir.Value`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -22,6 +37,8 @@ const Lowered = Lower.Lowered;
 /// call whose result nothing reads is dead code once codegen slices a unit out
 /// of the MIR. `cg_display` renders it like a `$display`.
 pub fn lowerStringWrite(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!void {
+    assert(self.blockValid(self.cur));
+    assert(name.len != 0);
     if (args.len == 0 or args[0] == .none) {
         try self.err(tok, .E0813, "`{s}` needs a string variable to write into", .{name});
         return;
@@ -84,6 +101,8 @@ pub fn lowerStringWrite(self: *Lower, tok: u32, name: []const u8, args: []const 
 ///
 /// Returns the count value; a statement-position call drops it.
 pub fn lowerScan(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!Mir.Value {
+    assert(self.blockValid(self.cur));
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0);
     if (args.len < 2 or args[0] == .none or args[1] == .none) {
         try self.err(tok, .E0813, "$sscanf needs a string to read and a format string", .{});
         return self.mir.addIntConst(self.arena, 0);
@@ -125,18 +144,6 @@ pub fn lowerScan(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!Mir.Value
     return count;
 }
 
-/// The `$sscanf` reader for a destination of type `ty`. The destination's
-/// declared type picks the callee, exactly as §5.10's `holdSlot` does: the
-/// name IS the type, so `callee.ty` and `sysFuncTy` cannot disagree about it.
-fn sscanfCallee(ty: Ty) []const u8 {
-    return switch (ty) {
-        .integer => "$sscanf$int",
-        .string => "$sscanf$str",
-        .real => "$sscanf$real",
-        .wide => unreachable, // `resolveLvalue` types a wide `reg` `.integer` (`Lvalue.at.wide`)
-    };
-}
-
 /// §9.12 / IEEE 1364 §17.10.2 `found = $value$plusargs(user_string, variable)`:
 /// "If no string is found matching, the function returns the integer value
 /// zero, and the variable provided is not modified" — so, as in `lowerScan`,
@@ -145,7 +152,11 @@ fn sscanfCallee(ty: Ty) []const u8 {
 /// (the device's `zPlusarg` says why that is the clause's conversion).
 /// Asserts that `args` is the user string and the variable, both written.
 pub fn lowerValuePlusargs(self: *Lower, args: []const Ast.ExprId) Oom!Mir.Value {
-    assert(args.len == 2 and args[0] != .none and args[1] != .none);
+    assert(self.blockValid(self.cur));
+    assert(args.len == 2);
+    assert(args[0] != .none);
+    assert(args[1] != .none);
+    assert(self.blockValid(self.cur));
     const user = (try lower_expr.lowerExpr(self, args[0])).v;
     const found = try self.call("$value$plusargs", &.{user});
     const slot = try lower_lvalue.resolveLvalue(self, args[1]) orelse return found;
@@ -156,43 +167,6 @@ pub fn lowerValuePlusargs(self: *Lower, args: []const Ast.ExprId) Oom!Mir.Value 
     const hit = try self.emit(.igt, &.{ found, zero });
     try lower_lvalue.writeLvalue(self, slot, try self.emit(.select, &.{ hit, v, old }));
     return found;
-}
-
-/// §9.5.4.2's conversion codes, and nothing else. True when the format was
-/// refused. The suppression `*` and the maximum field width are part of the
-/// specification and are read past here; `str_kernels.zScan` implements them.
-///
-/// Case-sensitive, unlike §9.4.3's display table: §9.5.4.2 spells each scan
-/// code once, in lower case, and leaves an invalid one implementation
-/// dependent. `zScan` compares the raw byte, so `%D` would silently match
-/// nothing; refusing it is the useful implementation-dependent result.
-fn checkScanFormat(self: *Lower, tok: u32, fmt: []const u8) Oom!bool {
-    var i: usize = 0;
-    while (std.mem.findScalarPos(u8, fmt, i, '%')) |p| {
-        i = p + 1;
-        if (i >= fmt.len) break;
-        if (fmt[i] == '%') { // a literal percent, matched not converted
-            i += 1;
-            continue;
-        }
-        if (fmt[i] == '*') i += 1;
-        while (i < fmt.len and fmt[i] >= '0' and fmt[i] <= '9') i += 1;
-        if (i >= fmt.len) break;
-        const conv = fmt[i];
-        i += 1;
-        // §9.5.4.2's code table has SIX rows, and `r` and `m` are two of them:
-        // "r Matches a 'real' number in engineering notation, using the scale
-        // factors defined in 2.6.2" and "m Returns the current hierarchical
-        // path as a string. Does not read data from the input file or str
-        // argument".
-        if (std.mem.findScalar(u8, "dohxbcfegsrm", conv) != null) continue;
-        var b = self.errWith(tok, .E0813);
-        b.msg("$sscanf does not support the conversion `%{c}`", .{conv});
-        b.note("§9.5.4.2's codes are %d %o %h %x %b %c %f %e %g %s %r %m", .{});
-        try b.emit();
-        return true;
-    }
-    return false;
 }
 
 /// Sequences one §9.5 file-family call into the per-point I/O phase.
@@ -207,6 +181,9 @@ fn checkScanFormat(self: *Lower, tok: u32, fmt: []const u8) Oom!bool {
 /// The chain carries reals (`fadd`) and every §9.5 function is integer-valued,
 /// so the carrier is `$itor`.
 pub fn sequenceFileCall(self: *Lower, tok: u32, name: []const u8, v: Mir.Value) Oom!void {
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
+    assert(name.len != 0);
     self.out.uses.insert(.file_tasks);
     const carrier = try self.call("$itor", &.{v});
     const cond = self.cond_depth != 0;
@@ -230,6 +207,8 @@ pub fn sequenceFileCall(self: *Lower, tok: u32, name: []const u8, v: Mir.Value) 
 /// sequences the pair and carries the "nothing was assigned" rule into the
 /// reader. Returns null when `name` is not one of the three.
 pub fn lowerFileRead(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!?Mir.Value {
+    assert(self.blockValid(self.cur));
+    assert(name.len != 0);
     const eq = std.mem.eql;
     const gets = eq(u8, name, "$fgets");
     const scan = eq(u8, name, "$fscanf");
@@ -309,4 +288,58 @@ pub fn lowerFileRead(self: *Lower, tok: u32, name: []const u8, args: []const Ast
         item += 1;
     }
     return n;
+}
+
+// ---- private ----
+
+/// The `$sscanf` reader for a destination of type `ty`. The destination's
+/// declared type picks the callee, exactly as §5.10's `holdSlot` does: the
+/// name IS the type, so `callee.ty` and `sysFuncTy` cannot disagree about it.
+fn sscanfCallee(ty: Ty) []const u8 {
+    assert(ty != .wide); // `resolveLvalue` types a wide `reg` `.integer`
+    return switch (ty) {
+        .integer => "$sscanf$int",
+        .string => "$sscanf$str",
+        .real => "$sscanf$real",
+        .wide => unreachable, // `resolveLvalue` types a wide `reg` `.integer` (`Lvalue.at.wide`)
+    };
+}
+
+/// §9.5.4.2's conversion codes, and nothing else. True when the format was
+/// refused. The suppression `*` and the maximum field width are part of the
+/// specification and are read past here; `str_kernels.zScan` implements them.
+///
+/// Case-sensitive, unlike §9.4.3's display table: §9.5.4.2 spells each scan
+/// code once, in lower case, and leaves an invalid one implementation
+/// dependent. `zScan` compares the raw byte, so `%D` would silently match
+/// nothing; refusing it is the useful implementation-dependent result.
+fn checkScanFormat(self: *Lower, tok: u32, fmt: []const u8) Oom!bool {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0);
+    var i: usize = 0;
+    while (std.mem.findScalarPos(u8, fmt, i, '%')) |p| {
+        i = p + 1;
+        if (i >= fmt.len) break;
+        if (fmt[i] == '%') { // a literal percent, matched not converted
+            i += 1;
+            continue;
+        }
+        if (fmt[i] == '*') i += 1;
+        while (i < fmt.len and fmt[i] >= '0' and fmt[i] <= '9') i += 1;
+        if (i >= fmt.len) break;
+        const conv = fmt[i];
+        i += 1;
+        // §9.5.4.2's code table has SIX rows, and `r` and `m` are two of them:
+        // "r Matches a 'real' number in engineering notation, using the scale
+        // factors defined in 2.6.2" and "m Returns the current hierarchical
+        // path as a string. Does not read data from the input file or str
+        // argument".
+        if (std.mem.findScalar(u8, "dohxbcfegsrm", conv) != null) continue;
+        assert(i <= fmt.len);
+        var b = self.errWith(tok, .E0813);
+        b.msg("$sscanf does not support the conversion `%{c}`", .{conv});
+        b.note("§9.5.4.2's codes are %d %o %h %x %b %c %f %e %g %s %r %m", .{});
+        try b.emit();
+        return true;
+    }
+    return false;
 }

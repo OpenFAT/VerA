@@ -1,3 +1,15 @@
+//! §9.7.3 `$fatal`/`$error` as a device status: a call in, a
+//! `Lowered.status_sites` row and the status channel's code and argument
+//! places out, the first site an evaluation reaches winning.
+//!
+//! Cites: §9.7.3.
+//!
+//! Contents:
+//! - `pub fn badFinishNumber(self: *Lower, args: []const Ast.ExprId) Oom!bool`
+//! - `pub fn lowerStatus(self: *Lower, tok: u32, fatal: bool, args: []const Ast.ExprId) Oom!void`
+
+const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -12,6 +24,7 @@ const Lowered = Lower.Lowered;
 /// three. A string first argument is a message with the number omitted
 /// (`cg_display.emitDisplayTask` keeps its text), not a finish_number.
 pub fn badFinishNumber(self: *Lower, args: []const Ast.ExprId) Oom!bool {
+    assert(self.blockValid(self.cur));
     if (args.len == 0 or args[0] == .none) return false;
     const cv = lower_constfold.constEval(self, args[0]);
     if (cv) |v| switch (v) {
@@ -31,6 +44,8 @@ pub fn badFinishNumber(self: *Lower, args: []const Ast.ExprId) Oom!bool {
 /// Runs at the statement, under its guards, so a call on an arm that did not
 /// run reports nothing. The printing artifact ignores the result.
 pub fn lowerStatus(self: *Lower, tok: u32, fatal: bool, args: []const Ast.ExprId) Oom!void {
+    assert(self.blockValid(self.cur));
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0);
     const site: u32 = @intCast(self.out.status_sites.items.len);
     // §9.7.3 `$fatal(finish_number, "…", …)`: the format is the first
     // argument that is a string literal, as `checkFormatPairing` reads it.
@@ -77,3 +92,5 @@ pub fn lowerStatus(self: *Lower, tok: u32, fatal: bool, args: []const Ast.ExprId
         k += 1;
     }
 }
+
+// ---- private ----

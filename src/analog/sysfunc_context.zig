@@ -1,4 +1,18 @@
+//! §9.2 which context a system function belongs to: a name in, whether its
+//! table's analog column says No (digital only), whether it is analog only,
+//! and whether it is a §9.22/§9.23 connect-module driver function.
+//!
+//! Cites: §2.8.3, §4.7.2, A.6.2, §7, §7.6, §9.2, §9.4.1, §9.5, §9.6, §9.7,
+//! §9.8, §9.9, §9.10, §9.11, §9.15, §9.17, §9.19, §9.20, §9.22, §9.22.1,
+//! §9.22.2, §9.22.3, §9.23, §9.23.1, §9.23.4.
+//!
+//! Contents:
+//! - `pub fn isDigitalOnlySysFunc(name: []const u8) bool`
+//! - `pub fn isAnalogOnlySysFunc(name: []const u8) bool`
+//! - `pub fn isConnectModuleOnlySysFunc(name: []const u8) bool`
+
 const std = @import("std");
+const assert = std.debug.assert;
 
 /// Whether `name` is a system function whose §9.2 "supported in analog
 /// context" cell says No, across the seven Chapter 9 tables (E0806).
@@ -7,6 +21,7 @@ const std = @import("std");
 /// analog context (A.6.2 `analog_construct`, with §4.7.2 function bodies
 /// inlined into one).
 pub fn isDigitalOnlySysFunc(name: []const u8) bool {
+    assert(name.len != 0);
     // ponytail: add the flag when a §7 digital block is lowered here.
     const digital_only = comptime nameSet(&.{
         // Table 9-1 (§9.4.1) — radix variants and the $monitor mode switches.
@@ -55,12 +70,15 @@ pub fn isDigitalOnlySysFunc(name: []const u8) bool {
         // $unsigned read No, and both presuppose a sized vector.
                 "$signed",           "$unsigned",
     });
-    return digital_only.has(name);
+    const hit = digital_only.has(name);
+    if (hit) assert(name[0] == '$'); // every listed name is a system name
+    return hit;
 }
 
 /// Whether `name` is analog-only: its §9.2 "Supported in digital context" cell
 /// is No and its analog cell Yes. §9.7 says it of the severity tasks in prose.
 pub fn isAnalogOnlySysFunc(name: []const u8) bool {
+    assert(name.len != 0);
     const analog_only = comptime nameSet(&.{
         "$debug", "$fdebug", // Tables 9-1/9-2
         "$fatal", "$warning", "$error", "$info", // Table 9-4
@@ -70,7 +88,9 @@ pub fn isAnalogOnlySysFunc(name: []const u8) bool {
         "$param_given", "$port_connected", // §9.19
         "$analog_node_alias", "$analog_port_alias", // §9.20
     });
-    return analog_only.has(name);
+    const hit = analog_only.has(name);
+    if (hit) assert(name[0] == '$'); // every listed name is a system name
+    return hit;
 }
 
 /// §9.22 paragraph 3, second sentence: "Driver access functions can only be
@@ -91,6 +111,7 @@ pub fn isAnalogOnlySysFunc(name: []const u8) bool {
 /// sits inside §9.22, takes the same `signal_name` argument, and Table 9-19
 /// carries it with the rest.
 pub fn isConnectModuleOnlySysFunc(name: []const u8) bool {
+    assert(name.len != 0);
     const cm_only = comptime nameSet(&.{
         // §9.22.1–§9.22.3 and the §9.22.1 non-normative paragraph.
         "$driver_count",         "$receiver_count", "$driver_state",
@@ -99,8 +120,12 @@ pub fn isConnectModuleOnlySysFunc(name: []const u8) bool {
              "$driver_delay",   "$driver_next_state",
         "$driver_next_strength", "$driver_type",
     });
-    return cm_only.has(name);
+    const hit = cm_only.has(name);
+    if (hit) assert(name[0] == '$'); // every listed name is a system name
+    return hit;
 }
+
+// ---- private ----
 
 /// `names` as a comptime set, so each list above keeps its per-table comments.
 fn nameSet(comptime names: []const []const u8) std.StaticStringMap(void) {

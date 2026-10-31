@@ -1,4 +1,25 @@
+//! System-call arguments: a call's argument list in, its arity and empty
+//! slots checked (E0887, E0894), descriptors checked (E0888, E0889), and each
+//! argument lowered as a value, a format string's lexical bytes (§9.4.2) or a
+//! net reference (§9.19, §9.20).
+//!
+//! Cites: §3.3, §4.3, §4.4, A.6.9, A.8.2, §9.4, §9.4.2, §9.5.1, §9.5.2,
+//! §9.14, §9.19, §9.20, §9.22, §9.23, §17.1.1.1; IEEE 1364-2005 §17.1.1.1.
+//!
+//! Contents:
+//! - `pub fn writtenArgs(self: *Lower, e: Ast.ExprId, name: []const u8, args: []const Ast.ExprId) Oom!?usize`
+//! - `pub fn checkArity(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!bool`
+//! - `pub fn checkDescriptor(self: *Lower, name: []const u8, i: usize, arg: Ast.ExprId, tv: TypedValue) Oom!bool`
+//! - `pub fn checkFopenType(self: *Lower, args: []const Ast.ExprId) Oom!bool`
+//! - `pub fn constStrArg(self: *Lower, e: Ast.ExprId) ?[]const u8`
+//! - `pub fn takesNetRef(name: []const u8) bool`
+//! - `pub fn outputLiteral(self: *Lower, e: Ast.ExprId) Oom!?[]const u8`
+//! - `pub fn lowerFormatArg(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn lowerTaskArg(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!TypedValue`
+//! - `pub fn lowerSysArg(self: *Lower, e: Ast.ExprId, net_ok: bool) Oom!TypedValue`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lexer = @import("frontend").Lexer;
@@ -19,12 +40,15 @@ const TypedValue = Lower.TypedValue;
 /// still leave an arity the function admits. The §9.4 display family is not
 /// judged here: IEEE 1364 §17.1.1.1 gives its empty argument a meaning.
 pub fn writtenArgs(self: *Lower, e: Ast.ExprId, name: []const u8, args: []const Ast.ExprId) Oom!?usize {
+    assert(e == .none or self.exprValid(e));
+    assert(name.len != 0);
     var n = args.len;
     while (n > 0 and args[n - 1] == .none) n -= 1;
     for (args[0..n], 1..) |a, pos| if (a == .none) {
         try self.err(self.file.exprs.mainTok(e), .E0894, "argument {d} of `{s}` is empty", .{ pos, name });
         return null;
     };
+    assert(n <= args.len);
     if (n != args.len and !Mir.callee.arity(Mir.Callee.fromName(name)).admits(n)) {
         try self.err(self.file.exprs.mainTok(e), .E0894, "argument {d} of `{s}` is empty", .{ n + 1, name });
         return null;
@@ -37,6 +61,8 @@ pub fn writtenArgs(self: *Lower, e: Ast.ExprId, name: []const u8, args: []const 
 /// `$fflush(,)` has two arguments, both null. §9.14's `$` math spellings report
 /// E0506, the code of the §4.3 operators they alias.
 pub fn checkArity(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!bool {
+    assert(name.len != 0);
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0);
     const c = Mir.Callee.fromName(name);
     const a = Mir.callee.arity(c);
     if (a.admits(args.len)) return false;
@@ -63,6 +89,8 @@ pub fn checkArity(self: *Lower, tok: u32, name: []const u8, args: []const Ast.Ex
 /// "a 32-bit integer" (LRM §9.5.1, §9.5.2), and returns true when it reported an
 /// error. Takes the already lowered operand so a `$fopen` in it runs once.
 pub fn checkDescriptor(self: *Lower, name: []const u8, i: usize, arg: Ast.ExprId, tv: TypedValue) Oom!bool {
+    assert(arg == .none or self.exprValid(arg));
+    assert(self.valueValid(tv.v));
     const at = Mir.callee.fdArg(Mir.Callee.fromName(name)) orelse return false;
     if (i != at or tv.ty == .integer) return false;
     try self.err(self.file.exprs.mainTok(arg), .E0888, "`{s}`'s descriptor argument is {s}", .{
@@ -82,6 +110,7 @@ pub fn checkDescriptor(self: *Lower, name: []const u8, i: usize, arg: Ast.ExprId
 pub fn checkFopenType(self: *Lower, args: []const Ast.ExprId) Oom!bool {
     if (args.len != 2 or args[1] == .none) return false;
     const s = constStrArg(self, args[1]) orelse return false;
+    assert(args[1] != .none);
     if (fopen_types.has(s)) return false;
     try self.err(self.file.exprs.mainTok(args[1]), .E0889, "`\"{s}\"`", .{s});
     return true;
@@ -89,6 +118,8 @@ pub fn checkFopenType(self: *Lower, args: []const Ast.ExprId) Oom!bool {
 
 /// Returns the constant string an argument folds to, or null for any other expression.
 pub fn constStrArg(self: *Lower, e: Ast.ExprId) ?[]const u8 {
+    assert(e == .none or self.exprValid(e));
+    assert(self.file.exprs.len() != 0);
     if (e == .none) return null;
     const c = lower_constfold.constEval(self, e) orelse return null;
     return switch (c) {
@@ -101,6 +132,7 @@ pub fn constStrArg(self: *Lower, e: Ast.ExprId) ?[]const u8 {
 /// `$port_connected`, §9.20 `$analog_node_alias`/`$analog_port_alias`. The §9.22/§9.23
 /// driver functions are refused before their arguments lower, so they are not listed.
 pub fn takesNetRef(name: []const u8) bool {
+    assert(name.len != 0);
     const fns = [_][]const u8{ "$port_connected", "$analog_node_alias", "$analog_port_alias" };
     for (fns) |f| if (std.mem.eql(u8, name, f)) return true;
     return false;
@@ -110,6 +142,8 @@ pub fn takesNetRef(name: []const u8) bool {
 /// keep what string storage (§3.3) drops, or null when `e` is not a quoted source
 /// token. The bytes are arena-owned.
 pub fn outputLiteral(self: *Lower, e: Ast.ExprId) Oom!?[]const u8 {
+    assert(e == .none or self.exprValid(e));
+    assert(self.src.len != 0 or e == .none);
     if (e == .none or self.file.exprs.tag(e) != .str_literal) return null;
     const span = self.tokenSpan(self.file.exprs.mainTok(e));
     const raw = self.src[span.start..span.end];
@@ -120,6 +154,8 @@ pub fn outputLiteral(self: *Lower, e: Ast.ExprId) Oom!?[]const u8 {
 
 /// Lowers a format-string argument, keeping a literal's lexical bytes (see `outputLiteral`).
 pub fn lowerFormatArg(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     if (try outputLiteral(self, e)) |bytes|
         return .{ .v = try self.mir.addStrConst(self.arena, bytes), .ty = .string };
     return lower_expr.lowerExpr(self, e);
@@ -128,6 +164,8 @@ pub fn lowerFormatArg(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// Lowers argument `e` of system task `name`: as a format string when the task takes
 /// one, otherwise through `lowerSysArg`.
 pub fn lowerTaskArg(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(name.len != 0);
     // Display/file-output operands run in the accepted-point task phase, not
     // the per-iteration residual. An unused remainder in an inlined function
     // argument still checks, but only on the display phase's effect root.
@@ -145,6 +183,8 @@ pub fn lowerTaskArg(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!TypedValu
 /// net name lowers to its `nodes` row; otherwise it goes through `lowerExpr`,
 /// which reports §4.4's E0315 for a net used as a value.
 pub fn lowerSysArg(self: *Lower, e: Ast.ExprId, net_ok: bool) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     if (net_ok and ex.tag(e) == .ident) {
         const name = self.file.str(ex.strOf(e));
@@ -157,3 +197,5 @@ pub fn lowerSysArg(self: *Lower, e: Ast.ExprId, net_ok: bool) Oom!TypedValue {
     }
     return lower_expr.lowerExpr(self, e);
 }
+
+// ---- private ----

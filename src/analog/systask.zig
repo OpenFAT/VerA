@@ -1,26 +1,19 @@
-//! Clause 9 system tasks in statement position: §9.4 display and monitor,
-//! §9.5 file and string I/O, §9.7 simulation control and the §9.7.3 status,
-//! §9.17 analog kernel control.
+//! Clause 9 system tasks in statement position: a `$task(...)` statement in,
+//! its MIR `call` out, routed by family: §9.4/§9.7 prints and simulation
+//! control onto the display chain (`display.zig`), §9.5 string and file I/O
+//! (`string_io.zig`), §9.7.3 status (`status.zig`), §9.17 kernel control
+//! (`kernel_ctl.zig`), and a user task's §12.22.2 output arguments.
 //!
-//! In: a `$task(...)` statement, or a §9.5 call `analog/sysfunc.zig` hands over.
-//! Out: MIR `call`s on the display chain (`Lowered.displays`, rooted at
-//! `Lowered.display_root`), the status channel (`Lowered.status`), and the
-//! kernel-control values the host reads after an accepted step.
+//! Cites: §4.2.1.1, §5.12, A.6.9, §7.3.1, §9.2, §9.4, §9.4.1, §9.4.2, §9.4.3,
+//! §9.4.6, §9.5, §9.5.2, §9.5.3, §9.5.4, §9.5.4.2, §9.7, §9.7.1, §9.7.2,
+//! §9.7.3, §9.13, §9.17, §9.17.1, §9.17.2, §12.22.2, §12.30, §12.32.2.
 //!
-//! Spine: `lowerSysTask` per statement; `finishKernelCtl` then
-//! `finishDisplays` once, after every analog block (`lowerModule`'s order).
-//! Every task with an effect on the host joins the display chain, so codegen
-//! runs it once per accepted point and never per Newton iteration (§9.5.9).
-//!
-//! LRM clauses this file's code cites: §2.7, §3.2, §3.3, §3.4.1, §3.6.1.2,
-//! §4.2.1.1, §4.4.1, §5.3.2, §5.4.2.2, §5.4.3, §5.6.1.2, §5.6.1.3, §5.6.8.1,
-//! §5.9.3, §5.10, §5.12, §7, §7.3.1, §9.2, §9.4, §9.4.1, §9.4.2, §9.4.3,
-//! §9.4.5, §9.4.6, §9.5, §9.5.2, §9.5.3, §9.5.4, §9.5.4.1, §9.5.4.2, §9.5.7,
-//! §9.5.9, §9.7, §9.7.1, §9.7.2, §9.7.3, §9.12, §9.13, §9.17, §9.17.1, §9.17.2,
-//! §12.22.2, §12.30, §12.32.2.
-//! IEEE 1364-2005 clauses cited: §3.5.1, §17.1.1.2, §17.1.1.3, §17.10.2.
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn lowerSysTask(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -81,11 +74,11 @@ pub const State = struct {
     init_error: ?struct { place: Ssa.Place, tok: u32 } = null,
 };
 
-// ---- statement position -----------------------------------------------------
-
 /// Lowers a §5.12/ch9 system task in statement position. Display and file tasks
 /// are void calls codegen may drop; the unsupported set is rejected by name.
 pub fn lowerSysTask(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!void {
+    assert(self.blockValid(self.cur));
+    assert(name.len != 0);
     if (try lower_sysfunc.refuseReserved(self, tok, name)) return;
     const c: Mir.Callee = .fromName(name);
     const family = Mir.callee.family(c);
@@ -212,6 +205,8 @@ pub fn lowerSysTask(self: *Lower, tok: u32, name: []const u8, args: []const Ast.
     }
 }
 
+// ---- private ----
+
 /// §12.22.2 a user system task's output arguments: `$resistor(curr, V(p, n),
 /// r)`'s calltf puts `curr` (§12.30) and its partials (§12.32.2), and the
 /// next statement reads it. Every argument that is a real or integer variable
@@ -219,6 +214,8 @@ pub fn lowerSysTask(self: *Lower, tok: u32, name: []const u8, args: []const Ast.
 /// §12.32.2 numbers arguments; an argument calltf did not put keeps its value
 /// (`contract.SystfHost.output`). An integer takes the real §4.2.1.1 rounds.
 fn systfOutputs(self: *Lower, call: Mir.Value, live: []const Ast.ExprId, vals: []const Mir.Value) Oom!void {
+    assert(self.valueValid(call));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     for (live, 0..) |a, j| {
         if (a == .none or ex.tag(a) != .ident) continue;
@@ -234,14 +231,6 @@ fn systfOutputs(self: *Lower, call: Mir.Value, live: []const Ast.ExprId, vals: [
         try lower_lvalue.writeLvalue(self, lv, if (s.ty == .integer) try self.emit(.fi_cast, &.{out}) else out);
     }
 }
-
-// ---- §9.4 display and monitor -----------------------------------------------
-
-// ---- §9.4.3 format strings --------------------------------------------------
-
-// ---- §9.5 string and file I/O -----------------------------------------------
-
-// ---- end of the analog block ------------------------------------------------
 
 test "§9.4/§9.7/§9.17 system tasks: arguments a task refuses, and their neighbours" {
     try Lower.expectBodies(&.{

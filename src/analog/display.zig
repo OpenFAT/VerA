@@ -1,3 +1,21 @@
+//! §9.4 the display chain: a display-family statement in, its `call` on
+//! `Lowered.displays` out. An unconditional print is minted at the end of the
+//! analog block, where an operand that reads a branch flow sees the converged
+//! retention state; a guarded one rides `display_cond_place`. `$monitor`
+//! arms at the statement and reports at the end of every accepted step.
+//!
+//! Cites: §3.6.1.2, §4.4.1, §5.3.2, §5.4.2.2, §5.4.3, §5.6.1.2, §5.6.1.3,
+//! §5.6.8.1, §5.9.3, A.6.9, §9.4, §9.4.1, §9.4.3, §9.4.6, §9.5, §9.5.2,
+//! §9.5.9, §9.7.
+//!
+//! Contents:
+//! - `pub const DeferredDisplay = struct`
+//! - `pub fn queueDisplay(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId, monitor: ?Mir.Value) Oom!void`
+//! - `pub fn armMonitor(self: *Lower, name: []const u8) Oom!Mir.Value`
+//! - `pub fn chainCondDisplay(self: *Lower, v: Mir.Value) Oom!void`
+//! - `pub fn finishDisplays(self: *Lower) Oom!void`
+//! - `pub fn nullArg(self: *Lower) Oom!TypedValue`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -59,24 +77,6 @@ const Scope = struct {
     block_path: []const u8,
 };
 
-// Installs `s` as the scope lowering resolves names in, and returns the one it
-// replaced, so a second call with that result restores it.
-fn swapScope(self: *Lower, s: Scope) Scope {
-    const old: Scope = .{
-        .vars = self.vars,
-        .arrays = self.arrays,
-        .consts = self.consts,
-        .scope_path = self.scope_path,
-        .block_path = self.block_path,
-    };
-    self.vars = s.vars;
-    self.arrays = s.arrays;
-    self.consts = s.consts;
-    self.scope_path = s.scope_path;
-    self.block_path = s.block_path;
-    return old;
-}
-
 /// Sequences one unconditional display-family statement: captures its operands
 /// and mints its `call` at the end of the analog block (LRM §9.4.1).
 ///
@@ -100,6 +100,8 @@ fn swapScope(self: *Lower, s: Scope) Scope {
 /// operand defers, because the report runs at the end of each accepted step
 /// whether or not the statement ran, and it may come from a guarded statement.
 pub fn queueDisplay(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId, monitor: ?Mir.Value) Oom!void {
+    assert(name.len != 0);
+    assert(self.cond_depth == 0 or monitor != null); // a guarded print mints its call where it is
     const pre = try self.arena.alloc(?TypedValue, args.len);
     var any_deferred = false;
     for (args, pre) |a, *p| {
@@ -167,6 +169,8 @@ pub fn queueDisplay(self: *Lower, tok: u32, name: []const u8, args: []const Ast.
 /// The arm rides `display_cond_place`, not `displays`: the report already has
 /// the statement's `displays` row, and W0850 is one warning per statement.
 pub fn armMonitor(self: *Lower, name: []const u8) Oom!Mir.Value {
+    assert(self.blockValid(self.cur));
+    assert(name.len != 0);
     if (std.mem.eql(u8, name, "$fmonitor")) {
         self.out.uses.insert(.file_tasks);
         self.out.uses.insert(.str_tasks);
@@ -177,31 +181,12 @@ pub fn armMonitor(self: *Lower, name: []const u8) Oom!Mir.Value {
     return k;
 }
 
-/// Does this operand tree read a branch FLOW (§4.4.1 `I(...)` under any
-/// §3.6.1.2 spelling)? That is the one read whose value is position-dependent
-/// inside the block (§5.6.1.2 retention); potentials and §5.4.3 port flows
-/// resolve to solver unknowns and read the same value everywhere, so they do
-/// not force an operand to the end. Every child edge is searched
-/// (`ExprStore.children`), assignment-pattern elements included.
-fn containsFlowRead(self: *const Lower, e: Ast.ExprId) bool {
-    if (e == .none) return false;
-    const ex = &self.file.exprs;
-    if (ex.tag(e) == .branch_access) {
-        const name = self.file.str(ex.strOf(e));
-        const kind = self.access_kind.get(name) orelse return false;
-        // ponytail: a name both halves use counts as a flow read: the
-        // retention is conservative, and the node is not resolved here.
-        return kind == .flow or self.access_both.contains(name);
-    }
-    var buf: [3]Ast.ExprId = undefined;
-    for (ex.children(e, &buf)) |c| if (containsFlowRead(self, c)) return true;
-    return false;
-}
-
 /// Carries one guarded §9.4/§9.5/§9.7 call into the display slice. The value is
 /// discarded at the root; the `fadd` gives the call a use, without which
 /// codegen's slice drops the print.
 pub fn chainCondDisplay(self: *Lower, v: Mir.Value) Oom!void {
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
     const p = self.systask_state.display_cond_place orelse blk: {
         const np = self.builder.newPlace();
         try self.builder.writeVariable(np, .entry, .f_zero);
@@ -225,6 +210,7 @@ pub fn chainCondDisplay(self: *Lower, v: Mir.Value) Oom!void {
 /// sits: it stays in the arm's block and codegen emits the arm as an `if`.
 /// Runs once, after `finishKernelCtl`; writes `Lowered.display_root`.
 pub fn finishDisplays(self: *Lower) Oom!void {
+    assert(self.blockValid(self.cur));
     // ponytail: print order is MIR order, so a module that prints both kinds shows
     // the guarded lines first, whatever the source order. Upgrade path: give
     // `Display` a source-order index and have codegen emit by it.
@@ -244,6 +230,59 @@ pub fn finishDisplays(self: *Lower) Oom!void {
         root = if (first) v else try self.emit(.fadd, &.{ root, v });
     }
     self.out.display_root = root;
+    assert(self.valueValid(root));
+}
+
+/// §9.4.1: "Any null argument produces a single space character in the
+/// display." A formatting task's null slot is the one-space string, which
+/// `cg_display.buildArgs` writes as a format with no conversion, at its place.
+pub fn nullArg(self: *Lower) Oom!TypedValue {
+    assert(self.blockValid(self.cur));
+    return .{ .v = try self.mir.addStrConst(self.arena, " "), .ty = .string };
+}
+
+// ---- private ----
+
+// Installs `s` as the scope lowering resolves names in, and returns the one it
+// replaced, so a second call with that result restores it.
+fn swapScope(self: *Lower, s: Scope) Scope {
+    const old: Scope = .{
+        .vars = self.vars,
+        .arrays = self.arrays,
+        .consts = self.consts,
+        .scope_path = self.scope_path,
+        .block_path = self.block_path,
+    };
+    self.vars = s.vars;
+    self.arrays = s.arrays;
+    self.consts = s.consts;
+    self.scope_path = s.scope_path;
+    self.block_path = s.block_path;
+    assert(self.block_path.ptr == s.block_path.ptr); // installed whole
+    return old;
+}
+
+/// Does this operand tree read a branch FLOW (§4.4.1 `I(...)` under any
+/// §3.6.1.2 spelling)? That is the one read whose value is position-dependent
+/// inside the block (§5.6.1.2 retention); potentials and §5.4.3 port flows
+/// resolve to solver unknowns and read the same value everywhere, so they do
+/// not force an operand to the end. Every child edge is searched
+/// (`ExprStore.children`), assignment-pattern elements included.
+fn containsFlowRead(self: *const Lower, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
+    assert(self.file.exprs.len() != 0);
+    if (e == .none) return false;
+    const ex = &self.file.exprs;
+    if (ex.tag(e) == .branch_access) {
+        const name = self.file.str(ex.strOf(e));
+        const kind = self.access_kind.get(name) orelse return false;
+        // ponytail: a name both halves use counts as a flow read: the
+        // retention is conservative, and the node is not resolved here.
+        return kind == .flow or self.access_both.contains(name);
+    }
+    var buf: [3]Ast.ExprId = undefined;
+    for (ex.children(e, &buf)) |c| if (containsFlowRead(self, c)) return true;
+    return false;
 }
 
 /// The end-of-block half of `queueDisplay`: lower what was deferred, mint each
@@ -252,6 +291,8 @@ pub fn finishDisplays(self: *Lower) Oom!void {
 /// accumulator reads — so a `flowAccum` read here is the §5.6.1.3 end-of-cycle
 /// retention state, phis and all.
 fn lowerDeferredDisplays(self: *Lower) Oom!void {
+    assert(self.blockValid(self.cur));
+    assert(self.module != null);
     for (self.systask_state.deferred_displays.items) |dd| {
         // Provenance: instructions minted here belong to the display
         // statement, not to whatever token the block ended on.
@@ -279,13 +320,6 @@ fn lowerDeferredDisplays(self: *Lower) Oom!void {
         if (dd.monitor) |k| try vals.insert(self.arena, 0, k);
         self.out.displays.items[dd.display].val = try self.call(dd.name, vals.items);
     }
-}
-
-/// §9.4.1: "Any null argument produces a single space character in the
-/// display." A formatting task's null slot is the one-space string, which
-/// `cg_display.buildArgs` writes as a format with no conversion, at its place.
-pub fn nullArg(self: *Lower) Oom!TypedValue {
-    return .{ .v = try self.mir.addStrConst(self.arena, " "), .ty = .string };
 }
 
 test "§9.4.1/§5.3.2 a deferred display operand keeps its named block's names" {

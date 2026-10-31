@@ -1,18 +1,16 @@
-//! Clause 9 system functions in analog context, and their arguments.
+//! Clause 9 system functions in expression position: a `$`-call in, a MIR
+//! `call` or a folded value out. `lowerSysCall` reads as its steps: the
+//! context rules (§9.2), the name-specific rules (§4.6.1, §9.15, §9.17.3,
+//! §9.19), then the generic call over its written arguments.
 //!
-//! In: a `$`-call in expression position. Out: a MIR call or a folded value, and
-//! the host field (`$simparam`) it reads. Statement-position tasks are
-//! `analog/systask.zig`'s, and the §9.13 distributions `analog/random.zig`'s; the
-//! argument helpers here serve both. The §9.2 context tables
-//! (`isDigitalOnlySysFunc` and its siblings) end the file.
+//! Cites: §2.9, §3.4.7, §4.2.1.1, §4.3.1, §4.5.13, §4.5.15, §4.6.1, §4.7,
+//! §5.6.1.2, §6.6.3, §6.7, A.8.2, §9.2, §9.5, §9.5.3, §9.5.4, §9.5.4.1,
+//! §9.5.4.2, §9.5.7, §9.12, §9.13, §9.15, §9.17.3, §9.18, §9.19, §9.20,
+//! §9.21, §9.22, §9.23, §12.32.1, §17.10; IEEE 1364-2005 §17.10.
 //!
-//! LRM clauses this file's code cites: §2.8.3, §2.9, §3.3, §3.4.7, §4.2.1.1, §4.3,
-//! §4.3.1, §4.4, §4.5.13, §4.5.15, §4.6.1, §4.7, §4.7.2, §5.6.1.2, §6.6.3, §6.7, §7,
-//! §7.6, §9.2, §9.4, §9.4.1, §9.4.2, §9.5, §9.5.1, §9.5.2, §9.5.3, §9.5.4, §9.5.4.1,
-//! §9.5.4.2, §9.5.7, §9.6, §9.7, §9.8, §9.9, §9.10, §9.11, §9.12, §9.13, §9.14, §9.15,
-//! §9.17, §9.17.3, §9.18, §9.19, §9.20, §9.21, §9.22, §9.22.1, §9.22.2, §9.22.3, §9.23,
-//! §9.23.1, §9.23.4, §12.32.1.
-//! IEEE 1364-2005 clauses cited: §17.1.1.1, §17.10, §17.11.1.
+//! Contents:
+//! - `pub fn refuseReserved(self: *Lower, tok: u32, name: []const u8) Oom!bool`
+//! - `pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -42,11 +40,15 @@ const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
 
-// ---- ch9 system functions ---------------------------------------------------
+/// §9.15 Table 9-28: the string parameter names `$simparam$str` "shall"
+/// support, and the only ones VerA knows.
+const simparam_str_names = [_][]const u8{ "analysis_name", "analysis_type", "cwd", "module", "instance", "path" };
 
 /// E1014: a source call spells a name VerA mints for itself
 /// (`Callee.synthetic`). True when refused.
 pub fn refuseReserved(self: *Lower, tok: u32, name: []const u8) Oom!bool {
+    assert(name.len != 0);
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0);
     if (!Mir.Callee.fromName(name).synthetic()) return false;
     try self.err(tok, .E1014, "`{s}`", .{name});
     return true;
@@ -56,7 +58,7 @@ pub fn refuseReserved(self: *Lower, tok: u32, name: []const u8) Oom!bool {
 /// validity rules are checked here; what survives becomes a `call` whose simulator
 /// semantics codegen's `emitCall` owns, or a folded value.
 pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
-    assert(self.exprValid(e));
+    assert(e == .none or self.exprValid(e));
     assert(self.file.exprs.tag(e) == .sys_call);
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
@@ -451,6 +453,8 @@ fn lowerLimitUser(self: *Lower, e: Ast.ExprId, fd: *const Ast.FuncDecl, sys_args
 /// averaging `(C + C_prev)/2`. A value with no unknown dependence is its own
 /// past value (the same rule as `coeffIsConst`).
 fn lowerPrev(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     assert(ex.tag(e) == .sys_call);
     const args = ex.args(e);
@@ -468,6 +472,7 @@ fn lowerPrev(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// Returns `name`'s position in the module's port list (§9.19's "port
 /// identifier"), or null.
 fn portOrdinal(self: *const Lower, name: []const u8) ?i64 {
+    assert(name.len != 0);
     const m = self.module orelse return null;
     for (m.ports, 0..) |p, k| if (std.mem.eql(u8, self.file.str(p.name), name)) return @intCast(k);
     return null;
@@ -476,19 +481,16 @@ fn portOrdinal(self: *const Lower, name: []const u8) ?i64 {
 /// Returns a system function's result type from `callee.zig`'s `ty` column, the
 /// list `callee.ty` reads too. An unlisted name, including a user `$name`, is real.
 fn sysFuncTy(name: []const u8) Ty {
-    return switch (Mir.callee.ty(Mir.Callee.fromName(name))) {
+    assert(name.len != 0);
+    const ty: Ty = switch (Mir.callee.ty(Mir.Callee.fromName(name))) {
         .real => .real,
         .int => .integer,
         .str => .string,
         .wide => .wide,
     };
+    if (Mir.Callee.fromName(name) == .systf) assert(ty == .real); // §12.32.1: a host function is real unless registered integer
+    return ty;
 }
-
-// ---- §9.2 which context a system function belongs to -----------------------
-
-/// §9.15 Table 9-28: the string parameter names `$simparam$str` "shall"
-/// support, and the only ones VerA knows.
-const simparam_str_names = [_][]const u8{ "analysis_name", "analysis_type", "cwd", "module", "instance", "path" };
 
 test "Clause 9 system functions: context and argument rules" {
     try Lower.expectBodies(&.{

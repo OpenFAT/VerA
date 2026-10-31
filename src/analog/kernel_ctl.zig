@@ -1,4 +1,17 @@
+//! §9.17 analog kernel control: `$bound_step`, `$discontinuity` and VerA's
+//! `$vera_reject_step` in, running minimums over SSA places out, each turned
+//! into one synthetic `call` (or a `Lowered` value) the host reads after an
+//! accepted step; and §9.7.3's halt after an `$error` in `analog initial`.
+//!
+//! Cites: §2.7, §3.3, §4.2.1.1, §9.7.3, §9.17, §9.17.1, §9.17.2.
+//!
+//! Contents:
+//! - `pub fn lowerKernelCtl(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!bool`
+//! - `pub fn finishKernelCtl(self: *Lower) Oom!void`
+//! - `pub fn haltAfterInitError(self: *Lower) Oom!void`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -14,6 +27,8 @@ const Const = Lower.Const;
 /// call because both tasks write to the host, and an unread call would be
 /// dropped. Returns true when `name` was one of them.
 pub fn lowerKernelCtl(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!bool {
+    assert(self.blockValid(self.cur));
+    assert(name.len != 0);
     // §9.17.2 `$bound_step ( expression ) ;` — "the simulator shall ensure that
     // the next time step taken is no larger than the smallest $bound_step()
     // argument currently active", so the accumulation is a running minimum.
@@ -119,22 +134,13 @@ pub fn lowerKernelCtl(self: *Lower, tok: u32, name: []const u8, args: []const As
     return false;
 }
 
-/// Returns the kernel-control place in `slot`, creating it on first use seeded
-/// to +inf in the entry block. +inf is both `fmin`'s identity and "the model
-/// asked for nothing", so no "was it called" flag has to survive the CFG.
-fn kernelCtlPlace(self: *Lower, slot: *?Ssa.Place) Oom!Ssa.Place {
-    if (slot.*) |p| return p;
-    const p = self.builder.newPlace();
-    try self.builder.writeVariable(p, .entry, .f_inf);
-    slot.* = p;
-    return p;
-}
-
 /// §9.17.1/§9.17.2. Turns each accumulated kernel-control place into exactly one
 /// synthetic `call`, whose single argument is the value the host must read.
 /// `names.enumerateUnits` gives that call a unit; `codegen` (`state.zig` `emitStateMachine`)
 /// evaluates the unit once per accepted step and stores it into `Instance`.
 pub fn finishKernelCtl(self: *Lower) Oom!void {
+    assert(self.blockValid(self.cur));
+    assert(self.module != null); // once, after the analog blocks
     if (self.systask_state.reject_iteration_place) |p| self.out.reject_iteration = try self.builder.readVariable(p, self.cur);
     if (self.systask_state.reject_step_place) |p| self.out.reject_step = try self.builder.readVariable(p, self.cur);
     if (self.systask_state.status_places) |ps| {
@@ -158,6 +164,8 @@ pub fn finishKernelCtl(self: *Lower) Oom!void {
 /// `$fatal(1, …)` ends the run there, after the block's own prints and before
 /// any of the analog block's. Status 1: a run an error ended (`$fatal`'s floor).
 pub fn haltAfterInitError(self: *Lower) Oom!void {
+    assert(self.blockValid(self.cur));
+    assert(self.in_analog_initial == false); // after the block, not in it
     const ie = self.systask_state.init_error orelse return;
     const hit = try self.builder.readVariable(ie.place, self.cur);
     const then_b = try self.mir.addBlock(self.arena);
@@ -175,6 +183,21 @@ pub fn haltAfterInitError(self: *Lower) Oom!void {
     try self.gotoBlock(join);
     try self.builder.sealBlock(join);
     self.cur = join;
+}
+
+// ---- private ----
+
+/// Returns the kernel-control place in `slot`, creating it on first use seeded
+/// to +inf in the entry block. +inf is both `fmin`'s identity and "the model
+/// asked for nothing", so no "was it called" flag has to survive the CFG.
+fn kernelCtlPlace(self: *Lower, slot: *?Ssa.Place) Oom!Ssa.Place {
+    assert(self.blockValid(self.cur));
+    assert(self.mir.blockCount() != 0); // the entry block the seed goes in
+    if (slot.*) |p| return p;
+    const p = self.builder.newPlace();
+    try self.builder.writeVariable(p, .entry, .f_inf);
+    slot.* = p;
+    return p;
 }
 
 test "lower: §9.17.2 $bound_step accumulates through the CFG, not unconditionally" {

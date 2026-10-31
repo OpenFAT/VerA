@@ -1,3 +1,17 @@
+//! §9.4.3 format strings: a task's arguments in, E0810/E0819/E0825/E0826/
+//! E0828 out for a conversion its operand cannot pair with, and each integer
+//! operand's IEEE 1364 width and sign recorded for the formatter
+//! (`$display$width`).
+//!
+//! Cites: §2.7, §3.2, §3.3, §3.5.1, §5.4.1, §5.5.1, §5.5.2, §7, §7.3.1,
+//! §9.4.1, §9.4.2, §9.4.3, §9.4.5, §9.5.2, §9.7.1, §9.7.2, §9.7.3, §17.1.1.2,
+//! §17.1.1.3; IEEE 1364-2005 §5.4.1, §17.1.1.3.
+//!
+//! Contents:
+//! - `pub fn checkFormatPairing(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!void`
+//! - `pub fn prepareFormatArgs(self: *Lower, tok: u32, live: []const Ast.ExprId, tys: []const Ty, vals: []Mir.Value, skip: usize) Oom!void`
+//! - `pub fn messageStart(c: Mir.Callee, tys: []const Ty) usize`
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
@@ -11,6 +25,30 @@ const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
 
+/// One conversion `nextConv` found: its letter, lowercased, whether its
+/// flags carried '#', whether anything (a flag, a width, a precision) stood
+/// between the `%` and the letter, and the larger of its width and
+/// precision (0 when neither is written; saturating).
+const Conv = struct { letter: u8, alt: bool, prefixed: bool = false, field: u64 = 0 };
+
+/// The largest field width or precision an analog-context format may
+/// write (#45; `docs/specification/Vague_Decisions.md` §7): 2^30. The device
+/// kernel `str_kernels.zCReal` indexes digits as i32, the precision plus
+/// f64's 309 integer digits and its rounding position, and `cg_display`
+/// sizes each field's scratch as width + precision + 328 bytes in a u64;
+/// at 2^30 both are exact with room to spare. Past it is E0828.
+const max_format_field: u64 = 1 << 30;
+
+/// An integer expression's width in bits (1..64, the carrier) and sign.
+const IntSize = struct { bits: u7, signed: bool };
+
+const one_bit: IntSize = .{ .bits = 1, .signed = false };
+
+/// §3.2's `integer`, the width the analog context computes every integer
+/// operation at (`render.intBin32`, VD-116), and IEEE 1364 Table 5-22's
+/// unsized constant ("Same as integer").
+const integer: IntSize = .{ .bits = 32, .signed = true };
+
 /// §9.4.3: "for each % character (except %m, %% and %l) that appears in a
 /// string, a corresponding expression argument shall be supplied after the
 /// string."
@@ -21,6 +59,7 @@ const TypedValue = Lower.TypedValue;
 /// that folds to a string, the rule `cg_display.emitDisplayTask` uses. A format
 /// built at run time is not checked.
 pub fn checkFormatPairing(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!void {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0);
     const at, const fmt = for (args, 0..) |a, i| {
         if (try lower_sysfunc_args.outputLiteral(self, a)) |text| break .{ i, text };
         if (lower_constfold.constEval(self, a)) |c| switch (c) {
@@ -37,74 +76,10 @@ pub fn checkFormatPairing(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!
 
     // A null argument (`,,`) is still an argument — §9.4.1 gives it a
     // rendering — so the supply is the slot count, not the non-empty one.
+    assert(at < args.len);
     const have = args.len - (at + 1);
     if (have >= need) return;
     try self.err(tok, .E0810, "the format string has {d} consuming format specifiers but {d} arguments follow it", .{ need, have });
-}
-
-/// One conversion `nextConv` found: its letter, lowercased, whether its
-/// flags carried '#', whether anything (a flag, a width, a precision) stood
-/// between the `%` and the letter, and the larger of its width and
-/// precision (0 when neither is written; saturating).
-const Conv = struct { letter: u8, alt: bool, prefixed: bool = false, field: u64 = 0 };
-
-/// The largest field width or precision an analog-context format may
-/// write (#45; `docs/specification/Vague_Decisions.md` §7): 2^30. The device
-/// kernel `str_kernels.zCReal` indexes digits as i32, the precision plus
-/// f64's 309 integer digits and its rounding position, and `cg_display`
-/// sizes each field's scratch as width + precision + 328 bytes in a u64;
-/// at 2^30 both are exact with room to spare. Past it is E0828.
-const max_format_field: u64 = 1 << 30;
-
-/// §9.4.3 `%[flags][width][.precision]conv`: the next conversion at or after
-/// `i.*`, `%%` included (letter '%'), with `i.*` moved past it; null when
-/// the format ends first. The flags are `str_kernels.zcFlag`'s set, the one
-/// `cg_display` and `zSFormatRt` read, so a flag is never taken for the
-/// letter (#41); of them only '#' is reported. A digit is read as a digit
-/// before as a flag, so the '0' of `%10d` is part of the width while a
-/// leading '0' (the flag) adds nothing to it.
-fn nextConv(fmt: []const u8, i: *usize) ?Conv {
-    const p = std.mem.findScalarPos(u8, fmt, i.*, '%') orelse return null;
-    i.* = p + 1;
-    var alt = false;
-    var run: u64 = 0; // the number being read: the width, then the precision
-    var field: u64 = 0;
-    while (i.* < fmt.len) : (i.* += 1) {
-        const c = fmt[i.*];
-        if (std.ascii.isDigit(c)) {
-            run = run *| 10 +| (c - '0');
-            field = @max(field, run);
-        } else if (c == '.') {
-            run = 0;
-        } else if (str_k.zcFlag(c)) |f| {
-            alt = alt or f == str_k.zc_alt;
-            run = 0;
-        } else break;
-    }
-    if (i.* >= fmt.len) return null;
-    const letter = std.ascii.toLower(fmt[i.*]);
-    const prefixed = i.* > p + 1;
-    i.* += 1;
-    return .{ .letter = letter, .alt = alt, .prefixed = prefixed, .field = field };
-}
-
-/// §9.4.3: "for each % character (except %m, %% and %l) ... a corresponding
-/// expression argument shall be supplied". `%5%` is refused (E0826, #42)
-/// and counted as `%%` is, consuming nothing, so E0810 does not add a
-/// second finding for it.
-fn consumes(letter: u8) bool {
-    return letter != '%' and letter != 'm' and letter != 'l';
-}
-
-/// Preserve the source integer width before SSA replaces variables with their
-/// values. The synthetic identity is consumed by the display formatter only;
-/// other conversions still see the same numeric value.
-fn formatOperand(self: *Lower, e: Ast.ExprId, tv: TypedValue) Oom!Mir.Value {
-    const size = intSize(self, e) orelse {
-        try self.err(self.file.exprs.mainTok(e), .E0819, "numeric `%s` needs a preserved integral width; this expression's sizing is not implemented", .{});
-        return tv.v;
-    };
-    return self.call("$display$width", &.{ tv.v, try self.mir.addIntConst(self.arena, size.bits) });
 }
 
 /// §9.4.3's other pairing rule: each conversion against its operand's type.
@@ -225,12 +200,72 @@ pub fn prepareFormatArgs(self: *Lower, tok: u32, live: []const Ast.ExprId, tys: 
 /// drops when it is not a string, and §9.7.1's `$finish`/`$stop` level,
 /// which `cg_display.finishLevel` reads as a constant.
 pub fn messageStart(c: Mir.Callee, tys: []const Ty) usize {
+    assert(Mir.callee.takesFormat(c) or Mir.callee.family(c) == .simctl);
     if (Mir.callee.family(c) == .file_out) if (Mir.callee.fdArg(c)) |fd| return @min(tys.len, @as(usize, fd) + 1);
     if (c == .@"$fatal" and tys.len > 0 and tys[0] != .string) return 1;
     // §9.7.1/§9.7.2: `$finish`'s and `$stop`'s one operand is the diagnostic
     // level `finishLevel` reads as a constant, never message text.
     if (c == .@"$finish" or c == .@"$stop") return tys.len;
     return 0;
+}
+
+// ---- private ----
+
+/// §9.4.3 `%[flags][width][.precision]conv`: the next conversion at or after
+/// `i.*`, `%%` included (letter '%'), with `i.*` moved past it; null when
+/// the format ends first. The flags are `str_kernels.zcFlag`'s set, the one
+/// `cg_display` and `zSFormatRt` read, so a flag is never taken for the
+/// letter (#41); of them only '#' is reported. A digit is read as a digit
+/// before as a flag, so the '0' of `%10d` is part of the width while a
+/// leading '0' (the flag) adds nothing to it.
+fn nextConv(fmt: []const u8, i: *usize) ?Conv {
+    assert(i.* <= fmt.len);
+    const p = std.mem.findScalarPos(u8, fmt, i.*, '%') orelse return null;
+    i.* = p + 1;
+    var alt = false;
+    var run: u64 = 0; // the number being read: the width, then the precision
+    var field: u64 = 0;
+    while (i.* < fmt.len) : (i.* += 1) {
+        const c = fmt[i.*];
+        if (std.ascii.isDigit(c)) {
+            run = run *| 10 +| (c - '0');
+            field = @max(field, run);
+        } else if (c == '.') {
+            run = 0;
+        } else if (str_k.zcFlag(c)) |f| {
+            alt = alt or f == str_k.zc_alt;
+            run = 0;
+        } else break;
+    }
+    if (i.* >= fmt.len) return null;
+    const letter = std.ascii.toLower(fmt[i.*]);
+    const prefixed = i.* > p + 1;
+    i.* += 1;
+    assert(i.* <= fmt.len);
+    return .{ .letter = letter, .alt = alt, .prefixed = prefixed, .field = field };
+}
+
+/// §9.4.3: "for each % character (except %m, %% and %l) ... a corresponding
+/// expression argument shall be supplied". `%5%` is refused (E0826, #42)
+/// and counted as `%%` is, consuming nothing, so E0810 does not add a
+/// second finding for it.
+fn consumes(letter: u8) bool {
+    assert(!std.ascii.isUpper(letter)); // `nextConv` lowercased it
+    return letter != '%' and letter != 'm' and letter != 'l';
+}
+
+/// Preserve the source integer width before SSA replaces variables with their
+/// values. The synthetic identity is consumed by the display formatter only;
+/// other conversions still see the same numeric value.
+fn formatOperand(self: *Lower, e: Ast.ExprId, tv: TypedValue) Oom!Mir.Value {
+    assert(e == .none or self.exprValid(e));
+    assert(self.valueValid(tv.v));
+    assert(self.blockValid(self.cur));
+    const size = intSize(self, e) orelse {
+        try self.err(self.file.exprs.mainTok(e), .E0819, "numeric `%s` needs a preserved integral width; this expression's sizing is not implemented", .{});
+        return tv.v;
+    };
+    return self.call("$display$width", &.{ tv.v, try self.mir.addIntConst(self.arena, size.bits) });
 }
 
 /// IEEE 1364 §17.1.1.3: "the values written to the output ... are sized
@@ -240,6 +275,8 @@ pub fn messageStart(c: Mir.Callee, tys: []const Ty) usize {
 /// 1-bit result needs one column, which an operand with no record prints.
 /// An operand `intSize` cannot size takes an `integer`'s field.
 fn decimalWidth(self: *Lower, e: Ast.ExprId, v: *Mir.Value) Oom!void {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const size = intSize(self, e) orelse integer;
     if (size.bits == 1 and !size.signed) return;
     v.* = try self.call("$display$width", &.{
@@ -248,16 +285,6 @@ fn decimalWidth(self: *Lower, e: Ast.ExprId, v: *Mir.Value) Oom!void {
         try self.mir.addIntConst(self.arena, @intFromBool(size.signed)),
     });
 }
-
-/// An integer expression's width in bits (1..64, the carrier) and sign.
-const IntSize = struct { bits: u7, signed: bool };
-
-const one_bit: IntSize = .{ .bits = 1, .signed = false };
-
-/// §3.2's `integer`, the width the analog context computes every integer
-/// operation at (`render.intBin32`, VD-116), and IEEE 1364 Table 5-22's
-/// unsized constant ("Same as integer").
-const integer: IntSize = .{ .bits = 32, .signed = true };
 
 /// The width and sign of integer operand `e`, the one rule every display
 /// conversion sizes by: `%d`'s field (`decimalWidth`), the radix digits and
@@ -274,6 +301,7 @@ const integer: IntSize = .{ .bits = 32, .signed = true };
 /// zero-extend what the carrier holds sign-extended), a parameter a model
 /// card can give another width (VD-089), or a constant past 64 bits.
 fn intSize(self: *Lower, e: Ast.ExprId) ?IntSize {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     return switch (ex.tag(e)) {
         .int_literal => blk: {
@@ -314,6 +342,7 @@ fn intSize(self: *Lower, e: Ast.ExprId) ?IntSize {
 /// `integer` when each operand is sized and at most 32 bits wide, the
 /// operands the analog context's 32-bit operation keeps whole; else null.
 fn narrowOperands(self: *Lower, a: Ast.ExprId, b: ?Ast.ExprId) ?IntSize {
+    assert(a == .none or self.exprValid(a));
     if ((intSize(self, a) orelse return null).bits > 32) return null;
     if (b) |r| if ((intSize(self, r) orelse return null).bits > 32) return null;
     return integer;
@@ -326,6 +355,7 @@ fn narrowOperands(self: *Lower, a: Ast.ExprId, b: ?Ast.ExprId) ?IntSize {
 /// with no type or range a model card can set, whose width is the card
 /// value's (`lower_constfold.hostSizedParam`, VD-089), known only at run time.
 fn identSize(self: *Lower, name: []const u8) ?IntSize {
+    assert(name.len != 0);
     var w: u32 = 32;
     var signed = true;
     if (self.vars.get(name)) |slot| {
@@ -345,6 +375,7 @@ fn identSize(self: *Lower, name: []const u8) ?IntSize {
         signed = p.source_signed orelse true;
     };
     if (w == 0 or w > 64) return integer;
+    assert(w <= 64);
     return .{ .bits = @intCast(w), .signed = signed };
 }
 

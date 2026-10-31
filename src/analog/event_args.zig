@@ -1,4 +1,14 @@
+//! §5.10.3 monitored-event arguments: a `cross`/`above`/`timer`/`absdelta`
+//! call in, E0517 out for a required slot left empty, an enable that is not
+//! an integer, a negative tolerance, or a tolerance without its direction.
+//!
+//! Cites: §5.10, §5.10.3, §5.10.3.1, §5.10.3.2, §5.10.3.3, §5.10.3.4, A.6.5.
+//!
+//! Contents:
+//! - `pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bool`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
 const Lower = @import("Lower.zig");
@@ -9,6 +19,8 @@ const Oom = Lower.Oom;
 /// digital event controls. Numeric bounds apply only to folded operands;
 /// cross()'s dependencies between omitted slots are structural.
 pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bool {
+    assert(e == .none or self.exprValid(e));
+    assert(self.file.exprs.tag(e) == .event_function);
     const args = self.file.exprs.args(e);
     // §5.10.3: a monitored event names what it monitors. A required slot
     // left empty (`cross()`, `timer(, 1n)`, `absdelta(V(a))`) is refused
@@ -32,7 +44,10 @@ pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bo
         try self.err(self.file.exprs.mainTok(e), .E0517, "`{s}()` takes at most {d} arguments, got {d} (A.6.5)", .{ name, k + 1, args.len });
         complete = false;
     };
-    if (!complete) return false;
+    if (!complete) {
+        assert(self.had_error);
+        return false;
+    }
     // "enable ... shall evaluate to an integer" (§5.10.3.1-§5.10.3.3); only a
     // folded non-integral value is refused. absdelta's is checked below.
     if (enableSlot(name)) |k| if (k < args.len and args[k] != .none) {
@@ -123,19 +138,25 @@ pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bo
     return true;
 }
 
+// ---- private ----
+
 /// The argument slots a §5.10.3 monitored event requires, in order.
 fn requiredSlots(name: []const u8) []const []const u8 {
+    assert(name.len != 0);
     if (std.mem.eql(u8, name, "cross") or std.mem.eql(u8, name, "above")) return &.{"expr"};
     if (std.mem.eql(u8, name, "timer")) return &.{"start_time"};
     if (std.mem.eql(u8, name, "absdelta")) return &.{ "expr", "delta" };
+    assert(!std.mem.eql(u8, name, "cross")); // answered above
     return &.{};
 }
 
 /// The enable slot of cross (§5.10.3.1), above (§5.10.3.2) and timer
 /// (§5.10.3.3); absdelta's is checked with its bounds.
 fn enableSlot(name: []const u8) ?usize {
+    assert(name.len != 0);
     if (std.mem.eql(u8, name, "cross")) return 4;
     if (std.mem.eql(u8, name, "above") or std.mem.eql(u8, name, "timer")) return 3;
+    assert(requiredSlots(name).len != 1 or std.mem.eql(u8, name, "absdelta")); // every one-slot form has an enable
     return null;
 }
 
