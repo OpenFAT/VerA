@@ -682,8 +682,8 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             float_lanes.instPin(self);
             return self.b("inst.{s}", .{self.names.held_names[heldIdx(self, args)]});
         },
-        .@"$wide" => return gen_wide.emitWide(self, args, false),
-        .@"$wide$int" => return gen_wide.emitWide(self, args, true),
+        .@"$wide" => return gen_wide.emitWide(self, args, .bits),
+        .@"$wide$int" => return gen_wide.emitWide(self, args, .int),
         // VerA's `vera_timepoint` (§2.9): is statement b's cache current, and
         // its slot k (`Lower.TpBlock`, the fields `emitInstance` declares).
         .@"$tp_hit" => {

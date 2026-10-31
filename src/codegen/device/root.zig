@@ -17,6 +17,11 @@ const codegen_file = @import("codegen.zig");
 const cg_display_file = @import("cg_display.zig");
 const compat = @import("compat.zig");
 
+/// Test support: a source lowered and generated (codegen/harness.zig).
+pub const Harness = @import("codegen/harness.zig").Harness;
+/// The runtime kernels a device carries, as Zig source text.
+pub const kernel_text = @import("codegen/kernel_text.zig");
+
 /// Emits a device from proven MIR; see `codegen.generate`.
 pub const generate = codegen_file.generate;
 /// Settings that change what is generated.
@@ -34,10 +39,6 @@ pub const sayRecords = cg_display_file.sayRecords;
 /// The spaces the emitter indents `n` levels with (capped, so deep nesting
 /// stays linear in text).
 pub const indentWidth = codegen_file.Gen.indWidth;
-/// Test support: a source lowered and generated (codegen/harness.zig).
-pub const Harness = @import("codegen/harness.zig").Harness;
-/// The runtime kernels a device carries, as Zig source text.
-pub const kernel_text = @import("codegen/kernel_text.zig");
 
 /// Pass-1 shim: the old `device.codegen` namespace. Delete in pass 2.
 pub const codegen = compat.codegen;

@@ -1,13 +1,20 @@
-//! Backend facts per `ir.op.OpKind` (§4.5, §5.10.3, §9.17 operators): the
-//! operator's `Instance` fields as Zig source and whether `updateState` needs
-//! `dt`. Whether its kernel reads the current input and which argument is
-//! the §5.10.3 `enable` are `ir.op`'s (`needsInput`, `enableArg`).
-//! `absdelay`, `laplace` and `zi` size their fields from the call, so they are
-//! `.from_args` and codegen computes them.
-//! LRM clauses cited: §4.5.4, §4.5.5, §4.5.7, §4.5.8, §4.5.9, §4.5.10, §4.5.11,
-//! §4.5.12, §5.10.3, §9.17.1, §9.17.2.
+//! Backend facts per `ir.op.OpKind` (§4.5, §5.10.3, §9.17 operators): an
+//! operator kind in, its `Instance` fields as Zig source and whether
+//! `updateState` needs `dt` out. Whether its kernel reads the current input
+//! and which argument is the §5.10.3 `enable` are `ir.op`'s (`needsInput`,
+//! `enableArg`). `absdelay`, `laplace` and `zi` size their fields from the
+//! call, so they are `.from_args` and codegen computes them.
+//! Cites: §4.5.4, §4.5.5, §4.5.7, §4.5.8, §4.5.9, §4.5.10, §4.5.11, §4.5.12,
+//! §5.10.3, §9.17.1, §9.17.2.
+//!
+//! Contents:
+//! - `pub const Slot = struct { suffix, default, note }`
+//! - `pub const Row = struct { lrm, needs_dt, slots, shape }`
+//! - `pub const table: std.EnumArray(OpKind, Row)`
+//! - `pub fn get(k: OpKind) Row`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const OpKind = @import("ir").op.OpKind;
 const kt = @import("kernel_text.zig");
 
@@ -151,9 +158,23 @@ pub const table = std.EnumArray(OpKind, Row).init(.{
     },
 });
 
-/// Returns `k`'s row.
+comptime {
+    // The shape `get` promises of every row, checked once at build time.
+    for (std.enums.values(OpKind)) |k| {
+        const r = table.get(k);
+        // `.static` claims `slots` is complete; the other two shapes own none.
+        if (r.shape == .static) assert(r.slots.len != 0);
+        if (r.shape != .static) assert(r.slots.len == 0);
+    }
+}
+
+/// Returns `k`'s row: a `.static` row lists at least one slot, any other
+/// shape none.
 pub fn get(k: OpKind) Row {
-    return table.get(k);
+    const r = table.get(k);
+    if (r.shape == .static) assert(r.slots.len != 0);
+    if (r.shape != .static) assert(r.slots.len == 0);
+    return r;
 }
 
 test "op_zig: the table is total and internally consistent" {

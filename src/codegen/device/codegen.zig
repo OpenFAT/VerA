@@ -28,6 +28,13 @@ const diag = @import("diag");
 const plan_args = @import("codegen/plan/args.zig");
 const prepare = @import("prepare.zig");
 
+/// The generated device and its per-unit ranges: the value `zigbuild` writes
+/// and builds, defined there (`zigbuild.Output`) so the build never imports
+/// codegen. `generate` produces it.
+pub const Output = @import("zigbuild").Output;
+/// The emitter's state; see `Gen.zig`.
+pub const Gen = @import("Gen.zig");
+
 /// Every way `generate` fails. Out of memory aside, each is a refusal of the
 /// whole device: no partial `Output` is returned and nothing the caller
 /// passed is changed. A refusal confined to one unit is not an error here but
@@ -43,10 +50,6 @@ pub const Error = Allocator.Error || error{
 /// Sentinel for "no index" in the u32 columns (`Hoist.idx`, a non-held array).
 pub const none_u32: u32 = std.math.maxInt(u32);
 
-/// The generated device and its per-unit ranges: the value `zigbuild` writes
-/// and builds, defined there (`zigbuild.Output`) so the build never imports
-/// codegen. `generate` produces it.
-pub const Output = @import("zigbuild").Output;
 
 /// §9.4: whether display tasks are dropped, recorded or emitted (plan/args.zig).
 pub const Display = plan_args.Display;
@@ -54,8 +57,6 @@ pub const Display = plan_args.Display;
 /// The value-type lattice lives with the analysis that computes it.
 pub const VTy = Analysis.VTy;
 
-/// The emitter's state; see `Gen.zig`.
-pub const Gen = @import("Gen.zig");
 
 /// Settings that change what is generated.
 pub const Options = struct {

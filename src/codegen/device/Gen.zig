@@ -18,6 +18,7 @@
 //! - `pub fn ind(self: *Gen, n: u32) Error!void`
 //! - `pub fn indWidth(n: u32) u32`
 //! - `pub fn arrMask(self: *const Gen, id: usize) []u64`
+//! - `F64Context.hash`, `F64Context.eql` (the `f64_cache` context)
 //! - method aliases: `probeInstance`, `rootRef`, `emitFile`, `fmtF64`,
 //!   `renderVal`, `f64Const`, `f64Expr`, `abort`, `strArg`
 
@@ -51,7 +52,6 @@ const gen_host = @import("codegen/host_expr.zig");
 const gen_call = @import("codegen/call.zig");
 const gen_dispatch = @import("codegen/dispatch.zig");
 
-const Gen = @This();
 const Error = @import("codegen.zig").Error;
 const Display = plan_args.Display;
 
@@ -293,6 +293,30 @@ pub const SystfSite = struct { name: []const u8, tok: u32, task: bool };
 /// is byte-identical.
 pub const max_indent: u32 = 32;
 
+// The sub-file API the `cg_*.zig` emitters call as methods (`g.renderVal(...)`).
+
+/// `setup.probeInstance`: the instance an auxiliary core sweep passes. May
+/// write a `var table_probe` declaration to `out` first.
+pub const probeInstance = gen_setup.probeInstance;
+/// `setup.rootRef`: the text reading a setup root's `Model.su` field.
+pub const rootRef = gen_setup.rootRef;
+/// `file.emitFile`, the codegen spine. Asserts nothing was emitted yet.
+pub const emitFile = gen_file.emitFile;
+/// `file.fmtF64`: an f64 as Zig literal text, arena-owned and memoized.
+pub const fmtF64 = gen_file.fmtF64;
+/// `render.renderVal`: appends a value's Zig expression, converted to the
+/// requested LRM type (§4.2.1.1/§4.2.1.2).
+pub const renderVal = gen_render.renderVal;
+/// `host_expr.f64Const`: plain-f64 text over `model`, or null.
+pub const f64Const = gen_host.f64Const;
+/// `host_expr.f64Expr`: `f64Const`, or E0515 and a poisoned unit.
+pub const f64Expr = gen_host.f64Expr;
+/// `call.abort`: reports a refusal at the call being rendered and poisons the
+/// unit.
+pub const abort = gen_call.abort;
+/// `call.strArg`: the string literal at `args[i]`, or null.
+pub const strArg = gen_call.strArg;
+
 /// Hash context for `f64_cache`. The key is an f64's bit pattern, so an
 /// integer mix is enough where `AutoContext` would run Wyhash over its bytes.
 const F64Context = struct {
@@ -305,6 +329,8 @@ const F64Context = struct {
         return x == y;
     }
 };
+
+const Gen = @This();
 
 comptime {
     // `indWidth` multiplies by 4 in u32: the widest indent fits with room.
@@ -378,30 +404,6 @@ pub fn arrMask(self: *const Gen, id: usize) []u64 {
     assert(self.arr_mask.len == self.arr_s.len * self.mw);
     return self.arr_mask[id * self.mw ..][0..self.mw];
 }
-
-// The sub-file API the `cg_*.zig` emitters call as methods (`g.renderVal(...)`).
-
-/// `setup.probeInstance`: the instance an auxiliary core sweep passes. May
-/// write a `var table_probe` declaration to `out` first.
-pub const probeInstance = gen_setup.probeInstance;
-/// `setup.rootRef`: the text reading a setup root's `Model.su` field.
-pub const rootRef = gen_setup.rootRef;
-/// `file.emitFile`, the codegen spine. Asserts nothing was emitted yet.
-pub const emitFile = gen_file.emitFile;
-/// `file.fmtF64`: an f64 as Zig literal text, arena-owned and memoized.
-pub const fmtF64 = gen_file.fmtF64;
-/// `render.renderVal`: appends a value's Zig expression, converted to the
-/// requested LRM type (§4.2.1.1/§4.2.1.2).
-pub const renderVal = gen_render.renderVal;
-/// `host_expr.f64Const`: plain-f64 text over `model`, or null.
-pub const f64Const = gen_host.f64Const;
-/// `host_expr.f64Expr`: `f64Const`, or E0515 and a poisoned unit.
-pub const f64Expr = gen_host.f64Expr;
-/// `call.abort`: reports a refusal at the call being rendered and poisons the
-/// unit.
-pub const abort = gen_call.abort;
-/// `call.strArg`: the string literal at `args[i]`, or null.
-pub const strArg = gen_call.strArg;
 
 test indWidth {
     try std.testing.expectEqual(0, indWidth(0));

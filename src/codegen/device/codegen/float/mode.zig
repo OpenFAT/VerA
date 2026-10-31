@@ -1,9 +1,17 @@
-//! Float mode of the generated device: prover verdicts and options in, the
-//! `@setFloatMode` of each body and the f32-Jacobian permission out. Pure.
-//! `lanes.zig` holds the lane half; `Float` is the emit state both share.
-//! LRM clauses cited: §4.3.
+//! Float mode of the generated device: the prover's per-job verdicts and the
+//! f32-Jacobian options in, the `@setFloatMode` the shared core compiles in
+//! and the folded f32-Jacobian permission out. Pure. `lanes.zig` holds the
+//! lane half; `Float` is the emit state both share.
+//! Cites: §4.3.
+//!
+//! Contents:
+//! - `pub const Float = struct`
+//! - `pub const Jac = enum { off, permit, host }`
+//! - `pub fn of(jac_f32: bool, jac_f32_host: bool) Jac` (on `Jac`)
+//! - `pub fn coreMode(jobs: []const Job) proof.FloatMode`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const proof = @import("prove").proof;
 const Job = @import("../plan/jobs.zig").Job;
 
@@ -44,19 +52,27 @@ pub const Jac = enum {
 
     /// Returns the permission for the two CLI options; `host` implies `permit`.
     pub fn of(jac_f32: bool, jac_f32_host: bool) Jac {
-        if (jac_f32_host) return .host;
-        return if (jac_f32) .permit else .off;
+        const j: Jac = if (jac_f32_host) .host else if (jac_f32) .permit else .off;
+        if (jac_f32_host) assert(j == .host);
+        if (!jac_f32 and !jac_f32_host) assert(j == .off);
+        return j;
     }
 };
 
 /// Returns the mode the shared core compiles in: the strictest mode of every
-/// job it serves, excluding the §9.4 display job (LRM §4.3).
+/// job it serves, excluding the §9.4 display job (LRM §4.3). No served job
+/// (a display-only model) forces nothing, so the result is `.optimized`.
 pub fn coreMode(jobs: []const Job) proof.FloatMode {
     var mode: proof.FloatMode = .optimized;
+    var served: usize = 0;
     for (jobs) |job| {
         if (job.kind == .display) continue;
         mode = .strictest(mode, job.mode);
+        served += 1;
+        // The join only climbs: every served job is at most as strict.
+        assert(proof.FloatMode.strictest(mode, job.mode) == mode);
     }
+    if (served == 0) assert(mode == .optimized);
     return mode;
 }
 
@@ -69,6 +85,7 @@ test "the core is strict if any served job is; the f32 knob normalises host ⇒ 
     try std.testing.expectEqual(proof.FloatMode.optimized, coreMode(&.{ j(.resist, .optimized), j(.display, .strict) }));
     try std.testing.expectEqual(proof.FloatMode.strict, coreMode(&.{ j(.resist, .optimized), j(.held, .strict) }));
     try std.testing.expectEqual(Jac.host, Jac.of(false, true));
+    try std.testing.expectEqual(Jac.host, Jac.of(true, true));
     try std.testing.expectEqual(Jac.permit, Jac.of(true, false));
     try std.testing.expectEqual(Jac.off, Jac.of(false, false));
 }

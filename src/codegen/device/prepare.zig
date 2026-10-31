@@ -9,6 +9,7 @@
 //!
 //! Contents:
 //! - `pub fn prepare(g: *Gen) Error!void`
+//! - `DynCtrl.isDynamic` (private type; `plan_jobs`' comptime interface)
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -34,6 +35,16 @@ const Gen = @import("Gen.zig");
 const Error = @import("codegen.zig").Error;
 
 const none_u32 = std.math.maxInt(u32);
+
+/// The one fact `plan_jobs` needs from the renderer: does a §4.5 control
+/// argument (or §4.6.3 stimulus) render host-side, or only off the core?
+const DynCtrl = struct {
+    g: *Gen,
+    /// Whether `v` renders only off the core (`host_expr.ctrlIsDynamic`).
+    pub fn isDynamic(d: DynCtrl, v: Mir.Value) Error!bool {
+        return gen_host.ctrlIsDynamic(d.g, v);
+    }
+};
 
 /// Writes every device plan into `g`. Fails only on allocation, except that
 /// a refused noise export or a varying timepoint read sets `g.any_fatal`
@@ -102,16 +113,6 @@ pub fn prepare(g: *Gen) Error!void {
 }
 
 // ---- private ----
-
-/// The one fact `plan_jobs` needs from the renderer: does a §4.5 control
-/// argument (or §4.6.3 stimulus) render host-side, or only off the core?
-const DynCtrl = struct {
-    g: *Gen,
-    /// Whether `v` renders only off the core (`host_expr.ctrlIsDynamic`).
-    pub fn isDynamic(d: DynCtrl, v: Mir.Value) Error!bool {
-        return gen_host.ctrlIsDynamic(d.g, v);
-    }
-};
 
 /// §3.2.2 marks each `Lowered.mem_arrays` row whose storage carries a
 /// derivative: some load reads a version a derivative-carrying store reached.
