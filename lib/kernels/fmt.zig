@@ -8,7 +8,7 @@
 //! §17.1.1.4, §17.1.1.7, §17.3, §19.8.
 const std = @import("std");
 const Int = @import("integer.zig");
-const str_k = @import("str_kernels.zig");
+const str_k = @import("str_real.zig");
 
 /// §9.4.3 Table 9-22's four conversions. The value is the base, so a digit is
 /// `@ctz(base)` bits wide for the three power-of-two members and decimal is the
