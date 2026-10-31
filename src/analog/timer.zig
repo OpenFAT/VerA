@@ -100,7 +100,6 @@ const DeferredTimer = struct {
 /// outside a replay or for an expression the replay recomputes.
 pub fn replayedExpr(self: *const Lower, e: Ast.ExprId) ?TypedValue {
     assert(e == .none or self.exprValid(e));
-    assert(e == .none or self.exprValid(e));
     const replay = self.timer_state.timer_replay orelse return null;
     return replay.get(e);
 }

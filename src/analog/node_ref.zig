@@ -1,3 +1,5 @@
+const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
@@ -15,6 +17,7 @@ const VecRange = Lower.VecRange;
 /// branch as the port it names, and a branch with a vector terminal as a
 /// vector branch. Runs after `declareNets`, so every terminal has its row.
 pub fn declareBranches(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     // §3.12 named branches.
     for (module.branches) |b| {
         const base = self.file.str(b.name);
@@ -105,6 +108,7 @@ pub fn checkPortBranchDecls(self: *Lower) Oom!void {
 /// takes "scalars or individual elements of a vector" (§5.5.2), so a bare vector
 /// name reports E0351 and an undeclared element E0351/E0352.
 pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32 {
+    assert(e == .none or self.exprValid(e));
     if (e == .none) return ground;
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
@@ -196,6 +200,8 @@ pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32 {
 ///
 /// ponytail: allocates a fresh arena copy per reference; such names are rare.
 pub fn netKey(self: *Lower, name: []const u8, tok: u32) Oom![]const u8 {
+    assert(name.len != 0);
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     if (name.len == 0 or name[name.len - 1] != ']') return name;
     if (tok >= self.tok_starts.len) return name;
     const at = self.tok_starts[tok];
@@ -206,6 +212,7 @@ pub fn netKey(self: *Lower, name: []const u8, tok: u32) Oom![]const u8 {
 /// `internNode` for a vector element, spelled as the source does (`bus[3]`).
 /// Looks up on a stack buffer and allocates only for a new element.
 pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!u32 {
+    assert(base.len != 0);
     var buf: [lower_shape.elem_key_len]u8 = undefined;
     const key = try lower_shape.elemKey(self, &buf, base, &.{i});
     const name = self.node_voltages.getKey(key) orelse try self.arena.print("{s}[{d}]", .{ base, i });
@@ -215,6 +222,7 @@ pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!u32 {
 /// Folds a declared `[msb:lsb]` (§3.6.3 Syntax 3-6); the bounds are constant
 /// expressions (`electrical [0:4-1] in;`, §6.5.2.2). Returns null after a diagnostic.
 pub fn foldDim(self: *Lower, d: Ast.Dim, tok: u32) Oom!?VecRange {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     const msb = lower_constfold.shapeEval(self, d.msb) orelse {
         try self.err(tok, .E0352, "the msb of the range is not a constant expression", .{});
         return null;
@@ -239,6 +247,7 @@ pub fn foldDim(self: *Lower, d: Ast.Dim, tok: u32) Oom!?VecRange {
 
 // E0352 for a range bound that folded to a real with no integer value.
 fn refuseBound(self: *Lower, tok: u32, which: []const u8, c: Lower.Const) Oom!?VecRange {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     try self.err(tok, .E0352, "the {s} of the range is {e}, which is no integer", .{ which, c.asReal() });
     return null;
 }
@@ -261,6 +270,7 @@ pub fn portRange(self: *Lower, p: *const Ast.Port) Oom!?VecRange {
 
 /// Whether branch terminal `e` is a part-select, `a[2:1]` or `a[b +: w]`.
 fn partSelect(self: *const Lower, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     if (e == .none or ex.tag(e) != .index) return false;
     return ex.tag(ex.rhs(e)) == .range or ex.tag(ex.rhs(e)) == .indexed_range;
@@ -277,6 +287,8 @@ const VecTerm = struct { name: []const u8, range: VecRange };
 /// Null after such a diagnostic; `declareBranches` then skips the branch
 /// (`partSelect`) rather than have `nodeOf` refuse the range again.
 pub fn vecTerminal(self: *Lower, e: Ast.ExprId, tok: u32) Oom!?VecTerm {
+    assert(e == .none or self.exprValid(e));
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     if (e == .none) return null;
     const ex = &self.file.exprs;
     if (ex.tag(e) == .ident) {

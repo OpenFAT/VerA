@@ -156,7 +156,6 @@ pub fn lowerValuePlusargs(self: *Lower, args: []const Ast.ExprId) Oom!Mir.Value 
     assert(args.len == 2);
     assert(args[0] != .none);
     assert(args[1] != .none);
-    assert(self.blockValid(self.cur));
     const user = (try lower_expr.lowerExpr(self, args[0])).v;
     const found = try self.call("$value$plusargs", &.{user});
     const slot = try lower_lvalue.resolveLvalue(self, args[1]) orelse return found;

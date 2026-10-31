@@ -12,13 +12,14 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Lower = @import("Lower.zig");
-const lower_constfold = @import("constfold.zig");
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
+const Lower = @import("Lower.zig");
+const lower_constfold = @import("constfold.zig");
 const lower_assign = @import("assign.zig");
 const lower_lvalue = @import("lvalue.zig");
 const Oom = Lower.Oom;
+
 /// One declared array dimension, normalized so `lo <= hi`.
 pub const Bounds = struct {
     lo: i64,
@@ -42,6 +43,8 @@ comptime {
 /// §3.2 puts no limit on the count: a multidimensional array is scalarized
 /// cell by cell (see `shapeCells`). Returns null after reporting E0307/E0308.
 pub fn dimsBounds(self: *Lower, dims: []const Ast.Dim, tok: u32, name: []const u8) Oom!?[]const Bounds {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    assert(name.len != 0);
     if (dims.len == 0) {
         try self.err(tok, .E0307, "`{s}` has no dimensions", .{name});
         return null;
@@ -143,6 +146,7 @@ pub fn subscriptBuf(self: *Lower, buf: *[max_stack_dims]i64, n: usize) Oom![]i64
 /// the key, so it has to outlive the call. Every *lookup* goes through
 /// `elemKey` instead — see there.
 pub fn elemName(self: *Lower, name: []const u8, idx: []const i64) Oom![]const u8 {
+    assert(name.len != 0);
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(self.arena, name);
     for (idx) |i| try out.print(self.arena, "[{d}]", .{i});
@@ -162,6 +166,7 @@ pub const elem_key_len = 1024 + 22 * 4;
 /// ponytail: an over-long identifier, or more than four dimensions, falls back
 /// to the arena. Truncating the key instead would alias two distinct elements.
 pub fn elemKey(self: *Lower, buf: *[elem_key_len]u8, name: []const u8, idx: []const i64) Oom![]const u8 {
+    assert(name.len != 0);
     if (name.len > buf.len) return try elemName(self, name, idx);
     @memcpy(buf[0..name.len], name);
     var n = name.len;
@@ -200,6 +205,7 @@ pub fn packedShapeWidth(self: *Lower, range: Ast.Dim) ?u32 {
 /// Everywhere else A.8.1's assignment_pattern has no empty element, and one is
 /// E0894 rather than a silent zero.
 pub fn flattenPattern(self: *Lower, e: Ast.ExprId, dims: []const Bounds, holes_ok: bool) Oom![]const Ast.ExprId {
+    assert(e == .none or self.exprValid(e));
     if (!holes_ok) try refuseHoles(self, e);
     const out = try self.arena.alloc(Ast.ExprId, shapeCells(dims));
     try fillPattern(self, e, dims, out);
@@ -207,6 +213,7 @@ pub fn flattenPattern(self: *Lower, e: Ast.ExprId, dims: []const Bounds, holes_o
 }
 
 fn refuseHoles(self: *Lower, e: Ast.ExprId) Oom!void {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     if (e == .none or ex.tag(e) != .assign_pattern) return;
     for (ex.args(e)) |el| {
@@ -245,6 +252,7 @@ fn fillPattern(self: *Lower, e: Ast.ExprId, dims: []const Bounds, out: []Ast.Exp
 /// included (§3.4) — and must be a non-negative integer (§4.2.13), else E0223
 /// and no elements, so every cell keeps its §3.2 zero default.
 pub fn patternElems(self: *Lower, e: Ast.ExprId) Oom![]const Ast.ExprId {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     const elems = ex.args(e);
     if (elems.len != 1 or ex.tag(elems[0]) != .pattern_repl) return elems;

@@ -8,6 +8,9 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const Elaborate = @import("elab").Elaborate;
+const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_discipline = @import("discipline.zig");
@@ -15,9 +18,6 @@ const lower_expr = @import("expr.zig");
 const lower_limit = @import("limit.zig");
 const lower_node = @import("node.zig");
 const lower_sysfunc = @import("sysfunc.zig");
-const Ast = @import("frontend").Ast;
-const Elaborate = @import("elab").Elaborate;
-const Mir = @import("ir").Mir;
 const lower_expr_op = @import("expr_op.zig");
 const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
@@ -81,6 +81,7 @@ pub fn popCond(self: *Lower) void {
 /// re-executes `analog initial` on a parameter change), emits a select over the
 /// candidates, re-lowering their conditions (`Cond.pure` makes that the same value).
 pub fn aliasProbe(self: *Lower, idx: u32) Oom!Mir.Value {
+    assert(self.blockValid(self.cur));
     const set = self.hier_name_state.runtime.get(idx) orelse return lower_node.probe(self, idx);
     var v = try lower_node.probe(self, set.base);
     for (set.entries.items) |en| {
@@ -95,6 +96,7 @@ pub fn aliasProbe(self: *Lower, idx: u32) Oom!Mir.Value {
 }
 
 fn condValue(self: *Lower, t: Cond) Oom!Mir.Value {
+    assert(self.blockValid(self.cur));
     var b: ?Mir.Value = null;
     if (t.labels.len == 0) {
         b = try self.toBool(try lower_expr.lowerExpr(self, t.e));
@@ -115,6 +117,8 @@ fn condValue(self: *Lower, t: Cond) Oom!Mir.Value {
 /// ponytail: refused rather than routed; route them through the same select
 /// the day a model needs one.
 pub fn refuseRuntime(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void {
+    assert(self.nodeValid(hi));
+    assert(self.nodeValid(lo));
     const rt = &self.hier_name_state.runtime;
     const idx = if (rt.contains(hi)) hi else if (rt.contains(lo)) lo else return;
     try self.err(tok, .E0812, "`{s}` is aliased under a parameter condition; VerA answers only a potential probe of it, not a contribution, a flow or a ddx", .{lower_node.nodeName(self, idx)});
@@ -134,6 +138,8 @@ const AliasHit = struct { idx: u32, direct: bool };
 /// message quoting its sentence. The alias is a `node_voltages` write made in source
 /// order, which gives §9.20's "the last evaluated call shall take precedence".
 pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []const Ast.ExprId) Oom!lower_limit.AliasResult {
+    assert(e == .none or self.exprValid(e));
+    assert(name.len != 0);
     const ex = &self.file.exprs;
     // 1. "It shall be an error for the $analog_node_alias() and
     // $analog_port_alias() system functions to be used outside the analog
@@ -349,6 +355,7 @@ fn bindAlias(self: *Lower, fname: []const u8, ref_name: []const u8, local: u32, 
 /// first and the device's own module name stripped only after it fails, since §6.7
 /// resolves the ambiguity "by giving priority to the local scope".
 fn resolveAliasNode(self: *Lower, path: []const u8) ?AliasHit {
+    assert(path.len != 0);
     if (lookupFlatNode(self, path)) |h| return h;
     var p = path;
     if (std.mem.startsWith(u8, p, "$root.")) p = p["$root.".len..];
@@ -390,6 +397,7 @@ fn callerParentPath(self: *const Lower) []const u8 {
 /// there is none. A name known only at run time (§9.16 "or a string variable")
 /// goes to `lowerSimprobeRuntime`.
 pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     const args = ex.args(e);
     if (args.len < 2) {
@@ -413,6 +421,8 @@ pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// §9.16 the value the sibling's parameter or output variable `path` (its
 /// flat name) has in this evaluation, or null when no such name exists.
 fn resolveProbe(self: *Lower, path: []const u8) Oom!?TypedValue {
+    assert(path.len != 0);
+    assert(self.blockValid(self.cur));
     // §6.4.3 "If a paramset output variable has the same name as a module
     // output variable, the paramset's value is reported for instances
     // using the paramset": first, and the nearest link's (last) wins.
@@ -441,6 +451,7 @@ fn resolveProbe(self: *Lower, path: []const u8) Oom!?TypedValue {
 /// §9.16's two outcomes for a name that does not resolve, in the clause's
 /// order: the optional expression, else an error.
 fn unresolvedProbe(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]const u8) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     const args = self.file.exprs.args(e);
     if (args.len >= 3 and args[2] != .none) return lower_expr.lowerExpr(self, args[2]);
     var b = self.errWith(self.file.exprs.mainTok(e), .E0817);
@@ -461,6 +472,7 @@ fn unresolvedProbe(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]con
 /// ponytail: E0823 for a name that may miss with no fallback, whose error
 /// §9.16 raises at run time; a guarded run-time error path is the upgrade.
 fn lowerSimprobeRuntime(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]const u8) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     const args = ex.args(e);
     assert(inst == null or param == null);
@@ -512,6 +524,9 @@ fn lowerSimprobeRuntime(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?
 /// `name == text ? hit : miss`, `name` a run-time string: a string
 /// comparison, as `==` between two strings is (§3.3 Table 3-3).
 fn matchArm(self: *Lower, name: TypedValue, text: []const u8, hit: Mir.Value, miss: Mir.Value) Oom!Mir.Value {
+    assert(self.valueValid(name.v));
+    assert(self.valueValid(hit));
+    assert(self.valueValid(miss));
     const want = try self.mir.addStrConst(self.arena, text);
     const eq = try self.emit(.ieq, &.{ name.v, want });
     return self.emit(.select, &.{ try self.toBool(.{ .v = eq, .ty = .integer }), hit, miss });
@@ -519,6 +534,7 @@ fn matchArm(self: *Lower, name: TypedValue, text: []const u8, hit: Mir.Value, mi
 
 /// E0823 at `arg`: a run-time `$simprobe` name VerA cannot resolve exactly.
 fn runtimeName(self: *Lower, arg: Ast.ExprId, why: []const u8) Oom!TypedValue {
+    assert(arg == .none or self.exprValid(arg));
     var b = self.errWith(self.file.exprs.mainTok(arg), .E0823);
     b.msg("this name has no value until the analog block runs, and {s}", .{why});
     b.help("spell the name as a string literal or a string parameter, or give the fallback expression", .{});

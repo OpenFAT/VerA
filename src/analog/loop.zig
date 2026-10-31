@@ -133,7 +133,6 @@ pub fn lowerFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
 /// exist, so it is a §3.4 shape parameter like an array bound.
 fn tryUnrollFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.StmtId, body: Ast.StmtId) Oom!bool {
     assert(cond == .none or self.exprValid(cond));
-    assert(cond == .none or self.exprValid(cond));
     const gv = genvarOf(self, init_s) orelse return false;
     // §6.6.1 "Both the initialization and iteration assignments shall assign
     // to the same genvar": a property of the text, so judged before any trip

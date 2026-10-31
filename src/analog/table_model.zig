@@ -9,14 +9,15 @@
 //! §9.21.5.
 
 const std = @import("std");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const Mir = @import("ir").Mir;
+const diag = @import("diag");
 const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
 const lower_sysfunc = @import("sysfunc.zig");
-const Ast = @import("frontend").Ast;
-const Mir = @import("ir").Mir;
-const diag = @import("diag");
 const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
@@ -49,6 +50,8 @@ pub const State = struct {
 /// first call is not seen (a known gap against §9.21.1). Array sources carry a
 /// unique snapshot site; codegen captures their rows at the first executed call.
 pub fn lowerTableModel(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const args = ex.args(e)[0 .. try lower_sysfunc_args.writtenArgs(self, e, "$table_model", ex.args(e)) orelse return poison];
 
@@ -213,6 +216,7 @@ pub fn lowerTableModel(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 
 /// Is this argument part of `table_data_source` rather than a lookup input?
 fn isTableSource(self: *Lower, a: Ast.ExprId) bool {
+    assert(a == .none or self.exprValid(a));
     if (isTableArray(self, a)) return true;
     const c = lower_constfold.constEval(self, a) orelse return false;
     return c == .str;
@@ -222,6 +226,7 @@ fn isTableSource(self: *Lower, a: Ast.ExprId) bool {
 /// variable names") or a pattern ("Arrays may be specified directly via the
 /// concatenation operator"). `appendVectorArg` reads both shapes.
 fn isTableArray(self: *Lower, a: Ast.ExprId) bool {
+    assert(a == .none or self.exprValid(a));
     const ex = &self.file.exprs;
     if (a == .none) return false;
     return switch (ex.tag(a)) {
@@ -240,6 +245,8 @@ const TableFile = struct { vals: []const f64, cols: usize };
 /// rules are checked in codegen's `planNoiseTable`, as for the vector form.
 /// The returned pairs are `self.arena`'s.
 pub fn readNoiseTableFile(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!?[]const f64 {
+    assert(e == .none or self.exprValid(e));
+    assert(name.len != 0);
     const f = (try readTableFile(self, e, name, "noise_table", .E0519, null)) orelse return null;
     if (f.cols != 2) {
         try self.err(self.file.exprs.mainTok(e), .E0519, "\"{s}\": LRM 4.6.4.3's input file is frequency / power PAIRS, one pair per line; found {d} numbers on a line", .{ name, f.cols });
@@ -268,6 +275,8 @@ fn readTableFile(
     code: diag.Code,
     missing: ?*bool,
 ) Oom!?TableFile {
+    assert(e == .none or self.exprValid(e));
+    assert(name.len != 0);
     const io = std.Io.Threaded.global_single_threaded.io();
     const dir: std.Io.Dir = .cwd();
     const text = blk: {
@@ -342,6 +351,7 @@ fn readTableFile(
 /// `leading = nd + ignored columns`, as Table 9-32's examples show (`"I,1CC,1CC;3"`
 /// needs "at least 6 column[s]"; `"3,D,I,1;3"` reads "column 7").
 fn parseTableCtl(self: *Lower, e: Ast.ExprId, ctl: []const u8, nd: usize, ncol: usize, ext: []u8, cmap: []usize) Oom!?usize {
+    assert(e == .none or self.exprValid(e));
     // "the function defaults to performing linear interpolation and linear
     // extrapolation in both dimensions" (§9.21.5), which Table 9-32's first row
     // states for every dimension: `""` is "default linear interpolation and

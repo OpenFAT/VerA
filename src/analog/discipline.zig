@@ -15,14 +15,15 @@
 //! §5.5.1, §7.4.3.
 
 const std = @import("std");
-const Lower = @import("Lower.zig");
-const lower_constfold = @import("constfold.zig");
-const lower_contrib = @import("contrib.zig");
-const lower_node = @import("node.zig");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const rules = @import("elab").discipline_rules;
 const diag = @import("diag");
+const Lower = @import("Lower.zig");
+const lower_constfold = @import("constfold.zig");
+const lower_contrib = @import("contrib.zig");
+const lower_node = @import("node.zig");
 const lower_branch = @import("branch.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
@@ -316,6 +317,7 @@ fn checkNatureAttrValue(self: *Lower, n: *const Ast.NatureDecl, a: Ast.NatureAtt
 /// Which source file a token came from (§3.13.1 scope comparisons). Only the
 /// preprocessor's segment map still knows; the prelude and user text are one stream.
 fn fileOf(self: *const Lower, tok: u32) diag.FileId {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     return self.bag.locate(self.tokenSpan(tok), null).file;
 }
 
@@ -348,6 +350,7 @@ pub fn natureOf(self: *Lower, name: Ast.StrId) NatureAttrs {
 
 /// Returns the declaration of the discipline named `name`, or null.
 pub fn disciplineDecl(self: *const Lower, name: []const u8) ?*const Ast.DisciplineDecl {
+    assert(name.len != 0);
     return rules.declOf(self.file, self.file.strings.find(name) orelse return null);
 }
 
@@ -364,6 +367,8 @@ pub fn nodeDisciplineConflict(self: *const Lower, an: []const u8, bn: []const u8
 /// access-function arguments (LRM §3.11), branch terminals (§3.12) and port
 /// connections (§7.4.3).
 pub fn checkNetCompat(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void {
+    assert(self.nodeValid(hi));
+    assert(self.nodeValid(lo));
     // §1.3.1.1: ground is the global reference, not a second net; `V(p)` spans one discipline.
     if (hi == ground or lo == ground) return;
     const an = self.out.nodes.items(.disc)[hi];

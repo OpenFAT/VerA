@@ -64,6 +64,8 @@ pub fn isHistoryless(name: []const u8) bool {
 /// path that lowers one must call this, including `lowerReactive`'s `ddt` spine,
 /// which bypasses `lowerFilter`. Returns false when the operator must not be lowered.
 pub fn checkOperatorPlace(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bool {
+    assert(e == .none or self.exprValid(e));
+    assert(name.len != 0);
     if (self.restrict) |ctx| {
         try self.err(self.file.exprs.mainTok(e), .E0422, "not allowed in {s}", .{ctx});
         return false;
@@ -97,6 +99,8 @@ pub fn checkOperatorPlace(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!boo
 /// stays a distinct `call` (one Instance state slot per site, §4.5.2). Vector
 /// coefficient arguments (§4.5.11, §4.5.12) are flattened as `<count>, e0, e1, ...`.
 pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
     const args = ex.args(e);
@@ -231,6 +235,8 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// s - d/dt(x) = 0 and x its charge. So DC reads the clause's zero, and the
 /// host integrates and truncation-checks x like any charge. Returns V(s).
 pub fn opDdt(self: *Lower, tok: u32, x: Mir.Value, abstol: f64, lte: bool) Oom!Mir.Value {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    assert(self.valueValid(x));
     const s = try lower_node.opStateNode(self, "ddt", abstol);
     const v = try lower_node.probe(self, s);
     try lower_reactive.stampOpRow(self, tok, s, v, x, true, lte);
@@ -244,6 +250,8 @@ pub fn opDdt(self: *Lower, tok: u32, x: Mir.Value, abstol: f64, lte: bool) Oom!M
 /// operator must be contained within a negative feedback loop that forces its
 /// argument to zero". Returns the operator's value.
 fn opIdt(self: *Lower, e: Ast.ExprId, vals: []const Mir.Value) Oom!Mir.Value {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     // ponytail: §4.5.5 idtmod stays in the device (`zIdtmod`), wrapped every
     // step. As a host unknown its state grows without bound, and a free-running
     // VCO's phase drifts with the rounding of |s|. Upgrade: a host that re-bases
@@ -315,6 +323,7 @@ fn opAbstol(self: *Lower, args: []const Ast.ExprId, slot: usize) f64 {
 /// `vera_interp` attribute, innermost wins: the call's own suffix, then the nearest
 /// enclosing statement's (`interp_stack`), then §4.5.7's "linear interpolation".
 fn absdelayQuad(self: *Lower, e: Ast.ExprId) Oom!bool {
+    assert(e == .none or self.exprValid(e));
     if (self.file.exprLte(e, .vera_interp)) |a| return interpQuad(self, a);
     return self.interp_stack.last() orelse false;
 }
@@ -378,6 +387,8 @@ fn abstolSlot(name: []const u8) ?usize {
 /// analysis" (§4.5.14). Judged on what the value depends on, so a tolerance
 /// held in a variable that only literals and parameters reach still passes.
 pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value {
+    assert(name.len != 0);
+    assert(e == .none or self.exprValid(e));
     if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
     // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
     const tv = try lower_expr.lowerExpr(self, e);
@@ -391,6 +402,7 @@ pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Va
 /// The abstol a bare `nature_identifier` or `net.potential.abstol` in a tolerance
 /// slot stands for, or null. A variable or parameter with the same name wins (§2.8).
 fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     // §5.5.3's other spelling of the same value, `n1.potential.abstol`. Its last
     // sentence makes the two interchangeable in this slot.
@@ -433,6 +445,7 @@ pub const NatureRef = union(enum) {
 /// discipline, or returns null when it is a §6.8 hierarchical name instead.
 /// `abstol` comes from `DisciplineInfo`, where a §3.6.2.3 discipline override is applied.
 pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
+    assert(e == .none or self.exprValid(e));
     const parts = self.file.exprs.nameParts(e);
     if (parts.len != 3) return null;
     const half = self.file.str(parts[1]);
@@ -470,6 +483,7 @@ pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
 /// legal and unknowable here. Checked in lowering, where the LRM's names for the
 /// arguments are still known for the message.
 fn checkFilterArgBounds(self: *Lower, name: []const u8, args: []const Ast.ExprId) Oom!void {
+    assert(name.len != 0);
     const Bound = enum {
         positive,
         non_negative,
@@ -558,6 +572,7 @@ fn nullZerosOk(name: []const u8) bool {
 /// pattern `'{a,b}` or an array name (§3.4.4). Returns false when `a` is a scalar,
 /// appending nothing. Invalidates element pointers of `out` if it grows.
 pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.ExprId) Oom!bool {
+    assert(a == .none or self.exprValid(a));
     const ex = &self.file.exprs;
     switch (ex.tag(a)) {
         .assign_pattern, .concat => {

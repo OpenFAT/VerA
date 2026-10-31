@@ -11,12 +11,12 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
 const Lower = @import("Lower.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_func = @import("func.zig");
 const lower_node = @import("node.zig");
 const lower_sysfunc = @import("sysfunc.zig");
-const Ast = @import("frontend").Ast;
 const lower_branch = @import("branch.zig");
 const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
@@ -26,6 +26,7 @@ const TypedValue = Lower.TypedValue;
 /// none (Syntax 9-12's other two forms put a string there, or nothing).
 /// A variable or parameter with the same name wins over the function (LRM §2.8).
 pub fn limitUserFunc(self: *Lower, a: Ast.ExprId) ?*const Ast.FuncDecl {
+    assert(a == .none or self.exprValid(a));
     // ponytail: lookup only; add an error set if resolution ever does fallible work.
     const ex = &self.file.exprs;
     if (a == .none or ex.tag(a) != .ident) return null;
@@ -48,6 +49,8 @@ pub fn limitUserFunc(self: *Lower, a: Ast.ExprId) ?*const Ast.FuncDecl {
 /// clamped region. `$limit$uf` (codegen `zLimitUf`) shifts `vlim.val()` onto the probe.
 /// Asserts that `args` holds at least the access function and the function name.
 pub fn lowerLimitUser(self: *Lower, e: Ast.ExprId, fd: *const Ast.FuncDecl, args: []const Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     assert(args.len >= 2);
     // §9.17.3 the first argument is an ACCESS FUNCTION, never a net.
     const vnew = try self.toReal(try lower_sysfunc_args.lowerSysArg(self, args[0], false));
@@ -72,6 +75,7 @@ pub fn lowerLimitUser(self: *Lower, e: Ast.ExprId, fd: *const Ast.FuncDecl, args
 /// The `limit_slots` index for this access function, minting nothing: `scanCallSites`
 /// created every slot before the body was lowered. Null when `a` is not an access function.
 fn limitSlotOf(self: *Lower, a: Ast.ExprId) Oom!?usize {
+    assert(a == .none or self.exprValid(a));
     const t = try limitSlotKey(self, a) orelse return null;
     return findSlot(self, t);
 }
@@ -90,6 +94,7 @@ fn findSlot(self: *const Lower, t: lower_branch.Target) ?usize {
 /// Called twice per expression; the bag dedupes `branchOf`'s diagnostics by
 /// `(code, span)`, so a malformed access function is reported once.
 fn limitSlotKey(self: *Lower, a: Ast.ExprId) Oom!?lower_branch.Target {
+    assert(a == .none or self.exprValid(a));
     if (a == .none or self.file.exprs.tag(a) != .branch_access) return null;
     return lower_branch.branchOf(self, a);
 }

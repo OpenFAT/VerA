@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -15,6 +16,7 @@ const Edge = lower_discrete_mark.Edge;
 const Oom = Lower.Oom;
 
 pub fn checkDiscreteContext(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     if (module.discrete.len == 0) return;
     // §7.3.6.1: a named event triggered in the analog context and named in the
     // digital one crosses the A/D boundary as an A2D event, which the
@@ -62,6 +64,7 @@ pub fn checkDiscreteContext(self: *Lower, module: *const Ast.ModuleDecl) Oom!voi
 /// shadowing a module-level `real x` is still recorded. Give `Ast.SeqBlock` a
 /// scope walk here if a model needs it.
 fn scanContext(self: *Lower, id: Ast.StmtId, comptime discrete: bool, context: if (discrete) u32 else bool, ctx: *DiscreteCtx) Oom!void {
+    assert(id == .none or @backingInt(id) < self.stmtCount());
     if (id == .none or (!discrete and ctx.assigned.count() == 0)) return;
     const pushed = try ctx.shadows.enter(self, id);
     defer ctx.shadows.leave(pushed);
@@ -180,6 +183,7 @@ fn scanContext(self: *Lower, id: Ast.StmtId, comptime discrete: bool, context: i
 /// read from the ordinary analog block is what §7.3.1 Table 7-1 is the
 /// conversion table for.
 fn scanContextExpr(self: *Lower, e: Ast.ExprId, comptime discrete: bool, is_initial: if (discrete) void else bool, ctx: *DiscreteCtx) Oom!void {
+    assert(e == .none or self.exprValid(e));
     if (e == .none or (!discrete and !is_initial)) return;
     const ex = &self.file.exprs;
     const tag = ex.tag(e);
@@ -279,6 +283,7 @@ fn probeTerminal(ex: *const Ast.ExprStore, e: Ast.ExprId) bool {
 /// its net and ground. §6.7.1 a hierarchical name that names neither is
 /// E0901, as in the analog block; a simple one the digital half resolves.
 fn recordProbeTerminal(self: *Lower, t: Ast.ExprId, only: bool) Oom!void {
+    assert(t == .none or self.exprValid(t));
     const ex = &self.file.exprs;
     const key = if (ex.tag(t) == .ident) self.file.str(ex.strOf(t)) else blk: {
         var parts: std.ArrayList([]const u8) = .empty;
@@ -303,6 +308,7 @@ fn recordProbeTerminal(self: *Lower, t: Ast.ExprId, only: bool) Oom!void {
 /// event (§7.3.5). The same code and wording as `lower_func.lowerUserCall`'s
 /// call from an analog block.
 fn digitalCallsIn(self: *Lower, e: Ast.ExprId) Oom!void {
+    assert(e == .none or self.exprValid(e));
     if (e == .none) return;
     const ex = &self.file.exprs;
     if (ex.tag(e) == .call) if (self.module) |m| for (m.functions) |*fd| {
@@ -336,6 +342,7 @@ fn probeOutsideEventFn(file: *const Ast.SourceFile, e: Ast.ExprId) ?Ast.ExprId {
 /// arguments, that no analog event statement assigns (a `Lowered.discrete_reads`
 /// name not held as `.event`), or null.
 fn freeVarOutsideEventFn(self: *const Lower, e: Ast.ExprId) ?Ast.ExprId {
+    assert(e == .none or self.exprValid(e));
     if (e == .none) return null;
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {

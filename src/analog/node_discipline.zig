@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const discipline_rules = @import("elab").discipline_rules;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
@@ -18,6 +19,7 @@ const ground = Lower.ground;
 /// `inout` ban on signal-flow ports (E0360) and §3.6.3.2's ban on a discrete
 /// net's nodeset (E0366).
 pub fn resolveDisciplines(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     // §7.4 discipline resolution, the one rule of it VerA implements: §10.2's
     // default. It runs here, after every declaration has been interned: a port
     // and a body declaration of the same net are two entries
@@ -107,6 +109,8 @@ pub fn isSignalFlow(self: *const Lower, dname: []const u8) bool {
 /// Applies the `default_discipline in force at `main_tok` for a `q` signal to
 /// net `name`, or to each scalarised element when it is a §3.6.3 vector (LRM §10.2).
 fn applyDefaultToAll(self: *Lower, name: []const u8, main_tok: u32, q: ?Preprocessor.Qualifier) Oom!void {
+    assert(name.len != 0);
+    assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     const r = self.out.vectors.get(name) orelse
         return applyDefaultDiscipline(self, try lower_node_ref.netKey(self, name, main_tok), main_tok, q);
     var key_buf: [lower_shape.elem_key_len]u8 = undefined;
@@ -125,6 +129,8 @@ fn qualifierOf(kind: Ast.NetKind) ?Preprocessor.Qualifier {
 /// `default_discipline directive." So only a net that still has none, and only a
 /// directive preceding its declaration, qualified for its type `q` or unqualified.
 fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?Preprocessor.Qualifier) Oom!void {
+    assert(name.len != 0);
+    assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     if (self.opts.directives.disciplines.len == 0) return;
     const idx = self.node_voltages.get(name) orelse return;
     if (idx == ground) return;
@@ -138,6 +144,7 @@ fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?Pre
 
 /// §10.2 the `default_discipline in force for a `q` signal at token `main_tok`, or null.
 fn defaultDisciplineAt(self: *const Lower, main_tok: u32, q: ?Preprocessor.Qualifier) ?[]const u8 {
+    assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     if (main_tok >= self.tok_starts.len) return null;
     return Preprocessor.DefaultDiscipline.inForce(self.opts.directives.disciplines, self.tok_starts[main_tok], q);
 }
@@ -154,6 +161,7 @@ fn defaultDisciplineAt(self: *const Lower, main_tok: u32, q: ?Preprocessor.Quali
 /// vendor-specific method, so only the directive in force at the primitive can
 /// supply the connection's discipline. Must run after `applyDefaultToAll`.
 fn checkPrimitiveDisciplines(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     for (module.gates) |g| {
         try checkPrimitiveTerminal(self, g.out, g.main_tok, "gate");
         for (g.ins) |t| try checkPrimitiveTerminal(self, t, g.main_tok, "gate");
@@ -163,6 +171,7 @@ fn checkPrimitiveDisciplines(self: *Lower, module: *const Ast.ModuleDecl) Oom!vo
 }
 
 fn checkPrimitiveTerminal(self: *Lower, term: Ast.ExprId, prim_tok: u32, what: []const u8) Oom!void {
+    assert(term == .none or self.exprValid(term));
     const ex = &self.file.exprs;
     const base = self.file.lvalueBase(term);
     if (base == .none or ex.tag(base) != .ident) return;
@@ -192,6 +201,8 @@ fn checkPrimitiveTerminal(self: *Lower, term: Ast.ExprId, prim_tok: u32, what: [
 /// how multiple drivers resolve, which VerA does not model. Upgrade: a discrete
 /// net type on `Ast.NetDecl`.
 pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void {
+    assert(name.len != 0);
+    assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     if (Preprocessor.NetTypeRegion.inForce(self.opts.directives.nettypes, self.tokStart(main_tok), .default) != .none) return;
     var b = self.errWith(main_tok, .E0367);
     b.msg("`{s}` was never declared, and `default_nettype none is in force", .{name});
@@ -209,6 +220,7 @@ pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void
 /// ponytail: 1.0 stands in for §19.9's Pu1 strength; the upgrade is discrete net
 /// resolution, where a pull is a driver rather than a potential.
 pub fn applyUnconnectedDrive(self: *Lower) Oom!void {
+    assert(self.blockValid(self.cur));
     if (self.opts.directives.drives.len == 0) return;
     for (self.design.unconnected_inputs) |site| {
         const drive = Preprocessor.DriveRegion.inForce(self.opts.directives.drives, self.tokStart(site.main_tok), .default);

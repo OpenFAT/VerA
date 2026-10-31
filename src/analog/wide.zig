@@ -34,11 +34,12 @@
 //! §5.4.1, §5.5.1-§5.5.3, Table 5-6 and Table 5-22.
 
 const std = @import("std");
-const Lower = @import("Lower.zig");
+const assert = std.debug.assert;
 const Lowered = @import("ir").Lowered;
-const lower_expr = @import("expr.zig");
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
+const Lower = @import("Lower.zig");
+const lower_expr = @import("expr.zig");
 const lower_expr_name = @import("expr_name.zig");
 const lower_expr_select = @import("expr_select.zig");
 const Oom = Lower.Oom;
@@ -109,6 +110,7 @@ const Build = struct {
 
 /// §5.5.3 `r = value` for wide `reg` `r` of `width` bits: its new bits.
 pub fn rhs(self: *Lower, width: u32, value: Ast.ExprId) Oom!Mir.Value {
+    assert(value == .none or self.exprValid(value));
     var b: Build = .{ .l = self };
     const st = try selfType(&b, value);
     if (!b.ok) return zero(self, width);
@@ -126,6 +128,7 @@ pub fn rhs(self: *Lower, width: u32, value: Ast.ExprId) Oom!Mir.Value {
 /// output argument, a `$sscanf` target, any write of a 32-bit signed value
 /// (§5.5.3: sign-extended, since the right-hand side is signed).
 pub fn fromInt(self: *Lower, width: u32, v: Mir.Value) Oom!Mir.Value {
+    assert(self.valueValid(v));
     var b: Build = .{ .l = self };
     const leaf = try b.node(.{ .op = .leaf_int, .width = 32, .signed = true, .arg = try b.arg(v) });
     return b.finish("$wide", try b.node(.{ .op = .resize, .width = width, .signed = true, .a = leaf }));
@@ -142,6 +145,8 @@ pub fn zero(self: *Lower, width: u32) Oom!Mir.Value {
 /// from the `reg`'s LSB and `width` its bits; Table 7-1's 31-bit limit was
 /// checked by the caller.
 pub fn select(self: *Lower, slot: VarSlot, lo: u32, width: u32) Oom!Mir.Value {
+    assert(self.nodeValid(lo));
+    assert(self.blockValid(self.cur));
     var b: Build = .{ .l = self };
     const base = try b.node(.{ .op = .leaf_wide, .width = slot.reg_width.?, .signed = slot.reg_signed, .arg = try b.arg(try self.builder.readVariable(slot.place, self.cur)) });
     return b.finish("$wide$int", try selectNode(&b, base, slot.reg_width.?, lo, width));
@@ -584,6 +589,7 @@ fn literal(b: *Build, e: Ast.ExprId, st: T) Oom!u32 {
 /// A two-state logic literal's low 64 bits as an i64 (its exact value when
 /// an i64 holds it, `Integer.Literal.asExactInt`).
 pub fn literalLow64(self: *Lower, e: Ast.ExprId) i64 {
+    assert(e == .none or self.exprValid(e));
     const n = self.file.exprs.logicValue(e);
     if (n.asExactInt()) |v| return v;
     return @bitCast(n.values()[0]);

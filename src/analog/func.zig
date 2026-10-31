@@ -14,6 +14,8 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_event = @import("event.zig");
@@ -22,8 +24,6 @@ const lower_limit = @import("limit.zig");
 const lower_stmt = @import("stmt.zig");
 const lower_shape = @import("shape.zig");
 const lower_var = @import("var.zig");
-const Ast = @import("frontend").Ast;
-const Mir = @import("ir").Mir;
 const lower_expr_select = @import("expr_select.zig");
 const lower_math = @import("math.zig");
 const lower_assign = @import("assign.zig");
@@ -88,6 +88,7 @@ pub fn scanCallSites(
     fns: if (limits) void else []const Ast.FuncDecl,
     out: if (limits) void else *std.ArrayList(u32),
 ) Oom!void {
+    assert(id == .none or @backingInt(id) < self.stmtCount());
     if (id == .none) return;
     // Every edge of the statement (`SourceFile.stmtEdges`): a `$limit` or a
     // call is a site wherever it is written, a for-loop's init and step, a
@@ -113,6 +114,7 @@ fn scanCallSitesExpr(
     fns: if (limits) void else []const Ast.FuncDecl,
     out: if (limits) void else *std.ArrayList(u32),
 ) Oom!void {
+    assert(e == .none or self.exprValid(e));
     if (e == .none) return;
     const ex = &self.file.exprs;
     const tag = ex.tag(e);
@@ -138,6 +140,7 @@ fn scanCallSitesExpr(
 /// reports through `unknownCall`; a digital function called from analog context
 /// reports E0436 and is inlined anyway (LRM §7.3.7).
 pub fn lowerUserCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
     const m = self.module orelse return poison;
@@ -478,6 +481,7 @@ fn leaveFuncConsts(self: *Lower, shadowed: *std.ArrayList(Shadow)) Oom!void {
 /// analog variable or an array assignment pattern of analog variables", or null
 /// for anything else.
 fn arrayActualCells(self: *Lower, actual: Ast.ExprId) Oom!?usize {
+    assert(actual == .none or self.exprValid(actual));
     const ex = &self.file.exprs;
     return switch (ex.tag(actual)) {
         .ident => if (self.arrays.get(self.file.str(ex.strOf(actual)))) |info| lower_shape.shapeCells(info.dims) else null,
@@ -497,6 +501,7 @@ fn arrayActualCells(self: *Lower, actual: Ast.ExprId) Oom!?usize {
 /// wrong size or is not one of those two shapes. Pattern elements lower as
 /// expressions; `funcArrayOut` is where write-back needs storage.
 fn funcArrayIn(self: *Lower, actual: Ast.ExprId, ty: Ty, out: []Mir.Value) Oom!bool {
+    assert(actual == .none or self.exprValid(actual));
     const ex = &self.file.exprs;
     switch (ex.tag(actual)) {
         .ident => {
@@ -547,6 +552,7 @@ fn funcArrayIn(self: *Lower, actual: Ast.ExprId, ty: Ty, out: []Mir.Value) Oom!b
 /// ordinary lvalue, so a pattern element that is not writable reports the usual
 /// E0313/E0316 from `resolveLvalue` (§4.7.2.3 says "analog variables").
 fn funcArrayOut(self: *Lower, actual: Ast.ExprId, vals: []const Mir.Value) Oom!void {
+    assert(actual == .none or self.exprValid(actual));
     const ex = &self.file.exprs;
     switch (ex.tag(actual)) {
         .ident => {

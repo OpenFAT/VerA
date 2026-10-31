@@ -49,7 +49,6 @@ const IndexChain = struct { name: Ast.StrId, subs: []const Ast.ExprId };
 /// Returns the current value at `lv`.
 pub fn readLvalue(self: *Lower, lv: Lvalue) Oom!Mir.Value {
     assert(self.blockValid(self.cur));
-    assert(self.blockValid(self.cur));
     return switch (lv.at) {
         .place => |p| self.builder.readVariable(p, self.cur),
         .elem => |el| self.emit(if (lv.ty == .integer) .iload else .fload, &.{ try self.builder.readVariable(el.place, self.cur), el.index }),

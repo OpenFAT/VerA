@@ -9,13 +9,14 @@
 //! IEEE 1364-2005 clauses cited: §17.9.3.
 
 const std = @import("std");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const Mir = @import("ir").Mir;
+const dist = @import("elab").dist;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
 const lower_var = @import("var.zig");
-const Ast = @import("frontend").Ast;
-const Mir = @import("ir").Mir;
-const dist = @import("elab").dist;
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const VarSlot = Lower.VarSlot;
@@ -48,6 +49,9 @@ const InternalSeed = struct { seed: VarSlot, ready: VarSlot };
 ///
 /// Returns null when `name` is not one of the 17.
 pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!?TypedValue {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    assert(name.len != 0);
+    assert(self.blockValid(self.cur));
     const d = dist.of(name) orelse return null;
     const ex = &self.file.exprs;
     self.out.uses.insert(.rng);
@@ -215,6 +219,7 @@ pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.E
 /// flag defers a model-card parameter's initialization until the call runs;
 /// neither an unevaluated branch nor a discarded Newton iterate consumes it.
 fn internalSeed(self: *Lower, tok: u32) Oom!InternalSeed {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     const scope = self.inlining.last() orelse self.scope_path;
     const key = try self.arena.print("{d}:{s}:{d}", .{ self.cur_unit, scope, tok });
     const entry = try self.random_state.rng_internal.getOrPut(self.arena, key);

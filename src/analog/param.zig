@@ -15,25 +15,27 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const hier_param = @import("elab").hier_param;
-const Lower = @import("Lower.zig");
 const Elaborate = @import("elab").Elaborate;
-const lower_constfold = @import("constfold.zig");
-const lower_expr = @import("expr.zig");
-const lower_shape = @import("shape.zig");
-const lower_var = @import("var.zig");
 const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
+const Lower = @import("Lower.zig");
+const lower_constfold = @import("constfold.zig");
+const lower_expr = @import("expr.zig");
+const lower_shape = @import("shape.zig");
+const lower_var = @import("var.zig");
 const lower_expr_name = @import("expr_name.zig");
 const Oom = Lower.Oom;
 const Const = Lower.Const;
 const astTy = Lower.astTy;
+
 /// §3.4 every parameter of the module, in source order, so a default may read
 /// an earlier one (§6.3.4): the §6.3.6 geometry aliases first, then each
 /// declaration, then the §6.4.2 selection parameters marked as shape. Runs
 /// before the ports, whose ranges may read a parameter.
 pub fn lowerParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     // One row per scalar declaration and per system alias, sized once: grown
     // row by row in the arena, the table left ~2.8x its final size behind in
     // abandoned copies (210 KB for psp103's 847 rows). An array parameter's
@@ -78,6 +80,7 @@ pub fn lowerParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 /// parameter (`aliasSystemParam`). E0331 when the alias collides, E0303 when
 /// the target is unknown.
 pub fn declareAliasParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     // §3.4 parameters were lowered above the port loop, in source order, so a
     // later default may still reference an earlier parameter (§6.3.4).
     // §3.4.7 aliasparam: a second name for an existing parameter.
@@ -231,6 +234,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
 /// references": the first hierarchical name in `e`, or null. A §5.5.3 nature
 /// attribute reference (`net.potential.attr`) is a constant, not a reference.
 fn oomrInDefault(self: *const Lower, e: Ast.ExprId) ?Ast.ExprId {
+    assert(e == .none or self.exprValid(e));
     if (e == .none) return null;
     const ex = &self.file.exprs;
     if (ex.tag(e) == .hier_ident) {
@@ -253,6 +257,7 @@ fn oomrInDefault(self: *const Lower, e: Ast.ExprId) ?Ast.ExprId {
 /// over earlier parameters, and a bound that reads an overridable parameter has
 /// no single value at compile time.
 fn checkParamRange(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8, folded: ?Const) Oom!void {
+    assert(name.len != 0);
     const c = folded orelse return;
     if (c == .str) {
         var has_from = false;
@@ -307,6 +312,7 @@ fn checkParamRange(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8, f
 /// One end of a §3.4.2 value_range. A.2.5 lets it be `inf` / `-inf`, which is
 /// not a constant_expression and so cannot go through `constEval`.
 fn rangeBound(self: *Lower, e: Ast.ExprId) ?f64 {
+    assert(e == .none or self.exprValid(e));
     if (e == .none) return null;
     return switch (self.file.exprs.tag(e)) {
         .pos_inf => std.math.inf(f64),
@@ -326,6 +332,7 @@ fn rangeBound(self: *Lower, e: Ast.ExprId) ?f64 {
 /// Scalars only — the array path has its own arm, since §3.4.4's requirement is
 /// about the DECLARATION and holds whatever the pattern contains.
 fn checkParamType(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8, folded: ?Const) Oom!void {
+    assert(name.len != 0);
     const c = folded orelse return; // not constant here: nothing to compare
     const is_str = c == .str;
     // §3.4.1: "the type of a string parameter (see 3.4.6) ... is mandatory."
@@ -400,6 +407,7 @@ fn paramRanges(self: *Lower, ranges: []const Ast.ValueRange) Oom![]const Lower.L
 
 /// One `paramRanges` bound: the literal-only fold of `e`, or null.
 fn foldBound(self: *const Lower, e: Ast.ExprId) ?f64 {
+    assert(e == .none or self.exprValid(e));
     const c = constfold.fold(self.file, e, constfold.literal_env) orelse return null;
     if (c == .str) return null;
     // A NaN bound (`0.0/0.0`) bounds nothing; as an interval end it would
@@ -458,6 +466,8 @@ const parameterConst = constfold.parameterValue;
 /// The MIR must contain the same declared-type conversion as `folded` metadata.
 /// Later defaults and operator controls follow this MIR, not the Model field.
 fn parameterDefault(self: *Lower, e: Ast.ExprId, ty: Ast.Type) Oom!Mir.Value {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     if (e == .none) return lower_var.zeroOf(astTy(ty));
     if (lower_constfold.foldExpr(self, e, false)) |raw| {
         return switch (parameterConst(ty, raw)) {
@@ -479,6 +489,7 @@ fn parameterDefault(self: *Lower, e: Ast.ExprId, ty: Ast.Type) Oom!Mir.Value {
 /// §3.4.4 `parameter real c[0:2] = '{1,2,3};` → three scalar parameters named
 /// `c[0]`, `c[1]`, `c[2]`. Codegen emits one Model field each.
 fn lowerParamArray(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8) Oom!void {
+    assert(name.len != 0);
     const dims = try lower_shape.dimsBounds(self, decl.dims, decl.main_tok, name) orelse return;
     // §3.4.4, in the restriction list closed by "Failure to follow these
     // restrictions shall result in an error": "A type of a parameter array
@@ -586,6 +597,7 @@ pub fn checkAttributes(self: *Lower, attrs: []const Ast.NatureAttr) Oom!void {
 /// `checkAttributes`, so a value that is not a string was already refused
 /// (E0358) and is skipped here.
 pub fn collectDeclMeta(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     // Declaration token -> its last `desc` and `units` spec. "Last" is source
     // order (§2.9), not binding order: a declaration list copies an earlier
     // prefix after a later one was parsed.

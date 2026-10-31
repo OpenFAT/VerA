@@ -302,6 +302,7 @@ fn suspends(file: *const Ast.SourceFile, id: Ast.StmtId) bool {
 /// `.va` is refused before a device is built rather than when its digital
 /// half first runs.
 pub fn checkWrealDrivers(self: *Lower, module: *const Ast.ModuleDecl, name: Ast.StrId, declared: bool) Oom!void {
+    assert(module.name != .none);
     const ex = &self.file.exprs;
     var count: u32 = @intFromBool(declared);
     for (module.assigns) |a| {
@@ -377,6 +378,7 @@ pub fn isNetSpelling(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl,
 /// `output_terminal ::= net_lvalue` (the first terminal of a MOS/CMOS switch):
 /// §8.5.3.5 resolves a switch as a driver of the nets it joins.
 pub fn checkSwitchTerminals(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     const ex = &self.file.exprs;
     for (module.switches) |sw| {
         const nets: usize = switch (sw.kind) {
@@ -406,6 +408,7 @@ pub fn netOf(module: *const Ast.ModuleDecl, name: Ast.StrId) ?*const Ast.NetDecl
 /// actuals, inout seeds), child statements included, in walk order with
 /// repeats. `out` grows in `self.arena`.
 pub fn collectWrites(self: *Lower, id: Ast.StmtId, out: *std.ArrayList(Ast.ExprId)) Oom!void {
+    assert(id == .none or @backingInt(id) < self.stmtCount());
     if (id == .none) return;
     const funcs: []const Ast.FuncDecl = if (self.module) |m| m.functions else &.{};
     var writes: std.ArrayList(Ast.ExprId) = .empty;
@@ -479,6 +482,7 @@ pub const EventRefs = struct {
 /// only `=` (`stmtWrites`: output actuals and `$random` seeds too). A reg is
 /// the discrete domain's (§7.2.1); the analog side may only read it (§7.3).
 pub fn checkRegWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     var sh: Shadows = .{};
     for (module.analog) |blk| try regWrites(self, module.functions, blk.body, &sh);
 }
@@ -486,6 +490,7 @@ pub fn checkRegWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 /// `checkRegWrites` on statement `id` and, through `stmtEdges`, every
 /// statement under it (`stmtWrites` reads one statement's own writes).
 fn regWrites(self: *Lower, funcs: []const Ast.FuncDecl, id: Ast.StmtId, sh: *Shadows) Oom!void {
+    assert(id == .none or @backingInt(id) < self.stmtCount());
     if (id == .none) return;
     const pushed = try sh.enter(self, id);
     defer sh.leave(pushed);

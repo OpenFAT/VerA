@@ -162,6 +162,7 @@ pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: [
 }
 
 fn dupItem(self: *Lower, tok: u32, name: Ast.StrId) Oom!void {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     var b = self.errWith(tok, .E0362);
     b.msg("`{s}`", .{self.file.str(name)});
     b.note("§6.8: one identifier declares one item in a scope — the earlier declaration is unreachable", .{});
@@ -177,6 +178,7 @@ const VarScope = enum { module, local };
 /// on a path that never assigned is 0 rather than the SSA builder's `.undef`
 /// (which codegen could not emit).
 pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) Oom!void {
+    assert(self.blockValid(self.cur));
     const name = self.file.str(decl.name);
     const ty = astTy(decl.ty);
     const reg_width: ?u32 = if (decl.storage == .reg) blk: {
@@ -332,6 +334,7 @@ pub fn literalReg(self: *const Lower, decl: *const Ast.VarDecl, scope: VarScope)
 
 /// §7.3.6.1 counts one assignment of `place`, when it has a count.
 pub fn countAssign(self: *Lower, place: Ssa.Place) Oom!void {
+    assert(self.blockValid(self.cur));
     const c = self.var_state.assign_counts.get(place) orelse return;
     const n = try self.builder.readVariable(c.place, self.cur);
     try self.builder.writeVariable(c.place, self.cur, try self.emit(.iadd, &.{ n, try self.mir.addIntConst(self.arena, 1) }));
@@ -343,6 +346,7 @@ pub fn countAssign(self: *Lower, place: Ssa.Place) Oom!void {
 /// device keeps a slot (E0534, and the variable is held where observable).
 /// The string `"uninit"` drops the zero start too; any other string is E0538.
 fn scratchOn(self: *Lower, tok: u32) Oom!Scratch {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     const a = try scratchSpec(self, tok) orelse return .off;
     if (a.value == .none) return .zero;
     const c = lower_constfold.foldExpr(self, a.value, false) orelse {
@@ -370,6 +374,7 @@ fn scratchMode(c: Const) ?Scratch {
 /// codegen derives one struct field per `held_vars` entry from it and two
 /// blocks may spell a local the same way (§5.3.2's whole point).
 fn qualifyHeld(self: *Lower, prefix: []const u8, name: []const u8) Oom![]const u8 {
+    assert(name.len != 0);
     if (prefix.len == 0) return name;
     return self.arena.print("{s}{s}", .{ prefix, name });
 }
@@ -379,6 +384,7 @@ fn qualifyHeld(self: *Lower, prefix: []const u8, name: []const u8) Oom![]const u
 /// SAME named block twice, which is two executions of one source declaration
 /// and so, by §5.3.2, two locations that happen to share a path.
 fn uniqueHeld(self: *Lower, name: []const u8, idx: u32) Oom![]const u8 {
+    assert(name.len != 0);
     const used = &self.var_state.held_used;
     const unique = if (used.contains(name)) try self.arena.print("{s}.{d}", .{ name, idx }) else name;
     try used.put(self.arena, unique, {});
@@ -429,6 +435,8 @@ fn holdSlot(self: *Lower, name: []const u8, ty: Ty, init_val: Mir.Value, place: 
 /// A compiler-owned retained integer discovered during expression lowering.
 /// Seed it in entry so even a branch that skips its first use has a value.
 pub fn hiddenHeldInt(self: *Lower, name: []const u8) Oom!VarSlot {
+    assert(name.len != 0);
+    assert(self.blockValid(self.cur));
     const place = self.builder.newPlace();
     const at = self.cur;
     self.cur = .entry;
@@ -483,6 +491,7 @@ pub fn closeScope(self: *Lower, mark: usize) void {
 }
 
 fn shadowName(self: *Lower, name: []const u8) Oom!void {
+    assert(name.len != 0);
     const st = &self.var_state;
     var e: ScopeEntry = .{ .name = name, .prev_var = none_u32, .prev_array = none_u32 };
     if (self.vars.get(name)) |p| {
@@ -500,12 +509,14 @@ fn shadowName(self: *Lower, name: []const u8) Oom!void {
 
 /// Binds `name` to an array, remembering what it shadowed (§5.3.2).
 pub fn declareArray(self: *Lower, name: []const u8, info: ArrayInfo) Oom!void {
+    assert(name.len != 0);
     try shadowName(self, name);
     try self.arrays.put(self.arena, name, info);
 }
 
 /// Bind `name` to a fresh SSA place, remembering what it shadowed (§5.3.2).
 pub fn declareVar(self: *Lower, name: []const u8, ty: Ty) Oom!VarSlot {
+    assert(name.len != 0);
     const slot: VarSlot = .{ .place = self.builder.newPlace(), .ty = ty };
     try shadowName(self, name);
     try self.vars.put(self.arena, name, slot);
@@ -524,6 +535,8 @@ pub fn isMemArray(self: *const Lower, name: Ast.StrId, ty: Ty) bool {
 /// return the place that holds its current version — when `zero`, a fresh one
 /// with every element zero (§3.2); otherwise the caller writes the first.
 pub fn declareMemArray(self: *Lower, name: []const u8, dims: []const lower_shape.Bounds, ty: Ty, zero: bool) Oom!Ssa.Place {
+    assert(name.len != 0);
+    assert(self.blockValid(self.cur));
     const id: u32 = @intCast(self.out.mem_arrays.items.len);
     try self.out.mem_arrays.append(self.arena, .{ .name = name, .len = @intCast(lower_shape.shapeCells(dims)), .ty = ty });
     const place = self.builder.newPlace();
@@ -534,12 +547,17 @@ pub fn declareMemArray(self: *Lower, name: []const u8, dims: []const lower_shape
 
 /// §3.2.2 `a[index] = v` on a memory-backed array: the next version.
 pub fn storeElem(self: *Lower, place: Ssa.Place, index: Mir.Value, v: Mir.Value) Oom!void {
+    assert(self.valueValid(index));
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
     const cur = try self.builder.readVariable(place, self.cur);
     try self.builder.writeVariable(place, self.cur, try self.emit(.store, &.{ cur, index, v }));
 }
 
 /// §3.2.2 element `index` of a memory-backed array's current version.
 pub fn loadElem(self: *Lower, mem: ArrayInfo.Mem, ty: Ty, index: Mir.Value) Oom!Mir.Value {
+    assert(self.valueValid(index));
+    assert(self.blockValid(self.cur));
     const cur = try self.builder.readVariable(mem.place, self.cur);
     const value = try self.emit(if (ty == .integer) .iload else .fload, &.{ cur, index });
     return analogRead(self, value, mem.reg_width);
@@ -548,6 +566,8 @@ pub fn loadElem(self: *Lower, mem: ArrayInfo.Mem, ty: Ty, index: Mir.Value) Oom!
 /// §7.3.1: the analog value of a discrete bit grouping is a nonnegative
 /// 32-bit integer. The source width controls zero extension, not arithmetic.
 pub fn analogRead(self: *Lower, value: Mir.Value, width: ?u32) Oom!Mir.Value {
+    assert(self.valueValid(value));
+    assert(self.blockValid(self.cur));
     const w = width orelse return value;
     if (w > 31) {
         try self.err(self.mir.cur_tok, .E0222, "this analog access reads {d} bits", .{w});
@@ -560,6 +580,8 @@ pub fn analogRead(self: *Lower, value: Mir.Value, width: ?u32) Oom!Mir.Value {
 /// §3.2.2 constant-subscript element write for either representation: the
 /// element's own place, or a store into the array's storage.
 pub fn writeElem(self: *Lower, name: []const u8, info: ArrayInfo, idx: []const i64, v: Mir.Value) Oom!void {
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
     if (info.mem) |m| return storeElem(self, m.place, try self.mir.addIntConst(self.arena, lower_shape.flatIndex(info.dims, idx)), v);
     var key_buf: [lower_shape.elem_key_len]u8 = undefined;
     const slot = self.vars.get(try lower_shape.elemKey(self, &key_buf, name, idx)) orelse return;
@@ -570,6 +592,7 @@ pub fn writeElem(self: *Lower, name: []const u8, info: ArrayInfo, idx: []const i
 /// writes (an assignment target, an output actual, a `$random` seed), as
 /// `Ast.SourceFile.stmtWrites` finds them.
 pub fn analogWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!std.AutoHashMapUnmanaged(Ast.StrId, void) {
+    assert(module.name != .none);
     var out: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty;
     var writes: std.ArrayList(Ast.ExprId) = .empty;
     const Walk = struct {
@@ -597,6 +620,7 @@ pub fn analogWrites(self: *Lower, module: *const Ast.ModuleDecl) Oom!std.AutoHas
 /// §2.9 E0535: every `vera_scratch` in `module` decorates a variable
 /// declaration (§3.2), the only item with a value an evaluation assigns.
 pub fn checkScratchOwners(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     for (module.attrs) |a| {
         if (!std.mem.eql(u8, self.file.str(a.name), "vera_scratch")) continue;
         const on_var = outer: for (self.file.attributes.items) |b| {
@@ -649,6 +673,7 @@ fn refuseDigitalScratch(self: *Lower, digital: *const std.AutoHashMapUnmanaged(A
 
 /// The last `vera_scratch` spec on the declaration at token `tok` (§2.9).
 fn scratchSpec(self: *Lower, tok: u32) Oom!?Ast.NatureAttr {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     const specs = &self.var_state.scratch_specs;
     if (specs.* == null) {
         // Built once: a scan of every attribute per declaration was 2% of a
@@ -663,6 +688,8 @@ fn scratchSpec(self: *Lower, tok: u32) Oom!?Ast.NatureAttr {
 }
 
 fn isVarTok(self: *const Lower, module: *const Ast.ModuleDecl, tok: u32) bool {
+    assert(module.name != .none);
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     for (module.vars) |v| if (v.main_tok == tok) return true;
     for (module.functions) |f| for (f.vars) |v| if (v.main_tok == tok) return true;
     for (module.tasks) |t| for (t.vars) |v| if (v.main_tok == tok) return true;

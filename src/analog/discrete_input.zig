@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const discipline_rules = @import("elab").discipline_rules;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
@@ -28,6 +29,7 @@ const Oom = Lower.Oom;
 /// Must run before the ports and nets are interned, so a digital-owned net
 /// never becomes an analog node.
 pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     // ponytail: a Model field is per model, and a discrete input is per
     // instance. Exact for the testbench (one instance), wrong for a host that
     // instantiates one mixed device twice; the right home is an `Instance`
@@ -218,6 +220,8 @@ const max_discrete_elems = 4096;
 /// inputs are (`Lower.discrete_arrays`). A guarded read's snapshot and a
 /// second dimension are refused (E0437).
 fn declareDiscreteArray(self: *Lower, name: []const u8, dims: []const Ast.Dim, ty: Ast.Type, zero: Mir.Value, folded: Lower.Const, tok: u32, guarded: bool) Oom!void {
+    assert(name.len != 0);
+    assert(self.valueValid(zero));
     if (dims.len != 1 or guarded) {
         try self.err(tok, .E0437, "`{s}` is a digital array the analog block reads {s}; VerA reads one dimension, outside an explicit D2A event's body", .{ name, if (guarded) "in an explicit D2A event's body" else "with more than one dimension" });
         return;

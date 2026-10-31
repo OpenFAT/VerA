@@ -62,6 +62,7 @@ pub const max_nodes = ground;
 /// one row per element, msb first. Sets `Lowered.num_ports` to the row count
 /// after them.
 pub fn declarePorts(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     for (module.ports) |p| {
         // §3.6.3/§6.5.2 a vector port is N terminals, in declaration order.
         if (try lower_node_ref.portRange(self, &p)) |r| {
@@ -88,6 +89,7 @@ pub fn declarePorts(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 /// §3.6.3.2 nodesets, and binds §3.6.4 ground declarations to `ground`. A net
 /// the discrete half owns (`Lowered.discrete_inputs`) never becomes a row.
 pub fn declareNets(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     for (module.nets) |n| {
         if (self.out.discrete_inputs.contains(self.file.str(n.name))) continue;
         // §2.8.1 vs §3.6.3 (see `netKey`). A ranged declaration is a vector and
@@ -239,6 +241,7 @@ pub fn bindPortConnections(self: *Lower) Oom!void {
 /// the net's declared range (E0351 on a net with none, E0352 outside it).
 /// Returns false after the diagnostic.
 fn partNodes(self: *Lower, part: Elaborate.NetPart, tok: u32, out: *std.ArrayList(u32)) Oom!bool {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     const decl = self.out.vectors.get(part.net) orelse {
         if (part.sel == .whole) {
             try out.append(self.arena, try internNode(self, part.net, ""));
@@ -288,6 +291,7 @@ pub fn partOf(decl: VecRange, r: VecRange) bool {
 /// Returns the `nodes` row of net `name`, creating it on first use. Undeclared names
 /// are implicit nets (§3.6.5); rows are created in source order.
 pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!u32 {
+    assert(name.len != 0);
     const gop = try self.node_voltages.getOrPut(self.arena, name);
     if (gop.found_existing) {
         if (discipline.len != 0 and gop.value_ptr.* != ground)
@@ -317,6 +321,7 @@ pub fn collectSignalAbstols(self: *Lower, segments: []const Elaborate.SignalDisc
 }
 
 fn collectNodeAbstol(self: *Lower, name: []const u8, abstol: f64) void {
+    assert(name.len != 0);
     const idx = self.node_voltages.get(name) orelse return;
     if (idx == ground) return;
     const local = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse return;
@@ -333,6 +338,8 @@ fn collectNodeAbstol(self: *Lower, name: []const u8, abstol: f64) void {
 /// override leaves a stale initial guess (never a wrong answer). Upgrade: keep the
 /// `Ast.ExprId` and export `nodeset(model)` the way `derive()` is.
 fn recordNodeset(self: *Lower, node: u32, e: Ast.ExprId, tok: u32, name: []const u8) Oom!void {
+    assert(self.nodeValid(node));
+    assert(e == .none or self.exprValid(e));
     const c = lower_constfold.constEval(self, e) orelse {
         var b = self.errWith(tok, .E0365);
         b.msg("the initializer of `{s}` is not a constant expression", .{name});
@@ -379,6 +386,7 @@ fn appendNode(self: *Lower, name: []const u8, discipline: []const u8, kind: Node
 /// §2.7 identifier character, so a suffixed name cannot collide with a source one.
 /// The suffix falls on the later slot, so it depends only on source order.
 fn uniqueSpelling(self: *Lower, name: []const u8) Oom![]const u8 {
+    assert(name.len != 0);
     if (!self.node_state.spellings.contains(name)) return name;
     // Losing candidates are built on the stack; only the winner reaches the arena.
     var buf: [spelling_buf_len]u8 = undefined;
@@ -413,6 +421,8 @@ pub fn probe(self: *Lower, idx: u32) Oom!Mir.Value {
 /// flow read creates. Deduped on the node pair (the §5.4.1 identity), not the
 /// printed name, since a net called `gnd` prints like the reference node.
 pub fn flowUnknown(self: *Lower, hi: u32, lo: u32) Oom!u32 {
+    assert(self.nodeValid(hi));
+    assert(self.nodeValid(lo));
     const gop = try self.out.flow_unknowns.getOrPut(self.arena, .{ .hi = hi, .lo = lo });
     if (gop.found_existing) return gop.value_ptr.*;
     const name = try self.arena.print("flow({s},{s})", .{ nodeName(self, hi), nodeName(self, lo) });
@@ -427,6 +437,7 @@ pub fn flowUnknown(self: *Lower, hi: u32, lo: u32) Oom!u32 {
 /// is the identity (a linear scan over the module's ports), so a net spelled
 /// `flow(<p>)` cannot take over the port's current.
 pub fn portFlowUnknown(self: *Lower, p: u32) Oom!u32 {
+    assert(self.nodeValid(p));
     for (self.out.port_probes.items) |pp| {
         if (pp.port == p) return pp.u;
     }

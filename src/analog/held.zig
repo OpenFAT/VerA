@@ -17,6 +17,7 @@ pub const HeldFrame = struct { prefix: []const u8, vars: []const Ast.VarDecl };
 /// §5.10. Collect the variables assigned inside an `@(<event>)` body, before
 /// any of them is declared.
 pub fn markHeldVars(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     for (module.analog) |blk| try scanHeld(self, blk.body, .none);
     self.var_state.held_frames.clearRetainingCapacity();
     // §3.2 retention, beside the §5.10 rule above: see `Exposed`.
@@ -401,6 +402,7 @@ fn heldKey(self: *Lower, id: Ast.StrId) Oom![]const u8 {
 /// the next evaluation. "Writes" is `Ast.SourceFile.stmtWrites`, not only the
 /// assignment target: an output actual or a `$random` seed counts too.
 fn scanHeld(self: *Lower, id: Ast.StmtId, in_event: Body) Oom!void {
+    assert(id == .none or @backingInt(id) < self.stmtCount());
     if (id == .none) return;
     if (in_event != .none) {
         const funcs: []const Ast.FuncDecl = if (self.module) |m| m.functions else &.{};
@@ -437,6 +439,7 @@ const Body = enum { none, d2a, analog };
 
 /// Is every term of event expression `e` an explicit D2A event?
 fn d2aOnly(self: *const Lower, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     if (e == .none) return false;
     if (ex.tag(e) == .event_or) return d2aOnly(self, ex.lhs(e)) and d2aOnly(self, ex.rhs(e));
@@ -464,6 +467,7 @@ const Held = struct {
 /// wrong guess costs speed, never meaning: a runtime-indexed array kept scalar
 /// reads through a `$idx` switch and writes one masked select per element.
 pub fn markMemArrays(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     var vars: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty;
     defer vars.deinit(self.arena);
     for (module.vars) |v| try vars.put(self.arena, v.name, {});
@@ -484,6 +488,7 @@ pub fn markMemArrays(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 }
 
 fn runtimeSub(self: *const Lower, vars: *const std.AutoHashMapUnmanaged(Ast.StrId, void), genvars: []const Ast.StrId, e: Ast.ExprId) bool {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
         .ident => {

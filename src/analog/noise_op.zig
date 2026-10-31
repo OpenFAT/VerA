@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -13,6 +14,8 @@ const poison = Lower.poison;
 /// Lowers a §4.6.4 noise source call. It contributes only in a small-signal noise
 /// analysis; codegen decides that from the call name (the value is 0 in DC).
 pub fn lowerNoise(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
     // VerA's `vera_timepoint` (§2.9): a source is a stamp, not a value.
@@ -149,6 +152,8 @@ const Coeff = union(enum) { absent, nonlinear, value: Mir.Value };
 /// Returns `-v`, folded when `v` is a literal so the coefficient renders inline in
 /// `noisePsd` instead of taking a core live-out slot.
 pub fn coeffNeg(self: *Lower, v: Mir.Value) Oom!Mir.Value {
+    assert(self.valueValid(v));
+    assert(self.blockValid(self.cur));
     if (self.mir.valueDef(self.mir.resolveAlias(v)) == .float_const)
         return self.mir.addFloatConst(self.arena, -self.mir.valueDef(self.mir.resolveAlias(v)).float_const);
     return self.emit(.fneg, &.{v});
@@ -158,6 +163,9 @@ pub fn coeffNeg(self: *Lower, v: Mir.Value) Oom!Mir.Value {
 /// `c * 1`, and emitting that multiply would hide the constant from
 /// `psdConst`.
 fn coeffMul(self: *Lower, a: Mir.Value, b: Mir.Value) Oom!Mir.Value {
+    assert(self.valueValid(a));
+    assert(self.valueValid(b));
+    assert(self.blockValid(self.cur));
     if (a == .f_one) return b;
     if (b == .f_one) return a;
     return self.emit(.fmul, &.{ a, b });
@@ -167,6 +175,8 @@ fn coeffMul(self: *Lower, a: Mir.Value, b: Mir.Value) Oom!Mir.Value {
 /// few arithmetic nodes it needs over values the MIR already holds (no re-lowering,
 /// so no side effect repeats).
 pub fn noiseCoeff(self: *Lower, v: Mir.Value, n: Mir.Value) Oom!Coeff {
+    assert(self.valueValid(v));
+    assert(self.valueValid(n));
     const gen = self.mir.resolveAlias(n);
     var reach = try reachOf(self, gen, v);
     defer reach.deinit(self.arena);
@@ -180,6 +190,8 @@ pub fn noiseCoeff(self: *Lower, v: Mir.Value, n: Mir.Value) Oom!Coeff {
 /// unknown. Indexed by `@backingInt(value)`. O(cone) per fixpoint pass, not
 /// O(values): a module of n noisy `<+` would otherwise lower in O(n²).
 fn reachOf(self: *Lower, gen: Mir.Value, v: Mir.Value) Oom!std.bit_set.Dynamic {
+    assert(self.valueValid(gen));
+    assert(self.valueValid(v));
     const mir = self.mir;
     const n = Mir.Value.first_dynamic + mir.defs.len;
     var reach = try std.bit_set.Dynamic.initEmpty(self.arena, n);
@@ -268,6 +280,9 @@ fn operandReaches(mir: *const Mir, inst: Mir.Inst, reach: *const std.bit_set.Dyn
 const PhiPath = struct { inst: Mir.Inst, up: ?*const PhiPath };
 
 fn coeffAt(self: *Lower, v: Mir.Value, gen: Mir.Value, reach: *const std.bit_set.Dynamic, depth: u16, path: ?*const PhiPath) Oom!Coeff {
+    assert(self.valueValid(v));
+    assert(self.valueValid(gen));
+    assert(self.blockValid(self.cur));
     if (depth == 64) return .nonlinear;
     const value = self.mir.resolveAlias(v);
     if (value == gen) return .{ .value = .f_one };

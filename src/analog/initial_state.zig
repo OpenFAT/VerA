@@ -1,3 +1,5 @@
+const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
 const Lower = @import("Lower.zig");
@@ -19,6 +21,7 @@ const Oom = Lower.Oom;
 /// runs on the kernel. E0433 is what is left: a body `constantShape` admits
 /// whose value `constEval` still cannot fold.
 pub fn collectInitialState(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
+    assert(module.name != .none);
     // A mixed module's `initial` blocks run on the kernel, with the rest of
     // its digital half: their writes are discrete inputs, not constants.
     if (self.out.mixed_signal) return;
@@ -32,6 +35,7 @@ pub fn collectInitialState(self: *Lower, module: *const Ast.ModuleDecl) Oom!void
 }
 
 fn collectInitialStmt(self: *Lower, id: Ast.StmtId) Oom!void {
+    assert(id == .none or @backingInt(id) < self.stmtCount());
     if (id == .none) return;
     const ex = &self.file.exprs;
     switch (self.file.stmt(id)) {
