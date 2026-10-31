@@ -244,7 +244,35 @@ pub fn Library(comptime D: type, comptime name: []const u8, comptime split: bool
         };
 
         comptime {
-            assert(T.pairs.len == collapsible.len);
+            // The pair of the simulator's reads: every offset the descriptor
+            // exports lands inside the blob it sized, and every node it
+            // names is one of its nodes (or ground, `no_off`).
+            @setEvalBranchQuota(10_000_000);
+            const d = descriptors[0];
+            assert(d.collapsed_offset + @max(T.pairs.len, 1) <= d.instance_size);
+            assert(d.node_mapping_offset + 4 * T.n <= d.instance_size);
+            assert(d.jacobian_ptr_resist_offset + @sizeOf(?*f64) * T.nj <= d.instance_size);
+            assert(d.state_idx_off < d.instance_size);
+            assert(d.bound_step_offset == abi.no_off or d.bound_step_offset + 8 <= d.instance_size);
+            assert(d.num_instance_params <= d.num_params);
+            for (nodes) |nd| {
+                assert(nd.resist_residual_off + 8 <= d.instance_size);
+                assert(nd.react_residual_off == abi.no_off or nd.react_residual_off + 8 <= d.instance_size);
+            }
+            for (jacobian_entries) |je| {
+                assert(je.nodes.node_1 < T.n);
+                assert(je.nodes.node_2 < T.n);
+                assert(je.react_ptr_off == abi.no_off or je.react_ptr_off + @sizeOf(?*f64) <= d.instance_size);
+                assert(je.flags != 0);
+            }
+            for (collapsible) |pair| {
+                assert(pair.node_1 < T.n);
+                assert(pair.node_2 == abi.no_off or pair.node_2 < pair.node_1);
+            }
+            for (noise_sources) |src| {
+                assert(src.nodes.node_1 < T.n);
+                assert(src.nodes.node_2 == abi.no_off or src.nodes.node_2 < T.n);
+            }
         }
 
         fn paraTy(comptime k: T.Kind) u32 {
