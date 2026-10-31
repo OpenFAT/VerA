@@ -32,6 +32,7 @@ const Lexer = @import("frontend").Lexer;
 const simparam = @import("ir").simparam;
 const fopen_types = @import("kernels").fopen_types;
 const lower_math = @import("math.zig");
+const lower_reactive = @import("reactive.zig");
 const simparamValueIn = simparam.simparamValueIn;
 const simparamIsRuntime = simparam.simparamIsRuntime;
 const host_simparams = simparam.host_simparams;
@@ -348,7 +349,7 @@ pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         }
         const v = try self.toReal(try lower_expr.lowerExpr(self, args[0]));
         return .{
-            .v = if (lower_contrib.coeffIsConst(self, v)) v else try self.emit(.path_prev, &.{v}),
+            .v = if (lower_reactive.coeffIsConst(self, v)) v else try self.emit(.path_prev, &.{v}),
             .ty = .real,
         };
     }

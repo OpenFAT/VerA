@@ -34,6 +34,9 @@ const diag = @import("diag");
 const Mir = @import("ir").Mir;
 const lower_expr_select = @import("expr_select.zig");
 const lower_math = @import("math.zig");
+const lower_static = @import("static.zig");
+const lower_branch = @import("branch.zig");
+const lower_reactive = @import("reactive.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
@@ -106,7 +109,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
             try self.err(self.file.exprs.mainTok(e), .E0504, "", .{});
             return poison;
         }
-        const t = try lower_contrib.branchOf(self, args[1]) orelse return poison;
+        const t = try lower_branch.branchOf(self, args[1]) orelse return poison;
         // §4.5.6: "The second argument shall be the potential of a scalar net
         // or port or the flow through a branch, because these are the unknown
         // variables in the system of equations for the analog solver."
@@ -215,7 +218,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         try vals.append(self.arena, if (tv.ty == .string) tv.v else try self.toReal(tv));
     }
     if (std.mem.eql(u8, name, "ddt"))
-        return .{ .v = try opDdt(self, ex.mainTok(e), vals.items[0], opAbstol(self, args, 1), try lower_contrib.opSiteLte(self, e)), .ty = .real };
+        return .{ .v = try opDdt(self, ex.mainTok(e), vals.items[0], opAbstol(self, args, 1), try lower_reactive.opSiteLte(self, e)), .ty = .real };
     if (std.mem.eql(u8, name, "idt"))
         return .{ .v = try opIdt(self, e, vals.items), .ty = .real };
     const callee = if (std.mem.eql(u8, name, "absdelay") and try absdelayQuad(self, e)) "absdelay$quad" else name;
@@ -228,7 +231,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 pub fn opDdt(self: *Lower, tok: u32, x: Mir.Value, abstol: f64, lte: bool) Oom!Mir.Value {
     const s = try lower_node.opStateNode(self, "ddt", abstol);
     const v = try lower_node.probe(self, s);
-    try lower_contrib.stampOpRow(self, tok, s, v, x, true, lte);
+    try lower_reactive.stampOpRow(self, tok, s, v, x, true, lte);
     return v;
 }
 
@@ -255,7 +258,7 @@ fn opIdt(self: *Lower, e: Ast.ExprId, vals: []const Mir.Value) Oom!Mir.Value {
     var f = try self.emit(.fneg, &.{x});
     if (hold) |h| f = try self.emit(.select, &.{ h, .f_zero, f });
     if (ic) |c| f = try self.emit(.select, &.{ try self.call("op$static", &.{}), try self.emit(.fsub, &.{ v, c }), f });
-    try lower_contrib.stampOpRow(self, self.file.exprs.mainTok(e), s, f, v, false, try lower_contrib.opSiteLte(self, e));
+    try lower_reactive.stampOpRow(self, self.file.exprs.mainTok(e), s, f, v, false, try lower_reactive.opSiteLte(self, e));
     return if (hold != null) self.call("idt$hold", &.{ v, ic.?, vals[2] }) else v;
 }
 
@@ -367,7 +370,7 @@ pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Va
     if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
     // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
     const tv = try lower_expr.lowerExpr(self, e);
-    if (tv.ty != .string and !try lower_control.isStaticValue(self, tv.v)) {
+    if (tv.ty != .string and !try lower_static.isStaticValue(self, tv.v)) {
         try self.err(self.file.exprs.mainTok(e), .E0515, "`{s}()` abstol is a constant expression argument (Table 4-20), and this one moves during the analysis", .{name});
         return null;
     }

@@ -31,6 +31,8 @@ const TypedValue = Lower.TypedValue;
 const VarSlot = Lower.VarSlot;
 const Ssa = @import("ssa.zig");
 const lower_expr_name = @import("expr_name.zig");
+const lower_assign = @import("assign.zig");
+const lower_lvalue = @import("lvalue.zig");
 
 /// This file's private state on `Lower` (`Lower.event_state`).
 pub const State = struct {
@@ -237,7 +239,7 @@ pub const EventRef = struct { places: []const Ssa.Place, conds: []const Mir.Valu
 /// Resolves `ev` or `ev[i]…` (A.6.5 `hierarchical_event_identifier
 /// { [ expression ] }`) to its flags. A scalar event and a constant subscript
 /// name one flag; a runtime subscript names every element, the element `k`
-/// guarded by "the flat index is `k`" (`lower_stmt.runtimeArrayIndex`'s
+/// guarded by "the flat index is `k`" (`lower_assign.runtimeArrayIndex`'s
 /// order, -1 when out of range). So a trigger raises, and a detection reads,
 /// only the element the subscript selects now: §5.10.4 "an event is not made
 /// to occur by changing the index of an event array in an event control
@@ -259,7 +261,7 @@ pub fn eventRef(self: *Lower, e: Ast.ExprId) Oom!?EventRef {
         return .{ .places = try self.arena.dupe(Ssa.Place, &.{p}), .conds = try self.arena.dupe(Mir.Value, &.{.one}) };
     }
     var subs_buf: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
-    const chain = (try lower_stmt.indexChain(self, e, &subs_buf)) orelse {
+    const chain = (try lower_lvalue.indexChain(self, e, &subs_buf)) orelse {
         try self.err(tok, .E0706, "", .{});
         return null;
     };
@@ -268,7 +270,7 @@ pub fn eventRef(self: *Lower, e: Ast.ExprId) Oom!?EventRef {
         try self.err(tok, .E0705, "`{s}` is not an event array", .{name});
         return null;
     };
-    if (!try lower_stmt.checkSubscriptCount(self, e, name, .{ .dims = bounds, .ty = .integer }, chain.subs.len)) return null;
+    if (!try lower_lvalue.checkSubscriptCount(self, e, name, .{ .dims = bounds, .ty = .integer }, chain.subs.len)) return null;
     var buf: [lower_shape.max_stack_dims]i64 = undefined;
     const idx = try lower_shape.subscriptBuf(self, &buf, bounds.len);
     const constant = for (chain.subs, idx) |s, *o| {
@@ -276,11 +278,11 @@ pub fn eventRef(self: *Lower, e: Ast.ExprId) Oom!?EventRef {
         o.* = c.asIntExact() orelse break false;
     } else true;
     if (constant) {
-        if (!try lower_stmt.checkSubscripts(self, e, name, .{ .dims = bounds, .ty = .integer }, idx)) return null;
+        if (!try lower_lvalue.checkSubscripts(self, e, name, .{ .dims = bounds, .ty = .integer }, idx)) return null;
         const p = self.events.get(try lower_shape.elemName(self, name, idx)).?;
         return .{ .places = try self.arena.dupe(Ssa.Place, &.{p}), .conds = try self.arena.dupe(Mir.Value, &.{.one}) };
     }
-    const flat = try lower_stmt.runtimeArrayIndex(self, chain.subs, bounds);
+    const flat = try lower_assign.runtimeArrayIndex(self, chain.subs, bounds);
     const n = lower_shape.shapeCells(bounds);
     const places = try self.arena.alloc(Ssa.Place, n);
     const conds = try self.arena.alloc(Mir.Value, n);
@@ -677,7 +679,7 @@ fn timerInputReads(self: *Lower, e: Ast.ExprId, reads: *std.ArrayList(TimerRead)
     // arrays and runtime indices below depend on their storage version.
     if (ex.tag(e) == .index) {
         var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
-        if (try lower_stmt.indexChain(self, e, &subs)) |chain| {
+        if (try lower_lvalue.indexChain(self, e, &subs)) |chain| {
             const name = self.file.str(chain.name);
             if (self.arrays.get(name)) |info| if (info.mem == null and chain.subs.len == info.dims.len) {
                 var buf: [lower_shape.max_stack_dims]i64 = undefined;

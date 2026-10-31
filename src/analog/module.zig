@@ -37,6 +37,7 @@ const lower_stmt = @import("stmt.zig");
 const lower_systask = @import("systask.zig");
 const lower_var = @import("var.zig");
 const lower_expr_access = @import("expr_access.zig");
+const lower_source_check = @import("source_check.zig");
 const Lowered = Lower.Lowered;
 const Oom = Lower.Oom;
 const Error = Lower.Error;
@@ -271,7 +272,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // cycle]?" question the clause's three-way rule turns on.
     try readContribFinals(self, 0);
     // §5.6.8.1 needs the final retention flags just read.
-    try lower_contrib.checkSourceLoops(self);
+    try lower_source_check.checkSourceLoops(self);
     // §5.10 the same, for every held variable. Reads only (no `call`), so the
     // unit enumeration below is untouched.
     for (self.out.held_vars.items, self.held_places.items) |*h, p| h.final = try self.builder.readVariable(p, self.cur);
@@ -303,7 +304,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 
     // After `finishDisplays`: a deferred display operand appends its
     // `branch_reads` there, and §1.3.1's probe test has to see every read.
-    try lower_contrib.checkProbeBranches(self);
+    try lower_source_check.checkProbeBranches(self);
     // Last, so no value numbered above moves.
     try readShareFinals(self);
     assert(self.accum.items.len == self.out.contributions.items.len);

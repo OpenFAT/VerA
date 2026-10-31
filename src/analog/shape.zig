@@ -15,6 +15,8 @@ const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
+const lower_assign = @import("assign.zig");
+const lower_lvalue = @import("lvalue.zig");
 const Oom = Lower.Oom;
 /// One declared array dimension, normalized so `lo <= hi`.
 pub const Bounds = struct {
@@ -112,8 +114,8 @@ pub fn shapeSubscripts(dims: []const Bounds, k: usize, out: []i64) void {
 
 /// The flat element index of an in-range subscript tuple: row-major, each
 /// dimension counted from its left bound — `shapeSubscripts`' inverse and
-/// `lower_stmt.runtimeArrayIndex`'s order. Asserts one subscript per dimension;
-/// the caller has range-checked them (`lower_stmt.checkSubscripts`), since an
+/// `lower_assign.runtimeArrayIndex`'s order. Asserts one subscript per dimension;
+/// the caller has range-checked them (`lower_lvalue.checkSubscripts`), since an
 /// out-of-range subscript can alias another cell.
 pub fn flatIndex(dims: []const Bounds, idx: []const i64) i64 {
     var flat: i64 = 0;

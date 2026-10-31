@@ -25,6 +25,7 @@ const lower_contrib = @import("contrib.zig");
 const lower_hier_name = @import("hier_name.zig");
 const lower_node = @import("node.zig");
 const lower_expr = @import("expr.zig");
+const lower_branch = @import("branch.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
@@ -50,8 +51,8 @@ pub fn lowerBranchAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // `I(<p>)` are one quantity and read the one unknown. Ahead of `branchOf`
     // because the name is not in `branches` and would otherwise fall through to
     // `nodeOf` and become an implicit net.
-    if (try lower_contrib.portBranchOf(self, e)) |p| return portFlowRead(self, e, p);
-    const t = try lower_contrib.branchOf(self, e) orelse return poison;
+    if (try lower_branch.portBranchOf(self, e)) |p| return portFlowRead(self, e, p);
+    const t = try lower_branch.branchOf(self, e) orelse return poison;
     try self.branch_reads.append(self.arena, .{
         .access = t.access,
         .hi = t.hi,
@@ -182,7 +183,7 @@ pub fn ammeterFlow(self: *Lower, internal: []const u8) Oom!?TypedValue {
 /// access functions whose examples are all POTENTIAL probes, which draw no flow
 /// — see `potentialSourceHere` for the case where this unit's OWN source is the
 /// branch being read.
-fn flowAccum(self: *const Lower, t: lower_contrib.Target) ?Accum {
+fn flowAccum(self: *const Lower, t: lower_branch.Target) ?Accum {
     assert(self.nodeValid(t.hi));
     assert(self.nodeValid(t.lo));
     const i = lower_contrib.directRow(self, .{ .access = .flow, .hi = t.hi, .lo = t.lo, .br = t.br }) orelse return null;
@@ -221,7 +222,7 @@ fn flowAbstol(self: *const Lower, n: u32) f64 {
 /// a second instance potential-sourcing a pair another already sources reads the
 /// accumulator instead — two ideal potential sources in parallel is a degenerate
 /// topology the clause does not describe either way.
-fn potentialSourceHere(self: *const Lower, t: lower_contrib.Target) bool {
+fn potentialSourceHere(self: *const Lower, t: lower_branch.Target) bool {
     assert(self.nodeValid(t.hi));
     assert(self.nodeValid(t.lo));
     for (self.out.contributions.items) |c| {
@@ -288,9 +289,9 @@ fn instancePortFlow(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
     const global = self.access_kind.get(name) orelse return null; // `portFlowRead` names it (E0501)
     if (global == .potential and !self.access_both.contains(name)) return null; // and this (E0507)
     const p = try nodeUnrefused(self, lhs) orelse return poison;
-    const access = try lower_contrib.accessOn(self, e, name, global, p, Lower.ground);
+    const access = try lower_branch.accessOn(self, e, name, global, p, Lower.ground);
     if (access == .potential) return null;
-    try lower_contrib.checkAccessMatch(self, e, name, access, p);
+    try lower_branch.checkAccessMatch(self, e, name, access, p);
     if (try ammeterFlow(self, lower_node.nodeName(self, p))) |tv| return tv;
     // Every block of the hierarchy is behind this one.
     for (self.cur_block..self.module.?.analog.len) |j| {
@@ -363,7 +364,7 @@ fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
         try b.emit();
         return poison;
     };
-    const access = try lower_contrib.accessOn(self, e, name, global, p, Lower.ground);
+    const access = try lower_branch.accessOn(self, e, name, global, p, Lower.ground);
     // §5.4.3 "The expression V(<a>) is invalid for ports and nets, where V is a
     // potential access function." A port access reads a FLOW, always.
     if (access == .potential) {
@@ -383,7 +384,7 @@ fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
         return poison;
     }
     // §4.4 the name still has to be the port discipline's flow access.
-    try lower_contrib.checkAccessMatch(self, e, name, access, p);
+    try lower_branch.checkAccessMatch(self, e, name, access, p);
     return .{ .v = try lower_node.probe(self, try lower_node.portFlowUnknown(self, p)), .ty = .real };
 }
 

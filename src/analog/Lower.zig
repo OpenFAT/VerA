@@ -110,6 +110,12 @@ const lower_hier_name = @import("hier_name.zig");
 const lower_func = @import("func.zig");
 // Constant evaluation: §4.2 constant_expression, §6.6.1 generate bounds.
 const lower_constfold = @import("constfold.zig");
+const lower_assign = @import("assign.zig");
+const lower_static = @import("static.zig");
+const lower_finite = @import("finite.zig");
+const lower_source_check = @import("source_check.zig");
+const lower_branch = @import("branch.zig");
+const lower_accum = @import("accum.zig");
 
 /// What lowering produces (`ir`'s `Lowered`).
 pub const Lowered = @import("ir").Lowered;
@@ -328,7 +334,7 @@ var_state: lower_var.State = .{},
 stmt_state: lower_stmt.State = .{},
 table_model_state: lower_table_model.State = .{},
 hier_name_state: lower_hier_name.State = .{},
-control_state: lower_control.State = .{},
+static_state: lower_static.State = .{},
 analog_op_state: lower_analog_op.State = .{},
 /// Accumulator places, parallel to `contributions`.
 accum: std.ArrayList(Accum) = .empty,
@@ -340,9 +346,9 @@ branch_reads: std.ArrayList(BranchRead) = .empty,
 /// §5.6.8.1 every potential `<+` spelled with hierarchical net references
 /// (`V(drv.x)`, not §5.6.8.2's `V(drv.branch(x))`): each creates a new unnamed
 /// branch in the writing instance, which `contribIndex` nonetheless merges
-/// with the pair's accumulator. Kept so `lower_contrib.checkHierParallel` can
+/// with the pair's accumulator. Kept so `lower_source_check.checkHierParallel` can
 /// see the second branch the merge hides.
-hier_potentials: std.ArrayList(lower_contrib.HierPotential) = .empty,
+hier_potentials: std.ArrayList(lower_source_check.HierPotential) = .empty,
 /// Preprocessed source, kept only so a token index can become a `diag.Span`
 /// (`tokenSpan`, which proof.zig uses too).
 src: []const u8 = "",
@@ -363,7 +369,7 @@ access_both: std.StringHashMapUnmanaged(void) = .empty,
 /// Visible variables (§3.2) — locals, function args, scalarized array elements.
 vars: std.StringHashMapUnmanaged(VarSlot) = .empty,
 /// §5.4.1 each instance's share of an unnamed-branch contribution row
-/// (`lower_contrib.unitAccum`), keyed by the row and the owning unit.
+/// (`lower_accum.unitAccum`), keyed by the row and the owning unit.
 unit_accum: std.AutoHashMapUnmanaged(struct { row: u32, unit: u32 }, Accum) = .empty,
 /// Every scalar `reg` with a constant packed range, by the name in `vars`,
 /// and every such `reg` a mixed module's analog block reads as a discrete
@@ -413,7 +419,7 @@ noise_tab: std.AutoHashMapUnmanaged(u32, []const Mir.Value) = .empty,
 noise_val: std.AutoHashMapUnmanaged(u32, Mir.Value) = .empty,
 /// `contrib.scanFinite`'s per-value answers for the `<+` being checked;
 /// cleared per statement, since a later alias can change a fold.
-finite_scan: std.AutoHashMapUnmanaged(Mir.Value, lower_contrib.FiniteScan) = .empty,
+finite_scan: std.AutoHashMapUnmanaged(Mir.Value, lower_finite.FiniteScan) = .empty,
 /// §5.9 break/continue targets.
 loops: std.ArrayList(LoopCtx) = .empty,
 /// `loops.items.len` when the innermost §5.9.3 analog_for being unrolled
@@ -508,7 +514,7 @@ lte_stack: std.ArrayList(bool) = .empty,
 /// quadratic `absdelay` interpolation (`lower_analog_op.absdelayQuad`).
 interp_stack: std.ArrayList(bool) = .empty,
 /// The same for `vera_nodiff`: true where assignments store no derivative
-/// (`lower_stmt.lowerAssign`).
+/// (`lower_assign.lowerAssign`).
 nodiff_stack: std.ArrayList(bool) = .empty,
 /// VerA's `vera_timepoint` (§2.9): the `out.timepoints` row of the statement
 /// being lowered, null outside one. Inside, the constructs whose value moves
@@ -558,7 +564,7 @@ event_arrays: std.StringHashMapUnmanaged([]const lower_shape.Bounds) = .empty,
 /// one. For the implicit form `I(b) <+ f(I(b))`, the rhs read is the branch-flow
 /// unknown of the implicit equation, not the §5.6.1.2 accumulator, which
 /// mid-statement still lacks this statement's term. See `lowerBranchAccess`.
-contrib_target: ?lower_contrib.Target = null,
+contrib_target: ?lower_branch.Target = null,
 /// The number of `lowerExpr` frames on the stack: the walk's recursion depth,
 /// asserted below the expression table's size (expr.zig's header).
 expr_depth: u32 = 0,

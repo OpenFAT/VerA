@@ -30,6 +30,7 @@ const naming = @import("ir").names;
 const lower_expr_name = @import("expr_name.zig");
 const lower_expr_select = @import("expr_select.zig");
 const lower_expr_case = @import("expr_case.zig");
+const lower_branch = @import("branch.zig");
 const Oom = Lower.Oom;
 
 // ---- §7.2.2 the discrete context -------------------------------------------
@@ -1263,8 +1264,8 @@ fn scanContextExpr(self: *Lower, e: Ast.ExprId, comptime discrete: bool, is_init
             for ([_]Ast.ExprId{ ex.lhs(e), ex.rhs(e) }) |arg| {
                 if (arg == .none or ex.tag(arg) != .ident) continue;
                 const node = self.node_voltages.get(self.file.str(ex.strOf(arg))) orelse continue;
-                const access = try lower_contrib.accessOn(self, e, self.file.str(ex.strOf(e)), global, node, Lower.ground);
-                try lower_contrib.checkAccessMatch(self, e, self.file.str(ex.strOf(e)), access, node);
+                const access = try lower_branch.accessOn(self, e, self.file.str(ex.strOf(e)), global, node, Lower.ground);
+                try lower_branch.checkAccessMatch(self, e, self.file.str(ex.strOf(e)), access, node);
             }
         };
         if (tag == .call) {

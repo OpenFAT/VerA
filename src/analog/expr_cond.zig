@@ -20,6 +20,7 @@ const lower_analog_op = @import("analog_op.zig");
 const lower_control = @import("control.zig");
 const lower_hier_name = @import("hier_name.zig");
 const lower_expr = @import("expr.zig");
+const lower_static = @import("static.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const unify = Lower.unify;
@@ -54,7 +55,7 @@ pub fn lowerTernary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized
     // arm loses its history on every step the arm is off. The two counters
     // `lowerCondBody` raises for an `if` body are raised here too, so E0514 in
     // `lowerFilter` sees it.
-    const static = lower_control.isAnalysisOrConst(self, cond) or try lower_control.isStaticValue(self, c);
+    const static = lower_static.isAnalysisOrConst(self, cond) or try lower_static.isStaticValue(self, c);
     self.cond_depth += 1;
     self.static_cond_depth += @intFromBool(static);
     defer {
@@ -67,7 +68,7 @@ pub fn lowerTernary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized
     const join = try self.mir.addBlock(self.arena);
     try self.branchTo(c, then_b, else_b, true);
 
-    const pure = lower_control.isAnalysisOrConst(self, cond);
+    const pure = lower_static.isAnalysisOrConst(self, cond);
     self.cur = then_b;
     try lower_hier_name.pushCond(self, .{ .e = cond, .pol = true, .pure = pure });
     const t = try lower_expr.lowerOperand(self, ex.rhs(e), plan, sized, 1);

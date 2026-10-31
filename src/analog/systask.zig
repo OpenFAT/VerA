@@ -32,6 +32,7 @@ const Mir = @import("ir").Mir;
 const Ssa = @import("ssa.zig");
 const str_k = @import("kernels").str_kernels;
 const lower_expr_name = @import("expr_name.zig");
+const lower_lvalue = @import("lvalue.zig");
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
@@ -292,8 +293,8 @@ fn systfOutputs(self: *Lower, call: Mir.Value, live: []const Ast.ExprId, vals: [
         args[1] = try self.mir.addIntConst(self.arena, @intCast(j + 1));
         @memcpy(args[2..], vals);
         const out = try self.call("$systf$out", args);
-        const lv: lower_stmt.Lvalue = .{ .ty = s.ty, .at = .{ .place = s.place } };
-        try lower_stmt.writeLvalue(self, lv, if (s.ty == .integer) try self.emit(.fi_cast, &.{out}) else out);
+        const lv: lower_lvalue.Lvalue = .{ .ty = s.ty, .at = .{ .place = s.place } };
+        try lower_lvalue.writeLvalue(self, lv, if (s.ty == .integer) try self.emit(.fi_cast, &.{out}) else out);
     }
 }
 
@@ -1010,7 +1011,7 @@ fn lowerStringWrite(self: *Lower, tok: u32, name: []const u8, args: []const Ast.
         try self.err(tok, .E0813, "`{s}` needs a string variable to write into", .{name});
         return;
     }
-    const slot = try lower_stmt.resolveLvalue(self, args[0]) orelse return;
+    const slot = try lower_lvalue.resolveLvalue(self, args[0]) orelse return;
     if (slot.ty != .string) {
         try self.err(self.file.exprs.mainTok(args[0]), .E0813, "`{s}` writes into a `string` variable, and this one is {s}", .{ name, @tagName(slot.ty) });
         return;
@@ -1035,7 +1036,7 @@ fn lowerStringWrite(self: *Lower, tok: u32, name: []const u8, args: []const Ast.
         for (args[2..]) |a|
             try vals.append(self.arena, (if (a == .none) try nullArg(self) else try lower_sysfunc.lowerFormatArg(self, a)).v);
         self.out.uses.insert(.str_tasks);
-        return lower_stmt.writeLvalue(self, slot, try self.call("$sformat$rt", vals.items));
+        return lower_lvalue.writeLvalue(self, slot, try self.call("$sformat$rt", vals.items));
     }
     var live: std.ArrayList(Ast.ExprId) = .empty;
     defer live.deinit(self.arena);
@@ -1054,7 +1055,7 @@ fn lowerStringWrite(self: *Lower, tok: u32, name: []const u8, args: []const Ast.
     try prepareFormatArgs(self, tok, live.items, tys.items, vals.items, 0);
     self.out.uses.insert(.str_tasks);
     const v = try self.call("$sformat", vals.items);
-    try lower_stmt.writeLvalue(self, slot, v);
+    try lower_lvalue.writeLvalue(self, slot, v);
 }
 
 /// §9.5.4.2 `code = $sscanf( str, format, args )`. One source call becomes one
@@ -1096,14 +1097,14 @@ pub fn lowerScan(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!Mir.Value
     var item: i64 = 0;
     for (args[2..]) |a| {
         if (a == .none) continue;
-        const slot = try lower_stmt.resolveLvalue(self, a) orelse continue;
+        const slot = try lower_lvalue.resolveLvalue(self, a) orelse continue;
         const index = try self.mir.addIntConst(self.arena, item);
         const v = try self.call(sscanfCallee(slot.ty), &.{ src, fmt, index });
         // Read the current SSA value per assignment: if a destination occurs
         // twice, a failed later conversion retains the earlier successful one.
-        const old = try lower_stmt.readLvalue(self, slot);
+        const old = try lower_lvalue.readLvalue(self, slot);
         const assigned = try self.emit(.igt, &.{ count, index });
-        try lower_stmt.writeLvalue(self, slot, try self.emit(.select, &.{ assigned, v, old }));
+        try lower_lvalue.writeLvalue(self, slot, try self.emit(.select, &.{ assigned, v, old }));
         item += 1;
     }
     return count;
@@ -1132,13 +1133,13 @@ pub fn lowerValuePlusargs(self: *Lower, args: []const Ast.ExprId) Oom!Mir.Value 
     assert(args.len == 2 and args[0] != .none and args[1] != .none);
     const user = (try lower_expr.lowerExpr(self, args[0])).v;
     const found = try self.call("$value$plusargs", &.{user});
-    const slot = try lower_stmt.resolveLvalue(self, args[1]) orelse return found;
+    const slot = try lower_lvalue.resolveLvalue(self, args[1]) orelse return found;
     self.out.uses.insert(.str_tasks);
     const zero = try self.mir.addIntConst(self.arena, 0);
     const v = try self.call(sscanfCallee(slot.ty), &.{ try self.call("$plusarg$str", &.{user}), user, zero });
-    const old = try lower_stmt.readLvalue(self, slot);
+    const old = try lower_lvalue.readLvalue(self, slot);
     const hit = try self.emit(.igt, &.{ found, zero });
-    try lower_stmt.writeLvalue(self, slot, try self.emit(.select, &.{ hit, v, old }));
+    try lower_lvalue.writeLvalue(self, slot, try self.emit(.select, &.{ hit, v, old }));
     return found;
 }
 
@@ -1263,7 +1264,7 @@ pub fn lowerFileRead(self: *Lower, tok: u32, name: []const u8, args: []const Ast
     var item: i64 = 0;
     for (dests) |a| {
         if (a == .none) continue;
-        const slot = try lower_stmt.resolveLvalue(self, a) orelse continue;
+        const slot = try lower_lvalue.resolveLvalue(self, a) orelse continue;
         // §9.5.4.1/§9.5.7 write a string; only §9.5.4.2 has typed items, and
         // there the destination's declared type picks the callee as in
         // `lowerScan`: the name is the type, so `sysFuncTy` and
@@ -1274,7 +1275,7 @@ pub fn lowerFileRead(self: *Lower, tok: u32, name: []const u8, args: []const Ast
                 continue;
             }
             const v = try self.call(if (gets) "$fgets$str" else "$ferror$str", &.{ n, fd });
-            try lower_stmt.writeLvalue(self, slot, v);
+            try lower_lvalue.writeLvalue(self, slot, v);
             continue;
         }
         const callee: []const u8 = switch (slot.ty) {
@@ -1287,9 +1288,9 @@ pub fn lowerFileRead(self: *Lower, tok: u32, name: []const u8, args: []const Ast
         const v = try self.call(callee, &.{ n, fd, fmt.?, index });
         // Only successful assignments change destinations. Reuse the count
         // from the sequenced file read; never consume another input window.
-        const old = try lower_stmt.readLvalue(self, slot);
+        const old = try lower_lvalue.readLvalue(self, slot);
         const assigned = try self.emit(.igt, &.{ n, index });
-        try lower_stmt.writeLvalue(self, slot, try self.emit(.select, &.{ assigned, v, old }));
+        try lower_lvalue.writeLvalue(self, slot, try self.emit(.select, &.{ assigned, v, old }));
         item += 1;
     }
     return n;

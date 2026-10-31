@@ -31,6 +31,8 @@ const lower_var = @import("var.zig");
 const lower_wide = @import("wide.zig");
 const lower_expr = @import("expr.zig");
 const lower_expr_name = @import("expr_name.zig");
+const lower_assign = @import("assign.zig");
+const lower_lvalue = @import("lvalue.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const VarSlot = Lower.VarSlot;
@@ -45,7 +47,7 @@ pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     assert(e == .none or self.exprValid(e));
     assert(self.blockValid(self.cur));
     var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
-    const chain = (try lower_stmt.indexChain(self, e, &subs)) orelse {
+    const chain = (try lower_lvalue.indexChain(self, e, &subs)) orelse {
         try self.err(self.file.exprs.mainTok(e), .E0330, "only `name[<index>]` is supported", .{});
         return poison;
     };
@@ -79,15 +81,15 @@ pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
             };
         } else all_const = false;
     }
-    if (!try lower_stmt.checkSubscriptCount(self, e, name, info, at.len)) return poison;
+    if (!try lower_lvalue.checkSubscriptCount(self, e, name, info, at.len)) return poison;
     if (all_const) {
-        if (!try lower_stmt.checkSubscripts(self, e, name, info, at)) return poison;
+        if (!try lower_lvalue.checkSubscripts(self, e, name, info, at)) return poison;
         return (try arrayElemValue(self, name, at)) orelse poison;
     }
 
     // `$idx` emits one switch over the scalarized elements. Both reads and
     // writes use the same declared-order flattening and per-dimension bounds.
-    const iv = try lower_stmt.runtimeArrayIndex(self, chain.subs, info.dims);
+    const iv = try lower_assign.runtimeArrayIndex(self, chain.subs, info.dims);
     const ty = info.ty;
     // A memory-backed array reads one element of its storage; an invalid
     // subscript (-1) reads the zero the `$idx` switch's default gives.

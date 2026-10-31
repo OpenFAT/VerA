@@ -16,6 +16,7 @@ const lower_func = @import("func.zig");
 const lower_node = @import("node.zig");
 const lower_sysfunc = @import("sysfunc.zig");
 const Ast = @import("frontend").Ast;
+const lower_branch = @import("branch.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 
@@ -75,7 +76,7 @@ fn limitSlotOf(self: *Lower, a: Ast.ExprId) Oom!?usize {
 
 /// The `limit_slots` row keyed on branch `t`, or null. One slot per access
 /// function: the spelling (`neg`) is part of the key, as `addLimitSlot` mints it.
-fn findSlot(self: *const Lower, t: lower_contrib.Target) ?usize {
+fn findSlot(self: *const Lower, t: lower_branch.Target) ?usize {
     for (self.out.limit_slots.items, 0..) |s, i| {
         if (s.access == t.access and s.hi == t.hi and s.lo == t.lo and s.neg == t.neg and s.br == t.br)
             return i;
@@ -86,9 +87,9 @@ fn findSlot(self: *const Lower, t: lower_contrib.Target) ?usize {
 /// The branch an access function names, or null for anything that is not one.
 /// Called twice per expression; the bag dedupes `branchOf`'s diagnostics by
 /// `(code, span)`, so a malformed access function is reported once.
-fn limitSlotKey(self: *Lower, a: Ast.ExprId) Oom!?lower_contrib.Target {
+fn limitSlotKey(self: *Lower, a: Ast.ExprId) Oom!?lower_branch.Target {
     if (a == .none or self.file.exprs.tag(a) != .branch_access) return null;
-    return lower_contrib.branchOf(self, a);
+    return lower_branch.branchOf(self, a);
 }
 
 /// Creates the `LimitSlot` for access function `a` unless one with the same branch

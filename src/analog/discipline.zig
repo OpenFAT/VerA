@@ -23,6 +23,7 @@ const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const rules = @import("elab").discipline_rules;
 const diag = @import("diag");
+const lower_branch = @import("branch.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const DisciplineInfo = Lower.DisciplineInfo;
@@ -40,8 +41,8 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
     // every discipline that binds the half they name. Registered in the same map
     // so they are "an alternative spelling": downstream sees an `Access` and cannot
     // tell which word produced it, except `checkAccessMatch`'s §3.6.1.2 name match.
-    try self.access_kind.put(self.arena, lower_contrib.generic_potential, .potential);
-    try self.access_kind.put(self.arena, lower_contrib.generic_flow, .flow);
+    try self.access_kind.put(self.arena, lower_branch.generic_potential, .potential);
+    try self.access_kind.put(self.arena, lower_branch.generic_flow, .flow);
 
     for (self.file.disciplines) |*d| {
         var info: DisciplineInfo = .{

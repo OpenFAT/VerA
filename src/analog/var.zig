@@ -36,6 +36,7 @@ const Mir = @import("ir").Mir;
 const Ssa = @import("ssa.zig");
 const rules = @import("elab").discipline_rules;
 const lower_expr_select = @import("expr_select.zig");
+const lower_noise_src = @import("noise_src.zig");
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const VarSlot = Lower.VarSlot;
@@ -825,7 +826,7 @@ pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) O
     // tells an assignment from no assignment by this count.
     if (hold and why.? == .event and prefix.len == 0 and self.out.discrete_reads.contains(name))
         try self.var_state.assign_counts.put(self.arena, slot.place, try hiddenHeldInt(self, try self.arena.print("{s}{s}", .{ Lower.HeldVar.assign_count_prefix, name })));
-    try lower_contrib.noteVarNoise(self, name, decl.init);
+    try lower_noise_src.noteVarNoise(self, name, decl.init);
 }
 
 /// §7.3.1 a module `reg` the analog context never assigns, whose initializer
