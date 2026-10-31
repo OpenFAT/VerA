@@ -16,7 +16,7 @@
 //! - `pub var refuse_for_test: bool`
 //! - `pub fn Result(comptime Func: type) type`
 //! - `pub fn run(depth_hint: usize, comptime func: anytype, args: anytype) Result(@TypeOf(func))`
-//! - `pub fn runGuarded(depth_hint: usize, comptime f: anytype, args: anytype) ReturnType(f)`
+//! - `pub fn runGuarded(depth_hint: usize, comptime f: anytype, args: anytype)`, returning what `f` returns
 //! - `pub fn exhausted() bool`
 //! - `pub fn mib() usize`
 //!
