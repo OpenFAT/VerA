@@ -40,14 +40,14 @@ pub fn Setup(comptime D: type) type {
             _ = P.hostParams(&m.card, paras.*) catch |err| switch (err) {
                 error.SimParasUnterminated => return refuse(handle, res, params.sim_paras_refusal),
             };
-            if (P.overlay(&m.card, &T.all_idx, T.np, &m.vals, m.given)) |param| {
+            if (P.overlay(&m.card, &T.all_idx, T.np, &m.vals, &m.given)) |param| {
                 P.refuseInt(handle, param);
                 res.flags |= abi.eval_ret_flag_fatal;
                 return;
             }
             var d = m.card;
             if (!derive(handle, &d)) res.flags |= abi.eval_ret_flag_fatal;
-            P.readback(&d, &T.all_idx, T.np, &m.vals, m.given);
+            P.readback(&d, &T.all_idx, T.np, &m.vals, &m.given);
             assert(res.flags & ~abi.eval_ret_flag_fatal == 0);
         }
 
@@ -74,7 +74,7 @@ pub fn Setup(comptime D: type) type {
             _ = P.hostParams(&self.row, paras.*) catch |err| switch (err) {
                 error.SimParasUnterminated => return refuse(handle, res, params.sim_paras_refusal),
             };
-            if (P.overlay(&self.row, T.inst_idx, T.num_inst_params, &self.vals, self.given)) |param| {
+            if (P.overlay(&self.row, T.inst_idx, T.num_inst_params, &self.vals, &self.given)) |param| {
                 P.refuseInt(handle, param);
                 res.flags |= abi.eval_ret_flag_fatal;
                 return;
@@ -85,12 +85,12 @@ pub fn Setup(comptime D: type) type {
             if (@hasField(D.Model, "port_connected__"))
                 self.row.port_connected__ = if (connected >= 64) std.math.maxInt(u64) else (@as(u64, 1) << @intCast(connected)) - 1;
             if (!derive(handle, &self.row)) res.flags |= abi.eval_ret_flag_fatal;
-            P.readback(&self.row, T.inst_idx, T.num_inst_params, &self.vals, self.given);
+            P.readback(&self.row, T.inst_idx, T.num_inst_params, &self.vals, &self.given);
             if (@hasDecl(D, "setup")) D.setup(T.Val, &self.row);
             self.inst = .{};
             if (T.has_mf) {
                 // §6.3.6: `$mfactor` defaults to 1.
-                if (!self.given.isSet(T.ni)) self.vals[T.ni] = @bitCast(@as(f64, 1));
+                if (!self.given[T.ni]) self.vals[T.ni] = @bitCast(@as(f64, 1));
                 self.inst.mfactor = P.mfactor(self);
             }
             if (@hasDecl(D, "setupInstance")) D.setupInstance(&self.row, &self.inst);

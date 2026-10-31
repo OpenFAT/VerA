@@ -33,7 +33,11 @@ pub fn Model(comptime D: type) type {
         vals: [T.np]u64,
         /// Which `vals` the simulator wrote (an `access` with
         /// `ACCESS_FLAG_SET`). The zeroed blob has none.
-        given: std.StaticBitSet(T.np),
+        // A byte per flag, not a bit set: `overlay` and `readback` test every
+        // flag in an unrolled loop, and a `std.StaticBitSet` there grew
+        // psp103's library text by 314 KB (5.09 to 5.41 MB, 6%) to save
+        // 700 bytes per model blob.
+        given: [T.np]bool,
         /// The card: defaults, the simulator's `$simparam`s and the given
         /// parameters, before `derive`.
         card: D.Model,
@@ -64,7 +68,7 @@ pub fn Instance(comptime D: type) type {
         /// parameters, then `$mfactor` (a double) when `T.has_mf`.
         vals: [T.num_inst_params]u64,
         /// Which `vals` the simulator wrote. The zeroed blob has none.
-        given: std.StaticBitSet(T.num_inst_params),
+        given: [T.num_inst_params]bool,
         /// This instance's own `Model` row, derived and set up.
         row: D.Model,
         inst: D.Instance,

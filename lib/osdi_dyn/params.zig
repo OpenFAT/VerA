@@ -17,8 +17,8 @@
 //! - `pub fn Params(D).access(ip: ?*anyopaque, mp: ?*anyopaque, id: u32, flags: u32) callconv(.c) ?*anyopaque`
 //! - `pub fn Params(D).givenModel(mp: *anyopaque, id: u32) callconv(.c) u32`
 //! - `pub fn Params(D).givenInstance(ip: *anyopaque, id: u32) callconv(.c) u32`
-//! - `pub fn Params(D).overlay(m: *D.Model, comptime idx: []const u16, comptime k: usize, vals: *[k]u64, given: std.StaticBitSet(k)) ?[]const u8`
-//! - `pub fn Params(D).readback(m: *const D.Model, comptime idx: []const u16, comptime k: usize, vals: *[k]u64, given: std.StaticBitSet(k)) void`
+//! - `pub fn Params(D).overlay(m: *D.Model, comptime idx: []const u16, comptime k: usize, vals: *[k]u64, given: *const [k]bool) ?[]const u8`
+//! - `pub fn Params(D).readback(m: *const D.Model, comptime idx: []const u16, comptime k: usize, vals: *[k]u64, given: *const [k]bool) void`
 //! - `pub fn Params(D).refuseInt(handle: ?*anyopaque, param: []const u8) void`
 //! - `pub fn Params(D).hostParams(m: *D.Model, p: abi.SimParas) SimParasError!bool`
 //! - `pub fn Params(D).hostParamsAt(self: *Instance(D), p: abi.SimParas) SimParasError!bool`
@@ -62,8 +62,8 @@ pub fn Params(comptime D: type) type {
             // `$mfactor` (id `ni`) is the instance's whichever blob is asked.
             if (T.num_inst_params > 0 and id < T.num_inst_params and (flags & abi.access_flag_instance != 0 or id >= T.ni)) {
                 const self = I.of(ip orelse return null);
-                if (set) self.given.set(id);
-                assert(!set or self.given.isSet(id));
+                if (set) self.given[id] = true;
+                assert(!set or self.given[id]);
                 return &self.vals[id];
             }
             // §3.4 parameters are optional (#79): with none, no model-side id
@@ -75,7 +75,7 @@ pub fn Params(comptime D: type) type {
             const j: usize = if (id < T.ni) T.inst_idx[id] else if (id >= T.num_inst_params and id < T.num_params) id - T.num_inst_params else return null;
             assert(j < T.np);
             const m = M.of(mp orelse return null);
-            if (set) m.given.set(j);
+            if (set) m.given[j] = true;
             return &m.vals[j];
         }
 
@@ -86,7 +86,7 @@ pub fn Params(comptime D: type) type {
             if (T.np == 0 or id < T.num_inst_params or id >= T.num_params) return 0;
             const j = id - T.num_inst_params;
             assert(j < T.np);
-            return @intFromBool(M.of(mp).given.isSet(j));
+            return @intFromBool(M.of(mp).given[j]);
         }
 
         /// OSDI `given_flag_instance`: whether the instance line gave
@@ -94,7 +94,7 @@ pub fn Params(comptime D: type) type {
         pub fn givenInstance(ip: *anyopaque, id: u32) callconv(.c) u32 {
             if (T.num_inst_params == 0 or id >= T.num_inst_params) return 0;
             assert(T.num_inst_params > 0);
-            return @intFromBool(I.of(ip).given.isSet(id));
+            return @intFromBool(I.of(ip).given[id]);
         }
 
         /// Writes the given slots of `vals` into `m`: slot `i` is parameter
@@ -102,10 +102,10 @@ pub fn Params(comptime D: type) type {
         /// whose host value the field cannot hold (the host's `int32_t` into
         /// VerA's narrower field), with `m` partly written; null when every
         /// given value was written. Asserts that `idx` fits the slots.
-        pub fn overlay(m: *D.Model, comptime idx: []const u16, comptime k: usize, vals: *[k]u64, given: std.StaticBitSet(k)) ?[]const u8 {
+        pub fn overlay(m: *D.Model, comptime idx: []const u16, comptime k: usize, vals: *[k]u64, given: *const [k]bool) ?[]const u8 {
             @setEvalBranchQuota(10_000_000);
             comptime assert(idx.len <= k);
-            inline for (idx, 0..) |pi, i| if (given.isSet(i)) {
+            inline for (idx, 0..) |pi, i| if (given[i]) {
                 const p = T.params[pi];
                 const F = @FieldType(D.Model, p.field);
                 @field(m, p.field) = switch (p.kind) {
@@ -121,10 +121,10 @@ pub fn Params(comptime D: type) type {
         /// Writes `m`'s value of every parameter `given` lacks into its slot
         /// of `vals`, so a host reading one back (ngspice `show`) sees the
         /// default. Asserts that `idx` fits the slots.
-        pub fn readback(m: *const D.Model, comptime idx: []const u16, comptime k: usize, vals: *[k]u64, given: std.StaticBitSet(k)) void {
+        pub fn readback(m: *const D.Model, comptime idx: []const u16, comptime k: usize, vals: *[k]u64, given: *const [k]bool) void {
             @setEvalBranchQuota(10_000_000);
             comptime assert(idx.len <= k);
-            inline for (idx, 0..) |pi, i| if (!given.isSet(i)) switch (T.params[pi].kind) {
+            inline for (idx, 0..) |pi, i| if (!given[i]) switch (T.params[pi].kind) {
                 .real => slot(f64, &vals[i]).* = @field(m, T.params[pi].field),
                 .int => slot(i32, &vals[i]).* = std.math.lossyCast(i32, @field(m, T.params[pi].field)),
                 // ponytail: a default string is not known to be NUL-terminated.
