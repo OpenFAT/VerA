@@ -73,7 +73,7 @@ pub fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error
             // path times the net that bridge drives; an unconnected one has
             // no outside to time.
             var dests: std.ArrayList(u32) = .empty;
-            if (r.net_of.get(at)) |net| {
+            if (r.netlist.slot_nets.get(at)) |net| {
                 try dests.append(r.arena, net);
             } else {
                 const is_port = for (m.ports) |pt| {

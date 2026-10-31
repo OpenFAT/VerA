@@ -140,7 +140,7 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
             .tchk_expiry => |t| try tchk.expired(r, t.check, t.gen),
             .tchk_event => |t| try tchk.delivered(r, t.code, t.bit),
             .tran_switch => |at| {
-                const t = &r.trans[at];
+                const t = &r.netlist.switches[at];
                 t.pending = null;
                 t.state = t.target;
                 try resolution.resolve(r, t.a);
@@ -149,15 +149,15 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
             // §6.1.3: the scheduler drops a cancelled transition, so what
             // arrives is the one still in flight.
             .drive => |at| {
-                const d = &r.drivers[at];
-                const t = &r.transitions.items[d.transition]; // a `.drive` event has its row
+                const d = &r.netlist.drivers[at];
+                const t = &r.netlist.transitions.items[d.transition]; // a `.drive` event has its row
                 t.in_flight = null;
                 @memcpy(d.current.planes, t.target.planes);
                 d.or_z = t.or_z;
                 try resolution.resolve(r, d.net);
             },
             .net_update => |at| {
-                const n = r.nets[at];
+                const n = r.netlist.nets[at];
                 const c = try r.netColdMut(at); // a delayed net has its row
                 c.transition.in_flight = null;
                 try waiters.store(r, n.slot, c.transition.target.planes);
@@ -165,7 +165,7 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
             // §3.8: the charge has been held for the decay time, and what a
             // trireg holds once it is worth nothing is x.
             .decay => |at| {
-                const n = &r.nets[at];
+                const n = &r.netlist.nets[at];
                 (try r.netColdMut(at)).decay_event = null; // a decaying trireg has its row
                 for (0..n.resolved.width) |i| setBit(n.resolved, @intCast(i), .x);
                 try waiters.store(r, n.slot, n.resolved.planes);

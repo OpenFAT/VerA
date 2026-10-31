@@ -243,7 +243,7 @@ pub fn mintNet(r: *Run, e: *Elab, kind: Ast.NetKind, width: u32, signed: bool, n
     const signal: u32 = @intCast(e.signals.items.len);
     try e.signals.appendNTimes(r.arena, .{}, width);
     try e.nets.append(r.arena, .{ .kind = kind, .slot = slot, .resolved = try filled(r.arena, if (wreal) 64 else width, false, .z), .signal = signal, .tok = tok });
-    try r.net_of.put(r.arena, slot, at);
+    try r.netlist.slot_nets.put(r.arena, slot, at);
     return at;
 }
 

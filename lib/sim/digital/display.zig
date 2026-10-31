@@ -620,15 +620,15 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                     if (arg == args.len) return short(self, e, dynamic, "missing display argument");
                     try compile.checkExpr(self, args[arg]);
                     if (compile.typeOf(self, args[arg]).width != 1) return self.exprFail(args[arg], "§17.1.1.5: %v takes a scalar net reference");
-                    const net = if (ex.tag(args[arg]) == .ident) self.net_of.get(try self.slot(args[arg])) else null;
+                    const net = if (ex.tag(args[arg]) == .ident) self.netlist.slot_nets.get(try self.slot(args[arg])) else null;
                     // The resolution keeps a net's `signal` only when read.
-                    if (net) |n| self.nets[n].strength_read = true;
+                    if (net) |n| self.netlist.nets[n].strength_read = true;
                     if (allocator) |a| {
-                        const n = if (net) |k| self.nets[k] else null;
+                        const n = if (net) |k| self.netlist.nets[k] else null;
                         // §7.6: a pass switch drives a net with no driver of its own.
                         const sig: Signal = if (n == null)
                             .of((try evaluate.eval(self, a, args[arg], 0)).bit(0), .strong, .strong)
-                        else if (self.netDrivers(net.?).len == 0 and self.netCold(n.?).trans.len == 0) netPull(n.?.kind) else self.signals[n.?.signal];
+                        else if (self.netDrivers(net.?).len == 0 and self.netCold(n.?).trans.len == 0) netPull(n.?.kind) else self.netlist.signals[n.?.signal];
                         try strength(self.out, sig);
                     }
                     continue;

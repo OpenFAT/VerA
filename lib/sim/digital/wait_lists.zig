@@ -211,7 +211,7 @@ pub fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
         const base = try self.slot(self.chainBase(e).base);
         if (self.events.contains(base)) return self.exprFail(e, "§9.7.3: a named event holds no data; it cannot be assigned");
         // §4.9.1 an element of a net array is a net.
-        if (self.net_of.contains(base)) return self.exprFail(e, net_refused);
+        if (self.netlist.slot_nets.contains(base)) return self.exprFail(e, net_refused);
         var x = e;
         while (ex.tag(x) == .index) : (x = ex.lhs(x)) {
             try checkExpr(self, ex.rhs(x));
@@ -223,7 +223,7 @@ pub fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
     // typing it as a read folds its bounds and checks its index.
     if (ex.tag(e) == .index) try checkExpr(self, e);
     const at = try self.baseSlot(e);
-    if (self.net_of.contains(at)) return self.exprFail(e, net_refused);
+    if (self.netlist.slot_nets.contains(at)) return self.exprFail(e, net_refused);
     if (self.params.contains(at)) return self.exprFail(e, "§12.2: a parameter is a constant; it cannot be assigned");
     if (self.events.contains(at)) return self.exprFail(e, "§9.7.3: a named event holds no data; it cannot be assigned");
 }

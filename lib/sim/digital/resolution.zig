@@ -56,16 +56,16 @@ const Timed = struct { ticks: u64, reject: u64, err: u64 };
 const Switches = struct {
     r: *const Run,
     pub fn switches(g: Switches, net: u32) []const u32 {
-        return g.r.netCold(g.r.nets[net]).trans;
+        return g.r.netCold(g.r.netlist.nets[net]).trans;
     }
     pub fn tran(g: Switches, ti: u32) Tran {
-        return g.r.trans[ti];
+        return g.r.netlist.switches[ti];
     }
     pub fn conduction(g: Switches, ti: u32) Tran.State {
-        return g.r.trans[ti].state;
+        return g.r.netlist.switches[ti].state;
     }
     pub fn fixed(g: Switches, net: u32) bool {
-        return switch (g.r.nets[net].kind) {
+        return switch (g.r.netlist.nets[net].kind) {
             .supply0, .supply1 => true,
             else => false, // else: every other net kind is a conductor
         };
@@ -105,8 +105,8 @@ const bus_expected = "1 0101 1 0111\nx 0xx1 1\n0 0001\n0 0011\nz zzzz 1\n";
 /// `store`, the path a variable write takes, so `@(posedge w)` resumes on a
 /// net.
 pub fn resolve(self: *Run, net: u32) Error!void {
-    assert(net < self.nets.len);
-    const n = self.nets[net];
+    assert(net < self.netlist.nets.len);
+    const n = self.netlist.nets[net];
     const drivers = self.netDrivers(net);
     // A §18.4 port's state can change with its drivers' strengths alone.
     if (self.waits.watch[n.slot].contains(.ports)) try waiters.requestVcd(self);
@@ -117,7 +117,7 @@ pub fn resolve(self: *Run, net: u32) Error!void {
         n.resolved.values()[0] = 0;
         n.resolved.unknowns()[0] = 0;
         for (drivers) |d| {
-            const cur = self.drivers[d].current;
+            const cur = self.netlist.drivers[d].current;
             if (!cur.hasUnknown()) n.resolved.values()[0] = cur.values()[0];
         }
         return waiters.store(self, n.slot, n.resolved.planes);
@@ -128,11 +128,11 @@ pub fn resolve(self: *Run, net: u32) Error!void {
     // §7.10/§7.11: a MOS switch passes its data's strength, so a change of
     // strength alone on a net one reads re-evaluates that switch.
     var moved = false;
-    if (uniform(self, net)) foldUniform(n.resolved, self.drivers, drivers) else for (0..n.resolved.width) |i| {
+    if (uniform(self, net)) foldUniform(n.resolved, self.netlist.drivers, drivers) else for (0..n.resolved.width) |i| {
         const at: u32 = @intCast(i);
         var acc: Signal = .{};
         for (drivers) |d| {
-            const c = contribution(self.drivers[d], at);
+            const c = contribution(self.netlist.drivers[d], at);
             acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
         }
         // §7.9/§7.10: a `trireg` with no driver asserting anything is in
@@ -144,8 +144,8 @@ pub fn resolve(self: *Run, net: u32) Error!void {
             floating += 1;
         }
         acc = acc.combine(netPull(n.kind));
-        moved = moved or (n.strength_read and !std.meta.eql(self.signals[n.signal + at], acc));
-        self.signals[n.signal + at] = acc;
+        moved = moved or (n.strength_read and !std.meta.eql(self.netlist.signals[n.signal + at], acc));
+        self.netlist.signals[n.signal + at] = acc;
         setBit(n.resolved, at, acc.collapse());
     }
     if (n.kind == .trireg) try chargeState(self, net, floating == n.resolved.width);
@@ -187,11 +187,11 @@ pub fn resolve(self: *Run, net: u32) Error!void {
 /// with no driver at all holds its type's pull (§3.7: a supply net's supply
 /// strength), which a MOS switch reading it as data passes on (§7.11).
 pub fn initial(self: *Run, net: u32) void {
-    assert(net < self.nets.len);
-    const n = self.nets[net];
+    assert(net < self.netlist.nets.len);
+    const n = self.netlist.nets[net];
     if (n.kind == .wreal or n.kind == .trireg or self.netCold(n).trans.len != 0) return;
     if (self.netDrivers(net).len == 0) {
-        @memset(self.signals[n.signal..][0..n.resolved.width], netPull(n.kind));
+        @memset(self.netlist.signals[n.signal..][0..n.resolved.width], netPull(n.kind));
         return;
     }
     const tables = wiredLogic(n.kind);
@@ -199,7 +199,7 @@ pub fn initial(self: *Run, net: u32) void {
         const at: u32 = @intCast(i);
         var acc: Signal = .{};
         for (self.netDrivers(net)) |d| {
-            const dr = self.drivers[d];
+            const dr = self.netlist.drivers[d];
             // A sequential UDP's initial state is published at time 0
             // (§8.5), a change from the unknown a process armed earlier
             // sees, as iverilog's does (ivtest br_ml20190806a).
@@ -207,7 +207,7 @@ pub fn initial(self: *Run, net: u32) void {
             acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
         }
         acc = acc.combine(netPull(n.kind));
-        self.signals[n.signal + at] = acc;
+        self.netlist.signals[n.signal + at] = acc;
         setBit(n.resolved, at, acc.collapse());
     }
     @memcpy(self.values[n.slot].planes, n.resolved.planes);
@@ -225,10 +225,10 @@ pub fn mosValue(self: *Run, scratch: std.mem.Allocator, at: u32, m: net_mod.Mos,
     const dv = try evaluate.eval(self, scratch, m.data, 1);
     const bit = if (dv.width > 1) m.lane.? else 0;
     var sig: Signal = .of(dv.bit(bit), .strong, .strong);
-    if (ex.tag(m.data) == .ident) if (self.net_of.get(try self.slot(m.data))) |net| {
-        sig = self.signals[self.nets[net].signal + bit];
+    if (ex.tag(m.data) == .ident) if (self.netlist.slot_nets.get(try self.slot(m.data))) |net| {
+        sig = self.netlist.signals[self.netlist.nets[net].signal + bit];
     };
-    const d = &self.drivers[at];
+    const d = &self.netlist.drivers[at];
     d.s0 = net_mod.reduce(if (sig.lo < 0) @fromBackingInt(@intCast(@as(u8, @intCast(-sig.lo)))) else .highz, m.resistive);
     d.s1 = net_mod.reduce(if (sig.hi > 0) @fromBackingInt(@intCast(@as(u8, @intCast(sig.hi)))) else .highz, m.resistive);
     const value = sig.collapse();
@@ -275,7 +275,7 @@ pub fn schedule(self: *Run, from: Int.Literal, from_or_z: bool, to: Int.Literal,
 /// A control that returns before its change lands cancels it (§7.14's
 /// inertial reading, as a gate's).
 pub fn switchAfter(self: *Run, at: u32, next: Tran.State) Error!void {
-    const t = &self.trans[at];
+    const t = &self.netlist.switches[at];
     const settled = if (t.pending != null) t.target else t.state;
     if (settled == next) return;
     if (t.pending) |h| try exec.cancel(self, h);
@@ -368,9 +368,9 @@ fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to:
 /// the earlier landing (on-event) or from now (on-detect) to the later.
 /// Returns whether it scheduled the transition itself.
 fn pulse(self: *Run, net: u32, c: *net_mod.NetCold, td: Timed) Error!bool {
-    assert(net < self.nets.len);
+    assert(net < self.netlist.nets.len);
     const st = &c.transition;
-    const n = self.nets[net];
+    const n = self.netlist.nets[net];
     const now = self.scheduler.now;
     const leading = st.due;
     const trailing = now + td.ticks;
@@ -400,7 +400,7 @@ fn pulse(self: *Run, net: u32, c: *net_mod.NetCold, td: Timed) Error!bool {
 
 /// Puts `to` in flight on `st` to land on net `net` at absolute time `at`.
 fn land(self: *Run, net: u32, st: *net_mod.Inertial, to: Int.Literal, at: u64) Error!void {
-    assert(net < self.nets.len);
+    assert(net < self.netlist.nets.len);
     if (st.target.planes.len != to.planes.len) st.target.planes = try self.arena.alloc(u64, to.planes.len);
     @memcpy(st.target.planes, to.planes);
     st.target.width = to.width;
@@ -424,7 +424,7 @@ fn land(self: *Run, net: u32, st: *net_mod.Inertial, to: Int.Literal, at: u64) E
 /// select, as one transition; per-bit scheduling would time each bit.
 fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int.Literal) Error!?Timed {
     var latest: ?u64 = null;
-    for (paths) |p| if (self.path_changed.get(p.src)) |c| {
+    for (paths) |p| if (self.netlist.path_changed.get(p.src)) |c| {
         latest = @max(latest orelse c.time, c.time);
     };
     const t = latest orelse return null;
@@ -464,7 +464,7 @@ fn pathActive(self: *Run, paths: []const net_mod.Path, p: net_mod.Path, t: u64) 
 /// significant bit", or the bit a bit-select names).
 /// ponytail: a source bit past 63 counts any transition as its edge.
 fn pathFired(self: *const Run, p: net_mod.Path, t: u64) bool {
-    const c = self.path_changed.get(p.src) orelse return false;
+    const c = self.netlist.path_changed.get(p.src) orelse return false;
     if (c.time != t) return false;
     if (p.edge == .none or p.src_bit >= 64) return true;
     const sh: u6 = @intCast(p.src_bit);
@@ -492,18 +492,18 @@ fn pathCond(self: *Run, p: net_mod.Path) Error!bool {
 /// reads (`Net.strength_read`), driven at one strength on both sides by
 /// every driver, none of them H/L (§7.10.2).
 fn uniform(self: *const Run, net: u32) bool {
-    assert(net < self.nets.len);
-    const n = self.nets[net];
+    assert(net < self.netlist.nets.len);
+    const n = self.netlist.nets[net];
     switch (n.kind) {
         .wire, .tri, .uwire => {},
         .tri0, .tri1, .trireg, .wand, .wor, .triand, .trior, .supply0, .supply1, .wreal => return false,
     }
     const ids = self.netDrivers(net);
     if (n.strength_read or ids.len == 0) return false;
-    const s = self.drivers[ids[0]].s0;
+    const s = self.netlist.drivers[ids[0]].s0;
     if (s == .highz) return false;
     for (ids) |d| {
-        const dr = self.drivers[d];
+        const dr = self.netlist.drivers[d];
         if (dr.or_z or dr.s0 != s or dr.s1 != s or dr.current.planes.len != n.resolved.planes.len) return false;
     }
     return true;
@@ -533,15 +533,15 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
     const a = self.resolve_scratch.allocator();
     var touched: std.ArrayList(u32) = .empty;
     try touched.append(a, start);
-    for (0..self.nets[start].resolved.width) |i| {
+    for (0..self.netlist.nets[start].resolved.width) |i| {
         const group = try reach(Switches{ .r = self }, a, .{ .net = start, .bit = @intCast(i) });
         for (group) |y| {
             const paths = try switchPaths(Switches{ .r = self }, a, y, group);
             var acc: Signal = .{};
             for (group, paths) |z, p| {
-                const n = self.nets[z.net];
+                const n = self.netlist.nets[z.net];
                 var own = netPull(n.kind);
-                for (self.netDrivers(z.net)) |d| own = own.combine(contribution(self.drivers[d], z.bit));
+                for (self.netDrivers(z.net)) |d| own = own.combine(contribution(self.netlist.drivers[d], z.bit));
                 // §9.3.2 "The force procedural statement on a net shall
                 // override all drivers"; across a switch the forced value is
                 // a strong driver of the other nets, as iverilog reads it
@@ -554,16 +554,16 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
                 acc = acc.combine(crossed(own, z, y, p));
             }
             if (acc.none()) for (group, paths) |z, p| {
-                const n = self.nets[z.net];
+                const n = self.netlist.nets[z.net];
                 if (n.kind == .trireg) acc = acc.combine(crossed(.of(self.values[n.slot].bit(z.bit), n.charge, n.charge), z, y, p));
             };
-            const n = self.nets[y.net];
-            self.signals[n.signal + y.bit] = acc;
+            const n = self.netlist.nets[y.net];
+            self.netlist.signals[n.signal + y.bit] = acc;
             setBit(n.resolved, y.bit, acc.collapse());
             if (std.mem.findScalar(u32, touched.items, y.net) == null) try touched.append(a, y.net);
         }
     }
-    for (touched.items) |t| try waiters.store(self, self.nets[t].slot, self.nets[t].resolved.planes);
+    for (touched.items) |t| try waiters.store(self, self.netlist.nets[t].slot, self.netlist.nets[t].resolved.planes);
 }
 
 /// §3.8 charge decay. The countdown restarts on each entry into the
@@ -572,8 +572,8 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
 // and some floating decays all of them together; a countdown per bit if a
 // design needs it.
 fn chargeState(self: *Run, net: u32, floating: bool) Error!void {
-    assert(net < self.nets.len);
-    const n = &self.nets[net];
+    assert(net < self.netlist.nets.len);
+    const n = &self.netlist.nets[net];
     const was = n.capacitive;
     n.capacitive = floating;
     // Leaving the state, or entering one that never decays, only has to
@@ -581,7 +581,7 @@ fn chargeState(self: *Run, net: u32, floating: bool) Error!void {
     if (was == floating) return;
     // A trireg without a cold row has no decay and no countdown to cancel.
     if (n.cold == no_cold) return;
-    const c = &self.net_cold.items[n.cold];
+    const c = &self.netlist.cold.items[n.cold];
     if (c.decay_event) |h| try exec.cancel(self, h);
     c.decay_event = null;
     if (!floating) return;

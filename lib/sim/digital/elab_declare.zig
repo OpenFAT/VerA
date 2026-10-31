@@ -240,7 +240,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
             // port (`Port.typed`), so a net already bound here is a second
             // one, unless it is the entry a folded `wire p = e;` leaves for
             // its initializer.
-            if (r.net_of.contains(var_slot)) for (m.nets) |n| if (n.name == p.name and n.init == .none and n.discipline == .none) return r.fail(n.main_tok, "duplicate digital variable", .{});
+            if (r.netlist.slot_nets.contains(var_slot)) for (m.nets) |n| if (n.name == p.name and n.init == .none and n.discipline == .none) return r.fail(n.main_tok, "duplicate digital variable", .{});
             if (p.direction != .output) return r.fail(p.main_tok, "§12.3.3: only an output port may be declared as a variable", .{});
             switch (bind) {
                 .open => {},
@@ -341,7 +341,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
                 // not a whole net).
                 const ex = &r.file.exprs;
                 if (ex.tag(c.expr) == .index and ex.tag(ex.lhs(c.expr)) == .ident) {
-                    if (r.lookup(c.scope, ex.strOf(ex.lhs(c.expr)))) |slot| if (r.net_of.get(slot)) |net| {
+                    if (r.lookup(c.scope, ex.strOf(ex.lhs(c.expr)))) |slot| if (r.netlist.slot_nets.get(slot)) |net| {
                         _ = try warnPort(r, p, e.nets.items[net].kind);
                     };
                 }

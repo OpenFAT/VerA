@@ -199,7 +199,7 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
     const before_words: [2]u64 = if (path_source) .{ dest.values()[0], dest.unknowns()[0] } else undefined;
     const changed = changed: {
         if (self.overrides.count() != 0 and !self.overriding) if (self.overrides.get(target)) |o| {
-            if (o.force != null or (o.assign != null and !self.net_of.contains(target))) return;
+            if (o.force != null or (o.assign != null and !self.netlist.slot_nets.contains(target))) return;
             // §9.3.2 a forced select of a net keeps its bits; the rest resolve.
             if (o.parts.items.len != 0) break :changed keepForced(dest, planes, o.parts.items);
         };
@@ -223,7 +223,7 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
     // watches a slot yet.
     if (self.growing != null or self.folding_constant) return;
     if (!changed) return driver.stored(self, target, false);
-    if (path_source) try self.path_changed.put(self.arena, target, .{ .time = self.scheduler.now, .before = before_words, .after = .{ dest.values()[0], dest.unknowns()[0] } });
+    if (path_source) try self.netlist.path_changed.put(self.arena, target, .{ .time = self.scheduler.now, .before = before_words, .after = .{ dest.values()[0], dest.unknowns()[0] } });
     // Most slots have no watcher, so one test skips them all.
     const watchers = self.waits.watch[target];
     if (watchers.count() != 0) {
@@ -266,7 +266,7 @@ pub fn release(self: *Run, slot: u32, force: bool) Error!void {
     // §9.3.2: a released net is its drivers' again; a released
     // variable keeps its value, unless an assign holds it.
     if (force) {
-        if (self.net_of.get(slot)) |net| try resolution.resolve(self, net) else if (held) |a| _ = try exec.enqueue(self, .{ .run_process = a.start }, null, false);
+        if (self.netlist.slot_nets.get(slot)) |net| try resolution.resolve(self, net) else if (held) |a| _ = try exec.enqueue(self, .{ .run_process = a.start }, null, false);
     }
 }
 
@@ -281,7 +281,7 @@ pub fn releaseBits(self: *Run, slot: u32, bits: compile.Bits) Error!void {
         break;
     };
     if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.overrides.remove(slot);
-    if (self.net_of.get(slot)) |net| try resolution.resolve(self, net);
+    if (self.netlist.slot_nets.get(slot)) |net| try resolution.resolve(self, net);
 }
 
 /// VPI §12.30 vpiForceFlag: force `slot` to a constant, "same as the
@@ -337,7 +337,7 @@ pub fn wakeA2d(self: *Run, slot: u32) Error!void {
 pub fn wakeSwitches(self: *Run, target: u32) Error!void {
     if (target + 1 < self.waits.fan_start.len) for (self.waits.fan[self.waits.fan_start[target]..self.waits.fan_start[target + 1]]) |pc| if (self.waits.armed[pc]) {
         const ins = self.program.code.items[pc];
-        if (ins != .continuous or self.drivers[ins.continuous].source != .mos) continue;
+        if (ins != .continuous or self.netlist.drivers[ins.continuous].source != .mos) continue;
         self.waits.armed[pc] = false;
         _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
     };
@@ -651,7 +651,7 @@ fn fileTerm(self: *Run, id: u32, slot: u32, edge: Edge, ext: u32) Error!void {
 
 fn staticSlots(r: *const Run, ins: compile.Instruction) []const u32 {
     return switch (ins) {
-        .continuous => |i| r.drivers[i].sensitivity,
+        .continuous => |i| r.netlist.drivers[i].sensitivity,
         .switch_ctrl => |s| s.slots,
         else => &.{}, // else: every other instruction suspends through `park`
     };

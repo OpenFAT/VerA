@@ -421,9 +421,9 @@ fn rvalues(c: *Ctx, kids: []const Node) error{ Syntax, OutOfMemory }![]const ?f6
 /// `elab.pathDelays` found them).
 fn destNets(c: *Ctx, slot: u32) Error![]const u32 {
     const r = c.r;
-    if (r.net_of.get(slot)) |net| return c.a.dupe(u32, &.{net});
+    if (r.netlist.slot_nets.get(slot)) |net| return c.a.dupe(u32, &.{net});
     var out: std.ArrayList(u32) = .empty;
-    for (r.drivers) |d| if (d.source == .bridge and d.source.bridge.src == slot) try out.append(c.a, d.net);
+    for (r.netlist.drivers) |d| if (d.source == .bridge and d.source.bridge.src == slot) try out.append(c.a, d.net);
     return out.items;
 }
 
@@ -497,7 +497,7 @@ fn interconnect(c: *Ctx, s: u32, e: Node, increment: bool) Error!void {
     if (vals.len < 2) t[1] = t[0];
     if (vals.len < 3) t[2] = @min(t[0], t[1]);
     var hit = false;
-    for (r.drivers) |*d| {
+    for (r.netlist.drivers) |*d| {
         if (d.scope != inst or std.mem.indexOfScalar(u32, d.sensitivity, slot) == null) continue;
         hit = true;
         d.delay = .{ .present = true, .rise = d.delay.rise + t[0], .fall = d.delay.fall + t[1], .off = d.delay.off + t[2] };
@@ -534,7 +534,7 @@ fn label(c: *Ctx, s: u32, e: Node, increment: bool) Error!void {
         if (dst.width % 64 != 0) dst.values()[dst.values().len - 1] &= (@as(u64, 1) << @intCast(dst.width % 64)) - 1;
     }
     r.scope = s;
-    for (r.net_cold.items) |*cold| for (cold.paths) |*q| {
+    for (r.netlist.cold.items) |*cold| for (cold.paths) |*q| {
         if (q.scope == s and q.delays.len != 0) q.table = try elab.pathTable(r, q.delays, q.tok);
     };
 }
@@ -613,7 +613,7 @@ fn pathPulse(c: *Ctx, s: u32, e: Node) Error!void {
     const err: ?u64 = if (vals.len == 2) (if (vals[1]) |v| @as(u64, @intCast(@max(0, c.ticks(s, v) orelse 0))) else null) else reject;
     const nets: []const u32 = if (ends) |x| try destNets(c, x[1]) else blk: {
         var all: std.ArrayList(u32) = .empty;
-        for (r.nets, 0..) |n, k| if (n.cold != net_mod.no_cold) try all.append(c.a, @intCast(k));
+        for (r.netlist.nets, 0..) |n, k| if (n.cold != net_mod.no_cold) try all.append(c.a, @intCast(k));
         break :blk all.items;
     };
     var hit = false;

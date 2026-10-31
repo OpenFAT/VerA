@@ -576,10 +576,10 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             // §7.6 a controlled pass switch: read the control, re-resolve
             // both sides, then wait on the control's operands.
             .switch_ctrl => |s| {
-                const t = &self.trans[s.tran];
+                const t = &self.netlist.switches[s.tran];
                 const c = (try evaluate.eval(self, scratch, t.ctrl, 1)).bit(0);
                 const next: Tran.State = if (c == t.on) .on else if (c == .zero or c == .one) .off else .unknown;
-                if (self.tran_delays.get(s.tran)) |d3| t.delay = try variableDelay(self, scratch, d3, self.file.exprs.mainTok(d3.rise));
+                if (self.netlist.switch_delays.get(s.tran)) |d3| t.delay = try variableDelay(self, scratch, d3, self.file.exprs.mainTok(d3.rise));
                 if (t.delay.present) try resolution.switchAfter(self, s.tran, next) else {
                     t.state = next;
                     try resolution.resolve(self, t.a);

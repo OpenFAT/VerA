@@ -473,9 +473,9 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     }
     try driver.segregate(&r, &e);
     r.values = e.values.items;
-    r.nets = e.nets.items;
-    r.net_cold = e.net_cold;
-    r.signals = e.signals.items;
+    r.netlist.nets = e.nets.items;
+    r.netlist.cold = e.net_cold;
+    r.netlist.signals = e.signals.items;
     try tchk.delayedDrivers(&r, &e);
     // Pass two: drivers, then processes. §6.1 one continuous assignment is one
     // driver of one net; §7.9 resolution needs them grouped, because every
@@ -485,7 +485,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     // resumption point: a `wait_event` resumes at its own pc plus one, and
     // every instruction from here on belongs to a process.
     if (e.wires.items.len > std.math.maxInt(u32)) return r.fail(m.main_tok, "too many continuous assignments", .{});
-    r.drivers = try arena.alloc(Driver, e.wires.items.len);
+    r.netlist.drivers = try arena.alloc(Driver, e.wires.items.len);
     for (e.wires.items, 0..) |a, i| {
         r.scope = a.scope;
         var watched: std.ArrayList(u32) = .empty;
@@ -521,7 +521,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
             },
             .pull => {},
         }
-        r.drivers[i] = .{
+        r.netlist.drivers[i] = .{
             .net = a.net,
             .source = a.source,
             .scope = a.scope,
@@ -532,18 +532,18 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
             // and `not #5`, unknown until 3 and 5). Only a net with no driver
             // keeps §4.2.1's default z. A sequential UDP's output is its state
             // from the start (§8.5), set below.
-            .current = try filled(arena, r.nets[a.net].resolved.width, false, .x),
+            .current = try filled(arena, r.netlist.nets[a.net].resolved.width, false, .x),
             .s0 = a.s0,
             .s1 = a.s1,
             .delay = if (try constantDelay(&r, a.delay)) try r.declaredDelay3(a.delay, a.tok) else blk: {
-                try r.driver_delays.put(arena, @intCast(i), a.delay);
+                try r.netlist.driver_delays.put(arena, @intCast(i), a.delay);
                 break :blk .{ .present = true };
             },
             .tok = a.tok,
         };
         // A UDP's output bit starts at its state: §8.5's initial value for a
         // sequential one, x for a combinational one until its first value.
-        if (a.source == .udp) setBit(r.drivers[i].current, a.source.udp.out_bit orelse 0, a.source.udp.state);
+        if (a.source == .udp) setBit(r.netlist.drivers[i].current, a.source.udp.out_bit orelse 0, a.source.udp.state);
         _ = try exec.enqueue(&r, .{ .run_process = try compile.append(&r, .{ .continuous = @intCast(i) }) }, null, false);
     }
     // The bits a continuous assignment or a port window leaves at z (a
@@ -556,15 +556,15 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         defer scratch.deinit();
         // Read every net as x, the value its drivers have not yet given it:
         // a bit is z here only when no operand value can make it otherwise.
-        const saved = try scratch.allocator().alloc([]u64, r.nets.len);
-        for (r.nets, saved) |n, *keep| {
+        const saved = try scratch.allocator().alloc([]u64, r.netlist.nets.len);
+        for (r.netlist.nets, saved) |n, *keep| {
             const planes = r.values[n.slot].planes;
             keep.* = try scratch.allocator().dupe(u64, planes);
             const x = try filled(scratch.allocator(), r.values[n.slot].width, false, .x);
             @memcpy(planes, x.planes);
         }
-        defer for (r.nets, saved) |n, keep| @memcpy(r.values[n.slot].planes, keep);
-        for (r.drivers) |*d| {
+        defer for (r.netlist.nets, saved) |n, keep| @memcpy(r.values[n.slot].planes, keep);
+        for (r.netlist.drivers) |*d| {
             r.scope = d.scope;
             const first = switch (d.source) {
                 // A window's source may be a net not yet initialized: only
@@ -584,7 +584,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
                         evaluate.copyBits(part, 0, whole, sl.lo, d.current.width);
                         break :blk part;
                     }
-                    break :blk try evaluate.evalFor(&r, scratch.allocator(), x.e, r.slotType(r.nets[d.net].slot));
+                    break :blk try evaluate.evalFor(&r, scratch.allocator(), x.e, r.slotType(r.netlist.nets[d.net].slot));
                 },
                 else => continue, // else: a gate, switch, UDP or pull starts at its own unknown
             };
@@ -593,14 +593,14 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     }
     // §7.6: each net knows the pass switches on it, and a controlled one is
     // a process that re-resolves both sides whenever its control changes.
-    r.trans = try arena.alloc(Tran, e.trans.items.len);
-    for (e.trans.items, r.trans, 0..) |t, *dst, i| {
+    r.netlist.switches = try arena.alloc(Tran, e.trans.items.len);
+    for (e.trans.items, r.netlist.switches, 0..) |t, *dst, i| {
         dst.* = t.tran;
         r.scope = t.scope;
         // §7.6's delays, a variable read when the control changes as a
         // driver's is (iverilog's rise_fall_delay3).
         if (t.delay.rise != .none) dst.delay = if (try constantDelay(&r, t.delay)) try r.declaredDelay3(t.delay, t.tok) else blk: {
-            try r.tran_delays.put(arena, @intCast(i), t.delay);
+            try r.netlist.switch_delays.put(arena, @intCast(i), t.delay);
             break :blk .{ .present = true };
         };
         if (t.tran.ctrl == .none) continue;
@@ -609,33 +609,33 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         try compile.sensitivity(&r, t.tran.ctrl, &watched);
         _ = try exec.enqueue(&r, .{ .run_process = try compile.append(&r, .{ .switch_ctrl = .{ .tran = @intCast(i), .slots = watched.items } }) }, null, false);
     }
-    for (r.drivers) |d| if (d.source == .mos and file.exprs.tag(d.source.mos.data) == .ident) {
+    for (r.netlist.drivers) |d| if (d.source == .mos and file.exprs.tag(d.source.mos.data) == .ident) {
         r.scope = d.scope;
-        if (r.net_of.get(try r.slot(d.source.mos.data))) |net| r.nets[net].strength_read = true;
+        if (r.netlist.slot_nets.get(try r.slot(d.source.mos.data))) |net| r.netlist.nets[net].strength_read = true;
     };
     // Each net's pass switches and drivers, in declaration order, as runs of
     // one flat array each (a counting sort), not a list per net: a large net
     // array is one net per element and almost none of them has either.
     {
-        const at = try netRuns(arena, r.nets.len, e.trans.items.len * 2, e.trans.items, struct {
+        const at = try netRuns(arena, r.netlist.nets.len, e.trans.items.len * 2, e.trans.items, struct {
             fn each(t: anytype, k: usize) u32 {
                 return if (k == 0) t.tran.a else t.tran.b;
             }
         }.each, 2);
         defer arena.free(at.start);
-        for (0..r.nets.len) |net| if (at.start[net] != at.start[net + 1]) {
+        for (0..r.netlist.nets.len) |net| if (at.start[net] != at.start[net + 1]) {
             (try r.netColdMut(@intCast(net))).trans = at.items[at.start[net]..at.start[net + 1]];
         };
     }
     {
-        const at = try netRuns(arena, r.nets.len, e.wires.items.len, e.wires.items, struct {
+        const at = try netRuns(arena, r.netlist.nets.len, e.wires.items.len, e.wires.items, struct {
             fn each(w: anytype, _: usize) u32 {
                 return w.net;
             }
         }.each, 1);
-        r.net_driver_start = at.start;
-        r.net_drivers = at.items;
-        for (r.nets, 0..) |n, net| {
+        r.netlist.driver_start = at.start;
+        r.netlist.driver_ids = at.items;
+        for (r.netlist.nets, 0..) |n, net| {
             resolution.initial(&r, @intCast(net));
             // §7.9 `uwire` is the UNRESOLVED net type: a second driver is not a
             // resolution question there, it is an error. §4.6.5's "more than
@@ -643,8 +643,8 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
             if (n.kind == .uwire) {
                 const ds = r.netDrivers(@intCast(net));
                 for (ds, 0..) |a, i| for (ds[i + 1 ..]) |b| {
-                    const x = driverBits(r.drivers[a], n.resolved.width);
-                    const y = driverBits(r.drivers[b], n.resolved.width);
+                    const x = driverBits(r.netlist.drivers[a], n.resolved.width);
+                    const y = driverBits(r.netlist.drivers[b], n.resolved.width);
                     if (x[0] < y[1] and y[0] < x[1]) return r.fail(n.tok, "a uwire net accepts a single driver per bit", .{});
                 };
             }
@@ -713,7 +713,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     @memset(r.waits.watch, .empty);
     // §14.3.3 a module path's source is watched for its last transition; a
     // §14.2.4 condition is type-checked in the scope that declares the path.
-    for (r.net_cold.items) |c| for (c.paths) |p| {
+    for (r.netlist.cold.items) |c| for (c.paths) |p| {
         r.waits.watch[p.src].insert(.path);
         if (p.cond != .none) {
             r.scope = p.scope;
@@ -727,7 +727,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     // settles only what the net types assert, before anything watches a slot
     // (no event, which the native emitter would refuse). `rt.State.initIn`
     // does the same for its `%v` signals.
-    for (r.nets, 0..) |n, k| if (r.netCold(n).trans.len != 0) try resolution.resolve(&r, @intCast(k));
+    for (r.netlist.nets, 0..) |n, k| if (r.netCold(n).trans.len != 0) try resolution.resolve(&r, @intCast(k));
     try tchk.solveNegative(&r);
     try tchk.arm(&r);
     try waiters.buildFanout(&r);

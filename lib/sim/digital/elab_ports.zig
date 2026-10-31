@@ -180,14 +180,14 @@ pub fn bindPort(r: *Run, e: *Elab, port: Ast.Port, conn: Ast.PortConn, scope: u3
     if (conn.expr == .none) return .open;
     const ex = &r.file.exprs;
     // §12.3.7: "The real data type shall not be directly connected to a port."
-    if (ex.tag(conn.expr) == .ident) if (r.lookup(scope, ex.strOf(conn.expr))) |at| if (r.reals.contains(at) and !r.net_of.contains(at))
+    if (ex.tag(conn.expr) == .ident) if (r.lookup(scope, ex.strOf(conn.expr))) |at| if (r.reals.contains(at) and !r.netlist.slot_nets.contains(at))
         return r.exprFail(conn.expr, "§12.3.7: a real cannot be connected to a port");
     // One whole net on the outside is a collapse, the only arm under which
     // the child's drive strengths reach the parent's resolution unchanged
     // (IEEE 1364 clause 12: a port is a connection). `declare` size-checks
     // it once the port's own width is known.
     if (ex.tag(conn.expr) == .ident) {
-        if (r.net_of.get(try r.scalarSlot(conn.expr))) |net| return .{ .collapse = .{ .net = net, .expr = conn.expr, .scope = scope, .tok = conn.main_tok } };
+        if (r.netlist.slot_nets.get(try r.scalarSlot(conn.expr))) |net| return .{ .collapse = .{ .net = net, .expr = conn.expr, .scope = scope, .tok = conn.main_tok } };
     }
     return switch (port.direction) {
         // §6.5.2.2 an input port is a receiver: the child puts no driver on the
@@ -234,7 +234,7 @@ pub fn sink(r: *Run, e: *Elab, arg: Ast.ExprId, tok: u32, comptime who: SinkOf) 
     // A.8.5's hierarchical_net_identifier: a net named through a scope
     // (`what[i].slice`, iverilog's pr1755629) is a net as much as a local one.
     if (ex.tag(arg) == .ident or ex.tag(arg) == .hier_ident or try r.indexedArray(arg) != null) {
-        const net = r.net_of.get(try netSlot(r, arg, tok)) orelse return r.exprFail(arg, not_net);
+        const net = r.netlist.slot_nets.get(try netSlot(r, arg, tok)) orelse return r.exprFail(arg, not_net);
         return .{ .net = net, .lo = 0, .width = e.nets.items[net].resolved.width };
     }
     // §6.1.1/A.8.5: the select may stand on a net array element, `b[i][j]`.
@@ -247,7 +247,7 @@ pub fn sink(r: *Run, e: *Elab, arg: Ast.ExprId, tok: u32, comptime who: SinkOf) 
     };
     try compile.checkExpr(r, arg);
     if (index != .none and !compile.constantExpression(r, index)) return r.exprFail(arg, refused);
-    const net = r.net_of.get(try netSlot(r, ex.lhs(arg), tok)) orelse return r.exprFail(arg, not_net);
+    const net = r.netlist.slot_nets.get(try netSlot(r, ex.lhs(arg), tok)) orelse return r.exprFail(arg, not_net);
     const sel = (try evaluate.selection(r, r.arena, arg)) orelse return r.exprFail(arg, "§12.3.9.2: the select's index is x or z");
     if (sel.first < 0 or sel.first + sel.count > e.nets.items[net].resolved.width) return r.exprFail(arg, "§12.3.9.2: the select is outside its net");
     return .{ .net = net, .lo = @intCast(sel.first), .width = sel.count };
@@ -297,7 +297,7 @@ fn connectGroup(r: *Run, e: *Elab, refs: []const Ast.Port, conn: Ast.PortConn, p
     // bits each input reference takes.
     var fed: ?u32 = null;
     for (list) |ref| if (ref.dir == .input) {
-        const dst = r.net_of.get(ref.slot) orelse return r.fail(conn.main_tok, "§12.3.3: an input port reference names a net", .{});
+        const dst = r.netlist.slot_nets.get(ref.slot) orelse return r.fail(conn.main_tok, "§12.3.3: an input port reference names a net", .{});
         const h = fed orelse blk: {
             const n = try mintNet(r, e, .wire, total, false, .none, conn.main_tok);
             try e.wires.append(r.arena, .{ .net = n, .scope = parent, .source = .{ .expr = .{ .e = conn.expr } }, .tok = conn.main_tok });
@@ -328,7 +328,7 @@ fn connectGroup(r: *Run, e: *Elab, refs: []const Ast.Port, conn: Ast.PortConn, p
         switch (ref.dir) {
             .output => try e.wires.append(r.arena, .{ .net = s.s.net, .scope = scope, .source = .{ .bridge = .{ .src = ref.slot, .src_lo = ref.lo + from - ref.at, .dst_lo = s.s.lo + from - s.at, .width = to - from } }, .tok = conn.main_tok }),
             .inout => {
-                const net = r.net_of.get(ref.slot) orelse return r.fail(conn.main_tok, "§12.3.3: an inout port reference names a net", .{});
+                const net = r.netlist.slot_nets.get(ref.slot) orelse return r.fail(conn.main_tok, "§12.3.3: an inout port reference names a net", .{});
                 for (from..to) |b| try e.trans.append(r.arena, .{
                     .tran = .{
                         .a = net,

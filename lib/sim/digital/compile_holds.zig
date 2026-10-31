@@ -100,13 +100,13 @@ fn overTarget(self: *Run, x: Ast.ExprId) Error!OverTarget {
             // §9.3.2 an element of a net array is a net (§4.9.1); a memory
             // word is not forced.
             if (try self.indexedArray(x) != null) {
-                if (!self.net_of.contains(try self.baseSlot(x))) return self.exprFail(x, refused);
+                if (!self.netlist.slot_nets.contains(try self.baseSlot(x))) return self.exprFail(x, refused);
                 return .{ .at = try elab.netSlot(self, x, ex.mainTok(x)), .bits = null };
             }
             const base = ex.lhs(x);
             if (ex.tag(base) != .ident and ex.tag(base) != .hier_ident) return self.exprFail(x, refused);
             const at = try self.scalarSlot(base);
-            if (!self.net_of.contains(at)) return self.exprFail(x, refused);
+            if (!self.netlist.slot_nets.contains(at)) return self.exprFail(x, refused);
             try checkExpr(self, x);
             const rg = ex.rhs(x);
             const index = switch (ex.tag(rg)) {
@@ -131,7 +131,7 @@ fn override(self: *Run, target: Ast.ExprId, t: OverTarget, value: Ast.ExprId, ki
     // Its value is re-evaluated after the activation may be gone.
     if (value != .none) try readsNoAutomatic(self, value, "a procedural continuous assignment");
     const force = kind == .force or kind == .release;
-    if (!force and self.net_of.contains(at)) return self.exprFail(target, "§9.3.1: assign/deassign take a variable; a net is forced");
+    if (!force and self.netlist.slot_nets.contains(at)) return self.exprFail(target, "§9.3.1: assign/deassign take a variable; a net is forced");
     if (kind == .deassign or kind == .release) {
         _ = try append(self, .{ .override_off = .{ .slot = at, .force = force, .bits = t.bits } });
         return;

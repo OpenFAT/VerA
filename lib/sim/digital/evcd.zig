@@ -124,8 +124,8 @@ const Dump = struct {
         var out: Signal = .{};
         if (p.net) |net| {
             for (r.netDrivers(net)) |di| {
-                const c = resolution.contribution(r.drivers[di], bit);
-                if (below(r, r.drivers[di].scope, p.inst)) out = out.combine(c) else in = in.combine(c);
+                const c = resolution.contribution(r.netlist.drivers[di], bit);
+                if (below(r, r.netlist.drivers[di].scope, p.inst)) out = out.combine(c) else in = in.combine(c);
             }
         } else out = .of(r.values[p.slot].bit(bit), .strong, .strong); // an output declared as a variable
         return .{ in, out };
@@ -213,7 +213,7 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
             const m = &r.file.modules[r.hier.scopes.items[sc].def];
             for (m.ports) |p| {
                 const slot = r.hier.names.get(.{ .scope = sc, .str = p.name }) orelse continue;
-                ports.appendAssumeCapacity(.{ .inst = sc, .slot = slot, .net = r.net_of.get(slot), .dir = p.direction });
+                ports.appendAssumeCapacity(.{ .inst = sc, .slot = slot, .net = r.netlist.slot_nets.get(slot), .dir = p.direction });
                 r.waits.watch[slot].insert(.ports);
             }
         }

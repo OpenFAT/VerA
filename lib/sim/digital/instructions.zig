@@ -139,16 +139,16 @@ pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "
 /// its net at once or after its delay, and the driver armed again. The
 /// process always ends here.
 pub fn continuous(self: *Run, scratch: std.mem.Allocator, at: u32, pc: u32) Error!void {
-    assert(at < self.drivers.len);
+    assert(at < self.netlist.drivers.len);
     assert(pc < self.waits.armed.len);
-    const d = &self.drivers[at];
+    const d = &self.netlist.drivers[at];
     // A driver's names resolve in the scope that wrote the
     // assignment, which for a port connection is the parent of
     // the net it feeds, not the dispatch's scope.
     self.scope = d.scope;
     // A.2.2.3: a delay that reads a variable is read when the
     // driver schedules (§6.1.3).
-    const timing = if (self.driver_delays.get(at)) |d3| try variableDelay(self, scratch, d3, d.tok) else d.delay;
+    const timing = if (self.netlist.driver_delays.get(at)) |d3| try variableDelay(self, scratch, d3, d.tok) else d.delay;
     var or_z = false;
     const value = switch (d.source) {
         .bridge => |b| try resolution.window(self, scratch, b, d.current.width),
@@ -163,7 +163,7 @@ pub fn continuous(self: *Run, scratch: std.mem.Allocator, at: u32, pc: u32) Erro
                 evaluate.copyBits(part, 0, whole, sl.lo, d.current.width);
                 break :blk part;
             }
-            break :blk try evaluate.evalFor(self, scratch, x.e, self.slotType(self.nets[d.net].slot));
+            break :blk try evaluate.evalFor(self, scratch, x.e, self.slotType(self.netlist.nets[d.net].slot));
         },
     };
     // A.6.1's `[ delay3 ]` delays what this driver contributes,
@@ -252,7 +252,7 @@ pub fn overrideEval(self: *Run, scratch: std.mem.Allocator, o: @FieldType(Instru
     }
     // A forced net drives the switch-connected nets joined to it
     // (`resolution.resolveJoined`), which follow its new value.
-    if (o.force and o.bits == null) if (self.net_of.get(o.slot)) |net| if (self.netCold(self.nets[net]).trans.len != 0)
+    if (o.force and o.bits == null) if (self.netlist.slot_nets.get(o.slot)) |net| if (self.netCold(self.netlist.nets[net]).trans.len != 0)
         try resolution.resolve(self, net);
     try doneFlush(self, pc);
     return;

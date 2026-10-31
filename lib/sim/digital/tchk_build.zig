@@ -48,8 +48,8 @@ pub fn compileChecks(r: *Run, checks: []const Ast.TimingCheck) Error!void {
 /// copies of the original reference and data signals"), so each is a
 /// zero-delay copy, one more driver of its net (a port window, `Bridge`).
 pub fn delayedDrivers(r: *Run, e: *elab.Elab) Error!void {
-    const drivers_before = r.drivers.len;
-    defer assert(r.drivers.len >= drivers_before);
+    const drivers_before = r.netlist.drivers.len;
+    defer assert(r.netlist.drivers.len >= drivers_before);
     for (e.insts.items) |inst| for (inst.module.timing_checks) |*t| {
         const name = r.file.str(t.name);
         if (!std.mem.eql(u8, name, "$setuphold") and !std.mem.eql(u8, name, "$recrem")) continue;
@@ -59,7 +59,7 @@ pub fn delayedDrivers(r: *Run, e: *elab.Elab) Error!void {
             if (dst_e == .none) continue;
             const src = try terminal(r, t.args[pair[1]]);
             const dst = try terminal(r, dst_e);
-            const net = r.net_of.get(dst.slot) orelse
+            const net = r.netlist.slot_nets.get(dst.slot) orelse
                 return r.failWith(.E1147, r.file.exprs.mainTok(dst_e), "a delayed signal of `{s}` is a net (IEEE 1364-2005 §15.5.1)", .{name});
             if (src.width != dst.width)
                 return r.failWith(.E1147, r.file.exprs.mainTok(dst_e), "a delayed signal of `{s}` is as wide as the signal it delays (IEEE 1364-2005 §15.5.1)", .{name});

@@ -163,7 +163,7 @@ pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_
                 const at: Sink = if (r.file.exprs.tag(sw.terms[0]) == .index)
                     try sink(r, e, sw.terms[0], sw.main_tok, .gate)
                 else blk: {
-                    const n = r.net_of.get(try r.scalarSlot(sw.terms[0])) orelse return r.fail(sw.main_tok, "a switch's output and inout terminals are nets", .{});
+                    const n = r.netlist.slot_nets.get(try r.scalarSlot(sw.terms[0])) orelse return r.fail(sw.main_tok, "a switch's output and inout terminals are nets", .{});
                     break :blk .{ .net = n, .lo = 0, .width = e.nets.items[n].resolved.width };
                 };
                 r.scope = scope;
@@ -409,7 +409,7 @@ fn switchTerminal(r: *Run, e: *Elab, t: Ast.ExprId, tok: u32, lanes: u32, lane: 
     assert(tok < r.starts.len);
     const ex = &r.file.exprs;
     if (ex.tag(t) != .index) {
-        const net = r.net_of.get(try r.scalarSlot(t)) orelse return r.fail(tok, "a switch's output and inout terminals are nets", .{});
+        const net = r.netlist.slot_nets.get(try r.scalarSlot(t)) orelse return r.fail(tok, "a switch's output and inout terminals are nets", .{});
         const width = e.nets.items[net].resolved.width;
         if (lanes > 1 and width == lanes) return .{ .net = net, .bit = lane };
         if (width != 1) return r.fail(tok, "§7.6: a pass switch terminal is a scalar net or a bit-select of a vector net", .{});
@@ -425,7 +425,7 @@ fn switchTerminal(r: *Run, e: *Elab, t: Ast.ExprId, tok: u32, lanes: u32, lane: 
         return r.fail(tok, "§7.6: a pass switch terminal is a scalar net or a bit-select of a vector net", .{});
     }
     const at = try r.scalarSlot(ex.lhs(t));
-    const net = r.net_of.get(at) orelse return r.fail(tok, "a switch's output and inout terminals are nets", .{});
+    const net = r.netlist.slot_nets.get(at) orelse return r.fail(tok, "a switch's output and inout terminals are nets", .{});
     const index = try r.declaredBound(ex.rhs(t), tok);
     const width: i64 = e.nets.items[net].resolved.width;
     const range = r.typing.vec_ranges.get(at) orelse VecRange{ .msb = width - 1, .lsb = 0 };

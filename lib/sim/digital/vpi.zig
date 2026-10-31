@@ -108,12 +108,12 @@ pub fn vpiConstantIndex(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprId
 /// its state and output now; a transition its delay held back is
 /// cancelled, and the net re-resolves.
 pub fn vpiPutUdp(r: *Run, at: u32, bit: Int.Bit) Error!void {
-    const d = &r.drivers[at];
+    const d = &r.netlist.drivers[at];
     const u = d.source.udp;
     u.state = bit;
     u.started = true;
     if (d.transition != no_transition) {
-        const st = &r.transitions.items[d.transition];
+        const st = &r.netlist.transitions.items[d.transition];
         if (st.in_flight) |h| try exec.cancel(r, h);
         st.in_flight = null;
     }

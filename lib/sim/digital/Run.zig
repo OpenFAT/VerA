@@ -167,26 +167,6 @@ nettypes: []const Front.Preprocessor.NetTypeRegion = &.{},
 /// Variables, array elements and nets share one slot space, so one `store`
 /// wakes event waiters for all three.
 values: []Int.Literal,
-/// Which of `nets` a slot is, for the slots that are nets at all. Per slot
-/// and not a `net_base` boundary because §6.2.2 elaboration interleaves one
-/// instance's variables with the next one's nets.
-net_of: SlotNets = .{},
-nets: []Net = &.{},
-/// The cold rows `Net.cold` indexes.
-net_cold: std.ArrayList(NetCold) = .empty,
-/// Every net's drivers as one CSR table: net `n`'s are
-/// `net_drivers[net_driver_start[n]..net_driver_start[n + 1]]`, in
-/// declaration order (`netDrivers`). Empty until pass two groups them.
-net_driver_start: []const u32 = &.{},
-net_drivers: []const u32 = &.{},
-/// Every net's per-bit §7.10 signals, `Net.signal` the first of each.
-signals: []Signal = &.{},
-drivers: []Driver = &.{},
-/// The §6.1.3 transitions of the delayed drivers, `Driver.transition`
-/// the row of each (`driverTransition`).
-transitions: std.ArrayList(Inertial) = .empty,
-/// §7.6 every pass switch.
-trans: []Tran = &.{},
 /// Keyed by the base slot of an unpacked array (§3.9).
 arrays: std.AutoHashMapUnmanaged(u32, Array) = .empty,
 /// IEEE 1364-2005 §12.4/§26.6.44: the net declarations belonging to each
@@ -229,6 +209,8 @@ typing: expr_types.Typing = .{},
 waits: waiters.Waits = .{},
 /// The scheduler's payload rows and the per-site cells processes use (`exec.Rows`).
 rows: exec.Rows = .{},
+/// The resolved nets, their drivers and switches (`run_nets.Netlist`).
+netlist: run_nets.Netlist = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
@@ -236,16 +218,6 @@ file_name: []const u8 = "",
 io: ?std.Io = null,
 /// §17.1.3 the standing monitor and §17.2.2 the `$fmonitor`s (`monitor.Monitoring`).
 monitoring: monitor.Monitoring = .{},
-/// Per driver index, a `delay3` that reads a variable: A.2.2.3 lets a
-/// continuous assignment's or gate's delay be one, which §6.1.3 reads
-/// each time the driver schedules (`exec`'s `.continuous`).
-driver_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
-/// The same for a §7.6 pass switch's delays, by `trans` index.
-tran_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
-/// IEEE 1364-2005 §14.3.3: per module path source slot (a `.path`
-/// watch), its last transition, which picks the path whose delay a
-/// destination transition takes (`waiters.store` fills it).
-path_changed: std.AutoHashMapUnmanaged(u32, @import("net.zig").PathEdge) = .empty,
 /// Per-instruction scratch of `runUntil` (`exec.Scratch`): the fixed
 /// buffer every instruction starts from, and the arena behind it, reset
 /// at each event with its capacity kept, so a run of many calls (the
@@ -491,7 +463,7 @@ pub fn reset(self: *Run) Error!void {
         error.DigitalFailed => return self.fail(0, "IEEE 1364-2005 C.7: the reset could not elaborate the design again", .{}),
         else => |other| return other,
     };
-    if (fresh.waits.watch.len != self.waits.watch.len or fresh.drivers.len != self.drivers.len or fresh.checks.rows.items.len != self.checks.rows.items.len)
+    if (fresh.waits.watch.len != self.waits.watch.len or fresh.netlist.drivers.len != self.netlist.drivers.len or fresh.checks.rows.items.len != self.checks.rows.items.len)
         return self.fail(0, "IEEE 1364-2005 C.7: the design elaborated again into a different shape", .{});
     fresh.bag = self.bag;
     fresh.host.change = self.host.change;
@@ -503,7 +475,7 @@ pub fn reset(self: *Run) Error!void {
     fresh.analog.probe = self.analog.probe;
     fresh.analog.probe_ctx = self.analog.probe_ctx;
     for (self.waits.watch, fresh.waits.watch) |old, *w| if (old.contains(.vpi)) w.insert(.vpi);
-    for (self.drivers, fresh.drivers) |old, *d| d.delay = old.delay;
+    for (self.netlist.drivers, fresh.netlist.drivers) |old, *d| d.delay = old.delay;
     for (self.checks.rows.items, fresh.checks.rows.items) |old, *c| c.lim = old.lim;
     self.* = fresh;
 }

@@ -597,11 +597,11 @@ fn rootNamed(r: *const Run, name: Ast.StrId) ?u32 {
 
 /// §18.2.3.7 `$var var_type size identifier_code reference $end`.
 fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast.StrId, at: u32, off: u32) Error!Var {
-    const kind: []const u8 = if (r.events.contains(at)) "event" else if (r.net_of.get(at)) |n| switch (r.nets[n].kind) {
+    const kind: []const u8 = if (r.events.contains(at)) "event" else if (r.netlist.slot_nets.get(at)) |n| switch (r.netlist.nets[n].kind) {
         // "a net of net type uwire shall have a variable type of wire"
         .uwire => "wire",
         .wreal => "real",
-        .wire, .tri, .tri0, .tri1, .triand, .trior, .trireg, .wand, .wor, .supply0, .supply1 => @tagName(r.nets[n].kind),
+        .wire, .tri, .tri0, .tri1, .triand, .trior, .trireg, .wand, .wor, .supply0, .supply1 => @tagName(r.netlist.nets[n].kind),
     } else if (r.reals.contains(at)) "real" else for (decls) |x| {
         if (x.name == name) break switch (x.storage) {
             .reg => "reg",
