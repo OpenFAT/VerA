@@ -70,7 +70,7 @@ pub const vera_validate_contract = true;
 
 const contract = @import("contract");
 
-/// The `--dyn` hook (`src/zigbuild/orchestrator.zig`): exports `bench_evalq`
+/// The `--dyn` hook (`src/zigbuild/shim.zig`): exports `bench_evalq`
 /// for `D`. `name` is unused: one device per `.so`, under a fixed symbol.
 pub fn exportDevice(comptime D: type, comptime name: []const u8) void {
     _ = name;
