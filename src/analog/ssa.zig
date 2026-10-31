@@ -14,9 +14,13 @@
 const std = @import("std");
 const Mir = @import("ir").Mir;
 const phi_value = @import("phi_value.zig");
+const dom_tree = @import("dom_tree.zig");
 const assert = std.debug.assert;
 // Spelled out, not inferred: sealBlock's addPhiOperands calls readFrom.
 const Error = std.mem.Allocator.Error;
+const Dom = dom_tree.Dom;
+const Span = dom_tree.Span;
+const no_dom = dom_tree.no_dom;
 
 /// A "place" is an assignable location (a variable or a lowered temp).
 pub const Place = enum(u32) { _ };
@@ -133,69 +137,6 @@ pub const SsaBuilder = struct {
         arm_mask: u32 = 0,
     };
 
-    /// A block's node in the dominator tree, filled when it is sealed.
-    ///
-    /// A read that reaches a sealed block with no cell for its place reads
-    /// back to the block's immediate dominator: its one predecessor, or
-    /// every predecessor of a join. Where nothing wrote the place in
-    /// between, that is the dominator's value, so `climb` goes straight
-    /// there, and on up while that holds. Without it a place read at the
-    /// end of a module climbs every block after its last write, and
-    /// memoizes a cell in each join: 10^4 instances, each with an `if`, a
-    /// named generate block's exit and its own branch share, took 5.5 s and
-    /// 865 MB.
-    ///
-    /// "Nothing wrote it" compares when blocks got their rows (`born`): a
-    /// place whose written blocks were all born before, or all after, every
-    /// block between the dominator and this one (`span`) was written in none
-    /// of them. A block inside a loop (sealed while a header is open), a
-    /// loop header and a block that held an incomplete phi get the span
-    /// that holds everything, never skipped: a read there can mint a phi,
-    /// and the skip must leave the MIR exactly as Braun's walk does.
-    const Dom = struct {
-        /// The immediate dominator, or `no_dom` for a root: the entry, or
-        /// a block with an unsealed predecessor or predecessors in
-        /// different trees (a loop header).
-        parent: u32 = no_dom,
-        /// An ancestor up to twice as far as the last one (Myers' skew
-        /// binary jump pointers): a climb is O(log depth).
-        jump: u32 = no_dom,
-        depth: u32 = 0,
-        /// `clock` when the block got its row.
-        born: u32 = 0,
-        /// `born` over this block and every block between `parent` and it:
-        /// a place written in no block of it ends this block with the value
-        /// it ended `parent` with.
-        span: Span = .all,
-        /// `span` over this block up to, not including, `jump`.
-        jspan: Span = .all,
-        /// Got a successor while unsealed (`open_loops`).
-        header: bool = false,
-        /// Held an incomplete phi.
-        phi: bool = false,
-        /// Has two or more predecessors.
-        join: bool = false,
-        /// A block from this one up to, not including, `jump` has two or
-        /// more predecessors.
-        jjoin: bool = false,
-    };
-    const no_dom: u32 = std.math.maxInt(u32);
-
-    /// An interval of `born` clocks.
-    const Span = struct {
-        lo: u32,
-        hi: u32,
-        const all: Span = .{ .lo = 0, .hi = std.math.maxInt(u32) };
-        const none: Span = .{ .lo = std.math.maxInt(u32), .hi = 0 };
-        fn join(a: Span, b: Span) Span {
-            return .{ .lo = @min(a.lo, b.lo), .hi = @max(a.hi, b.hi) };
-        }
-        /// Every block born in `w` is outside `self`.
-        fn misses(self: Span, w: Span) bool {
-            return w.hi < self.lo or w.lo > self.hi;
-        }
-    };
-
     /// `dir[off..][0..len]` holds columns `base .. base + len`.
     const Row = struct { base: u32 = 0, off: u32 = 0, len: u32 = 0 };
 
@@ -213,8 +154,6 @@ pub const SsaBuilder = struct {
         assert(@sizeOf(IncompletePhi) == 12);
         assert(@sizeOf(UserNode) == 8);
         assert(@sizeOf(ArmCell) == 12);
-        // Per block, beside `block_state`; `skipUp` reads 26 of its 36 bytes.
-        assert(@sizeOf(Dom) == 36);
         assert(@sizeOf(Row) == 12);
         assert(@sizeOf(JoinRead) <= 32);
     }
@@ -447,7 +386,7 @@ pub const SsaBuilder = struct {
             }
             const i = @backingInt(b);
             if (self.skip and sealed[i]) {
-                const up = self.skipUp(w, i);
+                const up = dom_tree.skipUp(self.dom.items, w, i);
                 if (up.to != i) {
                     resolve = resolve or up.join;
                     jumped = true;
@@ -767,26 +706,6 @@ pub const SsaBuilder = struct {
             dom[b].jspan = dom[b].span;
             dom[b].jjoin = dom[b].join;
         }
-    }
-
-    /// The highest ancestor of `b` (itself included) where a place written
-    /// in blocks born in `w` ends with the value it has at the end of `b`:
-    /// up the tree while each block passed has a `span` `w` misses.
-    /// `join`: a block passed has two or more predecessors.
-    fn skipUp(self: *const SsaBuilder, w: Span, b: u32) struct { to: u32, join: bool } {
-        const dom = self.dom.items;
-        var x = b;
-        var join = false;
-        while (dom[x].parent != no_dom and dom[x].span.misses(w)) {
-            if (dom[x].jspan.misses(w)) {
-                join = join or dom[x].jjoin;
-                x = dom[x].jump;
-            } else {
-                join = join or dom[x].join;
-                x = dom[x].parent;
-            }
-        }
-        return .{ .to = x, .join = join };
     }
 
     /// Record "`user` (a phi) reads `value`". Sentinels never collapse, so they

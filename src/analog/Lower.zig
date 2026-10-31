@@ -32,7 +32,7 @@
 //!   `NoiseSrc`, `ChargeSite`, `Ty`, `HeldVar`, `TpSlot`, `Const` (`Lowered`'s rows)
 //! - `pub const ParamOverride`, `pub const BranchInfo = struct`
 //! - `pub const TypedValue = struct`, `pub const poison: TypedValue`
-//! - `pub const VarSlot = struct`, `pub const RegRange = struct`,
+//! - `pub const VarSlot = struct` (`not_reg`, `regWidth`), `pub const RegRange = struct`,
 //!   `pub const ArrayInfo = struct` (with `pub const Mem = struct`), `pub const Accum = struct`
 //! - `pub const Options = struct`, `pub const Output = struct`
 //! - `pub const lowerFile`, `strToInt`, `strNum`, `toReal`, `toInt`,
@@ -827,6 +827,7 @@ test {
     _ = @import("discrete_input.zig");
     _ = @import("discrete_mark.zig");
     _ = @import("display.zig");
+    _ = @import("dom_tree.zig");
     _ = @import("event.zig");
     _ = @import("event_args.zig");
     _ = @import("expr.zig");
