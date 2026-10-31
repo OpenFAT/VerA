@@ -374,7 +374,6 @@ fn scratchMode(c: Const) ?Scratch {
 /// codegen derives one struct field per `held_vars` entry from it and two
 /// blocks may spell a local the same way (§5.3.2's whole point).
 fn qualifyHeld(self: *Lower, prefix: []const u8, name: []const u8) Oom![]const u8 {
-    assert(name.len != 0);
     if (prefix.len == 0) return name;
     return self.arena.print("{s}{s}", .{ prefix, name });
 }
@@ -384,7 +383,6 @@ fn qualifyHeld(self: *Lower, prefix: []const u8, name: []const u8) Oom![]const u
 /// SAME named block twice, which is two executions of one source declaration
 /// and so, by §5.3.2, two locations that happen to share a path.
 fn uniqueHeld(self: *Lower, name: []const u8, idx: u32) Oom![]const u8 {
-    assert(name.len != 0);
     const used = &self.var_state.held_used;
     const unique = if (used.contains(name)) try self.arena.print("{s}.{d}", .{ name, idx }) else name;
     try used.put(self.arena, unique, {});
@@ -435,7 +433,6 @@ fn holdSlot(self: *Lower, name: []const u8, ty: Ty, init_val: Mir.Value, place: 
 /// A compiler-owned retained integer discovered during expression lowering.
 /// Seed it in entry so even a branch that skips its first use has a value.
 pub fn hiddenHeldInt(self: *Lower, name: []const u8) Oom!VarSlot {
-    assert(name.len != 0);
     assert(self.blockValid(self.cur));
     const place = self.builder.newPlace();
     const at = self.cur;
@@ -491,7 +488,6 @@ pub fn closeScope(self: *Lower, mark: usize) void {
 }
 
 fn shadowName(self: *Lower, name: []const u8) Oom!void {
-    assert(name.len != 0);
     const st = &self.var_state;
     var e: ScopeEntry = .{ .name = name, .prev_var = none_u32, .prev_array = none_u32 };
     if (self.vars.get(name)) |p| {
@@ -509,14 +505,12 @@ fn shadowName(self: *Lower, name: []const u8) Oom!void {
 
 /// Binds `name` to an array, remembering what it shadowed (§5.3.2).
 pub fn declareArray(self: *Lower, name: []const u8, info: ArrayInfo) Oom!void {
-    assert(name.len != 0);
     try shadowName(self, name);
     try self.arrays.put(self.arena, name, info);
 }
 
 /// Bind `name` to a fresh SSA place, remembering what it shadowed (§5.3.2).
 pub fn declareVar(self: *Lower, name: []const u8, ty: Ty) Oom!VarSlot {
-    assert(name.len != 0);
     const slot: VarSlot = .{ .place = self.builder.newPlace(), .ty = ty };
     try shadowName(self, name);
     try self.vars.put(self.arena, name, slot);
@@ -535,7 +529,6 @@ pub fn isMemArray(self: *const Lower, name: Ast.StrId, ty: Ty) bool {
 /// return the place that holds its current version — when `zero`, a fresh one
 /// with every element zero (§3.2); otherwise the caller writes the first.
 pub fn declareMemArray(self: *Lower, name: []const u8, dims: []const lower_shape.Bounds, ty: Ty, zero: bool) Oom!Ssa.Place {
-    assert(name.len != 0);
     assert(self.blockValid(self.cur));
     const id: u32 = @intCast(self.out.mem_arrays.items.len);
     try self.out.mem_arrays.append(self.arena, .{ .name = name, .len = @intCast(lower_shape.shapeCells(dims)), .ty = ty });

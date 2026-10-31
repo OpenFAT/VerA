@@ -246,7 +246,6 @@ const TableFile = struct { vals: []const f64, cols: usize };
 /// The returned pairs are `self.arena`'s.
 pub fn readNoiseTableFile(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!?[]const f64 {
     assert(e == .none or self.exprValid(e));
-    assert(name.len != 0);
     const f = (try readTableFile(self, e, name, "noise_table", .E0519, null)) orelse return null;
     if (f.cols != 2) {
         try self.err(self.file.exprs.mainTok(e), .E0519, "\"{s}\": LRM 4.6.4.3's input file is frequency / power PAIRS, one pair per line; found {d} numbers on a line", .{ name, f.cols });
@@ -276,7 +275,6 @@ fn readTableFile(
     missing: ?*bool,
 ) Oom!?TableFile {
     assert(e == .none or self.exprValid(e));
-    assert(name.len != 0);
     const io = std.Io.Threaded.global_single_threaded.io();
     const dir: std.Io.Dir = .cwd();
     const text = blk: {

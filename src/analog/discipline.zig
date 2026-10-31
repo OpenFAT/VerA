@@ -350,7 +350,6 @@ pub fn natureOf(self: *Lower, name: Ast.StrId) NatureAttrs {
 
 /// Returns the declaration of the discipline named `name`, or null.
 pub fn disciplineDecl(self: *const Lower, name: []const u8) ?*const Ast.DisciplineDecl {
-    assert(name.len != 0);
     return rules.declOf(self.file, self.file.strings.find(name) orelse return null);
 }
 

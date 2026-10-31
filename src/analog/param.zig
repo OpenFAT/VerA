@@ -257,7 +257,6 @@ fn oomrInDefault(self: *const Lower, e: Ast.ExprId) ?Ast.ExprId {
 /// over earlier parameters, and a bound that reads an overridable parameter has
 /// no single value at compile time.
 fn checkParamRange(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8, folded: ?Const) Oom!void {
-    assert(name.len != 0);
     const c = folded orelse return;
     if (c == .str) {
         var has_from = false;
@@ -332,7 +331,6 @@ fn rangeBound(self: *Lower, e: Ast.ExprId) ?f64 {
 /// Scalars only — the array path has its own arm, since §3.4.4's requirement is
 /// about the DECLARATION and holds whatever the pattern contains.
 fn checkParamType(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8, folded: ?Const) Oom!void {
-    assert(name.len != 0);
     const c = folded orelse return; // not constant here: nothing to compare
     const is_str = c == .str;
     // §3.4.1: "the type of a string parameter (see 3.4.6) ... is mandatory."
@@ -489,7 +487,6 @@ fn parameterDefault(self: *Lower, e: Ast.ExprId, ty: Ast.Type) Oom!Mir.Value {
 /// §3.4.4 `parameter real c[0:2] = '{1,2,3};` → three scalar parameters named
 /// `c[0]`, `c[1]`, `c[2]`. Codegen emits one Model field each.
 fn lowerParamArray(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8) Oom!void {
-    assert(name.len != 0);
     const dims = try lower_shape.dimsBounds(self, decl.dims, decl.main_tok, name) orelse return;
     // §3.4.4, in the restriction list closed by "Failure to follow these
     // restrictions shall result in an error": "A type of a parameter array

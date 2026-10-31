@@ -200,7 +200,6 @@ pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32 {
 ///
 /// ponytail: allocates a fresh arena copy per reference; such names are rare.
 pub fn netKey(self: *Lower, name: []const u8, tok: u32) Oom![]const u8 {
-    assert(name.len != 0);
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     if (name.len == 0 or name[name.len - 1] != ']') return name;
     if (tok >= self.tok_starts.len) return name;
@@ -212,7 +211,6 @@ pub fn netKey(self: *Lower, name: []const u8, tok: u32) Oom![]const u8 {
 /// `internNode` for a vector element, spelled as the source does (`bus[3]`).
 /// Looks up on a stack buffer and allocates only for a new element.
 pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!u32 {
-    assert(base.len != 0);
     var buf: [lower_shape.elem_key_len]u8 = undefined;
     const key = try lower_shape.elemKey(self, &buf, base, &.{i});
     const name = self.node_voltages.getKey(key) orelse try self.arena.print("{s}[{d}]", .{ base, i });

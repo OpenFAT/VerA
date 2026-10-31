@@ -291,7 +291,6 @@ pub fn partOf(decl: VecRange, r: VecRange) bool {
 /// Returns the `nodes` row of net `name`, creating it on first use. Undeclared names
 /// are implicit nets (§3.6.5); rows are created in source order.
 pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!u32 {
-    assert(name.len != 0);
     const gop = try self.node_voltages.getOrPut(self.arena, name);
     if (gop.found_existing) {
         if (discipline.len != 0 and gop.value_ptr.* != ground)
@@ -321,7 +320,6 @@ pub fn collectSignalAbstols(self: *Lower, segments: []const Elaborate.SignalDisc
 }
 
 fn collectNodeAbstol(self: *Lower, name: []const u8, abstol: f64) void {
-    assert(name.len != 0);
     const idx = self.node_voltages.get(name) orelse return;
     if (idx == ground) return;
     const local = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse return;
@@ -386,7 +384,6 @@ fn appendNode(self: *Lower, name: []const u8, discipline: []const u8, kind: Node
 /// §2.7 identifier character, so a suffixed name cannot collide with a source one.
 /// The suffix falls on the later slot, so it depends only on source order.
 fn uniqueSpelling(self: *Lower, name: []const u8) Oom![]const u8 {
-    assert(name.len != 0);
     if (!self.node_state.spellings.contains(name)) return name;
     // Losing candidates are built on the stack; only the winner reaches the arena.
     var buf: [spelling_buf_len]u8 = undefined;

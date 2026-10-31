@@ -50,7 +50,6 @@ const InternalSeed = struct { seed: VarSlot, ready: VarSlot };
 /// Returns null when `name` is not one of the 17.
 pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!?TypedValue {
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    assert(name.len != 0);
     assert(self.blockValid(self.cur));
     const d = dist.of(name) orelse return null;
     const ex = &self.file.exprs;

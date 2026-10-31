@@ -145,7 +145,6 @@ pub fn zero(self: *Lower, width: u32) Oom!Mir.Value {
 /// from the `reg`'s LSB and `width` its bits; Table 7-1's 31-bit limit was
 /// checked by the caller.
 pub fn select(self: *Lower, slot: VarSlot, lo: u32, width: u32) Oom!Mir.Value {
-    assert(self.nodeValid(lo));
     assert(self.blockValid(self.cur));
     var b: Build = .{ .l = self };
     const base = try b.node(.{ .op = .leaf_wide, .width = slot.reg_width.?, .signed = slot.reg_signed, .arg = try b.arg(try self.builder.readVariable(slot.place, self.cur)) });

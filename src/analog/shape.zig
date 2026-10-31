@@ -44,7 +44,6 @@ comptime {
 /// cell by cell (see `shapeCells`). Returns null after reporting E0307/E0308.
 pub fn dimsBounds(self: *Lower, dims: []const Ast.Dim, tok: u32, name: []const u8) Oom!?[]const Bounds {
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    assert(name.len != 0);
     if (dims.len == 0) {
         try self.err(tok, .E0307, "`{s}` has no dimensions", .{name});
         return null;
@@ -146,7 +145,6 @@ pub fn subscriptBuf(self: *Lower, buf: *[max_stack_dims]i64, n: usize) Oom![]i64
 /// the key, so it has to outlive the call. Every *lookup* goes through
 /// `elemKey` instead — see there.
 pub fn elemName(self: *Lower, name: []const u8, idx: []const i64) Oom![]const u8 {
-    assert(name.len != 0);
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(self.arena, name);
     for (idx) |i| try out.print(self.arena, "[{d}]", .{i});
@@ -166,7 +164,6 @@ pub const elem_key_len = 1024 + 22 * 4;
 /// ponytail: an over-long identifier, or more than four dimensions, falls back
 /// to the arena. Truncating the key instead would alias two distinct elements.
 pub fn elemKey(self: *Lower, buf: *[elem_key_len]u8, name: []const u8, idx: []const i64) Oom![]const u8 {
-    assert(name.len != 0);
     if (name.len > buf.len) return try elemName(self, name, idx);
     @memcpy(buf[0..name.len], name);
     var n = name.len;

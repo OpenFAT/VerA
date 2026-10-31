@@ -139,7 +139,6 @@ const AliasHit = struct { idx: u32, direct: bool };
 /// order, which gives §9.20's "the last evaluated call shall take precedence".
 pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []const Ast.ExprId) Oom!lower_limit.AliasResult {
     assert(e == .none or self.exprValid(e));
-    assert(name.len != 0);
     const ex = &self.file.exprs;
     // 1. "It shall be an error for the $analog_node_alias() and
     // $analog_port_alias() system functions to be used outside the analog
@@ -355,7 +354,6 @@ fn bindAlias(self: *Lower, fname: []const u8, ref_name: []const u8, local: u32, 
 /// first and the device's own module name stripped only after it fails, since §6.7
 /// resolves the ambiguity "by giving priority to the local scope".
 fn resolveAliasNode(self: *Lower, path: []const u8) ?AliasHit {
-    assert(path.len != 0);
     if (lookupFlatNode(self, path)) |h| return h;
     var p = path;
     if (std.mem.startsWith(u8, p, "$root.")) p = p["$root.".len..];
@@ -421,7 +419,6 @@ pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// §9.16 the value the sibling's parameter or output variable `path` (its
 /// flat name) has in this evaluation, or null when no such name exists.
 fn resolveProbe(self: *Lower, path: []const u8) Oom!?TypedValue {
-    assert(path.len != 0);
     assert(self.blockValid(self.cur));
     // §6.4.3 "If a paramset output variable has the same name as a module
     // output variable, the paramset's value is reported for instances

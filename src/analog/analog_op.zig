@@ -65,7 +65,6 @@ pub fn isHistoryless(name: []const u8) bool {
 /// which bypasses `lowerFilter`. Returns false when the operator must not be lowered.
 pub fn checkOperatorPlace(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bool {
     assert(e == .none or self.exprValid(e));
-    assert(name.len != 0);
     if (self.restrict) |ctx| {
         try self.err(self.file.exprs.mainTok(e), .E0422, "not allowed in {s}", .{ctx});
         return false;
@@ -387,7 +386,6 @@ fn abstolSlot(name: []const u8) ?usize {
 /// analysis" (§4.5.14). Judged on what the value depends on, so a tolerance
 /// held in a variable that only literals and parameters reach still passes.
 pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value {
-    assert(name.len != 0);
     assert(e == .none or self.exprValid(e));
     if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
     // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
@@ -483,7 +481,6 @@ pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
 /// legal and unknowable here. Checked in lowering, where the LRM's names for the
 /// arguments are still known for the message.
 fn checkFilterArgBounds(self: *Lower, name: []const u8, args: []const Ast.ExprId) Oom!void {
-    assert(name.len != 0);
     const Bound = enum {
         positive,
         non_negative,

@@ -109,7 +109,6 @@ pub fn isSignalFlow(self: *const Lower, dname: []const u8) bool {
 /// Applies the `default_discipline in force at `main_tok` for a `q` signal to
 /// net `name`, or to each scalarised element when it is a §3.6.3 vector (LRM §10.2).
 fn applyDefaultToAll(self: *Lower, name: []const u8, main_tok: u32, q: ?Preprocessor.Qualifier) Oom!void {
-    assert(name.len != 0);
     assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     const r = self.out.vectors.get(name) orelse
         return applyDefaultDiscipline(self, try lower_node_ref.netKey(self, name, main_tok), main_tok, q);
@@ -129,7 +128,6 @@ fn qualifierOf(kind: Ast.NetKind) ?Preprocessor.Qualifier {
 /// `default_discipline directive." So only a net that still has none, and only a
 /// directive preceding its declaration, qualified for its type `q` or unqualified.
 fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?Preprocessor.Qualifier) Oom!void {
-    assert(name.len != 0);
     assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     if (self.opts.directives.disciplines.len == 0) return;
     const idx = self.node_voltages.get(name) orelse return;
@@ -201,7 +199,6 @@ fn checkPrimitiveTerminal(self: *Lower, term: Ast.ExprId, prim_tok: u32, what: [
 /// how multiple drivers resolve, which VerA does not model. Upgrade: a discrete
 /// net type on `Ast.NetDecl`.
 pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void {
-    assert(name.len != 0);
     assert(main_tok < self.tok_starts.len or self.tok_starts.len == 0 or main_tok == std.math.maxInt(u32));
     if (Preprocessor.NetTypeRegion.inForce(self.opts.directives.nettypes, self.tokStart(main_tok), .default) != .none) return;
     var b = self.errWith(main_tok, .E0367);
