@@ -1,6 +1,6 @@
 //! `setup`'s emitted text -> the same statements as `zSetup<k>` chunks over
 //! a scratch struct, which a split build compiles as objects of their own,
-//! in parallel (`orchestrator.Part`). A text transform after emission, like
+//! in parallel (`contract.DevicePart`). A text transform after emission, like
 //! `setup.zig`'s own patches: the relooper's output has a fixed shape (one
 //! statement per line, labelled blocks `B<n>: {` left by `break :B<n>`, and
 //! two-armed `if`s), and only that shape is split; anything else stays one
@@ -724,7 +724,7 @@ test hasWord {
     try std.testing.expect(!hasWord("SS + S_", "S")); // longer names
 }
 
-// Moved from the orchestrator's split-build test:
+// Moved from zigbuild's split-build test:
 // it builds `chunk`'s output, so it lives with codegen, not `zigbuild`.
 test "a chunked setup builds one object per chunk into a library that runs" {
     const zigbuild = @import("zigbuild");
@@ -796,15 +796,15 @@ test "a chunked setup builds one object per chunk into a library that runs" {
             .{ .name = "dyn", .root = try std.fs.path.join(gpa, &.{ work, "su.zig" }) },
         };
         defer for (mods) |m| gpa.free(m.root);
-        const o: zigbuild.Options = .{ .work_dir = work, .name = "sudev", .optimize = .fast, .backend = .llvm, .modules = &mods, .split = true };
-        var r = try zigbuild.compileRelease(gpa, io, o, .{ .text = su_dev, .setup_chunks = chunked.n }, 9);
+        const o: zigbuild.Options = .{ .work_dir = work, .name = "sudev", .optimize = .fast, .backend = .llvm, .modules = &mods, .split = .parts };
+        var r = try zigbuild.buildLibrary(gpa, io, o, .{ .text = su_dev, .setup_chunks = chunked.n }, 9);
         defer r.deinit(gpa);
         const so = switch (r) {
             .failed => |b| {
                 b.renderToStderr(io, .{}, .off) catch {};
                 return error.UnexpectedBuildFailure;
             },
-            .ok => |a| a.so_path,
+            .ok => |so_path| so_path,
         };
         try tmp.dir.access(io, "shim_setup1.zig", .{});
         var lib = try @import("dynlib").DynLib.open(so);
