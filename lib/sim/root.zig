@@ -18,7 +18,7 @@ pub const time = @import("time.zig");
 /// The region-ordered event queue (IEEE 1364-2005 §11, VAMS §8.5).
 pub const scheduler = @import("scheduler.zig");
 /// The VAMS §8 coordinator that steps a digital `Run` beside an analog solver.
-pub const mixed = @import("mixed.zig");
+pub const mixed = @import("mixed/root.zig");
 /// The runtime an `--emit-exe` executable links: native designs and devices.
 pub const rt = @import("rt/root.zig");
 

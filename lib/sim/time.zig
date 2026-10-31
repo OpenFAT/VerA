@@ -1,25 +1,46 @@
-//! Exact decimal timescale factors and integer digital delay counts, and an
-//! analog time as the digital tick it falls in.
-//! IEEE 1364-2005 §§4.8, 4.8.2, 9.7.1, 17.7.1, 17.7.2 and 19.8; VAMS §5.10.3.1,
-//! §7.3.6.5, §9.10.
-const std = @import("std");
+//! A §19.8 timescale directive's operands in, exact integer tick counts out:
+//! a module's scale against the design's finest precision, a delay in ticks,
+//! a tick count as `$time`/`$realtime`/`$abstime`; and an analog time as the
+//! digital tick it falls in.
+//! Cites: IEEE 1364-2005 §4.8, §4.8.2, §9.7.1, §17.7.1, §17.7.2, §19.8; VAMS
+//! §5.10.3.1, §7.3.6.5, §9.10.
+//!
+//! Contents:
+//! - `pub const Error = error{ InvalidQuantum, PrecisionTooCoarse, GlobalPrecisionTooCoarse, DelayOverflow, NonFiniteDelay }`
+//! - `pub const Quantum = enum(i5)`, `Quantum.fromSeconds(seconds: f64) Error!Quantum`
+//! - `pub const Scale = struct`
+//! - `Scale.init(unit: Quantum, precision: Quantum, global: Quantum) Error!Scale`
+//! - `Scale.unsignedDelay(self: Scale, value: u64) Error!u64`
+//! - `Scale.signedDelay(self: Scale, value: i64) Error!u64`
+//! - `Scale.realDelay(self: Scale, value: f64) Error!u64`
+//! - `Scale.unitsAt(self: Scale, ticks: u64) u64`
+//! - `Scale.realAt(self: Scale, ticks: u64) f64`
+//! - `pub const ulps: f64`
+//! - `pub fn secondsAt(ticks: u64, finest: i32) f64`
+//! - `pub fn tickAtOrBefore(t: f64, tick: f64) u64`
+//! - `pub fn crosses(dir: f64, v0: f64, v1: f64) bool`
 
-/// Why a timescale or a delay has no tick count. `InvalidQuantum`: not one
-/// of §19.8's 18 operands. `PrecisionTooCoarse`: a module's precision is
-/// coarser than its unit, which §19.8 forbids. `GlobalPrecisionTooCoarse`:
-/// the tick is coarser than a module's precision, which only a caller that
-/// passes something other than the design's finest precision causes.
-/// `DelayOverflow`: more than 2^64 - 1 ticks. `NonFiniteDelay`: a real
-/// delay that names no tick.
+const std = @import("std");
+const assert = std.debug.assert;
+const testing = std.testing;
+
+/// Why a timescale or a delay has no tick count. Every function that returns
+/// it leaves nothing behind: each is a pure function of its arguments.
 pub const Error = error{
+    /// A seconds value that is not one of §19.8's 18 operands.
     InvalidQuantum,
+    /// A module's precision is coarser than its unit, which §19.8 forbids.
     PrecisionTooCoarse,
+    /// The tick is coarser than a module's precision: only a caller passing
+    /// something other than the design's finest precision causes it.
     GlobalPrecisionTooCoarse,
+    /// The delay is more than 2^64 - 1 ticks.
     DelayOverflow,
+    /// A real delay that names no tick: an infinity or NaN.
     NonFiniteDelay,
 };
 
-/// Decimal exponent in seconds, including all 18 legal directive operands.
+/// A decimal exponent in seconds: the 18 legal `` `timescale `` operands.
 pub const Quantum = enum(i5) {
     fs = -15,
     ten_fs = -14,
@@ -40,30 +61,36 @@ pub const Quantum = enum(i5) {
     ten_s = 1,
     hundred_s = 2,
 
-    /// The quantum whose value in seconds is exactly `seconds`, one of the
-    /// preprocessor's canonical binary64 constants; error.InvalidQuantum for
-    /// any other value, however close.
+    /// Returns the quantum whose value in seconds is exactly `seconds`, one
+    /// of the preprocessor's canonical binary64 constants; `InvalidQuantum`
+    /// for any other value, however close.
     pub fn fromSeconds(seconds: f64) Error!Quantum {
         const decades = [_]f64{
             1e-15, 1e-14, 1e-13, 1e-12, 1e-11, 1e-10,
             1e-9,  1e-8,  1e-7,  1e-6,  1e-5,  1e-4,
             1e-3,  1e-2,  1e-1,  1e0,   1e1,   1e2,
         };
+        comptime assert(decades.len == std.enums.values(Quantum).len);
         for (decades, 0..) |value, i| {
-            if (seconds == value) return @fromBackingInt(@intCast(@as(i6, @intCast(i)) - 15));
+            if (seconds != value) continue;
+            const quantum: Quantum = @fromBackingInt(@intCast(@as(i6, @intCast(i)) + exponent_min));
+            assert(@backingInt(quantum) <= exponent_max);
+            return quantum;
         }
         return error.InvalidQuantum;
     }
 };
 
 /// A module's §19.8 time scale as two exact powers of ten: precision steps
-/// per time unit, and global ticks per precision step. Each is at most
-/// 10^17 (all 18 operands apart), so `u57` holds it.
+/// per time unit, and global ticks per precision step. Each is at most 10^17
+/// (all 18 operands apart), so `u57` holds it. Invariant: both are powers of
+/// ten, as `init` makes them; the emitted code (src/codegen/digital) writes
+/// the two fields as a literal it took from `init`.
 pub const Scale = struct {
     local_per_unit: u57,
     global_per_local: u57,
 
-    /// The scale of a module written under `` `timescale unit/precision ``,
+    /// Returns the scale of a module written under `` `timescale unit/precision ``,
     /// counted in ticks of `global`, the design's finest precision (§19.8).
     /// `PrecisionTooCoarse` when `precision` is coarser than `unit`,
     /// `GlobalPrecisionTooCoarse` when `global` is coarser than `precision`.
@@ -73,68 +100,153 @@ pub const Scale = struct {
         const g: i6 = @backingInt(global);
         if (p > u) return error.PrecisionTooCoarse;
         if (g > p) return error.GlobalPrecisionTooCoarse;
-        return .{
+        const scale: Scale = .{
             .local_per_unit = std.math.pow(u57, 10, @intCast(u - p)),
             .global_per_local = std.math.pow(u57, 10, @intCast(p - g)),
         };
+        assert(scale.local_per_unit >= 1);
+        assert(scale.global_per_local >= 1);
+        return scale;
     }
 
-    /// `value` time units as global ticks, exactly; `DelayOverflow` past
-    /// 2^64 - 1 ticks.
+    /// Returns `value` time units as global ticks, exactly; `DelayOverflow`
+    /// past 2^64 - 1 ticks.
     pub fn unsignedDelay(self: Scale, value: u64) Error!u64 {
-        return multiply(try multiply(value, self.local_per_unit), self.global_per_local);
+        assert(self.local_per_unit >= 1);
+        const ticks = try multiply(try multiply(value, self.local_per_unit), self.global_per_local);
+        if (value != 0) assert(ticks >= value);
+        return ticks;
     }
 
-    /// Procedural delay: negative integral values are unsigned 64-bit time values
-    /// (§9.7.1), not zero. `DelayOverflow` past 2^64 - 1 ticks.
+    /// `unsignedDelay` of a procedural delay: a negative integral value is
+    /// the unsigned 64-bit time of its bits (§9.7.1), not zero.
     pub fn signedDelay(self: Scale, value: i64) Error!u64 {
         return self.unsignedDelay(@bitCast(value));
     }
 
-    /// `value` time units rounded half away from zero to the module's
+    /// Returns `value` time units rounded half away from zero to the module's
     /// precision, then scaled exactly to global ticks. A negative value is
-    /// the 64-bit two's complement of its magnitude's ticks, as §9.7.1 makes
-    /// a negative integral delay an unsigned time (1364 says nothing of a
-    /// negative real; iverilog wraps it the same way). `NonFiniteDelay` for
-    /// an infinity or NaN, `DelayOverflow` past 2^64 - 1 ticks.
+    /// the 64-bit two's complement of its magnitude's ticks, as §9.7.1 makes a
+    /// negative integral delay an unsigned time (1364 says nothing of a
+    /// negative real; iverilog wraps it the same way). `NonFiniteDelay` for an
+    /// infinity or NaN, `DelayOverflow` past 2^64 - 1 ticks.
     pub fn realDelay(self: Scale, value: f64) Error!u64 {
         if (!std.math.isFinite(value)) return error.NonFiniteDelay;
         const ticks = try multiply(try roundedLocal(@abs(value), self.local_per_unit), self.global_per_local);
+        if (ticks == 0) assert(@abs(value) * @as(f64, @floatFromInt(self.local_per_unit)) < 0.5);
         return if (value < 0) 0 -% ticks else ticks;
     }
 
     /// Returns `ticks` in the invoking module's time unit, rounded half away
     /// from zero: IEEE 1364-2005 §17.7.1 `$time`, "scaled to the time unit of
     /// the module that invoked it and rounded". The rule is `realDelay`'s, so
-    /// a `#0.5` under `10ns/100ps` reports 1, not 0. Exact for every
-    /// `ticks`, up to 2^64 - 1.
+    /// a `#0.5` under `10ns/100ps` reports 1, not 0. Exact for every `ticks`
+    /// up to 2^64 - 1.
     pub fn unitsAt(self: Scale, ticks: u64) u64 {
+        assert(self.global_per_local >= 1);
         const local = ticks / self.global_per_local;
         const per: u64 = self.local_per_unit;
         // `(local + per / 2) / per` wraps within per / 2 of 2^64. The
         // remainder decides instead: `per` is a power of ten, so 1 (never a
         // half) or even, and twice the remainder stays below 2 * 10^17.
-        return local / per + @intFromBool(local % per * 2 >= per);
+        const units = local / per + @intFromBool(local % per * 2 >= per);
+        assert(units <= local);
+        return units;
     }
 
     /// `unitsAt` without the rounding (IEEE 1364-2005 §17.7.2 `$realtime`).
     /// Ticks below the module's precision are dropped first, as `unitsAt`
     /// drops them.
     pub fn realAt(self: Scale, ticks: u64) f64 {
+        assert(self.global_per_local >= 1);
         const local: f64 = @floatFromInt(ticks / self.global_per_local);
-        return local / @as(f64, @floatFromInt(self.local_per_unit));
+        const units = local / @as(f64, @floatFromInt(self.local_per_unit));
+        assert(units >= 0.0);
+        return units;
     }
 };
 
-/// VAMS §9.10 `$abstime` of `ticks` ticks of 10^`finest` seconds (`finest`
-/// one of `Quantum`'s exponents): the tick count divided, or multiplied, by
-/// an exact power of ten, so the result is the correctly rounded seconds.
+/// The relative distance within which two times are one: rounding, never a
+/// fraction of a tick however many ticks the run is long.
+pub const ulps = 4 * std.math.floatEps(f64);
+
+const exponent_min: i32 = @backingInt(Quantum.fs);
+const exponent_max: i32 = @backingInt(Quantum.hundred_s);
+
+comptime {
+    assert(exponent_max - exponent_min + 1 == std.enums.values(Quantum).len);
+    // The widest scale, 10^17, fits the fields' width.
+    assert(std.math.pow(u64, 10, exponent_max - exponent_min) <= std.math.maxInt(u57));
+}
+
+/// Returns VAMS §9.10 `$abstime` of `ticks` ticks of 10^`finest` seconds: the
+/// tick count divided, or multiplied, by an exact power of ten, so the result
+/// is the correctly rounded seconds. Asserts that `finest` is one of
+/// `Quantum`'s exponents.
 pub fn secondsAt(ticks: u64, finest: i32) f64 {
-    std.debug.assert(finest >= @backingInt(Quantum.fs) and finest <= @backingInt(Quantum.hundred_s));
+    assert(finest >= exponent_min);
+    assert(finest <= exponent_max);
     const powers = [_]f64{ 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15 };
+    comptime assert(powers.len == -exponent_min + 1);
     const t: f64 = @floatFromInt(ticks);
     const p = powers[@abs(finest)];
     return if (finest < 0) t / p else t * p;
+}
+
+/// Returns the greatest tick whose time is <= `t` (§7.3.6.5's "greatest
+/// digital time tick which is less than or equal to the analog time"). A `t`
+/// within a few ulps of a tick IS that tick: 4e-9 / 1e-9 is
+/// 3.9999999999999996 in binary64, and flooring it would put the analog solve
+/// one tick early. A negative or NaN `t` is tick 0; one at or past 2^64 ticks
+/// (+inf included) is the last tick, 2^64 - 1. Asserts that `tick > 0`.
+pub fn tickAtOrBefore(t: f64, tick: f64) u64 {
+    assert(tick > 0);
+    const x = t / tick;
+    const r = @round(x);
+    // An infinite `x` fails the first test (inf - inf is NaN) and floors to
+    // itself; a NaN one fails both comparisons below and `@max` drops it.
+    const k = if (@abs(x - r) <= ulps * @abs(r)) r else @floor(x);
+    // 2^64 is the first binary64 past the last tick.
+    if (k >= 0x1p64) return std.math.maxInt(u64);
+    const ticks: u64 = @intFromFloat(@max(k, 0.0));
+    if (!(t > 0)) assert(ticks == 0);
+    return ticks;
+}
+
+/// Returns whether `v0 -> v1` is a crossing in direction `dir`. §5.10.3.1:
+/// "If dir is +1, the event ... only occur[s] on rising edge transitions",
+/// -1 on falling ones, 0 on both, and any other value on none. The same test
+/// the device's `cross` makes against its accepted value.
+pub fn crosses(dir: f64, v0: f64, v1: f64) bool {
+    const rise = v0 <= 0 and v1 > 0;
+    const fall = v0 >= 0 and v1 < 0;
+    if (rise) assert(!fall);
+    return if (dir == 1) rise else if (dir == -1) fall else if (dir == 0) rise or fall else false;
+}
+
+// ---- private ----
+
+fn multiply(value: u64, factor: u57) Error!u64 {
+    assert(factor >= 1);
+    const result: u128 = @as(u128, value) * factor;
+    return std.math.cast(u64, result) orelse error.DelayOverflow;
+}
+
+/// Conventional IEEE binary64 scaling followed by half-away-from-zero
+/// rounding. Only this real-input boundary uses floating arithmetic; global
+/// scaling and every integral conversion stay integer operations.
+fn roundedLocal(value: f64, factor: u57) Error!u64 {
+    assert(value >= 0.0);
+    assert(factor >= 1);
+    const scaled = value * @as(f64, @floatFromInt(factor));
+    const rounded = @round(scaled);
+    if (!std.math.isFinite(rounded) or rounded >= 0x1p64) return error.DelayOverflow;
+    return @intFromFloat(rounded);
+}
+
+fn listedPair(rows: []const [2]f64, v0: f64, v1: f64) bool {
+    for (rows) |r| if (r[0] == v0 and r[1] == v1) return true;
+    return false;
 }
 
 test secondsAt {
@@ -144,54 +256,6 @@ test secondsAt {
     try std.testing.expectEqual(@as(f64, 700), secondsAt(7, 2));
     try std.testing.expectEqual(@as(f64, 0), secondsAt(0, -9));
 }
-
-/// The greatest tick whose time is <= `t` (§7.3.6.5's "greatest digital time
-/// tick which is less than or equal to the analog time"). A `t` within a few
-/// ulps of a tick IS that tick: 4e-9 / 1e-9 is 3.9999999999999996 in
-/// binary64, and flooring it would put the analog solve one tick early.
-/// A negative or NaN `t` is tick 0; one at or past 2^64 ticks (+inf
-/// included) is the last tick, 2^64 - 1. Asserts `tick > 0`.
-pub fn tickAtOrBefore(t: f64, tick: f64) u64 {
-    std.debug.assert(tick > 0);
-    const x = t / tick;
-    const r = @round(x);
-    // An infinite `x` fails the first test (inf - inf is NaN) and floors to
-    // itself; a NaN one fails both comparisons below and `@max` drops it.
-    const k = if (@abs(x - r) <= ulps * @abs(r)) r else @floor(x);
-    // 2^64 is the first binary64 past the last tick.
-    if (k >= 0x1p64) return std.math.maxInt(u64);
-    return @intFromFloat(@max(k, 0.0));
-}
-
-/// The relative distance within which two times are one: rounding, never a
-/// fraction of a tick however many ticks the run is long.
-pub const ulps = 4 * std.math.floatEps(f64);
-
-/// §5.10.3.1: "If dir is +1, the event ... only occur[s] on rising edge
-/// transitions", -1 on falling ones, 0 on both, and any other value on none.
-/// The same test the device's `cross` makes against its accepted value.
-pub fn crosses(dir: f64, v0: f64, v1: f64) bool {
-    const rise = v0 <= 0 and v1 > 0;
-    const fall = v0 >= 0 and v1 < 0;
-    return if (dir == 1) rise else if (dir == -1) fall else if (dir == 0) rise or fall else false;
-}
-
-fn multiply(value: u64, factor: u57) Error!u64 {
-    const result: u128 = @as(u128, value) * factor;
-    return std.math.cast(u64, result) orelse error.DelayOverflow;
-}
-
-/// Conventional IEEE binary64 scaling followed by half-away-from-zero rounding.
-/// Only this real-input boundary uses floating arithmetic; global scaling and
-/// all integral-input conversions remain integer operations.
-fn roundedLocal(value: f64, factor: u57) Error!u64 {
-    const scaled = value * @as(f64, @floatFromInt(factor));
-    const rounded = @round(scaled);
-    if (!std.math.isFinite(rounded) or rounded >= 0x1p64) return error.DelayOverflow;
-    return @intFromFloat(rounded);
-}
-
-const testing = std.testing;
 
 test "preprocessor seconds bridge rejects noncanonical floating values" {
     try testing.expectEqual(Quantum.fs, try Quantum.fromSeconds(1e-15));
@@ -371,9 +435,4 @@ test "crosses: §5.10.3.1's directions over every sign pair" {
         // Any other direction makes no event.
         for ([_]f64{ 0.5, 2, -2, std.math.nan(f64) }) |dir| try testing.expect(!crosses(dir, v0, v1));
     };
-}
-
-fn listedPair(rows: []const [2]f64, v0: f64, v1: f64) bool {
-    for (rows) |r| if (r[0] == v0 and r[1] == v1) return true;
-    return false;
 }

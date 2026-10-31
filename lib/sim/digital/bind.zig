@@ -5,12 +5,23 @@
 //!
 //! IEEE 1364-2005 clauses cited: §13.2.1.1, §13.2.3, §13.3.1.1 to §13.3.1.6,
 //! §13.3.2, §13.4.4, §13.5.1.
+//!
+//! Contents:
+//! - `pub const Ctx = struct`
+//! - `pub fn libraries(r: *Run, file: *Ast.SourceFile, opts: root.Options, more_starts: []const u32) Error!void`
+//! - `pub fn top(r: *Run) Error!?[]const u32`
+//! - `pub fn rootCtx(r: *const Run, ci: u32, def: u32) Ctx`
+//! - `pub fn child(r: *Run, parent: u32, inst: *const Ast.Instance) Error!struct { def: u32, ctx: Ctx }`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const root = @import("root.zig");
 const Run = root.Run;
 const Error = root.Error;
+const expectRun = root.expectRun;
+const expectRejected = root.expectRejected;
 
 /// What an instance scope's children bind under.
 pub const Ctx = struct {
@@ -26,7 +37,7 @@ pub const Ctx = struct {
 /// The libraries of `file`'s modules and configs: each is its source file's
 /// (`opts.lib`, then `opts.more[k].lib` from `more_starts[k]` on). Also the
 /// search order, and W1152 for each cell a later same-named one replaces.
-/// Sets `r.def_lib`, `r.cfg_lib` and `r.search`, all in `r.arena`; must run
+/// Sets `r.hier.def_lib`, `r.hier.cfg_lib` and `r.hier.search`, all in `r.arena`; must run
 /// before `top` or `child`.
 pub fn libraries(r: *Run, file: *Ast.SourceFile, opts: root.Options, more_starts: []const u32) Error!void {
     const arena = r.arena;
@@ -41,9 +52,9 @@ pub fn libraries(r: *Run, file: *Ast.SourceFile, opts: root.Options, more_starts
     if (opts.search.len != 0) {
         for (opts.search) |s| order.appendAssumeCapacity(try file.intern(arena, s));
     } else for (libs) |l| if (std.mem.findScalar(Ast.StrId, order.items, l) == null) order.appendAssumeCapacity(l);
-    r.def_lib = def_lib;
-    r.cfg_lib = cfg_lib;
-    r.search = order.items;
+    r.hier.def_lib = def_lib;
+    r.hier.cfg_lib = cfg_lib;
+    r.hier.search = order.items;
     // §13.2.1.1: "In the case where multiple modules with the same name are
     // mapped to the same library in a single invocation of the compiler,
     // then a warning message shall be issued."
@@ -53,53 +64,6 @@ pub fn libraries(r: *Run, file: *Ast.SourceFile, opts: root.Options, more_starts
         try r.bag.add(.lower, .W1152, .{ .start = at, .end = at }, "`{s}.{s}` is defined again; this later definition is the cell", .{ file.str(l), file.str(m.name) });
         break;
     };
-}
-
-fn unitOf(r: *const Run, more_starts: []const u32, tok: u32) usize {
-    const at = r.starts[tok];
-    var k: usize = 0;
-    while (k < more_starts.len and more_starts[k] <= at) k += 1;
-    return k;
-}
-
-/// §13.2.1.1 "the LAST cell encountered shall be written to the library":
-/// the last module named `cell` in `lib`.
-fn find(r: *const Run, lib: Ast.StrId, cell: Ast.StrId) ?u32 {
-    var i = r.file.modules.len;
-    while (i > 0) {
-        i -= 1;
-        if (r.file.modules[i].name == cell and r.def_lib[i] == lib) return @intCast(i);
-    }
-    return null;
-}
-
-/// §13.3.1.5 "the specified library list is searched in the specified order".
-fn lookup(r: *const Run, list: []const Ast.StrId, cell: Ast.StrId) ?u32 {
-    for (list) |lib| if (find(r, lib, cell)) |d| return d;
-    return null;
-}
-
-fn search(r: *Run, list: []const Ast.StrId, cell: Ast.StrId, tok: u32) Error!u32 {
-    if (lookup(r, list, cell)) |d| return d;
-    var names: std.ArrayList(u8) = .empty;
-    for (list, 0..) |lib, k| {
-        if (k != 0) try names.append(r.arena, ' ');
-        try names.appendSlice(r.arena, r.file.str(lib));
-    }
-    return r.fail(tok, "undeclared module in instantiation: no library of the search order ({s}) holds cell `{s}`", .{ names.items, r.file.str(cell) });
-}
-
-fn module(r: *Run, lib: Ast.StrId, cell: Ast.StrId, tok: u32) Error!u32 {
-    return find(r, lib, cell) orelse r.fail(tok, "undeclared module in instantiation: library `{s}` holds no cell `{s}`", .{ r.file.str(lib), r.file.str(cell) });
-}
-
-/// §13.3.1.5 "If no library list clause is selected or if the selected
-/// library list is empty, then the library list contains the single name
-/// that is the library in which the cell containing the unbound instance is
-/// found (i.e., the parent cell's library)."
-fn listOr(r: *Run, list: ?[]const Ast.StrId, parent_lib: Ast.StrId) Error![]const Ast.StrId {
-    if (list) |l| if (l.len != 0) return l;
-    return r.arena.dupe(Ast.StrId, &.{parent_lib});
 }
 
 /// The design's tops: the `design` cells of the configuration no `use`
@@ -121,7 +85,7 @@ pub fn top(r: *Run) Error!?[]const u32 {
     const c = configs[ci];
     const defs = try r.arena.alloc(u32, c.design.len);
     for (c.design, defs) |cell, *d| d.* = try designCell(r, ci, cell);
-    try r.binds.put(r.arena, 0, rootCtx(r, ci, defs[0]));
+    try r.hier.binds.put(r.arena, 0, rootCtx(r, ci, defs[0]));
     return defs;
 }
 
@@ -131,42 +95,15 @@ pub fn rootCtx(r: *const Run, ci: u32, def: u32) Ctx {
     return .{ .cfg = ci, .path = r.file.str(r.file.modules[def].name), .liblist = defaultList(r.file.configs[ci]) };
 }
 
-/// §13.3.1.1 a config's design cell: "If the library identifier is omitted,
-/// then the library that contains the config shall be used".
-fn designCell(r: *Run, ci: u32, d: Ast.LibCell) Error!u32 {
-    return module(r, if (d.lib != .none) d.lib else r.cfg_lib[ci], d.cell, r.file.configs[ci].main_tok);
-}
-
-fn defaultList(c: Ast.ConfigDecl) ?[]const Ast.StrId {
-    for (c.rules) |rule| if (rule.select == .default) return rule.expand.liblist;
-    return null;
-}
-
-/// Is config `ci` the target of some `use` clause? `:config` says so; so
-/// does a use naming a cell that no module has.
-fn referenced(r: *const Run, ci: u32) bool {
-    const name = r.file.configs[ci].name;
-    for (r.file.configs) |c| for (c.rules) |rule| switch (rule.expand) {
-        .use => |u| if (u.cell == name and (u.config or !isModule(r, name))) return true,
-        .liblist => {},
-    };
-    return false;
-}
-
-fn isModule(r: *const Run, name: Ast.StrId) bool {
-    for (r.file.modules) |m| if (m.name == name) return true;
-    return false;
-}
-
 /// §13.3 the module `inst`, declared in instance scope `parent`, binds to,
 /// and the `Ctx` its own children bind under. Fails, with the library list
 /// it searched named, when no library holds the cell; E0243 for an instance
 /// clause reaching inside another config's hierarchy (§13.3.2).
 pub fn child(r: *Run, parent: u32, inst: *const Ast.Instance) Error!struct { def: u32, ctx: Ctx } {
-    const up = r.binds.get(r.instanceOf(parent)) orelse Ctx{};
-    const ci = up.cfg orelse return .{ .def = try search(r, r.search, inst.module, inst.main_tok), .ctx = .{} };
+    const up = r.hier.binds.get(r.instanceOf(parent)) orelse Ctx{};
+    const ci = up.cfg orelse return .{ .def = try search(r, r.hier.search, inst.module, inst.main_tok), .ctx = .{} };
     const cfg = r.file.configs[ci];
-    const parent_lib = r.def_lib[r.scope_info.items[parent].def];
+    const parent_lib = r.hier.def_lib[r.hier.scopes.items[parent].def];
     // ponytail: a generate block between the parent instance and `inst` is
     // not spelled into the path, so an instance clause cannot reach inside one.
     const path = try r.arena.print("{s}.{s}", .{ up.path, r.file.str(inst.name) });
@@ -182,7 +119,7 @@ pub fn child(r: *Run, parent: u32, inst: *const Ast.Instance) Error!struct { def
         // consideration for being bound to the selected library and cell."
         if (x.select.cell.lib != .none) {
             const d = lookup(r, try listOr(r, up.liblist, parent_lib), inst.module) orelse continue;
-            if (r.def_lib[d] != x.select.cell.lib) continue;
+            if (r.hier.def_lib[d] != x.select.cell.lib) continue;
         }
         break x;
     } else null;
@@ -221,13 +158,89 @@ pub fn child(r: *Run, parent: u32, inst: *const Ast.Instance) Error!struct { def
     }
 }
 
-fn subConfig(r: *const Run, lib: Ast.StrId, name: Ast.StrId) ?u32 {
-    for (r.file.configs, r.cfg_lib, 0..) |c, l, i| if (c.name == name and l == lib) return @intCast(i);
+// ---- private ----
+
+fn unitOf(r: *const Run, more_starts: []const u32, tok: u32) usize {
+    assert(tok < r.starts.len);
+    const at = r.starts[tok];
+    var k: usize = 0;
+    while (k < more_starts.len and more_starts[k] <= at) k += 1;
+    return k;
+}
+
+/// §13.2.1.1 "the LAST cell encountered shall be written to the library":
+/// the last module named `cell` in `lib`.
+fn find(r: *const Run, lib: Ast.StrId, cell: Ast.StrId) ?u32 {
+    var i = r.file.modules.len;
+    while (i > 0) {
+        i -= 1;
+        if (r.file.modules[i].name == cell and r.hier.def_lib[i] == lib) return @intCast(i);
+    }
     return null;
 }
 
-const expectRun = root.expectRun;
-const expectRejected = root.expectRejected;
+/// §13.3.1.5 "the specified library list is searched in the specified order".
+fn lookup(r: *const Run, list: []const Ast.StrId, cell: Ast.StrId) ?u32 {
+    for (list) |lib| if (find(r, lib, cell)) |d| return d;
+    return null;
+}
+
+fn search(r: *Run, list: []const Ast.StrId, cell: Ast.StrId, tok: u32) Error!u32 {
+    assert(tok < r.starts.len);
+    if (lookup(r, list, cell)) |d| return d;
+    var names: std.ArrayList(u8) = .empty;
+    for (list, 0..) |lib, k| {
+        if (k != 0) try names.append(r.arena, ' ');
+        try names.appendSlice(r.arena, r.file.str(lib));
+    }
+    return r.fail(tok, "undeclared module in instantiation: no library of the search order ({s}) holds cell `{s}`", .{ names.items, r.file.str(cell) });
+}
+
+fn module(r: *Run, lib: Ast.StrId, cell: Ast.StrId, tok: u32) Error!u32 {
+    assert(tok < r.starts.len);
+    return find(r, lib, cell) orelse r.fail(tok, "undeclared module in instantiation: library `{s}` holds no cell `{s}`", .{ r.file.str(lib), r.file.str(cell) });
+}
+
+/// §13.3.1.5 "If no library list clause is selected or if the selected
+/// library list is empty, then the library list contains the single name
+/// that is the library in which the cell containing the unbound instance is
+/// found (i.e., the parent cell's library)."
+fn listOr(r: *Run, list: ?[]const Ast.StrId, parent_lib: Ast.StrId) Error![]const Ast.StrId {
+    if (list) |l| if (l.len != 0) return l;
+    return r.arena.dupe(Ast.StrId, &.{parent_lib});
+}
+
+/// §13.3.1.1 a config's design cell: "If the library identifier is omitted,
+/// then the library that contains the config shall be used".
+fn designCell(r: *Run, ci: u32, d: Ast.LibCell) Error!u32 {
+    return module(r, if (d.lib != .none) d.lib else r.hier.cfg_lib[ci], d.cell, r.file.configs[ci].main_tok);
+}
+
+fn defaultList(c: Ast.ConfigDecl) ?[]const Ast.StrId {
+    for (c.rules) |rule| if (rule.select == .default) return rule.expand.liblist;
+    return null;
+}
+
+/// Is config `ci` the target of some `use` clause? `:config` says so; so
+/// does a use naming a cell that no module has.
+fn referenced(r: *const Run, ci: u32) bool {
+    const name = r.file.configs[ci].name;
+    for (r.file.configs) |c| for (c.rules) |rule| switch (rule.expand) {
+        .use => |u| if (u.cell == name and (u.config or !isModule(r, name))) return true,
+        .liblist => {},
+    };
+    return false;
+}
+
+fn isModule(r: *const Run, name: Ast.StrId) bool {
+    for (r.file.modules) |m| if (m.name == name) return true;
+    return false;
+}
+
+fn subConfig(r: *const Run, lib: Ast.StrId, name: Ast.StrId) ?u32 {
+    for (r.file.configs, r.hier.cfg_lib, 0..) |c, l, i| if (c.name == name and l == lib) return @intCast(i);
+    return null;
+}
 
 test "§13.3.1.3/§13.3.1.4 an instance clause and a cell clause bind the cell their use names" {
     // top.u is named by the instance clause; top.w falls to the default, the

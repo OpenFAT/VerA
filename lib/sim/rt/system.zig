@@ -4,14 +4,43 @@
 //! `$sformat` formats scanned at run time. Free functions over `*State`,
 //! aliased on `State` because the emitted design calls each one as a
 //! method (`s.fopen(...)`, `S.formatOf(...)`).
+//!
+//! Contents:
+//! - `pub const Format = struct`
+//! - `pub const Spec = struct`
+//! - `pub fn fopen(self: *State, source: []const u8, name: anytype, comptime nw: u32, mode: anytype, comptime mw: u32) Error!i64`
+//! - `pub fn fileOp(self: *const State, f: system.FileFn, x: ?i64, y: ?i64, z: ?i64) i64`
+//! - `pub fn fileLine(self: *State, d: ?i64, comptime w: u32) Error![]const u8`
+//! - `pub fn fileWord(self: *State, d: ?i64, comptime w: u32, prior: anytype) Error!struct { value: ?logic.T(w), n: i64 }`
+//! - `pub fn fileError(self: *const State, d: ?i64) struct { code: i64, text: []const u8 }`
+//! - `pub fn fclose(self: *const State, d: ?i64) void`
+//! - `pub fn scan(_: *const State, a: std.mem.Allocator, input: anytype, comptime iw: u32, format: anytype, comptime fw: u32, outs: usize) Error!system.Scan`
+//! - `pub fn scanFile(self: *const State, a: std.mem.Allocator, descriptor: ?i64, format: anytype, comptime fw: u32, outs: usize) Error!system.FileScan`
+//! - `pub fn finishFileScan(self: *const State, file: system.FileScan, sc: system.Scan) void`
+//! - `pub fn fshow(self: *State, d: i64) Error!void`
+//! - `pub fn formatOf(buf: []u8, a: anytype, w: u32) Format`
+//! - `pub fn nextSpec(self: *State, f: *Format, scope: []const u8, lib: []const u8) Error!?Spec`
+//! - `pub fn endFormat(self: *State, f: *Format, scope: []const u8, lib: []const u8) Error!void`
+
 const std = @import("std");
-const root = @import("root.zig");
-const State = root.State;
-const Error = root.Error;
-const logic = @import("logic.zig");
+const design = @import("design.zig");
+const State = @import("State.zig");
+const Error = design.Error;
+const logic = @import("logic/root.zig");
 const fmt = @import("kernels").fmt;
 const system = @import("../digital/system.zig");
 const display = @import("../digital/display.zig");
+const testing = std.testing;
+const W = logic.W;
+
+/// §17.2.3 a `$sformat` format held in a variable, read when the task
+/// runs (`display.sformat`'s dynamic walk): its characters, how far they
+/// are used, and whether they end inside a conversion.
+pub const Format = struct { text: []const u8, i: usize = 0, bad: bool = false };
+
+/// One argument-taking conversion of a `Format`; `flags` are `fmt.spec`'s,
+/// which only a real conversion carries past `fmt.flagVerdict`.
+pub const Spec = struct { conv: u8, flags: u8, width: ?u64, precision: i64 };
 
 /// §17.2.1 `system.fopen` of the characters of `name` (`nw` bits) with
 /// the type in `mode` (`mw` bits), or `mode` null for a multichannel
@@ -100,15 +129,6 @@ pub fn fshow(self: *State, d: i64) Error!void {
     if (try system.channels(system.own, self.io, self.out, d & 0xffff_ffff, bytes)) self.warn("W1154", system.unwritten, .{});
 }
 
-/// §17.2.3 a `$sformat` format held in a variable, read when the task
-/// runs (`display.sformat`'s dynamic walk): its characters, how far they
-/// are used, and whether they end inside a conversion.
-pub const Format = struct { text: []const u8, i: usize = 0, bad: bool = false };
-
-/// One argument-taking conversion of a `Format`; `flags` are `fmt.spec`'s,
-/// which only a real conversion carries past `fmt.flagVerdict`.
-pub const Spec = struct { conv: u8, flags: u8, width: ?u64, precision: i64 };
-
 /// The characters of the `w`-bit format `a` (`system.text`) in `buf`,
 /// `w / 8` bytes rounded up, most significant first and its leading zero
 /// bytes dropped; none when it holds an x or z. The text is a slice of
@@ -143,6 +163,8 @@ pub fn nextSpec(self: *State, f: *Format, scope: []const u8, lib: []const u8) Er
 pub fn endFormat(self: *State, f: *Format, scope: []const u8, lib: []const u8) Error!void {
     if (try scanSpec(self, f, scope, lib) != null or f.bad) self.warn("W1153", display.sformat_mismatch, .{});
 }
+
+// ---- private ----
 
 fn scanSpec(self: *State, f: *Format, scope: []const u8, lib: []const u8) Error!?Spec {
     const t = f.text;
@@ -182,9 +204,6 @@ fn scanSpec(self: *State, f: *Format, scope: []const u8, lib: []const u8) Error!
     return null;
 }
 
-const testing = std.testing;
-const W = logic.W;
-
 test "formatOf: a held format's characters, leading zero bytes dropped, none with an x" {
     var buf: [4]u8 = undefined;
     try testing.expectEqualStrings("Hi", State.formatOf(&buf, W{ .v = 0x4869, .x = 0 }, 32).text);
@@ -196,16 +215,16 @@ test "formatOf: a held format's characters, leading zero bytes dropped, none wit
 test "§17.2.3 a held format: text, %% and %m print, a conversion is returned, a broken one refused" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try root.quietState(arena.allocator(), &root.one_slot, -9);
+    const s = try State.quietState(arena.allocator(), &design.one_slot, -9);
     var f: State.Format = .{ .text = "a%%b%5.2fc%m%" };
     const sp = (try s.nextSpec(&f, "top.u", "work")).?;
     try testing.expectEqual(@as(u8, 'f'), sp.conv);
     try testing.expectEqual(@as(?u64, 5), sp.width);
     try testing.expectEqual(@as(i64, 2), sp.precision);
-    try testing.expectEqualStrings("a%b", s.sink.buffered());
+    try testing.expectEqualStrings("a%b", s.buffers.sink.buffered());
     // The rest prints; the format ends inside a conversion (W1153).
     try s.endFormat(&f, "top.u", "work");
-    try testing.expectEqualStrings("a%bctop.u", s.sink.buffered());
+    try testing.expectEqualStrings("a%bctop.u", s.buffers.sink.buffered());
     try testing.expect(f.bad);
     // No conversion left for an argument: null (W1153).
     var plain: State.Format = .{ .text = "" };

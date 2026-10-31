@@ -5,7 +5,24 @@
 //! Clauses: IEEE 1364-2005 §3.7, §3.8, §6.1.3 inertial delay, §7.6 MOS and
 //! pass switches, §7.8.5 gates, §7.9, §7.10, §7.11, §7.12, §8 UDPs,
 //! §8.5.3.5; VAMS §3.7 wreal.
+//!
+//! Contents:
+//! - `Switches.switches(g: Switches, net: u32) []const u32`
+//! - `Switches.tran(g: Switches, ti: u32) Tran`
+//! - `Switches.conduction(g: Switches, ti: u32) Tran.State`
+//! - `Switches.fixed(g: Switches, net: u32) bool`
+//! - `pub fn resolve(self: *Run, net: u32) Error!void`
+//! - `pub fn initial(self: *Run, net: u32) void`
+//! - `pub fn mosValue(self: *Run, scratch: std.mem.Allocator, at: u32, m: net_mod.Mos, or_z: *bool) Error!Int.Literal`
+//! - `pub fn contribution(dr: net_mod.Driver, at: u32) Signal`
+//! - `pub fn schedule(self: *Run, from: Int.Literal, from_or_z: bool, to: Int.Literal, to_or_z: bool, st: *Inertial) Error!bool`
+//! - `pub fn switchAfter(self: *Run, at: u32, next: Tran.State) Error!void`
+//! - `pub fn gateValue(self: *Run, scratch: std.mem.Allocator, g: Gate, width: u32, or_z: *bool) Error!Int.Literal`
+//! - `pub fn udpValue(self: *Run, scratch: std.mem.Allocator, u: *net_mod.Udp, width: u32) Error!Int.Literal`
+//! - `pub fn window(self: *Run, scratch: std.mem.Allocator, b: Bridge, width: u32) Error!Int.Literal`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Int = @import("kernels").Integer;
 const Error = @import("root.zig").Error;
 const Run = @import("root.zig").Run;
@@ -30,15 +47,69 @@ const evaluate = @import("evaluate.zig");
 const exec = @import("exec.zig");
 const waiters = @import("waiters.zig");
 
+/// A transition's delay in ticks from now, and the §14.6.1 reject and error
+/// limits its pulses are judged by.
+const Timed = struct { ticks: u64, reject: u64, err: u64 };
+
+/// `net.reach`'s and `net.switchPaths`'s view of the run's switches: each
+/// net's `NetCold.trans` list and the conduction held in its `Tran` row.
+const Switches = struct {
+    r: *const Run,
+    pub fn switches(g: Switches, net: u32) []const u32 {
+        return g.r.netCold(g.r.netlist.nets[net]).trans;
+    }
+    pub fn tran(g: Switches, ti: u32) Tran {
+        return g.r.netlist.switches[ti];
+    }
+    pub fn conduction(g: Switches, ti: u32) Tran.State {
+        return g.r.netlist.switches[ti].state;
+    }
+    pub fn fixed(g: Switches, net: u32) bool {
+        return switch (g.r.netlist.nets[net].kind) {
+            .supply0, .supply1 => true,
+            else => false, // else: every other net kind is a conductor
+        };
+    }
+};
+
+const bus_source =
+    \\`timescale 1ns/1ns
+    \\module leaf(input [3:0] i, output [3:0] o); assign o = i; endmodule
+    \\module m;
+    \\reg [1:0] sel; reg [69:0] d0, d1;
+    \\wire [69:0] bus; wire [3:0] w; wire p;
+    \\assign bus = sel[0] ? d0 : 70'bz;
+    \\assign bus = sel[1] ? d1 : 70'bz;
+    \\assign (weak0, weak1) p = d0[0];
+    \\assign p = sel[1] ? d1[0] : 1'bz;
+    \\leaf u({d0[1:0], d1[1:0]}, w);
+    \\initial begin
+    \\  d0 = {1'b1, 65'b0, 4'b0101}; d1 = {1'b0, 65'b0, 4'b0011}; sel = 1;
+    \\  #1 $display("%b %b %b %b", bus[69], bus[3:0], p, w);
+    \\  sel = 3;
+    \\  #1 $display("%b %b %b", bus[69], bus[3:0], p);
+    \\  force bus[1] = 1'b0; sel = 2;
+    \\  #1 $display("%b %b", bus[69], bus[3:0]);
+    \\  release bus[1];
+    \\  #1 $display("%b %b", bus[69], bus[3:0]);
+    \\  sel = 0;
+    \\  #1 $display("%b %b %b", bus[69], bus[3:0], p);
+    \\end
+    \\endmodule
+;
+
+const bus_expected = "1 0101 1 0111\nx 0xx1 1\n0 0001\n0 0011\nz zzzz 1\n";
+
 /// §7.9: a net's value is the wired-logic resolution of all its drivers, so
 /// it is recomputed whole on every driver update and published through
 /// `store`, the path a variable write takes, so `@(posedge w)` resumes on a
 /// net.
 pub fn resolve(self: *Run, net: u32) Error!void {
-    const n = self.nets[net];
+    assert(net < self.netlist.nets.len);
+    const n = self.netlist.nets[net];
     const drivers = self.netDrivers(net);
     // A §18.4 port's state can change with its drivers' strengths alone.
-    if (self.watch[n.slot].contains(.ports)) try waiters.requestVcd(self);
+    if (self.waits.watch[n.slot].contains(.ports)) try waiters.requestVcd(self);
     if (self.netCold(n).trans.len != 0) return resolveJoined(self, net);
     // VAMS §3.7: a wreal has at most one driver and is that driver's value
     // (no four-state resolution, no strength), and 0.0 with none.
@@ -46,7 +117,7 @@ pub fn resolve(self: *Run, net: u32) Error!void {
         n.resolved.values()[0] = 0;
         n.resolved.unknowns()[0] = 0;
         for (drivers) |d| {
-            const cur = self.drivers[d].current;
+            const cur = self.netlist.drivers[d].current;
             if (!cur.hasUnknown()) n.resolved.values()[0] = cur.values()[0];
         }
         return waiters.store(self, n.slot, n.resolved.planes);
@@ -57,11 +128,11 @@ pub fn resolve(self: *Run, net: u32) Error!void {
     // §7.10/§7.11: a MOS switch passes its data's strength, so a change of
     // strength alone on a net one reads re-evaluates that switch.
     var moved = false;
-    if (uniform(self, net)) foldUniform(n.resolved, self.drivers, drivers) else for (0..n.resolved.width) |i| {
+    if (uniform(self, net)) foldUniform(n.resolved, self.netlist.drivers, drivers) else for (0..n.resolved.width) |i| {
         const at: u32 = @intCast(i);
         var acc: Signal = .{};
         for (drivers) |d| {
-            const c = contribution(self.drivers[d], at);
+            const c = contribution(self.netlist.drivers[d], at);
             acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
         }
         // §7.9/§7.10: a `trireg` with no driver asserting anything is in
@@ -73,8 +144,8 @@ pub fn resolve(self: *Run, net: u32) Error!void {
             floating += 1;
         }
         acc = acc.combine(netPull(n.kind));
-        moved = moved or (n.strength_read and !std.meta.eql(self.signals[n.signal + at], acc));
-        self.signals[n.signal + at] = acc;
+        moved = moved or (n.strength_read and !std.meta.eql(self.netlist.signals[n.signal + at], acc));
+        self.netlist.signals[n.signal + at] = acc;
         setBit(n.resolved, at, acc.collapse());
     }
     if (n.kind == .trireg) try chargeState(self, net, floating == n.resolved.width);
@@ -116,10 +187,11 @@ pub fn resolve(self: *Run, net: u32) Error!void {
 /// with no driver at all holds its type's pull (§3.7: a supply net's supply
 /// strength), which a MOS switch reading it as data passes on (§7.11).
 pub fn initial(self: *Run, net: u32) void {
-    const n = self.nets[net];
+    assert(net < self.netlist.nets.len);
+    const n = self.netlist.nets[net];
     if (n.kind == .wreal or n.kind == .trireg or self.netCold(n).trans.len != 0) return;
     if (self.netDrivers(net).len == 0) {
-        @memset(self.signals[n.signal..][0..n.resolved.width], netPull(n.kind));
+        @memset(self.netlist.signals[n.signal..][0..n.resolved.width], netPull(n.kind));
         return;
     }
     const tables = wiredLogic(n.kind);
@@ -127,7 +199,7 @@ pub fn initial(self: *Run, net: u32) void {
         const at: u32 = @intCast(i);
         var acc: Signal = .{};
         for (self.netDrivers(net)) |d| {
-            const dr = self.drivers[d];
+            const dr = self.netlist.drivers[d];
             // A sequential UDP's initial state is published at time 0
             // (§8.5), a change from the unknown a process armed earlier
             // sees, as iverilog's does (ivtest br_ml20190806a).
@@ -135,255 +207,11 @@ pub fn initial(self: *Run, net: u32) void {
             acc = if (tables) |table| acc.combineWired(c, table) else acc.combine(c);
         }
         acc = acc.combine(netPull(n.kind));
-        self.signals[n.signal + at] = acc;
+        self.netlist.signals[n.signal + at] = acc;
         setBit(n.resolved, at, acc.collapse());
     }
     @memcpy(self.values[n.slot].planes, n.resolved.planes);
 }
-
-/// A transition's delay in ticks from now, and the §14.6.1 reject and error
-/// limits its pulses are judged by.
-const Timed = struct { ticks: u64, reject: u64, err: u64 };
-
-/// The delay of net `c`'s transition from `from` to `to`: its own `delay3`
-/// (§6.1.3), its module paths' (`pathDelay`), or of the two "the larger"
-/// (IEEE 1364-2005 §14.4); null when neither applies.
-fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to: Int.Literal) Error!?Timed {
-    const own: ?u64 = if (c.delay.present) c.delay.continuous(from.truth(), to) else null;
-    var path = try pathDelay(self, c.paths, from, to);
-    if (own) |o| {
-        if (path) |*p| p.ticks = @max(o, p.ticks) else return .{ .ticks = o, .reject = o, .err = o };
-    }
-    return path;
-}
-
-/// IEEE 1364-2005 §14.6 a module path destination's transition `td` while
-/// another is in flight to land at `st.due`: the pulse between them, as wide
-/// as the time between the two landings, is judged by `td`'s limits.
-/// Narrower than the reject limit it is filtered, the inertial default
-/// (false: `schedule` cancels the one in flight). Not narrower than the
-/// error limit, both land (transport). Between the two, the pulse is x: from
-/// its leading edge (§14.6.4.1 on-event), or from now (on-detect), to its
-/// trailing one. A trailing edge landing no later than the leading one is a
-/// negative pulse (§14.6.4.2): filtered, or, under showcancelled, x from
-/// the earlier landing (on-event) or from now (on-detect) to the later.
-/// Returns whether it scheduled the transition itself.
-fn pulse(self: *Run, net: u32, c: *net_mod.NetCold, td: Timed) Error!bool {
-    const st = &c.transition;
-    const n = self.nets[net];
-    const now = self.scheduler.now;
-    const leading = st.due;
-    const trailing = now + td.ticks;
-    const xs = try filled(self.arena, n.resolved.width, n.resolved.signed, .x);
-    if (trailing <= leading) {
-        if (!c.showcancelled) return false;
-        try exec.cancel(self, st.in_flight.?);
-        st.in_flight = null;
-        if (c.ondetect) try waiters.store(self, n.slot, xs.planes) else _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = xs } }, trailing - now, false);
-        try land(self, net, st, n.resolved, leading);
-        return true;
-    }
-    const width = trailing - leading;
-    if (width < td.reject) return false;
-    try exec.cancel(self, st.in_flight.?);
-    st.in_flight = null;
-    if (width >= td.err) {
-        _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = st.target } }, leading - now, false);
-    } else if (c.ondetect) {
-        try waiters.store(self, n.slot, xs.planes);
-    } else {
-        _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = xs } }, leading - now, false);
-    }
-    try land(self, net, st, n.resolved, trailing);
-    return true;
-}
-
-/// Puts `to` in flight on `st` to land on net `net` at absolute time `at`.
-fn land(self: *Run, net: u32, st: *net_mod.Inertial, to: Int.Literal, at: u64) Error!void {
-    if (st.target.planes.len != to.planes.len) st.target.planes = try self.arena.alloc(u64, to.planes.len);
-    @memcpy(st.target.planes, to.planes);
-    st.target.width = to.width;
-    st.target.signed = to.signed;
-    st.or_z = false;
-    st.in_flight = try exec.enqueue(self, .{ .net_update = net }, at - self.scheduler.now, false);
-    st.due = at;
-}
-
-/// IEEE 1364-2005 §14.3.3: "Active specify paths are those whose input has
-/// transitioned most recently in time, and either they have no condition or
-/// their conditions are true", and of them the delay is chosen "by
-/// comparing the correct delay for the specific transition being scheduled
-/// from each specify path and choosing the smallest". An edge-sensitive
-/// path is active only for its edge (§14.2.3), an `ifnone` one only while
-/// no state-dependent path from its source is (§14.2.4.4). The delay runs
-/// from the source's transition, so time the module's own logic already
-/// took counts toward it: §14.4's "larger of the two delays" (Figure 14-3
-/// lands at 22, Figure 14-4 at 30). Null when no path is active.
-/// ponytail: a vector destination takes the smallest delay its changed bits
-/// select, as one transition; per-bit scheduling would time each bit.
-fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int.Literal) Error!?Timed {
-    var latest: ?u64 = null;
-    for (paths) |p| if (self.path_changed.get(p.src)) |c| {
-        latest = @max(latest orelse c.time, c.time);
-    };
-    const t = latest orelse return null;
-    var best: ?u64 = null;
-    var limits: [2]?u64 = .{ null, null };
-    for (paths) |p| {
-        if (!try pathActive(self, paths, p, t)) continue;
-        for (0..to.width) |i| {
-            const a = from.bit(@intCast(i));
-            const b = to.bit(@intCast(i));
-            if (a == b) continue;
-            const d = p.table[@backingInt(a)][@backingInt(b)];
-            if (best == null or d < best.?) limits = .{ p.reject, p.err };
-            best = @min(best orelse d, d);
-        }
-    }
-    const d = best orelse return null;
-    // §14.6.1: with no limits written, both are the path delay.
-    return .{ .ticks = (t + d) -| self.scheduler.now, .reject = limits[0] orelse d, .err = limits[1] orelse d };
-}
-
-/// Whether path `p` into a destination whose paths are `paths` is active
-/// for a source transition at time `t` (`pathDelay`).
-fn pathActive(self: *Run, paths: []const net_mod.Path, p: net_mod.Path, t: u64) Error!bool {
-    if (!pathFired(self, p, t)) return false;
-    if (p.ifnone) {
-        // Its state-dependent paths may be edge-sensitive ones (§14.2.4.4,
-        // `(posedge CLK => (Q +: D))` beside `ifnone (CLK => Q)`).
-        for (paths) |q| if (q.src == p.src and !q.ifnone and (q.cond != .none or q.edge != .none) and pathFired(self, q, t) and (q.cond == .none or try pathCond(self, q))) return false;
-        return true;
-    }
-    return p.cond == .none or try pathCond(self, p);
-}
-
-/// Whether `p`'s source transitioned at `t`, on its edge when it has one
-/// (§14.2.3: "the edge transition shall be detected on the least
-/// significant bit", or the bit a bit-select names).
-/// ponytail: a source bit past 63 counts any transition as its edge.
-fn pathFired(self: *const Run, p: net_mod.Path, t: u64) bool {
-    const c = self.path_changed.get(p.src) orelse return false;
-    if (c.time != t) return false;
-    if (p.edge == .none or p.src_bit >= 64) return true;
-    const sh: u6 = @intCast(p.src_bit);
-    const before = net_mod.planeBit(c.before[0] >> sh, c.before[1] >> sh);
-    const after = net_mod.planeBit(c.after[0] >> sh, c.after[1] >> sh);
-    return (if (p.edge == .posedge) waiters.Edge.posedge else waiters.Edge.negedge).matches(before, after);
-}
-
-/// §14.2.4.1: a state-dependent path's condition, read now in its module.
-/// "If the conditional expression evaluates to x or z, it shall be treated
-/// as true. If the conditional expression evaluates to multiple bits, the
-/// least significant bit shall represent the result."
-fn pathCond(self: *Run, p: net_mod.Path) Error!bool {
-    if (self.resolve_depth == 0) _ = self.resolve_scratch.reset(.retain_capacity);
-    self.resolve_depth += 1;
-    defer self.resolve_depth -= 1;
-    const saved = self.scope;
-    defer self.scope = saved;
-    self.scope = p.scope;
-    return (try evaluate.eval(self, self.resolve_scratch.allocator(), p.cond, 0)).bit(0) != .zero;
-}
-
-/// Whether `net` resolves plane-wise (`net.foldUniform`): a net type with no
-/// wired logic and no pull of its own (§7.9), whose per-bit `signal` nothing
-/// reads (`Net.strength_read`), driven at one strength on both sides by
-/// every driver, none of them H/L (§7.10.2).
-fn uniform(self: *const Run, net: u32) bool {
-    const n = self.nets[net];
-    switch (n.kind) {
-        .wire, .tri, .uwire => {},
-        .tri0, .tri1, .trireg, .wand, .wor, .triand, .trior, .supply0, .supply1, .wreal => return false,
-    }
-    const ids = self.netDrivers(net);
-    if (n.strength_read or ids.len == 0) return false;
-    const s = self.drivers[ids[0]].s0;
-    if (s == .highz) return false;
-    for (ids) |d| {
-        const dr = self.drivers[d];
-        if (dr.or_z or dr.s0 != s or dr.s1 != s or dr.current.planes.len != n.resolved.planes.len) return false;
-    }
-    return true;
-}
-
-/// IEEE 1364-2005 §7.6/§8.5.3.5 "switch processing shall consider all the
-/// devices in a bidirectional switch-connected net before it can determine
-/// the appropriate value for any node": the net bits joined through
-/// conducting pass switches resolve as one, from every driver of every one of
-/// them. A signal crossing a switch loses supply strength (§7.11) and one
-/// Table 7-8 step per resistive switch on the strongest path (§7.12). Across
-/// a switch of unknown conduction a driver may or may not arrive, so what it
-/// asserts there is widened to include high impedance (§7.10.2). With no
-/// driver asserting anything, the group's triregs are §4.6.3.1's capacitive
-/// network: each asserts the charge it holds at its charge strength, so the
-/// larger charge wins and equal ones of different values make x.
-/// ponytail: no charge decay, wired logic or net delay inside a joined
-/// group; the group is found afresh on every resolution, which is fine for
-/// the handful of switches a digital fixture wires up.
-fn resolveJoined(self: *Run, start: u32) Error!void {
-    // `Run.resolve_scratch`, kept between calls so a resolution per event
-    // does not grow the run's arena; a nested call (a store below waking
-    // another group) shares it, and only the outermost resets it.
-    if (self.resolve_depth == 0) _ = self.resolve_scratch.reset(.retain_capacity);
-    self.resolve_depth += 1;
-    defer self.resolve_depth -= 1;
-    const a = self.resolve_scratch.allocator();
-    var touched: std.ArrayList(u32) = .empty;
-    try touched.append(a, start);
-    for (0..self.nets[start].resolved.width) |i| {
-        const group = try reach(Switches{ .r = self }, a, .{ .net = start, .bit = @intCast(i) });
-        for (group) |y| {
-            const paths = try switchPaths(Switches{ .r = self }, a, y, group);
-            var acc: Signal = .{};
-            for (group, paths) |z, p| {
-                const n = self.nets[z.net];
-                var own = netPull(n.kind);
-                for (self.netDrivers(z.net)) |d| own = own.combine(contribution(self.drivers[d], z.bit));
-                // §9.3.2 "The force procedural statement on a net shall
-                // override all drivers"; across a switch the forced value is
-                // a strong driver of the other nets, as iverilog reads it
-                // (ivtest pr2937417b/c). The forced net keeps its own value
-                // (`waiters.store` drops this resolution's write to it).
-                // ponytail: a whole-net force only, not a forced select.
-                if (self.overrides.count() != 0) if (self.overrides.get(n.slot)) |o| if (o.force != null) {
-                    own = .of(self.values[n.slot].bit(z.bit), .strong, .strong);
-                };
-                acc = acc.combine(crossed(own, z, y, p));
-            }
-            if (acc.none()) for (group, paths) |z, p| {
-                const n = self.nets[z.net];
-                if (n.kind == .trireg) acc = acc.combine(crossed(.of(self.values[n.slot].bit(z.bit), n.charge, n.charge), z, y, p));
-            };
-            const n = self.nets[y.net];
-            self.signals[n.signal + y.bit] = acc;
-            setBit(n.resolved, y.bit, acc.collapse());
-            if (std.mem.findScalar(u32, touched.items, y.net) == null) try touched.append(a, y.net);
-        }
-    }
-    for (touched.items) |t| try waiters.store(self, self.nets[t].slot, self.nets[t].resolved.planes);
-}
-
-/// `net.reach`'s and `net.switchPaths`'s view of the run's switches: each
-/// net's `NetCold.trans` list and the conduction held in its `Tran` row.
-const Switches = struct {
-    r: *const Run,
-    pub fn switches(g: Switches, net: u32) []const u32 {
-        return g.r.netCold(g.r.nets[net]).trans;
-    }
-    pub fn tran(g: Switches, ti: u32) Tran {
-        return g.r.trans[ti];
-    }
-    pub fn conduction(g: Switches, ti: u32) Tran.State {
-        return g.r.trans[ti].state;
-    }
-    pub fn fixed(g: Switches, net: u32) bool {
-        return switch (g.r.nets[net].kind) {
-            .supply0, .supply1 => true,
-            else => false, // else: every other net kind is a conductor
-        };
-    }
-};
 
 /// §7.6 what a MOS switch drives: its data's value, at the data's strength
 /// reduced by §7.12 (the resolved strength of a net, strong for anything
@@ -397,10 +225,10 @@ pub fn mosValue(self: *Run, scratch: std.mem.Allocator, at: u32, m: net_mod.Mos,
     const dv = try evaluate.eval(self, scratch, m.data, 1);
     const bit = if (dv.width > 1) m.lane.? else 0;
     var sig: Signal = .of(dv.bit(bit), .strong, .strong);
-    if (ex.tag(m.data) == .ident) if (self.net_of.get(try self.slot(m.data))) |net| {
-        sig = self.signals[self.nets[net].signal + bit];
+    if (ex.tag(m.data) == .ident) if (self.netlist.slot_nets.get(try self.slot(m.data))) |net| {
+        sig = self.netlist.signals[self.netlist.nets[net].signal + bit];
     };
-    const d = &self.drivers[at];
+    const d = &self.netlist.drivers[at];
     d.s0 = net_mod.reduce(if (sig.lo < 0) @fromBackingInt(@intCast(@as(u8, @intCast(-sig.lo)))) else .highz, m.resistive);
     d.s1 = net_mod.reduce(if (sig.hi > 0) @fromBackingInt(@intCast(@as(u8, @intCast(sig.hi)))) else .highz, m.resistive);
     const value = sig.collapse();
@@ -447,7 +275,7 @@ pub fn schedule(self: *Run, from: Int.Literal, from_or_z: bool, to: Int.Literal,
 /// A control that returns before its change lands cancels it (§7.14's
 /// inertial reading, as a gate's).
 pub fn switchAfter(self: *Run, at: u32, next: Tran.State) Error!void {
-    const t = &self.trans[at];
+    const t = &self.netlist.switches[at];
     const settled = if (t.pending != null) t.target else t.state;
     if (settled == next) return;
     if (t.pending) |h| try exec.cancel(self, h);
@@ -459,28 +287,6 @@ pub fn switchAfter(self: *Run, at: u32, next: Tran.State) Error!void {
         .off => .zero,
         .unknown => .x,
     }), false);
-}
-
-/// §3.8 charge decay. The countdown restarts on each entry into the
-/// capacitive state, so this takes the state and acts on its edge.
-// ponytail: whole-net, not per-bit: a vector `trireg` with some bits driven
-// and some floating decays all of them together; a countdown per bit if a
-// design needs it.
-fn chargeState(self: *Run, net: u32, floating: bool) Error!void {
-    const n = &self.nets[net];
-    const was = n.capacitive;
-    n.capacitive = floating;
-    // Leaving the state, or entering one that never decays, only has to
-    // cancel whatever countdown was running.
-    if (was == floating) return;
-    // A trireg without a cold row has no decay and no countdown to cancel.
-    if (n.cold == no_cold) return;
-    const c = &self.net_cold.items[n.cold];
-    if (c.decay_event) |h| try exec.cancel(self, h);
-    c.decay_event = null;
-    if (!floating) return;
-    const after = c.decay orelse return;
-    c.decay_event = try exec.enqueue(self, .{ .decay = net }, after, false);
 }
 
 /// What a gate driver contributes: §7.8.5's one output bit, and whether it is
@@ -535,6 +341,262 @@ pub fn window(self: *Run, scratch: std.mem.Allocator, b: Bridge, width: u32) Err
 }
 
 // ---- tests ------------------------------------------------------------------
+
+// ---- private ----
+
+/// The delay of net `c`'s transition from `from` to `to`: its own `delay3`
+/// (§6.1.3), its module paths' (`pathDelay`), or of the two "the larger"
+/// (IEEE 1364-2005 §14.4); null when neither applies.
+fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to: Int.Literal) Error!?Timed {
+    const own: ?u64 = if (c.delay.present) c.delay.continuous(from.truth(), to) else null;
+    var path = try pathDelay(self, c.paths, from, to);
+    if (own) |o| {
+        if (path) |*p| p.ticks = @max(o, p.ticks) else return .{ .ticks = o, .reject = o, .err = o };
+    }
+    return path;
+}
+
+/// IEEE 1364-2005 §14.6 a module path destination's transition `td` while
+/// another is in flight to land at `st.due`: the pulse between them, as wide
+/// as the time between the two landings, is judged by `td`'s limits.
+/// Narrower than the reject limit it is filtered, the inertial default
+/// (false: `schedule` cancels the one in flight). Not narrower than the
+/// error limit, both land (transport). Between the two, the pulse is x: from
+/// its leading edge (§14.6.4.1 on-event), or from now (on-detect), to its
+/// trailing one. A trailing edge landing no later than the leading one is a
+/// negative pulse (§14.6.4.2): filtered, or, under showcancelled, x from
+/// the earlier landing (on-event) or from now (on-detect) to the later.
+/// Returns whether it scheduled the transition itself.
+fn pulse(self: *Run, net: u32, c: *net_mod.NetCold, td: Timed) Error!bool {
+    assert(net < self.netlist.nets.len);
+    const st = &c.transition;
+    const n = self.netlist.nets[net];
+    const now = self.scheduler.now;
+    const leading = st.due;
+    const trailing = now + td.ticks;
+    const xs = try filled(self.arena, n.resolved.width, n.resolved.signed, .x);
+    if (trailing <= leading) {
+        if (!c.showcancelled) return false;
+        try exec.cancel(self, st.in_flight.?);
+        st.in_flight = null;
+        if (c.ondetect) try waiters.store(self, n.slot, xs.planes) else _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = xs } }, trailing - now, false);
+        try land(self, net, st, n.resolved, leading);
+        return true;
+    }
+    const width = trailing - leading;
+    if (width < td.reject) return false;
+    try exec.cancel(self, st.in_flight.?);
+    st.in_flight = null;
+    if (width >= td.err) {
+        _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = st.target } }, leading - now, false);
+    } else if (c.ondetect) {
+        try waiters.store(self, n.slot, xs.planes);
+    } else {
+        _ = try exec.enqueue(self, .{ .write = .{ .target = n.slot, .value = xs } }, leading - now, false);
+    }
+    try land(self, net, st, n.resolved, trailing);
+    return true;
+}
+
+/// Puts `to` in flight on `st` to land on net `net` at absolute time `at`.
+fn land(self: *Run, net: u32, st: *net_mod.Inertial, to: Int.Literal, at: u64) Error!void {
+    assert(net < self.netlist.nets.len);
+    if (st.target.planes.len != to.planes.len) st.target.planes = try self.arena.alloc(u64, to.planes.len);
+    @memcpy(st.target.planes, to.planes);
+    st.target.width = to.width;
+    st.target.signed = to.signed;
+    st.or_z = false;
+    st.in_flight = try exec.enqueue(self, .{ .net_update = net }, at - self.scheduler.now, false);
+    st.due = at;
+}
+
+/// IEEE 1364-2005 §14.3.3: "Active specify paths are those whose input has
+/// transitioned most recently in time, and either they have no condition or
+/// their conditions are true", and of them the delay is chosen "by
+/// comparing the correct delay for the specific transition being scheduled
+/// from each specify path and choosing the smallest". An edge-sensitive
+/// path is active only for its edge (§14.2.3), an `ifnone` one only while
+/// no state-dependent path from its source is (§14.2.4.4). The delay runs
+/// from the source's transition, so time the module's own logic already
+/// took counts toward it: §14.4's "larger of the two delays" (Figure 14-3
+/// lands at 22, Figure 14-4 at 30). Null when no path is active.
+/// ponytail: a vector destination takes the smallest delay its changed bits
+/// select, as one transition; per-bit scheduling would time each bit.
+fn pathDelay(self: *Run, paths: []const net_mod.Path, from: Int.Literal, to: Int.Literal) Error!?Timed {
+    var latest: ?u64 = null;
+    for (paths) |p| if (self.netlist.path_changed.get(p.src)) |c| {
+        latest = @max(latest orelse c.time, c.time);
+    };
+    const t = latest orelse return null;
+    var best: ?u64 = null;
+    var limits: [2]?u64 = .{ null, null };
+    for (paths) |p| {
+        if (!try pathActive(self, paths, p, t)) continue;
+        for (0..to.width) |i| {
+            const a = from.bit(@intCast(i));
+            const b = to.bit(@intCast(i));
+            if (a == b) continue;
+            const d = p.table[@backingInt(a)][@backingInt(b)];
+            if (best == null or d < best.?) limits = .{ p.reject, p.err };
+            best = @min(best orelse d, d);
+        }
+    }
+    const d = best orelse return null;
+    // §14.6.1: with no limits written, both are the path delay.
+    return .{ .ticks = (t + d) -| self.scheduler.now, .reject = limits[0] orelse d, .err = limits[1] orelse d };
+}
+
+/// Whether path `p` into a destination whose paths are `paths` is active
+/// for a source transition at time `t` (`pathDelay`).
+fn pathActive(self: *Run, paths: []const net_mod.Path, p: net_mod.Path, t: u64) Error!bool {
+    if (!pathFired(self, p, t)) return false;
+    if (p.ifnone) {
+        // Its state-dependent paths may be edge-sensitive ones (§14.2.4.4,
+        // `(posedge CLK => (Q +: D))` beside `ifnone (CLK => Q)`).
+        for (paths) |q| if (q.src == p.src and !q.ifnone and (q.cond != .none or q.edge != .none) and pathFired(self, q, t) and (q.cond == .none or try pathCond(self, q))) return false;
+        return true;
+    }
+    return p.cond == .none or try pathCond(self, p);
+}
+
+/// Whether `p`'s source transitioned at `t`, on its edge when it has one
+/// (§14.2.3: "the edge transition shall be detected on the least
+/// significant bit", or the bit a bit-select names).
+/// ponytail: a source bit past 63 counts any transition as its edge.
+fn pathFired(self: *const Run, p: net_mod.Path, t: u64) bool {
+    const c = self.netlist.path_changed.get(p.src) orelse return false;
+    if (c.time != t) return false;
+    if (p.edge == .none or p.src_bit >= 64) return true;
+    const sh: u6 = @intCast(p.src_bit);
+    const before = net_mod.planeBit(c.before[0] >> sh, c.before[1] >> sh);
+    const after = net_mod.planeBit(c.after[0] >> sh, c.after[1] >> sh);
+    return (if (p.edge == .posedge) waiters.Edge.posedge else waiters.Edge.negedge).matches(before, after);
+}
+
+/// §14.2.4.1: a state-dependent path's condition, read now in its module.
+/// "If the conditional expression evaluates to x or z, it shall be treated
+/// as true. If the conditional expression evaluates to multiple bits, the
+/// least significant bit shall represent the result."
+fn pathCond(self: *Run, p: net_mod.Path) Error!bool {
+    if (self.resolve_depth == 0) _ = self.resolve_scratch.reset(.retain_capacity);
+    self.resolve_depth += 1;
+    defer self.resolve_depth -= 1;
+    const saved = self.scope;
+    defer self.scope = saved;
+    self.scope = p.scope;
+    return (try evaluate.eval(self, self.resolve_scratch.allocator(), p.cond, 0)).bit(0) != .zero;
+}
+
+/// Whether `net` resolves plane-wise (`net.foldUniform`): a net type with no
+/// wired logic and no pull of its own (§7.9), whose per-bit `signal` nothing
+/// reads (`Net.strength_read`), driven at one strength on both sides by
+/// every driver, none of them H/L (§7.10.2).
+fn uniform(self: *const Run, net: u32) bool {
+    assert(net < self.netlist.nets.len);
+    const n = self.netlist.nets[net];
+    switch (n.kind) {
+        .wire, .tri, .uwire => {},
+        .tri0, .tri1, .trireg, .wand, .wor, .triand, .trior, .supply0, .supply1, .wreal => return false,
+    }
+    const ids = self.netDrivers(net);
+    if (n.strength_read or ids.len == 0) return false;
+    const s = self.netlist.drivers[ids[0]].s0;
+    if (s == .highz) return false;
+    for (ids) |d| {
+        const dr = self.netlist.drivers[d];
+        if (dr.or_z or dr.s0 != s or dr.s1 != s or dr.current.planes.len != n.resolved.planes.len) return false;
+    }
+    return true;
+}
+
+/// IEEE 1364-2005 §7.6/§8.5.3.5 "switch processing shall consider all the
+/// devices in a bidirectional switch-connected net before it can determine
+/// the appropriate value for any node": the net bits joined through
+/// conducting pass switches resolve as one, from every driver of every one of
+/// them. A signal crossing a switch loses supply strength (§7.11) and one
+/// Table 7-8 step per resistive switch on the strongest path (§7.12). Across
+/// a switch of unknown conduction a driver may or may not arrive, so what it
+/// asserts there is widened to include high impedance (§7.10.2). With no
+/// driver asserting anything, the group's triregs are §4.6.3.1's capacitive
+/// network: each asserts the charge it holds at its charge strength, so the
+/// larger charge wins and equal ones of different values make x.
+/// ponytail: no charge decay, wired logic or net delay inside a joined
+/// group; the group is found afresh on every resolution, which is fine for
+/// the handful of switches a digital fixture wires up.
+fn resolveJoined(self: *Run, start: u32) Error!void {
+    // `Run.resolve_scratch`, kept between calls so a resolution per event
+    // does not grow the run's arena; a nested call (a store below waking
+    // another group) shares it, and only the outermost resets it.
+    if (self.resolve_depth == 0) _ = self.resolve_scratch.reset(.retain_capacity);
+    self.resolve_depth += 1;
+    defer self.resolve_depth -= 1;
+    const a = self.resolve_scratch.allocator();
+    var touched: std.ArrayList(u32) = .empty;
+    try touched.append(a, start);
+    for (0..self.netlist.nets[start].resolved.width) |i| {
+        const group = try reach(Switches{ .r = self }, a, .{ .net = start, .bit = @intCast(i) });
+        for (group) |y| {
+            const paths = try switchPaths(Switches{ .r = self }, a, y, group);
+            var acc: Signal = .{};
+            for (group, paths) |z, p| {
+                const n = self.netlist.nets[z.net];
+                var own = netPull(n.kind);
+                for (self.netDrivers(z.net)) |d| own = own.combine(contribution(self.netlist.drivers[d], z.bit));
+                // §9.3.2 "The force procedural statement on a net shall
+                // override all drivers"; across a switch the forced value is
+                // a strong driver of the other nets, as iverilog reads it
+                // (ivtest pr2937417b/c). The forced net keeps its own value
+                // (`waiters.store` drops this resolution's write to it).
+                // ponytail: a whole-net force only, not a forced select.
+                if (self.assigns.layers.count() != 0) if (self.assigns.layers.get(n.slot)) |o| if (o.force != null) {
+                    own = .of(self.values[n.slot].bit(z.bit), .strong, .strong);
+                };
+                acc = acc.combine(crossed(own, z, y, p));
+            }
+            if (acc.none()) for (group, paths) |z, p| {
+                const n = self.netlist.nets[z.net];
+                if (n.kind == .trireg) acc = acc.combine(crossed(.of(self.values[n.slot].bit(z.bit), n.charge, n.charge), z, y, p));
+            };
+            const n = self.netlist.nets[y.net];
+            self.netlist.signals[n.signal + y.bit] = acc;
+            setBit(n.resolved, y.bit, acc.collapse());
+            if (std.mem.findScalar(u32, touched.items, y.net) == null) try touched.append(a, y.net);
+        }
+    }
+    for (touched.items) |t| try waiters.store(self, self.netlist.nets[t].slot, self.netlist.nets[t].resolved.planes);
+}
+
+/// §3.8 charge decay. The countdown restarts on each entry into the
+/// capacitive state, so this takes the state and acts on its edge.
+// ponytail: whole-net, not per-bit: a vector `trireg` with some bits driven
+// and some floating decays all of them together; a countdown per bit if a
+// design needs it.
+fn chargeState(self: *Run, net: u32, floating: bool) Error!void {
+    assert(net < self.netlist.nets.len);
+    const n = &self.netlist.nets[net];
+    const was = n.capacitive;
+    n.capacitive = floating;
+    // Leaving the state, or entering one that never decays, only has to
+    // cancel whatever countdown was running.
+    if (was == floating) return;
+    // A trireg without a cold row has no decay and no countdown to cancel.
+    if (n.cold == no_cold) return;
+    const c = &self.netlist.cold.items[n.cold];
+    if (c.decay_event) |h| try exec.cancel(self, h);
+    c.decay_event = null;
+    if (!floating) return;
+    const after = c.decay orelse return;
+    c.decay_event = try exec.enqueue(self, .{ .decay = net }, after, false);
+}
+
+fn runBus(gpa: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var bag = @import("diag").Bag.init(arena.allocator());
+    var output = std.Io.Writer.Allocating.init(arena.allocator());
+    try @import("root.zig").run(arena.allocator(), bus_source, .{}, &bag, &output.writer);
+    try std.testing.expectEqualStrings(bus_expected, output.written());
+}
 
 test "continuous vector delay audit_assignment_pending_same_value" {
     try expectRun(
@@ -751,44 +813,8 @@ test "§7.6 a controlled pass switch with a delay turns on and off after it" {
     , "z11z\n");
 }
 
-const bus_source =
-    \\`timescale 1ns/1ns
-    \\module leaf(input [3:0] i, output [3:0] o); assign o = i; endmodule
-    \\module m;
-    \\reg [1:0] sel; reg [69:0] d0, d1;
-    \\wire [69:0] bus; wire [3:0] w; wire p;
-    \\assign bus = sel[0] ? d0 : 70'bz;
-    \\assign bus = sel[1] ? d1 : 70'bz;
-    \\assign (weak0, weak1) p = d0[0];
-    \\assign p = sel[1] ? d1[0] : 1'bz;
-    \\leaf u({d0[1:0], d1[1:0]}, w);
-    \\initial begin
-    \\  d0 = {1'b1, 65'b0, 4'b0101}; d1 = {1'b0, 65'b0, 4'b0011}; sel = 1;
-    \\  #1 $display("%b %b %b %b", bus[69], bus[3:0], p, w);
-    \\  sel = 3;
-    \\  #1 $display("%b %b %b", bus[69], bus[3:0], p);
-    \\  force bus[1] = 1'b0; sel = 2;
-    \\  #1 $display("%b %b", bus[69], bus[3:0]);
-    \\  release bus[1];
-    \\  #1 $display("%b %b", bus[69], bus[3:0]);
-    \\  sel = 0;
-    \\  #1 $display("%b %b %b", bus[69], bus[3:0], p);
-    \\end
-    \\endmodule
-;
-const bus_expected = "1 0101 1 0111\nx 0xx1 1\n0 0001\n0 0011\nz zzzz 1\n";
-
 test "§7.9 a bus of tri-state drivers resolves across a word boundary, under a forced select and beside a weaker driver" {
     try expectRun(bus_source, bus_expected);
-}
-
-fn runBus(gpa: std.mem.Allocator) !void {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    var bag = @import("diag").Bag.init(arena.allocator());
-    var output = std.Io.Writer.Allocating.init(arena.allocator());
-    try @import("root.zig").run(arena.allocator(), bus_source, .{}, &bag, &output.writer);
-    try std.testing.expectEqualStrings(bus_expected, output.written());
 }
 
 test "allocation failure anywhere in net resolution, a port window or a forced select cleans up" {

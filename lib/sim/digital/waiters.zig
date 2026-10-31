@@ -6,7 +6,39 @@
 //! fan-out, §9.3 procedural continuous assignments, §9.7.1-§9.7.3 event
 //! controls, §10.2.1, §11.4.2, §15 timing checks, §17.1.3, §18; VAMS §8.5
 //! D2A events.
+//!
+//! Contents:
+//! - `pub const Edge = enum(u2)`
+//! - `Edge.matches(self: Edge, before: Int.Bit, after: Int.Bit) bool`
+//! - `pub const Susp = struct`
+//! - `pub const Term = struct`
+//! - `pub const no_ext`
+//! - `pub const TermExt = struct`
+//! - `pub const Waits = struct`
+//! - `pub const ProcAssigns = struct`
+//! - `pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64`
+//! - `pub fn store(self: *Run, target: u32, planes: []const u64) Error!void`
+//! - `pub fn trigger(self: *Run, at: u32) Error!void`
+//! - `pub fn release(self: *Run, slot: u32, force: bool) Error!void`
+//! - `pub fn releaseBits(self: *Run, slot: u32, bits: compile.Bits) Error!void`
+//! - `pub fn forceValue(self: *Run, slot: u32, planes: []const u64) Error!void`
+//! - `pub fn requestAnalog(self: *Run) Error!void`
+//! - `pub fn requestMonitor(self: *Run) Error!void`
+//! - `pub fn requestVcd(self: *Run) Error!void`
+//! - `pub fn wakeA2d(self: *Run, slot: u32) Error!void`
+//! - `pub fn wakeSwitches(self: *Run, target: u32) Error!void`
+//! - `pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void`
+//! - `pub fn termsOf(self: *Run, slot: u32) ?*std.ArrayList(Term)`
+//! - `pub fn park(self: *Run, pc: u32) Error!u32`
+//! - `pub fn watch(self: *Run, id: u32, slot: u32, edge: Edge) Error!void`
+//! - `pub fn watchExt(self: *Run, id: u32, slot: u32, edge: Edge, ext: TermExt) Error!void`
+//! - `pub fn retire(self: *Run, id: u32) void`
+//! - `pub fn buildFanout(r: *Run) Error!void`
+
 const std = @import("std");
+const Overrides = @import("root.zig").Overrides;
+const Watcher = @import("root.zig").Watcher;
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -106,6 +138,52 @@ pub const TermExt = struct {
     x: u64 = 0,
 };
 
+/// A run's waiters: the suspended processes and the event-control terms each
+/// filed under the slots it waits on (near slots in `terms`, the rest in
+/// `far_terms`), the expression terms an automatic activation tests itself,
+/// the continuous drivers each slot fans out to, and per slot what is told
+/// when it changes (`watch`).
+pub const Waits = struct {
+    /// §9.7 the processes suspended on an event control. A row is recycled
+    /// once its process resumes or is disabled.
+    susps: std.ArrayList(Susp) = .empty,
+    free_susps: std.ArrayList(u32) = .empty,
+    /// §5.10.1 per slot, the terms of the event controls waiting on it, made
+    /// on the slot's first wait (most slots are never waited on, and a list
+    /// header is three words); a slot no variable owns (`driver.key`,
+    /// `registerMonitor`) is in `far_terms`.
+    terms: []?*std.ArrayList(Term) = &.{},
+    far_terms: std.AutoHashMapUnmanaged(u32, std.ArrayList(Term)) = .empty,
+    /// The select and event fields of the terms that have them
+    /// (`waiters.Term.ext`), and the rows free.
+    term_exts: std.ArrayList(TermExt) = .empty,
+    free_term_exts: std.ArrayList(u32) = .empty,
+    /// §6.1 / §7.6 the static fan-out (`waiters.buildFanout`): per slot
+    /// `fan[fan_start[slot]..fan_start[slot + 1]]` are the pcs of the
+    /// continuous drivers and controlled switches reading it, and `armed[pc]`
+    /// says that process is suspended on its operands right now.
+    fan_start: []u32 = &.{},
+    fan: []u32 = &.{},
+    armed: []bool = &.{},
+    /// Per slot, who is told when its value changes. `store` tests this on
+    /// every change and nothing else: it is the one value-change hook, whose
+    /// first watcher is §17.1.3's monitor; §18's value change dump and VAMS
+    /// §8.5's implicit D2A are the same event, each a member of its own.
+    watch: []std.EnumSet(Watcher) = &.{},
+};
+
+/// A run's §9.3 procedural continuous assignments: by slot, the process
+/// range of the `assign` and of the `force` holding it, and whether the
+/// write in flight is an override's own (which the guard lets through).
+pub const ProcAssigns = struct {
+    /// §9.3 the procedural continuous assignments in effect, by slot: the
+    /// process range of an `assign` and of a `force`. While one is, ordinary
+    /// writes to the slot do not land (`store`); a force outranks an assign.
+    layers: std.AutoHashMapUnmanaged(u32, Overrides) = .empty,
+    /// `store` from an override's own process, which the guard lets through.
+    active: bool = false,
+};
+
 /// Bits `[lo, lo + width)` of `value`, `width` at most 64, as (values,
 /// unknowns) words.
 pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64 {
@@ -119,6 +197,300 @@ pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64 {
     }
     return out;
 }
+
+/// Stores `planes` into slot `target` and wakes what watches it: the one
+/// write path for the active and NBA regions, so none bypasses §5.10.1
+/// resumption. A write to a slot a §9.3 override holds is dropped, unless
+/// `overriding`.
+pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
+    // §9.3: while a procedural continuous assignment holds the slot, its own
+    // process is the only writer: an `assign` over a variable, a `force`
+    // over anything, including a net's resolution.
+    const dest = self.values[target];
+    const before = dest.bit(0);
+    // §14.3.3 a module path source's transitions, by time (`resolution.pathDelay`).
+    const path_source = target < self.waits.watch.len and self.waits.watch[target].contains(.path);
+    const before_words: [2]u64 = if (path_source) .{ dest.values()[0], dest.unknowns()[0] } else undefined;
+    const changed = changed: {
+        if (self.assigns.layers.count() != 0 and !self.assigns.active) if (self.assigns.layers.get(target)) |o| {
+            if (o.force != null or (o.assign != null and !self.netlist.slot_nets.contains(target))) return;
+            // §9.3.2 a forced select of a net keeps its bits; the rest resolve.
+            if (o.parts.items.len != 0) break :changed keepForced(dest, planes, o.parts.items);
+        };
+        // A real changes when its value does: -0.0 and +0.0 compare equal
+        // (VAMS §3.7, IEEE 754 `==`), and a NaN never equals itself.
+        const differ = !std.mem.eql(u64, dest.planes, planes);
+        // Every real slot is 64 bits wide (§4.8, VAMS §3.7), so the width
+        // test spares the hash lookup on most stores.
+        const changed = if (dest.width == 64 and self.decls.reals.contains(target))
+            @as(f64, @bitCast(dest.planes[0])) != @as(f64, @bitCast(planes[0]))
+        else
+            differ;
+        // "No change" governs only the event: -0.0 over +0.0 still stores its
+        // bits, so `1.0/r` reads -inf (docs/specification/Vague_Decisions.md VD-032). Not
+        // copied when equal, which also covers `planes` aliasing `dest.planes`
+        // (`a = a`), a copy @memcpy forbids.
+        if (differ) @memcpy(dest.planes, planes);
+        break :changed changed;
+    };
+    // A §10.4.5 constant function running during elaboration: nothing
+    // watches a slot yet.
+    if (self.growing != null or self.folding_constant) return;
+    if (!changed) return driver.stored(self, target, false);
+    if (path_source) try self.netlist.path_changed.put(self.arena, target, .{ .time = self.scheduler.now, .before = before_words, .after = .{ dest.values()[0], dest.unknowns()[0] } });
+    // Most slots have no watcher, so one test skips them all.
+    const watchers = self.waits.watch[target];
+    if (watchers.count() != 0) {
+        if (watchers.contains(.monitor)) try @import("display.zig").monitorChanged(self, target);
+        if (watchers.contains(.analog)) try requestAnalog(self);
+        if (watchers.contains(.vcd) or watchers.contains(.ports)) try requestVcd(self);
+        if (watchers.contains(.d2a)) try requestD2a(self, target, before, dest.bit(0));
+    }
+    try wake(self, target, before, dest.bit(0));
+    // IEEE 1364-2005 §15: a timing check whose event this slot is.
+    if (watchers.contains(.tchk)) try tchk.changed(self, target, before, dest.bit(0));
+    if (watchers.contains(.vpi)) if (self.host.change) |f| f(self, target);
+    // After `wake`, so a `driver_update` process runs after the driver it
+    // watches has re-evaluated (both join the same active-region FIFO).
+    try driver.stored(self, target, true);
+}
+
+/// §5.10.4 `-> e`: named event `at` occurs, resuming what waits on it.
+pub fn trigger(self: *Run, at: u32) Error!void {
+    if (self.waits.watch[at].contains(.d2a)) try requestD2a(self, at, .x, .x);
+    if (self.waits.watch[at].contains(.vcd)) {
+        self.dumps.vcd.fire(&self.dumps.catalog.?, at);
+        try requestVcd(self);
+    }
+    try wake(self, at, .x, .x);
+}
+
+/// §9.3 `deassign` (`force` false) or `release` (`force` true) of `slot`.
+/// Releasing what is not held is a no-op.
+pub fn release(self: *Run, slot: u32, force: bool) Error!void {
+    assert(slot < self.values.len);
+    const layers = self.assigns.layers.getPtr(slot) orelse return;
+    const layer = if (force) &layers.force else &layers.assign;
+    if (layer.*) |old| _ = try exec.stopRange(self, old.start, old.end);
+    layer.* = null;
+    const held = layers.assign;
+    // A forced select is a layer of its own (§9.3.2), released only by its
+    // own select: the slot stays held while one remains.
+    if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.assigns.layers.remove(slot);
+    // §9.3.2: a released net is its drivers' again; a released
+    // variable keeps its value, unless an assign holds it.
+    if (force) {
+        if (self.netlist.slot_nets.get(slot)) |net| try resolution.resolve(self, net) else if (held) |a| _ = try exec.enqueue(self, .{ .run_process = a.start }, null, false);
+    }
+}
+
+/// §9.3.2 `release` of a forced select of net `slot`: its bits are the
+/// drivers' again, at once. Releasing what is not held is a no-op.
+pub fn releaseBits(self: *Run, slot: u32, bits: compile.Bits) Error!void {
+    assert(slot < self.values.len);
+    const layers = self.assigns.layers.getPtr(slot) orelse return;
+    for (layers.parts.items, 0..) |p, i| if (std.meta.eql(p.bits, bits)) {
+        _ = try exec.stopRange(self, p.range.start, p.range.end);
+        _ = layers.parts.orderedRemove(i);
+        break;
+    };
+    if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.assigns.layers.remove(slot);
+    if (self.netlist.slot_nets.get(slot)) |net| try resolution.resolve(self, net);
+}
+
+/// VPI §12.30 vpiForceFlag: force `slot` to a constant, "same as the
+/// procedural force" (§9.3.2) but with no expression to keep re-evaluating,
+/// so the force layer holds an empty process range.
+pub fn forceValue(self: *Run, slot: u32, planes: []const u64) Error!void {
+    assert(slot < self.values.len);
+    const entry = try self.assigns.layers.getOrPut(self.arena, slot);
+    if (!entry.found_existing) entry.value_ptr.* = .{};
+    if (entry.value_ptr.force) |old| _ = try exec.stopRange(self, old.start, old.end);
+    entry.value_ptr.force = .{ .start = 0, .end = 0 };
+    const was = self.assigns.active;
+    self.assigns.active = true;
+    defer self.assigns.active = was;
+    try store(self, slot, planes);
+}
+
+/// VAMS §8.5: "the implicit D2A event ... is created when a digital variable to
+/// which an analog block is implicitly sensitive changes value". §8.5.3.7 then
+/// processes the macro-process in region 3b, after every region-1..3 event of
+/// the tick, and once however many inputs moved.
+pub fn requestAnalog(self: *Run) Error!void {
+    if (self.analog.pending) return;
+    self.analog.pending = true;
+    _ = self.scheduler.schedule(self.arena, .analog, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
+}
+
+/// §17.1.3: "the entire argument list is displayed at the end of the time
+/// step". One event however many watched values moved, and however often: a
+/// value that changes and changes back within the step still "changes value",
+/// so it prints, with the settled values.
+pub fn requestMonitor(self: *Run) Error!void {
+    if (self.monitoring.standing == null or !self.monitoring.on or self.monitoring.pending) return;
+    self.monitoring.pending = true;
+    try exec.enqueueMonitor(self, .monitor_tick);
+}
+
+/// §18.1.3/§18.1.4 the dump is written at the end of the time step, once.
+pub fn requestVcd(self: *Run) Error!void {
+    if (self.dumps.vcd.pending) return;
+    self.dumps.vcd.pending = true;
+    try exec.enqueueMonitor(self, .vcd_tick);
+}
+
+/// VAMS §8.5.1: "A2D events ... are scheduled just like other event controlled
+/// statements": the waiters of a monitor slot resume in the active region.
+pub fn wakeA2d(self: *Run, slot: u32) Error!void {
+    return wake(self, slot, .x, .x);
+}
+
+/// Re-run the MOS switches reading `target` (§7.11), when its strength
+/// changed and its value may not have: no event control sees that.
+pub fn wakeSwitches(self: *Run, target: u32) Error!void {
+    if (target + 1 < self.waits.fan_start.len) for (self.waits.fan[self.waits.fan_start[target]..self.waits.fan_start[target + 1]]) |pc| if (self.waits.armed[pc]) {
+        const ins = self.program.code.items[pc];
+        if (ins != .continuous or self.netlist.drivers[ins.continuous].source != .mos) continue;
+        self.waits.armed[pc] = false;
+        _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
+    };
+}
+
+/// Resume every process suspended on `target` whose edge matches. Split out
+/// of `store` because §5.10.4's `-> e` resumes without publishing anything:
+/// a named event has no value for a change to be detected in.
+///
+/// The continuous drivers and controlled switches reading `target` come
+/// first, then the event controls in the order they suspended. §11.4.2 lets
+/// the processes one event resumes run in any order.
+pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void {
+    if (target + 1 < self.waits.fan_start.len) for (self.waits.fan[self.waits.fan_start[target]..self.waits.fan_start[target + 1]]) |pc| if (self.waits.armed[pc]) {
+        self.waits.armed[pc] = false;
+        _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
+    };
+    const list = termsOf(self, target) orelse return;
+    const event = self.decls.events.get(target);
+    const event_ctx = if (event) |e| eventContext(self, e.scope, self.calls.ctx) else 0;
+    // §10.2.1: an automatic task's variables, too, are each activation's
+    // own; a write in one activation is no change in another's.
+    const auto = event == null and self.routines.auto_slots.contains(target);
+    const slot_ctx = if (auto) slotContext(self, target, self.calls.ctx) else 0;
+    // Compacts as it goes: a matched term leaves with its suspension, and a
+    // stale one (its suspension resumed through another slot, or was
+    // disabled) is dropped.
+    var keep: usize = 0;
+    for (list.items) |t| {
+        const s = &self.waits.susps.items[t.susp];
+        if (s.gen != t.gen) {
+            dropExt(self, t);
+            continue;
+        }
+        const selected = (if (event) |e| event_ctx == eventContext(self, e.scope, s.ctx) else !auto or slot_ctx == slotContext(self, target, s.ctx)) and
+            if (t.ext == no_ext) t.edge.matches(before, after) else try extHit(self, t, target, before, after);
+        // An index function's blocking write can satisfy another term of
+        // this event-or suspension while selectedEvent evaluates it.
+        if (s.gen != t.gen) {
+            dropExt(self, t);
+            continue;
+        }
+        if (!selected) {
+            list.items[keep] = t;
+            keep += 1;
+            continue;
+        }
+        const pc = s.pc;
+        const ctx = s.ctx;
+        dropExt(self, t);
+        retire(self, t.susp);
+        _ = try exec.enqueue(self, exec.resumption(pc, ctx), null, false);
+    }
+    list.shrinkRetainingCapacity(keep);
+}
+
+/// The terms filed under `slot`, or null when nothing has ever waited on it.
+/// A slot below `Run.terms.len` keeps its list at a stable address; one
+/// above it (`driver.key`, a monitor's slot) is in `Run.far_terms`, whose
+/// rows a later `watch` of another far slot may move.
+pub fn termsOf(self: *Run, slot: u32) ?*std.ArrayList(Term) {
+    return if (slot < self.waits.terms.len) self.waits.terms[slot] else self.waits.far_terms.getPtr(slot);
+}
+
+/// Suspend the executing process at `pc` (§9.7). Its terms are filed with
+/// `watch` under the id returned. Invalidates pointers into `Run.susps`
+/// when no row is free for reuse.
+pub fn park(self: *Run, pc: u32) Error!u32 {
+    const id = self.waits.free_susps.pop() orelse blk: {
+        try self.waits.susps.append(self.arena, .{ .pc = 0, .ctx = 0, .gen = 0, .alive = false });
+        // Room for every row on the free list, so `retire` cannot fail.
+        try self.waits.free_susps.ensureTotalCapacity(self.arena, self.waits.susps.items.len);
+        break :blk @as(u32, @intCast(self.waits.susps.items.len - 1));
+    };
+    const s = &self.waits.susps.items[id];
+    s.pc = pc;
+    s.ctx = self.calls.ctx;
+    s.alive = true;
+    return id;
+}
+
+/// File one term of suspension `id` under `slot`. A slot's first wait
+/// beyond `Run.terms` adds a `Run.far_terms` row, which invalidates
+/// pointers to the other far lists (`termsOf`).
+pub fn watch(self: *Run, id: u32, slot: u32, edge: Edge) Error!void {
+    return fileTerm(self, id, slot, edge, no_ext);
+}
+
+/// `watch` of a term with an event select or a bit select (`TermExt`).
+pub fn watchExt(self: *Run, id: u32, slot: u32, edge: Edge, ext: TermExt) Error!void {
+    assert(slot < self.values.len);
+    const k = self.waits.free_term_exts.pop() orelse blk: {
+        try self.waits.term_exts.append(self.arena, undefined);
+        break :blk @as(u32, @intCast(self.waits.term_exts.items.len - 1));
+    };
+    // Room for every row on the free list, so `dropExt` cannot fail.
+    try self.waits.free_term_exts.ensureTotalCapacity(self.arena, self.waits.term_exts.items.len);
+    self.waits.term_exts.items[k] = ext;
+    try fileTerm(self, id, slot, edge, k);
+}
+
+/// The process at suspension `id` is no longer waiting: every term it filed
+/// goes stale, and the row is free.
+pub fn retire(self: *Run, id: u32) void {
+    const s = &self.waits.susps.items[id];
+    s.alive = false;
+    s.gen +%= 1;
+    self.waits.free_susps.appendAssumeCapacity(id);
+}
+
+/// The static fan-out of every continuous driver and controlled switch
+/// (§6.1, §7.6): their operands are fixed at compile time, so each slot's
+/// list of them is built once, and a flag per pc stands for the whole
+/// sensitivity list the process would otherwise re-register per evaluation.
+/// Called once the slot space and the code are final.
+pub fn buildFanout(r: *Run) Error!void {
+    const n = r.values.len;
+    const start = try r.arena.alloc(u32, n + 1);
+    @memset(start, 0);
+    for (r.program.code.items) |ins| for (staticSlots(r, ins)) |at| {
+        start[at + 1] += 1;
+    };
+    for (1..n + 1) |i| start[i] += start[i - 1];
+    const fill = try r.arena.dupe(u32, start[0..n]);
+    const fan = try r.arena.alloc(u32, start[n]);
+    for (r.program.code.items, 0..) |ins, pc| for (staticSlots(r, ins)) |at| {
+        fan[fill[at]] = @intCast(pc);
+        fill[at] += 1;
+    };
+    r.arena.free(fill); // the cursor is spent; a large one goes back now
+    r.waits.fan_start = start;
+    r.waits.fan = fan;
+    r.waits.armed = try r.arena.alloc(bool, r.program.code.items.len);
+    @memset(r.waits.armed, false);
+    r.waits.terms = try r.arena.alloc(?*std.ArrayList(Term), n);
+    @memset(r.waits.terms, null);
+}
+
+// ---- private ----
 
 /// A change of a select term's bits: whether it matches `edge` (of the
 /// select's least significant bit) and, either way, `e` now remembers them.
@@ -135,19 +507,19 @@ fn selectChanged(e: *TermExt, edge: Edge, value: Int.Literal) bool {
 /// Whether a change of `target` from `before` to `after` resumes term `t`,
 /// which has a `TermExt`.
 fn extHit(self: *Run, t: Term, target: u32, before: Int.Bit, after: Int.Bit) Error!bool {
-    const e = &self.term_exts.items[t.ext];
+    const e = &self.waits.term_exts.items[t.ext];
     if (e.expr != .none) {
         var scratch = std.heap.ArenaAllocator.init(self.arena);
         defer scratch.deinit();
         const scope = self.scope;
-        const ctx = self.ctx;
+        const ctx = self.calls.ctx;
         defer self.scope = scope;
-        defer self.ctx = ctx;
+        defer self.calls.ctx = ctx;
         self.scope = e.scope;
-        self.ctx = self.susps.items[t.susp].ctx;
-        try exec.makeResident(self, self.ctx);
+        self.calls.ctx = self.waits.susps.items[t.susp].ctx;
+        try @import("activations.zig").makeResident(self, self.calls.ctx);
         const value = try evaluate.eval(self, scratch.allocator(), e.expr, 0);
-        try exec.makeResident(self, ctx);
+        try @import("activations.zig").makeResident(self, ctx);
         return selectChanged(e, t.edge, value);
     }
     if (e.width != 0) return selectChanged(e, t.edge, self.values[target]);
@@ -156,67 +528,10 @@ fn extHit(self: *Run, t: Term, target: u32, before: Int.Bit, after: Int.Bit) Err
 
 /// A term leaves its list: its `TermExt` row, if any, is free.
 fn dropExt(self: *Run, t: Term) void {
-    if (t.ext != no_ext) self.free_term_exts.appendAssumeCapacity(t.ext);
+    if (t.ext != no_ext) self.waits.free_term_exts.appendAssumeCapacity(t.ext);
 }
 
 // ---- the write path (§5.10.1, §9.3, VAMS §8.5) ------------------------------
-
-/// Stores `planes` into slot `target` and wakes what watches it: the one
-/// write path for the active and NBA regions, so none bypasses §5.10.1
-/// resumption. A write to a slot a §9.3 override holds is dropped, unless
-/// `overriding`.
-pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
-    // §9.3: while a procedural continuous assignment holds the slot, its own
-    // process is the only writer: an `assign` over a variable, a `force`
-    // over anything, including a net's resolution.
-    const dest = self.values[target];
-    const before = dest.bit(0);
-    // §14.3.3 a module path source's transitions, by time (`resolution.pathDelay`).
-    const path_source = target < self.watch.len and self.watch[target].contains(.path);
-    const before_words: [2]u64 = if (path_source) .{ dest.values()[0], dest.unknowns()[0] } else undefined;
-    const changed = changed: {
-        if (self.overrides.count() != 0 and !self.overriding) if (self.overrides.get(target)) |o| {
-            if (o.force != null or (o.assign != null and !self.net_of.contains(target))) return;
-            // §9.3.2 a forced select of a net keeps its bits; the rest resolve.
-            if (o.parts.items.len != 0) break :changed keepForced(dest, planes, o.parts.items);
-        };
-        // A real changes when its value does: -0.0 and +0.0 compare equal
-        // (VAMS §3.7, IEEE 754 `==`), and a NaN never equals itself.
-        const differ = !std.mem.eql(u64, dest.planes, planes);
-        // Every real slot is 64 bits wide (§4.8, VAMS §3.7), so the width
-        // test spares the hash lookup on most stores.
-        const changed = if (dest.width == 64 and self.reals.contains(target))
-            @as(f64, @bitCast(dest.planes[0])) != @as(f64, @bitCast(planes[0]))
-        else
-            differ;
-        // "No change" governs only the event: -0.0 over +0.0 still stores its
-        // bits, so `1.0/r` reads -inf (docs/specification/Vague_Decisions.md VD-032). Not
-        // copied when equal, which also covers `planes` aliasing `dest.planes`
-        // (`a = a`), a copy @memcpy forbids.
-        if (differ) @memcpy(dest.planes, planes);
-        break :changed changed;
-    };
-    // A §10.4.5 constant function running during elaboration: nothing
-    // watches a slot yet.
-    if (self.growing != null or self.folding_constant) return;
-    if (!changed) return driver.stored(self, target, false);
-    if (path_source) try self.path_changed.put(self.arena, target, .{ .time = self.scheduler.now, .before = before_words, .after = .{ dest.values()[0], dest.unknowns()[0] } });
-    // Most slots have no watcher, so one test skips them all.
-    const watchers = self.watch[target];
-    if (watchers.count() != 0) {
-        if (watchers.contains(.monitor)) try @import("display.zig").monitorChanged(self, target);
-        if (watchers.contains(.analog)) try requestAnalog(self);
-        if (watchers.contains(.vcd) or watchers.contains(.ports)) try requestVcd(self);
-        if (watchers.contains(.d2a)) try requestD2a(self, target, before, dest.bit(0));
-    }
-    try wake(self, target, before, dest.bit(0));
-    // IEEE 1364-2005 §15: a timing check whose event this slot is.
-    if (watchers.contains(.tchk)) try tchk.changed(self, target, before, dest.bit(0));
-    if (watchers.contains(.vpi)) if (self.vpi_change) |f| f(self, target);
-    // After `wake`, so a `driver_update` process runs after the driver it
-    // watches has re-evaluated (both join the same active-region FIFO).
-    try driver.stored(self, target, true);
-}
 
 /// Writes `planes` into `dest` but for the bits of each forced select in
 /// `parts` (a `compile.Bits` each, at `.bits`), which keep `dest`'s, and
@@ -249,70 +564,114 @@ fn selectWord(bits: compile.Bits, w: usize) u64 {
     return ones << @intCast(lo - base);
 }
 
-/// §5.10.4 `-> e`: named event `at` occurs, resuming what waits on it.
-pub fn trigger(self: *Run, at: u32) Error!void {
-    if (self.watch[at].contains(.d2a)) try requestD2a(self, at, .x, .x);
-    if (self.watch[at].contains(.vcd)) {
-        self.vcd.fire(&self.vcd_catalog.?, at);
-        try requestVcd(self);
-    }
-    try wake(self, at, .x, .x);
-}
-
-/// §9.3 `deassign` (`force` false) or `release` (`force` true) of `slot`.
-/// Releasing what is not held is a no-op.
-pub fn release(self: *Run, slot: u32, force: bool) Error!void {
-    const layers = self.overrides.getPtr(slot) orelse return;
-    const layer = if (force) &layers.force else &layers.assign;
-    if (layer.*) |old| _ = try exec.stopRange(self, old.start, old.end);
-    layer.* = null;
-    const held = layers.assign;
-    // A forced select is a layer of its own (§9.3.2), released only by its
-    // own select: the slot stays held while one remains.
-    if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.overrides.remove(slot);
-    // §9.3.2: a released net is its drivers' again; a released
-    // variable keeps its value, unless an assign holds it.
-    if (force) {
-        if (self.net_of.get(slot)) |net| try resolution.resolve(self, net) else if (held) |a| _ = try exec.enqueue(self, .{ .run_process = a.start }, null, false);
-    }
-}
-
-/// §9.3.2 `release` of a forced select of net `slot`: its bits are the
-/// drivers' again, at once. Releasing what is not held is a no-op.
-pub fn releaseBits(self: *Run, slot: u32, bits: compile.Bits) Error!void {
-    const layers = self.overrides.getPtr(slot) orelse return;
-    for (layers.parts.items, 0..) |p, i| if (std.meta.eql(p.bits, bits)) {
-        _ = try exec.stopRange(self, p.range.start, p.range.end);
-        _ = layers.parts.orderedRemove(i);
-        break;
+/// VAMS §8.5: an event an analog event control waits on occurred. Every term
+/// it matches is marked, and ONE region-1b event reports them all once region
+/// 1 of the tick is done (§8.5.3.6).
+fn requestD2a(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void {
+    for (self.analog.d2a_sites.items) |s| if (s.slot == target and s.edge.matches(before, after)) {
+        self.analog.d2a_fired |= @as(u64, 1) << s.site;
     };
-    if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.overrides.remove(slot);
-    if (self.net_of.get(slot)) |net| try resolution.resolve(self, net);
+    if (self.analog.d2a_fired == 0 or self.analog.d2a_pending) return;
+    self.analog.d2a_pending = true;
+    _ = self.scheduler.schedule(self.arena, .explicit_d2a, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
 }
 
-/// VPI §12.30 vpiForceFlag: force `slot` to a constant, "same as the
-/// procedural force" (§9.3.2) but with no expression to keep re-evaluating,
-/// so the force layer holds an empty process range.
-pub fn forceValue(self: *Run, slot: u32, planes: []const u64) Error!void {
-    const entry = try self.overrides.getOrPut(self.arena, slot);
-    if (!entry.found_existing) entry.value_ptr.* = .{};
-    if (entry.value_ptr.force) |old| _ = try exec.stopRange(self, old.start, old.end);
-    entry.value_ptr.force = .{ .start = 0, .end = 0 };
-    const was = self.overriding;
-    self.overriding = true;
-    defer self.overriding = was;
-    try store(self, slot, planes);
+/// §10.2.1 allocates all declared items for each automatic invocation,
+/// including events: a shared compiled slot is not a shared event identity.
+/// Find the live activation enclosing this declaration (also for events in
+/// its named blocks). Static events need no activation key; an inlined
+/// automatic frame already has distinct slots.
+fn eventContext(self: *const Run, declared: u32, from: u32) u32 {
+    var ctx = from;
+    while (ctx != 0) {
+        const act = self.calls.acts.items[ctx];
+        const sub = self.routines.rows.items[act.sub];
+        if (sub.decl.automatic) {
+            const frame_scope = sub.body.?.frame.scope;
+            var scope = declared;
+            while (true) {
+                if (scope == frame_scope) return ctx;
+                const info = self.hier.scopes.items[scope];
+                if (!info.lexical) break;
+                scope = info.parent;
+            }
+        }
+        ctx = act.ret_ctx;
+    }
+    return 0;
 }
 
-/// VAMS §8.5: "the implicit D2A event ... is created when a digital variable to
-/// which an analog block is implicitly sensitive changes value". §8.5.3.7 then
-/// processes the macro-process in region 3b, after every region-1..3 event of
-/// the tick, and once however many inputs moved.
-pub fn requestAnalog(self: *Run) Error!void {
-    if (self.analog_pending) return;
-    self.analog_pending = true;
-    _ = self.scheduler.schedule(.analog, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
+/// `eventContext` for a variable: the live activation, from `from` out,
+/// whose automatic task's frame holds `slot`; 0 for none.
+fn slotContext(self: *const Run, slot: u32, from: u32) u32 {
+    var ctx = from;
+    while (ctx != 0) {
+        const act = self.calls.acts.items[ctx];
+        const sub = self.routines.rows.items[act.sub];
+        if (sub.decl.automatic) {
+            const f = sub.body.?.frame;
+            if (slot >= f.first and slot < f.first + f.count) return ctx;
+        }
+        ctx = act.ret_ctx;
+    }
+    return 0;
 }
+
+/// §§9.7.2–9.7.3: the event expression selects an occurrence; changing
+/// its index alone is not an occurrence. Test the current select only when
+/// an element occurs, in the suspended reader's automatic activation.
+fn selectedEvent(self: *Run, e: TermExt, susp: u32, target: u32) Error!bool {
+    if (e.event_select == .none) return true;
+    var scratch = std.heap.ArenaAllocator.init(self.arena);
+    defer scratch.deinit();
+    const scope = self.scope;
+    const ctx = self.calls.ctx;
+    defer self.scope = scope;
+    defer self.calls.ctx = ctx;
+    self.scope = e.scope;
+    self.calls.ctx = self.waits.susps.items[susp].ctx;
+    try @import("activations.zig").makeResident(self, self.calls.ctx);
+    const selected = try evaluate.address(self, scratch.allocator(), e.event_select);
+    try @import("activations.zig").makeResident(self, ctx);
+    return selected != null and selected.? == target;
+}
+
+fn fileTerm(self: *Run, id: u32, slot: u32, edge: Edge, ext: u32) Error!void {
+    const list = termsOf(self, slot) orelse if (slot < self.waits.terms.len) blk: {
+        // Made on the slot's first wait, at an address that stays put.
+        const l = try self.arena.create(std.ArrayList(Term));
+        l.* = .empty;
+        self.waits.terms[slot] = l;
+        break :blk l;
+    } else blk: {
+        const g = try self.waits.far_terms.getOrPut(self.arena, slot);
+        g.value_ptr.* = .empty;
+        break :blk g.value_ptr;
+    };
+    // Stale terms stay until their slot is next woken, which a slot that
+    // never changes never is: sweep them before the list grows, and grow
+    // anyway past half full so a sweep is paid for by as many appends.
+    if (list.items.len == list.capacity and list.capacity != 0) {
+        var keep: usize = 0;
+        for (list.items) |t| if (self.waits.susps.items[t.susp].gen == t.gen) {
+            list.items[keep] = t;
+            keep += 1;
+        } else dropExt(self, t);
+        list.shrinkRetainingCapacity(keep);
+        if (keep > list.capacity / 2) try list.ensureTotalCapacity(self.arena, list.capacity * 2);
+    }
+    try list.append(self.arena, .{ .susp = id, .gen = self.waits.susps.items[id].gen, .ext = ext, .edge = edge });
+}
+
+fn staticSlots(r: *const Run, ins: compile.Instruction) []const u32 {
+    return switch (ins) {
+        .continuous => |i| r.netlist.drivers[i].sensitivity,
+        .switch_ctrl => |s| r.program.wordsOf(s.slots),
+        else => &.{}, // else: every other instruction suspends through `park`
+    };
+}
+
+// ---- tests ------------------------------------------------------------------
 
 test "ams_implicit_d2a_queues_only_the_macro_process" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -336,281 +695,6 @@ test "ams_implicit_d2a_queues_only_the_macro_process" {
     // neither a separate active nor an explicit-D2A queue entry is added.
     try std.testing.expect(dig.scheduler.next() == null);
 }
-
-/// VAMS §8.5: an event an analog event control waits on occurred. Every term
-/// it matches is marked, and ONE region-1b event reports them all once region
-/// 1 of the tick is done (§8.5.3.6).
-fn requestD2a(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void {
-    for (self.d2a_sites.items) |s| if (s.slot == target and s.edge.matches(before, after)) {
-        self.d2a_fired |= @as(u64, 1) << s.site;
-    };
-    if (self.d2a_fired == 0 or self.d2a_pending) return;
-    self.d2a_pending = true;
-    _ = self.scheduler.schedule(.explicit_d2a, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
-}
-
-/// §17.1.3: "the entire argument list is displayed at the end of the time
-/// step". One event however many watched values moved, and however often: a
-/// value that changes and changes back within the step still "changes value",
-/// so it prints, with the settled values.
-pub fn requestMonitor(self: *Run) Error!void {
-    if (self.monitor == null or !self.monitor_on or self.monitor_pending) return;
-    self.monitor_pending = true;
-    try exec.enqueueMonitor(self, .monitor_tick);
-}
-
-/// §18.1.3/§18.1.4 the dump is written at the end of the time step, once.
-pub fn requestVcd(self: *Run) Error!void {
-    if (self.vcd.pending) return;
-    self.vcd.pending = true;
-    try exec.enqueueMonitor(self, .vcd_tick);
-}
-
-/// VAMS §8.5.1: "A2D events ... are scheduled just like other event controlled
-/// statements": the waiters of a monitor slot resume in the active region.
-pub fn wakeA2d(self: *Run, slot: u32) Error!void {
-    return wake(self, slot, .x, .x);
-}
-
-/// Re-run the MOS switches reading `target` (§7.11), when its strength
-/// changed and its value may not have: no event control sees that.
-pub fn wakeSwitches(self: *Run, target: u32) Error!void {
-    if (target + 1 < self.fan_start.len) for (self.fan[self.fan_start[target]..self.fan_start[target + 1]]) |pc| if (self.armed[pc]) {
-        const ins = self.code.items[pc];
-        if (ins != .continuous or self.drivers[ins.continuous].source != .mos) continue;
-        self.armed[pc] = false;
-        _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
-    };
-}
-
-/// Resume every process suspended on `target` whose edge matches. Split out
-/// of `store` because §5.10.4's `-> e` resumes without publishing anything:
-/// a named event has no value for a change to be detected in.
-///
-/// The continuous drivers and controlled switches reading `target` come
-/// first, then the event controls in the order they suspended. §11.4.2 lets
-/// the processes one event resumes run in any order.
-pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void {
-    if (target + 1 < self.fan_start.len) for (self.fan[self.fan_start[target]..self.fan_start[target + 1]]) |pc| if (self.armed[pc]) {
-        self.armed[pc] = false;
-        _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
-    };
-    const list = termsOf(self, target) orelse return;
-    const event = self.events.get(target);
-    const event_ctx = if (event) |e| eventContext(self, e.scope, self.ctx) else 0;
-    // §10.2.1: an automatic task's variables, too, are each activation's
-    // own; a write in one activation is no change in another's.
-    const auto = event == null and self.auto_slots.contains(target);
-    const slot_ctx = if (auto) slotContext(self, target, self.ctx) else 0;
-    // Compacts as it goes: a matched term leaves with its suspension, and a
-    // stale one (its suspension resumed through another slot, or was
-    // disabled) is dropped.
-    var keep: usize = 0;
-    for (list.items) |t| {
-        const s = &self.susps.items[t.susp];
-        if (s.gen != t.gen) {
-            dropExt(self, t);
-            continue;
-        }
-        const selected = (if (event) |e| event_ctx == eventContext(self, e.scope, s.ctx) else !auto or slot_ctx == slotContext(self, target, s.ctx)) and
-            if (t.ext == no_ext) t.edge.matches(before, after) else try extHit(self, t, target, before, after);
-        // An index function's blocking write can satisfy another term of
-        // this event-or suspension while selectedEvent evaluates it.
-        if (s.gen != t.gen) {
-            dropExt(self, t);
-            continue;
-        }
-        if (!selected) {
-            list.items[keep] = t;
-            keep += 1;
-            continue;
-        }
-        const pc = s.pc;
-        const ctx = s.ctx;
-        dropExt(self, t);
-        retire(self, t.susp);
-        _ = try exec.enqueue(self, exec.resumption(pc, ctx), null, false);
-    }
-    list.shrinkRetainingCapacity(keep);
-}
-
-/// §10.2.1 allocates all declared items for each automatic invocation,
-/// including events: a shared compiled slot is not a shared event identity.
-/// Find the live activation enclosing this declaration (also for events in
-/// its named blocks). Static events need no activation key; an inlined
-/// automatic frame already has distinct slots.
-fn eventContext(self: *const Run, declared: u32, from: u32) u32 {
-    var ctx = from;
-    while (ctx != 0) {
-        const act = self.acts.items[ctx];
-        const sub = self.subs.items[act.sub];
-        if (sub.decl.automatic) {
-            const frame_scope = sub.body.?.frame.scope;
-            var scope = declared;
-            while (true) {
-                if (scope == frame_scope) return ctx;
-                const info = self.scope_info.items[scope];
-                if (!info.lexical) break;
-                scope = info.parent;
-            }
-        }
-        ctx = act.ret_ctx;
-    }
-    return 0;
-}
-
-/// `eventContext` for a variable: the live activation, from `from` out,
-/// whose automatic task's frame holds `slot`; 0 for none.
-fn slotContext(self: *const Run, slot: u32, from: u32) u32 {
-    var ctx = from;
-    while (ctx != 0) {
-        const act = self.acts.items[ctx];
-        const sub = self.subs.items[act.sub];
-        if (sub.decl.automatic) {
-            const f = sub.body.?.frame;
-            if (slot >= f.first and slot < f.first + f.count) return ctx;
-        }
-        ctx = act.ret_ctx;
-    }
-    return 0;
-}
-
-/// §§9.7.2–9.7.3: the event expression selects an occurrence; changing
-/// its index alone is not an occurrence. Test the current select only when
-/// an element occurs, in the suspended reader's automatic activation.
-fn selectedEvent(self: *Run, e: TermExt, susp: u32, target: u32) Error!bool {
-    if (e.event_select == .none) return true;
-    var scratch = std.heap.ArenaAllocator.init(self.arena);
-    defer scratch.deinit();
-    const scope = self.scope;
-    const ctx = self.ctx;
-    defer self.scope = scope;
-    defer self.ctx = ctx;
-    self.scope = e.scope;
-    self.ctx = self.susps.items[susp].ctx;
-    try exec.makeResident(self, self.ctx);
-    const selected = try evaluate.address(self, scratch.allocator(), e.event_select);
-    try exec.makeResident(self, ctx);
-    return selected != null and selected.? == target;
-}
-
-/// The terms filed under `slot`, or null when nothing has ever waited on it.
-/// A slot below `Run.terms.len` keeps its list at a stable address; one
-/// above it (`driver.key`, a monitor's slot) is in `Run.far_terms`, whose
-/// rows a later `watch` of another far slot may move.
-pub fn termsOf(self: *Run, slot: u32) ?*std.ArrayList(Term) {
-    return if (slot < self.terms.len) self.terms[slot] else self.far_terms.getPtr(slot);
-}
-
-/// Suspend the executing process at `pc` (§9.7). Its terms are filed with
-/// `watch` under the id returned. Invalidates pointers into `Run.susps`
-/// when no row is free for reuse.
-pub fn park(self: *Run, pc: u32) Error!u32 {
-    const id = self.free_susps.pop() orelse blk: {
-        try self.susps.append(self.arena, .{ .pc = 0, .ctx = 0, .gen = 0, .alive = false });
-        // Room for every row on the free list, so `retire` cannot fail.
-        try self.free_susps.ensureTotalCapacity(self.arena, self.susps.items.len);
-        break :blk @as(u32, @intCast(self.susps.items.len - 1));
-    };
-    const s = &self.susps.items[id];
-    s.pc = pc;
-    s.ctx = self.ctx;
-    s.alive = true;
-    return id;
-}
-
-/// File one term of suspension `id` under `slot`. A slot's first wait
-/// beyond `Run.terms` adds a `Run.far_terms` row, which invalidates
-/// pointers to the other far lists (`termsOf`).
-pub fn watch(self: *Run, id: u32, slot: u32, edge: Edge) Error!void {
-    return fileTerm(self, id, slot, edge, no_ext);
-}
-
-/// `watch` of a term with an event select or a bit select (`TermExt`).
-pub fn watchExt(self: *Run, id: u32, slot: u32, edge: Edge, ext: TermExt) Error!void {
-    const k = self.free_term_exts.pop() orelse blk: {
-        try self.term_exts.append(self.arena, undefined);
-        break :blk @as(u32, @intCast(self.term_exts.items.len - 1));
-    };
-    // Room for every row on the free list, so `dropExt` cannot fail.
-    try self.free_term_exts.ensureTotalCapacity(self.arena, self.term_exts.items.len);
-    self.term_exts.items[k] = ext;
-    try fileTerm(self, id, slot, edge, k);
-}
-
-fn fileTerm(self: *Run, id: u32, slot: u32, edge: Edge, ext: u32) Error!void {
-    const list = termsOf(self, slot) orelse if (slot < self.terms.len) blk: {
-        // Made on the slot's first wait, at an address that stays put.
-        const l = try self.arena.create(std.ArrayList(Term));
-        l.* = .empty;
-        self.terms[slot] = l;
-        break :blk l;
-    } else blk: {
-        const g = try self.far_terms.getOrPut(self.arena, slot);
-        g.value_ptr.* = .empty;
-        break :blk g.value_ptr;
-    };
-    // Stale terms stay until their slot is next woken, which a slot that
-    // never changes never is: sweep them before the list grows, and grow
-    // anyway past half full so a sweep is paid for by as many appends.
-    if (list.items.len == list.capacity and list.capacity != 0) {
-        var keep: usize = 0;
-        for (list.items) |t| if (self.susps.items[t.susp].gen == t.gen) {
-            list.items[keep] = t;
-            keep += 1;
-        } else dropExt(self, t);
-        list.shrinkRetainingCapacity(keep);
-        if (keep > list.capacity / 2) try list.ensureTotalCapacity(self.arena, list.capacity * 2);
-    }
-    try list.append(self.arena, .{ .susp = id, .gen = self.susps.items[id].gen, .ext = ext, .edge = edge });
-}
-
-/// The process at suspension `id` is no longer waiting: every term it filed
-/// goes stale, and the row is free.
-pub fn retire(self: *Run, id: u32) void {
-    const s = &self.susps.items[id];
-    s.alive = false;
-    s.gen +%= 1;
-    self.free_susps.appendAssumeCapacity(id);
-}
-
-/// The static fan-out of every continuous driver and controlled switch
-/// (§6.1, §7.6): their operands are fixed at compile time, so each slot's
-/// list of them is built once, and a flag per pc stands for the whole
-/// sensitivity list the process would otherwise re-register per evaluation.
-/// Called once the slot space and the code are final.
-pub fn buildFanout(r: *Run) Error!void {
-    const n = r.values.len;
-    const start = try r.arena.alloc(u32, n + 1);
-    @memset(start, 0);
-    for (r.code.items) |ins| for (staticSlots(r, ins)) |at| {
-        start[at + 1] += 1;
-    };
-    for (1..n + 1) |i| start[i] += start[i - 1];
-    const fill = try r.arena.dupe(u32, start[0..n]);
-    const fan = try r.arena.alloc(u32, start[n]);
-    for (r.code.items, 0..) |ins, pc| for (staticSlots(r, ins)) |at| {
-        fan[fill[at]] = @intCast(pc);
-        fill[at] += 1;
-    };
-    r.arena.free(fill); // the cursor is spent; a large one goes back now
-    r.fan_start = start;
-    r.fan = fan;
-    r.armed = try r.arena.alloc(bool, r.code.items.len);
-    @memset(r.armed, false);
-    r.terms = try r.arena.alloc(?*std.ArrayList(Term), n);
-    @memset(r.terms, null);
-}
-
-fn staticSlots(r: *const Run, ins: compile.Instruction) []const u32 {
-    return switch (ins) {
-        .continuous => |i| r.drivers[i].sensitivity,
-        .switch_ctrl => |s| s.slots,
-        else => &.{}, // else: every other instruction suspends through `park`
-    };
-}
-
-// ---- tests ------------------------------------------------------------------
 
 test "§9.3 force over assign, release back to the assign, deassign keeps" {
     try expectRun(

@@ -18,15 +18,42 @@
 //! file and prints nothing, so the engine never calls the device's `std.Io`
 //! nor inspects an error of its `Writer`. The device's allocator crosses: its
 //! vtable returns no errors. Each process body is reached through `wrap`.
-//! Clauses: none of its own; the engine's are `root.zig`'s.
+//! Clauses: none of its own; the engine's are `main.zig`'s.
+//!
+//! Contents:
+//! - `pub const DispatchC`
+//! - `pub const tag`
+//! - `pub fn code(e: ?Error) u16`
+//! - `pub fn decode(c: u16) ?Error`
+//! - `pub inline fn call(f: DispatchC, s: *State, pc: u32) Error!void`
+//! - `pub fn exportAll() void`
+//! - `pub fn loop(s: *State, comptime four: design.Dispatch, comptime two: ?design.Dispatch, limit: u64) ?Error`
+//! - `pub fn saveTo(s: *const State, buf: []u8) std.Io.Writer.Error!usize`
+//! - `pub fn restore(s: *State, b: []const u8) Error!void`
+
 const std = @import("std");
-const root = @import("root.zig");
+const design = @import("design.zig");
+const entry = @import("main.zig");
+const logic = @import("logic/root.zig");
 const snapshot = @import("snapshot.zig");
-const State = root.State;
-const Error = root.Error;
+const State = @import("State.zig");
+const Error = design.Error;
 
 /// A device's dispatch as the engine calls it: `code` of its error.
 pub const DispatchC = *const fn (*State, u32) callconv(.c) u16;
+
+/// `State`'s layout (sizes, alignments and offsets, three levels down; no
+/// type names, which number anonymous types per compilation) and the root
+/// options the engine's code reads, as 16 hex digits.
+pub const tag = blk: {
+    @setEvalBranchQuota(1 << 20);
+    var h: std.hash.Wyhash = .init(0x7e9_e1e);
+    layout(&h, State, 3);
+    layout(&h, design.Design, 2);
+    h.update(&.{ @intFromBool(logic.two), @intFromBool(design.overrides), @intFromBool(design.activations) });
+    h.update(std.mem.asBytes(&design.budget));
+    break :blk std.fmt.comptimePrint("{x:0>16}", .{h.final()});
+};
 
 /// 0 for none, else the error.
 pub fn code(e: ?Error) u16 {
@@ -55,18 +82,37 @@ pub inline fn call(f: DispatchC, s: *State, pc: u32) Error!void {
     if (decode(f(s, pc))) |e| return e;
 }
 
-/// `State`'s layout (sizes, alignments and offsets, three levels down; no
-/// type names, which number anonymous types per compilation) and the root
-/// options the engine's code reads, as 16 hex digits.
-pub const tag = blk: {
-    @setEvalBranchQuota(1 << 20);
-    var h: std.hash.Wyhash = .init(0x7e9_e1e);
-    layout(&h, State, 3);
-    layout(&h, root.Design, 2);
-    h.update(&.{ @intFromBool(root.logic.two), @intFromBool(root.overrides), @intFromBool(root.activations) });
-    h.update(std.mem.asBytes(&root.budget));
-    break :blk std.fmt.comptimePrint("{x:0>16}", .{h.final()});
-};
+/// Exports the entry points, hidden: they bind inside the one library.
+pub fn exportAll() void {
+    @export(&cLoop, .{ .name = sym("loop"), .visibility = .hidden });
+    @export(&cSaveTo, .{ .name = sym("saveTo"), .visibility = .hidden });
+    @export(&cRestore, .{ .name = sym("restore"), .visibility = .hidden });
+}
+
+// ---- the device's side ----
+
+/// `main.loop` through the prebuilt object. 4-state only: asserts at comptime
+/// that `two` is null. A state that is not `quiet` is `error.Failed`.
+pub fn loop(s: *State, comptime four: design.Dispatch, comptime two: ?design.Dispatch, limit: u64) ?Error {
+    comptime std.debug.assert(two == null);
+    return decode(ext(cLoop, "loop")(s, wrap(four), limit));
+}
+
+/// `snapshot.save` of `s` into `buf` through the prebuilt object; the bytes
+/// written, or `WriteFailed` when `buf` is too short.
+pub fn saveTo(s: *const State, buf: []u8) std.Io.Writer.Error!usize {
+    var n: usize = undefined;
+    if (ext(cSaveTo, "saveTo")(s, buf.ptr, buf.len, &n) != 0) return error.WriteFailed;
+    return n;
+}
+
+/// `snapshot.restore` of `s` from bytes `saveTo` wrote, through the
+/// prebuilt object. A state that is not `quiet` is `error.Failed`.
+pub fn restore(s: *State, b: []const u8) Error!void {
+    if (decode(ext(cRestore, "restore")(s, b.ptr, b.len))) |e| return e;
+}
+
+// ---- private ----
 
 fn layout(h: *std.hash.Wyhash, comptime T: type, comptime depth: u32) void {
     h.update(std.mem.asBytes(&[2]u64{ @alignOf(T), @sizeOf(T) }));
@@ -87,7 +133,7 @@ fn sym(comptime name: []const u8) []const u8 {
 
 fn cLoop(s: *State, four: DispatchC, limit: u64) callconv(.c) u16 {
     if (!s.quiet) return code(error.Failed);
-    return code(root.loop(s, four, null, limit));
+    return code(entry.loop(s, four, null, limit));
 }
 
 fn cSaveTo(s: *const State, buf: [*]u8, len: usize, n: *usize) callconv(.c) u16 {
@@ -101,48 +147,18 @@ fn cRestore(s: *State, b: [*]const u8, len: usize) callconv(.c) u16 {
     return 0;
 }
 
-/// Exports the entry points, hidden: they bind inside the one library.
-pub fn exportAll() void {
-    @export(&cLoop, .{ .name = sym("loop"), .visibility = .hidden });
-    @export(&cSaveTo, .{ .name = sym("saveTo"), .visibility = .hidden });
-    @export(&cRestore, .{ .name = sym("restore"), .visibility = .hidden });
-}
-
-// ---- the device's side ----
-
 fn ext(comptime f: anytype, comptime name: []const u8) *const @TypeOf(f) {
     return @extern(*const @TypeOf(f), .{ .name = sym(name), .visibility = .hidden });
 }
 
-/// `f`, a `root.Dispatch`, as the engine calls it.
-fn wrap(comptime f: root.Dispatch) DispatchC {
+/// `f`, a `design.Dispatch`, as the engine calls it.
+fn wrap(comptime f: design.Dispatch) DispatchC {
     return struct {
         fn c(s: *State, pc: u32) callconv(.c) u16 {
             f(s, pc) catch |e| return code(e);
             return 0;
         }
     }.c;
-}
-
-/// `root.loop` through the prebuilt object. 4-state only: asserts at comptime
-/// that `two` is null. A state that is not `quiet` is `error.Failed`.
-pub fn loop(s: *State, comptime four: root.Dispatch, comptime two: ?root.Dispatch, limit: u64) ?Error {
-    comptime std.debug.assert(two == null);
-    return decode(ext(cLoop, "loop")(s, wrap(four), limit));
-}
-
-/// `snapshot.save` of `s` into `buf` through the prebuilt object; the bytes
-/// written, or `WriteFailed` when `buf` is too short.
-pub fn saveTo(s: *const State, buf: []u8) std.Io.Writer.Error!usize {
-    var n: usize = undefined;
-    if (ext(cSaveTo, "saveTo")(s, buf.ptr, buf.len, &n) != 0) return error.WriteFailed;
-    return n;
-}
-
-/// `snapshot.restore` of `s` from bytes `saveTo` wrote, through the
-/// prebuilt object. A state that is not `quiet` is `error.Failed`.
-pub fn restore(s: *State, b: []const u8) Error!void {
-    if (decode(ext(cRestore, "restore")(s, b.ptr, b.len))) |e| return e;
 }
 
 test "code and decode are inverse over no error and every error" {
