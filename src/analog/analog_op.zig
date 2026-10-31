@@ -19,6 +19,7 @@
 //! §9.21.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
 const Mir = @import("ir").Mir;
@@ -45,6 +46,10 @@ pub const State = struct {
     /// `readsUnknown`'s visited set, cleared and reused per walk rather than
     /// allocated per `idt` site.
     unknown_seen: std.AutoHashMapUnmanaged(Mir.Value, void) = .empty,
+    /// `readsUnknown`'s pending values. A worklist, not recursion: a value's
+    /// dependences are as long as the straight-line code before it, which no
+    /// parse nesting measures (`y = y + 1.0;` 5000 times overflowed the stack).
+    unknown_work: std.ArrayList(Mir.Value) = .empty,
 };
 
 /// Reports whether `name` is one of the two A.8.2 `analog_filter_function_call`
@@ -262,29 +267,38 @@ fn opIdt(self: *Lower, e: Ast.ExprId, vals: []const Mir.Value) Oom!Mir.Value {
 /// Whether `v` can read an unknown of the solve: a probe, or anything the walk
 /// does not see through (a phi, an array, a committed latch).
 fn readsUnknown(self: *Lower, v: Mir.Value) Oom!bool {
-    const seen = &self.analog_op_state.unknown_seen;
-    seen.clearRetainingCapacity();
-    return unknownWalk(self, v, seen);
-}
-
-fn unknownWalk(self: *Lower, v0: Mir.Value, seen: *std.AutoHashMapUnmanaged(Mir.Value, void)) Oom!bool {
-    const v = self.mir.resolveAlias(v0);
-    if ((try seen.getOrPut(self.arena, v)).found_existing) return false;
-    const inst = switch (self.mir.valueDef(v)) {
-        .undef, .float_const, .int_const, .str_const, .param_ref => return false,
-        .block_param => return true,
-        .inst_result => |i| i,
-    };
-    return switch (self.mir.instData(inst)) {
-        .unary => |u| u.op == .path_prev or u.op == .path_acc or try unknownWalk(self, u.operand, seen),
-        .binary => |b| try unknownWalk(self, b.lhs, seen) or try unknownWalk(self, b.rhs, seen),
-        .ternary => |t| try unknownWalk(self, t.cond, seen) or try unknownWalk(self, t.then_val, seen) or
-            try unknownWalk(self, t.else_val, seen),
-        .call => |c| for (c.args) |a| {
-            if (try unknownWalk(self, a, seen)) break true;
-        } else false,
-        .phi, .branch, .jump, .anew, .load, .store => true,
-    };
+    assert(self.valueValid(v));
+    const st = &self.analog_op_state;
+    st.unknown_seen.clearRetainingCapacity();
+    st.unknown_work.clearRetainingCapacity();
+    try st.unknown_work.append(self.arena, v);
+    // The answer is the disjunction over the reachable set, so the visit
+    // order is free; each value is judged once, so the walk ends within the
+    // MIR's operand edges.
+    const steps_max = 3 * self.mir.insts.len + self.mir.extra.items.len + 1;
+    var steps: usize = 0;
+    while (st.unknown_work.pop()) |v0| : (steps += 1) {
+        assert(steps <= steps_max);
+        const x = self.mir.resolveAlias(v0);
+        if ((try st.unknown_seen.getOrPut(self.arena, x)).found_existing) continue;
+        const inst = switch (self.mir.valueDef(x)) {
+            .undef, .float_const, .int_const, .str_const, .param_ref => continue,
+            .block_param => return true,
+            .inst_result => |i| i,
+        };
+        switch (self.mir.instData(inst)) {
+            .unary => |u| {
+                if (u.op == .path_prev or u.op == .path_acc) return true;
+                try st.unknown_work.append(self.arena, u.operand);
+            },
+            .binary => |bn| try st.unknown_work.appendSlice(self.arena, &.{ bn.lhs, bn.rhs }),
+            .ternary => |t| try st.unknown_work.appendSlice(self.arena, &.{ t.cond, t.then_val, t.else_val }),
+            .call => |c| try st.unknown_work.appendSlice(self.arena, c.args),
+            .phi, .branch, .jump, .anew, .load, .store => return true,
+        }
+    }
+    assert(st.unknown_work.items.len == 0);
+    return false;
 }
 
 /// The tolerance of an operator's unknown: its §4.5.3/§4.5.4 abstol or nature
@@ -788,4 +802,24 @@ test "§4.5 analog operators: argument shapes and bounds" {
         .{ .src = "analog I(p) <+ laplace_nd(V(p), '{1.0}, '{1.0, 1.0}, 1e-6, 1.0);", .code = .E0506 },
         .{ .src = "analog I(p) <+ zi_nd(V(p), '{1.0}, '{1.0, 1.0}, 1n, 0.0, 0.0, 1.0);", .code = .E0506 },
     });
+}
+
+test "readsUnknown: a 5000-statement dependence chain under idt is judged on a 1 MiB stack" {
+    // Width, not nesting: `y = y + 1.0;` 5000 times is a 5000-deep chain of
+    // `fadd` values, so the recursive walk from `idt(y)` overflowed the stack.
+    // Oracle: the module lowers with no diagnostic (the chain starts at a
+    // constant, so `idt` takes its zero initial condition).
+    const gpa = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    try src.appendSlice(gpa, "module m(p, n);\n  inout p, n;\n  electrical p, n;\n  real y;\n  analog begin\n    y = 0.0;\n");
+    for (0..5000) |_| try src.appendSlice(gpa, "    y = y + V(p, n);\n");
+    try src.appendSlice(gpa, "    I(p, n) <+ idt(y);\n  end\nendmodule\n");
+    var h: Lower.Harness = undefined;
+    try h.init(gpa, src.items);
+    defer h.deinit();
+    _ = try h.lowerOnStack(1 << 20) orelse {
+        h.dump();
+        return error.TestUnexpectedResult;
+    };
 }

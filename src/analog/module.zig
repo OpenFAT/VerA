@@ -47,6 +47,7 @@ const lower_initial_state = @import("initial_state.zig");
 const lower_node_discipline = @import("node_discipline.zig");
 const lower_node_ref = @import("node_ref.zig");
 const lower_held = @import("held.zig");
+const lower_discrete_check = @import("discrete_check.zig");
 const Lowered = Lower.Lowered;
 const Oom = Lower.Oom;
 const Error = Lower.Error;
@@ -232,7 +233,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // §7.2.2 the DISCRETE context. Before the analog blocks because the rules
     // below relate the two, and it is the discrete side that names the variables
     // the continuous side is then judged against.
-    try lower_context.checkDiscreteContext(self, module);
+    try lower_discrete_check.checkDiscreteContext(self, module);
     try lower_context.checkRegWrites(self, module); // §5.7
 
     // §9.17.3 the user-function `$limit` state slots, before the body: each
