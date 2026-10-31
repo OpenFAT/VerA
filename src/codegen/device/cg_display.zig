@@ -100,7 +100,7 @@ pub fn siteCap(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Error!
 }
 
 /// Call `site`'s formatted-text row: `zSBuf` for the 4096-byte row, else a
-/// row of `cap` bytes (`str_kernels.zSRow`, slot 0). Asserts that `cap` is
+/// row of `cap` bytes (`str_store.zSRow`, slot 0). Asserts that `cap` is
 /// at least `strcap.row` (`siteCap`, `strcap.rtFormatCap`).
 pub fn emitRow(g: *Gen, site: usize, cap: u64) Error!void {
     assert(cap > 0);
@@ -228,7 +228,7 @@ pub fn emitStringFormat(g: *Gen, args: []const Mir.Value, site: usize) Error!voi
 /// Emits §9.5.3 `$sformat` whose format_string is a string VARIABLE ("whose
 /// content is interpreted as the format string"): `args[0]` is the format,
 /// the rest its operands, each passed in its own type to
-/// `str_kernels.zSFormatRt`, which walks the format at run time. `%m` prints
+/// `str_format.zSFormatRt`, which walks the format at run time. `%m` prints
 /// what `translateFormat` prints for it.
 pub fn emitStringFormatRt(g: *Gen, args: []const Mir.Value, site: usize) Error!void {
     assert(site < g.mir.instCount());
@@ -504,12 +504,12 @@ test "§9.4.3 Table 9-23: every real conversion routes through the C kernel" {
 }
 
 test "§9.4.3/C11 7.21.6.1: zCReal is the conversion the device runs" {
-    // `str_kernels.zig` is spliced into every printing artifact, so these are
+    // `str_real.zig` is spliced into every printing artifact, so these are
     // the renderings a model gets. Each row is a rule of the clause: the %g
     // style choice on both sides of its window, sign/zero-fill placement, the
     // round-half-to-even tie, and §2.6.2's mantissa normalisation.
     // Imported through the `kernels` module: a file may live in one module.
-    const k = @import("kernels").str_kernels;
+    const k = @import("kernels").str_real;
     var b: [1024]u8 = undefined;
     const rows = .{
         .{ 1234.5678, 'g', @as(u8, 0), @as(usize, 0), @as(i64, -1), "1234.57" },
@@ -567,7 +567,7 @@ test "§9.4.1 $monitor reports a step only when the record changed" {
     try std.testing.expect(has(f, ") |zm| zFPut("));
 
     // The latch itself, at the boundary the emitted code uses it at.
-    const k = @import("kernels").str_kernels;
+    const k = @import("kernels").str_store;
     // "When a $monitor task is invoked ... the simulator sets up a mechanism":
     // before the statement has run there is no mechanism and nothing reports.
     try std.testing.expect(k.zMonitor(9001, &[_]u64{1}, "a\n") == null);
@@ -588,7 +588,7 @@ test "§9.4.1 $monitor reports a step only when the record changed" {
 test "§9.5.4.2 a scan consumes per DIRECTIVE, and says how much" {
     // `ZScan.used` is what `$fscanf` advances the descriptor by, so these
     // numbers are §9.5.5's `$ftell` answers (see `file_kernels.zFTake`).
-    const k = @import("kernels").str_kernels;
+    const k = @import("kernels").str_scan;
     // "The offending input character is left unread": nothing moved, and the
     // return is 0 and not EOF, because the input has not ended.
     const fail = k.zScan("abc\n", "%d", -1);

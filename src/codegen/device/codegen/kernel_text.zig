@@ -13,14 +13,14 @@
 //! - `pub const inf_lit = "@as(f64, @bitCast(@as(u64, 0x7ff0000000000000)))"`
 //! - `pub const header_txt`
 //! - `pub const ops_txt = kernels.text.ops`
-//! - `pub const timer_txt`
-//! - `pub const str_txt`
-//! - `pub const rng_txt`
-//! - `pub const table_txt`
-//! - `pub const file_txt`
-//! - `pub const wide_txt`
-//! - `pub const limit_txt`
-//! - `pub const filt_txt`
+//! - `pub const timer_txt = kernels.text.timer`
+//! - `pub const str_txt = kernels.text.str`
+//! - `pub const rng_txt = kernels.text.rng`
+//! - `pub const table_txt = kernels.text.table`
+//! - `pub const file_txt = kernels.text.file`
+//! - `pub const wide_txt = kernels.text.wide`
+//! - `pub const limit_txt = kernels.text.limit`
+//! - `pub const filt_txt = kernels.text.filter`
 //! - `pub const display_txt`
 //! - `pub const math_txt = math.math_txt`
 //! - `pub const domain_quiet_txt = math.domain_quiet_txt`
@@ -48,9 +48,6 @@ const ac = @import("kernel_text/ac.zig");
 const storage = @import("kernel_text/storage.zig");
 const unit_file = @import("kernel_text/unit_file.zig");
 
-// A file-level //! header cannot be spliced into the middle of device.zig.
-const timer_src = kernels.text.timer;
-
 /// NaN and +inf as bit-pattern literals, the values `std.math.nan(f64)` and
 /// `std.math.inf(f64)` return. Those are comptime loops, and every Instance
 /// field default is evaluated in one comptime context, so a device with
@@ -76,54 +73,47 @@ pub const header_txt =
 
 /// The §4.5 operator kernels. Each takes the current S-valued input plus the
 /// accepted state, so the companion model's Jacobian is analytic. Embedded
-/// whole from `ops_kernels.zig`: its banner is its first line, and its final
-/// newline ends the text, so it needs neither a prefix nor a cut.
+/// from `ops_kernels.zig`. Every `kernels.text.*` group opens with its own
+/// provenance line and ends with a newline, so none needs a banner or a cut.
 pub const ops_txt = kernels.text.ops;
 
 /// §5.10.3.3 timer scheduling, shared with the mixed coordinator.
-pub const timer_txt = "// ---- §5.10.3.3 timer schedule ----\n\n" ++
-    timer_src[std.mem.find(u8, timer_src, "\n\n").? + 2 ..];
+pub const timer_txt = kernels.text.timer;
 
 /// §9.5.3/§9.5.4.2 the string formatter's scratch and the scanner, embedded
-/// verbatim from `str_kernels.zig` so codegen's tests exercise the device's
+/// verbatim from `str_store.zig`, `str_real.zig`, `str_format.zig` and
+/// `str_scan.zig` so codegen's tests exercise the device's
 /// own bytes. Carried by devices that format strings or print.
-pub const str_txt = "// ---- §9.5.3/§9.5.4.2 string kernels (lib/kernels/str_kernels.zig) ----\n\n" ++
-    kernels.text.str;
+pub const str_txt = kernels.text.str;
 
 /// §9.13 the probabilistic distribution kernels, embedded verbatim from
 /// `rng_kernels.zig`. Carried only by devices that call a Table 9-10 function.
-pub const rng_txt = "// ---- §9.13 probabilistic distribution kernels (lib/kernels/rng_kernels.zig) ----\n\n" ++
-    kernels.text.rng;
+pub const rng_txt = kernels.text.rng;
 
 /// §9.21 the table-model interpolator, embedded verbatim from
 /// `table_kernels.zig`. Carried only by devices that call `$table_model`.
-pub const table_txt = "// ---- §9.21 table model kernels (lib/kernels/table_kernels.zig) ----\n\n" ++
-    kernels.text.table;
+pub const table_txt = kernels.text.table;
 
 /// §9.5 the file-descriptor table and its operations, embedded verbatim from
 /// `file_kernels.zig`. Carried only by a device that calls the family and is
 /// built `display == .emit`, the artifact whose host runs side effects. A
 /// solver device has no table, so §9.5.1's "a zero is returned for the mcd or
 /// fd" is its answer to `$fopen`.
-pub const file_txt = "// ---- §9.5 file descriptor I/O kernels (lib/kernels/file_kernels.zig) ----\n\n" ++
-    kernels.text.file;
+pub const file_txt = kernels.text.file;
 
 /// IEEE 1364-2005 §5.4 integers wider than 32 bits, embedded verbatim from
 /// `wide_kernels.zig`. Carried only by a device whose analog context
 /// computes a `reg` wider than 32 bits (`Lowered.wide_nodes`).
-pub const wide_txt = "// ---- IEEE 1364 §5.4 wide integer kernels (lib/kernels/wide_kernels.zig) ----\n\n" ++
-    kernels.text.wide;
+pub const wide_txt = kernels.text.wide;
 
 /// §4.5.15 the SPICE limiters, embedded verbatim from `limit_kernels.zig`.
 /// Carried only by a device with an honoured `$limit` call; no unit body
 /// reaches them, since `$limit` renders as its probe there (`cg_limit.zig`).
-pub const limit_txt = "// ---- §4.5.15 SPICE limiting kernels (lib/kernels/limit_kernels.zig) ----\n\n" ++
-    kernels.text.limit;
+pub const limit_txt = kernels.text.limit;
 
 /// §4.5.11/§4.5.12 the filter kernels, embedded verbatim from
 /// `filter_kernels.zig`. Carried only by devices that use a filter.
-pub const filt_txt = "// ---- §4.5.11/§4.5.12 filter kernels (lib/kernels/filter_kernels.zig) ----\n\n" ++
-    kernels.text.filter;
+pub const filt_txt = kernels.text.filter;
 
 /// §9.4.3 integer padding, for a printing artifact or a device that formats
 /// into a string. `std.fmt` writes `+42` for `{d:>5}`; §9.4.3 (like C's
