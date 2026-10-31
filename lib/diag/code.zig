@@ -7,7 +7,7 @@
 //! `std`, so every stage can name a code without pulling in the renderer.
 //!
 //! Contents:
-//! - `pub const Info = struct { title, lrm, explain: []const u8 }`
+//! - `pub const Info = struct { title, lrm, explain: []const u8 }`, `annexPrefix`
 //! - `pub const Code = enum(u16)`, with `pub fn name(self: Code) []const u8`
 //! - `pub fn info(c: Code) Info`
 
@@ -26,6 +26,15 @@ pub const Info = struct {
     /// Long form for `--explain`: the rule, why it exists, how to satisfy it.
     /// Authored pre-wrapped at 76 columns; `--explain` prints it verbatim.
     explain: []const u8,
+
+    /// Returns `"annex "` when `lrm` names an annex (`A.6.4`, `C`) and `""`
+    /// for a clause number or an IEEE 1364-2005 clause, so `LRM annex C`
+    /// reads as a pointer where `LRM C` reads as a typo. The LRM numbers its
+    /// clauses and letters its annexes, A to H.
+    pub fn annexPrefix(self: Info) []const u8 {
+        if (self.lrm.len == 0) return "";
+        return if (self.lrm[0] >= 'A' and self.lrm[0] <= 'H') "annex " else "";
+    }
 
     // Budget: three slices, 48 B for each of the catalogue's rows.
     comptime {

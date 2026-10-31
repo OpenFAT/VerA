@@ -7901,26 +7901,24 @@ pub const diag_tests = struct {
     }
 
     test "lint levels" {
-        const gpa = std.testing.allocator;
         var levels: Levels = .empty;
-        defer levels.deinit(gpa);
 
         try std.testing.expectEqual(Level.warn, levels.get(.W0650));
         try std.testing.expectEqual(Level.deny, levels.get(.E0601));
 
-        try levels.set(gpa, .W0650, .allow);
+        try levels.set(.W0650, .allow);
         try std.testing.expectEqual(Level.allow, levels.get(.W0650));
 
         // An error cannot be allowed away.
-        try std.testing.expectError(error.CannotAllowError, levels.set(gpa, .E0601, .allow));
+        try std.testing.expectError(error.CannotAllowError, levels.set(.E0601, .allow));
 
         // forbid is a one-way door.
-        try levels.set(gpa, .W0651, .forbid);
-        try std.testing.expectError(error.Forbidden, levels.set(gpa, .W0651, .allow));
+        try levels.set(.W0651, .forbid);
+        try std.testing.expectError(error.Forbidden, levels.set(.W0651, .allow));
 
-        try std.testing.expect(try levels.parseFlag(gpa, "deny=W0650"));
+        try std.testing.expect(try levels.parseFlag("deny=W0650"));
         try std.testing.expectEqual(Level.deny, levels.get(.W0650));
-        try std.testing.expect(!try levels.parseFlag(gpa, "not-a-flag"));
+        try std.testing.expect(!try levels.parseFlag("not-a-flag"));
     }
 
     test "bag: dedupe keys on the file of a preprocessor span" {
@@ -7957,12 +7955,12 @@ pub const diag_tests = struct {
         try std.testing.expectEqual(@as(u32, 1), bag.err_count);
 
         // ...until it is denied.
-        try bag.levels.set(arena_state.allocator(), .W0650, .deny);
+        try bag.levels.set(.W0650, .deny);
         try bag.add(.proof, .W0650, .{ .start = 30, .end = 34 }, "", .{});
         try std.testing.expectEqual(@as(u32, 2), bag.err_count);
 
         // ...or allowed, in which case it is not collected at all.
-        try bag.levels.set(arena_state.allocator(), .W0650, .allow);
+        try bag.levels.set(.W0650, .allow);
         const before = bag.count();
         try bag.add(.proof, .W0650, .{ .start = 40, .end = 44 }, "", .{});
         try std.testing.expectEqual(before, bag.count());
@@ -8009,7 +8007,7 @@ pub const diag_tests = struct {
         try std.testing.expectEqual(diag.Stage.lower, e.stage);
         try std.testing.expectEqual(Severity.err, e.severity);
         try std.testing.expectEqual(@as(u32, 50), e.span.start);
-        try std.testing.expect(e.file == null);
+        try std.testing.expectEqual(diag.FileId.none, e.file);
 
         var lbuf: [diag.max_children]diag.Label = undefined;
         const ls = bag.labels(e, &lbuf);
@@ -8351,58 +8349,70 @@ pub const diag_tests = struct {
     }
 
     test "levels: refusals leave the levels unchanged, overrides replace" {
-        const gpa = std.testing.allocator;
         var levels: Levels = .empty;
-        defer levels.deinit(gpa);
 
         // An error may be denied or forbidden, never warned or allowed.
-        try std.testing.expectError(error.CannotAllowError, levels.set(gpa, .E0601, .warn));
+        try std.testing.expectError(error.CannotAllowError, levels.set(.E0601, .warn));
         try std.testing.expectEqual(Level.deny, levels.get(.E0601));
-        try levels.set(gpa, .E0601, .forbid);
+        try levels.set(.E0601, .forbid);
         try std.testing.expectEqual(Level.forbid, levels.get(.E0601));
 
         // A warning's level is whatever was set last, in one row per code.
-        try levels.set(gpa, .W0650, .deny);
-        try levels.set(gpa, .W0650, .warn);
+        try levels.set(.W0650, .deny);
+        try levels.set(.W0650, .warn);
         try std.testing.expectEqual(Level.warn, levels.get(.W0650));
-        try std.testing.expectEqual(@as(usize, 2), levels.items.items.len);
+        // One slot per code: the two set, every other code untouched.
+        var want: Levels = .empty;
+        try want.set(.E0601, .forbid);
+        try want.set(.W0650, .warn);
+        try std.testing.expectEqual(want, levels);
 
         // `forbid` refuses every later level but itself, `deny` included.
-        try levels.set(gpa, .W0651, .forbid);
-        try std.testing.expectError(error.Forbidden, levels.set(gpa, .W0651, .deny));
-        try std.testing.expectError(error.Forbidden, levels.set(gpa, .W0651, .warn));
-        try levels.set(gpa, .W0651, .forbid);
+        try levels.set(.W0651, .forbid);
+        try std.testing.expectError(error.Forbidden, levels.set(.W0651, .deny));
+        try std.testing.expectError(error.Forbidden, levels.set(.W0651, .warn));
+        try levels.set(.W0651, .forbid);
         try std.testing.expectEqual(Level.forbid, levels.get(.W0651));
     }
 
     test "levels: parseFlag reads only exact level=code directives" {
-        const gpa = std.testing.allocator;
         var levels: Levels = .empty;
-        defer levels.deinit(gpa);
 
         const not_directives = [_][]const u8{
             "allow",       "=W0650",        "allow=",       "Allow=W0650",
             "allow=w0650", "allow=W0650=x", "allow= W0650", "allow=W9999",
         };
-        for (not_directives) |t| try std.testing.expect(!try levels.parseFlag(gpa, t));
-        try std.testing.expectEqual(@as(usize, 0), levels.items.items.len);
+        for (not_directives) |t| try std.testing.expect(!try levels.parseFlag(t));
+        try std.testing.expectEqual(Levels.empty, levels);
 
-        try std.testing.expect(try levels.parseFlag(gpa, "forbid=E0101"));
+        try std.testing.expect(try levels.parseFlag("forbid=E0101"));
         try std.testing.expectEqual(Level.forbid, levels.get(.E0101));
-        try std.testing.expectError(error.CannotAllowError, levels.parseFlag(gpa, "warn=E0313"));
+        try std.testing.expectError(error.CannotAllowError, levels.parseFlag("warn=E0313"));
     }
 
-    fn setSomeLevels(gpa: std.mem.Allocator) !void {
+    /// How many codes `levels` holds at other than their default level.
+    fn overridden(levels: Levels) usize {
+        var n: usize = 0;
+        for (0..@typeInfo(diag.Code).@"enum".field_names.len) |i| {
+            const c: diag.Code = @fromBackingInt(@intCast(i));
+            n += @intFromBool(levels.get(c) != Levels.empty.get(c));
+        }
+        return n;
+    }
+
+    test "levels: setting and parsing levels takes no allocator, and a copy is a snapshot" {
+        // `Levels` is one byte a code: no allocator to fail, nothing to free,
+        // and `bag.levels = lint` copies rather than shares.
+        try std.testing.expectEqual(@typeInfo(diag.Code).@"enum".field_names.len, @sizeOf(Levels));
         var levels: Levels = .empty;
-        defer levels.deinit(gpa);
-        try levels.set(gpa, .W0650, .allow);
-        try std.testing.expect(try levels.parseFlag(gpa, "deny=W0651"));
-        try levels.set(gpa, .W0650, .deny);
+        try levels.set(.W0650, .allow);
+        try std.testing.expect(try levels.parseFlag("deny=W0651"));
+        const snapshot = levels;
+        try levels.set(.W0650, .deny);
         try std.testing.expectEqual(Level.deny, levels.get(.W0650));
-    }
-
-    test "levels: every allocation failure propagates and leaks nothing" {
-        try std.testing.checkAllAllocationFailures(std.testing.allocator, setSomeLevels, .{});
+        try std.testing.expectEqual(Level.allow, snapshot.get(.W0650));
+        try std.testing.expectEqual(Level.deny, snapshot.get(.W0651));
+        try std.testing.expectEqual(@as(usize, 2), overridden(snapshot));
     }
 
     // ---------------------------------------------------------------------------
@@ -8516,10 +8526,8 @@ pub const diag_tests = struct {
     // ---------------------------------------------------------------------------
 
     test "bag: a clean compilation allocates nothing" {
-        const gpa = std.testing.allocator;
         var levels: Levels = .empty;
-        defer levels.deinit(gpa);
-        try levels.set(gpa, .W0650, .allow);
+        try levels.set(.W0650, .allow);
 
         // Every allocation fails, so anything below that allocates is an error.
         var bag = diag.Bag.init(std.testing.failing_allocator);
@@ -8528,7 +8536,7 @@ pub const diag_tests = struct {
         try std.testing.expect(!bag.failed());
         try std.testing.expect(!bag.enabled(.W0650));
         try std.testing.expect(bag.enabled(.W0651));
-        try std.testing.expectEqualStrings("", bag.str(0));
+        try std.testing.expectEqualStrings("", bag.str(.none));
         try std.testing.expectEqualStrings("<source>", bag.fileName(.root));
         try std.testing.expectEqualStrings("", bag.fileText(.root));
         try std.testing.expectEqualStrings("", bag.sourceText(.root));
@@ -8554,9 +8562,9 @@ pub const diag_tests = struct {
         b.point("", .{});
         try b.emit();
         // Sentinel at 0, "ab" at 1 with its NUL at 3, the empty point at 4.
-        try std.testing.expectEqualStrings("\x00ab\x00\x00", bag.string_bytes.items);
-        try std.testing.expectEqual(@as(u32, 1), bag.records.items[0].message);
-        try std.testing.expectEqual(@as(u32, 4), bag.records.items[0].point);
+        try std.testing.expectEqualStrings("\x00ab\x00\x00", bag.strings.items);
+        try std.testing.expectEqual(@as(u32, 1), @backingInt(bag.rows.items(.message)[0]));
+        try std.testing.expectEqual(@as(u32, 4), @backingInt(bag.rows.items(.point)[0]));
         try std.testing.expectEqualStrings("ab", bag.at(0).message);
         try std.testing.expectEqualStrings("", bag.at(0).point);
     }
@@ -8567,7 +8575,7 @@ pub const diag_tests = struct {
         const arena = arena_state.allocator();
         var bag = diag.Bag.init(arena);
 
-        try bag.levels.set(arena, .W0650, .allow);
+        try bag.levels.set(.W0650, .allow);
         var b = bag.build(.proof, .W0650, .at(3));
         b.msg("x", .{});
         b.point("p", .{});
@@ -8575,15 +8583,15 @@ pub const diag_tests = struct {
         b.help("h", .{});
         b.suggestHere("y");
         try b.emit();
-        try std.testing.expectEqual(@as(usize, 0), bag.string_bytes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), bag.strings.items.len);
         try std.testing.expect(bag.isEmpty());
         // Allowed is not suppressed: the trailer counts only the cap.
         try std.testing.expectEqual(@as(u32, 0), bag.suppressed);
 
         for (0..diag.max_entries) |i| try bag.add(.lower, .E0313, .at(@intCast(i + 1)), "", .{});
-        const pool = bag.string_bytes.items.len;
+        const pool = bag.strings.items.len;
         try bag.add(.lower, .E0313, .at(1000), "{s}", .{"never formatted"});
-        try std.testing.expectEqual(pool, bag.string_bytes.items.len);
+        try std.testing.expectEqual(pool, bag.strings.items.len);
         try std.testing.expectEqual(@as(u32, 1), bag.suppressed);
         // Counted, though dropped unformatted.
         try std.testing.expectEqual(@as(u32, diag.max_entries + 1), bag.err_count);
@@ -8631,7 +8639,7 @@ pub const diag_tests = struct {
         try b.emit();
 
         const e = bag.at(0);
-        try std.testing.expectEqual(@as(u32, diag.max_children), e.n_labels);
+        try std.testing.expectEqual(diag.max_children, e.label_count);
         var lbuf: [diag.max_children]diag.Label = undefined;
         const ls = bag.labels(e, &lbuf);
         try std.testing.expectEqualStrings("l0", ls[0].text);
@@ -8770,6 +8778,33 @@ pub const diag_tests = struct {
         try std.testing.expectEqual(diag.Segment.no_parent, r.seg);
     }
 
+    test "strip marks: the free function maps through any mark list, saturating" {
+        // `a/*1*/b` strips to `a b`: 'b' (stripped 2) is original 6.
+        const marks = [_]diag.StripMark{.{ .out = 2, .src = 6 }};
+        try std.testing.expectEqual(@as(u32, 1), diag.toSourceOffset(&marks, 1));
+        try std.testing.expectEqual(@as(u32, 6), diag.toSourceOffset(&marks, 2));
+        try std.testing.expectEqual(@as(u32, 9), diag.toSourceOffset(&.{}, 9));
+        const max = std.math.maxInt(u32);
+        try std.testing.expectEqual(@as(u32, max), diag.toSourceOffset(&marks, max));
+    }
+
+    test "bag: the file table refuses a file past files_max, and the bag is unchanged" {
+        // An `include tree is input: its size is an error return, never the
+        // panic a `FileId` overflow was.
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        var bag = diag.Bag.init(arena_state.allocator());
+        try bag.files.ensureTotalCapacity(bag.arena, diag.files_max);
+        for (0..diag.files_max) |i| {
+            const id = try bag.addFile("f.vh", "");
+            try std.testing.expectEqual(@as(u16, @intCast(i)), @backingInt(id));
+        }
+        try std.testing.expectError(error.TooManyFiles, bag.addFile("one.vh", "too many"));
+        try std.testing.expectEqual(@as(usize, diag.files_max), bag.files.items.len);
+        // The sentinel is no file: it reads as unknown.
+        try std.testing.expectEqualStrings("<source>", bag.fileName(.none));
+    }
+
     test "strip marks: a second strip of the same file keeps the original" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
@@ -8802,7 +8837,7 @@ pub const diag_tests = struct {
         var level: [codes.len]Level = .{ .deny, .warn, .warn };
         for (1..codes.len) |c| {
             level[c] = warning_levels[s.index(warning_levels.len)];
-            try bag.levels.set(arena, codes[c], level[c]);
+            try bag.levels.set(codes[c], level[c]);
         }
 
         var seen = std.mem.zeroes([codes.len][32]bool);
@@ -8929,9 +8964,9 @@ pub const diag_tests = struct {
         var map: std.StringHashMapUnmanaged(void) = .empty;
         defer map.deinit(gpa);
         for ([_][]const u8{ "vds", "vgs", "temp", "vas_", "vbs" }) |k| try map.put(gpa, k, {});
-        try std.testing.expectEqualStrings("vds", diag.didYouMeanMap("vdss", map).?);
-        try std.testing.expectEqualStrings("vas_", diag.didYouMeanMap("vas", map).?);
-        try std.testing.expect(diag.didYouMeanMap("completely_different", map) == null);
+        try std.testing.expectEqualStrings("vds", diag.didYouMeanMap(void, "vdss", map).?);
+        try std.testing.expectEqualStrings("vas_", diag.didYouMeanMap(void, "vas", map).?);
+        try std.testing.expect(diag.didYouMeanMap(void, "completely_different", map) == null);
     }
 
     test "did you mean: every order of the candidates gives one answer" {
