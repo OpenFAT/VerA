@@ -63,15 +63,15 @@ const own_files = system.own;
 const root = @import("root.zig");
 const Error = root.Error;
 
-/// Binds `r.disables[from..]` to their blocks' pc ranges or their tasks.
+/// Binds `r.program.disables[from..]` to their blocks' pc ranges or their tasks.
 /// A function compiled early for a §10.4.5 constant call binds its own at
 /// once (`elab.earlyFrame`): it runs before the other processes exist.
 pub fn bindDisables(r: *Run, from: usize) Error!void {
-    disabling: for (r.disables.items[from..]) |d| {
+    disabling: for (r.program.disables.items[from..]) |d| {
         var s = d.name.scope;
         while (true) {
-            if (r.blocks.get(.{ .scope = s, .str = d.name.str })) |range| {
-                r.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
+            if (r.program.blocks.get(.{ .scope = s, .str = d.name.str })) |range| {
+                r.program.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
                 continue :disabling;
             }
             if (!r.hier.scopes.items[s].lexical) break;
@@ -80,7 +80,7 @@ pub fn bindDisables(r: *Run, from: usize) Error!void {
         const idx = r.routines.by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
             return r.fail(d.tok, "undeclared named block or task", .{});
         if (r.routines.rows.items[idx].decl.is_function) return r.fail(d.tok, "§10.3: `disable` cannot name a function, only a named block within one", .{});
-        r.code.items[d.at] = .{ .disable_task = idx };
+        r.program.code.items[d.at] = .{ .disable_task = idx };
     }
 }
 
@@ -231,14 +231,14 @@ pub fn initVars(r: *Run, vars: []const Ast.VarDecl) Error!void {
 
 pub fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
     for (blocks) |process| {
-        const start: u32 = @intCast(r.code.items.len);
+        const start: u32 = @intCast(r.program.code.items.len);
         try compile.compileStmt(r, process.body, 0);
         _ = try compile.append(r, if (process.is_always)
             .{ .restart = .{ .target = start, .tok = process.main_tok } }
         else
             .stop);
         if (process.is_always and try levelControlled(r, process.body)) {
-            try r.early.append(r.arena, start);
+            try r.program.early.append(r.arena, start);
         } else _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
     }
 }

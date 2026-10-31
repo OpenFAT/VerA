@@ -383,7 +383,7 @@ pub fn emitScope(self: *Run) Error!void {
     var last: i64 = -1;
     while (true) {
         var next: ?struct { depth: u32, name: Ast.StrId } = null;
-        var it = self.blocks.iterator();
+        var it = self.program.blocks.iterator();
         while (it.next()) |b| {
             if (b.key_ptr.scope != self.scope or self.pc < b.value_ptr.start or self.pc >= b.value_ptr.end) continue;
             const d = b.value_ptr.depth;

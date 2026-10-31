@@ -206,7 +206,7 @@ pub fn earlyFrame(r: *Run, idx: u32, tok: u32) Error!void {
         return r.fail(tok, "§10.4.5: a function called during elaboration is a constant function, and {s}", .{why});
     const saved = r.scope;
     defer r.scope = saved;
-    const first = r.disables.items.len;
+    const first = r.program.disables.items.len;
     try compile.compileSub(r, idx);
     try root.bindDisables(r, first);
 }

@@ -5,16 +5,10 @@
 //! - `pub const Type = struct`
 //! - `pub const real_type: Type`
 //! - `pub const Instruction = union`
-//! AST -> bytecode: one process body or driver expression, in its instance
-//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
-//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
-//! before any process has run.
-//! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
-//! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to
-//! §9.7.7, §9.8.2, §10.2.2/§10.2.3, §10.4.4/§10.4.5, §12.7, §17.1 to §17.11,
-//! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
-//! §9.22 driver access.
+//! - `pub const Program = struct`
+
 const std = @import("std");
+const Name = @import("root.zig").Name;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const exec = @import("exec.zig");
@@ -152,4 +146,32 @@ pub const Instruction = union(enum(u5)) {
     comptime {
         std.debug.assert(@sizeOf(Instruction) == 40);
     }
+};
+
+/// A design's compiled processes: the `Instruction` rows, the scope each was
+/// compiled in, the jump tables of `case` and `disable`, the named blocks'
+/// pc ranges, and the processes §9.9 starts first at time 0.
+pub const Program = struct {
+    /// The always constructs `processes` starts first at time 0
+    /// (`levelControlled`), in source order, by the pc each starts at.
+    early: std.ArrayList(u32) = .empty,
+    code: std.ArrayList(Instruction) = .empty,
+    /// The instance scope each instruction was compiled in, one row per `code`
+    /// row. A process never leaves the scope it was written in, so `execute`
+    /// reads this once per dispatch, an event resumption included, which
+    /// re-enters at a pc in the middle of a body.
+    scope_of: std.ArrayList(u32) = .empty,
+    case_targets: std.ArrayList(u32) = .empty,
+    /// §5.3.2 the pc range of each named sequential block, keyed per §6.2.2
+    /// instance like every other declared name, so two instances of one
+    /// definition disable their own copy and not each other's.
+    /// `depth` is the block's statement nesting, which orders two named
+    /// blocks with the same range (`begin : a begin : b ... end end`) for `%m`.
+    blocks: std.AutoHashMapUnmanaged(Name, struct { start: u32, end: u32, depth: u32 }) = .empty,
+    /// The `.disable_block` instructions still waiting for their range, and the
+    /// name each one is waiting for. A.6.5 puts no ordering rule on a
+    /// `disable`: the block it names is routinely in ANOTHER process, which may
+    /// not be compiled yet, so the lookup is deferred to one pass at the end
+    /// rather than failing in the middle of a dispatch.
+    disables: std.ArrayList(struct { at: u32, name: Name, tok: u32 }) = .empty,
 };

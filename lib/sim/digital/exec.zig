@@ -434,7 +434,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
         if (self.calls.unwind != null) return;
         // §6.2.2 / §12.7: the names an instruction reads are those of the
         // scope it was compiled in: its instance's, or an inlined task's.
-        self.scope = self.code_scope.items[pc];
+        self.scope = self.program.scope_of.items[pc];
         // ponytail: a `wait` whose level is false resumes at its own pc, so
         // each re-test is one more visit.
         if (hooked) if (self.host.stmt_hook) |h| if (pc < h.at.bit_length and h.at.isSet(pc)) try h.fire(self, pc);
@@ -442,7 +442,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
         // reused; an untimed loop therefore retains no iteration temporaries.
         per_instruction.reset();
         const scratch = per_instruction.allocator();
-        switch (self.code.items[pc]) {
+        switch (self.program.code.items[pc]) {
             .stop => return,
             .init_var => |s| {
                 try waiters.store(self, s.slot, (try evaluate.evalFor(self, scratch, s.value, self.slotType(s.slot))).planes);
@@ -715,7 +715,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     for (arm.labels) |label| {
                         const item = try evaluate.evalContext(self, scratch, label, s.ty);
                         if (caseMatches(case.kind, value, item)) {
-                            pc = self.case_targets.items[s.targets + i];
+                            pc = self.program.case_targets.items[s.targets + i];
                             break :search;
                         }
                     }

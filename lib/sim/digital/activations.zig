@@ -199,7 +199,7 @@ pub fn returnTimed(self: *Run, a: std.mem.Allocator, idx: u32) Error!u32 {
     try self.calls.free.append(self.arena, done);
     self.calls.ctx = act.ret_ctx;
     try makeResident(self, self.calls.ctx);
-    self.scope = self.code_scope.items[act.ret_pc - 1];
+    self.scope = self.program.scope_of.items[act.ret_pc - 1];
     for (sub.decl.ports, act.args, f.ports, outs) |p, arg, slot, v| if (p.direction != .input)
         try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
     return act.ret_pc;

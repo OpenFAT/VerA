@@ -300,7 +300,7 @@ pub fn wakeA2d(self: *Run, slot: u32) Error!void {
 /// changed and its value may not have: no event control sees that.
 pub fn wakeSwitches(self: *Run, target: u32) Error!void {
     if (target + 1 < self.fan_start.len) for (self.fan[self.fan_start[target]..self.fan_start[target + 1]]) |pc| if (self.armed[pc]) {
-        const ins = self.code.items[pc];
+        const ins = self.program.code.items[pc];
         if (ins != .continuous or self.drivers[ins.continuous].source != .mos) continue;
         self.armed[pc] = false;
         _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
@@ -421,20 +421,20 @@ pub fn buildFanout(r: *Run) Error!void {
     const n = r.values.len;
     const start = try r.arena.alloc(u32, n + 1);
     @memset(start, 0);
-    for (r.code.items) |ins| for (staticSlots(r, ins)) |at| {
+    for (r.program.code.items) |ins| for (staticSlots(r, ins)) |at| {
         start[at + 1] += 1;
     };
     for (1..n + 1) |i| start[i] += start[i - 1];
     const fill = try r.arena.dupe(u32, start[0..n]);
     const fan = try r.arena.alloc(u32, start[n]);
-    for (r.code.items, 0..) |ins, pc| for (staticSlots(r, ins)) |at| {
+    for (r.program.code.items, 0..) |ins, pc| for (staticSlots(r, ins)) |at| {
         fan[fill[at]] = @intCast(pc);
         fill[at] += 1;
     };
     r.arena.free(fill); // the cursor is spent; a large one goes back now
     r.fan_start = start;
     r.fan = fan;
-    r.armed = try r.arena.alloc(bool, r.code.items.len);
+    r.armed = try r.arena.alloc(bool, r.program.code.items.len);
     @memset(r.armed, false);
     r.terms = try r.arena.alloc(?*std.ArrayList(Term), n);
     @memset(r.terms, null);

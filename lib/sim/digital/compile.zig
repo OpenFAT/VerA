@@ -366,7 +366,7 @@ fn outOfLine(self: *Run, idx: u32, depth: u32) Error!void {
     try compileStmt(self, decl.body, depth + 1);
     _ = try append(self, .{ .task_return = idx });
     self.scope = caller;
-    self.code.items[skip].jump = position(self);
+    self.program.code.items[skip].jump = position(self);
 }
 
 /// Does task `idx` contain a timing control, directly or through a task it

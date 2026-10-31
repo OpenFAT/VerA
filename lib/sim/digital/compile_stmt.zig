@@ -65,16 +65,16 @@ const waitIntra = wait_lists.waitIntra;
 const watch = wait_lists.watch;
 
 pub fn position(self: *Run) u32 {
-    return @intCast(self.code.items.len);
+    return @intCast(self.program.code.items.len);
 }
 
 /// Appends one instruction in the executing scope and returns its pc.
 /// Fails at 2^32 - 1 instructions. Invalidates pointers into `Run.code`.
 pub fn append(self: *Run, instruction: Instruction) Error!u32 {
-    if (self.code.items.len == std.math.maxInt(u32)) return self.fail(0, "too many digital instructions", .{});
+    if (self.program.code.items.len == std.math.maxInt(u32)) return self.fail(0, "too many digital instructions", .{});
     const at = position(self);
-    try self.code.append(self.arena, instruction);
-    try self.code_scope.append(self.arena, self.scope);
+    try self.program.code.append(self.arena, instruction);
+    try self.program.scope_of.append(self.arena, self.scope);
     return at;
 }
 
@@ -112,7 +112,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             if (b.parallel and !self.routines.in_function) try compileFork(self, b.body, depth) else for (b.body) |s| try compileStmt(self, s, depth + 1);
             self.scope = outer;
             if (b.name != .none) {
-                const entry = try self.blocks.getOrPut(self.arena, .{ .scope = self.scope, .str = b.name });
+                const entry = try self.program.blocks.getOrPut(self.arena, .{ .scope = self.scope, .str = b.name });
                 if (entry.found_existing) return self.fail(tok, "duplicate named block", .{});
                 // `end` is one past the block, which is the statement
                 // execution continues with once the block is terminated.
@@ -125,7 +125,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             const first = position(self);
             const at = try append(self, .{ .disable_block = .{ .start = 0, .end = 0 } });
             try doneSite(self, id, first);
-            try self.disables.append(self.arena, .{ .at = at, .name = .{ .scope = self.scope, .str = s.name }, .tok = tok });
+            try self.program.disables.append(self.arena, .{ .at = at, .name = .{ .scope = self.scope, .str = s.name }, .tok = tok });
         },
         .if_stmt => |s| {
             if (s.is_generate) return self.fail(tok, "conditional generate is not implemented", .{});
@@ -133,12 +133,12 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             const test_pc = try append(self, .{ .branch = .{ .condition = s.cond, .otherwise = 0 } });
             try compileStmt(self, s.then_s, depth + 1);
             if (s.else_s == .none) {
-                self.code.items[test_pc].branch.otherwise = position(self);
+                self.program.code.items[test_pc].branch.otherwise = position(self);
             } else {
                 const end_pc = try append(self, .{ .jump = 0 });
-                self.code.items[test_pc].branch.otherwise = position(self);
+                self.program.code.items[test_pc].branch.otherwise = position(self);
                 try compileStmt(self, s.else_s, depth + 1);
-                self.code.items[end_pc].jump = position(self);
+                self.program.code.items[end_pc].jump = position(self);
             }
         },
         .while_stmt => |s| {
@@ -146,7 +146,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             const test_pc = try append(self, .{ .branch = .{ .condition = s.cond, .otherwise = 0 } });
             try compileStmt(self, s.body, depth + 1);
             _ = try append(self, .{ .jump = test_pc });
-            self.code.items[test_pc].branch.otherwise = position(self);
+            self.program.code.items[test_pc].branch.otherwise = position(self);
         },
         .for_stmt => |s| {
             try compileStmt(self, s.init, depth + 1);
@@ -156,7 +156,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             try site(self, id);
             try compileStmt(self, s.step, depth + 1);
             _ = try append(self, .{ .jump = test_pc });
-            self.code.items[test_pc].branch.otherwise = position(self);
+            self.program.code.items[test_pc].branch.otherwise = position(self);
         },
         .repeat_stmt => |s| {
             try checkExpr(self, s.count);
@@ -166,7 +166,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             try compileStmt(self, s.body, depth + 1);
             try site(self, id);
             _ = try append(self, .{ .repeat_next = .{ .counter = counter, .body = body_pc } });
-            self.code.items[test_pc].repeat_start.end = position(self);
+            self.program.code.items[test_pc].repeat_start.end = position(self);
         },
         .case_stmt => |s| {
             if (s.is_generate) return self.fail(tok, "case generate is not implemented", .{});
@@ -184,20 +184,20 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     ty = common(ty, typeOf(self, label));
                 }
             }
-            if (s.arms.len > std.math.maxInt(u32) - self.case_targets.items.len) return self.fail(tok, "too many case targets", .{});
-            const targets: u32 = @intCast(self.case_targets.items.len);
-            try self.case_targets.appendNTimes(self.arena, 0, s.arms.len);
+            if (s.arms.len > std.math.maxInt(u32) - self.program.case_targets.items.len) return self.fail(tok, "too many case targets", .{});
+            const targets: u32 = @intCast(self.program.case_targets.items.len);
+            try self.program.case_targets.appendNTimes(self.arena, 0, s.arms.len);
             const dispatch = try append(self, .{ .case_select = .{ .statement = id, .targets = targets, .fallback = 0, .ty = ty } });
             const exits = try self.arena.alloc(u32, s.arms.len);
             for (s.arms, 0..) |arm, i| {
-                self.case_targets.items[targets + i] = position(self);
-                if (arm.labels.len == 0) self.code.items[dispatch].case_select.fallback = position(self);
+                self.program.case_targets.items[targets + i] = position(self);
+                if (arm.labels.len == 0) self.program.code.items[dispatch].case_select.fallback = position(self);
                 try compileStmt(self, arm.body, depth + 1);
                 exits[i] = try append(self, .{ .jump = 0 });
             }
             const end = position(self);
-            if (!have_default) self.code.items[dispatch].case_select.fallback = end;
-            for (exits) |at| self.code.items[at].jump = end;
+            if (!have_default) self.program.code.items[dispatch].case_select.fallback = end;
+            for (exits) |at| self.program.code.items[at].jump = end;
         },
         .assign => |s| if (s.continuous != .none) {
             const first = position(self);
@@ -250,12 +250,12 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                 const body_pc = position(self);
                 try waitIntra(self, id, s);
                 _ = try append(self, .{ .repeat_next = .{ .counter = counter, .body = body_pc } });
-                self.code.items[test_pc].repeat_start.end = position(self);
+                self.program.code.items[test_pc].repeat_start.end = position(self);
             } else try waitIntra(self, id, s);
             _ = try append(self, .{ .deposit = .{ .statement = id, .cell = cell } });
             if (skip) |at| {
                 _ = try append(self, .stop);
-                self.code.items[at].jump = position(self);
+                self.program.code.items[at].jump = position(self);
             }
         },
         // A.6.5 `event_trigger`: resolve the declaration here; array
@@ -282,7 +282,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                 // nothing is an empty list, which nothing can trigger: the
                 // process suspends forever, as `@` on a never-changing net
                 // would. §9.7.5 states no restriction against it.
-                self.code.items[at].wait_slots = watched.items;
+                self.program.code.items[at].wait_slots = watched.items;
                 return;
             }
             switch (s.kind) {
@@ -493,7 +493,7 @@ pub fn watcher(self: *Run, step: Instruction, watched: []const u32) Error!u32 {
     _ = try append(self, step);
     _ = try append(self, .{ .wait_slots = watched });
     _ = try append(self, .{ .jump = start });
-    self.code.items[skip].jump = position(self);
+    self.program.code.items[skip].jump = position(self);
     return start;
 }
 
@@ -536,6 +536,6 @@ fn compileFork(self: *Run, body: []const Ast.StmtId, depth: u32) Error!void {
         try compileStmt(self, s, depth + 1);
         end.* = try append(self, .{ .join_arm = .{ .join = join, .end = 0 } });
     }
-    self.code.items[at].fork.end = position(self);
-    for (ends) |e| self.code.items[e].join_arm.end = position(self);
+    self.program.code.items[at].fork.end = position(self);
+    for (ends) |e| self.program.code.items[e].join_arm.end = position(self);
 }

@@ -70,6 +70,7 @@
 //! - `pub fn reset(self: *Run) Error!void`
 
 const std = @import("std");
+const bytecode = @import("bytecode.zig");
 const vcd_file = @import("vcd.zig");
 const activations = @import("activations.zig");
 const monitor = @import("monitor.zig");
@@ -155,9 +156,6 @@ scope: u32 = 0,
 /// §9.7.2 each event term that is an expression, by the scope it is
 /// compiled in: the hidden slot `compile.exprTerm` keeps equal to it.
 term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) = .empty,
-/// The always constructs `processes` starts first at time 0
-/// (`levelControlled`), in source order, by the pc each starts at.
-early: std.ArrayList(u32) = .empty,
 /// The instruction a system task is running from, so `%m` can name the
 /// §5.3.2 named blocks around it.
 pc: u32 = 0,
@@ -214,25 +212,6 @@ spec_types: std.AutoHashMapUnmanaged(SpecExpr, Type) = .empty,
 /// the name again. Null for every other node.
 sys_calls: []?compile.SysFn = &.{},
 replications: std.AutoHashMapUnmanaged(SpecExpr, u32) = .empty,
-code: std.ArrayList(Instruction) = .empty,
-/// The instance scope each instruction was compiled in, one row per `code`
-/// row. A process never leaves the scope it was written in, so `execute`
-/// reads this once per dispatch, an event resumption included, which
-/// re-enters at a pc in the middle of a body.
-code_scope: std.ArrayList(u32) = .empty,
-case_targets: std.ArrayList(u32) = .empty,
-/// §5.3.2 the pc range of each named sequential block, keyed per §6.2.2
-/// instance like every other declared name, so two instances of one
-/// definition disable their own copy and not each other's.
-/// `depth` is the block's statement nesting, which orders two named
-/// blocks with the same range (`begin : a begin : b ... end end`) for `%m`.
-blocks: std.AutoHashMapUnmanaged(Name, struct { start: u32, end: u32, depth: u32 }) = .empty,
-/// The `.disable_block` instructions still waiting for their range, and the
-/// name each one is waiting for. A.6.5 puts no ordering rule on a
-/// `disable`: the block it names is routinely in ANOTHER process, which may
-/// not be compiled yet, so the lookup is deferred to one pass at the end
-/// rather than failing in the middle of a dispatch.
-disables: std.ArrayList(struct { at: u32, name: Name, tok: u32 }) = .empty,
 /// One counter per lexical `repeat`: no process re-enters its own.
 repeats: std.ArrayList(u64) = .empty,
 /// §9.8.2 one counter per lexical `fork`: the arms still running. One per
@@ -293,6 +272,8 @@ time: declared.Times = .{},
 hier: name_search.Hierarchy = .{},
 /// §10 the tasks and functions and what calls them (`compile.Routines`).
 routines: compile.Routines = .{},
+/// The compiled processes (`bytecode.Program`).
+program: bytecode.Program = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.

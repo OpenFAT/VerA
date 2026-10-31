@@ -56,7 +56,7 @@ pub const Flow = enum { next, ended };
 /// (`$finish` and `$stop` end it). A task in a constant function being folded
 /// does nothing (§10.4.5).
 pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "task"), pc: u32) Error!Flow {
-    assert(pc < self.code.items.len);
+    assert(pc < self.program.code.items.len);
     // §10.4.5: a system task in a constant function is ignored
     // while the function folds a constant.
     if (self.growing != null or self.folding_constant) {
@@ -260,7 +260,7 @@ pub fn overrideEval(self: *Run, scratch: std.mem.Allocator, o: @FieldType(Instru
 
 /// `.override_off`: `deassign` or `release` of the target (§9.3).
 pub fn overrideOff(self: *Run, o: @FieldType(Instruction, "override_off"), pc: u32) Error!void {
-    assert(pc < self.code.items.len);
+    assert(pc < self.program.code.items.len);
     // An override undone before its process ran was still executed.
     if (self.overrides.get(o.slot)) |layers| {
         if (o.bits) |bits| {

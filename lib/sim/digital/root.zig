@@ -694,10 +694,10 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         try processes(&r, p.blocks);
     };
     // Last, each ahead of the rest, so the first in source order runs first.
-    var left = r.early.items.len;
+    var left = r.program.early.items.len;
     while (left > 0) {
         left -= 1;
-        try exec.enqueueFirst(&r, .{ .run_process = r.early.items[left] });
+        try exec.enqueueFirst(&r, .{ .run_process = r.program.early.items[left] });
     }
     // A.6.5's `disable` names a block that needs no declaration before its
     // use (it may be in another process), so the ranges are bound here, once
