@@ -17,7 +17,7 @@
 //! IEEE 1364-2005 clauses cited: §5.2.1, §19.2, §19.9.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_discipline = @import("discipline.zig");
@@ -28,6 +28,7 @@ const lower_shape = @import("shape.zig");
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Preprocessor = @import("frontend").Preprocessor;
+const lower_expr_name = @import("expr_name.zig");
 const assert = std.debug.assert;
 const Oom = Lower.Oom;
 const ground = Lower.ground;
@@ -197,7 +198,7 @@ pub fn declareNets(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 pub fn bindPortConnections(self: *Lower) Oom!void {
     // §6.5.7.1 "The sizes of the ports and net must match." A net this module
     // never interned (a discrete input) has no width here to compare.
-    for (self.port_widths) |pw| {
+    for (self.design.port_widths) |pw| {
         const port: u64 = if (pw.range) |d| ((try foldDim(self, d, pw.main_tok)) orelse continue).size() else 1;
         const net: u64 = if (self.out.vectors.get(pw.net)) |v| v.size() else if (self.node_voltages.contains(pw.net)) 1 else continue;
         if (port != net)
@@ -208,7 +209,7 @@ pub fn bindPortConnections(self: *Lower) Oom!void {
     // §6.5.5's sub-range of a net: element k of the port IS bit k of the
     // connection, so its key names that bit's node.
     var bits: std.ArrayList(u32) = .empty;
-    for (self.port_concats) |pc| {
+    for (self.design.port_concats) |pc| {
         bits.clearRetainingCapacity();
         var ok = for (pc.parts) |part| {
             if (!try partNodes(self, part, pc.main_tok, &bits)) break false;
@@ -472,7 +473,7 @@ fn qualifierOf(kind: Ast.NetKind) ?Preprocessor.Qualifier {
 /// `default_discipline directive." So only a net that still has none, and only a
 /// directive preceding its declaration, qualified for its type `q` or unqualified.
 fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?Preprocessor.Qualifier) Oom!void {
-    if (self.directives.disciplines.len == 0) return;
+    if (self.opts.directives.disciplines.len == 0) return;
     const idx = self.node_voltages.get(name) orelse return;
     if (idx == ground) return;
     if (self.out.nodes.items(.disc)[idx].len != 0) return;
@@ -486,7 +487,7 @@ fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?Pre
 /// §10.2 the `default_discipline in force for a `q` signal at token `main_tok`, or null.
 fn defaultDisciplineAt(self: *const Lower, main_tok: u32, q: ?Preprocessor.Qualifier) ?[]const u8 {
     if (main_tok >= self.tok_starts.len) return null;
-    return Preprocessor.DefaultDiscipline.inForce(self.directives.disciplines, self.tok_starts[main_tok], q);
+    return Preprocessor.DefaultDiscipline.inForce(self.opts.directives.disciplines, self.tok_starts[main_tok], q);
 }
 
 /// §3.9 "For digital primitives the domain is discrete and thus the discipline
@@ -539,7 +540,7 @@ fn checkPrimitiveTerminal(self: *Lower, term: Ast.ExprId, prim_tok: u32, what: [
 /// how multiple drivers resolve, which VerA does not model. Upgrade: a discrete
 /// net type on `Ast.NetDecl`.
 pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void {
-    if (Preprocessor.NetTypeRegion.inForce(self.directives.nettypes, self.tokStart(main_tok), .default) != .none) return;
+    if (Preprocessor.NetTypeRegion.inForce(self.opts.directives.nettypes, self.tokStart(main_tok), .default) != .none) return;
     var b = self.errWith(main_tok, .E0367);
     b.msg("`{s}` was never declared, and `default_nettype none is in force", .{name});
     b.note("§3.6.5 would make it an implicit net; IEEE 1364 §19.2's `none` is what withdraws that", .{});
@@ -556,9 +557,9 @@ pub fn rejectImplicitNet(self: *Lower, name: []const u8, main_tok: u32) Oom!void
 /// ponytail: 1.0 stands in for §19.9's Pu1 strength; the upgrade is discrete net
 /// resolution, where a pull is a driver rather than a potential.
 pub fn applyUnconnectedDrive(self: *Lower) Oom!void {
-    if (self.directives.drives.len == 0) return;
-    for (self.unconnected_inputs) |site| {
-        const drive = Preprocessor.DriveRegion.inForce(self.directives.drives, self.tokStart(site.main_tok), .default);
+    if (self.opts.directives.drives.len == 0) return;
+    for (self.design.unconnected_inputs) |site| {
+        const drive = Preprocessor.DriveRegion.inForce(self.opts.directives.drives, self.tokStart(site.main_tok), .default);
         if (drive == .float) continue;
         const idx = self.node_voltages.get(site.name) orelse continue;
         if (idx == ground) continue;
@@ -729,8 +730,8 @@ pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32 {
         // net `u.a`, so `flatName` resolves it. It never interns a new node:
         // §3.6.5's implicit net applies only to an undeclared simple name.
         .hier_ident => {
-            if (try lower_expr.refuseUnnamedGen(self, e)) return ground;
-            const name = try lower_expr.flatName(self, e);
+            if (try lower_expr_name.refuseUnnamedGen(self, e)) return ground;
+            const name = try lower_expr_name.flatName(self, e);
             if (!self.node_voltages.contains(name)) {
                 try self.err(self.file.exprs.mainTok(e), .E0901, "`{s}` names no net in the elaborated design", .{name});
                 return ground;
@@ -742,7 +743,7 @@ pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32 {
             // `u.v[1]`: §6.7.1's hierarchical terminal, one element of it.
             const name = switch (ex.tag(base)) {
                 .ident => self.file.str(ex.strOf(base)),
-                .hier_ident => if (try lower_expr.refuseUnnamedGen(self, base)) return ground else try lower_expr.flatName(self, base),
+                .hier_ident => if (try lower_expr_name.refuseUnnamedGen(self, base)) return ground else try lower_expr_name.flatName(self, base),
                 else => { // else: a select of anything but a net name is no net reference: E0306
                     try self.err(self.file.exprs.mainTok(e), .E0306, "", .{});
                     return ground;

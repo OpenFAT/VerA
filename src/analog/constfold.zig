@@ -11,10 +11,11 @@
 //! IEEE 1364-2005's §5.5.1 is what the body's bare §5.5.1 (signedness) means.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_expr = @import("expr.zig");
 const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
+const lower_expr_name = @import("expr_name.zig");
 const Const = constfold.Const;
 
 /// Folds an elaboration-time constant: literals, genvars (LRM §3.5) and parameters
@@ -57,7 +58,7 @@ const Env = struct {
         // A function-local parameter is not overridable by a model card
         // (§4.7.2: it never reaches the Model), so `foldExpr(..., false)`'s refusal
         // to look through a parameter does not apply to a shadowing local.
-        if (self.param_index.get(name)) |i| if (!lower_expr.funcParamShadows(self, name)) {
+        if (self.param_index.get(name)) |i| if (!lower_expr_name.funcParamShadows(self, name)) {
             if (!env.params) return null;
             if (env.shape) |l| l.out.params.items[i].shape = true;
         };
@@ -219,7 +220,7 @@ fn nameSignedForClog2(self: *const Lower, e: Ast.ExprId, depth: u32) ?bool {
 /// width (docs/specification/Vague_Decisions.md VD-089). Null for a local parameter, an
 /// `integer` or ranged one (whose width no override changes), or a non-integer.
 pub fn hostSizedParam(self: *const Lower, name: []const u8) ?usize {
-    if (self.vars.contains(name) or lower_expr.funcParamShadows(self, name)) return null;
+    if (self.vars.contains(name) or lower_expr_name.funcParamShadows(self, name)) return null;
     const pi = self.param_index.get(name) orelse return null;
     const p = self.out.params.items[pi];
     if (p.ty != .integer or p.integer32 or p.is_local) return null;

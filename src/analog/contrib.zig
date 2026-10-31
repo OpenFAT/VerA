@@ -19,7 +19,7 @@
 //! §7.3.2.1, §9.18.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_discipline = @import("discipline.zig");
@@ -33,6 +33,8 @@ const Elaborate = @import("elab").Elaborate;
 const Const = Lower.Const;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
+const lower_expr_name = @import("expr_name.zig");
+const lower_expr_access = @import("expr_access.zig");
 const Oom = Lower.Oom;
 const unnamed_branch = Lower.unnamed_branch;
 const ground = Lower.ground;
@@ -717,8 +719,8 @@ pub fn checkSourceLoops(self: *Lower) Oom!void {
         d.msg("`V({s},{s})` closes a loop of potential sources with a contribution from `{s}`", .{
             lower_node.nodeName(self, c.hi),
             lower_node.nodeName(self, c.lo),
-            if (theirs < self.unit_paths.len and self.unit_paths[theirs].path.len != 0)
-                self.unit_paths[theirs].path[0 .. self.unit_paths[theirs].path.len - 1] // drop the trailing separator
+            if (theirs < self.design.units.len and self.design.units[theirs].path.len != 0)
+                self.design.units[theirs].path[0 .. self.design.units[theirs].path.len - 1] // drop the trailing separator
             else
                 "the top-level module",
         });
@@ -829,7 +831,7 @@ fn branchKey(self: *Lower, buf: *[lower_shape.elem_key_len]u8, e: Ast.ExprId) Oo
         // `nodeOf`, whose `.hier_ident` arm owns E0901. Arena rather than `buf`:
         // cold, one path per source reference.
         // §6.6.2: into an unnamed generate block, `nodeOf` refuses it (E0998).
-        .hier_ident => if (try lower_expr.unnamedGenScope(self, e) != null) null else try lower_expr.flatName(self, e),
+        .hier_ident => if (try lower_expr_name.unnamedGenScope(self, e) != null) null else try lower_expr_name.flatName(self, e),
         // Into the caller's buffer, not the arena: both consumers only call
         // `branches.get`/`port_branches.get`, which never retain a key, and this
         // runs once per §4.4.1 access.
@@ -875,7 +877,7 @@ fn ownerUnit(self: *Lower, e: Ast.ExprId) Oom!u32 {
         if (t == .none or ex.tag(t) != .hier_ident) continue;
         const path = try Elaborate.flatReference(self.file, self.arena, self.module, t);
         const cut = std.mem.findScalarLast(u8, path, Elaborate.sep) orelse continue;
-        for (self.unit_paths, 0..) |u, i| {
+        for (self.design.units, 0..) |u, i| {
             if (std.mem.eql(u8, u.path, path[0 .. cut + 1])) return @intCast(i);
         }
     }
@@ -997,7 +999,7 @@ pub const generic_flow = "flow";
 ///    (natureless, or `I` on a signal-flow `voltage`; §1.3.4).
 ///  - E0501 with a suggestion: the §3.6.1.2 name mismatch.
 pub fn checkAccessMatch(self: *Lower, e: Ast.ExprId, name: []const u8, access: Access, node: u32) Oom!void {
-    if (node == ground or self.local_accesses.contains(e)) return;
+    if (node == ground or self.design.local_accesses.contains(e)) return;
     const dname = (try portDiscipline(self, e)) orelse self.out.nodes.items(.disc)[node];
     if (dname.len == 0) {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0337);
@@ -1050,7 +1052,7 @@ pub fn checkAccessMatch(self: *Lower, e: Ast.ExprId, name: []const u8, access: A
 fn portDiscipline(self: *Lower, e: Ast.ExprId) Oom!?[]const u8 {
     const ex = &self.file.exprs;
     if (ex.tag(e) != .branch_access or ex.tag(ex.lhs(e)) != .hier_ident) return null;
-    return self.port_disciplines.get(try Elaborate.flatReference(self.file, self.arena, self.module, ex.lhs(e)));
+    return self.design.port_disciplines.get(try Elaborate.flatReference(self.file, self.arena, self.module, ex.lhs(e)));
 }
 
 /// Returns the contribution index for a target, creating its entry and
@@ -1088,7 +1090,7 @@ pub fn contribIndex(self: *Lower, t: Target, tok: u32) Oom!u32 {
 /// §5.4.1/§5.6.8.1 one instance's share of an unnamed-branch row. Flattening
 /// stamps every instance's unnamed branch over one node pair as one row (the
 /// node equations only see the sum), but each instance's branch is its own,
-/// so its flow read (`lower_expr.flowAccum`) is what THAT instance's branch
+/// so its flow read (`lower_expr_access.flowAccum`) is what THAT instance's branch
 /// carries: its own `<+` plus §5.6.8.2's hierarchical contributions aimed at
 /// it. Seeded in the entry block like `accum`.
 ///

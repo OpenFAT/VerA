@@ -21,7 +21,7 @@
 //! IEEE 1364-2005 clauses cited: §3.5.1, §17.1.1.2, §17.1.1.3, §17.10.2.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
 const lower_random = @import("random.zig");
@@ -31,6 +31,7 @@ const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Ssa = @import("ssa.zig");
 const str_k = @import("kernels").str_kernels;
+const lower_expr_name = @import("expr_name.zig");
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
@@ -977,7 +978,7 @@ fn identSize(self: *Lower, name: []const u8) ?IntSize {
             w = rr.width;
             signed = rr.signed;
         }
-    } else if (!lower_expr.funcParamShadows(self, name)) if (self.param_index.get(name)) |pi| {
+    } else if (!lower_expr_name.funcParamShadows(self, name)) if (self.param_index.get(name)) |pi| {
         if (lower_constfold.hostSizedParam(self, name) != null) return null;
         const p = self.out.params.items[pi];
         w = p.source_width orelse 32;

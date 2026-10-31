@@ -16,7 +16,7 @@
 //! §7.3.6.2, §8.5.3.6.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_control = @import("control.zig");
 const lower_expr = @import("expr.zig");
@@ -30,6 +30,7 @@ const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const VarSlot = Lower.VarSlot;
 const Ssa = @import("ssa.zig");
+const lower_expr_name = @import("expr_name.zig");
 
 /// This file's private state on `Lower` (`Lower.event_state`).
 pub const State = struct {
@@ -444,7 +445,7 @@ pub fn captureExpr(self: *Lower, e: Ast.ExprId, value: TypedValue) Oom!void {
         .value = value,
         .variable = switch (self.file.exprs.tag(e)) {
             .ident => self.vars.get(self.file.str(self.file.exprs.strOf(e))),
-            .hier_ident => self.vars.get(try lower_expr.flatName(self, e)),
+            .hier_ident => self.vars.get(try lower_expr_name.flatName(self, e)),
             else => null, // else: only a resolved name directly reads one variable
         },
         .effects = try captureTimerEffects(self, e),
@@ -698,7 +699,7 @@ fn timerInputReads(self: *Lower, e: Ast.ExprId, reads: *std.ArrayList(TimerRead)
     }
     const name = switch (ex.tag(e)) {
         .ident => self.file.str(ex.strOf(e)),
-        .hier_ident => try lower_expr.flatName(self, e),
+        .hier_ident => try lower_expr_name.flatName(self, e),
         else => null, // else: recurse into the expression's reads below
     };
     if (name) |n| {

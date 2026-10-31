@@ -9,7 +9,7 @@
 //! IEEE 1364-2005 clauses cited: §17.9.3.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
 const lower_var = @import("var.zig");

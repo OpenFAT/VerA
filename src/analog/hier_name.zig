@@ -7,7 +7,7 @@
 //! §5.4.3, §5.8.3, §6.2.1, §6.4.3, §6.7, §9.16, §9.20.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_discipline = @import("discipline.zig");
 const lower_expr = @import("expr.zig");
@@ -17,6 +17,7 @@ const lower_sysfunc = @import("sysfunc.zig");
 const Ast = @import("frontend").Ast;
 const Elaborate = @import("elab").Elaborate;
 const Mir = @import("ir").Mir;
+const lower_expr_op = @import("expr_op.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
@@ -99,7 +100,7 @@ fn condValue(self: *Lower, t: Cond) Oom!Mir.Value {
         // §5.8.3 an arm matches any one of its labels.
         const sv = try lower_expr.lowerExpr(self, t.e);
         for (t.labels) |l| {
-            const eq = try lower_expr.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l));
+            const eq = try lower_expr_op.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l));
             b = if (b) |p| try self.emit(.logor, &.{ p, eq }) else eq;
         }
     }
@@ -372,8 +373,8 @@ fn lookupFlatNode(self: *Lower, p: []const u8) ?AliasHit {
 /// with its last segment dropped, separator included, "" at the top. Joined to
 /// an `inst_name` it gives the flat name of a sibling.
 fn callerParentPath(self: *const Lower) []const u8 {
-    if (self.cur_unit >= self.unit_paths.len) return "";
-    const p = self.unit_paths[self.cur_unit].path;
+    if (self.cur_unit >= self.design.units.len) return "";
+    const p = self.design.units[self.cur_unit].path;
     if (p.len == 0) return p;
     // `path` ends with the separator, so the caller's own segment is the text
     // between the previous separator and the last one.
@@ -413,11 +414,11 @@ fn resolveProbe(self: *Lower, path: []const u8) Oom!?TypedValue {
     // §6.4.3 "If a paramset output variable has the same name as a module
     // output variable, the paramset's value is reported for instances
     // using the paramset": first, and the nearest link's (last) wins.
-    var k = self.ps_outputs.len;
+    var k = self.design.ps_outputs.len;
     while (k > 0) {
         k -= 1;
-        if (!std.mem.eql(u8, self.ps_outputs[k].report, path)) continue;
-        const slot = self.vars.get(self.ps_outputs[k].flat) orelse break;
+        if (!std.mem.eql(u8, self.design.ps_outputs[k].report, path)) continue;
+        const slot = self.vars.get(self.design.ps_outputs[k].flat) orelse break;
         return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
     }
     if (self.param_index.get(path)) |pi|
@@ -429,7 +430,7 @@ fn resolveProbe(self: *Lower, path: []const u8) Oom!?TypedValue {
     // value it computed for this evaluation.
     // §6.4.3 unless the instance's paramset hides it: "the module output
     // variable shall not be available for instances using the paramset".
-    for (self.ps_hidden) |h| if (std.mem.eql(u8, h, path)) return null;
+    for (self.design.ps_hidden) |h| if (std.mem.eql(u8, h, path)) return null;
     if (self.vars.get(path)) |slot|
         return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
     return null;
@@ -469,7 +470,7 @@ fn lowerSimprobeRuntime(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?
     };
     const parent = callerParentPath(self);
     var keys: std.ArrayList([]const u8) = .empty;
-    for (self.ps_outputs) |o| try keys.append(self.arena, o.report);
+    for (self.design.ps_outputs) |o| try keys.append(self.arena, o.report);
     var pk = self.param_index.keyIterator();
     while (pk.next()) |key| try keys.append(self.arena, key.*);
     var vk = self.vars.keyIterator();
@@ -535,7 +536,7 @@ test callerParentPath {
         .{ .module = "a", .path = "u1.", .decl = undefined },
         .{ .module = "b", .path = "u1.u2.", .decl = undefined },
     };
-    h.low.unit_paths = &units;
+    h.low.design.units = &units;
     const want = [_][]const u8{ "", "", "u1.", "" };
     for (want, 0..) |w, unit| {
         h.low.cur_unit = @intCast(unit);

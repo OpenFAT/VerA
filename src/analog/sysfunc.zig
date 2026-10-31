@@ -16,7 +16,7 @@
 
 const std = @import("std");
 const hier_param = @import("elab").hier_param;
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_random = @import("random.zig");
@@ -31,6 +31,7 @@ const Elaborate = @import("elab").Elaborate;
 const Lexer = @import("frontend").Lexer;
 const simparam = @import("ir").simparam;
 const fopen_types = @import("kernels").fopen_types;
+const lower_math = @import("math.zig");
 const simparamValueIn = simparam.simparamValueIn;
 const simparamIsRuntime = simparam.simparamIsRuntime;
 const host_simparams = simparam.host_simparams;
@@ -67,7 +68,7 @@ pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         // function reads "Supported in analog context of connectmodule: No"
         // ($receiver_count alone reads Yes). This call is in a connect module's
         // analog block, so the fence it hits is §9.2's analog column.
-        const in_cm = self.cur_unit < self.unit_paths.len and self.unit_paths[self.cur_unit].decl.is_connect;
+        const in_cm = self.cur_unit < self.design.units.len and self.design.units[self.cur_unit].decl.is_connect;
         if (in_cm and !std.mem.eql(u8, name, "$receiver_count")) {
             var b = self.errWith(self.file.exprs.mainTok(e), .E0806);
             b.msg("`{s}` in the analog block of a connect module", .{name});
@@ -130,7 +131,7 @@ pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // sysFuncTy cannot express that: it would turn integer division into real
     // division. Use typed arithmetic opcodes, after the context checks above.
     if (std.mem.eql(u8, name, "$abs") or std.mem.eql(u8, name, "$min") or
-        std.mem.eql(u8, name, "$max")) return lower_expr.lowerBuiltin(self, e);
+        std.mem.eql(u8, name, "$max")) return lower_math.lowerBuiltin(self, e);
     // §3.4.7/§9.18 aliases and the original system spelling denote the
     // same top-level value. Instance-local reads were resolved in elaboration.
     if (hier_param.Kind.fromName(name)) |kind| if (self.hier_params.get(kind)) |pi|
@@ -200,13 +201,13 @@ pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // `cur_unit`, the instance that wrote this block: "module" is "the name of the
     // module from which $simparam$str is called" and "instance" is "the
     // hierarchical name of the instance". Codegen only sees the flattened module.
-    if (std.mem.eql(u8, name, "$simparam$str") and (self.cur_unit < self.unit_paths.len or self.module != null)) {
+    if (std.mem.eql(u8, name, "$simparam$str") and (self.cur_unit < self.design.units.len or self.module != null)) {
         const a = ex.args(e);
         if (a.len >= 1) if (constStrArg(self, a[0])) |nm| {
             // A design with no instances has no unit table: its one unit is the
             // top module, at the root.
-            const u: struct { module: []const u8, path: []const u8 } = if (self.cur_unit < self.unit_paths.len)
-                .{ .module = self.unit_paths[self.cur_unit].module, .path = self.unit_paths[self.cur_unit].path }
+            const u: struct { module: []const u8, path: []const u8 } = if (self.cur_unit < self.design.units.len)
+                .{ .module = self.design.units[self.cur_unit].module, .path = self.design.units[self.cur_unit].path }
             else
                 .{ .module = self.file.str(self.module.?.name), .path = "" };
             if (std.mem.eql(u8, nm, "module"))
@@ -215,7 +216,7 @@ pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
             // module's instance name is its module name, and the path is joined
             // to it by §6.7's period. `path` already carries the separator.
             if (std.mem.eql(u8, nm, "instance") or std.mem.eql(u8, nm, "path")) {
-                const top = if (self.unit_paths.len != 0) self.unit_paths[0].module else u.module;
+                const top = if (self.design.units.len != 0) self.design.units[0].module else u.module;
                 const inst = if (u.path.len == 0)
                     top
                 else
@@ -259,7 +260,7 @@ pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         const args = ex.args(e);
         if (args.len == 1) {
             if (lower_constfold.constEval(self, args[0])) |c| switch (c) {
-                .str => |s| if (simparamValueIn(self.directives.timescale(), s) == null and !simparamIsRuntime(s)) {
+                .str => |s| if (simparamValueIn(self.opts.directives.timescale(), s) == null and !simparamIsRuntime(s)) {
                     var b = self.errWith(self.file.exprs.mainTok(e), .E0811);
                     b.msg("`\"{s}\"`", .{s});
                     b.note("$simparam(\"{s}\", <expression>) supplies the value to use instead, and §9.15 makes that form legal for any name", .{s});
@@ -377,7 +378,7 @@ pub fn lowerSysCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // §12.32.1 "The sysfunctype field ... shall define the type of value
     // which a system function shall return": a vpiIntFunc's call is an
     // integer, the host's value rounded as §4.2.1.1 converts a real.
-    if (Mir.Callee.fromName(name) == .systf) for (self.int_systfs) |n| if (std.mem.eql(u8, n, name))
+    if (Mir.Callee.fromName(name) == .systf) for (self.opts.int_systfs) |n| if (std.mem.eql(u8, n, name))
         return .{ .v = try self.emit(.fi_cast, &.{v}), .ty = .integer };
     return .{ .v = v, .ty = sysFuncTy(name) };
 }
@@ -474,8 +475,8 @@ pub fn checkArity(self: *Lower, tok: u32, name: []const u8, args: []const Ast.Ex
     const a = Mir.callee.arity(c);
     if (a.admits(args.len)) return false;
     // `$log10` is Table 9-11's spelling of Table 4-14's `log`.
-    const math = c == .@"$log10" or lower_expr.unaryMathOp(name[1..]) != null or
-        lower_expr.binaryMathOp(name[1..]) != null;
+    const math = c == .@"$log10" or lower_math.unaryMathOp(name[1..]) != null or
+        lower_math.binaryMathOp(name[1..]) != null;
     const want: u8 = if (args.len < a.min) a.min else a.max;
     if (math) {
         try self.err(tok, .E0506, "`{s}()` takes {d}", .{ name, want });

@@ -11,7 +11,7 @@
 //! §3.4.8, §3.6.3.2, §4.2.1.1, §4.2.13, §4.2.14.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");

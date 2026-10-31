@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const hier_param = @import("elab").hier_param;
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const Elaborate = @import("elab").Elaborate;
 const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
@@ -24,6 +24,7 @@ const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
+const lower_expr_name = @import("expr_name.zig");
 const Oom = Lower.Oom;
 const Const = Lower.Const;
 const astTy = Lower.astTy;
@@ -66,7 +67,7 @@ pub fn lowerParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
         _ = try aliasSystemParam(self, alias, self.file.str(a.target));
     }
     for (module.params) |*p| try lowerParamDecl(self, p);
-    for (self.selection_params) |name| if (self.param_index.get(self.file.str(name))) |i| {
+    for (self.design.selection_params) |name| if (self.param_index.get(self.file.str(name))) |i| {
         self.out.params.items[i].shape = true;
     };
 }
@@ -142,7 +143,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
         try self.err(decl.main_tok, .E0363, "`{s}` reads `{s}`", .{ name, what });
     }
     if (oomrInDefault(self, decl.default)) |h|
-        try self.err(self.file.exprs.mainTok(h), .E0924, "`{s}` in the default of `{s}`", .{ try lower_expr.flatName(self, h), name });
+        try self.err(self.file.exprs.mainTok(h), .E0924, "`{s}` in the default of `{s}`", .{ try lower_expr_name.flatName(self, h), name });
 
     // §3.4.4 array parameters are scalarized into `name[i]` entries.
     if (decl.dims.len != 0) return lowerParamArray(self, decl, name);
@@ -154,7 +155,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     // the declared type, or — §3.4.1's inference — the declared default's.
     // A string parameter takes the text as typed; a numeric one a text that
     // is no number is refused once lowering is done (Compilation's check).
-    const over: ?Const = if (decl.is_local) null else for (self.param_overrides) |o| {
+    const over: ?Const = if (decl.is_local) null else for (self.opts.param_overrides) |o| {
         if (!std.mem.eql(u8, o.name, name)) continue;
         if (decl.ty == .string or (declared != null and declared.? == .str)) break .{ .str = o.text };
         if (!std.math.isNan(o.value)) break constfold.parameterCardValue(decl.ty, declared, o.value);
@@ -735,7 +736,7 @@ test "checkParamRange: §3.4.2 an overridden value lies in some `from` and in no
         try h.init(std.testing.allocator, src);
         defer h.deinit();
         const overrides = [_]Lower.ParamOverride{.{ .name = "r", .value = c.value }};
-        h.low.param_overrides = &overrides;
+        h.low.opts.param_overrides = &overrides;
         _ = try h.lower();
         try std.testing.expectEqual(c.refused, h.count(.E0361) != 0);
     }

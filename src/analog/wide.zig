@@ -34,11 +34,13 @@
 //! §5.4.1, §5.5.1-§5.5.3, Table 5-6 and Table 5-22.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const Lowered = @import("ir").Lowered;
 const lower_expr = @import("expr.zig");
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
+const lower_expr_name = @import("expr_name.zig");
+const lower_expr_select = @import("expr_select.zig");
 const Oom = Lower.Oom;
 const VarSlot = Lower.VarSlot;
 const TypedValue = Lower.TypedValue;
@@ -261,7 +263,7 @@ fn identType(b: *Build, e: Ast.ExprId, name: []const u8) Oom!T {
         if (l.reg_ranges.get(name)) |rr| return .{ .w = rr.width, .s = rr.signed };
         return opaqueType(b, e);
     }
-    if (!lower_expr.funcParamShadows(l, name)) if (l.param_index.get(name)) |pi| {
+    if (!lower_expr_name.funcParamShadows(l, name)) if (l.param_index.get(name)) |pi| {
         const p = l.out.params.items[pi];
         if (p.ty != .integer) return opaqueType(b, e);
         const w = p.source_width orelse 32;
@@ -495,9 +497,9 @@ fn constReg(b: *Build, name: []const u8, st: T) Oom!u32 {
 fn inputNode(b: *Build, name: []const u8, st: T) Oom!u32 {
     const l = b.l;
     const words = l.out.discrete_words.get(name) orelse 1;
-    if (words == 1) return b.node(.{ .op = .leaf_int, .width = st.w, .signed = st.s, .arg = try b.arg(try lower_expr.regWordValue(l, name, 0)) });
-    const first = try b.arg(try lower_expr.regWordValue(l, name, 0));
-    for (1..words) |k| _ = try b.arg(try lower_expr.regWordValue(l, name, @intCast(k)));
+    if (words == 1) return b.node(.{ .op = .leaf_int, .width = st.w, .signed = st.s, .arg = try b.arg(try lower_expr_select.regWordValue(l, name, 0)) });
+    const first = try b.arg(try lower_expr_select.regWordValue(l, name, 0));
+    for (1..words) |k| _ = try b.arg(try lower_expr_select.regWordValue(l, name, @intCast(k)));
     return b.node(.{ .op = .leaf_words, .width = st.w, .signed = st.s, .arg = first });
 }
 
@@ -514,7 +516,7 @@ fn selectOf(l: *Lower, e: Ast.ExprId) ?[]const u8 {
     const name = l.file.str(ex.strOf(base));
     if (l.arrays.contains(name) or !l.reg_ranges.contains(name)) return null;
     if (l.in_d2a_body and l.out.discrete_snaps.contains(name)) return null;
-    if (l.vars.get(name) == null and !(l.out.discrete_inputs.contains(name) and !lower_expr.funcParamShadows(l, name))) return null;
+    if (l.vars.get(name) == null and !(l.out.discrete_inputs.contains(name) and !lower_expr_name.funcParamShadows(l, name))) return null;
     return name;
 }
 
@@ -530,17 +532,17 @@ fn selectType(b: *Build, e: Ast.ExprId, name: []const u8) Oom!T {
     }
     const ranged = ex.tag(sub) == .range;
     const hi_e, const lo_e = if (ranged) .{ ex.lhs(sub), ex.rhs(sub) } else .{ sub, sub };
-    const hi = lower_expr.selectBound(l, hi_e);
-    const lo = lower_expr.selectBound(l, lo_e);
+    const hi = lower_expr_select.selectBound(l, hi_e);
+    const lo = lower_expr_select.selectBound(l, lo_e);
     if (hi == null or lo == null) {
         try b.fail(sub, "a select of `{s}` needs constant bounds", .{name});
         return .{ .w = 1 };
     }
-    const pa = lower_expr.selectPos(rr, hi.?);
-    const pb = lower_expr.selectPos(rr, lo.?);
+    const pa = lower_expr_select.selectPos(rr, hi.?);
+    const pb = lower_expr_select.selectPos(rr, lo.?);
     if (pa == null or pb == null) {
         b.ok = false;
-        _ = try lower_expr.outsideRange(l, sub, name, if (pa == null) hi.? else lo.?, rr.width);
+        _ = try lower_expr_select.outsideRange(l, sub, name, if (pa == null) hi.? else lo.?, rr.width);
         return .{ .w = 1 };
     }
     const s: Sel = .{ .name = name, .lo = @min(pa.?, pb.?), .width = @max(pa.?, pb.?) - @min(pa.?, pb.?) + 1 };

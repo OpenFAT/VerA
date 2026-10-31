@@ -9,7 +9,7 @@
 //! §9.21.5.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
@@ -270,7 +270,7 @@ fn readTableFile(
     const io = std.Io.Threaded.global_single_threaded.io();
     const dir: std.Io.Dir = .cwd();
     const text = blk: {
-        for (self.include_dirs) |base| {
+        for (self.opts.include_dirs) |base| {
             const full = try std.fs.path.join(self.arena, &.{ base, name });
             // No size bound but memory: a data file is numbers, not text the
             // lexer addresses (§9.21.1 bounds nothing about it).

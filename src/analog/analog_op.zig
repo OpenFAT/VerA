@@ -19,7 +19,7 @@
 //! §9.21.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_control = @import("control.zig");
@@ -32,6 +32,8 @@ const lower_shape = @import("shape.zig");
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
 const Mir = @import("ir").Mir;
+const lower_expr_select = @import("expr_select.zig");
+const lower_math = @import("math.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
@@ -98,7 +100,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // §4.5.6 ddx(f, V(node)): the second argument is a probe, not a value;
     // it names the unknown to differentiate with respect to.
     if (std.mem.eql(u8, name, "ddx")) {
-        if (args.len != 2) return lower_expr.arityError(self, e, name, 2);
+        if (args.len != 2) return lower_math.arityError(self, e, name, 2);
         const f = try self.toReal(try lower_expr.lowerExpr(self, args[0]));
         if (ex.tag(args[1]) != .branch_access) {
             try self.err(self.file.exprs.mainTok(e), .E0504, "", .{});
@@ -423,7 +425,7 @@ pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
     const is_potential = std.mem.eql(u8, half, "potential");
     if (!is_potential and !std.mem.eql(u8, half, "flow")) return null;
 
-    const dname = if (self.attribute_disciplines.get(e)) |disc| self.file.str(disc) else blk: {
+    const dname = if (self.design.attribute_disciplines.get(e)) |disc| self.file.str(disc) else blk: {
         const net = self.file.str(parts[0]);
         // §5.5.3 "the attributes for a net or a branch": a §3.12 branch reads
         // the discipline of its terminals, which §3.11 makes compatible; the
@@ -563,7 +565,7 @@ pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.Expr
             var index: [1]i64 = undefined;
             for (0..@intCast(d.count())) |k| {
                 lower_shape.shapeSubscripts(info.dims, k, &index);
-                const el = (try lower_expr.arrayElemValue(self, name, &index)) orelse return true;
+                const el = (try lower_expr_select.arrayElemValue(self, name, &index)) orelse return true;
                 try out.append(self.arena, try self.toReal(el));
             }
             return true;
@@ -598,7 +600,7 @@ pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.Expr
             const step: i64 = if (ends[1] >= ends[0]) 1 else -1;
             try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(n)));
             for (0..@as(usize, @intCast(n))) |k| {
-                const el = (try lower_expr.arrayElemValue(self, name, &.{ends[0] + step * @as(i64, @intCast(k))})) orelse return true;
+                const el = (try lower_expr_select.arrayElemValue(self, name, &.{ends[0] + step * @as(i64, @intCast(k))})) orelse return true;
                 try out.append(self.arena, try self.toReal(el));
             }
             return true;

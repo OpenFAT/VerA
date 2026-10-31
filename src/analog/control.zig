@@ -10,7 +10,7 @@
 //! IEEE 1364-2005 clauses cited: §9.5.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
 const lower_hier_name = @import("hier_name.zig");
@@ -20,6 +20,8 @@ const Ast = @import("frontend").Ast;
 const diag = @import("diag");
 const Mir = @import("ir").Mir;
 const Elaborate = @import("elab").Elaborate;
+const lower_expr_op = @import("expr_op.zig");
+const lower_expr_case = @import("expr_case.zig");
 const Const = Lower.Const;
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
@@ -71,7 +73,7 @@ pub fn checkGenScheme(self: *Lower, tok: u32, scheme: Ast.ExprId) Oom!void {
 /// flattening retained both arms, so judge their gates only after lowerParamDecl.
 /// As with every generate scheme, the card must preserve the selected shape.
 pub fn checkParamsetDefparams(self: *Lower) Oom!void {
-    for (self.paramset_defparams) |dp| {
+    for (self.design.paramset_defparams) |dp| {
         if (dp.gate != .none) {
             const active = lower_constfold.shapeEval(self, dp.gate) orelse {
                 try checkGenScheme(self, self.file.exprs.mainTok(dp.gate), dp.gate);
@@ -404,7 +406,7 @@ pub fn lowerBranchStmt(
 
 /// Lowers a §5.8.3 case as its equality chain: the first matching arm wins and
 /// `default` is the final else. `casex`/`casez` (§7.3.2) differ only in the
-/// don't-care bits a four-state side brings (`lower_expr.caseMatch`).
+/// don't-care bits a four-state side brings (`lower_expr_case.caseMatch`).
 pub fn lowerCase(
     self: *Lower,
     tok: u32,
@@ -458,9 +460,9 @@ fn lowerCaseChain(
     var cond: ?Mir.Value = null;
     for (a.labels) |l| {
         const eq = if (four_state) |fs|
-            (try lower_expr.caseMatch(self, kind, fs, l)) orelse try lower_expr.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l))
+            (try lower_expr_case.caseMatch(self, kind, fs, l)) orelse try lower_expr_op.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l))
         else
-            try lower_expr.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l));
+            try lower_expr_op.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l));
         cond = if (cond) |c| try self.emit(.logor, &.{ c, eq }) else eq;
     }
 

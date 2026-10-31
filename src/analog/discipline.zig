@@ -15,7 +15,7 @@
 //! §5.5.1, §7.4.3.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_node = @import("node.zig");

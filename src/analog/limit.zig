@@ -10,7 +10,7 @@
 //! LRM clauses this file's code cites: §2.8, §4.5.15, §4.7, §9.17.3, §9.20.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_func = @import("func.zig");
 const lower_node = @import("node.zig");

@@ -9,7 +9,7 @@
 //! IEEE 1364-2005 clauses cited: §5.5.3.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_contrib = @import("contrib.zig");
@@ -26,6 +26,7 @@ const Mir = @import("ir").Mir;
 const Ssa = @import("ssa.zig");
 const Elaborate = @import("elab").Elaborate;
 const diag = @import("diag");
+const lower_expr_select = @import("expr_select.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const ArrayInfo = Lower.ArrayInfo;
@@ -218,7 +219,7 @@ fn scopeElem(self: *Lower, b: Ast.SeqBlock) Oom!?[]const u8 {
     }
     if (b.name == .none) return null;
     const label = self.file.str(b.name);
-    const unit = if (self.cur_unit < self.unit_paths.len) self.unit_paths[self.cur_unit].path else "";
+    const unit = if (self.cur_unit < self.design.units.len) self.design.units[self.cur_unit].path else "";
     return if (std.mem.startsWith(u8, label, unit)) label[unit.len..] else label;
 }
 
@@ -676,7 +677,7 @@ fn copyWholeArray(
     for (0..n) |k| {
         lower_shape.shapeSubscripts(dst.dims, k, di);
         lower_shape.shapeSubscripts(src.dims, k, si);
-        const v = (try lower_expr.arrayElemValue(self, src_name, si)) orelse continue;
+        const v = (try lower_expr_select.arrayElemValue(self, src_name, si)) orelse continue;
         if (dst.mem == null and !self.vars.contains(try lower_shape.elemKey(self, &key_buf, dst_name, di))) continue;
         // The element types are already known equivalent, so there is no
         // conversion to make, only the source's `Value` to re-bind.
@@ -780,7 +781,7 @@ pub fn readSliceCells(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, sd: []const
         if (!known) return false; // out of range — E0310 already reported
         for (out, 0..) |*v, k| {
             lower_shape.shapeSubscripts(sd, k, idx[s.subs.len..]);
-            const el = (try lower_expr.arrayElemValue(self, s.name, idx)) orelse return false;
+            const el = (try lower_expr_select.arrayElemValue(self, s.name, idx)) orelse return false;
             v.* = el.v;
         }
         return true;
@@ -814,7 +815,7 @@ pub fn readSliceCells(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, sd: []const
         lower_shape.shapeSubscripts(sd, k, idx[s.subs.len..]);
         for (0..lower_shape.shapeCells(pdims)) |p| {
             lower_shape.shapeSubscripts(pdims, p, idx[0..s.subs.len]);
-            const el = (try lower_expr.arrayElemValue(self, s.name, idx)) orelse return false;
+            const el = (try lower_expr_select.arrayElemValue(self, s.name, idx)) orelse return false;
             try args.append(self.arena, el.v);
         }
         v.* = try self.call(callee, args.items);
@@ -966,7 +967,7 @@ pub fn resolveLvalue(self: *Lower, e: Ast.ExprId) Oom!?Lvalue {
                     try self.err(self.file.exprs.mainTok(e), .E0311, "indexing `{s}`", .{name});
                     return null;
                 };
-                // `lower_expr.lowerIndex`'s rule, so a write and a read of
+                // `lower_expr_select.lowerIndex`'s rule, so a write and a read of
                 // one subscript agree: a real with no §4.2.1.1 integer (NaN,
                 // an infinity, past i64) names no element. Saturating it
                 // wrote a NaN subscript to element 0.

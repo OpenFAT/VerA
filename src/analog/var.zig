@@ -24,7 +24,7 @@
 //! §9.13.1/§9.13.2 hidden seed storage (`hiddenHeldInt`) uses the same retained SSA mechanism.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_context = @import("context.zig");
 const lower_contrib = @import("contrib.zig");
@@ -35,6 +35,7 @@ const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Ssa = @import("ssa.zig");
 const rules = @import("elab").discipline_rules;
+const lower_expr_select = @import("expr_select.zig");
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const VarSlot = Lower.VarSlot;
@@ -302,7 +303,7 @@ const Exposed = struct {
         // §5.9.2 the init assignment runs once, before the condition is read.
         if (s == .for_stmt) try x.stmt(s.for_stmt.init);
         // §9.4 a print the device drops reads nothing in the device.
-        const dropped = s == .sys_task and self.displays_dropped and
+        const dropped = s == .sys_task and self.opts.displays_dropped and
             Mir.callee.family(.fromName(self.file.str(s.sys_task.name))) == .display;
         if (!dropped) try self.file.stmtEdges(id, Own{ .x = x });
         const funcs: []const Ast.FuncDecl = if (self.module) |m| m.functions else &.{};
@@ -546,7 +547,7 @@ const Held = struct {
 };
 
 /// §3.2.2 which arrays does some subscript index at run time? Lowering decides
-/// that per reference (`lower_expr.lowerIndex`: a subscript `foldExpr(.., false)`
+/// that per reference (`lower_expr_select.lowerIndex`: a subscript `foldExpr(.., false)`
 /// cannot fold), after the declaration has already chosen a representation, so
 /// this answers it ahead of time, by NAME and over the whole source, with the
 /// same rule: a subscript reading a variable, a parameter (a model card can
@@ -654,7 +655,7 @@ pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: [
     };
     var port_vars: Set = .empty;
     defer port_vars.deinit(self.arena);
-    for (self.port_vars) |name| try port_vars.put(self.arena, name, {});
+    for (self.design.port_vars) |name| try port_vars.put(self.arena, name, {});
     var var_names: Set = .empty;
     defer var_names.deinit(self.arena);
     for (vars) |v| {

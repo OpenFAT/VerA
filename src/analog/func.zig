@@ -13,7 +13,7 @@
 //! IEEE 1364-2005 clauses cited: §10.4.1.
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_event = @import("event.zig");
 const lower_expr = @import("expr.zig");
@@ -23,6 +23,8 @@ const lower_shape = @import("shape.zig");
 const lower_var = @import("var.zig");
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
+const lower_expr_select = @import("expr_select.zig");
+const lower_math = @import("math.zig");
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
@@ -148,7 +150,7 @@ pub fn lowerUserCall(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         return inlineUserFuncPre(self, fd, &.{}, ex.args(e), e);
     }
     // vpi_* and every other unresolved name lands here.
-    try lower_expr.unknownCall(self, e, name);
+    try lower_math.unknownCall(self, e, name);
     return poison;
 }
 
@@ -371,7 +373,7 @@ pub fn inlineUserFuncPre(
             const idx = try lower_shape.subscriptBuf(self, &sub, info.dims.len);
             for (vals, 0..) |*v, k| {
                 lower_shape.shapeSubscripts(info.dims, k, idx);
-                v.* = (try lower_expr.arrayElemValue(self, self.file.str(formal.name), idx)).?.v;
+                v.* = (try lower_expr_select.arrayElemValue(self, self.file.str(formal.name), idx)).?.v;
             }
             try writeback.append(self.arena, vals);
             continue;
@@ -500,7 +502,7 @@ fn funcArrayIn(self: *Lower, actual: Ast.ExprId, ty: Ty, out: []Mir.Value) Oom!b
             const idx = try lower_shape.subscriptBuf(self, &sub, info.dims.len);
             for (out, 0..) |*v, k| {
                 lower_shape.shapeSubscripts(info.dims, k, idx);
-                const el = (try lower_expr.arrayElemValue(self, aname, idx)) orelse return false;
+                const el = (try lower_expr_select.arrayElemValue(self, aname, idx)) orelse return false;
                 v.* = if (ty == .real) try self.toReal(el) else el.v;
             }
             return true;
