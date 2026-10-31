@@ -317,7 +317,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 /// wide `reg` the analog context only reads holds its literal for the whole
 /// analysis, so every bit of it is known (`reg_consts`).
 fn declareModuleVars(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    assert(self.cur == .entry);
+    assert(self.blockValid(self.cur));
     assert(self.module == module);
     const before = self.vars.count() + self.arrays.count();
     for (module.vars) |*v| {
@@ -342,7 +342,7 @@ fn declareModuleVars(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
             try self.reg_consts.put(self.arena, name, d.init);
     }
     assert(self.vars.count() + self.arrays.count() >= before);
-    assert(self.cur == .entry);
+    assert(self.blockValid(self.cur));
 }
 
 /// §5.10.4 named events. An event carries no value — only "triggered at this
@@ -358,7 +358,7 @@ fn declareModuleVars(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 // never runs. Closing that needs a scheduler queue; §5.10.4's own example
 // triggers first.
 fn declareEvents(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    assert(self.cur == .entry);
+    assert(self.blockValid(self.cur));
     const before = self.events.count();
     for (module.events) |ev| {
         const name = self.file.str(ev.name);
@@ -382,7 +382,7 @@ fn declareEvents(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
         try self.event_arrays.put(self.arena, name, bounds);
     }
     assert(self.events.count() >= before);
-    assert(self.cur == .entry);
+    assert(self.blockValid(self.cur));
 }
 
 /// Reads each contribution's accumulators from `from` on at the end of the
