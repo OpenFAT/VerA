@@ -17,6 +17,7 @@
 //! - `pub fn analogPoint(r: *Run, k: Tick) Error!bool`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -109,6 +110,7 @@ pub fn watchEvent(r: *Run, at: u32, edge: waiters.Edge, site: u6) Error!void {
 /// The process waits on a slot no variable owns (counted down from the
 /// top of the slot space), which `deliverA2d` wakes.
 pub fn registerMonitor(r: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     if (!r.mixed or monitorKind(r, e) == .timer)
         return r.exprFail(e, "only cross(), above() and absdelta() are monitored in a digital event control");
     const scope = r.instanceOf(r.scope);
@@ -118,6 +120,7 @@ pub fn registerMonitor(r: *Run, e: Ast.ExprId) Error!void {
 
 /// A monitor of analog event `e` whose occurrence wakes `slot`'s waiters.
 pub fn addMonitor(r: *Run, e: Ast.ExprId, wakes: u32) Error!void {
+    assert(e != .none);
     const args = r.file.exprs.args(e);
     if (args.len == 0 or args[0] == .none) return r.exprFail(e, "an analog event needs its expression");
     for (args) |arg| if (arg != .none) try compile.checkExpr(r, arg);
@@ -126,6 +129,7 @@ pub fn addMonitor(r: *Run, e: Ast.ExprId, wakes: u32) Error!void {
 
 /// Returns which monitored analog function event `e` calls.
 pub fn monitorKind(r: *const Run, e: Ast.ExprId) MonitorKind {
+    assert(e != .none);
     // The parser admits exactly A.6.5's four names as an event function.
     return std.meta.stringToEnum(MonitorKind, r.file.str(r.file.exprs.strOf(e))).?;
 }
@@ -171,6 +175,7 @@ pub fn analogTriggers(r: *Run, m: *const Ast.ModuleDecl, named: *const std.AutoH
 /// The slot whose waiters monitor `e` of instance `scope` wakes, or null
 /// when that event is not monitored. O(monitors).
 pub fn monitorSlot(r: *const Run, e: Ast.ExprId, scope: u32) ?u32 {
+    assert(e != .none);
     for (r.monitors.items) |m| if (m.expr == e and m.scope == scope) return m.slot;
     return null;
 }

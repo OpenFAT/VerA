@@ -19,6 +19,7 @@
 //! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
 //! §9.22 driver access.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const exec = @import("exec.zig");
@@ -83,6 +84,7 @@ pub fn common(a: Type, b: Type) Type {
 /// specialization (`Run.specOf`). Asserts `e` was checked: an untyped row is
 /// unreachable.
 pub fn typeOf(self: *Run, e: Ast.ExprId) Type {
+    assert(e != .none);
     const i = @backingInt(e);
     return switch (self.ty_state[i]) {
         .one => self.types[i],
@@ -96,6 +98,7 @@ pub fn typeOf(self: *Run, e: Ast.ExprId) Type {
 /// form digital execution does not implement. Must run before `typeOf` or
 /// any evaluation of `e`.
 pub fn checkExpr(self: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     _ = try inferValue(self, e);
 }
 
@@ -448,6 +451,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
 // ---- private ----
 
 fn leafType(self: *Run, e: Ast.ExprId) Error!Type {
+    assert(e != .none);
     const ex = &self.file.exprs;
     return switch (ex.tag(e)) {
         .ident, .hier_ident => blk: {
@@ -491,16 +495,19 @@ fn leafType(self: *Run, e: Ast.ExprId) Error!Type {
 /// its calltf returns. Remember its lexical context without evaluating or
 /// requiring a value from scope/array/event arguments.
 fn rememberVpiScope(self: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     try self.vpi_expr_scopes.put(self.arena, .{ self.instanceOf(self.scope), @backingInt(e) }, self.scope);
 }
 
 fn inferValue(self: *Run, e: Ast.ExprId) Error!Type {
+    assert(e != .none);
     const ty = try infer(self, e);
     if (ty.width == 0) return self.exprFail(e, "zero replication requires an immediately enclosing concatenation with a positive-width operand");
     return ty;
 }
 
 fn replicationCount(self: *Run, e: Ast.ExprId) Error!u32 {
+    assert(e != .none);
     if (!constantExpression(self, e)) return self.exprFail(e, "integral replication requires a constant expression");
     var scratch = std.heap.ArenaAllocator.init(self.arena);
     defer scratch.deinit();
@@ -515,6 +522,7 @@ fn replicationCount(self: *Run, e: Ast.ExprId) Error!u32 {
 /// A part-select bound or an indexed part-select's width: §5.2.1's constant
 /// integer expression, which §4.8.1 keeps a real out of.
 fn partBound(self: *Run, e: Ast.ExprId) Error!i64 {
+    assert(e != .none);
     const v = try self.constant(e, self.file.exprs.mainTok(e));
     if (typeOf(self, e).real) return self.exprFail(e, "§4.8.1: a real is not a part-select bound");
     if (v.hasUnknown()) return self.exprFail(e, "a part-select bound cannot contain x or z");
@@ -524,6 +532,7 @@ fn partBound(self: *Run, e: Ast.ExprId) Error!i64 {
 /// §17.10.2: a literal user_string's conversions are "the only valid ones",
 /// `%d %o %h %b %e %f %g %s` in either case, with a leading 0 allowed.
 fn plusargFormat(self: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     const text = self.file.str(self.file.exprs.strOf(e));
     var i: usize = 0;
     while (std.mem.findScalarPos(u8, text, i, '%')) |at| {

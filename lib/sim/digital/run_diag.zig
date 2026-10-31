@@ -9,6 +9,7 @@
 //! - `pub fn exprFail(self: *Run, e: Ast.ExprId, comptime msg: []const u8) Error`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -62,6 +63,7 @@ const own_files = system.own;
 /// Adds an E1100 diagnostic at token `tok` (clamped to the last token)
 /// and returns `error.DigitalFailed` for the caller to propagate.
 pub fn fail(self: *Run, tok: u32, comptime fmt: []const u8, args: anytype) Error {
+    assert(tok < self.starts.len);
     return self.failWith(.E1100, tok, fmt, args);
 }
 
@@ -72,6 +74,7 @@ pub fn stage(self: *const Run) diag.Stage {
 
 /// `fail` under a rule's own code, for a refusal the analog side reports.
 pub fn failWith(self: *Run, code: diag.Code, tok: u32, comptime fmt: []const u8, args: anytype) Error {
+    assert(tok < self.starts.len);
     const start = self.starts[@min(tok, self.starts.len - 1)];
     self.bag.add(self.stage(), code, .{ .start = start, .end = start }, fmt, args) catch return error.OutOfMemory;
     return error.DigitalFailed;
@@ -79,10 +82,12 @@ pub fn failWith(self: *Run, code: diag.Code, tok: u32, comptime fmt: []const u8,
 
 /// A walk ran out of the stack `deep.runGuarded` reserved, at token `tok`.
 pub fn deepFail(self: *Run, tok: u32) Error {
+    assert(tok < self.starts.len);
     return self.fail(tok, deep.message, .{deep.mib()});
 }
 
 /// `fail` at expression `e`'s main token, with a fixed message.
 pub fn exprFail(self: *Run, e: Ast.ExprId, comptime msg: []const u8) Error {
+    assert(e != .none);
     return self.fail(self.file.exprs.mainTok(e), "{s}", .{msg});
 }

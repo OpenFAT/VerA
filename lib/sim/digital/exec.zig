@@ -37,6 +37,7 @@
 //! - `pub fn doneFlush(self: *Run, start: u32) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -301,6 +302,7 @@ pub fn execute(self: *Run, scratch: *Scratch, start: u32) Error!void {
 /// A driver's `delay3` that reads a variable (`Run.driver_delays`), its
 /// values now, defaulted as `Run.declaredDelay3` defaults a constant one.
 pub fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!Delay {
+    assert(tok < self.starts.len);
     var out: Delay = .{ .present = true };
     out.rise = try delayOf(self, scratch, d.rise, tok);
     out.fall = if (d.fall != .none) try delayOf(self, scratch, d.fall, tok) else out.rise;
@@ -320,6 +322,8 @@ pub fn doneFlush(self: *Run, start: u32) Error!void {
 
 /// The run-time counterpart of `checkDelay`, in the module's precision.
 fn delayOf(self: *Run, scratch: std.mem.Allocator, e: Ast.ExprId, tok: u32) Error!u64 {
+    assert(e != .none);
+    assert(tok < self.starts.len);
     if (compile.typeOf(self, e).real) {
         return self.timeOf(self.scope).scale.realDelay(try evaluate.evalReal(self, scratch, e)) catch |err|
             return self.fail(tok, "digital delay cannot be represented: {t}", .{err});
@@ -335,6 +339,7 @@ fn delayOf(self: *Run, scratch: std.mem.Allocator, e: Ast.ExprId, tok: u32) Erro
 }
 
 fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
+    assert(e != .none);
     const ex = &self.file.exprs;
     const edge: waiters.Edge = switch (ex.tag(e)) {
         .event_or => {

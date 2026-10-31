@@ -15,6 +15,7 @@
 //! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
 //! §9.22 driver access.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const exec = @import("exec.zig");
@@ -60,6 +61,8 @@ const OverTarget = struct { at: u32, bits: ?Bits };
 /// `.override_on` that starts it; `deassign`/`release` stop it. `assign`
 /// takes a variable (§9.3.1); `force` a variable or a net (§9.3.2).
 pub fn compileProcContinuous(self: *Run, target: Ast.ExprId, value: Ast.ExprId, kind: Ast.ProcContinuous, tok: u32) Error!void {
+    assert(target != .none);
+    assert(tok < self.starts.len);
     if (self.in_function) return self.fail(tok, "§10.4.4: a function body cannot contain a procedural continuous assignment", .{});
     const ex = &self.file.exprs;
     // §9.3 "a concatenation of variables" (and for `force`, of nets): one
@@ -88,6 +91,7 @@ fn overWidth(self: *Run, t: OverTarget) u32 {
 /// A §9.3 target's slot and, for §9.3.2's "constant bit-select of a vector
 /// net, a part-select of a vector net", the bits it names.
 fn overTarget(self: *Run, x: Ast.ExprId) Error!OverTarget {
+    assert(x != .none);
     const ex = &self.file.exprs;
     const refused = "§9.3: a procedural continuous assignment names one whole variable or net, a constant bit-select or part-select of a vector net, or a concatenation of them";
     switch (ex.tag(x)) {
@@ -121,6 +125,7 @@ fn overTarget(self: *Run, x: Ast.ExprId) Error!OverTarget {
 
 /// §9.3 one override of `target`: a whole variable or net, or bits of a net.
 fn override(self: *Run, target: Ast.ExprId, t: OverTarget, value: Ast.ExprId, kind: Ast.ProcContinuous, slice: ?Slice) Error!void {
+    assert(target != .none);
     const at = t.at;
     try notAutomatic(self, target, "a procedural continuous assignment");
     // Its value is re-evaluated after the activation may be gone.

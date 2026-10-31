@@ -34,6 +34,7 @@
 //! - `pub fn buildFanout(r: *Run) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -217,6 +218,7 @@ pub fn trigger(self: *Run, at: u32) Error!void {
 /// §9.3 `deassign` (`force` false) or `release` (`force` true) of `slot`.
 /// Releasing what is not held is a no-op.
 pub fn release(self: *Run, slot: u32, force: bool) Error!void {
+    assert(slot < self.values.len);
     const layers = self.overrides.getPtr(slot) orelse return;
     const layer = if (force) &layers.force else &layers.assign;
     if (layer.*) |old| _ = try exec.stopRange(self, old.start, old.end);
@@ -235,6 +237,7 @@ pub fn release(self: *Run, slot: u32, force: bool) Error!void {
 /// §9.3.2 `release` of a forced select of net `slot`: its bits are the
 /// drivers' again, at once. Releasing what is not held is a no-op.
 pub fn releaseBits(self: *Run, slot: u32, bits: compile.Bits) Error!void {
+    assert(slot < self.values.len);
     const layers = self.overrides.getPtr(slot) orelse return;
     for (layers.parts.items, 0..) |p, i| if (std.meta.eql(p.bits, bits)) {
         _ = try exec.stopRange(self, p.range.start, p.range.end);
@@ -249,6 +252,7 @@ pub fn releaseBits(self: *Run, slot: u32, bits: compile.Bits) Error!void {
 /// procedural force" (§9.3.2) but with no expression to keep re-evaluating,
 /// so the force layer holds an empty process range.
 pub fn forceValue(self: *Run, slot: u32, planes: []const u64) Error!void {
+    assert(slot < self.values.len);
     const entry = try self.overrides.getOrPut(self.arena, slot);
     if (!entry.found_existing) entry.value_ptr.* = .{};
     if (entry.value_ptr.force) |old| _ = try exec.stopRange(self, old.start, old.end);
@@ -388,6 +392,7 @@ pub fn watch(self: *Run, id: u32, slot: u32, edge: Edge) Error!void {
 
 /// `watch` of a term with an event select or a bit select (`TermExt`).
 pub fn watchExt(self: *Run, id: u32, slot: u32, edge: Edge, ext: TermExt) Error!void {
+    assert(slot < self.values.len);
     const k = self.free_term_exts.pop() orelse blk: {
         try self.term_exts.append(self.arena, undefined);
         break :blk @as(u32, @intCast(self.term_exts.items.len - 1));

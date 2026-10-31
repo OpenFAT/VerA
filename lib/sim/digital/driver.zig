@@ -19,6 +19,7 @@
 //! - `pub fn evalReal(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -119,6 +120,7 @@ pub fn segregate(r: *Run, e: *elab.Elab) Error!void {
 /// `@(driver_update x)`: `x` names a net, and its drivers are watched once the
 /// slot space is final (`arm`).
 pub fn checkUpdate(r: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     const signal = r.file.exprs.lhs(e);
     const net = r.net_of.get(try r.scalarSlot(signal)) orelse return r.exprFail(signal, "§9.22.5: driver_update watches the drivers of a net");
     if (std.mem.findScalar(u32, r.drv.watched.items, net) != null) return;
@@ -194,6 +196,7 @@ pub fn of(f: compile.SysFn) ?Fn {
 /// driver_index)` for the rest. The counts, strengths and type are integers;
 /// the states are "0, 1, x, or z"; the delay is "a real number".
 pub fn infer(r: *Run, e: Ast.ExprId, f: Fn) Error!compile.Type {
+    assert(e != .none);
     const args = r.file.exprs.args(e);
     const want: usize = if (f == .count or f == .receiver_count) 1 else 2;
     if (args.len != want or args[0] == .none or (want == 2 and args[1] == .none))
@@ -217,6 +220,7 @@ pub fn infer(r: *Run, e: Ast.ExprId, f: Fn) Error!compile.Type {
 
 /// The integral functions' values.
 pub fn eval(r: *Run, a: std.mem.Allocator, e: Ast.ExprId, f: Fn) Error!Int.Literal {
+    assert(e != .none);
     const args = r.file.exprs.args(e);
     const slot = try r.scalarSlot(args[0]);
     const net = r.net_of.get(slot).?;
@@ -254,6 +258,7 @@ pub fn eval(r: *Run, a: std.mem.Allocator, e: Ast.ExprId, f: Fn) Error!Int.Liter
 /// value on a signal, it returns the value minus one (-1.0)", in the calling
 /// module's `timescale units.
 pub fn evalReal(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
+    assert(e != .none);
     const args = r.file.exprs.args(e);
     const net = r.net_of.get(try r.scalarSlot(args[0])).?;
     const i = (try evaluate.eval(r, a, args[1], 0)).asInt() orelse return -1.0;
@@ -280,12 +285,14 @@ fn scopeAt(r: *const Run, path: []const u8) ?u32 {
 /// §9.22 ¶3: is `scope` inside a connect module, whose drivers "the driver
 /// access functions … only access drivers found in ordinary modules" skip?
 fn isConnect(r: *const Run, scope: u32) bool {
+    assert(scope < r.scope_info.items.len);
     return r.file.modules[r.scope_info.items[r.instanceOf(scope)].def].is_connect;
 }
 
 /// §9.22.1 the `i`'th ordinary driver of `net`, "arbitrarily numbered from 0
 /// to N-1" (here in declaration order), or its count N when `i` is null.
 fn ordinary(r: *const Run, net: u32, i: ?u64) union(enum) { count: u32, driver: ?u32 } {
+    assert(net < r.nets.len);
     var n: u32 = 0;
     for (r.netDrivers(net)) |d| {
         if (isConnect(r, r.drivers[d].scope)) continue;
@@ -298,6 +305,8 @@ fn ordinary(r: *const Run, net: u32, i: ?u64) union(enum) { count: u32, driver: 
 // ---- driver_update (§9.22.5) --------------------------------------------------
 
 fn watch(r: *Run, slot: u32, net: u32, reg: bool) Error!void {
+    assert(slot < r.values.len);
+    assert(net < r.nets.len);
     r.watch[slot].insert(.driver_update);
     try r.drv.sources.append(r.arena, .{ .slot = slot, .net = net, .reg = reg });
 }
@@ -328,6 +337,7 @@ fn pending(r: *Run, a: std.mem.Allocator, di: u32) Error!?Pend {
 
 /// §9.22.2: ordinary input ports bound to the net at `slot`.
 fn receivers(r: *const Run, slot: u32) u32 {
+    assert(slot < r.values.len);
     var n: u32 = 0;
     var it = r.names.iterator();
     while (it.next()) |entry| n += @intFromBool(entry.value_ptr.* == slot and ordinaryInput(r, entry.key_ptr.scope, entry.key_ptr.str));
@@ -337,6 +347,7 @@ fn receivers(r: *const Run, slot: u32) u32 {
 /// Whether name `str` in `scope` is an input port of an ordinary module
 /// instance (not a connect module's, not a block's local).
 fn ordinaryInput(r: *const Run, scope: u32, str: Ast.StrId) bool {
+    assert(scope < r.scope_info.items.len);
     if (isConnect(r, scope)) return false;
     const info = r.scope_info.items[scope];
     if (info.lexical) return false;

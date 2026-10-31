@@ -35,6 +35,7 @@
 //! - `pub fn annotate(r: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, tok: u32) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -226,6 +227,7 @@ pub fn rvalue(n: Node, mtm: u2) error{Syntax}!?f64 {
 /// The config file, log file and scale arguments are read and not applied
 /// (W1105 for a scale factor other than 1).
 pub fn annotate(r: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, tok: u32) Error!void {
+    assert(tok < r.starts.len);
     const name = (try system.text(a, try evaluate.eval(r, a, args[0], 0))) orelse return r.failWith(.E1102, tok, "$sdf_annotate's file name has x or z bits", .{});
     var c: Ctx = .{ .r = r, .a = a, .file = name, .tok = tok };
     const scope = if (args.len > 1 and args[1] != .none) switch (try @import("vcd.zig").target(r, args[1])) {
@@ -375,6 +377,7 @@ fn below(r: *const Run, s: u32, top: u32) bool {
 
 /// The instance `parts` names from `scope` down, one instance per part.
 fn child(r: *const Run, scope: u32, parts: []const []const u8) ?u32 {
+    assert(scope < r.scope_info.items.len);
     var at = scope;
     for (parts) |p| {
         at = for (r.scope_info.items, 0..) |info, s| {
@@ -386,6 +389,7 @@ fn child(r: *const Run, scope: u32, parts: []const []const u8) ?u32 {
 
 /// The slot port `name` of instance `scope` is bound to.
 fn portSlot(r: *const Run, scope: u32, name: []const u8) ?u32 {
+    assert(scope < r.scope_info.items.len);
     const m = r.file.modules[r.scope_info.items[scope].def];
     for (m.ports) |p| if (std.mem.eql(u8, r.file.str(p.name), name)) return r.names.get(.{ .scope = scope, .str = p.name });
     return null;

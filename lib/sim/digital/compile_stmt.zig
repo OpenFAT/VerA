@@ -16,6 +16,7 @@
 //! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
 //! §9.22 driver access.
 const std = @import("std");
+const assert = std.debug.assert;
 const tasks = @import("system_functions.zig").tasks;
 const Front = @import("frontend");
 const Ast = Front.Ast;
@@ -515,6 +516,7 @@ fn doneSite(self: *Run, id: Ast.StmtId, first: u32) Error!void {
 /// A new `Run.repeats` counter, for one `repeat` loop or §9.7.7 repeat
 /// event control. Fails at 2^32 - 1 counters.
 fn repeatCounter(self: *Run, tok: u32) Error!u32 {
+    assert(tok < self.starts.len);
     if (self.repeats.items.len == std.math.maxInt(u32)) return self.fail(tok, "too many repeat counters", .{});
     try self.repeats.append(self.arena, 0);
     return @intCast(self.repeats.items.len - 1);

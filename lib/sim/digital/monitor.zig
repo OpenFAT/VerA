@@ -12,6 +12,7 @@
 //! - `pub fn fmonitorPrint(self: *Run, a: std.mem.Allocator) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -193,6 +194,7 @@ pub fn comparedOperand(self: *Run, e: Ast.ExprId) bool {
 /// step; one whose slot changed under an unchanged argument (`bs` under
 /// `bs[1]`) does not. A transient change still reports.
 pub fn monitorChanged(self: *Run, slot: u32) Error!void {
+    assert(slot < self.values.len);
     if (self.monitoring.evaluating) return;
     self.monitoring.evaluating = true;
     defer self.monitoring.evaluating = false;
@@ -229,6 +231,7 @@ fn watchAll(self: *Run, on: bool) void {
 /// Whether argument `e`'s value can move only when a slot it reads does:
 /// no clock query, call or analog probe anywhere in it.
 fn comparable(self: *Run, e: Ast.ExprId) bool {
+    assert(e != .none);
     const ex = &self.file.exprs;
     return switch (ex.tag(e)) {
         .int_literal, .logic_literal, .str_literal, .real_literal, .ident, .hier_ident => true,
@@ -246,6 +249,7 @@ fn comparable(self: *Run, e: Ast.ExprId) bool {
 /// real as its bits (VD-032's change is `!=`, which -0.0 over +0.0 is not,
 /// so a real compares by value).
 fn current(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error![]u64 {
+    assert(e != .none);
     if (compile.typeOf(self, e).real) {
         const r = try evaluate.evalReal(self, a, e);
         const out = try a.alloc(u64, 1);
@@ -259,6 +263,7 @@ fn current(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error![]u64 {
 /// of them moved since its last evaluation (each then keeps its new value),
 /// or when an argument that is not compared reads `slot` (`install`).
 fn moved(self: *Run, m: *Standing, a: std.mem.Allocator, slot: u32) Error!bool {
+    assert(slot < self.values.len);
     if (std.mem.findScalar(u32, m.loose, slot) != null) return true;
     const saved_scope = self.scope;
     const saved_pc = self.pc;

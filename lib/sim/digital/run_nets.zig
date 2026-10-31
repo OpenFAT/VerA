@@ -8,6 +8,7 @@
 //! - `pub fn netColdMut(self: *Run, net: u32) Error!*NetCold`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -66,6 +67,7 @@ pub fn netCold(self: *const Run, n: Net) *const NetCold {
 /// Net `net`'s driver rows (`drivers` indices), in declaration order;
 /// none until pass two has grouped them (`elaborate`).
 pub fn netDrivers(self: *const Run, net: u32) []const u32 {
+    assert(net < self.nets.len);
     if (net + 1 >= self.net_driver_start.len) return &.{};
     return self.net_drivers[self.net_driver_start[net]..self.net_driver_start[net + 1]];
 }
@@ -84,6 +86,7 @@ pub fn driverTransition(self: *Run, at: u32) Error!*Inertial {
 /// Net `net`'s cold row, made on first use. Invalidates pointers to
 /// other cold rows when it makes one.
 pub fn netColdMut(self: *Run, net: u32) Error!*NetCold {
+    assert(net < self.nets.len);
     const n = &self.nets[net];
     if (n.cold == no_cold) {
         n.cold = @intCast(self.net_cold.items.len);

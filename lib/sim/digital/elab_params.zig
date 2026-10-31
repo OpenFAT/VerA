@@ -19,6 +19,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -68,6 +69,7 @@ pub fn ieee1364(r: *const Run) bool {
 /// §12.5 named block, which `over` never reaches), in declaration order so a
 /// default may name an earlier one.
 pub fn declareParams(r: *Run, scope: u32, declared_params: []const Ast.ParamDecl, over: []const Ast.ParamOverride) Error!void {
+    assert(scope < r.scope_info.items.len);
     const arena = r.arena;
     const params = try specifyOrder(r, declared_params);
     const g = r.growing.?;
@@ -253,6 +255,7 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
 
 /// The first name in `e` that does not resolve in the current scope.
 fn unresolved(r: *Run, e: Ast.ExprId) ?Ast.ExprId {
+    assert(e != .none);
     const ex = &r.file.exprs;
     if (ex.tag(e) == .ident) return if (r.lookup(r.scope, ex.strOf(e)) == null) e else null;
     var buf: [3]Ast.ExprId = undefined;
@@ -262,6 +265,7 @@ fn unresolved(r: *Run, e: Ast.ExprId) ?Ast.ExprId {
 
 /// Does `e`, read in the current scope, name a specparam?
 fn readsSpecparam(r: *Run, e: Ast.ExprId) bool {
+    assert(e != .none);
     const ex = &r.file.exprs;
     if (ex.tag(e) == .ident) return if (r.lookup(r.scope, ex.strOf(e))) |at| r.specparams.contains(at) else false;
     var buf: [3]Ast.ExprId = undefined;

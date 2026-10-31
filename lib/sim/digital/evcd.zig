@@ -30,6 +30,7 @@
 //! - `pub fn below(r: *Run, scope: u32, inst: u32) bool`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const waiters = @import("waiters.zig");
@@ -140,6 +141,7 @@ const State = struct { c: u8, s0: u8, s1: u8 };
 
 /// Refuses a malformed §18.3 call (Syntax 18-21 to 18-25).
 pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+    assert(tok < r.starts.len);
     const ex = &r.file.exprs;
     const given = present(args);
     for (given) |a| if (a == .none) return r.fail(tok, "the §18.3 dump tasks take no null arguments", .{});
@@ -179,6 +181,7 @@ pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
 
 /// The interpreter's run of one §18.3 task.
 pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+    assert(tok < r.starts.len);
     const ex = &r.file.exprs;
     const given = present(args);
     const d = &r.evcd;
@@ -305,6 +308,7 @@ pub fn close(r: *Run) Error!void {
 
 /// The instance path of `scope` from its root, `top.u`.
 pub fn path(r: *Run, w: *std.Io.Writer, scope: u32) std.Io.Writer.Error!void {
+    assert(scope < r.scope_info.items.len);
     const info = r.scope_info.items[scope];
     if (!root.isRoot(r, scope)) {
         try path(r, w, info.parent);
@@ -366,6 +370,7 @@ pub fn writeChanges(d: anytype, at: u64) !void {
 
 /// Is `scope` the instance `inst` or inside it?
 pub fn below(r: *Run, scope: u32, inst: u32) bool {
+    assert(scope < r.scope_info.items.len);
     var s = scope;
     while (true) {
         if (s == inst) return true;
@@ -383,6 +388,7 @@ fn present(args: []const Ast.ExprId) []const Ast.ExprId {
 
 /// The characters of a file_pathname argument; null for an x or z bit.
 fn fileName(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?[]const u8 {
+    assert(e != .none);
     return @import("system.zig").text(a, try evaluate.eval(r, a, e, 0));
 }
 

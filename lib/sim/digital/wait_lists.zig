@@ -31,6 +31,7 @@
 //! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
 //! §9.22 driver access.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const exec = @import("exec.zig");
@@ -68,6 +69,7 @@ const SelectTerm = struct { slot: u32, first: u32, count: u32 };
 /// An array element operand lists every element of its array. `out`'s items
 /// are in `self.arena`.
 pub fn sensitivity(self: *Run, e: Ast.ExprId, out: *std.ArrayList(u32)) Error!void {
+    assert(e != .none);
     // ponytail: an array element operand watches every element of its array;
     // a per-array wake list if a big memory ever feeds one.
     return sensitivityProbes(self, e, out, null);
@@ -82,6 +84,7 @@ pub fn probeTerminal(ex: *const Ast.ExprStore, e: Ast.ExprId) bool {
 /// Probe terminal `e` as the analog solution names it: a hierarchical
 /// name's parts joined by `.` (`Lowered.discrete_probes`' keys), in `a`.
 pub fn probeName(self: *const Run, a: std.mem.Allocator, e: Ast.ExprId) Error![]const u8 {
+    assert(e != .none);
     const ex = &self.file.exprs;
     if (ex.tag(e) == .ident) return self.file.str(ex.strOf(e));
     const ids = ex.nameParts(e);
@@ -98,6 +101,7 @@ pub fn probeName(self: *const Run, a: std.mem.Allocator, e: Ast.ExprId) Error![]
 /// `@*`) a probe would be read once and never again, so it is refused by
 /// name rather than silently frozen.
 pub fn sensitivityProbes(self: *Run, e: Ast.ExprId, out: *std.ArrayList(u32), probes: ?*std.ArrayList(Ast.ExprId)) Error!void {
+    assert(e != .none);
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
         .int_literal, .logic_literal, .str_literal, .real_literal => {},
@@ -192,6 +196,7 @@ pub fn watch(self: *Run, at: u32, out: *std.ArrayList(u32)) Error!void {
 /// §6.2.2/§6.1: a net is driven by a continuous assignment and a variable by
 /// a procedural one; neither accepts the other's form.
 pub fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     const ex = &self.file.exprs;
     // §9.2 "a concatenation or nested concatenation of any of the above".
     if (ex.tag(e) == .concat) {
@@ -254,6 +259,7 @@ pub fn waitIntra(self: *Run, id: Ast.StmtId, s: @FieldType(Ast.Stmt, "assign")) 
 /// "shall not be traced with system tasks such as $monitor". `e` is the
 /// target, or a traced argument.
 pub fn notAutomatic(self: *Run, e: Ast.ExprId, comptime what: []const u8) Error!void {
+    assert(e != .none);
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
         .concat => for (ex.args(e)) |x| try notAutomatic(self, x, what),
@@ -268,6 +274,7 @@ pub fn notAutomatic(self: *Run, e: Ast.ExprId, comptime what: []const u8) Error!
 /// writes or waits on, and a procedural continuous assignment's target and
 /// value, in the scope `scope` its names resolve in.
 pub fn deferredReads(self: *Run, scope: u32, s: Ast.StmtId) Error!void {
+    assert(scope < self.scope_info.items.len);
     if (s == .none) return;
     const W = struct {
         r: *Run,
@@ -314,6 +321,7 @@ pub fn readsNoAutomatic(self: *Run, e: Ast.ExprId, comptime what: []const u8) Er
 /// is rounded to the module's precision at run time (`Scale.realDelay`), not
 /// truncated to its unit, so a sub-unit delay keeps its meaning.
 pub fn checkDelay(self: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     try checkExpr(self, e);
     if (typeOf(self, e).width > 64) return self.exprFail(e, "delay values wider than 64 bits are not implemented");
 }
@@ -321,6 +329,7 @@ pub fn checkDelay(self: *Run, e: Ast.ExprId) Error!void {
 /// Event terms resolve to watched slots at compile time; an indexed named
 /// event also validates each index for selection at an occurrence.
 pub fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     const ex = &self.file.exprs;
     if (try eventReference(self, e) != null) return;
     switch (ex.tag(e)) {
@@ -356,6 +365,7 @@ pub fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
 /// §9.7.3: a scalar event or exactly one selected array element. Only the
 /// indices are value expressions; neither the array nor an event holds data.
 pub fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
+    assert(e != .none);
     const ex = &self.file.exprs;
     const c = self.chainBase(e);
     if (ex.tag(c.base) != .ident and ex.tag(c.base) != .hier_ident) return null;
@@ -380,6 +390,7 @@ pub fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
 /// term is (§11.6.3). Null for any other term, which gets a hidden slot
 /// (`exprTerm`).
 pub fn selectTerm(self: *Run, e: Ast.ExprId) Error!?SelectTerm {
+    assert(e != .none);
     const ex = &self.file.exprs;
     if (ex.tag(e) != .index) return null;
     const v = ex.lhs(e);
@@ -403,6 +414,7 @@ pub fn selectTerm(self: *Run, e: Ast.ExprId) Error!?SelectTerm {
 /// An element lvalue reads its subscript; `sensitivity` on the whole
 /// `.index` would also add the array's own elements.
 fn targetReads(self: *Run, target: Ast.ExprId, out: *std.ArrayList(u32)) Error!void {
+    assert(target != .none);
     const ex = &self.file.exprs;
     if (ex.tag(target) == .concat) {
         for (ex.args(target)) |arg| try targetReads(self, arg, out);
@@ -417,6 +429,7 @@ fn targetReads(self: *Run, target: Ast.ExprId, out: *std.ArrayList(u32)) Error!v
 /// it alone. A hidden slot follows `e`, kept equal to it by an out-of-line
 /// process of its own started at time 0, and the term watches that slot.
 fn exprTerm(self: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     try checkExpr(self, e);
     if (self.auto_terms.contains(.{ .scope = self.scope, .e = e })) return;
     const ty = typeOf(self, e);

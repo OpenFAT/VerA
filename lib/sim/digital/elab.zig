@@ -54,6 +54,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -260,6 +261,7 @@ pub fn isScope(r: *const Run, s: u32, n: []const u8, k: ?i64) bool {
 }
 
 pub fn findModule(r: *Run, name: Ast.StrId, tok: u32) Error!*const Ast.ModuleDecl {
+    assert(tok < r.starts.len);
     for (r.file.modules) |*m| if (m.name == name) return connectable(r, m, tok);
     return r.fail(tok, "undeclared module in instantiation", .{});
 }
@@ -273,6 +275,7 @@ pub fn defOf(r: *const Run, m: *const Ast.ModuleDecl) u32 {
 /// §12.1.2's array of them, one instance per element from the lower index
 /// up, each a scope named `u[k]` (the same order the analog elaborator uses).
 pub fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, depth: u32) Error!void {
+    assert(scope < r.scope_info.items.len);
     r.scope = scope;
     if (findUdp(r.file, inst.module)) |u| return declareUdp(r, e, scope, inst, u);
     // IEEE 1364-2005 A.4.1.1: a module_instantiation's `#` is a
@@ -289,6 +292,7 @@ pub fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dep
 /// The next scope id. The caller appends its `scope_info` row, which must be
 /// row `id` (ids are dense, root 0). Fails at 2^32 - 1 scopes.
 pub fn newScope(r: *Run, tok: u32) Error!u32 {
+    assert(tok < r.starts.len);
     r.scopes += 1;
     if (r.scopes == std.math.maxInt(u32)) return r.fail(tok, "too many digital instances", .{});
     try r.scope_toks.put(r.arena, r.scopes, tok);
@@ -299,6 +303,7 @@ pub fn newScope(r: *Run, tok: u32) Error!u32 {
 
 /// `m`, unless it is a connect module and this is not a mixed design.
 fn connectable(r: *Run, m: *const Ast.ModuleDecl, tok: u32) Error!*const Ast.ModuleDecl {
+    assert(tok < r.starts.len);
     // VAMS §7.1: a connect module "can be manually inserted (by the user) or
     // automatically inserted (by the simulator)", in a mixed design, which is
     // the only one that can hold its continuous half.
@@ -358,6 +363,7 @@ fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, child_scope: u32, por
 }
 
 fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, depth: u32, index: ?i64) Error!void {
+    assert(scope < r.scope_info.items.len);
     const arena = r.arena;
     r.scope = scope;
     const bound = try binding.child(r, scope, inst);

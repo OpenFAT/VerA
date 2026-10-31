@@ -21,6 +21,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -92,6 +93,7 @@ pub fn isGenerate(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, s: Ast.
 /// A block's events, drivers and processes are declared in the scope it is
 /// elaborated in (`Ast.GenItems`), which is the block's own (`armScope`).
 pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.StmtId, depth: u32) Error!void {
+    assert(scope < r.scope_info.items.len);
     // A digital parse keeps a generate block's nets on the block
     // (`parseGenerateBlock`), so the `.block` arm declares one set per loop
     // iteration, in that iteration's scope. ponytail: a part-select bound
@@ -218,6 +220,7 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
 /// One A.2.1.3 net declaration of `scope`: the net, or a §4.9.1 net
 /// array's elements, and a net_decl_assignment's driver.
 pub fn declareNet(r: *Run, e: *Elab, scope: u32, n: Ast.NetDecl) Error!void {
+    assert(scope < r.scope_info.items.len);
     const arena = r.arena;
     // §7.2.1: a disciplined net is continuous, the analog solver's.
     if (r.mixed and (n.is_ground or continuous(r.file, n.discipline))) return;
@@ -264,6 +267,7 @@ pub fn declareNet(r: *Run, e: *Elab, scope: u32, n: Ast.NetDecl) Error!void {
 /// `scope`, reachable as `name[k]` (the spelling the parser gives an
 /// instance select) when the source writes one.
 pub fn selectable(r: *Run, scope: u32, name: Ast.StrId, k: i64, at: u32) Error!void {
+    assert(scope < r.scope_info.items.len);
     if (name == .none) return;
     var buf: [256]u8 = undefined;
     const text = std.mem.print(&buf, "{s}[{d}]", .{ r.file.str(name), k }) catch return;
@@ -308,6 +312,8 @@ fn genvarOf(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, f: anytype) ?
 /// `genblk<n>`, unless `s` is no block or a directly nested construct (the
 /// parser leaves those unnamed), which is not a scope.
 fn armScope(r: *Run, scope: u32, s: Ast.StmtId, tok: u32) Error!u32 {
+    assert(scope < r.scope_info.items.len);
+    assert(tok < r.starts.len);
     if (s == .none) return scope;
     const name = switch (r.file.stmt(s)) {
         .block => |b| b.gen_name,
@@ -325,6 +331,7 @@ fn armScope(r: *Run, scope: u32, s: Ast.StmtId, tok: u32) Error!u32 {
 /// A genvar's storage in the current scope: a 32-bit signed constant
 /// (§3.5 "an integer"), which `constant` folds like any parameter.
 fn genvarSlot(r: *Run, e: *Elab, name: Ast.StrId, tok: u32) Error!u32 {
+    assert(tok < r.starts.len);
     const at: u32 = @intCast(e.values.items.len);
     try r.bind(name, at, tok);
     try e.values.append(r.arena, try filled(r.arena, 32, true, .x));

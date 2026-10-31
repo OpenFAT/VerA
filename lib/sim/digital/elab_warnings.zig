@@ -20,6 +20,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -62,6 +63,8 @@ const size_mismatch = elab_declare.size_mismatch;
 /// §6.5.7.1 joins them highest-order first, so the rightmost operand takes
 /// the port's low bits.
 pub fn sendPort(r: *Run, e: *Elab, operands: []const Sink, tok: u32, src: u32, width: u32, scope: u32) Error!void {
+    assert(tok < r.starts.len);
+    assert(scope < r.scope_info.items.len);
     var lo: u32 = 0;
     var k = operands.len;
     while (k != 0) {

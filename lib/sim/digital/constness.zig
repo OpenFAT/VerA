@@ -20,6 +20,7 @@
 //! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
 //! §9.22 driver access.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const exec = @import("exec.zig");
@@ -48,12 +49,14 @@ const sys_fns = system_functions.sys_fns;
 /// system function calls, and §10.4.5 constant function calls while
 /// elaboration still folds (`Run.growing`)? Evaluates nothing.
 pub fn constantExpression(self: *Run, e: Ast.ExprId) bool {
+    assert(e != .none);
     return isConstantExpression(self, e, false);
 }
 
 /// Attributes are materialized for VPI after elaboration, when their
 /// §10.4.5 constant function calls still retain their elaborated frames.
 pub fn attributeConstantExpression(self: *Run, e: Ast.ExprId) bool {
+    assert(e != .none);
     return isConstantExpression(self, e, true);
 }
 
@@ -62,6 +65,7 @@ pub fn attributeConstantExpression(self: *Run, e: Ast.ExprId) bool {
 /// (`ModuleDecl.attrs`), read in its instance `scope`, whose parameters are
 /// constants.
 pub fn checkAttributes(self: *Run, attrs: []const Ast.NatureAttr, scope: u32) Error!void {
+    assert(scope < self.scope_info.items.len);
     const saved = self.scope;
     defer self.scope = saved;
     self.scope = scope;
@@ -133,6 +137,7 @@ pub fn notConstant(self: *Run, idx: u32) Error!?[]const u8 {
 // arithmetic expressions is disputed; retain an explicit unsupported
 // boundary until qualified, stopping at self-determined expression results.
 pub fn unsizedConcatOperand(self: *Run, e: Ast.ExprId) bool {
+    assert(e != .none);
     const ex = &self.file.exprs;
     return switch (ex.tag(e)) {
         .int_literal => ex.intLiteral(e).width == 0,
@@ -155,6 +160,7 @@ pub fn unsizedConcatOperand(self: *Run, e: Ast.ExprId) bool {
 // ---- private ----
 
 fn isConstantExpression(self: *Run, e: Ast.ExprId, attribute: bool) bool {
+    assert(e != .none);
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
         .int_literal, .logic_literal, .str_literal, .real_literal => return true,

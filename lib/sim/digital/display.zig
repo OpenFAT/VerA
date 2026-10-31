@@ -50,6 +50,7 @@
 //! Clauses: §9.4.1 Table 9-1, §9.4.3 Table 9-22; IEEE 1364-2005 §17.1.1.3,
 //! §17.1.1.4, §17.1.2, §17.1.3, §17.2.9, §17.3, §17.7.2.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -439,6 +440,7 @@ pub fn printTimescale(self: *Run, args: []const Ast.ExprId) Error!void {
 /// A named block that declares nothing has no scope, so is found in its
 /// module's source (`namedBlock`).
 pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!TimescaleTarget {
+    assert(e != .none);
     const ex = &self.file.exprs;
     const parts: []const Ast.StrId = switch (ex.tag(e)) {
         .ident => &.{ex.strOf(e)},
@@ -482,6 +484,7 @@ fn toFile(radix: Radix) Show {
 }
 
 fn sformatMismatch(self: *Run, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     const at = self.starts[@min(self.file.exprs.mainTok(e), self.starts.len - 1)];
     try self.bag.add(self.stage(), .W1153, .{ .start = at, .end = at }, sformat_mismatch, .{});
 }
@@ -490,6 +493,7 @@ fn sformatMismatch(self: *Run, e: Ast.ExprId) Error!void {
 /// variable (`dynamic`) warns and the task stops (`sformatMismatch`), a
 /// literal one is refused with `msg`.
 fn short(self: *Run, e: Ast.ExprId, dynamic: bool, comptime msg: []const u8) Error!void {
+    assert(e != .none);
     return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, msg);
 }
 
@@ -692,6 +696,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
 /// prints: C's `%#g`, and a bare `$realtime` call in `%.Nf`, N the decimal
 /// digits of its module's precision below its unit.
 fn bareReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!void {
+    assert(e != .none);
     const r = try evaluate.evalReal(self, a, e);
     if (self.file.exprs.tag(e) == .sys_call and self.sys_calls[@backingInt(e)].? == .realtime) {
         const digits = std.math.log10_int(@as(u64, self.timeOf(self.scope).scale.local_per_unit));
@@ -733,6 +738,7 @@ fn emitPath(self: *Run, s: u32) Error!void {
 /// its own (`elab.blockScopes`), is in module instance `scope`'s
 /// initial and always constructs.
 fn namedBlock(self: *const Run, scope: u32, name: Ast.StrId) bool {
+    assert(scope < self.scope_info.items.len);
     if (self.scope_info.items[scope].lexical) return false;
     const V = struct {
         f: *const Ast.SourceFile,

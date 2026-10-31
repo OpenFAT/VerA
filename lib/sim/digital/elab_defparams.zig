@@ -18,6 +18,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -127,6 +128,7 @@ pub fn checkDefparams(r: *Run) Error!void {
 /// first segment is resolved, and the rest of it. `children` is pass one's
 /// static view of `decl`'s children; null reads the complete hierarchy.
 fn defparamBase(r: *Run, decl: u32, path: []const u8, children: ?[]const Ast.Instance, tok: u32) Error!struct { at: u32, rest: []const u8 } {
+    assert(tok < r.starts.len);
     const dot = std.mem.findScalar(u8, path, '.') orelse return .{ .at = decl, .rest = path };
     const name, const index = segment(path[0..dot]);
     if (children) |list| {

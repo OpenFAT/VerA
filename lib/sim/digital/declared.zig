@@ -12,6 +12,7 @@
 //! - `pub fn declaredWidth(self: *Run, range: Ast.Dim, tok: u32) Error!u32`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -85,6 +86,8 @@ pub fn timeOf(self: *const Run, scope: u32) ModuleTime {
 /// run-time expression cannot disagree about an operator. The result's
 /// planes are fresh arena memory, never a literal's own.
 pub fn constant(self: *Run, e: Ast.ExprId, tok: u32) Error!Int.Literal {
+    assert(e != .none);
+    assert(tok < self.starts.len);
     if (self.growing) |g| self.values = g.items;
     try compile.checkExpr(self, e);
     if (!compile.constantExpression(self, e)) return self.fail(tok, "a constant expression is required here", .{});
@@ -97,6 +100,8 @@ pub fn constant(self: *Run, e: Ast.ExprId, tok: u32) Error!Int.Literal {
 /// One declared bound (§3.3, §4.3.1): any constant expression, of any
 /// sign (the §4.3.1 example `[-2:1]`).
 pub fn declaredBound(self: *Run, e: Ast.ExprId, tok: u32) Error!i64 {
+    assert(e != .none);
+    assert(tok < self.starts.len);
     if (self.file.exprs.tag(e) == .int_literal) return self.file.exprs.intValue(e);
     const v = try self.constant(e, tok);
     // §4.3.1: "Both the msb constant expression and the lsb constant
@@ -112,6 +117,8 @@ pub fn declaredBound(self: *Run, e: Ast.ExprId, tok: u32) Error!i64 {
 /// The `identifier` alternative names a parameter, so anything but a
 /// literal goes through `constant`.
 pub fn declaredDelay(self: *Run, e: Ast.ExprId, tok: u32) Error!u64 {
+    assert(e != .none);
+    assert(tok < self.starts.len);
     const scale = self.timeOf(self.scope).scale;
     return switch (self.file.exprs.tag(e)) {
         .real_literal => scale.realDelay(self.file.exprs.realValue(e)),
@@ -129,6 +136,7 @@ pub fn declaredDelay(self: *Run, e: Ast.ExprId, tok: u32) Error!u64 {
 /// One A.2.2.3 `delay3` as the three tick counts §7.14 chooses between. A
 /// two-value form's `off` is "the smallest of the delays".
 pub fn declaredDelay3(self: *Run, d: Ast.Delay3, tok: u32) Error!Delay {
+    assert(tok < self.starts.len);
     if (!d.any()) return .{};
     var out: Delay = .{ .present = true };
     out.rise = try self.declaredDelay(d.rise, tok);
@@ -139,6 +147,7 @@ pub fn declaredDelay3(self: *Run, d: Ast.Delay3, tok: u32) Error!Delay {
 
 /// §3.3/§6.5.2 a packed `[msb:lsb]` range as a bit width.
 pub fn declaredWidth(self: *Run, range: Ast.Dim, tok: u32) Error!u32 {
+    assert(tok < self.starts.len);
     const hi = try self.declaredBound(range.msb, tok);
     const lo = try self.declaredBound(range.lsb, tok);
     const span = @abs(@as(i128, hi) - lo);

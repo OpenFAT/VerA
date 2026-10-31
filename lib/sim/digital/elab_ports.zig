@@ -28,6 +28,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -114,6 +115,7 @@ pub fn groupByName(m: *const Ast.ModuleDecl, name: Ast.StrId) ?usize {
 /// one net (or output variable) per port name, then each external port's
 /// connection split among its references, leftmost the most significant.
 pub fn groupPorts(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind) Error!void {
+    assert(scope < r.scope_info.items.len);
     for (m.ports, 0..) |p, i| {
         if (p.name == .none) continue; // A.1.3: a null port declares no internal net
         if (for (m.ports[0..i]) |q| {
@@ -151,6 +153,7 @@ pub fn portByName(m: *const Ast.ModuleDecl, name: Ast.StrId) ?usize {
 
 /// Records `slot`'s declared `[msb:lsb]` (`Run.vec_ranges`).
 pub fn putRange(r: *Run, slot: u32, range: Ast.Dim, tok: u32) Error!void {
+    assert(tok < r.starts.len);
     try r.vec_ranges.put(r.arena, slot, .{ .msb = try r.declaredBound(range.msb, tok), .lsb = try r.declaredBound(range.lsb, tok) });
 }
 
@@ -173,6 +176,7 @@ pub fn childPortWidth(r: *Run, child: u32, p: Ast.Port) Error!u32 {
 
 /// §6.5.7 one port connection, decided in the PARENT's scope.
 pub fn bindPort(r: *Run, e: *Elab, port: Ast.Port, conn: Ast.PortConn, scope: u32) Error!PortBind {
+    assert(scope < r.scope_info.items.len);
     if (conn.expr == .none) return .open;
     const ex = &r.file.exprs;
     // §12.3.7: "The real data type shall not be directly connected to a port."
@@ -207,6 +211,7 @@ pub fn bindPort(r: *Run, e: *Elab, port: Ast.Port, conn: Ast.PortConn, scope: u3
 /// The operands of `e`, a nested concatenation flattened in order, or `e`
 /// itself.
 pub fn concatLeaves(r: *Run, e: Ast.ExprId, out: *std.ArrayList(Ast.ExprId)) Error!void {
+    assert(e != .none);
     const ex = &r.file.exprs;
     if (ex.tag(e) != .concat) return out.append(r.arena, e);
     for (ex.args(e)) |x| try concatLeaves(r, x, out);
@@ -216,6 +221,8 @@ pub fn concatLeaves(r: *Run, e: Ast.ExprId, out: *std.ArrayList(Ast.ExprId)) Err
 /// net, a net array element, or a constant bit-select or part-select of a
 /// vector net.
 pub fn sink(r: *Run, e: *Elab, arg: Ast.ExprId, tok: u32, comptime who: SinkOf) Error!Sink {
+    assert(arg != .none);
+    assert(tok < r.starts.len);
     const ex = &r.file.exprs;
     r.values = e.values.items;
     const lvalue = " a net, a net array element, a constant bit-select or part-select of a vector net, or a concatenation of them";
@@ -261,6 +268,7 @@ fn groupEnd(m: *const Ast.ModuleDecl, i: usize) usize {
 /// connected nets, and an inout one is joined to them bit by bit, as a
 /// `tran` joins two nets (§7.6).
 fn connectGroup(r: *Run, e: *Elab, refs: []const Ast.Port, conn: Ast.PortConn, parent: u32, scope: u32) Error!void {
+    assert(scope < r.scope_info.items.len);
     if (conn.expr == .none) return;
     const Ref = struct { slot: u32, lo: u32, width: u32, at: u32, dir: Ast.Direction };
     const list = try r.arena.alloc(Ref, refs.len);

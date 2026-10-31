@@ -23,6 +23,7 @@
 //! - `pub fn bind(self: *Run, name: Ast.StrId, at: u32, tok: u32) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -99,6 +100,7 @@ pub fn slotOf(self: *const Run, name: []const u8) ?u32 {
 /// the scope before it, and the last is a declared name in the scope the
 /// final instance minted.
 pub fn slot(self: *Run, e: Ast.ExprId) Error!u32 {
+    assert(e != .none);
     if (self.slot_memo.len == 0) return self.resolveSlot(e);
     const key = @backingInt(e) *% 0x9e3779b1 ^ self.scope *% 0x85ebca6b;
     const m = &self.slot_memo[key >> (32 - memo_bits)];
@@ -110,6 +112,7 @@ pub fn slot(self: *Run, e: Ast.ExprId) Error!u32 {
 
 /// Returns the slot name `e` resolves to in the executing scope, or an E-coded refusal.
 pub fn resolveSlot(self: *Run, e: Ast.ExprId) Error!u32 {
+    assert(e != .none);
     const ex = &self.file.exprs;
     if (ex.tag(e) == .hier_ident) {
         const parts = ex.nameParts(e);
@@ -148,6 +151,7 @@ pub fn resolveSlot(self: *Run, e: Ast.ExprId) Error!u32 {
 /// in this scope: the spelling of an instance or generate block name
 /// (`SourceFile.hierIndices`).
 pub fn foldSelects(self: *Run, tok: u32, text: []const u8, indices: []const Ast.ExprId, used: *usize) Error!Ast.StrId {
+    assert(tok < self.starts.len);
     var out: std.Io.Writer.Allocating = .init(self.arena);
     var rest = text;
     while (std.mem.find(u8, rest, "[]")) |at| {
@@ -166,6 +170,7 @@ pub fn foldSelects(self: *Run, tok: u32, text: []const u8, indices: []const Ast.
 /// generate `base` declared in `parent`, or, with no parent (the first
 /// part of a §12.5 name), in the nearest scope upward that has one.
 pub fn elementScope(self: *Run, tok: u32, base: []const u8, parent: ?u32, indices: []const Ast.ExprId, used: *usize) Error!u32 {
+    assert(tok < self.starts.len);
     if (used.* == indices.len) return self.fail(tok, "§12.5: a hierarchical select has no index", .{});
     const v = (try self.constant(indices[used.*], tok)).asInt() orelse return self.fail(tok, "§12.5: a hierarchical select's index has an x or z bit", .{});
     used.* += 1;
@@ -184,6 +189,7 @@ pub fn elementScope(self: *Run, tok: u32, base: []const u8, parent: ?u32, indice
 /// The slot event term `e` watches: a name's own, or the hidden one a
 /// §9.7.2 expression term keeps (`term_slots`).
 pub fn termSlot(self: *Run, e: Ast.ExprId) Error!u32 {
+    assert(e != .none);
     return self.term_slots.get(.{ .scope = self.scope, .e = e }) orelse self.slot(e);
 }
 
@@ -203,6 +209,8 @@ pub fn slotType(self: *const Run, at: u32) compile.Type {
 /// the same hides the outer name from the instance on (iverilog's
 /// gate_instance_shadow_fail and gate_instance_reference_order).
 pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
+    assert(scope < self.scope_info.items.len);
+    assert(tok < self.starts.len);
     var s = scope;
     while (true) {
         if (self.names.get(.{ .scope = s, .str = str })) |at| {
@@ -219,6 +227,8 @@ pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
 /// Whether `lookupAt` found nothing because a primitive instance of
 /// that name, at or before `tok`, hides the outer one.
 pub fn instanceHides(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) bool {
+    assert(scope < self.scope_info.items.len);
+    assert(tok < self.starts.len);
     var s = scope;
     while (true) {
         if (self.names.contains(.{ .scope = s, .str = str })) return false;
@@ -231,6 +241,7 @@ pub fn instanceHides(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) boo
 
 /// Returns the slot `str` names in `scope` or a scope around it, or null.
 pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
+    assert(scope < self.scope_info.items.len);
     var s = scope;
     while (true) {
         if (self.names.get(.{ .scope = s, .str = str })) |at| return at;
@@ -246,6 +257,7 @@ pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
 /// it. A named block or a task frame declares names from its instance's
 /// parameters, so it shares its instance's types.
 pub fn specOf(self: *const Run, scope: u32) u32 {
+    assert(scope < self.scope_info.items.len);
     var s = scope;
     while (s < self.scope_info.items.len) {
         const info = self.scope_info.items[s];
@@ -257,6 +269,7 @@ pub fn specOf(self: *const Run, scope: u32) u32 {
 
 /// The instance a (possibly nested) scope belongs to.
 pub fn instanceOf(self: *const Run, scope: u32) u32 {
+    assert(scope < self.scope_info.items.len);
     var s = scope;
     while (self.scope_info.items[s].lexical) s = self.scope_info.items[s].parent;
     return s;
@@ -278,6 +291,7 @@ pub fn isScalar(self: *const Run, at: u32) bool {
 /// wide as element zero, so a parked value can be sized before §8.5.3.3
 /// resolves which element it lands in.
 pub fn baseSlot(self: *Run, e: Ast.ExprId) Error!u32 {
+    assert(e != .none);
     const ex = &self.file.exprs;
     return if (ex.tag(e) == .index) self.slot(self.chainBase(e).base) else self.scalarSlot(e);
 }
@@ -285,6 +299,7 @@ pub fn baseSlot(self: *Run, e: Ast.ExprId) Error!u32 {
 /// The name at the bottom of a stack of selects, `a` in `a[i][j]`, and
 /// how many selects stand on it.
 pub fn chainBase(self: *const Run, e: Ast.ExprId) struct { base: Ast.ExprId, depth: u32 } {
+    assert(e != .none);
     const ex = &self.file.exprs;
     var x = e;
     var depth: u32 = 0;
@@ -295,6 +310,7 @@ pub fn chainBase(self: *const Run, e: Ast.ExprId) struct { base: Ast.ExprId, dep
 /// The slot of a reference to one whole value. §3.9's unpacked array has
 /// no value of its own, only its elements do, so a bare array name fails.
 pub fn scalarSlot(self: *Run, e: Ast.ExprId) Error!u32 {
+    assert(e != .none);
     const at = try self.slot(e);
     if (self.arrays.contains(at)) return self.exprFail(e, "an unpacked array reference requires an element index");
     return at;
@@ -303,6 +319,7 @@ pub fn scalarSlot(self: *Run, e: Ast.ExprId) Error!u32 {
 /// The array an `.index` names an element of (one index per dimension,
 /// §4.9), or null when it is a bit or part select.
 pub fn indexedArray(self: *Run, e: Ast.ExprId) Error!?Array {
+    assert(e != .none);
     const ex = &self.file.exprs;
     if (ex.tag(e) != .index) return null;
     const c = self.chainBase(e);
@@ -323,6 +340,7 @@ pub fn indexedArray(self: *Run, e: Ast.ExprId) Error!?Array {
 /// Binds `name` to slot `at` in the current scope (`scope`). A second
 /// declaration of one name in one scope fails at `tok` (E1100).
 pub fn bind(self: *Run, name: Ast.StrId, at: u32, tok: u32) Error!void {
+    assert(tok < self.starts.len);
     const entry = try self.names.getOrPut(self.arena, .{ .scope = self.scope, .str = name });
     if (entry.found_existing) return self.fail(tok, "duplicate digital variable", .{});
     entry.value_ptr.* = at;

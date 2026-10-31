@@ -32,6 +32,7 @@
 //! - `pub fn tick(r: *Run, a: std.mem.Allocator) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const waiters = @import("waiters.zig");
@@ -366,6 +367,7 @@ pub fn preamble(w: *std.Io.Writer, io: std.Io, call: []const u8, finest: i32) st
 
 /// Refuses a malformed §18.1 call before the run.
 pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+    assert(tok < r.starts.len);
     for (args) |a| if (a == .none) return r.fail(tok, "the §18.1 dump tasks take no null arguments", .{});
     switch (op) {
         // §18.1.1: the filename is optional.
@@ -388,6 +390,7 @@ pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
 /// §18.1.2 `module_or_variable`: a module instance (the root by its module
 /// name, or a downward path) or a variable, by slot.
 pub fn target(r: *Run, e: Ast.ExprId) Error!Target {
+    assert(e != .none);
     const ex = &r.file.exprs;
     const parts: []const Ast.StrId = switch (ex.tag(e)) {
         .ident => &.{ex.strOf(e)},
@@ -464,6 +467,7 @@ pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
 
 /// The interpreter's run of one §18.1 task.
 pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+    assert(tok < r.starts.len);
     const v = &r.vcd;
     switch (op) {
         .file => if (args.len == 1 and !v.started) {

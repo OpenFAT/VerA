@@ -18,6 +18,7 @@
 //! Clauses: §17.2 file input and output, §17.2.3 string output, §17.5
 //! programmable logic arrays, §17.6 stochastic queues, §17.9 distributions.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -79,6 +80,7 @@ const duplicate_id = 6;
 
 /// Returns argument `e` as an integer, or null when it has an x or z bit.
 pub fn int(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?i64 {
+    assert(e != .none);
     return (try evaluate.eval(self, a, e, 0)).asInt();
 }
 

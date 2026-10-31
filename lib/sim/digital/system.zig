@@ -50,6 +50,7 @@
 //! Clauses: §17.2 file input and output, §17.2.3 string output, §17.5
 //! programmable logic arrays, §17.6 stochastic queues, §17.9 distributions.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -220,6 +221,7 @@ pub fn dist(f: Dist, seed: i32, a: i32, b: i32) ?Draw {
 /// read and written back (§17.9.1, §17.9.2: "an inout argument"); a
 /// seedless `$random` advances `Run.random_seed`.
 pub fn random(self: *Run, a: std.mem.Allocator, f: Dist, args: []const Ast.ExprId, tok: u32) Error!i32 {
+    assert(tok < self.starts.len);
     if (args.len == 0) {
         const d = dist(.random, self.random_seed, 0, 0).?;
         self.random_seed = d.seed;
@@ -322,6 +324,7 @@ pub fn plaEval(p: Pla, rows: []const Int.Literal, in: Int.Literal, out: Int.Lite
 /// The seed or integer argument `e` as the listing's 32-bit `long`: its
 /// low 32 bits, 0 when it holds an x or z bit.
 fn long(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!i32 {
+    assert(e != .none);
     return @truncate(try int(self, a, e) orelse 0);
 }
 

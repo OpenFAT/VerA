@@ -27,6 +27,7 @@
 //! Clauses: §17.2 file input and output, §17.2.3 string output, §17.5
 //! programmable logic arrays, §17.6 stochastic queues, §17.9 distributions.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -121,6 +122,7 @@ pub const FakeFile = struct {
 /// A descriptor is "a 32-bit value" (§17.2.1): its low 32 bits, however the
 /// variable holding it is signed (`integer fd` is the clause's own example).
 pub fn descriptor(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?i64 {
+    assert(e != .none);
     return low32(try int(self, a, e));
 }
 

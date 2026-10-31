@@ -14,6 +14,7 @@
 //! - `pub fn child(r: *Run, parent: u32, inst: *const Ast.Instance) Error!struct { def: u32, ctx: Ctx }`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const root = @import("root.zig");
@@ -160,6 +161,7 @@ pub fn child(r: *Run, parent: u32, inst: *const Ast.Instance) Error!struct { def
 // ---- private ----
 
 fn unitOf(r: *const Run, more_starts: []const u32, tok: u32) usize {
+    assert(tok < r.starts.len);
     const at = r.starts[tok];
     var k: usize = 0;
     while (k < more_starts.len and more_starts[k] <= at) k += 1;
@@ -184,6 +186,7 @@ fn lookup(r: *const Run, list: []const Ast.StrId, cell: Ast.StrId) ?u32 {
 }
 
 fn search(r: *Run, list: []const Ast.StrId, cell: Ast.StrId, tok: u32) Error!u32 {
+    assert(tok < r.starts.len);
     if (lookup(r, list, cell)) |d| return d;
     var names: std.ArrayList(u8) = .empty;
     for (list, 0..) |lib, k| {
@@ -194,6 +197,7 @@ fn search(r: *Run, list: []const Ast.StrId, cell: Ast.StrId, tok: u32) Error!u32
 }
 
 fn module(r: *Run, lib: Ast.StrId, cell: Ast.StrId, tok: u32) Error!u32 {
+    assert(tok < r.starts.len);
     return find(r, lib, cell) orelse r.fail(tok, "undeclared module in instantiation: library `{s}` holds no cell `{s}`", .{ r.file.str(lib), r.file.str(cell) });
 }
 

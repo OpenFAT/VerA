@@ -18,6 +18,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -56,6 +57,7 @@ const Elab = elab.Elab;
 /// net, and a parallel path as a full one: the net takes the smallest delay
 /// its changed bits select.
 pub fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!void {
+    assert(scope < r.scope_info.items.len);
     // ponytail: per-bit destinations would time each bit on its own.
     const ex = &r.file.exprs;
     r.scope = scope;
@@ -117,6 +119,7 @@ pub fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error
 /// current scope (`r.scope`) to its transition table. "If the path delay
 /// expression results in a negative value, it shall be treated as zero."
 pub fn pathTable(r: *Run, delays: []const Ast.ExprId, tok: u32) Error!net_mod.PathTable {
+    assert(tok < r.starts.len);
     var ticks: [12]u64 = undefined;
     for (delays, ticks[0..delays.len]) |d, *t| {
         const v = try r.constant(d, tok);

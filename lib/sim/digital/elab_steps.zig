@@ -14,6 +14,7 @@
 //! - `pub fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -255,6 +256,7 @@ fn levelControlled(r: *Run, body: Ast.StmtId) Error!bool {
     if (st != .event_control or st.event_control.kind != .event) return false;
     const L = struct {
         fn level(rr: *Run, e: Ast.ExprId) Error!bool {
+            assert(e != .none);
             const ex = &rr.file.exprs;
             return switch (ex.tag(e)) {
                 .event_or => try level(rr, ex.lhs(e)) and try level(rr, ex.rhs(e)),

@@ -378,6 +378,7 @@ fn limitTicks(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!i64 {
 /// Tables 15-1, 15-2, 15-4, 15-5, 15-7 to 15-11: a "Non-negative constant
 /// expression".
 fn nonNegative(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId, what: []const u8) Error!u64 {
+    assert(e != .none);
     assert(what.len != 0);
     const v = try limitTicks(r, t, e);
     if (v < 0) return r.failWith(
@@ -397,6 +398,7 @@ fn nonNegative(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId, what: []const 
 /// §15.5.4: the limit is 0, and the delayed signals are copies
 /// (`delayedDrivers`).
 fn signedLimit(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!u64 {
+    assert(e != .none);
     const v = try limitTicks(r, t, e);
     if (!r.opts.negative_timing) assert(@max(v, 0) >= 0);
     return if (r.opts.negative_timing) @bitCast(v) else @intCast(@max(v, 0));

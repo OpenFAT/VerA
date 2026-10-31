@@ -22,6 +22,7 @@
 //! - `pub fn window(self: *Run, scratch: std.mem.Allocator, b: Bridge, width: u32) Error!Int.Literal`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Int = @import("kernels").Integer;
 const Error = @import("root.zig").Error;
 const Run = @import("root.zig").Run;
@@ -104,6 +105,7 @@ const bus_expected = "1 0101 1 0111\nx 0xx1 1\n0 0001\n0 0011\nz zzzz 1\n";
 /// `store`, the path a variable write takes, so `@(posedge w)` resumes on a
 /// net.
 pub fn resolve(self: *Run, net: u32) Error!void {
+    assert(net < self.nets.len);
     const n = self.nets[net];
     const drivers = self.netDrivers(net);
     // A §18.4 port's state can change with its drivers' strengths alone.
@@ -185,6 +187,7 @@ pub fn resolve(self: *Run, net: u32) Error!void {
 /// with no driver at all holds its type's pull (§3.7: a supply net's supply
 /// strength), which a MOS switch reading it as data passes on (§7.11).
 pub fn initial(self: *Run, net: u32) void {
+    assert(net < self.nets.len);
     const n = self.nets[net];
     if (n.kind == .wreal or n.kind == .trireg or self.netCold(n).trans.len != 0) return;
     if (self.netDrivers(net).len == 0) {
@@ -365,6 +368,7 @@ fn transitionDelay(self: *Run, c: *const net_mod.NetCold, from: Int.Literal, to:
 /// the earlier landing (on-event) or from now (on-detect) to the later.
 /// Returns whether it scheduled the transition itself.
 fn pulse(self: *Run, net: u32, c: *net_mod.NetCold, td: Timed) Error!bool {
+    assert(net < self.nets.len);
     const st = &c.transition;
     const n = self.nets[net];
     const now = self.scheduler.now;
@@ -396,6 +400,7 @@ fn pulse(self: *Run, net: u32, c: *net_mod.NetCold, td: Timed) Error!bool {
 
 /// Puts `to` in flight on `st` to land on net `net` at absolute time `at`.
 fn land(self: *Run, net: u32, st: *net_mod.Inertial, to: Int.Literal, at: u64) Error!void {
+    assert(net < self.nets.len);
     if (st.target.planes.len != to.planes.len) st.target.planes = try self.arena.alloc(u64, to.planes.len);
     @memcpy(st.target.planes, to.planes);
     st.target.width = to.width;
@@ -487,6 +492,7 @@ fn pathCond(self: *Run, p: net_mod.Path) Error!bool {
 /// reads (`Net.strength_read`), driven at one strength on both sides by
 /// every driver, none of them H/L (§7.10.2).
 fn uniform(self: *const Run, net: u32) bool {
+    assert(net < self.nets.len);
     const n = self.nets[net];
     switch (n.kind) {
         .wire, .tri, .uwire => {},
@@ -566,6 +572,7 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
 // and some floating decays all of them together; a countdown per bit if a
 // design needs it.
 fn chargeState(self: *Run, net: u32, floating: bool) Error!void {
+    assert(net < self.nets.len);
     const n = &self.nets[net];
     const was = n.capacitive;
     n.capacitive = floating;

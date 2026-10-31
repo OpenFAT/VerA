@@ -56,6 +56,7 @@
 //! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
 //! §9.22 driver access.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const exec = @import("exec.zig");
@@ -193,6 +194,7 @@ pub fn compileSub(self: *Run, idx: u32) Error!void {
 /// continues to search higher level modules until found" (ivtest
 /// sv_task_call_instance_lookup: each `child` calls its own parent's task).
 pub fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
+    assert(scope < self.scope_info.items.len);
     var s = scope;
     while (true) : (s = self.scope_info.items[s].parent) {
         if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
@@ -206,6 +208,7 @@ pub fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
 /// formal and none of them null, and an output or inout argument an lvalue
 /// the value can be copied back into.
 pub fn checkArgs(self: *Run, decl: *const Ast.Subroutine, args: []const Ast.ExprId, tok: u32) Error!void {
+    assert(tok < self.starts.len);
     if (args.len != decl.ports.len) return self.fail(tok, "`{s}` takes {d} arguments, not {d}", .{ self.file.str(decl.name), decl.ports.len, args.len });
     const ex = &self.file.exprs;
     for (decl.ports, args) |p, a| {
@@ -226,6 +229,8 @@ pub fn checkArgs(self: *Run, decl: *const Ast.Subroutine, args: []const Ast.Expr
 /// instances as a §12.5 reference's do, and the task is the last part,
 /// declared in the final one. Fails at `tok` when `report`, else is null.
 pub fn enabledTask(self: *Run, scope: u32, name: Ast.StrId, tok: u32, comptime report: bool) Error!?u32 {
+    assert(scope < self.scope_info.items.len);
+    assert(tok < self.starts.len);
     const saved = self.scope;
     defer self.scope = saved;
     self.scope = scope;
@@ -282,6 +287,7 @@ pub fn element(self: *const Run, parent: u32, name: Ast.StrId, v: i64) ?u32 {
 /// site, which is per activation because a site cannot be re-entered while
 /// its process is suspended inside it.
 pub fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok: u32, depth: u32) Error!void {
+    assert(tok < self.starts.len);
     if (self.in_function) return self.fail(tok, "§10.4.4: a function cannot enable a task", .{});
     const idx = (try enabledTask(self, self.scope, name, tok, true)).?;
     const decl = self.subs.items[idx].decl;

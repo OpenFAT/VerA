@@ -28,6 +28,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -104,6 +105,7 @@ pub const size_mismatch = "§6.5.7.1: the sizes of the port and the net connecte
 /// Recurses into child instances AFTER its own nets exist, so a port connection
 /// always resolves against a parent that is fully declared.
 pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, over: []const Ast.ParamOverride, depth: u32) Error!void {
+    assert(scope < r.scope_info.items.len);
     try declareHead(r, e, m, scope, over, depth);
     return declareBody(r, e, m, scope, binds, depth);
 }
@@ -112,6 +114,7 @@ pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: [
 /// and parameters, which an instance's parent needs before it binds the
 /// ports (a port range may name a parameter, IEEE 1364-2005 §12.2).
 pub fn declareHead(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, over: []const Ast.ParamOverride, depth: u32) Error!void {
+    assert(scope < r.scope_info.items.len);
     const arena = r.arena;
     if (deep.exhausted()) return r.deepFail(m.main_tok);
     // §12.1.3: a module may instantiate itself only under a generate that
@@ -392,6 +395,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
 /// Whether two declared `[msb:lsb]` ranges fold to the same bounds, as
 /// §12.3.3 asks of a port's two declarations.
 pub fn sameRange(r: *Run, a: Ast.Dim, b: Ast.Dim, tok: u32) Error!bool {
+    assert(tok < r.starts.len);
     return try r.declaredBound(a.msb, tok) == try r.declaredBound(b.msb, tok) and
         try r.declaredBound(a.lsb, tok) == try r.declaredBound(b.lsb, tok);
 }
@@ -420,6 +424,7 @@ pub fn declareEvents(r: *Run, events: []const Ast.EventDecl) Error!void {
 /// compiled first (`b.mod_1.x` from a sibling block) finds them. `compile`
 /// enters the scope `block_scopes` records.
 pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
+    assert(scope < r.scope_info.items.len);
     if (s == .none) return;
     const W = struct {
         r: *Run,
@@ -442,6 +447,7 @@ pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
 /// Block `s`'s scope under `scope`, its parameters, events and variables
 /// declared there. Pass two calls it for an automatic activation's copy.
 pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
+    assert(scope < r.scope_info.items.len);
     const b = r.file.stmt(s).block;
     const tok = r.file.stmtTok(s);
     const at = try newScope(r, tok);
@@ -475,6 +481,7 @@ fn assignsTo(r: *const Run, m: *const Ast.ModuleDecl, name: Ast.StrId) bool {
 }
 
 fn namesIn(r: *const Run, e: Ast.ExprId, name: Ast.StrId) bool {
+    assert(e != .none);
     const ex = &r.file.exprs;
     return switch (ex.tag(e)) {
         .ident => ex.strOf(e) == name,
@@ -492,6 +499,7 @@ fn namesIn(r: *const Run, e: Ast.ExprId, name: Ast.StrId) bool {
 /// A terminal's identifiers count wherever they stand in its expression
 /// (`.r(!r)`); an assignment's target only as the whole of it.
 fn implicitNets(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl) Error!void {
+    assert(scope < r.scope_info.items.len);
     for (m.instances) |inst| for (inst.ports) |c| try implicitTerminal(r, e, scope, m, c.expr);
     for (m.gates) |g| {
         try implicitNet(r, e, scope, m, g.out);
@@ -504,6 +512,7 @@ fn implicitNets(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl) Error!v
 
 /// Every identifier of terminal expression `x` through `implicitNet`.
 fn implicitTerminal(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.ExprId) Error!void {
+    assert(scope < r.scope_info.items.len);
     const ex = &r.file.exprs;
     if (x == .none) return;
     if (ex.tag(x) == .ident) return implicitNet(r, e, scope, m, x);
@@ -512,6 +521,7 @@ fn implicitTerminal(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: 
 }
 
 fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.ExprId) Error!void {
+    assert(scope < r.scope_info.items.len);
     const ex = &r.file.exprs;
     if (x == .none or ex.tag(x) != .ident) return;
     const tok = ex.mainTok(x);

@@ -24,6 +24,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -100,6 +101,7 @@ pub fn mintVar(r: *Run, v: Ast.VarDecl) Error!u32 {
 /// §4.9 the `arrays` row of the array whose first element is `base`, declared
 /// with `dims`, and its element count; 1, and no row, for no dimensions.
 pub fn declareArray(r: *Run, base: u32, dims: []const Ast.Dim, tok: u32) Error!u32 {
+    assert(tok < r.starts.len);
     if (dims.len == 0) return 1;
     var count: u32 = 1;
     const spans = try r.arena.alloc(Span, dims.len);
@@ -123,6 +125,8 @@ pub fn declareArray(r: *Run, base: u32, dims: []const Ast.Dim, tok: u32) Error!u
 /// §4.9.1 the slot a driver, a port connection or a §9.3.2 `force` drives: a whole net, or one
 /// element of a net array named with a constant index per dimension.
 pub fn netSlot(r: *Run, e: Ast.ExprId, tok: u32) Error!u32 {
+    assert(e != .none);
+    assert(tok < r.starts.len);
     const arr = (try r.indexedArray(e)) orelse return r.scalarSlot(e);
     const ex = &r.file.exprs;
     const c = r.chainBase(e);
@@ -194,6 +198,7 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
 /// function and compiled now, so `exec.callSync` can run it during
 /// elaboration.
 pub fn earlyFrame(r: *Run, idx: u32, tok: u32) Error!void {
+    assert(tok < r.starts.len);
     const sub = &r.subs.items[idx];
     sub.frame = try frame(r, sub.decl, sub.inst);
     sub.framed = true;
@@ -223,6 +228,7 @@ pub fn promoteWreal(r: *Run, e: *Elab, net: u32) Error!void {
 /// current scope; returns the net's index. Invalidates pointers into
 /// `e.values`, `e.nets` and `e.signals`.
 pub fn mintNet(r: *Run, e: *Elab, kind: Ast.NetKind, width: u32, signed: bool, name: Ast.StrId, tok: u32) Error!u32 {
+    assert(tok < r.starts.len);
     if (e.values.items.len == std.math.maxInt(u32)) return r.fail(tok, "too many digital storage slots", .{});
     const slot: u32 = @intCast(e.values.items.len);
     const at: u32 = @intCast(e.nets.items.len);

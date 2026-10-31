@@ -23,6 +23,7 @@
 //! wreal, §6.3 the host's parameters, §7.2 continuous and discrete, §7.8.4
 //! inserted connect modules.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -89,6 +90,7 @@ const LaneSeg = struct { row: usize, j: usize, term: u32, seg: Ast.ExprId };
 /// `items.discrete` are not read. `lanes` re-points single lanes of
 /// `items.gates`' instance arrays (`bridged`).
 pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_at: []const LaneSeg) Error!void {
+    assert(scope < r.scope_info.items.len);
     r.scope = scope;
     for (items.assigns) |a| {
         const net = try drivenNet(r, e, scope, a.target, a.main_tok, .assign, .{ a.strength0, a.strength1 });
@@ -239,6 +241,7 @@ pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_
 // parameters are the analog block's), and a generate scope's path is not
 // matched: insertion under a generate block reaches only the analog half.
 pub fn bridged(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!Bridged {
+    assert(scope < r.scope_info.items.len);
     var b: Bridged = .{ .instances = m.instances, .gates = m.gates, .pulls = m.pulls, .switches = m.switches };
     if (r.inserts.len == 0) return b;
     const arena = r.arena;
@@ -402,6 +405,8 @@ fn interned(r: *Run, name: []const u8) Error!Ast.StrId {
 /// of an instance array `lanes` wide takes bit `lane` of a net that wide
 /// (§7.1.6).
 fn switchTerminal(r: *Run, e: *Elab, t: Ast.ExprId, tok: u32, lanes: u32, lane: u32) Error!struct { net: u32, bit: u32 } {
+    assert(t != .none);
+    assert(tok < r.starts.len);
     const ex = &r.file.exprs;
     if (ex.tag(t) != .index) {
         const net = r.net_of.get(try r.scalarSlot(t)) orelse return r.fail(tok, "a switch's output and inout terminals are nets", .{});
@@ -435,6 +440,9 @@ fn switchTerminal(r: *Run, e: *Elab, t: Ast.ExprId, tok: u32, lanes: u32, lane: 
 /// The bridges drive at the driver's `strength` (§7.10), since the hidden
 /// net's one driver is all their value comes from.
 fn drivenNet(r: *Run, e: *Elab, scope: u32, target: Ast.ExprId, tok: u32, comptime who: SinkOf, strength: [2]Ast.Strength) Error!u32 {
+    assert(scope < r.scope_info.items.len);
+    assert(target != .none);
+    assert(tok < r.starts.len);
     var leaves: std.ArrayList(Ast.ExprId) = .empty;
     try concatLeaves(r, target, &leaves);
     const operands = try r.arena.alloc(Sink, leaves.items.len);

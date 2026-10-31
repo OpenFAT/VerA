@@ -17,6 +17,7 @@
 //! - `pub fn tchkSite(r: *const Run, check: u32) struct { scope: u32, tok: u32 }`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -76,6 +77,7 @@ pub const Host = struct {
 /// The scope is the one `vpi_expr_scopes` recorded for (`instance`,
 /// `e`), else `instance`; `scope` is restored on return.
 pub fn vpiEval(r: *Run, a: std.mem.Allocator, instance: u32, e: Ast.ExprId) Error!VpiValue {
+    assert(e != .none);
     const saved = r.scope;
     defer r.scope = saved;
     r.scope = r.vpi_expr_scopes.get(.{ instance, @backingInt(e) }) orelse instance;
@@ -88,6 +90,8 @@ pub fn vpiEval(r: *Run, a: std.mem.Allocator, instance: u32, e: Ast.ExprId) Erro
 /// element. Canonicalizing it must never evaluate a variable index or an
 /// application's function (whose value is only requested at run time).
 pub fn vpiConstantIndex(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprId) Error!?i64 {
+    assert(scope < r.scope_info.items.len);
+    assert(e != .none);
     const saved = r.scope;
     defer r.scope = saved;
     r.scope = scope;
@@ -121,6 +125,8 @@ pub fn vpiPutUdp(r: *Run, at: u32, bit: Int.Bit) Error!void {
 /// IEEE §3.8 / AMS §2.9: attribute values are constant expressions in
 /// the decorated element's lexical scope, after parameter elaboration.
 pub fn vpiAttributeValue(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprId) Error!VpiValue {
+    assert(scope < r.scope_info.items.len);
+    assert(e != .none);
     const saved = r.scope;
     defer r.scope = saved;
     r.scope = scope;
