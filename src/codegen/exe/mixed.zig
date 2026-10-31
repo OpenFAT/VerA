@@ -29,8 +29,8 @@ const fmtF64 = parts.fmtF64;
 
 /// Writes the mixed-signal runner for `bench` to `w`. `count` is
 /// `pointCount(bench)`; each point is its own analysis, with a fresh digital
-/// elaboration and `State`. `scratch` holds the `Model` and `Instance` field
-/// spellings (`naming`) and may be freed once this returns.
+/// elaboration and `State`. `scratch` is an arena: it holds the `Model` and
+/// `Instance` field spellings (`naming`), free to reset once this returns.
 pub fn writeMixed(w: *Writer, scratch: Allocator, title: []const u8, bench: *const Bench, facts: Facts, mx: Mixed, count: u32) RenderError!void {
     assert(count != 0);
     assert(mx.wide.len == mx.words.len);

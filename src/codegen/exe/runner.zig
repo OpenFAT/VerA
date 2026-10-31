@@ -34,8 +34,9 @@ const Step = struct { t: f64, k: usize, n: u32, solve: u32, count: u32, per_bloc
 /// runner when `facts.mixed` is set, else the fixed-grid one. `title` keys
 /// each transcript block (the fixture's file stem). The runner prints to
 /// stderr through `std.debug.print`, the stream generated `$strobe` uses, so
-/// the interleaving is deterministic. `scratch` holds the mixed runner's
-/// field spellings and may be freed once this returns. Fails with
+/// the interleaving is deterministic. `scratch` is an arena (the mixed
+/// runner's field spellings are never freed one by one), free to reset once
+/// this returns. Fails with
 /// `error.TooManyPoints`, writing nothing, past `points_max`. Asserts the
 /// `Bench` invariants.
 pub fn writeRunner(w: *Writer, scratch: Allocator, title: []const u8, bench: *const Bench, facts: Facts) RenderError!void {
