@@ -8,8 +8,29 @@
 //! LRM clauses cited: §3.6.3, §3.6.3.2, §3.7, §3.10, §3.12, §3.12.1, §6.2,
 //! §6.5.2, §6.5.2.2, §6.5.3, §6.8, §7.4.4, §7.9, annex C.4/C.8, annex F.2.1;
 //! IEEE 1364-2005 §4.4, §4.9.1, §6.1.4, §7.14.
+//!
+//! Contents:
+//! - `pub fn portDirection(tag: token.Tag) ?Ast.Direction`
+//! - `pub fn optDiscipline(self: *Parser) Error!Ast.StrId`
+//! - `pub fn optPortType(self: *Parser, kind: *Ast.NetKind, signed: *bool) Error!Ast.StrId`
+//! - `pub fn parsePortDecl(self: *Parser, b: *parse_module.Body) Error!void`
+//! - `pub fn optVarStorage(self: *Parser, dir: Ast.Direction) Error!?@FieldType(Ast.VarDecl, "storage")`
+//! - `pub fn varPort(self: *Parser, b: *parse_module.Body, storage: @FieldType(Ast.VarDecl, "storage"), name: Ast.StrId, range: ?Ast.Dim, signed: bool, tok: u32) Error!void`
+//! - `pub fn findPort(b: *parse_module.Body, name: Ast.StrId) ?*Ast.Port`
+//! - `pub fn netKind(tag: token.Tag) ?Ast.NetKind`
+//! - `pub const StrengthWord = struct`
+//! - `pub fn strengthWord(self: *const Parser, i: u32) ?StrengthWord`
+//! - `pub fn parseDriveStrength(self: *Parser, s0: *Ast.Strength, s1: *Ast.Strength) Error!void`
+//! - `pub fn parseChargeStrength(self: *Parser, kind: Ast.NetKind) Error!Ast.Strength`
+//! - `pub fn parseDelay3(self: *Parser) Error!Ast.Delay3`
+//! - `pub fn parseDelay2(self: *Parser) Error!Ast.Delay3`
+//! - `pub fn parseDelayValue(self: *Parser) Error!Ast.ExprId`
+//! - `pub fn parseNetNames(self: *Parser, b: *parse_module.Body, disc: Ast.StrId, kind: Ast.NetKind, is_ground: bool, st: Ast.NetStrength, signed: bool) Error!void`
+//! - `pub fn parseBranchDecl(self: *Parser, b: *parse_module.Body) Error!void`
+//! - `pub fn parseWrealDecl(self: *Parser, b: *parse_module.Body) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_decl = @import("decl.zig");
@@ -20,9 +41,33 @@ const token = @import("../token.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
-// -----------------------------------------------------------------------
-// A.2.1.2 port declarations: LRM §6.5.2
-// -----------------------------------------------------------------------
+/// One A.2.2.2 strength keyword: its IEEE 1364-2005 clause 7 level and the
+/// side it may occupy. `side` is 0 for `strength0` and `highz0`, 1 for their
+/// `1` spellings, and 2 for a `charge_strength` (`small`/`medium`/`large`),
+/// which only A.2.1.3's `trireg` alternatives take. The charge words are
+/// listed so they can be recognised and refused elsewhere.
+pub const StrengthWord = struct { level: Ast.Strength, side: u8 };
+
+comptime {
+    std.debug.assert(@sizeOf(StrengthWord) == 2); // a `strength_words` value: two bytes
+}
+
+const strength_words = std.StaticStringMap(StrengthWord).initComptime(.{
+    .{ "supply0", StrengthWord{ .level = .supply, .side = 0 } },
+    .{ "strong0", StrengthWord{ .level = .strong, .side = 0 } },
+    .{ "pull0", StrengthWord{ .level = .pull, .side = 0 } },
+    .{ "weak0", StrengthWord{ .level = .weak, .side = 0 } },
+    .{ "highz0", StrengthWord{ .level = .highz, .side = 0 } },
+    .{ "supply1", StrengthWord{ .level = .supply, .side = 1 } },
+    .{ "strong1", StrengthWord{ .level = .strong, .side = 1 } },
+    .{ "pull1", StrengthWord{ .level = .pull, .side = 1 } },
+    .{ "weak1", StrengthWord{ .level = .weak, .side = 1 } },
+    .{ "highz1", StrengthWord{ .level = .highz, .side = 1 } },
+    // side 2: a charge strength, which belongs to neither.
+    .{ "small", StrengthWord{ .level = .small, .side = 2 } },
+    .{ "medium", StrengthWord{ .level = .medium, .side = 2 } },
+    .{ "large", StrengthWord{ .level = .large, .side = 2 } },
+});
 
 /// Returns the `Ast.Direction` of an A.2.1.2 port direction keyword, or null
 /// for any other token.
@@ -39,6 +84,9 @@ pub fn portDirection(tag: token.Tag) ?Ast.Direction {
 /// [ signed ]` prefix of a port declaration and returns the discipline, or
 /// `.none`. The net type and `signed` are consumed and dropped.
 pub fn optDiscipline(self: *Parser) Error!Ast.StrId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var kind: Ast.NetKind = .wire;
     var signed = false;
     return optPortType(self, &kind, &signed);
@@ -49,6 +97,9 @@ pub fn optDiscipline(self: *Parser) Error!Ast.StrId {
 /// is an identifier followed by another identifier (the first name), so one
 /// token of lookahead decides.
 pub fn optPortType(self: *Parser, kind: *Ast.NetKind, signed: *bool) Error!Ast.StrId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var disc: Ast.StrId = .none;
     if (self.peek() == .identifier and self.identLike(self.pos + 1)) {
         disc = try self.internTok(self.pos);
@@ -74,6 +125,9 @@ pub fn optPortType(self: *Parser, kind: *Ast.NetKind, signed: *bool) Error!Ast.S
 /// introduce a terminal. Reports E0206 for a name that is not a header port
 /// and E0218 for a port that already has a direction.
 pub fn parsePortDecl(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const decl_tok = self.pos;
     const dir = portDirection(self.peek()).?;
     self.pos += 1;
@@ -132,6 +186,9 @@ pub fn parsePortDecl(self: *Parser, b: *parse_module.Body) Error!void {
 /// returns the storage it names, or null when none is there. Another
 /// direction with one is E0207.
 pub fn optVarStorage(self: *Parser, dir: Ast.Direction) Error!?@FieldType(Ast.VarDecl, "storage") {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const storage: @FieldType(Ast.VarDecl, "storage") = switch (self.peek()) {
         .kw_integer => .variable, // A.2.2.1 output_variable_type
         .kw_time => .time, // …its other alternative
@@ -152,6 +209,9 @@ pub fn optVarStorage(self: *Parser, dir: Ast.Direction) Error!?@FieldType(Ast.Va
 /// `list_of_variable_port_identifiers ::= port_identifier
 /// [ = constant_expression ] { , ... }`.
 pub fn varPort(self: *Parser, b: *parse_module.Body, storage: @FieldType(Ast.VarDecl, "storage"), name: Ast.StrId, range: ?Ast.Dim, signed: bool, tok: u32) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const init_expr: Ast.ExprId = if (self.eat(.assign_eq)) try parse_expr.parseExpr(self) else .none;
     try b.vars.append(self.arena, .{
         .name = name,
@@ -174,10 +234,6 @@ pub fn findPort(b: *parse_module.Body, name: Ast.StrId) ?*Ast.Port {
     return &b.ports.items[b.port_index.get(name) orelse return null];
 }
 
-// -----------------------------------------------------------------------
-// A.2.1.3 net declarations and A.2.2 strengths and delays: LRM §3.6.3
-// -----------------------------------------------------------------------
-
 /// A.2.2.1 net_type keyword -> `Ast.NetKind`, null for a token that is not
 /// one. A declaration naming no net type resolves as `.wire` (§7.9); that
 /// default is the caller's, not a spelling's.
@@ -199,32 +255,6 @@ pub fn netKind(tag: token.Tag) ?Ast.NetKind {
     };
 }
 
-/// One A.2.2.2 strength keyword: its IEEE 1364-2005 clause 7 level and the
-/// side it may occupy. `side` is 0 for `strength0` and `highz0`, 1 for their
-/// `1` spellings, and 2 for a `charge_strength` (`small`/`medium`/`large`),
-/// which only A.2.1.3's `trireg` alternatives take. The charge words are
-/// listed so they can be recognised and refused elsewhere.
-pub const StrengthWord = struct { level: Ast.Strength, side: u8 };
-comptime {
-    std.debug.assert(@sizeOf(StrengthWord) == 2); // a `strength_words` value: two bytes
-}
-const strength_words = std.StaticStringMap(StrengthWord).initComptime(.{
-    .{ "supply0", StrengthWord{ .level = .supply, .side = 0 } },
-    .{ "strong0", StrengthWord{ .level = .strong, .side = 0 } },
-    .{ "pull0", StrengthWord{ .level = .pull, .side = 0 } },
-    .{ "weak0", StrengthWord{ .level = .weak, .side = 0 } },
-    .{ "highz0", StrengthWord{ .level = .highz, .side = 0 } },
-    .{ "supply1", StrengthWord{ .level = .supply, .side = 1 } },
-    .{ "strong1", StrengthWord{ .level = .strong, .side = 1 } },
-    .{ "pull1", StrengthWord{ .level = .pull, .side = 1 } },
-    .{ "weak1", StrengthWord{ .level = .weak, .side = 1 } },
-    .{ "highz1", StrengthWord{ .level = .highz, .side = 1 } },
-    // side 2: a charge strength, which belongs to neither.
-    .{ "small", StrengthWord{ .level = .small, .side = 2 } },
-    .{ "medium", StrengthWord{ .level = .medium, .side = 2 } },
-    .{ "large", StrengthWord{ .level = .large, .side = 2 } },
-});
-
 /// Returns the strength keyword at token `i`, or null. Every strength spelling
 /// lexes as `.kw_reserved` except `supply0`/`supply1`, which are also A.2.2.1
 /// net types with their own tags, so both are looked up by spelling.
@@ -239,6 +269,9 @@ pub fn strengthWord(self: *const Parser, i: u32) ?StrengthWord {
 /// 1-side strength, in either order, not both `highz`. Precondition: the
 /// cursor is on a `(` the caller has decided opens a strength.
 pub fn parseDriveStrength(self: *Parser, s0: *Ast.Strength, s1: *Ast.Strength) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     _ = try self.expect(.lparen);
     const first_tok = self.pos;
     const a = strengthWord(self, self.pos) orelse return self.failAt(self.pos, .E0207, "found {s}, which is not a drive strength", .{self.found(self.pos)});
@@ -263,6 +296,9 @@ pub fn parseDriveStrength(self: *Parser, s0: *Ast.Strength, s1: *Ast.Strength) E
 /// which only `trireg` takes. Reports E0257 for a charge strength on any other
 /// net type, so `wire (small) w;` is refused. Cursor on the `(`.
 pub fn parseChargeStrength(self: *Parser, kind: Ast.NetKind) Error!Ast.Strength {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     _ = try self.expect(.lparen);
     const tok = self.pos;
     const w = strengthWord(self, self.pos) orelse return self.failAt(tok, .E0207, "found {s}, which is not a charge strength", .{self.found(tok)});
@@ -280,12 +316,18 @@ pub fn parseChargeStrength(self: *Parser, kind: Ast.NetKind) Error!Ast.Strength 
 /// `off` unset, because the clause derives it as the smaller of the two and
 /// that is arithmetic on the evaluated values, not a syntax node.
 pub fn parseDelay3(self: *Parser) Error!Ast.Delay3 {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     return parseDelays(self, true);
 }
 
 /// A.2.2.3 `delay2`: a `delay3` with no turn-off value, so a third value is
 /// E0210.
 pub fn parseDelay2(self: *Parser) Error!Ast.Delay3 {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     return parseDelays(self, false);
 }
 
@@ -296,6 +338,9 @@ pub fn parseDelay2(self: *Parser) Error!Ast.Delay3 {
 /// `d(g, in)`. A sized or based number is no unsigned_number (E0207): it needs
 /// the parenthesized form, `#(4'd2)`.
 pub fn parseDelayValue(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     if (self.identLike(tok) and self.peekAt(1) != .dot)
         return self.file.exprs.add(self.arena, .{ .tag = .ident, .main_tok = tok, .str = try self.expectIdent() });
@@ -304,40 +349,15 @@ pub fn parseDelayValue(self: *Parser) Error!Ast.ExprId {
     return parse_expr.parsePrimary(self);
 }
 
-/// The body of `parseDelay3` (`three`) and `parseDelay2`. Holds
-/// `in_digital_delay` for the whole bracket, so §2.6.2's scale-factor check
-/// (E0247) sees every value, a discarded min/max arm included.
-fn parseDelays(self: *Parser, three: bool) Error!Ast.Delay3 {
-    const saved_delay = self.in_digital_delay;
-    self.in_digital_delay = true;
-    defer self.in_digital_delay = saved_delay;
-    _ = try self.expect(.hash);
-    if (!self.eat(.lparen)) {
-        const v = try parseDelayValue(self);
-        return .{ .rise = v, .fall = v, .off = v };
-    }
-    var out: Ast.Delay3 = .{};
-    out.rise = try parse_expr.parseMinTypMax(self);
-    out.fall = out.rise;
-    out.off = out.rise;
-    if (self.eat(.comma)) {
-        out.fall = try parse_expr.parseMinTypMax(self);
-        out.off = if (three and self.eat(.comma)) try parse_expr.parseMinTypMax(self) else .none;
-    }
-    // After the third value the production admits only `)`. E0210 names the
-    // missing parenthesis; E0207 would send the reader to the previous
-    // statement.
-    if (self.peek() != .rparen) return self.failAt(self.pos, .E0210, "found {s}", .{self.found(self.pos)});
-    self.pos += 1;
-    return out;
-}
-
 /// Parses an A.2.1.3 `list_of_net_identifiers ;` (§3.6.3) after the discipline
 /// or net type: an optional range and `delay3`, then the names. A name that is
 /// a header port binds the discipline to that port instead of declaring a new
 /// net, so lowering sees one object per terminal. The range and delay apply to
 /// every name. A §3.6.3.2 `= expression` nodeset is read unless `is_ground`.
 pub fn parseNetNames(self: *Parser, b: *parse_module.Body, disc: Ast.StrId, kind: Ast.NetKind, is_ground: bool, st: Ast.NetStrength, signed: bool) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const range: ?Ast.Dim = try parse_decl.optDim(self);
     // A.2.1.3 puts `[ delay3 ]` between the range and the name list, and it
     // belongs to the net, not to the optional assignment: `wire #3 y = ~a;`
@@ -465,6 +485,9 @@ pub fn parseNetNames(self: *Parser, b: *parse_module.Body, disc: Ast.StrId, kind
 /// name. A.2.3's optional `[ range ]` per name declares a branch array over
 /// one terminal pair; lowering expands it, where the bounds can be folded.
 pub fn parseBranchDecl(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     self.pos += 1; // 'branch'
     _ = try self.expect(.lparen);
     const is_port_branch = self.eat(.lt);
@@ -502,6 +525,9 @@ pub fn parseBranchDecl(self: *Parser, b: *parse_module.Body) Error!void {
 /// no `vectored`/`scalared`. Annex C.4 removes it from the Verilog-A subset
 /// only; in Verilog-AMS §3.7 lets the analog block read one.
 pub fn parseWrealDecl(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     self.pos += 1;
     // `[ discipline_identifier ]`: an identifier followed by another
     // identifier, `optPortType`'s lookahead.
@@ -509,4 +535,37 @@ pub fn parseWrealDecl(self: *Parser, b: *parse_module.Body) Error!void {
     var signed = false;
     const disc = try optPortType(self, &ignored, &signed);
     try parseNetNames(self, b, disc, .wreal, false, .{}, signed);
+}
+
+// ---- private ----
+
+/// The body of `parseDelay3` (`three`) and `parseDelay2`. Holds
+/// `in_digital_delay` for the whole bracket, so §2.6.2's scale-factor check
+/// (E0247) sees every value, a discarded min/max arm included.
+fn parseDelays(self: *Parser, three: bool) Error!Ast.Delay3 {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const saved_delay = self.in_digital_delay;
+    self.in_digital_delay = true;
+    defer self.in_digital_delay = saved_delay;
+    _ = try self.expect(.hash);
+    if (!self.eat(.lparen)) {
+        const v = try parseDelayValue(self);
+        return .{ .rise = v, .fall = v, .off = v };
+    }
+    var out: Ast.Delay3 = .{};
+    out.rise = try parse_expr.parseMinTypMax(self);
+    out.fall = out.rise;
+    out.off = out.rise;
+    if (self.eat(.comma)) {
+        out.fall = try parse_expr.parseMinTypMax(self);
+        out.off = if (three and self.eat(.comma)) try parse_expr.parseMinTypMax(self) else .none;
+    }
+    // After the third value the production admits only `)`. E0210 names the
+    // missing parenthesis; E0207 would send the reader to the previous
+    // statement.
+    if (self.peek() != .rparen) return self.failAt(self.pos, .E0210, "found {s}", .{self.found(self.pos)});
+    self.pos += 1;
+    return out;
 }

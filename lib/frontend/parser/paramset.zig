@@ -6,8 +6,12 @@
 //! statement before it is parsed.
 //!
 //! LRM clauses cited: §2.9, §6.4, §6.4.1, §6.4.3, §9.18, A.1.9.
+//!
+//! Contents:
+//! - `pub fn parseParamset(self: *Parser) Error!Ast.ParamsetDecl`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_decl = @import("decl.zig");
@@ -31,6 +35,9 @@ const Error = parser.Error;
 /// paramset's own declarations and its `.name = expr;` overrides of the
 /// module's parameters. Clears `self.attrs`.
 pub fn parseParamset(self: *Parser) Error!Ast.ParamsetDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     self.pos += 1; // 'paramset'
     const name = try self.expectIdent();
@@ -161,6 +168,8 @@ pub fn parseParamset(self: *Parser) Error!Ast.ParamsetDecl {
     };
 }
 
+// ---- private ----
+
 /// Skips one A.1.9 paramset statement by tokens: to the `;` that ends it,
 /// balancing `(...)` (a `for` header holds two semicolons), `begin`/`end`
 /// and `case`/`endcase`, and continuing over `else`, so a dropped
@@ -172,6 +181,9 @@ pub fn parseParamset(self: *Parser) Error!Ast.ParamsetDecl {
 /// statements. Shall not use named blocks." Skipping them silently would
 /// accept them.
 fn skipParamsetStatement(self: *Parser) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var depth: u32 = 0;
     while (true) : (self.pos += 1) {
         const what: ?[]const u8 = switch (self.peek()) {

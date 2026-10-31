@@ -4,8 +4,21 @@
 //!
 //! LRM clauses cited: §1.1, §2.6.2, §2.9, §6.2.2, §6.3, §6.3.6, §7.1.5, §7.2, §7.2.2,
 //! §7.6, §7.7.3, §7.8, §7.12, §7.14, §8.5.3.5, §9.18.
+//!
+//! Contents:
+//! - `pub fn parseInstantiation(self: *Parser, b: *parse_module.Body) Error!void`
+//! - `pub fn parseParamValueAssignment(self: *Parser) Error![]const Ast.ParamOverride`
+//! - `pub fn unsupportedItem(self: *Parser) Error`
+//! - `pub fn notAModuleItem(self: *Parser) Error`
+//! - `pub fn parseGates(self: *Parser, b: *parse_module.Body) Error!void`
+//! - `pub fn gateNotModelled(self: *Parser) Error!void`
+//! - `pub fn parsePullGate(self: *Parser, b: *parse_module.Body) Error!void`
+//! - `pub const switch_arms = std.StaticStringMap(SwitchArm).initComptime(.`
+//! - `pub fn parseSwitch(self: *Parser, b: *parse_module.Body) Error!void`
+//! - `pub fn parseDiscrete(self: *Parser, b: *parse_module.Body) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_decl = @import("decl.zig");
@@ -18,6 +31,44 @@ const token_value = @import("../token_value.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
+/// A.3.4's twelve switch spellings, keyed by spelling because most of them
+/// share the `.kw_reserved` tag.
+pub const switch_arms = std.StaticStringMap(SwitchArm).initComptime(.{
+    // `cmos_switchtype [delay3] ( output , input , ncontrol , pcontrol )`
+    .{ "cmos", SwitchArm{ .terminals = 4, .lvalues = 1, .delay = true, .shape = cmos_shape } },
+    .{ "rcmos", SwitchArm{ .terminals = 4, .lvalues = 1, .delay = true, .shape = cmos_shape } },
+    // `mos_switchtype [delay3] ( output , input , enable )`
+    .{ "nmos", SwitchArm{ .terminals = 3, .lvalues = 1, .delay = true, .shape = mos_shape } },
+    .{ "pmos", SwitchArm{ .terminals = 3, .lvalues = 1, .delay = true, .shape = mos_shape } },
+    .{ "rnmos", SwitchArm{ .terminals = 3, .lvalues = 1, .delay = true, .shape = mos_shape } },
+    .{ "rpmos", SwitchArm{ .terminals = 3, .lvalues = 1, .delay = true, .shape = mos_shape } },
+    // `pass_switchtype ( inout , inout )`: the one arm with no delay.
+    .{ "tran", SwitchArm{ .terminals = 2, .lvalues = 2, .delay = false, .shape = pass_shape } },
+    .{ "rtran", SwitchArm{ .terminals = 2, .lvalues = 2, .delay = false, .shape = pass_shape } },
+    // `pass_en_switchtype [delay2] ( inout , inout , enable )`. `delay2` is
+    // a `delay3` that stops at two values, which `parseDelay3` already
+    // returns for a two-value list.
+    .{ "tranif0", SwitchArm{ .terminals = 3, .lvalues = 2, .delay = true, .shape = pass_en_shape } },
+    .{ "tranif1", SwitchArm{ .terminals = 3, .lvalues = 2, .delay = true, .shape = pass_en_shape } },
+    .{ "rtranif0", SwitchArm{ .terminals = 3, .lvalues = 2, .delay = true, .shape = pass_en_shape } },
+    .{ "rtranif1", SwitchArm{ .terminals = 3, .lvalues = 2, .delay = true, .shape = pass_en_shape } },
+});
+
+/// What distinguishes the four A.3.1 switch arms: how many terminals an
+/// instance takes, how many of those lead as A.3.3 `net_lvalue`s (the rest
+/// are expressions), and whether a delay may precede the instance list.
+/// `shape` describes the A.3.4 class for the diagnostic when an instance
+/// closes its list early.
+const SwitchArm = struct { terminals: u8, lvalues: u8, delay: bool, shape: []const u8 };
+
+const cmos_shape = "a cmos switch (A.3.4 cmos_switchtype) takes an output, an input, an ncontrol and a pcontrol terminal";
+
+const mos_shape = "a mos switch (A.3.4 mos_switchtype) takes an output, an input and an enable terminal";
+
+const pass_shape = "a pass switch (A.3.4 pass_switchtype) takes two inout terminals";
+
+const pass_en_shape = "a pass-enable switch (A.3.4 pass_en_switchtype) takes two inout terminals and an enable";
+
 /// Parses an A.4.1 module_instantiation (§6.2.2 instances, §6.3 overrides),
 /// cursor on the module name, into `b.instances`:
 ///
@@ -29,6 +80,9 @@ const Error = parser.Error;
 /// is resolved here: the module, override values and port nets are all
 /// elaboration's questions, including a name that resolves to nothing.
 pub fn parseInstantiation(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const module = try self.internTok(self.pos);
     self.pos += 1;
     const params = try parseParamValueAssignment(self);
@@ -89,6 +143,9 @@ pub fn parseInstantiation(self: *Parser, b: *parse_module.Body) Error!void {
 /// on `#`. A leading `.` marks the named arm; A.4.1 requires a nonempty
 /// list entirely in one arm. Shared by instantiation and §7.7.3 connect.
 pub fn parseParamValueAssignment(self: *Parser) Error![]const Ast.ParamOverride {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var params: std.ArrayList(Ast.ParamOverride) = .empty;
     if (self.eat(.hash)) {
         _ = try self.expect(.lparen);
@@ -126,34 +183,22 @@ pub fn parseParamValueAssignment(self: *Parser) Error![]const Ast.ParamOverride 
     return params.items;
 }
 
-/// A.4.1 and A.5.4 share `name #(expr) instance(...)` until elaboration
-/// resolves `name`. Keep §2.6.2's lexical evidence for the UDP-delay case,
-/// including an operand expression folding discarded. Attribute values are
-/// metadata, not operands of the parameter or delay expression.
-fn scaledLiteral(self: *const Parser, start: u32, end: u32) ?u32 {
-    var in_attr = false;
-    for (start..end) |at| switch (self.tags[at]) {
-        .attr_open => in_attr = true,
-        .attr_close => in_attr = false,
-        .real_literal => if (!in_attr) {
-            const text = self.tokenText(@intCast(at));
-            if (token_value.scaleExp(text[text.len - 1]) != null) return @intCast(at);
-        },
-        else => {}, // else: only a real literal can carry a §2.6.2 scale factor
-    };
-    return null;
-}
-
 /// Reports E0205 for a module item A.1.4 derives but VerA does not support (an
 /// annex B spelling with no production here, a digital `task` in an analog
 /// parse, ...) and returns `error.ParseError`.
 pub fn unsupportedItem(self: *Parser) Error {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     return self.failAt(self.pos, .E0205, "found {s}", .{self.found(self.pos)});
 }
 
 /// Reports E0240 for text no A.1.4 `module_item` alternative derives, a syntax
 /// error rather than a missing feature, and returns `error.ParseError`.
 pub fn notAModuleItem(self: *Parser) Error {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     return self.failAt(self.pos, .E0240, "found {s}", .{self.found(self.pos)});
 }
 
@@ -171,6 +216,9 @@ pub fn notAModuleItem(self: *Parser) Error {
 /// Outside a digital run the instance is accepted and modelled by nothing,
 /// with W0252 (see `gateNotModelled`).
 pub fn parseGates(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     try gateNotModelled(self);
     const kind: Ast.GateKind = switch (self.peek()) {
         .kw_and => .g_and,
@@ -261,26 +309,15 @@ pub fn parseGates(self: *Parser, b: *parse_module.Body) Error!void {
     _ = try self.expect(.semicolon);
 }
 
-/// A.8.5 `net_lvalue`: a (hierarchical) net name with optional selects, or a
-/// concatenation of net_lvalues.
-fn isNetLvalue(self: *const Parser, e: Ast.ExprId) bool {
-    const x = &self.file.exprs;
-    return switch (x.tag(e)) {
-        .ident, .hier_ident => true,
-        .index => isNetLvalue(self, x.lhs(e)),
-        .concat => for (x.args(e)) |a| {
-            if (!isNetLvalue(self, a)) break false;
-        } else true,
-        else => false, // else: a literal, operator, call, access or pattern names no net; a new name form would be a new arm above
-    };
-}
-
 /// Warns W0252 for the primitive at the cursor unless the parse is digital.
 /// A gate's update is an event (§8.5.3.5), and a compiled analog device has
 /// no event queue, so the instance does nothing. The source is derivable from
 /// A.3.1 and §1.1 makes it VerA's to accept, so it is a warning, not E0205;
 /// `--deny=W0252` refuses it. Under `--run` the discrete engine executes it.
 pub fn gateNotModelled(self: *Parser) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (self.digital) return;
     try self.bag.add(
         .parse,
@@ -312,6 +349,9 @@ pub fn gateNotModelled(self: *Parser) Error!void {
 /// accepted and modelled by nothing (W0252); the digital engine executes
 /// `b.pulls` and an analog compile never reads it.
 pub fn parsePullGate(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     try gateNotModelled(self);
     // A.3.2's `strength0`/`strength1` name the side the gate pulls toward:
     // 0 for `pulldown`, 1 for `pullup`, which is also `StrengthWord.side`.
@@ -361,41 +401,6 @@ pub fn parsePullGate(self: *Parser, b: *parse_module.Body) Error!void {
     _ = try self.expect(.semicolon);
 }
 
-/// What distinguishes the four A.3.1 switch arms: how many terminals an
-/// instance takes, how many of those lead as A.3.3 `net_lvalue`s (the rest
-/// are expressions), and whether a delay may precede the instance list.
-/// `shape` describes the A.3.4 class for the diagnostic when an instance
-/// closes its list early.
-const SwitchArm = struct { terminals: u8, lvalues: u8, delay: bool, shape: []const u8 };
-
-const cmos_shape = "a cmos switch (A.3.4 cmos_switchtype) takes an output, an input, an ncontrol and a pcontrol terminal";
-const mos_shape = "a mos switch (A.3.4 mos_switchtype) takes an output, an input and an enable terminal";
-const pass_shape = "a pass switch (A.3.4 pass_switchtype) takes two inout terminals";
-const pass_en_shape = "a pass-enable switch (A.3.4 pass_en_switchtype) takes two inout terminals and an enable";
-
-/// A.3.4's twelve switch spellings, keyed by spelling because most of them
-/// share the `.kw_reserved` tag.
-pub const switch_arms = std.StaticStringMap(SwitchArm).initComptime(.{
-    // `cmos_switchtype [delay3] ( output , input , ncontrol , pcontrol )`
-    .{ "cmos", SwitchArm{ .terminals = 4, .lvalues = 1, .delay = true, .shape = cmos_shape } },
-    .{ "rcmos", SwitchArm{ .terminals = 4, .lvalues = 1, .delay = true, .shape = cmos_shape } },
-    // `mos_switchtype [delay3] ( output , input , enable )`
-    .{ "nmos", SwitchArm{ .terminals = 3, .lvalues = 1, .delay = true, .shape = mos_shape } },
-    .{ "pmos", SwitchArm{ .terminals = 3, .lvalues = 1, .delay = true, .shape = mos_shape } },
-    .{ "rnmos", SwitchArm{ .terminals = 3, .lvalues = 1, .delay = true, .shape = mos_shape } },
-    .{ "rpmos", SwitchArm{ .terminals = 3, .lvalues = 1, .delay = true, .shape = mos_shape } },
-    // `pass_switchtype ( inout , inout )`: the one arm with no delay.
-    .{ "tran", SwitchArm{ .terminals = 2, .lvalues = 2, .delay = false, .shape = pass_shape } },
-    .{ "rtran", SwitchArm{ .terminals = 2, .lvalues = 2, .delay = false, .shape = pass_shape } },
-    // `pass_en_switchtype [delay2] ( inout , inout , enable )`. `delay2` is
-    // a `delay3` that stops at two values, which `parseDelay3` already
-    // returns for a two-value list.
-    .{ "tranif0", SwitchArm{ .terminals = 3, .lvalues = 2, .delay = true, .shape = pass_en_shape } },
-    .{ "tranif1", SwitchArm{ .terminals = 3, .lvalues = 2, .delay = true, .shape = pass_en_shape } },
-    .{ "rtranif0", SwitchArm{ .terminals = 3, .lvalues = 2, .delay = true, .shape = pass_en_shape } },
-    .{ "rtranif1", SwitchArm{ .terminals = 3, .lvalues = 2, .delay = true, .shape = pass_en_shape } },
-});
-
 /// Parses A.3.1's four switch arms into `b.switches`, cursor on the switch
 /// keyword. These are the primitives whose output is a conduction path rather
 /// than a computed value:
@@ -420,6 +425,9 @@ pub const switch_arms = std.StaticStringMap(SwitchArm).initComptime(.{
 /// (under `--run`, and as a mixed module's discrete half); lowering warns
 /// W0250 when a module has no discrete half to carry one.
 pub fn parseSwitch(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     const spelling = self.tokenText(main_tok);
     const arm = switch_arms.get(spelling).?; // the caller dispatched on exactly these
@@ -464,6 +472,9 @@ pub fn parseSwitch(self: *Parser, b: *parse_module.Body) Error!void {
 /// Whether the process can be executed is lowering's question
 /// (`Lower.checkDiscreteContext`).
 pub fn parseDiscrete(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     const is_always = self.peek() == .kw_always;
     self.pos += 1;
@@ -480,4 +491,38 @@ pub fn parseDiscrete(self: *Parser, b: *parse_module.Body) Error!void {
         .body = body,
         .main_tok = main_tok,
     });
+}
+
+// ---- private ----
+
+/// A.4.1 and A.5.4 share `name #(expr) instance(...)` until elaboration
+/// resolves `name`. Keep §2.6.2's lexical evidence for the UDP-delay case,
+/// including an operand expression folding discarded. Attribute values are
+/// metadata, not operands of the parameter or delay expression.
+fn scaledLiteral(self: *const Parser, start: u32, end: u32) ?u32 {
+    var in_attr = false;
+    for (start..end) |at| switch (self.tags[at]) {
+        .attr_open => in_attr = true,
+        .attr_close => in_attr = false,
+        .real_literal => if (!in_attr) {
+            const text = self.tokenText(@intCast(at));
+            if (token_value.scaleExp(text[text.len - 1]) != null) return @intCast(at);
+        },
+        else => {}, // else: only a real literal can carry a §2.6.2 scale factor
+    };
+    return null;
+}
+
+/// A.8.5 `net_lvalue`: a (hierarchical) net name with optional selects, or a
+/// concatenation of net_lvalues.
+fn isNetLvalue(self: *const Parser, e: Ast.ExprId) bool {
+    const x = &self.file.exprs;
+    return switch (x.tag(e)) {
+        .ident, .hier_ident => true,
+        .index => isNetLvalue(self, x.lhs(e)),
+        .concat => for (x.args(e)) |a| {
+            if (!isNetLvalue(self, a)) break false;
+        } else true,
+        else => false, // else: a literal, operator, call, access or pattern names no net; a new name form would be a new arm above
+    };
 }

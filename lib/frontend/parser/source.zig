@@ -6,8 +6,14 @@
 //!
 //! LRM clauses cited: §1, §1.1, §2.2, §2.7, §6.2, §6.4, §7.6, §7.7, §10.6,
 //! annex C.4, C.17.
+//!
+//! Contents:
+//! - `pub fn parseSourceFile(self: *Parser) Error!Ast.SourceFile`
+//! - `pub fn keywordsDirective(self: *Parser) Error!void`
+//! - `pub fn outsideDesignElement(self: *Parser, what: []const u8) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_module = @import("module.zig");
@@ -24,15 +30,14 @@ const Ast = @import("../ast.zig");
 const Error = parser.Error;
 const diag = @import("diag");
 
-// -----------------------------------------------------------------------
-// A.1.2 source_text
-// -----------------------------------------------------------------------
-
 /// Parses the whole token stream as annex A `source_text` and returns
 /// `self.file` with every description appended after any seeded ones.
 /// Returns `error.ParseError` if any diagnostic was an error; the
 /// diagnostics are in `self.bag`.
 pub fn parseSourceFile(self: *Parser) Error!Ast.SourceFile {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     try self.access_names.put(self.arena, "V", {});
     try self.access_names.put(self.arena, "I", {});
     try checkEscapes(self);
@@ -142,47 +147,15 @@ pub fn parseSourceFile(self: *Parser) Error!Ast.SourceFile {
     return self.file;
 }
 
-/// Annex C.4 "the domain binding type discrete shall be an error in
-/// Verilog-A": E0250 at each port, net or `reg` naming a discipline of
-/// domain discrete. The definition itself is ignored (C.17).
-fn refuseDiscreteUses(self: *Parser, disciplines: []const Ast.DisciplineDecl, modules: []const Ast.ModuleDecl) error{OutOfMemory}!void {
-    for (modules) |m| {
-        for (m.ports) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
-        for (m.nets) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
-        for (m.vars) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
-    }
-}
-
-fn refuseDiscreteUse(self: *Parser, disciplines: []const Ast.DisciplineDecl, name: Ast.StrId, tok: u32) error{OutOfMemory}!void {
-    if (name == .none) return;
-    for (disciplines) |d| if (d.name == name and d.domain == .discrete)
-        return self.refuseDigital(tok, "domain discrete");
-}
-
-/// §2.7 Table 2-2 over every string literal still to be parsed, wherever the
-/// grammar later takes it: an octal escape above `\377` is E0148, and an
-/// escape the table does not list warns W0149 (`stringContents` keeps the
-/// character and drops the backslash).
-fn checkEscapes(self: *Parser) error{OutOfMemory}!void {
-    for (self.tags[self.pos..], self.pos..) |tag, tok| {
-        if (tag != .string_literal) continue;
-        const span = lexer.tokenSpan(self.src, self.starts, @intCast(tok));
-        const text = self.src[span.start..span.end];
-        var from: u32 = 0;
-        while (token_value.badEscape(text, from)) |b| : (from = b.end) {
-            const at: diag.Span = .{ .start = span.start + b.start, .end = span.start + b.end };
-            if (b.above_377) self.failed = true;
-            try self.bag.add(.parse, if (b.above_377) .E0148 else .W0149, at, "`{s}`", .{text[b.start..b.end]});
-        }
-    }
-}
-
 /// Applies one LRM §10.6 `begin_keywords "<version_specifier>" or
 /// `end_keywords at the cursor, selecting which annex B words are reserved
 /// for the design elements that follow (see `identLike`). The directives
 /// nest, so the previous set is stacked. An unmatched `end_keywords is
 /// E0136; an unknown specifier, or one newer than `self.language`, is E0135.
 pub fn keywordsDirective(self: *Parser) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     self.pos += 1;
     if (self.tags[tok] == .dir_end_keywords) {
@@ -213,14 +186,66 @@ pub fn keywordsDirective(self: *Parser) Error!void {
 /// primitive, configuration, paramset, connectrules or connectmodule)."
 /// `parseModuleItem` covers modules itself.
 pub fn outsideDesignElement(self: *Parser, what: []const u8) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const t = self.peek();
     if (t != .dir_begin_keywords and t != .dir_end_keywords) return;
     return self.failAt(self.pos, .E0202, "{s} inside a {s}", .{ token.Tag.lexeme(t).?, what });
 }
 
+// ---- private ----
+
+/// Annex C.4 "the domain binding type discrete shall be an error in
+/// Verilog-A": E0250 at each port, net or `reg` naming a discipline of
+/// domain discrete. The definition itself is ignored (C.17).
+fn refuseDiscreteUses(self: *Parser, disciplines: []const Ast.DisciplineDecl, modules: []const Ast.ModuleDecl) error{OutOfMemory}!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    for (modules) |m| {
+        for (m.ports) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+        for (m.nets) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+        for (m.vars) |x| try refuseDiscreteUse(self, disciplines, x.discipline, x.main_tok);
+    }
+}
+
+fn refuseDiscreteUse(self: *Parser, disciplines: []const Ast.DisciplineDecl, name: Ast.StrId, tok: u32) error{OutOfMemory}!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    if (name == .none) return;
+    for (disciplines) |d| if (d.name == name and d.domain == .discrete)
+        return self.refuseDigital(tok, "domain discrete");
+}
+
+/// §2.7 Table 2-2 over every string literal still to be parsed, wherever the
+/// grammar later takes it: an octal escape above `\377` is E0148, and an
+/// escape the table does not list warns W0149 (`stringContents` keeps the
+/// character and drops the backslash).
+fn checkEscapes(self: *Parser) error{OutOfMemory}!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    for (self.tags[self.pos..], self.pos..) |tag, tok| {
+        if (tag != .string_literal) continue;
+        const span = lexer.tokenSpan(self.src, self.starts, @intCast(tok));
+        const text = self.src[span.start..span.end];
+        var from: u32 = 0;
+        while (token_value.badEscape(text, from)) |b| : (from = b.end) {
+            const at: diag.Span = .{ .start = span.start + b.start, .end = span.start + b.end };
+            if (b.above_377) self.failed = true;
+            try self.bag.add(.parse, if (b.above_377) .E0148 else .W0149, at, "`{s}`", .{text[b.start..b.end]});
+        }
+    }
+}
+
 /// Appends one parsed design element to `list`, or on a syntax error
 /// recovers to the next element and appends nothing.
 fn element(self: *Parser, before: u32, list: anytype, parsed: anytype) error{OutOfMemory}!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const x = parsed catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory;
         recoverTopLevel(self, before);
@@ -233,6 +258,9 @@ fn element(self: *Parser, before: u32, list: anytype, parsed: anytype) error{Out
 /// past any `end*` keyword that closes the construct being abandoned.
 /// Always advances at least one token.
 fn recoverTopLevel(self: *Parser, before: u32) void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     // The `.eof` arm never fails, so an unmoved cursor is on a real token.
     if (self.pos == before) std.debug.assert(self.peek() != .eof);
     if (self.pos == before) self.pos += 1;
@@ -262,10 +290,6 @@ fn recoverTopLevel(self: *Parser, before: u32) void {
     };
 }
 
-// -----------------------------------------------------------------------
-// A.1.1 library source text, A.1.5 configuration: LRM §1.1
-// -----------------------------------------------------------------------
-
 /// Parses one of A.1.1's two library-map-only descriptions, then always
 /// fails with E0232:
 ///
@@ -281,6 +305,9 @@ fn recoverTopLevel(self: *Parser, before: u32) void {
 /// lands on the keyword of a construct that parsed. `file_path_spec` is
 /// taken as a string literal only.
 fn parseLibraryDecl(self: *Parser) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     // ponytail: an unquoted `file_path` (`./lib/*.v`, as real map files
     // write it) is not a §2.2 token sequence. A library map file needs its
     // own reader, which is the work E0232 says is absent.
@@ -320,6 +347,9 @@ fn parseLibraryDecl(self: *Parser) Error!void {
 /// A digital run binds through it (`sim/digital`); an analog compile binds
 /// nothing and warns W0253.
 fn parseConfigDecl(self: *Parser, configs: *std.ArrayList(Ast.ConfigDecl)) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const kw = self.pos;
     self.pos += 1;
     const name = try self.expectIdent();
@@ -350,6 +380,9 @@ fn parseConfigDecl(self: *Parser, configs: *std.ArrayList(Ast.ConfigDecl)) Error
 
 /// Syntax 13-1 `[library_identifier.]cell_identifier`, without the suffix.
 fn parseLibCell(self: *Parser) Error!Ast.LibCell {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const first = try self.expectIdent();
     if (!self.eat(.dot)) return .{ .cell = first };
     return .{ .lib = first, .cell = try self.expectIdent() };
@@ -366,6 +399,9 @@ fn parseLibCell(self: *Parser) Error!Ast.LibCell {
 ///     liblist_clause ::= liblist { library_identifier }
 ///     use_clause ::= use [ library_identifier . ] cell_identifier [ : config ]
 fn parseConfigRule(self: *Parser) Error!Ast.ConfigRule {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     // `default` is the one A.1.5 word with a tag, shared with A.6.7's
     // `case` default.

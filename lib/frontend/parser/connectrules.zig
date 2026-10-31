@@ -4,8 +4,12 @@
 //! checks the names).
 //!
 //! LRM clauses cited: §7.7, §7.7.1, §7.7.2, §7.7.3, §7.7.4, §7.8.3.
+//!
+//! Contents:
+//! - `pub fn parseConnectRules(self: *Parser) Error!Ast.ConnectRulesDecl`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_inst = @import("inst.zig");
@@ -25,6 +29,9 @@ const Error = parser.Error;
 /// (A.1.2 puts no order on descriptions), so elaboration checks them
 /// (`elab/resolve.zig`, `checkConnectRules`).
 pub fn parseConnectRules(self: *Parser) Error!Ast.ConnectRulesDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     self.pos += 1; // 'connectrules'
     const name = try self.expectIdent();

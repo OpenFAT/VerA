@@ -7,8 +7,13 @@
 //!
 //! LRM clauses cited: §1.1, §8.5.3; IEEE 1364-2005 §8, §8.1.2, §8.1.4, §8.4,
 //! §8.8, Table 8-1.
+//!
+//! Contents:
+//! - `pub fn parseUdpDecl(self: *Parser) Error!Ast.UdpDecl`
+//! - `pub fn parseUdpInst(self: *Parser, b: *parse_module.Body) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_decl = @import("decl.zig");
@@ -19,6 +24,11 @@ const parse_net = @import("net.zig");
 const token = @import("../token.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
+
+/// One input field of an entry as the concrete values it covers: a level
+/// symbol as a set over {0, 1, x} (bit 0, 1, 2), an edge as a set over the
+/// (from, to) transitions, bit `3 * from + to` (Table 8-1).
+const UdpField = union(enum) { level: u3, edge: u9 };
 
 /// Parses one A.5.1 `udp_declaration`, either arm:
 ///
@@ -38,6 +48,9 @@ const Error = parser.Error;
 /// kind and column count. The digital engine evaluates it; an analog
 /// compile warns W0252 at each instance (`parseUdpInst`).
 pub fn parseUdpDecl(self: *Parser) Error!Ast.UdpDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     self.pos += 1; // `primitive`
     const name = try self.expectIdent();
@@ -131,6 +144,81 @@ pub fn parseUdpDecl(self: *Parser) Error!Ast.UdpDecl {
     };
 }
 
+/// Parses one A.5.4 `udp_instantiation` at module scope, appending its
+/// instances to `b.instances` in a digital parse only:
+///
+///     udp_instantiation ::= udp_identifier [ drive_strength ] [ delay2 ]
+///             udp_instance { , udp_instance } ;
+///     udp_instance ::= [ name_of_udp_instance ]
+///             ( output_terminal , input_terminal { , input_terminal } )
+///
+/// The caller dispatches here on an identifier followed by `(`, or by a
+/// `#` delay that is not `#(`: A.4.1 makes a module instance's name
+/// mandatory, so no module instantiation looks like that. A named UDP
+/// instance parses as a module instantiation and elaboration resolves the
+/// name.
+///
+/// An analog compile warns W0252, as for a gate: the table computes a logic
+/// value for an event queue a compiled analog device does not have.
+pub fn parseUdpInst(self: *Parser, b: *parse_module.Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    try parse_inst.gateNotModelled(self);
+    const module_tok = self.pos;
+    const module = try self.internTok(self.pos);
+    self.pos += 1; // the udp_identifier
+    var s0: Ast.Strength = .strong;
+    var s1: Ast.Strength = .strong;
+    if (self.peek() == .lparen and parse_net.strengthWord(self, self.pos + 1) != null) try parse_net.parseDriveStrength(self, &s0, &s1);
+    // A.2.2.3 `delay2` is a `delay3` that stops at two values.
+    const delay_tok = self.pos;
+    const delay: Ast.Delay3 = if (self.peek() == .hash) try parse_net.parseDelay3(self) else .{};
+    // `parseDelay3` copies a lone value into `off`; only a written third one differs.
+    if (delay.off != .none and delay.off != delay.rise) try self.report(delay_tok, .E0239, "`{s} #(…)`: 3 values", .{self.file.str(module)});
+    while (true) {
+        const tok = self.pos;
+        var name: Ast.StrId = .none;
+        var range: ?Ast.Dim = null;
+        if (self.identLike(self.pos)) {
+            name = try self.internTok(self.pos);
+            self.pos += 1;
+            // `name_of_udp_instance ::= udp_instance_identifier [ range ]`
+            range = try parse_decl.optDim(self);
+        }
+        _ = try self.expect(.lparen);
+        var ports: std.ArrayList(Ast.PortConn) = .empty;
+        const out_tok = self.pos;
+        try ports.append(self.arena, .{ .expr = try parse_expr.parseNetLvalue(self), .main_tok = out_tok }); // A.3.3 output_terminal ::= net_lvalue
+        while (self.eat(.comma)) {
+            const in_tok = self.pos;
+            try ports.append(self.arena, .{ .expr = try parse_expr.parseExpr(self), .main_tok = in_tok }); // input_terminal ::= expression
+        }
+        // A.5.4's unnamed instance is a UDP's, with an output and at least
+        // one input terminal; anything else with no name is a module
+        // instance missing A.4.1's name_of_module_instance (`child(s);`).
+        if (name == .none and ports.items.len < 2)
+            return self.failAt(module_tok, .E0293, "`{s}`, with one terminal", .{self.file.str(module)});
+        _ = try self.expect(.rparen);
+        // The digital engine runs a UDP instance (IEEE 1364-2005 §8); an
+        // analog compile keeps nothing (W0252 above).
+        if (self.digital) try b.instances.append(self.arena, .{
+            .module = module,
+            .name = name,
+            .range = range,
+            .ports = ports.items,
+            .delay = delay,
+            .strength0 = s0,
+            .strength1 = s1,
+            .main_tok = tok,
+        });
+        if (!self.eat(.comma)) break;
+    }
+    _ = try self.expect(.semicolon);
+}
+
+// ---- private ----
+
 /// Parses A.5.3's `table … endtable`, appending each entry to `rows`, and
 /// returns whether the table is sequential (`Ast.UdpDecl.is_sequential`):
 ///
@@ -148,6 +236,9 @@ pub fn parseUdpDecl(self: *Parser) Error!Ast.UdpDecl {
 /// nothing. An empty table reads combinational (A.5.3 requires an entry in
 /// both alternatives, so either answer is arbitrary).
 fn parseUdpTable(self: *Parser, rows: *std.ArrayList(Ast.UdpRow)) Error!bool {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (!self.reservedIs(self.pos, "table"))
         return self.failAt(self.pos, .E0207, "found {s}: a udp_body is a `table … endtable`", .{self.found(self.pos)});
     self.pos += 1;
@@ -168,6 +259,9 @@ fn parseUdpTable(self: *Parser, rows: *std.ArrayList(Ast.UdpRow)) Error!bool {
 /// `sequential` is null before the table's first entry, which sets it; each
 /// later entry must agree. A column holds any number of symbols.
 fn parseUdpEntry(self: *Parser, sequential: *?bool, rows: *std.ArrayList(Ast.UdpRow)) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     // Column 0 is the input list; a colon opens each of the 1 or 2 that
     // follow, so the colon count is the entry's `udp_body` alternative.
@@ -253,11 +347,6 @@ fn parseUdpEntry(self: *Parser, sequential: *?bool, rows: *std.ArrayList(Ast.Udp
     });
 }
 
-/// One input field of an entry as the concrete values it covers: a level
-/// symbol as a set over {0, 1, x} (bit 0, 1, 2), an edge as a set over the
-/// (from, to) transitions, bit `3 * from + to` (Table 8-1).
-const UdpField = union(enum) { level: u3, edge: u9 };
-
 fn udpLevelSet(c: u8) u3 {
     return switch (std.ascii.toLower(c)) {
         '0' => 0b001,
@@ -314,6 +403,9 @@ fn udpFields(inputs: []const u8, out: []UdpField) usize {
 /// edge entry never conflict: §8.8 lets the level entry dominate. Neither
 /// do edge entries on different inputs, which one event cannot both match.
 fn checkUdpConflicts(self: *Parser, name: Ast.StrId, rows: []const Ast.UdpRow, inputs: usize, sequential: bool, main_tok: u32) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const a_buf = try self.arena.alloc(UdpField, inputs);
     const b_buf = try self.arena.alloc(UdpField, inputs);
     for (rows, 0..) |a, i| {
@@ -357,74 +449,4 @@ fn isLevelSymbol(c: u8) bool {
 
 fn udpBodyName(sequential: bool) []const u8 {
     return if (sequential) "sequential" else "combinational";
-}
-
-/// Parses one A.5.4 `udp_instantiation` at module scope, appending its
-/// instances to `b.instances` in a digital parse only:
-///
-///     udp_instantiation ::= udp_identifier [ drive_strength ] [ delay2 ]
-///             udp_instance { , udp_instance } ;
-///     udp_instance ::= [ name_of_udp_instance ]
-///             ( output_terminal , input_terminal { , input_terminal } )
-///
-/// The caller dispatches here on an identifier followed by `(`, or by a
-/// `#` delay that is not `#(`: A.4.1 makes a module instance's name
-/// mandatory, so no module instantiation looks like that. A named UDP
-/// instance parses as a module instantiation and elaboration resolves the
-/// name.
-///
-/// An analog compile warns W0252, as for a gate: the table computes a logic
-/// value for an event queue a compiled analog device does not have.
-pub fn parseUdpInst(self: *Parser, b: *parse_module.Body) Error!void {
-    try parse_inst.gateNotModelled(self);
-    const module_tok = self.pos;
-    const module = try self.internTok(self.pos);
-    self.pos += 1; // the udp_identifier
-    var s0: Ast.Strength = .strong;
-    var s1: Ast.Strength = .strong;
-    if (self.peek() == .lparen and parse_net.strengthWord(self, self.pos + 1) != null) try parse_net.parseDriveStrength(self, &s0, &s1);
-    // A.2.2.3 `delay2` is a `delay3` that stops at two values.
-    const delay_tok = self.pos;
-    const delay: Ast.Delay3 = if (self.peek() == .hash) try parse_net.parseDelay3(self) else .{};
-    // `parseDelay3` copies a lone value into `off`; only a written third one differs.
-    if (delay.off != .none and delay.off != delay.rise) try self.report(delay_tok, .E0239, "`{s} #(…)`: 3 values", .{self.file.str(module)});
-    while (true) {
-        const tok = self.pos;
-        var name: Ast.StrId = .none;
-        var range: ?Ast.Dim = null;
-        if (self.identLike(self.pos)) {
-            name = try self.internTok(self.pos);
-            self.pos += 1;
-            // `name_of_udp_instance ::= udp_instance_identifier [ range ]`
-            range = try parse_decl.optDim(self);
-        }
-        _ = try self.expect(.lparen);
-        var ports: std.ArrayList(Ast.PortConn) = .empty;
-        const out_tok = self.pos;
-        try ports.append(self.arena, .{ .expr = try parse_expr.parseNetLvalue(self), .main_tok = out_tok }); // A.3.3 output_terminal ::= net_lvalue
-        while (self.eat(.comma)) {
-            const in_tok = self.pos;
-            try ports.append(self.arena, .{ .expr = try parse_expr.parseExpr(self), .main_tok = in_tok }); // input_terminal ::= expression
-        }
-        // A.5.4's unnamed instance is a UDP's, with an output and at least
-        // one input terminal; anything else with no name is a module
-        // instance missing A.4.1's name_of_module_instance (`child(s);`).
-        if (name == .none and ports.items.len < 2)
-            return self.failAt(module_tok, .E0293, "`{s}`, with one terminal", .{self.file.str(module)});
-        _ = try self.expect(.rparen);
-        // The digital engine runs a UDP instance (IEEE 1364-2005 §8); an
-        // analog compile keeps nothing (W0252 above).
-        if (self.digital) try b.instances.append(self.arena, .{
-            .module = module,
-            .name = name,
-            .range = range,
-            .ports = ports.items,
-            .delay = delay,
-            .strength0 = s0,
-            .strength1 = s1,
-            .main_tok = tok,
-        });
-        if (!self.eat(.comma)) break;
-    }
-    _ = try self.expect(.semicolon);
 }
