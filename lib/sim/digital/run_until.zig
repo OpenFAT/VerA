@@ -13,6 +13,7 @@ const diag = @import("diag");
 const Scheduler = @import("../scheduler.zig").Scheduler;
 /// Scheduler ticks. `Time` below is the timescale module, not this.
 const Tick = @import("../scheduler.zig").Time;
+const max_events_per_tick = root.max_events_per_tick;
 const Time = @import("../time.zig");
 const deep = @import("base").deep_stack;
 const compile = @import("compile.zig");
@@ -58,6 +59,15 @@ const isRoot = root.isRoot;
 /// The descriptor table a `Run` with no `file_io` opens files through.
 const own_files = system.own;
 
+/// The zero-delay-loop guard of a run: the events dispatched at tick `time`,
+/// against `max` (`Options.event_budget`).
+pub const EventBudget = struct {
+    /// Events dispatched at `budget_time`, against `budget`.
+    time: Tick = 0,
+    used: u64 = 0,
+    max: u64 = max_events_per_tick,
+};
+
 /// Dispatch every event at a time <= `limit` (IEEE 1364 §11.4's loop,
 /// VAMS §8.5.1's regions), then return with the queue holding only later
 /// work. `limit = maxInt` is the whole simulation, which is `run`. Calling
@@ -73,17 +83,17 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
         // A zero-delay loop (`always a = ~a;`) never lets time advance
         // (IEEE 1364 §11.4 has nothing to stop it); refuse it by name
         // instead of hanging the kernel at one tick.
-        if (event.time != r.budget_time) {
-            r.budget_time = event.time;
-            r.budget_used = 0;
+        if (event.time != r.event_budget.time) {
+            r.event_budget.time = event.time;
+            r.event_budget.used = 0;
             // §8.5.1: monitor events "are continuously re-enabled in
             // every successive time step"; one that probes the analog
             // solution has no slot to wake it, so each step asks.
             if (r.monitoring.probes.len != 0) try waiters.requestMonitor(r);
         }
-        r.budget_used += 1;
-        if (r.budget_used > r.budget)
-            return r.fail(0, "more than {d} events at time {d}: a zero-delay loop keeps simulation time from advancing", .{ r.budget, event.time });
+        r.event_budget.used += 1;
+        if (r.event_budget.used > r.event_budget.max)
+            return r.fail(0, "more than {d} events at time {d}: a zero-delay loop keeps simulation time from advancing", .{ r.event_budget.max, event.time });
         if (event.region == .analog) {
             r.analog_pending = false;
             return .analog;

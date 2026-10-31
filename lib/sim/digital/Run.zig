@@ -360,6 +360,8 @@ free_term_exts: std.ArrayList(u32) = .empty,
 fan_start: []u32 = &.{},
 fan: []u32 = &.{},
 armed: []bool = &.{},
+/// The zero-delay-loop guard: events dispatched at one tick (`run_until.EventBudget`).
+event_budget: run_until.EventBudget = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
@@ -407,10 +409,6 @@ analog_pending: bool = false,
 d2a_sites: std.ArrayList(D2aSite) = .empty,
 d2a_fired: u64 = 0,
 d2a_pending: bool = false,
-/// Events dispatched at `budget_time`, against `budget`.
-budget_time: Tick = 0,
-budget_used: u64 = 0,
-budget: u64 = max_events_per_tick,
 /// Per-instruction scratch of `runUntil` (`exec.Scratch`): the fixed
 /// buffer every instruction starts from, and the arena behind it, reset
 /// at each event with its capacity kept, so a run of many calls (the

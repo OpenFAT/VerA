@@ -442,9 +442,9 @@ fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool 
 /// tick (docs/specification/Vague_Decisions.md §7). `rt.State.loopIteration` is
 /// the native executable's.
 fn loopIteration(self: *Run) Error!void {
-    self.budget_used += 1;
-    if (self.budget_used > self.budget)
-        return self.fail(0, "more than {d} loop iterations and events at time {d}: a loop with no delay keeps simulation time from advancing", .{ self.budget, self.scheduler.now });
+    self.event_budget.used += 1;
+    if (self.event_budget.used > self.event_budget.max)
+        return self.fail(0, "more than {d} loop iterations and events at time {d}: a loop with no delay keeps simulation time from advancing", .{ self.event_budget.max, self.scheduler.now });
 }
 
 /// `execute`, which with `hooked` calls `Run.stmt_hook` before each

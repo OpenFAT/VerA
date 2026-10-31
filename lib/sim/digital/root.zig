@@ -646,7 +646,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     file.* = parsed.overlay(.{});
     try Front.wreal.check(file, tokens.items(.start), bag);
     if (bag.failed()) return error.DigitalFailed;
-    var r: Run = .{ .arena = arena, .file = file, .text = text, .starts = tokens.items(.start), .bag = bag, .out = out, .values = &.{}, .scheduler = .empty, .file_name = opts.file_name, .io = opts.io, .drives = drives, .nettypes = pp.directives.nettypes, .mixed = opts.mixed != null, .a2d_reads = if (opts.mixed) |mx| mx.reads else &.{}, .card = if (opts.mixed) |mx| mx.params else &.{}, .real_card = if (opts.mixed) |mx| mx.real_params else &.{}, .budget = opts.event_budget, .systf = opts.systf, .stmt_sites = if (opts.stmt_sites) .empty else null, .source = source, .opts = opts, .scratch_buf = try arena.alloc(u8, exec.scratch_fixed_bytes), .scratch = .init(arena), .resolve_scratch = .init(arena) };
+    var r: Run = .{ .arena = arena, .file = file, .text = text, .starts = tokens.items(.start), .bag = bag, .out = out, .values = &.{}, .scheduler = .empty, .file_name = opts.file_name, .io = opts.io, .drives = drives, .nettypes = pp.directives.nettypes, .mixed = opts.mixed != null, .a2d_reads = if (opts.mixed) |mx| mx.reads else &.{}, .card = if (opts.mixed) |mx| mx.params else &.{}, .real_card = if (opts.mixed) |mx| mx.real_params else &.{}, .event_budget = .{ .max = opts.event_budget }, .systf = opts.systf, .stmt_sites = if (opts.stmt_sites) .empty else null, .source = source, .opts = opts, .scratch_buf = try arena.alloc(u8, exec.scratch_fixed_bytes), .scratch = .init(arena), .resolve_scratch = .init(arena) };
     try binding.libraries(&r, file, opts, pp.more_starts);
     // IEEE 1364-2005 §8.1's rules hold for every UDP declaration, whether or
     // not an instance uses it.
@@ -1269,7 +1269,7 @@ test "a zero-delay loop fails by name instead of hanging at one tick" {
     var r = try elaborate(arena.allocator(),
         \\module m; reg a; initial a = 0; always #0 a = ~a; endmodule
     , .{}, &bag, &output.writer);
-    r.budget = 1000;
+    r.event_budget.max = 1000;
     try std.testing.expectError(error.DigitalFailed, r.runUntil(std.math.maxInt(Tick)));
     try std.testing.expectEqual(@as(Tick, 0), r.scheduler.now);
 }
@@ -1284,7 +1284,7 @@ test "an always construct with no timing control runs until the event budget end
     var r = try elaborate(arena.allocator(),
         \\module m; reg areg; initial areg = 0; always areg = ~areg; endmodule
     , .{}, &bag, &output.writer);
-    r.budget = 1000;
+    r.event_budget.max = 1000;
     try std.testing.expectError(error.DigitalFailed, r.runUntil(std.math.maxInt(Tick)));
     try std.testing.expectEqual(@as(Tick, 0), r.scheduler.now);
     try std.testing.expect(std.mem.indexOf(u8, bag.at(0).message, "keeps simulation time from advancing") != null);
@@ -1298,7 +1298,7 @@ test "an untimed loop inside one process fails by name instead of hanging at one
     var r = try elaborate(arena.allocator(),
         \\module m; reg x; initial forever x = 1; endmodule
     , .{}, &bag, &output.writer);
-    r.budget = 1000;
+    r.event_budget.max = 1000;
     try std.testing.expectError(error.DigitalFailed, r.runUntil(std.math.maxInt(Tick)));
     try std.testing.expectEqual(@as(Tick, 0), r.scheduler.now);
     try std.testing.expect(std.mem.indexOf(u8, bag.at(0).message, "more than 1000 loop iterations and events at time 0") != null);
@@ -1312,7 +1312,7 @@ test "a finite untimed loop under the budget runs to its end" {
     var r = try elaborate(arena.allocator(),
         \\module m; integer i, n; initial begin n = 0; for (i = 0; i < 900; i = i + 1) n = n + 1; end endmodule
     , .{}, &bag, &output.writer);
-    r.budget = 1000;
+    r.event_budget.max = 1000;
     _ = try r.runUntil(std.math.maxInt(Tick));
     try std.testing.expectEqual(@as(?i64, 900), r.values[r.slotOf("n").?].asInt());
 }
