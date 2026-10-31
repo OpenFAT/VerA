@@ -476,6 +476,7 @@ pub const MockWide = struct {
     const n_u = 300;
     const names = blk: {
         @setEvalBranchQuota(1_000_000);
+        // SAFETY: the loop writes every name.
         var a: [n_u][]const u8 = undefined;
         for (&a, 0..) |*s, u| s.* = std.fmt.comptimePrint("u{d}", .{u});
         break :blk a;
@@ -498,6 +499,7 @@ pub const MockWide = struct {
     };
     pub fn eval(comptime S: type, x: *const [n_u]S.V, m: *const Model, _: *const Instance, _: SimState) Rows(@This(), S) {
         @setEvalBranchQuota(1_000_000);
+        // SAFETY: the loop writes every row.
         var r: Rows(@This(), S) = undefined;
         inline for (0..n_u) |u| r[u] = if (u % 2 == 0) S.probe(u, x[u]).scale(m.g).to(rowMask(@This(), u)) else S.con(0).to(rowMask(@This(), u));
         return r;
@@ -527,6 +529,7 @@ pub fn MockN(comptime n: usize) type {
         pub const U = @Enum(u8, .exhaustive, &names, &std.simd.iota(u8, n));
         const names = blk: {
             @setEvalBranchQuota(100_000);
+            // SAFETY: the loop writes every name.
             var a: [n][]const u8 = undefined;
             for (&a, 0..) |*s, u| s.* = std.fmt.comptimePrint("u{d}", .{u});
             break :blk a;

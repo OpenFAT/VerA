@@ -139,6 +139,7 @@ fn writeInteger(w: *Writer, conv: u8, v: f64, f: Flags) Writer.Error!void {
     // 2^63 - 1024 is the largest double below 2^63.
     const n: i64 = if (std.math.isNan(v)) 0 else @intFromFloat(@round(std.math.clamp(v, -0x1p63, 0x1p63 - 1024)));
     const u: u64 = @bitCast(n);
+    // SAFETY: `print` writes the digits it returns; nothing else is read.
     var buf: [64]u8 = undefined;
     // 64 bytes hold the longest of these: a u64 in binary.
     const digits = switch (conv) {
@@ -163,10 +164,12 @@ fn writeReal(w: *Writer, conv: u8, v: f64, f: Flags) Writer.Error!void {
         const t: []const u8 = if (std.math.isNan(v)) (if (up) "NAN" else "nan") else if (up) "INF" else "inf";
         return writePadded(w, signOf(v < 0, f), t, f, .text);
     }
+    // SAFETY: `cReal` returns only bytes it wrote (or a literal).
     var buf: [buf_len]u8 = undefined;
     const body = cReal(&buf, @abs(v), std.ascii.toLower(conv), f.prec, f.alt);
     // `%E`/`%G` spell the exponent marker upper case; `%R`'s scale letters
     // keep their case (`m` is milli, `M` mega).
+    // SAFETY: `upperString` writes the `body.len` bytes it returns.
     var upper: [buf_len]u8 = undefined;
     const text = if (conv == 'E' or conv == 'G') std.ascii.upperString(&upper, body) else body;
     assert(text.len == body.len);
@@ -361,6 +364,7 @@ fn cExp(buf: *[buf_len]u8, sci: []const u8) []const u8 {
     const neg = exp.len != 0 and exp[0] == '-';
     if (neg) exp = exp[1..];
     // A mantissa at `precision_max` and a three-digit exponent.
+    // SAFETY: `print` writes the bytes it returns.
     var tmp: [2 + precision_max + 6]u8 = undefined;
     const t = std.mem.print(&tmp, "{s}e{c}{s}{s}", .{ sci[0..e], @as(u8, if (neg) '-' else '+'), if (exp.len < 2) "0" else "", exp }) catch unreachable;
     assert(t.len < scratch_at);

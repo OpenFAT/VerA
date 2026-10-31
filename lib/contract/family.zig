@@ -175,6 +175,7 @@ fn laneTable(comptime lane: anytype) []const u32 {
             return laneTable(&a);
         }
         @setEvalBranchQuota(10 * lane.len + 1000);
+        // SAFETY: the loop writes every entry.
         var out: [lane.len]u32 = undefined;
         for (&out, 0..) |*o, u| {
             const l = lane[u];
@@ -190,6 +191,7 @@ fn laneTable(comptime lane: anytype) []const u32 {
 /// The unknown each lane of mask `m` belongs to, in lane order.
 fn laneCols(comptime m: anytype) [@popCount(m)]u32 {
     @setEvalBranchQuota(10 * @bitSizeOf(@TypeOf(m)) + 1000);
+    // SAFETY: one entry per set bit of `m`, as the exit assert checks.
     var cols: [@popCount(m)]u32 = undefined;
     var j: usize = 0;
     for (0..@bitSizeOf(@TypeOf(m))) |u| if ((m >> u) & 1 != 0) {
@@ -223,15 +225,20 @@ fn sqrtSlope(s: f64) f64 {
 fn RefSparse(comptime L: type, comptime lane: []const u32, comptime collapsed: bool) type {
     const M = MaskOf(lane.len);
     return struct {
+        /// The family's `collapse_applied` trait (`RefOptions`).
         pub const collapse_applied = collapsed;
+        /// One unknown's value: one operating point.
         pub const V = f64;
 
+        /// The constant `c`, with no lanes.
         pub fn con(c: f64) Of(0) {
             return .{ .v = c, .d = .{} };
         }
+        /// Unknown `u` at value `v`: lane `u` is exactly 1.
         pub fn probe(comptime u: usize, v: f64) Of(@as(M, 1) << u) {
             return .{ .v = v, .d = @splat(1.0) };
         }
+        /// `c ≠ 0 ? a : b` (a NaN `c` picks `a`), the winner widened to both masks.
         pub fn sel(c: anytype, a: anytype, b: anytype) Of(@TypeOf(a).mask | @TypeOf(b).mask) {
             const r = @TypeOf(a).mask | @TypeOf(b).mask;
             return if (c.v != 0.0) a.to(r) else b.to(r);
@@ -263,6 +270,7 @@ fn RefSparse(comptime L: type, comptime lane: []const u32, comptime collapsed: b
             return struct {
                 v: f64,
                 d: Lanes align(@alignOf(L)),
+                /// The unknowns this value carries lanes of (inside the family's `lane` table).
                 pub const mask = m;
                 const Lanes = @Vector(@popCount(m), L);
                 const T = @This();
@@ -287,6 +295,7 @@ fn RefSparse(comptime L: type, comptime lane: []const u32, comptime collapsed: b
                     if (m == 0) return @splat(0.0);
                     const idx = comptime blk: {
                         @setEvalBranchQuota(100_000);
+                        // SAFETY: one entry per set bit of `to_m`, each written.
                         var idx: [@popCount(to_m)]i32 = undefined;
                         var j: usize = 0;
                         for (0..@bitSizeOf(M)) |u| if ((to_m >> u) & 1 != 0) {
@@ -299,28 +308,35 @@ fn RefSparse(comptime L: type, comptime lane: []const u32, comptime collapsed: b
                     return @shuffle(L, a.d, z, idx);
                 }
 
+                /// The same value, lanes widened to `to_m`; the new lanes are exactly +0. A compile error unless `m ⊆ to_m`.
                 pub fn to(a: T, comptime to_m: M) Of(to_m) {
                     return .{ .v = a.v, .d = a.spread(to_m) };
                 }
+                /// The value half.
                 pub fn val(a: T) f64 {
                     return a.v;
                 }
+                /// Lane `u`, the partial by unknown `u`; 0 off the mask.
                 pub fn ddxAt(a: T, comptime u: usize) f64 {
                     if ((m >> u) & 1 == 0) return 0.0;
                     return a.d[@popCount(m & ((@as(M, 1) << u) - 1))];
                 }
 
+                /// a + b; each operand's lanes on its own unknowns.
                 pub fn add(a: T, b: anytype) Join(@TypeOf(b)) {
                     const r = m | @TypeOf(b).mask;
                     return .{ .v = a.v + b.v, .d = a.spread(r) + b.spread(r) };
                 }
+                /// a − b; `b`'s lanes negated.
                 pub fn sub(a: T, b: anytype) Join(@TypeOf(b)) {
                     const r = m | @TypeOf(b).mask;
                     return .{ .v = a.v - b.v, .d = a.spread(r) - b.spread(r) };
                 }
+                /// −a, every lane negated.
                 pub fn neg(a: T) T {
                     return .{ .v = -a.v, .d = -a.d };
                 }
+                /// a·b; lanes mulAdd(b.d, a.v, a.d·b.v), one product for a one-sided operand.
                 pub fn mul(a: T, b: anytype) Join(@TypeOf(b)) {
                     const B = @TypeOf(b);
                     const r = m | B.mask;
@@ -328,6 +344,7 @@ fn RefSparse(comptime L: type, comptime lane: []const u32, comptime collapsed: b
                     if (m == 0) return .{ .v = a.v * b.v, .d = b.spread(r) * kj(B, a.v) };
                     return .{ .v = a.v * b.v, .d = laneFma(@Vector(@popCount(r), L), b.spread(r), kj(B, a.v), a.spread(r) * kj(B, b.v)) };
                 }
+                /// a/b; lanes mulAdd(b.d, −q, a.d)·(1/b.v), a.d·(1/b.v) for an `Of(0)` divisor.
                 pub fn div(a: T, b: anytype) Join(@TypeOf(b)) {
                     const B = @TypeOf(b);
                     const r = m | B.mask;
@@ -336,58 +353,75 @@ fn RefSparse(comptime L: type, comptime lane: []const u32, comptime collapsed: b
                     if (B.mask == 0) return .{ .v = q, .d = a.spread(r) * kj(B, inv) };
                     return .{ .v = q, .d = laneFma(@Vector(@popCount(r), L), b.spread(r), kj(B, -q), a.spread(r)) * kj(B, inv) };
                 }
+                /// a·c; lanes a.d·c.
                 pub fn scale(a: T, c: f64) T {
                     return map(a, a.v * c, c);
                 }
+                /// a + c; lanes unchanged.
                 pub fn addC(a: T, c: f64) T {
                     return .{ .v = a.v + c, .d = a.d };
                 }
+                /// gm.exp; lanes d·e.
                 pub fn exp(a: T) T {
                     const e = gm.exp(a.v);
                     return map(a, e, e);
                 }
+                /// gm.log; lanes d·(1/v).
                 pub fn log(a: T) T {
                     return map(a, gm.log(a.v), 1.0 / a.v);
                 }
+                /// gm.expm1; lanes d·exp(v).
                 pub fn expm1(a: T) T {
                     return map(a, gm.expm1(a.v), gm.exp(a.v));
                 }
+                /// gm.log1p; lanes d·(1/(1+v)).
                 pub fn log1p(a: T) T {
                     return map(a, gm.log1p(a.v), 1.0 / (1.0 + a.v));
                 }
+                /// √a; lanes d·(0.5/s), 0 unless s > 0.
                 pub fn sqrt(a: T) T {
                     const s = @sqrt(a.v);
                     return map(a, s, sqrtSlope(s));
                 }
+                /// gm.sin; lanes d·cos.
                 pub fn sin(a: T) T {
                     return map(a, gm.sin(a.v), gm.cos(a.v));
                 }
+                /// gm.cos; lanes d·(−sin).
                 pub fn cos(a: T) T {
                     return map(a, gm.cos(a.v), -gm.sin(a.v));
                 }
+                /// gm.tanh; lanes d·(1−th²).
                 pub fn tanh(a: T) T {
                     const th = gm.tanh(a.v);
                     return map(a, th, 1.0 - th * th);
                 }
+                /// gm.sinh; lanes d·cosh.
                 pub fn sinh(a: T) T {
                     return map(a, gm.sinh(a.v), gm.cosh(a.v));
                 }
+                /// gm.cosh; lanes d·sinh.
                 pub fn cosh(a: T) T {
                     return map(a, gm.cosh(a.v), gm.sinh(a.v));
                 }
+                /// gm.atan; lanes d·(1/(1+v²)).
                 pub fn atan(a: T) T {
                     return map(a, gm.atan(a.v), 1.0 / (1.0 + a.v * a.v));
                 }
+                /// gm.pow(a, c); lanes d·(c·p/x), d·(c·pow(0, c−1)) at x = 0, 0 for a non-finite slope.
                 pub fn pow(a: T, c: f64) T {
                     const p = gm.pow(a.v, c);
                     return map(a, p, powSlope(a.v, c, p));
                 }
+                /// 1.0 when a < b, else 0.0 (NaN gives 0); no lanes.
                 pub fn lt(a: T, b: anytype) Of(0) {
                     return con(@floatFromInt(@intFromBool(a.v < b.v)));
                 }
+                /// 1.0 when a <= b, else 0.0 (NaN gives 0); no lanes.
                 pub fn le(a: T, b: anytype) Of(0) {
                     return con(@floatFromInt(@intFromBool(a.v <= b.v)));
                 }
+                /// 1.0 when a == b, else 0.0 (NaN gives 0); no lanes.
                 pub fn eq(a: T, b: anytype) Of(0) {
                     return con(@floatFromInt(@intFromBool(a.v == b.v)));
                 }

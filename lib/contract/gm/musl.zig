@@ -103,6 +103,8 @@ fn softExpm1(x_: f64) f64 {
         if (x > 7.09782712893383973096e+02) return std.math.inf(f64);
     }
 
+    // SAFETY: musl's branches below set hi, lo and c wherever k is not 0,
+    // and k on every path that reaches the polynomial.
     var hi: f64 = undefined;
     var lo: f64 = undefined;
     var c: f64 = undefined;
@@ -287,6 +289,7 @@ fn softSin(x: f64) f64 {
     const ax = @abs(x);
     if (ax < pio4) return if (ax < 0x1p-27) x else kernelSin(x, 0.0, false);
     if (!std.math.isFinite(x)) return std.math.nan(f64);
+    // SAFETY: `remPio2` writes both halves.
     var y: [2]f64 = undefined;
     const n = remPio2(x, &y);
     return switch (@as(u32, @bitCast(n)) & 3) {
@@ -301,6 +304,7 @@ fn softCos(x: f64) f64 {
     const ax = @abs(x);
     if (ax < pio4) return if (ax < 0x1p-27) 1.0 else kernelCos(x, 0.0);
     if (!std.math.isFinite(x)) return std.math.nan(f64);
+    // SAFETY: `remPio2` writes both halves.
     var y: [2]f64 = undefined;
     const n = remPio2(x, &y);
     return switch (@as(u32, @bitCast(n)) & 3) {

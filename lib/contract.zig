@@ -89,6 +89,9 @@ const validate_file = @import("contract/validate.zig");
 /// device's `contract_abi`, 2026-10-18.
 pub const vera_version = "0.20.0";
 
+// A mutable global, against the house rule, because it is ABI: generated
+// devices read it through `hostString` from every entry point, and a
+// parameter would change every entry point's signature (pass 2's call).
 /// §9.15 Table 9-28 the host's strings: entry i is the text a `Model` index
 /// field holding i names (`cwd_idx__`, `analysis_name_idx__`). The host owns
 /// the bytes, sets the slice before the first evaluation that reads an index,
@@ -101,9 +104,6 @@ pub const vera_version = "0.20.0";
 /// Only the CPU reads it. On an NVPTX or AMDGCN target `hostString` answers
 /// its fallback, so a host keeps a device whose `Model` has `cwd_idx__` on its
 /// CPU path when the strings matter to it.
-// A mutable global, against the house rule, because it is ABI: generated
-// devices read it through `hostString` from every entry point, and a
-// parameter would change every entry point's signature (pass 2's call).
 pub var host_strings: []const []const u8 = &.{};
 
 /// The transcendentals of every target, the GPU ones included.

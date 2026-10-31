@@ -247,6 +247,7 @@ fn sigFold(h: u64) u16 {
 fn Signature(comptime n: usize) type {
     const F = family.RefFamily(f64, &@as([n]u8, @splat(family.no_lane)), .{});
     return struct {
+        // The family decls, `F`'s.
         pub const V = F.V;
         pub const Of = F.Of;
         pub const con = F.con;
@@ -260,16 +261,19 @@ fn Signature(comptime n: usize) type {
         fn mix(v: u64) void {
             h = sigMix(h, v);
         }
+        /// The comparison `a op b`, its outcome mixed into the hash.
         pub fn decide(comptime op: std.math.CompareOperator, a: anytype, b: anytype) bool {
             const r = std.math.compare(a.val(), op, b.val());
             mix(@intFromBool(r));
             return r;
         }
+        /// `a` rounded to an integer, mixed into the hash.
         pub fn decideI(a: anytype) i64 {
             const r = std.math.lossyCast(i64, @round(a.val()));
             mix(@bitCast(r));
             return r;
         }
+        /// `a`'s value with no lanes (the protocol's strip; it decides nothing).
         pub fn strip(a: anytype) Of(0) {
             return F.con(a.val());
         }
