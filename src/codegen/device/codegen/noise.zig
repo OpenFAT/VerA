@@ -44,6 +44,7 @@ const coreIdx = gen_dispatch.coreIdx;
 /// ground-ground branch, E0520; non-constant table pairs, E0519) replaces
 /// the whole `noise_gens` decl with a `@compileError` (`refuseNoise`).
 pub fn emitNoiseTable(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     if (self.noise.fatal) |msg| {
         // A `@compileError` value, not a statement: a host that never touches
         // noise still builds, and one that reads `noise_gens` gets this
@@ -161,6 +162,7 @@ pub fn emitNoiseTable(self: *Gen) Error!void {
 /// `noisePsd` reads off it. Called from `emitUnits`, so its range tiles with
 /// the other unit declarations.
 pub fn emitNoiseCore(self: *Gen) Error!void {
+    assert(self.noise_core.name.len == 0);
     if (self.noise.fatal != null or self.noise.rows.len == 0) return;
     const keep = try self.arena.alloc(bool, self.core.lo_vals.len);
     @memset(keep, false);
@@ -189,6 +191,7 @@ pub fn emitNoiseCore(self: *Gen) Error!void {
 /// `noise_table_points__` and `derive` fills it. False when the noise tables
 /// were refused, since then no `noise_tables` is emitted either.
 pub fn hasCardKnots(self: *const Gen) bool {
+    assert(self.noise.refusals.items.len == 0 or self.any_fatal);
     if (self.noise.fatal != null or self.noise.rows.len == 0) return false;
     for (self.noise.tab_vals) |mvs| if (mvs.len != 0) return true;
     return false;
@@ -196,6 +199,7 @@ pub fn hasCardKnots(self: *const Gen) bool {
 
 /// The knots of every table, the length of `noiseTablePoints`' result.
 pub fn cardKnotCount(self: *const Gen) usize {
+    assert(self.noise.refusals.items.len == 0 or self.any_fatal);
     var total: usize = 0;
     for (self.noise.tabs) |pts| total += pts.len;
     return total;
@@ -209,6 +213,7 @@ pub fn cardKnotCount(self: *const Gen) usize {
 /// It takes the state vector because A.8.2 makes both arguments
 /// `analog_expression`; a stimulus that folds renders over `Model` alone.
 pub fn emitAcTable(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     if (self.noise.ac_rows.len == 0) return;
 
     // Rendered before anything is written, so the `x`/`model`/`inst`
@@ -296,6 +301,7 @@ pub fn emitAcTable(self: *Gen) Error!void {
 /// `derive` stores its result in the row (`Model.noise_table_points__`,
 /// `contract.noiseTable`).
 fn emitNoiseTablePoints(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     if (!hasCardKnots(self)) return;
     const total = cardKnotCount(self);
     assert(total > 0);
@@ -355,6 +361,8 @@ fn acRef(self: *Gen, v: Mir.Value, uses_core: *bool) Error!?[]const u8 {
 /// cannot state, as `refuseNoise` does for `noise_gens`. No diagnostic of its
 /// own: `emitCall` already reported E0515 on the same argument.
 fn refuseAc(self: *Gen) Error!void {
+    const len_before = self.out.items.len;
+    defer assert(self.out.items.len >= len_before);
     try self.w("/// §4.6.3 refused by codegen; see the diagnostic.\n", .{});
     try self.w("pub const ac_gens = @compileError(\"LRM 4.6.3: an ac_stim magnitude or " ++
         "phase must be a constant or parameter expression\");\n\n", .{});

@@ -50,6 +50,7 @@ comptime {
 /// The most bytes string Value `v` can hold. Memoized per Value; a Value met
 /// again while its own capacity is computed (a loop's phi) counts `row`.
 pub fn cap(g: *Gen, v0: Mir.Value) Error!u64 {
+    assert(g.an.vty.len == g.an.nv);
     if (g.held_caps == null) try planHeld(g);
     const v = g.an.rv(v0);
     if (g.str_caps.get(v)) |c| return c;
@@ -64,6 +65,7 @@ pub fn cap(g: *Gen, v0: Mir.Value) Error!u64 {
 /// widest rendering. A width written in the run-time format can still ask
 /// for more (E1011).
 pub fn rtFormatCap(g: *Gen, args: []const Mir.Value) Error!u64 {
+    assert(args.len != 0);
     var n: u64 = if (args.len > 0) try cap(g, args[0]) else 0;
     for (args[@min(1, args.len)..]) |a| n +|= switch (g.an.tyOf(g.an.rv(a))) {
         .str => try cap(g, a),
@@ -77,6 +79,8 @@ pub fn rtFormatCap(g: *Gen, args: []const Mir.Value) Error!u64 {
 /// The `Instance` type of held string `i`: `ZStrHeld` for the `row`, else
 /// `ZStrHeldN(cap)`.
 pub fn emitHeldType(g: *Gen, i: usize) Error!void {
+    assert(i < g.lowered.held_vars.items.len);
+    assert(g.lowered.held_vars.items[i].ty == .string);
     const c = try heldCap(g, i);
     if (c == row) return g.w("ZStrHeld", .{});
     return g.w("ZStrHeldN({d})", .{c});
@@ -85,6 +89,8 @@ pub fn emitHeldType(g: *Gen, i: usize) Error!void {
 /// The call that copies text into held string `i`'s type: `zStrHeld(` or
 /// `zStrHeldN(cap, `; the caller writes the text and the `)`.
 pub fn emitHeldCopy(g: *Gen, i: usize) Error!void {
+    assert(i < g.lowered.held_vars.items.len);
+    assert(g.lowered.held_vars.items[i].ty == .string);
     const c = try heldCap(g, i);
     if (c == row) return g.w("zStrHeld(", .{});
     return g.w("zStrHeldN({d}, ", .{c});
@@ -118,6 +124,7 @@ fn compute(g: *Gen, v: Mir.Value) Error!u64 {
 }
 
 fn callCap(g: *Gen, c: Mir.Callee, args: []const Mir.Value) Error!u64 {
+    assert(args.len <= std.math.maxInt(u32));
     switch (c) {
         .@"$sformat" => {
             var fmt: std.ArrayList(u8) = .empty;
@@ -153,6 +160,7 @@ fn callCap(g: *Gen, c: Mir.Callee, args: []const Mir.Value) Error!u64 {
 /// grows by itself every step does not settle, and keeps the capacity the
 /// last round gave (E1011 when it outgrows it).
 fn heldCap(g: *Gen, i: usize) Error!u64 {
+    assert(i < g.lowered.held_vars.items.len);
     if (g.held_caps == null) try planHeld(g);
     const caps = g.held_caps.?;
     assert(caps.len == g.lowered.held_vars.items.len);
@@ -162,6 +170,7 @@ fn heldCap(g: *Gen, i: usize) Error!u64 {
 }
 
 fn planHeld(g: *Gen) Error!void {
+    assert(g.held_caps == null);
     const held = g.lowered.held_vars.items;
     const caps = try g.arena.alloc(u64, held.len);
     for (held, caps) |h, *c| c.* = @max(row, initLen(g, h.init));

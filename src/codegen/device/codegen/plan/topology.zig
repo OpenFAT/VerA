@@ -41,6 +41,7 @@ pub const Topology = struct {
     /// The `FreeFlow` for the pair `(hi, lo)`, if that branch has one. The
     /// pair is ordered: `(lo, hi)` is another branch. O(free flows).
     pub fn freeFlowOf(self: Topology, hi: u32, lo: u32) ?FreeFlow {
+        assert(hi != lo or hi == Lower.ground);
         for (self.free_flows) |f| if (f.hi == hi and f.lo == lo) return f;
         return null;
     }
@@ -48,6 +49,7 @@ pub const Topology = struct {
     /// Whether the branch whose flow unknown is `u` is one `collapse`
     /// aliases away. O(pairs).
     pub fn collapsible(self: Topology, u: u32) bool {
+        assert(u != none_u32);
         for (self.cpairs) |p| if (p.flow_u == u) return true;
         return false;
     }
@@ -111,6 +113,7 @@ const max_visits = 1 << 16;
 /// Asserts that `branch_u` has one entry per contribution.
 pub fn plan(in: Input, branch_u: []const u32) Error!Topology {
     assert(branch_u.len == in.lowered.contributions.items.len);
+    assert(branch_u.len == in.lowered.contributions.items.len);
     return .{
         .free_flows = try freeFlows(in, branch_u),
         .cpairs = try collapsePairs(in, branch_u),
@@ -119,6 +122,7 @@ pub fn plan(in: Input, branch_u: []const u32) Error!Topology {
 
 /// Returns what is statically known about `c`'s §5.6.1.3 retention.
 pub fn retention(self: Input, c: Lower.Contribution) Retention {
+    assert(self.an.vty.len == self.an.nv);
     const v = self.an.rv(c.wrote_val);
     return switch (self.mir.valueDef(v)) {
         .float_const => |x| if (x != 0.0) Retention.on else Retention.off,
@@ -134,6 +138,7 @@ pub fn retention(self: Input, c: Lower.Contribution) Retention {
 /// are tens, same order as `plan/names.zig`'s branch-current scan.
 /// Asserts that `pi` indexes a contribution.
 pub fn switchFlowOf(self: Input, pi: usize) ?usize {
+    assert(pi < self.lowered.contributions.items.len);
     assert(pi < self.lowered.contributions.items.len);
     const p = self.lowered.contributions.items[pi];
     for (self.lowered.contributions.items, 0..) |c, j| {
@@ -151,6 +156,7 @@ pub fn switchFlowOf(self: Input, pi: usize) ?usize {
 /// unknown (row `I_b − value`, stamps ±I_b), and stamping it here as well
 /// would inject the current twice. Asserts that `j` indexes a contribution.
 pub fn flowIsMerged(self: Input, j: usize) bool {
+    assert(j < self.lowered.contributions.items.len);
     assert(j < self.lowered.contributions.items.len);
     const f = self.lowered.contributions.items[j];
     if (f.kind != .direct or f.access != .flow) return false;
@@ -176,6 +182,7 @@ pub fn flowIsMerged(self: Input, j: usize) bool {
 /// is `ib = 0`, which leaves the branch row `V(out) - e = 0` to fix the
 /// potential.
 pub fn flowOnlySignalFlowNet(self: Input, c: Lower.Contribution) ?u32 {
+    assert(c.access == .flow);
     if (c.access != .flow or c.kind != .direct) return null;
     for ([_]u32{ c.hi, c.lo }) |n| {
         if (n >= self.lowered.nodes.len) continue; // ground
@@ -196,6 +203,7 @@ pub fn flowOnlySignalFlowNet(self: Input, c: Lower.Contribution) ?u32 {
 
 /// Is unknown `i` a flow (a current) rather than a potential?
 pub fn isFlowUnknown(self: Input, i: u32) bool {
+    assert(i != none_u32);
     if (i >= self.lowered.nodes.len) return true; // codegen-added branch current
     // §5.4.2/§5.4.3 lowering records the kind where it creates the slot; the
     // name cannot decide it, since §2.8.1 lets a net be declared `\flow(p,n)`.
@@ -221,6 +229,7 @@ pub fn isFlowUnknown(self: Input, i: u32) bool {
 /// its iteration order is not the emitted order). Asserts that `branch_u`
 /// has one entry per contribution.
 fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
+    assert(branch_u.len == self.lowered.contributions.items.len);
     assert(branch_u.len == self.lowered.contributions.items.len);
     var out: std.ArrayList(FreeFlow) = .empty;
     var it = self.lowered.flow_unknowns.iterator();
@@ -270,6 +279,7 @@ fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
 /// values, which recursion refuses. Loop-carried phis are refused
 /// outright.
 fn buildFree(self: Input, v0: Mir.Value, depth: u32) bool {
+    assert(self.an.vty.len == self.an.nv);
     var budget: u32 = max_visits;
     return constFree(self, v0, depth, true, &budget);
 }
@@ -278,6 +288,7 @@ fn buildFree(self: Input, v0: Mir.Value, depth: u32) bool {
 /// §6.3.6 `$mfactor`. What is left is a function of the model card, which
 /// `derive` (it has no Instance) can compute.
 fn cardOnly(self: Input, v0: Mir.Value) bool {
+    assert(self.an.vty.len == self.an.nv);
     var budget: u32 = max_visits;
     return constFree(self, v0, 0, false, &budget);
 }
@@ -372,6 +383,7 @@ fn zeroOnEveryPath(self: Input, v0: Mir.Value, depth: u32) bool {
 /// read of an unknown is its `block_param` value, so this is a scan of the
 /// value table, run once per collapse candidate (a model has few).
 fn unknownProbed(self: Input, u: u32) bool {
+    assert(u != none_u32);
     for (Mir.Value.first_dynamic..self.an.nv) |i| {
         const def = self.mir.valueDef(@fromBackingInt(@intCast(i)));
         if (def == .block_param and def.block_param == u) return true;
@@ -388,6 +400,7 @@ fn unknownProbed(self: Input, u: u32) bool {
 /// branch row, and catastrophic cancellation when its LU eliminates the short.
 /// Asserts that `branch_u` has one entry per contribution.
 fn collapsePairs(self: Input, branch_u: []const u32) Error![]CollapsePair {
+    assert(branch_u.len == self.lowered.contributions.items.len);
     assert(branch_u.len == self.lowered.contributions.items.len);
     var out: std.ArrayList(CollapsePair) = .empty;
     const np: u32 = @intCast(self.lowered.num_ports);
