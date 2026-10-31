@@ -20,6 +20,7 @@
 //! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
 //! §9.22 driver access.
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const exec = @import("exec.zig");
@@ -140,40 +141,46 @@ pub const SysFn = enum {
     /// count and a case label depend on this. A clock query, a file or queue
     /// operation, a draw from a distribution and a driver query never are.
     pub fn constant(self: SysFn) bool {
-        return switch (self) {
+        const yes = switch (self) {
             .time, .stime, .realtime, .abstime, .test_plusargs, .value_plusargs, .q_full, .fopen, .fgetc, .ungetc, .fgets, .fscanf, .fread, .ftell, .fseek, .rewind, .feof, .ferror, .sscanf => false,
             .random, .dist_uniform, .dist_normal, .dist_exponential, .dist_poisson, .dist_chi_square, .dist_t, .dist_erlang => false,
             .driver_count, .receiver_count, .driver_state, .driver_strength, .driver_delay, .driver_next_state, .driver_next_strength, .driver_type => false,
             .user => false,
             else => true, // else: a pure function of its arguments
         };
+        if (yes) assert(!self.effects());
+        return yes;
     }
 
     /// How many real arguments a Table 17-17 function takes, or null for a
     /// function that is not one of them.
     pub fn mathArity(self: SysFn) ?u32 {
-        return switch (self) {
+        const n: ?u32 = switch (self) {
             .pow, .atan2, .hypot => 2,
             .ln, .ln1p, .log10, .exp, .expm1, .sqrt, .floor, .ceil, .sin, .cos, .tan, .asin, .acos, .atan, .sinh, .cosh, .tanh, .asinh, .acosh, .atanh => 1,
             else => null, // else: not a math function
         };
+        if (n) |k| assert(k == 1 or k == 2);
+        return n;
     }
 
     /// Does a call change state besides giving its value: an argument it
     /// writes back, `$random`'s seed, a file's position or table?
     pub fn effects(self: SysFn) bool {
-        return switch (self) {
+        const yes = switch (self) {
             .q_full, .sscanf, .fopen, .fgetc, .ungetc, .fgets, .fscanf, .fread, .ferror, .fseek, .rewind => true,
             .random, .dist_uniform, .dist_normal, .dist_exponential, .dist_poisson, .dist_chi_square, .dist_t, .dist_erlang => true,
             // §20.7: its application may write any argument.
             .user => true,
             else => false, // else: a function of its arguments, the clock or the design alone
         };
+        if (yes) assert(self.mathArity() == null);
+        return yes;
     }
 
     /// The §17.9 distribution a call draws from, or null for any other.
     pub fn dist(self: SysFn) ?system.Dist {
-        return switch (self) {
+        const d: ?system.Dist = switch (self) {
             .random => .random,
             .dist_uniform => .uniform,
             .dist_normal => .normal,
@@ -184,8 +191,19 @@ pub const SysFn = enum {
             .dist_erlang => .erlang,
             else => null, // else: not a §17.9 function
         };
+        if (d != null) assert(self.mathArity() == null);
+        return d;
     }
 };
+
+// Table relations every call site relies on, checked once over every function.
+comptime {
+    @setEvalBranchQuota(200_000);
+    for (std.enums.values(SysFn)) |f| if (f.dist() != null) assert(!f.constant()); // A draw is never folded.
+    for (std.enums.values(SysFn)) |f| if (f.mathArity() != null) assert(f.constant()); // Table 17-17 is pure.
+    for (std.enums.values(SysFn)) |f| if (f.effects()) assert(!f.constant()); // State changes are never folded.
+    for (std.enums.values(SysFn)) |f| if (f.dist() != null) assert(f.effects()); // A draw advances its seed.
+}
 
 // ponytail: each row is one `SysFn` and its two evaluators (interpreter,
 // `src/codegen/digital/emit_expr.zig`) away from running.

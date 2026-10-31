@@ -187,6 +187,9 @@ pub const Routines = struct {
 /// entered by `.call`: every function, and every task with no timing control
 /// (§10.2.1 allows one in a task; §10.4.4 forbids it in a function).
 pub fn compileSubs(self: *Run) Error!void {
+    assert(!self.routines.in_function);
+    const rows = self.routines.rows.items.len;
+    defer assert(self.routines.rows.items.len == rows); // Compiling declares no routine.
     // A §10.4.5 constant function call during elaboration compiled its
     // callee already; a second body would register its named blocks twice.
     for (0..self.routines.rows.items.len) |i| if (!self.routines.rows.items[i].compiled) try compileSub(self, @intCast(i));
@@ -195,6 +198,8 @@ pub fn compileSubs(self: *Run) Error!void {
 /// Subroutine `idx`'s body at a pc range of its own, unless it is a timed
 /// task, which is inlined where it is enabled.
 pub fn compileSub(self: *Run, idx: u32) Error!void {
+    assert(idx < self.routines.rows.items.len);
+    assert(!self.routines.rows.items[idx].compiled);
     if (try timed(self, idx)) {
         // §10.2.3 holds whether or not the task is ever enabled.
         const sub = self.routines.rows.items[idx];
@@ -209,6 +214,7 @@ pub fn compileSub(self: *Run, idx: u32) Error!void {
     sub.compiled = true;
     try compileStmt(self, sub.decl.body, 0);
     _ = try append(self, .stop);
+    assert(self.routines.rows.items[idx].entry < self.program.code.items.len);
 }
 
 /// The task or function `name` names from `scope`: §12.4's generate blocks
@@ -225,6 +231,7 @@ pub fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
         if (self.hier.prim_names.contains(.{ .scope = s, .str = name })) return null;
         // A root is its own parent (`elaborate`'s other top-level modules).
         if (self.hier.scopes.items[s].parent == s) return null;
+        assert(self.hier.scopes.items[s].parent < self.hier.scopes.items.len);
     }
 }
 
@@ -246,6 +253,7 @@ pub fn checkArgs(self: *Run, decl: *const Ast.Subroutine, args: []const Ast.Expr
         }
         if (p.direction != .output) try checkExpr(self, a);
     }
+    assert(args.len == decl.ports.len);
 }
 
 /// The task an enable of `name` in `scope` names. IEEE 1364-2005 A.6.9
@@ -298,6 +306,8 @@ pub fn enabledTask(self: *Run, scope: u32, name: Ast.StrId, tok: u32, comptime r
 /// The scope of element `v` of instance array or loop generate `name`
 /// directly under `parent`, or null.
 pub fn element(self: *const Run, parent: u32, name: Ast.StrId, v: i64) ?u32 {
+    assert(parent < self.hier.scopes.items.len);
+    assert(name != .none);
     for (self.hier.scopes.items, 0..) |info, at| {
         if (at != parent and info.parent == parent and info.name == name and info.index == v) return @intCast(at);
     }
@@ -344,6 +354,7 @@ pub fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok:
         _ = try append(self, .{ .copy_out = .{ .target = a, .slot = slot } });
     };
     try self.routines.rows.items[idx].ranges.append(self.arena, .{ .start = start, .end = position(self) });
+    assert(start <= position(self));
 }
 
 // ---- private ----
@@ -356,8 +367,10 @@ fn outOfLine(self: *Run, idx: u32, depth: u32) Error!void {
     // activations; and `repeat` counters and intra-assignment cells are per
     // site, so a body that suspends inside one of them across its own
     // recursion shares it.
+    assert(idx < self.routines.rows.items.len);
     if (self.routines.rows.items[idx].body != null) return;
     const decl = self.routines.rows.items[idx].decl;
+    assert(!decl.is_function); // Only a task is called out of line.
     const f = if (decl.automatic) try elab.frame(self, decl, self.routines.rows.items[idx].inst) else self.routines.rows.items[idx].frame;
     const skip = try append(self, .{ .jump = 0 });
     self.routines.rows.items[idx].body = .{ .entry = position(self), .frame = f };
@@ -367,22 +380,27 @@ fn outOfLine(self: *Run, idx: u32, depth: u32) Error!void {
     _ = try append(self, .{ .task_return = idx });
     self.scope = caller;
     self.program.code.items[skip].jump = position(self);
+    assert(self.program.code.items[skip].jump > self.routines.rows.items[idx].body.?.entry);
 }
 
 /// Does task `idx` contain a timing control, directly or through a task it
 /// enables? Such a task can suspend, so it is inlined where it is enabled.
 /// A recursive enable is taken as untimed while it is being asked about.
 fn timed(self: *Run, idx: u32) Error!bool {
+    assert(idx < self.routines.rows.items.len);
     const sub = &self.routines.rows.items[idx];
     if (sub.timed) |t| return t;
     sub.timed = false;
     const t = !sub.decl.is_function and try stmtTimed(self, sub.inst, sub.decl.body);
     self.routines.rows.items[idx].timed = t;
+    if (t) assert(!self.routines.rows.items[idx].decl.is_function); // §10.4.4: a function holds no timing control.
     return t;
 }
 
 fn stmtTimed(self: *Run, inst: u32, id: Ast.StmtId) Error!bool {
+    assert(inst < self.hier.scopes.items.len);
     if (id == .none) return false;
+    assert(self.routines.rows.items.len > 0); // Asked of a task body only.
     return switch (self.file.stmt(id)) {
         .event_control => true,
         .assign => |s| intraTimed(s),

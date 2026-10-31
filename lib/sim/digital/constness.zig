@@ -50,6 +50,7 @@ const sys_fns = system_functions.sys_fns;
 /// elaboration still folds (`Run.growing`)? Evaluates nothing.
 pub fn constantExpression(self: *Run, e: Ast.ExprId) bool {
     assert(e != .none);
+    assert(self.scope < self.hier.scopes.items.len);
     return isConstantExpression(self, e, false);
 }
 
@@ -57,6 +58,7 @@ pub fn constantExpression(self: *Run, e: Ast.ExprId) bool {
 /// §10.4.5 constant function calls still retain their elaborated frames.
 pub fn attributeConstantExpression(self: *Run, e: Ast.ExprId) bool {
     assert(e != .none);
+    assert(self.scope < self.hier.scopes.items.len);
     return isConstantExpression(self, e, true);
 }
 
@@ -71,11 +73,15 @@ pub fn checkAttributes(self: *Run, attrs: []const Ast.NatureAttr, scope: u32) Er
     self.scope = scope;
     for (attrs) |a| if (a.value != .none and !attributeConstantExpression(self, a.value))
         return self.exprFail(a.value, "§3.8: an attribute value must be a constant expression");
+    assert(self.scope == scope);
 }
 
 /// IEEE 1364-2005 §10.4.5: is function `idx` a constant function?
 pub fn constantFunction(self: *Run, idx: u32) Error!bool {
-    return try notConstant(self, idx) == null;
+    assert(idx < self.routines.rows.items.len);
+    const yes = try notConstant(self, idx) == null;
+    assert(self.routines.rows.items[idx].constant != null); // Memoized.
+    return yes;
 }
 
 /// Why function `idx` is no §10.4.5 constant function, or null when it is
@@ -88,6 +94,7 @@ pub fn constantFunction(self: *Run, idx: u32) Error!bool {
 pub fn notConstant(self: *Run, idx: u32) Error!?[]const u8 {
     // ponytail: a system task is refused, not ignored as §10.4.5 says, and a
     // named block's own locals are not the function's.
+    assert(idx < self.routines.rows.items.len);
     const sub = &self.routines.rows.items[idx];
     if (sub.constant) |c| return if (c) null else "it is not a constant function";
     if (!sub.decl.is_function) return "it is a task";
@@ -130,6 +137,7 @@ pub fn notConstant(self: *Run, idx: u32) Error!?[]const u8 {
     var v: V = .{ .r = self, .sub = sub };
     try v.stmt(sub.decl.body);
     sub.constant = v.why == null;
+    assert(sub.decl.is_function);
     return v.why;
 }
 
