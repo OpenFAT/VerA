@@ -88,7 +88,7 @@ pub fn constantFunction(self: *Run, idx: u32) Error!bool {
 pub fn notConstant(self: *Run, idx: u32) Error!?[]const u8 {
     // ponytail: a system task is refused, not ignored as §10.4.5 says, and a
     // named block's own locals are not the function's.
-    const sub = &self.subs.items[idx];
+    const sub = &self.routines.rows.items[idx];
     if (sub.constant) |c| return if (c) null else "it is not a constant function";
     if (!sub.decl.is_function) return "it is a task";
     sub.constant = true;
@@ -107,7 +107,7 @@ pub fn notConstant(self: *Run, idx: u32) Error!?[]const u8 {
                     "it reads a name that is neither its own nor a parameter",
                 .hier_ident => "it contains a hierarchical reference",
                 .call => if (subIn(v.r, v.sub.inst, ex.strOf(x))) |callee| blk: {
-                    if (!v.r.subs.items[callee].framed) try elab.earlyFrame(v.r, callee, ex.mainTok(x));
+                    if (!v.r.routines.rows.items[callee].framed) try elab.earlyFrame(v.r, callee, ex.mainTok(x));
                     break :blk if (try notConstant(v.r, callee) == null) null else "it calls a function that is not a constant function";
                 } else "it calls a function that is not a constant function",
                 .sys_call => if (sys_fns.get(v.r.file.str(ex.strOf(x)))) |sf| if (sf.constant()) null else "it calls a system function no constant expression may" else "it calls a system function no constant expression may",
@@ -185,7 +185,7 @@ fn isConstantExpression(self: *Run, e: Ast.ExprId, attribute: bool) bool {
         .call => {
             if (self.growing == null and !attribute) return false;
             const idx = subIn(self, self.scope, ex.strOf(e)) orelse return false;
-            if (!self.subs.items[idx].framed or !(constantFunction(self, idx) catch false)) return false;
+            if (!self.routines.rows.items[idx].framed or !(constantFunction(self, idx) catch false)) return false;
         },
         // §17.7: a call that reads the clock is never constant, however
         // constant its (absent) arguments are. Without this `$time`

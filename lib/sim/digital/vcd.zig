@@ -438,7 +438,7 @@ pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
     // §18.2.3.4 a static task's or function's frame is a scope of its own.
     const subs = try a.alloc(?*const Ast.Subroutine, scopes.len);
     @memset(subs, null);
-    for (r.subs.items) |sub| if (sub.framed and !sub.decl.automatic) {
+    for (r.routines.rows.items) |sub| if (sub.framed and !sub.decl.automatic) {
         subs[sub.frame.scope] = sub.decl;
     };
     for (r.hier.scopes.items, scopes, subs, 0..) |info, *sc, sub, s| {

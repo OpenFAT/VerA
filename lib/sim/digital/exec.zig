@@ -345,7 +345,7 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
         const now = waiters.termBits(self.values[sel.slot], sel.first, sel.count);
         return waiters.watchExt(self, id, sel.slot, edge, .{ .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] });
     }
-    if (self.auto_terms.get(.{ .scope = self.scope, .e = watched })) |reads| {
+    if (self.routines.auto_terms.get(.{ .scope = self.scope, .e = watched })) |reads| {
         var scratch = std.heap.ArenaAllocator.init(self.arena);
         defer scratch.deinit();
         const width = compile.typeOf(self, watched).width;
@@ -641,7 +641,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             // the task": every inlined copy (the current one resumes after
             // itself), and every synchronous activation, which unwind.
             .disable_task => |idx| {
-                const sub = &self.subs.items[idx];
+                const sub = &self.routines.rows.items[idx];
                 var next = pc + 1;
                 var resumed = false;
                 for (sub.ranges.items) |rg| {

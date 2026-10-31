@@ -191,7 +191,7 @@ pub fn resolveSlot(self: *Run, e: Ast.ExprId) Error!u32 {
             const next = if (k == 0) self.upward(part) else self.hier.instances.get(.{ .scope = scope, .str = part });
             scope = next orelse return if (std.mem.findScalar(u8, self.file.str(part), '[') != null)
                 self.fail(self.file.exprs.mainTok(e), "§12.5: `{s}`: an instance select out of range, or of no array", .{self.file.str(part)})
-            else if (self.sub_by_name.get(.{ .scope = if (k == 0) self.instanceOf(self.scope) else scope, .str = part })) |idx| if (self.subs.items[idx].decl.automatic)
+            else if (self.routines.by_name.get(.{ .scope = if (k == 0) self.instanceOf(self.scope) else scope, .str = part })) |idx| if (self.routines.rows.items[idx].decl.automatic)
                 self.fail(self.file.exprs.mainTok(e), "§10.2.1: `{s}` is automatic: its items cannot be accessed by hierarchical references", .{self.file.str(part)})
             else
                 self.exprFail(e, "undeclared instance in a hierarchical reference") else self.exprFail(e, "undeclared instance in a hierarchical reference");

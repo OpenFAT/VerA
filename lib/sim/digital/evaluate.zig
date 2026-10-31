@@ -446,7 +446,7 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
             return normalize(a, value, ty);
         },
         .call => {
-            const idx = self.sub_base.get(self.instanceOf(self.scope)).? + self.call_subs.get(e).?;
+            const idx = self.routines.base.get(self.instanceOf(self.scope)).? + self.routines.calls.get(e).?;
             return normalize(a, try @import("activations.zig").callSync(self, a, idx, ex.args(e)), ty);
         },
         .multi_concat => {

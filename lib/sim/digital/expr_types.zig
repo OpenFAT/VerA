@@ -389,12 +389,12 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
             // subroutines (`Run.sub_base`).
             // ponytail: a function of another instance is refused; an
             // absolute index in `call_subs` is the upgrade.
-            if (self.instanceOf(self.subs.items[idx].inst) != inst) return self.exprFail(e, "§12.5: a hierarchical call of a function in another module instance is not implemented by digital execution");
-            if (!self.subs.items[idx].decl.is_function) return self.exprFail(e, "§10.2: a task is enabled as a statement, not called in an expression");
-            if (!self.subs.items[idx].framed) try elab.earlyFrame(self, idx, ex.mainTok(e));
-            const sub = self.subs.items[idx];
+            if (self.instanceOf(self.routines.rows.items[idx].inst) != inst) return self.exprFail(e, "§12.5: a hierarchical call of a function in another module instance is not implemented by digital execution");
+            if (!self.routines.rows.items[idx].decl.is_function) return self.exprFail(e, "§10.2: a task is enabled as a statement, not called in an expression");
+            if (!self.routines.rows.items[idx].framed) try elab.earlyFrame(self, idx, ex.mainTok(e));
+            const sub = self.routines.rows.items[idx];
             try checkArgs(self, sub.decl, ex.args(e), ex.mainTok(e));
-            try self.call_subs.put(self.arena, e, idx - self.sub_base.get(inst).?);
+            try self.routines.calls.put(self.arena, e, idx - self.routines.base.get(inst).?);
             if (self.reals.contains(sub.frame.result)) break :blk real_type;
             const result = self.values[sub.frame.result];
             break :blk .{ .width = result.width, .signed = result.signed };

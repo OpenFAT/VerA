@@ -109,7 +109,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             // so each runs to its end, and running them one after another,
             // in order, is one execution of the parallel block, joined
             // before the call returns. A queued arm would outlive the call.
-            if (b.parallel and !self.in_function) try compileFork(self, b.body, depth) else for (b.body) |s| try compileStmt(self, s, depth + 1);
+            if (b.parallel and !self.routines.in_function) try compileFork(self, b.body, depth) else for (b.body) |s| try compileStmt(self, s, depth + 1);
             self.scope = outer;
             if (b.name != .none) {
                 const entry = try self.blocks.getOrPut(self.arena, .{ .scope = self.scope, .str = b.name });
@@ -206,8 +206,8 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
         } else {
             // §10.4.4: "Functions shall not contain any time-controlled
             // statements" and "shall not have any nonblocking assignments".
-            if (self.in_function and s.nonblocking) return self.fail(tok, "§10.4.4: a function body cannot contain a nonblocking assignment", .{});
-            if (self.in_function and intraTimed(s)) return self.fail(tok, "§10.4.4: a function body cannot contain a time control", .{});
+            if (self.routines.in_function and s.nonblocking) return self.fail(tok, "§10.4.4: a function body cannot contain a nonblocking assignment", .{});
+            if (self.routines.in_function and intraTimed(s)) return self.fail(tok, "§10.4.4: a function body cannot contain a time control", .{});
             try checkTarget(self, s.target);
             if (s.nonblocking) try notAutomatic(self, s.target, "a nonblocking assignment");
             // Its event control is waited on after the activation may be gone.
@@ -261,7 +261,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
         // A.6.5 `event_trigger`: resolve the declaration here; array
         // indices choose one of its element slots when the trigger runs.
         .event_trigger => |s| {
-            if (self.in_function) return self.fail(tok, "§10.4.4: a function body cannot contain an event trigger", .{});
+            if (self.routines.in_function) return self.fail(tok, "§10.4.4: a function body cannot contain an event trigger", .{});
             const base = self.chainBase(s.target).base;
             if (self.file.exprs.tag(base) == .ident and self.lookup(self.scope, self.file.exprs.strOf(base)) == null)
                 return self.fail(tok, "undeclared named event", .{});
@@ -269,7 +269,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             _ = try append(self, .{ .trigger = if (self.file.exprs.tag(s.target) == .index) .{ .indexed = s.target } else .{ .slot = at } });
         },
         .event_control => |s| {
-            if (self.in_function) return self.fail(tok, "§10.4.4: a function body cannot contain a time control", .{});
+            if (self.routines.in_function) return self.fail(tok, "§10.4.4: a function body cannot contain a time control", .{});
             // A.6.5 `@*`. The terms come from the body, so the body has to
             // be type-checked before they can be read off it: emit the wait
             // with an empty list, compile the body, then patch the list in.

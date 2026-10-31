@@ -82,12 +82,12 @@ pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.Ex
     // with `repeat` across its own recursion shares one.
     // §10.4.5: a constant function call folded before pass two compiles the
     // bodies (a generate condition calling a function already framed).
-    if (!self.subs.items[idx].compiled) {
+    if (!self.routines.rows.items[idx].compiled) {
         const saved = self.scope;
         defer self.scope = saved;
         try compile.compileSub(self, idx);
     }
-    const sub = &self.subs.items[idx];
+    const sub = &self.routines.rows.items[idx];
     const decl = sub.decl;
     const f = sub.frame;
     // An activation's frames are large: the bound is the stack itself.
@@ -148,7 +148,7 @@ pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.Ex
 pub fn makeResident(self: *Run, ctx: u32) Error!void {
     if (ctx == 0) return;
     const act = self.calls.acts.items[ctx];
-    const sub = &self.subs.items[act.sub];
+    const sub = &self.routines.rows.items[act.sub];
     if (!sub.decl.automatic or sub.resident == ctx) return;
     try evict(self, act.sub);
     loadFrame(self, sub.body.?.frame, act.storage);
@@ -161,7 +161,7 @@ pub fn makeResident(self: *Run, ctx: u32) Error!void {
 /// enters their scope"), and the body runs in this process from `Sub.body`.
 /// Returns the pc to continue at.
 pub fn callTimed(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.ExprId, pc: u32) Error!u32 {
-    const sub = &self.subs.items[idx];
+    const sub = &self.routines.rows.items[idx];
     const f = sub.body.?.frame;
     const inputs = try a.alloc(?Int.Literal, args.len);
     for (sub.decl.ports, args, inputs, f.ports) |p, arg, *in, slot|
@@ -189,7 +189,7 @@ pub fn callTimed(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.E
 /// is still resident, the caller's activation (if any) becomes resident, and
 /// the outputs are copied to the caller's actuals in the caller's scope.
 pub fn returnTimed(self: *Run, a: std.mem.Allocator, idx: u32) Error!u32 {
-    const sub = &self.subs.items[idx];
+    const sub = &self.routines.rows.items[idx];
     const f = sub.body.?.frame;
     const done = self.calls.ctx;
     const act = self.calls.acts.items[done];
@@ -209,7 +209,7 @@ pub fn returnTimed(self: *Run, a: std.mem.Allocator, idx: u32) Error!u32 {
 
 /// Save the resident activation of automatic task `idx`, freeing its frame.
 fn evict(self: *Run, idx: u32) Error!void {
-    const sub = &self.subs.items[idx];
+    const sub = &self.routines.rows.items[idx];
     if (sub.resident == 0) return;
     const f = sub.body.?.frame;
     const act = &self.calls.acts.items[sub.resident];

@@ -324,7 +324,7 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
     const event_ctx = if (event) |e| eventContext(self, e.scope, self.calls.ctx) else 0;
     // §10.2.1: an automatic task's variables, too, are each activation's
     // own; a write in one activation is no change in another's.
-    const auto = event == null and self.auto_slots.contains(target);
+    const auto = event == null and self.routines.auto_slots.contains(target);
     const slot_ctx = if (auto) slotContext(self, target, self.calls.ctx) else 0;
     // Compacts as it goes: a matched term leaves with its suspension, and a
     // stale one (its suspension resumed through another slot, or was
@@ -535,7 +535,7 @@ fn eventContext(self: *const Run, declared: u32, from: u32) u32 {
     var ctx = from;
     while (ctx != 0) {
         const act = self.calls.acts.items[ctx];
-        const sub = self.subs.items[act.sub];
+        const sub = self.routines.rows.items[act.sub];
         if (sub.decl.automatic) {
             const frame_scope = sub.body.?.frame.scope;
             var scope = declared;
@@ -557,7 +557,7 @@ fn slotContext(self: *const Run, slot: u32, from: u32) u32 {
     var ctx = from;
     while (ctx != 0) {
         const act = self.calls.acts.items[ctx];
-        const sub = self.subs.items[act.sub];
+        const sub = self.routines.rows.items[act.sub];
         if (sub.decl.automatic) {
             const f = sub.body.?.frame;
             if (slot >= f.first and slot < f.first + f.count) return ctx;

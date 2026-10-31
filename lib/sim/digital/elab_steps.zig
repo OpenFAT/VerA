@@ -77,9 +77,9 @@ pub fn bindDisables(r: *Run, from: usize) Error!void {
             if (!r.hier.scopes.items[s].lexical) break;
             s = r.hier.scopes.items[s].parent;
         }
-        const idx = r.sub_by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
+        const idx = r.routines.by_name.get(.{ .scope = r.instanceOf(d.name.scope), .str = d.name.str }) orelse
             return r.fail(d.tok, "undeclared named block or task", .{});
-        if (r.subs.items[idx].decl.is_function) return r.fail(d.tok, "§10.3: `disable` cannot name a function, only a named block within one", .{});
+        if (r.routines.rows.items[idx].decl.is_function) return r.fail(d.tok, "§10.3: `disable` cannot name a function, only a named block within one", .{});
         r.code.items[d.at] = .{ .disable_task = idx };
     }
 }

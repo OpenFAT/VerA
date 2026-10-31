@@ -63,7 +63,7 @@ const OverTarget = struct { at: u32, bits: ?Bits };
 pub fn compileProcContinuous(self: *Run, target: Ast.ExprId, value: Ast.ExprId, kind: Ast.ProcContinuous, tok: u32) Error!void {
     assert(target != .none);
     assert(tok < self.starts.len);
-    if (self.in_function) return self.fail(tok, "§10.4.4: a function body cannot contain a procedural continuous assignment", .{});
+    if (self.routines.in_function) return self.fail(tok, "§10.4.4: a function body cannot contain a procedural continuous assignment", .{});
     const ex = &self.file.exprs;
     // §9.3 "a concatenation of variables" (and for `force`, of nets): one
     // override per operand, each keeping its own bits of the value.

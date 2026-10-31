@@ -39,6 +39,7 @@
 //! - `pub const parksOnly`
 //! - `pub const eventReference`
 //! - `pub const selectTerm`
+//! - `pub const Routines = struct`
 //! - `pub fn compileSubs(self: *Run) Error!void`
 //! - `pub fn compileSub(self: *Run, idx: u32) Error!void`
 //! - `pub fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32`
@@ -46,16 +47,10 @@
 //! - `pub fn enabledTask(self: *Run, scope: u32, name: Ast.StrId, tok: u32, comptime report: bool) Error!?u32`
 //! - `pub fn element(self: *const Run, parent: u32, name: Ast.StrId, v: i64) ?u32`
 //! - `pub fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok: u32, depth: u32) Error!void`
-//! AST -> bytecode: one process body or driver expression, in its instance
-//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
-//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
-//! before any process has run.
-//! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
-//! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to
-//! §9.7.7, §9.8.2, §10.2.2/§10.2.3, §10.4.4/§10.4.5, §12.7, §17.1 to §17.11,
-//! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
-//! §9.22 driver access.
+
 const std = @import("std");
+const Name = @import("root.zig").Name;
+const Sub = @import("root.zig").Sub;
 const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
@@ -159,13 +154,42 @@ pub const eventReference = wait_lists.eventReference;
 /// `wait_lists.selectTerm`.
 pub const selectTerm = wait_lists.selectTerm;
 
+/// A design's §10 tasks and functions: one row per compiled subroutine, how
+/// a name and a call site find it, and which storage and scopes are
+/// automatic (§10.2.3).
+pub const Routines = struct {
+    /// IEEE 1364-2005 §10 the tasks and functions of every instance.
+    rows: std.ArrayList(Sub) = .empty,
+    /// A subroutine by its name in the instance that declares it.
+    by_name: std.AutoHashMapUnmanaged(Name, u32) = .empty,
+    /// Per instance scope, the index of its first `subs` row: a call site is
+    /// typed once per module, so it records a module-relative index
+    /// (`call_subs`) and each instance adds its own base.
+    base: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    calls: std.AutoHashMapUnmanaged(Ast.ExprId, u32) = .empty,
+    /// Compiling a function body, which §10.4.4 restricts.
+    in_function: bool = false,
+    /// §9.7.2 an expression term that reads a timed automatic task's
+    /// variables, by scope, and the slots it reads: a hidden slot would be
+    /// shared by every activation (§10.2.1), so each waiter instead tests
+    /// the expression in its own activation (`waiters.TermExt.expr`).
+    auto_terms: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, []const u32) = .empty,
+    /// The storage of automatic tasks and functions, which §10.2.3 keeps
+    /// out of constructs that might outlive an activation.
+    auto_slots: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// The scopes whose variables are automatic: an automatic task's or
+    /// function's frame, and the named blocks inside it (§10.2.1: "all
+    /// items declared inside automatic tasks" are allocated per call).
+    auto_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
+};
+
 /// Compiles every subroutine that runs synchronously into a body of its own,
 /// entered by `.call`: every function, and every task with no timing control
 /// (§10.2.1 allows one in a task; §10.4.4 forbids it in a function).
 pub fn compileSubs(self: *Run) Error!void {
     // A §10.4.5 constant function call during elaboration compiled its
     // callee already; a second body would register its named blocks twice.
-    for (0..self.subs.items.len) |i| if (!self.subs.items[i].compiled) try compileSub(self, @intCast(i));
+    for (0..self.routines.rows.items.len) |i| if (!self.routines.rows.items[i].compiled) try compileSub(self, @intCast(i));
 }
 
 /// Subroutine `idx`'s body at a pc range of its own, unless it is a timed
@@ -173,14 +197,14 @@ pub fn compileSubs(self: *Run) Error!void {
 pub fn compileSub(self: *Run, idx: u32) Error!void {
     if (try timed(self, idx)) {
         // §10.2.3 holds whether or not the task is ever enabled.
-        const sub = self.subs.items[idx];
+        const sub = self.routines.rows.items[idx];
         if (sub.decl.automatic) try deferredReads(self, sub.frame.scope, sub.decl.body);
         return;
     }
-    const sub = &self.subs.items[idx];
+    const sub = &self.routines.rows.items[idx];
     self.scope = sub.frame.scope;
-    self.in_function = sub.decl.is_function;
-    defer self.in_function = false;
+    self.routines.in_function = sub.decl.is_function;
+    defer self.routines.in_function = false;
     sub.entry = position(self);
     sub.compiled = true;
     try compileStmt(self, sub.decl.body, 0);
@@ -197,7 +221,7 @@ pub fn subIn(self: *const Run, scope: u32, name: Ast.StrId) ?u32 {
     assert(scope < self.hier.scopes.items.len);
     var s = scope;
     while (true) : (s = self.hier.scopes.items[s].parent) {
-        if (self.sub_by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
+        if (self.routines.by_name.get(.{ .scope = s, .str = name })) |idx| return idx;
         if (self.hier.prim_names.contains(.{ .scope = s, .str = name })) return null;
         // A root is its own parent (`elaborate`'s other top-level modules).
         if (self.hier.scopes.items[s].parent == s) return null;
@@ -267,7 +291,7 @@ pub fn enabledTask(self: *Run, scope: u32, name: Ast.StrId, tok: u32, comptime r
             return if (report) self.fail(tok, "undeclared instance `{s}` in a hierarchical task name", .{part}) else null;
     }
     const leaf = self.file.strings.find(text[dot + 1 ..]);
-    return (if (leaf) |l| self.sub_by_name.get(.{ .scope = inst, .str = l }) else null) orelse
+    return (if (leaf) |l| self.routines.by_name.get(.{ .scope = inst, .str = l }) else null) orelse
         if (report) self.fail(tok, "undeclared task `{s}`", .{text}) else null;
 }
 
@@ -288,9 +312,9 @@ pub fn element(self: *const Run, parent: u32, name: Ast.StrId, v: i64) ?u32 {
 /// its process is suspended inside it.
 pub fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok: u32, depth: u32) Error!void {
     assert(tok < self.starts.len);
-    if (self.in_function) return self.fail(tok, "§10.4.4: a function cannot enable a task", .{});
+    if (self.routines.in_function) return self.fail(tok, "§10.4.4: a function cannot enable a task", .{});
     const idx = (try enabledTask(self, self.scope, name, tok, true)).?;
-    const decl = self.subs.items[idx].decl;
+    const decl = self.routines.rows.items[idx].decl;
     if (decl.is_function) return self.fail(tok, "§10.4: a function is called in an expression, not enabled", .{});
     try checkArgs(self, decl, args, tok);
     if (!try timed(self, idx)) {
@@ -300,14 +324,14 @@ pub fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok:
     // A timed task reaching itself would inline forever: that enable, and
     // every later one inside the body, is an activation of one out-of-line
     // copy instead, with a frame per activation (§10.2.3).
-    if (self.subs.items[idx].inlining) {
+    if (self.routines.rows.items[idx].inlining) {
         try outOfLine(self, idx, depth);
         _ = try append(self, .{ .call_timed = .{ .sub = idx, .args = args } });
         return;
     }
-    self.subs.items[idx].inlining = true;
-    defer self.subs.items[idx].inlining = false;
-    const f = if (decl.automatic) try elab.frame(self, decl, self.subs.items[idx].inst) else self.subs.items[idx].frame;
+    self.routines.rows.items[idx].inlining = true;
+    defer self.routines.rows.items[idx].inlining = false;
+    const f = if (decl.automatic) try elab.frame(self, decl, self.routines.rows.items[idx].inst) else self.routines.rows.items[idx].frame;
     const start = position(self);
     for (decl.ports, args, f.ports) |p, a, slot| if (p.direction != .output) {
         _ = try append(self, .{ .init_var = .{ .slot = slot, .value = a } });
@@ -319,7 +343,7 @@ pub fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok:
     for (decl.ports, args, f.ports) |p, a, slot| if (p.direction != .input) {
         _ = try append(self, .{ .copy_out = .{ .target = a, .slot = slot } });
     };
-    try self.subs.items[idx].ranges.append(self.arena, .{ .start = start, .end = position(self) });
+    try self.routines.rows.items[idx].ranges.append(self.arena, .{ .start = start, .end = position(self) });
 }
 
 // ---- private ----
@@ -332,11 +356,11 @@ fn outOfLine(self: *Run, idx: u32, depth: u32) Error!void {
     // activations; and `repeat` counters and intra-assignment cells are per
     // site, so a body that suspends inside one of them across its own
     // recursion shares it.
-    if (self.subs.items[idx].body != null) return;
-    const decl = self.subs.items[idx].decl;
-    const f = if (decl.automatic) try elab.frame(self, decl, self.subs.items[idx].inst) else self.subs.items[idx].frame;
+    if (self.routines.rows.items[idx].body != null) return;
+    const decl = self.routines.rows.items[idx].decl;
+    const f = if (decl.automatic) try elab.frame(self, decl, self.routines.rows.items[idx].inst) else self.routines.rows.items[idx].frame;
     const skip = try append(self, .{ .jump = 0 });
-    self.subs.items[idx].body = .{ .entry = position(self), .frame = f };
+    self.routines.rows.items[idx].body = .{ .entry = position(self), .frame = f };
     const caller = self.scope;
     self.scope = f.scope;
     try compileStmt(self, decl.body, depth + 1);
@@ -349,11 +373,11 @@ fn outOfLine(self: *Run, idx: u32, depth: u32) Error!void {
 /// enables? Such a task can suspend, so it is inlined where it is enabled.
 /// A recursive enable is taken as untimed while it is being asked about.
 fn timed(self: *Run, idx: u32) Error!bool {
-    const sub = &self.subs.items[idx];
+    const sub = &self.routines.rows.items[idx];
     if (sub.timed) |t| return t;
     sub.timed = false;
     const t = !sub.decl.is_function and try stmtTimed(self, sub.inst, sub.decl.body);
-    self.subs.items[idx].timed = t;
+    self.routines.rows.items[idx].timed = t;
     return t;
 }
 

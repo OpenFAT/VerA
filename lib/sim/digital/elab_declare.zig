@@ -139,15 +139,15 @@ pub fn declareHead(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, over
     for (m.defparams) |d| try bindDefparam(r, scope, d, m.instances);
     // §10: the instance's tasks and functions, named before its parameters
     // so a §10.4.5 constant function call in one can find its function.
-    try r.sub_base.put(arena, scope, @intCast(r.subs.items.len));
+    try r.routines.base.put(arena, scope, @intCast(r.routines.rows.items.len));
     for (m.tasks) |*t| {
         // A mixed module's real-valued function is the analog side's to call
         // (VAMS §4.7); this engine holds no real, so it declares none.
         if (r.analog.mixed and usesReal(t)) continue;
-        const entry = try r.sub_by_name.getOrPut(arena, .{ .scope = scope, .str = t.name });
+        const entry = try r.routines.by_name.getOrPut(arena, .{ .scope = scope, .str = t.name });
         if (entry.found_existing) return r.fail(t.main_tok, "duplicate task or function", .{});
-        entry.value_ptr.* = @intCast(r.subs.items.len);
-        try r.subs.append(arena, .{ .decl = t, .inst = scope, .frame = undefined });
+        entry.value_ptr.* = @intCast(r.routines.rows.items.len);
+        try r.routines.rows.append(arena, .{ .decl = t, .inst = scope, .frame = undefined });
     }
     try declareParams(r, scope, m.params, over);
 }
@@ -191,7 +191,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
     // storage a static subroutine shares between activations (§10.2.3).
     // Framed after the parameters its widths may read, unless a §10.4.5
     // constant function call framed it first (`earlyFrame`).
-    for (r.subs.items[r.sub_base.get(scope).?..]) |*sub| {
+    for (r.routines.rows.items[r.routines.base.get(scope).?..]) |*sub| {
         if (!sub.framed) {
             sub.frame = try frame(r, sub.decl, scope);
             sub.framed = true;
@@ -378,7 +378,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
     }
     // §10.4.2: "It is illegal to declare another object with the same name
     // as the function in the scope where the function is declared."
-    for (r.subs.items[r.sub_base.get(scope).?..]) |sub| if (r.hier.names.contains(.{ .scope = scope, .str = sub.decl.name }))
+    for (r.routines.rows.items[r.routines.base.get(scope).?..]) |sub| if (r.hier.names.contains(.{ .scope = scope, .str = sub.decl.name }))
         return r.fail(sub.decl.main_tok, "§10.4.2: duplicate declaration of `{s}`, a task or function name in this scope", .{r.file.str(sub.decl.name)});
     try implicitNets(r, e, scope, m);
     // §3.8: every attribute value is a constant expression, judged once the
@@ -459,12 +459,12 @@ pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
     r.scope = at;
     try declareParams(r, at, b.params, &.{});
     try declareEvents(r, b.events);
-    const automatic = r.auto_scopes.contains(scope);
-    if (automatic) try r.auto_scopes.put(r.arena, at, {});
+    const automatic = r.routines.auto_scopes.contains(scope);
+    if (automatic) try r.routines.auto_scopes.put(r.arena, at, {});
     for (b.vars) |v| {
         if (v.init != .none) return r.fail(v.main_tok, "an initialized block-local variable is not implemented", .{});
         const slot = try mintVar(r, v);
-        if (automatic) try r.auto_slots.put(r.arena, slot, {});
+        if (automatic) try r.routines.auto_slots.put(r.arena, slot, {});
     }
     return at;
 }

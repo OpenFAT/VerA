@@ -187,8 +187,8 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
         _ = try mintVar(r, v);
     }
     if (t.automatic) {
-        try r.auto_scopes.put(r.arena, scope, {});
-        for (first..g.items.len) |at| try r.auto_slots.put(r.arena, @intCast(at), {});
+        try r.routines.auto_scopes.put(r.arena, scope, {});
+        for (first..g.items.len) |at| try r.routines.auto_slots.put(r.arena, @intCast(at), {});
     }
     return .{ .scope = scope, .ports = ports, .result = result, .first = first, .count = @as(u32, @intCast(g.items.len)) - first };
 }
@@ -199,7 +199,7 @@ pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
 /// elaboration.
 pub fn earlyFrame(r: *Run, idx: u32, tok: u32) Error!void {
     assert(tok < r.starts.len);
-    const sub = &r.subs.items[idx];
+    const sub = &r.routines.rows.items[idx];
     sub.frame = try frame(r, sub.decl, sub.inst);
     sub.framed = true;
     if (try compile.notConstant(r, idx)) |why|

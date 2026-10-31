@@ -174,14 +174,14 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
             try declareParams(r, scope, b.params, &.{});
             // A.1.4: its tasks and functions too, named and framed in its
             // scope (`sub_by_name` keyed by the generate scope).
-            const sub_first = r.subs.items.len;
+            const sub_first = r.routines.rows.items.len;
             for (b.gen.tasks) |*t| {
-                const entry = try r.sub_by_name.getOrPut(r.arena, .{ .scope = scope, .str = t.name });
+                const entry = try r.routines.by_name.getOrPut(r.arena, .{ .scope = scope, .str = t.name });
                 if (entry.found_existing) return r.fail(t.main_tok, "duplicate task or function", .{});
-                entry.value_ptr.* = @intCast(r.subs.items.len);
-                try r.subs.append(r.arena, .{ .decl = t, .inst = scope, .frame = undefined });
+                entry.value_ptr.* = @intCast(r.routines.rows.items.len);
+                try r.routines.rows.append(r.arena, .{ .decl = t, .inst = scope, .frame = undefined });
             }
-            for (r.subs.items[sub_first..]) |*sub| {
+            for (r.routines.rows.items[sub_first..]) |*sub| {
                 sub.frame = try frame(r, sub.decl, scope);
                 sub.framed = true;
                 if (!sub.decl.automatic) try r.hier.instances.put(r.arena, .{ .scope = scope, .str = sub.decl.name }, sub.frame.scope);

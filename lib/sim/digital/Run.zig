@@ -152,35 +152,12 @@ starts: []const u32,
 bag: *diag.Bag,
 out: *std.Io.Writer,
 scope: u32 = 0,
-/// IEEE 1364-2005 §10 the tasks and functions of every instance.
-subs: std.ArrayList(Sub) = .empty,
-/// A subroutine by its name in the instance that declares it.
-sub_by_name: std.AutoHashMapUnmanaged(Name, u32) = .empty,
-/// Per instance scope, the index of its first `subs` row: a call site is
-/// typed once per module, so it records a module-relative index
-/// (`call_subs`) and each instance adds its own base.
-sub_base: std.AutoHashMapUnmanaged(u32, u32) = .empty,
-call_subs: std.AutoHashMapUnmanaged(Ast.ExprId, u32) = .empty,
-/// Compiling a function body, which §10.4.4 restricts.
-in_function: bool = false,
 /// §9.7.2 each event term that is an expression, by the scope it is
 /// compiled in: the hidden slot `compile.exprTerm` keeps equal to it.
 term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) = .empty,
 /// The always constructs `processes` starts first at time 0
 /// (`levelControlled`), in source order, by the pc each starts at.
 early: std.ArrayList(u32) = .empty,
-/// §9.7.2 an expression term that reads a timed automatic task's
-/// variables, by scope, and the slots it reads: a hidden slot would be
-/// shared by every activation (§10.2.1), so each waiter instead tests
-/// the expression in its own activation (`waiters.TermExt.expr`).
-auto_terms: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, []const u32) = .empty,
-/// The storage of automatic tasks and functions, which §10.2.3 keeps
-/// out of constructs that might outlive an activation.
-auto_slots: std.AutoHashMapUnmanaged(u32, void) = .empty,
-/// The scopes whose variables are automatic: an automatic task's or
-/// function's frame, and the named blocks inside it (§10.2.1: "all
-/// items declared inside automatic tasks" are allocated per call).
-auto_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty,
 /// The instruction a system task is running from, so `%m` can name the
 /// §5.3.2 named blocks around it.
 pc: u32 = 0,
@@ -314,6 +291,8 @@ tasks: system.TaskState = .{},
 time: declared.Times = .{},
 /// The elaborated hierarchy and every name bound in it (`name_search.Hierarchy`).
 hier: name_search.Hierarchy = .{},
+/// §10 the tasks and functions and what calls them (`compile.Routines`).
+routines: compile.Routines = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.

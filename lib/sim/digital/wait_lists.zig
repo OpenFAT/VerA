@@ -263,7 +263,7 @@ pub fn notAutomatic(self: *Run, e: Ast.ExprId, comptime what: []const u8) Error!
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
         .concat => for (ex.args(e)) |x| try notAutomatic(self, x, what),
-        .ident, .hier_ident, .index => if (self.auto_slots.contains(try self.slot(self.chainBase(e).base)))
+        .ident, .hier_ident, .index => if (self.routines.auto_slots.contains(try self.slot(self.chainBase(e).base)))
             return self.exprFail(e, "§10.2.3: " ++ what ++ " cannot name a variable of an automatic task or function"),
         else => {}, // else: an expression names no storage to outlive the activation, its operands are read now
     }
@@ -308,7 +308,7 @@ pub fn readsNoAutomatic(self: *Run, e: Ast.ExprId, comptime what: []const u8) Er
     const ex = &self.file.exprs;
     if (e == .none) return;
     if (ex.tag(e) == .ident) {
-        if (self.lookup(self.scope, ex.strOf(e))) |at| if (self.auto_slots.contains(at))
+        if (self.lookup(self.scope, ex.strOf(e))) |at| if (self.routines.auto_slots.contains(at))
             return self.exprFail(e, "§10.2.3: " ++ what ++ " cannot name a variable of an automatic task or function");
         return;
     }
@@ -347,7 +347,7 @@ pub fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
                 try exprTerm(self, x);
             }
             // An `auto_terms` expression is never real.
-            if (!self.auto_terms.contains(.{ .scope = self.scope, .e = x }) and self.reals.contains(try self.termSlot(x)))
+            if (!self.routines.auto_terms.contains(.{ .scope = self.scope, .e = x }) and self.reals.contains(try self.termSlot(x)))
                 return self.exprFail(e, "§4.8.1: posedge and negedge do not apply to a real variable");
         },
         .hier_ident => _ = try self.scalarSlot(e),
@@ -431,13 +431,13 @@ fn targetReads(self: *Run, target: Ast.ExprId, out: *std.ArrayList(u32)) Error!v
 fn exprTerm(self: *Run, e: Ast.ExprId) Error!void {
     assert(e != .none);
     try checkExpr(self, e);
-    if (self.auto_terms.contains(.{ .scope = self.scope, .e = e })) return;
+    if (self.routines.auto_terms.contains(.{ .scope = self.scope, .e = e })) return;
     const ty = typeOf(self, e);
     if (!ty.real and ty.width <= 64) {
         var reads: std.ArrayList(u32) = .empty;
         try sensitivity(self, e, &reads);
-        for (reads.items) |at| if (self.auto_slots.contains(at))
-            return self.auto_terms.put(self.arena, .{ .scope = self.scope, .e = e }, reads.items);
+        for (reads.items) |at| if (self.routines.auto_slots.contains(at))
+            return self.routines.auto_terms.put(self.arena, .{ .scope = self.scope, .e = e }, reads.items);
     }
     const entry = try self.term_slots.getOrPut(self.arena, .{ .scope = self.scope, .e = e });
     if (entry.found_existing) return;
