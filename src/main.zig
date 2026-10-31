@@ -240,6 +240,16 @@ test {
     _ = @import("cli/usage.zig");
 }
 
+test "an empty input path is refused as the read reports it: `vera \"\"`" {
+    // The read `drive` makes for `cli.paths[0]`, and the line it prints.
+    // Oracle: the OS's answer for an empty path before `readText` asserted.
+    try std.testing.expectError(error.FileNotFound, preprocessor.readText(std.testing.io, .cwd(), "", std.testing.allocator));
+    var buf: [64]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try vera.readFailed(&w, "", error.FileNotFound);
+    try std.testing.expectEqualStrings("error: cannot read ``: FileNotFound\n", w.buffered());
+}
+
 test simTree {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

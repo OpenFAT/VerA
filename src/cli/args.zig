@@ -887,6 +887,15 @@ test "parse: lint levels, and what may not be allowed or un-forbidden" {
     try fixtures.expectRefused(&.{"--no-such-flag"}, "error: unknown option `--no-such-flag`\n");
 }
 
+test "parse: an empty argument is an input as typed; there is no `--spice=` form" {
+    // `vera ""` reaches the read, which reports it (`main.zig`'s test).
+    var l: fixtures.Line = .init();
+    defer l.deinit();
+    try std.testing.expectEqual(@as(?u8, null), try l.read(&.{""}));
+    try std.testing.expectEqualStrings("", l.cli.paths.items[0]);
+    try fixtures.expectRefused(&.{ "--spice=", "m.va" }, "error: unknown option `--spice=`\n");
+}
+
 test "parse: every argument that is not a flag is an input, in order" {
     var l: fixtures.Line = .init();
     defer l.deinit();
