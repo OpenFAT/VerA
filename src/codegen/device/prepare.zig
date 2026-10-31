@@ -57,7 +57,7 @@ pub fn prepare(g: *Gen) Error!void {
     assert(g.files.len == 0);
     // The emitted Zig runs about 24 bytes per MIR instruction; one guess up
     // front saves a dozen doublings.
-    try g.out.ensureTotalCapacity(g.gpa, g.mir.insts.len * 24 + 4096);
+    try g.out.ensureTotalCapacity(g.gpa, @as(usize, g.mir.instCount()) * 24 + 4096);
     // Per-unit scratch, owned by plan/unit.zig.
     g.cur.plan = try UnitPlan.init(g.arena, g.mir, g.an, g.display);
     try arrayLanes(g);

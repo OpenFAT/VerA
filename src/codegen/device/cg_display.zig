@@ -210,7 +210,7 @@ pub fn emitSimCtl(g: *Gen, name: []const u8, args: []const Mir.Value, inst: Mir.
 /// block's value is the formatted string. §3.3 removes NUL bytes only after
 /// formatting, so field widths count the original bytes.
 pub fn emitStringFormat(g: *Gen, args: []const Mir.Value, site: usize) Error!void {
-    assert(site < g.mir.insts.len);
+    assert(site < g.mir.instCount());
     var fmt: std.ArrayList(u8) = .empty;
     var ops: Ops = .empty;
     try buildArgs(g, args, &fmt, &ops);
@@ -231,7 +231,7 @@ pub fn emitStringFormat(g: *Gen, args: []const Mir.Value, site: usize) Error!voi
 /// `str_kernels.zSFormatRt`, which walks the format at run time. `%m` prints
 /// what `translateFormat` prints for it.
 pub fn emitStringFormatRt(g: *Gen, args: []const Mir.Value, site: usize) Error!void {
-    assert(site < g.mir.insts.len);
+    assert(site < g.mir.instCount());
     try g.b("zStringStore(zSFormatRt(", .{});
     try emitRow(g, site, try strcap.rtFormatCap(g, args));
     try g.b(", ", .{});
@@ -291,7 +291,7 @@ pub fn endsLine(c: Mir.Callee) bool {
 /// expression; an overrun is E1011 (`zSOver`). Past `fmt_chunk` operands the
 /// text goes through one fixed writer, a print per chunk.
 pub fn emitBufPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg, site: usize) Error!void {
-    assert(site < g.mir.insts.len);
+    assert(site < g.mir.instCount());
     const cap = try siteCap(g, fmt, ops);
     if (ops.len <= fmt_chunk) {
         try g.b("std.mem.print(", .{});
@@ -317,7 +317,7 @@ pub fn emitBufPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg, s
 /// array, or call `site`'s static row for operand i (`zSRow` slot i + 1) when
 /// the field is wider than `Spec.max_stack`.
 pub fn emitScratch(g: *Gen, ops: []const cg_format.PrintArg, site: usize) Error!void {
-    assert(site < g.mir.insts.len);
+    assert(site < g.mir.instCount());
     for (ops, 0..) |p, i| {
         const n = p.scratch() orelse continue;
         if (p.onStack())
@@ -333,7 +333,7 @@ pub fn emitScratch(g: *Gen, ops: []const cg_format.PrintArg, site: usize) Error!
 /// `strcap.max_row` it is more than a device can address, which is E1011
 /// at compile time (memory, the one bound a row has).
 fn fits(g: *Gen, site: usize, cap: u64) Error!bool {
-    assert(site < g.mir.insts.len);
+    assert(site < g.mir.instCount());
     if (cap <= strcap.max_row) return true;
     if (g.diags) |bag| try bag.add(.codegen, .E1011, g.lowered.tokenSpan(g.mir.instTok(@fromBackingInt(@intCast(site)))), "the text here can need {d} bytes, more than a device can address", .{cap});
     g.poison("a string row is larger than a device can address");

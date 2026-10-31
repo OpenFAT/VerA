@@ -28,7 +28,7 @@ const analysis_names = std.StaticStringMap(void).initComptime(.{ .{"static"}, .{
 /// `emitCall` arm that reads such state must be listed here too.
 /// Asserts that `inst` is a call.
 pub fn readsHostState(self: *const Gen, inst: Mir.Inst) bool {
-    assert(@backingInt(inst) < self.mir.insts.len);
+    assert(@backingInt(inst) < self.mir.instCount());
     assert(self.mir.instOp(inst) == .call);
     const d = self.mir.instData(inst).call;
     return switch (d.callee) {

@@ -427,7 +427,7 @@ fn readSet(self: Input, queued: []const Job) ![]bool {
     const read = try self.arena.alloc(bool, self.an.nv);
     @memset(read, false);
     for (queued) |j| read[@backingInt(self.an.rv(j.target))] = true;
-    for (0..self.mir.insts.len) |ii| {
+    for (0..self.mir.instCount()) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         switch (self.mir.instData(inst)) {
             .unary => |d| read[@backingInt(self.an.rv(d.operand))] = true,

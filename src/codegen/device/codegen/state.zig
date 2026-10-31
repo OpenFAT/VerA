@@ -122,7 +122,7 @@ pub fn inPlaceArrays(self: *Gen) Error![]const bool {
     const n = self.lowered.mem_arrays.items.len;
     const flags = try self.arena.alloc(bool, n);
     for (flags, 0..) |*f, id| f.* = render_array.cow(self, @intCast(id));
-    for (0..self.mir.insts.len) |ii| {
+    for (0..self.mir.instCount()) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         if (self.mir.instOp(inst) != .anew) continue;
         const d = self.mir.instData(inst).anew;

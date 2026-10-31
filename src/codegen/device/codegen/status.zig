@@ -88,7 +88,7 @@ pub fn srcLine(self: *const Gen, tok: u32) struct { file: []const u8, line: u32 
     const bag = self.diags orelse return .{ .file = "", .line = 0 };
     if (tok >= self.lowered.tok_starts.len) return .{ .file = "", .line = 0 };
     const start = self.lowered.tok_starts[tok];
-    const at = bag.locate(.{ .start = start, .end = start }, null);
+    const at = bag.locate(.{ .start = start, .end = start }, .none);
     const off = bag.toSourceOffset(at.file, at.offset);
     const text = bag.sourceText(at.file);
     return .{

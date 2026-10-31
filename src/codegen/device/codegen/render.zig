@@ -186,7 +186,7 @@ pub fn materialized(self: *const Gen, v: Mir.Value) bool {
 /// Asserts that `inst` is a row of `mir`.
 /// Invalidates slices of `out.items` if additional memory is needed.
 pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
-    assert(@backingInt(inst) < self.mir.insts.len);
+    assert(@backingInt(inst) < self.mir.instCount());
     const row = self.mir.instRow(inst);
     const op = row.op;
     if (op == .call) return gen_call.emitCall(self, inst);
@@ -357,7 +357,7 @@ fn renderSelLazy(self: *Gen, first: Sel) Error!void {
     var nested: usize = 0;
     while (true) : (nested += 1) {
         // Each level is a distinct select row of the chain.
-        assert(nested < self.mir.insts.len);
+        assert(nested < self.mir.instCount());
         assert(s.want == want);
         try self.b("(if (", .{});
         try gen_cfg.renderCond(self, s.a);

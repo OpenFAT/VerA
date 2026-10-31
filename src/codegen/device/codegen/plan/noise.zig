@@ -200,7 +200,7 @@ pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
 
 /// Returns `v` as a compile-time f64, or null when only the core can answer.
 pub fn psdConst(mir: *const Mir, v: Mir.Value) ?f64 {
-    assert(mir.defs.len <= std.math.maxInt(u32));
+    assert(@backingInt(v) < mir.valueCount());
     return switch (mir.valueDef(v)) {
         .float_const => |x| x,
         .int_const => |x| @floatFromInt(x),

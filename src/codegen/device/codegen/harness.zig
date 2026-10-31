@@ -16,8 +16,9 @@ const Lowered = @import("ir").Lowered;
 const proof = @import("prove").proof;
 const diag = @import("diag");
 const Ast = @import("frontend").Ast;
-const Preprocessor = @import("frontend").Preprocessor;
-const Lexer = @import("frontend").Lexer;
+const preprocessor = @import("frontend").preprocessor;
+const lexer = @import("frontend").lexer;
+const annex_e = @import("frontend").annex_e;
 const Parser = @import("frontend").Parser;
 const Output = codegen.Output;
 const generate = codegen.generate;
@@ -50,16 +51,16 @@ pub const Harness = struct {
         const arena = out.arena_state.allocator();
         // One diagnostic bag threaded through every stage (diag.zig).
         out.bag = diag.Bag.init(arena);
-        const pp = try Preprocessor.process(arena, src, .{ .bag = &out.bag });
+        const pp = try preprocessor.process(arena, src, .{ .bag = &out.bag });
         const text = pp.text;
-        const toks = try Lexer.Lexer.tokenize(arena, text);
+        const toks = try lexer.tokenize(arena, text, null);
         var p = Parser.Parser.init(arena, text, toks.items(.tag), toks.items(.start), &out.bag);
         const parse = try arena.create(Ast.SourceFile);
         parse.* = try p.parseSourceFile();
-        // The annex E prelude came with `Preprocessor.process` (std_defs is on by
+        // The annex E prelude came with `preprocessor.process` (std_defs is on by
         // default), so its modules are the leading entries of `file.modules`.
         // Elaboration writes the overlay, never the parse.
-        out.file = parse.overlay(.{ .builtin_modules = Preprocessor.spice_module_count });
+        out.file = parse.overlay(.{ .builtin_modules = annex_e.spice_module_count });
         // `directives` as `root.compile` passes them: a §10.3
         // `default_transition` reaches §4.5.8 only through it.
         out.lowered = (try Lower.lower(arena, &out.mir, &out.file, text, toks.items(.start), &out.bag, .{
