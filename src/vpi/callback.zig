@@ -789,8 +789,8 @@ pub fn fireOverride(reason: c_int, o: *root.Obj) void {
 /// obj or on one of the variables or nets it overrides. A `disable` fires
 /// cbDisable on each callback whose named block it disabled.
 pub fn onDone(r: *digital.Run, pc: u32) digital.Error!void {
-    const site = r.done_sites.get(pc) orelse return;
-    const reason: c_int = switch (r.code.items[pc]) {
+    const site = r.host.done_sites.get(pc) orelse return;
+    const reason: c_int = switch (r.program.code.items[pc]) {
         .override_on => |o| if (o.force) cbForce else cbAssign,
         .override_off => |o| if (o.force) cbRelease else cbDeassign,
         .disable_block => |b| {
@@ -826,7 +826,7 @@ pub fn onDone(r: *digital.Run, pc: u32) digital.Error!void {
             const target = (root.asObj(cb.obj) orelse continue).slot.get() orelse continue;
             // The slots the statement's instructions override (a
             // concatenation overrides several).
-            const hit = for (r.code.items[site.pc .. pc + 1]) |ins| switch (ins) {
+            const hit = for (r.program.code.items[site.pc .. pc + 1]) |ins| switch (ins) {
                 .override_on => |o| if (o.slot == target) break true,
                 .override_off => |o| if (o.slot == target) break true,
                 else => {}, // else: only an override names a slot it overrides
@@ -861,7 +861,7 @@ fn stmtSites(obj: vpiHandle) ?[]const Site {
         root.fail("NOENGINE", "vpi_register_cb: no digital run executes statements", .{});
         return null;
     };
-    const engine_sites = r.stmt_sites orelse {
+    const engine_sites = r.host.stmt_sites orelse {
         root.fail("NOSITES", "vpi_register_cb: this run records no statement sites", .{});
         return null;
     };
@@ -901,7 +901,7 @@ fn oomSites() ?[]const Site {
 /// (`root.openDigital`), so `rehook` never allocates: `vpi_remove_cb` has
 /// no failure to report but a bad handle (§12.34).
 pub fn sizeHooks(r: *const digital.Run) error{OutOfMemory}!void {
-    try hooked.resize(gpa, r.code.items.len, false);
+    try hooked.resize(gpa, r.program.code.items.len, false);
 }
 
 /// Rebuilds `hooked` from the live cbStmt callbacks, and installs the hook
@@ -910,13 +910,13 @@ pub fn sizeHooks(r: *const digital.Run) error{OutOfMemory}!void {
 /// source again).
 fn rehook() void {
     const r = root.run.attached() orelse return;
-    std.debug.assert(hooked.bit_length == r.code.items.len);
+    std.debug.assert(hooked.bit_length == r.program.code.items.len);
     hooked.unsetAll();
     for (cbs.items) |cb| {
         if (cb.dead or cb.reason != cbStmt) continue;
         for (cb.sites) |st| hooked.set(st.pc);
     }
-    r.stmt_hook = if (hooked.findFirstSet() != null) .{ .at = &hooked, .fire = fireStmt } else null;
+    r.host.stmt_hook = if (hooked.findFirstSet() != null) .{ .at = &hooked, .fire = fireStmt } else null;
 }
 
 /// Every live cbStmt at `pc`, in registration order, each once per

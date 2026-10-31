@@ -201,7 +201,7 @@ fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, anal
         else => {},
     };
     vpi.callback.startOfSimulation();
-    for (analyses) |a| binding.runMixed(a, &dig, sim.time.secondsAt(1, dig.finest), mx.probe_names, mx.probe_nodes) catch |e| {
+    for (analyses) |a| binding.runMixed(a, &dig, sim.time.secondsAt(1, dig.time.finest), mx.probe_names, mx.probe_nodes) catch |e| {
         try vera.diag.render(&bag, stderrWriter(), .{});
         std.debug.print("vpi_host: the {t} analysis of `{s}` failed: {t}\n", .{ a.kind, path, e });
         return 1;

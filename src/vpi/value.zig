@@ -137,7 +137,7 @@ fn source(o: *const Obj) ?Source {
         const r = run.attached() orelse return null;
         const lit = r.values[at];
         // The engine holds a real as its IEEE 754 bits in the value plane.
-        if (r.reals.contains(at)) return .{ .real = @bitCast(lit.planes[0]) };
+        if (r.decls.reals.contains(at)) return .{ .real = @bitCast(lit.planes[0]) };
         return literalSource(lit);
     }
     if (o.value) |c| return switch (c) {
@@ -164,11 +164,11 @@ fn driven(o: *const Obj) ?Source {
     const r = run.attached() orelse return null;
     const scope = root.design.?.scopes[o.owner.get().?].engine;
     var found: ?usize = null;
-    for (r.drivers, 0..) |drv, k| if (drv.tok == o.src_tok and drv.scope == scope) {
+    for (r.netlist.drivers, 0..) |drv, k| if (drv.tok == o.src_tok and drv.scope == scope) {
         if (found != null) return null;
         found = k;
     };
-    const lit = r.drivers[found orelse return null].current;
+    const lit = r.netlist.drivers[found orelse return null].current;
     return literalSource(lit);
 }
 
@@ -290,7 +290,7 @@ fn strength(o: *const Obj, v: *Value) void {
     };
     const r = run.attached();
     const at = o.slot.get() orelse 0;
-    if (o.slot == .none or r == null or r.?.net_of.contains(at) or r.?.reals.contains(at)) {
+    if (o.slot == .none or r == null or r.?.netlist.slot_nets.contains(at) or r.?.decls.reals.contains(at)) {
         root.fail("BADFORMAT", "vpi_get_value: vpiStrengthVal is answered for a reg or integer variable only", .{});
         return;
     }
@@ -697,7 +697,7 @@ fn prune() void {
 fn cancel(r: *digital.Run, h: sim.scheduler.Handle) void {
     const row = r.scheduler.payloadOf(h) orelse return;
     _ = r.scheduler.cancel(h) catch return;
-    r.free_rows.append(r.arena, row) catch {};
+    r.rows.free.append(r.arena, row) catch {};
 }
 
 var put_buf: std.ArrayList(u64) = .empty;
@@ -847,7 +847,7 @@ pub export fn vpi_put_value(obj: vpiHandle, value_p: ?*Value, time_p: ?*const Ti
     // ponytail: a driver re-evaluated to the value it already had resolves
     // the net again too, ending the put early.
     const r = run.attached().?;
-    if ((mode == vpiInertialDelay or mode == vpiTransportDelay or mode == vpiPureTransportDelay) and r.net_of.contains(at)) {
+    if ((mode == vpiInertialDelay or mode == vpiTransportDelay or mode == vpiPureTransportDelay) and r.netlist.slot_nets.contains(at)) {
         root.fail("NETPUT", "vpi_put_value: `{s}` is a net, which takes a put with vpiNoDelay or vpiForceFlag only", .{o.full});
         return null;
     }
@@ -857,7 +857,7 @@ pub export fn vpi_put_value(obj: vpiHandle, value_p: ?*Value, time_p: ?*const Ti
     };
     // IEEE 1364-2005 §27.32: "It shall be illegal to specify the format of
     // the value as vpiStringVal when putting a value to a real variable".
-    if (v.format == vpiStringVal and r.reals.contains(at)) {
+    if (v.format == vpiStringVal and r.decls.reals.contains(at)) {
         root.fail("BADFORMAT", "vpi_put_value: vpiStringVal onto the real `{s}` is illegal", .{o.full});
         return null;
     }
@@ -869,7 +869,7 @@ pub export fn vpi_put_value(obj: vpiHandle, value_p: ?*Value, time_p: ?*const Ti
     };
     // A real holds IEEE 754 bits: a vpiRealVal as given, any other format as
     // the signed integer it wrote (IEEE 1364 §4.8.2 integer-to-real).
-    if (r.reals.contains(at)) {
+    if (r.decls.reals.contains(at)) {
         const f: f64 = if (v.format == vpiRealVal) v.value.real else @floatFromInt(@as(i64, @bitCast(put_buf.items[0])));
         @memset(put_buf.items, 0);
         put_buf.items[0] = @bitCast(f);
@@ -930,7 +930,7 @@ fn putUdp(o: *const Obj, value_p: ?*const Value, mode: c_int) vpiHandle {
     const r = run.attached() orelse return engineFail();
     const scope = root.design.?.scopes[o.owner.get().?].engine;
     var found: ?u32 = null;
-    for (r.drivers, 0..) |drv, k| if (drv.tok == o.src_tok and drv.scope == scope and drv.source == .udp) {
+    for (r.netlist.drivers, 0..) |drv, k| if (drv.tok == o.src_tok and drv.scope == scope and drv.source == .udp) {
         if (found != null) {
             root.fail("NOPUT", "vpi_put_value: `{s}` is an instance array; put onto one element", .{o.full});
             return null;
@@ -938,7 +938,7 @@ fn putUdp(o: *const Obj, value_p: ?*const Value, mode: c_int) vpiHandle {
         found = @intCast(k);
     };
     const at = found orelse return engineFail();
-    if (!r.drivers[at].source.udp.sequential) {
+    if (!r.netlist.drivers[at].source.udp.sequential) {
         root.fail("NOPUT", "vpi_put_value: `{s}` is a combinational UDP, and only a sequential UDP takes a put", .{o.full});
         return null;
     }
@@ -1081,12 +1081,12 @@ fn badPut(why: []const u8) error{BadValue} {
 /// on. Cheap to repeat.
 pub fn watch(o: *const Obj) void {
     const r = run.attached() orelse return;
-    r.vpi_change = onChange;
-    if (o.slot.get()) |at| r.watch[at].insert(.vpi);
+    r.host.change = onChange;
+    if (o.slot.get()) |at| r.waits.watch[at].insert(.vpi);
     // An array: every element (§12.31.1 "if the obj is a memory word or a
     // variable array, ... the index field shall contain the index").
     const d = &(root.design orelse return);
-    for (coldOf(o).members) |m| if (d.objects[m].slot.get()) |at| r.watch[at].insert(.vpi);
+    for (coldOf(o).members) |m| if (d.objects[m].slot.get()) |at| r.waits.watch[at].insert(.vpi);
 }
 
 fn onChange(_: *digital.Run, slot: u32) void {

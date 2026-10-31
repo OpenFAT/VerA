@@ -39,11 +39,11 @@ pub fn attach(r: *digital.Run) void {
     clock = r.scheduler.now;
     // §12.31.1 cbForce/cbRelease/cbAssign/cbDeassign/cbDisable on design
     // statements; a callback registered before elaboration counts too.
-    r.done_hook = callback.onDone;
+    r.host.done_hook = callback.onDone;
     // VAMS 12.31.4 cbTchkViolation on the engine's timing checks.
-    r.tchk_hook = callback.onTchk;
+    r.checks.hook = callback.onTchk;
     // VAMS 12.31.4 cbError on the run-time errors the run survives.
-    r.error_hook = callback.onRunError;
+    r.host.error_hook = callback.onRunError;
 }
 
 /// Unbinds the engine and invalidates every time-queue handle.
@@ -149,8 +149,8 @@ fn timeSteps(r: *digital.Run) digital.Error!void {
             passes = 0;
         }
         passes += 1;
-        if (passes > r.budget) {
-            const e = r.fail(0, "more than {d} callback passes at time {d}: a time callback that registers another at its own time keeps simulation time from advancing", .{ r.budget, t });
+        if (passes > r.event_budget.max) {
+            const e = r.fail(0, "more than {d} callback passes at time {d}: a time callback that registers another at its own time keeps simulation time from advancing", .{ r.event_budget.max, t });
             callback.runError(e);
             return e;
         }
@@ -221,7 +221,7 @@ fn earliest(a: ?u64, b: ?u64) ?u64 {
 /// scope; any other object in the scope that declares it.
 fn scale(obj: vpiHandle) ?sim.time.Scale {
     const r = engine orelse return null;
-    const o = root.asObj(obj) orelse return r.scale;
+    const o = root.asObj(obj) orelse return r.time.scale;
     // `timeOf` takes the ENGINE's scope id, which a lexical engine scope (a
     // generate iteration, a task frame) can set apart from the model's index.
     const sc = if (o.kind == .module) o.scope else o.owner.get() orelse 0;
@@ -861,7 +861,7 @@ test "§12.31.2: a read-write callback that registers itself at its own time for
     var h: Harness = undefined;
     try h.init(timeline);
     defer h.deinit();
-    h.run.budget = 1000;
+    h.run.event_budget.max = 1000;
     finish_seen = 0;
     var t: Time = .{ .type = callback.vpiSimTime, .high = 0, .low = 7, .real = 0 };
     const d: callback.CbData = .{ .reason = callback.cbReadWriteSynch, .cb_rtn = readWriteAgain, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };

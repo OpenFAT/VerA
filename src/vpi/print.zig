@@ -15,7 +15,7 @@ const digital = @import("sim").digital;
 const va = @import("va.zig");
 
 const Io = std.Io;
-const FileIo = @typeInfo(@FieldType(digital.Run, "file_io")).optional.child;
+const FileIo = @typeInfo(@FieldType(digital.system.TaskState, "file_io")).optional.child;
 
 fn io() Io {
     return Io.Threaded.global_single_threaded.io();
@@ -199,9 +199,9 @@ fn fdName(d: i64) ?[:0]const u8 {
 /// that use mcd descriptors and the VPI routines that use mcd descriptors."
 /// An fd stays in `r`'s table, its name kept for §27.24.
 pub fn share(r: *digital.Run) void {
-    if (r.file_io) |t| if (t.open == hdlOpen) return;
-    fds = r.file_io orelse digital.own_files;
-    r.file_io = .{ .open = hdlOpen, .close = hdlClose, .put = hdlPut, .getc = fdGetc, .ungetc = fdUngetc, .tell = fdTell, .seek = fdSeek, .eof = fdEof, .err = fdErr };
+    if (r.tasks.file_io) |t| if (t.open == hdlOpen) return;
+    fds = r.tasks.file_io orelse digital.own_files;
+    r.tasks.file_io = .{ .open = hdlOpen, .close = hdlClose, .put = hdlPut, .getc = fdGetc, .ungetc = fdUngetc, .tell = fdTell, .seek = fdSeek, .eof = fdEof, .err = fdErr };
 }
 
 fn hdlOpen(path: []const u8, ty: []const u8, mcd: bool) i64 {

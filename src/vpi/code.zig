@@ -469,8 +469,8 @@ pub const Builder = struct {
     /// declarations; only static variables expose those slots as values.
     fn subFrame(b: *Builder, t: *const Ast.Subroutine) ?sim.digital.Frame {
         const r = b.run orelse return null;
-        const i = r.sub_by_name.get(.{ .scope = b.engine, .str = t.name }) orelse return null;
-        const sub = r.subs.items[i];
+        const i = r.routines.by_name.get(.{ .scope = b.engine, .str = t.name }) orelse return null;
+        const sub = r.routines.rows.items[i];
         return if (sub.framed) sub.frame else null;
     }
 
@@ -550,7 +550,7 @@ pub const Builder = struct {
         var scalars: std.ArrayList(u32) = try .initCapacity(b.arena, declarations.len - n_arrays);
         var arrays: std.ArrayList(u32) = try .initCapacity(b.arena, n_arrays);
         for (declarations) |e| {
-            const slot = if (b.run) |r| r.names.get(.{ .scope = b.engine, .str = e.name }) else null;
+            const slot = if (b.run) |r| r.hier.names.get(.{ .scope = b.engine, .str = e.name }) else null;
             const scope: []const Edge = if (b.inner == none) &.{} else &.{.{ .tag = vpiScope, .to = b.inner }};
             const auto_prop: Prop = .{ .prop = root.vpiAutomatic, .value = @intFromBool(b.automatic) };
             const at = try b.code(if (e.dims.len == 0) vpiNamedEvent else vpiNamedEventArray, scope, &.{.{ .tag = vpiIndex, .items = &.{} }}, if (e.dims.len == 0) &.{ .{ .prop = root.vpiArray, .value = 0 }, auto_prop } else &.{auto_prop});
@@ -565,7 +565,7 @@ pub const Builder = struct {
             }
             arrays.appendAssumeCapacity(at);
             const base = slot orelse continue;
-            const arr = b.run.?.arrays.get(base).?;
+            const arr = b.run.?.decls.arrays.get(base).?;
             const ranges = try b.arena.alloc(u32, e.dims.len);
             ranges[0] = try model.addRange(b.arena, b.objects, b.scope, arr.left, arr.right);
             for (arr.rest, ranges[1..]) |sp, *range| range.* = try model.addRange(b.arena, b.objects, b.scope, if (sp.descending) sp.high else sp.low, if (sp.descending) sp.low else sp.high);
@@ -653,7 +653,7 @@ pub const Builder = struct {
                 });
             }
             for (t.vars) |v| {
-                const slot = if (frame) |fr| b.run.?.names.get(.{ .scope = fr.scope, .str = v.name }) else null;
+                const slot = if (frame) |fr| b.run.?.hier.names.get(.{ .scope = fr.scope, .str = v.name }) else null;
                 _ = try b.subVar(&vars, v, slot, t.automatic);
             }
             const body = try b.stmt(t.body);
@@ -1016,7 +1016,7 @@ pub const Builder = struct {
                     const local = try b.arena.dupe(u8, f.str(blk.name));
                     try b.setName(at, local);
                     saved = try b.enter(at, local, &inner);
-                    if (b.run) |r| b.engine = r.block_scopes.get(.{ .scope = b.engine, .stmt = id }) orelse b.engine;
+                    if (b.run) |r| b.engine = r.hier.block_scopes.get(.{ .scope = b.engine, .stmt = id }) orelse b.engine;
                 }
                 const events = try b.eventDecls(blk.events);
                 const items = try b.arena.alloc(u32, blk.body.len);

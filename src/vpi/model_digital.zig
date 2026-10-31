@@ -52,19 +52,19 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
     defer scratch.deinit();
     const gpa = scratch.allocator();
     const file = r.file;
-    const top_name = try arena.dupe(u8, file.str(r.scope_info.items[0].name));
+    const top_name = try arena.dupe(u8, file.str(r.hier.scopes.items[0].name));
 
     var n_scopes: usize = 0;
-    for (r.scope_info.items) |info| n_scopes += @intFromBool(!info.lexical);
+    for (r.hier.scopes.items) |info| n_scopes += @intFromBool(!info.lexical);
     var scopes: std.ArrayList(Building) = try .initCapacity(gpa, n_scopes);
     defer {
         for (scopes.items) |*s| s.deinit(gpa);
         scopes.deinit(gpa);
     }
     // The VPI scope of each engine instance scope; a lexical row has none.
-    const vpi_of = try gpa.alloc(u32, r.scope_info.items.len);
+    const vpi_of = try gpa.alloc(u32, r.hier.scopes.items.len);
     defer gpa.free(vpi_of);
-    for (r.scope_info.items, 0..) |info, e| {
+    for (r.hier.scopes.items, 0..) |info, e| {
         if (info.lexical) continue;
         // ponytail: the model has one top-level module; a second (§12.1.1)
         // is refused until `Design` names objects from more than one root.
@@ -76,21 +76,21 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
         if (e != 0) {
             path = try pathComponent(arena, file, info);
             var p = info.parent;
-            while (r.scope_info.items[p].lexical) : (p = r.scope_info.items[p].parent)
-                path = try joinPath(arena, try pathComponent(arena, file, r.scope_info.items[p]), path);
+            while (r.hier.scopes.items[p].lexical) : (p = r.hier.scopes.items[p].parent)
+                path = try joinPath(arena, try pathComponent(arena, file, r.hier.scopes.items[p]), path);
             parent = vpi_of[p];
             path = try joinPath(arena, scopes.items[vpi_of[p]].path, path);
         }
         const m = &file.modules[info.def];
-        const cfg = if (r.binds.get(@intCast(e))) |b| b.cfg else null;
+        const cfg = if (r.hier.binds.get(@intCast(e))) |b| b.cfg else null;
         const mt = r.timeOf(@intCast(e));
         scopes.appendAssumeCapacity(.{
             .time_unit = @intCast(mt.unit_exp),
             .time_precision = @intCast(mt.unit_exp - @as(i32, std.math.log10_int(@as(u64, mt.scale.local_per_unit)))),
             .decl = m,
             .def_name = try arena.dupe(u8, file.str(m.name)),
-            .library = try arena.dupe(u8, file.str(r.def_lib[info.def])),
-            .config = if (cfg) |c| try arena.print("{s}.{s}", .{ file.str(r.cfg_lib[c]), file.str(file.configs[c].name) }) else "",
+            .library = try arena.dupe(u8, file.str(r.hier.def_lib[info.def])),
+            .config = if (cfg) |c| try arena.print("{s}.{s}", .{ file.str(r.hier.cfg_lib[c]), file.str(file.configs[c].name) }) else "",
             .path = path,
             .parent = parent,
             .engine = @intCast(e),
@@ -114,7 +114,7 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
         const m = s.decl;
         for (m.ports, 0..) |p, k| {
             if (p.name == .none) continue; // IEEE 1364-2005 A.1.3 a null port names no net
-            const at = r.names.get(.{ .scope = eng, .str = p.name });
+            const at = r.hier.names.get(.{ .scope = eng, .str = p.name });
             try s.ports.append(gpa, @intCast(objects.hot.items.len));
             var o = try digitalObj(r, arena, top_name, s.path, scope, p.name, .port, at);
             o.direction = p.direction;
@@ -123,10 +123,10 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
             try objects.append(o);
         }
         for (m.nets) |n| {
-            const at = r.names.get(.{ .scope = eng, .str = n.name }) orelse continue;
+            const at = r.hier.names.get(.{ .scope = eng, .str = n.name }) orelse continue;
             // IEEE 1364-2005 §26.6.6: a net array, over the engine's element
             // slots, each element a net of the declared type.
-            if (r.arrays.get(at)) |a| {
+            if (r.decls.arrays.get(at)) |a| {
                 const local = try arena.dupe(u8, file.str(n.name));
                 const arr = try addArray(arena, &objects, .net_array, scope, local, try joinPath(arena, top_name, try joinPath(arena, s.path, local)), .unspecified, a.low, a.high, a.rest, r.values[at].width, at);
                 for (objects.coldOf(arr).members) |e| {
@@ -172,10 +172,10 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
         for (m.assigns) |a| terms.appendAssumeCapacity(a.target);
         for (terms.items) |x| if (x != .none and ex.tag(x) == .ident) try implicitNet(gpa, arena, r, &objects, s, &have, scope, top_name, ex.strOf(x));
         for (m.vars) |v| {
-            const at = r.names.get(.{ .scope = eng, .str = v.name }) orelse continue;
+            const at = r.hier.names.get(.{ .scope = eng, .str = v.name }) orelse continue;
             // §3.9 arrays: §11.6.11's classes, over the engine's own element
             // slots.
-            if (r.arrays.get(at)) |a| {
+            if (r.decls.arrays.get(at)) |a| {
                 const is_reg = v.storage == .reg;
                 const local = try arena.dupe(u8, file.str(v.name));
                 // §26.6.7: a `real` array is a vpiRealVar with vpiArray set,
@@ -206,8 +206,8 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
         // parameter after all module instantiation overrides and defparams
         // have been resolved" is that slot, read like any other value.
         for (m.params) |p| {
-            const at = r.names.get(.{ .scope = eng, .str = p.name }) orelse continue;
-            if (!r.params.contains(at)) continue;
+            const at = r.hier.names.get(.{ .scope = eng, .str = p.name }) orelse continue;
+            if (!r.decls.params.contains(at)) continue;
             try s.params.append(gpa, @intCast(objects.hot.items.len));
             var o = try digitalObj(r, arena, top_name, s.path, scope, p.name, .parameter, at);
             o.ty = p.ty;
@@ -238,7 +238,7 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
     }
     try freeze(&d, &objects, scopes.items);
     d.udp_defns = udp_defns;
-    d.finest = @intCast(r.finest);
+    d.finest = @intCast(r.time.finest);
     d.search_up = false;
     d.file = file;
     return d;
@@ -275,7 +275,7 @@ fn addConnections(b: *code.Builder, scopes: []Building, r: *const sim.digital.Ru
     var pos = s.children.items.len;
     while (pos > 0) {
         pos -= 1;
-        const g = try heads.getOrPut(b.gpa, r.scope_info.items[scopes[s.children.items[pos]].engine].name);
+        const g = try heads.getOrPut(b.gpa, r.hier.scopes.items[scopes[s.children.items[pos]].engine].name);
         next[pos] = if (g.found_existing) g.value_ptr.* else code.none;
         g.value_ptr.* = @intCast(pos);
     }
@@ -351,8 +351,8 @@ fn implicitNet(
     top_name: []const u8,
     name: Ast.StrId,
 ) Error!void {
-    const at = r.names.get(.{ .scope = s.engine, .str = name }) orelse return;
-    if (!r.net_of.contains(at)) return;
+    const at = r.hier.names.get(.{ .scope = s.engine, .str = name }) orelse return;
+    if (!r.netlist.slot_nets.contains(at)) return;
     if ((try have.getOrPut(gpa, at)).found_existing) return;
     try s.nets.append(gpa, @intCast(objects.hot.items.len));
     var o = try digitalObj(r, arena, top_name, s.path, scope, name, .net, at);
@@ -414,9 +414,9 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
         for (groups.values()) |*v| v.deinit(gpa);
         groups.deinit(gpa);
     }
-    for (r.scope_info.items, 0..) |info, e| {
+    for (r.hier.scopes.items, 0..) |info, e| {
         // An instance array element has an index too, but is no lexical row.
-        if (!info.lexical or info.index == null or r.scope_info.items[info.parent].lexical) continue;
+        if (!info.lexical or info.index == null or r.hier.scopes.items[info.parent].lexical) continue;
         const g = try groups.getOrPut(gpa, .{ .scope = vpi_of[info.parent], .name = info.name });
         if (!g.found_existing) g.value_ptr.* = .empty;
         try g.value_ptr.append(gpa, @intCast(e));
@@ -426,7 +426,7 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
         const name = try arena.dupe(u8, r.file.str(k.name));
         const members = try arena.alloc(u32, rows.items.len);
         for (rows.items, members) |e, *m| {
-            const i = r.scope_info.items[e].index.?;
+            const i = r.hier.scopes.items[e].index.?;
             const c: u32 = @intCast(objects.hot.items.len);
             try objects.append(.{ .kind = .constant, .owner = .of(k.scope), .name = "", .full = "", .size = 32, .value = .{ .int = i } });
             const local = try arena.print("{s}[{d}]", .{ name, i });
@@ -442,15 +442,15 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
                 .props = try arena.dupe(code.Prop, &.{
                     .{ .prop = vpiArray, .value = 1 },
                     .{ .prop = code.vpiProtected, .value = 0 },
-                    .{ .prop = code.vpiImplicitDecl, .value = @intFromBool(r.scope_info.items[e].implicit) },
+                    .{ .prop = code.vpiImplicitDecl, .value = @intFromBool(r.hier.scopes.items[e].implicit) },
                 }),
             });
-            const gen_nets = r.gen_nets.get(e) orelse &.{};
+            const gen_nets = r.decls.gen_nets.get(e) orelse &.{};
             // At most one per generated net.
             var nets: std.ArrayList(u32) = try .initCapacity(arena, gen_nets.len);
             for (gen_nets) |n| {
-                const slot = r.names.get(.{ .scope = e, .str = n.name }) orelse continue;
-                if (r.arrays.contains(slot)) continue;
+                const slot = r.hier.names.get(.{ .scope = e, .str = n.name }) orelse continue;
+                if (r.decls.arrays.contains(slot)) continue;
                 const net_name = try arena.dupe(u8, r.file.str(n.name));
                 nets.appendAssumeCapacity(@intCast(objects.hot.items.len));
                 try objects.appendCold(.{

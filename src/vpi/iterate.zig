@@ -427,7 +427,7 @@ fn addMentions(gpa: std.mem.Allocator, d: *const Design, by_obj: *std.ArrayList(
 fn activeOverride(d: *const Design, o: *const Obj) bool {
     if (coldOf(o).override_expr == .none) return false;
     const r = run.attached() orelse return false;
-    var it = r.overrides.valueIterator();
+    var it = r.assigns.layers.valueIterator();
     while (it.next()) |layers| {
         if (if (o.vtype == code.vpiForce) layers.force else layers.assign) |range|
             if (overrideRange(d, o, r, range)) return true;
@@ -440,8 +440,8 @@ fn activeOverride(d: *const Design, o: *const Obj) bool {
 fn overrideRange(d: *const Design, o: *const Obj, r: *const sim.digital.Run, range: sim.digital.PcRange) bool {
     // A VPI force has an empty range; it activates no HDL source statement.
     if (range.start == range.end) return false;
-    if (r.instanceOf(r.code_scope.items[range.start]) != d.scopes[o.owner.get().?].engine) return false;
-    return switch (r.code.items[range.start]) {
+    if (r.instanceOf(r.program.scope_of.items[range.start]) != d.scopes[o.owner.get().?].engine) return false;
+    return switch (r.program.code.items[range.start]) {
         .override_eval => |op| op.value == coldOf(o).override_expr and op.force == (o.vtype == code.vpiForce),
         else => false, // else: only an override_eval maintains a procedural continuous assignment
     };

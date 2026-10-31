@@ -258,7 +258,7 @@ pub export fn vpi_put_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
     // model's scope index.
     const scope = root.design.?.scopes[o.owner.get() orelse 0].engine;
     var hit = false;
-    for (r.drivers) |*drv| {
+    for (r.netlist.drivers) |*drv| {
         if (drv.tok != o.src_tok or drv.scope != scope) continue;
         drv.delay = .{ .rise = ticks[0], .fall = ticks[1], .off = ticks[2], .present = true };
         hit = true;

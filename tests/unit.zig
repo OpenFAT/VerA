@@ -19321,7 +19321,7 @@ pub const vpi_tests = struct {
         // The one driver the gate became: rise 3, fall 4, turn-off min(3, 4).
         const tok = (asObj(g) orelse return error.TestUnexpectedResult).src_tok;
         var hits: usize = 0;
-        for (h.run.drivers) |drv| {
+        for (h.run.netlist.drivers) |drv| {
             if (drv.tok != tok) continue;
             hits += 1;
             try std.testing.expect(drv.delay.present);

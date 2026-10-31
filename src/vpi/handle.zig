@@ -87,7 +87,7 @@ pub export fn vpi_handle(obj_type: c_int, ref: vpiHandle) vpiHandle {
     // there is no active call, even though its source object already exists.
     if (obj_type == vpiActiveTimeFormat and ref == null) {
         const r = run.attached() orelse return null;
-        const active = r.active_timeformat orelse return null;
+        const active = r.time.active_format orelse return null;
         for (d.objects) |*call| {
             if (call.vtype != code.vpiSysTaskCall or call.src_stmt == .none) continue;
             const owner = call.owner.get() orelse continue;
