@@ -15,6 +15,7 @@ const operator_ctrl = @import("operator_ctrl.zig");
 const cg_strcap = @import("../cg_strcap.zig");
 const gen_host = @import("host_expr.zig");
 const gen_dispatch = @import("dispatch.zig");
+const dispatch_q = @import("dispatch_q.zig");
 const gen_file = @import("file.zig");
 const gen_instance = @import("instance.zig");
 const gen_setup = @import("setup.zig");
@@ -360,7 +361,7 @@ fn emitAcceptQ(self: *Gen, acc: Accept) Error!void {
     // §5.6.1.2 the charges, one per site (`q`'s layout).
     self.cur.core_wanted = true;
     try self.b("    const qq = ", .{});
-    try gen_dispatch.writeSites(self);
+    try dispatch_q.writeSites(self);
     try self.b(";\n", .{});
     try emitAcceptBody(self, acc);
     try self.w("    return qq;\n}}\n\n", .{});

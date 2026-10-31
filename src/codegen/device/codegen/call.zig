@@ -19,6 +19,7 @@ const float_lanes = @import("float/lanes.zig");
 const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_dispatch = @import("dispatch.zig");
+const gen_stamps = @import("stamps.zig");
 const gen_mask = @import("mask.zig");
 const gen_file = @import("file.zig");
 const gen_render = @import("render.zig");
@@ -114,7 +115,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             const lane = if (u) |x| std.math.lossyCast(i64, x) else 0;
             // The value reads a lane, so record it in `ddx_reads`.
             // An index outside the unknowns marks every lane: a superset.
-            gen_mask.orIn(self.jac.ddx_reads, try gen_dispatch.bits(self, &.{if (lane >= 0 and lane < self.names.n_u) @intCast(lane) else none_u32}, &.{}));
+            gen_mask.orIn(self.jac.ddx_reads, try gen_stamps.bits(self, &.{if (lane >= 0 and lane < self.names.n_u) @intCast(lane) else none_u32}, &.{}));
             try self.b("S.con((", .{});
             try gen_render.renderVal(self, if (args.len > 0) args[0] else .f_zero, .real);
             try self.b(").ddxAt({d}))", .{lane});

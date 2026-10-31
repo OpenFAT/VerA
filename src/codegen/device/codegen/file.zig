@@ -16,6 +16,8 @@ const gen_call = @import("call.zig");
 const call_systf = @import("call_systf.zig");
 const gen_host = @import("host_expr.zig");
 const gen_dispatch = @import("dispatch.zig");
+const jac_tables = @import("jac_tables.zig");
+const switch_row = @import("switch_row.zig");
 const gen_noise = @import("noise.zig");
 const gen_opvars = @import("opvars.zig");
 const gen_state = @import("state.zig");
@@ -164,7 +166,7 @@ pub fn emitFile(self: *Gen) Error!void {
     try gen_state.emitCollapse(self, cpairs);
     try gen_state.emitNextBreakpoint(self);
     try gen_state.emitDelays(self);
-    try gen_dispatch.emitDerivReads(self, if (self.limits.calls.len != 0) (try cg_limit.liveSets(self)).writes else self.zero_mask);
+    try jac_tables.emitDerivReads(self, if (self.limits.calls.len != 0) (try cg_limit.liveSets(self)).writes else self.zero_mask);
     const k = try gen_family.constant(self);
     if (k.g or k.c) try self.w(
         \\/// ∂eval/∂x (`g`) and ∂q/∂x (`c`) do not depend on x: a host may build
@@ -688,7 +690,7 @@ fn emitModel(self: *Gen) Error!void {
     for (self.topo.cpairs, 0..) |p, k| {
         if (!p.card) continue;
         const d = if (self.an.foldConst(p.flag, true)) |f| try fmtF64(self, f) else kt.nan_lit;
-        try self.w("    {s}: f64 = {s}, // §5.6.5 retention flag — `derive` writes it\n", .{ try gen_dispatch.guardField(self, @intCast(k)), d });
+        try self.w("    {s}: f64 = {s}, // §5.6.5 retention flag — `derive` writes it\n", .{ try switch_row.guardField(self, @intCast(k)), d });
     }
     // §9.10 `$temperature`, kelvin: one number per Model row, so every value
     // `setup` derives from it is shared by the instances of that row. A host
@@ -974,9 +976,9 @@ fn deriveFlags(self: *Gen) Error!bool {
         if (!p.card) continue;
         const f = self.core.lo_idx[@backingInt(self.an.rv(p.flag))];
         if (self.an.vty[@backingInt(self.an.rv(p.flag))] == .int)
-            try self.w("    model.{s} = @floatFromInt(m.f{d});\n", .{ try gen_dispatch.guardField(self, @intCast(k)), f })
+            try self.w("    model.{s} = @floatFromInt(m.f{d});\n", .{ try switch_row.guardField(self, @intCast(k)), f })
         else
-            try self.w("    model.{s} = m.f{d}.val();\n", .{ try gen_dispatch.guardField(self, @intCast(k)), f });
+            try self.w("    model.{s} = m.f{d}.val();\n", .{ try switch_row.guardField(self, @intCast(k)), f });
     }
     return true;
 }
