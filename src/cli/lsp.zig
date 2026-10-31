@@ -97,6 +97,8 @@ const Server = struct {
         var aw: Io.Writer.Allocating = .init(arena);
         // An allocating writer fails only when its allocator does.
         std.json.Stringify.value(msg, .{ .emit_null_optional_fields = false }, &aw.writer) catch return error.OutOfMemory;
+        assert(aw.written().len != 0);
+        assert(aw.written()[0] == '{'); // Every LSP message is a JSON object.
         try s.out.print("Content-Length: {d}\r\n\r\n", .{aw.written().len});
         try s.out.writeAll(aw.written());
         try s.out.flush();
@@ -201,6 +203,7 @@ pub fn serve(gpa: Allocator, io: Io, cli: *args.Cli, in: *Io.Reader, out: *Io.Wr
 // ---- private ----
 
 fn dispatch(s: *Server, arena: Allocator, method: []const u8, id: ?std.json.Value, params: std.json.Value) !void {
+    assert(!std.mem.eql(u8, method, "exit")); // `serve` ends the session itself.
     const eql = std.mem.eql;
     if (eql(u8, method, "initialize")) {
         const p = try std.json.parseFromValueLeaky(struct {
@@ -278,6 +281,8 @@ fn dispatch(s: *Server, arena: Allocator, method: []const u8, id: ?std.json.Valu
 /// is made relative to `root`. A flag `vera` refuses is shown to the user,
 /// and the flags before it stay.
 fn readFlags(s: *Server, arena: Allocator, root: []const u8) !void {
+    assert(!s.initialized); // Read once: `cli` borrows the bytes.
+    assert(s.flags_text.len == 0);
     const path = try std.fs.path.join(arena, &.{ root, ".vera-flags" });
     s.flags_text = Preprocessor.readText(s.io, .cwd(), path, s.gpa) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -315,12 +320,14 @@ fn setText(s: *Server, arena: Allocator, uri: []const u8, text: []const u8) !voi
         gop.value_ptr.* = .{ .text = &.{} };
     }
     gop.value_ptr.text = owned;
+    assert(std.mem.eql(u8, gop.value_ptr.text, text));
     try lintAndPublish(s, arena, gop.key_ptr.*, gop.value_ptr);
 }
 
 // ponytail: a full lint per keystroke, no debounce or cancellation; add a
 // frontend-only pass on change when a large model makes typing lag.
 fn lintAndPublish(s: *Server, arena: Allocator, uri: []const u8, doc: *Doc) !void {
+    assert(s.docs.getPtr(uri) == doc);
     var bag: diag.Bag = .init(s.gpa);
     defer bag.deinit(s.gpa);
     const path = try uriToPath(arena, uri);
@@ -359,9 +366,11 @@ fn lintAndPublish(s: *Server, arena: Allocator, uri: []const u8, doc: *Doc) !voi
         try publish(s, arena, e.key_ptr.*, e.value_ptr.items);
         if (!std.mem.eql(u8, e.key_ptr.*, uri)) try doc.extra.append(s.gpa, try s.gpa.dupe(u8, e.key_ptr.*));
     }
+    assert(doc.extra.items.len + 1 == by_uri.count()); // Every URI but the document's own.
 }
 
 fn publish(s: *Server, arena: Allocator, uri: []const u8, ds: []const Diagnostic) !void {
+    for (ds) |d| assert(d.severity >= 1 and d.severity <= 3);
     try s.send(arena, .{
         .jsonrpc = "2.0",
         .method = "textDocument/publishDiagnostics",

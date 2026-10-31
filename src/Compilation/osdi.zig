@@ -35,6 +35,7 @@ pub fn check(bag: *diag.Bag, lowered: *const Lowered) error{OutOfMemory}!void {
 // ponytail: O(n²) in the noise rows, a handful per model; a sorted id
 // column if a model ever carries thousands.
 fn sharesGenerator(cs: []const Lowered.Contribution) bool {
+    if (cs.len < 2) return false; // One row cannot share with another.
     for (cs, 0..) |c, i| for (c.noise_srcs) |s| {
         if (s.kind == .ac_stim) continue;
         for (cs[i + 1 ..]) |d| for (d.noise_srcs) |t| {

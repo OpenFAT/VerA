@@ -17,10 +17,10 @@ const Preprocessor = @import("frontend").Preprocessor;
 /// What reading a source file can fail with (`Preprocessor.readText`).
 pub const ReadError = @typeInfo(@typeInfo(@TypeOf(Preprocessor.readText)).@"fn".return_type.?).error_union.error_set;
 
-/// Writes the line for `path` failing with `e` on `w`.
-/// Asserts that `path` is not empty: every path flag refuses an empty value.
+/// Writes the line for `path` failing with `e` on `w`. `path` is the user's
+/// text, so it may be anything, the empty string included.
 pub fn readFailed(w: *Io.Writer, path: []const u8, e: ReadError) Io.Writer.Error!void {
-    assert(path.len != 0);
+    comptime assert(Preprocessor.max_text_bytes > 0);
     if (e == error.StreamTooLong)
         try w.print("error[E1013]: `{s}` is larger than {d} bytes; see `vera --explain E1013`\n", .{ path, Preprocessor.max_text_bytes })
     else

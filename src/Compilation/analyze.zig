@@ -68,7 +68,9 @@ const Parsed = struct {
 /// run, errors and warnings, even when this fails: a clean result may still
 /// carry warnings (W0650). The caller frees it with `bag.deinit(gpa)`.
 /// Asserts that `bag` holds nothing on entry (fresh from `Bag.init`): it is
-/// overwritten, not appended to.
+/// overwritten, not appended to. Asserts that `source` is at most
+/// `Preprocessor.max_text_bytes`, the bound `Preprocessor.readText` enforces
+/// at the file boundary.
 pub fn analyze(gpa: Allocator, source: []const u8, settings: Settings, bag: ?*diag.Bag) Error!Result {
     if (bag) |b| assert(b.isEmpty());
     assert(source.len <= Preprocessor.max_text_bytes);

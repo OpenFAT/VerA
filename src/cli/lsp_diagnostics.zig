@@ -103,6 +103,7 @@ const Lines = struct {
         const start = @min(l.bag.toSourceOffset(a.file, a.offset), text.len);
         // An end in another file (a span across an `include or out of a
         // macro) is cut to the start.
+        assert(start <= text.len);
         const end = if (b.file == a.file) @max(start, @min(l.bag.toSourceOffset(b.file, b.offset), text.len)) else start;
         const range: Range = .{
             .start = position(text, gop.value_ptr.*, @intCast(start), l.utf16),
@@ -124,7 +125,6 @@ const Lines = struct {
 /// is not on disk (the annex D prelude) lands on `uri`'s first character,
 /// its own place named in the message. Sorts the bag.
 pub fn diagnostics(arena: Allocator, bag: *diag.Bag, uri: []const u8, utf16: bool) Error!ByUri {
-    assert(uri.len != 0);
     bag.sort();
     var by_uri: ByUri = .empty;
     try by_uri.put(arena, uri, .empty);
@@ -176,6 +176,7 @@ pub fn diagnostics(arena: Allocator, bag: *diag.Bag, uri: []const u8, utf16: boo
             .data = .{ .fixes = fixes.items },
         });
     }
+    assert(std.mem.eql(u8, by_uri.keys()[0], uri));
     if (bag.suppressed != 0) try by_uri.getPtr(uri).?.append(arena, .{
         .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } },
         .severity = 3,
@@ -198,6 +199,7 @@ pub fn uriToPath(arena: Allocator, uri: []const u8) Allocator.Error!?[]const u8 
 /// Absolute path -> `file://` URI, percent-encoding all but RFC 3986's
 /// unreserved bytes and `/`. A Windows path's `\` becomes `/`.
 pub fn pathToUri(arena: Allocator, path: []const u8) Error![]const u8 {
+    assert(path.len != 0);
     var w: Io.Writer.Allocating = .init(arena);
     try w.writer.writeAll(if (path.len >= 2 and path[1] == ':') "file:///" else "file://");
     for (path) |c| switch (c) {
@@ -214,8 +216,10 @@ pub fn pathToUri(arena: Allocator, path: []const u8) Error![]const u8 {
 /// counted in UTF-16 code units when `utf16`, else in bytes. Invalid UTF-8
 /// counts a unit per non-continuation byte.
 fn position(text: []const u8, index: diag.LineIndex, off: u32, utf16: bool) Position {
+    assert(off <= text.len);
     const loc = index.loc(off);
     const line_start = index.starts[loc.line - 1];
+    assert(line_start <= off);
     if (!utf16) return .{ .line = loc.line - 1, .character = off - line_start };
     var units: u32 = 0;
     for (text[line_start..off]) |c| {

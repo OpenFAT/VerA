@@ -286,6 +286,7 @@ pub fn parse(cli: *Cli, gpa: Allocator, args: anytype, out: *Io.Writer, err: *Io
         } else try cli.paths.append(gpa, arg);
     }
     assert(cli.paths.items.len >= paths_before);
+    assert(n <= args_max);
     return null;
 }
 
@@ -487,6 +488,7 @@ fn takeSwitch(cli: *Cli, gpa: Allocator, s: Switch, arg: []const u8, args: anyty
 
 /// The `valued` row whose `--name=` begins `arg`, if any.
 fn valuedKey(arg: []const u8) ?Valued {
+    assert(arg.len != 0);
     const eq = std.mem.findScalar(u8, arg, '=') orelse return null;
     return valued.get(arg[0 .. eq + 1]);
 }
@@ -581,6 +583,7 @@ fn takeValued(cli: *Cli, v: Valued, arg: []const u8, value: []const u8, err: *Io
 /// one is refused before anything opens or spawns it (#47).
 fn pathValue(args: anytype, err: *Io.Writer, flag: []const u8, what: []const u8) Io.Writer.Error!?[]const u8 {
     assert(switches.get(flag) != null);
+    assert(what.len != 0);
     const v = args.next() orelse "";
     if (v.len != 0) return v;
     _ = try missing(err, flag, what);

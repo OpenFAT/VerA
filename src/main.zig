@@ -113,7 +113,6 @@ pub fn main(init: std.process.Init) !u8 {
 /// Refuses an input whose language has no compilation path: IEEE 1800 is
 /// E1104, VHDL a plain refusal. Null for any other extension.
 fn refuseLanguage(gpa: Allocator, in_path: []const u8, style: report.Style, err: *Io.Writer) !?u8 {
-    assert(in_path.len != 0);
     const ext = std.fs.path.extension(in_path);
     if (std.mem.eql(u8, ext, ".sv")) {
         var sv: diag.Bag = .init(gpa);
