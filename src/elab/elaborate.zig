@@ -1,363 +1,64 @@
-//! Elaboration: a parsed `Ast.SourceFile` → one flattened `Design` whose top
-//! module holds a renamed copy of every reachable instance, so nothing after
-//! this stage sees hierarchy. LRM §6.2.2 instantiation, §6.3 parameter
-//! overrides and §6.3.1 defparam, §6.4 paramsets, §6.6 if-generate, §6.7
-//! hierarchical names (`Design.names`), §7.8 connect-module insertion, and
-//! Annex F.2 discipline resolution.
+//! Elaboration's spine: a parsed `Ast.SourceFile` (an overlay the stage may
+//! append to) → one `Design` whose top module holds a renamed copy of every
+//! reachable instance, so nothing after this stage sees hierarchy. Picks the
+//! root (§6.2.2), runs the compilation-wide checks, then the walks
+//! `Flatten.run` performs: an IEEE 1364-2005 §12.8.1 seed walk when a
+//! defparam may bind early, a §7.8.4 dry walk when connect modules may be
+//! inserted, and the real walk.
+//! Cites: LRM §3.4.7, §6.2.1, §6.2.2, §6.3.1, §6.4, §6.6, §7.6, §7.7, §7.8.4,
+//! Annex E; IEEE 1364-2005 §12.8.1, §13.2.1.1.
 //!
-//! The spine, `elaborate` then `Flatten.run`:
-//!
-//!     alias.checkSource           §3.4.7 alias reads, before anything folds
-//!     gen_instances, pickTop      §6.6 table, §6.2.2 the root
-//!     names / resolve checks      E.3.3, §7.7, A.2.1.3, §6.5.2.2, §7.4.2 (every
-//!                                 module)
-//!     run: seed the top           its own declarations, unrenamed
-//!       instance.walkInstances    per level: override.collectDefparams,
-//!                                 resolve.collectOoc, insert.plan, then per
-//!                                 instance inlineInstance (ports, overrides,
-//!                                 names, clone.*, recurse)
-//!       resolve post-passes       E.3.2.2 primitive ports, F.2.1 step 4
-//!       override.reportUnused...  §6.3.1 E0907
-//!       publish `fate`            one `Ast.ModuleDecl`, plus `Design` tables
-//!       alias.checkFlat           §3.4.7 hierarchical alias reads
-//!
-//! Who writes which `Flatten` table: the synthesized declaration lists,
-//! `unit_paths`, `names`, `implicit_nets`, `unconnected_inputs`,
-//! `port_concats`, `port_widths`, `ps_hidden`, `port_vars`, `prim_ports` and
-//! the dry walk's `tree` are `instance.zig`'s (with `clone.cloneParams`
-//! appending `params`/`aliasparams`); `defparams`, `seed_params`,
-//! `paramset_defparams` and `system_checks` are `override.zig`'s (`run`
-//! adds the top's card-read checks); `nets`, `disc_of`, `segs`,
-//! `port_resolved`, `redecided`, `ooc`, `ooc_inits` and
-//! `signal_disciplines` are `resolve.zig`'s (`addNet` is the only net
-//! append); `inserts`, `unbridged` and `seg_down` are `insert.zig`'s, and
-//! `seg_up` and `seg_index` are `segment.zig`'s memos, which `insert.plan`
-//! clears per level; `selection_params` and `ps_outputs` are `paramset.zig`'s (which also
-//! appends paramset variables to `vars`); `attribute_disciplines`,
-//! `local_accesses`, `pending_attributes` and `expression_aliases` are
-//! written by `clone.zig` during the clone, the attribute rows settled by
-//! `resolve.resolveMultiCandidates`. `elaborate` copies the dry walk's `tree`
-//! and `ooc` into the real walk (`tree_ooc`). `unit` is not a table but the
-//! namespace in force: `inlineInstance` pushes and pops it, and a pass that
-//! clones text written in another scope (`override.collectOverrides`,
-//! `paramset.paramsetOverrides`, `clone.paramsetOomr`) swaps it and restores.
+//! Contents:
+//! - `pub fn elaborate(ctx: design.Ctx) design.Error!design.Design`
 
 const std = @import("std");
-const hier_param = @import("hier_param.zig");
-const elab_alias = @import("alias.zig");
-const elab_clone = @import("clone.zig");
-const elab_insert = @import("insert.zig");
-const elab_instance = @import("instance.zig");
-const elab_names = @import("names.zig");
-const elab_override = @import("override.zig");
-const elab_paramset = @import("paramset.zig");
-const elab_resolve = @import("resolve.zig");
-const elab_segment = @import("segment.zig");
-/// §6.7 a hierarchical expression → the flat name it denotes; lowering's
-/// path resolution and the §3.4.7 alias check share it. See
-/// `elab/names.zig`.
-pub const flatReference = elab_names.flatReference;
-/// §6.6.2 the flat prefixes no hierarchical name may open from outside:
-/// see `elab/names.zig`.
-pub const unnamedGenScopes = elab_names.unnamedGenScopes;
-/// E.2.1 for a netlist card's names: see `elab/names.zig`.
-pub const spiceCase = elab_names.spiceCase;
-/// §6.6.1 whether a loop generate scheme ends, which lowering's unroll
-/// asks too: see `elab/instance.zig`.
-pub const genvarLoop = elab_instance.genvarLoop;
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
 const diag = @import("diag");
-const discipline = @import("discipline_rules.zig");
-
-/// `NoModule`: A.1.2 lets a source_text hold no module_declaration at all
-/// (a file of `discipline`/`nature` declarations is legal), but a device needs
-/// one. The caller reports E1001, since "no module" is only an error relative
-/// to what was asked for.
-///
-/// `DiagnosticsReported`: something in the instance tree was diagnosed; the
-/// bag holds the diagnostics and no design is returned.
-pub const Error = error{ OutOfMemory, NoModule, DiagnosticsReported };
-
-/// The separator between levels of a flattened hierarchical name (LRM §6.7).
-///
-/// A period, as §6.7's `hierarchical_identifier` writes it, so a flat name in
-/// a diagnostic or an emitted identifier reads like the source reference. An
-/// escaped identifier may contain a period (§2.8.1, `\x.y `), but
-/// `parser.internTok` interns that period as a space, so a period in a flat
-/// name is always a join and the mangling is injective.
-pub const sep = '.';
-
-/// The elaborated design lowering walks: one module with the hierarchy already
-/// applied. Runtime dynamic hierarchical access (`$simprobe` with a computed
-/// path) cannot be answered from it; every §6.7 reference must resolve here.
-pub const Design = struct {
-    /// The root of §6.2.2's instance tree, with every reachable child inlined:
-    /// the module whose ports are the device's terminals.
-    top: *const Ast.ModuleDecl,
-    /// §6.7 hierarchical path → the flat name that path denotes.
-    ///
-    /// Holds only the rows that are not the identity: the flat name is the
-    /// path joined with `sep`, so every reader does `get(p) orelse p`. The rows
-    /// are connected child ports: `u.a` bound to parent net `p` has no node of
-    /// its own, and §6.7.1 still lets `V(u.a)` name it.
-    ///
-    /// Empty for a tree of one: with nothing renamed there is no path but the
-    /// module's own names, and those resolve without it.
-    names: std.StringHashMapUnmanaged([]const u8) = .empty,
-    /// §4.4 the `names` rows' own declarations: a connected child port's path
-    /// → the discipline the child declares for it, when it declares one. The
-    /// joined net's discipline may be another (§3.6.2.3's domainless net), and
-    /// `V(u.a)` names the port.
-    port_disciplines: std.StringHashMapUnmanaged([]const u8) = .empty,
-    /// §3.6.5's STRUCTURAL implicit nets: "Nets can be used in structural
-    /// descriptions without being declared." One entry per instance port actual
-    /// naming a net the instantiating module never declared.
-    ///
-    /// Reported, not judged: the child's declaration already supplies the
-    /// discipline (§7.4), and legality is IEEE 1364 §19.2 `default_nettype`, a
-    /// positional directive this pass cannot see (`Lower.rejectImplicitNet`).
-    implicit_nets: []const NameSite = &.{},
-    /// §6.2.2 "a blank port connection shall represent the situation where the
-    /// port is not to be connected", for an `input` port. One entry per such
-    /// port, naming the internal net the flatten gave it.
-    ///
-    /// Judged later for the same reason: IEEE 1364 §19.9 `unconnected_drive`
-    /// is positional text (`Lower.applyUnconnectedDrive`).
-    unconnected_inputs: []const NameSite = &.{},
-    /// §9.15 Table 9-28's two hierarchy rows, indexed by `Ast.AnalogBlock.unit`:
-    /// "module" is "the name of the module from which $simparam$str is called"
-    /// and "instance" is "the hierarchical name of the instance". Flattening
-    /// erases both, so the walk publishes them here. §9.16's sibling scope
-    /// ("in the parent of the current instance") reads `path` too.
-    units: []const UnitPath = &.{},
-    /// §7.8.4 every port an automatic connect module was inserted on, for the
-    /// mixed-signal runner: its digital engine elaborates the SOURCE hierarchy,
-    /// in which the bridges do not exist.
-    inserts: []const Inserted = &.{},
-    /// §6.5.7.1 "a vector port can be connected to a vector net or
-    /// concatenated net expression of the matching width". One entry per port
-    /// connected to a concatenation or to §6.5.5's scalar member or sub-range
-    /// of a net (`.v(bus[1])`, `.w(bus[3:2])`): the child's port, renamed to a flat
-    /// name of its own, whose element k (declaration order, msb first per IEEE
-    /// 1364 §12.3.9.2) is bit k of `parts`, read left to right. Lowering
-    /// interns no node for it: each element aliases its net's node
-    /// (`lower_node.bindPortConnections`).
-    port_concats: []const PortConcat = &.{},
-    /// §6.5.7.1 "The sizes of the ports and net must match." One entry per
-    /// port bound to a net: the bound flat net and the child's declared range
-    /// (null for a scalar port), for lowering to fold and compare.
-    port_widths: []const PortWidth = &.{},
-    /// §7.2.4's continuous segments of one signal retain their local
-    /// disciplines even when flattening gives the signal one net declaration.
-    /// Lowering folds their potential tolerances into the shared node's minimum.
-    signal_disciplines: []const SignalDiscipline = &.{},
-    /// §5.5.3 attribute reads on bound ports keep the source segment's
-    /// discipline even after the expression names the shared flattened net.
-    attribute_disciplines: std.AutoHashMapUnmanaged(Ast.ExprId, Ast.StrId) = .empty,
-    /// §4.4 accesses in a child that `names.localAccess` already judged
-    /// against the child's own declaration, on a node whose discipline binds
-    /// no nature for that half (§3.11.1's natureless or domainless parent).
-    local_accesses: std.AutoHashMapUnmanaged(Ast.ExprId, void) = .empty,
-    /// §6.4.3 "If a paramset variable without a description has the same name
-    /// as a module output variable, the module output variable shall not be
-    /// available for instances using the paramset." The flat names of those
-    /// variables, for §9.16's `$simprobe` to treat as unresolvable.
-    ps_hidden: []const []const u8 = &.{},
-    /// §6.8 IEEE 1364-2005 §12.3.3: the flat names of the output ports
-    /// "declared as a variable" that the walk renamed onto the net their
-    /// parent connects (`instance.zig`). Such a variable is in the child's
-    /// scope and the net in the parent's, so sharing one flat name is not
-    /// two declarations in one scope (`lower_var.checkOneItemPerScope`).
-    port_vars: []const Ast.StrId = &.{},
-    /// §5.4.3/§6.7.1 the instance ports whose flow is read, each split off the
-    /// parent's net onto an internal net of its own (`instance.zig`): one
-    /// row per such port, the internal net's flat name and the parent's net
-    /// it hangs from. Lowering reads the port's flow as that branch's current,
-    /// a §5.4.2.1 flow probe (Figure 5-1's ammeter).
-    port_ammeters: []const PortAmmeter = &.{},
-    /// §6.4.3 "Integer or real variables in the paramset declared with
-    /// descriptions are considered output variables", and "the paramset's
-    /// value is reported for instances using the paramset": one row per such
-    /// variable of a paramset instance, for §9.16's `$simprobe`.
-    ps_outputs: []const PsOutput = &.{},
-    /// §6.3.1/§6.4 defparams encountered below a paramset instance, with the
-    /// generate condition that decides whether that hierarchy exists. Lowering
-    /// judges them after the final parameter values (including --param) exist.
-    paramset_defparams: []const ParamsetDefparam = &.{},
-    /// §6.4.2 values read while choosing an overloaded paramset. The host must
-    /// re-elaborate when these shape parameters change, as for generate schemes.
-    selection_params: []const Ast.StrId = &.{},
-    /// §9.18 Table 9-29 domains to check at card time (`SystemCheck`).
-    system_checks: []const SystemCheck = &.{},
-};
-
-/// One `Design.port_ammeters` row: the flat names of the port's own internal
-/// net and of the parent's net it was connected to.
-pub const PortAmmeter = struct { internal: []const u8, bound: []const u8 };
-
-/// One `Design.ps_outputs` row: the name an instance reports the variable
-/// under (`path ++ name`) and the flat variable holding it (`path ++
-/// paramset ++ sep ++ name`, beside the paramset's parameters).
-pub const PsOutput = struct { report: []const u8, flat: []const u8 };
-
-/// A defparam is forbidden only in an instantiated paramset hierarchy:
-/// §6.6.2 leaves an unselected generate arm out of the model. Flattening keeps
-/// both arms, so the flattened gate travels with the source diagnostic site.
-pub const ParamsetDefparam = struct {
-    /// The defparam statement's token, where the diagnostic points.
-    main_tok: u32,
-    /// The nearest paramset instance's path, without its trailing `sep`.
-    instance: []const u8,
-    /// The unit's §6.6 gate in flat names; `.none` when no scheme gates it.
-    gate: Ast.ExprId,
-};
-
-/// One `Design.port_widths` row: a port bound to a flat net, for the §6.5.7.1
-/// size check.
-pub const PortWidth = struct {
-    net: []const u8,
-    /// Cloned into the flat namespace, as `PortConcat.range` is.
-    range: ?Ast.Dim,
-    main_tok: u32,
-};
-
-/// One hierarchical net segment attached to the flattened signal `net`.
-pub const SignalDiscipline = struct { net: []const u8, discipline: []const u8 };
-
-/// One `Design.port_concats` row: a port bound bit by bit to parent nets, a
-/// concatenation (LRM §6.5.7.1) or a bit- or part-select (§6.5.5).
-pub const PortConcat = struct {
-    /// The port's flat name.
-    name: []const u8,
-    /// The child's declared range, cloned into the flat namespace so a
-    /// parameter in it folds against the instance's own overrides. Null for
-    /// a scalar port bound to one bit (§6.5.5 `.v(bus[1])`).
-    range: ?Ast.Dim,
-    /// The connection's members, left to right: one for a select, one per
-    /// operand of a concatenation.
-    parts: []const NetPart,
-    main_tok: u32,
-};
-
-/// One member of a `PortConcat` connection: a parent net (its flat name),
-/// whole or under the constant select the connection wrote, its bounds folded
-/// in the parent's names. Lowering, which knows each net's declared range,
-/// checks the select against it and expands the part to bits.
-pub const NetPart = struct {
-    net: []const u8,
-    /// `[a]`, `[a:b]`, or IEEE 1364-2005 §5.2.1's `[a +: b]` and `[a -: b]`.
-    sel: enum { whole, bit, range, up, down } = .whole,
-    /// The select's first and second folded values; `b == a` for a bit,
-    /// both 0 for a whole net.
-    a: i64 = 0,
-    b: i64 = 0,
-};
-
-/// One port §7.8.4 re-pointed at a connect module (`base`'s, which
-/// documents the fields).
-pub const Inserted = @import("base").Inserted;
-
-/// One instance the first walk elaborated (`Flatten.tree`): the instance as
-/// its parent wrote it (an array element or a generate copy as the walk
-/// named it, a row of that level's arena list), the module it elaborated to,
-/// and its own instance path.
-pub const TreeKid = struct {
-    inst: *const Ast.Instance,
-    module: *const Ast.ModuleDecl,
-    path: []const u8,
-
-    comptime {
-        // One row per instance of the dry walk: two pointers and a slice,
-        // not a 72 B copy of the instance.
-        std.debug.assert(@sizeOf(TreeKid) <= 32);
-    }
-};
-
-/// An out-of-context discipline declaration (`Flatten.ooc`), with its token
-/// for §3.6.2's compatibility diagnostic.
-pub const OocDecl = struct { disc: Ast.StrId, tok: u32 };
-
-/// One entry of `Design.units`. `path` is the instance prefix, separator
-/// included and empty at the top, so `path ++ local` is the flat name.
-pub const UnitPath = struct {
-    module: []const u8,
-    path: []const u8,
-    /// The definition this unit was inlined FROM: the module `findModule`
-    /// named, or the end of the §6.4.2-selected paramset's chain. Published so
-    /// the VPI's `vpiDefName` and ports (Clause 11) read the answer instead of
-    /// re-resolving the name by a second rule.
-    decl: *const Ast.ModuleDecl,
-};
-
-/// A name the flatten wants a later stage to judge, and the token it was
-/// written at. The token is what a positional compiler directive is looked up
-/// by, and what a diagnostic points at.
-pub const NameSite = struct { name: []const u8, main_tok: u32 };
-
-/// §9.18 a hierarchical system parameter's specified value that reads the
-/// model card, so Table 9-29's "Allowed values" can only be checked when
-/// the host writes the card (codegen's `checkCard`). `value` is in the flat
-/// namespace; `name` is what the check reports: `path$kind`, or a top-level
-/// alias's own spelling.
-pub const SystemCheck = struct { kind: hier_param.Kind, value: Ast.ExprId, name: []const u8 };
-
-/// Everything elaboration needs from the compilation. `file` is MUTABLE because
-/// flattening appends: new interned names (§6.7 paths), cloned expression rows
-/// and cloned statements. It is an overlay of the parse
-/// (`Ast.SourceFile.overlay`), so they land in the overlay's own rows, numbered
-/// after the parser's, and the parse is never written.
-/// Nothing is ever rewritten in place, so every id the parser handed out
-/// stays valid.
-pub const Ctx = struct {
-    arena: std.mem.Allocator,
-    file: *Ast.SourceFile,
-    src: []const u8,
-    tok_starts: []const u32,
-    bag: *diag.Bag,
-    param_overrides: []const ParamOverride = &.{},
-    discipline_resolution: DisciplineResolution = .basic,
-    /// §10.2's directives: §3.9 names a digital primitive's side of a net
-    /// with the one in force at the primitive (`insert.plan`).
-    default_disciplines: []const @import("frontend").Preprocessor.DefaultDiscipline = &.{},
-};
-
-/// §7.4.4 basic or detail discipline resolution (`base`'s).
-pub const DisciplineResolution = @import("base").DisciplineResolution;
-
-/// §3.4 compile-time overrides, shared with Lower.Options (`base`'s).
-pub const ParamOverride = @import("base").ParamOverride;
+const design = @import("design.zig");
+const Flatten = @import("Flatten.zig");
+const generate = @import("generate.zig");
+const ports = @import("ports.zig");
+const lookup = @import("lookup.zig");
+const defparam = @import("defparam.zig");
+const paramset_select = @import("paramset_select.zig");
+const decl_check = @import("decl_check.zig");
+const alias = @import("alias.zig");
+const fixture = @import("fixture.zig");
+const Fixture = fixture.Fixture;
+const parse = fixture.parse;
+const parseWithPrelude = fixture.parseWithPrelude;
 
 /// Elaborates `ctx.file` into the design lowering walks. Every pointer in the
 /// result points into `ctx.arena`. A top with no instances, defparams or
 /// generate instances is returned by pointer, exactly as parsed. §6.5.7.1's
 /// distribution of a vector net across an instance array is not supported.
-pub fn elaborate(ctx: Ctx) Error!Design {
+pub fn elaborate(ctx: design.Ctx) design.Error!design.Design {
     if (ctx.file.userModules().len == 0) return error.NoModule;
-    try elab_alias.checkSource(ctx); // §3.4.7, before any folding or cloning
+    try alias.checkSource(ctx); // §3.4.7, before any folding or cloning
 
     // §6.6 each module's generate-block instances, walked once: `pickTop`,
     // the tree-of-one test and every inlined instance read them.
     const gen_instances = try ctx.arena.alloc([]const Ast.Instance, ctx.file.modules.len);
     for (ctx.file.modules, gen_instances) |*m, *out| {
         var list: std.ArrayList(Ast.Instance) = .empty;
-        for (m.analog) |blk| try elab_instance.genInstanceList(ctx.file, blk.body, ctx.arena, &list);
+        for (m.analog) |blk| try generate.genInstanceList(ctx.file, blk.body, ctx.arena, &list);
         out.* = list.items;
     }
 
     const top = try pickTop(ctx, gen_instances);
 
     var f: Flatten = .{ .ctx = ctx, .gen_instances = gen_instances };
-    try elab_names.warnSpiceShadows(&f);
-    try elab_names.warnRedefinedModules(&f); // IEEE 1364-2005 §13.2.1.1 W1152
+    try lookup.warnSpiceShadows(&f);
+    try lookup.warnRedefinedModules(&f); // IEEE 1364-2005 §13.2.1.1 W1152
     // §7.7's names are judged whether or not the design has a hierarchy to
     // resolve: a `connectrules` block is a description of the COMPILATION
     // (A.1.2), not of the top module, so the tree-of-one shortcut below must
     // not skip a misspelled connect module or discipline in one.
-    try elab_resolve.checkConnectRules(&f);
-    try elab_resolve.checkNetDisciplines(&f); // A.2.1.3, every module: see there
-    try elab_instance.checkPortDirections(&f); // §6.5.2.2, every module
-    try elab_paramset.checkRanges(&f); // §3.4.2, every paramset, selected or not
+    try decl_check.checkConnectRules(&f);
+    try decl_check.checkNetDisciplines(&f); // A.2.1.3, every module: see there
+    try ports.checkPortDirections(&f); // §6.5.2.2, every module
+    try paramset_select.checkRanges(&f); // §3.4.2, every paramset, selected or not
     // §7.4.2 "the real-value nets shall obey the rules imposed by 3.7": the
     // same structural check the digital runner makes (E0918/E0919).
     try @import("frontend").wreal.check(ctx.file, ctx.tok_starts, ctx.bag);
@@ -372,7 +73,7 @@ pub fn elaborate(ctx: Ctx) Error!Design {
         (top.gates.len + top.pulls.len + top.switches.len == 0 or ctx.file.connectrules.len == 0))
     {
         if (f.had_error) return error.DiagnosticsReported;
-        try elab_alias.checkFlat(ctx, top, top.aliasparams);
+        try alias.checkFlat(ctx, top, top.aliasparams);
         return .{ .top = top };
     }
 
@@ -380,7 +81,7 @@ pub fn elaborate(ctx: Ctx) Error!Design {
     // parameters it names take their values. A design whose defparams may
     // name a parameter bound before the walk reaches them is walked twice,
     // the first walk (diagnostics discarded) only collecting them.
-    const bind_early = elab_override.mayBindEarly(ctx.file);
+    const bind_early = defparam.mayBindEarly(ctx.file);
     var scratch: diag.Bag = .init(ctx.arena);
     scratch.levels = ctx.bag.levels;
     var first_ctx = ctx;
@@ -391,7 +92,7 @@ pub fn elaborate(ctx: Ctx) Error!Design {
             error.OutOfMemory => return error.OutOfMemory,
             error.NoModule, error.DiagnosticsReported => {},
         };
-        try elab_override.seedDefparams(&f, &first);
+        try defparam.seedDefparams(&f, &first);
     }
     // §7.8.4: insertion "depends on a complete hierarchical examination of
     // each signal", and a level is planned before its children are walked.
@@ -404,13 +105,15 @@ pub fn elaborate(ctx: Ctx) Error!Design {
         var dry_ctx = ctx;
         dry_ctx.bag = &dry_scratch;
         var dry: Flatten = .{ .ctx = dry_ctx, .gen_instances = gen_instances, .dry = true };
-        if (bind_early) try elab_override.seedDefparams(&dry, &first);
+        if (bind_early) try defparam.seedDefparams(&dry, &first);
         if (dry.run(top)) |_| {} else |e| if (e == error.OutOfMemory) return e;
-        f.tree = dry.tree;
-        f.tree_ooc = dry.ooc;
+        f.tree.kids = dry.tree.kids;
+        f.tree.ooc = dry.oocs.decls;
     }
     return f.run(top);
 }
+
+// ---- private ----
 
 /// Which module is the device (§6.2.2): the first user module, in source
 /// order, that nothing instantiates. A child may be declared before its
@@ -420,8 +123,9 @@ pub fn elaborate(ctx: Ctx) Error!Design {
 /// `gen_instances` is `Flatten.gen_instances`. Every instantiated name is
 /// collected once, so the choice costs one pass over the instances rather
 /// than one per candidate.
-fn pickTop(ctx: Ctx, gen_instances: []const []const Ast.Instance) Error!*const Ast.ModuleDecl {
+fn pickTop(ctx: design.Ctx, gen_instances: []const []const Ast.Instance) design.Error!*const Ast.ModuleDecl {
     const file = ctx.file;
+    assert(gen_instances.len == file.modules.len);
     // Annex E: a candidate is a module the USER wrote. The shipped Table E.1
     // primitives instantiate nothing, so all nineteen are roots of the instance
     // graph and one of them would win every time. They still count as
@@ -466,476 +170,10 @@ fn lastNamed(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl) *const Ast.M
     for (file.userModules()) |*o| if (o.name == m.name) {
         last = o;
     };
+    assert(last.name == m.name);
+    assert(@intFromPtr(last) >= @intFromPtr(m)); // the last of its name, so not before `m`
     return last;
 }
-
-// ---------------------------------------------------------------------------
-// The flatten
-// ---------------------------------------------------------------------------
-
-/// One name binding in the flattened namespace: what a child's local name is
-/// called after the join. §6.7's path table, in the direction the clone needs.
-const Rename = std.AutoHashMapUnmanaged(Ast.StrId, Ast.StrId);
-
-/// What the flatten does with one field of `Ast.ModuleDecl`.
-const Fate = enum {
-    /// The device's own: the top's value, as parsed.
-    top,
-    /// The top's entries followed by every inlined instance's, renamed into the
-    /// flat namespace by `inlineInstance`. `Flatten` holds a list of the same
-    /// name, and `run` publishes it.
-    merged,
-    /// Applied by the walk and gone after it; nothing downstream reads it.
-    consumed,
-};
-
-/// Every field of `Ast.ModuleDecl`, classified. `EnumFieldStruct` with no
-/// default makes each entry required, so a field added to `ModuleDecl` does
-/// not compile until someone decides what a child's copy of it becomes. `run`
-/// builds its output from this table, so the two cannot drift.
-const fate: std.enums.EnumFieldStruct(std.meta.FieldEnum(Ast.ModuleDecl), Fate, null) = .{
-    .name = .top,
-    .ports = .top, // §6.5 the device's terminals are the top's
-    .params = .merged,
-    .aliasparams = .merged,
-    .vars = .merged,
-    .nets = .merged,
-    .branches = .merged,
-    .instances = .consumed, // §6.2.2 inlined; lowering must not elaborate them again
-    .defparams = .consumed, // §6.3.1 applied to the parameter each names
-    .genvars = .merged,
-    .events = .merged,
-    .functions = .merged,
-    .analog = .merged,
-    // §7.2.2 the discrete context. Merged: lowering reads what the analog
-    // half needs of it, and the mixed runner runs it under the flat names.
-    .discrete = .merged,
-    .assigns = .merged,
-    // Lowering reads no gate in any module; the parser's W0252 reports each.
-    // Merged anyway, so a child's gate is where a top's gate is.
-    .gates = .merged,
-    // §7.8 pull sources, read by the digital engine only; merged like gates.
-    .pulls = .merged,
-    // The digital engine elaborates its own hierarchy from the source and runs
-    // every task; lowering reads the top's only (what its bodies write).
-    // ponytail: a child's task writes are not digital-owned to the analog side;
-    // merge them (renamed like `discrete`) when a child's task needs it.
-    .tasks = .top,
-    // §8.5.3.5 switches, run by the digital engine; merged like gates.
-    .switches = .merged,
-    // A.7 specify paths and timing checks: read only by the VPI's §11.6.15
-    // model, which walks each module's own declaration, never the flattened
-    // one, so the flat design keeps the top's.
-    .paths = .top,
-    .timing_checks = .top,
-    .pulses = .top,
-    .attrs = .merged,
-    // `pickTop` never picks a connect module, so this is always the top's
-    // `false`; a hand-placed one (§7.1) is a child like any other.
-    .is_connect = .top,
-    .main_tok = .top,
-};
-
-/// The flatten's state: the synthesized module's declaration lists, the rename
-/// map of the unit being cloned, and the side tables `Design` publishes. Every
-/// allocation is in `ctx.arena` and lives as long as the compilation; `run`
-/// hands the lists' `items` to `Design` without copying. The file header
-/// names each table's writer.
-pub const Flatten = struct {
-    ctx: Ctx,
-    /// Set by `err` and by the pre-walk checks; `run` turns it into
-    /// `error.DiagnosticsReported` after the walk, so one design reports
-    /// every error it has rather than the first.
-    had_error: bool = false,
-    /// §6.6 every module's generate-block instances (`genInstanceList`),
-    /// indexed like `ctx.file.modules`; read through `genInstancesOf`.
-    /// Built once by `elaborate`, read-only after.
-    gen_instances: []const []const Ast.Instance,
-
-    /// Last `Ast.AnalogBlock.unit` handed out. 0 is the top, so the first
-    /// inlined instance is 1. See that field for what it is for.
-    last_unit: u32 = 0,
-    /// §9.15/§9.16 one entry per unit id, in issue order (so index == unit id).
-    unit_paths: std.ArrayList(UnitPath) = .empty,
-    /// `Design.ps_hidden`, as the walk finds them.
-    ps_hidden: std.ArrayList([]const u8) = .empty,
-    /// `Design.port_vars`, as the walk renames them.
-    port_vars: std.ArrayList(Ast.StrId) = .empty,
-    /// `Design.ps_outputs`, as `paramset.paramsetOverrides` declares them.
-    ps_outputs: std.ArrayList(PsOutput) = .empty,
-    /// `Design.port_ammeters`, as `instance.inlineInstance` splits ports.
-    port_ammeters: std.ArrayList(PortAmmeter) = .empty,
-    /// `Design.paramset_defparams`, before generate schemes have final values.
-    paramset_defparams: std.ArrayList(ParamsetDefparam) = .empty,
-    /// `Design.selection_params`: flat parameters a §6.4.2 overload choice
-    /// read. May repeat a name; readers treat it as a set.
-    selection_params: std.ArrayList(Ast.StrId) = .empty,
-    /// `names.paramValue`'s cache, one row per `params` row
-    /// (`names.syncParamValues`), and how many leading rows it has folded.
-    param_values: std.ArrayList(elab_names.ParamValue) = .empty,
-    param_warm: usize = 0,
-    /// Each flat name → its first scalar `params` row, the one `names`'
-    /// folds read; kept by `names.syncParamValues`, so a fold's identifier
-    /// is one lookup, not a scan of every flat parameter.
-    param_index: std.AutoHashMapUnmanaged(Ast.StrId, u32) = .empty,
-    /// `Design.system_checks`, as overrides are composed.
-    system_checks: std.ArrayList(SystemCheck) = .empty,
-
-    // The synthesized module's declarations, in append order.
-    params: std.ArrayList(Ast.ParamDecl) = .empty,
-    aliasparams: std.ArrayList(Ast.AliasParam) = .empty,
-    vars: std.ArrayList(Ast.VarDecl) = .empty,
-    nets: std.ArrayList(Ast.NetDecl) = .empty,
-    branches: std.ArrayList(Ast.BranchDecl) = .empty,
-    genvars: std.ArrayList(Ast.StrId) = .empty,
-    events: std.ArrayList(Ast.EventDecl) = .empty,
-    functions: std.ArrayList(Ast.FuncDecl) = .empty,
-    analog: std.ArrayList(Ast.AnalogBlock) = .empty,
-    discrete: std.ArrayList(Ast.DiscreteBlock) = .empty,
-    assigns: std.ArrayList(Ast.ContAssign) = .empty,
-    gates: std.ArrayList(Ast.GateInst) = .empty,
-    pulls: std.ArrayList(Ast.PullInst) = .empty,
-    switches: std.ArrayList(Ast.SwitchInst) = .empty,
-    attrs: std.ArrayList(Ast.NatureAttr) = .empty,
-
-    /// §6.7 path → flat name. See `Design.names`.
-    names: std.StringHashMapUnmanaged([]const u8) = .empty,
-    /// See `Design.port_disciplines`.
-    port_disciplines: std.StringHashMapUnmanaged([]const u8) = .empty,
-    /// See `Design.inserts`.
-    inserts: std.ArrayList(Inserted) = .empty,
-    /// Ports `insert.plan` bridged with nothing, judged once every net's
-    /// discipline is resolved (`insert.checkUnbridged`, E0927).
-    unbridged: std.ArrayList(elab_insert.Unbridged) = .empty,
-    /// `segment.up`'s answers for the level `insert.plan` is planning, keyed
-    /// by instance path and local net name.
-    seg_up: std.StringHashMapUnmanaged(elab_segment.Seg) = .empty,
-    /// `segment.indexOf`'s answers for the same level, keyed by instance
-    /// path: each net's declared discipline and child ports. Cleared with
-    /// `seg_up`.
-    seg_index: std.StringHashMapUnmanaged(elab_segment.UnitIndex) = .empty,
-    /// The modules `segment.up` is below right now, outermost first: a
-    /// source instance list that instantiates one of them again is a cycle
-    /// the walk refuses (E0905), so the climb stops there.
-    seg_on: std.ArrayList(Ast.StrId) = .empty,
-    /// The answer each port's lower connection resolved to when its parent
-    /// was planned (`segment.down`), the same keys: the upper connection of
-    /// the ports one level further down.
-    seg_down: std.StringHashMapUnmanaged(elab_segment.Seg) = .empty,
-    /// §7.8.4 "a complete hierarchical examination of each signal": a first
-    /// walk that inserts no connect module (`dry`) records here every
-    /// instance it elaborates, under its parent's instance path, and the
-    /// walk that inserts reads it (`segment.up`). So a level is planned from
-    /// the subtree below it as elaborated: generate blocks evaluated,
-    /// instance arrays expanded, paramsets selected (`elaborate`).
-    tree: std.StringHashMapUnmanaged(std.ArrayList(TreeKid)) = .empty,
-    /// The first walk's `ooc`: every out-of-context declaration, those
-    /// declared below the level being planned included.
-    tree_ooc: std.StringHashMapUnmanaged(OocDecl) = .empty,
-    /// This is that first walk.
-    dry: bool = false,
-
-    /// The discipline every flat net has been declared with, keyed by the flat
-    /// name: §3.10's precedence orders 1 and 2 after they have been decided.
-    /// Every net append goes through `addNet`, which keeps this table and
-    /// `self.nets` in agreement. The top's ports are seeded first (`run`),
-    /// since a discipline resolved up the hierarchy lands on one of them.
-    ///
-    /// One discipline per net, the answer every consumer reads. Annex F.2.1
-    /// step 4.b needs the full candidate set per net, and that is `segs`.
-    disc_of: std.AutoHashMapUnmanaged(Ast.StrId, Ast.StrId) = .empty,
-
-    /// Annex F.2.1 step 4.b's input, per flat net: EVERY discipline a child
-    /// segment declared onto it, in arrival order, with the token of the first
-    /// segment for the diagnostic. Fed by `resolveDiscipline` and consumed
-    /// once, after the walk, by `resolveMultiCandidates`. An array
-    /// hash map so the post-pass visits nets in first-binding order and a
-    /// design with two errors reports them deterministically.
-    segs: std.array_hash_map.Auto(Ast.StrId, Segs) = .empty,
-
-    /// The flat nets whose discipline came from a bound port rather than a
-    /// declaration: §3.6.5's implicit nets, the set §7.4.4.1's continuous-wins
-    /// rule may overrule without overruling a real declaration.
-    port_resolved: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty,
-    /// The `port_resolved` nets whose discipline was overruled after their
-    /// net row was added (§7.4.4.1's upgrade, F.2.1 4.b's `resolveto`):
-    /// `resolve.resolveMultiCandidates` rewrites their rows once, at the end.
-    redecided: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty,
-
-    /// E.3.2's LAST source, deferred: every bound port of an analog primitive,
-    /// whose own `electrical` is only "the default analog primitive" and so
-    /// binds its net after the walk, and only if nothing else did (E.3.2.2 "If
-    /// there are no continuous disciplines defined on the net segment").
-    prim_ports: std.ArrayList(struct { path: []const u8, port: Ast.Port, bound: Ast.StrId }) = .empty,
-
-    /// `Design.implicit_nets` / `Design.unconnected_inputs`, collected on the
-    /// way through and published unchanged.
-    implicit_nets: std.ArrayList(NameSite) = .empty,
-    unconnected_inputs: std.ArrayList(NameSite) = .empty,
-    port_concats: std.ArrayList(PortConcat) = .empty,
-    port_widths: std.ArrayList(PortWidth) = .empty,
-    signal_disciplines: std.ArrayList(SignalDiscipline) = .empty,
-    attribute_disciplines: std.AutoHashMapUnmanaged(Ast.ExprId, Ast.StrId) = .empty,
-    local_accesses: std.AutoHashMapUnmanaged(Ast.ExprId, void) = .empty,
-    /// Attribute reads of undeclared ports wait for bottom-up resolution.
-    pending_attributes: std.ArrayList(struct { expr: Ast.ExprId, net: Ast.StrId, path: []const u8 }) = .empty,
-
-    /// §6.3.1 every `defparam` seen so far, keyed by the absolute flat name of
-    /// the parameter it overrides: the declaring module's path joined with the
-    /// path the source wrote. Collected on the way down (`override.collectDefparams`),
-    /// which is before any instance below it is inlined, so a defparam is always
-    /// in the map before the parameter it names is created.
-    defparams: std.StringHashMapUnmanaged(elab_override.Defparam) = .empty,
-    /// IEEE 1364-2005 §12.8.1: the first walk's flat parameters, when
-    /// `override.seedDefparams` ran one; `override.seededValue` reads a
-    /// not-yet-inlined parameter's value from them.
-    seed_params: []const Ast.ParamDecl = &.{},
-
-    /// Annex F.2.1 step 3 / §3.10 precedence order 1: every OUT-OF-CONTEXT
-    /// discipline declaration, keyed by the absolute flat name of the net segment
-    /// it declares, the same key shape as `defparams`.
-    /// "Apply all out-of-context node and signal declarations. For example,
-    /// electrical top.middle.bottom.sig; overrides any discipline which may be
-    /// declared for sig in the module where sig was declared." With the
-    /// declaration's token, for §3.6.2's compatibility diagnostic
-    /// (`resolve.checkOocOverrides`).
-    ooc: std.StringHashMapUnmanaged(OocDecl) = .empty,
-    /// §3.6.3.2's nodeset on an out-of-context declaration
-    /// (`electrical u.w = 2.75;`), in `collectOoc` order (top-down), with the
-    /// initializer cloned in the declaring module's namespace. Applied after
-    /// the walk by `resolve.applyOocInits`.
-    ooc_inits: std.ArrayList(elab_resolve.OocInit) = .empty,
-
-    /// The rename map in force while cloning the current unit's body, plus the
-    /// per-instance rewrites §9.19 and §9.18 need. `inlineInstance` saves and
-    /// restores it around the recursive call.
-    unit: Unit = .{},
-    /// Source aliases in each instantiated scope, including geometry aliases
-    /// that cloning represents as local parameters rather than declarations.
-    expression_aliases: std.ArrayList(Ast.AliasParam) = .empty,
-
-    /// True while `paramsetOverrides` clones text written inside a §6.4
-    /// paramset body, the one scope §9.13.1/§9.13.2 admit a distribution
-    /// call's `type_string` in. Set and cleared with the `unit` swap there;
-    /// read by `cloneExpr`'s sys_call arm (`rewriteParamsetDist`).
-    in_paramset: bool = false,
-
-    /// True while cloning the branch a `<+` or an indirect assignment DRIVES.
-    /// §6.3.6's second automatic rule divides "the value returned by any branch
-    /// flow probe" by $mfactor, and a contribution's left-hand side is the
-    /// branch, not a probe of it. Read by `cloneExpr`'s branch_access arm.
-    contrib_target: bool = false,
-
-    /// One `segs` row: the disciplines a net's child segments declared, and
-    /// the token of the first declaration (the diagnostic anchor).
-    const Segs = struct {
-        /// `.none` for an undeclared port: see `resolveDiscipline`.
-        discs: std.ArrayList(Ast.StrId) = .empty,
-        /// Each arrival's instance path, parallel to `discs`.
-        paths: std.ArrayList([]const u8) = .empty,
-        /// Answers for undeclared segments, keyed by their arrival index.
-        resolved: std.AutoHashMapUnmanaged(u32, ?Ast.StrId) = .empty,
-        tok: u32,
-
-        comptime {
-            // One row per port-bound flat net; three containers and a token.
-            // A budget, not an exact size: the hash map carries a safety lock
-            // in Debug/ReleaseSafe only, so the row is 96 B there and smaller
-            // in ReleaseFast/ReleaseSmall.
-            std.debug.assert(@sizeOf(Segs) <= 96);
-        }
-    };
-
-    /// Per-instance clone state: the rename map and the §9.18/§9.19 answers
-    /// that differ from one instance of a module to the next.
-    pub const Unit = struct {
-        /// This instance's namespace prefix, ending in `sep` below the top.
-        path: []const u8 = "",
-        /// Local name → flat name for this unit's declarations and ports.
-        rename: Rename = .empty,
-        /// §9.19 `$port_connected`: the child's local port name → was it given
-        /// an expression in the connection list. Empty for the top, whose ports
-        /// the host binds.
-        connected: std.AutoHashMapUnmanaged(Ast.StrId, bool) = .empty,
-        /// §9.19 `$param_given`: local parameter name → was it overridden.
-        given: std.AutoHashMapUnmanaged(Ast.StrId, bool) = .empty,
-        /// §4.4/§5.5.3 the discipline a BOUND port was declared with in this unit,
-        /// local port name → discipline. The port is the parent's net after
-        /// the join, whose discipline may be another one; `localAccess` checks
-        /// this unit's access names against this, not against that. Attribute
-        /// reads likewise retain this discipline when their net is renamed.
-        port_disc: std.AutoHashMapUnmanaged(Ast.StrId, Ast.StrId) = .empty,
-        /// Annex E: the unit is a shipped Table E.1 primitive, whose `V`/`I`
-        /// is a nature-neutral spelling of the port pair's potential and flow,
-        /// not those two access functions. See `primitiveAccess`.
-        primitive: bool = false,
-        /// §9.18 the six resolved values in the flat namespace. `.none`
-        /// denotes Table 9-29's top-level identity; descendants inherit the
-        /// parent's expression unless they specify a new value to combine.
-        hier: hier_param.Values = .initFill(.none),
-        /// §6.6 the conjunction of if-generate schemes that brings this unit
-        /// into existence, in the flat namespace; `.none` when nothing does.
-        /// Every analog block of the unit is lowered under it.
-        gate: Ast.ExprId = .none,
-        /// §6.3.1 the nearest paramset instance above or at this unit. A
-        /// descendant module inherits it even when instantiated by module name.
-        paramset_instance: ?[]const u8 = null,
-        /// The module this unit is an instance of, and the unit that
-        /// instantiated it (null at the top). IEEE 1364-2005 12.6/12.7's
-        /// upward search walks them (`clone.upward`). Null `module` is a
-        /// scope that is not a module instance (a paramset body).
-        module: ?*const Ast.ModuleDecl = null,
-        up: ?*const Unit = null,
-    };
-
-    /// Returns `m`'s §6.6 generate-block instances. Asserts `m` is a row of
-    /// `ctx.file.modules` (what `findModule` returns), not a copy.
-    pub fn genInstancesOf(self: *const Flatten, m: *const Ast.ModuleDecl) []const Ast.Instance {
-        const mods = self.ctx.file.modules;
-        std.debug.assert(@intFromPtr(m) >= @intFromPtr(mods.ptr) and @intFromPtr(m) < @intFromPtr(mods.ptr + mods.len));
-        return self.gen_instances[(@intFromPtr(m) - @intFromPtr(mods.ptr)) / @sizeOf(Ast.ModuleDecl)];
-    }
-
-    /// Reports `code` at `tok` and marks the flatten failed, so `elaborate`
-    /// returns `error.DiagnosticsReported` once the walk ends.
-    pub fn err(self: *Flatten, tok: u32, code: diag.Code, comptime fmt: []const u8, args: anytype) Error!void {
-        self.had_error = true;
-        return self.ctx.bag.add(.lower, code, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, tok), fmt, args);
-    }
-
-    /// The flatten's spine (see the file header): seeds the flat namespace
-    /// with the top's own declarations, walks the instance tree, runs the
-    /// post-walk passes and publishes `Design`.
-    fn run(self: *Flatten, top: *const Ast.ModuleDecl) Error!Design {
-        // The top's own declarations go in unrenamed and uncloned: it IS the
-        // flat namespace, so an identity rename would rewrite every expression
-        // in the device for no change.
-        try self.params.appendSlice(self.ctx.arena, top.params);
-        try elab_names.syncParamValues(self);
-        try elab_override.applyTopDefparams(self);
-        try self.aliasparams.appendSlice(self.ctx.arena, top.aliasparams);
-        for (top.aliasparams) |al| if (elab_alias.original(self.ctx.file, top.params, top.aliasparams, al)) |target|
-            try self.expression_aliases.append(self.ctx.arena, .{ .alias = al.alias, .target = target });
-
-        // A host can set a top-level geometry alias through the model card.
-        // Retain that parameter read in every descendant's composition. The
-        // mfactor host field has its own automatic scaling convention.
-        for (top.aliasparams) |al| {
-            const kind = hier_param.Kind.fromName(self.ctx.file.str(al.target)) orelse continue;
-            const card = try self.ctx.file.exprs.add(self.ctx.arena, .{
-                .tag = .ident,
-                .main_tok = top.main_tok,
-                .str = al.alias,
-            });
-            // The card value is the top's own system parameter: Table 9-29
-            // constrains it as much as an instance override.
-            if (kind.constrained()) try self.system_checks.append(self.ctx.arena, .{
-                .kind = kind,
-                .value = card,
-                .name = self.ctx.file.str(al.alias),
-            });
-            if (kind == .mfactor or self.unit.hier.get(kind) != .none) continue;
-            self.unit.hier.set(kind, card);
-        }
-        try self.vars.appendSlice(self.ctx.arena, top.vars);
-        for (top.ports) |p| try elab_resolve.noteDiscipline(self, p.name, p.discipline);
-        try elab_resolve.addNets(self, top.nets);
-        try self.branches.appendSlice(self.ctx.arena, top.branches);
-        try self.genvars.appendSlice(self.ctx.arena, top.genvars);
-        try self.events.appendSlice(self.ctx.arena, top.events);
-        try self.functions.appendSlice(self.ctx.arena, top.functions);
-        try self.attrs.appendSlice(self.ctx.arena, top.attrs);
-        try self.discrete.appendSlice(self.ctx.arena, top.discrete);
-        try self.assigns.appendSlice(self.ctx.arena, top.assigns);
-        try self.gates.appendSlice(self.ctx.arena, top.gates);
-        try self.pulls.appendSlice(self.ctx.arena, top.pulls);
-        try self.switches.appendSlice(self.ctx.arena, top.switches);
-
-        // Unit 0 is the top itself, and §9.15's example makes a top-level
-        // module's instance name its module name ("testbench").
-        try self.unit_paths.append(self.ctx.arena, .{
-            .module = self.ctx.file.str(top.name),
-            .path = "",
-            .decl = top,
-        });
-
-        self.unit.module = top;
-        var stack: std.ArrayList(Ast.StrId) = .empty;
-        try stack.append(self.ctx.arena, top.name);
-        try elab_instance.walkInstances(self, top, &stack);
-        // The walk puts back every unit it inlined, ending on the top's.
-        std.debug.assert(self.unit.module.? == top);
-        std.debug.assert(self.unit.up == null);
-        // `Design.units[i]` is unit i: the top, then one row per instance.
-        std.debug.assert(self.unit_paths.items.len == @as(usize, self.last_unit) + 1);
-
-        // E.3.2.2 "If there are no continuous disciplines defined on the net
-        // segment, then the discipline shall default to electrical": the
-        // primitive's own declaration, on a net nothing else resolved.
-        for (self.prim_ports.items) |pp| {
-            const d = self.disc_of.get(pp.bound) orelse .none;
-            if (d == .none or !discipline.isContinuous(self.ctx.file, d))
-                try elab_resolve.resolveDiscipline(self, pp.path, pp.port, pp.bound, null);
-        }
-
-        // Annex F.2.1 step 4's multi-candidate arm, over the segment sets the
-        // walk collected. After the walk because 4.b matches the complete
-        // candidate set of a signal against §7.7.2's resolution statements.
-        try elab_resolve.resolveMultiCandidates(self);
-        try elab_resolve.applyOocInits(self); // §3.6.3.2 hierarchical nodesets
-        try elab_insert.checkUnbridged(self); // §7.8.4 E0927, on resolved nets
-
-        // §5.2 analog blocks are concurrent, but §5.4.2.2's flow read is
-        // ordered: `I(b)` after a flow contribution to `b` reads the retained
-        // value, before one it mints an unknown. A parent reading a child's
-        // branch flow through §6.7.1 must see the child's contribution, so the
-        // top's own blocks go last, after every inlined child's.
-        try self.analog.appendSlice(self.ctx.arena, top.analog);
-
-        try elab_override.reportUnusedDefparams(self); // §6.3.1 E0907
-
-        const out = try self.ctx.arena.create(Ast.ModuleDecl);
-        const md = @typeInfo(Ast.ModuleDecl).@"struct";
-        inline for (md.field_names, md.field_types, md.field_attrs) |name, F, attrs| @field(out, name) = switch (@field(fate, name)) {
-            .top => @field(top, name),
-            .merged => @field(self, name).items,
-            .consumed => comptime attrs.defaultValue(F).?,
-        };
-
-        if (self.had_error) return error.DiagnosticsReported;
-        try elab_alias.checkFlat(self.ctx, out, self.expression_aliases.items);
-        return .{
-            .top = out,
-            .names = self.names,
-            .port_disciplines = self.port_disciplines,
-            .implicit_nets = self.implicit_nets.items,
-            .unconnected_inputs = self.unconnected_inputs.items,
-            .units = self.unit_paths.items,
-            .inserts = self.inserts.items,
-            .port_concats = self.port_concats.items,
-            .port_widths = self.port_widths.items,
-            .signal_disciplines = self.signal_disciplines.items,
-            .attribute_disciplines = self.attribute_disciplines,
-            .local_accesses = self.local_accesses,
-            .ps_hidden = self.ps_hidden.items,
-            .port_vars = self.port_vars.items,
-            .ps_outputs = self.ps_outputs.items,
-            .port_ammeters = self.port_ammeters.items,
-            .paramset_defparams = self.paramset_defparams.items,
-            .selection_params = self.selection_params.items,
-            .system_checks = self.system_checks.items,
-        };
-    }
-};
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-const fixture = @import("fixture.zig");
-const Fixture = fixture.Fixture;
-const parse = fixture.parse;
-const parseWithPrelude = fixture.parseWithPrelude;
 
 test "a tree of one elaborates to that one, by pointer" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -947,9 +185,9 @@ test "a tree of one elaborates to that one, by pointer" {
     try std.testing.expectError(error.NoModule, elaborate(c));
 
     try parse(&f, "module a(p); inout p; electrical p; analog I(p) <+ 0.0; endmodule");
-    const design = try elaborate(f.ctx());
+    const dsg = try elaborate(f.ctx());
     // The identity of the pointer IS the regression claim: nothing was rebuilt.
-    try std.testing.expectEqual(&f.file.modules[0], design.top);
+    try std.testing.expectEqual(&f.file.modules[0], dsg.top);
 }
 
 test "the top is the module nothing instantiates, whatever the source order" {
@@ -967,20 +205,20 @@ test "the top is the module nothing instantiates, whatever the source order" {
         \\  kid #(.g(4.0)) u(p, n);
         \\endmodule
     );
-    const design = try elaborate(f.ctx());
-    try std.testing.expectEqualStrings("top", f.file.str(design.top.name));
+    const dsg = try elaborate(f.ctx());
+    try std.testing.expectEqualStrings("top", f.file.str(dsg.top.name));
 
     // §6.3: the child's parameter is flattened in under its §6.7 path, as a
     // localparam, carrying the override.
-    try std.testing.expectEqual(@as(usize, 1), design.top.params.len);
-    try std.testing.expectEqualStrings("u.g", f.file.str(design.top.params[0].name));
-    try std.testing.expect(design.top.params[0].is_local);
-    try std.testing.expect(design.top.params[0].is_override);
+    try std.testing.expectEqual(@as(usize, 1), dsg.top.params.len);
+    try std.testing.expectEqualStrings("u.g", f.file.str(dsg.top.params[0].name));
+    try std.testing.expect(dsg.top.params[0].is_local);
+    try std.testing.expect(dsg.top.params[0].is_override);
     // §6.5 the terminals are still the top's, and the child added no node: both
     // its ports were connected to them.
-    try std.testing.expectEqual(@as(usize, 2), design.top.ports.len);
-    try std.testing.expectEqual(@as(usize, 0), design.top.nets.len);
-    try std.testing.expectEqual(@as(usize, 1), design.top.analog.len);
+    try std.testing.expectEqual(@as(usize, 2), dsg.top.ports.len);
+    try std.testing.expectEqual(@as(usize, 0), dsg.top.nets.len);
+    try std.testing.expectEqual(@as(usize, 1), dsg.top.analog.len);
 }
 
 test "annex E: a shipped primitive is instantiable, is never the top, and yields to a user module of the same name" {
@@ -993,14 +231,14 @@ test "annex E: a shipped primitive is instantiable, is never the top, and yields
         \\endmodule
     );
     try std.testing.expect(f.file.builtin_modules > 0);
-    const design = try elaborate(f.ctx());
+    const dsg = try elaborate(f.ctx());
     // §6.2.2: nineteen uninstantiated primitives are nineteen roots, and none of
     // them is the device.
-    try std.testing.expectEqualStrings("top", f.file.str(design.top.name));
+    try std.testing.expectEqualStrings("top", f.file.str(dsg.top.name));
     // Table E.1's `resistor` row: parameters r, tc1, tc2, flattened under §6.7.
-    try std.testing.expectEqual(@as(usize, 3), design.top.params.len);
-    try std.testing.expectEqualStrings("r1.r", f.file.str(design.top.params[0].name));
-    try std.testing.expect(design.top.params[0].is_override);
+    try std.testing.expectEqual(@as(usize, 3), dsg.top.params.len);
+    try std.testing.expectEqualStrings("r1.r", f.file.str(dsg.top.params[0].name));
+    try std.testing.expect(dsg.top.params[0].is_override);
 
     // E.3.3: "a module ... defined in the Verilog-AMS will always be selected in
     // favor of a SPICE primitive ... using exactly the same name". The user's
@@ -1060,8 +298,8 @@ test "§6.6 an if-generate's instances are elaborated under their arm's scheme; 
     // §6.6.1: one generate block instance per genvar value, `blk[i]`.
     const dg = try elaborate(g.ctx());
     try std.testing.expectEqual(@as(usize, 3), dg.units.len);
-    try std.testing.expectEqualStrings("blk[0].a.", dg.units[1].path);
-    try std.testing.expectEqualStrings("blk[1].a.", dg.units[2].path);
+    try std.testing.expectEqualStrings("blk[0].a.", dg.units.items(.path)[1]);
+    try std.testing.expectEqualStrings("blk[1].a.", dg.units.items(.path)[2]);
 
     var h: Fixture = .{ .arena = .init(std.testing.allocator) };
     defer h.deinit();
@@ -1088,20 +326,20 @@ test "§6.3.6 a scaled instance's flow contribution is multiplied, its flow prob
         \\  analog V(c) <+ I(a, b);
         \\endmodule
     );
-    const design = try elaborate(f.ctx());
+    const dsg = try elaborate(f.ctx());
     const x = &f.file.exprs;
-    try std.testing.expectEqual(@as(usize, 2), design.top.analog.len);
+    try std.testing.expectEqual(@as(usize, 2), dsg.top.analog.len);
 
     // Rule 1: the FLOW contribution's value is `V(a,b) * 4.0`. The left-hand
     // side is untouched: it names the branch and is not a read of it.
-    const flow = f.file.stmt(design.top.analog[0].body).contribute;
+    const flow = f.file.stmt(dsg.top.analog[0].body).contribute;
     try std.testing.expectEqual(Ast.ExprTag.branch_access, x.tag(flow.lhs));
     try std.testing.expectEqual(Ast.BinaryOp.mul, x.binOp(flow.rhs));
     try std.testing.expectEqual(@as(f64, 4.0), x.realValue(x.rhs(flow.rhs)));
 
     // Rule 2: the POTENTIAL contribution is not scaled, but the flow probe
     // inside it is divided: one instance of 4 copies carries a quarter each.
-    const pot = f.file.stmt(design.top.analog[1].body).contribute;
+    const pot = f.file.stmt(dsg.top.analog[1].body).contribute;
     try std.testing.expectEqual(Ast.ExprTag.branch_access, x.tag(pot.lhs));
     try std.testing.expectEqual(Ast.BinaryOp.div, x.binOp(pot.rhs));
     try std.testing.expectEqual(Ast.ExprTag.branch_access, x.tag(x.lhs(pot.rhs)));
@@ -1122,11 +360,11 @@ test "§6.3.1 a defparam beats the instance's own override, and an unmatched one
         \\  analog I(a, b) <+ g * V(a, b);
         \\endmodule
     );
-    const design = try elaborate(f.ctx());
-    try std.testing.expectEqualStrings("u.g", f.file.str(design.top.params[0].name));
+    const dsg = try elaborate(f.ctx());
+    try std.testing.expectEqualStrings("u.g", f.file.str(dsg.top.params[0].name));
     // §6.3: "the parameter in the module shall take the value specified by the
     // defparam": 5.0, not the instance's 2.0, whichever came first in the text.
-    const v = design.top.params[0].default;
+    const v = dsg.top.params[0].default;
     try std.testing.expectEqual(@as(f64, 5.0), f.file.exprs.realValue(v));
 
     var g: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -1173,9 +411,9 @@ test "§3.4.7 defparam aliases share binding and reject conflicting spellings ac
             try std.testing.expectError(error.DiagnosticsReported, elaborate(f.ctx()));
             try std.testing.expectEqual(diag.Code.E0908, f.bag.at(0).code);
         } else {
-            const design = try elaborate(f.ctx());
+            const dsg = try elaborate(f.ctx());
             const target = if (paramset) "u.card.g" else "u.g";
-            const p = for (design.top.params) |p| {
+            const p = for (dsg.top.params) |p| {
                 if (std.mem.eql(u8, f.file.str(p.name), target)) break p;
             } else unreachable;
             try std.testing.expect(p.is_override);
@@ -1195,11 +433,11 @@ test "empty named associations retain defaults and do not mark param_given" {
             \\analog I(p)<+$param_given(g);
             \\endmodule
         , .{name}));
-        const design = try elaborate(f.ctx());
-        const p = design.top.params[0];
+        const dsg = try elaborate(f.ctx());
+        const p = dsg.top.params[0];
         try std.testing.expect(!p.is_override);
         try std.testing.expectEqual(@as(f64, 3.0), f.file.exprs.realValue(p.default));
-        const contribution = f.file.stmt(design.top.analog[0].body).contribute;
+        const contribution = f.file.stmt(dsg.top.analog[0].body).contribute;
         try std.testing.expectEqual(@as(i64, 0), f.file.exprs.intValue(contribution.rhs));
     }
 }
@@ -1232,10 +470,10 @@ test "empty named associations do not suppress defparam override or given state"
         \\module kid(p); inout p; electrical p;
         \\parameter real g=3.0; analog I(p)<+$param_given(g); endmodule
     );
-    const design = try elaborate(f.ctx());
-    try std.testing.expect(design.top.params[0].is_override);
-    try std.testing.expectEqual(@as(f64, 5.0), f.file.exprs.realValue(design.top.params[0].default));
-    const contribution = f.file.stmt(design.top.analog[0].body).contribute;
+    const dsg = try elaborate(f.ctx());
+    try std.testing.expect(dsg.top.params[0].is_override);
+    try std.testing.expectEqual(@as(f64, 5.0), f.file.exprs.realValue(dsg.top.params[0].default));
+    const contribution = f.file.stmt(dsg.top.analog[0].body).contribute;
     try std.testing.expectEqual(@as(i64, 1), f.file.exprs.intValue(contribution.rhs));
 }
 
@@ -1247,8 +485,8 @@ test "empty named associations leave the inherited mfactor product unchanged" {
         \\module mid(p); inout p; electrical p; kid #(.$mfactor()) v(p); endmodule
         \\module kid(p); inout p; electrical p; analog V(p)<+$mfactor; endmodule
     );
-    const design = try elaborate(f.ctx());
-    const contribution = f.file.stmt(design.top.analog[0].body).contribute;
+    const dsg = try elaborate(f.ctx());
+    const contribution = f.file.stmt(dsg.top.analog[0].body).contribute;
     try std.testing.expectEqual(@as(f64, 4.0), f.file.exprs.realValue(contribution.rhs));
 }
 
@@ -1268,11 +506,11 @@ test "compile-time selection overrides replace default dependencies in host shap
     );
     var ctx = f.ctx();
     ctx.param_overrides = &.{.{ .name = "base", .value = 7.0 }};
-    const design = try elaborate(ctx);
-    try std.testing.expect(design.selection_params.len != 0);
-    for (design.selection_params) |name|
+    const dsg = try elaborate(ctx);
+    try std.testing.expect(dsg.selection_params.len != 0);
+    for (dsg.selection_params) |name|
         try std.testing.expectEqualStrings("base", f.file.str(name));
-    const gain = for (design.top.params) |p| {
+    const gain = for (dsg.top.params) |p| {
         if (std.mem.eql(u8, f.file.str(p.name), "u.g")) break p;
     } else unreachable;
     try std.testing.expectEqual(@as(f64, 3.0), f.file.exprs.realValue(gain.default));
@@ -1293,8 +531,8 @@ test "empty named associations use paramset defaults in admission and tie scores
         \\parameter real k=1.0; analog I(p)<+k*V(p);
         \\endmodule
     );
-    const design = try elaborate(f.ctx());
-    const ps_value = for (design.top.params) |p| {
+    const dsg = try elaborate(f.ctx());
+    const ps_value = for (dsg.top.params) |p| {
         if (std.mem.eql(u8, f.file.str(p.name), "u.bin.g")) break p;
     } else unreachable;
     try std.testing.expectEqual(@as(f64, 2.0), f.file.exprs.realValue(ps_value.default));
@@ -1322,10 +560,10 @@ test "§6.4.2 the paramset whose range admits the override is selected, and a ga
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
     defer f.deinit();
     try parse(&f, try f.arena.allocator().print(src, .{"0.5"}));
-    const design = try elaborate(f.ctx());
+    const dsg = try elaborate(f.ctx());
     // The SECOND paramset is the admitting one, so a first-match with no range
     // test answers 10.0 here.
-    const k = for (design.top.params) |p| {
+    const k = for (dsg.top.params) |p| {
         if (std.mem.eql(u8, f.file.str(p.name), "u.k")) break p.default;
     } else unreachable;
     try std.testing.expectEqual(@as(f64, 20.0), f.file.exprs.realValue(k));
@@ -1354,15 +592,15 @@ test "Annex F.2 a leaf's discipline reaches the top segment it is bound to" {
         \\module leaf(p); inout p; electrical p;
         \\endmodule
     );
-    const design = try elaborate(f.ctx());
+    const dsg = try elaborate(f.ctx());
     // The path is INSTANCE names, so it is `m.l.p` and not `m.leaf.p`: §6.7 walks
     // the instance tree. The leaf declares `electrical p`, the declaration above
     // declares it out of context, and
     // §3.10 order 1 wins. Both segments are the top's `a` after the flatten, so
     // the discipline lands on a net declaration for `a` and on nothing else.
-    try std.testing.expectEqual(@as(usize, 1), design.top.nets.len);
-    try std.testing.expectEqualStrings("a", f.file.str(design.top.nets[0].name));
-    try std.testing.expectEqualStrings("annex_f_y", f.file.str(design.top.nets[0].discipline));
+    try std.testing.expectEqual(@as(usize, 1), dsg.top.nets.len);
+    try std.testing.expectEqualStrings("a", f.file.str(dsg.top.nets[0].name));
+    try std.testing.expectEqualStrings("annex_f_y", f.file.str(dsg.top.nets[0].discipline));
 }
 
 test "Annex F.2.1 step 4.b: resolveto resolves the multi-candidate net, no rule with a mixed port is E0903, exclude is E0917" {
@@ -1399,9 +637,9 @@ test "Annex F.2.1 step 4.b: resolveto resolves the multi-candidate net, no rule 
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
     defer f.deinit();
     try S.build(&f, "connectrules r; connect fb, fa resolveto fc; endconnectrules", "");
-    const design = try elaborate(f.ctx());
-    try std.testing.expectEqual(@as(usize, 1), design.top.nets.len);
-    try std.testing.expectEqualStrings("fc", f.file.str(design.top.nets[0].discipline));
+    const dsg = try elaborate(f.ctx());
+    try std.testing.expectEqual(@as(usize, 1), dsg.top.nets.len);
+    try std.testing.expectEqualStrings("fc", f.file.str(dsg.top.nets[0].discipline));
 
     // §7.7.2.1: the candidate set {fa,fb} is a subset of {fa,fb,fc}.
     var subset: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -1442,7 +680,7 @@ test "Annex F.2.1 step 4.b: resolveto resolves the multi-candidate net, no rule 
     try std.testing.expectEqual(diag.Code.E0903, g.bag.at(0).code);
 
     // Bullet 4, legal half: same unknown, no discrete segment: the net keeps
-    // the first arrival and the design elaborates.
+    // the first arrival and the dsg elaborates.
     var h: Fixture = .{ .arena = .init(std.testing.allocator) };
     defer h.deinit();
     try S.build(&h, "", "");
@@ -1499,8 +737,8 @@ test "a connect module is never the top (§7.6), and a hand-placed one is inline
         \\connectmodule bridge(a, d); inout a, d; electrical a; endmodule
         \\module top(p); inout p; electrical p; analog I(p) <+ V(p); endmodule
     );
-    const design = try elaborate(f.ctx());
-    try std.testing.expectEqualStrings("top", f.file.str(design.top.name));
+    const dsg = try elaborate(f.ctx());
+    try std.testing.expectEqualStrings("top", f.file.str(dsg.top.name));
 
     // §7.1: connect modules "can be manually inserted (by the user)", so
     // naming one inlines it like any child, its analog block included.
@@ -1523,12 +761,12 @@ test "§7.2.2 a flattened discrete half is carried, never dropped" {
         \\module c(p); inout p; electrical p; integer k; initial k = 3; analog I(p) <+ k * V(p); endmodule
         \\module top(p); inout p; electrical p; integer j; initial j = 2; c u(p); analog I(p) <+ j * V(p); endmodule
     );
-    const design = try elaborate(f.ctx());
-    try std.testing.expectEqual(@as(usize, 2), design.top.discrete.len);
-    const child_init = f.file.stmt(design.top.discrete[1].body).assign;
+    const dsg = try elaborate(f.ctx());
+    try std.testing.expectEqual(@as(usize, 2), dsg.top.discrete.len);
+    const child_init = f.file.stmt(dsg.top.discrete[1].body).assign;
     try std.testing.expectEqualStrings("u.k", f.file.str(f.file.exprs.strOf(child_init.target)));
 
-    // So is a child's process in a design that needs the event kernel: the
+    // So is a child's process in a dsg that needs the event kernel: the
     // mixed runner resolves `u.q` as a §6.7 path (`sim.digital.Run.slotOf`).
     var g: Fixture = .{ .arena = .init(std.testing.allocator) };
     defer g.deinit();
@@ -1549,9 +787,9 @@ test "IEEE 1364 §12.3.3 two variable ports collapsed onto one net declare it on
         \\module d(o); output o; reg o; initial o = 1'b0; endmodule
         \\module top(p); inout p; electrical p; wire w; d a(w); d b(w); analog I(p) <+ V(p); endmodule
     );
-    const design = try elaborate(f.ctx());
-    try std.testing.expectEqual(@as(usize, 1), design.top.vars.len);
-    try std.testing.expectEqualStrings("w", f.file.str(design.top.vars[0].name));
+    const dsg = try elaborate(f.ctx());
+    try std.testing.expectEqual(@as(usize, 1), dsg.top.vars.len);
+    try std.testing.expectEqualStrings("w", f.file.str(dsg.top.vars[0].name));
 }
 
 test pickTop {
@@ -1599,7 +837,7 @@ test pickTop {
 }
 
 test "every allocation elaborate makes can fail, and the failure is OutOfMemory, not a swallowed or leaked one" {
-    // One design through every walk: the §12.8.1 seed walk (an upward
+    // One dsg through every walk: the §12.8.1 seed walk (an upward
     // defparam), the §7.8.4 dry walk (connectrules), a paramset, an instance
     // array, a loop and an if-generate, $mfactor and an out-of-context net.
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -1638,7 +876,7 @@ test "every allocation elaborate makes can fail, and the failure is OutOfMemory,
         c.file = &file;
         c.bag = &bag;
         if (elaborate(c)) |_| {
-            // No failure was induced and swallowed on the way to a design.
+            // No failure was induced and swallowed on the way to a dsg.
             try std.testing.expect(!failing.has_induced_failure);
             break;
         } else |e| {
@@ -1646,18 +884,37 @@ test "every allocation elaborate makes can fail, and the failure is OutOfMemory,
             try std.testing.expect(failing.has_induced_failure);
         }
     }
-    // The design allocates; the loop above failed each of those.
+    // The dsg allocates; the loop above failed each of those.
     try std.testing.expect(i > 100);
 }
 
 test {
-    _ = elab_alias;
-    _ = elab_clone;
-    _ = elab_insert;
-    _ = elab_instance;
-    _ = elab_names;
-    _ = elab_override;
-    _ = elab_paramset;
-    _ = elab_resolve;
-    _ = elab_segment;
+    // Every file of the module, so each one's own tests run with `test-elab`.
+    _ = @import("Flatten.zig");
+    _ = @import("access.zig");
+    _ = @import("alias.zig");
+    _ = @import("clone_decl.zig");
+    _ = @import("clone_expr.zig");
+    _ = @import("clone_stmt.zig");
+    _ = @import("connect_rule.zig");
+    _ = @import("decl_check.zig");
+    _ = @import("defparam.zig");
+    _ = @import("design.zig");
+    _ = @import("flat_name.zig");
+    _ = @import("fold.zig");
+    _ = @import("generate.zig");
+    _ = @import("insert.zig");
+    _ = @import("instance.zig");
+    _ = @import("lookup.zig");
+    _ = @import("ooc.zig");
+    _ = @import("override.zig");
+    _ = @import("paramset.zig");
+    _ = @import("paramset_dist.zig");
+    _ = @import("paramset_select.zig");
+    _ = @import("ports.zig");
+    _ = @import("primitive.zig");
+    _ = @import("resolve.zig");
+    _ = @import("segment.zig");
+    _ = @import("spice_case.zig");
+    _ = @import("walk.zig");
 }
