@@ -74,6 +74,7 @@
 //! - `N.stmt(w: @This(), st: Ast.StmtId) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -307,9 +308,11 @@ pub fn expectRejected(source: []const u8, message: []const u8) !void {
 // ---- private ----
 
 fn runDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *diag.Bag, out: *std.Io.Writer) Error!void {
+    assert(opts.mixed == null); // A mixed run is stepped by `sim.mixed.run`.
     var r = try elaborate(arena, source, opts, bag, out);
     // Nothing is `watchAnalog`ed in a digital-only run, so it never stops early.
-    _ = try r.runUntil(std.math.maxInt(Tick));
+    const stop = try r.runUntil(std.math.maxInt(Tick));
+    assert(stop == .idle);
     try @import("evcd.zig").close(&r);
 }
 
@@ -407,6 +410,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         .unit_exp = @backingInt(l.unit),
     };
     r.time.modules = module_times;
+    assert(module_times.len == file.modules.len); // One scale per definition.
     const root_time = module_times[elab.defOf(&r, m)];
     r.time.scale = root_time.scale;
     r.time.unit_exp = root_time.unit_exp;
@@ -735,6 +739,11 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     r.decls.slot_memo = try arena.alloc(SlotMemo, 1 << memo_bits);
     @memset(r.decls.slot_memo, .{});
     r.diag_stage = .run;
+    // Elaboration is complete before time 0 (§12.1.3): one scope row per
+    // instruction, a fan-out and a watch set per slot, nothing has run.
+    assert(r.program.scope_of.items.len == r.program.code.items.len);
+    assert(r.waits.watch.len == r.values.len);
+    assert(r.scheduler.now == 0);
     return r;
 }
 
