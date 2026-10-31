@@ -34,7 +34,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
+const lexer = @import("frontend").lexer;
 const diag = @import("diag");
 const design = @import("design.zig");
 const alias = @import("alias.zig");
@@ -272,7 +272,7 @@ pub fn genInstancesOf(self: *const Flatten, m: *const Ast.ModuleDecl) []const As
 pub fn err(self: *Flatten, tok: u32, code: diag.Code, comptime fmt: []const u8, args: anytype) Error!void {
     assert(tok == 0 or tok < self.ctx.tok_starts.len);
     self.had_error = true;
-    try self.ctx.bag.add(.lower, code, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, tok), fmt, args);
+    try self.ctx.bag.add(.lower, code, lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, tok), fmt, args);
     assert(self.had_error);
 }
 

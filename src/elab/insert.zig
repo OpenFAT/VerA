@@ -12,7 +12,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Preprocessor = @import("frontend").Preprocessor;
+const directive_events = @import("frontend").directive_events;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
 const elaborate = @import("elaborate.zig");
@@ -158,7 +158,7 @@ pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src
     };
     for (try Ast.primTerms(self.ctx.arena, file, module)) |pt| {
         if (pt.main_tok >= self.ctx.tok_starts.len) continue;
-        const dname = Preprocessor.DefaultDiscipline.inForce(self.ctx.default_disciplines, self.ctx.tok_starts[pt.main_tok], .wire) orelse continue;
+        const dname = directive_events.DefaultDiscipline.inForce(self.ctx.default_disciplines, self.ctx.tok_starts[pt.main_tok], .wire) orelse continue;
         const bottom = file.strings.find(dname) orelse continue;
         if (connect_rule.domain(file, bottom) != .discrete) continue;
         const base = file.lvalueBase(pt.expr);

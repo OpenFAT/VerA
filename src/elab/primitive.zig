@@ -12,7 +12,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
+const lexer = @import("frontend").lexer;
 const constfold = @import("frontend").constfold;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
@@ -150,6 +150,6 @@ fn decorates(self: *Flatten, t: u32, inst: *const Ast.Instance) bool {
 /// The source text of token `t`.
 fn tokText(self: *Flatten, t: u32) []const u8 {
     assert(t < self.ctx.tok_starts.len);
-    const sp = Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, t);
+    const sp = lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, t);
     return self.ctx.src[sp.start..sp.end];
 }

@@ -5,7 +5,7 @@
 //! Cites: none (VerA's test harness); the cases that use it cite their clauses.
 //!
 //! Contents:
-//! - `pub const InitError = Preprocessor.Error || Parser.Error`
+//! - `pub const InitError = preprocessor.Error || Parser.Error`
 //! - `pub const VerdictError = InitError || Error || error{TestUnexpectedResult}`
 //! - `pub const Case = struct`
 //! - `pub const Harness = struct` (`init`, `lower`, `lowerOnStack`, `count`, `dump`, `deinit`)
@@ -16,9 +16,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
+const lexer = @import("frontend").lexer;
+const preprocessor = @import("frontend").preprocessor;
+const annex_e = @import("frontend").annex_e;
 const Parser = @import("frontend").Parser;
-const Preprocessor = @import("frontend").Preprocessor;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
 const Lower = @import("Lower.zig");
@@ -27,7 +28,7 @@ const Error = Lower.Error;
 
 /// Every way `Harness.init` fails: the source did not preprocess or parse
 /// (its diagnostics are in the harness's bag), or memory ran out.
-pub const InitError = Preprocessor.Error || Parser.Error;
+pub const InitError = preprocessor.Error || Parser.Error;
 
 /// Every way the `expect*` checks fail: `TestUnexpectedResult` when the
 /// verdict differs from the one wanted (both are printed), or the harness's
@@ -66,14 +67,14 @@ pub const Harness = struct {
         errdefer h.arena_state.deinit();
         const arena = h.arena_state.allocator();
         h.bag = diag.Bag.init(arena);
-        const text = (try Preprocessor.process(arena, src, .{ .bag = &h.bag })).text;
-        const toks = try Lexer.Lexer.tokenize(arena, text);
+        const text = (try preprocessor.process(arena, src, .{ .bag = &h.bag })).text;
+        const toks = try lexer.tokenize(arena, text, null);
         var p = Parser.Parser.init(arena, text, toks.items(.tag), toks.items(.start), &h.bag);
         const parse = try arena.create(Ast.SourceFile);
         parse.* = try p.parseSourceFile();
         // The annex E prelude's modules lead `file.modules`. Elaboration
         // writes the overlay, never the parse.
-        h.file = parse.overlay(.{ .builtin_modules = Preprocessor.spice_module_count });
+        h.file = parse.overlay(.{ .builtin_modules = annex_e.spice_module_count });
         h.low = Lower.init(arena, &h.mir, &h.file, text, toks.items(.start), &h.bag);
         assert(h.low.file == &h.file);
         assert(h.low.mir == &h.mir);

@@ -18,8 +18,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
-const Preprocessor = @import("frontend").Preprocessor;
+const lexer = @import("frontend").lexer;
+const directive_events = @import("frontend").directive_events;
 const constfold = @import("frontend").constfold;
 const Elaborate = @import("elab").Elaborate;
 const Lower = @import("Lower.zig");
@@ -150,7 +150,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // IEEE 1364 §19.1 (§10.1 carries it over): the tag of the module keyword's
     // own position, which is what "modules between `celldefine and
     // `endcelldefine" means once the directives are positional regions.
-    self.mir.is_cell = Preprocessor.CellRegion.inForce(self.opts.directives.cells, self.tokStart(module.main_tok), false);
+    self.mir.is_cell = directive_events.CellRegion.inForce(self.opts.directives.cells, self.tokStart(module.main_tok), false);
 
     try reserveMir(self);
     const entry = try self.mir.addBlock(self.arena);
@@ -461,7 +461,7 @@ fn lowered(self: *Lower) Oom!Lowered {
     assert(!self.had_error);
     self.out.src = self.src;
     self.out.tok_starts = self.tok_starts;
-    self.out.token_span = &Lexer.tokenSpan;
+    self.out.token_span = &lexer.tokenSpan;
     self.out.default_transitions = self.opts.directives.transitions; // §10.3
     self.out.timescale = self.opts.directives.timescale(); // IEEE 1364 §19.8
     self.out.timescales = self.opts.directives.timescales;

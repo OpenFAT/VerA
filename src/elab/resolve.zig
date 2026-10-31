@@ -22,7 +22,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
+const lexer = @import("frontend").lexer;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
 const ooc = @import("ooc.zig");
@@ -484,7 +484,7 @@ fn matchResolution(self: *Flatten, cands: []const Ast.StrId, report: bool) desig
                 }
                 if (exact != want_exact) continue;
                 if (first != null) {
-                    if (report) try self.ctx.bag.add(.lower, .W0950, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, r.main_tok), "multiple {s} resolution rules apply; using the first", .{
+                    if (report) try self.ctx.bag.add(.lower, .W0950, lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, r.main_tok), "multiple {s} resolution rules apply; using the first", .{
                         if (want_exact) "exact" else "subset",
                     });
                     return first;

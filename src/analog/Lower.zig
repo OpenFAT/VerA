@@ -62,8 +62,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
-const Preprocessor = @import("frontend").Preprocessor;
+const lexer = @import("frontend").lexer;
+const directive_events = @import("frontend").directive_events;
 const Mir = @import("ir").Mir;
 const Elaborate = @import("elab").Elaborate;
 const diag = @import("diag");
@@ -222,13 +222,13 @@ pub const Accum = struct { resist: Ssa.Place, react: Ssa.Place, wrote: Ssa.Place
 /// nothing": no directives, no include path, no overrides.
 pub const Options = struct {
     /// The positional directive events the preprocessor published
-    /// (`Preprocessor.Directives`). A text stage cannot apply them itself:
+    /// (`directive_events.Directives`). A text stage cannot apply them itself:
     /// §10.2's default discipline needs the module's declarations, §10.3's
     /// default transition reaches only codegen (`defaultTransition`), and §9.15
     /// reads the timescale back. So they record where each took effect, and
     /// lowering applies them. Empty when the text never came through the
     /// preprocessor.
-    directives: Preprocessor.Directives = .{},
+    directives: directive_events.Directives = .{},
     /// Where a §9.21.1 `$table_model` data file is looked for, in order: the
     /// `include` search path. Empty means the working directory only.
     include_dirs: []const []const u8 = &.{},
@@ -657,7 +657,7 @@ pub fn deinit(self: *Lower) void {
 
 /// Returns the byte range of a token, the unit every diagnostic reports in.
 pub fn tokenSpan(self: *const Lower, tok: u32) diag.Span {
-    const span = Lexer.tokenSpan(self.src, self.tok_starts, tok);
+    const span = lexer.tokenSpan(self.src, self.tok_starts, tok);
     assert(span.start <= span.end);
     assert(span.end <= self.src.len);
     return span;

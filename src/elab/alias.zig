@@ -14,7 +14,7 @@ const design = @import("design.zig");
 const flat_name = @import("flat_name.zig");
 const Kind = @import("hier_param.zig").Kind;
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
+const lexer = @import("frontend").lexer;
 const Ctx = design.Ctx;
 const Error = design.Error;
 const fixture = @import("fixture.zig");
@@ -54,7 +54,7 @@ const Scan = struct {
 
     fn reject(self: *Scan, e: Ast.ExprId, alias: Ast.StrId, target: Ast.StrId) Error!void {
         const file = self.ctx.file;
-        try self.ctx.bag.add(.lower, .E0373, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, file.exprs.mainTok(e)), "`{s}` is an alias; reference the original parameter `{s}`", .{ file.str(alias), file.str(target) });
+        try self.ctx.bag.add(.lower, .E0373, lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, file.exprs.mainTok(e)), "`{s}` is an alias; reference the original parameter `{s}`", .{ file.str(alias), file.str(target) });
     }
 
     /// Visit AST expression slots, never binding-name slots (`StrId`). This
