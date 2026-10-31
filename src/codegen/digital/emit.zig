@@ -100,10 +100,10 @@ pub fn device(arena: std.mem.Allocator, r: *Run, file_name: []const u8, schedule
     r.diag_stage = .lower; // compiled, never run: as in `programDeep` (#72)
     var e: Emitter = .{ .r = r, .arena = arena, .out = .init(arena), .device = true };
     // `rt` reads these from the root module, which in a host is the host's.
-    for (r.code.items) |ins| if (ins == .override_on) return .{ .refused = "a §9.3 procedural continuous assignment (assign or force)" };
+    for (r.program.code.items) |ins| if (ins == .override_on) return .{ .refused = "a §9.3 procedural continuous assignment (assign or force)" };
     // ponytail: rt resolves switches, but no host test drives a device's
     // pins through one; open this with a vdev_host case that does.
-    if (r.trans.len != 0) return .{ .refused = "a §7.6 pass switch" };
+    if (r.netlist.switches.len != 0) return .{ .refused = "a §7.6 pass switch" };
     if (native(&e, file_name, schedule)) |text| return .{ .zig = text } else |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Unsupported => return .{ .refused = e.why },
@@ -116,7 +116,7 @@ pub fn device(arena: std.mem.Allocator, r: *Run, file_name: []const u8, schedule
 /// wide as the pin count needs past them; the masks are `contract.MaskOf`.
 fn deviceRoot(self: *Emitter) Error!void {
     const r = self.r;
-    const m = &r.file.modules[r.scope_info.items[0].def];
+    const m = &r.file.modules[r.hier.scopes.items[0].def];
     var names: std.Io.Writer.Allocating = .init(self.arena);
     var pins: std.Io.Writer.Allocating = .init(self.arena);
     var n: u32 = 0;
@@ -126,12 +126,12 @@ fn deviceRoot(self: *Emitter) Error!void {
             .output => true,
             .inout, .unspecified => return self.refuse("an inout port: the analog side would drive a §7.9 resolved net"),
         };
-        const at = r.names.get(.{ .scope = 0, .str = p.name }) orelse return self.refuse("a port with no net or variable behind it");
-        if (r.reals.contains(at)) return self.refuse("a real port");
+        const at = r.hier.names.get(.{ .scope = 0, .str = p.name }) orelse return self.refuse("a port with no net or variable behind it");
+        if (r.decls.reals.contains(at)) return self.refuse("a real port");
         for (m.vars) |v| if (v.name == p.name and v.storage != .reg) return self.refuse("an integer or time port");
         const w = self.slotWidth(at);
         const vr = expr.vecRange(r, at, w);
-        const scalar = w == 1 and !r.vec_ranges.contains(at);
+        const scalar = w == 1 and !r.typing.vec_ranges.contains(at);
         var i = vr.msb;
         while (true) : (i = if (vr.msb >= vr.lsb) i - 1 else i + 1) {
             // Not a VerA cap: a contract mask is one integer with a bit per
@@ -171,7 +171,7 @@ fn deviceRoot(self: *Emitter) Error!void {
         \\    @import("contract").validate(@This());
         \\}}
         \\
-    , .{ @import("contract").vera_version, tag_bits, members, n, r.finest, pins.written() });
+    , .{ @import("contract").vera_version, tag_bits, members, n, r.time.finest, pins.written() });
 }
 
 fn interpreted(arena: std.mem.Allocator, embed: Embed, why: []const u8) std.mem.Allocator.Error![]const u8 {
@@ -318,7 +318,7 @@ pub const Emitter = struct {
     /// `M.nbaAfter`), or `M.put`, or `M.set` when nothing can wait on the slot.
     pub fn store(self: *Emitter, at: u32, how: How) Error!void {
         // §4.8 a real changes when its value does, not its bits.
-        if (self.r.reals.contains(at)) {
+        if (self.r.decls.reals.contains(at)) {
             try realStoreCall(self, how);
             return self.print("{d}, {d}, ", .{ at, self.off[at] });
         }
@@ -331,11 +331,11 @@ pub const Emitter = struct {
     /// slot `base`.
     fn storeElement(self: *Emitter, base: u32, lb: u32, how: How) Error!void {
         const off = .{ self.off[base], lb, base, words(self.r.values[base].width) };
-        if (self.r.reals.contains(base)) {
+        if (self.r.decls.reals.contains(base)) {
             try realStoreCall(self, how);
             return self.print("a{d}, {d} + (a{d} - {d}) * {d}, ", .{lb} ++ off);
         }
-        const count = self.r.arrays.get(base).?.count;
+        const count = self.r.decls.arrays.get(base).?.count;
         const watched = std.mem.findScalar(bool, self.watched[base..][0..count], true) != null;
         if (how == .blocking and !watched) return self.print("try M.set(s, {d} + (a{d} - {d}) * {d}, ", off);
         var wakes: plan.Reach = .{};
@@ -467,7 +467,7 @@ fn rhsFor(self: *Emitter, rhs: Rhs, target: Type) Error!void {
 /// value is left in `r<lb>`.
 pub fn call(self: *Emitter, idx: u32, args: []const Ast.ExprId, lb: u32) Error!void {
     const r = self.r;
-    const sub = r.subs.items[idx];
+    const sub = r.routines.rows.items[idx];
     const f = sub.frame;
     if (!self.sub_done[idx]) {
         self.sub_done[idx] = true;
@@ -517,7 +517,7 @@ fn fillTable(self: *Emitter, name: []const u8, idx: u32, f: root.Frame) Error!vo
     try self.print("const {s}{d} = [_]u64{{", .{ name, idx });
     for (r.values[f.first..][0..f.count], f.first..) |v, at| for (0..words(v.width)) |j| {
         const top = if (j + 1 == words(v.width)) expr.maskOf(v.width - 64 * @as(u32, @intCast(j))) else std.math.maxInt(u64);
-        try self.print(" 0x{x},", .{if (self.two_state or r.reals.contains(@intCast(at))) 0 else top});
+        try self.print(" 0x{x},", .{if (self.two_state or r.decls.reals.contains(@intCast(at))) 0 else top});
     };
     try self.print(" }};\n\n", .{});
 }
@@ -541,7 +541,7 @@ fn fullText(w: u32, out: *std.Io.Writer) std.Io.Writer.Error!void {
 fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]const u8 {
     const r = self.r;
     // `rt` keeps a driver's delay as the constant ticks `Driver.delay` holds.
-    if (r.driver_delays.count() != 0) return self.refuse("A.2.2.3 a continuous assignment or gate delay that reads a variable");
+    if (r.netlist.driver_delays.count() != 0) return self.refuse("A.2.2.3 a continuous assignment or gate delay that reads a variable");
     const off = try self.arena.alloc(u32, r.values.len);
     var total: u32 = 0;
     for (r.values, off) |v, *o| {
@@ -551,30 +551,30 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     self.off = off;
     self.slot_words = total;
     self.total = total;
-    self.sub_done = try self.arena.alloc(bool, r.subs.items.len);
+    self.sub_done = try self.arena.alloc(bool, r.routines.rows.items.len);
     @memset(self.sub_done, false);
     const forced = try self.arena.alloc(bool, r.values.len);
     @memset(forced, false);
-    for (r.code.items) |ins| if (ins == .override_on) if (ins.override_on.bits != null) {
+    for (r.program.code.items) |ins| if (ins == .override_on) if (ins.override_on.bits.some() != null) {
         forced[ins.override_on.slot] = true;
     };
     self.select_forced = forced;
-    for (r.code.items) |ins| switch (ins) {
+    for (r.program.code.items) |ins| switch (ins) {
         .disable_block => |b| try blockEnd(self, b.start, b.end),
-        .disable_task => |idx| for (r.subs.items[idx].ranges.items) |rg| try blockEnd(self, rg.start, rg.end),
+        .disable_task => |idx| for (r.routines.rows.items[idx].ranges.items) |rg| try blockEnd(self, rg.start, rg.end),
         else => {}, // else: only a `disable` resumes a process somewhere it did not suspend
     };
     if (r.drv.watched.items.len != 0) return self.refuse("VAMS §9.22 driver access");
     // `rt` evaluates no timing check; the interpreter does (`tchk.zig`).
-    if (r.tchks.items.len != 0) return self.refuse("IEEE 1364-2005 §15 timing checks");
+    if (r.checks.rows.items.len != 0) return self.refuse("IEEE 1364-2005 §15 timing checks");
     // §7.6: what a switch passes is a strength, which an x or z carries.
-    if (r.trans.len != 0) try self.xMeaning("a §7.6 pass switch", null);
+    if (r.netlist.switches.len != 0) try self.xMeaning("a §7.6 pass switch", null);
     try portDumps(self);
     try resolvedNets(self);
     // The time-0 queue in `Run.pending` order: every driver, declaration
     // assignment and process, as the pc it starts at.
     var order: std.ArrayList(u32) = .empty;
-    while (r.scheduler.next()) |ev| switch (r.pending.items[ev.payload].item) {
+    while (r.scheduler.next()) |ev| switch (r.rows.pending.items[ev.payload].item) {
         .run_process => |pc| try order.append(self.arena, pc),
         .@"resume", .write, .strobe, .monitor_tick, .vcd_tick, .tran_switch, .drive, .net_update, .decay, .a2d, .analog_point, .tchk_expiry, .tchk_event => return self.refuse("an event queued at elaboration"),
     };
@@ -588,18 +588,18 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
         \\
     , .{std.zig.fmtString(file_name)});
     if (self.two_state) try self.print("pub const vera_two_state = true;\n", .{});
-    for (r.code.items) |ins| if (ins == .override_on) {
+    for (r.program.code.items) |ins| if (ins == .override_on) {
         try self.print("pub const vera_overrides = true;\n", .{});
         try forcedParts(self);
         break;
     };
-    if (r.budget != root.max_events_per_tick) try self.print("pub const vera_event_budget: u64 = {d};\n", .{r.budget});
+    if (r.event_budget.max != root.max_events_per_tick) try self.print("pub const vera_event_budget: u64 = {d};\n", .{r.event_budget.max});
     // Every function of the design, once per phase (`rt.Phase`): `main`
     // names `Code(true)` only when it runs both, and Zig compiles only what
     // is named.
     const decls_at = self.out.written().len;
     try self.print("\nfn Code(comptime two: bool) type {{\nreturn struct {{\nconst M = rt.Phase(two);\n\n", .{});
-    const seen = try self.arena.alloc(bool, r.code.items.len);
+    const seen = try self.arena.alloc(bool, r.program.code.items.len);
     @memset(seen, false);
     var procs: std.ArrayList(plan.Proc) = .empty;
     for (order.items) |entry| {
@@ -608,7 +608,7 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     }
     var next_timed: usize = 0;
     while (next_timed < self.timed.items.len) : (next_timed += 1) {
-        const entry = r.subs.items[self.timed.items[next_timed]].body.?.entry;
+        const entry = r.routines.rows.items[self.timed.items[next_timed]].body.?.entry;
         if (!seen[entry]) try procs.append(self.arena, .{ .entry = entry, .pcs = try reach(self, entry, seen) });
     }
     const activations = self.timed.items.len != 0;
@@ -620,7 +620,7 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     for (pure_nodes, p.node_pc) |*x, pc| x.* = pureNode(self, pc);
     self.pure_nodes = pure_nodes;
     // `fn proc<pc>` of every pc, so a dispatch is one indexed call.
-    const entry_of = try self.arena.alloc(?u32, r.code.items.len);
+    const entry_of = try self.arena.alloc(?u32, r.program.code.items.len);
     @memset(entry_of, null);
     for (procs.items) |pr| {
         self.role = pr.role;
@@ -639,7 +639,7 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     var next_sub: usize = 0;
     while (next_sub < self.subs_todo.items.len) : (next_sub += 1) {
         const idx = self.subs_todo.items[next_sub];
-        const sub = r.subs.items[idx];
+        const sub = r.routines.rows.items[idx];
         const pcs = try reach(self, sub.entry, seen);
         try process(self, pcs);
         for (pcs) |pc| entry_of[pc] = pcs[0];
@@ -651,7 +651,7 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     // §10.2.3 an automatic timed body's fresh frame, as `fill<idx>` is a
     // synchronous one's.
     for (self.timed.items) |idx| {
-        const sub = r.subs.items[idx];
+        const sub = r.routines.rows.items[idx];
         if (!sub.decl.automatic) continue;
         self.keepFour("an automatic task or function, whose storage is x at every call (§10.2.3)", null);
         try fillTable(self, "tfill", idx, sub.body.?.frame);
@@ -661,9 +661,9 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     try self.print("fn none(_: *S, _: u32) rt.Error!void {{\n    unreachable;\n}}\n\n", .{});
     // A pure node's process runs only in the time-0 queue, which the
     // 2-state phase never sees (`rt.auto`): that phase leaves it uncompiled.
-    const time0 = try self.arena.alloc(bool, r.code.items.len);
+    const time0 = try self.arena.alloc(bool, r.program.code.items.len);
     @memset(time0, false);
-    if (self.auto) for (procs.items) |pr| if (pr.role == .comb and r.code.items[pr.entry] == .continuous and self.pure_nodes[pr.role.comb]) {
+    if (self.auto) for (procs.items) |pr| if (pr.role == .comb and r.program.code.items[pr.entry] == .continuous and self.pure_nodes[pr.role.comb]) {
         time0[pr.entry] = true;
     };
     try self.print("const procs = [_]*const fn (*S, u32) rt.Error!void{{", .{});
@@ -724,7 +724,7 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
     try self.print(" }},\n    .slots = {d},\n", .{r.values.len});
     try table(self, "fan_start", p.fan_start);
     try table(self, "fan", p.fan);
-    try self.print("    .code_len = {d},\n    .repeats = {d},\n    .joins = {d},\n    .subs = {d},\n", .{ r.code.items.len, r.repeats.items.len, r.joins.items.len, r.subs.items.len });
+    try self.print("    .code_len = {d},\n    .repeats = {d},\n    .joins = {d},\n    .subs = {d},\n", .{ r.program.code.items.len, r.rows.repeats.items.len, r.rows.joins.items.len, r.routines.rows.items.len });
     if (activations) try actEvents(self);
     if (dumps(r)) try self.print("    .vcd = &vcd_catalog,\n", .{});
     try netTables(self);
@@ -754,12 +754,12 @@ fn native(self: *Emitter, file_name: []const u8, schedule: Schedule) Error![]con
         \\    return rt.auto(init, &design, {d}, Code(false).dispatch, Code(true).dispatch);
         \\}}
         \\
-    , .{r.finest}) else try self.print(
+    , .{r.time.finest}) else try self.print(
         \\pub fn main(init: std.process.Init) u8 {{
         \\    return rt.main(init, &design, {d}, Code(false).dispatch);
         \\}}
         \\
-    , .{r.finest});
+    , .{r.time.finest});
     return self.out.written();
 }
 
@@ -770,13 +770,13 @@ fn actEvents(self: *Emitter) Error!void {
     const r = self.r;
     const owner = try self.arena.alloc(u32, r.values.len);
     @memset(owner, 0);
-    var it = r.events.iterator();
+    var it = r.decls.events.iterator();
     while (it.next()) |ev| for (self.timed.items) |idx| {
-        const sub = r.subs.items[idx];
+        const sub = r.routines.rows.items[idx];
         if (!sub.decl.automatic) continue;
         var scope = ev.value_ptr.scope;
         while (scope != sub.body.?.frame.scope) {
-            const info = r.scope_info.items[scope];
+            const info = r.hier.scopes.items[scope];
             if (!info.lexical) break;
             scope = info.parent;
         } else owner[ev.key_ptr.*] = idx + 1;
@@ -787,9 +787,9 @@ fn actEvents(self: *Emitter) Error!void {
 /// Can simulation time pass 0: does a procedural, intra-assignment, net
 /// or gate delay exist?
 fn advances(r: *const Run) bool {
-    for (r.code.items) |ins| if (ins == .delay or ins == .sample) return true;
-    for (r.drivers) |d| if (d.delay.present) return true;
-    for (r.net_cold.items) |c| if (c.delay.present) return true;
+    for (r.program.code.items) |ins| if (ins == .delay or ins == .sample) return true;
+    for (r.netlist.drivers) |d| if (d.delay.present) return true;
+    for (r.netlist.cold.items) |c| if (c.delay.present) return true;
     return false;
 }
 
@@ -801,7 +801,7 @@ fn advances(r: *const Run) bool {
 fn settleNode(self: *Emitter, p: plan.Plan, pc: u32, n: u32, entry: u32) Error!void {
     const r = self.r;
     if (!self.pure_nodes[n]) return self.print("    if (s.take({d})) try proc{d}(s.s, {d});\n", .{ n, entry, pc });
-    const slot = r.nets[r.drivers[r.code.items[pc].continuous].net].slot;
+    const slot = r.netlist.nets[r.netlist.drivers[r.program.code.items[pc].continuous].net].slot;
     if (!self.watched[slot]) return self.print("    try M.set(s, {d}, val{d}(s), {f});\n", .{ self.off[slot], n, full(self.slotWidth(slot)) });
     var wakes = self.reach[slot];
     wakes.comb = false;
@@ -816,13 +816,13 @@ fn settleNode(self: *Emitter, p: plan.Plan, pc: u32, n: u32, entry: u32) Error!v
 /// and variables, of a net that is not a real?
 fn pureNode(self: *Emitter, pc: u32) bool {
     const r = self.r;
-    const i = switch (r.code.items[pc]) {
+    const i = switch (r.program.code.items[pc]) {
         .continuous => |i| i,
         else => return false, // else: an `always @*` node, whose body may do anything
     };
-    const d = r.drivers[i];
+    const d = r.netlist.drivers[i];
     return switch (d.source) {
-        .expr => |x| pure(self, x.e) and !r.reals.contains(r.nets[d.net].slot),
+        .expr => |x| pure(self, x.e) and !r.decls.reals.contains(r.netlist.nets[d.net].slot),
         .gate => true,
         .bridge, .udp, .mos, .pull => false,
     };
@@ -832,8 +832,8 @@ fn pureNode(self: *Emitter, pc: u32) bool {
 /// `rt.View`, which its process and the settle event both store.
 fn nodeValue(self: *Emitter, pc: u32, n: u32) Error!void {
     const r = self.r;
-    const d = r.drivers[r.code.items[pc].continuous];
-    const slot = r.nets[d.net].slot;
+    const d = r.netlist.drivers[r.program.code.items[pc].continuous];
+    const slot = r.netlist.nets[d.net].slot;
     r.scope = d.scope;
     r.pc = pc;
     const head = self.out.written().len;
@@ -865,7 +865,7 @@ fn pure(self: *Emitter, e: Ast.ExprId) bool {
 
 /// Does the design call a §18 dump task?
 pub fn dumps(r: *const Run) bool {
-    for (r.code.items) |ins| if (ins == .task and ins.task.task == .dump) return true;
+    for (r.program.code.items) |ins| if (ins == .task and ins.task.task == .dump) return true;
     return false;
 }
 
@@ -889,11 +889,11 @@ fn emitShows(self: *Emitter) Error!void {
     if (self.shows.items.len == 0) return self.print("fn show(_: *S, _: u32) rt.Error!void {{\n    unreachable;\n}}\n\n", .{});
     try self.print("fn show(s: *S, k: u32) rt.Error!void {{\n    @setEvalBranchQuota(1 << 30);\n    switch (k) {{\n", .{});
     for (self.shows.items, 0..) |pc, k| {
-        r.scope = r.code_scope.items[pc];
+        r.scope = r.program.scope_of.items[pc];
         r.pc = pc;
-        const t = r.code.items[pc].task;
+        const t = r.program.code.items[pc].task;
         try self.print("        {d} => {{\n", .{k});
-        try show(self, t.args, switch (t.task) {
+        try show(self, r.program.exprs(t.args), switch (t.task) {
             .strobe, .monitor => |sh| sh,
             else => unreachable, // else: `site` registers only these two
         }, false);
@@ -947,7 +947,7 @@ fn reach(self: *Emitter, entry: u32, seen: []bool) Error![]const u32 {
         try pcs.append(self.arena, pc);
         if (self.block_ends.get(pc)) |ends| try work.appendSlice(self.arena, ends.items);
         const next = pc + 1;
-        switch (r.code.items[pc]) {
+        switch (r.program.code.items[pc]) {
             .stop, .continuous => {},
             .jump => |t| try work.append(self.arena, t),
             .restart => |x| try work.append(self.arena, x.target),
@@ -955,7 +955,7 @@ fn reach(self: *Emitter, entry: u32, seen: []bool) Error![]const u32 {
             .case_select => |c| {
                 try work.append(self.arena, c.fallback);
                 const arms = r.file.stmt(c.statement).case_stmt.arms.len;
-                try work.appendSlice(self.arena, r.case_targets.items[c.targets..][0..arms]);
+                try work.appendSlice(self.arena, r.program.case_targets.items[c.targets..][0..arms]);
             },
             .repeat_start => |x| try work.appendSlice(self.arena, &.{ next, x.end }),
             .repeat_next => |x| try work.appendSlice(self.arena, &.{ next, x.body }),
@@ -965,7 +965,7 @@ fn reach(self: *Emitter, entry: u32, seen: []bool) Error![]const u32 {
             .disable_block => |b| try work.appendSlice(self.arena, if (pc >= b.start and pc < b.end) &.{ next, b.end } else &.{next}),
             .disable_task => |idx| {
                 try work.append(self.arena, next);
-                for (r.subs.items[idx].ranges.items) |rg| if (pc >= rg.start and pc < rg.end) try work.append(self.arena, rg.end);
+                for (r.routines.rows.items[idx].ranges.items) |rg| if (pc >= rg.start and pc < rg.end) try work.append(self.arena, rg.end);
             },
             // §10.2.3 the body is a process of its own (`timed`); its
             // `.task_return` jumps back to the call site, which then
@@ -977,7 +977,7 @@ fn reach(self: *Emitter, entry: u32, seen: []bool) Error![]const u32 {
             },
             .task_return => {},
             .pla_start => |p| try work.appendSlice(self.arena, &.{ next, p.at }),
-            .fork => |f| try work.appendSlice(self.arena, if (f.arms.len == 0) &.{f.end} else f.arms),
+            .fork => |f| try work.appendSlice(self.arena, if (f.arms.len == 0) &.{f.end} else r.program.wordsOf(f.arms)),
             .join_arm => |j| try work.append(self.arena, j.end),
             // §9.3 the held slot's own process, started by its `.override_on`.
             .override_on => |o| try work.appendSlice(self.arena, &.{ next, o.start }),
@@ -996,14 +996,14 @@ fn process(self: *Emitter, pcs: []const u32) Error!void {
     // Every kernel call folds its widths at compile time, which Zig counts
     // against one quota per function.
     try self.print("fn proc{d}(s: *S, pc: u32) rt.Error!void {{\n    @setEvalBranchQuota(1 << 30);\n", .{pcs[0]});
-    for (pcs) |pc| if (r.code.items[pc] == .restart) {
+    for (pcs) |pc| if (r.program.code.items[pc] == .restart) {
         try self.print("    var restarted = false;\n", .{});
         break;
     };
     const sw = self.out.written().len;
     try self.print("    switch (pc) {{\n", .{});
     for (pcs) |pc| {
-        r.scope = r.code_scope.items[pc];
+        r.scope = r.program.scope_of.items[pc];
         r.pc = pc;
         try self.print("        {d} => {{\n", .{pc});
         if (self.in_sub) try self.print("            if (s.unwind != null) return;\n", .{});
@@ -1033,7 +1033,7 @@ fn insert(self: *Emitter, at: usize, text: []const u8) Error!void {
 fn instruction(self: *Emitter, pc: u32) Error!void {
     const r = self.r;
     const next = pc + 1;
-    switch (r.code.items[pc]) {
+    switch (r.program.code.items[pc]) {
         .stop => try self.print("            return;\n", .{}),
         .init_var => |x| {
             try self.print("            ", .{});
@@ -1052,12 +1052,12 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
         },
         .task => |t| {
             switch (t.task) {
-                .show => |sh| try show(self, t.args, sh, false),
+                .show => |sh| try show(self, r.program.exprs(t.args), sh, false),
                 .finish => |stop| {
                     try self.print("            return s.{s}(", .{if (stop) "stopRun" else "finish"});
-                    if (t.args.len == 0) try self.print("true", .{}) else {
+                    if (r.program.exprs(t.args).len == 0) try self.print("true", .{}) else {
                         try self.print("(L.asInt(", .{});
-                        const ty = try expr.selfDetermined(self, t.args[0]);
+                        const ty = try expr.selfDetermined(self, r.program.exprs(t.args)[0]);
                         try self.print(", {d}, {}) orelse 1) != 0", .{ ty.width, ty.signed });
                     }
                     const start = r.starts[t.tok];
@@ -1067,19 +1067,19 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                 },
                 // §17.3.2: the three numbers are read when the task runs, an
                 // x/z one as 0.
-                .timeformat => if (t.args.len == 0) {
-                    try self.print("            s.time_format = .{{ .units = {d} }};\n", .{r.finest});
+                .timeformat => if (r.program.exprs(t.args).len == 0) {
+                    try self.print("            s.time_format = .{{ .units = {d} }};\n", .{r.time.finest});
                 } else {
                     try self.print("            s.time_format = .{{ .units = std.math.lossyCast(i32, ", .{});
-                    try int(self, t.args[0]);
+                    try int(self, r.program.exprs(t.args)[0]);
                     try self.print("), .precision = std.math.lossyCast(u32, ", .{});
-                    try int(self, t.args[1]);
-                    try self.print("), .suffix = \"{f}\", .width = std.math.lossyCast(u32, ", .{std.zig.fmtString(r.file.str(r.file.exprs.strOf(t.args[2])))});
-                    try int(self, t.args[3]);
+                    try int(self, r.program.exprs(t.args)[1]);
+                    try self.print("), .suffix = \"{f}\", .width = std.math.lossyCast(u32, ", .{std.zig.fmtString(r.file.str(r.file.exprs.strOf(r.program.exprs(t.args)[2])))});
+                    try int(self, r.program.exprs(t.args)[3]);
                     try self.print(") }};\n", .{});
                 },
                 .sdf_annotate => return self.refuse("§17.2.10 $sdf_annotate, which the interpreter (`vera --run`) applies"),
-                .printtimescale => try self.print("            try s.out.writeAll(\"{f}\");\n", .{std.zig.fmtString(try staticText(self, display.printTimescale, .{t.args}))}),
+                .printtimescale => try self.print("            try s.out.writeAll(\"{f}\");\n", .{std.zig.fmtString(try staticText(self, display.printTimescale, .{r.program.exprs(t.args)}))}),
                 // §17.1.2: the call is queued, its arguments are read then.
                 .strobe => |sh| {
                     if (sh.file) return self.refuse("§17.2.2 $fstrobe: a strobe written to a file descriptor");
@@ -1089,10 +1089,10 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                 // slot its arguments read asks to print.
                 .monitor => |sh| {
                     if (sh.file) return self.refuse("§17.2.2 $fmonitor: a monitor written to a file descriptor");
-                    for (t.args) |arg| if (display.comparedOperand(r, arg))
+                    for (r.program.exprs(t.args)) |arg| if (display.comparedOperand(r, arg))
                         return self.refuse("§17.1.3 a $monitor argument that is an expression (a select, an operator), which reports only when its value changes");
                     var slots: std.ArrayList(u32) = .empty;
-                    for (t.args) |arg| if (arg != .none and r.file.exprs.tag(arg) != .str_literal)
+                    for (r.program.exprs(t.args)) |arg| if (arg != .none and r.file.exprs.tag(arg) != .str_literal)
                         compile.sensitivity(r, arg, &slots) catch return self.refuse("a monitor argument the engine resolves only at run time");
                     try self.print("            try s.monitor({d}, &.{{", .{try site(self, pc)});
                     for (slots.items) |at| try self.print(" {d},", .{at});
@@ -1106,15 +1106,15 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                 // §17.2.9: the bounds are read now; the file when the task runs.
                 .readmem => |radix| {
                     if (self.device) return self.refuse("§17.2.9 $readmemb/$readmemh: a device reads no file");
-                    if (r.file.exprs.tag(t.args[0]) != .str_literal) return self.refuse("§17.2.9 $readmemb/$readmemh with a file name held in a variable");
-                    const base = try self.slot(t.args[1]);
-                    const arr = r.arrays.get(base).?;
-                    const name = r.file.str(r.file.exprs.strOf(t.args[0]));
+                    if (r.file.exprs.tag(r.program.exprs(t.args)[0]) != .str_literal) return self.refuse("§17.2.9 $readmemb/$readmemh with a file name held in a variable");
+                    const base = try self.slot(r.program.exprs(t.args)[1]);
+                    const arr = r.decls.arrays.get(base).?;
+                    const name = r.file.str(r.file.exprs.strOf(r.program.exprs(t.args)[0]));
                     try self.print("            try s.readmem(\"{f}\", \"{f}\", .{t}, ", .{ std.zig.fmtString(r.file_name), std.zig.fmtString(name), radix });
-                    try self.print("{d}, {d}, {d}, {d}, {d}, {d}", .{ self.slotWidth(base), base, self.off[base], arr.low, arr.high, t.args.len - 2 });
+                    try self.print("{d}, {d}, {d}, {d}, {d}, {d}", .{ self.slotWidth(base), base, self.off[base], arr.low, arr.high, r.program.exprs(t.args).len - 2 });
                     for (2..4) |k| {
                         try self.print(", ", .{});
-                        if (k < t.args.len) try int64(self, t.args[k]) else try self.print("null", .{});
+                        if (k < r.program.exprs(t.args).len) try int64(self, r.program.exprs(t.args)[k]) else try self.print("null", .{});
                     }
                     try self.print(");\n", .{});
                 },
@@ -1125,40 +1125,40 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                     const lb = self.label();
                     const scale = r.timeOf(r.scope).scale;
                     try self.print("            const q{d} = try s.queue(.{t}, ", .{ lb, op });
-                    try int64(self, t.args[0]);
+                    try int64(self, r.program.exprs(t.args)[0]);
                     try self.print(", ", .{});
-                    if (op == .initialize or op == .add or op == .exam) try int64(self, t.args[1]) else try self.print("null", .{});
+                    if (op == .initialize or op == .add or op == .exam) try int64(self, r.program.exprs(t.args)[1]) else try self.print("null", .{});
                     try self.print(", ", .{});
-                    if (op == .initialize or op == .add) try int64(self, t.args[2]) else try self.print("null", .{});
+                    if (op == .initialize or op == .add) try int64(self, r.program.exprs(t.args)[2]) else try self.print("null", .{});
                     try self.print(", .{{ .local_per_unit = {d}, .global_per_local = {d} }});\n", .{ scale.local_per_unit, scale.global_per_local });
                     for (1..3) |k| if (op == .remove or (op == .exam and k == 2)) {
                         try self.print("            if (q{d}.out[{d}]) |v{d}| {{\n", .{ lb, k - 1, lb });
-                        try assignInt(self, t.args[k], try self.arena.print("v{d}", .{lb}));
+                        try assignInt(self, r.program.exprs(t.args)[k], try self.arena.print("v{d}", .{lb}));
                         try self.print("            }}\n", .{});
                     };
-                    try assignInt(self, t.args[3], try self.arena.print("q{d}.status", .{lb}));
+                    try assignInt(self, r.program.exprs(t.args)[3], try self.arena.print("q{d}.status", .{lb}));
                 },
                 // §17.5: the outputs through a cell as wide as they are.
                 .pla => |p| {
-                    const base = try self.slot(t.args[0]);
-                    const ty = try targetType(self, t.args[2]);
+                    const base = try self.slot(r.program.exprs(t.args)[0]);
+                    const ty = try targetType(self, r.program.exprs(t.args)[2]);
                     if (ty.real) return self.refuse("a §17.5 PLA writing a real");
                     if (p.plane) try self.xMeaning("a §17.5.4 plane PLA, whose z personality bits mean \"ignore this input\"", t.tok);
                     self.keepFour("a §17.5 PLA, whose outputs are x where no row decides", t.tok);
                     const at = try cellOf(self, std.math.maxInt(u32) - words(ty.width), ty.width);
                     try self.print("            try s.pla(.{{ .logic = .@\"{t}\", .plane = {}, .async_ = false }}, {d}, {d}, {d}, ", .{
-                        p.logic, p.plane, self.off[base], r.arrays.get(base).?.count, self.slotWidth(base),
+                        p.logic, p.plane, self.off[base], r.decls.arrays.get(base).?.count, self.slotWidth(base),
                     });
-                    const in = try expr.selfDetermined(self, t.args[1]);
+                    const in = try expr.selfDetermined(self, r.program.exprs(t.args)[1]);
                     try self.print(", {d}, {d}, {d});\n", .{ in.width, at, ty.width });
-                    try assignment(self, t.args[2], .{ .stored = .{ .off = at, .ty = .{ .width = ty.width, .signed = false } } }, .blocking);
+                    try assignment(self, r.program.exprs(t.args)[2], .{ .stored = .{ .off = at, .ty = .{ .width = ty.width, .signed = false } } }, .blocking);
                 },
                 .fflush => {},
                 .user => return self.refuse("a PLI application's system task, which runs only under a VPI host"),
-                .ports => |op| try portTask(self, pc, op, t.args),
+                .ports => |op| try portTask(self, pc, op, r.program.exprs(t.args)),
                 .fclose => {
                     try self.print("            s.fclose(", .{});
-                    try int64(self, t.args[0]);
+                    try int64(self, r.program.exprs(t.args)[0]);
                     try self.print(");\n", .{});
                 },
                 // §17.2.2: the descriptor is read first; an x or z one
@@ -1166,42 +1166,42 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                 .fshow => |sh| {
                     const lb = self.label();
                     try self.print("            if (", .{});
-                    try int64(self, t.args[0]);
+                    try int64(self, r.program.exprs(t.args)[0]);
                     try self.print(") |d{d}| {{\n            s.capture();\n", .{lb});
-                    try show(self, t.args[1..], sh, false);
+                    try show(self, r.program.exprs(t.args)[1..], sh, false);
                     try self.print("            try s.fshow(d{d});\n            }}\n", .{lb});
                 },
                 .sshow => |sh| {
                     try self.print("            s.capture();\n", .{});
-                    try show(self, t.args[1..], sh, false);
-                    try assignChars(self, t.args[0], "s.captured()");
+                    try show(self, r.program.exprs(t.args)[1..], sh, false);
+                    try assignChars(self, r.program.exprs(t.args)[0], "s.captured()");
                 },
                 .sformat => {
                     try self.print("            s.capture();\n", .{});
-                    if (r.file.exprs.tag(t.args[1]) == .str_literal)
-                        try show(self, t.args[1..], .{ .radix = .decimal, .newline = false }, true)
+                    if (r.file.exprs.tag(r.program.exprs(t.args)[1]) == .str_literal)
+                        try show(self, r.program.exprs(t.args)[1..], .{ .radix = .decimal, .newline = false }, true)
                     else
-                        try dynamicFormat(self, t.args[1..]);
-                    try assignChars(self, t.args[0], "s.captured()");
+                        try dynamicFormat(self, r.program.exprs(t.args)[1..]);
+                    try assignChars(self, r.program.exprs(t.args)[0], "s.captured()");
                 },
                 // §18.1: the arguments are read now; the targets were
                 // resolved at elaboration.
                 .dump => |op| switch (op) {
-                    .file => if (t.args.len == 1) {
+                    .file => if (r.program.exprs(t.args).len == 1) {
                         try self.print("            try s.dumpFile(", .{});
-                        const n = try expr.selfDetermined(self, t.args[0]);
+                        const n = try expr.selfDetermined(self, r.program.exprs(t.args)[0]);
                         try self.print(", {d}, \"{f}\");\n", .{ n.width, std.zig.fmtString(vcd.callText(r.text, r.starts[t.tok])) });
                     },
                     .vars => {
                         try self.print("            try s.dumpVars(", .{});
-                        if (t.args.len == 0) {
+                        if (r.program.exprs(t.args).len == 0) {
                             try self.print("0, &.{{", .{});
-                            for (r.roots) |sc| try self.print(" .{{ .scope = {d} }},", .{sc});
+                            for (r.hier.roots) |sc| try self.print(" .{{ .scope = {d} }},", .{sc});
                             try self.print(" }});\n", .{});
                         } else {
-                            try int64(self, t.args[0]);
+                            try int64(self, r.program.exprs(t.args)[0]);
                             try self.print(", &.{{", .{});
-                            for (t.args[1..]) |e| switch (vcd.target(r, e) catch return self.refuse("a $dumpvars target the engine resolves only at run time")) {
+                            for (r.program.exprs(t.args)[1..]) |e| switch (vcd.target(r, e) catch return self.refuse("a $dumpvars target the engine resolves only at run time")) {
                                 .scope => |sc| try self.print(" .{{ .scope = {d} }},", .{sc}),
                                 .slot => |sl| try self.print(" .{{ .slot = {d} }},", .{sl}),
                             };
@@ -1209,8 +1209,8 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
                         }
                     },
                     .limit => {
-                        try self.print("            s.dump.limit = std.math.lossyCast(u64, ", .{});
-                        try int(self, t.args[0]);
+                        try self.print("            s.dumps.vcd.limit = std.math.lossyCast(u64, ", .{});
+                        try int(self, r.program.exprs(t.args)[0]);
                         try self.print(");\n", .{});
                     },
                     .off, .on, .all, .flush => try self.print("            try s.dumpControl(.{t});\n", .{op}),
@@ -1240,7 +1240,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
             for (case.arms, 0..) |arm, i| for (arm.labels) |lb| {
                 try self.print("            if (L.caseMatch(.{t}, v, ", .{case.kind});
                 try expr.caseLabel(self, lb, c.ty, case.kind);
-                try self.print(")) continue :sw {d};\n", .{r.case_targets.items[c.targets + i]});
+                try self.print(")) continue :sw {d};\n", .{r.program.case_targets.items[c.targets + i]});
             };
             try self.print("            continue :sw {d};\n", .{c.fallback});
         },
@@ -1263,7 +1263,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
             // An `assign` or `force` of a constant waits on nothing.
             if (slots.len == 0) return self.print("            _ = try s.park({d});\n            return;\n", .{next});
             try self.print("            const id = try s.park({d});\n", .{next});
-            for (slots) |at| try self.print("            try s.watch(id, {d}, .any);\n", .{at});
+            for (r.program.wordsOf(slots)) |at| try self.print("            try s.watch(id, {d}, .any);\n", .{at});
             try self.print("            return;\n", .{});
         },
         .wait_level => |x| {
@@ -1274,7 +1274,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
             // An empty list suspends with nothing to wake it (IEEE 1364-2005 §9.7.6).
             if (x.slots.len == 0) return self.print(" == .one) continue :sw {d};\n            _ = try s.park({d});\n            return;\n", .{ next, pc });
             try self.print(" == .one) continue :sw {d};\n            const id = try s.park({d});\n", .{ next, pc });
-            for (x.slots) |at| try self.print("            try s.watch(id, {d}, .any);\n", .{at});
+            for (r.program.wordsOf(x.slots)) |at| try self.print("            try s.watch(id, {d}, .any);\n", .{at});
             try self.print("            return;\n", .{});
         },
         .trigger => |event| switch (event) {
@@ -1336,15 +1336,15 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
         // the synchronous ones, which unwind back to their callers.
         .disable_task => |idx| {
             var after = next;
-            for (r.subs.items[idx].ranges.items) |rg| {
+            for (r.routines.rows.items[idx].ranges.items) |rg| {
                 if (pc >= rg.start and pc < rg.end and hostsOthers(r, rg.start, rg.end)) return self.refuse(disable_inside);
                 try self.print("            try s.disable({d}, {d}, {d});\n", .{ rg.start, rg.end, rg.end });
                 if (pc >= rg.start and pc < rg.end) after = rg.end;
             }
-            try self.print("            if (s.active[{d}] != 0) {{\n                s.unwind = {d};\n                return;\n            }}\n            continue :sw {d};\n", .{ idx, idx, after });
+            try self.print("            if (s.calls.active[{d}] != 0) {{\n                s.unwind = {d};\n                return;\n            }}\n            continue :sw {d};\n", .{ idx, idx, after });
         },
         .call => |c| {
-            try call(self, c.sub, c.args, self.label());
+            try call(self, c.sub, r.program.exprs(c.args), self.label());
             try self.print("            continue :sw {d};\n", .{next});
         },
         // §10.2.2 an inlined task's output, copied back in the caller's scope.
@@ -1356,7 +1356,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
         .fork => |f| {
             if (f.arms.len == 0) return self.print("            continue :sw {d};\n", .{f.end});
             try self.print("            s.joins[{d}] = {d};\n", .{ f.join, f.arms.len });
-            for (f.arms) |arm| try self.print("            try s.run({d}, null);\n", .{arm});
+            for (r.program.wordsOf(f.arms)) |arm| try self.print("            try s.run({d}, null);\n", .{arm});
             try self.print("            return;\n", .{});
         },
         .join_arm => |j| try self.print("            s.joins[{d}] -= 1;\n            if (s.joins[{d}] == 0) try s.run({d}, null);\n            return;\n", .{ j.join, j.join, j.end }),
@@ -1366,14 +1366,14 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
             try self.print("            try dispatch(s, {d});\n            continue :sw {d};\n", .{ p.at, next })
         else
             try self.print("            try s.run({d}, null);\n            continue :sw {d};\n", .{ p.at, next }),
-        .override_on => |o| if (o.bits) |b|
+        .override_on => |o| if (o.bits.some()) |b|
             try self.print("            try s.overrideBits({d}, {d}, {d}, {d}, {d}, {d});\n            continue :sw {d};\n", .{ o.slot, partOf(self, o.slot, b).?, b.lo, b.width, o.start, o.end, next })
         else
             try self.print("            try s.overrideOn({d}, {}, {d}, {d});\n            continue :sw {d};\n", .{ o.slot, o.force, o.start, o.end, next }),
         // An `assign` under a `force` keeps tracking but does not write.
         .override_eval => |o| {
             try self.print("            if ({} or !s.forced({d})) {{\n            s.overriding = true;\n            defer s.overriding = false;\n            ", .{ o.force, o.slot });
-            if (o.bits) |b| {
+            if (o.bits.some()) |b| {
                 try self.print("try s.putBits({d}, {d}, {d}, {d}, {d}, ", .{ o.slot, self.off[o.slot], b.lo, b.width, self.slotWidth(o.slot) });
                 try expr.assigned(self, o.value, .{ .width = b.width, .signed = false });
                 return self.print(");\n            }}\n            continue :sw {d};\n", .{next});
@@ -1381,7 +1381,7 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
             try self.store(o.slot, .blocking);
             // An operand of a §9.3 concatenation target takes its window of
             // the value, evaluated as wide as the whole target.
-            if (o.slice) |sl| {
+            if (o.slice.some()) |sl| {
                 try self.print("L.part(", .{});
                 try expr.assigned(self, o.value, .{ .width = sl.of, .signed = false });
                 try self.print(", {d}, {d}, {d})", .{ sl.lo, self.slotWidth(o.slot), sl.of });
@@ -1390,22 +1390,22 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
         },
         // §9.3.2: a released net is its driver's again, at once.
         .override_off => |o| {
-            if (o.bits) |b| {
+            if (o.bits.some()) |b| {
                 // Releasing a select never forced is a no-op (`waiters.releaseBits`).
                 if (partOf(self, o.slot, b)) |k| {
-                    const net = r.net_of.get(o.slot) orelse return self.refuse("a force of a select of a variable");
+                    const net = r.netlist.slot_nets.get(o.slot) orelse return self.refuse("a force of a select of a variable");
                     try self.print("            try s.releaseBits({d}, {d});\n            try s.resolve({d});\n", .{ o.slot, k, self.net_ix[net].? });
                 }
                 return self.print("            continue :sw {d};\n", .{next});
             }
-            if (r.net_of.get(o.slot)) |net| {
+            if (r.netlist.slot_nets.get(o.slot)) |net| {
                 if (self.net_ix[net]) |k| {
                     try self.print("            if (try s.release({d}, true)) try s.resolve({d});\n            continue :sw {d};\n", .{ o.slot, k, next });
                     return;
                 }
                 const drivers = r.netDrivers(net);
                 if (drivers.len != 1) return self.refuse("releasing a net without exactly one driver");
-                const at = for (r.code.items, 0..) |ins, i| {
+                const at = for (r.program.code.items, 0..) |ins, i| {
                     if (ins == .continuous and ins.continuous == drivers[0]) break i;
                 } else return self.refuse("releasing a net whose driver is not a process");
                 try self.print("            if (try s.release({d}, true)) try proc{d}(s, {d});\n", .{ o.slot, at, at });
@@ -1415,14 +1415,14 @@ fn instruction(self: *Emitter, pc: u32) Error!void {
         // §7.6 a controlled pass switch: read the control, re-resolve both
         // sides (`rt.net.switchCtrl`), and re-arm on the control's operands.
         .switch_ctrl => |sc| {
-            try bits(self, &.{r.trans[sc.tran].ctrl}, 0);
+            try bits(self, &.{r.netlist.switches[sc.tran].ctrl}, 0);
             try self.print("            try s.switchCtrl({d}, b[0]);\n            s.armed[{d}] = true;\n            return;\n", .{ sc.tran, pc });
         },
-        .call_timed => |c| try callTimed(self, pc, c.sub, c.args),
+        .call_timed => |c| try callTimed(self, pc, c.sub, r.program.exprs(c.args)),
         // §10.2.2 the outputs are put aside (`retCell`) while this
         // activation's storage is still resident; the call site copies them.
         .task_return => |idx| {
-            const sub = r.subs.items[idx];
+            const sub = r.routines.rows.items[idx];
             for (sub.decl.ports, sub.body.?.frame.ports) |p, at| if (p.direction != .input) {
                 try self.print("            try M.set(s, {d}, ", .{try retCell(self, at)});
                 try self.get(at);
@@ -1443,10 +1443,10 @@ const disable_inside = "a §10.3 disable from inside a block other processes may
 /// which `exec.disableInside` avoids and `rt` cannot yet.
 fn hostsOthers(r: *const Run, start: u32, end: u32) bool {
     // ponytail: a refusal; `rt` exposing `stop` lets these disables be native.
-    for (r.code.items[start..end]) |ins| switch (ins) {
+    for (r.program.code.items[start..end]) |ins| switch (ins) {
         .fork, .pla_start, .override_on => return true,
         .init_var => |x| {
-            var it = r.term_slots.valueIterator();
+            var it = r.typing.term_slots.valueIterator();
             while (it.next()) |at| if (at.* == x.slot) return true;
         },
         else => {}, // else: every other instruction runs in the process that reaches it
@@ -1467,7 +1467,7 @@ fn retCell(self: *Emitter, at: u32) Error!u32 {
 /// §10.2.3).
 fn callTimed(self: *Emitter, pc: u32, idx: u32, args: []const Ast.ExprId) Error!void {
     const r = self.r;
-    const sub = r.subs.items[idx];
+    const sub = r.routines.rows.items[idx];
     const f = sub.body.?.frame;
     try self.print("            if (s.returned) {{\n                s.returned = false;\n", .{});
     for (sub.decl.ports, args, f.ports) |p, arg, at| if (p.direction != .input)
@@ -1528,7 +1528,7 @@ fn pathConds(self: *Emitter) Error!void {
     const scope = r.scope;
     defer r.scope = scope;
     var i: u32 = 0;
-    for (self.rt_nets.items) |k| for (r.netCold(r.nets[k]).paths) |p| if (p.cond != .none) {
+    for (self.rt_nets.items) |k| for (r.netCold(r.netlist.nets[k]).paths) |p| if (p.cond != .none) {
         r.scope = p.scope;
         try self.print("pub fn pathCond{d}(s: *S) rt.Error!bool {{\n    _ = &s;\n    return L.low(", .{i});
         _ = try expr.selfDetermined(self, p.cond);
@@ -1723,8 +1723,8 @@ fn delay(self: *Emitter, amount: Ast.ExprId) Error!void {
 /// Reads `select_forced`, which `native` fills before anything asks.
 pub fn plainDriver(self: *const Emitter, i: u32) bool {
     const r = self.r;
-    const d = r.drivers[i];
-    const n = r.nets[d.net];
+    const d = r.netlist.drivers[i];
+    const n = r.netlist.nets[d.net];
     const plain = switch (n.kind) {
         .wire, .tri, .uwire => true,
         .tri0, .tri1, .trireg, .wand, .wor, .triand, .trior, .supply0, .supply1, .wreal => false,
@@ -1751,14 +1751,14 @@ fn logicGate(kind: Ast.GateKind) bool {
 /// plain, and every net a switch reads the strength of (§7.12).
 fn resolvedNets(self: *Emitter) Error!void {
     const r = self.r;
-    self.net_ix = try self.arena.alloc(?u32, r.nets.len);
-    self.drv_ix = try self.arena.alloc(?u32, r.drivers.len);
+    self.net_ix = try self.arena.alloc(?u32, r.netlist.nets.len);
+    self.drv_ix = try self.arena.alloc(?u32, r.netlist.drivers.len);
     @memset(self.net_ix, null);
     @memset(self.drv_ix, null);
     // A subset of the nets, and of their drivers, each once.
-    try self.rt_nets.ensureTotalCapacityPrecise(self.arena, r.nets.len);
-    try self.rt_drivers.ensureTotalCapacityPrecise(self.arena, r.drivers.len);
-    for (r.nets, 0..) |n, k| {
+    try self.rt_nets.ensureTotalCapacityPrecise(self.arena, r.netlist.nets.len);
+    try self.rt_drivers.ensureTotalCapacityPrecise(self.arena, r.netlist.drivers.len);
+    for (r.netlist.nets, 0..) |n, k| {
         // §7.6 a switch terminal resolves with the nets it is joined to.
         const resolved = n.strength_read or r.netCold(n).trans.len != 0 or self.select_forced[n.slot] or for (r.netDrivers(@intCast(k))) |di| {
             if (!plainDriver(self, di)) break true;
@@ -1790,11 +1790,11 @@ fn portArgs(args: []const Ast.ExprId) []const Ast.ExprId {
 fn portDumps(self: *Emitter) Error!void {
     const r = self.r;
     const ex = &r.file.exprs;
-    for (r.code.items, 0..) |ins, pc| {
+    for (r.program.code.items, 0..) |ins, pc| {
         if (ins != .task or ins.task.task != .ports or ins.task.task.ports != .ports) continue;
         const t = ins.task;
-        r.scope = r.code_scope.items[pc];
-        const given = portArgs(t.args);
+        r.scope = r.program.scope_of.items[pc];
+        const given = portArgs(r.program.exprs(t.args));
         var scopes: std.ArrayList(u32) = try .initCapacity(self.arena, @max(given.len, 1));
         var name: []const u8 = "dumpports.vcd";
         for (given, 0..) |e, i| {
@@ -1810,9 +1810,9 @@ fn portDumps(self: *Emitter) Error!void {
             name = r.file.str(ex.strOf(e));
         }
         if (scopes.items.len == 0) scopes.appendAssumeCapacity(r.instanceOf(r.scope));
-        for (scopes.items) |sc| for (r.file.modules[r.scope_info.items[sc].def].ports) |mp| {
-            const slot = r.names.get(.{ .scope = sc, .str = mp.name }) orelse continue;
-            if (r.net_of.get(slot)) |n| r.nets[n].strength_read = true;
+        for (scopes.items) |sc| for (r.file.modules[r.hier.scopes.items[sc].def].ports) |mp| {
+            const slot = r.hier.names.get(.{ .scope = sc, .str = mp.name }) orelse continue;
+            if (r.netlist.slot_nets.get(slot)) |n| r.netlist.nets[n].strength_read = true;
         };
         try self.port_files.append(self.arena, .{ .pc = @intCast(pc), .name = name, .call = vcd.callText(r.text, r.starts[t.tok]), .scopes = scopes.items });
     }
@@ -1836,8 +1836,8 @@ fn portTables(self: *Emitter) Error!void {
             w.writeAll("$scope module ") catch return error.OutOfMemory;
             root.for_emitter.evcd.path(r, w, sc) catch return error.OutOfMemory;
             w.writeAll(" $end\n") catch return error.OutOfMemory;
-            for (r.file.modules[r.scope_info.items[sc].def].ports) |mp| {
-                const slot = r.names.get(.{ .scope = sc, .str = mp.name }) orelse continue;
+            for (r.file.modules[r.hier.scopes.items[sc].def].ports) |mp| {
+                const slot = r.hier.names.get(.{ .scope = sc, .str = mp.name }) orelse continue;
                 const width = r.values[slot].width;
                 w.writeAll("$var port ") catch return error.OutOfMemory;
                 if (width == 1) w.writeAll("1") catch return error.OutOfMemory else {
@@ -1847,9 +1847,9 @@ fn portTables(self: *Emitter) Error!void {
                 w.print(" <{d} {s} $end\n", .{ n, r.file.str(mp.name) }) catch return error.OutOfMemory;
                 n += 1;
                 pw.print("\n            .{{ .off = {d}, .width = {d}, .dir = .{t}, ", .{ self.off[slot], width, mp.direction }) catch return error.OutOfMemory;
-                if (r.net_of.get(slot)) |k| {
+                if (r.netlist.slot_nets.get(slot)) |k| {
                     pw.print(".net = {d}, .inside = &.{{", .{self.net_ix[k] orelse return self.refuse("a dumped port whose net the executable does not resolve")}) catch return error.OutOfMemory;
-                    for (r.netDrivers(k)) |d| pw.print(" {},", .{root.for_emitter.evcd.below(r, r.drivers[d].scope, sc)}) catch return error.OutOfMemory;
+                    for (r.netDrivers(k)) |d| pw.print(" {},", .{root.for_emitter.evcd.below(r, r.netlist.drivers[d].scope, sc)}) catch return error.OutOfMemory;
                     pw.writeAll(" } },") catch return error.OutOfMemory;
                 } else pw.writeAll("},") catch return error.OutOfMemory;
             }
@@ -1857,7 +1857,7 @@ fn portTables(self: *Emitter) Error!void {
         }
         w.writeAll("$enddefinitions $end\n") catch return error.OutOfMemory;
         try self.print("\n        .{{ .name = \"{f}\", .call = \"{f}\", .finest = {d}, .header = \"{f}\", .ports = &.{{{s}\n        }} }},", .{
-            std.zig.fmtString(f.name), std.zig.fmtString(f.call), r.finest, std.zig.fmtString(head.written()), ports.written(),
+            std.zig.fmtString(f.name), std.zig.fmtString(f.call), r.time.finest, std.zig.fmtString(head.written()), ports.written(),
         });
     }
     try self.print("\n    }},\n", .{});
@@ -1899,7 +1899,7 @@ fn forcedParts(self: *Emitter) Error!void {
     const start = try self.arena.alloc(u32, r.values.len + 1);
     @memset(start, 0);
     // First each one's place within its slot, counted in `start[slot + 1]`.
-    for (r.code.items) |ins| if (ins == .override_on) if (ins.override_on.bits) |b| {
+    for (r.program.code.items) |ins| if (ins == .override_on) if (ins.override_on.bits.some()) |b| {
         const slot = ins.override_on.slot;
         const gop = try self.parts.getOrPut(self.arena, .{ .slot = slot, .bits = b });
         if (gop.found_existing) continue;
@@ -1926,11 +1926,11 @@ fn netTables(self: *Emitter) Error!void {
     var conds: u32 = 0;
     try self.print("    .nets = &.{{", .{});
     for (self.rt_nets.items) |k| {
-        const n = r.nets[k];
+        const n = r.netlist.nets[k];
         const c = r.netCold(n);
         var strong = !n.strength_read and c.trans.len == 0;
         for (r.netDrivers(k)) |di| {
-            const d = r.drivers[di];
+            const d = r.netlist.drivers[di];
             const or_z = switch (d.source) {
                 .gate => |g| !logicGate(g.kind),
                 .mos => true,
@@ -1965,7 +1965,7 @@ fn netTables(self: *Emitter) Error!void {
     try self.print("\n    }},\n    .drivers = &.{{", .{});
     var udps: std.ArrayList(*const root.for_emitter.net.Udp) = try .initCapacity(self.arena, self.rt_drivers.items.len);
     for (self.rt_drivers.items) |di| {
-        const d = r.drivers[di];
+        const d = r.netlist.drivers[di];
         r.scope = d.scope;
         try self.print("\n        .{{ .net = {d}, .s0 = .{t}, .s1 = .{t}, .delay = {f}, .init = .{t}, .delay_bit = ", .{ self.net_ix[d.net].?, d.s0, d.s1, fmtDelay(d.delay), d.current.bit(if (d.source == .udp) d.source.udp.out_bit orelse 0 else 0) });
         switch (d.source) {
@@ -1978,7 +1978,7 @@ fn netTables(self: *Emitter) Error!void {
             .mos => |m| {
                 if (m.lane != null or m.out_bit != null) return self.refuse("§7.1.6 a MOS switch of an instance array with vector terminals (one lane each)");
                 var data_net: ?u32 = null;
-                if (r.file.exprs.tag(m.data) == .ident) if (r.net_of.get(try self.slot(m.data))) |net| {
+                if (r.file.exprs.tag(m.data) == .ident) if (r.netlist.slot_nets.get(try self.slot(m.data))) |net| {
                     data_net = self.net_ix[net];
                 };
                 try self.print("0, .source = .{{ .mos = .{{ .n_type = {}, .resistive = {}, .data_net = {?d} }} }} }},", .{ m.n_type, m.resistive, data_net });
@@ -1988,9 +1988,9 @@ fn netTables(self: *Emitter) Error!void {
         }
     }
     try self.print("\n    }},\n", .{});
-    if (r.trans.len != 0) {
+    if (r.netlist.switches.len != 0) {
         try self.print("    .trans = &.{{", .{});
-        for (r.trans) |t| try self.print("\n        .{{ .a = {d}, .b = {d}, .a_bit = {d}, .b_bit = {d}, .on = .{t}, .state = .{t}, .resistive = {}, .delay = {f} }},", .{
+        for (r.netlist.switches) |t| try self.print("\n        .{{ .a = {d}, .b = {d}, .a_bit = {d}, .b_bit = {d}, .on = .{t}, .state = .{t}, .resistive = {}, .delay = {f} }},", .{
             self.net_ix[t.a].?, self.net_ix[t.b].?, t.a_bit, t.b_bit, t.on, t.state, t.resistive, fmtDelay(t.delay),
         });
         try self.print("\n    }},\n", .{});
@@ -2027,8 +2027,8 @@ fn delayText(d: root.for_emitter.net.Delay, out: *std.Io.Writer) std.Io.Writer.E
 /// operands.
 fn continuous(self: *Emitter, pc: u32, i: u32) Error!void {
     const r = self.r;
-    const d = r.drivers[i];
-    const n = r.nets[d.net];
+    const d = r.netlist.drivers[i];
+    const n = r.netlist.nets[d.net];
     r.scope = d.scope;
     const nw = self.slotWidth(n.slot);
     if (plainDriver(self, i)) {
@@ -2193,7 +2193,7 @@ pub fn fread(self: *Emitter, args: []const Ast.ExprId) Error!void {
     const ex = &r.file.exprs;
     const lb = self.label();
     const base = if (ex.tag(args[0]) == .ident) try self.slot(args[0]) else null;
-    const arr = if (base) |at| r.arrays.get(at) else null;
+    const arr = if (base) |at| r.decls.arrays.get(at) else null;
     try self.print("fr{d}: {{\n            const fd{d} = ", .{ lb, lb });
     try int64(self, args[1]);
     try self.print(";\n", .{});
@@ -2279,7 +2279,7 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
                 // `display.bareReal`'s text: `%#g`, a bare `$realtime` `%.Nf`.
                 try self.print("            try s.real(", .{});
                 try expr.real(self, e);
-                if (ex.tag(e) == .sys_call and r.sys_calls[@backingInt(e)].? == .realtime)
+                if (ex.tag(e) == .sys_call and r.typing.sys_calls[@backingInt(e)].? == .realtime)
                     try self.print(", 'f', 0, {d}, null);\n", .{std.math.log10_int(@as(u64, r.timeOf(r.scope).scale.local_per_unit))})
                 else
                     try self.print(", 'g', {d}, -1, null);\n", .{@import("kernels").str_kernels.zc_alt});
@@ -2346,8 +2346,8 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
                 },
                 'm', 'M' => try text.appendSlice(self.arena, try staticText(self, display.emitScope, .{})),
                 'l', 'L' => {
-                    const def = r.scope_info.items[r.scope].def;
-                    try text.appendSlice(self.arena, try self.arena.print("{s}.{s}", .{ r.file.str(r.def_lib[def]), r.file.str(r.file.modules[def].name) }));
+                    const def = r.hier.scopes.items[r.scope].def;
+                    try text.appendSlice(self.arena, try self.arena.print("{s}.{s}", .{ r.file.str(r.hier.def_lib[def]), r.file.str(r.file.modules[def].name) }));
                 },
                 // §17.1.1.2 Table 17-3's real conversions, and §9.4.7's %r.
                 'e', 'E', 'f', 'F', 'g', 'G', 'r', 'R' => {
@@ -2377,13 +2377,13 @@ fn show(self: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first: 
 /// value at strong strength.
 fn strengthOf(self: *Emitter, e: Ast.ExprId) Error!void {
     const r = self.r;
-    const net = if (r.file.exprs.tag(e) == .ident) r.net_of.get(try self.slot(e)) else null;
+    const net = if (r.file.exprs.tag(e) == .ident) r.netlist.slot_nets.get(try self.slot(e)) else null;
     if (net) |k| {
         // §7.6: a pass switch drives a net with no driver of its own
         // (`display.walk`'s test, which the interpreter prints by).
-        if (r.netDrivers(k).len == 0 and r.netCold(r.nets[k]).trans.len == 0) {
+        if (r.netDrivers(k).len == 0 and r.netCold(r.netlist.nets[k]).trans.len == 0) {
             var buf: std.Io.Writer.Allocating = .init(self.arena);
-            display.strength(&buf.writer, root.for_emitter.net.netPull(r.nets[k].kind)) catch return error.OutOfMemory;
+            display.strength(&buf.writer, root.for_emitter.net.netPull(r.netlist.nets[k].kind)) catch return error.OutOfMemory;
             return self.print("            try s.out.writeAll(\"{s}\");\n", .{buf.written()});
         }
         const ix = self.net_ix[k] orelse return self.refuse("a %v of a net the executable does not resolve");
@@ -2402,13 +2402,13 @@ fn dynamicFormat(self: *Emitter, args: []const Ast.ExprId) Error!void {
     for (args[1..]) |a| {
         if (a == .none) return self.refuse("a null argument after a $sformat format held in a variable");
         // Its strength is kept only where a literal %v marks it read.
-        if (r.file.exprs.tag(a) == .ident and r.net_of.get(try self.slot(a)) != null and compile.typeOf(r, a).width == 1)
+        if (r.file.exprs.tag(a) == .ident and r.netlist.slot_nets.get(try self.slot(a)) != null and compile.typeOf(r, a).width == 1)
             return self.refuse("a scalar net after a $sformat format held in a variable, which a %v there would need the strength of");
     }
     if (compile.typeOf(r, args[0]).real) return self.refuse("a $sformat format held in a real");
     const scope = std.zig.fmtString(try staticText(self, display.emitScope, .{}));
-    const def = r.scope_info.items[r.scope].def;
-    const lib = std.zig.fmtString(try self.arena.print("{s}.{s}", .{ r.file.str(r.def_lib[def]), r.file.str(r.file.modules[def].name) }));
+    const def = r.hier.scopes.items[r.scope].def;
+    const lib = std.zig.fmtString(try self.arena.print("{s}.{s}", .{ r.file.str(r.hier.def_lib[def]), r.file.str(r.file.modules[def].name) }));
     const lb = self.label();
     try self.print("            {{\n            var fb{d}: [{d}]u8 = undefined;\n            var f{d} = S.formatOf(&fb{d}, ", .{ lb, (compile.typeOf(r, args[0]).width + 7) / 8, lb, lb });
     const ft = try expr.selfDetermined(self, args[0]);

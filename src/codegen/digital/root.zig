@@ -39,11 +39,11 @@ pub fn emitDevice(arena: std.mem.Allocator, source: []const u8, opts: sim_digita
 fn emitDeviceDeep(arena: std.mem.Allocator, source: []const u8, opts: sim_digital.Options, schedule: Schedule, bag: *diag.Bag) sim_digital.Error!DeviceZig {
     var discard: std.Io.Writer.Discarding = .init(&.{});
     var r = try sim_digital.elaborate(arena, source, opts, bag, &discard.writer);
-    const top = r.file.modules[r.scope_info.items[0].def];
+    const top = r.file.modules[r.hier.scopes.items[0].def];
     const at: diag.Span = .{ .start = r.starts[top.main_tok], .end = r.starts[top.main_tok] };
     switch (try emit.device(arena, &r, opts.file_name, schedule)) {
         .zig => |text| {
-            if (r.finest == 0) try bag.add(.lower, .W1155, at, "module `{s}`: no `timescale sets a finer precision", .{r.file.str(top.name)});
+            if (r.time.finest == 0) try bag.add(.lower, .W1155, at, "module `{s}`: no `timescale sets a finer precision", .{r.file.str(top.name)});
             return .{ .name = r.file.str(top.name), .zig = text };
         },
         .refused => |why| {

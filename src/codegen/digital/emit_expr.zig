@@ -119,13 +119,13 @@ pub fn real(self: *Emitter, e: Ast.ExprId) Error!void {
         },
         .sys_call => {
             const args = ex.args(e);
-            const f = r.sys_calls[@backingInt(e)].?;
+            const f = r.typing.sys_calls[@backingInt(e)].?;
             switch (f) {
                 .realtime => {
                     const scale = r.timeOf(r.scope).scale;
                     return self.print("s.realtime(.{{ .local_per_unit = {d}, .global_per_local = {d} }})", .{ scale.local_per_unit, scale.global_per_local });
                 },
-                .abstime => return self.print("s.abstime({d})", .{r.finest}),
+                .abstime => return self.print("s.abstime({d})", .{r.time.finest}),
                 .itor => {
                     if (!compile.typeOf(r, args[0]).real) return real(self, args[0]);
                     try self.print("L.itorReal(", .{});
@@ -373,7 +373,7 @@ pub fn value(self: *Emitter, e: Ast.ExprId, ty: Type) Error!void {
         },
         .sys_call => {
             const args = ex.args(e);
-            switch (r.sys_calls[@backingInt(e)].?) {
+            switch (r.typing.sys_calls[@backingInt(e)].?) {
                 .make_signed, .make_unsigned => {
                     try self.print("L.rs(", .{});
                     const t = try selfDetermined(self, args[0]);
@@ -539,7 +539,7 @@ pub fn value(self: *Emitter, e: Ast.ExprId, ty: Type) Error!void {
         },
         .multi_concat => {
             const n = compile.typeOf(self.r, e);
-            const count = r.replications.get(.{ .spec = r.specOf(r.scope), .e = e }).?;
+            const count = r.typing.replications.get(.{ .spec = r.specOf(r.scope), .e = e }).?;
             try self.print("L.rs(L.rep(", .{});
             const t = try selfDetermined(self, ex.rhs(e));
             try self.print(", {d}, {d}), {d}, {d}, {})", .{ t.width, count, n.width, w, sg });
@@ -559,7 +559,7 @@ pub fn value(self: *Emitter, e: Ast.ExprId, ty: Type) Error!void {
 /// frame, in the result variable's representation (real bits or integer).
 fn functionValue(self: *Emitter, e: Ast.ExprId) Error!void {
     const r = self.r;
-    const idx = r.sub_base.get(r.instanceOf(r.scope)).? + r.call_subs.get(e).?;
+    const idx = r.routines.base.get(r.instanceOf(r.scope)).? + r.routines.calls.get(e).?;
     const lb = self.label();
     try self.print("c{d}: {{\n", .{lb});
     try emit.call(self, idx, r.file.exprs.args(e), lb);
@@ -572,7 +572,7 @@ fn calls(self: *Emitter, e: Ast.ExprId) bool {
     if (ex.tag(e) == .call) return true;
     // This node only: the walk below visits every child, as `effects` would
     // again at every level.
-    if (ex.tag(e) == .sys_call) if (self.r.sys_calls[@backingInt(e)]) |f| if (f.effects()) return true;
+    if (ex.tag(e) == .sys_call) if (self.r.typing.sys_calls[@backingInt(e)]) |f| if (f.effects()) return true;
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (c != .none and calls(self, c)) return true;
     return false;
@@ -583,7 +583,7 @@ fn calls(self: *Emitter, e: Ast.ExprId) bool {
 /// function call alone is not one; `calls` covers those.
 pub fn effects(self: *Emitter, e: Ast.ExprId) bool {
     const ex = &self.r.file.exprs;
-    if (ex.tag(e) == .sys_call) if (self.r.sys_calls[@backingInt(e)]) |f| if (f.effects()) return true;
+    if (ex.tag(e) == .sys_call) if (self.r.typing.sys_calls[@backingInt(e)]) |f| if (f.effects()) return true;
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (c != .none and effects(self, c)) return true;
     return false;
@@ -725,7 +725,7 @@ pub fn address(self: *Emitter, e: Ast.ExprId, label: u32) Error!void {
     const ex = &r.file.exprs;
     const c = r.chainBase(e);
     const base = try self.slot(c.base);
-    const arr = r.arrays.get(base).?;
+    const arr = r.decls.arrays.get(base).?;
     try self.print("b{d}: {{", .{label});
     // §4.9 row-major: the innermost select is the last dimension.
     var depth: usize = 0;
@@ -754,7 +754,7 @@ pub const VecRange = @import("sim").digital.VecRange;
 
 /// A slot's declared `[msb:lsb]`, `[w-1:0]` when it declares none.
 pub fn vecRange(r: anytype, at: u32, width: u32) VecRange {
-    return r.vec_ranges.get(at) orelse .{ .msb = @as(i64, width) - 1, .lsb = 0 };
+    return r.typing.vec_ranges.get(at) orelse .{ .msb = @as(i64, width) - 1, .lsb = 0 };
 }
 
 /// A constant part-select as a shift: select bit i is slot bit `i + shift`
@@ -766,7 +766,7 @@ pub const Place = struct { shift: i64, count: u32 };
 /// `e` was typed there.
 pub fn partPlace(self: *Emitter, e: Ast.ExprId, range: VecRange) Error!Place {
     const r = self.r;
-    const b = r.part_selects.get(.{ .spec = r.specOf(r.scope), .e = e }).?;
+    const b = r.typing.part_selects.get(.{ .spec = r.specOf(r.scope), .e = e }).?;
     // `infer` refused a part-select against its vector's direction (§5.2.1).
     return .{ .shift = range.position(b.lsb), .count = @intCast(@abs(b.msb - b.lsb) + 1) };
 }

@@ -108,10 +108,10 @@ pub fn terms(self: *Emitter, e: Ast.ExprId, out: *std.ArrayList(Term)) Error!voi
     const watched = if (edge == .any) e else ex.lhs(e);
     if (ex.tag(watched) == .index) {
         const base = r.slot(r.chainBase(watched).base) catch return self.refuse("an indexed event term the engine resolves only at run time");
-        if (r.events.contains(base)) return out.append(self.arena, .{
+        if (r.decls.events.contains(base)) return out.append(self.arena, .{
             .slot = base,
             .edge = .any,
-            .count = r.arrays.get(base).?.count,
+            .count = r.decls.arrays.get(base).?.count,
             .event_select = watched,
         });
     }
@@ -127,12 +127,12 @@ pub fn terms(self: *Emitter, e: Ast.ExprId, out: *std.ArrayList(Term)) Error!voi
 /// every other instruction. Sets `r.scope` to `pc`'s.
 fn waitTerms(self: *Emitter, pc: u32, out: *std.ArrayList(Term)) Error!void {
     const r = self.r;
-    r.scope = r.code_scope.items[pc];
+    r.scope = r.program.scope_of.items[pc];
     out.clearRetainingCapacity();
-    switch (r.code.items[pc]) {
+    switch (r.program.code.items[pc]) {
         .wait_event => |e| try terms(self, e, out),
-        .wait_slots => |slots| for (slots) |s| try out.append(self.arena, .{ .slot = s, .edge = .any }),
-        .wait_level => |x| for (x.slots) |s| try out.append(self.arena, .{ .slot = s, .edge = .any }),
+        .wait_slots => |slots| for (r.program.wordsOf(slots)) |s| try out.append(self.arena, .{ .slot = s, .edge = .any }),
+        .wait_level => |x| for (r.program.wordsOf(x.slots)) |s| try out.append(self.arena, .{ .slot = s, .edge = .any }),
         .sample => |x| {
             const st = r.file.stmt(x.statement).assign;
             if (!st.timing_is_delay and !compile.parksOnly(st)) try terms(self, st.timing, out);
@@ -147,25 +147,25 @@ pub fn build(self: *Emitter, procs: []Proc, schedule: Schedule) Error!Plan {
     const a = self.arena;
     const watched = try a.alloc(bool, r.values.len);
     @memset(watched, false);
-    for (0..r.fan_start.len -| 1) |s| watched[s] = r.fan_start[s] != r.fan_start[s + 1];
+    for (0..r.waits.fan_start.len -| 1) |s| watched[s] = r.waits.fan_start[s] != r.waits.fan_start[s + 1];
     var ts: std.ArrayList(Term) = .empty;
     for (procs) |p| for (p.pcs) |pc| {
         // A held slot is never `set`: the store must meet `rt`'s guard.
-        if (r.code.items[pc] == .override_eval) watched[r.code.items[pc].override_eval.slot] = true;
+        if (r.program.code.items[pc] == .override_eval) watched[r.program.code.items[pc].override_eval.slot] = true;
         try waitTerms(self, pc, &ts);
         for (ts.items) |t| @memset(watched[t.slot..][0..t.count], true);
     };
     // §17.1.3 a change of a slot the monitor reads asks it to print; a
     // monitor may sit in any subroutine, so every one is looked at.
     var mon: std.ArrayList(u32) = .empty;
-    for (r.code.items, 0..) |ins, pc| if (ins == .task and ins.task.task == .monitor) {
-        r.scope = r.code_scope.items[pc];
-        for (ins.task.args) |arg| if (arg != .none and r.file.exprs.tag(arg) != .str_literal)
+    for (r.program.code.items, 0..) |ins, pc| if (ins == .task and ins.task.task == .monitor) {
+        r.scope = r.program.scope_of.items[pc];
+        for (r.program.exprs(ins.task.args)) |arg| if (arg != .none and r.file.exprs.tag(arg) != .str_literal)
             compile.sensitivity(r, arg, &mon) catch return self.refuse("a monitor argument the engine resolves only at run time");
     };
     for (mon.items) |s| watched[s] = true;
     // §14.3.3 a module path source's every transition reaches `rt.net.pathSeen`.
-    for (r.net_cold.items) |c| for (c.paths) |p| {
+    for (r.netlist.cold.items) |c| for (c.paths) |p| {
         watched[p.src] = true;
     };
     // §18: which slots a `$dumpvars` selects is known only at run time, and
@@ -174,44 +174,44 @@ pub fn build(self: *Emitter, procs: []Proc, schedule: Schedule) Error!Plan {
     if (emit.dumps(r)) @memset(watched, true);
     if (schedule == .fifo) return .{
         .watched = watched,
-        .reach = try reachOf(self, procs, mon.items, r.fan_start, &.{}, &.{}),
-        .fan_start = r.fan_start,
-        .fan = r.fan,
+        .reach = try reachOf(self, procs, mon.items, r.waits.fan_start, &.{}, &.{}),
+        .fan_start = r.waits.fan_start,
+        .fan = r.waits.fan,
     };
 
     // Candidates for a node, with the slots they read and write.
     // `bits` is null when a node re-runs on any change of an input.
     const Cand = struct { proc: u32, inputs: []const u32, outputs: []const u32, bits: ?Bits = null };
     var cands: std.ArrayList(Cand) = try .initCapacity(a, procs.len); // one per process at most
-    const proc_of = try a.alloc(u32, r.code.items.len);
+    const proc_of = try a.alloc(u32, r.program.code.items.len);
     for (procs, 0..) |p, i| for (p.pcs) |pc| {
         proc_of[pc] = @intCast(i);
     };
     // Per process, the slots it is in the fan-out of, ascending: a counting
-    // sort of `r.fan` by process.
+    // sort of `r.waits.fan` by process.
     const reads = try a.alloc([]u32, procs.len);
     {
         const fill_at = try a.alloc(u32, procs.len + 1);
         @memset(fill_at, 0);
-        for (0..r.fan_start.len -| 1) |s| for (r.fan[r.fan_start[s]..r.fan_start[s + 1]]) |pc| {
+        for (0..r.waits.fan_start.len -| 1) |s| for (r.waits.fan[r.waits.fan_start[s]..r.waits.fan_start[s + 1]]) |pc| {
             fill_at[proc_of[pc] + 1] += 1;
         };
         for (fill_at[1..], 0..) |*c, k| c.* += fill_at[k];
         const flat = try a.alloc(u32, fill_at[procs.len]);
         for (reads, fill_at[0..procs.len], fill_at[1..]) |*l, lo, hi| l.* = flat[lo..hi];
-        for (0..r.fan_start.len -| 1) |s| for (r.fan[r.fan_start[s]..r.fan_start[s + 1]]) |pc| {
+        for (0..r.waits.fan_start.len -| 1) |s| for (r.waits.fan[r.waits.fan_start[s]..r.waits.fan_start[s + 1]]) |pc| {
             flat[fill_at[proc_of[pc]]] = @intCast(s);
             fill_at[proc_of[pc]] += 1;
         };
     }
     var triggered: u32 = 0;
     const ranges = try disableRanges(self);
-    for (procs, 0..) |*p, i| switch (r.code.items[p.entry]) {
+    for (procs, 0..) |*p, i| switch (r.program.code.items[p.entry]) {
         // A resolved net's driver is queued: `rt.net` delays or folds it.
         .continuous => |d| if (emit.plainDriver(self, d)) cands.appendAssumeCapacity(.{
             .proc = @intCast(i),
             .inputs = reads[i],
-            .outputs = try a.dupe(u32, &.{r.nets[r.drivers[d].net].slot}),
+            .outputs = try a.dupe(u32, &.{r.netlist.nets[r.netlist.drivers[d].net].slot}),
             .bits = try driverBits(self, d),
         }),
         .wait_event, .wait_slots => if (!disabled(ranges, p.*) and try fixedWait(self, p.*)) {
@@ -224,7 +224,7 @@ pub fn build(self: *Emitter, procs: []Proc, schedule: Schedule) Error!Plan {
                 // §9.7.5: `@*` lists every slot its body reads, so the body
                 // is a function of the bits it reads. An explicit list may
                 // omit one, and then any change of a listed slot must re-run it.
-                .bits = if (r.code.items[p.entry] == .wait_slots) try bodyBits(self, p.*) else null,
+                .bits = if (r.program.code.items[p.entry] == .wait_slots) try bodyBits(self, p.*) else null,
             });
         },
         else => {}, // else: anything else suspends where the interpreter says
@@ -277,7 +277,7 @@ pub fn build(self: *Emitter, procs: []Proc, schedule: Schedule) Error!Plan {
         const p = &procs[cands.items[ci].proc];
         p.role = .{ .comb = @intCast(n) };
         node_of[cands.items[ci].proc] = @intCast(n);
-        node_pc[n] = if (r.code.items[p.entry] == .continuous) p.entry else p.entry + 1;
+        node_pc[n] = if (r.program.code.items[p.entry] == .continuous) p.entry else p.entry + 1;
     }
 
     // Per slot: the nodes it dirties, the watchers it wakes, the drivers
@@ -314,14 +314,14 @@ pub fn build(self: *Emitter, procs: []Proc, schedule: Schedule) Error!Plan {
     }.lt);
     const comb = try per.table(Sense, a, comb_lists);
 
-    // A subset of `r.fan`, in its order: at most `r.fan.len` rows.
+    // A subset of `r.waits.fan`, in its order: at most `r.waits.fan.len` rows.
     const fan = fan: {
-        const n_fan = r.fan_start.len -| 1;
+        const n_fan = r.waits.fan_start.len -| 1;
         const start = try a.alloc(u32, n_fan + 1);
-        var items: std.ArrayList(u32) = try .initCapacity(a, r.fan.len);
+        var items: std.ArrayList(u32) = try .initCapacity(a, r.waits.fan.len);
         for (start[0..n_fan], 0..) |*at, s| {
             at.* = @intCast(items.items.len);
-            for (r.fan[r.fan_start[s]..r.fan_start[s + 1]]) |pc| if (node_of[proc_of[pc]] == null) items.appendAssumeCapacity(pc);
+            for (r.waits.fan[r.waits.fan_start[s]..r.waits.fan_start[s + 1]]) |pc| if (node_of[proc_of[pc]] == null) items.appendAssumeCapacity(pc);
         }
         start[n_fan] = @intCast(items.items.len);
         break :fan .{ .start = start, .items = items.items };
@@ -379,7 +379,7 @@ fn reachOf(self: *Emitter, procs: []const Proc, mon: []const u32, fan_start: []c
         };
     };
     for (mon) |s| reach[s].mon = true;
-    for (r.net_cold.items) |c| for (c.paths) |p| {
+    for (r.netlist.cold.items) |c| for (c.paths) |p| {
         reach[p.src].path = true;
     };
     if (emit.dumps(r)) for (reach) |*x| {
@@ -465,7 +465,7 @@ fn fixedWait(self: *Emitter, p: Proc) Error!bool {
     for (ts.items) |t| if (t.event_select != .none or t.width != 0) return false;
     for (p.pcs) |pc| {
         if (pc == p.entry) continue;
-        switch (self.r.code.items[pc]) {
+        switch (self.r.program.code.items[pc]) {
             .restart => |x| if (x.target != p.entry) return false,
             .delay, .wait_event, .wait_slots, .wait_level, .continuous, .stop => return false,
             // A synchronous call runs to completion (`emit.call`).
@@ -483,9 +483,9 @@ const Range = struct { lo: u32, hi: u32 };
 fn disableRanges(self: *Emitter) Error![]const Range {
     const r = self.r;
     var out: std.ArrayList(Range) = .empty;
-    for (r.code.items) |ins| switch (ins) {
+    for (r.program.code.items) |ins| switch (ins) {
         .disable_block => |b| try out.append(self.arena, .{ .lo = b.start, .hi = b.end }),
-        .disable_task => |idx| for (r.subs.items[idx].ranges.items) |rg| try out.append(self.arena, .{ .lo = rg.start, .hi = rg.end }),
+        .disable_task => |idx| for (r.routines.rows.items[idx].ranges.items) |rg| try out.append(self.arena, .{ .lo = rg.start, .hi = rg.end }),
         else => {}, // else: no other instruction stops another process
     };
     return out.items;
@@ -504,8 +504,8 @@ fn disabled(ranges: []const Range, p: Proc) bool {
 fn combinational(self: *Emitter, p: Proc) Error!?struct { inputs: []const u32, outputs: []const u32 } {
     const r = self.r;
     const ex = &r.file.exprs;
-    r.scope = r.code_scope.items[p.entry];
-    const inputs: []const u32 = switch (r.code.items[p.entry]) {
+    r.scope = r.program.scope_of.items[p.entry];
+    const inputs: []const u32 = switch (r.program.code.items[p.entry]) {
         .wait_event => |e| inputs: {
             var ts: std.ArrayList(Term) = .empty;
             try terms(self, e, &ts);
@@ -514,21 +514,21 @@ fn combinational(self: *Emitter, p: Proc) Error!?struct { inputs: []const u32, o
             for (ts.items, in) |t, *i| {
                 // §9.7.3 a named event holds no value, so no change of one
                 // would ever dirty a node.
-                if (t.edge != .any or r.events.contains(t.slot)) return null;
+                if (t.edge != .any or r.decls.events.contains(t.slot)) return null;
                 i.* = t.slot;
             }
             break :inputs in;
         },
         // §9.7.5 an `@*` over a body that reads nothing never wakes; a
         // settle node would run it once.
-        .wait_slots => |slots| if (slots.len == 0) return null else try self.arena.dupe(u32, slots),
+        .wait_slots => |slots| if (slots.len == 0) return null else try self.arena.dupe(u32, r.program.wordsOf(slots)),
         else => return null,
     };
     // At most one output per instruction.
     var outputs: std.ArrayList(u32) = try .initCapacity(self.arena, p.pcs.len);
     for (p.pcs) |pc| {
-        r.scope = r.code_scope.items[pc];
-        switch (r.code.items[pc]) {
+        r.scope = r.program.scope_of.items[pc];
+        switch (r.program.code.items[pc]) {
             .assign => |x| {
                 if (expr.effects(self, x.value) or expr.effects(self, x.target)) return null;
                 const t = if (ex.tag(x.target) == .index) ex.lhs(x.target) else x.target;
@@ -552,11 +552,11 @@ const Bits = std.AutoHashMapUnmanaged(u32, ?[]u64);
 
 fn driverBits(self: *Emitter, d: u32) Error!?Bits {
     const r = self.r;
-    const x = switch (r.drivers[d].source) {
+    const x = switch (r.netlist.drivers[d].source) {
         .expr => |x| x,
         .bridge, .gate, .udp, .mos, .pull => return null,
     };
-    r.scope = r.drivers[d].scope;
+    r.scope = r.netlist.drivers[d].scope;
     var out: Bits = .empty;
     try readBits(self, x.e, &out);
     return out;
@@ -569,8 +569,8 @@ fn bodyBits(self: *Emitter, p: Proc) Error!?Bits {
     const ex = &r.file.exprs;
     var out: Bits = .empty;
     for (p.pcs) |pc| {
-        r.scope = r.code_scope.items[pc];
-        switch (r.code.items[pc]) {
+        r.scope = r.program.scope_of.items[pc];
+        switch (r.program.code.items[pc]) {
             .assign => |x| {
                 try readBits(self, x.value, &out);
                 var t = x.target;
@@ -657,7 +657,7 @@ fn readBits(self: *Emitter, e: Ast.ExprId, out: *Bits) Error!void {
 pub fn stepLocal(self: *Emitter, procs: []const Proc) Error![]const u32 {
     const r = self.r;
     const a = self.arena;
-    const n = r.code.items.len;
+    const n = r.program.code.items.len;
     // The candidates: slots some instruction writes whole, as bit indices.
     const bit = try a.alloc(?u32, r.values.len);
     @memset(bit, null);
@@ -667,7 +667,7 @@ pub fn stepLocal(self: *Emitter, procs: []const Proc) Error![]const u32 {
     for (writes, 0..) |*w, pc| {
         w.* = null;
         const at = wholeWrite(self, @intCast(pc)) orelse continue;
-        if (self.watched[at] or r.reals.contains(at)) continue;
+        if (self.watched[at] or r.decls.reals.contains(at)) continue;
         if (bit[at] == null) {
             bit[at] = @intCast(cands.items.len);
             cands.appendAssumeCapacity(at);
@@ -687,7 +687,7 @@ pub fn stepLocal(self: *Emitter, procs: []const Proc) Error![]const u32 {
     @memset(none, 0);
     for (procs) |p| try meet(a, in, seen, &work, nw, p.entry, none);
     for (self.subs_todo.items) |idx| {
-        const sub = r.subs.items[idx];
+        const sub = r.routines.rows.items[idx];
         const known = try a.dupe(u64, none);
         for (sub.decl.ports, sub.frame.ports) |port, at| if (port.direction != .output) if (bit[at]) |b| {
             known[b / 64] |= @as(u64, 1) << @intCast(b % 64);
@@ -700,7 +700,7 @@ pub fn stepLocal(self: *Emitter, procs: []const Proc) Error![]const u32 {
         if (writes[pc]) |b| out[b / 64] |= @as(u64, 1) << @intCast(b % 64);
         if (self.block_ends.get(pc)) |ends| for (ends.items) |e| try meet(a, in, seen, &work, nw, e, none);
         const next = pc + 1;
-        switch (r.code.items[pc]) {
+        switch (r.program.code.items[pc]) {
             .stop, .continuous => {},
             .jump => |t| try meet(a, in, seen, &work, nw, t, out),
             .restart => |x| try meet(a, in, seen, &work, nw, x.target, out),
@@ -708,7 +708,7 @@ pub fn stepLocal(self: *Emitter, procs: []const Proc) Error![]const u32 {
             .case_select => |c| {
                 try meet(a, in, seen, &work, nw, c.fallback, out);
                 const arms = r.file.stmt(c.statement).case_stmt.arms.len;
-                for (r.case_targets.items[c.targets..][0..arms]) |t| try meet(a, in, seen, &work, nw, t, out);
+                for (r.program.case_targets.items[c.targets..][0..arms]) |t| try meet(a, in, seen, &work, nw, t, out);
             },
             .repeat_start => |x| for ([_]u32{ next, x.end }) |t| try meet(a, in, seen, &work, nw, t, out),
             .repeat_next => |x| for ([_]u32{ next, x.body }) |t| try meet(a, in, seen, &work, nw, t, out),
@@ -721,10 +721,10 @@ pub fn stepLocal(self: *Emitter, procs: []const Proc) Error![]const u32 {
             },
             .disable_task => |idx| {
                 try meet(a, in, seen, &work, nw, next, out);
-                for (r.subs.items[idx].ranges.items) |rg| if (pc >= rg.start and pc < rg.end) try meet(a, in, seen, &work, nw, rg.end, out);
+                for (r.routines.rows.items[idx].ranges.items) |rg| if (pc >= rg.start and pc < rg.end) try meet(a, in, seen, &work, nw, rg.end, out);
             },
             .pla_start => |p| for ([_]u32{ next, p.at }) |t| try meet(a, in, seen, &work, nw, t, none),
-            .fork => |f| for (if (f.arms.len == 0) &[_]u32{f.end} else f.arms) |t| try meet(a, in, seen, &work, nw, t, none),
+            .fork => |f| for (if (f.arms.len == 0) &[_]u32{f.end} else r.program.wordsOf(f.arms)) |t| try meet(a, in, seen, &work, nw, t, none),
             .join_arm => |j| try meet(a, in, seen, &work, nw, j.end, none),
             .override_on => |o| {
                 try meet(a, in, seen, &work, nw, next, out);
@@ -799,8 +799,8 @@ test meet {
 fn wholeWrite(self: *Emitter, pc: u32) ?u32 {
     const r = self.r;
     const ex = &r.file.exprs;
-    r.scope = r.code_scope.items[pc];
-    const target = switch (r.code.items[pc]) {
+    r.scope = r.program.scope_of.items[pc];
+    const target = switch (r.program.code.items[pc]) {
         .init_var => |x| return x.slot,
         .assign => |x| if (x.nonblocking) return null else x.target,
         .copy_out => |x| x.target,
@@ -815,8 +815,8 @@ fn wholeWrite(self: *Emitter, pc: u32) ?u32 {
 fn readsAt(self: *Emitter, pc: u32, out: *std.ArrayList(u32)) Error!bool {
     const r = self.r;
     const ex = &r.file.exprs;
-    r.scope = r.code_scope.items[pc];
-    switch (r.code.items[pc]) {
+    r.scope = r.program.scope_of.items[pc];
+    switch (r.program.code.items[pc]) {
         .assign => |x| {
             if (ex.tag(x.target) != .ident and ex.tag(x.target) != .hier_ident) if (!try exprReads(self, x.target, out)) return false;
             return exprReads(self, x.value, out);
@@ -828,7 +828,7 @@ fn readsAt(self: *Emitter, pc: u32, out: *std.ArrayList(u32)) Error!bool {
         },
         .init_var => |x| return exprReads(self, x.value, out),
         .delay => |x| return exprReads(self, x.amount, out),
-        .task => |t| for (t.args) |e| if (!try exprReads(self, e, out)) return false,
+        .task => |t| for (r.program.exprs(t.args)) |e| if (!try exprReads(self, e, out)) return false,
         .branch => |b| return exprReads(self, b.condition, out),
         .case_select => |c| {
             const cs = r.file.stmt(c.statement).case_stmt;
@@ -840,7 +840,7 @@ fn readsAt(self: *Emitter, pc: u32, out: *std.ArrayList(u32)) Error!bool {
         .wait_level => |x| return exprReads(self, x.cond, out),
         .sample => |x| return stmtReads(self, x.statement, out),
         .deposit => |x| return stmtReads(self, x.statement, out),
-        .call => |x| for (x.args) |e| if (!try exprReads(self, e, out)) return false,
+        .call => |x| for (r.program.exprs(x.args)) |e| if (!try exprReads(self, e, out)) return false,
         .override_eval => |x| return exprReads(self, x.value, out),
         .trigger => |event| switch (event) {
             .slot => {},
@@ -882,8 +882,8 @@ fn exprReads(self: *Emitter, e: Ast.ExprId, out: *std.ArrayList(u32)) Error!bool
             return true;
         },
         .call => {
-            const idx = r.sub_base.get(r.instanceOf(r.scope)).? + r.call_subs.get(e).?;
-            try out.append(self.arena, r.subs.items[idx].frame.result);
+            const idx = r.routines.base.get(r.instanceOf(r.scope)).? + r.routines.calls.get(e).?;
+            try out.append(self.arena, r.routines.rows.items[idx].frame.result);
         },
         else => {}, // else: every other form reads only through its children
     }
