@@ -160,6 +160,8 @@ pub fn verify(mir: *const Mir, lowered: *const Lowered) Error!?Violation {
 // ---- private ----
 
 fn bad(invariant: Invariant, block: ?Mir.Block, inst: Mir.Inst, what: []const u8) Violation {
+    assert(what.len != 0);
+    if (block == null) assert(inst == .none); // a table-wide rule names no row
     return .{ .invariant = invariant, .block = block, .inst = inst, .what = what };
 }
 
@@ -172,6 +174,8 @@ fn blockOf(bi: usize) Mir.Block {
 }
 
 fn chains(mir: *const Mir, pos: []u32) ?Violation {
+    assert(pos.len == mir.insts.len);
+    assert(std.mem.allEqual(u32, pos, none)); // every row starts unplaced
     const next = mir.insts.items(.next);
     const home = mir.insts.items(.block);
     for (mir.blocks.items(.first), mir.blocks.items(.last), 0..) |head, tail, bi| {
@@ -197,6 +201,8 @@ fn chains(mir: *const Mir, pos: []u32) ?Violation {
 fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
     const nv = valueCount(mir);
     const nb = mir.blockCount();
+    assert(nb > 0);
+    assert(nv >= fd);
     const extra = mir.extra.items;
     const n_callees = std.meta.tags(Mir.Callee).len;
     for (0..nb) |bi| {
@@ -277,6 +283,7 @@ fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
 /// Per dynamic Value: its payload names a row, and its alias chain ends.
 fn values(a: Allocator, mir: *const Mir, lowered: *const Lowered) Allocator.Error!?Violation {
     const nv = valueCount(mir);
+    assert(nv == mir.defs.len + fd);
     const results = mir.insts.items(.result);
     const alias = mir.alias.items;
     if (alias.len != mir.defs.len) return bad(.handle, null, .none, "the alias table is not parallel to `defs`");
@@ -318,6 +325,8 @@ fn values(a: Allocator, mir: *const Mir, lowered: *const Lowered) Allocator.Erro
 
 /// Dominance, phi edges, array operands and `ddx` lanes, per linked row.
 fn uses(mir: *const Mir, lowered: *const Lowered, an: *const Analysis, pos: []const u32) ?Violation {
+    assert(an.nb == mir.blockCount());
+    assert(pos.len == mir.insts.len);
     for (0..mir.blockCount()) |i| {
         const b = blockOf(i);
         const bi: u32 = @intCast(i);
@@ -388,6 +397,8 @@ fn uses(mir: *const Mir, lowered: *const Lowered, an: *const Analysis, pos: []co
 /// Null when `v` is available at row position `at` of block `b` (`none`: at
 /// its end, where a phi reads it); else why not.
 fn available(mir: *const Mir, an: *const Analysis, pos: []const u32, v: Mir.Value, b: u32, at: u32) ?[]const u8 {
+    assert(b < an.nb);
+    assert(@backingInt(v) < an.nv);
     const r = an.rv(v);
     if (mir.valueKind(r) != .inst_result) return null; // a constant, parameter or probe
     const d = mir.valueDef(r).inst_result;
@@ -416,6 +427,7 @@ fn version(mir: *const Mir, an: *const Analysis, v: Mir.Value) bool {
 /// `$held_*` call (`$held_real`, `$held_int`, `$held_str`, `$held_wide`) whose argument is
 /// i, an array's seed the `anew` of the array whose `held` is i.
 fn held(mir: *const Mir, lowered: *const Lowered, an: *const Analysis) ?Violation {
+    assert(an.alias.len == an.nv);
     for (lowered.held_vars.items, 0..) |h, i| {
         if (@backingInt(h.seed) >= an.nv) return bad(.handle, null, .none, "a `held_vars` seed names no Value");
         const seed = mir.valueDef(an.rv(h.seed));

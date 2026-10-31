@@ -230,11 +230,13 @@ pub fn succsOf(an: *const Analysis, b: u32) []const u32 {
 
 /// Returns block `b`'s dominator-tree children, in RPO order.
 pub fn domKids(an: *const Analysis, b: u32) []const u32 {
+    assert(b < an.nb);
     return an.kid_pool[an.kid_off[b]..an.kid_off[b + 1]];
 }
 
 /// Returns block `b`'s rows as a contiguous window (see `inst_pool`).
 pub inline fn blockInstsFlat(an: *const Analysis, b: u32) []const Mir.Inst {
+    assert(b < an.nb);
     return an.inst_pool[an.inst_off[b]..an.inst_off[b + 1]];
 }
 
@@ -252,6 +254,7 @@ pub fn dominates(an: *const Analysis, a: u32, x: u32) bool {
 
 /// Returns whether block `b` is inside some loop's natural body.
 pub fn inLoop(an: *const Analysis, b: u32) bool {
+    assert(b < an.nb);
     return an.loop_of[b] != none;
 }
 

@@ -68,6 +68,8 @@ pub fn check(p: *Prover, inst: Mir.Inst) Error!bool {
 ///   - integer `%`: codegen reports E0601 at execution, without evaluating
 ///     Zig's `%` by zero.
 fn divisor(p: *Prover, inst: Mir.Inst, op: Mir.Opcode) Error!bool {
+    assert(Mir.opClass(op) == .binary);
+    assert(op == p.mir.instOp(inst));
     const d = p.mir.instData(inst).binary;
     const y = p.ivOf(d.rhs);
     if (y.excludesZero() or y.isEmpty()) return true;
@@ -84,6 +86,7 @@ fn divisor(p: *Prover, inst: Mir.Inst, op: Mir.Opcode) Error!bool {
 /// same three-way standard as E0602-E0607: reject only when every admitted
 /// value pair violates.
 fn powSign(p: *Prover, inst: Mir.Inst) Error!bool {
+    assert(Mir.opClass(p.mir.instOp(inst)) == .binary);
     const d = p.mir.instData(inst).binary;
     const x = p.ivOf(d.lhs);
     const y = p.ivOf(d.rhs);
@@ -110,6 +113,7 @@ fn powSign(p: *Prover, inst: Mir.Inst) Error!bool {
 /// and every double is rational, so even a point interval is never provably
 /// at one. Unprovable -> `.strict`, where a pole yields an IEEE infinity.
 fn tanPoles(p: *const Prover, inst: Mir.Inst) bool {
+    assert(Mir.opClass(p.mir.instOp(inst)) == .unary);
     const a = p.ivOf(p.mir.instData(inst).unary.operand);
     if (a.isEmpty()) return true;
     if (!a.bounded()) return false;
@@ -125,6 +129,8 @@ fn tanPoles(p: *const Prover, inst: Mir.Inst) bool {
 /// The one-argument domains of Table 4-15. Each arm: proven inside -> true;
 /// proven outside -> report, false; straddling -> false, no diagnostic.
 fn unaryDomain(p: *Prover, inst: Mir.Inst, op: Mir.Opcode, dom: Mir.opcode.Domain) Error!bool {
+    assert(Mir.opClass(op) == .unary);
+    assert(Mir.opcode.get(op).domain == dom);
     const d = p.mir.instData(inst).unary;
     const a = p.ivOf(d.operand);
     if (a.isEmpty()) return true;
@@ -163,7 +169,9 @@ fn unaryDomain(p: *Prover, inst: Mir.Inst, op: Mir.Opcode, dom: Mir.opcode.Domai
 /// fractional. The failure mode is "not provable", which keeps a
 /// possibly-integer exponent on the accept-as-`.strict` path.
 fn provablyNonInteger(iv: Interval) bool {
-    return iv.bounded() and @floor(iv.lo) == @floor(iv.hi) and iv.lo != @floor(iv.lo);
+    const fractional = iv.bounded() and @floor(iv.lo) == @floor(iv.hi) and iv.lo != @floor(iv.lo);
+    if (fractional) assert(iv.hi != @floor(iv.hi) or iv.hi < iv.lo); // no integer end either
+    return fractional;
 }
 
 /// §4.3.1 pow with a negative base needs "all integer y".
@@ -195,6 +203,8 @@ fn violated(
     requirement: []const u8,
     fix: []const u8,
 ) Error!bool {
+    assert(requirement.len != 0);
+    assert(fix.len != 0);
     var b = try message.violation(p, inst, code, operand, iv, what);
     b.point("{s}", .{requirement});
     b.help("{s}", .{fix});

@@ -97,6 +97,7 @@ pub fn varying(in: Input, t: Lowered.TpBlock) Error!?Mir.Value {
 /// analysis the host keys the cache on, the accepted held state, the cache
 /// itself, and the pure synthetic reads lowering mints. An allowlist.
 fn callTimepoint(in: Input, d: Call) bool {
+    assert(d.callee == Mir.Callee.fromName(d.name)); // `verify`'s `callee` invariant
     if (invariance.callInvariant(in, d)) return true;
     return switch (d.callee) {
         .@"$abstime", .@"$realtime", .analysis, .analog_initial, .initial_step, .final_step => true,
@@ -118,6 +119,8 @@ fn varies(in: Input, vary: []const bool, v0: Mir.Value) bool {
 }
 
 fn rule(in: Input, vary: []const bool, inside: []const bool, cds: setup.ControlDeps, v: Mir.Value) bool {
+    assert(vary.len == in.an.nv);
+    assert(inside.len == in.an.nb);
     const def = in.mir.valueDef(v);
     if (def != .inst_result) return varies(in, vary, v);
     const inst = def.inst_result;

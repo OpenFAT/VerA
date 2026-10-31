@@ -184,6 +184,7 @@ pub fn keepSlice(gpa: Allocator, mir: *const Mir, roots: []const Mir.Value) Erro
 /// assigned value)`, is what codegen's setup split recognises as initial-only
 /// work and computes once; a `select` on the flag would run every evaluation.
 fn firstPoint(mir: *const Mir, cond: Mir.Value) bool {
+    assert(@backingInt(cond) < mir.defs.len + Mir.Value.first_dynamic);
     const def = mir.valueDef(mir.resolveAlias(cond));
     if (def != .inst_result or mir.instOp(def.inst_result) != .call) return false;
     const d = mir.instData(def.inst_result).call;
@@ -196,6 +197,7 @@ fn firstPoint(mir: *const Mir, cond: Mir.Value) bool {
 /// phi or load answers false, and so does a tree past `budget` visits: false
 /// only costs a branch its `.speculate` refusal.
 fn cardOnly(mir: *const Mir, v0: Mir.Value, budget: *u32) bool {
+    assert(budget.* <= card_visits_max); // the recursion's depth is bounded by it
     if (budget.* == 0) return false;
     budget.* -= 1;
     const v = mir.resolveAlias(v0);
@@ -213,6 +215,7 @@ fn cardOnly(mir: *const Mir, v0: Mir.Value, budget: *u32) bool {
 }
 
 fn countPreds(mir: *const Mir, preds: []u32) void {
+    assert(preds.len == mir.blockCount());
     @memset(preds, 0);
     for (0..preds.len) |b| {
         var it = mir.blockInsts(@fromBackingInt(@intCast(b)));
@@ -246,6 +249,8 @@ fn classifyChain(mir: *const Mir, x: Mir.Block, head: Mir.Block, preds: []const 
 
 /// Validates one block of an arm; returns the block it jumps to.
 fn classifyArm(mir: *const Mir, x: Mir.Block, arm: Mir.Block, preds: []const u32, mode: Mode) ?Mir.Block {
+    assert(@backingInt(arm) < preds.len);
+    assert(@backingInt(x) < preds.len);
     if (arm == x) return null; // back edge to the branching block itself
     if (preds[@backingInt(arm)] != 1) return null;
     var join: ?Mir.Block = null;
@@ -283,7 +288,8 @@ fn classifyArm(mir: *const Mir, x: Mir.Block, arm: Mir.Block, preds: []const u32
     return j;
 }
 
-fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) !bool {
+fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) Error!bool {
+    assert(preds.len == mir.blockCount());
     const term = terminator(mir, x) orelse return false;
     if (mir.instOp(term) != .branch) return false;
     const br = mir.instData(term).branch;
@@ -377,6 +383,9 @@ fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode,
         rewritePhi(mir, phi, then_key, else_key, x, sel);
     }
     _ = try mir.emitJump(gpa, x, join);
+    const now = terminator(mir, x).?;
+    assert(mir.instOp(now) == .jump); // X falls through to the join now
+    assert(mir.instData(now).jump.target == join);
     return true;
 }
 
@@ -405,6 +414,7 @@ fn peelToBool(mir: *const Mir, cond0: Mir.Value) Mir.Value {
 /// sit after the terminator (ssa.zig mints phis on demand), which is also why
 /// analysis.buildCfg searches the same way.
 fn terminator(mir: *const Mir, b: Mir.Block) ?Mir.Inst {
+    assert(@backingInt(b) < mir.blockCount());
     var it = mir.blockInsts(b);
     while (it.next()) |inst| switch (Mir.opClass(mir.instOp(inst))) {
         .branch, .jump => return inst,

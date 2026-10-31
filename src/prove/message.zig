@@ -38,6 +38,7 @@ const iv_text_max: usize = 768;
 
 /// Returns the source span of `inst`, or none for an unattributed row.
 pub fn span(p: *const Prover, inst: Mir.Inst) diag.Span {
+    assert(inst != .none);
     const tok = p.mir.instTok(inst);
     // Token 0 is the first line of the annex D prelude, not a location.
     if (tok == Mir.no_tok) return .{};
@@ -70,6 +71,7 @@ pub fn violation(
     iv: Interval,
     what: []const u8,
 ) Error!diag.Builder {
+    assert(what.len != 0);
     var buf: [iv_text_max]u8 = undefined;
     const at = span(p, inst);
     var b = p.bag.build(.proof, code, at);
@@ -120,6 +122,7 @@ pub fn describe(p: *const Prover, v: Mir.Value) Error![]const u8 {
 /// The first leaf in `root`'s backward slice with no bound evidence: the
 /// thing the user has to constrain. Budgeted; used only for the message.
 fn unboundedLeaf(p: *const Prover, root: Mir.Value) ?Mir.Value {
+    assert(p.mir.valueDef(root) == .inst_result); // `describe` asks for computed values only
     var stack: [leaf_stack_max]Mir.Value = undefined;
     var n: usize = 1;
     stack[0] = root;
