@@ -29,7 +29,7 @@
 //!
 //! Contents:
 //! - `pub const vera_version`
-//! - `pub const str_scan`, `str_real`, `str_format`, `str_store`, `table_kernels`, `rng_kernels`, `filter_kernels`, `file_kernels`, `limit_kernels`, `timer_kernels`, `hist_kernels`, `wide_kernels`, `ops_kernels`
+//! - `pub const str_scan`, `str_real`, `str_format`, `str_store`, `table_kernels`, `rng_kernels`, `filter_kernels`, `file_kernels`, `file_table`, `limit_kernels`, `timer_kernels`, `hist_kernels`, `wide_kernels`, `ops_kernels`
 //! - `pub const Integer`, `fmt`, `fold`
 //! - `pub const fopen_types: std.StaticStringMap(void)`
 //! - `pub const text = struct { str, table, rng, filter, file, limit, timer, hist, wide, ops }`
@@ -62,6 +62,8 @@ pub const filter_kernels = @import("filter_kernels.zig");
 /// `own`). The table is process-global: every caller in one process shares
 /// its channels.
 pub const file_kernels = @import("file_kernels.zig");
+/// §9.5 the descriptor table itself, over a caller's allocator and `Io`.
+pub const file_table = @import("file_table.zig");
 /// §4.5.15 SPICE limiting functions.
 pub const limit_kernels = @import("limit_kernels.zig");
 /// §5.10.3.3 absolute timer scheduling, also the mixed coordinator's.
@@ -108,7 +110,7 @@ pub const text = struct {
     pub const table = deviceText("ztstd", &.{"table_kernels.zig"}, &.{@embedFile("table_kernels.zig")});
     pub const rng = deviceText("zrstd", &.{"rng_kernels.zig"}, &.{@embedFile("rng_kernels.zig")});
     pub const filter = deviceText("zqstd", &.{"filter_kernels.zig"}, &.{@embedFile("filter_kernels.zig")});
-    pub const file = deviceText("zfstd", &.{"file_kernels.zig"}, &.{@embedFile("file_kernels.zig")});
+    pub const file = deviceText("zfstd", &.{ "file_table.zig", "file_kernels.zig" }, &.{ @embedFile("file_table.zig"), @embedFile("file_kernels.zig") });
     pub const limit = deviceText("zlstd", &.{"limit_kernels.zig"}, &.{@embedFile("limit_kernels.zig")});
     pub const timer = deviceText("ztm", &.{"timer_kernels.zig"}, &.{@embedFile("timer_kernels.zig")});
     pub const hist = deviceText("zhs", &.{"hist_kernels.zig"}, &.{@embedFile("hist_kernels.zig")});

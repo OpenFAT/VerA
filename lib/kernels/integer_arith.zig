@@ -32,14 +32,20 @@ const fixture = @import("integer_fixture.zig");
 /// truncates toward zero and the remainder has the dividend's sign. Caller
 /// owns the result's planes and frees them with `gpa`.
 pub fn arithmetic(self: Literal, gpa: Allocator, op: Arithmetic, rhs: Literal) Allocator.Error!Literal {
-    return arithmeticIn(self, gpa, op, rhs, @max(self.width, rhs.width) <= 64);
+    const out = try arithmeticIn(self, gpa, op, rhs, @max(self.width, rhs.width) <= 64);
+    assert(out.width == @max(self.width, rhs.width));
+    assert(out.signed == (self.signed and rhs.signed));
+    return out;
 }
 
 /// Returns `-self` at the operand's width and signedness, wrapping at the
 /// most negative value; any X/Z bit makes the whole result X. Caller owns
 /// the result's planes and frees them with `gpa`.
 pub fn negate(self: Literal, gpa: Allocator) Allocator.Error!Literal {
-    return negateIn(self, gpa, self.width <= 64);
+    const out = try negateIn(self, gpa, self.width <= 64);
+    assert(out.width == self.width);
+    assert(out.signed == self.signed);
+    return out;
 }
 
 /// Returns `self ** exponent` (IEEE 1364-2005 §5.1.5, Tables 5-6 and 5-8).
@@ -49,7 +55,10 @@ pub fn negate(self: Literal, gpa: Allocator) Allocator.Error!Literal {
 /// O(exponent bits) multiplications at the base width. Caller owns the
 /// result's planes and frees them with `gpa`.
 pub fn power(self: Literal, gpa: Allocator, exponent: Literal) Allocator.Error!Literal {
-    return powerIn(self, gpa, exponent, self.width <= 64);
+    const out = try powerIn(self, gpa, exponent, self.width <= 64);
+    assert(out.width == self.width);
+    assert(out.signed == self.signed);
+    return out;
 }
 
 // ---- private ----
@@ -218,6 +227,7 @@ fn arithmeticValue(lit: Literal, gpa: Allocator, signed: bool) Allocator.Error!B
     defer gpa.free(bytes);
     for (lit.values()[0..n], 0..) |word, i|
         std.mem.writeInt(u64, bytes[i * 8 ..][0..8], word, .little);
+    assert(n * 64 >= lit.width);
     var out = try Big.initCapacity(gpa, std.math.big.int.calcTwosCompLimbCount(lit.width));
     var mutable = out.toMutable();
     mutable.readTwosComplement(bytes, lit.width, .little, if (signed) .signed else .unsigned);
