@@ -1,30 +1,28 @@
-//! §12.11 vpi_get_delays and §12.29 vpi_put_delays over the delay rows the
-//! builders recorded (`Obj.delays`, in the module's time unit): continuous
-//! assignments, gates and UDP instances, delay controls, and the §11.6.15
-//! module paths and timing checks. A put on a gate, UDP or continuous
-//! assignment rewrites the engine driver its statement became, and the row;
-//! on a path or timing check, the row alone (no simulation applies a specify
-//! block). Either way vpi_get_delays reads the put back, a path's pulse
-//! limits included (`limits`). §12.22's inter-module paths live here too
-//! (`InterModPath`): objects made on demand from two port rows, whose delays
-//! the model holds as it holds a module path's.
+//! §12.11 vpi_get_delays and §12.29 vpi_put_delays over gates, continuous
+//! assignments, module paths, timing checks and delay controls, and IEEE
+//! 1364-2005 §26.6.16's inter-module paths (§12.22).
+//! Cites: VAMS-2023 §12.11, §12.22, §12.29, Table 12-5; IEEE 1364 §7.14,
+//! §14.3.1 Tables 14-3/14-4, §26.6.16.
+//!
+//! Contents:
+//! - `pub fn reset() void`
+//! - `pub fn vpi_get_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void`
+//! - `pub fn vpi_put_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void`
+//! - `pub fn part(d: *const Delay, k: usize, p: usize) Time`
+//! - `pub fn asPath(h: abi.vpiHandle) ?*InterModPath`
+//! - `pub fn interModPath(ref1: abi.vpiHandle, ref2: abi.vpiHandle) abi.vpiHandle`
 
 const std = @import("std");
-const callback = @import("callback.zig");
-const code = @import("code.zig");
-const root = @import("root.zig");
+const abi = @import("abi.zig");
 const run = @import("run.zig");
-
-const vpiContAssign = code.vpiContAssign;
-const vpiDelayControl = code.vpiDelayControl;
-const vpiGate = code.vpiGate;
-const vpiModPath = code.vpiModPath;
-const vpiTchk = code.vpiTchk;
-const vpiUdp = code.vpiUdp;
-
-// ---------------------------------------------------------------------------
-// §12.11 vpi_get_delays
-// ---------------------------------------------------------------------------
+const session = @import("session.zig");
+const status = @import("status.zig");
+const trust = @import("trust.zig");
+const user = @import("vpi_user.zig");
+const schema = @import("schema.zig");
+const Delay = abi.Delay;
+const Obj = schema.Obj;
+const Time = abi.Time;
 
 /// The pulse limits a §12.29 put gave a module path, by object index: each
 /// written delay's reject and error limit, kept apart from the delays so a
@@ -34,7 +32,21 @@ const vpiUdp = code.vpiUdp;
 /// itself, which therefore follows a delay put. Slices live in the design's
 /// arena; `reset` drops the table with the design.
 const Limits = struct { reject: []const f64, err: []const f64 };
+
 var limits: std.AutoHashMapUnmanaged(u32, Limits) = .empty;
+
+/// IEEE 1364-2005 §26.6.16's inter-module path: the interconnect from port
+/// row `ports[0]` (an output or inout) to port row `ports[1]` (an input or
+/// inout), and the rise, fall and turn-off delays a put gave it, in
+/// `ports[0]`'s module's time unit. An interconnect nothing was put on has no
+/// delay, so they start at 0. Like a module path's, the delays are the
+/// model's: no simulation applies one (VD-114).
+const InterModPath = struct { ports: [2]u32, delays: [3]f64 = .{ 0, 0, 0 } };
+
+/// Every inter-module path made since the design opened, each a handle.
+/// ponytail: scanned per lookup; an application asks for a handful. Key a
+/// map by the port pair when one asks for thousands.
+var paths: std.ArrayList(*InterModPath) = .empty;
 
 /// Forgets every path's pulse limits and every inter-module path
 /// (`root.close`).
@@ -43,16 +55,6 @@ pub fn reset() void {
     for (paths.items) |m| std.heap.smp_allocator.destroy(m);
     paths.clearAndFree(std.heap.smp_allocator);
 }
-
-/// Figure 12-4, laid out as Annex G does (its `bool`s are PLI_INT32).
-pub const Delay = extern struct {
-    da: [*c]callback.Time,
-    no_of_delays: c_int,
-    time_type: c_int,
-    mtm_flag: c_int,
-    append_flag: c_int,
-    pulsere_flag: c_int,
-};
 
 /// "shall retrieve the delays or pulse limits of an object and place them in
 /// an s_vpi_delay structure which has been allocated by the user. The format
@@ -71,51 +73,51 @@ pub const Delay = extern struct {
 /// expression reaches this model), and the reject and error limits are the
 /// ones a put gave a path, else the delay itself (IEEE 1364 §14.6.1's
 /// default, an inertial delay).
-pub export fn vpi_get_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
-    if (root.refused("vpi_get_delays")) return;
+pub export fn vpi_get_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
+    if (status.refused("vpi_get_delays")) return;
     if (asPath(obj)) |m| return getPathDelays(m, delay_p);
-    const o = root.asObj(obj) orelse {
-        root.fail("BADHANDLE", "vpi_get_delays: that handle is not an object", .{});
+    const o = trust.asObj(obj) orelse {
+        status.fail("BADHANDLE", "vpi_get_delays: that handle is not an object", .{});
         return;
     };
     const d = delay_p orelse {
-        root.fail("BADDELAY", "vpi_get_delays: delay_p is NULL", .{});
+        status.fail("BADDELAY", "vpi_get_delays: delay_p is NULL", .{});
         return;
     };
     if (o.kind != .code or o.delays.len == 0) {
-        root.fail("NODELAY", "vpi_get_delays: that object carries no delays", .{});
+        status.fail("NODELAY", "vpi_get_delays: that object carries no delays", .{});
         return;
     }
     // §12.11: "For primitive objects, the no_of_delays value shall be 2 or
     // 3. For path delay objects, the no_of_delays value shall be 1, 2, 3, 6,
     // or 12. For timing check objects, the no_of_delays value shall match
     // the number of limits existing in the timing check."
-    const primitive = o.vtype == vpiGate or o.vtype == vpiUdp;
+    const primitive = o.vtype == user.vpiGate or o.vtype == user.vpiUdp;
     const legal = switch (o.vtype) {
-        vpiModPath => switch (d.no_of_delays) {
+        user.vpiModPath => switch (d.no_of_delays) {
             1, 2, 3, 6, 12 => true,
             else => false,
         },
-        vpiTchk => d.no_of_delays == o.delays.len,
+        user.vpiTchk => d.no_of_delays == o.delays.len,
         else => d.no_of_delays >= @as(c_int, if (primitive) 2 else 1) and
-            d.no_of_delays <= @as(c_int, if (o.vtype == vpiDelayControl) 1 else 3),
+            d.no_of_delays <= @as(c_int, if (o.vtype == user.vpiDelayControl) 1 else 3),
     };
     if (!legal) {
-        root.fail("BADDELAY", "vpi_get_delays: no_of_delays {d} is not legal for this object", .{d.no_of_delays});
+        status.fail("BADDELAY", "vpi_get_delays: no_of_delays {d} is not legal for this object", .{d.no_of_delays});
         return;
     }
     if (!timeTypeOk("vpi_get_delays", d)) return;
     if (d.da == null) {
-        root.fail("BADDELAY", "vpi_get_delays: da is NULL", .{});
+        status.fail("BADDELAY", "vpi_get_delays: da is NULL", .{});
         return;
     }
     const rise = o.delays[0];
     const fall = if (o.delays.len > 1) o.delays[1] else rise;
     const off = if (o.delays.len > 2) o.delays[2] else @min(rise, fall);
     var values_buf: [12]f64 = undefined;
-    const values: []const f64 = if (o.vtype == vpiModPath)
+    const values: []const f64 = if (o.vtype == user.vpiModPath)
         pathDelays(o.delays, &values_buf)
-    else if (o.vtype == vpiTchk)
+    else if (o.vtype == user.vpiTchk)
         o.delays
     else blk: {
         values_buf[0..3].* = .{ rise, fall, off };
@@ -124,42 +126,11 @@ pub export fn vpi_get_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
     // A path's put limits, spread over its transitions as its delays are.
     var reject_buf: [12]f64 = undefined;
     var err_buf: [12]f64 = undefined;
-    const lim = if (o.vtype == vpiModPath) limits.get(root.design.?.indexOf(o)) else null;
+    const lim = if (o.vtype == user.vpiModPath) limits.get(session.design.?.indexOf(o)) else null;
     const rejects: []const f64 = if (lim) |l| pathDelays(l.reject, &reject_buf) else values;
     const errs: []const f64 = if (lim) |l| pathDelays(l.err, &err_buf) else values;
     fill(d, values, rejects, errs, obj);
 }
-
-/// Writes `values` (with their `rejects` and `errs`) into the user's `da` as
-/// Table 12-5 lays them out, in `d.time_type`; a vpiSimTime counts ticks
-/// of `unit_of`'s module's unit.
-fn fill(d: *Delay, values: []const f64, rejects: []const f64, errs: []const f64, unit_of: root.vpiHandle) void {
-    const mtm: usize = if (d.mtm_flag != 0) 3 else 1;
-    const pulse: usize = if (d.pulsere_flag != 0) 3 else 1;
-    var at: usize = 0;
-    // A path's first three transitions (0->1, 1->0, 0->z) ARE its rise,
-    // fall and turn-off, so every count reads a prefix.
-    for (values[0..@intCast(d.no_of_delays)], 0..) |delay_v, i| {
-        for (0..pulse) |p| for (0..mtm) |_| {
-            const v = switch (p) {
-                0 => delay_v,
-                1 => if (i < rejects.len) rejects[i] else delay_v,
-                else => if (i < errs.len) errs[i] else delay_v,
-            };
-            var t: callback.Time = .{ .type = d.time_type, .high = 0, .low = 0, .real = v };
-            if (d.time_type == callback.vpiSimTime) {
-                const ticks = run.ticksOf(.{ .type = callback.vpiScaledRealTime, .high = 0, .low = 0, .real = v }, unit_of) orelse return;
-                t = .{ .type = callback.vpiSimTime, .high = @truncate(ticks >> 32), .low = @truncate(ticks), .real = 0 };
-            }
-            d.da[at] = t;
-            at += 1;
-        };
-    }
-}
-
-// ---------------------------------------------------------------------------
-// §12.29 vpi_put_delays
-// ---------------------------------------------------------------------------
 
 /// "shall set the delays or timing limits of an object as indicated in the
 /// delay_p structure. The same ordering of delays shall be used as described
@@ -183,19 +154,19 @@ fn fill(d: *Delay, values: []const f64, rejects: []const f64, errs: []const f64,
 /// The engine's gates and continuous assignments run IEEE 1364 §14.6.1's
 /// inertial default, both limits the delay itself, and no other: a put of
 /// other limits onto one is refused rather than dropped.
-pub export fn vpi_put_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
-    if (root.refused("vpi_put_delays")) return;
+pub export fn vpi_put_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
+    if (status.refused("vpi_put_delays")) return;
     if (asPath(obj)) |m| return putPathDelays(m, delay_p);
-    const o = root.asObj(obj) orelse {
-        root.fail("BADHANDLE", "vpi_put_delays: that handle is not an object", .{});
+    const o = trust.asObj(obj) orelse {
+        status.fail("BADHANDLE", "vpi_put_delays: that handle is not an object", .{});
         return;
     };
     const d = delay_p orelse {
-        root.fail("BADDELAY", "vpi_put_delays: delay_p is NULL", .{});
+        status.fail("BADDELAY", "vpi_put_delays: delay_p is NULL", .{});
         return;
     };
-    const primitive = o.kind == .code and (o.vtype == vpiGate or o.vtype == vpiUdp);
-    const assign = o.kind == .code and o.vtype == vpiContAssign;
+    const primitive = o.kind == .code and (o.vtype == user.vpiGate or o.vtype == user.vpiUdp);
+    const assign = o.kind == .code and o.vtype == user.vpiContAssign;
     // §11.6.15's paths and timing checks: "For path delay objects, the
     // no_of_delays value shall be 1, 2, 3, 6, or 12. For timing check
     // objects, the no_of_delays value shall match the number of limits".
@@ -203,30 +174,30 @@ pub export fn vpi_put_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
     // a path delay (W0251) — so the put sets what vpi_get_delays reads
     // back. A timing check's limits are the engine's too: a digital run
     // judges every later event with them (IEEE 1364-2005 clause 15).
-    if (o.kind == .code and o.vtype == vpiModPath) {
+    if (o.kind == .code and o.vtype == user.vpiModPath) {
         _ = putModelDelays(o, d);
         return;
     }
-    if (o.kind == .code and o.vtype == vpiTchk) {
+    if (o.kind == .code and o.vtype == user.vpiTchk) {
         if (putModelDelays(o, d)) putEngineLimits(obj, o, d);
         return;
     }
     if (!primitive and !assign) {
-        root.fail("NODELAY", "vpi_put_delays: that object has no delays a put can set", .{});
+        status.fail("NODELAY", "vpi_put_delays: that object has no delays a put can set", .{});
         return;
     }
     const least: c_int = if (primitive) 2 else 1;
     if (d.no_of_delays < least or d.no_of_delays > 3) {
-        root.fail("BADDELAY", "vpi_put_delays: no_of_delays {d} is not legal here ({d}..3)", .{ d.no_of_delays, least });
+        status.fail("BADDELAY", "vpi_put_delays: no_of_delays {d} is not legal here ({d}..3)", .{ d.no_of_delays, least });
         return;
     }
     if (!timeTypeOk("vpi_put_delays", d)) return;
     if (d.da == null) {
-        root.fail("BADDELAY", "vpi_put_delays: da is NULL", .{});
+        status.fail("BADDELAY", "vpi_put_delays: da is NULL", .{});
         return;
     }
     const r = run.attached() orelse {
-        root.fail("NOENGINE", "vpi_put_delays: no simulation is running this object's drivers", .{});
+        status.fail("NOENGINE", "vpi_put_delays: no simulation is running this object's drivers", .{});
         return;
     };
     const n: usize = @intCast(d.no_of_delays);
@@ -236,16 +207,16 @@ pub export fn vpi_put_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
         // The k-th delay's element: its typical (mtm), its delay (pulsere).
         const t = part(d, k, 0);
         if (t.type != d.time_type) {
-            root.fail("BADDELAY", "vpi_put_delays: da[{d}] is not of the structure's time_type", .{k});
+            status.fail("BADDELAY", "vpi_put_delays: da[{d}] is not of the structure's time_type", .{k});
             return;
         }
         ticks[k] = run.ticksOf(t, obj) orelse return;
-        units[k] = if (t.type == callback.vpiScaledRealTime) t.real else run.unitsOf(ticks[k], obj);
+        units[k] = if (t.type == user.vpiScaledRealTime) t.real else run.unitsOf(ticks[k], obj);
         if (d.pulsere_flag != 0) for (1..3) |p| {
             const lt = part(d, k, p);
-            const same = if (lt.type == callback.vpiSimTime) lt.high == t.high and lt.low == t.low else lt.real == t.real;
+            const same = if (lt.type == user.vpiSimTime) lt.high == t.high and lt.low == t.low else lt.real == t.real;
             if (lt.type != t.type or !same) {
-                root.fail("NOTSUPPORTED", "vpi_put_delays: this object's pulse limits are its delay (IEEE 1364 §14.6.1); other reject or error limits are not implemented for it", .{});
+                status.fail("NOTSUPPORTED", "vpi_put_delays: this object's pulse limits are its delay (IEEE 1364 §14.6.1); other reject or error limits are not implemented for it", .{});
                 return;
             }
         };
@@ -256,7 +227,7 @@ pub export fn vpi_put_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
     // Drivers are keyed by the ENGINE's instance scope, which a lexical engine
     // scope (a generate iteration, a task frame) can set apart from the
     // model's scope index.
-    const scope = root.design.?.scopes[o.owner.get() orelse 0].engine;
+    const scope = session.design.?.scopes[o.owner.get() orelse 0].engine;
     var hit = false;
     for (r.netlist.drivers) |*drv| {
         if (drv.tok != o.src_tok or drv.scope != scope) continue;
@@ -264,16 +235,108 @@ pub export fn vpi_put_delays(obj: root.vpiHandle, delay_p: ?*Delay) void {
         hit = true;
     }
     if (!hit) {
-        root.fail("NODRIVER", "vpi_put_delays: the engine holds no driver for that statement", .{});
+        status.fail("NODRIVER", "vpi_put_delays: the engine holds no driver for that statement", .{});
         return;
     }
     // What vpi_get_delays reads back: the written delays, in the module's
     // unit however they were given.
-    const design = &root.design.?;
+    const design = &session.design.?;
     design.objects[design.indexOf(o)].delays = design.arena.allocator().dupe(f64, units[0..n]) catch {
-        root.fail("NOMEM", "vpi_put_delays: out of memory", .{});
+        status.fail("NOMEM", "vpi_put_delays: out of memory", .{});
         return;
     };
+}
+
+/// `d.da`'s delay `k`, part `p`, under `d`'s own mtm and pulsere flags.
+pub fn part(d: *const Delay, k: usize, p: usize) Time {
+    return d.da[element(k, p, if (d.mtm_flag != 0) 3 else 1, if (d.pulsere_flag != 0) 3 else 1)];
+}
+
+/// `h` as an inter-module path this design made, or null; never
+/// dereferences a foreign pointer.
+pub fn asPath(h: abi.vpiHandle) ?*InterModPath {
+    const p = h orelse return null;
+    for (paths.items) |m| if (@intFromPtr(m) == @intFromPtr(p)) return m;
+    return null;
+}
+
+/// §12.22: "vpi_handle_multi() shall return a handle to objects of type
+/// vpiInterModPath associated with a list of output port and input port
+/// reference objects. The ports shall be of the same size and can be at
+/// different levels of the hierarchy." The same pair is the same path, the
+/// same handle (vpi_compare_objects reads identity). Two distinct ports,
+/// `from` driving out (output or inout) and `to` reading in (input or
+/// inout), of one size; whether a net joins them is not asked, as §12.22
+/// does not ask it.
+pub fn interModPath(ref1: abi.vpiHandle, ref2: abi.vpiHandle) abi.vpiHandle {
+    const who = "vpi_handle_multi(vpiInterModPath)";
+    const a = trust.asObj(ref1);
+    const b = trust.asObj(ref2);
+    if (a == null or b == null or a.?.kind != .port or b.?.kind != .port) {
+        status.fail("BADHANDLE", who ++ ": an inter-module path joins two port handles", .{});
+        return null;
+    }
+    const from = a.?;
+    const to = b.?;
+    if (from == to) {
+        status.fail("BADPORT", who ++ ": `{s}` is both ends; a path joins two ports", .{from.full});
+        return null;
+    }
+    if (from.direction != .output and from.direction != .inout) {
+        status.fail("BADPORT", who ++ ": `{s}` is not an output or inout port, and the path leaves the first one", .{from.full});
+        return null;
+    }
+    if (to.direction != .input and to.direction != .inout) {
+        status.fail("BADPORT", who ++ ": `{s}` is not an input or inout port, and the path enters the second one", .{to.full});
+        return null;
+    }
+    if (from.size != to.size or from.size == 0) {
+        status.fail("BADPORT", who ++ ": `{s}` and `{s}` are not of the same size", .{ from.full, to.full });
+        return null;
+    }
+    const key = [2]u32{ session.design.?.indexOf(from), session.design.?.indexOf(to) };
+    for (paths.items) |m| if (std.mem.eql(u32, &m.ports, &key)) return @ptrCast(m);
+    const gpa = std.heap.smp_allocator;
+    const m = gpa.create(InterModPath) catch {
+        status.fail("NOMEM", who ++ ": out of memory", .{});
+        return null;
+    };
+    m.* = .{ .ports = key };
+    paths.append(gpa, m) catch {
+        gpa.destroy(m);
+        status.fail("NOMEM", who ++ ": out of memory", .{});
+        return null;
+    };
+    return @ptrCast(m);
+}
+
+// ---- private ----
+
+/// Writes `values` (with their `rejects` and `errs`) into the user's `da` as
+/// Table 12-5 lays them out, in `d.time_type`; a vpiSimTime counts ticks
+/// of `unit_of`'s module's unit.
+fn fill(d: *Delay, values: []const f64, rejects: []const f64, errs: []const f64, unit_of: abi.vpiHandle) void {
+    const mtm: usize = if (d.mtm_flag != 0) 3 else 1;
+    const pulse: usize = if (d.pulsere_flag != 0) 3 else 1;
+    var at: usize = 0;
+    // A path's first three transitions (0->1, 1->0, 0->z) ARE its rise,
+    // fall and turn-off, so every count reads a prefix.
+    for (values[0..@intCast(d.no_of_delays)], 0..) |delay_v, i| {
+        for (0..pulse) |p| for (0..mtm) |_| {
+            const v = switch (p) {
+                0 => delay_v,
+                1 => if (i < rejects.len) rejects[i] else delay_v,
+                else => if (i < errs.len) errs[i] else delay_v,
+            };
+            var t: Time = .{ .type = d.time_type, .high = 0, .low = 0, .real = v };
+            if (d.time_type == user.vpiSimTime) {
+                const ticks = run.ticksOf(.{ .type = user.vpiScaledRealTime, .high = 0, .low = 0, .real = v }, unit_of) orelse return;
+                t = .{ .type = user.vpiSimTime, .high = @truncate(ticks >> 32), .low = @truncate(ticks), .real = 0 };
+            }
+            d.da[at] = t;
+            at += 1;
+        };
+    }
 }
 
 /// IEEE 1364 §14.3.1 Table 14-3: a path's written delays as the twelve
@@ -309,43 +372,38 @@ fn element(k: usize, p: usize, mtm: usize, pulse: usize) usize {
     return k * mtm * pulse + p * mtm + (if (mtm == 3) @as(usize, 1) else 0);
 }
 
-/// `d.da`'s delay `k`, part `p`, under `d`'s own mtm and pulsere flags.
-fn part(d: *const Delay, k: usize, p: usize) callback.Time {
-    return d.da[element(k, p, if (d.mtm_flag != 0) 3 else 1, if (d.pulsere_flag != 0) 3 else 1)];
-}
-
 /// The two time types §12.11/§12.29 take for an object's delays; false,
 /// with the error recorded, for any other.
 fn timeTypeOk(comptime who: []const u8, d: *const Delay) bool {
-    if (d.time_type == callback.vpiScaledRealTime or d.time_type == callback.vpiSimTime) return true;
-    root.fail("BADDELAY", who ++ ": time_type {d} is neither vpiScaledRealTime nor vpiSimTime", .{d.time_type});
+    if (d.time_type == user.vpiScaledRealTime or d.time_type == user.vpiSimTime) return true;
+    status.fail("BADDELAY", who ++ ": time_type {d} is neither vpiScaledRealTime nor vpiSimTime", .{d.time_type});
     return false;
 }
 
 /// A path's or a timing check's delays, as the model holds them; false,
 /// with the error recorded, when the put is refused.
-fn putModelDelays(o: *const root.Obj, d: *const Delay) bool {
-    const legal = if (o.vtype == vpiModPath) switch (d.no_of_delays) {
+fn putModelDelays(o: *const Obj, d: *const Delay) bool {
+    const legal = if (o.vtype == user.vpiModPath) switch (d.no_of_delays) {
         1, 2, 3, 6, 12 => true,
         else => false,
     } else d.no_of_delays == o.delays.len;
     if (!legal) {
-        root.fail("BADDELAY", "vpi_put_delays: no_of_delays {d} is not legal for this object", .{d.no_of_delays});
+        status.fail("BADDELAY", "vpi_put_delays: no_of_delays {d} is not legal for this object", .{d.no_of_delays});
         return false;
     }
-    if (d.time_type != callback.vpiScaledRealTime or d.da == null) {
-        root.fail("BADDELAY", "vpi_put_delays: a specify object's delays are put as vpiScaledRealTime, in an array", .{});
+    if (d.time_type != user.vpiScaledRealTime or d.da == null) {
+        status.fail("BADDELAY", "vpi_put_delays: a specify object's delays are put as vpiScaledRealTime, in an array", .{});
         return false;
     }
     const n: usize = @intCast(d.no_of_delays);
-    const design = &root.design.?;
+    const design = &session.design.?;
     const out = design.arena.allocator().alloc(f64, n) catch return noMem();
     for (out, 0..) |*v, k| v.* = part(d, k, 0).real;
     for (out) |v| if (!isDelay(v)) return notDelay(v);
     const idx = design.indexOf(o);
     // §12.29: a put with pulsere_flag sets a path's limits; one without
     // leaves them.
-    if (d.pulsere_flag != 0 and o.vtype == vpiModPath) {
+    if (d.pulsere_flag != 0 and o.vtype == user.vpiModPath) {
         const a = design.arena.allocator();
         const reject = a.alloc(f64, n) catch return noMem();
         const err = a.alloc(f64, n) catch return noMem();
@@ -364,15 +422,15 @@ fn putModelDelays(o: *const root.Obj, d: *const Delay) bool {
 /// The limits a put gave timing check `o`, in its module's time unit, as
 /// the digital engine's (`digital.Run.tchkLimits`). Without a digital run
 /// (the analog model) the model's copy is all there is.
-fn putEngineLimits(obj: root.vpiHandle, o: *const root.Obj, d: *const Delay) void {
+fn putEngineLimits(obj: abi.vpiHandle, o: *const Obj, d: *const Delay) void {
     const r = run.attached() orelse return;
     const n: usize = @intCast(d.no_of_delays);
     var ticks: [2]u64 = undefined;
     if (n > ticks.len) return;
     for (ticks[0..n], 0..) |*t, k| t.* = run.ticksOf(part(d, k, 0), obj) orelse return;
-    const scope = root.design.?.scopes[o.owner.get() orelse 0].engine;
+    const scope = session.design.?.scopes[o.owner.get() orelse 0].engine;
     if (!r.tchkLimits(scope, o.src_tok, ticks[0..n]))
-        root.fail("NODRIVER", "vpi_put_delays: the engine holds no timing check for that object", .{});
+        status.fail("NODRIVER", "vpi_put_delays: the engine holds no timing check for that object", .{});
 }
 
 /// Whether `v` is a delay a put may hold: finite and not negative. The
@@ -382,93 +440,18 @@ fn isDelay(v: f64) bool {
 }
 
 fn notDelay(v: f64) bool {
-    root.fail("BADDELAY", "vpi_put_delays: {d} is not a delay", .{v});
+    status.fail("BADDELAY", "vpi_put_delays: {d} is not a delay", .{v});
     return false;
 }
 
 fn noMem() bool {
-    root.fail("NOMEM", "vpi_put_delays: out of memory", .{});
+    status.fail("NOMEM", "vpi_put_delays: out of memory", .{});
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// §12.22 inter-module paths
-// ---------------------------------------------------------------------------
-
-/// IEEE 1364-2005 §26.6.16's inter-module path: the interconnect from port
-/// row `ports[0]` (an output or inout) to port row `ports[1]` (an input or
-/// inout), and the rise, fall and turn-off delays a put gave it, in
-/// `ports[0]`'s module's time unit. An interconnect nothing was put on has no
-/// delay, so they start at 0. Like a module path's, the delays are the
-/// model's: no simulation applies one (VD-114).
-const InterModPath = struct { ports: [2]u32, delays: [3]f64 = .{ 0, 0, 0 } };
-
-/// Every inter-module path made since the design opened, each a handle.
-/// ponytail: scanned per lookup; an application asks for a handful. Key a
-/// map by the port pair when one asks for thousands.
-var paths: std.ArrayList(*InterModPath) = .empty;
-
-/// `h` as an inter-module path this design made, or null; never
-/// dereferences a foreign pointer.
-pub fn asPath(h: root.vpiHandle) ?*InterModPath {
-    const p = h orelse return null;
-    for (paths.items) |m| if (@intFromPtr(m) == @intFromPtr(p)) return m;
-    return null;
-}
-
-/// §12.22: "vpi_handle_multi() shall return a handle to objects of type
-/// vpiInterModPath associated with a list of output port and input port
-/// reference objects. The ports shall be of the same size and can be at
-/// different levels of the hierarchy." The same pair is the same path, the
-/// same handle (vpi_compare_objects reads identity). Two distinct ports,
-/// `from` driving out (output or inout) and `to` reading in (input or
-/// inout), of one size; whether a net joins them is not asked, as §12.22
-/// does not ask it.
-pub fn interModPath(ref1: root.vpiHandle, ref2: root.vpiHandle) root.vpiHandle {
-    const who = "vpi_handle_multi(vpiInterModPath)";
-    const a = root.asObj(ref1);
-    const b = root.asObj(ref2);
-    if (a == null or b == null or a.?.kind != .port or b.?.kind != .port) {
-        root.fail("BADHANDLE", who ++ ": an inter-module path joins two port handles", .{});
-        return null;
-    }
-    const from = a.?;
-    const to = b.?;
-    if (from == to) {
-        root.fail("BADPORT", who ++ ": `{s}` is both ends; a path joins two ports", .{from.full});
-        return null;
-    }
-    if (from.direction != .output and from.direction != .inout) {
-        root.fail("BADPORT", who ++ ": `{s}` is not an output or inout port, and the path leaves the first one", .{from.full});
-        return null;
-    }
-    if (to.direction != .input and to.direction != .inout) {
-        root.fail("BADPORT", who ++ ": `{s}` is not an input or inout port, and the path enters the second one", .{to.full});
-        return null;
-    }
-    if (from.size != to.size or from.size == 0) {
-        root.fail("BADPORT", who ++ ": `{s}` and `{s}` are not of the same size", .{ from.full, to.full });
-        return null;
-    }
-    const key = [2]u32{ root.design.?.indexOf(from), root.design.?.indexOf(to) };
-    for (paths.items) |m| if (std.mem.eql(u32, &m.ports, &key)) return @ptrCast(m);
-    const gpa = std.heap.smp_allocator;
-    const m = gpa.create(InterModPath) catch {
-        root.fail("NOMEM", who ++ ": out of memory", .{});
-        return null;
-    };
-    m.* = .{ .ports = key };
-    paths.append(gpa, m) catch {
-        gpa.destroy(m);
-        root.fail("NOMEM", who ++ ": out of memory", .{});
-        return null;
-    };
-    return @ptrCast(m);
-}
-
 /// The port row `i` as a handle, for a time unit or an iteration.
-fn portHandle(i: u32) root.vpiHandle {
-    return @ptrCast(&root.design.?.objects[i]);
+fn portHandle(i: u32) abi.vpiHandle {
+    return @ptrCast(&session.design.?.objects[i]);
 }
 
 /// §12.11: "For inter-module path objects, the no_of_delays value shall be 2
@@ -477,7 +460,7 @@ fn portHandle(i: u32) root.vpiHandle {
 /// itself (§14.6.1's default): no put keeps others.
 fn getPathDelays(m: *const InterModPath, delay_p: ?*Delay) void {
     const d = delay_p orelse {
-        root.fail("BADDELAY", "vpi_get_delays: delay_p is NULL", .{});
+        status.fail("BADDELAY", "vpi_get_delays: delay_p is NULL", .{});
         return;
     };
     if (!pathStruct("vpi_get_delays", d)) return;
@@ -492,16 +475,16 @@ fn getPathDelays(m: *const InterModPath, delay_p: ?*Delay) void {
 /// diagnostics get W0251: no simulation applies an interconnect delay.
 fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
     const d = delay_p orelse {
-        root.fail("BADDELAY", "vpi_put_delays: delay_p is NULL", .{});
+        status.fail("BADDELAY", "vpi_put_delays: delay_p is NULL", .{});
         return;
     };
     if (!pathStruct("vpi_put_delays", d)) return;
-    if (d.time_type != callback.vpiScaledRealTime) {
-        root.fail("BADDELAY", "vpi_put_delays: an inter-module path's delays are put as vpiScaledRealTime", .{});
+    if (d.time_type != user.vpiScaledRealTime) {
+        status.fail("BADDELAY", "vpi_put_delays: an inter-module path's delays are put as vpiScaledRealTime", .{});
         return;
     }
     const r = run.attached() orelse {
-        root.fail("NOENGINE", "vpi_put_delays: an inter-module path's delays are put on a digital run, and none is running", .{});
+        status.fail("NOENGINE", "vpi_put_delays: an inter-module path's delays are put on a digital run, and none is running", .{});
         return;
     };
     const n: usize = @intCast(d.no_of_delays);
@@ -515,13 +498,13 @@ fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
         if (d.pulsere_flag == 0) continue;
         for (1..3) |p| {
             if (part(d, k, p).real == v.*) continue;
-            root.fail("NOTSUPPORTED", "vpi_put_delays: an inter-module path's pulse limits are its delay (IEEE 1364 §14.6.1); others are not held", .{});
+            status.fail("NOTSUPPORTED", "vpi_put_delays: an inter-module path's pulse limits are its delay (IEEE 1364 §14.6.1); others are not held", .{});
             return;
         }
     }
     if (n < 3) got[2] = @min(got[0], got[1]);
     m.delays = got;
-    const objects = root.design.?.objects;
+    const objects = session.design.?.objects;
     const from = &objects[m.ports[0]];
     if (r.bag.enabled(.W0251)) {
         const start = r.starts[@min(from.src_tok, r.starts.len - 1)];
@@ -529,7 +512,7 @@ fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
             from.full,
             objects[m.ports[1]].full,
         }) catch {
-            root.fail("NOMEM", "vpi_put_delays: out of memory", .{});
+            status.fail("NOMEM", "vpi_put_delays: out of memory", .{});
             return;
         };
     }
@@ -538,20 +521,15 @@ fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
 /// The checks a get and a put share: §12.11's count and a `da` to use.
 fn pathStruct(comptime who: []const u8, d: *const Delay) bool {
     if (d.no_of_delays != 2 and d.no_of_delays != 3) {
-        root.fail("BADDELAY", who ++ ": an inter-module path takes 2 or 3 delays, not {d} (§12.11)", .{d.no_of_delays});
+        status.fail("BADDELAY", who ++ ": an inter-module path takes 2 or 3 delays, not {d} (§12.11)", .{d.no_of_delays});
         return false;
     }
     if (d.da == null) {
-        root.fail("BADDELAY", who ++ ": da is NULL", .{});
+        status.fail("BADDELAY", who ++ ": da is NULL", .{});
         return false;
     }
     return true;
 }
-
-// ---------------------------------------------------------------------------
-// Tests. A put onto a design's gate is tests/unit.zig's `vpi_tests` (it
-// needs a digital run).
-// ---------------------------------------------------------------------------
 
 test "IEEE 1364 §14.3.1 Tables 14-3/14-4: a path's delays over the twelve transitions" {
     // Order: 0->1 1->0 0->z z->1 1->z z->0, then 0->x x->1 1->x x->0 x->z
@@ -578,16 +556,4 @@ test "Table 12-5: the element holding a delay's typical value, reject or error l
             try std.testing.expectEqual(9 * k + 3 * p + 1, element(k, p, 3, 3));
         }
     }
-}
-
-test "§12.11/§12.29: delays of a handle that is no object, or into no structure" {
-    root.close();
-    var junk: u32 = 0;
-    var d: Delay = .{ .da = null, .no_of_delays = 1, .time_type = callback.vpiScaledRealTime, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
-    vpi_get_delays(@ptrCast(&junk), &d);
-    try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(null));
-    vpi_put_delays(@ptrCast(&junk), &d);
-    try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(null));
-    vpi_get_delays(null, null);
-    try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(null));
 }

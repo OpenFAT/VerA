@@ -2,38 +2,37 @@
 //! `Design` whose net, reg and variable rows are bound to the engine slot
 //! that stores them (`Obj.slot`), which §12.16/§12.30 and cbValueChange read
 //! and write through. The run must outlive the model.
+//! Cites: IEEE 1364-2005 §12.3, §26.6.1-§26.6.12, §26.6.44; VAMS-2023 §11.2.2.
 //!
 //! The shape is the engine's own elaboration, read back rather than redone:
-//! every instance is a non-lexical row of `Run.scope_info`, in depth-first
-//! pre-order with the root at 0, and `Run.names` keys each declared name by
-//! that row's engine scope id. Task frames, named-block scopes and
-//! loop-generate iterations are lexical rows: not instances, but a generate
-//! iteration is a component of the path of an instance inside it.
+//! every instance is a non-lexical row of `Run.hier.scopes`, in depth-first
+//! pre-order with the root at 0, and `Run.hier.names` keys each declared name
+//! by that row's engine scope id.
+//!
+//! Contents:
+//! - `pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Design`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
 const sim = @import("sim");
-const attributes = @import("attributes.zig");
-const code = @import("code.zig");
 const model = @import("model.zig");
-const root = @import("root.zig");
-
+const model_arrays = @import("model_arrays.zig");
+const schema = @import("schema.zig");
+const udp = @import("udp.zig");
+const user = @import("vpi_user.zig");
+const Builder = @import("Builder.zig");
+const Design = @import("Design.zig");
+const attribute = @import("attribute.zig");
+const session = @import("session.zig");
 const Building = model.Building;
-const Design = root.Design;
-const Error = root.Error;
-const Kind = root.Kind;
-const Obj = root.Obj;
-const addArray = model.addArray;
-const addModuleArrays = model.addModuleArrays;
-const addRange = model.addRange;
-const freeze = model.freeze;
-const joinPath = model.joinPath;
-const lastComponent = model.lastComponent;
-const nameTable = model.nameTable;
-const vpiArray = root.vpiArray;
-const vpiNet = root.vpiNet;
-const vpiScope = root.vpiScope;
-const vpiSize = root.vpiSize;
+const ByOwner = attribute.ByOwner;
+const Edge = schema.Edge;
+const Error = session.Error;
+const Kind = schema.Kind;
+const List = schema.List;
+const Obj = schema.Obj;
+const Prop = schema.Prop;
+const Rows = model.Rows;
 
 /// Builds the digital model over run `r`. Value rows hold `r`'s slots and
 /// behavioural rows its parsed source, so `r` must outlive the result.
@@ -77,9 +76,9 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
             path = try pathComponent(arena, file, info);
             var p = info.parent;
             while (r.hier.scopes.items[p].lexical) : (p = r.hier.scopes.items[p].parent)
-                path = try joinPath(arena, try pathComponent(arena, file, r.hier.scopes.items[p]), path);
+                path = try model.joinPath(arena, try pathComponent(arena, file, r.hier.scopes.items[p]), path);
             parent = vpi_of[p];
-            path = try joinPath(arena, scopes.items[vpi_of[p]].path, path);
+            path = try model.joinPath(arena, scopes.items[vpi_of[p]].path, path);
         }
         const m = &file.modules[info.def];
         const cfg = if (r.hier.binds.get(@intCast(e))) |b| b.cfg else null;
@@ -98,14 +97,14 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
         if (parent) |p| try scopes.items[p].children.append(gpa, at);
     }
 
-    var objects: model.Rows = .{ .gpa = model_gpa };
+    var objects: Rows = .{ .gpa = model_gpa };
     defer objects.deinit();
     for (scopes.items, 0..) |s, i| try objects.append(.{
         .kind = .module,
         .owner = .of(s.parent),
         .scope = @intCast(i),
-        .name = if (i == 0) top_name else lastComponent(s.path),
-        .full = try joinPath(arena, top_name, s.path),
+        .name = if (i == 0) top_name else model.lastComponent(s.path),
+        .full = try model.joinPath(arena, top_name, s.path),
     });
 
     for (scopes.items, 0..) |*s, i| {
@@ -128,12 +127,12 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
             // slots, each element a net of the declared type.
             if (r.decls.arrays.get(at)) |a| {
                 const local = try arena.dupe(u8, file.str(n.name));
-                const arr = try addArray(arena, &objects, .net_array, scope, local, try joinPath(arena, top_name, try joinPath(arena, s.path, local)), .unspecified, a.low, a.high, a.rest, r.values[at].width, at);
+                const arr = try model_arrays.addArray(arena, &objects, .net_array, scope, local, try model.joinPath(arena, top_name, try model.joinPath(arena, s.path, local)), .unspecified, a.low, a.high, a.rest, r.values[at].width, at);
                 for (objects.coldOf(arr).members) |e| {
                     objects.hot.items[e].net_type = n.kind;
                     objects.hot.items[e].src_tok = n.main_tok;
                 }
-                const range = try arena.dupe(u32, &.{try addRange(arena, &objects, scope, a.left, a.right)});
+                const range = try arena.dupe(u32, &.{try model_arrays.addRange(arena, &objects, scope, a.left, a.right)});
                 (try objects.coldFor(arr)).range = range;
                 objects.hot.items[arr].src_tok = n.main_tok;
                 try s.net_arrays.append(gpa, arr);
@@ -144,7 +143,7 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
             o.net_type = n.kind;
             o.src_tok = n.main_tok;
             try objects.append(o);
-            try addBits(arena, &objects, r, code.vpiNetBit);
+            try addBits(arena, &objects, r, user.vpiNetBit);
         }
         // The implicit nets: a port declared with no net type (IEEE 1364-2005
         // §12.3.3), then §4.5's undeclared terminals and assignment targets,
@@ -181,9 +180,9 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
                 // §26.6.7: a `real` array is a vpiRealVar with vpiArray set,
                 // one of the scope's reals — as the analog model builds it.
                 const real = !is_reg and v.ty == .real;
-                const arr = try addArray(arena, &objects, if (is_reg) .reg_array else .var_array, scope, local, try joinPath(arena, top_name, try joinPath(arena, s.path, local)), if (real) .real else .integer, a.low, a.high, a.rest, r.values[at].width, at);
+                const arr = try model_arrays.addArray(arena, &objects, if (is_reg) .reg_array else .var_array, scope, local, try model.joinPath(arena, top_name, try model.joinPath(arena, s.path, local)), if (real) .real else .integer, a.low, a.high, a.rest, r.values[at].width, at);
                 // Two statements: addRange grows `objects`, moving `items`.
-                const range = try arena.dupe(u32, &.{try addRange(arena, &objects, scope, a.left, a.right)});
+                const range = try arena.dupe(u32, &.{try model_arrays.addRange(arena, &objects, scope, a.left, a.right)});
                 (try objects.coldFor(arr)).range = range;
                 objects.hot.items[arr].src_tok = v.main_tok;
                 try (if (is_reg) &s.reg_arrays else if (real) &s.reals else &s.integers).append(gpa, arr);
@@ -199,7 +198,7 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
             o.is_signed = kind != .time_var and (v.is_signed or kind == .integer);
             o.src_tok = v.main_tok;
             try objects.append(o);
-            if (kind == .reg) try addBits(arena, &objects, r, code.vpiRegBit);
+            if (kind == .reg) try addBits(arena, &objects, r, user.vpiRegBit);
         }
         // §11.6.12 parameters. The engine folds each into a slot of its own
         // (IEEE 1364 §12.2, `Run.params`), so NOTE 1's "final value of the
@@ -216,33 +215,35 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
             try objects.append(o);
         }
     }
-    try addModuleArrays(gpa, arena, &objects, scopes.items, top_name);
+    try model_arrays.addModuleArrays(gpa, arena, &objects, scopes.items, top_name);
     try addGenScopes(gpa, arena, &objects, scopes.items, r, vpi_of);
     // §11.6.3/§11.6.16–§11.6.24, over each instance's own definition: the
     // engine ran these same bodies, one copy per instance.
     var udps: std.AutoHashMapUnmanaged(Ast.StrId, u32) = .empty;
     defer udps.deinit(gpa);
-    var attrs: attributes.ByOwner = try .init(gpa, file);
+    var attrs: ByOwner = try .init(gpa, file);
     defer attrs.deinit(gpa);
-    const udp_defns = try code.udpDefns(gpa, arena, &objects, file, &attrs, &udps);
-    var names = try nameTable(gpa, objects.hot.items);
+    const udp_defns = try udp.udpDefns(gpa, arena, &objects, file, &attrs, &udps);
+    var names = try model.nameTable(gpa, objects.hot.items);
     defer names.deinit(gpa);
     var decls = try model.decls(gpa, objects.hot.items, scopes.items.len);
     defer decls.deinit(gpa);
     for (scopes.items, 0..) |*s, i| {
-        var b: code.Builder = .{ .gpa = gpa, .arena = arena, .objects = &objects, .file = file, .names = &names, .top_name = top_name, .scope = @intCast(i), .path = s.path, .lists = &s.code, .udps = &udps, .run = r, .engine = s.engine, .attrs = &attrs };
+        var b: Builder = .{ .gpa = gpa, .arena = arena, .objects = &objects, .file = file, .names = &names, .top_name = top_name, .scope = @intCast(i), .path = s.path, .lists = &s.code, .udps = &udps, .run = r, .engine = s.engine, .attrs = &attrs };
         for (decls.of(i)) |at|
             try b.attributes(at, .{ .kind = .declaration, .tok = objects.hot.items[at].src_tok }, false);
         try b.module(s.decl);
         try addConnections(&b, scopes.items, r);
     }
-    try freeze(&d, &objects, scopes.items);
+    try model.freeze(&d, &objects, scopes.items);
     d.udp_defns = udp_defns;
     d.finest = @intCast(r.time.finest);
     d.search_up = false;
     d.file = file;
     return d;
 }
+
+// ---- private ----
 
 /// IEEE 1364-2005 §26.6.2/§26.6.5/§26.6.12, built in scope `b.scope`, whose
 /// expressions the connections are: each parameter's declared range
@@ -253,7 +254,7 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
 ///
 /// ponytail: only instances written directly in the module body; one inside
 /// a generate block has none of these (its `Ast.Instance` is the block's).
-fn addConnections(b: *code.Builder, scopes: []Building, r: *const sim.digital.Run) Error!void {
+fn addConnections(b: *Builder, scopes: []Building, r: *const sim.digital.Run) Error!void {
     const s = &scopes[b.scope];
     const m = s.decl;
     const file = b.file;
@@ -264,7 +265,7 @@ fn addConnections(b: *code.Builder, scopes: []Building, r: *const sim.digital.Ru
         const range = p.packed_range orelse Ast.Dim{ .msb = .none, .lsb = .none };
         const l = try b.expr(range.msb);
         const rr = try b.expr(range.lsb);
-        b.objects.hot.items[at].edges = try b.arena.dupe(code.Edge, &.{ .{ .tag = code.vpiLeftRange, .to = l }, .{ .tag = code.vpiRightRange, .to = rr } });
+        b.objects.hot.items[at].edges = try b.arena.dupe(Edge, &.{ .{ .tag = user.vpiLeftRange, .to = l }, .{ .tag = user.vpiRightRange, .to = rr } });
     }
     // The child scopes each instance name made, in child order: `next`
     // chains the positions in `s.children` that share a name, from `heads`.
@@ -276,7 +277,7 @@ fn addConnections(b: *code.Builder, scopes: []Building, r: *const sim.digital.Ru
     while (pos > 0) {
         pos -= 1;
         const g = try heads.getOrPut(b.gpa, r.hier.scopes.items[scopes[s.children.items[pos]].engine].name);
-        next[pos] = if (g.found_existing) g.value_ptr.* else code.none;
+        next[pos] = if (g.found_existing) g.value_ptr.* else schema.no_obj;
         g.value_ptr.* = @intCast(pos);
     }
     for (m.instances) |*inst| {
@@ -287,20 +288,20 @@ fn addConnections(b: *code.Builder, scopes: []Building, r: *const sim.digital.Ru
             for (inst.ports, conns) |c, *e| e.* = c.expr;
             const l = try b.expr(range.msb);
             const rr = try b.expr(range.lsb);
-            const list = try b.operation(code.vpiListOp, conns);
-            b.objects.hot.items[at].edges = try b.arena.dupe(code.Edge, &.{
-                .{ .tag = code.vpiLeftRange, .to = l },
-                .{ .tag = code.vpiRightRange, .to = rr },
-                .{ .tag = code.vpiExpr, .to = list },
+            const list = try b.operation(user.vpiListOp, conns);
+            b.objects.hot.items[at].edges = try b.arena.dupe(Edge, &.{
+                .{ .tag = user.vpiLeftRange, .to = l },
+                .{ .tag = user.vpiRightRange, .to = rr },
+                .{ .tag = user.vpiExpr, .to = list },
             });
         };
-        var made = heads.get(inst.name) orelse code.none;
-        while (made != code.none) : (made = next[made]) {
+        var made = heads.get(inst.name) orelse schema.no_obj;
+        while (made != schema.no_obj) : (made = next[made]) {
             const c = s.children.items[made];
             try b.attributes(c, .{ .kind = .declaration, .tok = inst.main_tok }, false);
             const child = scopes[c].decl;
             const named = inst.ports.len != 0 and inst.ports[0].name != .none;
-            for (scopes[c].ports.items) |pt| b.objects.hot.items[pt].props = try b.arena.dupe(code.Prop, &.{.{ .prop = code.vpiConnByName, .value = @intFromBool(named) }});
+            for (scopes[c].ports.items) |pt| b.objects.hot.items[pt].props = try b.arena.dupe(Prop, &.{.{ .prop = user.vpiConnByName, .value = @intFromBool(named) }});
             for (inst.ports, 0..) |conn, k| {
                 // §12.3.6: by name, the port whose external name it is; in
                 // order, the k-th port (a concatenation's pieces are one).
@@ -314,7 +315,7 @@ fn addConnections(b: *code.Builder, scopes: []Building, r: *const sim.digital.Ru
                     }
                 } else continue;
                 const high = try b.expr(conn.expr);
-                b.objects.hot.items[scopes[c].ports.items[j]].edges = try b.arena.dupe(code.Edge, &.{.{ .tag = code.vpiHighConn, .to = high }});
+                b.objects.hot.items[scopes[c].ports.items[j]].edges = try b.arena.dupe(Edge, &.{.{ .tag = user.vpiHighConn, .to = high }});
                 try b.attributes(scopes[c].ports.items[j], .{ .kind = .declaration, .tok = conn.main_tok }, false);
             }
             for (inst.params, 0..) |o, k| {
@@ -327,9 +328,9 @@ fn addConnections(b: *code.Builder, scopes: []Building, r: *const sim.digital.Ru
                 } else continue;
                 const lhs = for (scopes[c].params.items) |at| {
                     if (std.mem.eql(u8, b.objects.hot.items[at].name, file.str(name))) break at;
-                } else code.none;
+                } else schema.no_obj;
                 const rhs = try b.expr(o.value);
-                const at = try b.code(code.vpiParamAssign, &.{ .{ .tag = code.vpiLhs, .to = lhs }, .{ .tag = code.vpiRhs, .to = rhs } }, &.{}, &.{.{ .prop = code.vpiConnByName, .value = @intFromBool(o.name != .none) }});
+                const at = try b.code(user.vpiParamAssign, &.{ .{ .tag = user.vpiLhs, .to = lhs }, .{ .tag = user.vpiRhs, .to = rhs } }, &.{}, &.{.{ .prop = user.vpiConnByName, .value = @intFromBool(o.name != .none) }});
                 b.objects.hot.items[at].owner = .of(c);
                 try scopes[c].code.param_assigns.append(b.gpa, at);
             }
@@ -344,7 +345,7 @@ fn implicitNet(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     r: *const sim.digital.Run,
-    objects: *model.Rows,
+    objects: *Rows,
     s: *Building,
     have: *std.AutoHashMapUnmanaged(u32, void),
     scope: u32,
@@ -376,7 +377,7 @@ fn digitalObj(
         .kind = kind,
         .owner = .of(scope),
         .name = local,
-        .full = try joinPath(arena, top_name, try joinPath(arena, path, local)),
+        .full = try model.joinPath(arena, top_name, try model.joinPath(arena, path, local)),
         .size = if (at) |a| r.values[a].width else 1,
         .slot = .of(at),
     };
@@ -392,10 +393,10 @@ fn pathComponent(arena: std.mem.Allocator, file: *const Ast.SourceFile, info: an
 
 /// `model.addBits` over the engine's declared range of the vector last
 /// appended (`Run.vecRange`); a row without an engine slot gets none.
-fn addBits(arena: std.mem.Allocator, objects: *model.Rows, r: *const sim.digital.Run, vtype: c_int) Error!void {
+fn addBits(arena: std.mem.Allocator, objects: *Rows, r: *const sim.digital.Run, vtype: c_int) Error!void {
     const slot = objects.hot.items[objects.hot.items.len - 1].slot.get() orelse return;
     const range = r.vecRange(slot);
-    try model.addBits(arena, objects, range.msb, range.lsb, vtype);
+    try model_arrays.addBits(arena, objects, range.msb, range.lsb, vtype);
 }
 
 /// IEEE 1364-2005 §26.6.44: each §12.4.1 loop generate directly inside an
@@ -407,7 +408,7 @@ fn addBits(arena: std.mem.Allocator, objects: *model.Rows, r: *const sim.digital
 /// conditional generate's scope, have no gen scope yet; both are rows of
 /// `Run.scope_info` whose parent is itself lexical. Net arrays and other
 /// declarations within a gen scope are not modelled yet.
-fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *model.Rows, scopes: []Building, r: *sim.digital.Run, vpi_of: []const u32) Error!void {
+fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows, scopes: []Building, r: *sim.digital.Run, vpi_of: []const u32) Error!void {
     const Key = struct { scope: u32, name: Ast.StrId };
     var groups: std.array_hash_map.Auto(Key, std.ArrayList(u32)) = .empty;
     defer {
@@ -430,19 +431,19 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
             const c: u32 = @intCast(objects.hot.items.len);
             try objects.append(.{ .kind = .constant, .owner = .of(k.scope), .name = "", .full = "", .size = 32, .value = .{ .int = i } });
             const local = try arena.print("{s}[{d}]", .{ name, i });
-            const full = try joinPath(arena, module_full, local);
+            const full = try model.joinPath(arena, module_full, local);
             m.* = @intCast(objects.hot.items.len);
             try objects.append(.{
                 .kind = .code,
-                .vtype = code.vpiGenScope,
+                .vtype = user.vpiGenScope,
                 .owner = .of(k.scope),
                 .name = local,
                 .full = full,
-                .edges = try arena.dupe(code.Edge, &.{.{ .tag = code.vpiIndex, .to = c }}),
-                .props = try arena.dupe(code.Prop, &.{
-                    .{ .prop = vpiArray, .value = 1 },
-                    .{ .prop = code.vpiProtected, .value = 0 },
-                    .{ .prop = code.vpiImplicitDecl, .value = @intFromBool(r.hier.scopes.items[e].implicit) },
+                .edges = try arena.dupe(Edge, &.{.{ .tag = user.vpiIndex, .to = c }}),
+                .props = try arena.dupe(Prop, &.{
+                    .{ .prop = user.vpiArray, .value = 1 },
+                    .{ .prop = user.vpiProtected, .value = 0 },
+                    .{ .prop = user.vpiImplicitDecl, .value = @intFromBool(r.hier.scopes.items[e].implicit) },
                 }),
             });
             const gen_nets = r.decls.gen_nets.get(e) orelse &.{};
@@ -457,26 +458,26 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *mode
                     .kind = .net,
                     .owner = .of(k.scope),
                     .name = net_name,
-                    .full = try joinPath(arena, full, net_name),
+                    .full = try model.joinPath(arena, full, net_name),
                     .size = r.values[slot].width,
                     .slot = .of(slot),
                     .net_type = n.kind,
                     .src_tok = n.main_tok,
-                    .edges = try arena.dupe(code.Edge, &.{.{ .tag = vpiScope, .to = m.* }}),
+                    .edges = try arena.dupe(Edge, &.{.{ .tag = user.vpiScope, .to = m.* }}),
                 }, .{ .src_engine = e });
-                try addBits(arena, objects, r, code.vpiNetBit);
+                try addBits(arena, objects, r, user.vpiNetBit);
             }
-            objects.hot.items[m.*].lists = try arena.dupe(code.List, &.{.{ .tag = vpiNet, .items = nets.items }});
+            objects.hot.items[m.*].lists = try arena.dupe(List, &.{.{ .tag = user.vpiNet, .items = nets.items }});
         }
         const at: u32 = @intCast(objects.hot.items.len);
         try objects.append(.{
             .kind = .code,
-            .vtype = code.vpiGenScopeArray,
+            .vtype = user.vpiGenScopeArray,
             .owner = .of(k.scope),
             .name = name,
-            .full = try joinPath(arena, module_full, name),
-            .props = try arena.dupe(code.Prop, &.{.{ .prop = vpiSize, .value = @intCast(members.len) }}),
-            .lists = try arena.dupe(code.List, &.{.{ .tag = code.vpiGenScope, .items = members }}),
+            .full = try model.joinPath(arena, module_full, name),
+            .props = try arena.dupe(Prop, &.{.{ .prop = user.vpiSize, .value = @intCast(members.len) }}),
+            .lists = try arena.dupe(List, &.{.{ .tag = user.vpiGenScope, .items = members }}),
         });
         try scopes[k.scope].code.gen_arrays.append(gpa, at);
     }

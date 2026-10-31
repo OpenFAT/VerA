@@ -1,74 +1,37 @@
-//! Property reads: §12.5 vpi_get, §12.18 vpi_get_real and §12.12
-//! vpi_get_str. A handle and a property -> the integer, real or string §11.6
-//! lists for the object's class. A property the class does not have is
+//! Property reads: a handle and a property -> the integer, real or string
+//! §11.6 lists for the object's class. A property the class does not have is
 //! vpiUndefined (NULL for a string) plus an error, never a zero. Every
-//! vpi_get_str answer is in one static buffer (`str_buf`) that the next call
-//! overwrites.
+//! vpi_get_str answer is in one static buffer that the next call overwrites.
+//! Cites: VAMS-2023 §12.5, §12.12, §12.18, §11.6; IEEE 1364-2005 §13.6,
+//! §26.3.2, §26.3.3, §26.3.5, §26.6.
+//!
+//! Contents:
+//! - `pub fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int`
+//! - `pub fn codeProp(o: *const Obj, prop: c_int) c_int`
+//! - `pub fn vpi_get_real(prop: c_int, obj: abi.vpiHandle) f64`
+//! - `pub fn vpi_get_str(prop: c_int, obj: abi.vpiHandle) [*c]u8`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
-const analog_run = @import("analog.zig");
+const abi = @import("abi.zig");
+const analog = @import("analog.zig");
 const callback = @import("callback.zig");
-const code = @import("code.zig");
+const code_tables = @import("code_tables.zig");
 const decompile = @import("decompile.zig");
 const delays = @import("delays.zig");
-const root = @import("root.zig");
 const run = @import("run.zig");
+const schema = @import("schema.zig");
+const session = @import("session.zig");
+const status = @import("status.zig");
 const systf = @import("systf.zig");
-const value = @import("value.zig");
+const trust = @import("trust.zig");
+const value_put = @import("value_put.zig");
+const user = @import("vpi_user.zig");
+const Loc = schema.Loc;
+const Obj = schema.Obj;
 
-const Obj = root.Obj;
-const asIter = root.asIter;
-const asObj = root.asObj;
-const refused = root.refused;
-const enter = root.enter;
-const fail = root.fail;
-const issued = root.issued;
-const name_buf_len = root.name_buf_len;
-const object = root.object;
-const typeName = root.typeName;
-const typeOf = root.typeOf;
-const vpiArray = root.vpiArray;
-const vpiAutomatic = root.vpiAutomatic;
-const vpiCell = root.vpiCell;
-const vpiConfig = root.vpiConfig;
-const vpiConstType = root.vpiConstType;
-const vpiDecompile = root.vpiDecompile;
-const vpiDefName = root.vpiDefName;
-const vpiDirection = root.vpiDirection;
-const vpiFile = root.vpiFile;
-const vpiFullName = root.vpiFullName;
-const vpiHandle = root.vpiHandle;
-const vpiInout = root.vpiInout;
-const vpiInput = root.vpiInput;
-const vpiIntConst = root.vpiIntConst;
-const vpiIsMemory = root.vpiIsMemory;
-const vpiIterator = root.vpiIterator;
-const vpiIteratorType = root.vpiIteratorType;
-const vpiLibrary = root.vpiLibrary;
-const vpiLineNo = root.vpiLineNo;
-const vpiLocalParam = root.vpiLocalParam;
-const vpiName = root.vpiName;
-const vpiNetType = root.vpiNetType;
-const vpiNoDirection = root.vpiNoDirection;
-const vpiOutput = root.vpiOutput;
-const vpiPortIndex = root.vpiPortIndex;
-const vpiProtected = root.vpiProtected;
-const vpiRealConst = root.vpiRealConst;
-const vpiScalar = root.vpiScalar;
-const vpiSigned = root.vpiSigned;
-const vpiSize = root.vpiSize;
-const vpiStringConst = root.vpiStringConst;
-const vpiTimePrecision = root.vpiTimePrecision;
-const vpiTimeUnit = root.vpiTimeUnit;
-const vpiTopModule = root.vpiTopModule;
-const vpiType = root.vpiType;
-const vpiUndefined = root.vpiUndefined;
-const vpiVector = root.vpiVector;
-
-// ---------------------------------------------------------------------------
-// §12.5 vpi_get
-// ---------------------------------------------------------------------------
+/// §12.12's single shared buffer. See `name_buf_len` for the ceiling.
+var str_buf: [schema.name_buf_len]u8 = undefined;
 
 /// "Should an error occur, `vpi_get()` shall return `vpiUndefined`."
 ///
@@ -76,80 +39,80 @@ const vpiVector = root.vpiVector;
 /// for a property a class does not have — `vpiDirection` of a net, `vpiSize` of
 /// a module — is an error and not a zero: §11.6.8 simply gives a net no
 /// direction, and a 0 would be indistinguishable from `vpiNoDirection`.
-pub export fn vpi_get(prop: c_int, obj: vpiHandle) c_int {
+pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
     // Not `enter`: callbacks, time queues, events and systf registrations are
     // objects without a design, and a handle to one still has a type.
-    if (refused("vpi_get")) return vpiUndefined;
+    if (status.refused("vpi_get")) return user.vpiUndefined;
     // A handle VerA issued that is no design object: §12.23's iterator,
     // §11.6.25's callback, §12.30's scheduled event, a systf registration,
     // IEEE 1364-2005 §26.6.16's inter-module path, a time queue. Each has a
     // type and, at most, one property of its own.
-    const other: ?c_int = if (asIter(obj) != null) vpiIterator else if (callback.asCb(obj) != null) callback.vpiCallback else if (value.asEvent(obj) != null) value.vpiSchedEvent else if (systf.asSystf(obj) != null) systf.vpiUserSystf else if (delays.asPath(obj) != null) systf.vpiInterModPath else if (run.asQueue(obj) != null) run.vpiTimeQueue else null;
+    const other: ?c_int = if (trust.asIter(obj) != null) user.vpiIterator else if (callback.asCb(obj) != null) user.vpiCallback else if (value_put.asEvent(obj) != null) user.vpiSchedEvent else if (systf.asSystf(obj) != null) user.vpiUserSystf else if (delays.asPath(obj) != null) user.vpiInterModPath else if (run.asQueue(obj) != null) user.vpiTimeQueue else null;
     // IEEE 1364-2005 §26.3.5: "All objects have a vpiIsProtected property",
     // which vpi_user.h numbers as Annex G's vpiProtected (VD-045). An object
     // is protected when a §28 decryption envelope's cleartext declares it;
     // a handle that is no design object never is.
-    if (prop == vpiProtected) {
-        if (asObj(obj)) |o| return @intFromBool(isProtected(o));
+    if (prop == user.vpiProtected) {
+        if (trust.asObj(obj)) |o| return @intFromBool(isProtected(o));
         if (other != null) return 0;
     }
-    if (root.unansweredProp(prop)) |u| {
-        root.failUnanswered("vpi_get", u);
-        return vpiUndefined;
+    if (status.unansweredProp(prop)) |u| {
+        status.failUnanswered("vpi_get", u);
+        return user.vpiUndefined;
     }
     if (other) |t| {
-        if (prop == vpiType) return t;
-        if (prop == vpiIteratorType) if (asIter(obj)) |it| return it.ty;
-        if (prop == value.vpiScheduled) if (value.asEvent(obj)) |e| return @intFromBool(value.scheduled(e));
-        fail("NOPROP", "vpi_get: a {s} has no property {d}", .{ typeName(t), prop });
-        return vpiUndefined;
+        if (prop == user.vpiType) return t;
+        if (prop == user.vpiIteratorType) if (trust.asIter(obj)) |it| return it.ty;
+        if (prop == user.vpiScheduled) if (value_put.asEvent(obj)) |e| return @intFromBool(value_put.scheduled(e));
+        status.fail("NOPROP", "vpi_get: a {s} has no property {d}", .{ schema.typeName(t), prop });
+        return user.vpiUndefined;
     }
     // §12.5's NULL-object case: IEEE 1364-2005 §26.6.1 Details b.
-    if (obj == null and (prop == vpiTimeUnit or prop == vpiTimePrecision)) {
-        if (root.design) |d| if (d.finest) |f| return f;
+    if (obj == null and (prop == user.vpiTimeUnit or prop == user.vpiTimePrecision)) {
+        if (session.design) |d| if (d.finest) |f| return f;
     }
-    const o = object("vpi_get", obj) orelse return vpiUndefined;
-    if (o.kind == .code and prop != vpiType and prop != vpiLineNo) return codeProp(o, prop);
+    const o = status.object("vpi_get", obj) orelse return user.vpiUndefined;
+    if (o.kind == .code and prop != user.vpiType and prop != user.vpiLineNo) return codeProp(o, prop);
     switch (prop) {
-        vpiType => return typeOf(o),
+        user.vpiType => return schema.typeOf(o),
         // IEEE 1364 §26.6.1/§26.6.6-§26.6.8: "is item an array" — an array,
         // or a module, net or reg that is a member of one (a reg that is
         // one is a `.word`). §26.6.8 draws no vpiArray on a var select.
-        vpiArray => return switch (o.kind) {
+        user.vpiArray => return switch (o.kind) {
             .reg_array, .var_array, .net_array, .word => 1,
             .module, .net => @intFromBool(o.parent != .none),
             .reg, .integer, .real_var, .time_var, .var_select => 0,
             else => propFail(prop, o),
         },
-        code.vpiImplicitDecl => return switch (o.kind) {
+        user.vpiImplicitDecl => return switch (o.kind) {
             .net => @intFromBool(o.implicit),
             else => propFail(prop, o),
         },
-        vpiAutomatic => return switch (o.kind) {
+        user.vpiAutomatic => return switch (o.kind) {
             .reg, .integer, .real_var, .time_var => @intFromBool(o.automatic),
             else => propFail(prop, o),
         },
-        vpiIsMemory => return switch (o.kind) {
+        user.vpiIsMemory => return switch (o.kind) {
             .reg_array => 1,
             .var_array, .reg => 0,
             else => propFail(prop, o),
         },
         // §11.6.1 — true for the root of the instance tree, the one module
         // `Elaborate.pickTop` chose.
-        vpiTopModule => {
+        user.vpiTopModule => {
             if (o.kind != .module) return propFail(prop, o);
             return @intFromBool(o.owner == .none);
         },
-        vpiTimeUnit, vpiTimePrecision => {
+        user.vpiTimeUnit, user.vpiTimePrecision => {
             if (o.kind != .module) return propFail(prop, o);
-            const sc = root.design.?.scopes[o.scope];
-            return (if (prop == vpiTimeUnit) sc.time_unit else sc.time_precision) orelse propFail(prop, o);
+            const sc = session.design.?.scopes[o.scope];
+            return (if (prop == user.vpiTimeUnit) sc.time_unit else sc.time_precision) orelse propFail(prop, o);
         },
-        vpiSize, vpiScalar, vpiVector => {
+        user.vpiSize, user.vpiScalar, user.vpiVector => {
             // An array's size counts ELEMENTS (§26.6.9 "array size counts
             // members"), everything else's counts bits.
             switch (o.kind) {
-                .reg_array, .var_array, .net_array, .module_array => if (prop == vpiSize) return @intCast(o.size) else return propFail(prop, o),
+                .reg_array, .var_array, .net_array, .module_array => if (prop == user.vpiSize) return @intCast(o.size) else return propFail(prop, o),
                 .port, .net, .reg, .integer, .real_var, .time_var, .word, .var_select, .constant, .node, .branch, .quantity => {},
                 else => return propFail(prop, o),
             }
@@ -157,75 +120,75 @@ pub export fn vpi_get(prop: c_int, obj: vpiHandle) c_int {
             // model_analog.zig `packedWidth`): unknown, which is not the
             // same as zero-width.
             if (o.size == 0) {
-                fail("NOFOLD", "vpi_get: the declared range of `{s}` is not a constant this model folded", .{o.full});
-                return vpiUndefined;
+                status.fail("NOFOLD", "vpi_get: the declared range of `{s}` is not a constant this model folded", .{o.full});
+                return user.vpiUndefined;
             }
             // §11.6.4 NOTE 3: scalar and vector are about the object's own
             // width and "shall not indicate anything about what is connected".
             return switch (prop) {
-                vpiSize => @intCast(o.size),
-                vpiScalar => @intFromBool(o.size == 1),
+                user.vpiSize => @intCast(o.size),
+                user.vpiScalar => @intFromBool(o.size == 1),
                 else => @intFromBool(o.size > 1),
             };
         },
-        vpiDirection => {
+        user.vpiDirection => {
             if (o.kind != .port) return propFail(prop, o);
             // §6.5.2.2. `.unspecified` is a port named in the header whose
             // direction declaration never arrived — §11.6.4's `vpiNoDirection`,
             // which is an answer rather than a missing one.
             return switch (o.direction) {
-                .input => vpiInput,
-                .output => vpiOutput,
-                .inout => vpiInout,
-                .unspecified => vpiNoDirection,
+                .input => user.vpiInput,
+                .output => user.vpiOutput,
+                .inout => user.vpiInout,
+                .unspecified => user.vpiNoDirection,
             };
         },
-        vpiPortIndex => {
+        user.vpiPortIndex => {
             if (o.kind != .port) return propFail(prop, o);
             return @intCast(o.port_index);
         },
-        vpiLocalParam => {
+        user.vpiLocalParam => {
             if (o.kind != .parameter) return propFail(prop, o);
             return @intFromBool(o.is_local);
         },
         // §11.6.12 `vpiConstType` over §3.4.1's parameter types. `.unspecified`
         // is a `parameter p = <expr>;` whose type follows its value, which
         // this property does not read.
-        vpiConstType => {
+        user.vpiConstType => {
             if (o.kind == .constant) {
                 if (o.const_type == 0) {
-                    fail("NOTYPE", "vpi_get: this literal's base is not recorded", .{});
-                    return vpiUndefined;
+                    status.fail("NOTYPE", "vpi_get: this literal's base is not recorded", .{});
+                    return user.vpiUndefined;
                 }
                 return o.const_type;
             }
             if (o.kind != .parameter) return propFail(prop, o);
             return switch (o.ty) {
-                .real => vpiRealConst,
-                .integer => vpiIntConst,
-                .string => vpiStringConst,
+                .real => user.vpiRealConst,
+                .integer => user.vpiIntConst,
+                .string => user.vpiStringConst,
                 .unspecified => {
-                    fail("NOTYPE", "vpi_get: `{s}` has no declared type; its constant type follows its value", .{o.full});
-                    return vpiUndefined;
+                    status.fail("NOTYPE", "vpi_get: `{s}` has no declared type; its constant type follows its value", .{o.full});
+                    return user.vpiUndefined;
                 },
             };
         },
-        vpiSigned => {
+        user.vpiSigned => {
             if (o.kind != .reg and o.kind != .integer and o.kind != .time_var) return propFail(prop, o);
             return @intFromBool(o.is_signed);
         },
-        vpiNetType => {
+        user.vpiNetType => {
             if (o.kind != .net) return propFail(prop, o);
             return netType(o.net_type) orelse propFail(prop, o);
         },
-        vpiLineNo => {
+        user.vpiLineNo => {
             const at = location(o) orelse return propFail(prop, o);
             return at.line;
         },
         else => {
             for (o.props) |p| if (p.prop == prop) return p.value;
-            fail("NOPROP", "vpi_get: property {d} is not answered for a {s}", .{ prop, @tagName(o.kind) });
-            return vpiUndefined;
+            status.fail("NOPROP", "vpi_get: property {d} is not answered for a {s}", .{ prop, @tagName(o.kind) });
+            return user.vpiUndefined;
         },
     }
 }
@@ -234,16 +197,16 @@ pub export fn vpi_get(prop: c_int, obj: vpiHandle) c_int {
 /// a registered user systf (NOTE 3) and, for a function, its sysfunctype —
 /// then the object's own `props` rows.
 pub fn codeProp(o: *const Obj, prop: c_int) c_int {
-    if (o.vtype == code.vpiSysTaskCall or o.vtype == code.vpiSysFuncCall) {
+    if (o.vtype == user.vpiSysTaskCall or o.vtype == user.vpiSysFuncCall) {
         const reg = systf.regOf(o);
-        if (prop == systf.vpiUserDefn) return @intFromBool(reg != null);
-        if (prop == systf.vpiSysFuncType and o.vtype == code.vpiSysFuncCall) {
+        if (prop == user.vpiUserDefn) return @intFromBool(reg != null);
+        if (prop == user.vpiSysFuncType and o.vtype == user.vpiSysFuncCall) {
             const r = reg orelse return propFail(prop, o);
             return if (r.domain == .digital) r.digital.sysfunctype else r.analog.sysfunctype;
         }
         // IEEE 1364-2005 §26.1.1: "the number of bits that the calltf
         // routine shall provide as the return value".
-        if (prop == vpiSize and o.vtype == code.vpiSysFuncCall and !o.in_analog) if (systf.kindOf(o.name)) |k| switch (k) {
+        if (prop == user.vpiSize and o.vtype == user.vpiSysFuncCall and !o.in_analog) if (systf.kindOf(o.name)) |k| switch (k) {
             .func => |t| return @intCast(t.width),
             .task => {},
         };
@@ -251,18 +214,6 @@ pub fn codeProp(o: *const Obj, prop: c_int) c_int {
     for (o.props) |p| if (p.prop == prop) return p.value;
     return propFail(prop, o);
 }
-
-// ---------------------------------------------------------------------------
-// §12.18 vpi_get_real
-// ---------------------------------------------------------------------------
-
-// §12.18's analysis properties. Verilog-AMS names them and numbers none;
-// VerA's numbers, after the analog systf types.
-pub const vpiStartTime: c_int = 742;
-pub const vpiEndTime: c_int = 743;
-pub const vpiTransientMaxStep: c_int = 744;
-pub const vpiStartFrequency: c_int = 745;
-pub const vpiEndFrequency: c_int = 746;
 
 /// "shall return the value of object properties, for properties of type
 /// real ... This function is available to analog tasks and functions only.
@@ -272,45 +223,139 @@ pub const vpiEndFrequency: c_int = 746;
 /// (`systf.active`). There the five properties are the analysis's
 /// (`analog_run.analysis`), asked of a NULL object; with no analysis, or for
 /// the AC-only frequencies outside an AC sweep, the answer is the error.
-pub export fn vpi_get_real(prop: c_int, obj: vpiHandle) f64 {
-    const undef: f64 = @floatFromInt(vpiUndefined);
-    if (refused("vpi_get_real")) return undef;
+pub export fn vpi_get_real(prop: c_int, obj: abi.vpiHandle) f64 {
+    const undef: f64 = @floatFromInt(user.vpiUndefined);
+    if (status.refused("vpi_get_real")) return undef;
     const at = systf.active orelse {
-        fail("NOTANALOG", "vpi_get_real: available to analog tasks and functions only, and none is running", .{});
+        status.fail("NOTANALOG", "vpi_get_real: available to analog tasks and functions only, and none is running", .{});
         return undef;
     };
-    if (!root.design.?.objects[at].in_analog) {
-        fail("NOTANALOG", "vpi_get_real: the running system task or function is a digital one", .{});
+    if (!session.design.?.objects[at].in_analog) {
+        status.fail("NOTANALOG", "vpi_get_real: the running system task or function is a digital one", .{});
         return undef;
     }
     switch (prop) {
-        vpiStartTime, vpiEndTime, vpiTransientMaxStep, vpiStartFrequency, vpiEndFrequency => {
+        user.vpiStartTime, user.vpiEndTime, user.vpiTransientMaxStep, user.vpiStartFrequency, user.vpiEndFrequency => {
             if (obj != null) {
-                fail("BADHANDLE", "vpi_get_real: property {d} is the analysis's, asked of NULL", .{prop});
+                status.fail("BADHANDLE", "vpi_get_real: property {d} is the analysis's, asked of NULL", .{prop});
                 return undef;
             }
-            const a = analog_run.analysis() orelse {
-                fail("NOANALYSIS", "vpi_get_real: no analysis is set up in this process", .{});
+            const a = analog.analysis() orelse {
+                status.fail("NOANALYSIS", "vpi_get_real: no analysis is set up in this process", .{});
                 return undef;
             };
             return switch (prop) {
-                vpiStartTime => a.start,
-                vpiEndTime => a.stop,
-                vpiTransientMaxStep => a.max_step,
+                user.vpiStartTime => a.start,
+                user.vpiEndTime => a.stop,
+                user.vpiTransientMaxStep => a.max_step,
                 // §12.18 "for the start/end frequency of AC analysis": a
                 // transient or operating point has none.
-                else => if (a.kind == .ac) (if (prop == vpiStartFrequency) a.fstart else a.fstop) else {
-                    fail("NOANALYSIS", "vpi_get_real: property {d} is an AC analysis's, and none is running", .{prop});
+                else => if (a.kind == .ac) (if (prop == user.vpiStartFrequency) a.fstart else a.fstop) else {
+                    status.fail("NOANALYSIS", "vpi_get_real: property {d} is an AC analysis's, and none is running", .{prop});
                     return undef;
                 },
             };
         },
         else => {
-            fail("NOPROP", "vpi_get_real: {d} is not a real property", .{prop});
+            status.fail("NOPROP", "vpi_get_real: {d} is not a real property", .{prop});
             return undef;
         },
     }
 }
+
+/// "The string shall be placed in a temporary buffer which shall be used by
+/// every call to this routine. If the string is to be used after a subsequent
+/// call, the string needs to be copied to another location."
+///
+/// One buffer, reused, so the model stores names unterminated. A failing call
+/// returns NULL, the one value an application would not go on to print.
+pub export fn vpi_get_str(prop: c_int, obj: abi.vpiHandle) [*c]u8 {
+    const d = status.enter("vpi_get_str") orelse return null;
+    if (status.unansweredProp(prop)) |u| {
+        status.failUnanswered("vpi_get_str", u);
+        return null;
+    }
+    // IEEE 1364-2005 §26.3.2: every object has a type, and its name, the
+    // handles that are not design objects (an iterator, a callback) included.
+    if (prop == user.vpiType and trust.asObj(obj) == null and trust.issued(obj) != null) return copyStr(schema.typeName(vpi_get(user.vpiType, obj)));
+    const o = status.object("vpi_get_str", obj) orelse return null;
+    const s: []const u8 = switch (prop) {
+        // §11.6.7 lists no name for a quantity: it is reached from its
+        // branch, and named only as `V(b)`/`I(b)` in source.
+        user.vpiName, user.vpiFullName => blk: {
+            // A behavioural object has the names its diagram lists and no
+            // others: a named block both, a call its tf name only, a
+            // statement none.
+            if (o.kind == .code and (if (prop == user.vpiName) o.name else o.full).len == 0) {
+                status.fail("NOPROP", "vpi_get_str: a {s} has no name property {d}", .{ schema.typeName(o.vtype), prop });
+                return null;
+            }
+            if (o.kind == .quantity) {
+                status.fail("NOPROP", "vpi_get_str: a quantity has no name property {d}", .{prop});
+                return null;
+            }
+            break :blk if (prop == user.vpiName) o.name else o.full;
+        },
+        user.vpiType => schema.typeName(schema.typeOf(o)),
+        // §11.6.1 — a module property and only a module's. A net has no
+        // definition to name.
+        user.vpiDefName => blk: {
+            if (o.kind == .code) if (code_tables.defName(o)) |n| break :blk n;
+            if (o.kind != .module) {
+                status.fail("NOPROP", "vpi_get_str: a {s} has no vpiDefName", .{@tagName(o.kind)});
+                return null;
+            }
+            break :blk d.scopes[o.scope].def_name;
+        },
+        user.vpiFile => blk: {
+            const at = location(o) orelse {
+                status.fail("NOPROP", "vpi_get_str: no source location is recorded for a {s}", .{@tagName(o.kind)});
+                return null;
+            };
+            break :blk at.file;
+        },
+        // IEEE 1364-2005 §26.6.26 b) / §26.6.19 g), spelled from the
+        // source straight into the buffer.
+        user.vpiDecompile => {
+            if (o.src_expr == .none and o.src_stmt == .none) {
+                status.fail("NOPROP", "vpi_get_str: a {s} has no vpiDecompile", .{schema.typeName(schema.typeOf(o))});
+                return null;
+            }
+            const f = d.file orelse {
+                status.fail("NOSOURCE", "vpi_get_str: the analog model keeps no source to decompile", .{});
+                return null;
+            };
+            var w: std.Io.Writer = .fixed(str_buf[0 .. str_buf.len - 1]);
+            (if (o.src_expr != .none) decompile.decompile(&w, f, o.src_expr) else decompile.decompileCall(&w, f, o.src_stmt)) catch {
+                status.fail("TOOLONG", "vpi_get_str: the decompiled text passes {d} bytes", .{str_buf.len - 1});
+                return null;
+            };
+            str_buf[w.end] = 0;
+            return @ptrCast(&str_buf);
+        },
+        // IEEE 1364-2005 §13.6: "The following VPI properties shall exist for
+        // objects of type vpiModule".
+        user.vpiLibrary, user.vpiCell, user.vpiConfig => blk: {
+            if (o.kind != .module) {
+                status.fail("NOPROP", "vpi_get_str: a {s} has no library binding", .{@tagName(o.kind)});
+                return null;
+            }
+            const sc = d.scopes[o.scope];
+            break :blk switch (prop) {
+                user.vpiLibrary => sc.library,
+                user.vpiCell => sc.def_name,
+                else => if (sc.config.len == 0) return null else sc.config,
+            };
+        },
+        else => {
+            status.fail("NOPROP", "vpi_get_str: string property {d} is not answered for a {s}", .{ prop, @tagName(o.kind) });
+            return null;
+        },
+    };
+    return copyStr(s);
+}
+
+// ---- private ----
 
 /// IEEE 1364-2005 §26.6.6's vpiNetType, Annex G numbered; null for a
 /// `wreal`, which Annex G has no constant for.
@@ -338,11 +383,11 @@ fn netType(k: Ast.NetKind) ?c_int {
 /// file as written, through the digital run's source map.
 ///
 /// ponytail: the physical line; §19.7's `line renumbering is not applied.
-fn location(o: *const Obj) ?root.Loc {
-    if (root.coldOf(o).loc) |l| return l;
+fn location(o: *const Obj) ?Loc {
+    if (schema.coldOf(o).loc) |l| return l;
     if (o.src_tok == 0) return null;
     const r = run.attached() orelse return null;
-    return root.locate(r.bag, r.starts[o.src_tok]);
+    return schema.locate(r.bag, r.starts[o.src_tok]);
 }
 
 /// §26.3.5: whether `o` is declared in a decrypted envelope's cleartext,
@@ -353,104 +398,8 @@ fn isProtected(o: *const Obj) bool {
 }
 
 fn propFail(prop: c_int, o: *const Obj) c_int {
-    fail("NOPROP", "vpi_get: a {s} has no property {d}", .{ @tagName(o.kind), prop });
-    return vpiUndefined;
-}
-
-// ---------------------------------------------------------------------------
-// §12.12 vpi_get_str
-// ---------------------------------------------------------------------------
-
-/// "The string shall be placed in a temporary buffer which shall be used by
-/// every call to this routine. If the string is to be used after a subsequent
-/// call, the string needs to be copied to another location."
-///
-/// One buffer, reused, so the model stores names unterminated. A failing call
-/// returns NULL, the one value an application would not go on to print.
-pub export fn vpi_get_str(prop: c_int, obj: vpiHandle) [*c]u8 {
-    const d = enter("vpi_get_str") orelse return null;
-    if (root.unansweredProp(prop)) |u| {
-        root.failUnanswered("vpi_get_str", u);
-        return null;
-    }
-    // IEEE 1364-2005 §26.3.2: every object has a type, and its name, the
-    // handles that are not design objects (an iterator, a callback) included.
-    if (prop == vpiType and asObj(obj) == null and issued(obj) != null) return copyStr(typeName(vpi_get(vpiType, obj)));
-    const o = object("vpi_get_str", obj) orelse return null;
-    const s: []const u8 = switch (prop) {
-        // §11.6.7 lists no name for a quantity: it is reached from its
-        // branch, and named only as `V(b)`/`I(b)` in source.
-        vpiName, vpiFullName => blk: {
-            // A behavioural object has the names its diagram lists and no
-            // others: a named block both, a call its tf name only, a
-            // statement none.
-            if (o.kind == .code and (if (prop == vpiName) o.name else o.full).len == 0) {
-                fail("NOPROP", "vpi_get_str: a {s} has no name property {d}", .{ typeName(o.vtype), prop });
-                return null;
-            }
-            if (o.kind == .quantity) {
-                fail("NOPROP", "vpi_get_str: a quantity has no name property {d}", .{prop});
-                return null;
-            }
-            break :blk if (prop == vpiName) o.name else o.full;
-        },
-        vpiType => typeName(typeOf(o)),
-        // §11.6.1 — a module property and only a module's. A net has no
-        // definition to name.
-        vpiDefName => blk: {
-            if (o.kind == .code) if (code.defName(o)) |n| break :blk n;
-            if (o.kind != .module) {
-                fail("NOPROP", "vpi_get_str: a {s} has no vpiDefName", .{@tagName(o.kind)});
-                return null;
-            }
-            break :blk d.scopes[o.scope].def_name;
-        },
-        vpiFile => blk: {
-            const at = location(o) orelse {
-                fail("NOPROP", "vpi_get_str: no source location is recorded for a {s}", .{@tagName(o.kind)});
-                return null;
-            };
-            break :blk at.file;
-        },
-        // IEEE 1364-2005 §26.6.26 b) / §26.6.19 g), spelled from the
-        // source straight into the buffer.
-        vpiDecompile => {
-            if (o.src_expr == .none and o.src_stmt == .none) {
-                fail("NOPROP", "vpi_get_str: a {s} has no vpiDecompile", .{typeName(typeOf(o))});
-                return null;
-            }
-            const f = d.file orelse {
-                fail("NOSOURCE", "vpi_get_str: the analog model keeps no source to decompile", .{});
-                return null;
-            };
-            var w: std.Io.Writer = .fixed(str_buf[0 .. str_buf.len - 1]);
-            (if (o.src_expr != .none) decompile.decompile(&w, f, o.src_expr) else decompile.decompileCall(&w, f, o.src_stmt)) catch {
-                fail("TOOLONG", "vpi_get_str: the decompiled text passes {d} bytes", .{str_buf.len - 1});
-                return null;
-            };
-            str_buf[w.end] = 0;
-            return @ptrCast(&str_buf);
-        },
-        // IEEE 1364-2005 §13.6: "The following VPI properties shall exist for
-        // objects of type vpiModule".
-        vpiLibrary, vpiCell, vpiConfig => blk: {
-            if (o.kind != .module) {
-                fail("NOPROP", "vpi_get_str: a {s} has no library binding", .{@tagName(o.kind)});
-                return null;
-            }
-            const sc = d.scopes[o.scope];
-            break :blk switch (prop) {
-                vpiLibrary => sc.library,
-                vpiCell => sc.def_name,
-                else => if (sc.config.len == 0) return null else sc.config,
-            };
-        },
-        else => {
-            fail("NOPROP", "vpi_get_str: string property {d} is not answered for a {s}", .{ prop, @tagName(o.kind) });
-            return null;
-        },
-    };
-    return copyStr(s);
+    status.fail("NOPROP", "vpi_get: a {s} has no property {d}", .{ @tagName(o.kind), prop });
+    return user.vpiUndefined;
 }
 
 fn copyStr(s: []const u8) [*c]u8 {
@@ -459,13 +408,6 @@ fn copyStr(s: []const u8) [*c]u8 {
     str_buf[n] = 0;
     return @ptrCast(&str_buf);
 }
-
-/// §12.12's single shared buffer. See `name_buf_len` for the ceiling.
-var str_buf: [name_buf_len]u8 = undefined;
-
-// ---------------------------------------------------------------------------
-// Tests. Properties of design rows are test.zig's.
-// ---------------------------------------------------------------------------
 
 test "IEEE 1364-2005 §26.6.6 vpiNetType: Annex G's numbers, each once, none for wreal" {
     var seen: u32 = 0;
@@ -483,6 +425,6 @@ test "IEEE 1364-2005 §26.6.6 vpiNetType: Annex G's numbers, each once, none for
 }
 
 test "§12.18 vpi_get_real: only inside an analog task or function" {
-    try std.testing.expectEqual(@as(f64, @floatFromInt(vpiUndefined)), vpi_get_real(vpiStartTime, null));
-    try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(null));
+    try std.testing.expectEqual(@as(f64, @floatFromInt(user.vpiUndefined)), vpi_get_real(user.vpiStartTime, null));
+    try std.testing.expectEqual(user.vpiError, status.vpi_chk_error(null));
 }

@@ -13,6 +13,8 @@
 //! An analog library is built by spawning `zig` (`$VERA_ZIG`, else `zig` on
 //! PATH) under `$VERA_VPI_WORK` (else `.zig-cache/vera-vpi` in the cwd), with
 //! the contract this library was built with written out there.
+//!
+//! Contents: none (tests and file-private rows only)
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,7 +22,6 @@ const DynLib = @import("dynlib").DynLib;
 const vera = @import("vera");
 const vpi = @import("vpi");
 const sim = @import("sim");
-
 const Io = std.Io;
 
 /// C's `main`, because this file is built ONCE as a static library and linked
@@ -29,6 +30,49 @@ const Io = std.Io;
 /// The C runtime's, on Windows: `_O_BINARY` keeps an application's `printf`
 /// from writing `\r\n`, so its stdout is the bytes a test expects.
 extern "c" fn _setmode(fd: c_int, mode: c_int) c_int; // os: the C runtime's, declared on every target and called only on Windows
+
+/// ESPice's shape (VerA #83, #84): a host that solves the circuit itself and
+/// binds VerA only to run the application's calltf. Each `Lib` is a built
+/// library's call table with no solution (`n_u = n_rows = n_shares = 0`), so
+/// `vpi_get_analog_value` refuses NOSOLUTION; its hop is unused, since this
+/// host calls `Binding.call` directly, as its `contract.SystfHost.call`
+/// would. It sets each point with `analog.setPoint`, then, per library
+/// and per instance, calls every call once with no arguments.
+const External = struct {
+    const Point = struct { kind: vpi.analog.Kind, t: f64, dt: f64, freq: f64 };
+    const none = [0]f64{};
+
+    fn zero() callconv(.c) usize {
+        return 0;
+    }
+    fn x() callconv(.c) [*]const f64 {
+        return &none;
+    }
+    fn ignore(_: ?*anyopaque, _: ?vpi.analog.HostCall, _: ?vpi.analog.HostOut) callconv(.c) void {}
+    fn lib(real: vpi.analog.Lib) vpi.analog.Lib {
+        var l = real;
+        l.n_u = zero;
+        l.n_rows = zero;
+        l.n_shares = zero;
+        l.x = x;
+        l.systf = ignore;
+        return l;
+    }
+    fn run(points: []const Point, bindings: []const *vpi.Binding, instances: usize) u8 {
+        vpi.callback_fire.startOfSimulation();
+        for (points) |p| {
+            vpi.analog.setPoint(.{ .kind = p.kind }, p.t, p.dt, p.freq);
+            for (bindings) |b| for (0..instances) |i| for (0..b.lib.?.n_systf()) |k| {
+                _ = b.call(i, k, &.{}, &.{});
+            };
+        }
+        vpi.analog.setPoint(null, 0, 0, 0);
+        vpi.callback_fire.endOfSimulation();
+        return 0;
+    }
+};
+
+// ---- private ----
 
 export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
     if (builtin.os.tag == .windows) { // os: binary stdio is a Windows-only C runtime mode
@@ -40,11 +84,11 @@ export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
         return 2;
     }
     // §12.17: the invocation a vpi_get_vlog_info() reports is this one.
-    vpi.setInvocation(argc, @ptrCast(@constCast(argv)));
+    vpi.session.setInvocation(argc, @ptrCast(@constCast(argv)));
     // §12.26's log file: the application's name with `.log`, in the cwd.
     var log_buf: [256]u8 = undefined;
     const app_name = std.fs.path.basename(std.mem.span(argv[0]));
-    vpi.setLogFile(std.mem.print(&log_buf, "{s}.log", .{app_name}) catch "vera.log") catch {};
+    vpi.print.setLogFile(std.mem.print(&log_buf, "{s}.log", .{app_name}) catch "vera.log") catch {};
     const design = std.mem.span(argv[1]);
     const app = if (argc > 2) std.mem.span(argv[2]) else null;
     const code = (if (std.mem.endsWith(u8, design, ".va")) analogHost(design, app) else digitalHost(design)) catch |e| {
@@ -54,9 +98,9 @@ export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
     return code;
 }
 
-/// An analog design, opened as `vpi.open` models it. When the application's
+/// An analog design, opened as `vpi.session.open` models it. When the application's
 /// banner asks for analyses, the device is built as a shared library and
-/// `vpi.analog_run` walks them. The include path is the design's directory and
+/// `vpi.Binding.run` walks them. The include path is the design's directory and
 /// the corpus's `include/` two above it (`tests/<lang>/<chapter>/x.va`), where
 /// the suite keeps `check.vh`.
 fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
@@ -72,8 +116,8 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
         return 1;
     };
     defer res.deinit();
-    try vpi.open(gpa, &res);
-    defer vpi.close();
+    try vpi.session.open(gpa, &res);
+    defer vpi.session.close();
 
     // The analyses the application asks for (`*! analysis` lines in its
     // banner, grammar at `readAnalyses`). None: declarations only.
@@ -89,7 +133,7 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
     if ((second != null or instances != 1) and points.len == 0) return error.BadAnalysis;
     // §12.33.2 the registrations come before the device is built: a call's
     // type is its function's sysfunctype (§12.32.1), which compiling needs.
-    vpi.runStartupRoutines();
+    vpi.session.runStartupRoutines();
     var loaded: ?DynLib = null;
     defer if (loaded) |*l| l.close();
     var loaded2: ?DynLib = null;
@@ -97,9 +141,9 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
     // The design's own library, on the installed design; a second one with
     // its own (VerA #84). Detached before the libraries close and the
     // design does: these defers run first.
-    var binding: vpi.analog_run.Binding = .{};
+    var binding: vpi.Binding = .{};
     defer binding.detach();
-    var binding2: vpi.analog_run.Binding = .{};
+    var binding2: vpi.Binding = .{};
     defer binding2.detach();
     if (analyses.len != 0 or points.len != 0) {
         // Building the library spawns `zig`, which the global single-threaded
@@ -137,25 +181,25 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
             };
             loaded2 = try DynLib.open(lib2_path);
             const lib2 = External.lib(try bindLib(&loaded2.?));
-            try binding2.attach(lib2, try vpi.buildDesign(gpa, &res2));
+            try binding2.attach(lib2, try vpi.session.buildDesign(gpa, &res2));
         }
     }
 
-    vpi.callback.endOfCompile();
+    vpi.callback_fire.endOfCompile();
     if (points.len != 0) {
-        const all = [_]*vpi.analog_run.Binding{ &binding, &binding2 };
+        const all = [_]*vpi.Binding{ &binding, &binding2 };
         return External.run(points, all[0..if (second != null) 2 else 1], instances);
     }
     if (analyses.len == 0) return 0;
     // VAMS §8.4 a mixed-signal design: its digital half runs beside the
     // analog solve (`Binding.runMixed`), and VPI reads its variables.
     if (vera.tb.mixedPlan(res.lowered, res.mir)) |mx| return mixedHost(arena, path, mx, analyses, &binding);
-    vpi.callback.startOfSimulation();
+    vpi.callback_fire.startOfSimulation();
     for (analyses) |a| binding.run(a) catch |e| {
         std.debug.print("vpi_host: the {t} analysis of `{s}` failed: {t}\n", .{ a.kind, path, e });
         return 1;
     };
-    vpi.callback.endOfSimulation();
+    vpi.callback_fire.endOfSimulation();
     return 0;
 }
 
@@ -166,7 +210,7 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
 /// what `Binding.runMixed`'s analog side does not carry yet (an analog block
 /// that reads a digital value, an explicit D2A event, an inserted connect
 /// module, a digital read of an analog variable).
-fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, analyses: []const vpi.analog_run.Analysis, binding: *vpi.analog_run.Binding) !u8 {
+fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, analyses: []const vpi.analog.Analysis, binding: *vpi.Binding) !u8 {
     const why: ?[]const u8 = if (mx.inputs.len != 0 or mx.snaps.len != 0)
         "its analog block reads a digital value"
     else if (mx.events.len != 0)
@@ -194,19 +238,19 @@ fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, anal
     // §12.10 the design's objects the digital half holds read its slots:
     // each named as the digital engine names it, relative to the root.
     const prefix = try std.mem.concat(arena, u8, &.{ mx.top, "." });
-    for (vpi.design.?.objects) |*o| switch (o.kind) {
+    for (vpi.session.design.?.objects) |*o| switch (o.kind) {
         .net, .reg, .integer, .real_var, .time_var => if (o.slot == .none) if (std.mem.startsWith(u8, o.full, prefix)) {
             if (dig.slotOf(o.full[prefix.len..])) |at| o.slot = .of(at);
         },
         else => {},
     };
-    vpi.callback.startOfSimulation();
+    vpi.callback_fire.startOfSimulation();
     for (analyses) |a| binding.runMixed(a, &dig, sim.time.secondsAt(1, dig.time.finest), mx.probe_names, mx.probe_nodes) catch |e| {
         try vera.diag.render(&bag, stderrWriter(), .{});
         std.debug.print("vpi_host: the {t} analysis of `{s}` failed: {t}\n", .{ a.kind, path, e });
         return 1;
     };
-    vpi.callback.endOfSimulation();
+    vpi.callback_fire.endOfSimulation();
     // The digital half's own §17.1 output, after the run.
     std.debug.print("{s}", .{dout.written()});
     return 0;
@@ -216,9 +260,9 @@ fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, anal
 /// ac <fstart> <fstop> <points>>`, one per line, run in order. Numbers take
 /// SPICE's scale suffixes, as the banners write them (`tran 0 5m`). An `ac`
 /// sweep's points are evenly spaced, both ends included.
-fn readAnalyses(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const vpi.analog_run.Analysis {
+fn readAnalyses(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const vpi.analog.Analysis {
     const text = try Io.Dir.cwd().readFileAlloc(io, c_path, arena, .limited(1 << 20));
-    var out: std.ArrayList(vpi.analog_run.Analysis) = .empty;
+    var out: std.ArrayList(vpi.analog.Analysis) = .empty;
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
@@ -267,54 +311,13 @@ fn readPoints(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const Ext
         const line = std.mem.trim(u8, raw, " \t\r");
         if (!std.mem.startsWith(u8, line, "*! external")) continue;
         var words = std.mem.tokenizeAny(u8, line["*! external".len..], " \t");
-        const kind = std.meta.stringToEnum(vpi.analog_run.Kind, words.next() orelse return error.BadAnalysis) orelse return error.UnsupportedAnalysis;
+        const kind = std.meta.stringToEnum(vpi.analog.Kind, words.next() orelse return error.BadAnalysis) orelse return error.UnsupportedAnalysis;
         var v: [3]f64 = undefined;
         for (&v) |*x| x.* = try spiceNumber(words.next() orelse return error.BadAnalysis);
         try out.append(arena, .{ .kind = kind, .t = v[0], .dt = v[1], .freq = v[2] });
     }
     return out.items;
 }
-
-/// ESPice's shape (VerA #83, #84): a host that solves the circuit itself and
-/// binds VerA only to run the application's calltf. Each `Lib` is a built
-/// library's call table with no solution (`n_u = n_rows = n_shares = 0`), so
-/// `vpi_get_analog_value` refuses NOSOLUTION; its hop is unused, since this
-/// host calls `Binding.call` directly, as its `contract.SystfHost.call`
-/// would. It sets each point with `analog_run.setPoint`, then, per library
-/// and per instance, calls every call once with no arguments.
-const External = struct {
-    const Point = struct { kind: vpi.analog_run.Kind, t: f64, dt: f64, freq: f64 };
-    const none = [0]f64{};
-
-    fn zero() callconv(.c) usize {
-        return 0;
-    }
-    fn x() callconv(.c) [*]const f64 {
-        return &none;
-    }
-    fn ignore(_: ?*anyopaque, _: ?vpi.analog_run.HostCall, _: ?vpi.analog_run.HostOut) callconv(.c) void {}
-    fn lib(real: vpi.analog_run.Lib) vpi.analog_run.Lib {
-        var l = real;
-        l.n_u = zero;
-        l.n_rows = zero;
-        l.n_shares = zero;
-        l.x = x;
-        l.systf = ignore;
-        return l;
-    }
-    fn run(points: []const Point, bindings: []const *vpi.analog_run.Binding, instances: usize) u8 {
-        vpi.callback.startOfSimulation();
-        for (points) |p| {
-            vpi.analog_run.setPoint(.{ .kind = p.kind }, p.t, p.dt, p.freq);
-            for (bindings) |b| for (0..instances) |i| for (0..b.lib.?.n_systf()) |k| {
-                _ = b.call(i, k, &.{}, &.{});
-            };
-        }
-        vpi.analog_run.setPoint(null, 0, 0, 0);
-        vpi.callback.endOfSimulation();
-        return 0;
-    }
-};
 
 fn spiceNumber(w: []const u8) !f64 {
     const scales = [_]struct { s: []const u8, v: f64 }{
@@ -388,9 +391,9 @@ fn stderrWriter() *Io.Writer {
     return &S.w.?.interface;
 }
 
-fn bindLib(l: *DynLib) !vpi.analog_run.Lib {
-    var out: vpi.analog_run.Lib = undefined;
-    const s = @typeInfo(vpi.analog_run.Lib).@"struct";
+fn bindLib(l: *DynLib) !vpi.analog.Lib {
+    var out: vpi.analog.Lib = undefined;
+    const s = @typeInfo(vpi.analog.Lib).@"struct";
     inline for (s.field_names, s.field_types) |name, F| {
         @field(out, name) = l.lookup(F, "vera_vpi_" ++ name) orelse return error.MissingSymbol;
     }
@@ -418,7 +421,7 @@ fn digitalHost(path: []const u8) !u8 {
     // §12.33.2 first: IEEE 1364-2005 §26.2.4 allows only the two
     // registration routines there, and elaboration reads the systfs they
     // register (§20.4) and sizes them (§26.1.1).
-    vpi.runStartupRoutines();
+    vpi.session.runStartupRoutines();
     var bag = vera.diag.Bag.init(arena);
     const dir = std.fs.path.dirname(path) orelse ".";
     // `$VERA_PROTECT_KEYS` names a key file as `vera --protect-keys` reads it:
@@ -443,12 +446,12 @@ fn digitalHost(path: []const u8) !u8 {
         try err.flush();
         return 1;
     };
-    try vpi.openDigital(std.heap.page_allocator, &run);
-    defer vpi.close();
+    try vpi.session.openDigital(std.heap.page_allocator, &run);
+    defer vpi.session.close();
 
     // §12.31.4's "end of simulation data structure compilation or build",
     // then time 0.
-    vpi.callback.endOfCompile();
+    vpi.callback_fire.endOfCompile();
     vpi.run.simulate() catch |e| {
         if (vpi.systf.misuse) |name| {
             try out.flush();

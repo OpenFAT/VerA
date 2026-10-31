@@ -1,17 +1,12 @@
-//! A C `va_list`, read through `varargs.c`. That file holds every variadic
-//! VPI routine and starts the list; Zig 0.17 refuses `@cVaStart` on
-//! x86_64-windows and aarch64-linux, so no Zig code here names the ABI's
-//! va_list type and the reads below work on every target.
+//! The `va_list` the C shim (`varargs.c`) hands to the Zig side, opaque.
+//! Cites: none (the platform C ABI).
+//!
+//! Contents:
+//! - `pub const List = opaque {}`
+//! - `pub fn arg(ap: *List, comptime T: type) T`
 
 /// A `va_list *`, opaque: only `varargs.c` knows its layout.
 pub const List = opaque {};
-
-extern fn vera_va_int(ap: *List) c_int;
-extern fn vera_va_long(ap: *List) c_long;
-extern fn vera_va_longlong(ap: *List) c_longlong;
-extern fn vera_va_size(ap: *List) usize;
-extern fn vera_va_double(ap: *List) f64;
-extern fn vera_va_ptr(ap: *List) ?*anyopaque;
 
 /// `va_arg(*ap, T)`. An unsigned type reads its signed twin, which C11
 /// 7.16.1.1 allows for a value both represent and which passes in the same
@@ -31,3 +26,17 @@ pub fn arg(ap: *List, comptime T: type) T {
         else => @compileError("va.arg: no C accessor for " ++ @typeName(T)),
     };
 }
+
+// ---- private ----
+
+extern fn vera_va_int(ap: *List) c_int;
+
+extern fn vera_va_long(ap: *List) c_long;
+
+extern fn vera_va_longlong(ap: *List) c_longlong;
+
+extern fn vera_va_size(ap: *List) usize;
+
+extern fn vera_va_double(ap: *List) f64;
+
+extern fn vera_va_ptr(ap: *List) ?*anyopaque;

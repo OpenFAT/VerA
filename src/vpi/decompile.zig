@@ -1,24 +1,26 @@
-//! IEEE 1364-2005 §26.6.26 b) / §26.6.19 g) vpiDecompile: a source
-//! expression (or a task call) -> its text, written to a caller's `Writer`.
-//! Parentheses only where precedence needs them, one space between operands
-//! and operators, each literal in its own base. A pure function of the AST;
-//! property.zig's `vpi_get_str` supplies the buffer. Precedence and
-//! associativity: IEEE 1364-2005 §5.1.2, Table 5-4.
+//! A source expression or task call -> its vpiDecompile text, with only the
+//! parentheses precedence needs.
+//! Cites: IEEE 1364-2005 §5.1.2 (precedence), §26.6.19 g), §26.6.26 b).
+//!
+//! Contents:
+//! - `pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Error!void`
+//! - `pub fn decompileCall(w: *Writer, f: *const Ast.SourceFile, id: Ast.StmtId) Writer.Error!void`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
-const code = @import("code.zig");
+const Io = std.Io;
+const Writer = std.Io.Writer;
 const handle = @import("handle.zig");
 const iterate = @import("iterate.zig");
 const property = @import("property.zig");
-const root = @import("root.zig");
+const trust = @import("trust.zig");
+const user = @import("vpi_user.zig");
 const run = @import("run.zig");
+const Harness = run.Harness;
 
-const vpiProcess = code.vpiProcess;
-const vpiRhs = code.vpiRhs;
-const vpiStmt = code.vpiStmt;
-
-const Writer = std.Io.Writer;
+/// IEEE 1364-2005 §5.1.2 Table 5-4, highest first; every binary operator
+/// associates left to right, the conditional right to left.
+const unary_prec: u8 = 12;
 
 /// §26.6.26 b): "a string with a functionally equivalent expression to the
 /// original expression within the HDL. Parentheses shall be added only to
@@ -187,6 +189,8 @@ pub fn decompileCall(w: *Writer, f: *const Ast.SourceFile, id: Ast.StmtId) Write
     if (s.args.len != 0) try list(w, f, "(", s.args, ")");
 }
 
+// ---- private ----
+
 fn list(w: *Writer, f: *const Ast.SourceFile, open: []const u8, items: []const Ast.ExprId, close: []const u8) Writer.Error!void {
     try w.writeAll(open);
     for (items, 0..) |e, k| {
@@ -195,10 +199,6 @@ fn list(w: *Writer, f: *const Ast.SourceFile, open: []const u8, items: []const A
     }
     try w.writeAll(close);
 }
-
-/// IEEE 1364-2005 §5.1.2 Table 5-4, highest first; every binary operator
-/// associates left to right, the conditional right to left.
-const unary_prec: u8 = 12;
 
 fn binaryPrec(op: Ast.BinaryOp) u8 {
     return switch (op) {
@@ -283,7 +283,7 @@ fn binarySpelling(op: Ast.BinaryOp) []const u8 {
 }
 
 test "§26.6.26 b) vpiDecompile adds parentheses only where precedence needs them" {
-    var h: run.Harness = undefined;
+    var h: Harness = undefined;
     try h.init(
         \\module t;
         \\  reg [7:0] x, a, b, c, d;
@@ -291,13 +291,13 @@ test "§26.6.26 b) vpiDecompile adds parentheses only where precedence needs the
         \\endmodule
     );
     defer h.deinit();
-    const procs = iterate.vpi_iterate(vpiProcess, handle.vpi_handle_by_name("t", null));
+    const procs = iterate.vpi_iterate(user.vpiProcess, handle.vpi_handle_by_name("t", null));
     const init = iterate.vpi_scan(procs);
-    _ = root.vpi_free_object(procs);
-    const rhs = handle.vpi_handle(vpiRhs, handle.vpi_handle(vpiStmt, init));
+    _ = trust.vpi_free_object(procs);
+    const rhs = handle.vpi_handle(user.vpiRhs, handle.vpi_handle(user.vpiStmt, init));
     try std.testing.expectEqualStrings(
         "(a + b) * c - (d - a) - b ? {2{a[1:0], 1'b1}} : ~ (a & 4'hf) + - 2.5",
-        std.mem.span(property.vpi_get_str(root.vpiDecompile, rhs)),
+        std.mem.span(property.vpi_get_str(user.vpiDecompile, rhs)),
     );
 }
 
@@ -306,7 +306,7 @@ test "§26.6.26 b): an equal-precedence right operand keeps its parentheses; lit
     // `**` included, and the conditional right to left. So `a - (b - c)` and
     // `a ** (b ** c)` need theirs, `a - b - c` none, and a conditional as a
     // condition needs them where one as the else-branch does not.
-    var h: run.Harness = undefined;
+    var h: Harness = undefined;
     try h.init(
         \\module t;
         \\  reg [7:0] a, b, c;
@@ -319,7 +319,7 @@ test "§26.6.26 b): an equal-precedence right operand keeps its parentheses; lit
         \\endmodule
     );
     defer h.deinit();
-    const itr = iterate.vpi_iterate(code.vpiContAssign, handle.vpi_handle_by_name("t", null));
+    const itr = iterate.vpi_iterate(user.vpiContAssign, handle.vpi_handle_by_name("t", null));
     for ([_][]const u8{
         "a - (b - c)",
         "a - b - c",
@@ -328,7 +328,7 @@ test "§26.6.26 b): an equal-precedence right operand keeps its parentheses; lit
         "a ? b : c ? 4'b1x0z : 42",
     }) |want| {
         const assign = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
-        try std.testing.expectEqualStrings(want, std.mem.span(property.vpi_get_str(root.vpiDecompile, handle.vpi_handle(vpiRhs, assign))));
+        try std.testing.expectEqualStrings(want, std.mem.span(property.vpi_get_str(user.vpiDecompile, handle.vpi_handle(user.vpiRhs, assign))));
     }
     try std.testing.expect(iterate.vpi_scan(itr) == null);
 }
