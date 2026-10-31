@@ -185,3 +185,57 @@ test {
     _ = @import("codegen/kernel_text.zig");
     _ = @import("codegen/opcode_zig.zig");
 }
+
+test "generate: a case of 2500 arms generates on a 1 MiB stack" {
+    // Width, not nesting: lowering turns the arms into a chain as long as
+    // the case is wide, which no parse nesting measures, so the caller's
+    // stack (`deep_stack.run` sized from source nesting) is the default one.
+    // Codegen walked that chain one call per arm and overflowed it (#105,
+    // case_5000). Oracle: generation succeeds with no refusal, and the
+    // device's text names the last arm's value.
+    const gpa = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    try src.appendSlice(gpa, "module m(p, n);\n  inout p, n;\n  electrical p, n;\n  real y;\n  integer k;\n  analog begin\n    k = V(p, n);\n    case (k)\n");
+    // 2500 arms already overflowed 1 MiB, in a fraction of 5000 arms' time.
+    const arms = 2500;
+    for (0..arms) |i| try src.print(gpa, "      {d}: y = {d}.0;\n", .{ i, i });
+    try src.appendSlice(gpa, "    endcase\n    I(p, n) <+ y;\n  end\nendmodule\n");
+
+    const Run = struct {
+        h: @import("codegen/harness.zig").Harness = undefined,
+        lowered: anyerror!void = {},
+        out: anyerror!Output = error.NotRun,
+        fn lower(r: *@This(), text: []const u8) void {
+            r.lowered = @import("codegen/harness.zig").Harness.run(std.testing.allocator, text, &r.h);
+            // As `Compilation.lowerAndProve` does: the case's diamonds become
+            // one chain of selects as long as the case is wide.
+            if (r.lowered) |_| {
+                const ifconv = @import("prove").ifconv;
+                const a = r.h.arena_state.allocator();
+                _ = ifconv.run(a, &r.h.mir) catch |e| {
+                    r.lowered = e;
+                };
+                // A `.strict` unit keeps nothing as CFG: every arm speculates.
+                _ = ifconv.runMode(a, &r.h.mir, .speculate, null) catch |e| {
+                    r.lowered = e;
+                };
+            } else |_| {}
+        }
+        fn gen(r: *@This()) void {
+            r.out = r.h.genWith(.{});
+        }
+    };
+    var r: Run = .{};
+    // Lowering has its own stack budget (analog's test); give it room.
+    const t0 = try std.Thread.spawn(.{ .stack_size = 256 << 20 }, Run.lower, .{ &r, src.items });
+    t0.join();
+    try r.lowered;
+    defer r.h.deinit();
+    const t1 = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.gen, .{&r});
+    t1.join();
+    // The harness generates into its own arena, freed by `deinit`.
+    const out = try r.out;
+    try std.testing.expect(std.mem.countScalar(Mir.Opcode, r.h.mir.insts.items(.op), .select) >= arms - 1);
+    try std.testing.expect(std.mem.find(u8, out.text, "2499.0") != null);
+}

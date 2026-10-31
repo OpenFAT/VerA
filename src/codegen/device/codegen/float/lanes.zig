@@ -46,6 +46,9 @@ const eager_depth_max = 64;
 /// Answers false past `eager_depth_max` operands deep.
 /// Asserts that `v0` resolves to a value of the analysis.
 pub fn eagerCostly(self: *Gen, v0: Mir.Value, depth: u32) bool {
+    // Every call adds one level, so the stop below holds the stack at
+    // `eager_depth_max` frames whatever the input's width.
+    assert(depth <= eager_depth_max + 1);
     if (depth > eager_depth_max) return false;
     const v = self.an.rv(v0);
     assert(@backingInt(v) < self.an.nv);
@@ -80,6 +83,9 @@ pub fn eagerCostly(self: *Gen, v0: Mir.Value, depth: u32) bool {
 /// `renderVal` inlines. Answers false past `eager_depth_max` operands deep.
 /// Asserts that `v0` resolves to a value of the analysis.
 pub fn eagerSafe(self: *Gen, v0: Mir.Value, depth: u32) bool {
+    // Every call adds one level, so the stop below holds the stack at
+    // `eager_depth_max` frames whatever the input's width.
+    assert(depth <= eager_depth_max + 1);
     if (depth > eager_depth_max) return false;
     const v = self.an.rv(v0);
     assert(@backingInt(v) < self.an.nv);

@@ -38,6 +38,16 @@ const render_op = @import("render_op.zig");
 /// (`Gen.subst`): `v` while the guard chain from `lit` holds, else `safe`.
 pub const Subst = struct { v: Mir.Value, lit: u32, safe: f64 };
 
+/// One select row as the renderer reads it: its condition, both arms, the
+/// type it renders at and its result.
+const Sel = struct { a: Mir.Value, then: Mir.Value, otherwise: Mir.Value, want: VTy, res: Mir.Value };
+
+/// How `renderInst` writes a select. In a `.strict` unit a real select whose
+/// inline arms are total (`eagerSafe`) and cheap (`eagerCostly`) runs both
+/// arms and picks; costly arms on a per-point condition do so on a GPU target
+/// only (`zSpec`); every other select stays lazy. Pure: it only reads.
+const SelForm = enum { eager, spec, lazy };
+
 /// Returns `renderVal`'s text as an arena string instead of appending it to
 /// `out`. Renders into `out` and rewinds, so `uses.x`/`uses.model`
 /// accounting matches a direct render. For §4.5 operator inputs that must
@@ -187,13 +197,7 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
     // each S op it replaces would carry zero lanes `.strict` cannot fold.
     // `f64Const` succeeds only on literals, parameters and arithmetic.
     const res = self.mir.instResult(inst);
-    if (res != .undef and self.an.vty[@backingInt(res)] == .real and self.an.dFree(res)) {
-        // A value the analysis folds from literals alone (never through a
-        // parameter) is its literal: `pow(0.5178…, -2)` is no `zPowK` call.
-        // The planner made it a slot-free leaf (`UnitPlan.literal`).
-        if (self.cur.plan.literal(res)) return self.b("S.con({s})", .{try gen_file.fmtF64(self, self.an.foldConst(res, false).?)});
-        if (try gen_host.f64Const(self, res, 0, true)) |s| return self.b("S.con({s})", .{s});
-    }
+    if (try writeDerivFree(self, res)) return;
 
     // Only unary, binary and select rows get here; a select's arms sit in
     // `extra` (`Mir.InstRow`), and any other row has no third operand.
@@ -216,21 +220,8 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
     assert(op != .call);
     assert(op != .phi);
     if (op == .select) {
-        const want = res_ty;
-        if (want == .real and self.float.strict and
-            float_lanes.eagerSafe(self, b2, 0) and float_lanes.eagerSafe(self, c, 0))
-        {
-            if (!float_lanes.eagerCostly(self, b2, 0) and !float_lanes.eagerCostly(self, c, 0))
-                return renderSelEager(self, a, b2, c, res);
-            if (float_lanes.perPoint(self, a)) {
-                try self.b("(if (comptime zSpec) ", .{});
-                try renderSelEager(self, a, b2, c, res);
-                try self.b(" else ", .{});
-                try renderSelLazy(self, a, b2, c, want, res);
-                return self.b(")", .{});
-            }
-        }
-        return renderSelLazy(self, a, b2, c, want, res);
+        const sel: Sel = .{ .a = a, .then = b2, .otherwise = c, .want = res_ty, .res = res };
+        return renderSel(self, sel, selForm(self, sel));
     }
     // §4.3.2 a domain-restricted row `ifconv`'s `.speculate` moved out of its
     // arm runs on its domain's safe argument while its guard is false, so it
@@ -342,17 +333,115 @@ fn renderSelEager(self: *Gen, a: Mir.Value, b2: Mir.Value, c: Mir.Value, res: Mi
     try self.b(")", .{});
 }
 
-/// A select that runs only the arm its condition takes.
-fn renderSelLazy(self: *Gen, a: Mir.Value, b2: Mir.Value, c: Mir.Value, want: VTy, res: Mir.Value) Error!void {
-    assert(self.an.tyOf(res) == want);
-    try self.b("(if (", .{});
-    try gen_cfg.renderCond(self, a);
-    try self.b(") ", .{});
-    if (want == .real) return renderArms(self, b2, c, family.mask(self, res));
-    try renderVal(self, b2, want);
-    try self.b(" else ", .{});
-    try renderVal(self, c, want);
-    try self.b(")", .{});
+fn selForm(self: *Gen, s: Sel) SelForm {
+    assert(self.an.tyOf(s.res) == s.want);
+    if (s.want == .real and self.float.strict and
+        float_lanes.eagerSafe(self, s.then, 0) and float_lanes.eagerSafe(self, s.otherwise, 0))
+    {
+        if (!float_lanes.eagerCostly(self, s.then, 0) and !float_lanes.eagerCostly(self, s.otherwise, 0)) return .eager;
+        if (float_lanes.perPoint(self, s.a)) return .spec;
+    }
+    return .lazy;
+}
+
+/// A select that runs only the arm its condition takes. An else arm that is
+/// itself a lazy select `renderVal` would render inline (a §4.2.12 `?:`
+/// chain, a §5.8.3 `case` after `ifconv`) continues the loop instead of
+/// recursing, so a chain as long as the source is wide writes on a bounded
+/// stack (#105, case_5000). Each such level owes the same closing text, so
+/// the closes are a count. Writes exactly what the recursion wrote.
+fn renderSelLazy(self: *Gen, first: Sel) Error!void {
+    assert(self.an.tyOf(first.res) == first.want);
+    const want = first.want;
+    var s = first;
+    var nested: usize = 0;
+    while (true) : (nested += 1) {
+        // Each level is a distinct select row of the chain.
+        assert(nested < self.mir.insts.len);
+        assert(s.want == want);
+        try self.b("(if (", .{});
+        try gen_cfg.renderCond(self, s.a);
+        try self.b(") ", .{});
+        if (want == .real) {
+            const m = family.mask(self, s.res);
+            try family.openTo(self, m);
+            try renderVal(self, s.then, .real);
+            try self.b(")", .{});
+            try self.b(" else ", .{});
+            try family.openTo(self, m);
+        } else {
+            try renderVal(self, s.then, want);
+            try self.b(" else ", .{});
+        }
+        s = (try chainNext(self, s.otherwise, want)) orelse break;
+    }
+    // Innermost first: a real level closes its `zTo` and its `if`.
+    const close = if (want == .real) "))" else ")";
+    for (0..nested + 1) |_| try self.b("{s}", .{close});
+}
+
+/// Writes `renderVal(v0, want)` unless that would write `v0` as a lazy
+/// select inline, in which case it writes nothing and returns that select
+/// for `renderSelLazy`'s loop to continue with. The steps are `renderVal`'s,
+/// `renderValueRef`'s and `renderInst`'s, in their order, each taken once, so
+/// the bytes are the recursion's.
+fn chainNext(self: *Gen, v0: Mir.Value, want: VTy) Error!?Sel {
+    const v = self.an.rv(v0);
+    const subst_hit = if (self.cur.subst) |su| su.v == v else false;
+    const def = self.mir.valueDef(v);
+    if (subst_hit or def != .inst_result or self.an.tyOf(v) != want or materialized(self, v) or
+        self.mir.instOp(def.inst_result) != .select)
+    {
+        try renderVal(self, v0, want);
+        return null;
+    }
+    // From here on this is `renderInst` on a select row.
+    const inst = def.inst_result;
+    const res = self.mir.instResult(inst);
+    assert(res == v);
+    if (try writeDerivFree(self, res)) return null;
+    const t = self.mir.instData(inst).ternary;
+    const s: Sel = .{ .a = @fromBackingInt(@intCast(self.mir.instRow(inst).a)), .then = t.then_val, .otherwise = t.else_val, .want = want, .res = res };
+    const form = selForm(self, s);
+    if (form == .lazy) return s;
+    try renderSel(self, s, form);
+    return null;
+}
+
+/// Writes a select in `form` (`selForm`'s answer for it).
+/// Invalidates slices of `out.items` if additional memory is needed.
+fn renderSel(self: *Gen, s: Sel, form: SelForm) Error!void {
+    assert(self.an.tyOf(s.res) == s.want);
+    if (form != .lazy) assert(s.want == .real);
+    switch (form) {
+        .eager => return renderSelEager(self, s.a, s.then, s.otherwise, s.res),
+        .spec => {
+            try self.b("(if (comptime zSpec) ", .{});
+            try renderSelEager(self, s.a, s.then, s.otherwise, s.res);
+            try self.b(" else ", .{});
+            try renderSelLazy(self, s);
+            return self.b(")", .{});
+        },
+        .lazy => return renderSelLazy(self, s),
+    }
+}
+
+/// A derivative-free subtree is one `S.con` over plain f64 arithmetic: each
+/// S op it replaces would carry zero lanes `.strict` cannot fold.
+/// `f64Const` succeeds only on literals, parameters and arithmetic. A value
+/// the analysis folds from literals alone (never through a parameter) is its
+/// literal: `pow(0.5178…, -2)` is no `zPowK` call; the planner made it a
+/// slot-free leaf (`UnitPlan.literal`). Returns whether it wrote `res` so.
+fn writeDerivFree(self: *Gen, res: Mir.Value) Error!bool {
+    if (res == .undef or self.an.vty[@backingInt(res)] != .real or !self.an.dFree(res)) return false;
+    assert(@backingInt(res) < self.an.nv);
+    if (self.cur.plan.literal(res)) {
+        try self.b("S.con({s})", .{try gen_file.fmtF64(self, self.an.foldConst(res, false).?)});
+        return true;
+    }
+    const s = try gen_host.f64Const(self, res, 0, true) orelse return false;
+    try self.b("S.con({s})", .{s});
+    return true;
 }
 
 /// A point inside each §4.3.1/§4.3.2 domain (Table 4-14/4-15) with a finite
@@ -417,17 +506,4 @@ fn renderSubst(self: *Gen, s: Subst, want: VTy) Error!void {
         // A domain-restricted operand is a number (`Mir.opcode`).
         .str, .wide => try renderVal(self, s.v, want),
     }
-}
-
-/// Writes a lazy real `if`'s `then else otherwise)` after its condition. Both
-/// arms widen to the result's mask `m`, the one type the `if` can have.
-fn renderArms(self: *Gen, then: Mir.Value, otherwise: Mir.Value, m: []const u64) Error!void {
-    assert(m.len == self.mw);
-    for ([_]Mir.Value{ then, otherwise }, 0..) |v, k| {
-        if (k != 0) try self.b(" else ", .{});
-        try family.openTo(self, m);
-        try renderVal(self, v, .real);
-        try self.b(")", .{});
-    }
-    try self.b(")", .{});
 }
