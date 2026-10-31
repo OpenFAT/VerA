@@ -32,9 +32,6 @@ const lower_string_io = @import("string_io.zig");
 const lower_clog2 = @import("clog2.zig");
 const lower_sysfunc_args = @import("sysfunc_args.zig");
 const lower_sysfunc_context = @import("sysfunc_context.zig");
-const simparamValueIn = simparam.simparamValueIn;
-const simparamIsRuntime = simparam.simparamIsRuntime;
-const host_simparams = simparam.host_simparams;
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
@@ -323,7 +320,7 @@ fn refuseSimparam(self: *Lower, e: Ast.ExprId) Oom!bool {
     const args = self.file.exprs.args(e);
     if (args.len == 1) {
         if (lower_constfold.constEval(self, args[0])) |c| switch (c) {
-            .str => |s| if (simparamValueIn(self.opts.directives.timescale(), s) == null and !simparamIsRuntime(s)) {
+            .str => |s| if (simparam.valueIn(self.opts.directives.timescale(), s) == null and !simparam.isRuntime(s)) {
                 var b = self.errWith(self.file.exprs.mainTok(e), .E0811);
                 b.msg("`\"{s}\"`", .{s});
                 b.note("$simparam(\"{s}\", <expression>) supplies the value to use instead, and §9.15 makes that form legal for any name", .{s});
@@ -338,7 +335,7 @@ fn refuseSimparam(self: *Lower, e: Ast.ExprId) Oom!bool {
     // reads `iteration`.
     if (args.len >= 1) if (lower_sysfunc_args.constStrArg(self, args[0])) |s| {
         if (std.mem.eql(u8, s, "iteration")) self.out.uses.insert(.newton_iter);
-        for (host_simparams) |h| if (std.mem.eql(u8, h.name, s)) self.out.uses.insert(h.use);
+        for (simparam.host_params) |h| if (std.mem.eql(u8, h.name, s)) self.out.uses.insert(h.use);
     };
     return false;
 }

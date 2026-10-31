@@ -97,7 +97,7 @@ pub fn lowerStringWrite(self: *Lower, tok: u32, name: []const u8, args: []const 
 ///
 /// An out-parameter has no spelling in an SSA expression tree, and the scan is a
 /// pure function of the two strings, so N+1 evaluations compute what one call
-/// with N writes would. `str_kernels.zig` says the same from the runtime side.
+/// with N writes would. `str_scan.zig` says the same from the runtime side.
 ///
 /// Returns the count value; a statement-position call drops it.
 pub fn lowerScan(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!Mir.Value {
@@ -306,7 +306,7 @@ fn sscanfCallee(ty: Ty) []const u8 {
 
 /// §9.5.4.2's conversion codes, and nothing else. True when the format was
 /// refused. The suppression `*` and the maximum field width are part of the
-/// specification and are read past here; `str_kernels.zScan` implements them.
+/// specification and are read past here; `str_scan.zScan` implements them.
 ///
 /// Case-sensitive, unlike §9.4.3's display table: §9.5.4.2 spells each scan
 /// code once, in lower case, and leaves an invalid one implementation

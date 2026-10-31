@@ -98,7 +98,7 @@ pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
     const global = self.access_kind.get(name) orelse {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0501);
         b.msg("`{s}`", .{name});
-        if (diag.didYouMeanMap(name, self.access_kind)) |s|
+        if (diag.didYouMeanMap(Lower.Access, name, self.access_kind)) |s|
             b.suggestHere(s);
         try b.emit();
         return null;

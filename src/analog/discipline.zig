@@ -385,7 +385,7 @@ fn checkNatureAttrValue(self: *Lower, n: *const Ast.NatureDecl, a: Ast.NatureAtt
 /// preprocessor's segment map still knows; the prelude and user text are one stream.
 fn fileOf(self: *const Lower, tok: u32) diag.FileId {
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    return self.bag.locate(self.tokenSpan(tok), null).file;
+    return self.bag.locate(self.tokenSpan(tok), .none).file;
 }
 
 test "§3.6 natures and disciplines: the declaration rules" {

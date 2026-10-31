@@ -126,7 +126,7 @@ pub fn declareAliasParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void 
         } else {
             var b = self.errWith(module.main_tok, .E0303);
             b.msg("`{s}`", .{target});
-            if (diag.didYouMeanMap(target, self.param_index)) |s|
+            if (diag.didYouMeanMap(u32, target, self.param_index)) |s|
                 b.help("did you mean `{s}`?", .{s});
             try b.emit();
         }

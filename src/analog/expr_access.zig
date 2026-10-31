@@ -360,7 +360,7 @@ fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
     const global = self.access_kind.get(name) orelse {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0501);
         b.msg("`{s}`", .{name});
-        if (diag.didYouMeanMap(name, self.access_kind)) |s|
+        if (diag.didYouMeanMap(Lower.Access, name, self.access_kind)) |s|
             b.suggestHere(s);
         try b.emit();
         return poison;
@@ -379,7 +379,7 @@ fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
     if (p == ground or p >= self.out.num_ports) {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0508);
         b.msg("`{s}(<{s}>)`", .{ name, lower_node.nodeName(self, p) });
-        if (diag.didYouMeanMap(lower_node.nodeName(self, p), self.node_voltages)) |s|
+        if (diag.didYouMeanMap(u32, lower_node.nodeName(self, p), self.node_voltages)) |s|
             b.help("did you mean `{s}`?", .{s});
         try b.emit();
         return poison;

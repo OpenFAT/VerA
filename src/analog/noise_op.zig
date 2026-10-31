@@ -213,7 +213,7 @@ fn reachOf(self: *Lower, gen: Mir.Value, v: Mir.Value) Oom!std.bit_set.Dynamic {
     assert(self.valueValid(gen));
     assert(self.valueValid(v));
     const mir = self.mir;
-    const n = Mir.Value.first_dynamic + mir.defs.len;
+    const n = mir.valueCount();
     var reach = try std.bit_set.Dynamic.initEmpty(self.arena, n);
     errdefer reach.deinit(self.arena);
     reach.set(@backingInt(gen));

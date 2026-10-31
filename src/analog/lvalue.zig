@@ -100,8 +100,8 @@ pub fn resolveLvalue(self: *Lower, e: Ast.ExprId) Oom!?Lvalue {
             }
             var b = self.errWith(self.file.exprs.mainTok(e), .E0313);
             b.msg("`{s}`", .{name});
-            const near = diag.didYouMeanMap(name, self.vars) orelse
-                diag.didYouMeanMap(name, self.param_index);
+            const near = diag.didYouMeanMap(Lower.VarSlot, name, self.vars) orelse
+                diag.didYouMeanMap(u32, name, self.param_index);
             if (near) |s| b.suggestHere(s);
             try b.emit();
             return null;

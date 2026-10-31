@@ -1055,7 +1055,7 @@ test "ssa: a sealed block with no predecessor reads undef, and sealing twice is 
     try std.testing.expectEqual(Mir.Value.undef, try b.readVariable(x, orphan));
     try std.testing.expectEqual(Mir.Value.f_two, try b.readVariable(x, entry));
     // No phi row was needed for either read.
-    try std.testing.expectEqual(@as(usize, 0), mir.insts.len);
+    try std.testing.expectEqual(@as(u32, 0), mir.instCount());
 }
 
 test "ssa: a short single-predecessor chain is climbed without memo cells, a long one memoizes its path" {

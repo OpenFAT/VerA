@@ -772,7 +772,7 @@ pub fn exprValid(self: *const Lower, e: Ast.ExprId) bool {
 /// Reports whether `v` is a sentinel constant or a row this pass's `mir`
 /// numbered. For the sub-files' exit asserts.
 pub fn valueValid(self: *const Lower, v: Mir.Value) bool {
-    return @backingInt(v) < Mir.Value.first_dynamic + self.mir.defs.len;
+    return @backingInt(v) < self.mir.valueCount();
 }
 
 /// Returns how many statement rows `file` holds, its parse's included (an
