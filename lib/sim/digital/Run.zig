@@ -355,6 +355,8 @@ event_budget: run_until.EventBudget = .{},
 calls: activations.Calls = .{},
 /// What a VPI application attached to the run (`vpi.Host`).
 host: vpi.Host = .{},
+/// The run's side of a mixed-signal analysis (`analog_link.Link`).
+analog: analog_link.Link = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
@@ -394,14 +396,6 @@ path_changed: std.AutoHashMapUnmanaged(u32, @import("net.zig").PathEdge) = .empt
 /// first watcher is §17.1.3's monitor; §18's value change dump and VAMS
 /// §8.5's implicit D2A are the same event, each a member of its own.
 watch: []std.EnumSet(Watcher) = &.{},
-/// One region-3b event per tick however many analog-read values moved,
-/// the same coalescing `monitor_pending` does for region 4.
-analog_pending: bool = false,
-/// §8.5 the explicit D2A terms, the ones that occurred this tick (bit =
-/// `D2aSite.site`), and the one region-1b event that reports them.
-d2a_sites: std.ArrayList(D2aSite) = .empty,
-d2a_fired: u64 = 0,
-d2a_pending: bool = false,
 /// Per-instruction scratch of `runUntil` (`exec.Scratch`): the fixed
 /// buffer every instruction starts from, and the arena behind it, reset
 /// at each event with its capacity kept, so a run of many calls (the
@@ -422,21 +416,6 @@ diag_stage: diag.Stage = .lower,
 /// calls are: only the outermost resets it.
 resolve_scratch: std.heap.ArenaAllocator,
 resolve_depth: u32 = 0,
-/// VAMS §7.3.5 the analog events digital event controls wait on
-/// (`registerMonitor`). The mixed-signal kernel evaluates each against the
-/// analog solution and delivers its A2D events (`deliverA2d`).
-monitors: std.ArrayList(Monitor) = .empty,
-/// VAMS §7.3.3 / §7.3.6.3: the potential `V(a)` / `V(a, b)` of the analog
-/// solution at the current digital time. Set by the mixed-signal kernel;
-/// a digital process that probes without it fails.
-probe: ?*const fn (ctx: *anyopaque, a: []const u8, b: ?[]const u8) Error!f64 = null,
-probe_ctx: *anyopaque = undefined,
-/// Some digital expression probes the analog solution (`probe`).
-has_probes: bool = false,
-/// Elaborating the digital half of a mixed-signal module (`Options.mixed`).
-mixed: bool = false,
-/// `Mixed.reads`: the analog variables declared here for `a2dWrite`.
-a2d_reads: []const []const u8 = &.{},
 /// `Mixed.inserts`, and each row's segment as an identifier expression
 /// (minted before pass one, while the expression tables can still grow).
 inserts: []const Insert = &.{},
@@ -466,10 +445,6 @@ defparams: std.HashMapUnmanaged(PathKey, struct { d: Ast.Defparam, decl: u32 }, 
 /// Each defparam as pass one bound it, for §12.8.2's check against the
 /// complete hierarchy (`checkDefparams`).
 bound_defparams: std.ArrayList(struct { decl: u32, path: []const u8, at: u32, rest: []const u8, tok: u32 }) = .empty,
-/// `Mixed.params`: the root's parameter values on the host's card.
-card: []const Param = &.{},
-/// `Mixed.real_params`: only the real parameters the discrete side needs.
-real_card: []const Param = &.{},
 /// §12.2 parameter slots: constants an expression may fold, never a
 /// target.
 params: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -699,8 +674,8 @@ pub fn reset(self: *Run) Error!void {
     fresh.checks.hook = self.checks.hook;
     fresh.host.error_hook = self.host.error_hook;
     fresh.file_io = self.file_io;
-    fresh.probe = self.probe;
-    fresh.probe_ctx = self.probe_ctx;
+    fresh.analog.probe = self.analog.probe;
+    fresh.analog.probe_ctx = self.analog.probe_ctx;
     for (self.watch, fresh.watch) |old, *w| if (old.contains(.vpi)) w.insert(.vpi);
     for (self.drivers, fresh.drivers) |old, *d| d.delay = old.delay;
     for (self.checks.rows.items, fresh.checks.rows.items) |old, *c| c.lim = old.lim;

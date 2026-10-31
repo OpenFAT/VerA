@@ -124,11 +124,11 @@ pub fn declareHead(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, over
     // proof; no design this interpreter runs is this deep or this wide.
     if (depth >= max_depth or e.insts.items.len >= max_insts)
         return r.fail(m.main_tok, "instantiation past {d} levels or {d} instances: a module instantiates itself without a terminating generate (IEEE 1364-2005 §12.1.3)", .{ max_depth, max_insts });
-    if (!r.mixed and (m.aliasparams.len != 0 or m.branches.len != 0 or m.functions.len != 0))
+    if (!r.analog.mixed and (m.aliasparams.len != 0 or m.branches.len != 0 or m.functions.len != 0))
         return r.fail(m.main_tok, "digital execution currently requires a module with only variables, nets, events, instances and processes", .{});
     // A digital parse makes each generate construct an `analog` block over
     // an `if`; anything else there is a genuine analog block.
-    if (!r.mixed) for (m.analog) |ab| if (!isGenerate(r.file, m, ab.body))
+    if (!r.analog.mixed) for (m.analog) |ab| if (!isGenerate(r.file, m, ab.body))
         return r.fail(ab.main_tok, "digital execution currently requires a module with only variables, nets, events, instances and processes", .{});
     r.scope = scope;
     try e.insts.append(arena, .{ .module = m, .scope = scope });
@@ -143,7 +143,7 @@ pub fn declareHead(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, over
     for (m.tasks) |*t| {
         // A mixed module's real-valued function is the analog side's to call
         // (VAMS §4.7); this engine holds no real, so it declares none.
-        if (r.mixed and usesReal(t)) continue;
+        if (r.analog.mixed and usesReal(t)) continue;
         const entry = try r.sub_by_name.getOrPut(arena, .{ .scope = scope, .str = t.name });
         if (entry.found_existing) return r.fail(t.main_tok, "duplicate task or function", .{});
         entry.value_ptr.* = @intCast(r.subs.items.len);
@@ -158,11 +158,11 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
     const arena = r.arena;
     r.scope = scope;
     try declareEvents(r, m.events);
-    const written = if (r.mixed) try digitalWrites(r, m) else std.AutoHashMapUnmanaged(Ast.StrId, void).empty;
+    const written = if (r.analog.mixed) try digitalWrites(r, m) else std.AutoHashMapUnmanaged(Ast.StrId, void).empty;
     for (m.vars) |v| {
         // VAMS §7.3.6.4: an analog variable a digital expression reads is
         // declared, uninitialized, for the coordinator to write.
-        if (r.mixed and scope == 0) if (for (r.a2d_reads) |n| {
+        if (r.analog.mixed and scope == 0) if (for (r.analog.a2d_reads) |n| {
             if (std.mem.eql(u8, n, r.file.str(v.name))) break true;
         } else false) {
             var read = v;
@@ -176,7 +176,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
         // assigned"); a digital process naming one is an undeclared name. A
         // `time` a discrete process writes is the digital engine's 64-bit
         // variable (IEEE 1364-2005 §4.8), `output time t` (A.2.1.2) included.
-        if (r.mixed and (v.init != .none or ((v.ty != .integer or v.storage == .time) and !written.contains(v.name)))) continue;
+        if (r.analog.mixed and (v.init != .none or ((v.ty != .integer or v.storage == .time) and !written.contains(v.name)))) continue;
         if (v.init != .none and v.dims.len != 0) return r.fail(v.main_tok, "an unpacked array declaration takes no initializer", .{});
         // IEEE 1364-2005 §12.3.3: "If either the port or the net/reg is
         // declared as signed, then the other shall also be considered signed."
@@ -206,11 +206,11 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
     for (m.nets) |n| try declareNet(r, e, scope, n);
     // §6.5 the ports, after the body nets: a port net minted here is the one a
     // body `wire w;` on the same name was folded into by the parser.
-    const grouped = !r.mixed and expressionPorts(m);
+    const grouped = !r.analog.mixed and expressionPorts(m);
     if (grouped) try groupPorts(r, e, m, scope, binds);
     for (if (grouped) m.ports[0..0] else m.ports, 0..) |p, i| {
         if (p.name == .none) continue; // IEEE 1364-2005 A.1.3 a null port connects nothing inside
-        if (r.mixed and continuous(r.file, p.discipline)) continue; // §7.2.1 continuous
+        if (r.analog.mixed and continuous(r.file, p.discipline)) continue; // §7.2.1 continuous
         if (p.external_name != .none and !p.concat_rest) for (m.ports[0..i]) |q| if (q.external_name == p.external_name)
             return r.fail(p.main_tok, "§12.3.2: a port defined twice in the list of ports: `{s}`", .{r.file.str(p.external_name)});
         if (p.direction == .unspecified) return r.fail(p.main_tok, "§12.3.3: port `{s}` has no direction declaration", .{r.file.str(p.name)});
@@ -384,7 +384,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
     // §3.8: every attribute value is a constant expression, judged once the
     // instance's names are all bound (a mixed module's are the analog
     // compile's to judge).
-    if (!r.mixed) try compile.checkAttributes(r, m.attrs, scope);
+    if (!r.analog.mixed) try compile.checkAttributes(r, m.attrs, scope);
     const b = try bridged(r, e, m, scope);
     try declareDrivers(r, e, scope, .{ .assigns = m.assigns, .gates = b.gates, .pulls = b.pulls, .switches = b.switches }, b.lanes);
     try pathDelays(r, e, m, scope);

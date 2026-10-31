@@ -96,13 +96,13 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
         if (r.event_budget.used > r.event_budget.max)
             return r.fail(0, "more than {d} events at time {d}: a zero-delay loop keeps simulation time from advancing", .{ r.event_budget.max, event.time });
         if (event.region == .analog) {
-            r.analog_pending = false;
+            r.analog.pending = false;
             return .analog;
         }
         // §8.4.7 "Digital to analog events shall cause an analog solution
         // of the time where they occur": 1b is always followed by 3b.
         if (event.region == .explicit_d2a) {
-            r.d2a_pending = false;
+            r.analog.d2a_pending = false;
             try waiters.requestAnalog(r);
             return .explicit_d2a;
         }

@@ -425,10 +425,10 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
         // VAMS §7.3.3 / §7.3.6.3 a potential probe of a continuous net, read
         // from the analog solution through the mixed-signal kernel's hook.
         .branch_access => blk: {
-            if (!self.mixed or !std.mem.eql(u8, self.file.str(ex.strOf(e)), "V") or !probeTerminal(ex, ex.lhs(e)) or
+            if (!self.analog.mixed or !std.mem.eql(u8, self.file.str(ex.strOf(e)), "V") or !probeTerminal(ex, ex.lhs(e)) or
                 (ex.rhs(e) != .none and !probeTerminal(ex, ex.rhs(e))))
                 return self.exprFail(e, "only a V(net), V(net, net) or V(branch) probe of the analog solution is implemented in a digital expression");
-            self.has_probes = true;
+            self.analog.has_probes = true;
             break :blk real_type;
         },
         else => return self.exprFail(e, "this digital expression form is not implemented"), // else: the analog-only forms (access functions, filters, patterns, events), refused out loud

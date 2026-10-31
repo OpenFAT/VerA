@@ -201,7 +201,7 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
             // ponytail: a mixed design's generate-block variables stay
             // undeclared here; give them `declare`'s domain test when a
             // digital process there needs to write one.
-            const vars: []const Ast.VarDecl = if (r.mixed) &.{} else b.vars;
+            const vars: []const Ast.VarDecl = if (r.analog.mixed) &.{} else b.vars;
             for (vars) |v| {
                 if (v.init != .none and v.dims.len != 0) return r.fail(v.main_tok, "an unpacked array declaration takes no initializer", .{});
                 _ = try mintVar(r, v);
@@ -211,7 +211,7 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
             for (b.instances) |*inst| try instantiate(r, e, scope, inst, depth);
             // A mixed design's generate block also holds its analog blocks,
             // which are the analog compile's.
-            for (b.body) |inner| if (!r.mixed or isGenerate(r.file, m, inner)) try generate(r, e, m, scope, inner, depth);
+            for (b.body) |inner| if (!r.analog.mixed or isGenerate(r.file, m, inner)) try generate(r, e, m, scope, inner, depth);
         },
         else => return r.fail(tok, "only generate constructs of instances are implemented by digital execution", .{}), // else: analog behaviour inside a generate block
     }
@@ -223,8 +223,8 @@ pub fn declareNet(r: *Run, e: *Elab, scope: u32, n: Ast.NetDecl) Error!void {
     assert(scope < r.scope_info.items.len);
     const arena = r.arena;
     // §7.2.1: a disciplined net is continuous, the analog solver's.
-    if (r.mixed and (n.is_ground or continuous(r.file, n.discipline))) return;
-    if (!r.mixed and (n.discipline != .none or n.is_ground))
+    if (r.analog.mixed and (n.is_ground or continuous(r.file, n.discipline))) return;
+    if (!r.analog.mixed and (n.discipline != .none or n.is_ground))
         return r.fail(n.main_tok, "disciplined and ground nets are not implemented by digital execution", .{});
     const width = if (n.range) |range| try r.declaredWidth(range, n.main_tok) else 1;
     // A.2.4 `net_decl_assignment` names no dimension.

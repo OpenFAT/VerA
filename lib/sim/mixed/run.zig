@@ -168,12 +168,12 @@ pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void {
     // §7.3.5 / §7.3.6.3: a monitored analog event or a probe needs the analog
     // solution at every digital event time, so the analog steps to each one
     // before the digital engine runs it (Figure 8-7's conservative half).
-    const sync = dig.monitors.items.len != 0 or dig.has_probes;
+    const sync = dig.analog.monitors.items.len != 0 or dig.analog.has_probes;
     if (sync) {
-        dig.probe = State(A).probeHook;
-        dig.probe_ctx = &s;
-        s.mons = try dig.arena.alloc(Mon, dig.monitors.items.len);
-        for (s.mons, dig.monitors.items, 0..) |*m, mon, j| {
+        dig.analog.probe = State(A).probeHook;
+        dig.analog.probe_ctx = &s;
+        s.mons = try dig.arena.alloc(Mon, dig.analog.monitors.items.len);
+        for (s.mons, dig.analog.monitors.items, 0..) |*m, mon, j| {
             if (mon.kind == .timer) {
                 // Controls may read a probe. Initialize after the first solve,
                 // when those arguments have an analog value (§5.10.3.3).
@@ -213,7 +213,7 @@ pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void {
         // `setInputs`: the inputs keep their defaults, and §5.2.1 keeps them
         // out of the analog initial block). `acc` stays null: the DC point is
         // still solved below, with the time-zero digital values (§8.4.2).
-        if (i == 0 and dig.has_probes) try a.solveAt(target, 0.0, true, target == s.final);
+        if (i == 0 and dig.analog.has_probes) try a.solveAt(target, 0.0, true, target == s.final);
         if (sync and i > 0) {
             while (s.acc.? < target) {
                 var t_end = target;

@@ -96,14 +96,14 @@ pub fn checkDefparams(r: *Run) Error!void {
         // scope holds it, E0907 when a named instance has no such parameter.
         // A mixed design's defparam may name a VAMS §7.8.5 inserted connect
         // module, which only the analog elaboration builds.
-        const target = defparamScope(r, b.at, b.rest) orelse if (r.mixed)
+        const target = defparamScope(r, b.at, b.rest) orelse if (r.analog.mixed)
             continue
         else
             return r.failWith(.E0901, b.tok, "§12.2.1: this defparam's hierarchical name `{s}` names nothing in the design", .{b.path});
         const leaf = b.rest[if (std.mem.findScalarLast(u8, b.rest, '.')) |d| d + 1 else 0..];
         const slot = if (r.file.strings.find(leaf)) |str| r.names.get(.{ .scope = target, .str = str }) else null;
         // A mixed design leaves the analog block's parameters unbound here.
-        if (!r.mixed and (slot == null or !r.params.contains(slot.?))) {
+        if (!r.analog.mixed and (slot == null or !r.params.contains(slot.?))) {
             if (slot == null and target == b.at and std.mem.findScalar(u8, b.rest, '.') == null)
                 return r.failWith(.E0901, b.tok, "§12.2.1: this defparam's hierarchical name `{s}` names nothing in the design", .{b.path});
             return r.failWith(.E0907, b.tok, "§12.2.1: this defparam names `{s}`, which is no parameter of its module", .{leaf});

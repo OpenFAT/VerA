@@ -2,6 +2,7 @@
 //! Cites: VAMS §5.10.3, §7.3.6, §8.4.3, §8.5.
 //!
 //! Contents:
+//! - `pub const Link = struct`
 //! - `pub fn watchAnalog(r: *Run, at: u32) void`
 //! - `pub fn a2dWrite(r: *Run, at: u32, v: f64, assigned: bool) Error!void`
 //! - `pub fn watchEvent(r: *Run, at: u32, edge: waiters.Edge, site: u6) Error!void`
@@ -59,15 +60,49 @@ const filled = @import("net.zig").filled;
 const setBit = @import("net.zig").setBit;
 const Show = display.Show;
 const TimeFormat = display.TimeFormat;
-
 // ---- the public surface -----------------------------------------------------
 const root = @import("root.zig");
+const Param = root.Param;
+const Monitor = root.Monitor;
+const D2aSite = root.D2aSite;
 const Run = root.Run;
 const Error = root.Error;
 const MonitorKind = root.MonitorKind;
-
 /// The descriptor table a `Run` with no `file_io` opens files through.
 const own_files = system.own;
+
+/// A digital run beside an analog solver (VAMS §7.3.6, §8): the monitored
+/// analog events and probes, the D2A/A2D bookkeeping, and the host's
+/// parameter card. Empty in a purely digital run.
+pub const Link = struct {
+    /// One region-3b event per tick however many analog-read values moved,
+    /// the same coalescing `monitor_pending` does for region 4.
+    pending: bool = false,
+    /// §8.5 the explicit D2A terms, the ones that occurred this tick (bit =
+    /// `D2aSite.site`), and the one region-1b event that reports them.
+    d2a_sites: std.ArrayList(D2aSite) = .empty,
+    d2a_fired: u64 = 0,
+    d2a_pending: bool = false,
+    /// VAMS §7.3.5 the analog events digital event controls wait on
+    /// (`registerMonitor`). The mixed-signal kernel evaluates each against the
+    /// analog solution and delivers its A2D events (`deliverA2d`).
+    monitors: std.ArrayList(Monitor) = .empty,
+    /// VAMS §7.3.3 / §7.3.6.3: the potential `V(a)` / `V(a, b)` of the analog
+    /// solution at the current digital time. Set by the mixed-signal kernel;
+    /// a digital process that probes without it fails.
+    probe: ?*const fn (ctx: *anyopaque, a: []const u8, b: ?[]const u8) Error!f64 = null,
+    probe_ctx: *anyopaque = undefined,
+    /// Some digital expression probes the analog solution (`probe`).
+    has_probes: bool = false,
+    /// Elaborating the digital half of a mixed-signal module (`Options.mixed`).
+    mixed: bool = false,
+    /// `Mixed.reads`: the analog variables declared here for `a2dWrite`.
+    a2d_reads: []const []const u8 = &.{},
+    /// `Mixed.params`: the root's parameter values on the host's card.
+    card: []const Param = &.{},
+    /// `Mixed.real_params`: only the real parameters the discrete side needs.
+    real_card: []const Param = &.{},
+};
 
 /// VAMS §8.5 / §8.4.3.2: the analog block reads `slot` outside any event
 /// guard, so it is implicitly sensitive to it and every change is an
@@ -103,7 +138,7 @@ pub fn a2dWrite(r: *Run, at: u32, v: f64, assigned: bool) Error!void {
 /// tick, with bit `site` set in `d2a_fired`.
 pub fn watchEvent(r: *Run, at: u32, edge: waiters.Edge, site: u6) Error!void {
     r.watch[at].insert(.d2a);
-    try r.d2a_sites.append(r.arena, .{ .slot = at, .edge = edge, .site = site });
+    try r.analog.d2a_sites.append(r.arena, .{ .slot = at, .edge = edge, .site = site });
 }
 
 /// VAMS §7.3.5: `cross`/`above`/`absdelta` as a term of a digital event control.
@@ -111,11 +146,11 @@ pub fn watchEvent(r: *Run, at: u32, edge: waiters.Edge, site: u6) Error!void {
 /// top of the slot space), which `deliverA2d` wakes.
 pub fn registerMonitor(r: *Run, e: Ast.ExprId) Error!void {
     assert(e != .none);
-    if (!r.mixed or monitorKind(r, e) == .timer)
+    if (!r.analog.mixed or monitorKind(r, e) == .timer)
         return r.exprFail(e, "only cross(), above() and absdelta() are monitored in a digital event control");
     const scope = r.instanceOf(r.scope);
     if (r.monitorSlot(e, scope) != null) return;
-    try r.addMonitor(e, std.math.maxInt(u32) - 1 - @as(u32, @intCast(r.monitors.items.len)));
+    try r.addMonitor(e, std.math.maxInt(u32) - 1 - @as(u32, @intCast(r.analog.monitors.items.len)));
 }
 
 /// A monitor of analog event `e` whose occurrence wakes `slot`'s waiters.
@@ -124,7 +159,7 @@ pub fn addMonitor(r: *Run, e: Ast.ExprId, wakes: u32) Error!void {
     const args = r.file.exprs.args(e);
     if (args.len == 0 or args[0] == .none) return r.exprFail(e, "an analog event needs its expression");
     for (args) |arg| if (arg != .none) try compile.checkExpr(r, arg);
-    try r.monitors.append(r.arena, .{ .expr = e, .scope = r.instanceOf(r.scope), .slot = wakes, .kind = monitorKind(r, e) });
+    try r.analog.monitors.append(r.arena, .{ .expr = e, .scope = r.instanceOf(r.scope), .slot = wakes, .kind = monitorKind(r, e) });
 }
 
 /// Returns which monitored analog function event `e` calls.
@@ -176,14 +211,14 @@ pub fn analogTriggers(r: *Run, m: *const Ast.ModuleDecl, named: *const std.AutoH
 /// when that event is not monitored. O(monitors).
 pub fn monitorSlot(r: *const Run, e: Ast.ExprId, scope: u32) ?u32 {
     assert(e != .none);
-    for (r.monitors.items) |m| if (m.expr == e and m.scope == scope) return m.slot;
+    for (r.analog.monitors.items) |m| if (m.expr == e and m.scope == scope) return m.slot;
     return null;
 }
 
 /// Argument `k` of monitor `m`, evaluated as a real in the monitor's scope
 /// (`k` = 0 is the monitored expression), or null when absent.
 pub fn monitorArg(r: *Run, m: usize, k: usize) Error!?f64 {
-    const mon = r.monitors.items[m];
+    const mon = r.analog.monitors.items[m];
     const args = r.file.exprs.args(mon.expr);
     if (k >= args.len or args[k] == .none) return null;
     const saved = r.scope;
@@ -199,7 +234,7 @@ pub fn monitorArg(r: *Run, m: usize, k: usize) Error!?f64 {
 /// ... earlier than the last or current digital event".
 pub fn deliverA2d(r: *Run, m: usize, tick: Tick) Error!void {
     const now = r.scheduler.now;
-    _ = try exec.enqueue(r, .{ .a2d = r.monitors.items[m].slot }, if (tick > now) tick - now else null, false);
+    _ = try exec.enqueue(r, .{ .a2d = r.analog.monitors.items[m].slot }, if (tick > now) tick - now else null, false);
 }
 
 /// VAMS §8.4, IEEE 1364-2005 §17.1.3: the mixed kernel accepted an analog

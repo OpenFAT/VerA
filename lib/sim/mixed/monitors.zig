@@ -100,7 +100,7 @@ pub fn Monitors(comptime Self: type) type {
                 const period = (try s.monArgAt(j, 1, t)) orelse 0;
                 const ttol = (try s.monArgAt(j, 2, t)) orelse 0;
                 const enable = (try s.monArgAt(j, 3, t)) orelse 1;
-                const tok = s.dig.file.exprs.mainTok(s.dig.monitors.items[j].expr);
+                const tok = s.dig.file.exprs.mainTok(s.dig.analog.monitors.items[j].expr);
                 if (!(ttol >= 0))
                     return s.dig.failWith(.E0517, tok, "`timer()` time_tol shall be non-negative", .{});
                 if (!std.math.isFinite(enable) or enable != @round(enable))
@@ -132,7 +132,7 @@ pub fn Monitors(comptime Self: type) type {
             const ttol = (try s.monArgAt(j, 2, t)) orelse 0;
             const etol = (try s.monArgAt(j, 3, t)) orelse 0;
             const enable = (try s.monArgAt(j, 4, t)) orelse 1;
-            const tok = s.dig.file.exprs.mainTok(s.dig.monitors.items[j].expr);
+            const tok = s.dig.file.exprs.mainTok(s.dig.analog.monitors.items[j].expr);
             if (!(delta >= 0 and ttol >= 0 and etol >= 0))
                 return s.dig.failWith(.E0517, tok, "`absdelta()` delta and tolerances shall be non-negative", .{});
             if (!std.math.isFinite(enable) or enable != @round(enable))

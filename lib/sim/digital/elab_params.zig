@@ -73,16 +73,16 @@ pub fn declareParams(r: *Run, scope: u32, declared_params: []const Ast.ParamDecl
     const arena = r.arena;
     const params = try specifyOrder(r, declared_params);
     const g = r.growing.?;
-    const path = if (r.real_card.len != 0) try scopePath(r, scope) else "";
+    const path = if (r.analog.real_card.len != 0) try scopePath(r, scope) else "";
     var positional: usize = 0;
     for (params) |p| {
         const pos = positional;
         if (!p.is_local) positional += 1;
-        const real_value = for (r.real_card) |c| {
+        const real_value = for (r.analog.real_card) |c| {
             if (std.mem.startsWith(u8, c.name, path) and std.mem.eql(u8, c.name[path.len..], r.file.str(p.name))) break c.value;
         } else null;
-        if (p.dims.len != 0 or p.ty == .string or (r.mixed and p.ty == .real and real_value == null)) {
-            if (r.mixed) continue;
+        if (p.dims.len != 0 or p.ty == .string or (r.analog.mixed and p.ty == .real and real_value == null)) {
+            if (r.analog.mixed) continue;
             return r.fail(p.main_tok, "only scalar integral and real parameters are implemented by digital execution", .{});
         }
         // The host has applied §6.3 overrides and dependent defaults already;
@@ -215,7 +215,7 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
     };
     r.scope = src.scope;
     defer r.scope = scope;
-    if (r.mixed and !compile.constantExpression(r, src.e)) return null;
+    if (r.analog.mixed and !compile.constantExpression(r, src.e)) return null;
     // Parameters bind before any other name of the instance, so a name that
     // does not resolve yet is no previously defined parameter.
     if (unresolved(r, src.e)) |x| return r.exprFail(x, "§4.10.1: a parameter's value is a constant expression of numbers and previously defined parameters, and this name is neither");
@@ -224,7 +224,7 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
     // expression that includes any specify parameters".
     if (!p.is_spec and readsSpecparam(r, src.e))
         return r.exprFail(src.e, "§4.10.3: a module parameter cannot be assigned an expression that includes a specify parameter");
-    if (r.mixed and compile.typeOf(r, src.e).real) return null;
+    if (r.analog.mixed and compile.typeOf(r, src.e).real) return null;
     if (isRoot(r, scope) and !p.is_local) for (r.opts.params) |o| if (std.mem.eql(u8, o.name, r.file.str(p.name))) {
         // `vera --param`: a string-defaulted parameter takes the text as a
         // §3.6 string; otherwise an integer's text is an integer, a real's a
@@ -239,7 +239,7 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
         if (!std.math.isNan(o.value)) return .{ .v = try evaluate.realLiteral(r.arena, o.value), .real = true };
         return .{ .v = try evaluate.stringLiteral(r.arena, o.text) };
     };
-    if (scope == 0 and !p.is_local) for (r.card) |c| if (std.mem.eql(u8, c.name, r.file.str(p.name))) {
+    if (scope == 0 and !p.is_local) for (r.analog.card) |c| if (std.mem.eql(u8, c.name, r.file.str(p.name))) {
         // VAMS §6.3: the card sets the root's parameter as a `#( … )` would;
         // an integer one takes the value rounded, as the device's does.
         const w = try filled(r.arena, 64, true, .zero);

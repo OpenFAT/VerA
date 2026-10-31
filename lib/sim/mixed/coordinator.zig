@@ -203,9 +203,9 @@ pub fn State(comptime A: type) type {
                 try s.a.latch();
                 s.fired = 0;
             }
-            s.pending |= s.dig.d2a_fired;
-            s.dig.d2a_fired = 0;
-            assert(s.dig.d2a_fired == 0);
+            s.pending |= s.dig.analog.d2a_fired;
+            s.dig.analog.d2a_fired = 0;
+            assert(s.dig.analog.d2a_fired == 0);
             try s.a.snapshot(s.dig);
         }
 
@@ -310,7 +310,7 @@ pub fn State(comptime A: type) type {
         pub fn probeHook(ctx: *anyopaque, n1: []const u8, n2: ?[]const u8) digital.Error!f64 {
             // SAFETY: `run` sets `probe_ctx` to its own `*Self` with this hook.
             const s: *Self = @ptrCast(@alignCast(ctx));
-            assert(s.dig.probe_ctx == ctx);
+            assert(s.dig.analog.probe_ctx == ctx);
             // §7.3.6.3 "the analog value calculated for the time corresponding
             // to a real promotion of the digital time".
             const t: ?f64 = if (s.mon_eval) s.mon_time else if (s.acc == null) null else @as(f64, @floatFromInt(s.dig.scheduler.now)) * s.opts.tick;

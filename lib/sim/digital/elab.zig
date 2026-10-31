@@ -307,7 +307,7 @@ fn connectable(r: *Run, m: *const Ast.ModuleDecl, tok: u32) Error!*const Ast.Mod
     // VAMS §7.1: a connect module "can be manually inserted (by the user) or
     // automatically inserted (by the simulator)", in a mixed design, which is
     // the only one that can hold its continuous half.
-    if (m.is_connect and !r.mixed) return r.fail(tok, "a connect module is inserted by §7.6 discipline resolution, not instantiated", .{});
+    if (m.is_connect and !r.analog.mixed) return r.fail(tok, "a connect module is inserted by §7.6 discipline resolution, not instantiated", .{});
     return m;
 }
 
@@ -377,7 +377,7 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
     try r.binds.put(arena, child_scope, bound.ctx);
     try declareHead(r, e, child, child_scope, inst.params, depth + 1);
     r.scope = scope;
-    const grouped = !r.mixed and expressionPorts(child);
+    const grouped = !r.analog.mixed and expressionPorts(child);
     if (grouped) {
         if (index != null) return r.fail(inst.main_tok, "§12.1.2: an instance array of a module with port expressions is not implemented by digital execution", .{});
         for (inst.ports, 0..) |conn, i| {
@@ -421,7 +421,7 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
         // A continuous port is the analog solver's on both sides (§7.2.1),
         // so a mixed design's digital half connects nothing through it,
         // as the child's own port loop skips it.
-        if (r.mixed and continuous(r.file, child.ports[at].discipline)) continue;
+        if (r.analog.mixed and continuous(r.file, child.ports[at].discipline)) continue;
         if (index) |k| if (conn.expr != .none) if (try arrayConn(r, e, inst, child_scope, child.ports[at], conn, k)) |split| {
             binds_out[at] = split;
             continue;

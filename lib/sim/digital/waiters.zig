@@ -268,8 +268,8 @@ pub fn forceValue(self: *Run, slot: u32, planes: []const u64) Error!void {
 /// processes the macro-process in region 3b, after every region-1..3 event of
 /// the tick, and once however many inputs moved.
 pub fn requestAnalog(self: *Run) Error!void {
-    if (self.analog_pending) return;
-    self.analog_pending = true;
+    if (self.analog.pending) return;
+    self.analog.pending = true;
     _ = self.scheduler.schedule(self.arena, .analog, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
 }
 
@@ -518,11 +518,11 @@ fn selectWord(bits: compile.Bits, w: usize) u64 {
 /// it matches is marked, and ONE region-1b event reports them all once region
 /// 1 of the tick is done (§8.5.3.6).
 fn requestD2a(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void {
-    for (self.d2a_sites.items) |s| if (s.slot == target and s.edge.matches(before, after)) {
-        self.d2a_fired |= @as(u64, 1) << s.site;
+    for (self.analog.d2a_sites.items) |s| if (s.slot == target and s.edge.matches(before, after)) {
+        self.analog.d2a_fired |= @as(u64, 1) << s.site;
     };
-    if (self.d2a_fired == 0 or self.d2a_pending) return;
-    self.d2a_pending = true;
+    if (self.analog.d2a_fired == 0 or self.analog.d2a_pending) return;
+    self.analog.d2a_pending = true;
     _ = self.scheduler.schedule(self.arena, .explicit_d2a, root.analog_payload) catch |e| return exec.scheduleFailure(self, e, "scheduling");
 }
 

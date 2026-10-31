@@ -197,9 +197,9 @@ pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
         },
         // VAMS §7.3.6.3 the analog solution at the promoted digital time.
         .branch_access => blk: {
-            const probe = self.probe orelse return self.exprFail(e, "an analog probe needs the mixed-signal kernel");
+            const probe = self.analog.probe orelse return self.exprFail(e, "an analog probe needs the mixed-signal kernel");
             const b = ex.rhs(e);
-            break :blk try probe(self.probe_ctx, try compile.probeName(self, a, ex.lhs(e)), if (b == .none) null else try compile.probeName(self, a, b));
+            break :blk try probe(self.analog.probe_ctx, try compile.probeName(self, a, ex.lhs(e)), if (b == .none) null else try compile.probeName(self, a, b));
         },
         else => unreachable, // else: infer types no other form real
     };
