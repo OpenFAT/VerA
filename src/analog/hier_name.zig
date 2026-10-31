@@ -18,6 +18,7 @@ const Ast = @import("frontend").Ast;
 const Elaborate = @import("elab").Elaborate;
 const Mir = @import("ir").Mir;
 const lower_expr_op = @import("expr_op.zig");
+const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
@@ -394,8 +395,8 @@ pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         try self.err(self.file.exprs.mainTok(e), .E0809, "`$simprobe` takes an instance name and a parameter name", .{});
         return poison;
     }
-    const inst = lower_sysfunc.constStrArg(self, args[0]);
-    const param = lower_sysfunc.constStrArg(self, args[1]);
+    const inst = lower_sysfunc_args.constStrArg(self, args[0]);
+    const param = lower_sysfunc_args.constStrArg(self, args[1]);
     if (inst == null or param == null) return lowerSimprobeRuntime(self, e, inst, param);
     // §9.16: "the simulator will look for an instance called inst_name in
     // the parent of the current instance i.e. a sibling of the instance

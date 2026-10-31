@@ -31,6 +31,9 @@ const lower_expr_name = @import("expr_name.zig");
 const lower_expr_select = @import("expr_select.zig");
 const lower_expr_case = @import("expr_case.zig");
 const lower_branch = @import("branch.zig");
+const lower_event_args = @import("event_args.zig");
+const lower_format = @import("format.zig");
+const lower_sysfunc_context = @import("sysfunc_context.zig");
 const Oom = Lower.Oom;
 
 // ---- §7.2.2 the discrete context -------------------------------------------
@@ -155,7 +158,7 @@ fn constantShape(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, id:
             return constantExpr(file, module, a.value);
         },
         // An analog-only task is §9.2's E0821 in either context (`scanContext`).
-        .sys_task => |s| return lower_sysfunc.isAnalogOnlySysFunc(file.str(s.name)),
+        .sys_task => |s| return lower_sysfunc_context.isAnalogOnlySysFunc(file.str(s.name)),
         else => return false, // else: every other statement is a process's to run, a new one included
     }
 }
@@ -236,7 +239,7 @@ fn usesFiles(file: *const Ast.SourceFile, id: Ast.StmtId) bool {
         hit: *bool,
         fn isFile(name: []const u8) bool {
             return Mir.callee.isFileCall(.fromName(name)) or std.mem.eql(u8, name, "$ungetc") or
-                (std.mem.startsWith(u8, name, "$f") and lower_sysfunc.isDigitalOnlySysFunc(name));
+                (std.mem.startsWith(u8, name, "$f") and lower_sysfunc_context.isDigitalOnlySysFunc(name));
         }
         pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) error{}!void {
             if (e == .none) return;
@@ -1063,7 +1066,7 @@ fn collectInitialStmt(self: *Lower, id: Ast.StmtId) Oom!void {
         },
         // An analog-only task is §9.2's E0821 (`scanContext`), which names the
         // rule; E0433 on top would blame the initial-block model instead.
-        .sys_task => |s| if (!lower_sysfunc.isAnalogOnlySysFunc(self.file.str(s.name))) try self.err(
+        .sys_task => |s| if (!lower_sysfunc_context.isAnalogOnlySysFunc(self.file.str(s.name))) try self.err(
             self.file.stmtTok(id),
             .E0433,
             "only assignments of constant expressions are supported here",
@@ -1167,7 +1170,7 @@ fn scanContext(self: *Lower, id: Ast.StmtId, comptime discrete: bool, context: i
     if (discrete) if (self.file.stmt(id) == .sys_task) {
         const st = self.file.stmt(id).sys_task;
         const n = self.file.str(st.name);
-        if (lower_sysfunc.isAnalogOnlySysFunc(n)) try self.err(self.file.stmtTok(id), .E0821, "`{s}` in {s}", .{ n, ctx.where })
+        if (lower_sysfunc_context.isAnalogOnlySysFunc(n)) try self.err(self.file.stmtTok(id), .E0821, "`{s}` in {s}", .{ n, ctx.where })
         // §9.4.3's pairing rule — "For each % character (except %m, %% and
         // %l) that appears in a string, a corresponding expression argument
         // shall be supplied" — is a property of the format text, so it holds in
@@ -1175,7 +1178,7 @@ fn scanContext(self: *Lower, id: Ast.StmtId, comptime discrete: bool, context: i
         // counts. Judged here, before the digital kernel would meet the gap at
         // run time.
         else if (Mir.callee.takesFormat(.fromName(n)))
-            try lower_systask.checkFormatPairing(self, self.file.stmtTok(id), st.args);
+            try lower_format.checkFormatPairing(self, self.file.stmtTok(id), st.args);
     };
     switch (self.file.stmt(id)) {
         // The target is a write, collected above; only the value is read.
@@ -1217,7 +1220,7 @@ fn scanContextExpr(self: *Lower, e: Ast.ExprId, comptime discrete: bool, is_init
         // contexts: an operator carries state from one accepted timepoint to the
         // next, and none of these has a timepoint to advance.
         if (tag == .filter_call) try self.err(self.file.exprs.mainTok(e), .E0422, "not allowed in {s}", .{ctx.where});
-        if (tag == .sys_call and lower_sysfunc.isAnalogOnlySysFunc(self.file.str(ex.strOf(e))))
+        if (tag == .sys_call and lower_sysfunc_context.isAnalogOnlySysFunc(self.file.str(ex.strOf(e))))
             try self.err(ex.mainTok(e), .E0821, "`{s}` in {s}", .{ self.file.str(ex.strOf(e)), ctx.where });
         // §5.10: "The usage of initial_step and final_step analog events are
         // not allowed in the digital context."
@@ -1251,7 +1254,7 @@ fn scanContextExpr(self: *Lower, e: Ast.ExprId, comptime discrete: bool, is_init
         // a call from the continuous context, so §7.3.7's first sentence
         // (E0436) applies to a digital function there.
         if (tag == .event_function) {
-            _ = try lower_event.checkEventArgBounds(self, e, self.file.str(ex.strOf(e)));
+            _ = try lower_event_args.checkEventArgBounds(self, e, self.file.str(ex.strOf(e)));
             for (ex.args(e)) |a| try digitalCallsIn(self, a);
         }
         // §7.3.3 "All probes which are legal in a continuous context of a

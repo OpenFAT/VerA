@@ -40,6 +40,7 @@ const lower_expr_op = @import("expr_op.zig");
 const lower_expr_cond = @import("expr_cond.zig");
 const lower_expr_access = @import("expr_access.zig");
 const lower_math = @import("math.zig");
+const lower_timer = @import("timer.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
@@ -105,14 +106,14 @@ pub fn lowerOperand(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized
 // A $clog2 operand must retain its dependency when its timer is rescheduled.
 fn lowerExprRaw(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool) Oom!TypedValue {
     assert(e == .none or self.exprValid(e));
-    if (lower_event.replayedExpr(self, e)) |value| return value;
+    if (lower_timer.replayedExpr(self, e)) |value| return value;
     self.expr_depth += 1;
     defer self.expr_depth -= 1;
     assert(self.expr_depth <= self.file.exprs.len() + 1); // see the header: depth below node count
     const value = try lowerExprInner(self, e, plan, sized);
     assert(self.valueValid(value.v));
     assert(value.ty != .wide);
-    try lower_event.captureExpr(self, e, value);
+    try lower_timer.captureExpr(self, e, value);
     return value;
 }
 

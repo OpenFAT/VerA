@@ -17,6 +17,7 @@ const lower_sysfunc = @import("sysfunc.zig");
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
+const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
@@ -49,7 +50,7 @@ pub const State = struct {
 /// unique snapshot site; codegen captures their rows at the first executed call.
 pub fn lowerTableModel(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     const ex = &self.file.exprs;
-    const args = ex.args(e)[0 .. try lower_sysfunc.writtenArgs(self, e, "$table_model", ex.args(e)) orelse return poison];
+    const args = ex.args(e)[0 .. try lower_sysfunc_args.writtenArgs(self, e, "$table_model", ex.args(e)) orelse return poison];
 
     // Syntax 9-16 puts `table_inputs` first, then `table_data_source`. The
     // boundary is decidable without counting: an input is "any legal expression

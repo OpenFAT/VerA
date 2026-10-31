@@ -28,6 +28,7 @@ const lower_math = @import("math.zig");
 const lower_assign = @import("assign.zig");
 const lower_slice = @import("slice.zig");
 const lower_lvalue = @import("lvalue.zig");
+const lower_timer = @import("timer.zig");
 const Oom = Lower.Oom;
 const Ty = Lower.Ty;
 const TypedValue = Lower.TypedValue;
@@ -271,8 +272,8 @@ pub fn inlineUserFuncPre(
     // Timer scheduling captures caller dependencies, not this call's private
     // locals. Pure functions are recomputed with new actuals; effectful ones
     // keep their original result and never execute a second time.
-    const timer_capture = lower_event.suspendCapture(self);
-    defer lower_event.resumeCapture(self, timer_capture);
+    const timer_capture = lower_timer.suspendCapture(self);
+    defer lower_timer.resumeCapture(self, timer_capture);
 
     // ---- enter the function scope (§4.7.1) ----
     const saved_vars = self.vars;

@@ -33,6 +33,7 @@ const lower_expr = @import("expr.zig");
 const lower_expr_name = @import("expr_name.zig");
 const lower_assign = @import("assign.zig");
 const lower_lvalue = @import("lvalue.zig");
+const lower_timer = @import("timer.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const VarSlot = Lower.VarSlot;
@@ -62,7 +63,7 @@ pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         return poison;
     };
 
-    try lower_event.captureTimerArray(self, name);
+    try lower_timer.captureTimerArray(self, name);
     var idx: [lower_shape.max_stack_dims]i64 = undefined;
     const at = try lower_shape.subscriptBuf(self, &idx, chain.subs.len);
     var all_const = true;
@@ -154,7 +155,7 @@ pub fn outsideRange(self: *Lower, sub: Ast.ExprId, name: []const u8, k: i64, w: 
 pub fn arrayElemValue(self: *Lower, name: []const u8, idx: []const i64) Oom!?TypedValue {
     assert(self.blockValid(self.cur));
     assert(idx.len != 0); // one subscript per dimension, and an array has one
-    try lower_event.captureTimerArray(self, name);
+    try lower_timer.captureTimerArray(self, name);
     if (self.arrays.get(name)) |info| if (info.mem) |m| return .{
         .v = try lower_var.loadElem(self, m, info.ty, try self.mir.addIntConst(self.arena, lower_shape.flatIndex(info.dims, idx))),
         .ty = info.ty,

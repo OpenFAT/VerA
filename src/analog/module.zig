@@ -38,6 +38,9 @@ const lower_systask = @import("systask.zig");
 const lower_var = @import("var.zig");
 const lower_expr_access = @import("expr_access.zig");
 const lower_source_check = @import("source_check.zig");
+const lower_timer = @import("timer.zig");
+const lower_kernel_ctl = @import("kernel_ctl.zig");
+const lower_display = @import("display.zig");
 const Lowered = Lower.Lowered;
 const Oom = Lower.Oom;
 const Error = Lower.Error;
@@ -258,14 +261,14 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
             try lower_control.lowerBranchStmt(self, flag, blk.body, .none, false, .none);
             self.in_analog_initial = false;
             self.restrict = prev;
-            try lower_systask.haltAfterInitError(self);
+            try lower_kernel_ctl.haltAfterInitError(self);
         } else {
             try lower_stmt.lowerStmt(self, blk.body);
         }
     }
     self.runtime_error_phase = .none;
 
-    try lower_event.finishTimers(self);
+    try lower_timer.finishTimers(self);
 
     // §5.6.1.3 the contribution accumulators' final values, and beside each the
     // final value of its retention flag — the "is a value retained [this
@@ -289,14 +292,14 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 
     // §9.17 analog kernel control. Emitted last and in this fixed order so the
     // unit enumeration stays a pure function of the source.
-    try lower_systask.finishKernelCtl(self);
+    try lower_kernel_ctl.finishKernelCtl(self);
     // §9.4 display tasks, after the kernel-control calls: those become naming
     // units, and inserting anything ahead would renumber every Instance state
     // field. Deferred §9.4.1 operands are lowered inside, after the accumulator
     // finals above, which is what "converged" means here.
     const contribs_before = self.out.contributions.items.len;
     const sites_before = self.out.charge_sites.items.len;
-    try lower_systask.finishDisplays(self);
+    try lower_display.finishDisplays(self);
     // §4.5.2 an operator in a deferred operand adds its unknown's row there.
     try readContribFinals(self, contribs_before);
     try readSiteFinals(self, sites_before);

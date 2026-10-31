@@ -118,6 +118,7 @@ const lower_finite = @import("finite.zig");
 const lower_source_check = @import("source_check.zig");
 const lower_branch = @import("branch.zig");
 const lower_accum = @import("accum.zig");
+const lower_timer = @import("timer.zig");
 
 /// What lowering produces (`ir`'s `Lowered`).
 pub const Lowered = @import("ir").Lowered;
@@ -329,7 +330,7 @@ node_voltages: std.StringHashMapUnmanaged(u32) = .empty,
 /// Sub-file-private state: each is read and written by that one file only.
 contrib_state: lower_contrib.State = .{},
 node_state: lower_node.State = .{},
-event_state: lower_event.State = .{},
+timer_state: lower_timer.State = .{},
 systask_state: lower_systask.State = .{},
 random_state: lower_random.State = .{},
 var_state: lower_var.State = .{},

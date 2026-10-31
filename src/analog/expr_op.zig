@@ -27,6 +27,8 @@ const lower_systask = @import("systask.zig");
 const lower_expr = @import("expr.zig");
 const lower_expr_case = @import("expr_case.zig");
 const lower_expr_cond = @import("expr_cond.zig");
+const lower_display = @import("display.zig");
+const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
@@ -118,8 +120,8 @@ pub fn lowerBinary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized:
     // The literal's LEXICAL bytes, because string storage removes NULs.
     const eq_op = op == .eq or op == .neq or op == .case_eq or op == .case_neq;
     if (eq_op and ex.tag(ex.lhs(e)) == .str_literal and ex.tag(ex.rhs(e)) == .str_literal) {
-        const sa = (try lower_sysfunc.outputLiteral(self, ex.lhs(e))) orelse self.file.str(ex.strOf(ex.lhs(e)));
-        const sb = (try lower_sysfunc.outputLiteral(self, ex.rhs(e))) orelse self.file.str(ex.strOf(ex.rhs(e)));
+        const sa = (try lower_sysfunc_args.outputLiteral(self, ex.lhs(e))) orelse self.file.str(ex.strOf(ex.lhs(e)));
+        const sb = (try lower_sysfunc_args.outputLiteral(self, ex.rhs(e))) orelse self.file.str(ex.strOf(ex.rhs(e)));
         const same = std.mem.eql(u8, std.mem.trimStart(u8, sa, "\x00"), std.mem.trimStart(u8, sb, "\x00"));
         const want_same = op == .eq or op == .case_eq;
         return .{ .v = if (same == want_same) .one else .zero, .ty = .integer };
@@ -183,7 +185,7 @@ pub fn lowerBinary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized:
                 if (divisor != .int_const or divisor.int_const == 0) {
                     const value = try self.toReal(.{ .v = result, .ty = .integer });
                     if (self.runtime_error_phase == .display) {
-                        try lower_systask.chainCondDisplay(self, value);
+                        try lower_display.chainCondDisplay(self, value);
                         return .{ .v = result, .ty = ty };
                     }
                     const place = try self.effectPlace();

@@ -17,6 +17,7 @@ const lower_node = @import("node.zig");
 const lower_sysfunc = @import("sysfunc.zig");
 const Ast = @import("frontend").Ast;
 const lower_branch = @import("branch.zig");
+const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 
@@ -48,7 +49,7 @@ pub fn limitUserFunc(self: *Lower, a: Ast.ExprId) ?*const Ast.FuncDecl {
 pub fn lowerLimitUser(self: *Lower, e: Ast.ExprId, fd: *const Ast.FuncDecl, args: []const Ast.ExprId) Oom!TypedValue {
     std.debug.assert(args.len >= 2);
     // §9.17.3 the first argument is an ACCESS FUNCTION, never a net.
-    const vnew = try self.toReal(try lower_sysfunc.lowerSysArg(self, args[0], false));
+    const vnew = try self.toReal(try lower_sysfunc_args.lowerSysArg(self, args[0], false));
     const slot = try limitSlotOf(self, args[0]) orelse {
         // No access function to key state on (`$limit(x, f)` with an ordinary
         // expression). §4.5.15 lets a simulator decline any limiting request;
