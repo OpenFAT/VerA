@@ -360,8 +360,9 @@ fn cExp(buf: *[buf_len]u8, sci: []const u8) []const u8 {
     var exp = sci[e + 1 ..];
     const neg = exp.len != 0 and exp[0] == '-';
     if (neg) exp = exp[1..];
-    var tmp: [64]u8 = undefined;
-    const t = std.mem.print(&tmp, "{s}e{c}{s}{s}", .{ sci[0..e], @as(u8, if (neg) '-' else '+'), if (exp.len < 2) "0" else "", exp }) catch return "?";
+    // A mantissa at `precision_max` and a three-digit exponent.
+    var tmp: [2 + precision_max + 6]u8 = undefined;
+    const t = std.mem.print(&tmp, "{s}e{c}{s}{s}", .{ sci[0..e], @as(u8, if (neg) '-' else '+'), if (exp.len < 2) "0" else "", exp }) catch unreachable;
     assert(t.len < scratch_at);
     @memcpy(buf[0..t.len], t);
     return buf[0..t.len];
@@ -445,6 +446,11 @@ test "formatC: the C11 7.21.6.1 corners a model's format can reach" {
         .{ .fmt = "%05.1f", .args = &.{-2.3}, .want = "-02.3" }, // zeros after the sign
         .{ .fmt = "%-+4d|", .args = &.{5}, .want = "+5  |" },
         .{ .fmt = "%.100f", .args = &.{1}, .want = "1." ++ &zeros64 }, // precision cut to 64
+        // C11 prints every digit a `%e` precision asks for: at the cap, 64
+        // fraction digits and the exponent (this printed `?` before the
+        // exponent's scratch held the cap's mantissa).
+        .{ .fmt = "%.64e", .args = &.{1}, .want = "1." ++ &zeros64 ++ "e+00" },
+        .{ .fmt = "%.64E", .args = &.{0.5}, .want = "5." ++ &zeros64 ++ "E-01" },
     };
     for (cases) |c| {
         var buf: [256]u8 = undefined;
