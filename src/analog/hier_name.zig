@@ -7,6 +7,7 @@
 //! §5.4.3, §5.8.3, §6.2.1, §6.4.3, §6.7, §9.16, §9.20.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_discipline = @import("discipline.zig");
@@ -72,7 +73,7 @@ pub fn pushCond(self: *Lower, c: Cond) Oom!void {
 pub fn popCond(self: *Lower) void {
     if (!self.in_analog_initial) return;
     const left = self.hier_name_state.conds.pop();
-    std.debug.assert(left != null);
+    assert(left != null);
 }
 
 /// Returns the potential probe of node `idx`, following §9.20 aliases. For a net
@@ -462,7 +463,7 @@ fn unresolvedProbe(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]con
 fn lowerSimprobeRuntime(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]const u8) Oom!TypedValue {
     const ex = &self.file.exprs;
     const args = ex.args(e);
-    std.debug.assert(inst == null or param == null);
+    assert(inst == null or param == null);
     var rt: [2]?TypedValue = .{ null, null };
     for ([2]?[]const u8{ inst, param }, args[0..2], &rt) |name, arg, *v| if (name == null) {
         const tv = try lower_expr.lowerExpr(self, arg);

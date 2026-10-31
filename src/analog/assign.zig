@@ -149,7 +149,7 @@ pub fn writeRuntimeIndex(self: *Lower, target: Ast.ExprId, at_e: Ast.ExprId, tv:
 /// subscript per dimension of `dims`.
 pub fn runtimeArrayIndex(self: *Lower, subs: []const Ast.ExprId, dims: []const lower_shape.Bounds) Oom!Mir.Value {
     assert(self.blockValid(self.cur));
-    std.debug.assert(subs.len == dims.len);
+    assert(subs.len == dims.len);
     var flat = Mir.Value.zero;
     var valid = Mir.Value.one;
     for (subs, dims) |s, d| {

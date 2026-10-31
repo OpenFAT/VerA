@@ -111,7 +111,7 @@ pub fn lowerCondBody(self: *Lower, body: Ast.StmtId, static: bool) Oom!void {
     assert(body == .none or @backingInt(body) < self.stmtCount());
     self.cond_depth += 1;
     self.static_cond_depth += @intFromBool(static);
-    std.debug.assert(self.static_cond_depth <= self.cond_depth); // a static arm is still an arm
+    assert(self.static_cond_depth <= self.cond_depth); // a static arm is still an arm
     defer {
         self.cond_depth -= 1;
         self.static_cond_depth -= @intFromBool(static);

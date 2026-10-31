@@ -12,6 +12,7 @@
 //! IEEE 1364-2005 clauses cited: §6.1, §9.9.1, §10.2, §17.8.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_node = @import("node.zig");
@@ -553,7 +554,7 @@ fn declareDiscreteArray(self: *Lower, name: []const u8, dims: []const Ast.Dim, t
 /// `collectInitialState` folds it into analog initial values, where an x has
 /// nowhere to live. Asserts that `marks` has one slot per expression id.
 pub fn markDiscreteExprs(file: *const Ast.SourceFile, marks: []bool) void {
-    std.debug.assert(marks.len == file.exprs.len());
+    assert(marks.len == file.exprs.len());
     const Mark = struct {
         file: *const Ast.SourceFile,
         marks: []bool,

@@ -11,6 +11,7 @@
 //! §3.4.8, §3.6.3.2, §4.2.1.1, §4.2.13, §4.2.14.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const Ast = @import("frontend").Ast;
@@ -32,7 +33,7 @@ pub const Bounds = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Bounds) == 24); // one per dimension, read per subscript
+    assert(@sizeOf(Bounds) == 24); // one per dimension, read per subscript
 }
 
 /// §3.2/§3.2.2/§3.4.4 `{ [msb:lsb] }` — one `Bounds` per declared dimension,
@@ -100,7 +101,7 @@ pub fn shapeCells(dims: []const Bounds) usize {
 /// `k` is below `shapeCells(dims)`; a larger one wraps in the outermost
 /// dimension. Asserts that `out` has one slot per dimension.
 pub fn shapeSubscripts(dims: []const Bounds, k: usize, out: []i64) void {
-    std.debug.assert(out.len == dims.len);
+    assert(out.len == dims.len);
     var rest = k;
     var i = dims.len;
     while (i > 0) {
@@ -230,7 +231,7 @@ fn fillPattern(self: *Lower, e: Ast.ExprId, dims: []const Bounds, out: []Ast.Exp
     else
         &.{};
     const stride = shapeCells(dims[1..]);
-    std.debug.assert(out.len == stride * @as(usize, @intCast(dims[0].count()))); // `flattenPattern` sized it
+    assert(out.len == stride * @as(usize, @intCast(dims[0].count()))); // `flattenPattern` sized it
     for (0..@intCast(dims[0].count())) |k| {
         const child = if (k < elems.len) elems[k] else Ast.ExprId.none;
         try fillPattern(self, child, dims[1..], out[k * stride ..][0..stride]);

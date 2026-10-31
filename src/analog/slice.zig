@@ -113,8 +113,8 @@ pub fn copyArraySlice(self: *Lower, target: Ast.ExprId, value: Ast.ExprId) Oom!b
 /// Asserts that `sd` is the dimensions `s.subs` leaves and that `out` has one
 /// slot per cell of them.
 pub fn readSliceCells(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, sd: []const lower_shape.Bounds, out: []Mir.Value) Oom!bool {
-    std.debug.assert(s.subs.len + sd.len == s.info.dims.len);
-    std.debug.assert(out.len == lower_shape.shapeCells(sd));
+    assert(s.subs.len + sd.len == s.info.dims.len);
+    assert(out.len == lower_shape.shapeCells(sd));
     var full: [lower_shape.max_stack_dims]i64 = undefined;
     const idx = try lower_shape.subscriptBuf(self, &full, s.info.dims.len);
     const pdims = s.info.dims[0..s.subs.len];
@@ -170,7 +170,7 @@ pub fn readSliceCells(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, sd: []const
 pub fn writeSliceCells(self: *Lower, at_e: Ast.ExprId, d: ArraySlice, dd: []const lower_shape.Bounds, vals: []const Mir.Value) Oom!bool {
     assert(at_e == .none or self.exprValid(at_e));
     assert(self.blockValid(self.cur));
-    std.debug.assert(d.subs.len + dd.len == d.info.dims.len);
+    assert(d.subs.len + dd.len == d.info.dims.len);
     var key_buf: [lower_shape.elem_key_len]u8 = undefined;
     var full: [lower_shape.max_stack_dims]i64 = undefined;
     const idx = try lower_shape.subscriptBuf(self, &full, d.info.dims.len);

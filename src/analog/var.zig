@@ -24,6 +24,7 @@
 //! §9.13.1/§9.13.2 hidden seed storage (`hiddenHeldInt`) uses the same retained SSA mechanism.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_context = @import("context.zig");
@@ -99,7 +100,7 @@ pub const State = struct {
 pub const ScopeEntry = struct { name: []const u8, prev_var: u32, prev_array: u32 };
 // Budget: a name and two handles. It was 88 B with the bindings inline.
 comptime {
-    std.debug.assert(@sizeOf(ScopeEntry) <= 24);
+    assert(@sizeOf(ScopeEntry) <= 24);
 }
 
 /// One enclosing §5.3.2 named block, as `scanHeld` sees it: the dotted prefix
@@ -602,7 +603,7 @@ fn runtimeSub(self: *const Lower, vars: *const std.AutoHashMapUnmanaged(Ast.StrI
 /// mask has one flag per row and no dropped row is an array's.
 pub fn dropHeld(lowered: *Lower.Lowered, keep: []const bool) void {
     const held = &lowered.held_vars;
-    std.debug.assert(keep.len == held.items.len);
+    assert(keep.len == held.items.len);
     var kept: usize = 0;
     for (held.items, keep) |h, k| {
         if (!k) {
@@ -916,7 +917,7 @@ fn holdSlot(self: *Lower, name: []const u8, ty: Ty, init_val: Mir.Value, place: 
     // itself opened a diamond (§4.2.7 `&&`/`||` short-circuit), in which case it
     // is that diamond's join. Either way it dominates every statement of the
     // module, which is all the seed has to do.
-    std.debug.assert(self.held_places.items.len == self.out.held_vars.items.len); // one place per held row
+    assert(self.held_places.items.len == self.out.held_vars.items.len); // one place per held row
     const idx: i64 = @intCast(self.out.held_vars.items.len);
     const seed = try self.call(switch (ty) {
         .integer => "$held_int",
@@ -933,7 +934,7 @@ fn holdSlot(self: *Lower, name: []const u8, ty: Ty, init_val: Mir.Value, place: 
         .d2a = d2a,
     });
     try self.held_places.append(self.arena, place);
-    std.debug.assert(self.held_places.items.len == self.out.held_vars.items.len);
+    assert(self.held_places.items.len == self.out.held_vars.items.len);
     return seed;
 }
 
@@ -953,8 +954,8 @@ pub fn hiddenHeldInt(self: *Lower, name: []const u8) Oom!VarSlot {
 /// array's `anew` (which codegen fills from the `Instance` field) and whose
 /// final value is the array version the block ends with.
 fn holdArray(self: *Lower, name: []const u8, ty: Ty, id: u32, inits: []const Mir.Value, place: Ssa.Place, d2a: bool) Oom!Mir.Value {
-    std.debug.assert(self.held_places.items.len == self.out.held_vars.items.len); // one place per held row
-    std.debug.assert(id < self.out.mem_arrays.items.len);
+    assert(self.held_places.items.len == self.out.held_vars.items.len); // one place per held row
+    assert(id < self.out.mem_arrays.items.len);
     const idx: u32 = @intCast(self.out.held_vars.items.len);
     const seed = try self.mir.emitAnew(self.arena, self.cur, id);
     self.out.mem_arrays.items[id].held = idx;
@@ -968,7 +969,7 @@ fn holdArray(self: *Lower, name: []const u8, ty: Ty, id: u32, inits: []const Mir
         .d2a = d2a,
     });
     try self.held_places.append(self.arena, place);
-    std.debug.assert(self.held_places.items.len == self.out.held_vars.items.len);
+    assert(self.held_places.items.len == self.out.held_vars.items.len);
     return seed;
 }
 
@@ -977,7 +978,7 @@ fn holdArray(self: *Lower, name: []const u8, ty: Ty, id: u32, inits: []const Mir
 /// Pops the scope log back to `mark`, restoring each variable and array binding
 /// the scope shadowed. Asserts that `mark` is a length the log has had.
 pub fn closeScope(self: *Lower, mark: usize) void {
-    std.debug.assert(mark <= self.scope_log.items.len);
+    assert(mark <= self.scope_log.items.len);
     while (self.scope_log.items.len > mark) {
         const e = self.scope_log.pop().?;
         if (e.prev_var != none_u32) {

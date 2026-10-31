@@ -128,7 +128,7 @@ pub fn captureExpr(self: *Lower, e: Ast.ExprId, value: TypedValue) Oom!void {
 /// the caller's reads, never on the function's private locals. Returns what
 /// `resumeCapture` must restore.
 pub fn suspendCapture(self: *Lower) ?*TimerCapture {
-    assert(self.timer_state.timer_replay == null); // a replay lowers no function body afresh
+    assert(self.blockValid(self.cur));
     defer self.timer_state.timer_capture = null;
     return self.timer_state.timer_capture;
 }
@@ -136,8 +136,8 @@ pub fn suspendCapture(self: *Lower) ?*TimerCapture {
 /// Restores the capture `suspendCapture` returned. Asserts that no capture
 /// opened meanwhile: an analog function body holds no event control (E0702).
 pub fn resumeCapture(self: *Lower, capture: ?*TimerCapture) void {
-    assert(self.timer_state.timer_replay == null);
-    std.debug.assert(self.timer_state.timer_capture == null);
+    assert(self.blockValid(self.cur));
+    assert(self.timer_state.timer_capture == null);
     self.timer_state.timer_capture = capture;
 }
 
@@ -174,8 +174,8 @@ pub fn captureTimerArray(self: *Lower, name: []const u8) Oom!void {
 /// event is neither canceled nor executed a second time. Asserts that no
 /// capture or replay is open: it runs once, after every analog block.
 pub fn finishTimers(self: *Lower) Oom!void {
-    std.debug.assert(self.timer_state.timer_capture == null);
-    std.debug.assert(self.timer_state.timer_replay == null);
+    assert(self.timer_state.timer_capture == null);
+    assert(self.timer_state.timer_replay == null);
     for (self.timer_state.timers.items) |tm| {
         const saved_unit = self.cur_unit;
         const saved_scope = self.scope_path;

@@ -10,6 +10,7 @@
 //! LRM clauses this file's code cites: §2.8, §4.5.15, §4.7, §9.17.3, §9.20.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Lower = @import("Lower.zig");
 const lower_contrib = @import("contrib.zig");
 const lower_func = @import("func.zig");
@@ -47,7 +48,7 @@ pub fn limitUserFunc(self: *Lower, a: Ast.ExprId) ?*const Ast.FuncDecl {
 /// clamped region. `$limit$uf` (codegen `zLimitUf`) shifts `vlim.val()` onto the probe.
 /// Asserts that `args` holds at least the access function and the function name.
 pub fn lowerLimitUser(self: *Lower, e: Ast.ExprId, fd: *const Ast.FuncDecl, args: []const Ast.ExprId) Oom!TypedValue {
-    std.debug.assert(args.len >= 2);
+    assert(args.len >= 2);
     // §9.17.3 the first argument is an ACCESS FUNCTION, never a net.
     const vnew = try self.toReal(try lower_sysfunc_args.lowerSysArg(self, args[0], false));
     const slot = try limitSlotOf(self, args[0]) orelse {
@@ -99,7 +100,7 @@ fn limitSlotKey(self: *Lower, a: Ast.ExprId) Oom!?lower_branch.Target {
 pub fn addLimitSlot(self: *Lower, a: Ast.ExprId) Oom!void {
     const t = try limitSlotKey(self, a) orelse return;
     if (findSlot(self, t) != null) return;
-    std.debug.assert(self.limit_places.items.len == self.out.limit_slots.items.len); // one place per slot
+    assert(self.limit_places.items.len == self.out.limit_slots.items.len); // one place per slot
     const k: i64 = @intCast(self.out.limit_slots.items.len);
     // A `call`, so `analysis.foldConst` cannot fold the previous iterate into a constant.
     const seed = try self.call("$limit$old", &.{try self.mir.addIntConst(self.arena, k)});
@@ -117,7 +118,7 @@ pub fn addLimitSlot(self: *Lower, a: Ast.ExprId) Oom!void {
         .seed = seed,
     });
     try self.limit_places.append(self.arena, place);
-    std.debug.assert(self.limit_places.items.len == self.out.limit_slots.items.len);
+    assert(self.limit_places.items.len == self.out.limit_slots.items.len);
 }
 
 /// §9.20's outcome for one `$analog_node_alias()` / `$analog_port_alias()`

@@ -272,7 +272,7 @@ fn literalBit(self: *Lower, lit: Ast.ExprId, k: u32) bool {
 fn discreteElem(self: *Lower, name: []const u8, lo: i64, hi: i64, sub: Ast.ExprId) Oom!TypedValue {
     assert(sub == .none or self.exprValid(sub));
     assert(self.blockValid(self.cur));
-    std.debug.assert(lo <= hi);
+    assert(lo <= hi);
     const elem = struct {
         fn read(l: *Lower, base: []const u8, k: i64) Oom!Mir.Value {
             const key = try l.arena.print("{s}[{d}]", .{ base, k });

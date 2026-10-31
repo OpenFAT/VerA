@@ -87,13 +87,13 @@ pub fn timepointRefuses(self: *const Lower, id: Ast.StmtId) ?[]const u8 {
 /// cached `anew`). Each slot's value at the join is a core live-out `eval`
 /// stores (`Lowered.timepoints`), and the mark place says the statement ran.
 pub fn lowerTimepoint(self: *Lower, id: Ast.StmtId) Oom!void {
-    std.debug.assert(self.tp_cur == null); // `lowerStmt` caches only an outermost statement
-    std.debug.assert(self.tp_marks.items.len == self.out.timepoints.items.len);
+    assert(self.tp_cur == null); // `lowerStmt` caches only an outermost statement
+    assert(self.tp_marks.items.len == self.out.timepoints.items.len);
     const b: u32 = @intCast(self.out.timepoints.items.len);
     var slots: std.ArrayList(Lower.TpSlot) = .empty;
     var places: std.ArrayList(Ssa.Place) = .empty;
     try timepointSlots(self, id, &slots, &places);
-    std.debug.assert(slots.items.len == places.items.len);
+    assert(slots.items.len == places.items.len);
     const saved = self.tp_cur;
     self.tp_cur = b;
     defer self.tp_cur = saved;
@@ -135,7 +135,7 @@ pub fn lowerTimepoint(self: *Lower, id: Ast.StmtId) Oom!void {
     for (slots.items, places.items) |*s, p| s.final = try self.builder.readVariable(p, join);
     // The statement lowered with `tp_cur` set, so nothing inside cached itself:
     // `b` is still the next row.
-    std.debug.assert(self.out.timepoints.items.len == b);
+    assert(self.out.timepoints.items.len == b);
     try self.out.timepoints.append(self.arena, .{
         .tok = self.file.stmtTok(id),
         .miss = miss_b,

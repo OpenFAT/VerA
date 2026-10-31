@@ -93,8 +93,8 @@ pub fn checkFormatPairing(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!
 /// The first `skip` operands are not message text (`messageStart`): no
 /// format reads them, and they keep their own values.
 pub fn prepareFormatArgs(self: *Lower, tok: u32, live: []const Ast.ExprId, tys: []const Ty, vals: []Mir.Value, skip: usize) Oom!void {
-    std.debug.assert(live.len == tys.len);
-    std.debug.assert(skip <= live.len);
+    assert(live.len == tys.len);
+    assert(skip <= live.len);
     var at: usize = skip;
     while (at < live.len) {
         // Use the actual lowered bytes, including direct literal NUL escapes,

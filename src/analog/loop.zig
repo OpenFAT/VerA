@@ -44,7 +44,7 @@ pub fn lowerWhile(self: *Lower, cond: Ast.ExprId, body: Ast.StmtId) Oom!void {
     try lower_control.lowerCondBody(self, body, false); // §5.9: a loop body is never static
     try self.gotoBlock(header);
     const popped = self.loops.pop().?;
-    std.debug.assert(popped.brk == exit); // the body's loops popped their own
+    assert(popped.brk == exit); // the body's loops popped their own
 
     try self.builder.sealBlock(header);
     try self.builder.sealBlock(exit);
@@ -75,7 +75,7 @@ pub fn lowerRepeat(self: *Lower, count: Ast.ExprId, body: Ast.StmtId) Oom!void {
     try lower_control.lowerCondBody(self, body, false); // §5.9: a loop body is never static
     try self.gotoBlock(step_b);
     const popped = self.loops.pop().?;
-    std.debug.assert(popped.brk == exit); // the body's loops popped their own
+    assert(popped.brk == exit); // the body's loops popped their own
 
     try self.builder.sealBlock(step_b);
     self.cur = step_b;
@@ -113,7 +113,7 @@ pub fn lowerFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
     try lower_control.lowerCondBody(self, body, false); // §5.9: a loop body is never static
     try self.gotoBlock(step_b);
     const popped = self.loops.pop().?;
-    std.debug.assert(popped.brk == exit); // the body's loops popped their own
+    assert(popped.brk == exit); // the body's loops popped their own
 
     try self.builder.sealBlock(step_b);
     self.cur = step_b;

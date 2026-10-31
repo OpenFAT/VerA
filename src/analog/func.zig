@@ -13,6 +13,7 @@
 //! IEEE 1364-2005 clauses cited: §10.4.1.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_event = @import("event.zig");
@@ -267,7 +268,7 @@ pub fn inlineUserFuncPre(
         }}));
     }
 
-    std.debug.assert(actuals.items.len == fd.args.len); // one per formal, `pre` ones included
+    assert(actuals.items.len == fd.args.len); // one per formal, `pre` ones included
 
     // Timer scheduling captures caller dependencies, not this call's private
     // locals. Pure functions are recomputed with new actuals; effectful ones
@@ -389,9 +390,9 @@ pub fn inlineUserFuncPre(
 
     // ---- leave the function scope ----
     const left = self.inlining.pop().?;
-    std.debug.assert(std.mem.eql(u8, left, name)); // a nested call popped its own
-    std.debug.assert(self.loops.items.len == 0); // the body's loops popped their own
-    std.debug.assert(log_mark <= self.scope_log.items.len);
+    assert(std.mem.eql(u8, left, name)); // a nested call popped its own
+    assert(self.loops.items.len == 0); // the body's loops popped their own
+    assert(log_mark <= self.scope_log.items.len);
     self.scope_log.shrinkRetainingCapacity(log_mark);
     self.vars.deinit(self.arena);
     self.arrays.deinit(self.arena);
@@ -431,7 +432,7 @@ pub fn inlineUserFuncPre(
         const slot = try lower_lvalue.resolveLvalue(self, actual) orelse continue;
         try lower_lvalue.writeLvalue(self, slot, vals[0]);
     }
-    std.debug.assert(w == writeback.items.len); // one writeback per output/inout formal
+    assert(w == writeback.items.len); // one writeback per output/inout formal
     return result;
 }
 

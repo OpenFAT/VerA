@@ -276,7 +276,7 @@ pub fn resizeInt(self: *Lower, v: Mir.Value, context: constfold.IntContext) Oom!
     const mask: i64 = @intCast((@as(u64, 1) << @intCast(context.width)) - 1);
     const bits = try self.emit(.bitand, &.{ v, try self.mir.addIntConst(self.arena, mask) });
     if (!context.signed) return bits;
-    std.debug.assert(context.width >= 1); // `IntContext`: every context comes from an operand width
+    assert(context.width >= 1); // `IntContext`: every context comes from an operand width
     const sign = try self.emit(.bitand, &.{ bits, try self.mir.addIntConst(self.arena, @as(i64, 1) << @intCast(context.width - 1)) });
     const negative = try self.emit(.bitor, &.{ bits, try self.mir.addIntConst(self.arena, ~mask) });
     return self.emit(.select, &.{ try self.toBool(.{ .v = sign, .ty = .integer }), negative, bits });
