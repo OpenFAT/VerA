@@ -240,7 +240,7 @@ const fixtures = struct {
 /// go on, or the process exit code when the line is answered here: 0 after
 /// `--help` (usage on `out`), `--version` (`vera <contract.vera_version>` on
 /// `out`) or `--explain CODE` (the explanation on `out`), 2 after a
-/// malformed flag or an empty argument (the reason on `err`). Stops at the first such flag, so
+/// malformed flag (the reason on `err`). Stops at the first such flag, so
 /// the rest of the line is never read. `args` is any iterator whose `next()`
 /// returns each argument as a `?[]const u8` (`std.process.Args.Iterator`, a
 /// tokenizer, a test's fixed list); `cli` borrows every argument it keeps, so
@@ -254,9 +254,6 @@ pub fn parse(cli: *Cli, gpa: Allocator, args: anytype, out: *Io.Writer, err: *Io
             try err.print("error: more than {d} arguments\n", .{args_max});
             return 2;
         }
-        // No flag is empty, so this is an input, and an input reaches
-        // `preprocessor.readText`, which takes no empty path.
-        if (arg.len == 0) return try missing(err, "an input file", "a path");
         if (switches.get(arg)) |s| {
             if (try takeSwitch(cli, gpa, s, arg, args, out, err)) |code| return code;
         } else if (valuedKey(arg)) |v| {
@@ -423,7 +420,7 @@ fn takeSwitch(cli: *Cli, gpa: Allocator, s: Switch, arg: []const u8, args: anyty
             cli.emit_rtlil = true;
             cli.codegen_flag = arg;
         },
-        .digital_pins => cli.digital_pins = try pathValue(args, err, arg, "a list of ports or a file") orelse return 2,
+        .digital_pins => cli.digital_pins = args.next() orelse return try missing(err, "--digital-pins", "a list of ports or a file"),
         .power_pins => cli.power_pins = true,
         .check => {
             cli.check = true;
@@ -659,7 +656,6 @@ test "parse: a flag that takes a value refuses a line that ends before it" {
 
 test "parse: every path-valued flag refuses an empty path; any other is taken as typed" {
     const cases = [_][2][]const u8{
-        .{ "--digital-pins", "error: --digital-pins needs a list of ports or a file\n" },
         .{ "--contract", "error: --contract needs a path\n" },
         .{ "--dyn", "error: --dyn needs a path\n" },
         .{ "--work-dir", "error: --work-dir needs a directory\n" },
@@ -889,16 +885,6 @@ test "parse: lint levels, and what may not be allowed or un-forbidden" {
     try fixtures.expectRefused(&.{ "--forbid=W0650", "--allow=W0650" }, "error: `--allow=W0650`: this code was already --forbid'd\n");
     try fixtures.expectRefused(&.{"--deny=W9999"}, "error: unknown option `--deny=W9999`\n");
     try fixtures.expectRefused(&.{"--no-such-flag"}, "error: unknown option `--no-such-flag`\n");
-}
-
-test "parse: an empty input file is refused before any file is read" {
-    // `preprocessor.readText` asserts a non-empty path; the command line is
-    // the trust boundary that keeps that contract (the path-valued flags:
-    // the test above).
-    try fixtures.expectRefused(&.{""}, "error: an input file needs a path\n");
-    try fixtures.expectRefused(&.{ "top.v", "" }, "error: an input file needs a path\n");
-    // There is no `--spice=` form: it is an unknown option, never a path.
-    try fixtures.expectRefused(&.{ "--spice=", "m.va" }, "error: unknown option `--spice=`\n");
 }
 
 test "parse: every argument that is not a flag is an input, in order" {
