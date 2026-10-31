@@ -5,6 +5,13 @@
 //! sources at its own operating point. A source VerA cannot state becomes a
 //! `@compileError` value, not a wrong table.
 //! LRM: §4.6.3, §4.6.4, §4.6.4.1, §4.6.4.2, §4.6.4.3, §4.6.4.4, §4.6.4.6, A.8.2.
+//!
+//! Contents:
+//! - `pub fn emitNoiseTable(self: *Gen) Error!void`
+//! - `pub fn emitNoiseCore(self: *Gen) Error!void`
+//! - `pub fn hasCardKnots(self: *const Gen) bool`
+//! - `pub fn cardKnotCount(self: *const Gen) usize`
+//! - `pub fn emitAcTable(self: *Gen) Error!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -37,6 +44,7 @@ const coreIdx = gen_dispatch.coreIdx;
 /// ground-ground branch, E0520; non-constant table pairs, E0519) replaces
 /// the whole `noise_gens` decl with a `@compileError` (`refuseNoise`).
 pub fn emitNoiseTable(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     if (self.noise.fatal) |msg| {
         // A `@compileError` value, not a statement: a host that never touches
         // noise still builds, and one that reads `noise_gens` gets this
@@ -154,6 +162,7 @@ pub fn emitNoiseTable(self: *Gen) Error!void {
 /// `noisePsd` reads off it. Called from `emitUnits`, so its range tiles with
 /// the other unit declarations.
 pub fn emitNoiseCore(self: *Gen) Error!void {
+    assert(self.noise_core.name.len == 0);
     if (self.noise.fatal != null or self.noise.rows.len == 0) return;
     const keep = try self.arena.alloc(bool, self.core.lo_vals.len);
     @memset(keep, false);
@@ -177,65 +186,12 @@ pub fn emitNoiseCore(self: *Gen) Error!void {
     gen_mask.orIn(self.jac.ddx_reads, ddx_before);
 }
 
-/// Emits `noiseTablePoints`: the knots of every §4.6.4.3 table as the model
-/// card sets them, since "the vector can either be specified as an array
-/// parameter" and `noise_tables` holds only the declared defaults. One flat
-/// array in `noise_tables` order (a per-table return type would be generic,
-/// which `contract.expectFn` cannot check); table k starts at the sum of the
-/// earlier `noise_tables[i].points.len`. Emitted only when some knot is a
-/// parameter. Re-sorted at run time, because §4.6.4.3's "the simulator shall
-/// internally sort the pairs into ascending frequency" must hold for any card.
-/// `derive` stores its result in the row (`Model.noise_table_points__`,
-/// `contract.noiseTable`).
-fn emitNoiseTablePoints(self: *Gen) Error!void {
-    if (!hasCardKnots(self)) return;
-    const total = cardKnotCount(self);
-    assert(total > 0);
-    assert(self.noise.tab_vals.len <= self.noise.tabs.len);
-    try self.w(
-        \\/// §4.6.4.3 every tabulated knot AT THIS CARD, in `noise_tables`
-        \\/// order and ascending in frequency within each table. Table k is
-        \\/// the segment starting at the sum of `noise_tables[i].points.len`
-        \\/// for i < k; `noise_tables` itself carries the array parameter's
-        \\/// DECLARED DEFAULTS, which is all a comptime table can hold.
-        \\pub fn noiseTablePoints(
-    , .{});
-    const at_model = self.out.items.len;
-    try self.w("model: *const Model) [{d}][2]f64 {{\n", .{total});
-    const saved_model = self.uses.model;
-    self.uses.model = false;
-    var body: std.ArrayList(u8) = .empty;
-    for (self.noise.tabs, 0..) |pts, k| {
-        const mvs = if (k < self.noise.tab_vals.len) self.noise.tab_vals[k] else &.{};
-        // A parametric table's MIR knots are positional against its points.
-        if (mvs.len != 0) assert(mvs.len == pts.len);
-        for (pts, 0..) |p, i| {
-            const pair: [2][]const u8 = if (i < mvs.len) .{
-                (try gen_host.f64Const(self, mvs[i][0], 0, false)) orelse try gen_file.fmtF64(self, p[0]),
-                (try gen_host.f64Const(self, mvs[i][1], 0, false)) orelse try gen_file.fmtF64(self, p[1]),
-            } else .{ try gen_file.fmtF64(self, p[0]), try gen_file.fmtF64(self, p[1]) };
-            try body.print(self.arena, "        .{{ {s}, {s} }},\n", .{ pair[0], pair[1] });
-        }
-    }
-    const reads_model = self.uses.model;
-    self.uses.model = saved_model or reads_model;
-    if (!reads_model) gen_unit.patchParam(self, at_model, "model".len);
-    try self.w("    var pts: [{d}][2]f64 = .{{\n", .{total});
-    try self.w("{s}", .{body.items});
-    try self.w("    }};\n", .{});
-    var at: usize = 0;
-    for (self.noise.tabs) |pts| {
-        try self.w("    contract.sortNoiseTable(pts[{d}..{d}]);\n", .{ at, at + pts.len });
-        at += pts.len;
-    }
-    try self.w("    return pts;\n}}\n\n", .{});
-}
-
 /// Returns whether the device emits `noiseTablePoints`: a §4.6.4.3/.4 table
 /// some knot of which is a parameter, so the `Model` row also carries
 /// `noise_table_points__` and `derive` fills it. False when the noise tables
 /// were refused, since then no `noise_tables` is emitted either.
 pub fn hasCardKnots(self: *const Gen) bool {
+    assert(self.noise.refusals.items.len == 0 or self.any_fatal);
     if (self.noise.fatal != null or self.noise.rows.len == 0) return false;
     for (self.noise.tab_vals) |mvs| if (mvs.len != 0) return true;
     return false;
@@ -243,6 +199,7 @@ pub fn hasCardKnots(self: *const Gen) bool {
 
 /// The knots of every table, the length of `noiseTablePoints`' result.
 pub fn cardKnotCount(self: *const Gen) usize {
+    assert(self.noise.refusals.items.len == 0 or self.any_fatal);
     var total: usize = 0;
     for (self.noise.tabs) |pts| total += pts.len;
     return total;
@@ -256,15 +213,16 @@ pub fn cardKnotCount(self: *const Gen) usize {
 /// It takes the state vector because A.8.2 makes both arguments
 /// `analog_expression`; a stimulus that folds renders over `Model` alone.
 pub fn emitAcTable(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     if (self.noise.ac_rows.len == 0) return;
 
     // Rendered before anything is written, so the `x`/`model`/`inst`
     // parameters can be patched to `_` when nothing reached them, as
     // `emitUnit` does. The flags are Gen-wide, so they are saved.
-    const saved_model = self.uses.model;
-    const saved_inst = self.uses.inst;
-    self.uses.model = false;
-    self.uses.inst = false;
+    const saved_model = self.cur.uses.model;
+    const saved_inst = self.cur.uses.inst;
+    self.cur.uses.model = false;
+    self.cur.uses.inst = false;
     const vals = try self.arena.alloc([2][]const u8, self.noise.ac_rows.len);
     var all_stated = true;
     var uses_core = false;
@@ -286,10 +244,10 @@ pub fn emitAcTable(self: *Gen) Error!void {
         // row's sign rides as a negative magnitude (`plan/noise.zig` `neg`).
         v.* = .{ if (nr.neg) try self.arena.print("-({s})", .{scaled}) else scaled, phase.? };
     }
-    const reads_model = self.uses.model or uses_core;
-    const reads_inst = self.uses.inst or uses_core;
-    self.uses.model = saved_model or reads_model;
-    self.uses.inst = saved_inst or reads_inst;
+    const reads_model = self.cur.uses.model or uses_core;
+    const reads_inst = self.cur.uses.inst or uses_core;
+    self.cur.uses.model = saved_model or reads_model;
+    self.cur.uses.inst = saved_inst or reads_inst;
     if (!all_stated) return refuseAc(self);
 
     try self.w("/// §4.6.3 AC stimulus sources declared by the model.\npub const ac_gens = [_]contract.AcGen(Self){{\n", .{});
@@ -330,6 +288,63 @@ pub fn emitAcTable(self: *Gen) Error!void {
     try self.w("    }};\n}}\n\n", .{});
 }
 
+// ---- private ----
+
+/// Emits `noiseTablePoints`: the knots of every §4.6.4.3 table as the model
+/// card sets them, since "the vector can either be specified as an array
+/// parameter" and `noise_tables` holds only the declared defaults. One flat
+/// array in `noise_tables` order (a per-table return type would be generic,
+/// which `contract.expectFn` cannot check); table k starts at the sum of the
+/// earlier `noise_tables[i].points.len`. Emitted only when some knot is a
+/// parameter. Re-sorted at run time, because §4.6.4.3's "the simulator shall
+/// internally sort the pairs into ascending frequency" must hold for any card.
+/// `derive` stores its result in the row (`Model.noise_table_points__`,
+/// `contract.noiseTable`).
+fn emitNoiseTablePoints(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
+    if (!hasCardKnots(self)) return;
+    const total = cardKnotCount(self);
+    assert(total > 0);
+    assert(self.noise.tab_vals.len <= self.noise.tabs.len);
+    try self.w(
+        \\/// §4.6.4.3 every tabulated knot AT THIS CARD, in `noise_tables`
+        \\/// order and ascending in frequency within each table. Table k is
+        \\/// the segment starting at the sum of `noise_tables[i].points.len`
+        \\/// for i < k; `noise_tables` itself carries the array parameter's
+        \\/// DECLARED DEFAULTS, which is all a comptime table can hold.
+        \\pub fn noiseTablePoints(
+    , .{});
+    const at_model = self.out.items.len;
+    try self.w("model: *const Model) [{d}][2]f64 {{\n", .{total});
+    const saved_model = self.cur.uses.model;
+    self.cur.uses.model = false;
+    var body: std.ArrayList(u8) = .empty;
+    for (self.noise.tabs, 0..) |pts, k| {
+        const mvs = if (k < self.noise.tab_vals.len) self.noise.tab_vals[k] else &.{};
+        // A parametric table's MIR knots are positional against its points.
+        if (mvs.len != 0) assert(mvs.len == pts.len);
+        for (pts, 0..) |p, i| {
+            const pair: [2][]const u8 = if (i < mvs.len) .{
+                (try gen_host.f64Const(self, mvs[i][0], 0, false)) orelse try gen_file.fmtF64(self, p[0]),
+                (try gen_host.f64Const(self, mvs[i][1], 0, false)) orelse try gen_file.fmtF64(self, p[1]),
+            } else .{ try gen_file.fmtF64(self, p[0]), try gen_file.fmtF64(self, p[1]) };
+            try body.print(self.arena, "        .{{ {s}, {s} }},\n", .{ pair[0], pair[1] });
+        }
+    }
+    const reads_model = self.cur.uses.model;
+    self.cur.uses.model = saved_model or reads_model;
+    if (!reads_model) gen_unit.patchParam(self, at_model, "model".len);
+    try self.w("    var pts: [{d}][2]f64 = .{{\n", .{total});
+    try self.w("{s}", .{body.items});
+    try self.w("    }};\n", .{});
+    var at: usize = 0;
+    for (self.noise.tabs) |pts| {
+        try self.w("    contract.sortNoiseTable(pts[{d}..{d}]);\n", .{ at, at + pts.len });
+        at += pts.len;
+    }
+    try self.w("    return pts;\n}}\n\n", .{});
+}
+
 /// Returns one §4.6.3 magnitude, phase or §4.6.4.6 coefficient in `acStim`'s
 /// frame: `f64Const` over `Model` when it folds, else the core field
 /// `buildJobs` queued (setting `uses_core`). Null means neither, a planning
@@ -346,6 +361,8 @@ fn acRef(self: *Gen, v: Mir.Value, uses_core: *bool) Error!?[]const u8 {
 /// cannot state, as `refuseNoise` does for `noise_gens`. No diagnostic of its
 /// own: `emitCall` already reported E0515 on the same argument.
 fn refuseAc(self: *Gen) Error!void {
+    const len_before = self.out.items.len;
+    defer assert(self.out.items.len >= len_before);
     try self.w("/// §4.6.3 refused by codegen; see the diagnostic.\n", .{});
     try self.w("pub const ac_gens = @compileError(\"LRM 4.6.3: an ac_stim magnitude or " ++
         "phase must be a constant or parameter expression\");\n\n", .{});

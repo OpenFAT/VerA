@@ -2,8 +2,16 @@
 //! sites, small-signal rows) -> every value the shared core returns, and why,
 //! resolved before a unit is written. Clauses: §2.9, §4.5, §4.6.3, §4.6.4, §5.6,
 //! §5.6.1.2, §5.6.1.3, §5.6.7, §5.10, §5.10.3.3, §9.4, §9.13, §9.17, §9.21.1.
+//!
+//! Contents:
+//! - `pub const display_comment = "§9.4 display tasks, in source order"`
+//! - `pub const Jobs = struct`
+//! - `pub const Job = struct`
+//! - `pub fn plan(self: Input, from: From, dyn: anytype) !Jobs`
+//! - members: `Job.Kind`, `always.isDynamic`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const proof = @import("prove").proof;
 const OpKind = @import("ir").op.OpKind;
@@ -13,6 +21,7 @@ const Names = @import("names.zig").Names;
 const LimitCall = @import("limit.zig").LimitCall;
 const plan_noise = @import("noise.zig");
 const plan_topo = @import("topology.zig");
+const Fixture = @import("prove").Fixture;
 
 /// The doc line of the §9.4 display unit's declaration.
 pub const display_comment = "§9.4 display tasks, in source order";
@@ -25,29 +34,6 @@ pub const Jobs = struct {
     /// when the §9.4 tasks are dropped). The job that renders it is queued
     /// last.
     display_name: []const u8 = "",
-};
-
-/// What `plan` reads besides the lowered module.
-const From = struct {
-    /// `plan/names.zig`: the canonical units, whose operators queue inputs.
-    names: *const Names,
-    /// `proof.Verdict.unit_modes`: the float mode of each CONTRIBUTION unit.
-    unit_modes: []const proof.FloatMode,
-    /// `Limits.calls`: the honoured §4.5.15 sites.
-    limits: []const LimitCall,
-    /// `plan/noise.zig`: the §4.6.4 generator rows and §4.6.3 stimulus rows.
-    noise: *const plan_noise.Noise,
-    /// `Options.display == .emit`: the §9.4 tasks become a unit of their own.
-    emit_display: bool,
-    /// A `.record` device has tasks its `say` records (`cg_display.planSay`):
-    /// the display unit is that entry point's body.
-    record_display: bool = false,
-    /// `plan/qsite.zig` `QSites.sites`: the `Lowered.charge_sites` that get a
-    /// `q` slot, in slot order. Each one's charge is a core live-out.
-    q_sites: []const u32 = &.{},
-    /// `Options.vpi_contribs`: every value `vpiContribs` and `vpiShares`
-    /// report is a core live-out.
-    vpi: bool = false,
 };
 
 /// One core target, resolved before anything is written.
@@ -116,11 +102,43 @@ pub const Job = struct {
     };
 };
 
+/// What `plan` reads besides the lowered module.
+const From = struct {
+    /// `plan/names.zig`: the canonical units, whose operators queue inputs.
+    names: *const Names,
+    /// `proof.Verdict.unit_modes`: the float mode of each CONTRIBUTION unit.
+    unit_modes: []const proof.FloatMode,
+    /// `Limits.calls`: the honoured §4.5.15 sites.
+    limits: []const LimitCall,
+    /// `plan/noise.zig`: the §4.6.4 generator rows and §4.6.3 stimulus rows.
+    noise: *const plan_noise.Noise,
+    /// `Options.display == .emit`: the §9.4 tasks become a unit of their own.
+    emit_display: bool,
+    /// A `.record` device has tasks its `say` records (`cg_display.planSay`):
+    /// the display unit is that entry point's body.
+    record_display: bool = false,
+    /// `plan/qsite.zig` `QSites.sites`: the `Lowered.charge_sites` that get a
+    /// `q` slot, in slot order. Each one's charge is a core live-out.
+    q_sites: []const u32 = &.{},
+    /// `Options.vpi_contribs`: every value `vpiContribs` and `vpiShares`
+    /// report is a core live-out.
+    vpi: bool = false,
+};
+
+/// A `dyn` stub: every §4.5 control argument and §4.6.3 stimulus reads the solve.
+const always = struct {
+    pub fn isDynamic(_: @This(), _: Mir.Value) error{}!bool {
+        return true;
+    }
+}{};
+
 /// Returns every core target in queue order (`Job.Kind`); slices are owned by
 /// `self.arena`. `dyn.isDynamic(v)` answers whether a §4.5 control argument
 /// renders only off the core, so a test can pass a stub. Fails on
 /// allocation or with `dyn`'s error.
 pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
+    if (!@hasDecl(@TypeOf(dyn), "isDynamic")) @compileError(@typeName(@TypeOf(dyn)) ++ " has no pub fn isDynamic");
+    assert(from.names.units.len == from.names.unit_names.len);
     var out: Jobs = .{};
     var jobs: std.ArrayList(Job) = .empty;
     for (self.lowered.contributions.items, 0..) |c, i| {
@@ -386,8 +404,12 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
     return out;
 }
 
+// ---- private ----
+
 /// Queues `v`, a value of contribution `row`, as a `.vpi` job unless it is 0.
 fn queueVpi(self: Input, jobs: *std.ArrayList(Job), from: From, v: Mir.Value, row: usize) !void {
+    assert(from.vpi);
+    assert(row < self.lowered.contributions.items.len);
     const t = self.an.rv(v);
     if (t == .f_zero) return;
     try jobs.append(self.arena, .{
@@ -401,6 +423,7 @@ fn queueVpi(self: Input, jobs: *std.ArrayList(Job), from: From, v: Mir.Value, ro
 /// instructions count: the answer only has to be a superset. One sweep of
 /// every instruction, O(instructions).
 fn readSet(self: Input, queued: []const Job) ![]bool {
+    assert(queued.len <= std.math.maxInt(u32));
     const read = try self.arena.alloc(bool, self.an.nv);
     @memset(read, false);
     for (queued) |j| read[@backingInt(self.an.rv(j.target))] = true;
@@ -436,6 +459,7 @@ fn readSet(self: Input, queued: []const Job) ![]bool {
 /// Returns the prover's float mode for unit `i`, or `.strict` for a unit
 /// the prover did not rate.
 fn unitMode(unit_modes: []const proof.FloatMode, i: usize) proof.FloatMode {
+    assert(unit_modes.len <= std.math.maxInt(u32));
     // proof.zig rates the CONTRIBUTION units only (proof.unitCount ==
     // lower.contributions.len); an analog-operator unit is not covered, so
     // it takes the safe side.
@@ -469,8 +493,6 @@ fn isDynCtrlArg(k: OpKind, ai: usize) bool {
         .none, .transition, .slew, .above, .timer, .bound_step, .discontinuity => false,
     };
 }
-
-const Fixture = @import("prove").Fixture;
 
 test "jobs queue in insert-tolerant order: contributions, operator inputs, held values" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -512,13 +534,6 @@ test "jobs queue in insert-tolerant order: contributions, operator inputs, held 
     try std.testing.expectEqual(va, jobs.list[2].target);
     try std.testing.expectEqualStrings("", jobs.display_name);
 }
-
-/// A `dyn` stub: every §4.5 control argument and §4.6.3 stimulus reads the solve.
-const always = struct {
-    pub fn isDynamic(_: @This(), _: Mir.Value) error{}!bool {
-        return true;
-    }
-}{};
 
 test "§4.5 Table 4-20: an absdelay's td and maxdelay are queued only when they render off the core" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

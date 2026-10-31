@@ -4,6 +4,12 @@
 //! X and closed before Y's code, so every edge into Y is `break :B<Y>`; a back
 //! edge is `continue :L<X>`. Exact for every reducible CFG. Phis are copied on
 //! each incoming edge. LRM clauses cited: §5.6.1.3.
+//!
+//! Contents:
+//! - `pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void`
+//! - `pub fn emitBlockInsts(self: *Gen, bi: u32, depth: u32, comptime decl: bool) Error!void`
+//! - `pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void`
+//! - `pub fn renderCond(self: *Gen, cond: Mir.Value) Error!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -12,120 +18,16 @@ const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_setup = @import("setup.zig");
 const gen_instance = @import("instance.zig");
+const gen_timepoint = @import("timepoint.zig");
 const gen_render = @import("render.zig");
+const render_array = @import("render_array.zig");
 const gen_unit = @import("unit.zig");
+const gen_unit_body = @import("unit_body.zig");
 const family = @import("family.zig");
 const gen_mask = @import("mask.zig");
 const Mir = @import("ir").Mir;
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;
-
-/// Writes a body's exit: a unit returns its contribution value, the shared
-/// core returns its whole cache, and `setup` stores its roots.
-pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void {
-    if (self.su.mode) return gen_setup.emitStores(self, depth, "");
-    try self.ind(depth);
-    if (!self.emitting_common) {
-        try self.b("return ", .{});
-        try family.openTo(self, family.mask(self, target));
-        try gen_render.renderVal(self, target, .real);
-        return self.b(");\n", .{});
-    }
-    try self.b("return .{{\n", .{});
-    for (self.core.lo_vals, 0..) |v, k| {
-        const arr = self.an.arrOf(v);
-        if (arr) |id| if (gen_render.inPlace(self, id)) continue;
-        try self.ind(depth + 1);
-        try self.b(".f{d} = ", .{k});
-        const wrap = arr == null and self.an.vty[@backingInt(v)] == .real;
-        if (wrap) try family.openTo(self, family.mask(self, v));
-        if (arr != null)
-            try gen_render.renderArrayOut(self, v)
-        else
-            try gen_render.renderVal(self, v, self.an.vty[@backingInt(v)]);
-        if (wrap) try self.b(")", .{});
-        try self.b(",\n", .{});
-    }
-    try self.ind(depth);
-    try self.b("}};\n", .{});
-}
-
-/// Writes block `bi`'s statements. `decl` is the straight-line path, which
-/// declares every slot at its definition. Asserts that `bi` is a block of
-/// the unit.
-pub fn emitBlockInsts(self: *Gen, bi: u32, depth: u32, comptime decl: bool) Error!void {
-    assert(bi < self.an.term.len);
-    assert(self.an.stmt_off[bi] <= self.an.stmt_off[bi + 1]);
-    const stmts = self.an.stmt_pool[self.an.stmt_off[bi]..self.an.stmt_off[bi + 1]];
-    // `setup` runs no `vera_timepoint` statement: it reads the time.
-    if (!self.su.mode) try gen_instance.emitTpFills(self, bi, depth);
-    for (stmts) |inst| {
-        // `setup` computes a speculable value at its home instead.
-        if (self.su.mode and self.sinv.home[@backingInt(self.an.i_res[@backingInt(inst)])] != none_u32) continue;
-        try emitStmt(self, inst, depth, decl);
-    }
-    if (self.su.mode) for (self.sinv.movedTo(bi)) |v| {
-        self.su.spec = true;
-        defer self.su.spec = false;
-        try emitStmt(self, self.mir.valueDef(v).inst_result, depth, decl);
-    };
-}
-
-fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!void {
-    const i = @backingInt(self.an.i_res[@backingInt(inst)]);
-    if (!self.plan.needed.isSet(i)) return;
-    // §3.2.2 an `anew`/`store` is a statement on its storage, not a slot.
-    if (self.an.arr_of[i] != none_u32) {
-        if (!self.plan.cached(@fromBackingInt(@intCast(i)))) try gen_render.emitArrayStmt(self, inst, depth);
-        return;
-    }
-    if (self.plan.slot[i] == none_u32) return;
-    // The straight-line path runs without a probe, so it never reads `place`.
-    if (!decl) assert(self.plan.slot[i] < self.probe.place.items.len);
-    gen_unit.probeDef(self, self.plan.slot[i], true);
-    // `or` short-circuits, so the straight-line path (`decl`, which runs
-    // without a probe) never touches `place`.
-    const at_def = decl or self.probe.place.items[self.plan.slot[i]].at_def;
-    try self.ind(depth);
-    var m: ?[]const u64 = null;
-    if (at_def) {
-        if (self.an.vty[i] == .real) {
-            // Zig types it from the expression; `lane_masks` counts it.
-            try family.note(self, family.mask(self, @fromBackingInt(@intCast(i))));
-            try self.b("const t{d} = ", .{self.plan.slot[i]});
-        } else try self.b("const t{d}: {s} = ", .{ self.plan.slot[i], try gen_unit.slotTy(self, i) });
-    } else {
-        try gen_unit.writeSlotRef(self, i);
-        try self.b(" = ", .{});
-        m = gen_unit.slotMask(self, i);
-        if (m) |k| try family.openTo(self, k);
-    }
-    try gen_render.renderInst(self, inst);
-    if (m != null) try self.b(")", .{});
-    try self.b(";\n", .{});
-}
-
-/// Writes block `bi` and the dominator subtree it heads, wrapping a loop
-/// header in `L<bi>: while (true)`.
-///
-/// The walk is a loop over a heap stack of what is left to write after each
-/// nested piece (`Resume`), not a recursion: an `if` nested, chained or
-/// following another 100,000 deep is a dominator tree that deep, and each
-/// level costs a stack row instead of a few native frames. The text is the
-/// recursion's, byte for byte (`emitStep`'s pieces are its bodies in order).
-pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void {
-    var stack: std.ArrayList(Resume) = .empty;
-    defer stack.deinit(self.gpa);
-    var next: ?Step = .{ .tree = .{ .bi = bi, .depth = depth } };
-    while (true) {
-        if (next) |s| {
-            next = try emitStep(self, s, &stack, target);
-            continue;
-        }
-        const r = stack.pop() orelse return;
-        next = try emitResume(self, r, &stack);
-    }
-}
 
 /// A piece `emitTree` writes next: a block's subtree (`tree`, which may open
 /// a loop), a block's own code (`code`), or an edge.
@@ -151,6 +53,131 @@ const Resume = union(enum) {
     if_end: struct { depth: u32, was_dead: bool },
 };
 
+/// Writes a body's exit: a unit returns its contribution value, the shared
+/// core returns its whole cache, and `setup` stores its roots.
+pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void {
+    if (self.su.mode) return gen_setup.emitStores(self, depth, "");
+    try self.ind(depth);
+    if (!self.cur.emitting_common) {
+        try self.b("return ", .{});
+        try family.openTo(self, family.mask(self, target));
+        try gen_render.renderVal(self, target, .real);
+        return self.b(");\n", .{});
+    }
+    try self.b("return .{{\n", .{});
+    for (self.core.lo_vals, 0..) |v, k| {
+        const arr = self.an.arrOf(v);
+        if (arr) |id| if (render_array.inPlace(self, id)) continue;
+        try self.ind(depth + 1);
+        try self.b(".f{d} = ", .{k});
+        const wrap = arr == null and self.an.vty[@backingInt(v)] == .real;
+        if (wrap) try family.openTo(self, family.mask(self, v));
+        if (arr != null)
+            try render_array.renderArrayOut(self, v)
+        else
+            try gen_render.renderVal(self, v, self.an.vty[@backingInt(v)]);
+        if (wrap) try self.b(")", .{});
+        try self.b(",\n", .{});
+    }
+    try self.ind(depth);
+    try self.b("}};\n", .{});
+}
+
+/// Writes block `bi`'s statements. `decl` is the straight-line path, which
+/// declares every slot at its definition. Asserts that `bi` is a block of
+/// the unit.
+pub fn emitBlockInsts(self: *Gen, bi: u32, depth: u32, comptime decl: bool) Error!void {
+    assert(bi < self.an.term.len);
+    assert(self.an.stmt_off[bi] <= self.an.stmt_off[bi + 1]);
+    const stmts = self.an.stmt_pool[self.an.stmt_off[bi]..self.an.stmt_off[bi + 1]];
+    // `setup` runs no `vera_timepoint` statement: it reads the time.
+    if (!self.su.mode) try gen_timepoint.emitTpFills(self, bi, depth);
+    for (stmts) |inst| {
+        // `setup` computes a speculable value at its home instead.
+        if (self.su.mode and self.sinv.home[@backingInt(self.an.i_res[@backingInt(inst)])] != none_u32) continue;
+        try emitStmt(self, inst, depth, decl);
+    }
+    if (self.su.mode) for (self.sinv.movedTo(bi)) |v| {
+        self.su.spec = true;
+        defer self.su.spec = false;
+        try emitStmt(self, self.mir.valueDef(v).inst_result, depth, decl);
+    };
+}
+
+/// Writes block `bi` and the dominator subtree it heads, wrapping a loop
+/// header in `L<bi>: while (true)`.
+///
+/// The walk is a loop over a heap stack of what is left to write after each
+/// nested piece (`Resume`), not a recursion: an `if` nested, chained or
+/// following another 100,000 deep is a dominator tree that deep, and each
+/// level costs a stack row instead of a few native frames. The text is the
+/// recursion's, byte for byte (`emitStep`'s pieces are its bodies in order).
+pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void {
+    var stack: std.ArrayList(Resume) = .empty;
+    defer stack.deinit(self.gpa);
+    var next: ?Step = .{ .tree = .{ .bi = bi, .depth = depth } };
+    while (true) {
+        if (next) |s| {
+            next = try emitStep(self, s, &stack, target);
+            continue;
+        }
+        const r = stack.pop() orelse return;
+        next = try emitResume(self, r, &stack);
+    }
+}
+
+/// Writes `cond` as a Zig bool (`!= 0` on its scalar value) and pins lanes
+/// if it depends on x.
+pub fn renderCond(self: *Gen, cond: Mir.Value) Error!void {
+    const v = self.an.rv(cond);
+    if (self.an.tyOf(v) == .int) {
+        float_lanes.pinLanes(self, cond);
+        try gen_render.renderVal(self, v, .int);
+        try self.b(" != 0", .{});
+    } else {
+        float_lanes.leadLanes(self, cond);
+        try self.b("zCmp(S, .neq, ", .{});
+        try gen_render.renderVal(self, v, .real);
+        try self.b(", S.con(0.0))", .{});
+    }
+}
+
+// ---- private ----
+
+fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!void {
+    const i = @backingInt(self.an.i_res[@backingInt(inst)]);
+    if (!self.cur.plan.needed.isSet(i)) return;
+    // §3.2.2 an `anew`/`store` is a statement on its storage, not a slot.
+    if (self.an.arr_of[i] != none_u32) {
+        if (!self.cur.plan.cached(@fromBackingInt(@intCast(i)))) try render_array.emitArrayStmt(self, inst, depth);
+        return;
+    }
+    if (self.cur.plan.slot[i] == none_u32) return;
+    // The straight-line path runs without a probe, so it never reads `place`.
+    if (!decl) assert(self.cur.plan.slot[i] < self.cur.probe.place.items.len);
+    gen_unit_body.probeDef(self, self.cur.plan.slot[i], true);
+    // `or` short-circuits, so the straight-line path (`decl`, which runs
+    // without a probe) never touches `place`.
+    const at_def = decl or self.cur.probe.place.items[self.cur.plan.slot[i]].at_def;
+    try self.ind(depth);
+    var m: ?[]const u64 = null;
+    if (at_def) {
+        if (self.an.vty[i] == .real) {
+            // Zig types it from the expression; `lane_masks` counts it.
+            try family.note(self, family.mask(self, @fromBackingInt(@intCast(i))));
+            try self.b("const t{d} = ", .{self.cur.plan.slot[i]});
+        } else try self.b("const t{d}: {s} = ", .{ self.cur.plan.slot[i], try gen_unit_body.slotTy(self, i) });
+    } else {
+        try gen_unit_body.writeSlotRef(self, i);
+        try self.b(" = ", .{});
+        m = gen_unit_body.slotMask(self, i);
+        if (m) |k| try family.openTo(self, k);
+    }
+    try gen_render.renderInst(self, inst);
+    if (m != null) try self.b(")", .{});
+    try self.b(";\n", .{});
+}
+
 /// Writes `s` up to its first nested piece, pushing what follows that piece
 /// onto `stack`, and returns the nested piece (null when `s` had none).
 fn emitStep(self: *Gen, s: Step, stack: *std.ArrayList(Resume), target: Mir.Value) Error!?Step {
@@ -168,7 +195,7 @@ fn emitStep(self: *Gen, s: Step, stack: *std.ArrayList(Resume), target: Mir.Valu
             }
             try self.ind(t.depth);
             try self.b("L{d}: while (true) {{\n", .{t.bi});
-            try gen_unit.scopeOpen(self);
+            try gen_unit_body.scopeOpen(self);
             try stack.append(self.gpa, .{ .loop_end = .{ .depth = t.depth, .was_dead = was_dead } });
             return .{ .code = .{ .bi = t.bi, .depth = t.depth + 1 } };
         },
@@ -191,25 +218,25 @@ fn emitStep(self: *Gen, s: Step, stack: *std.ArrayList(Resume), target: Mir.Valu
 fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step {
     switch (r) {
         .loop_end => |l| {
-            gen_unit.scopeClose(self, self.out.items.len);
+            gen_unit_body.scopeClose(self, self.out.items.len);
             try self.ind(l.depth);
             try self.b("}}\n", .{});
             self.su.dead = l.was_dead;
             return null;
         },
         .else_arm => |e| {
-            if (e.init_at) |at| try self.init_arms.append(self.arena, .{ at, self.out.items.len });
-            gen_unit.scopeClose(self, self.out.items.len);
+            if (e.init_at) |at| try self.cur.init_arms.append(self.arena, .{ at, self.out.items.len });
+            gen_unit_body.scopeClose(self, self.out.items.len);
             try self.ind(e.depth);
             try self.b("}} else {{\n", .{});
-            try gen_unit.scopeOpen(self);
+            try gen_unit_body.scopeOpen(self);
             const was_dead = self.su.dead;
             self.su.dead = e.else_dead;
             try stack.append(self.gpa, .{ .if_end = .{ .depth = e.depth, .was_dead = was_dead } });
             return .{ .edge = .{ .from = e.from, .to = e.to, .depth = e.depth + 1 } };
         },
         .if_end => |e| {
-            gen_unit.scopeClose(self, self.out.items.len);
+            gen_unit_body.scopeClose(self, self.out.items.len);
             try self.ind(e.depth);
             try self.b("}}\n", .{});
             self.su.dead = e.was_dead;
@@ -231,7 +258,7 @@ fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step 
                     assert(m.at_inner <= m.body_start);
                     assert(m.depth > 0);
                     self.out.shrinkRetainingCapacity(m.at_inner);
-                    gen_unit.scopeClose(self, m.at_inner);
+                    gen_unit_body.scopeClose(self, m.at_inner);
                     m.depth -= 1;
                 }
             }
@@ -240,7 +267,7 @@ fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step 
             if (m.j != 0 or !m.dropped) {
                 assert(m.depth > 0);
                 m.depth -= 1;
-                gen_unit.scopeClose(self, self.out.items.len);
+                gen_unit_body.scopeClose(self, self.out.items.len);
                 try self.ind(m.depth);
                 try self.b("}}\n", .{});
             }
@@ -276,7 +303,7 @@ fn emitCode(self: *Gen, bi0: u32, depth0: u32, stack: *std.ArrayList(Resume), ta
             if (i == 0) at_inner = self.out.items.len;
             try self.ind(depth);
             try self.b("B{d}: {{\n", .{mc[i]});
-            try gen_unit.scopeOpen(self);
+            try gen_unit_body.scopeOpen(self);
             depth += 1;
         }
         const body_start = self.out.items.len;
@@ -313,7 +340,7 @@ fn inlineSuccessor(self: *const Gen, bi: u32) ?u32 {
     if (t == .none) return null;
     const to: u32 = switch (self.mir.instData(t)) {
         .jump => |d| @backingInt(d.target),
-        .branch => |d| if (self.plan.dead_branch.isSet(bi)) @backingInt(d.then_block) else return null,
+        .branch => |d| if (self.cur.plan.dead_branch.isSet(bi)) @backingInt(d.then_block) else return null,
         .unary, .binary, .ternary, .phi, .call, .anew, .load, .store => unreachable,
     };
     if (self.an.is_loop[to] or self.an.is_merge[to]) return null;
@@ -349,7 +376,7 @@ fn emitTerm(self: *Gen, bi: u32, depth: u32, stack: *std.ArrayList(Resume), targ
         .branch => |d| {
             // `planDeadBranches`: both arms reconverge with nothing this
             // unit can observe in between, so emit the common action once.
-            if (self.plan.dead_branch.isSet(bi))
+            if (self.cur.plan.dead_branch.isSet(bi))
                 return .{ .edge = .{ .from = bi, .to = @backingInt(d.then_block), .depth = depth } };
             try self.ind(depth);
             try self.b("if (", .{});
@@ -366,7 +393,7 @@ fn emitTerm(self: *Gen, bi: u32, depth: u32, stack: *std.ArrayList(Resume), targ
                 try self.b("zs_stop", .{});
             } else try renderCond(self, d.cond);
             try self.b(") {{\n", .{});
-            try gen_unit.scopeOpen(self);
+            try gen_unit_body.scopeOpen(self);
             const init_at: ?usize = if (!self.su.mode and initialStep(self, d.cond)) self.out.items.len else null;
             try stack.append(self.gpa, .{ .else_arm = .{ .from = bi, .to = @backingInt(d.else_block), .depth = depth, .else_dead = else_dead, .init_at = init_at } });
             return .{ .edge = .{ .from = bi, .to = @backingInt(d.then_block), .depth = depth + 1 } };
@@ -382,22 +409,6 @@ fn initialStep(self: *const Gen, cond: Mir.Value) bool {
     const def = self.mir.valueDef(self.an.rv(cond));
     if (def != .inst_result or self.mir.instOp(def.inst_result) != .call) return false;
     return self.mir.instData(def.inst_result).call.callee == .initial_step;
-}
-
-/// Writes `cond` as a Zig bool (`!= 0` on its scalar value) and pins lanes
-/// if it depends on x.
-pub fn renderCond(self: *Gen, cond: Mir.Value) Error!void {
-    const v = self.an.rv(cond);
-    if (self.an.tyOf(v) == .int) {
-        float_lanes.pinLanes(self, cond);
-        try gen_render.renderVal(self, v, .int);
-        try self.b(" != 0", .{});
-    } else {
-        float_lanes.leadLanes(self, cond);
-        try self.b("zCmp(S, .neq, ", .{});
-        try gen_render.renderVal(self, v, .real);
-        try self.b(", S.con(0.0))", .{});
-    }
 }
 
 /// Writes the phi copies on the edge `from -> to`. They go through
@@ -435,12 +446,12 @@ fn emitPhiCopies(self: *Gen, from: u32, to: u32, depth: u32) Error!void {
             if (self.an.vty[i] == .real)
                 try self.b("const c{d} = ", .{k})
             else
-                try self.b("const c{d}: {s} = ", .{ k, try gen_unit.slotTy(self, i) });
+                try self.b("const c{d}: {s} = ", .{ k, try gen_unit_body.slotTy(self, i) });
         } else {
-            gen_unit.probeDef(self, self.plan.slot[i], false);
-            try gen_unit.writeSlotRef(self, i);
+            gen_unit_body.probeDef(self, self.cur.plan.slot[i], false);
+            try gen_unit_body.writeSlotRef(self, i);
             try self.b(" = ", .{});
-            m = gen_unit.slotMask(self, i);
+            m = gen_unit_body.slotMask(self, i);
             if (m) |mk| try family.openTo(self, mk);
         }
         try gen_render.renderVal(self, self.mir.phiIn(inst, @fromBackingInt(from)) orelse .undef, self.an.vty[i]);
@@ -455,9 +466,9 @@ fn emitPhiCopies(self: *Gen, from: u32, to: u32, depth: u32) Error!void {
         if (!slotted(self, inst)) continue;
         try self.ind(d2);
         const i = @backingInt(self.an.i_res[@backingInt(inst)]);
-        gen_unit.probeDef(self, self.plan.slot[i], false);
-        try gen_unit.writeSlotRef(self, i);
-        if (gen_unit.slotMask(self, i)) |mk|
+        gen_unit_body.probeDef(self, self.cur.plan.slot[i], false);
+        try gen_unit_body.writeSlotRef(self, i);
+        if (gen_unit_body.slotMask(self, i)) |mk|
             try self.b(" = zTo(S, 0x{f}, c{d});\n", .{ gen_mask.hex(mk, false), k })
         else
             try self.b(" = c{d};\n", .{k});
@@ -496,5 +507,5 @@ fn readsPhiOf(self: *Gen, v0: Mir.Value, to: u32, depth: u32) bool {
 /// local slot.
 fn slotted(self: *const Gen, inst: Mir.Inst) bool {
     const i = @backingInt(self.an.i_res[@backingInt(inst)]);
-    return self.plan.needed.isSet(i) and self.plan.slot[i] != none_u32;
+    return self.cur.plan.needed.isSet(i) and self.cur.plan.slot[i] != none_u32;
 }

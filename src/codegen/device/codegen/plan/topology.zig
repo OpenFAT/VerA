@@ -4,16 +4,29 @@
 //! static retention). The emitter asks the helpers through `Gen.input()`.
 //! Clauses: §1.3.1.1, §1.3.4, §1.3.4.2, §3.6.2.2, §4.4, §5.4.2, §5.4.2.1,
 //! §5.6.1.3, §5.6.5, §5.6.6.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Topology = struct`
+//! - `pub const Retention = union(enum)`
+//! - `pub const CollapsePair = struct`
+//! - `pub fn plan(in: Input, branch_u: []const u32) Error!Topology`
+//! - `pub fn retention(self: Input, c: Lower.Contribution) Retention`
+//! - `pub fn switchFlowOf(self: Input, pi: usize) ?usize`
+//! - `pub fn flowIsMerged(self: Input, j: usize) bool`
+//! - `pub fn flowOnlySignalFlowNet(self: Input, c: Lower.Contribution) ?u32`
+//! - `pub fn isFlowUnknown(self: Input, i: u32) bool`
+//! - members: `Topology.freeFlowOf`, `Topology.collapsible`
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
 const Lower = @import("ir").Lowered;
 const Input = @import("prove").Input;
+const assert = std.debug.assert;
+const Fixture = @import("prove").Fixture;
 
 /// Every fallible call here fails only on allocation.
 pub const Error = std.mem.Allocator.Error;
-const none_u32 = std.math.maxInt(u32);
-const assert = std.debug.assert;
 
 /// The §5.4.2/§5.6 branch facts the residual is assembled from.
 pub const Topology = struct {
@@ -28,6 +41,7 @@ pub const Topology = struct {
     /// The `FreeFlow` for the pair `(hi, lo)`, if that branch has one. The
     /// pair is ordered: `(lo, hi)` is another branch. O(free flows).
     pub fn freeFlowOf(self: Topology, hi: u32, lo: u32) ?FreeFlow {
+        assert(hi != lo or hi == Lower.ground);
         for (self.free_flows) |f| if (f.hi == hi and f.lo == lo) return f;
         return null;
     }
@@ -35,21 +49,11 @@ pub const Topology = struct {
     /// Whether the branch whose flow unknown is `u` is one `collapse`
     /// aliases away. O(pairs).
     pub fn collapsible(self: Topology, u: u32) bool {
+        assert(u != none_u32);
         for (self.cpairs) |p| if (p.flow_u == u) return true;
         return false;
     }
 };
-
-/// Returns the branch facts for the branch currents `branch_u` (per
-/// contribution, `none_u32` where none); slices are owned by `in.arena`.
-/// Asserts that `branch_u` has one entry per contribution.
-pub fn plan(in: Input, branch_u: []const u32) Error!Topology {
-    assert(branch_u.len == in.lowered.contributions.items.len);
-    return .{
-        .free_flows = try freeFlows(in, branch_u),
-        .cpairs = try collapsePairs(in, branch_u),
-    };
-}
 
 /// §5.6.1.3 what is known statically about a `.direct` contribution's
 /// retention this cycle, read off `Lower.Contribution.wrote_val`.
@@ -67,8 +71,58 @@ pub const Retention = union(enum) {
     runtime: Mir.Value,
 };
 
+/// One collapsible §5.6.5 switch branch: when `flag` (a §5.6.1.3
+/// retention flag, carried as a core field) is nonzero at build time,
+/// the host aliases unknown `victim` and the branch-flow unknown
+/// `flow_u` onto unknown `target`. Indices are `nodes`/U-enum space.
+/// `card`: the flag is a function of the model card alone (`cardOnly`), so
+/// `derive` can publish it as a `Model` field (the `jac_const` guard).
+pub const CollapsePair = struct { victim: u32, target: u32, flow_u: u32, flag: Mir.Value, card: bool = false };
+
+const none_u32 = std.math.maxInt(u32);
+
+/// A §5.4.2 branch-flow unknown that no branch row defines.
+///
+/// Lowering mints one whenever the model reads `I(a,b)`, and only a §5.6
+/// potential (or §5.6.7 indirect) contribution on the same pair gives it a
+/// defining row (`branch_u`). What is left is two shapes the LRM states
+/// outright, each needing its own row:
+///
+///   `sourced`: §5.6.6 implicit contribution. `I(b) <+ f(..., I(b))` reads
+///   the unknown on its own right-hand side, and "the underlying
+///   implementation of the simulator will find the value of I(diode) that
+///   equals the sum of the contributions made to it". The row is
+///   `x[u] - sum(contributions) = 0`; without it the self-reference
+///   evaluates to 0 and the model is silently linearised.
+///
+///   not `sourced`: §5.4.2.1 flow probe. "If the flow of the branch appears
+///   in an expression anywhere in the module, the branch is a flow probe ...
+///   The branch potential of a flow probe is zero (0)." Figure 5-1 draws the
+///   ammeter: the probe is a short, so its row is `V(hi) - V(lo) = 0` and its
+///   current enters KCL at both ends.
+const FreeFlow = struct { u: u32, hi: u32, lo: u32, sourced: bool };
+
+/// The most operand visits one `constFree` walk makes before it answers
+/// false (the safe side: no collapse, or no guard). The walk does not
+/// memoize, so a DAG that shares its operands (`x = x*x + x` repeated) is
+/// exponential in its depth, and the depth cap alone still allows 2^64.
+const max_visits = 1 << 16;
+
+/// Returns the branch facts for the branch currents `branch_u` (per
+/// contribution, `none_u32` where none); slices are owned by `in.arena`.
+/// Asserts that `branch_u` has one entry per contribution.
+pub fn plan(in: Input, branch_u: []const u32) Error!Topology {
+    assert(branch_u.len == in.lowered.contributions.items.len);
+    assert(branch_u.len == in.lowered.contributions.items.len);
+    return .{
+        .free_flows = try freeFlows(in, branch_u),
+        .cpairs = try collapsePairs(in, branch_u),
+    };
+}
+
 /// Returns what is statically known about `c`'s §5.6.1.3 retention.
 pub fn retention(self: Input, c: Lower.Contribution) Retention {
+    assert(self.an.vty.len == self.an.nv);
     const v = self.an.rv(c.wrote_val);
     return switch (self.mir.valueDef(v)) {
         .float_const => |x| if (x != 0.0) Retention.on else Retention.off,
@@ -84,6 +138,7 @@ pub fn retention(self: Input, c: Lower.Contribution) Retention {
 /// are tens, same order as `plan/names.zig`'s branch-current scan.
 /// Asserts that `pi` indexes a contribution.
 pub fn switchFlowOf(self: Input, pi: usize) ?usize {
+    assert(pi < self.lowered.contributions.items.len);
     assert(pi < self.lowered.contributions.items.len);
     const p = self.lowered.contributions.items[pi];
     for (self.lowered.contributions.items, 0..) |c, j| {
@@ -101,6 +156,7 @@ pub fn switchFlowOf(self: Input, pi: usize) ?usize {
 /// unknown (row `I_b − value`, stamps ±I_b), and stamping it here as well
 /// would inject the current twice. Asserts that `j` indexes a contribution.
 pub fn flowIsMerged(self: Input, j: usize) bool {
+    assert(j < self.lowered.contributions.items.len);
     assert(j < self.lowered.contributions.items.len);
     const f = self.lowered.contributions.items[j];
     if (f.kind != .direct or f.access != .flow) return false;
@@ -126,6 +182,7 @@ pub fn flowIsMerged(self: Input, j: usize) bool {
 /// is `ib = 0`, which leaves the branch row `V(out) - e = 0` to fix the
 /// potential.
 pub fn flowOnlySignalFlowNet(self: Input, c: Lower.Contribution) ?u32 {
+    assert(c.access == .flow);
     if (c.access != .flow or c.kind != .direct) return null;
     for ([_]u32{ c.hi, c.lo }) |n| {
         if (n >= self.lowered.nodes.len) continue; // ground
@@ -146,6 +203,7 @@ pub fn flowOnlySignalFlowNet(self: Input, c: Lower.Contribution) ?u32 {
 
 /// Is unknown `i` a flow (a current) rather than a potential?
 pub fn isFlowUnknown(self: Input, i: u32) bool {
+    assert(i != none_u32);
     if (i >= self.lowered.nodes.len) return true; // codegen-added branch current
     // §5.4.2/§5.4.3 lowering records the kind where it creates the slot; the
     // name cannot decide it, since §2.8.1 lets a net be declared `\flow(p,n)`.
@@ -165,39 +223,13 @@ pub fn isFlowUnknown(self: Input, i: u32) bool {
     return d.has_flow and !d.has_potential;
 }
 
-/// One collapsible §5.6.5 switch branch: when `flag` (a §5.6.1.3
-/// retention flag, carried as a core field) is nonzero at build time,
-/// the host aliases unknown `victim` and the branch-flow unknown
-/// `flow_u` onto unknown `target`. Indices are `nodes`/U-enum space.
-/// `card`: the flag is a function of the model card alone (`cardOnly`), so
-/// `derive` can publish it as a `Model` field (the `jac_const` guard).
-pub const CollapsePair = struct { victim: u32, target: u32, flow_u: u32, flag: Mir.Value, card: bool = false };
-
-/// A §5.4.2 branch-flow unknown that no branch row defines.
-///
-/// Lowering mints one whenever the model reads `I(a,b)`, and only a §5.6
-/// potential (or §5.6.7 indirect) contribution on the same pair gives it a
-/// defining row (`branch_u`). What is left is two shapes the LRM states
-/// outright, each needing its own row:
-///
-///   `sourced`: §5.6.6 implicit contribution. `I(b) <+ f(..., I(b))` reads
-///   the unknown on its own right-hand side, and "the underlying
-///   implementation of the simulator will find the value of I(diode) that
-///   equals the sum of the contributions made to it". The row is
-///   `x[u] - sum(contributions) = 0`; without it the self-reference
-///   evaluates to 0 and the model is silently linearised.
-///
-///   not `sourced`: §5.4.2.1 flow probe. "If the flow of the branch appears
-///   in an expression anywhere in the module, the branch is a flow probe ...
-///   The branch potential of a flow probe is zero (0)." Figure 5-1 draws the
-///   ammeter: the probe is a short, so its row is `V(hi) - V(lo) = 0` and its
-///   current enters KCL at both ends.
-const FreeFlow = struct { u: u32, hi: u32, lo: u32, sourced: bool };
+// ---- private ----
 
 /// `free_flows`, in unknown-slot order (`flow_unknowns` is a hash map, and
 /// its iteration order is not the emitted order). Asserts that `branch_u`
 /// has one entry per contribution.
 fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
+    assert(branch_u.len == self.lowered.contributions.items.len);
     assert(branch_u.len == self.lowered.contributions.items.len);
     var out: std.ArrayList(FreeFlow) = .empty;
     var it = self.lowered.flow_unknowns.iterator();
@@ -247,6 +279,7 @@ fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
 /// values, which recursion refuses. Loop-carried phis are refused
 /// outright.
 fn buildFree(self: Input, v0: Mir.Value, depth: u32) bool {
+    assert(self.an.vty.len == self.an.nv);
     var budget: u32 = max_visits;
     return constFree(self, v0, depth, true, &budget);
 }
@@ -255,15 +288,10 @@ fn buildFree(self: Input, v0: Mir.Value, depth: u32) bool {
 /// §6.3.6 `$mfactor`. What is left is a function of the model card, which
 /// `derive` (it has no Instance) can compute.
 fn cardOnly(self: Input, v0: Mir.Value) bool {
+    assert(self.an.vty.len == self.an.nv);
     var budget: u32 = max_visits;
     return constFree(self, v0, 0, false, &budget);
 }
-
-/// The most operand visits one `constFree` walk makes before it answers
-/// false (the safe side: no collapse, or no guard). The walk does not
-/// memoize, so a DAG that shares its operands (`x = x*x + x` repeated) is
-/// exponential in its depth, and the depth cap alone still allows 2^64.
-const max_visits = 1 << 16;
 
 fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool, budget: *u32) bool {
     if (depth > 64 or budget.* == 0) return false;
@@ -355,6 +383,7 @@ fn zeroOnEveryPath(self: Input, v0: Mir.Value, depth: u32) bool {
 /// read of an unknown is its `block_param` value, so this is a scan of the
 /// value table, run once per collapse candidate (a model has few).
 fn unknownProbed(self: Input, u: u32) bool {
+    assert(u != none_u32);
     for (Mir.Value.first_dynamic..self.an.nv) |i| {
         const def = self.mir.valueDef(@fromBackingInt(@intCast(i)));
         if (def == .block_param and def.block_param == u) return true;
@@ -371,6 +400,7 @@ fn unknownProbed(self: Input, u: u32) bool {
 /// branch row, and catastrophic cancellation when its LU eliminates the short.
 /// Asserts that `branch_u` has one entry per contribution.
 fn collapsePairs(self: Input, branch_u: []const u32) Error![]CollapsePair {
+    assert(branch_u.len == self.lowered.contributions.items.len);
     assert(branch_u.len == self.lowered.contributions.items.len);
     var out: std.ArrayList(CollapsePair) = .empty;
     const np: u32 = @intCast(self.lowered.num_ports);
@@ -409,7 +439,23 @@ fn collapsePairs(self: Input, branch_u: []const u32) Error![]CollapsePair {
     return out.items;
 }
 
-const Fixture = @import("prove").Fixture;
+/// A V(a,b) switch row retained under `flag`, its `<+ 0` arm, and branch
+/// current 3; nets p (a port), a, b. Returns the planned pairs.
+fn switchPairs(f: *Fixture, flag_of: enum { param, temperature, probe }, probe_flow: bool) ![]CollapsePair {
+    const a = f.alloc();
+    f.lowered.num_ports = 1;
+    try f.lowered.params.append(a, .{ .name = "rs", .ty = .real, .default = .f_zero });
+    const x = switch (flag_of) {
+        .param => try f.mir.addParamRef(a, 0),
+        .temperature => try f.call("$temperature", &.{}),
+        .probe => try f.probe(1),
+    };
+    const flag = try f.mir.emit(a, .entry, .select, &.{ try f.mir.emit(a, .entry, .fgt, &.{ x, .f_zero }), .f_one, .f_zero });
+    if (probe_flow) _ = try f.probe(3);
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = 2, .wrote_val = flag });
+    const an = try f.analysis();
+    return collapsePairs(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{3});
+}
 
 test "a probed flow no source defines is free; one a potential source drives is not" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -530,24 +576,6 @@ test "zeroOnEveryPath: a select or phi of zeros is zero; one nonzero arm is not"
     // The walk gives up past depth 16: unknown is not zero.
     try std.testing.expect(!zeroOnEveryPath(in, nested, 17));
     try std.testing.expect(!zeroOnEveryPath(in, c, 0));
-}
-
-/// A V(a,b) switch row retained under `flag`, its `<+ 0` arm, and branch
-/// current 3; nets p (a port), a, b. Returns the planned pairs.
-fn switchPairs(f: *Fixture, flag_of: enum { param, temperature, probe }, probe_flow: bool) ![]CollapsePair {
-    const a = f.alloc();
-    f.lowered.num_ports = 1;
-    try f.lowered.params.append(a, .{ .name = "rs", .ty = .real, .default = .f_zero });
-    const x = switch (flag_of) {
-        .param => try f.mir.addParamRef(a, 0),
-        .temperature => try f.call("$temperature", &.{}),
-        .probe => try f.probe(1),
-    };
-    const flag = try f.mir.emit(a, .entry, .select, &.{ try f.mir.emit(a, .entry, .fgt, &.{ x, .f_zero }), .f_one, .f_zero });
-    if (probe_flow) _ = try f.probe(3);
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = 2, .wrote_val = flag });
-    const an = try f.analysis();
-    return collapsePairs(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{3});
 }
 
 test "collapsePairs: a build-time 0 V switch collapses the higher internal net onto the lower" {

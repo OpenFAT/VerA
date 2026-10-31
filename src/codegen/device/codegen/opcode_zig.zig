@@ -1,14 +1,21 @@
-//! Backend facts per `Mir.Opcode`: how each is spelled in Zig, one comptime
-//! row per opcode. `src/ir/opcode.zig` holds the IR half. `EnumArray.init`
-//! has no defaults, so a new opcode does not compile until its row is filled.
-//! LRM clauses cited: §3.2.2, §4.3, §4.3.1 (Table 4-14), §4.3.2 (Table 4-15),
-//! §6.3.4.
+//! Backend facts per `Mir.Opcode`: an opcode in, how it is spelled in Zig
+//! out, one comptime row per opcode. `src/ir/opcode.zig` holds the IR half.
+//! `EnumArray.init` has no defaults, so a new opcode does not compile until
+//! its row is filled.
+//! Cites: §3.2.2, §4.3, §4.3.1 (Table 4-14), §4.3.2 (Table 4-15), §6.3.4.
+//!
+//! Contents:
+//! - `pub const Spell = union(enum)`
+//! - `pub const Row = struct`
+//! - `pub const table`
+//! - `pub fn get(op: Mir.Opcode) Row`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 
 /// How `render.renderOp` writes an opcode over `S`.
-const Spell = union(enum) {
+pub const Spell = union(enum) {
     /// Written by hand in `renderOp`: arithmetic with its scalar fast paths,
     /// comparisons, integer ops, casts, latches, and the control opcodes.
     custom,
@@ -137,10 +144,29 @@ pub const table = std.EnumArray(Mir.Opcode, Row).init(.{
     .call = .{ .s = .custom, .pins_lanes = false, .host_f64 = null, .dev_safe = false, .libm = false },
 });
 
-/// Returns `op`'s row.
-pub fn get(op: Mir.Opcode) Row {
-    return table.get(op);
+comptime {
+    // The shape `get` promises of every row, checked once at build time.
+    @setEvalBranchQuota(20_000);
+    for (std.enums.values(Mir.Opcode)) |op| {
+        const r = table.get(op);
+        // A GPU form is a host form, and a libm call is not one.
+        if (r.dev_safe) assert(r.host_f64 != null);
+        if (r.libm) assert(!r.dev_safe);
+        // A host spelling wraps a unary's one operand or a binary's two.
+        if (r.host_f64) |h| assert(h.len == 2 or h.len == 3);
+    }
 }
+
+/// Returns `op`'s row. Every row satisfies the comptime checks above: a
+/// `dev_safe` row has a host spelling and a `libm` row is not `dev_safe`.
+pub fn get(op: Mir.Opcode) Row {
+    const r = table.get(op);
+    if (r.libm) assert(!r.dev_safe);
+    if (r.host_f64) |h| assert(h.len >= 2);
+    return r;
+}
+
+// ---- private ----
 
 test "opcode_zig: every row agrees with the IR table's shape" {
     for (std.meta.tags(Mir.Opcode)) |op| {
