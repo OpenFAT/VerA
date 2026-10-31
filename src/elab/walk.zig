@@ -302,7 +302,7 @@ fn startInstance(self: *Flatten, lv: *Level) design.Error!bool {
     const auto = idx >= lv.src.len;
     lv.gate = if (idx < module.instances.len or auto) .none else lv.gates[idx - module.instances.len];
     // §3.6.5, the structural half: an actual that names nothing `module`
-    // declared is an implicit net (see `design.Design.implicit_nets`).
+    // declared is an implicit net (see `Design.implicit_nets`).
     // Collected here, not in `inlineInstance`, because only this loop
     // still has `module` in hand; one level down the names are flat.
     // Reads the source's own connections, not `plan`'s segments.

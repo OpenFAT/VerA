@@ -96,11 +96,43 @@ pub const UnitIndex = struct {
 /// port this pass could not decide is judged after the walk
 /// (`insert.checkUnbridged`, E0929).
 pub fn up(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: Ast.StrId, depth: u32) design.Error!Seg {
-    const file = self.ctx.file;
-    if (self.seg.up.getAdapted(flat_name.PathKey{ .path = path, .local = file.str(net) }, flat_name.PathKey.Context{})) |s| return s;
-    const answer = try compute(self, module, path, net, depth);
-    try self.seg.up.put(self.ctx.arena, try self.ctx.arena.print("{s}{s}", .{ path, file.str(net) }), answer);
-    return answer;
+    if (memo(self, path, net)) |s| return s;
+    const a = self.ctx.arena;
+    const on_before = self.seg.on.items.len;
+    // The climb, on a heap stack: one frame per segment being resolved. A
+    // frame's module is on `seg.on` while it is open, and a module already
+    // there opens no frame, so the stack holds at most one frame per module.
+    var stack: std.ArrayList(Frame) = .empty;
+    switch (try enter(self, module, path, net, depth)) {
+        .done => |s| return remember(self, path, net, s),
+        .open => |f| try stack.append(a, f),
+    }
+    while (true) {
+        assert(stack.items.len <= self.ctx.file.modules.len);
+        assert(self.seg.on.items.len == on_before + stack.items.len);
+        const top = &stack.items[stack.items.len - 1];
+        if (nextPort(self, top)) |c| {
+            const child = memo(self, c.path, c.port) orelse switch (try enter(self, c.module, c.path, c.port, top.depth + 1)) {
+                .done => |s| try remember(self, c.path, c.port, s),
+                .open => |f| {
+                    try stack.append(a, f);
+                    continue;
+                },
+            };
+            if (child.domain != .unspecified) try top.below.append(a, child);
+            continue;
+        }
+        var done = stack.pop().?;
+        // Every frame above this one was closed, so its own push is on top.
+        assert(self.seg.on.items[self.seg.on.items.len - 1] == done.module.name);
+        _ = self.seg.on.pop();
+        const s = try remember(self, done.path, done.net, try combine(self, &done));
+        if (stack.items.len == 0) {
+            assert(self.seg.on.items.len == on_before);
+            return s;
+        }
+        if (s.domain != .unspecified) try stack.items[stack.items.len - 1].below.append(a, s);
+    }
 }
 
 /// The segment on the lower connection of a port whose upper connection
@@ -134,8 +166,47 @@ pub fn down(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net
 
 // ---- private ----
 
-fn compute(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: Ast.StrId, depth: u32) design.Error!Seg {
+/// One open segment of `up`'s climb: the segment, its children's answers so
+/// far, and where it is in its list of child ports.
+const Frame = struct {
+    module: *const Ast.ModuleDecl,
+    path: []const u8,
+    net: Ast.StrId,
+    depth: u32,
+    behavioral: bool,
+    /// The wide unit's table (`indexOf`), whose ports on `net` are visited;
+    /// null for a narrow unit, whose `kids` are scanned.
+    ports: []const PortOn,
+    kids: []const walk.TreeKid,
+    /// The next entry of `ports`, or of `kids` and that kid's port list.
+    next: u32 = 0,
+    port: u32 = 0,
+    /// The answers of the child segments of known domain.
+    below: std.ArrayList(Seg) = .empty,
+};
+
+/// What `enter` made of a segment: answered at once, or open.
+const Entered = union(enum) { done: Seg, open: Frame };
+
+/// `up`'s memo for segment `path ++ net`, if this level has answered it.
+fn memo(self: *Flatten, path: []const u8, net: Ast.StrId) ?Seg {
+    return self.seg.up.getAdapted(flat_name.PathKey{ .path = path, .local = self.ctx.file.str(net) }, flat_name.PathKey.Context{});
+}
+
+/// Records `s` as segment `path ++ net`'s answer and returns it.
+fn remember(self: *Flatten, path: []const u8, net: Ast.StrId, s: Seg) design.Error!Seg {
+    const before = self.seg.up.count();
+    try self.seg.up.put(self.ctx.arena, try self.ctx.arena.print("{s}{s}", .{ path, self.ctx.file.str(net) }), s);
+    assert(self.seg.up.count() == before + 1);
+    return s;
+}
+
+/// The part of a segment's answer that needs no child: its declaration (steps
+/// 2 and 3), or, for a module already being climbed, its own behavioral use.
+/// Otherwise opens it: pushes its module on `seg.on` and lists its children.
+fn enter(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: Ast.StrId, depth: u32) design.Error!Entered {
     const file = self.ctx.file;
+    if (path.len != 0) assert(path[path.len - 1] == sep);
     // ponytail: a narrow unit (under 16 ports, nets and children) is scanned
     // per net: building its table cost more than the scans on a 2^10-leaf
     // binary tree (callgrind). The table is for the wide ones, where the
@@ -144,49 +215,67 @@ fn compute(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net:
     const index = if (module.ports.len + module.nets.len + kid_count < 16) null else try indexOf(self, module, path, depth);
     const declared = if (index) |ix| ix.declared.get(net) else declaredIn(module, net);
     if (ooc.oocDisciplineBelow(self, path, net) orelse declared) |d|
-        return ofDiscipline(file, d, true);
+        return .{ .done = ofDiscipline(file, d, true) };
     // §3.6.2.4: "If the net is referenced in behavioral code, then it shall
     // be treated as having no discipline with a domain binding of discrete."
     const behavioral = digitalUse(file, module, net);
     if (std.mem.findScalar(Ast.StrId, self.seg.on.items, module.name) != null)
-        return .{ .domain = if (behavioral) .discrete else .unspecified, .behavioral = behavioral };
-    const on = self.seg.on.items.len;
+        return .{ .done = .{ .domain = if (behavioral) .discrete else .unspecified, .behavioral = behavioral } };
     try self.seg.on.append(self.ctx.arena, module.name);
-    // Every nested climb pops what it pushed, so this frame's own push is
-    // on top when it returns.
-    defer {
-        assert(self.seg.on.items.len == on + 1);
-        _ = self.seg.on.pop();
-    }
-    var below: std.ArrayList(Seg) = .empty;
+    var f: Frame = .{ .module = module, .path = path, .net = net, .depth = depth, .behavioral = behavioral, .ports = &.{}, .kids = &.{} };
     if (index) |ix| {
-        if (ix.ports.get(net)) |list| for (list.items) |c| {
-            const s = try up(self, c.kid.module, c.kid.path, c.port, depth + 1);
-            if (s.domain != .unspecified) try below.append(self.ctx.arena, s);
-        };
-    } else for (try kidsOf(self, module, path, depth)) |kid| {
-        if (kid.module.is_connect) continue;
-        for (kid.module.ports, 0..) |p, pi| {
-            const ci = connect_rule.connIndex(kid.inst, p, pi) orelse continue;
-            if (lookup.netRefName(self, kid.inst.ports[ci].expr) != net) continue;
-            const s = try up(self, kid.module, kid.path, p.name, depth + 1);
-            if (s.domain != .unspecified) try below.append(self.ctx.arena, s);
-        }
+        if (ix.ports.get(net)) |list| f.ports = list.items;
+    } else f.kids = try kidsOf(self, module, path, depth);
+    assert(f.ports.len == 0 or f.kids.len == 0);
+    return .{ .open = f };
+}
+
+/// The next child port of `f`'s segment: on `f.net`, of a child that is no
+/// connect module. Null when every one was visited.
+fn nextPort(self: *Flatten, f: *Frame) ?struct { module: *const Ast.ModuleDecl, path: []const u8, port: Ast.StrId } {
+    if (f.ports.len != 0) {
+        if (f.next == f.ports.len) return null;
+        const c = f.ports[f.next];
+        f.next += 1;
+        return .{ .module = c.kid.module, .path = c.kid.path, .port = c.port };
     }
-    var domain: Ast.DisciplineDecl.Domain = if (behavioral) .discrete else .unspecified;
-    if (!behavioral) for (below.items) |s| {
-        assert(s.domain != .unspecified); // only known domains are kept above
+    while (f.next < f.kids.len) {
+        const kid = f.kids[f.next];
+        if (kid.module.is_connect or f.port == kid.module.ports.len) {
+            f.next += 1;
+            f.port = 0;
+            continue;
+        }
+        const pi = f.port;
+        f.port += 1;
+        const p = kid.module.ports[pi];
+        const ci = connect_rule.connIndex(kid.inst, p, pi) orelse continue;
+        if (lookup.netRefName(self, kid.inst.ports[ci].expr) != f.net) continue;
+        return .{ .module = kid.module, .path = kid.path, .port = p.name };
+    }
+    assert(f.next == f.kids.len);
+    return null;
+}
+
+/// F.2.1/F.2.2 step 4 over a closed frame's children: continuous if any
+/// child is, discrete if any is (or the segment's own behavioral use says
+/// so), unknown otherwise; 4.b then picks among that domain's disciplines.
+fn combine(self: *Flatten, f: *const Frame) design.Error!Seg {
+    var domain: Ast.DisciplineDecl.Domain = if (f.behavioral) .discrete else .unspecified;
+    if (!f.behavioral) for (f.below.items) |s| {
+        assert(s.domain != .unspecified); // only known domains are kept
         if (s.domain == .continuous) domain = .continuous;
         if (s.domain == .discrete and domain == .unspecified) domain = .discrete;
     };
     if (domain == .unspecified) return .{};
     var cands: std.ArrayList(Ast.StrId) = .empty;
-    for (below.items) |s| {
+    for (f.below.items) |s| {
         if (s.domain != domain or s.disc == .none) continue;
         if (std.mem.findScalar(Ast.StrId, cands.items, s.disc) == null)
             try cands.append(self.ctx.arena, s.disc);
     }
-    return .{ .disc = try resolve.levelCandidates(self, cands.items), .domain = domain, .behavioral = behavioral };
+    assert(cands.items.len <= f.below.items.len);
+    return .{ .disc = try resolve.levelCandidates(self, cands.items), .domain = domain, .behavioral = f.behavioral };
 }
 
 fn ofDiscipline(file: *const Ast.SourceFile, d: Ast.StrId, declared: bool) Seg {

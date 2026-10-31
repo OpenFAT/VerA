@@ -99,7 +99,7 @@ pub fn collectOoc(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u
 /// ponytail: an out-of-context declaration that matched nothing is not
 /// diagnosed as an unmatched `defparam` is (E0907): from here it cannot be
 /// told apart from a legal form this pass does not reach. The upgrade is a
-/// `used` flag on `ooc`, like `defparam.Defparam.used`.
+/// `used` flag on `ooc`, like `Defparam.used`.
 pub fn oocDiscipline(self: *Flatten, path: []const u8, local: Ast.StrId) ?Ast.StrId {
     return oocIn(&self.oocs.decls, self, path, local);
 }

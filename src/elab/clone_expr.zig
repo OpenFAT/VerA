@@ -338,7 +338,7 @@ fn ownPortFlow(self: *Flatten, e: Ast.ExprId) ?Ast.StrId {
 }
 
 /// §5.4.3 whether the walk split this unit's `port` onto an internal net of
-/// its own (`design.Design.port_ammeters`), so its flow is a probe lowering reads.
+/// its own (`Design.port_ammeters`), so its flow is a probe lowering reads.
 fn ammetered(self: *Flatten, port: Ast.StrId) bool {
     const flat = self.unit.rename.get(port) orelse return false;
     for (self.out.port_ammeters.items) |am| if (am.internal == flat) return true;
@@ -389,7 +389,7 @@ test readsName {
 }
 
 test "§5.4.3 a child reading the flow into its own port gets a net of its own; the top reading its own does not" {
-    // The read port is split off the parent's net (`design.Design.port_ammeters`),
+    // The read port is split off the parent's net (`Design.port_ammeters`),
     // so the flow into it is the branch between the two; the top's port is
     // the host's, its `I(<p>)` its own exact unknown.
     var own: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };

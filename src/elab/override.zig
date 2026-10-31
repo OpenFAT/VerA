@@ -195,7 +195,7 @@ pub fn parameterBinding(self: *Flatten, inst: *const Ast.Instance, params: []con
 /// Folds `e` to a real, or null: §2.6 literals, the A.2.5 infinities, and
 /// every operator over them, through the shared constant kernel, so `1/2` is
 /// §4.2.4's integer division as in lowering. This literal-only helper checks
-/// §9.18 domains without freezing host inputs; selection uses paramset_select.ParamsetEnv.
+/// §9.18 domains without freezing host inputs; selection uses ParamsetEnv.
 pub fn constReal(self: *Flatten, e: Ast.ExprId) ?f64 {
     const c = constfold.fold(self.ctx.file, e, constfold.literal_env) orelse return null;
     return if (c == .str) null else c.asReal();
@@ -204,7 +204,7 @@ pub fn constReal(self: *Flatten, e: Ast.ExprId) ?f64 {
 /// §9.18/Table 9-29 domains, checked when the specified expression folds
 /// without the model card. Every override mechanism uses this same check.
 /// A value that reads the card is recorded for the card-time `checkCard`
-/// instead (`design.Design.system_checks`), under the name `path$kind`.
+/// instead (`Design.system_checks`), under the name `path$kind`.
 pub fn checkSystemParam(self: *Flatten, kind: hier_param.Kind, tok: u32, e: Ast.ExprId, path: []const u8) design.Error!bool {
     if (constfold.firstStateRead(self.ctx.file, e, self.decls.vars.items)) |what| {
         try self.err(tok, .E0363, "`{s}` override reads `{s}`", .{ kind.name(), what });

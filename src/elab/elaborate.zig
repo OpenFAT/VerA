@@ -327,14 +327,14 @@ test "§6.3.6 a scaled instance's flow contribution is multiplied, its flow prob
     const x = &f.file.exprs;
     try std.testing.expectEqual(@as(usize, 2), dsg.top.analog.len);
 
-    // connect_rule.Rule 1: the FLOW contribution's value is `V(a,b) * 4.0`. The left-hand
+    // Rule 1: the FLOW contribution's value is `V(a,b) * 4.0`. The left-hand
     // side is untouched: it names the branch and is not a read of it.
     const flow = f.file.stmt(dsg.top.analog[0].body).contribute;
     try std.testing.expectEqual(Ast.ExprTag.branch_access, x.tag(flow.lhs));
     try std.testing.expectEqual(Ast.BinaryOp.mul, x.binOp(flow.rhs));
     try std.testing.expectEqual(@as(f64, 4.0), x.realValue(x.rhs(flow.rhs)));
 
-    // connect_rule.Rule 2: the POTENTIAL contribution is not scaled, but the flow probe
+    // Rule 2: the POTENTIAL contribution is not scaled, but the flow probe
     // inside it is divided: one instance of 4 copies carries a quarter each.
     const pot = f.file.stmt(dsg.top.analog[1].body).contribute;
     try std.testing.expectEqual(Ast.ExprTag.branch_access, x.tag(pot.lhs));

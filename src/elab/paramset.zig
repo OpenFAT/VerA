@@ -171,7 +171,7 @@ pub fn paramsetOverrides(
 /// link's variables are declared under `path ++ link ++ sep` (where its
 /// parameters are) and its statements cloned into `stmts`, far link first
 /// as the module assignments are; a described variable is reported as the
-/// instance's own (`design.Design.ps_outputs`). §6.4.3's `.gm` reads the module's
+/// instance's own (`Design.ps_outputs`). §6.4.3's `.gm` reads the module's
 /// `gm` of this instance. Each link's statements run in its own unit
 /// (`units`, parallel to `chain`), so they read that link's parameters.
 fn paramsetStatements(

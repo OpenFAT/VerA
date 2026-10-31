@@ -114,7 +114,7 @@ pub fn namesUnnamedGen(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, na
 }
 
 /// Returns `path ++ local`, interned. The flat name is the §6.7 path, so the
-/// path table (`design.Design.names`) needs no row for it.
+/// path table (`Design.names`) needs no row for it.
 pub fn join(self: *Flatten, path: []const u8, local: Ast.StrId) design.Error!Ast.StrId {
     const s = try self.ctx.arena.print("{s}{s}", .{ path, self.ctx.file.str(local) });
     return self.ctx.file.intern(self.ctx.arena, s);

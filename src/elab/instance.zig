@@ -44,7 +44,7 @@ pub fn inlineInstance(
     path: []const u8,
     gate: Ast.ExprId,
 ) Error!*const Unit {
-    // `walk.nextChild` spells every child path `parent ++ leaf ++ sep`.
+    // `nextChild` spells every child path `parent ++ leaf ++ sep`.
     assert(path.len != 0);
     assert(path[path.len - 1] == sep);
     const units_before = self.out.units.len;

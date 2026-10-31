@@ -351,8 +351,8 @@ fn strInRanges(self: *Flatten, s: []const u8, ranges: []const Ast.ValueRange) bo
 const fixture = @import("fixture.zig");
 
 test "§6.4.2 ties: the greatest number of ranged localparams, then the fewest unconnected ports; still tied is E0914" {
-    // connect_rule.Rule 1 ties both pairs below (each leaves its one parameter `l` at its
-    // default). connect_rule.Rule 2 then picks the paramset whose localparam has a range.
+    // Rule 1 ties both pairs below (each leaves its one parameter `l` at its
+    // default). Rule 2 then picks the paramset whose localparam has a range.
     var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
     defer f.deinit();
     try fixture.parse(&f,

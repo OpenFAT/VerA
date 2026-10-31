@@ -56,7 +56,7 @@ ctx: design.Ctx,
 /// `error.DiagnosticsReported` after the walk, so one design reports every
 /// error it has rather than the first.
 had_error: bool = false,
-/// §6.6 every module's generate-block instances (`generate.genInstanceList`),
+/// §6.6 every module's generate-block instances (`genInstanceList`),
 /// indexed like `ctx.file.modules`; read through `genInstancesOf`. Built once
 /// by `elaborate`, read-only after.
 gen_instances: []const []const Ast.Instance,
@@ -92,7 +92,7 @@ expression_aliases: std.ArrayList(Ast.AliasParam) = .empty,
 /// The rename map in force while cloning the current unit's body, plus the
 /// per-instance rewrites §9.19 and §9.18 need.
 unit: Unit = .{},
-/// True while `paramset.paramsetOverrides` clones text written inside a §6.4
+/// True while `paramsetOverrides` clones text written inside a §6.4
 /// paramset body, the one scope §9.13.1/§9.13.2 admit a distribution call's
 /// `type_string` in. Read by `clone_expr.cloneExpr`'s sys_call arm.
 in_paramset: bool = false,
@@ -256,7 +256,7 @@ const fate: std.enums.EnumFieldStruct(std.meta.FieldEnum(Ast.ModuleDecl), Fate, 
 };
 
 /// Returns `m`'s §6.6 generate-block instances. Asserts that `m` is a row of
-/// `ctx.file.modules` (what `lookup.findModule` returns), not a copy.
+/// `ctx.file.modules` (what `findModule` returns), not a copy.
 pub fn genInstancesOf(self: *const Flatten, m: *const Ast.ModuleDecl) []const Ast.Instance {
     const mods = self.ctx.file.modules;
     assert(@intFromPtr(m) >= @intFromPtr(mods.ptr));

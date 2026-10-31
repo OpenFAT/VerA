@@ -38,7 +38,7 @@ const LocalAccess = struct { name: Ast.StrId, local_only: bool = false };
 /// natureless or domainless parent, compatible with the child's), there is no
 /// spelling to respell to: the access keeps the child's name and is recorded
 /// `local_only`, so lowering does not judge it again against the net
-/// (`design.Design.local_accesses`).
+/// (`Design.local_accesses`).
 ///
 /// ponytail: the respelling uses the net's discipline as known at the join;
 /// a §7.7.2 `resolveto` re-decided after the walk (`resolveMultiCandidates`)

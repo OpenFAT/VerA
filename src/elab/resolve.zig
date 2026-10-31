@@ -88,7 +88,7 @@ pub const PendingAttribute = struct { expr: Ast.ExprId, net: Ast.StrId, path: []
 
 /// §7.4.1's levels of one flattened net: its arrivals grouped by the arrival
 /// each reached the net through (`levelOf`), built once per net by `levelsOf`
-/// so `resolveLevel` visits every arrival once. walk.Level `g < paths.len` holds
+/// so `resolveLevel` visits every arrival once. Level `g < paths.len` holds
 /// the arrivals directly below arrival g; level `paths.len` the net's own.
 const Levels = struct {
     /// `members[start[g]..start[g + 1]]` is level g, in arrival order.
@@ -142,7 +142,7 @@ pub fn noteDiscipline(self: *Flatten, name: Ast.StrId, disc: Ast.StrId) design.E
 /// most one matching-domain candidate arrives. Every arrival is also recorded
 /// in `segs`, and `resolveMultiCandidates` re-decides the rest after the walk.
 ///
-/// §3.11's Signal Connection connect_rule.Rule is judged here, the last place both
+/// §3.11's Signal Connection Rule is judged here, the last place both
 /// segments are visible: "It shall be an error to connect two ports or nets
 /// of the same domain with incompatible disciplines" (E0355). A segment of
 /// the other domain is §7.4.4's connect-module question.
@@ -347,22 +347,46 @@ fn levelsOf(arena: std.mem.Allocator, paths: []const []const u8) design.Error!Le
 /// children. `lv` is `s`'s levels; with the `resolved` memo, one net's
 /// resolution visits each arrival once (#75: a scan of every arrival per
 /// level, each through `levelOf`, was cubic in the instance count).
-fn resolveLevel(self: *Flatten, net: Ast.StrId, s: anytype, lv: *const Levels, group: ?usize) design.Error!?Ast.StrId {
+fn resolveLevel(self: *Flatten, net: Ast.StrId, s: *Segs, lv: *const Levels, group: ?usize) design.Error!?Ast.StrId {
     // `resolveDiscipline` appends the two columns together.
     assert(s.discs.items.len == s.paths.items.len);
     if (group) |g| assert(g < s.discs.items.len);
     if (group) |g| if (s.resolved.get(@intCast(g))) |cached| return cached;
-    const members = lv.of(group orelse s.discs.items.len);
-    var discs: std.ArrayList(Ast.StrId) = try .initCapacity(self.ctx.arena, members.len);
-    for (members) |i| {
-        const d = s.discs.items[i];
-        const v = if (d != .none) d else (try resolveLevel(self, net, s, lv, i)) orelse continue;
-        discs.appendAssumeCapacity(v);
+    // The levels below `group`, on a heap stack, each closed before the one
+    // above it: an arrival's level is a strictly shorter path, so the stack
+    // holds at most one frame per arrival plus the net's own level.
+    const Frame = struct { group: ?usize, members: []const u32, next: usize = 0, discs: std.ArrayList(Ast.StrId) };
+    const a = self.ctx.arena;
+    var stack: std.ArrayList(Frame) = .empty;
+    const first = lv.of(group orelse s.discs.items.len);
+    try stack.append(a, .{ .group = group, .members = first, .discs = try .initCapacity(a, first.len) });
+    while (true) {
+        assert(stack.items.len <= s.discs.items.len + 1);
+        const top = &stack.items[stack.items.len - 1];
+        if (top.next < top.members.len) {
+            const i = top.members[top.next];
+            top.next += 1;
+            const d = s.discs.items[i];
+            if (d != .none) {
+                top.discs.appendAssumeCapacity(d);
+            } else if (s.resolved.get(i)) |cached| {
+                if (cached) |v| top.discs.appendAssumeCapacity(v);
+            } else {
+                const below = lv.of(i);
+                try stack.append(a, .{ .group = i, .members = below, .discs = try .initCapacity(a, below.len) });
+            }
+            continue;
+        }
+        const done = stack.pop().?;
+        const answer = try levelAnswer(self, net, s.tok, done.discs.items);
+        if (done.group) |g| try s.resolved.put(a, @intCast(g), answer);
+        if (answer) |disc| try noteSignalDiscipline(self, net, disc);
+        if (stack.items.len == 0) {
+            assert(done.group == group);
+            return answer;
+        }
+        if (answer) |v| stack.items[stack.items.len - 1].discs.appendAssumeCapacity(v);
     }
-    const answer = try levelAnswer(self, net, s.tok, discs.items);
-    if (group) |g| try s.resolved.put(self.ctx.arena, @intCast(g), answer);
-    if (answer) |disc| try noteSignalDiscipline(self, net, disc);
-    return answer;
 }
 
 /// Annex F.2.1 step 4 over one level's candidate disciplines.
