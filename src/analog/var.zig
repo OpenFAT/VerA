@@ -13,7 +13,7 @@
 //! declaration, not at the statement that reveals it; then `declareVarDecl`
 //! per declaration; `checkScratchOwners` after every declaration is in.
 //! After lowering, the spine hands `dropHeld` the held rows `prove`'s
-//! `pruneHeld` found unobservable: lowering stays the one writer of
+//! `prove.held.prune` found unobservable: lowering stays the one writer of
 //! `held_vars`.
 //!
 //! Cites: A.2.7, §2.9, §3.2, §3.2.2, §3.3, §3.4.4, §3.4.8, §3.6.2, §4.2.2,

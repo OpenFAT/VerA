@@ -46,7 +46,7 @@ pub const HeldFrame = struct { prefix: []const u8, vars: []const Ast.VarDecl };
 /// evaluation (`avar = avar`: what it reads is what the last evaluation
 /// wrote). The rest are `.unless_invariant`: no read precedes a write, so the
 /// held value is seen only if whether a write runs changes between
-/// evaluations, which `pruneHeld` (prove/setup.zig) decides and `dropHeld`
+/// evaluations, which `prove.held.prune` decides and `dropHeld`
 /// applies.
 ///
 /// §3.2.2 an array is its scalarized elements, so a write whose subscripts
@@ -420,7 +420,7 @@ pub fn markMemArrays(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     }
 }
 
-/// §3.2 applies `prove.setup.pruneHeld`'s mask: drops every `held_vars` row
+/// §3.2 applies `prove.held.prune`'s mask: drops every `held_vars` row
 /// whose `keep` flag is false and renumbers the `mem_arrays` rows that point
 /// at a kept one. The MIR side (the seeds' row arguments) is already
 /// renumbered the same way, densely over the kept rows in order. Asserts the

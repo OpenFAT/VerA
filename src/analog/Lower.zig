@@ -295,7 +295,7 @@ pub const Case = harness.Case;
 pub const expectBodies = harness.expectBodies;
 /// A node's §1.3.1 display name, for diagnostics and tests.
 pub const nodeName = lower_node.nodeName;
-/// Applies `prove.setup.pruneHeld`'s held-row mask to `Lowered`.
+/// Applies `prove.held.prune`'s held-row mask to `Lowered`.
 pub const dropHeld = lower_held.dropHeld;
 /// Reports whether a §9.15 simulation parameter is answered at run time.
 pub const simparamIsRuntime = Lowered.simparamIsRuntime;
