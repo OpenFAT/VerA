@@ -78,7 +78,7 @@ pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "
         // taken place", so whether it was already on is not asked.
         // Turning it off is silent.
         .monitor_enable => |on| {
-            self.monitor_on = on;
+            self.monitoring.on = on;
             if (on) try display.monitorPrint(self, scratch);
         },
         .timeformat => {

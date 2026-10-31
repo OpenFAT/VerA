@@ -6,7 +6,7 @@
 //! timer-based, when its limit elapses: `expired`), §15.3.4's pulse width,
 //! §15.3.5's period or §15.3.6's level window. A violation is reported
 //! (W1199), toggles the notifier (§15.5, Table 15-13) and calls
-//! `Run.tchk_hook` (VAMS 12.31.4 cbTchkViolation). A form this file does
+//! `Run.checks.hook` (VAMS 12.31.4 cbTchkViolation). A form this file does
 //! not evaluate (a negative $nochange end offset) is refused by name
 //! (E1149), never accepted and ignored.
 //!
@@ -152,6 +152,20 @@ pub const Flags = packed struct(u8) {
     _: u4 = 0,
 };
 
+/// IEEE 1364-2005 §15 a run's timing checks: one row per check, in
+/// elaboration order; the rows each watched slot's change reaches; the
+/// §15.5.1 delays of each row's reference [0] and data [1] signal (parallel
+/// to `rows`, empty when no negative limit made one, `solveNegative`); and
+/// the host's violation callback (VAMS 12.31.4 cbTchkViolation, installed by
+/// the VPI; nothing in the engine reads it).
+pub const Checks = struct {
+    rows: std.ArrayList(Tchk) = .empty,
+    /// The checks a watched slot wakes, each as `check * 2 + event`.
+    by_slot: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty,
+    delay: std.ArrayList([2]u64) = .empty,
+    hook: ?*const fn (r: *Run, check: u32) void = null,
+};
+
 /// One timing check of one instance.
 pub const Tchk = struct {
     kind: Kind,
@@ -229,12 +243,12 @@ pub fn notifier(r: *Run, e: Ast.ExprId) Error!?u32 {
 /// Files every check under the slots its events watch. After `Run.watch`
 /// exists, so once per run.
 pub fn arm(r: *Run) Error!void {
-    assert(r.tchks.items.len < std.math.maxInt(u32) / 2); // `i * 2 + k` codes fit.
-    for (r.tchks.items, 0..) |c, i| {
+    assert(r.checks.rows.items.len < std.math.maxInt(u32) / 2); // `i * 2 + k` codes fit.
+    for (r.checks.rows.items, 0..) |c, i| {
         const n: usize = if (c.kind == .width or c.kind == .period) 1 else 2;
         for (c.ev[0..n], 0..) |ev, k| {
             r.watch[ev.slot].insert(.tchk);
-            const gop = try r.tchk_by_slot.getOrPut(r.arena, ev.slot);
+            const gop = try r.checks.by_slot.getOrPut(r.arena, ev.slot);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(r.arena, @intCast(i * 2 + k));
             assert(r.watch[ev.slot].contains(.tchk));
@@ -249,7 +263,7 @@ pub fn putLimits(r: *Run, scope: u32, tok: u32, ticks: []const u64) bool {
     assert(ticks.len <= 2);
     assert(scope < r.scope_info.items.len);
     var hit = false;
-    for (r.tchks.items) |*c| {
+    for (r.checks.rows.items) |*c| {
         if (c.scope != scope or c.tok != tok or ticks.len == 0) continue;
         switch (c.kind) {
             .setup, .removal, .width, .period => c.lim[0] = ticks[0],
@@ -274,14 +288,14 @@ pub fn putLimits(r: *Run, scope: u32, tok: u32, ticks: []const u64) bool {
 /// `before` to `after`: every check watching it judges the change.
 pub fn changed(r: *Run, slot: u32, before: Int.Bit, after: Int.Bit) Error!void {
     assert(slot < r.values.len);
-    const list = r.tchk_by_slot.get(slot) orelse return;
+    const list = r.checks.by_slot.get(slot) orelse return;
     for (list.items) |code| {
         const i = code / 2;
-        assert(i < r.tchks.items.len);
+        assert(i < r.checks.rows.items.len);
         const k: usize = code % 2;
-        const bit = transitionOf(r, &r.tchks.items[i].ev[k], before, after) orelse continue;
+        const bit = transitionOf(r, &r.checks.rows.items[i].ev[k], before, after) orelse continue;
         // §15.5.1 a delayed signal: the check sees the change later.
-        const delay = if (r.tchk_delay.items.len != 0) r.tchk_delay.items[i][k] else 0;
+        const delay = if (r.checks.delay.items.len != 0) r.checks.delay.items[i][k] else 0;
         if (delay != 0) {
             _ = try exec.enqueue(r, .{ .tchk_event = .{ .code = code, .bit = bit } }, delay, false);
             continue;
@@ -294,7 +308,7 @@ pub fn changed(r: *Run, slot: u32, before: Int.Bit, after: Int.Bit) Error!void {
 /// delayed signals as measured by the adjusted timing check values are in
 /// violation".
 pub fn delivered(r: *Run, code: u32, bit: u8) Error!void {
-    assert(code / 2 < r.tchks.items.len);
+    assert(code / 2 < r.checks.rows.items.len);
     try judge(r, code / 2, code % 2, bit);
 }
 
@@ -304,8 +318,8 @@ pub fn delivered(r: *Run, code: u32, bit: u8) Error!void {
 /// ran out, unless a later window or a data event retired it.
 /// $nochange's data event deferred to the inactive events is judged here.
 pub fn expired(r: *Run, i: u32, gen: u32) Error!void {
-    assert(i < r.tchks.items.len);
-    const c = &r.tchks.items[i];
+    assert(i < r.checks.rows.items.len);
+    const c = &r.checks.rows.items[i];
     if (c.kind == .nochange) return noChange(r, i, r.scheduler.now);
     if (!c.flags.active or c.gen != gen) return;
     sleep(c);
@@ -319,9 +333,9 @@ pub fn expired(r: *Run, i: u32, gen: u32) Error!void {
 /// and the data-first half of §15.2.3/§15.2.6), and the second of a
 /// simultaneous pair whose data event came first.
 pub fn reference(r: *Run, i: u32, now: u64) Error!void {
-    assert(i < r.tchks.items.len);
+    assert(i < r.checks.rows.items.len);
     assert(now == r.scheduler.now);
-    const c = &r.tchks.items[i];
+    const c = &r.checks.rows.items[i];
     if (try enabled(r, c.scope, c.stamp_cond)) c.at[0].note(now);
     if (!try enabled(r, c.scope, c.check_cond)) return;
     if (c.lim[0] > 0) if (c.at[1].earlier(now)) |d| if (d +| c.lim[0] > now) try violation(r, i, d, now);
@@ -416,9 +430,9 @@ fn enabled(r: *Run, scope: u32, cond: Ast.ExprId) Error!bool {
 /// Check `i`'s event `k` occurred if its edges name transition `bit` and
 /// its condition holds; judge the check.
 fn judge(r: *Run, i: u32, k: usize, bit: u8) Error!void {
-    assert(i < r.tchks.items.len);
+    assert(i < r.checks.rows.items.len);
     assert(k < 2);
-    const c = &r.tchks.items[i];
+    const c = &r.checks.rows.items[i];
     const now = r.scheduler.now;
     switch (c.kind) {
         // §15.3.4: "threshold < (timecheck time) - (timestamp time) < limit",
@@ -492,7 +506,7 @@ fn judge(r: *Run, i: u32, k: usize, bit: u8) Error!void {
 /// remain_active_flag is set (§15.3.2).
 fn skew(r: *Run, i: u32, k: usize, now: u64) Error!void {
     assert(k < 2);
-    const c = &r.tchks.items[i];
+    const c = &r.checks.rows.items[i];
     assert(c.kind == .skew or c.kind == .timeskew or c.kind == .fullskew);
     if (c.flags.active and k != c.flags.first) {
         const ts = c.at[0].last.?; // an open window has its timestamp
@@ -528,7 +542,7 @@ fn sleep(c: *Tchk) void {
 // (`judge`), so that pair still violates; judge in the monitor region if it
 // matters.
 fn noChange(r: *Run, i: u32, d: u64) Error!void {
-    const c = &r.tchks.items[i];
+    const c = &r.checks.rows.items[i];
     assert(c.kind == .nochange);
     const lead = c.at[0].last orelse return;
     const start: i64 = @bitCast(c.lim[0]);
@@ -561,9 +575,9 @@ fn simultaneous(c: *const Tchk) bool {
 /// time) + limit" (§15.2.2, §15.2.5, and the reference-first half of
 /// §15.2.3/§15.2.6); one report per data event's time.
 fn data(r: *Run, i: u32, now: u64) Error!void {
-    assert(i < r.tchks.items.len);
+    assert(i < r.checks.rows.items.len);
     assert(now == r.scheduler.now);
-    const c = &r.tchks.items[i];
+    const c = &r.checks.rows.items[i];
     if (try enabled(r, c.scope, c.stamp_cond)) c.at[1].note(now);
     if (!try enabled(r, c.scope, c.check_cond)) return;
     const ts = c.at[0].last orelse return;
@@ -579,9 +593,9 @@ fn data(r: *Run, i: u32, now: u64) Error!void {
 /// keeps one diagnostic per site, so a check's later violations add no
 /// warning), toggle its notifier (Table 15-13, VD-103), and tell the host.
 fn violation(r: *Run, i: u32, stamp: u64, check: u64) Error!void {
-    assert(i < r.tchks.items.len);
-    assert(stamp <= check or r.tchks.items[i].kind == .nochange);
-    const c = r.tchks.items[i];
+    assert(i < r.checks.rows.items.len);
+    assert(stamp <= check or r.checks.rows.items[i].kind == .nochange);
+    const c = r.checks.rows.items[i];
     if (r.bag.enabled(.W1199)) {
         var path: std.Io.Writer.Allocating = .init(r.arena);
         defer path.deinit();
@@ -596,7 +610,7 @@ fn violation(r: *Run, i: u32, stamp: u64, check: u64) Error!void {
         });
     }
     if (c.notifier) |at| try toggle(r, at);
-    if (r.tchk_hook) |hook| hook(r, i);
+    if (r.checks.hook) |hook| hook(r, i);
 }
 
 /// Table 15-13 on each bit of notifier `at`: 0 -> 1, 1 -> 0, z -> z, and

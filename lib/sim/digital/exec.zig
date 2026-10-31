@@ -132,7 +132,7 @@ pub const Pending = union(enum) {
     tchk_expiry: struct { check: u32, gen: u32 },
     /// IEEE 1364-2005 §15.5.1 a change of a timing check's signal reaching
     /// the check through its delayed signal (`tchk.delivered`): `code` the
-    /// `Run.tchk_by_slot` entry, `bit` the transition it made.
+    /// `Run.checks.by_slot` entry, `bit` the transition it made.
     tchk_event: struct { code: u32, bit: u8 },
 };
 

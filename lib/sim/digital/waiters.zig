@@ -274,8 +274,8 @@ pub fn requestAnalog(self: *Run) Error!void {
 /// value that changes and changes back within the step still "changes value",
 /// so it prints, with the settled values.
 pub fn requestMonitor(self: *Run) Error!void {
-    if (self.monitor == null or !self.monitor_on or self.monitor_pending) return;
-    self.monitor_pending = true;
+    if (self.monitoring.standing == null or !self.monitoring.on or self.monitoring.pending) return;
+    self.monitoring.pending = true;
     try exec.enqueueMonitor(self, .monitor_tick);
 }
 

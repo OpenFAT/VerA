@@ -43,15 +43,46 @@ const TimeFormat = fmt.TimeFormat;
 const display = @import("display.zig");
 const Show = display.Show;
 
+/// §17.1.3 the one standing monitor and §17.2.2 the `$fmonitor` tasks of a
+/// run, with what each report compares against.
+pub const Monitoring = struct {
+    /// The standing monitor. A second `$monitor` replaces it; there is no stack.
+    standing: ?Standing = null,
+    /// "any number of $fmonitor tasks can be set up to be simultaneously
+    /// active", each until an `$fclose` of its descriptor.
+    files: std.ArrayList(Standing) = .empty,
+    /// `monitorChanged` is evaluating a monitor's arguments, so a store that
+    /// evaluation makes asks nothing again.
+    evaluating: bool = false,
+    on: bool = true,
+    /// One `.monitor` event per timestep however many values moved.
+    pending: bool = false,
+    /// VAMS §7.3.6.3: the analog probes in the standing monitor's arguments,
+    /// operands no slot holds. With any, the monitor is checked at every time
+    /// step (`runUntil`), after the step's region-3b solve (§8.5.1 row 4), and
+    /// at every analog solution at a tick no digital event reached
+    /// (`analogPoint`), and reports when a probe's value moved (`monitorDue`).
+    probes: []const Ast.ExprId = &.{},
+    /// A watched slot changed since the monitor last reported, so the report
+    /// is due without a comparison. The first report is due too.
+    slot_hit: bool = false,
+    /// Per `probes` entry, the value it read at the last report.
+    last: []f64 = &.{},
+    /// The slots the standing monitor's arguments read: §17.1.3's "variable
+    /// or an expression in the argument list". Clock queries read no slot,
+    /// which is the clause's `$time`/`$stime`/`$realtime` exception.
+    slots: std.ArrayList(u32) = .empty,
+};
+
 /// Prints the standing monitor's argument list, if there is one and it is
 /// on. The caller decides whether to print (`monitorDue` at the time step's
 /// `.monitor` event, or `$monitoron` ran), never by comparing text.
 pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
-    const m = self.monitor orelse return;
+    const m = self.monitoring.standing orelse return;
     // A change seen while monitoring was on still reports at the end of its
     // step, after a `$monitoroff` there, as iverilog's does (monitor4):
     // §17.1.3 says only that $monitoroff "disables monitoring".
-    if (!self.monitor_on and !self.monitor_slot_hit) return;
+    if (!self.monitoring.on and !self.monitoring.slot_hit) return;
     // §17.1.3 the monitor renders in the instance that installed it; the
     // `.monitor` region runs outside any process's dispatch.
     self.scope = m.scope;
@@ -59,8 +90,8 @@ pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
     try display.display(self, m.args, a, m.show);
     // What each probe read at this report, the base the next time step
     // compares against (`monitorDue`).
-    for (self.monitor_probes, self.monitor_last) |e, *last| last.* = try evaluate.evalReal(self, a, e);
-    self.monitor_slot_hit = false;
+    for (self.monitoring.probes, self.monitoring.last) |e, *last| last.* = try evaluate.evalReal(self, a, e);
+    self.monitoring.slot_hit = false;
 }
 
 /// Whether the `.monitor` event of this time step reports (§17.1.3: "each
@@ -72,12 +103,12 @@ pub fn monitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
 /// exceptions inside an expression too, so time passing alone reports
 /// nothing (docs/specification/Vague_Decisions.md VD-111).
 pub fn monitorDue(self: *Run, a: std.mem.Allocator) Error!bool {
-    const m = self.monitor orelse return false;
-    if (self.monitor_slot_hit) return true;
-    if (self.monitor_probes.len == 0 or !self.monitor_on) return false;
+    const m = self.monitoring.standing orelse return false;
+    if (self.monitoring.slot_hit) return true;
+    if (self.monitoring.probes.len == 0 or !self.monitoring.on) return false;
     self.scope = m.scope;
     self.pc = m.pc;
-    for (self.monitor_probes, self.monitor_last) |e, last| {
+    for (self.monitoring.probes, self.monitoring.last) |e, last| {
         if ((try evaluate.evalReal(self, a, e)) != last) return true;
     }
     return false;
@@ -113,21 +144,21 @@ pub fn install(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show:
         for (args[1..]) |e| if (e != .none and self.file.exprs.tag(e) != .str_literal)
             try compile.sensitivity(self, e, &slots);
         m.slots = slots.items;
-        try self.fmonitors.append(self.arena, m);
+        try self.monitoring.files.append(self.arena, m);
         return requestTick(self);
     }
-    self.monitor_slots.clearRetainingCapacity();
+    self.monitoring.slots.clearRetainingCapacity();
     var probes: std.ArrayList(Ast.ExprId) = .empty;
     for (args) |e| if (e != .none and self.file.exprs.tag(e) != .str_literal)
-        try compile.sensitivityProbes(self, e, &self.monitor_slots, &probes);
-    self.monitor = m;
+        try compile.sensitivityProbes(self, e, &self.monitoring.slots, &probes);
+    self.monitoring.standing = m;
     // VAMS §8.5.1 row 4 after 3b: a probe of the analog solution is an
     // operand no slot holds, so it is compared at every time step and
     // analog solution (`monitorDue`). The first report is due.
-    self.monitor_probes = probes.items;
-    self.monitor_last = try self.arena.alloc(f64, probes.items.len);
-    @memset(self.monitor_last, 0);
-    self.monitor_slot_hit = true;
+    self.monitoring.probes = probes.items;
+    self.monitoring.last = try self.arena.alloc(f64, probes.items.len);
+    @memset(self.monitoring.last, 0);
+    self.monitoring.slot_hit = true;
     try waiters.requestMonitor(self);
 }
 
@@ -141,10 +172,10 @@ pub fn cancelFile(self: *Run, d: i64) void {
     defer watchAll(self, true);
     const mcd = d & (1 << 31) == 0;
     var k: usize = 0;
-    while (k < self.fmonitors.items.len) {
-        const fd = self.fmonitors.items[k].fd;
+    while (k < self.monitoring.files.items.len) {
+        const fd = self.monitoring.files.items[k].fd;
         const hit = if (mcd and fd & (1 << 31) == 0) fd & d != 0 else fd == d;
-        if (hit) _ = self.fmonitors.orderedRemove(k) else k += 1;
+        if (hit) _ = self.monitoring.files.orderedRemove(k) else k += 1;
     }
 }
 
@@ -166,15 +197,15 @@ pub fn comparedOperand(self: *Run, e: Ast.ExprId) bool {
 /// step; one whose slot changed under an unchanged argument (`bs` under
 /// `bs[1]`) does not. A transient change still reports.
 pub fn monitorChanged(self: *Run, slot: u32) Error!void {
-    if (self.monitor_evaluating) return;
-    self.monitor_evaluating = true;
-    defer self.monitor_evaluating = false;
+    if (self.monitoring.evaluating) return;
+    self.monitoring.evaluating = true;
+    defer self.monitoring.evaluating = false;
     const a = self.scratch.allocator();
-    if (self.monitor) |*m| if (std.mem.findScalar(u32, self.monitor_slots.items, slot) != null and try moved(self, m, a, slot) and self.monitor_on) {
-        self.monitor_slot_hit = true;
+    if (self.monitoring.standing) |*m| if (std.mem.findScalar(u32, self.monitoring.slots.items, slot) != null and try moved(self, m, a, slot) and self.monitoring.on) {
+        self.monitoring.slot_hit = true;
         try waiters.requestMonitor(self);
     };
-    for (self.fmonitors.items) |*m| if (std.mem.findScalar(u32, m.slots, slot) != null and try moved(self, m, a, slot)) {
+    for (self.monitoring.files.items) |*m| if (std.mem.findScalar(u32, m.slots, slot) != null and try moved(self, m, a, slot)) {
         m.hit = true;
         try requestTick(self);
     };
@@ -182,7 +213,7 @@ pub fn monitorChanged(self: *Run, slot: u32) Error!void {
 
 /// The `.monitor_tick`'s `$fmonitor` lines: each one whose arguments moved.
 pub fn fmonitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
-    for (self.fmonitors.items) |*m| if (m.hit) {
+    for (self.monitoring.files.items) |*m| if (m.hit) {
         m.hit = false;
         self.scope = m.scope;
         self.pc = m.pc;
@@ -195,8 +226,8 @@ pub fn fmonitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
 /// Marks (`on`) or unmarks every slot a standing monitor reads as a
 /// `.monitor` watch (`waiters.store` -> `monitorChanged`).
 fn watchAll(self: *Run, on: bool) void {
-    for (self.monitor_slots.items) |at| self.watch[at].setPresent(.monitor, on);
-    for (self.fmonitors.items) |m| for (m.slots) |at| self.watch[at].setPresent(.monitor, on);
+    for (self.monitoring.slots.items) |at| self.watch[at].setPresent(.monitor, on);
+    for (self.monitoring.files.items) |m| for (m.slots) |at| self.watch[at].setPresent(.monitor, on);
 }
 
 /// Whether argument `e`'s value can move only when a slot it reads does:
@@ -255,8 +286,8 @@ fn moved(self: *Run, m: *Standing, a: std.mem.Allocator, slot: u32) Error!bool {
 /// The time step's one `.monitor_tick`, which `$fmonitor` needs whether or
 /// not a `$monitor` stands.
 fn requestTick(self: *Run) Error!void {
-    if (self.monitor_pending) return;
-    self.monitor_pending = true;
+    if (self.monitoring.pending) return;
+    self.monitoring.pending = true;
     try @import("exec.zig").enqueueMonitor(self, .monitor_tick);
 }
 

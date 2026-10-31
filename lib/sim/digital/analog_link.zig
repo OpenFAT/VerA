@@ -204,7 +204,7 @@ pub fn deliverA2d(r: *Run, m: usize, tick: Tick) Error!void {
 /// brings digital time to `k` and re-checks the monitor in region 4.
 /// False, with nothing queued, when no monitor probes or `k` has run.
 pub fn analogPoint(r: *Run, k: Tick) Error!bool {
-    if (r.monitor_probes.len == 0 or !r.monitor_on or k <= r.scheduler.now) return false;
+    if (r.monitoring.probes.len == 0 or !r.monitoring.on or k <= r.scheduler.now) return false;
     _ = try exec.enqueue(r, .analog_point, k - r.scheduler.now, false);
     return true;
 }

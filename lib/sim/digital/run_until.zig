@@ -79,7 +79,7 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
             // §8.5.1: monitor events "are continuously re-enabled in
             // every successive time step"; one that probes the analog
             // solution has no slot to wake it, so each step asks.
-            if (r.monitor_probes.len != 0) try waiters.requestMonitor(r);
+            if (r.monitoring.probes.len != 0) try waiters.requestMonitor(r);
         }
         r.budget_used += 1;
         if (r.budget_used > r.budget)
@@ -118,7 +118,7 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
                     try display.display(r, s.args, scratch.allocator(), s.show);
             },
             .monitor_tick => {
-                r.monitor_pending = false;
+                r.monitoring.pending = false;
                 if (try display.monitorDue(r, scratch.allocator())) try display.monitorPrint(r, scratch.allocator());
                 try display.fmonitorPrint(r, scratch.allocator());
             },

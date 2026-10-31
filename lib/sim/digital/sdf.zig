@@ -566,7 +566,7 @@ fn timingCheck(c: *Ctx, s: u32, e: Node) Error!void {
         error.Syntax => return c.warn(e.line, "{s} has a malformed value", .{fam[0]}),
     };
     var hit = false;
-    for (r.tchks.items) |*t| {
+    for (r.checks.rows.items) |*t| {
         if (t.scope != s or std.mem.indexOfScalar(tchk.Kind, fam[1], t.kind) == null) continue;
         const ok = if (fam[2] == 1) t.ev[0].slot == slots[0] else (t.ev[0].slot == slots[0] and t.ev[1].slot == slots[1]) or (t.ev[0].slot == slots[1] and t.ev[1].slot == slots[0]);
         if (!ok) continue;

@@ -70,6 +70,7 @@
 //! - `pub fn reset(self: *Run) Error!void`
 
 const std = @import("std");
+const monitor = @import("monitor.zig");
 const Tick = @import("../scheduler.zig").Time;
 const exec = @import("exec.zig");
 const system = @import("system.zig");
@@ -381,13 +382,8 @@ active_timeformat: ?struct { scope: u32, tok: u32 } = null,
 /// §17.3.2 Table 17-11's default `units_number`: "the smallest time
 /// precision argument of all the `timescale compiler directives".
 finest: i32 = 0,
-/// §17.1.3 the one standing monitor. A second `$monitor` replaces it;
-/// there is no stack.
-monitor: ?Standing = null,
-/// §17.2.2 the active `$fmonitor` tasks: "any number of $fmonitor tasks
-/// can be set up to be simultaneously active", each until an `$fclose`
-/// of its descriptor.
-fmonitors: std.ArrayList(Standing) = .empty,
+/// §17.1.3 the standing monitor and §17.2.2 the `$fmonitor`s (`monitor.Monitoring`).
+monitoring: monitor.Monitoring = .{},
 /// Per driver index, a `delay3` that reads a variable: A.2.2.3 lets a
 /// continuous assignment's or gate's delay be one, which §6.1.3 reads
 /// each time the driver schedules (`exec`'s `.continuous`).
@@ -398,28 +394,6 @@ tran_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
 /// watch), its last transition, which picks the path whose delay a
 /// destination transition takes (`waiters.store` fills it).
 path_changed: std.AutoHashMapUnmanaged(u32, @import("net.zig").PathEdge) = .empty,
-/// `display.monitorChanged` is evaluating a monitor's arguments, so a
-/// store that evaluation makes asks nothing again.
-monitor_evaluating: bool = false,
-monitor_on: bool = true,
-/// One `.monitor` event per timestep however many values moved.
-monitor_pending: bool = false,
-/// VAMS §7.3.6.3: the analog probes in the standing monitor's arguments,
-/// operands no slot holds. With any, the monitor is checked at every time
-/// step (`runUntil`), after the step's region-3b solve (§8.5.1 row 4),
-/// and at every analog solution at a tick no digital event reached
-/// (`analogPoint`), and reports when a probe's value moved
-/// (`display.monitorDue`).
-monitor_probes: []const Ast.ExprId = &.{},
-/// A watched slot changed since the monitor last reported, so the report
-/// is due without a comparison (§17.1.3). The first report is due too.
-monitor_slot_hit: bool = false,
-/// Per `monitor_probes` entry, the value it read at the last report.
-monitor_last: []f64 = &.{},
-/// The slots the standing monitor's arguments read: §17.1.3's "variable
-/// or an expression in the argument list". Clock queries read no slot,
-/// which is the clause's `$time`/`$stime`/`$realtime` exception.
-monitor_slots: std.ArrayList(u32) = .empty,
 /// Per slot, who is told when its value changes. `store` tests this on
 /// every change and nothing else: it is the one value-change hook, whose
 /// first watcher is §17.1.3's monitor; §18's value change dump and VAMS
@@ -555,19 +529,8 @@ vcd_catalog: ?@import("vcd.zig").Catalog = null,
 ports_dump: @import("evcd.zig").Check = .{},
 /// §18.3 the extended dump.
 evcd: @import("evcd.zig").Evcd = .{},
-/// IEEE 1364-2005 §15 every instance's timing checks (`tchk.zig`), in
-/// elaboration order.
-tchks: std.ArrayList(tchk.Tchk) = .empty,
-/// The checks a watched slot wakes, each as `check * 2 + event`.
-tchk_by_slot: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty,
-/// IEEE 1364-2005 §15.5.1 how long, in ticks, each check's reference [0]
-/// and data [1] signal is delayed, parallel to `tchks`; empty when no
-/// negative limit made one (`tchk.solveNegative`).
-tchk_delay: std.ArrayList([2]u64) = .empty,
-/// Called after timing check `check` (a `tchks` row) reported a
-/// violation. The VPI installs it (VAMS 12.31.4 cbTchkViolation);
-/// nothing in the engine reads it.
-tchk_hook: ?*const fn (r: *Run, check: u32) void = null,
+/// IEEE 1364-2005 §15 the timing checks (`tchk.Checks`).
+checks: tchk.Checks = .{},
 /// Called after a run-time error the run survives (IEEE 1364-2005
 /// §17.2.9's terminated `$readmem` load, VD-134). The VPI installs it
 /// (VAMS 12.31.4 cbError); nothing in the engine reads it.
@@ -760,20 +723,20 @@ pub fn reset(self: *Run) Error!void {
         error.DigitalFailed => return self.fail(0, "IEEE 1364-2005 C.7: the reset could not elaborate the design again", .{}),
         else => |other| return other,
     };
-    if (fresh.watch.len != self.watch.len or fresh.drivers.len != self.drivers.len or fresh.tchks.items.len != self.tchks.items.len)
+    if (fresh.watch.len != self.watch.len or fresh.drivers.len != self.drivers.len or fresh.checks.rows.items.len != self.checks.rows.items.len)
         return self.fail(0, "IEEE 1364-2005 C.7: the design elaborated again into a different shape", .{});
     fresh.bag = self.bag;
     fresh.vpi_change = self.vpi_change;
     fresh.done_hook = self.done_hook;
     fresh.stmt_hook = self.stmt_hook;
-    fresh.tchk_hook = self.tchk_hook;
+    fresh.checks.hook = self.checks.hook;
     fresh.error_hook = self.error_hook;
     fresh.file_io = self.file_io;
     fresh.probe = self.probe;
     fresh.probe_ctx = self.probe_ctx;
     for (self.watch, fresh.watch) |old, *w| if (old.contains(.vpi)) w.insert(.vpi);
     for (self.drivers, fresh.drivers) |old, *d| d.delay = old.delay;
-    for (self.tchks.items, fresh.tchks.items) |old, *c| c.lim = old.lim;
+    for (self.checks.rows.items, fresh.checks.rows.items) |old, *c| c.lim = old.lim;
     self.* = fresh;
 }
 

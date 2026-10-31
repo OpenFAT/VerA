@@ -32,11 +32,11 @@ const notifier = tchk.notifier;
 const reference = tchk.reference;
 
 /// Binds the A.7.5 checks of the instance being elaborated (`r.scope`) into
-/// `r.tchks`. Refuses (E1149) an argument `judge` does not evaluate.
+/// `r.checks.rows`. Refuses (E1149) an argument `judge` does not evaluate.
 pub fn compileChecks(r: *Run, checks: []const Ast.TimingCheck) Error!void {
-    const rows_before = r.tchks.items.len;
+    const rows_before = r.checks.rows.items.len;
     for (checks) |*t| try compileOne(r, t);
-    assert(r.tchks.items.len == rows_before + checks.len); // One row per check.
+    assert(r.checks.rows.items.len == rows_before + checks.len); // One row per check.
 }
 
 /// §15.5.1 the explicit delayed signals of every `$setuphold` and `$recrem`
@@ -123,8 +123,8 @@ pub fn event(r: *Run, t: *const Ast.TimingCheck, k: usize) Error!Event {
 /// copies, and SDF or vpi_put_delays limits set later are not solved again.
 pub fn solveNegative(r: *Run) Error!void {
     if (!r.opts.negative_timing) return;
-    const checks = r.tchks.items;
-    assert(r.tchk_delay.items.len == 0 or r.tchk_delay.items.len == checks.len);
+    const checks = r.checks.rows.items;
+    assert(r.checks.delay.items.len == 0 or r.checks.delay.items.len == checks.len);
     const window = struct {
         fn of(c: Tchk) bool {
             return c.kind == .setuphold or c.kind == .recrem;
@@ -138,7 +138,7 @@ pub fn solveNegative(r: *Run) Error!void {
         any = true;
     };
     if (!any) return;
-    try r.tchk_delay.appendNTimes(r.arena, .{ 0, 0 }, checks.len);
+    try r.checks.delay.appendNTimes(r.arena, .{ 0, 0 }, checks.len);
     var done: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (checks) |c0| {
         if (!window.of(c0) or done.contains(c0.scope)) continue;
@@ -220,7 +220,7 @@ pub fn solveNegative(r: *Run) Error!void {
             const dd = d[pair[1]];
             std.debug.assert(s + dr - dd >= 0 and h - dr + dd >= 0);
             checks[i].lim = .{ @intCast(s + dr - dd), @intCast(h - dr + dd) };
-            r.tchk_delay.items[i] = .{ @intCast(dr), @intCast(dd) };
+            r.checks.delay.items[i] = .{ @intCast(dr), @intCast(dd) };
         }
     }
     // Every other check is non-negative already; its bits are its value.
@@ -329,7 +329,7 @@ fn compileOne(r: *Run, t: *const Ast.TimingCheck) Error!void {
         },
     }
     assert(c.kind == kind);
-    try r.tchks.append(r.arena, c);
+    try r.checks.rows.append(r.arena, c);
 }
 
 /// A.7.3 a `specify_terminal_descriptor`: a name, or a constant select of one.

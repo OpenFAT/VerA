@@ -97,8 +97,8 @@ pub fn vpiAttributeValue(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprI
 }
 
 /// The instance scope and command token of timing check `check` (a
-/// `Run.tchk_hook` argument), which a host's object for it carries.
+/// `Run.checks.hook` argument), which a host's object for it carries.
 pub fn tchkSite(r: *const Run, check: u32) struct { scope: u32, tok: u32 } {
-    const c = r.tchks.items[check];
+    const c = r.checks.rows.items[check];
     return .{ .scope = c.scope, .tok = c.tok };
 }
