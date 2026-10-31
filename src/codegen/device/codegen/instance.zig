@@ -527,7 +527,7 @@ pub fn emitTpFills(self: *Gen, bi: u32, depth: u32) Error!void {
             if (!hitEmitted(self, @intCast(b), @intCast(k))) continue;
             const m = self.lowered.mem_arrays.items[sl.array];
             const ty = if (m.ty == .integer) "i64" else "f64";
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             try self.ind(depth);
             // `updateState`'s slice stores the array in its field
             // (`render.inPlace`): a hit's cached version is copied there.
@@ -554,7 +554,7 @@ fn hitEmitted(self: *const Gen, b: u32, k: u32) bool {
         if (tp.block != b or tp.slot != k) continue;
         // As `cfg.emitStmt` decides it emits the statement.
         const v = self.an.i_res[ii];
-        if (self.plan.needed.isSet(@backingInt(v)) and !self.plan.cached(v)) return true;
+        if (self.cur.plan.needed.isSet(@backingInt(v)) and !self.cur.plan.cached(v)) return true;
     }
     return false;
 }

@@ -90,9 +90,9 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
         else => unreachable, // else: `planAll` plans only a `.laplace`/`.zi` unit, whose call is one of these eight
     };
 
-    const saved = g.uses.model;
-    g.uses.model = false;
-    defer g.uses.model = saved;
+    const saved = g.cur.uses.model;
+    g.cur.uses.model = false;
+    defer g.cur.uses.model = saved;
 
     const nv = readVec(g, args, 1) orelse
         return .{ .err = "LRM 4.5.11/4.5.12: the numerator argument of a filter must be a vector" };
@@ -113,7 +113,7 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
         .num = num.items,
         .den = den.items,
         .ns = @max(num.items.len, den.items.len),
-        .uses_model = g.uses.model,
+        .uses_model = g.cur.uses.model,
         .lets = lets.items,
         .sampled = cx.sampled.items,
     };
@@ -159,7 +159,7 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
             p.tau = p.tau orelse "0.0";
             p.t0 = p.t0 orelse "0.0";
         }
-        p.uses_model = g.uses.model;
+        p.uses_model = g.cur.uses.model;
     }
     // §4.5.11 the optional ε argument only "deriv[es] an absolute
     // tolerance (if needed)"; VerA has no per-signal tolerance table, so
@@ -176,20 +176,20 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
 pub fn planAll(g: *Gen) Error!void {
     g.filters = try g.arena.alloc(?FilterPlan, g.names.units.len);
     @memset(g.filters, null);
-    const saved_tok = g.ctrl_tok;
-    defer g.ctrl_tok = saved_tok;
+    const saved_tok = g.cur.ctrl_tok;
+    defer g.cur.ctrl_tok = saved_tok;
     for (g.names.units, 0..) |u, i| {
         if (u.role != .analog_op or u.inst == .none) continue;
         const k = u.op;
         if (k != .laplace and k != .zi) continue;
         // `emitOperator` set this before planning, and E0515 falls back to it
         // for a coefficient with no token of its own.
-        g.ctrl_tok = g.mir.instTok(u.inst);
-        const saved = g.fatal;
-        g.fatal = null;
+        g.cur.ctrl_tok = g.mir.instTok(u.inst);
+        const saved = g.cur.fatal;
+        g.cur.fatal = null;
         var p = try filterPlan(g, u.inst, g.mir.instData(u.inst).call.args);
-        p.fatal = g.fatal;
-        g.fatal = saved;
+        p.fatal = g.cur.fatal;
+        g.cur.fatal = saved;
         g.filters[i] = p;
     }
 }

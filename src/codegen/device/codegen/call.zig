@@ -435,9 +435,9 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
     const name = d.name;
     const args = d.args;
     const k = Mir.callee.opKind(c);
-    const saved_tok = self.call_tok;
-    self.call_tok = self.mir.instTok(inst);
-    defer self.call_tok = saved_tok;
+    const saved_tok = self.cur.call_tok;
+    self.cur.call_tok = self.mir.instTok(inst);
+    defer self.cur.call_tok = saved_tok;
     // idt's hold and the §4.5.11/§4.5.12 filters stay lane-exact: they
     // branch only on `dt` or a control argument and are S-linear over shared
     // state. Every other operator steers on or collapses a `.val()` of its
@@ -497,7 +497,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // the block per sweep sub-task, while initial_step is the first point
         // of the whole analysis.
         .analog_initial => {
-            self.uses.sim = true;
+            self.cur.uses.sim = true;
             try self.b("S.con(if (sim.analog_initial) 1.0 else 0.0)", .{});
             return;
         },
@@ -507,14 +507,14 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // dt = 0. A small-signal analysis linearizes at dt = 0 too, and there
         // the operator is its transfer function, not its DC value.
         .@"op$static" => {
-            self.uses.sim = true;
+            self.cur.uses.sim = true;
             try self.b("S.con(if (sim.dt == 0.0 and sim.kind != .ac and sim.kind != .noise) 1.0 else 0.0)", .{});
             return;
         },
 
         // §5.10.2 global events.
         .initial_step, .final_step => {
-            self.uses.sim = true;
+            self.cur.uses.sim = true;
             const flag = if (c == .initial_step) "initial_step" else "final_step";
             try self.b("S.con(if (sim.{s}", .{flag});
             if (args.len != 0) {
@@ -588,7 +588,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             },
             // A device's `say` records the task (`contract.SaySite`); a task
             // it does not record, and every other unit, renders it void.
-            .record => if (self.emitting_display) cg_display.emitSay(self, inst) else voidTask(self),
+            .record => if (self.cur.emitting_display) cg_display.emitSay(self, inst) else voidTask(self),
             .drop => voidTask(self),
         },
         // §9.7.1/§9.7.2 same gate: in a printing artifact the run ends at the
@@ -602,7 +602,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // §9.4.1 a monitor's registration is a side effect, performed only by
         // the display unit.
         .@"$monitor$arm" => {
-            if (!self.emitting_display or self.display != .emit) return voidTask(self);
+            if (!self.cur.emitting_display or self.display != .emit) return voidTask(self);
             const gated = try gateOpen(self, c, inst);
             try cg_display.emitMonitorArm(self, args);
             return if (gated) gateClose(self) else {};
@@ -632,7 +632,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$fscanf$real",
         .@"$fscanf$str",
         => {
-            if (!self.emitting_display or self.display != .emit) return emitFileCallDropped(self, c, args, @backingInt(inst));
+            if (!self.cur.emitting_display or self.display != .emit) return emitFileCallDropped(self, c, args, @backingInt(inst));
             const gated = try gateOpen(self, c, inst);
             try cg_display.emitFileCall(self, c, args, @backingInt(inst));
             if (!gated) return;
@@ -642,13 +642,13 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         },
         // §9.10 environment.
         .@"$temperature" => {
-            self.uses.model = true;
+            self.cur.uses.model = true;
             return self.b("S.con(model.temperature__)", .{});
         },
         .@"$vt" => {
             // §9.10 $vt = kT/q, k/q = 8.617333262e-5 V/K.
             if (args.len == 0) {
-                self.uses.model = true;
+                self.cur.uses.model = true;
                 return self.b("S.con(model.temperature__ * 8.617333262145179e-5)", .{});
             }
             try self.b("(", .{});
@@ -656,14 +656,14 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             return self.b(").scale(8.617333262145179e-5)", .{});
         },
         .@"$abstime", .@"$realtime" => {
-            self.uses.sim = true;
+            self.cur.uses.sim = true;
             return self.b("S.con(sim.t)", .{});
         },
         // §5.10 the retained value of an event-assigned variable: the
         // `Instance` default before the event first fires, then the last
         // accepted value.
         .@"$held_real", .@"$held_int" => {
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             const f = self.names.held_names[heldIdx(self, args)];
             float_lanes.instLanes(self, c == .@"$held_int");
             return self.b("{s}(S, inst, \"{s}\")", .{ if (c == .@"$held_int") "zInstI" else "zInst", f });
@@ -671,14 +671,14 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // §5.10/§3.3 a held string: its `ZStrHeld` field's text, read from
         // the one instance `inst` is, so an eval-side read is not `batch_ok`.
         .@"$held_str" => {
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             float_lanes.instPin(self);
             return self.b("inst.{s}.get()", .{self.names.held_names[heldIdx(self, args)]});
         },
         // IEEE 1364 §5.4 a held wide `reg`: its `ZW(n)` field, read from the
         // one instance `inst` is, as a held string is.
         .@"$held_wide" => {
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             float_lanes.instPin(self);
             return self.b("inst.{s}", .{self.names.held_names[heldIdx(self, args)]});
         },
@@ -687,13 +687,13 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // VerA's `vera_timepoint` (§2.9): is statement b's cache current, and
         // its slot k (`Lower.TpBlock`, the fields `emitInstance` declares).
         .@"$tp_hit" => {
-            self.uses.inst = true;
-            self.uses.sim = true;
+            self.cur.uses.inst = true;
+            self.cur.uses.sim = true;
             const b = litArg(self, args, 0);
             return self.b("@as(i64, @intFromBool(zTpHit(inst.tp{d}_t, inst.tp{d}_k, sim)))", .{ b, b });
         },
         .@"$tp_int", .@"$tp_real", .@"$tp_wide" => {
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             const b = litArg(self, args, 0);
             const slot = litArg(self, args, 1);
             return if (c != .@"$tp_real")
@@ -702,7 +702,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
                 self.b("S.con(inst.tp{d}_s{d})", .{ b, slot });
         },
         .@"$mfactor" => { // §6.3.6
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             float_lanes.instLanes(self, false);
             return self.b("zInst(S, inst, \"mfactor\")", .{});
         },
@@ -719,12 +719,12 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             const nm = strArg(self, args, 0) orelse "";
             switch (self.lowered.simparamAnswer(nm, args.len > 1)) {
                 .runtime => {
-                    self.uses.sim = true;
+                    self.cur.uses.sim = true;
                     if (std.mem.eql(u8, nm, "dt")) return self.b("S.con(sim.dt)", .{});
                     return self.b("S.con(@floatFromInt(sim.iteration))", .{});
                 },
                 .host => |h| {
-                    self.uses.model = true;
+                    self.cur.uses.model = true;
                     return self.b("S.con(model.{s})", .{h.field});
                 },
                 .value => |v| return self.b("S.con({s})", .{try gen_file.fmtF64(self, v)}),
@@ -746,28 +746,28 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             // an elaborated unit table.
             if (strArg(self, args, 0)) |nm| {
                 if (std.mem.eql(u8, nm, "analysis_type")) {
-                    self.uses.sim = true;
+                    self.cur.uses.sim = true;
                     return self.b("@tagName(sim.kind)", .{});
                 }
                 if (std.mem.eql(u8, nm, "module")) return self.b("\"{f}\"", .{std.zig.fmtString(self.mir.name)});
                 const host = std.mem.eql(u8, nm, "cwd") or std.mem.eql(u8, nm, "analysis_name");
                 if (!host or !self.lowered.uses.contains(.host_strings)) return self.b("\"\"", .{});
-                self.uses.inst = true;
-                self.uses.model = true;
+                self.cur.uses.inst = true;
+                self.cur.uses.model = true;
                 float_lanes.instPin(self);
                 return self.b("contract.hostString(model.{0s}_idx__, inst.{0s})", .{nm});
             }
             // §9.15 param_name may be a string variable, so the lookup runs
             // at run time.
-            self.uses.sim = true;
+            self.cur.uses.sim = true;
             try self.b("(if (std.mem.eql(u8, ", .{});
             try gen_render.renderValueRef(self, self.an.rv(args[0]));
             try self.b(", \"analysis_type\")) @tagName(sim.kind) else if (std.mem.eql(u8, ", .{});
             try gen_render.renderValueRef(self, self.an.rv(args[0]));
             try self.b(", \"module\")) \"{f}\" else ", .{std.zig.fmtString(self.mir.name)});
             if (self.lowered.uses.contains(.host_strings)) {
-                self.uses.inst = true;
-                self.uses.model = true;
+                self.cur.uses.inst = true;
+                self.cur.uses.model = true;
                 float_lanes.instPin(self);
                 for ([_][]const u8{ "cwd", "analysis_name" }) |field| {
                     try self.b("if (std.mem.eql(u8, ", .{});
@@ -781,7 +781,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$param_given" => {
             const def = if (args.len > 0) self.mir.valueDef(self.an.rv(args[0])) else Mir.Def.undef;
             if (def == .param_ref and self.names.given_bit[def.param_ref] != none_u32) {
-                self.uses.model = true;
+                self.cur.uses.model = true;
                 return self.b("@as(i64, @intFromBool(model.given__.isSet({d})))", .{self.names.given_bit[def.param_ref]});
             }
             return self.b("@as(i64, 0)", .{});
@@ -793,7 +793,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$port_connected" => {
             const port = if (args.len == 1) self.an.foldConst(args[0], false) else null;
             if (port) |ord| {
-                self.uses.model = true;
+                self.cur.uses.model = true;
                 return self.b("@as(i64, @intFromBool((model.port_connected__ >> {d}) & 1 != 0))", .{std.math.lossyCast(u6, ord)});
             }
             return self.b("@as(i64, 1)", .{});
@@ -805,7 +805,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // `inst.plusargs`, in supplied order. `$plusarg$str` is the matched
         // plusarg that `$sscanf$<ty>` converts.
         .@"$test$plusargs", .@"$value$plusargs", .@"$plusarg$str" => {
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             float_lanes.instPin(self);
             const str = c == .@"$plusarg$str";
             try self.b("{s}zPlusarg(inst.plusargs, ", .{if (str) "(" else "@as(i64, @intFromBool("});
@@ -825,7 +825,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             return gen_render.helper2(self, "zLimitUf", args[0], args[1]);
         },
         .@"$limit$old" => {
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             float_lanes.instPin(self);
             return self.b("S.con(inst.limiter_previous[{d}])", .{gen_render.intArg(self, args, 0) orelse unreachable});
         },
@@ -1032,7 +1032,7 @@ fn emitUnregistered(self: *Gen, inst: Mir.Inst, name: []const u8, args: []const 
 /// sees; `fatal` only poisons the unit's generated body.
 pub fn abort(self: *Gen, code: diag.Code, comptime fmt: []const u8, args: anytype) Error!void {
     const msg = try self.arena.print(fmt, args);
-    if (self.diags) |bag| try bag.add(.codegen, code, self.lowered.tokenSpan(self.call_tok), "{s}", .{msg});
+    if (self.diags) |bag| try bag.add(.codegen, code, self.lowered.tokenSpan(self.cur.call_tok), "{s}", .{msg});
     self.poison(msg);
     try self.b("S.con(0.0)", .{});
 }
@@ -1040,7 +1040,7 @@ pub fn abort(self: *Gen, code: diag.Code, comptime fmt: []const u8, args: anytyp
 /// Writes the §4.6.1 test of `args`' analysis names against `sim.kind`,
 /// or `false` when none is a string literal.
 fn analysisMatch(self: *Gen, args: []const Mir.Value) Error!void {
-    self.uses.sim = true;
+    self.cur.uses.sim = true;
     var first = true;
     for (args) |a| {
         const def = self.mir.valueDef(self.an.rv(a));
@@ -1072,14 +1072,14 @@ fn analysisMatch(self: *Gen, args: []const Mir.Value) Error!void {
 /// 9-28 `analysis_name`, `Lower` made the device publish its fields) is that
 /// name. Never a large-signal analysis, whatever its name.
 fn acStimMatch(self: *Gen, args: []const Mir.Value) Error!void {
-    self.uses.sim = true;
+    self.cur.uses.sim = true;
     const def = if (args.len == 0) Mir.Def{ .str_const = "ac" } else self.mir.valueDef(self.an.rv(args[0]));
     // A.8.2 quotes the name, so `Lower` refused anything else (E0521).
     if (def != .str_const) return self.b("false", .{});
     const name = def.str_const;
     if (std.mem.eql(u8, name, "ac") or std.mem.eql(u8, name, "noise")) return self.b("sim.kind == .{s}", .{name});
-    self.uses.inst = true;
-    self.uses.model = true;
+    self.cur.uses.inst = true;
+    self.cur.uses.model = true;
     float_lanes.instPin(self);
     try self.b("((sim.kind == .ac or sim.kind == .noise) and std.mem.eql(u8, " ++
         "contract.hostString(model.analysis_name_idx__, inst.analysis_name), \"{f}\"))", .{std.zig.fmtString(name)});
@@ -1091,7 +1091,7 @@ fn acStimMatch(self: *Gen, args: []const Mir.Value) Error!void {
 /// S: `arg.addC(-arg.val()).scale(p)` adds p·d(arg) to the derivative and
 /// zero to the value (§12.22.1's `derivtf`).
 fn emitSystfCall(self: *Gen, name: []const u8, args: []const Mir.Value, task: bool) Error!void {
-    const k = try systfIndex(self, name, self.call_tok, task);
+    const k = try systfIndex(self, name, self.cur.call_tok, task);
     return emitHostCall(self, null, args, try self.arena.print("zsh.call(zsh.ctx, {d}, &zsv, &zsp)", .{k}));
 }
 
@@ -1138,7 +1138,7 @@ fn systfIndex(self: *Gen, name: []const u8, tok: u32, task: bool) Error!usize {
 /// before the arguments.
 fn emitHostCall(self: *Gen, first: ?Mir.Value, args: []const Mir.Value, host: []const u8) Error!void {
     // Reads `inst`, so `emitUnit` keeps the parameter named.
-    self.uses.inst = true;
+    self.cur.uses.inst = true;
     float_lanes.instPin(self);
 
     const label = self.systf_sites;
@@ -1225,14 +1225,14 @@ pub fn emitSystfTable(self: *Gen) Error!void {
 /// `pass` is comptime, so a pass that does not perform the call compiles
 /// only its other answer.
 fn gateOpen(self: *Gen, c: Mir.Callee, inst: Mir.Inst) Error!bool {
-    if (!self.passes or !self.emitting_display or Mir.callee.family(c) == .file_read) return false;
-    self.uses.pass = true;
+    if (!self.passes or !self.cur.emitting_display or Mir.callee.family(c) == .file_read) return false;
+    self.cur.uses.pass = true;
     // §9.7.3: `$fatal` "terminates the simulation without checking whether the
     // iteration would be rejected", so it is performed at the iterate like
     // `$debug`, not held back to the accepted point with the display tasks.
     const every = c == .@"$debug" or c == .@"$fdebug" or c == .@"$fatal";
     const init = std.mem.findScalar(Mir.Inst, self.init_calls, inst) != null and (every or Mir.callee.isFileCall(c));
-    if (init) self.uses.sim = true;
+    if (init) self.cur.uses.sim = true;
     // §9.7.1/§9.7.2: a `$finish`/`$stop` that already ran means the run ends
     // at the enclosing wrapper (`zFinishPass`); no later task of this pass
     // may print, the way an immediate exit would have stopped them.
@@ -1280,7 +1280,7 @@ pub fn strArg(self: *const Gen, args: []const Mir.Value, i: usize) ?[]const u8 {
 /// Writes a §4.5 stateful analog operator call. Each operator is a named
 /// unit, so its `Instance` fields and `updateState`'s read share a stable key.
 fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) Error!void {
-    self.ctrl_tok = self.mir.instTok(inst); // E0515's fallback span
+    self.cur.ctrl_tok = self.mir.instTok(inst); // E0515's fallback span
     const unit = gen_unit.unitOfInst(self, inst);
     if (unit == none_u32) return self.b("S.con(0.0)", .{});
     const n = self.names.unit_names[unit];
@@ -1293,12 +1293,12 @@ fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) 
         try gen_render.renderToArena(self, if (args.len == 0) .f_zero else args[0], .real)
     else
         "";
-    self.uses.inst = true;
+    self.cur.uses.inst = true;
     float_lanes.instPin(self); // the operator's history is the instance's
     // Every sim-state read below is spelled `sim.<field>`.
     const at = self.out.items.len;
     defer if (std.mem.find(u8, self.out.items[at..], "sim.") != null) {
-        self.uses.sim = true;
+        self.cur.uses.sim = true;
     };
     // A kernel runs at the result's mask `fm`, as `gen_render.kernelOpen`
     // says; `kS` is its scalar and `in` its input.
@@ -1312,7 +1312,7 @@ fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) 
             const p = cg_filters.planOf(self, unit);
             if (p.err) |m| return abort(self, .E0540, "{s}", .{m});
             // `__sec` always takes `model`, so keep the parameter named.
-            self.uses.model = true;
+            self.cur.uses.model = true;
             const sec = try self.arena.print("{s}__sec(model{s})", .{ n, try sampledCoefs(self, n, p) });
             try opOpen(self, fm);
             try acOpen(self, kS, try self.arena.print("zAcLaplace({0s}, {1d}, {2d}, {3s}, {4s}, zLaplaceH0({1d}, {2d}, {4s}))", .{ kS, p.ns, p.deg, in, sec }));
@@ -1330,7 +1330,7 @@ fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) 
             const p = cg_filters.planOf(self, unit);
             if (p.err) |m| return abort(self, .E0540, "{s}", .{m});
             // As for `.laplace`.
-            self.uses.model = true;
+            self.cur.uses.model = true;
             const sec = try self.arena.print("{s}__sec(model{s})", .{ n, try sampledCoefs(self, n, p) });
             try opOpen(self, fm);
             try acOpen(self, kS, try self.arena.print("zAcZi({s}, {d}, {d}, {s}, {s}, {s})", .{
@@ -1505,8 +1505,8 @@ fn transitionTime(self: *Gen, args: []const Mir.Value, i: usize, dflt: []const u
 fn defaultTransition(self: *Gen) Error!?[]const u8 {
     const list = self.lowered.default_transitions;
     if (list.len == 0) return null;
-    if (self.ctrl_tok == Mir.no_tok or self.ctrl_tok >= self.lowered.tok_starts.len) return null;
-    const t = Lower.DefaultTransition.inForce(list, self.lowered.tok_starts[self.ctrl_tok], null) orelse return null;
+    if (self.cur.ctrl_tok == Mir.no_tok or self.cur.ctrl_tok >= self.lowered.tok_starts.len) return null;
+    const t = Lower.DefaultTransition.inForce(list, self.lowered.tok_starts[self.cur.ctrl_tok], null) orelse return null;
     return try gen_file.fmtF64(self, t);
 }
 

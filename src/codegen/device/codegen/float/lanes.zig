@@ -13,6 +13,7 @@
 const codegen = @import("../../codegen.zig");
 const Gen = codegen.Gen;
 const gen_render = @import("../render.zig");
+const opcode_zig = @import("../opcode_zig.zig");
 const Mir = @import("ir").Mir;
 const proof = @import("prove").proof;
 
@@ -32,7 +33,7 @@ pub fn eagerCostly(self: *Gen, v0: Mir.Value, depth: u32) bool {
     const def = self.mir.valueDef(v);
     if (def != .inst_result) return false;
     const row = self.mir.instRow(def.inst_result);
-    if (codegen.opcode_zig.get(row.op).libm) return true;
+    if (opcode_zig.get(row.op).libm) return true;
     return switch (Mir.opClass(row.op)) {
         .unary => eagerCostly(self, @fromBackingInt(@intCast(row.a)), depth + 1),
         .binary => eagerCostly(self, @fromBackingInt(@intCast(row.a)), depth + 1) or
@@ -89,7 +90,7 @@ pub fn eagerSafe(self: *Gen, v0: Mir.Value, depth: u32) bool {
 /// lane-uniform. Tests `xDep`, not `dFree`: a `dstop` has no lanes and still
 /// varies. No effect while emitting the display unit.
 pub fn pinLanes(self: *Gen, v: Mir.Value) void {
-    if (self.emitting_display) return;
+    if (self.cur.emitting_display) return;
     if (!perPoint(self, v)) return;
     // An x-dependent integer is already one decision per call: it came from
     // a real collapse (`leadLanes`) or a call that pinned where it was made.
@@ -101,7 +102,7 @@ pub fn pinLanes(self: *Gen, v: Mir.Value) void {
 /// rendered: a setup root is a `Model` field, which every point shares.
 pub fn perPoint(self: *const Gen, v: Mir.Value) bool {
     const r = self.an.rv(v);
-    if (@backingInt(r) < self.an.nv and self.plan.isRoot(r)) return false;
+    if (@backingInt(r) < self.an.nv and self.cur.plan.isRoot(r)) return false;
     return self.an.pointDep(r);
 }
 
@@ -109,7 +110,7 @@ pub fn perPoint(self: *const Gen, v: Mir.Value) bool {
 /// or `zInstI` (integer, a decision: the lead protocol). Each point of a
 /// batch has its own `Instance`, so the device declares `batch_inst`.
 pub fn instLanes(self: *Gen, int: bool) void {
-    if (self.emitting_display) return;
+    if (self.cur.emitting_display) return;
     self.float.inst = true;
     if (int) self.float.lead = true;
 }
@@ -119,7 +120,7 @@ pub fn instLanes(self: *Gen, int: bool) void {
 /// value, plusargs, a host system function): one instance per call, so the
 /// device is not `batch_ok`.
 pub fn instPin(self: *Gen) void {
-    if (self.emitting_display) return;
+    if (self.cur.emitting_display) return;
     self.float.pinned = true;
 }
 
@@ -128,7 +129,7 @@ pub fn instPin(self: *Gen) void {
 /// exact per point, so it marks the device `batch_lead` rather than pinned.
 /// No effect for a value every point shares, or in the display unit.
 pub fn leadLanes(self: *Gen, v: Mir.Value) void {
-    if (self.emitting_display) return;
+    if (self.cur.emitting_display) return;
     if (!perPoint(self, v)) return;
     self.float.lead = true;
 }
@@ -137,5 +138,5 @@ pub fn leadLanes(self: *Gen, v: Mir.Value) void {
 /// draw, a systf's `.val()` hand-off). Pins unconditionally, except in the
 /// §9.4 display unit, which is not part of the residual.
 pub fn pinCrossing(self: *Gen) void {
-    self.float.pinned = self.float.pinned or !self.emitting_display;
+    self.float.pinned = self.float.pinned or !self.cur.emitting_display;
 }

@@ -459,8 +459,8 @@ fn emitDisplay(self: *Gen) Error!void {
 /// Emits `eval` over `zResidual`: the §5.6 rows, emitted once and shared with
 /// `evalQ`, which passes them its own core result.
 fn emitEval(self: *Gen) Error!void {
-    self.core_wanted = false;
-    self.core_hoisted = true;
+    self.cur.core_wanted = false;
+    self.cur.core_hoisted = true;
     // `model` and `inst` reach a row only through `core`, so the rows take
     // its result and not them.
     try self.w("/// §5.6 the resistive rows over the core result `m`: `eval` and `evalQ`.\n", .{});
@@ -472,17 +472,17 @@ fn emitEval(self: *Gen) Error!void {
     const at_mut = self.out.items.len;
     try self.w("var   res: contract.Rows(Self, S) = zRowsZero(S);\n", .{});
     const stamps = try emitStamps(self, false);
-    self.core_hoisted = false;
+    self.cur.core_hoisted = false;
     // `uses.x` also counts a row that reads `x` only through the core, so ask
     // the text: every direct read is `x[@intFromEnum(U.<name>)]`.
     if (std.mem.find(u8, self.out.items[at_mut..], "x[@intFromEnum(") == null) gen_unit.patchParam(self, at_x, "x".len);
-    if (!self.core_wanted) gen_unit.patchParam(self, at_m, "m".len);
+    if (!self.cur.core_wanted) gen_unit.patchParam(self, at_m, "m".len);
     if (stamps == 0) self.out.items[at_mut..][0.."const".len].* = "const".*;
     try self.w("    return res;\n}}\n\n", .{});
 
     try self.w("/// §5.6 resistive residual: KCL at every unknown (§1.3.2)\n", .{});
     const st = gen_instance.hasStatus(self);
-    if (self.core_wanted and (self.lowered.timepoints.items.len != 0 or st)) {
+    if (self.cur.core_wanted and (self.lowered.timepoints.items.len != 0 or st)) {
         // VerA's `vera_timepoint` (§2.9): the core result fills a stale cache.
         // §9.7.3 a status latches, and a latched one zeroes every row.
         const tp = if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "";
@@ -505,7 +505,7 @@ fn emitEval(self: *Gen) Error!void {
             \\
             \\
         , .{ self.heldArg(false), tp });
-    } else if (self.core_wanted) {
+    } else if (self.cur.core_wanted) {
         try self.w(
             \\pub fn eval(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) contract.Rows(Self, S) {{
             \\
@@ -578,11 +578,11 @@ fn emitStamps(self: *Gen, react: bool) Error!u32 {
     var opened = false;
     if (self.lowered.table_effect != .f_zero) {
         opened = true;
-        self.uses.x = true;
-        self.uses.model = true;
-        self.uses.inst = true;
-        self.core_wanted = true;
-        if (!self.core_hoisted) try self.b("    const m = @call(.always_inline, core, .{{ S, x, model, inst, sim{s} }});\n", .{self.heldArg(false)});
+        self.cur.uses.x = true;
+        self.cur.uses.model = true;
+        self.cur.uses.inst = true;
+        self.cur.core_wanted = true;
+        if (!self.cur.core_hoisted) try self.b("    const m = @call(.always_inline, core, .{{ S, x, model, inst, sim{s} }});\n", .{self.heldArg(false)});
         try self.b("    _ = m.f{d};\n", .{coreIdx(self, self.an.rv(self.lowered.table_effect)).?});
     }
 
@@ -626,18 +626,18 @@ fn emitStamps(self: *Gen, react: bool) Error!u32 {
             val != .f_zero or run_pot != null or
                 (c.access == .potential and self.an.rv(c.react_val) != .f_zero);
         if (!live) continue;
-        self.uses.x = true;
+        self.cur.uses.x = true;
         // `model`/`inst` are read through `core` alone, so a residual whose
         // every live row is zero never opens one (an unused parameter would
         // fail the host's build). A runtime-selected row always opens it: its
         // retention flag is a core field (`buildJobs`).
         if (val != .f_zero or run_pot != null) {
-            self.uses.model = true;
-            self.uses.inst = true;
+            self.cur.uses.model = true;
+            self.cur.uses.inst = true;
             if (!opened) {
                 opened = true;
-                self.core_wanted = true;
-                if (!self.core_hoisted) {
+                self.cur.core_wanted = true;
+                if (!self.cur.core_hoisted) {
                     try self.ind(1);
                     try self.b("const m = @call(.always_inline, core, .{{ S, x, model, inst, sim{s} }});\n", .{self.heldArg(false)});
                 }
@@ -754,7 +754,7 @@ fn emitStamps(self: *Gen, react: bool) Error!u32 {
     // is already on this row as `−Σ q`, and a §5.4.2.1 probe is a short,
     // which stores no charge.
     if (!react) for (self.topo.free_flows) |f| {
-        self.uses.x = true;
+        self.cur.uses.x = true;
         stamps += 1;
         if (f.sourced) {
             // Closes `res[u] = x[u] − Σ contributions`, whose `−Σ` half the
@@ -795,7 +795,7 @@ fn emitStamps(self: *Gen, react: bool) Error!u32 {
     // with a `ddt` junction capacitance. Emitted after the contribution loop
     // because it reads the finished res[p].
     for (self.lowered.port_probes.items) |pp| {
-        self.uses.x = true;
+        self.cur.uses.x = true;
         stamps += 1;
         try self.ind(1);
         // Reads the finished res[port], so this row's columns are that row's.

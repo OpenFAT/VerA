@@ -92,26 +92,26 @@ pub fn planSetup(self: *Gen) Error!void {
     for (0..nv) |i| {
         if (plan_setup.candidate(self.input(), self.sinv.val, @fromBackingInt(@intCast(i)))) self.su.idx[i] = 0;
     }
-    self.plan.su_idx = self.su.idx;
-    self.plan.su_on = true;
+    self.cur.plan.su_idx = self.su.idx;
+    self.cur.plan.su_on = true;
     // `root` and `same` are scratch of this pass: on the gpa, freed on return.
     const root = try self.gpa.alloc(bool, nv);
     defer self.gpa.free(root);
     @memset(root, false);
     if (self.core.lo_vals.len != 0) {
-        self.plan.display_unit = false;
-        try self.plan.analyze(.undef, true);
-        for (self.plan.live.items) |lv| {
+        self.cur.plan.display_unit = false;
+        try self.cur.plan.analyze(.undef, true);
+        for (self.cur.plan.live.items) |lv| {
             if (self.su.idx[@backingInt(lv)] != none_u32) root[@backingInt(lv)] = true;
         }
     }
     for (self.jobs.list) |job| {
         if (job.kind != .display) continue;
-        self.plan.display_unit = true;
-        try self.plan.analyze(job.target, false);
-        self.plan.display_unit = false;
-        for (self.plan.live.items) |lv| {
-            if (self.su.idx[@backingInt(lv)] != none_u32 and !self.plan.cached(lv)) root[@backingInt(lv)] = true;
+        self.cur.plan.display_unit = true;
+        try self.cur.plan.analyze(job.target, false);
+        self.cur.plan.display_unit = false;
+        for (self.cur.plan.live.items) |lv| {
+            if (self.su.idx[@backingInt(lv)] != none_u32 and !self.cur.plan.cached(lv)) root[@backingInt(lv)] = true;
         }
     }
     // A card copied beside nothing is a slower read: without a derived root
@@ -140,8 +140,8 @@ pub fn planSetup(self: *Gen) Error!void {
     self.su.vals = vals.items;
     self.su.real = n[0];
     self.su.int = n[1];
-    self.plan.su_idx = self.su.idx;
-    self.plan.su_on = vals.items.len != 0;
+    self.cur.plan.su_idx = self.su.idx;
+    self.cur.plan.su_on = vals.items.len != 0;
 }
 
 /// Returns which of `Setup`'s arrays holds `v`: 0 real, 1 integer, 2 a 0/1 flag.
@@ -238,7 +238,7 @@ fn placeOf(self: *const Gen, v: Mir.Value) u32 {
 pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
     const i = @backingInt(v);
     const k = self.su.idx[i];
-    self.uses.model = true;
+    self.cur.uses.model = true;
     if (rootGroup(self, v) == 2) {
         if (as_f64) return self.arena.print("@as(f64, @floatFromInt(@intFromBool(model.su.b.isSet({d}))))", .{k});
         return self.arena.print("@as(i64, @intFromBool(model.su.b.isSet({d})))", .{k});
@@ -291,7 +291,7 @@ fn emitSetupInstance(self: *Gen) Error!void {
 /// need a new `setup` call. Collected while `emitSetup` plans its slice.
 fn emitSimparams(self: *Gen) Error!void {
     var names: std.ArrayList([]const u8) = .empty;
-    for (self.plan.live.items) |lv| {
+    for (self.cur.plan.live.items) |lv| {
         const def = self.mir.valueDef(lv);
         if (def != .inst_result or self.mir.instOp(def.inst_result) != .call) continue;
         const d = self.mir.instData(def.inst_result).call;
@@ -320,32 +320,32 @@ fn emitSimparams(self: *Gen) Error!void {
 pub fn emitSetup(self: *Gen) Error!void {
     try emitSetupInstance(self);
     if (self.su.vals.len == 0) return;
-    const save_idx = self.plan.lo_idx;
-    const save_vals = self.plan.lo_vals;
-    self.plan.lo_idx = self.su.idx;
-    self.plan.lo_vals = self.su.vals;
-    self.plan.su_on = false; // computing the roots, not reading them
-    self.plan.setup_mode = true;
-    self.plan.sinv = self.sinv.val;
-    self.plan.su_home = self.sinv.home;
-    self.plan.display_unit = false;
+    const save_idx = self.cur.plan.lo_idx;
+    const save_vals = self.cur.plan.lo_vals;
+    self.cur.plan.lo_idx = self.su.idx;
+    self.cur.plan.lo_vals = self.su.vals;
+    self.cur.plan.su_on = false; // computing the roots, not reading them
+    self.cur.plan.setup_mode = true;
+    self.cur.plan.sinv = self.sinv.val;
+    self.cur.plan.su_home = self.sinv.home;
+    self.cur.plan.display_unit = false;
     self.su.mode = true;
-    self.emitting_common = true;
+    self.cur.emitting_common = true;
     defer {
-        self.plan.lo_idx = save_idx;
-        self.plan.lo_vals = save_vals;
-        self.plan.su_on = true;
-        self.plan.setup_mode = false;
+        self.cur.plan.lo_idx = save_idx;
+        self.cur.plan.lo_vals = save_vals;
+        self.cur.plan.su_on = true;
+        self.cur.plan.setup_mode = false;
         self.su.mode = false;
-        self.emitting_common = false;
+        self.cur.emitting_common = false;
     }
-    try self.plan.analyze(.undef, true);
+    try self.cur.plan.analyze(.undef, true);
     try emitSimparams(self);
 
-    self.uses.x = false;
-    self.uses.model = true;
-    self.uses.inst = false;
-    self.fatal = null;
+    self.cur.uses.x = false;
+    self.cur.uses.model = true;
+    self.cur.uses.inst = false;
+    self.cur.fatal = null;
     self.su.chunks = 0;
     const at_doc = self.out.items.len;
     try self.w(
@@ -389,12 +389,12 @@ pub fn emitSetup(self: *Gen) Error!void {
     // per-eval), but a per-eval value the relooper places before a `zs_stop`
     // branch may, for the arm that flag never runs: it reads a default
     // Instance, so the text compiles and nothing stored depends on it.
-    if (self.uses.inst) {
+    if (self.cur.uses.inst) {
         std.debug.assert(self.su.stop);
         try self.out.insertSlice(self.gpa, at_stop, "    const inst: *const Instance = &.{};\n");
     }
-    std.debug.assert(!self.uses.x);
-    std.debug.assert(self.fatal == null);
+    std.debug.assert(!self.cur.uses.x);
+    std.debug.assert(self.cur.fatal == null);
     if (self.out.items.len - at_doc < setup_chunk.chunk_bytes) return;
     // A large `setup` becomes chunks a split build compiles in parallel.
     // The split is a text transform whose working copies (several times the

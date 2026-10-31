@@ -537,7 +537,7 @@ pub fn emitSay(g: *Gen, inst: Mir.Inst) Error!void {
     const k = for (g.say, 0..) |site, j| {
         if (site.call == call) break j;
     } else return g.b("S.con(0.0)", .{});
-    g.uses.out = true;
+    g.cur.uses.out = true;
     try g.b("zd: {{ out.{s}({d}, &.{{", .{ if (g.say[k].debug) "putDebug" else "put", k });
     for (g.say[k].vals, 0..) |v, i| {
         try g.b("{s}", .{if (i == 0) " " else ", "});
@@ -601,7 +601,7 @@ pub fn emitSimCtl(g: *Gen, name: []const u8, args: []const Mir.Value, inst: Mir.
 fn emitWhen(g: *Gen, task: []const u8, inst: Mir.Inst, level: i64) Error!void {
     if (std.mem.findScalar(Mir.Inst, g.init_calls, inst) != null)
         return g.b("std.debug.print(\"{s}: initialization\", .{{}}); ", .{task});
-    g.uses.sim = true;
+    g.cur.uses.sim = true;
     try g.b("std.debug.print(\"{s}: \", .{{}}); zWhen(sim.t, {d}); ", .{ task, std.math.clamp(level, 0, 2) });
 }
 

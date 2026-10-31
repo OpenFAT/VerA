@@ -333,12 +333,12 @@ fn emitAcceptQ(self: *Gen, acc: Accept) Error!void {
     // §9.21.1 (VD-095) `updateState` keeps a table capture from its own core
     // run; a table device's host calls `q` and `updateState`.
     if (self.lowered.table_samples.items.len != 0) return;
-    self.uses.x = false;
-    self.uses.model = false;
-    self.uses.inst = true; // the §9.17 resets below always write it
-    self.core_wanted = false;
-    self.core_hoisted = true;
-    defer self.core_hoisted = false;
+    self.cur.uses.x = false;
+    self.cur.uses.model = false;
+    self.cur.uses.inst = true; // the §9.17 resets below always write it
+    self.cur.core_wanted = false;
+    self.cur.core_hoisted = true;
+    defer self.cur.core_hoisted = false;
     try self.w(
         \\/// §5.6.1.2 + §4.5.2 the accepted-point pass from ONE core evaluation.
         \\/// Returns `q(S, x, model, inst, sim)` and then does what
@@ -355,19 +355,19 @@ fn emitAcceptQ(self: *Gen, acc: Accept) Error!void {
     });
     const at_core = self.out.items.len;
     // §5.6.1.2 the charges, one per site (`q`'s layout).
-    self.core_wanted = true;
+    self.cur.core_wanted = true;
     try self.b("    const qq = ", .{});
     try gen_dispatch.writeSites(self);
     try self.b(";\n", .{});
     try emitAcceptBody(self, acc);
     try self.w("    return qq;\n}}\n\n", .{});
-    if (self.core_wanted or acc.uses_core) {
-        self.uses.x = true;
-        self.uses.model = true;
+    if (self.cur.core_wanted or acc.uses_core) {
+        self.cur.uses.x = true;
+        self.cur.uses.model = true;
         try self.out.insertSlice(self.gpa, at_core, try self.arena.print("    const m = @call(.always_inline, core, .{{ S, zProbe(S, x), model, inst, sim{s} }});\n", .{self.heldArg(true)}));
     }
-    if (!self.uses.x) gen_unit.patchParam(self, at_x, "x".len);
-    if (!self.uses.model) gen_unit.patchParam(self, at_model, "model".len);
+    if (!self.cur.uses.x) gen_unit.patchParam(self, at_x, "x".len);
+    if (!self.cur.uses.model) gen_unit.patchParam(self, at_model, "model".len);
 }
 
 /// Writes the accepted-step body shared by `updateState` and `acceptQ`:
@@ -410,7 +410,7 @@ fn emitAcceptBody(self: *Gen, acc: Accept) Error!void {
         if (u.role != .analog_op or k == .none) continue;
         const n = self.names.unit_names[i];
         const inst = self.names.opInstOf(@intCast(i)) orelse continue;
-        self.ctrl_tok = self.mir.instTok(inst); // E0515's fallback span
+        self.cur.ctrl_tok = self.mir.instTok(inst); // E0515's fallback span
         const original_args = self.mir.instData(inst).call.args;
         const latest = self.lowered.timer_controls.get(inst);
         const args: []const Mir.Value = if (latest) |*v| v else original_args;
@@ -829,9 +829,9 @@ fn emitAliases(self: *Gen, pairs: []const CollapsePair) Error!void {
 /// breakpoint at t + td and clamps dt_max under the shortest delay. A site
 /// whose delay is a solved quantity is skipped.
 pub fn emitDelays(self: *Gen) Error!void {
-    const saved = self.uses.model;
-    defer self.uses.model = saved;
-    self.uses.model = false;
+    const saved = self.cur.uses.model;
+    defer self.cur.uses.model = saved;
+    self.cur.uses.model = false;
     var tds: std.ArrayList([]const u8) = .empty;
     for (self.names.units, 0..) |u, i| {
         if (u.role != .analog_op or u.op != .absdelay) continue;
@@ -852,7 +852,7 @@ pub fn emitDelays(self: *Gen) Error!void {
         \\/// shortest delay (engine minDelay -> tran echo machinery).
         \\pub fn delays({s}: *const Model) [{d}]f64 {{
         \\    return .{{
-    , .{ if (self.uses.model) "model" else "_", tds.items.len });
+    , .{ if (self.cur.uses.model) "model" else "_", tds.items.len });
     for (tds.items, 0..) |td, k| try self.w("{s} {s}", .{ if (k == 0) "" else ",", td });
     try self.w(" }};\n}}\n\n\n", .{});
 }
@@ -894,9 +894,9 @@ pub fn emitNextBreakpoint(self: *Gen) Error!void {
 
     // Render first: `f64Const` sets `uses.model`, and an unused `model`
     // parameter does not compile.
-    const saved = self.uses.model;
-    defer self.uses.model = saved;
-    self.uses.model = false;
+    const saved = self.cur.uses.model;
+    defer self.cur.uses.model = saved;
+    self.cur.uses.model = false;
 
     const Timer = struct { start: []const u8, period: []const u8, guard: ?[]const u8 };
     var timers: std.ArrayList(Timer) = .empty;
@@ -930,7 +930,7 @@ pub fn emitNextBreakpoint(self: *Gen) Error!void {
         \\pub fn nextBreakpoint({s}: *const Model, t: f64) ?f64 {{
         \\    var best = std.math.inf(f64);
         \\
-    , .{if (self.uses.model) "model" else "_"});
+    , .{if (self.cur.uses.model) "model" else "_"});
     for (timers.items) |tm| {
         if (tm.guard) |g| try self.w("    if (({s}) != 0.0) {{\n    ", .{g});
         try self.w("    if (zNextTimer({s}, {s}, t)) |b| best = @min(best, b);\n", .{ tm.start, tm.period });

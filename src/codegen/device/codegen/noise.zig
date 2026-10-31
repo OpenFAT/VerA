@@ -202,8 +202,8 @@ fn emitNoiseTablePoints(self: *Gen) Error!void {
     , .{});
     const at_model = self.out.items.len;
     try self.w("model: *const Model) [{d}][2]f64 {{\n", .{total});
-    const saved_model = self.uses.model;
-    self.uses.model = false;
+    const saved_model = self.cur.uses.model;
+    self.cur.uses.model = false;
     var body: std.ArrayList(u8) = .empty;
     for (self.noise.tabs, 0..) |pts, k| {
         const mvs = if (k < self.noise.tab_vals.len) self.noise.tab_vals[k] else &.{};
@@ -217,8 +217,8 @@ fn emitNoiseTablePoints(self: *Gen) Error!void {
             try body.print(self.arena, "        .{{ {s}, {s} }},\n", .{ pair[0], pair[1] });
         }
     }
-    const reads_model = self.uses.model;
-    self.uses.model = saved_model or reads_model;
+    const reads_model = self.cur.uses.model;
+    self.cur.uses.model = saved_model or reads_model;
     if (!reads_model) gen_unit.patchParam(self, at_model, "model".len);
     try self.w("    var pts: [{d}][2]f64 = .{{\n", .{total});
     try self.w("{s}", .{body.items});
@@ -261,10 +261,10 @@ pub fn emitAcTable(self: *Gen) Error!void {
     // Rendered before anything is written, so the `x`/`model`/`inst`
     // parameters can be patched to `_` when nothing reached them, as
     // `emitUnit` does. The flags are Gen-wide, so they are saved.
-    const saved_model = self.uses.model;
-    const saved_inst = self.uses.inst;
-    self.uses.model = false;
-    self.uses.inst = false;
+    const saved_model = self.cur.uses.model;
+    const saved_inst = self.cur.uses.inst;
+    self.cur.uses.model = false;
+    self.cur.uses.inst = false;
     const vals = try self.arena.alloc([2][]const u8, self.noise.ac_rows.len);
     var all_stated = true;
     var uses_core = false;
@@ -286,10 +286,10 @@ pub fn emitAcTable(self: *Gen) Error!void {
         // row's sign rides as a negative magnitude (`plan/noise.zig` `neg`).
         v.* = .{ if (nr.neg) try self.arena.print("-({s})", .{scaled}) else scaled, phase.? };
     }
-    const reads_model = self.uses.model or uses_core;
-    const reads_inst = self.uses.inst or uses_core;
-    self.uses.model = saved_model or reads_model;
-    self.uses.inst = saved_inst or reads_inst;
+    const reads_model = self.cur.uses.model or uses_core;
+    const reads_inst = self.cur.uses.inst or uses_core;
+    self.cur.uses.model = saved_model or reads_model;
+    self.cur.uses.inst = saved_inst or reads_inst;
     if (!all_stated) return refuseAc(self);
 
     try self.w("/// §4.6.3 AC stimulus sources declared by the model.\npub const ac_gens = [_]contract.AcGen(Self){{\n", .{});

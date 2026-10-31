@@ -22,7 +22,7 @@ const Analysis = @import("prove").Analysis;
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;
 const VTy = codegen.VTy;
-const opcode_zig = codegen.opcode_zig;
+const opcode_zig = @import("opcode_zig.zig");
 
 /// Returns whether `op` has a plain-f64 spelling a GPU can execute.
 ///
@@ -100,7 +100,7 @@ fn strConst(self: *Gen, v0: Mir.Value) Error!?[]const u8 {
         .str_const => |s| return try self.arena.print("\"{f}\"", .{std.zig.fmtString(s)}),
         .param_ref => |p| {
             if (Analysis.tyOfParam(self.lowered.params.items[p].ty) != .str) return null;
-            self.uses.model = true;
+            self.cur.uses.model = true;
             return try self.arena.print("model.{s}", .{self.names.p_names[p]});
         },
         .undef, .float_const, .int_const, .block_param, .inst_result => return null,
@@ -118,7 +118,7 @@ pub fn i64Const(self: *Gen, v0: Mir.Value, depth: u32) Error!?[]const u8 {
         .float_const => |n| return try self.arena.print("@as(i64, {d})", .{std.math.lossyCast(i64, @round(n))}),
         .param_ref => |p| {
             if (Analysis.tyOfParam(self.lowered.params.items[p].ty) == .str) return null;
-            self.uses.model = true;
+            self.cur.uses.model = true;
             return switch (Analysis.tyOfParam(self.lowered.params.items[p].ty)) {
                 .int => try self.arena.print("@as(i64, model.{s})", .{self.names.p_names[p]}),
                 .real => try self.arena.print("std.math.lossyCast(i64, @round(model.{s}))", .{self.names.p_names[p]}),
@@ -143,7 +143,7 @@ pub fn i64Const(self: *Gen, v0: Mir.Value, depth: u32) Error!?[]const u8 {
                 if (d.callee == .@"$param_given") {
                     const def = if (d.args.len > 0) self.mir.valueDef(self.an.rv(d.args[0])) else Mir.Def.undef;
                     if (def != .param_ref) return "@as(i64, 0)";
-                    self.uses.model = true;
+                    self.cur.uses.model = true;
                     const bit = self.names.given_bit[def.param_ref];
                     if (bit == none_u32) return "@as(i64, 0)";
                     return try self.arena.print("@as(i64, @intFromBool(model.given__.isSet({d})))", .{bit});
@@ -299,21 +299,21 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
         if (depth > 0 and self.an.dFree(v)) {
             const i = @backingInt(v);
             // A setup field is already a plain f64.
-            if (i < self.an.nv and self.plan.isRoot(v)) return try gen_setup.rootRef(self, v, true);
+            if (i < self.an.nv and self.cur.plan.isRoot(v)) return try gen_setup.rootRef(self, v, true);
             // One that differs per point of a batch: `.val()` would pick
             // one, so the caller keeps it an `S` value (the same f64
             // arithmetic on a lane-free value).
             if (float_lanes.perPoint(self, v)) return null;
-            if (i < self.an.nv and self.plan.cached(v))
+            if (i < self.an.nv and self.cur.plan.cached(v))
                 return try self.arena.print("c.f{d}.val()", .{self.core.lo_idx[i]});
-            if (i < self.an.nv and self.plan.slot[i] != none_u32) {
-                gen_unit.probeUse(self, self.plan.slot[i]);
+            if (i < self.an.nv and self.cur.plan.slot[i] != none_u32) {
+                gen_unit.probeUse(self, self.cur.plan.slot[i]);
                 return try self.arena.print("{s}.val()", .{try gen_unit.slotRefStr(self, i)});
             }
         }
         // A planner literal (`UnitPlan.literal`) is a leaf whose operands the
         // unit never planned: its number, whatever they would name.
-        if (v != .undef and self.plan.literal(v)) return try gen_file.fmtF64(self, self.an.foldConst(v, false).?);
+        if (v != .undef and self.cur.plan.literal(v)) return try gen_file.fmtF64(self, self.an.foldConst(v, false).?);
         // Fold a literal chain to one number unless it would swallow a slot.
         if (!gen_render.foldHidesSlot(self, v, 0)) {
             if (self.an.foldConst(v, false)) |k| return try gen_file.fmtF64(self, k);
@@ -329,7 +329,7 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
     }
     switch (self.mir.valueDef(v)) {
         .param_ref => |p| {
-            self.uses.model = true;
+            self.cur.uses.model = true;
             return switch (Analysis.tyOfParam(self.lowered.params.items[p].ty)) {
                 .real => try self.arena.print("model.{s}", .{self.names.p_names[p]}),
                 .int => try self.arena.print("@as(f64, @floatFromInt(model.{s}))", .{self.names.p_names[p]}),
@@ -350,7 +350,7 @@ pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]c
                 const name = gen_call.strArg(self, d.args, 0) orelse return null;
                 switch (self.lowered.simparamAnswer(name, d.args.len > 1)) {
                     .host => |h| {
-                        self.uses.model = true;
+                        self.cur.uses.model = true;
                         return try self.arena.print("model.{s}", .{h.field});
                     },
                     .value => |x| return try gen_file.fmtF64(self, x),
@@ -403,7 +403,7 @@ pub fn f64Expr(self: *Gen, v0: Mir.Value) Error![]const u8 {
     if (self.diags) |bag| try bag.add(
         .codegen,
         .E0515,
-        self.lowered.tokenSpan(if (tok == Mir.no_tok) self.ctrl_tok else tok),
+        self.lowered.tokenSpan(if (tok == Mir.no_tok) self.cur.ctrl_tok else tok),
         "this argument is computed during the solve; only literals, parameters " ++
             "and arithmetic over them are available where the host evaluates it",
         .{},
@@ -411,7 +411,7 @@ pub fn f64Expr(self: *Gen, v0: Mir.Value) Error![]const u8 {
     self.poison("LRM 4.5: an analog operator control argument " ++
         "must be a constant or parameter expression");
     assert(self.any_fatal);
-    assert(self.fatal != null);
+    assert(self.cur.fatal != null);
     return "0.0";
 }
 
@@ -425,7 +425,7 @@ pub fn argF64(self: *Gen, args: []const Mir.Value, i: usize, dflt: []const u8) E
 /// constant or parameter expression. Rolls back `f64Const`'s `uses.model`
 /// side effect.
 pub fn ctrlIsDynamic(self: *Gen, v: Mir.Value) Error!bool {
-    const saved = self.uses.model;
-    defer self.uses.model = saved;
+    const saved = self.cur.uses.model;
+    defer self.cur.uses.model = saved;
     return (try f64Const(self, v, 0, false)) == null;
 }

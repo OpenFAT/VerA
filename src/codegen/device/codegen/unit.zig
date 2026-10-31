@@ -76,7 +76,7 @@ pub fn scanSimReads(self: *const Gen, start: usize) SimReads {
         var e = i + 1;
         while (e < text.len and ident(text[e])) e += 1;
         const field = text[i + 1 .. e];
-        const guarded = for (self.init_arms.items) |a| {
+        const guarded = for (self.cur.init_arms.items) |a| {
             if (a[0] <= k and k < a[1]) break true;
         } else false;
         if (std.mem.eql(u8, field, "iteration")) r.iteration = true;
@@ -167,8 +167,8 @@ pub fn emitUnits(self: *Gen) Error!void {
     for (self.jobs.list) |job| {
         if (job.kind != .display) continue;
         // §9.5 the one unit where a descriptor operation may actually happen.
-        self.emitting_display = true;
-        defer self.emitting_display = false;
+        self.cur.emitting_display = true;
+        defer self.cur.emitting_display = false;
         const lo = self.out.items.len;
         const at = try emitUnit(self, self.jobs.display_name, job.target, job.mode, plan_jobs.display_comment);
         try gen_file.recordUnitFile(self, self.jobs.display_name, lo, at);
@@ -210,15 +210,15 @@ const core_doc =
 /// float mode as the core, so every field is bit-identical to the core's.
 /// For a value-only caller: its reals are no `lane_masks` data.
 pub fn emitSlice(self: *Gen, name: []const u8, vals: []Mir.Value, idx: []u32, doc: []const u8) Error!void {
-    const saved = .{ self.core.lo_vals, self.plan.lo_idx, self.plan.lo_vals };
+    const saved = .{ self.core.lo_vals, self.cur.plan.lo_idx, self.cur.plan.lo_vals };
     defer {
         self.core.lo_vals = saved[0];
-        self.plan.lo_idx = saved[1];
-        self.plan.lo_vals = saved[2];
+        self.cur.plan.lo_idx = saved[1];
+        self.cur.plan.lo_vals = saved[2];
     }
     self.core.lo_vals = vals;
-    self.plan.lo_idx = idx;
-    self.plan.lo_vals = vals;
+    self.cur.plan.lo_idx = idx;
+    self.cur.plan.lo_vals = vals;
     const n_masks = self.fam_masks.items.len;
     defer self.fam_masks.shrinkRetainingCapacity(n_masks);
     try emitCoreDecl(self, name, doc);
@@ -266,13 +266,13 @@ fn remapAll(self: *Gen, fields: []const u32, remap: []const u32) Error![]u32 {
 /// as a struct: the shared core, or a caller's slice of it with `core.lo_vals`
 /// and `plan.lo_idx`/`lo_vals` swapped (`emitSlice`), under doc comment `doc`.
 fn emitCoreDecl(self: *Gen, name: []const u8, doc: []const u8) Error!void {
-    self.emitting_common = true;
-    defer self.emitting_common = false;
+    self.cur.emitting_common = true;
+    defer self.cur.emitting_common = false;
 
-    self.uses = .{};
-    self.fatal = null;
-    self.plan.display_unit = self.emitting_display;
-    try self.plan.analyze(.undef, self.emitting_common); // `emitting_common` ⇒ the live-outs are the targets
+    self.cur.uses = .{};
+    self.cur.fatal = null;
+    self.cur.plan.display_unit = self.cur.emitting_display;
+    try self.cur.plan.analyze(.undef, self.cur.emitting_common); // `emitting_common` ⇒ the live-outs are the targets
 
     const lo = self.out.items.len;
     try self.w("{s}", .{doc});
@@ -305,16 +305,16 @@ fn emitCoreDecl(self: *Gen, name: []const u8, doc: []const u8) Error!void {
     // `Setup` defaults its reals to NaN, which a missed `setup` call turns
     // into a NaN residual; the integers have no NaN, so Debug asserts it.
     if (self.su.vals.len != 0) {
-        self.uses.model = true;
+        self.cur.uses.model = true;
         try self.w("    if (std.debug.runtime_safety and contract.validating) std.debug.assert(model.su_ok);\n", .{});
     }
-    self.fatal = null;
-    self.init_arms.clearRetainingCapacity();
+    self.cur.fatal = null;
+    self.cur.init_arms.clearRetainingCapacity();
     try emitUnitBody(self, .undef);
     if (std.mem.eql(u8, name, self.core.name)) self.sim_reads = scanSimReads(self, body_start);
     try tableReset(self, body_start);
     try closeSig(self, slots, body_start);
-    if (self.core.held_only.len != 0 and !self.uses.held) patchParam(self, at_held, "held".len);
+    if (self.core.held_only.len != 0 and !self.cur.uses.held) patchParam(self, at_held, "held".len);
     // A slice of integers and plain arrays alone never names `S`.
     if (!try namesIdent(self, slots.x, "S")) patchParam(self, slots.x - "S: type, ".len, "S".len);
     try self.w("}}\n\n", .{});
@@ -349,10 +349,10 @@ pub fn opInputIdx(self: *const Gen, i: u32) u32 {
 /// splices `pub ` for the split form. `text` itself stays private because
 /// `contract.rejectStrayPubDecls` allows only contract-recognized public names.
 fn emitUnit(self: *Gen, name: []const u8, target: Mir.Value, mode: proof.FloatMode, comment: []const u8) Error!usize {
-    self.uses = .{};
-    self.fatal = null;
-    self.plan.display_unit = self.emitting_display;
-    try self.plan.analyze(target, self.emitting_common);
+    self.cur.uses = .{};
+    self.cur.fatal = null;
+    self.cur.plan.display_unit = self.cur.emitting_display;
+    try self.cur.plan.analyze(target, self.cur.emitting_common);
 
     try self.w("/// {s}\n", .{comment});
     const at_fn = self.out.items.len;
@@ -419,14 +419,14 @@ fn openSig(self: *Gen, name: []const u8) Error!Slots {
     try self.w("sim: contract.SimState", .{});
     // §9.4.1/§9.5.9 a printing display unit with a per-iteration task runs
     // once per pass (`Gen.passes`).
-    if (self.emitting_display and self.display == .emit and self.passes) {
+    if (self.cur.emitting_display and self.display == .emit and self.passes) {
         try self.w(", comptime ", .{});
         const pass = self.out.items.len;
         try self.w("pass: contract.SayPass", .{});
         return .{ .x = x, .model = model, .inst = inst, .sim = sim, .pass = pass };
     }
     // §9.4 a device's display unit records into the host's buffer (`say`).
-    if (!self.emitting_display or self.display != .record) return .{ .x = x, .model = model, .inst = inst, .sim = sim };
+    if (!self.cur.emitting_display or self.display != .record) return .{ .x = x, .model = model, .inst = inst, .sim = sim };
     try self.w(", ", .{});
     const out = self.out.items.len;
     try self.w("out: *contract.Say", .{});
@@ -436,18 +436,18 @@ fn openSig(self: *Gen, name: []const u8) Error!Slots {
 /// Replaces a refused body (from `body_start`) with its `@compileError`, then
 /// back-patches every parameter the body never read to `_`.
 fn closeSig(self: *Gen, s: Slots, body_start: usize) Error!void {
-    if (self.fatal) |msg| {
+    if (self.cur.fatal) |msg| {
         self.any_fatal = true;
         self.out.shrinkRetainingCapacity(body_start);
-        self.uses = .{};
+        self.cur.uses = .{};
         try self.b("    @compileError(\"{s}\");\n", .{msg});
     }
-    if (!self.uses.x) patchParam(self, s.x, "x".len);
-    if (!self.uses.model) patchParam(self, s.model, "model".len);
-    if (!self.uses.inst) patchParam(self, s.inst, "inst".len);
-    if (!self.uses.sim) patchParam(self, s.sim, "sim".len);
-    if (s.out != 0 and !self.uses.out) patchParam(self, s.out, "out".len);
-    if (s.pass != 0 and !self.uses.pass) patchParam(self, s.pass, "pass".len);
+    if (!self.cur.uses.x) patchParam(self, s.x, "x".len);
+    if (!self.cur.uses.model) patchParam(self, s.model, "model".len);
+    if (!self.cur.uses.inst) patchParam(self, s.inst, "inst".len);
+    if (!self.cur.uses.sim) patchParam(self, s.sim, "sim".len);
+    if (s.out != 0 and !self.cur.uses.out) patchParam(self, s.out, "out".len);
+    if (s.pass != 0 and !self.cur.uses.pass) patchParam(self, s.pass, "pass".len);
 }
 
 /// Overwrites a reserved parameter-name slot with `_`, space-padded to the
@@ -530,13 +530,13 @@ fn hoistArray(t: VTy) []const u8 {
 // `slotArr`/`slotNum` are the one place that knows whether a slot is its own
 // `tN` or a hoist-array element, so declaration and use cannot drift apart.
 fn slotArr(self: *Gen, i: usize) ?[]const u8 {
-    const s = self.plan.slot[i];
-    if (s < self.hoist.idx.items.len and self.hoist.idx.items[s] != none_u32) return hoistArray(self.an.vty[i]);
+    const s = self.cur.plan.slot[i];
+    if (s < self.cur.hoist.idx.items.len and self.cur.hoist.idx.items[s] != none_u32) return hoistArray(self.an.vty[i]);
     return null;
 }
 fn slotNum(self: *Gen, i: usize) u32 {
-    const s = self.plan.slot[i];
-    if (s < self.hoist.idx.items.len and self.hoist.idx.items[s] != none_u32) return self.hoist.idx.items[s];
+    const s = self.cur.plan.slot[i];
+    if (s < self.cur.hoist.idx.items.len and self.cur.hoist.idx.items[s] != none_u32) return self.cur.hoist.idx.items[s];
     return s;
 }
 /// Writes the name value `i`'s slot is read and written under: its own `tN`
@@ -544,7 +544,7 @@ fn slotNum(self: *Gen, i: usize) u32 {
 pub fn writeSlotRef(self: *Gen, i: usize) Error!void {
     if (slotArr(self, i)) |arr| {
         const k = slotNum(self, i);
-        if (self.an.vty[i] == .real) return self.b("h{d}[{d}]", .{ self.hoist.grp.items[k], self.hoist.pos.items[k] });
+        if (self.an.vty[i] == .real) return self.b("h{d}[{d}]", .{ self.cur.hoist.grp.items[k], self.cur.hoist.pos.items[k] });
         return self.b("{s}[{d}]", .{ arr, k });
     }
     return self.b("t{d}", .{slotNum(self, i)});
@@ -555,45 +555,45 @@ pub fn writeSlotRef(self: *Gen, i: usize) Error!void {
 pub fn slotMask(self: *Gen, i: usize) ?[]const u64 {
     if (self.an.vty[i] != .real) return null;
     if (slotArr(self, i) == null) return null;
-    return self.hoist.mask.items[slotNum(self, i)];
+    return self.cur.hoist.mask.items[slotNum(self, i)];
 }
 
 /// Every real hoist element's mask: the union over the values that share it.
 fn hoistMasks(self: *Gen, n: u32) Error!void {
-    self.hoist.mask.clearRetainingCapacity();
-    try self.hoist.mask.ensureTotalCapacityPrecise(self.arena, n);
-    for (0..n) |_| self.hoist.mask.appendAssumeCapacity(try gen_mask.zero(self.arena, self.mw));
-    for (self.plan.live.items) |lv| {
+    self.cur.hoist.mask.clearRetainingCapacity();
+    try self.cur.hoist.mask.ensureTotalCapacityPrecise(self.arena, n);
+    for (0..n) |_| self.cur.hoist.mask.appendAssumeCapacity(try gen_mask.zero(self.arena, self.mw));
+    for (self.cur.plan.live.items) |lv| {
         const v = @backingInt(lv);
-        if (self.an.vty[v] != .real or self.plan.slot[v] == none_u32) continue;
-        const k = self.hoist.idx.items[self.plan.slot[v]];
+        if (self.an.vty[v] != .real or self.cur.plan.slot[v] == none_u32) continue;
+        const k = self.cur.hoist.idx.items[self.cur.plan.slot[v]];
         if (k == none_u32) continue;
-        gen_mask.orIn(self.hoist.mask.items[k], family.mask(self, lv));
+        gen_mask.orIn(self.cur.hoist.mask.items[k], family.mask(self, lv));
     }
-    for (self.hoist.mask.items) |m| try family.note(self, m);
+    for (self.cur.hoist.mask.items) |m| try family.note(self, m);
     // One array per distinct mask: a `@Tuple` with one field per slot is
     // most of a large body's sema time (psp103 `setup`: 1,576 fields, 9
     // masks; `git show 6e59b3d4^:docs/measurements/codegen-levers-2026-09-30.md` lever 5), and
     // every element keeps exactly the type its tuple field had.
     // One `grp`/`pos` entry per hoist element.
-    self.hoist.grp.clearRetainingCapacity();
-    try self.hoist.grp.ensureTotalCapacityPrecise(self.arena, n);
-    self.hoist.pos.clearRetainingCapacity();
-    try self.hoist.pos.ensureTotalCapacityPrecise(self.arena, n);
-    self.hoist.gmask.clearRetainingCapacity();
-    self.hoist.glen.clearRetainingCapacity();
-    for (self.hoist.mask.items) |m| {
+    self.cur.hoist.grp.clearRetainingCapacity();
+    try self.cur.hoist.grp.ensureTotalCapacityPrecise(self.arena, n);
+    self.cur.hoist.pos.clearRetainingCapacity();
+    try self.cur.hoist.pos.ensureTotalCapacityPrecise(self.arena, n);
+    self.cur.hoist.gmask.clearRetainingCapacity();
+    self.cur.hoist.glen.clearRetainingCapacity();
+    for (self.cur.hoist.mask.items) |m| {
         // ponytail: linear scan; a body has 1-30 distinct masks.
-        const g = for (self.hoist.gmask.items, 0..) |gm, j| {
+        const g = for (self.cur.hoist.gmask.items, 0..) |gm, j| {
             if (std.mem.eql(u64, gm, m)) break j;
         } else blk: {
-            try self.hoist.gmask.append(self.arena, m);
-            try self.hoist.glen.append(self.arena, 0);
-            break :blk self.hoist.gmask.items.len - 1;
+            try self.cur.hoist.gmask.append(self.arena, m);
+            try self.cur.hoist.glen.append(self.arena, 0);
+            break :blk self.cur.hoist.gmask.items.len - 1;
         };
-        self.hoist.grp.appendAssumeCapacity(@intCast(g));
-        self.hoist.pos.appendAssumeCapacity(self.hoist.glen.items[g]);
-        self.hoist.glen.items[g] += 1;
+        self.cur.hoist.grp.appendAssumeCapacity(@intCast(g));
+        self.cur.hoist.pos.appendAssumeCapacity(self.cur.hoist.glen.items[g]);
+        self.cur.hoist.glen.items[g] += 1;
     }
 }
 
@@ -602,7 +602,7 @@ fn hoistMasks(self: *Gen, n: u32) Error!void {
 pub fn slotRefStr(self: *Gen, i: usize) Error![]const u8 {
     if (slotArr(self, i)) |arr| {
         const k = slotNum(self, i);
-        if (self.an.vty[i] == .real) return self.arena.print("h{d}[{d}]", .{ self.hoist.grp.items[k], self.hoist.pos.items[k] });
+        if (self.an.vty[i] == .real) return self.arena.print("h{d}[{d}]", .{ self.cur.hoist.grp.items[k], self.cur.hoist.pos.items[k] });
         return self.arena.print("{s}[{d}]", .{ arr, k });
     }
     return self.arena.print("t{d}", .{slotNum(self, i)});
@@ -650,17 +650,17 @@ pub const Place = struct {
 /// Records that a lexical scope opens at the current output offset. No-op
 /// unless `probe.active`.
 pub fn scopeOpen(self: *Gen) Error!void {
-    if (!self.probe.active) return;
-    try self.probe.sc_end.append(self.arena, 0);
-    try self.probe.sc_open.append(self.arena, @intCast(self.probe.sc_end.items.len - 1));
+    if (!self.cur.probe.active) return;
+    try self.cur.probe.sc_end.append(self.arena, 0);
+    try self.cur.probe.sc_open.append(self.arena, @intCast(self.cur.probe.sc_end.items.len - 1));
 }
 
 /// Records that the innermost open scope ends at `at`, which is not always
 /// `out.len`: the `cfg.zig` peephole rewinds over a label it drops.
 /// No-op unless `probe.active`.
 pub fn scopeClose(self: *Gen, at: usize) void {
-    if (!self.probe.active) return;
-    self.probe.sc_end.items[self.probe.sc_open.pop().?] = @intCast(at);
+    if (!self.cur.probe.active) return;
+    self.cur.probe.sc_end.items[self.cur.probe.sc_open.pop().?] = @intCast(at);
 }
 
 /// Records the definition of `slot` at the current offset while `probe.active`.
@@ -668,17 +668,17 @@ pub fn scopeClose(self: *Gen, at: usize) void {
 /// several edges, and even a single-edge copy lands in an arm its merge
 /// block's readers are lexically outside of.
 pub fn probeDef(self: *Gen, slot: u32, movable: bool) void {
-    if (!self.probe.active) return;
-    const p = &self.probe.place.items[slot];
-    if (p.defs == 0) p.scope = self.probe.sc_open.last().?;
+    if (!self.cur.probe.active) return;
+    const p = &self.cur.probe.place.items[slot];
+    if (p.defs == 0) p.scope = self.cur.probe.sc_open.last().?;
     p.defs +|= 1;
     if (p.defs > 1 or !movable) p.pinned = true;
 }
 
 /// Records a read of `slot` at the current offset while `probe.active`.
 pub fn probeUse(self: *Gen, slot: u32) void {
-    if (!self.probe.active) return;
-    const p = &self.probe.place.items[slot];
+    if (!self.cur.probe.active) return;
+    const p = &self.cur.probe.place.items[slot];
     p.uses +|= 1;
     // Read before written in the text: a loop-carried value, or a slot the
     // emitter never assigns at all (which is the `undefined`/zero seed the
@@ -693,27 +693,27 @@ pub fn probeUse(self: *Gen, slot: u32) void {
 /// dropped labels and inlined arms). Safe to run twice: emission only appends
 /// to `out` and sets monotone flags, and `fatal` is set-once.
 fn probeBody(self: *Gen, target: Mir.Value) Error!void {
-    self.probe.place.clearRetainingCapacity();
-    try self.probe.place.appendNTimes(self.arena, .{}, self.plan.n_slots);
-    self.probe.sc_end.clearRetainingCapacity();
-    self.probe.sc_open.clearRetainingCapacity();
+    self.cur.probe.place.clearRetainingCapacity();
+    try self.cur.probe.place.appendNTimes(self.arena, .{}, self.cur.plan.n_slots);
+    self.cur.probe.sc_end.clearRetainingCapacity();
+    self.cur.probe.sc_open.clearRetainingCapacity();
 
     const at = self.out.items.len;
     self.su.exits = 0;
     self.su.store_bytes = 0;
-    self.probe.active = true;
+    self.cur.probe.active = true;
     try scopeOpen(self); // the function body itself
     try gen_setup.emitRoot(self, target);
     scopeClose(self, self.out.items.len);
-    self.probe.active = false;
+    self.cur.probe.active = false;
     self.su.lines = std.mem.count(u8, self.out.items[at..], "\n");
     self.out.shrinkRetainingCapacity(at);
 
-    for (self.probe.place.items) |*p| {
+    for (self.cur.probe.place.items) |*p| {
         // `uses == 0` keeps its `var`: a slot that is written and never read
         // is legal Zig, but the same code as an unused `const` is not.
         p.at_def = !p.pinned and p.defs == 1 and p.uses != 0 and
-            p.max_use < self.probe.sc_end.items[p.scope];
+            p.max_use < self.cur.probe.sc_end.items[p.scope];
     }
 }
 
@@ -728,9 +728,9 @@ fn declareArrays(self: *Gen) Error!void {
     // writes it; until one does, `p<id>` is the whole of it.
     const stored = try self.arena.alloc(bool, n);
     @memset(stored, false);
-    for (self.plan.live.items) |lv| {
+    for (self.cur.plan.live.items) |lv| {
         const id = self.an.arrOf(lv) orelse continue;
-        if (self.plan.cached(lv)) continue;
+        if (self.cur.plan.cached(lv)) continue;
         seen[id] = true;
         const def = self.mir.valueDef(lv);
         if (def == .inst_result and self.mir.instOp(def.inst_result) == .store) stored[id] = true;
@@ -756,26 +756,26 @@ fn declareArrays(self: *Gen) Error!void {
 
 /// Emits the body computing `target` (or every live-out, while
 /// `emitting_common`): slot declarations, then the structured control flow.
-/// Requires `self.plan` to be analyzed for this unit.
+/// Requires `self.cur.plan` to be analyzed for this unit.
 pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
     // First, before anything can emit a slot name: slot numbering is
     // unit-local, so the previous unit's hoist indices would rename this
     // unit's slots. Both paths below can emit before the real assignment.
-    self.hoist.idx.clearRetainingCapacity();
-    try self.hoist.idx.appendNTimes(self.arena, none_u32, self.plan.n_slots);
+    self.cur.hoist.idx.clearRetainingCapacity();
+    try self.cur.hoist.idx.appendNTimes(self.arena, none_u32, self.cur.plan.n_slots);
 
     // One call at the top of the body, so the shared core is evaluated
     // exactly once per unit.
-    if (self.plan.uses_cache) {
-        self.uses.x = true;
-        self.uses.model = true;
-        self.uses.inst = true;
-        self.uses.sim = true;
+    if (self.cur.plan.uses_cache) {
+        self.cur.uses.x = true;
+        self.cur.uses.model = true;
+        self.cur.uses.inst = true;
+        self.cur.uses.sim = true;
         try self.ind(1);
         try self.b("const c = @call(.always_inline, core, .{{ S, x, model, inst, sim{s} }});\n", .{self.heldArg(true)});
     }
     try declareArrays(self);
-    if (self.plan.straight) {
+    if (self.cur.plan.straight) {
         try gen_cfg.emitBlockInsts(self, 0, 1, true);
         try gen_cfg.emitReturn(self, 1, target);
         return;
@@ -812,22 +812,22 @@ pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
     // after the declaration.
     var seeded: std.ArrayList(Mir.Value) = .empty;
     defer seeded.deinit(self.arena);
-    for (self.plan.live.items) |lv| {
+    for (self.cur.plan.live.items) |lv| {
         const v = @backingInt(lv);
-        if (self.plan.slot[v] == none_u32) continue;
-        const p = self.probe.place.items[self.plan.slot[v]];
+        if (self.cur.plan.slot[v] == none_u32) continue;
+        const p = self.cur.probe.place.items[self.cur.plan.slot[v]];
         if (p.at_def) continue;
         // Never assigned and never read: `mark` kept the value alive but the
         // emitted tree reaches neither end. Declaring it would be an unused local.
         if (p.defs == 0 and p.uses == 0) continue;
-        const returned = if (self.emitting_common) self.plan.lo_idx[v] != none_u32 else lv == ret;
+        const returned = if (self.cur.emitting_common) self.cur.plan.lo_idx[v] != none_u32 else lv == ret;
         if (returned) try seeded.append(self.arena, lv);
         if (self.an.vty[v] == .wide) {
             try own.append(self.arena, lv);
             continue;
         }
         const ty = @backingInt(self.an.vty[v]);
-        self.hoist.idx.items[self.plan.slot[v]] = n_hoist[ty];
+        self.cur.hoist.idx.items[self.cur.plan.slot[v]] = n_hoist[ty];
         n_hoist[ty] += 1;
     }
     try hoistMasks(self, n_hoist[@backingInt(VTy.real)]);
@@ -836,7 +836,7 @@ pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
         if (n == 0) continue;
         try self.ind(1);
         if (ty == .real) {
-            for (self.hoist.gmask.items, self.hoist.glen.items, 0..) |m, len, g| {
+            for (self.cur.hoist.gmask.items, self.cur.hoist.glen.items, 0..) |m, len, g| {
                 if (g != 0) try self.ind(1);
                 try self.b("var h{d}: [{d}]zOf(S, 0x{f}) = undefined;\n", .{ g, len, gen_mask.hex(m, false) });
             }
@@ -846,7 +846,7 @@ pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
     }
     for (own.items) |lv| {
         try self.ind(1);
-        try self.b("var t{d}: {s} = undefined;\n", .{ self.plan.slot[@backingInt(lv)], try slotTy(self, @backingInt(lv)) });
+        try self.b("var t{d}: {s} = undefined;\n", .{ self.cur.plan.slot[@backingInt(lv)], try slotTy(self, @backingInt(lv)) });
     }
     for (seeded.items) |lv| {
         const v = @backingInt(lv);
@@ -860,7 +860,7 @@ pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
         try self.b(";\n", .{});
     }
     // The probes' arms were rewound with their text.
-    self.init_arms.clearRetainingCapacity();
+    self.cur.init_arms.clearRetainingCapacity();
     try gen_setup.emitRoot(self, target);
 }
 

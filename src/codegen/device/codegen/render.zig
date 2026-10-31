@@ -18,7 +18,7 @@ const gen_setup = @import("setup.zig");
 const gen_cfg = @import("cfg.zig");
 const gen_unit = @import("unit.zig");
 const family = @import("family.zig");
-const opcode_zig = codegen.opcode_zig;
+const opcode_zig = @import("opcode_zig.zig");
 const Mir = @import("ir").Mir;
 const Analysis = @import("prove").Analysis;
 const Error = codegen.Error;
@@ -72,7 +72,7 @@ pub fn renderToArena(self: *Gen, v: Mir.Value, want: VTy) Error![]const u8 {
 /// the other LRM type.
 pub fn renderVal(self: *Gen, v0: Mir.Value, want: VTy) Error!void {
     const v = self.an.rv(v0);
-    if (self.subst) |s| if (s.v == v) return renderSubst(self, s, want);
+    if (self.cur.subst) |s| if (s.v == v) return renderSubst(self, s, want);
     const def = self.mir.valueDef(v);
     if (def == .undef) {
         // Lowering starts every wide `reg` at its declaration, so no `.wide`
@@ -129,14 +129,14 @@ pub fn renderVal(self: *Gen, v0: Mir.Value, want: VTy) Error!void {
 pub fn renderValueRef(self: *Gen, v: Mir.Value) Error!void {
     const i = @backingInt(v);
     // `setup` wrote the field when the card, instance or temperature changed.
-    if (i < self.an.nv and self.plan.isRoot(v)) {
+    if (i < self.an.nv and self.cur.plan.isRoot(v)) {
         const f = try gen_setup.rootRef(self, v, false);
         return if (self.an.vty[i] == .int) self.b("{s}", .{f}) else self.b("S.con({s})", .{f});
     }
     // Hoisted: computed once by the shared core, read from its cache.
-    if (i < self.an.nv and self.plan.cached(v)) return self.b("c.f{d}", .{self.core.lo_idx[i]});
-    if (i < self.an.nv and self.plan.slot[i] != none_u32) {
-        gen_unit.probeUse(self, self.plan.slot[i]);
+    if (i < self.an.nv and self.cur.plan.cached(v)) return self.b("c.f{d}", .{self.core.lo_idx[i]});
+    if (i < self.an.nv and self.cur.plan.slot[i] != none_u32) {
+        gen_unit.probeUse(self, self.cur.plan.slot[i]);
         try gen_unit.writeSlotRef(self, i);
         return;
     }
@@ -146,7 +146,7 @@ pub fn renderValueRef(self: *Gen, v: Mir.Value) Error!void {
         .int_const => |x| try self.b("@as(i64, {d})", .{x}),
         .str_const => |s| try self.b("\"{f}\"", .{std.zig.fmtString(s)}),
         .param_ref => |p| {
-            self.uses.model = true;
+            self.cur.uses.model = true;
             switch (Analysis.tyOfParam(self.lowered.params.items[p].ty)) {
                 .real => try self.b("S.con(model.{s})", .{self.names.p_names[p]}),
                 // The field may be narrower than the i64 the bodies compute in.
@@ -156,7 +156,7 @@ pub fn renderValueRef(self: *Gen, v: Mir.Value) Error!void {
             }
         },
         .block_param => |u| {
-            self.uses.x = true;
+            self.cur.uses.x = true;
             // Every probe read needs its lane; `deriv_reads` is this sound
             // superset.
             gen_mask.set(self.jac.deriv_reads, u);
@@ -172,7 +172,7 @@ pub fn renderValueRef(self: *Gen, v: Mir.Value) Error!void {
 pub fn materialized(self: *const Gen, v: Mir.Value) bool {
     const i = @backingInt(v);
     return i < self.an.nv and
-        (self.plan.isRoot(v) or self.plan.cached(v) or self.plan.slot[i] != none_u32);
+        (self.cur.plan.isRoot(v) or self.cur.plan.cached(v) or self.cur.plan.slot[i] != none_u32);
 }
 
 /// Returns the select condition's unslotted real comparison, so rendering it
@@ -205,7 +205,7 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
         // A value the analysis folds from literals alone (never through a
         // parameter) is its literal: `pow(0.5178…, -2)` is no `zPowK` call.
         // The planner made it a slot-free leaf (`UnitPlan.literal`).
-        if (self.plan.literal(res)) return self.b("S.con({s})", .{try gen_file.fmtF64(self, self.an.foldConst(res, false).?)});
+        if (self.cur.plan.literal(res)) return self.b("S.con({s})", .{try gen_file.fmtF64(self, self.an.foldConst(res, false).?)});
         if (try gen_host.f64Const(self, res, 0, true)) |s| return self.b("S.con({s})", .{s});
     }
 
@@ -247,11 +247,11 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
     // §4.3.2 a domain-restricted row `ifconv`'s `.speculate` moved out of its
     // arm runs on its domain's safe argument while its guard is false, so it
     // neither reports nor leaves the domain where the source never ran it.
-    const saved = self.subst;
-    defer self.subst = saved;
+    const saved = self.cur.subst;
+    defer self.cur.subst = saved;
     if (self.mir.guardOf(inst)) |lit| {
         const dom = Mir.opcode.get(op).domain;
-        self.subst = .{ .v = self.an.rv(if (dom == .nonzero_divisor) b2 else a), .lit = lit, .safe = safeArg(dom) };
+        self.cur.subst = .{ .v = self.an.rv(if (dom == .nonzero_divisor) b2 else a), .lit = lit, .safe = safeArg(dom) };
     }
     return renderOp(self, op, a, b2, res_ty);
 }
@@ -363,8 +363,8 @@ fn renderGuard(self: *Gen, lit0: u32) Error!void {
 /// Writes `s.v` behind its guard: the operand while the guard holds, else
 /// the domain's safe value at the operand's type.
 fn renderSubst(self: *Gen, s: Subst, want: VTy) Error!void {
-    self.subst = null;
-    defer self.subst = s;
+    self.cur.subst = null;
+    defer self.cur.subst = s;
     switch (want) {
         .real => {
             const m = family.mask(self, s.v);
@@ -440,7 +440,7 @@ pub fn arrElemTy(self: *Gen, id: u32) Error![]const u8 {
 /// it holds plain values (a cached version always does).
 fn arrRef(self: *Gen, v0: Mir.Value) Error!bool {
     const v = self.an.rv(v0);
-    if (self.plan.cached(v)) {
+    if (self.cur.plan.cached(v)) {
         try self.b("&c.f{d}", .{self.core.lo_idx[@backingInt(v)]});
         return true;
     }
@@ -497,7 +497,7 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
             // left, from its `Instance` slot; a copy-on-write array reads it
             // in place, as a held one reads its own field.
             if (d.tp) |tp| {
-                self.uses.inst = true;
+                self.cur.uses.inst = true;
                 float_lanes.instPin(self);
                 if (cow(self, d.array)) return self.b("p{d} = &inst.tp{d}_s{d};\n", .{ d.array, tp.block, tp.slot });
                 if (plain) return self.b("a{d} = inst.tp{d}_s{d};\n", .{ d.array, tp.block, tp.slot });
@@ -529,7 +529,7 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
             }
             // §5.10 a held array starts from what the last accepted
             // evaluation left in its `Instance` field.
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             float_lanes.instPin(self); // a held array is one instance's
             const f = self.names.held_names[m.held];
             if (plain) return self.b("p{d} = &inst.{s};\n", .{ d.array, f });
@@ -541,8 +541,8 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
             // Only a §5.10 held array has an `Instance` field to store into.
             if (inPlace(self, id)) assert(m.held != none_u32);
             const r = self.an.rv(self.mir.instResult(inst));
-            if (self.emitting_common and self.core.held_only.len != 0 and self.core.held_only[@backingInt(r)]) {
-                self.uses.held = true;
+            if (self.cur.emitting_common and self.core.held_only.len != 0 and self.core.held_only[@backingInt(r)]) {
+                self.cur.uses.held = true;
                 try self.b("if (held) ", .{});
             }
             const ty = try arrElemTy(self, id);
@@ -558,7 +558,7 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
             // the pointer check: a store before the statement may have
             // copied it into `a<id>` already.
             const tp = gen_instance.tpSlotAt(self, @backingInt(self.mir.instBlock(inst)), id);
-            if (tp != null) self.uses.inst = true;
+            if (tp != null) self.cur.uses.inst = true;
             if (inPlace(self, id) and gen_instance.dirtyTracked(self, id))
                 try self.b("zArrStD({s}, p{d}, &inst.{s}__dirty, ", .{ ty, id, self.names.held_names[m.held] })
             else if (inPlace(self, id))
@@ -798,7 +798,7 @@ pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty:
             const v = self.an.rv(a);
             const fam = if (op == .path_prev) self.core.prev_vals else self.core.acc_vals;
             const k = std.mem.findScalar(Mir.Value, fam, v).?; // plan_core.plan queued every site
-            self.uses.inst = true; // the latch read keeps `inst` in the signature
+            self.cur.uses.inst = true; // the latch read keeps `inst` in the signature
             float_lanes.instLanes(self, false);
             try self.b("zInst(S, inst, \"{s}__{d}\")", .{ @as([]const u8, if (op == .path_prev) "pb" else "pq"), k });
         },
@@ -1052,7 +1052,7 @@ pub fn emitRng(self: *Gen, c: Mir.Callee, args: []const Mir.Value) Error!void {
         .@"$rng$auto" => {
             // §9.13.1's internal seed; `updateState` advances it on the
             // accepted step, never here.
-            self.uses.inst = true;
+            self.cur.uses.inst = true;
             const site = intArg(self, args, 0) orelse 0;
             return self.b("S.con(@floatFromInt(inst.rng_auto[{d}]))", .{site});
         },
@@ -1132,7 +1132,7 @@ pub fn emitTable(self: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!void
     const val = "zV"; // a family has no `S.val`
     const pt = try self.arena.print("zL(S, 0x{f})", .{gen_mask.hex(m, false)});
     if (site != 0) {
-        self.uses.inst = true;
+        self.cur.uses.inst = true;
         self.float.pinned = true;
         try self.b("tbl_{d}: {{ _ = {s}(", .{ @backingInt(inst), val });
         try renderVal(self, args[6], .real);

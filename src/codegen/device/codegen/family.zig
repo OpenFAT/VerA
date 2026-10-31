@@ -44,7 +44,7 @@ pub fn ofText(self: *Gen, m: []const u64) Error![]const u8 {
 /// Records one real the shared core declares at mask `m`, for `lane_masks`.
 /// Ignored in `setup` (value scalar) and in a `probeBody` dry run.
 pub fn note(self: *Gen, m: []const u64) Error!void {
-    if (self.probe.active or !self.emitting_common or self.su.mode) return;
+    if (self.cur.probe.active or !self.cur.emitting_common or self.su.mode) return;
     try self.fam_masks.append(self.arena, m);
 }
 
