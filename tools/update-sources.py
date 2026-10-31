@@ -5,7 +5,7 @@ packages install (`nix build '.#"0.9.0"'`), from the GitHub releases.
 Shape, after mitchellh/zig-overlay's sources.json:
 
     { "<version>": { "date": "YYYY-MM-DD", "zig": "<the Zig it drives>",
-                     "contract": { "url": ..., "sha256": <hex> },
+                     "contract": { "url": ..., "sha256": <hex>[, "archive": true] },
                      "<nix system>": { "url": ..., "sha256": <hex> }, ... } }
 
 The hashes are the release's own SHA256SUMS, so a tarball that does not match
@@ -14,6 +14,8 @@ build.zig.zon `minimum_zig_version`: the Zig that `vera` spawns to build a
 device must be the one its generated code was written for. `contract` is the
 tag's lib/contract.zig, which the tarball (the binary alone) does not carry:
 the package installs it as share/vera/contract.zig, as `zig build install` does.
+From 0.21.0 that root imports lib/contract/ beside it, so `contract` is the
+tag's source archive (`"archive": true`), and the package installs both from it.
 
 Usage: tools/update-sources.py [OUT]   (default: sources.json beside tools/)
 GITHUB_TOKEN, when set, lifts the API's anonymous rate limit.
@@ -40,12 +42,16 @@ SYSTEMS = {
 FIRST = (0, 9, 0)
 
 
-def get(url):
+def get_bytes(url):
     req = urllib.request.Request(url)
     if "api.github.com" in url and os.environ.get("GITHUB_TOKEN"):
         req.add_header("Authorization", "Bearer " + os.environ["GITHUB_TOKEN"])
     with urllib.request.urlopen(req) as r:
-        return r.read().decode()
+        return r.read()
+
+
+def get(url):
+    return get_bytes(url).decode()
 
 
 def raw(tag, path):
@@ -76,6 +82,9 @@ def main():
             "zig": re.search(r'minimum_zig_version\s*=\s*"([^"]+)"', zon).group(1),
             "contract": {"url": contract, "sha256": hashlib.sha256(contract_text.encode()).hexdigest()},
         }
+        if '@import("contract/' in contract_text:  # the root and lib/contract/: the flake untars both
+            archive = f"https://github.com/{REPO}/archive/refs/tags/{tag}.tar.gz"
+            entry["contract"] = {"url": archive, "sha256": hashlib.sha256(get_bytes(archive)).hexdigest(), "archive": True}
         for system, target in SYSTEMS.items():
             name = f"vera-{tag}-{target}.tar.gz"
             if name in assets and name in sums:
