@@ -61,4 +61,5 @@ test {
     _ = @import("transfer.zig");
     _ = @import("cfg.zig");
     _ = @import("invariance.zig");
+    _ = @import("falsify.zig");
 }
