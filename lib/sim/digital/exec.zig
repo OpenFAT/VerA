@@ -6,11 +6,12 @@
 //! `resolution.zig` (nets); this file owns the payload rows and the process
 //! control; `activations.zig` owns the subroutine activations and
 //! `instructions.zig` the non-control instructions.
-//! Clauses: IEEE 1364-2005 §6.1/§6.1.3, §8.5.3.3/§8.5.3.4 intra-assignment
+//! Cites: IEEE 1364-2005 §6.1/§6.1.3, §8.5.3.3/§8.5.3.4 intra-assignment
 //! timing, §9.3, §9.5/§9.5.1, §9.6, §9.7.1, §9.7.5 to §9.7.7, §9.8.2,
 //! §10.2.2, §10.2.3, §10.3, §10.4.2, §17.1.2, §17.1.3, §17.3.2, §17.4.1;
 //! VAMS §7.3.6.1 A2D events.
 //!
+//! The delays a process waits are computed in exec_delays.zig.
 //!
 //! Contents:
 //! - `pub const address`
@@ -18,6 +19,7 @@
 //! - `pub const trigger`
 //! - `pub const release`
 //! - `pub const forceValue`
+//! - `pub const variableDelay`
 //! - `pub const Pending = union(enum)`
 //! - `pub const Row = struct`
 //! - `pub const Scratch = struct`
@@ -33,7 +35,6 @@
 //! - `pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle`
 //! - `pub fn enqueueFirst(self: *Run, item: Pending) Error!void`
 //! - `pub fn execute(self: *Run, scratch: *Scratch, start: u32) Error!void`
-//! - `pub fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!Delay`
 //! - `pub fn doneFlush(self: *Run, start: u32) Error!void`
 
 const std = @import("std");
@@ -69,8 +70,8 @@ const instructions = @import("instructions.zig");
 const callSync = activations.callSync;
 const callTimed = activations.callTimed;
 const returnTimed = activations.returnTimed;
-
-// ---- scheduler rows (§6.1.3, §17.1.2, §17.1.3) -------------------------------
+const exec_delays = @import("exec_delays.zig");
+const delayOf = exec_delays.delayOf;
 
 /// `evaluate.address`: the element an lvalue names right now.
 pub const address = evaluate.address;
@@ -86,6 +87,9 @@ pub const release = waiters.release;
 
 /// `waiters.forceValue`: a VPI force of a constant.
 pub const forceValue = waiters.forceValue;
+
+/// `exec_delays.variableDelay`.
+pub const variableDelay = exec_delays.variableDelay;
 
 /// One scheduled event's payload, consumed whole by its dispatch. A `.write`
 /// value lives in its row's own planes (`Row`), never in variable storage.
@@ -232,8 +236,6 @@ pub fn scheduleFailure(self: *Run, e: anyerror, comptime what: []const u8) Error
     return self.fail(0, "digital " ++ what ++ " failure: {t}", .{e});
 }
 
-// ---- process control and scheduling (§9.7.1, §17.1.3, 1364 §10.3) -----------
-
 /// Queues `item` in the `.monitor` region of the current time, §17.1.2 and
 /// §17.1.3's "end of the timestep", which the scheduler orders after active,
 /// inactive and NBA.
@@ -299,17 +301,6 @@ pub fn execute(self: *Run, scratch: *Scratch, start: u32) Error!void {
     return if (self.host.stmt_sites != null or self.host.stmt_hook != null) run(self, scratch, start, true) else run(self, scratch, start, false);
 }
 
-/// A driver's `delay3` that reads a variable (`Run.driver_delays`), its
-/// values now, defaulted as `Run.declaredDelay3` defaults a constant one.
-pub fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!Delay {
-    assert(tok < self.starts.len);
-    var out: Delay = .{ .present = true };
-    out.rise = try delayOf(self, scratch, d.rise, tok);
-    out.fall = if (d.fall != .none) try delayOf(self, scratch, d.fall, tok) else out.rise;
-    out.off = if (d.off != .none) try delayOf(self, scratch, d.off, tok) else @min(out.rise, out.fall);
-    return out;
-}
-
 /// Reports the `assign`/`force` whose override process starts at `start` to
 /// `Run.done_hook`, once: when the process first writes the target, or when
 /// the override is undone or replaced before it ran.
@@ -319,24 +310,6 @@ pub fn doneFlush(self: *Run, start: u32) Error!void {
 }
 
 // ---- private ----
-
-/// The run-time counterpart of `checkDelay`, in the module's precision.
-fn delayOf(self: *Run, scratch: std.mem.Allocator, e: Ast.ExprId, tok: u32) Error!u64 {
-    assert(e != .none);
-    assert(tok < self.starts.len);
-    if (compile.typeOf(self, e).real) {
-        return self.timeOf(self.scope).scale.realDelay(try evaluate.evalReal(self, scratch, e)) catch |err|
-            return self.fail(tok, "digital delay cannot be represented: {t}", .{err});
-    }
-    const value = try evaluate.eval(self, scratch, e, 0);
-    // §9.7.1 leaves an x/z delay undefined; zero is the reading that keeps
-    // the process running rather than losing it.
-    if (value.hasUnknown()) return 0;
-    if (value.width > 64) return self.exprFail(e, "delay values wider than 64 bits are not implemented");
-    const scale = self.timeOf(self.scope).scale;
-    return (if (value.signed) scale.signedDelay(value.asInt().?) else scale.unsignedDelay(value.values()[0])) catch |err|
-        return self.fail(tok, "digital delay cannot be represented: {t}", .{err});
-}
 
 fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
     assert(e != .none);
@@ -437,8 +410,6 @@ fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool 
     }
     return true;
 }
-
-// ---- synchronous subroutines (IEEE 1364-2005 §10) ----------------------------
 
 /// One pass back to the top of a loop (a backward jump, a `repeat`'s next
 /// iteration): an untimed loop never returns to the scheduler, so each pass
@@ -754,8 +725,6 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
         }
     }
 }
-
-// ---- tests ------------------------------------------------------------------
 
 test "Scratch: the fixed buffer serves until it is full, the arena after, and reset frees both" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
