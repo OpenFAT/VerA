@@ -607,7 +607,7 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         try compile.checkExpr(&r, t.tran.ctrl);
         var watched: std.ArrayList(u32) = .empty;
         try compile.sensitivity(&r, t.tran.ctrl, &watched);
-        _ = try exec.enqueue(&r, .{ .run_process = try compile.append(&r, .{ .switch_ctrl = .{ .tran = @intCast(i), .slots = watched.items } }) }, null, false);
+        _ = try exec.enqueue(&r, .{ .run_process = try compile.append(&r, .{ .switch_ctrl = .{ .tran = @intCast(i), .slots = try r.program.addWords(r.arena, watched.items) } }) }, null, false);
     }
     for (r.netlist.drivers) |d| if (d.source == .mos and file.exprs.tag(d.source.mos.data) == .ident) {
         r.scope = d.scope;

@@ -3,17 +3,15 @@
 //!
 //! Contents:
 //! - `pub const Slice = struct`
+//! - `Slice.none: Slice`
+//! - `Slice.from(s: ?Slice) Slice`
+//! - `Slice.some(s: Slice) ?Slice`
 //! - `pub const Bits = struct`
+//! - `Bits.none: Bits`
+//! - `Bits.from(b: ?Bits) Bits`
+//! - `Bits.some(b: Bits) ?Bits`
 //! - `pub fn compileProcContinuous(self: *Run, target: Ast.ExprId, value: Ast.ExprId, kind: Ast.ProcContinuous, tok: u32) Error!void`
-//! AST -> bytecode: one process body or driver expression, in its instance
-//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
-//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
-//! before any process has run.
-//! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
-//! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to
-//! §9.7.7, §9.8.2, §10.2.2/§10.2.3, §10.4.4/§10.4.5, §12.7, §17.1 to §17.11,
-//! §20.4, A.6.5; VAMS §7.3.6.3 analog probes, §9.14 Table 9-11 `$clog2`,
-//! §9.22 driver access.
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Front = @import("frontend");
@@ -49,10 +47,48 @@ const watcher = compile_stmt.watcher;
 
 /// The bits of an overriding value one concatenation operand takes: from
 /// bit `lo` of a value `of` bits wide (§9.3 `assign {a, b} = v`).
-pub const Slice = struct { lo: u32, of: u32 };
+pub const Slice = struct {
+    lo: u32,
+    of: u32,
+
+    /// No slice: the whole value (`of` is never 0 for a real one).
+    pub const none: Slice = .{ .lo = 0, .of = 0 };
+
+    /// Returns `s` as a row field: `none` for null.
+    pub fn from(s: ?Slice) Slice {
+        const out = s orelse none;
+        if (s != null) assert(out.of != 0);
+        return out;
+    }
+
+    /// Returns the slice a row field holds, null for `none`.
+    pub fn some(s: Slice) ?Slice {
+        if (s.of == 0) assert(s.lo == 0);
+        return if (s.of == 0) null else s;
+    }
+};
 
 /// A constant bit range of a slot, `width` bits from bit position `lo`.
-pub const Bits = struct { lo: u32, width: u32 };
+pub const Bits = struct {
+    lo: u32,
+    width: u32,
+
+    /// No range: the whole slot (`width` is never 0 for a real one).
+    pub const none: Bits = .{ .lo = 0, .width = 0 };
+
+    /// Returns `b` as a row field: `none` for null.
+    pub fn from(b: ?Bits) Bits {
+        const out = b orelse none;
+        if (b != null) assert(out.width != 0);
+        return out;
+    }
+
+    /// Returns the range a row field holds, null for `none`.
+    pub fn some(b: Bits) ?Bits {
+        if (b.width == 0) assert(b.lo == 0);
+        return if (b.width == 0) null else b;
+    }
+};
 
 const OverTarget = struct { at: u32, bits: ?Bits };
 
@@ -133,19 +169,19 @@ fn override(self: *Run, target: Ast.ExprId, t: OverTarget, value: Ast.ExprId, ki
     const force = kind == .force or kind == .release;
     if (!force and self.netlist.slot_nets.contains(at)) return self.exprFail(target, "§9.3.1: assign/deassign take a variable; a net is forced");
     if (kind == .deassign or kind == .release) {
-        _ = try append(self, .{ .override_off = .{ .slot = at, .force = force, .bits = t.bits } });
+        _ = try append(self, .{ .override_off = .{ .slot = at, .force = force, .bits = .from(t.bits) } });
         return;
     }
     try checkExpr(self, value);
     var watched: std.ArrayList(u32) = .empty;
     try sensitivity(self, value, &watched);
-    const start = try watcher(self, .{ .override_eval = .{ .slot = at, .value = value, .force = force, .slice = slice, .bits = t.bits } }, watched.items);
+    const start = try watcher(self, .{ .override_eval = .{ .slot = at, .value = value, .force = force, .slice = .from(slice), .bits = .from(t.bits) } }, watched.items);
     const end = position(self);
     // §9.3.1/§9.3.2: the override holds from the statement on, so the
     // value is written here, before the next statement reads it; the
     // process `.override_on` starts keeps it. `.override_on` stays the
     // statement's last instruction, the `done_sites` pc whose process
     // reports the §12.31.1 cbForce/cbAssign (`exec.doneFlush`).
-    _ = try append(self, .{ .override_eval = .{ .slot = at, .value = value, .force = force, .slice = slice, .bits = t.bits } });
-    _ = try append(self, .{ .override_on = .{ .slot = at, .force = force, .start = start, .end = end, .bits = t.bits } });
+    _ = try append(self, .{ .override_eval = .{ .slot = at, .value = value, .force = force, .slice = .from(slice), .bits = .from(t.bits) } });
+    _ = try append(self, .{ .override_on = .{ .slot = at, .force = force, .start = start, .end = end, .bits = .from(t.bits) } });
 }

@@ -57,6 +57,7 @@ pub const Flow = enum { next, ended };
 /// does nothing (§10.4.5).
 pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "task"), pc: u32) Error!Flow {
     assert(pc < self.program.code.items.len);
+    const args = self.program.exprs(s.args);
     // §10.4.5: a system task in a constant function is ignored
     // while the function folds a constant.
     if (self.growing != null or self.folding_constant) {
@@ -64,15 +65,15 @@ pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "
     }
     self.pc = pc;
     switch (s.task) {
-        .show => |sh| try display.display(self, s.args, scratch, sh),
+        .show => |sh| try display.display(self, args, scratch, sh),
         // §17.1.2: the arguments are NOT captured, the call is.
         // What it reports is the value at the end of the timestep,
         // so evaluation waits for the `.monitor` region.
-        .strobe => |sh| try enqueueMonitor(self, .{ .strobe = .{ .args = s.args, .show = sh, .scope = self.scope, .pc = pc } }),
+        .strobe => |sh| try enqueueMonitor(self, .{ .strobe = .{ .args = args, .show = sh, .scope = self.scope, .pc = pc } }),
         // §17.1.3 one standing monitor: a new one replaces the
         // old, watch list and all; §17.2.2 any number of
         // $fmonitors.
-        .monitor => |sh| try display.install(self, scratch, s.args, sh, pc),
+        .monitor => |sh| try display.install(self, scratch, args, sh, pc),
         // "$monitoron shall produce a display immediately after
         // it is invoked, regardless of whether a value change has
         // taken place", so whether it was already on is not asked.
@@ -82,17 +83,17 @@ pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "
             if (on) try display.monitorPrint(self, scratch);
         },
         .timeformat => {
-            if (s.args.len == 0) {
+            if (args.len == 0) {
                 self.time.format = .{ .units = self.time.finest };
             } else {
                 const ex = &self.file.exprs;
-                const units = try evaluate.eval(self, scratch, s.args[0], 0);
-                const precision = try evaluate.eval(self, scratch, s.args[1], 0);
-                const width = try evaluate.eval(self, scratch, s.args[3], 0);
+                const units = try evaluate.eval(self, scratch, args[0], 0);
+                const precision = try evaluate.eval(self, scratch, args[1], 0);
+                const width = try evaluate.eval(self, scratch, args[3], 0);
                 self.time.format = .{
                     .units = std.math.lossyCast(i32, units.asInt() orelse 0),
                     .precision = std.math.lossyCast(u32, precision.asInt() orelse 0),
-                    .suffix = self.file.str(ex.strOf(s.args[2])),
+                    .suffix = self.file.str(ex.strOf(args[2])),
                     .width = std.math.lossyCast(u32, width.asInt() orelse 0),
                 };
             }
@@ -100,29 +101,29 @@ pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "
             // reset. A task's lexical frame is in this instance.
             self.time.active_format = .{ .scope = self.instanceOf(self.scope), .tok = s.tok };
         },
-        .readmem => |radix| try display.readMemory(self, scratch, s.args, radix),
-        .queue => |op| try system.queueTask(self, scratch, op, s.args),
-        .pla => |p| try system.pla(self, scratch, p, s.args),
-        .fclose => try system.fclose(self, scratch, s.args),
+        .readmem => |radix| try display.readMemory(self, scratch, args, radix),
+        .queue => |op| try system.queueTask(self, scratch, op, args),
+        .pla => |p| try system.pla(self, scratch, p, args),
+        .fclose => try system.fclose(self, scratch, args),
         .fflush => {},
         .user => try self.host.systf.?.call(self, self.instanceOf(self.scope), s.tok, null),
-        .fshow => |sh| try system.fdisplay(self, scratch, s.args, sh),
-        .sshow => |sh| try system.sformat(self, scratch, s.args, sh),
-        .sformat => try system.sformat(self, scratch, s.args, null),
-        .printtimescale => try display.printTimescale(self, s.args),
-        .sdf_annotate => try @import("sdf.zig").annotate(self, scratch, s.args, s.tok),
-        .dump => |op| try vcd.task(self, scratch, op, s.args, s.tok),
-        .ports => |op| try evcd.task(self, scratch, op, s.args, s.tok),
+        .fshow => |sh| try system.fdisplay(self, scratch, args, sh),
+        .sshow => |sh| try system.sformat(self, scratch, args, sh),
+        .sformat => try system.sformat(self, scratch, args, null),
+        .printtimescale => try display.printTimescale(self, args),
+        .sdf_annotate => try @import("sdf.zig").annotate(self, scratch, args, s.tok),
+        .dump => |op| try vcd.task(self, scratch, op, args, s.tok),
+        .ports => |op| try evcd.task(self, scratch, op, args, s.tok),
         .finish => |stop| {
             // An x/z level has no verbosity to select; the fullest
             // report is the reading that loses nothing.
-            const verbose = s.args.len == 0 or ((try evaluate.eval(self, scratch, s.args[0], 0)).asInt() orelse 1) != 0;
+            const verbose = args.len == 0 or ((try evaluate.eval(self, scratch, args[0], 0)).asInt() orelse 1) != 0;
             if (verbose) {
                 const start_byte = self.starts[s.tok];
                 const loc = self.bag.locate(.{ .start = start_byte, .end = start_byte }, null);
                 const fmt_s = "{s} at tick {d}, {s} byte {d}\n";
-                const args = .{ if (stop) "$stop" else "$finish", self.scheduler.now, self.bag.fileName(loc.file), loc.offset };
-                if (stop) std.debug.print(fmt_s, args) else try self.out.print(fmt_s, args);
+                const fmt_args = .{ if (stop) "$stop" else "$finish", self.scheduler.now, self.bag.fileName(loc.file), loc.offset };
+                if (stop) std.debug.print(fmt_s, fmt_args) else try self.out.print(fmt_s, fmt_args);
             }
             // iverilog's reading of §17.4.1's "exit": the rest of
             // this time step (other processes, NBA updates, the
@@ -199,10 +200,11 @@ pub fn continuous(self: *Run, scratch: std.mem.Allocator, at: u32, pc: u32) Erro
 /// `.override_on`: the `assign` or `force` whose process is `[o.start,
 /// o.end)` now holds its target, replacing the one before it (§9.3).
 pub fn overrideOn(self: *Run, o: @FieldType(Instruction, "override_on"), pc: u32) Error!void {
+    const held = o.bits.some();
     assert(o.start < o.end);
     const entry = try self.assigns.layers.getOrPut(self.arena, o.slot);
     if (!entry.found_existing) entry.value_ptr.* = .{};
-    if (o.bits) |bits| {
+    if (held) |bits| {
         const parts = &entry.value_ptr.parts;
         const range: PcRange = .{ .start = o.start, .end = o.end };
         for (parts.items) |*p| {
@@ -232,27 +234,29 @@ pub fn overrideOn(self: *Run, o: @FieldType(Instruction, "override_on"), pc: u32
 /// `.override_eval`: the holding process writes its value, past the hold
 /// it owns (`Run.overriding`).
 pub fn overrideEval(self: *Run, scratch: std.mem.Allocator, o: @FieldType(Instruction, "override_eval"), pc: u32) Error!void {
+    const held = o.bits.some();
+    const slice = o.slice.some();
     assert(!self.assigns.active);
     const layers = self.assigns.layers.get(o.slot) orelse Overrides{};
     // An assign under a force keeps tracking but does not write.
     if (o.force or layers.force == null) {
-        const w = if (o.bits) |b| b.width else self.values[o.slot].width;
-        const value = if (o.slice) |sl|
+        const w = if (held) |b| b.width else self.values[o.slot].width;
+        const value = if (slice) |sl|
             try evaluate.bitsOf(scratch, try evaluate.evalFor(self, scratch, o.value, .{ .width = sl.of, .signed = false }), sl.lo, w)
-        else if (o.bits != null)
+        else if (held != null)
             try evaluate.evalFor(self, scratch, o.value, .{ .width = w, .signed = false })
         else
             try evaluate.evalFor(self, scratch, o.value, self.slotType(o.slot));
         self.assigns.active = true;
         defer self.assigns.active = false;
-        if (o.bits) |b|
+        if (held) |b|
             try evaluate.write(self, scratch, .{ .slot = o.slot, .sel = .{ .first = b.lo, .count = b.width } }, value)
         else
             try waiters.store(self, o.slot, value.planes);
     }
     // A forced net drives the switch-connected nets joined to it
     // (`resolution.resolveJoined`), which follow its new value.
-    if (o.force and o.bits == null) if (self.netlist.slot_nets.get(o.slot)) |net| if (self.netCold(self.netlist.nets[net]).trans.len != 0)
+    if (o.force and held == null) if (self.netlist.slot_nets.get(o.slot)) |net| if (self.netCold(self.netlist.nets[net]).trans.len != 0)
         try resolution.resolve(self, net);
     try doneFlush(self, pc);
     return;
@@ -260,14 +264,15 @@ pub fn overrideEval(self: *Run, scratch: std.mem.Allocator, o: @FieldType(Instru
 
 /// `.override_off`: `deassign` or `release` of the target (§9.3).
 pub fn overrideOff(self: *Run, o: @FieldType(Instruction, "override_off"), pc: u32) Error!void {
+    const held = o.bits.some();
     assert(pc < self.program.code.items.len);
     // An override undone before its process ran was still executed.
     if (self.assigns.layers.get(o.slot)) |layers| {
-        if (o.bits) |bits| {
+        if (held) |bits| {
             for (layers.parts.items) |p| if (std.meta.eql(p.bits, bits)) try doneFlush(self, p.range.start);
         } else if (if (o.force) layers.force else layers.assign) |layer| try doneFlush(self, layer.start);
     }
-    if (o.bits) |bits| try waiters.releaseBits(self, o.slot, bits) else try waiters.release(self, o.slot, o.force);
+    if (held) |bits| try waiters.releaseBits(self, o.slot, bits) else try waiters.release(self, o.slot, o.force);
     if (self.host.done_hook) |h| if (self.host.done_sites.contains(pc)) try h(self, pc);
     return;
 }

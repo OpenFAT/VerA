@@ -497,7 +497,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             // §9.7.5 the implicit list is a plain `or` of value changes.
             .wait_slots => |slots| {
                 const id = try waiters.park(self, pc + 1);
-                for (slots) |s| try waiters.watch(self, id, s, .any);
+                for (self.program.wordsOf(slots)) |s| try waiters.watch(self, id, s, .any);
                 return;
             },
             // A.6.5 a `wait` that is already satisfied does not suspend at
@@ -509,7 +509,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     continue;
                 }
                 const id = try waiters.park(self, pc);
-                for (s.slots) |at| try waiters.watch(self, id, at, .any);
+                for (self.program.wordsOf(s.slots)) |at| try waiters.watch(self, id, at, .any);
                 return;
             },
             // §8.5.3.3 "computes the right-hand side value using the
@@ -604,15 +604,16 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 continue;
             },
             .fork => |f| {
-                if (f.arms.len == 0) {
+                const arms = self.program.wordsOf(f.arms);
+                if (arms.len == 0) {
                     pc = f.end;
                     continue;
                 }
                 if (self.calls.ctx == 0)
-                    self.rows.joins.items[f.join] = @intCast(f.arms.len)
+                    self.rows.joins.items[f.join] = @intCast(arms.len)
                 else
-                    try self.calls.joins.put(self.arena, .{ .join = f.join, .ctx = self.calls.ctx }, @intCast(f.arms.len));
-                for (f.arms) |arm| _ = try enqueue(self, resumption(arm, self.calls.ctx), null, false);
+                    try self.calls.joins.put(self.arena, .{ .join = f.join, .ctx = self.calls.ctx }, @intCast(arms.len));
+                for (arms) |arm| _ = try enqueue(self, resumption(arm, self.calls.ctx), null, false);
                 return;
             },
             .join_arm => |j| {
@@ -641,7 +642,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 continue;
             },
             .call => |s| {
-                _ = try callSync(self, scratch, s.sub, s.args);
+                _ = try callSync(self, scratch, s.sub, self.program.exprs(s.args));
                 pc += 1;
                 continue;
             },
@@ -653,7 +654,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 continue;
             },
             .call_timed => |c| {
-                pc = try callTimed(self, scratch, c.sub, c.args, pc);
+                pc = try callTimed(self, scratch, c.sub, self.program.exprs(c.args), pc);
                 continue;
             },
             .task_return => |idx| {

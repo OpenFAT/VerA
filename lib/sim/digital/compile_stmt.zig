@@ -274,7 +274,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             // be type-checked before they can be read off it: emit the wait
             // with an empty list, compile the body, then patch the list in.
             if (s.event == .none) {
-                const at = try append(self, .{ .wait_slots = &.{} });
+                const at = try append(self, .{ .wait_slots = .empty });
                 try compileStmt(self, s.body, depth + 1);
                 var watched: std.ArrayList(u32) = .empty;
                 try readSlots(self, s.body, &watched);
@@ -282,7 +282,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                 // nothing is an empty list, which nothing can trigger: the
                 // process suspends forever, as `@` on a never-changing net
                 // would. §9.7.5 states no restriction against it.
-                self.program.code.items[at].wait_slots = watched.items;
+                self.program.code.items[at].wait_slots = try self.program.addWords(self.arena, watched.items);
                 return;
             }
             switch (s.kind) {
@@ -303,7 +303,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     try sensitivity(self, s.event, &watched);
                     // IEEE 1364-2005 §9.7.6 tests the level first. An empty
                     // list is legal: true continues, false suspends forever.
-                    _ = try append(self, .{ .wait_level = .{ .cond = s.event, .slots = watched.items } });
+                    _ = try append(self, .{ .wait_level = .{ .cond = s.event, .slots = try self.program.addWords(self.arena, watched.items) } });
                 },
             }
             try compileStmt(self, s.body, depth + 1);
@@ -314,7 +314,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             // IEEE 1364-2005 §20.4, as for a function (`infer`).
             if (self.host.systf) |u| if (u.kind(name)) |k| if (k == .task) {
                 for (s.args) |arg| try rememberVpiArgument(self, arg);
-                _ = try append(self, .{ .task = .{ .task = .user, .args = s.args, .tok = tok } });
+                _ = try append(self, .{ .task = .{ .task = .user, .args = try self.program.addExprs(self.arena, s.args), .tok = tok } });
                 return;
             };
             // §17.4.2 Syntax 17-12 `$stop [ ( n ) ]`, refused by the runner
@@ -322,7 +322,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             if (std.mem.eql(u8, name, "$stop") and s.args.len > 1) return self.fail(tok, "$stop accepts zero or one argument", .{});
             if (evcd.tasks.get(name)) |op| {
                 try evcd.check(self, op, s.args, tok);
-                _ = try append(self, .{ .task = .{ .task = .{ .ports = op }, .args = s.args, .tok = tok } });
+                _ = try append(self, .{ .task = .{ .task = .{ .ports = op }, .args = try self.program.addExprs(self.arena, s.args), .tok = tok } });
                 return;
             }
             const task = tasks.get(name) orelse return self.fail(tok, "digital system task `{s}` is not implemented", .{name});
@@ -419,7 +419,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                         const base = try self.slot(s.args[0]);
                         for (0..arr.?.count) |i| try watch(self, base + @as(u32, @intCast(i)), &watched);
                         try sensitivity(self, s.args[1], &watched);
-                        const loop = try watcher(self, .{ .task = .{ .task = .{ .pla = sync }, .args = s.args, .tok = tok } }, watched.items);
+                        const loop = try watcher(self, .{ .task = .{ .task = .{ .pla = sync }, .args = try self.program.addExprs(self.arena, s.args), .tok = tok } }, watched.items);
                         _ = try append(self, .{ .pla_start = .{ .at = loop } });
                         return;
                     }
@@ -478,7 +478,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     }
                 },
             }
-            _ = try append(self, .{ .task = .{ .task = task, .args = s.args, .tok = tok } });
+            _ = try append(self, .{ .task = .{ .task = task, .args = try self.program.addExprs(self.arena, s.args), .tok = tok } });
         },
         else => return self.fail(tok, "this digital statement is not implemented", .{}), // else: the analog statements (contribution, indirect, jump), refused out loud
     }
@@ -491,7 +491,7 @@ pub fn watcher(self: *Run, step: Instruction, watched: []const u32) Error!u32 {
     const skip = try append(self, .{ .jump = 0 });
     const start = position(self);
     _ = try append(self, step);
-    _ = try append(self, .{ .wait_slots = watched });
+    _ = try append(self, .{ .wait_slots = try self.program.addWords(self.arena, watched) });
     _ = try append(self, .{ .jump = start });
     self.program.code.items[skip].jump = position(self);
     return start;
@@ -529,13 +529,16 @@ fn compileFork(self: *Run, body: []const Ast.StmtId, depth: u32) Error!void {
     const join: u32 = @intCast(self.rows.joins.items.len);
     try self.rows.joins.append(self.arena, 0);
     const arms = try self.arena.alloc(u32, body.len);
-    const at = try append(self, .{ .fork = .{ .arms = arms, .join = join, .end = 0 } });
+    // The arm pcs are known only as each arm compiles; the list is filled in
+    // `Program.words` after the last one.
+    const at = try append(self, .{ .fork = .{ .arms = .empty, .join = join, .end = 0 } });
     const ends = try self.arena.alloc(u32, body.len);
     for (body, arms, ends) |s, *arm, *end| {
         arm.* = position(self);
         try compileStmt(self, s, depth + 1);
         end.* = try append(self, .{ .join_arm = .{ .join = join, .end = 0 } });
     }
+    self.program.code.items[at].fork.arms = try self.program.addWords(self.arena, arms);
     self.program.code.items[at].fork.end = position(self);
     for (ends) |e| self.program.code.items[e].join_arm.end = position(self);
 }

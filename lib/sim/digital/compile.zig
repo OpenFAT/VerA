@@ -318,7 +318,7 @@ pub fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok:
     if (decl.is_function) return self.fail(tok, "§10.4: a function is called in an expression, not enabled", .{});
     try checkArgs(self, decl, args, tok);
     if (!try timed(self, idx)) {
-        _ = try append(self, .{ .call = .{ .sub = idx, .args = args, .tok = tok } });
+        _ = try append(self, .{ .call = .{ .sub = idx, .args = try self.program.addExprs(self.arena, args), .tok = tok } });
         return;
     }
     // A timed task reaching itself would inline forever: that enable, and
@@ -326,7 +326,7 @@ pub fn compileEnable(self: *Run, name: Ast.StrId, args: []const Ast.ExprId, tok:
     // copy instead, with a frame per activation (§10.2.3).
     if (self.routines.rows.items[idx].inlining) {
         try outOfLine(self, idx, depth);
-        _ = try append(self, .{ .call_timed = .{ .sub = idx, .args = args } });
+        _ = try append(self, .{ .call_timed = .{ .sub = idx, .args = try self.program.addExprs(self.arena, args) } });
         return;
     }
     self.routines.rows.items[idx].inlining = true;

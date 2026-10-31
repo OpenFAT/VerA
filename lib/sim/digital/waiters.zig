@@ -666,7 +666,7 @@ fn fileTerm(self: *Run, id: u32, slot: u32, edge: Edge, ext: u32) Error!void {
 fn staticSlots(r: *const Run, ins: compile.Instruction) []const u32 {
     return switch (ins) {
         .continuous => |i| r.netlist.drivers[i].sensitivity,
-        .switch_ctrl => |s| s.slots,
+        .switch_ctrl => |s| r.program.wordsOf(s.slots),
         else => &.{}, // else: every other instruction suspends through `park`
     };
 }

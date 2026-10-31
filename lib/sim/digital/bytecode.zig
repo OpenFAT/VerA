@@ -4,10 +4,19 @@
 //! Contents:
 //! - `pub const Type = struct`
 //! - `pub const real_type: Type`
+//! - `pub const ExprList = struct`
+//! - `ExprList.empty: ExprList`
+//! - `pub const WordList = struct`
+//! - `WordList.empty: WordList`
 //! - `pub const Instruction = union`
 //! - `pub const Program = struct`
+//! - `Program.exprs(p: *const Program, list: ExprList) []const Ast.ExprId`
+//! - `Program.wordsOf(p: *const Program, list: WordList) []const u32`
+//! - `Program.addExprs(p: *Program, gpa: std.mem.Allocator, items: []const Ast.ExprId) std.mem.Allocator.Error!ExprList`
+//! - `Program.addWords(p: *Program, gpa: std.mem.Allocator, items: []const u32) std.mem.Allocator.Error!WordList`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Name = @import("root.zig").Name;
 const Front = @import("frontend");
 const Ast = Front.Ast;
@@ -38,6 +47,25 @@ pub const Type = struct { width: u32, signed: bool, real: bool = false };
 /// §4.8 `real`: 64 bits, signed, `real` set. The one real type there is.
 pub const real_type: Type = .{ .width = 64, .signed = true, .real = true };
 
+/// A run of `Program.operands`: the arguments of a task or subroutine call,
+/// stored beside the rows so an `Instruction` carries 8 bytes, not a slice.
+pub const ExprList = struct {
+    start: u32,
+    len: u32,
+
+    /// No arguments.
+    pub const empty: ExprList = .{ .start = 0, .len = 0 };
+};
+
+/// A run of `Program.words`: the slots a wait re-tests on, or a `fork`'s arm pcs.
+pub const WordList = struct {
+    start: u32,
+    len: u32,
+
+    /// No words.
+    pub const empty: WordList = .{ .start = 0, .len = 0 };
+};
+
 /// One bytecode row, consumed whole by one dispatch; expressions stay in the
 /// AST. Each statement kind is decided here, so `exec.execute` is one switch
 /// and never goes back to the statement.
@@ -48,7 +76,7 @@ pub const Instruction = union(enum(u5)) {
     /// §9.7.1 `#d stmt`: suspend for the delay, resume at the next pc.
     delay: struct { amount: Ast.ExprId, tok: u32 },
     /// One §17 system task, resolved against `display.tasks` at compile time.
-    task: struct { task: display.Task, args: []const Ast.ExprId, tok: u32 },
+    task: struct { task: display.Task, args: ExprList, tok: u32 },
     /// §6.1 continuous assignment `n`: evaluate, drive, resolve, then suspend
     /// on its own operands, resuming at its own pc.
     continuous: u32,
@@ -71,11 +99,11 @@ pub const Instruction = union(enum(u5)) {
     wait_event: Ast.ExprId,
     /// A.6.5 `@*`: §9.7.5's implicit list, resolved to slots at compile time.
     /// A resumption is the same `.any` waiter `@(a or b)` installs.
-    wait_slots: []const u32,
+    wait_slots: WordList,
     /// A.6.5 `wait_statement`, level sensitive: `cond` is tested on arrival
     /// and on every resumption, and only a true reading falls through.
     /// `slots` (its operands) says when to re-test.
-    wait_level: struct { cond: Ast.ExprId, slots: []const u32 },
+    wait_level: struct { cond: Ast.ExprId, slots: WordList },
     /// §8.5.3.3 the first half of an intra-assignment timing control: the
     /// right-hand side, evaluated when the statement is reached, is parked in
     /// `cell`, then the timing applies. A nonblocking one schedules its write
@@ -101,7 +129,7 @@ pub const Instruction = union(enum(u5)) {
     init_var: struct { slot: u32, value: Ast.ExprId },
     /// §10.2.2 a task enable or function call run to completion in place:
     /// copy in, the body at `Sub.entry`, copy out.
-    call: struct { sub: u32, args: []const Ast.ExprId, tok: u32 },
+    call: struct { sub: u32, args: ExprList, tok: u32 },
     /// §10.2.2 an inlined enable's copy-out: formal `slot` is assigned to
     /// the caller's lvalue `target`, resolved in the caller's scope.
     copy_out: struct { target: Ast.ExprId, slot: u32 },
@@ -109,7 +137,7 @@ pub const Instruction = union(enum(u5)) {
     disable_task: u32,
     /// §10.2.3 enable of a task that suspends and reaches itself: a new
     /// activation of its out-of-line body (`Sub.body`).
-    call_timed: struct { sub: u32, args: []const Ast.ExprId },
+    call_timed: struct { sub: u32, args: ExprList },
     /// The end of a `call_timed` activation of task `n`.
     task_return: u32,
     /// Start a process of its own at `at`: §17.5 an asynchronous PLA's, or
@@ -121,30 +149,32 @@ pub const Instruction = union(enum(u5)) {
     pla_start: struct { at: u32, now: bool = false },
     /// §9.8.2 `fork`: start every arm as a process of its own; join cell
     /// `join` counts them back, and the parent resumes at `end`.
-    fork: struct { arms: []const u32, join: u32, end: u32 },
+    fork: struct { arms: WordList, join: u32, end: u32 },
     /// One `fork` arm finished; the last one resumes the parent at `end`.
     join_arm: struct { join: u32, end: u32 },
     /// §9.3 install a procedural continuous assignment on `slot`: its
     /// out-of-line process [start, end) keeps the slot equal to its expression.
     /// `bits`: §9.3.2's constant select of a vector net, which the override
     /// holds alone (`override_eval` and `override_off` alike).
-    override_on: struct { slot: u32, force: bool, start: u32, end: u32, bits: ?Bits = null },
+    override_on: struct { slot: u32, force: bool, start: u32, end: u32, bits: Bits = .none },
     /// That process's one step: write `value` into `slot` past the guard.
     /// An operand of a §9.3 concatenation target takes bits [lo, lo + its
     /// width) of the value evaluated `of` bits wide.
-    override_eval: struct { slot: u32, value: Ast.ExprId, force: bool, slice: ?Slice = null, bits: ?Bits = null },
+    override_eval: struct { slot: u32, value: Ast.ExprId, force: bool, slice: Slice = .none, bits: Bits = .none },
     /// §9.3 `deassign` / `release`.
-    override_off: struct { slot: u32, force: bool, bits: ?Bits = null },
+    override_off: struct { slot: u32, force: bool, bits: Bits = .none },
     /// §7.6 a controlled pass switch: read the control, re-resolve both
     /// sides, and wait on the control's operands.
-    switch_ctrl: struct { tran: u32, slots: []const u32 },
+    switch_ctrl: struct { tran: u32, slots: WordList },
     /// The end of a process, a subroutine body or an out-of-line helper.
     stop,
 
-    // Budget: one row per pc, read by every dispatch of `exec.execute`. The
-    // largest payloads are two slices (`task`, `switch_ctrl`).
+    // Budget: one row per pc, read by every dispatch of `exec.execute`.
+    // Lists live in `Program.operands`/`Program.words`, so no payload holds
+    // a slice; the largest is `override_eval`'s optional select pair.
     comptime {
-        std.debug.assert(@sizeOf(Instruction) == 40);
+        std.debug.assert(@sizeOf(ExprList) == 8);
+        std.debug.assert(@sizeOf(Instruction) == 32);
     }
 };
 
@@ -174,4 +204,42 @@ pub const Program = struct {
     /// not be compiled yet, so the lookup is deferred to one pass at the end
     /// rather than failing in the middle of a dispatch.
     disables: std.ArrayList(struct { at: u32, name: Name, tok: u32 }) = .empty,
+    /// The argument lists the rows name by `ExprList`.
+    operands: std.ArrayList(Ast.ExprId) = .empty,
+    /// The slot and pc lists the rows name by `WordList`.
+    words: std.ArrayList(u32) = .empty,
+
+    /// Returns the expressions `list` names. Valid until the next `addExprs`.
+    pub fn exprs(p: *const Program, list: ExprList) []const Ast.ExprId {
+        assert(list.start + list.len <= p.operands.items.len);
+        return p.operands.items[list.start..][0..list.len];
+    }
+
+    /// Returns the words `list` names. Valid until the next `addWords`.
+    pub fn wordsOf(p: *const Program, list: WordList) []const u32 {
+        assert(list.start + list.len <= p.words.items.len);
+        return p.words.items[list.start..][0..list.len];
+    }
+
+    /// Appends `items` and returns the list naming them.
+    /// Invalidates slices `exprs` returned if more memory is needed.
+    pub fn addExprs(p: *Program, gpa: std.mem.Allocator, items: []const Ast.ExprId) std.mem.Allocator.Error!ExprList {
+        assert(p.operands.items.len + items.len <= std.math.maxInt(u32));
+        const start: u32 = @intCast(p.operands.items.len);
+        try p.operands.appendSlice(gpa, items);
+        const list: ExprList = .{ .start = start, .len = @intCast(items.len) };
+        assert(std.mem.eql(Ast.ExprId, p.exprs(list), items));
+        return list;
+    }
+
+    /// Appends `items` and returns the list naming them.
+    /// Invalidates slices `wordsOf` returned if more memory is needed.
+    pub fn addWords(p: *Program, gpa: std.mem.Allocator, items: []const u32) std.mem.Allocator.Error!WordList {
+        assert(p.words.items.len + items.len <= std.math.maxInt(u32));
+        const start: u32 = @intCast(p.words.items.len);
+        try p.words.appendSlice(gpa, items);
+        const list: WordList = .{ .start = start, .len = @intCast(items.len) };
+        assert(std.mem.eql(u32, p.wordsOf(list), items));
+        return list;
+    }
 };

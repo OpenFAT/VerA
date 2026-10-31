@@ -251,7 +251,7 @@ pub fn waitIntra(self: *Run, id: Ast.StmtId, s: @FieldType(Ast.Stmt, "assign")) 
     }
     var watched: std.ArrayList(u32) = .empty;
     try readSlots(self, id, &watched);
-    _ = try append(self, .{ .wait_slots = watched.items });
+    _ = try append(self, .{ .wait_slots = try self.program.addWords(self.arena, watched.items) });
 }
 
 /// §10.2.3: an automatic task's variables "shall not be assigned values
