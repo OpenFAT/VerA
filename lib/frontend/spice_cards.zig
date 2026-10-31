@@ -33,7 +33,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const token = @import("token.zig");
-const Preprocessor = @import("preprocessor.zig");
 const deep_stack = @import("base").deep_stack;
 const assert = std.debug.assert;
 const spice_card = @import("spice/card.zig");

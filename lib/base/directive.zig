@@ -1,7 +1,7 @@
 //! Positional compiler-directive events: a directive's event list (each event
 //! an output offset and the value in force from it) and an offset in → the
 //! value in force there out; plus the `timescale operands. The preprocessor
-//! writes the lists (`Preprocessor.Directives`, which aliases these types);
+//! writes the lists (`frontend.directive_events.Directives`, which aliases these types);
 //! lowering and the stages after it read them through `Lowered` without
 //! importing the frontend.
 //!

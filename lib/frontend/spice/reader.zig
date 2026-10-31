@@ -14,7 +14,7 @@ const spice_cards = @import("../spice_cards.zig");
 const Refusal = spice_cards.Refusal;
 const File = spice_cards.File;
 const deep_stack = @import("base").deep_stack;
-const Preprocessor = @import("../preprocessor.zig");
+const preprocessor = @import("../preprocessor.zig");
 const spice_card = @import("card.zig");
 const Card = spice_card.Card;
 const Refusals = spice_card.Refusals;
@@ -159,7 +159,7 @@ pub const Reader = struct {
         assert(card.text.len > 0);
         const full = try r.resolve(card.file, name);
         const io = std.Io.Threaded.global_single_threaded.io();
-        const text = Preprocessor.readText(io, .cwd(), full, r.arena) catch |e| switch (e) {
+        const text = preprocessor.readText(io, .cwd(), full, r.arena) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 try r.refusals.add(card, "`{s}`: cannot read \"{s}\" ({t})", .{ kw, full, e });

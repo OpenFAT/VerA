@@ -16,7 +16,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const diag = @import("diag");
-const Preprocessor = @import("preprocessor.zig");
+const preprocessor = @import("preprocessor.zig");
 const deep_stack = @import("base").deep_stack;
 const Io = std.Io;
 const testing = std.testing;
@@ -121,7 +121,7 @@ const Loader = struct {
     /// file is open: `load` reads the outermost ones, an `include` the rest.
     fn read(l: *Loader, path: []const u8, at: ?Site) Error!void {
         assert((at == null) == (l.open.items.len == 0));
-        const text = Preprocessor.readText(l.io, .cwd(), path, l.arena) catch |e|
+        const text = preprocessor.readText(l.io, .cwd(), path, l.arena) catch |e|
             return l.fail(at, "cannot read library map `{s}`: {t}", .{ path, e });
         const real = Io.Dir.cwd().realPathFileAlloc(l.io, path, l.arena) catch |e|
             return l.fail(at, "cannot resolve library map `{s}`: {t}", .{ path, e });

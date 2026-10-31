@@ -48,7 +48,7 @@ const std = @import("std");
 /// name as a parameter, which E.3.1 says is "not supported" (E0904).
 pub const spice_primitives =
     \\// Annex E Table E.1 — names, ports and parameters transcribed; see
-    \\// `Preprocessor.spice_primitives` for what of this is normative.
+    \\// `annex_e.spice_primitives` for what of this is normative.
     \\
     \\// resistor | p, n | r, tc1, tc2 | V = I*r*(1 + tc1*T + tc2*T^2)
     \\//

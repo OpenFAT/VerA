@@ -203,7 +203,7 @@ pub const Parser = struct {
     /// The state a parse of a leading run of tokens leaves behind, so a parse
     /// of a longer stream that begins with that run can resume instead of
     /// redoing it. Built once per process for the annex D/E prelude by
-    /// `Preprocessor.preludeAst`, which asserts that every field not listed
+    /// `prelude.preludeAst`, which asserts that every field not listed
     /// here is back at its `init` value when the prefix parse ends.
     ///
     /// A new `Parser` field that a prefix parse can leave dirty must be added

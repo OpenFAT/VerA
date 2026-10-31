@@ -48,7 +48,7 @@ name: []const u8 = "",
 /// IEEE 1364 §19.1 (via §10.1): the module was declared inside a
 /// `` `celldefine ``/`` `endcelldefine `` pair. A tag only; nothing branches on
 /// it. It carries the fact past the preprocessor for tools that ask. For any
-/// other module, ask `Preprocessor.CellRegion.inForce`.
+/// other module, ask `directive_events.CellRegion.inForce`.
 is_cell: bool = false,
 /// Provenance cursor: the builder sets it to the token of the AST node being
 /// lowered, and every appended instruction row is stamped with it. A cursor

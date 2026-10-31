@@ -120,7 +120,7 @@ pub const Output = struct {
 };
 
 /// The longest text the lexer and every later stage can address: offsets
-/// are u32 (`Lexer.TokenList.start`, `diag.Span`). A source file, an
+/// are u32 (`lexer.TokenList.start`, `diag.Span`). A source file, an
 /// `include file, a `--spice` netlist and the preprocessed text past it are
 /// E1013 (a file) or E0150 (the text macros expand to). Not a policy bound:
 /// widening every offset to 64 bits would double the token table of every

@@ -80,14 +80,14 @@ tok_starts: []const u32 = &.{},
 // and `ir` sits below `frontend` in `module_specs`, so it cannot call the
 // lexer directly. One indirect call per diagnostic.
 token_span: *const fn (src: []const u8, starts: []const u32, tok: u32) diag.Span = &noTokens,
-/// §10.3 the `default_transition events (`Preprocessor.Directives.transitions`),
+/// §10.3 the `default_transition events (`directive_events.Directives.transitions`),
 /// in text-stream order: codegen's `transition()` default at a call's offset.
 default_transitions: []const DefaultTransition = &.{},
 /// IEEE 1364 §19.8 the `timescale in force at the end of the stream
-/// (`Preprocessor.Directives.timescale`), or null: §9.15's `timeUnit` and
+/// (`directive_events.Directives.timescale`), or null: §9.15's `timeUnit` and
 /// `timePrecision`.
 timescale: ?Timescale = null,
-/// IEEE 1364 §19.8 every `timescale event (`Preprocessor.Directives.timescales`),
+/// IEEE 1364 §19.8 every `timescale event (`directive_events.Directives.timescales`),
 /// at offsets into `src`: each module runs in the one written before it, so
 /// the mixed-signal testbench hands the digital half all of them.
 timescales: []const TimescaleEvent = &.{},
@@ -986,11 +986,11 @@ pub const simparamIsRuntime = simparam.isRuntime;
 /// The §9.15 simulation parameters a host supplies, in `Model` field order
 /// (`simparam.host_params`).
 pub const host_simparams = simparam.host_params;
-/// §10.3 one `default_transition event (`Preprocessor.DefaultTransition`).
+/// §10.3 one `default_transition event (`directive_events.DefaultTransition`).
 pub const DefaultTransition = base.Region(?f64);
-/// A `timescale's two operands, in seconds (`Preprocessor.Timescale`).
+/// A `timescale's two operands, in seconds (`directive_events.Timescale`).
 pub const Timescale = base.Timescale;
-/// IEEE 1364 §19.8 one `timescale event (`Preprocessor.TimescaleEvent`).
+/// IEEE 1364 §19.8 one `timescale event (`directive_events.TimescaleEvent`).
 pub const TimescaleEvent = base.Region(?Timescale);
 
 // Row budgets on a 64-bit host. Every table here is per module and short

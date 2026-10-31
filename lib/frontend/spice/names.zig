@@ -56,7 +56,7 @@ pub fn spiceNumber(t: []const u8) ?f64 {
     }
     const scale = spiceScale(t[i..]);
     if (scale.exp == 0) return (std.fmt.parseFloat(f64, t[0..i]) catch return null) * scale.mul;
-    // Rounds once, as `Lexer.scaleExp`'s callers do: `50n` is
+    // Rounds once, as `token_value.scaleExp`'s callers do: `50n` is
     // parseFloat("50e-9"), while 50 * 1e-9 is a different double.
     var buf: [128]u8 = undefined;
     // i64: an exponent at the end of i32 plus the scale's would overflow.

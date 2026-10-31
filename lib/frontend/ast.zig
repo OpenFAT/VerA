@@ -301,7 +301,7 @@ pub const SourceFile = struct {
     configs: []const ConfigDecl = &.{}, // IEEE 1364-2005 §13.3
 
     /// How many leading entries of `modules` are the annex E prelude (Table E.1
-    /// SPICE primitives, prepended as source by `Preprocessor.spice_primitives`)
+    /// SPICE primitives, prepended as source by `annex_e.spice_primitives`)
     /// rather than the user's declarations. E.3.3 prefers a user module of the
     /// same name, so lookups search `userModules()` first; and §6.2.2's top must
     /// be a module the user wrote. Kept with `--no-std-defs` (E.2); set by the caller,
@@ -310,7 +310,7 @@ pub const SourceFile = struct {
     /// How many leading entries of `natures` are annex D.1's, preloaded with
     /// the prelude. Zero with `--no-std-defs`; set by the caller.
     builtin_natures: u32 = 0,
-    /// The source `include`d annex D.1 itself (`Preprocessor.Output.annex_d_included`),
+    /// The source `include`d annex D.1 itself (`preprocessor.Output.annex_d_included`),
     /// so the `builtin_natures` take part in §3.13.2's uniqueness rule
     /// (specification/Vague_Decisions.md VD-096). Set by the caller.
     annex_d_included: bool = false,

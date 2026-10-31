@@ -36,9 +36,9 @@ pub const Type = @import("syntax.zig").Type;
 pub const Direction = @import("syntax.zig").Direction;
 
 /// A positional directive event list's row type, `Region(T)`
-/// (`Preprocessor.Region`).
+/// (`directive_events.Region`).
 pub const Region = @import("directive.zig").Region;
-/// A `timescale's two operands, in seconds (`Preprocessor.Timescale`).
+/// A `timescale's two operands, in seconds (`directive_events.Timescale`).
 pub const Timescale = @import("directive.zig").Timescale;
 
 /// §7.8.4 one port re-pointed at a connect module (`Elaborate.Inserted`).
