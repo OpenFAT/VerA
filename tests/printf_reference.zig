@@ -1,4 +1,4 @@
-//! L3 formatting oracle: `str_kernels.zCReal`, the one
+//! L3 formatting oracle: `str_real.zCReal`, the one
 //! `%e %f %g` conversion the analog devices (`cg_display`) and the digital
 //! engine (`sim/digital/display.zig`, `sim/rt`) both print through, against
 //! the C library's `snprintf`, which IEEE 1364-2005 §17.1.1.3 and VAMS §9.4.3
@@ -26,14 +26,14 @@
 //! to C here.
 
 const std = @import("std");
-const zCReal = @import("kernels").str_kernels.zCReal;
+const zCReal = @import("kernels").str_real.zCReal;
 
 extern "c" fn snprintf(buf: [*]u8, n: usize, format: [*:0]const u8, ...) c_int;
 
 const inf = std.math.inf(f64);
 
 /// One conversion, as zCReal takes it: flags 1 '-', 2 '+', 4 ' ', 8 '0',
-/// 16 '#' (`str_kernels.zc_*`); `prec` -1 for none.
+/// 16 '#' (`str_real.zc_*`); `prec` -1 for none.
 const Spec = struct { conv: u8, flags: u8 = 0, width: usize = 0, prec: i64 = -1 };
 
 fn cFormat(buf: []u8, s: Spec) ![:0]u8 {
