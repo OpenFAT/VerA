@@ -183,7 +183,8 @@ pub fn asinh(x: f64) f64 {
 /// acosh(x) = ln(x + sqrt(x² − 1)) for x >= 1; NaN below.
 pub fn acosh(x: f64) f64 {
     const r = acoshBody(x);
-    assert(!(x >= 1.0) or !(r < 0.0)); // ln of a value >= 1.
+    assert(!(r < 0.0)); // ln of a value >= 1, or NaN below 1.
+    assert(!(x < 1.0) or std.math.isNan(r));
     return r;
 }
 /// atanh(x) = ½·ln((1 + x)/(1 − x)) for |x| < 1, ±inf at ±1, NaN past.
@@ -322,6 +323,10 @@ fn atan2Body(y: f64, x: f64) f64 {
 
 fn acoshBody(x: f64) f64 {
     const e = (@as(u64, @bitCast(x)) >> 52) & 0x7FF;
+    // musl reads |x|'s exponent and leaves the sign to the formulas, which
+    // give NaN for x in (-2, 1) but a finite value at x <= -2 (acosh(-12345.678)
+    // was -8.05): C99 F.10.2.1 and Table 4-14 make every x < 1 a domain error.
+    if (x < 0 and e >= 0x3FF + 1) return std.math.nan(f64);
     if (e < 0x3FF + 1) return log1p(x - 1 + @sqrt((x - 1) * (x - 1) + 2 * (x - 1)));
     if (e < 0x3FF + 26) return arm_log.hlog(2 * x - 1 / (x + @sqrt(x * x - 1)));
     return arm_log.hlog(x) + 0.693147180559945309417232121458176568;
@@ -566,4 +571,14 @@ test "gm exp/log agree with compiler_rt to 1 ulp; the device ports with libm" {
         const got = std.math.atan(@as(@Vector(2, f64), @splat(a)))[0];
         try std.testing.expect(@abs(got - want) <= 2 * @abs(want) * std.math.floatEps(f64));
     }
+}
+
+test "acosh is NaN for every x below 1, the far negative side included" {
+    // C99 F.10.2.1: a domain error below 1. musl's formulas, which read
+    // only |x|'s exponent, gave -8.048412491148412 at -12345.678.
+    for ([_]f64{ 0.5, 0.0, -0.0, -1.0, -1.5, -2.0, -2.5, -12345.678, -1e7, -1e300, -std.math.inf(f64) }) |x|
+        try std.testing.expect(std.math.isNan(acosh(x)));
+    try std.testing.expectEqual(@as(f64, 0.0), acosh(1.0));
+    try std.testing.expectEqual(std.math.inf(f64), acosh(std.math.inf(f64)));
+    try std.testing.expect(bits.ulps(acosh(10.0), std.math.acosh(@as(f64, 10.0))) <= 2);
 }
