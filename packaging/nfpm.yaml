@@ -1,0 +1,38 @@
+# The Linux packages a release ships (.deb, .rpm, Arch .pkg.tar.zst), built by
+# publish.yaml with nfpm from one target's `zig build install` prefix, copied
+# to pkg/ (nfpm expands variables in fields, not in content paths):
+#
+#   rm -rf pkg && cp -r out/x86_64-linux-gnu pkg && cp LICENSE pkg/
+#   VERA_VERSION=0.20.0 NFPM_ARCH=amd64 nfpm package -f packaging/nfpm.yaml -p deb -t .
+#
+# The VPI library and header go under vera/ so they never shadow another
+# simulator's vpi_user.h; a C application builds with
+# `zig cc app.c -I/usr/include/vera /usr/lib/vera/libvera-vpi.a`.
+name: vera
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERA_VERSION}
+release: 1
+section: devel
+priority: optional
+maintainer: OmarSiwy <OmarSiwy@users.noreply.github.com>
+description: |
+  Verilog-AMS compiler: Verilog-A to Zig device code, Verilog simulation,
+  OSDI and VPI. Simulating a design runs Zig (zig on PATH, or VERA_ZIG);
+  checking and the text --emit modes do not.
+vendor: VerA
+homepage: https://github.com/OpenFAT/VerA
+license: Apache-2.0
+contents:
+  - src: pkg/bin/vera
+    dst: /usr/bin/vera
+    file_info:
+      mode: 0755
+  - src: pkg/share/vera/contract.zig
+    dst: /usr/share/vera/contract.zig
+  - src: pkg/lib/libvera-vpi.a
+    dst: /usr/lib/vera/libvera-vpi.a
+  - src: pkg/include/vpi_user.h
+    dst: /usr/include/vera/vpi_user.h
+  - src: pkg/LICENSE
+    dst: /usr/share/licenses/vera/LICENSE

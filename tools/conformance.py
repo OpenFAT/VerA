@@ -460,6 +460,55 @@ class ReleaseVersionTests(unittest.TestCase):
             self.assertIn('pub const vera_version = "0.10.0";', con.read_text())
 
 
+class InstallScriptTests(unittest.TestCase):
+    """tools/install.sh against a sources.json of local tarballs: it installs the
+    newest version by version order (0.10.0 over 0.9.0), reuses a cached
+    tarball, switches its link to a pinned version, and refuses a tarball
+    whose sha256 is not sources.json's."""
+
+    def test_install_cache_pin_and_hash(self):
+        import platform, tarfile
+        machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(), platform.machine().lower())
+        system = f"{machine}-{ {'Linux': 'linux', 'Darwin': 'darwin'}.get(platform.system(), '')}"
+        if system.endswith("-"):
+            self.skipTest("install.sh supports Linux and macOS")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            sources = {}
+            for v in ("0.9.0", "0.10.0"):
+                exe = d / v / "vera"
+                exe.parent.mkdir()
+                exe.write_text(f"#!/bin/sh\necho vera {v}\n")
+                exe.chmod(0o755)
+                tgz = d / f"vera-{v}.tar.gz"
+                with tarfile.open(tgz, "w:gz") as t:
+                    t.add(exe, arcname="vera")
+                sources[v] = {system: {"url": str(tgz), "sha256": hashlib.sha256(tgz.read_bytes()).hexdigest()}, "zig": "0.0.0"}
+            catalogue = d / "sources.json"
+            catalogue.write_text(json.dumps(sources, indent=2, sort_keys=True))
+            env = dict(os.environ, VERA_SOURCES=str(catalogue), VERA_HOME=str(d / "home"),
+                       VERA_BIN=str(d / "bin"), VERA_CACHE=str(d / "cache"))
+            run = lambda *a: subprocess.run(["sh", str(ROOT / "tools" / "install.sh"), *a], env=env, capture_output=True, text=True)
+            vera = lambda: subprocess.run([str(d / "bin" / "vera")], capture_output=True, text=True).stdout.strip()
+
+            first = run()
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertIn("downloading 0.10.0", first.stdout)
+            self.assertEqual(vera(), "vera 0.10.0")
+            again = run()
+            self.assertIn("0.10.0 for " + system + " is cached", again.stdout)
+            pinned = run("v0.9.0")
+            self.assertEqual(pinned.returncode, 0, pinned.stderr)
+            self.assertEqual(vera(), "vera 0.9.0")
+
+            (d / "vera-0.10.0.tar.gz").write_bytes(b"not the release")
+            (d / "cache" / f"vera-0.10.0-{system}.tar.gz").unlink()
+            tampered = run("0.10.0")
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertIn("sha256", tampered.stderr)
+            self.assertEqual(vera(), "vera 0.9.0")
+
+
 class SuiteScoreTests(unittest.TestCase):
     """The release line: XFAIL fails, XPASS passes, a skip counts against, SPICE is not scored."""
 

@@ -45,7 +45,7 @@ recorded with `contract.formatSay`. That is how the model's `$strobe`,
 `$display` and the other display tasks reach your output; [tables](tables.md)
 has the details.
 
-[ESPice](https://github.com/OmarSiwy/ESPice) is a complete host to read
+[ESPice](https://github.com/OpenFAT/EGSpice) is a complete host to read
 beside this list; its `src/device/eval.zig` is the device-facing part, one
 call into the contract per hook, and `src/analysis/` the analyses (Newton,
 LTE-controlled transient, noise).

@@ -13,7 +13,7 @@ lands through a pull request whose merge result passed the required checks
 
 - **Pinned**: a commit and hash in `build.zig.zon` (`zig fetch --save`). Nothing on `main` can move it.
 - **Released**: a tag's tarballs with `SHA256SUMS`, `vera.wasm`, or the flake's `#latest`, which follows `sources.json` after every release.
-- **Head**: `nix run github:OmarSiwy/VerA`. It is `main` at that second, which is gated, but it is not a release.
+- **Head**: `nix run github:OpenFAT/VerA`. It is `main` at that second, which is gated, but it is not a release.
 
 Versions are 0.y.z: a minor bump may break, a patch may not. The Zig
 VerA is built with is part of the release (`sources.json`), because `vera`

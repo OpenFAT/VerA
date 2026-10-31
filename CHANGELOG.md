@@ -19,7 +19,7 @@
   a `desc` or `units` (LRM §3.2.1's output variables) declares
   `op_vars`, their names, and `opVars(S, x, ...)`, their values when the
   analog block runs at `x`, read off a slice of the core as `noisePsd` is
-  (OmarSiwy/ESPice#236). Not yet in `--emit-osdi`.
+  (OpenFAT/EGSpice#236). Not yet in `--emit-osdi`.
 - **`--run` accepts the conformance harness's `//! stdout`, `//! expect`,
   `//! diagnostic` and `//! exit any` lines** instead of refusing them as an
   unknown directive; the harness reads them, `--run` drops them. Seven ch09
@@ -103,6 +103,13 @@
   `vera_vpi_open` stored through an unrelocated pointer (33 suite tests).
   `flake.nix` now names the glibc target, and `src/dynlib.zig` refuses to
   compile on Linux without glibc.
+- **Installing without Nix:** `tools/install.sh` installs a release from
+  `sources.json` on Linux and macOS, checks the tarball's sha256, caches it
+  and keeps versions side by side. Each release also ships a `.deb`, an
+  `.rpm` and an Arch package (each installed and run by its own package
+  manager before upload), the AUR `PKGBUILD` (`vera-bin`) and a Homebrew
+  formula; the AUR and the `OmarSiwy/homebrew-vera` tap are updated when
+  their secrets are set.
 
 ## v0.20.0 — 2026-10-25
 
@@ -112,7 +119,7 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Veri
   the VAMS Conformance Suite passes: `tools/vera.xfail` and the suite's
   `vera/xfail` are empty. Where a test expected what the LRM forbids, the
   suite now expects a refusal citing the clause
-  (OmarSiwy/VAMS-Conformance-Suite#1); VerA accepts nothing the LRM forbids.
+  (OpenFAT/VAMS-Conformance-Suite#1); VerA accepts nothing the LRM forbids.
 - **Output to a file is no longer overwritten.** `vera`, the `.v` runtime and
   the VPI host wrote stdout and stderr at fixed offsets, so a warning printed
   after a testbench ran overwrote its output when both went to one file.

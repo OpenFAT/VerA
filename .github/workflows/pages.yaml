@@ -1,4 +1,4 @@
-# The website (https://omarsiwy.github.io/VerA/): the user documentation
+# The website (https://openfat.github.io/VerA/): the user documentation
 # (docs/, mdBook) at / and the conformance and speed report at /report/.
 #
 # It runs when conformance.yaml finishes on main, whatever its verdict, so
@@ -67,7 +67,7 @@ jobs:
           submodules: true  # tests/conformance: the fixtures
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: OmarSiwy/ESPice
+          repository: OpenFAT/EGSpice
           path: arpice
           sparse-checkout: models
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2

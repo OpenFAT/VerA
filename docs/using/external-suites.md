@@ -17,7 +17,7 @@ harness. Build `vera` in the shell first: `zig build -Doptimize=ReleaseFast inst
 
 ## The conformance suite: `zig build conformance`
 
-The [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+The [VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite),
 checked out at `tests/conformance`, carries the Verilog, Verilog-A,
 Verilog-AMS and Annex E tests and the external corpora (ivtest, sv-tests'
 IEEE 1364-2005 subset, the ISP RAS examples of the standard, OpenVAF,

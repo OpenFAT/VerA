@@ -27,7 +27,7 @@ import sys
 import urllib.error
 import urllib.request
 
-REPO = "OmarSiwy/VerA"
+REPO = "OpenFAT/VerA"
 # Nix system -> the target publish.yaml names the tarball after.
 SYSTEMS = {
     "x86_64-linux": "x86_64-linux-gnu",

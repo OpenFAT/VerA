@@ -90,7 +90,7 @@ not for accurate transients: that is your simulator's job.
 A check prints its own verdict as a number, `ok=1` or `ok=0`, rather than
 printing only on success, so a check that never ran cannot pass. VerA's own
 fixtures use the macros in
-[`tests/include/check.vh`](https://github.com/OmarSiwy/VAMS-Conformance-Suite/blob/main/tests/include/check.vh)
+[`tests/include/check.vh`](https://github.com/OpenFAT/VAMS-Conformance-Suite/blob/main/tests/include/check.vh)
 of the conformance suite
 (`CHECK` absolute tolerance, `CHECKR` relative, `CHECKX` exact, `CHECKI`
 integer, `CHECKEQ` two expressions against each other); this one defines its
@@ -135,17 +135,17 @@ values, LRM §9.17.3), `//! abstol` (the tolerance of an unknown, LRM
 `acstim`, `qsite`, `seed` and `meta` also take `none`: the device publishes
 no such row, which is a claim, where an absent directive claims nothing.
 Their exact syntax is in the header of
-[`src/codegen/exe/tb/directive.zig`](https://github.com/OmarSiwy/VerA/blob/main/src/codegen/exe/tb/directive.zig).
+[`src/codegen/exe/tb/directive.zig`](https://github.com/OpenFAT/VerA/blob/main/src/codegen/exe/tb/directive.zig).
 
 ## Directives the fixture suite grades
 
 VerA's own test suite (`zig build suite -- --strict`) runs every fixture
 under `tests/conformance/tests/` (the
-[VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite),
+[VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite),
 a submodule) through the same testbench and grades it by these.
 `vera --run` ignores them; you need them only to contribute a fixture, which
 goes into the suite under its language directory
-([the test guide](https://github.com/OmarSiwy/VerA/blob/main/tests/README.md)).
+([the test guide](https://github.com/OpenFAT/VerA/blob/main/tests/README.md)).
 
 | Directive | Meaning |
 |---|---|

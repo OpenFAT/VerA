@@ -50,7 +50,7 @@ directories hold VerA's own test inputs, and `conformance/` is the suite.
 | `canary/` | The wrong-on-purpose fixtures the canary in `test` judges, with their `EXPECT.tsv` |
 | `rtlil/`, `beh_verilog/`, `osdi/` | The `--emit-rtlil`, `--emit-verilog` and `--emit-osdi` inputs |
 | `suite.xfail` | The fixture runner's known failures: one suite path a line, then `# reason` |
-| `conformance/` | The [VAMS Conformance Suite](https://github.com/OmarSiwy/VAMS-Conformance-Suite), a submodule: the fixtures (below) and its own `conform` harness, tool configs and external suites |
+| `conformance/` | The [VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite), a submodule: the fixtures (below) and its own `conform` harness, tool configs and external suites |
 
 The suite's corpus is `conformance/tests/`, split by language and then by
 specification chapter. The suite is tool-neutral: VerA keeps nothing in it.

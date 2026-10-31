@@ -9,7 +9,7 @@
     zig-overlay.url = "github:mitchellh/zig-overlay";
     zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
     # The conformance suite: its `conform` harness.
-    conformance.url = "github:OmarSiwy/VAMS-Conformance-Suite";
+    conformance.url = "github:OpenFAT/VAMS-Conformance-Suite";
     conformance.inputs.nixpkgs.follows = "nixpkgs";
     conformance.inputs.flake-utils.follows = "flake-utils";
   };
@@ -76,7 +76,7 @@
           '';
           meta = {
             description = "Verilog-AMS compiler: Verilog-A to Zig device code";
-            homepage = "https://github.com/OmarSiwy/VerA";
+            homepage = "https://github.com/OpenFAT/VerA";
             license = lib.licenses.asl20;
             mainProgram = "vera";
           };
@@ -107,7 +107,7 @@
           '';
           meta = {
             description = "Verilog-AMS compiler: Verilog-A to Zig device code (release binary)";
-            homepage = "https://github.com/OmarSiwy/VerA";
+            homepage = "https://github.com/OpenFAT/VerA";
             license = lib.licenses.asl20;
             sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
             mainProgram = "vera";

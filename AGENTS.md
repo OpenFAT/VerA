@@ -1,7 +1,7 @@
 # Agents
 
 VerA is a compiler whose consumers pin it (ESPice by commit and hash) or
-follow `main` (`nix run github:OmarSiwy/VerA`). Two rules decide everything
+follow `main` (`nix run github:OpenFAT/VerA`). Two rules decide everything
 below: **every test names its oracle**, and **main is green by machine**.
 `TESTING.md` is the oracle map and the tiers; `CONTRIBUTING.md` is the
 branch, pin and release policy.

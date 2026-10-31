@@ -76,9 +76,9 @@ the next iterate's points on those.
 ## What it buys
 
 Measured, not estimated, in two notes in the repository:
-[`specification/measurements/batched-instances-2026-10-01.md`](https://github.com/OmarSiwy/VerA/blob/main/specification/measurements/batched-instances-2026-10-01.md)
+[`specification/measurements/batched-instances-2026-10-01.md`](https://github.com/OpenFAT/VerA/blob/main/specification/measurements/batched-instances-2026-10-01.md)
 and
-[`specification/measurements/batched-lead-2026-10-02.md`](https://github.com/OmarSiwy/VerA/blob/main/specification/measurements/batched-lead-2026-10-02.md)
+[`specification/measurements/batched-lead-2026-10-02.md`](https://github.com/OpenFAT/VerA/blob/main/specification/measurements/batched-lead-2026-10-02.md)
 (AVX2, ReleaseFast, with their harnesses beside them). In summary, from the
 second note's §1b, §2 and §5:
 
