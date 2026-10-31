@@ -99,7 +99,9 @@ pub fn paramsetChain(
     // Every link is a distinct paramset (a repeat is the cycle refused below).
     try out.ensureUnusedCapacity(self.ctx.arena, self.ctx.file.paramsets.len + 1);
     var link = near;
-    while (true) {
+    // Each pass appends a link no earlier pass appended, so the chain is at
+    // most every paramset long.
+    for (0..self.ctx.file.paramsets.len + 1) |_| {
         out.appendAssumeCapacity(link);
         if (findModule(self, link.target) != null) return true;
         const next = for (self.ctx.file.paramsets) |*p| {
@@ -121,6 +123,7 @@ pub fn paramsetChain(
         };
         link = next;
     }
+    unreachable; // a longer chain repeats a link, which returned above
 }
 
 /// The module at the end of `ps`'s chain, or `null` after an E0904.

@@ -57,6 +57,7 @@ pub fn genvarLoop(comptime T: type, scheme: anytype, first: T) !LoopRun(T) {
         n += 1;
         lam += 1;
         if (@TypeOf(scheme).same(hare, tortoise)) return .{ .repeats = hare };
+        assert(n != std.math.maxInt(u64)); // every scheme ends or repeats long before
         if (lam == power) {
             tortoise = hare;
             power *|= 2;
@@ -315,10 +316,17 @@ fn loopInstances(self: *Flatten, init: Ast.StmtId, cond: Ast.ExprId, step: Ast.S
         }
     };
     const scheme: Scheme = .{ .self = self, .gv = gv, .cond = cond, .step = file.stmt(step).assign.value };
-    if (try genvarLoop(i64, scheme, v) != .ends) return;
-    while (true) {
+    const run = try genvarLoop(i64, scheme, v);
+    if (run != .ends) return;
+    // `genvarLoop` ran this scheme to its end: as many copies as it counted.
+    var copies: u64 = 0;
+    while (true) : (copies += 1) {
+        assert(copies <= run.ends);
         const lit = try scheme.lit(v);
-        if (!(try scheme.holds(v)).?) return;
+        if (!(try scheme.holds(v)).?) {
+            assert(copies == run.ends);
+            return;
+        }
         for (blk.instances) |inst| {
             var copy = inst;
             copy.name = try file.intern(self.ctx.arena, try self.ctx.arena.print("{s}{s}[{d}]{c}{s}", .{ prefix, file.str(blk.gen_name), v, sep, file.str(inst.name) }));

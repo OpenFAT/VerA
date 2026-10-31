@@ -9,6 +9,7 @@
 //! - `pub fn paramName(d: *const Dist, i: usize) []const u8`
 
 const std = @import("std");
+const assert = std.debug.assert;
 
 /// One row of Table 9-10's probabilistic family: the source spelling, the
 /// synthetic kernel `rng_kernels.zig` implements, and the argument rules

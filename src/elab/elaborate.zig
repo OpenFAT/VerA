@@ -12,6 +12,7 @@
 //! - `pub fn elaborate(ctx: design.Ctx) design.Error!design.Design`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
 const design = @import("design.zig");
@@ -124,6 +125,7 @@ pub fn elaborate(ctx: design.Ctx) design.Error!design.Design {
 /// than one per candidate.
 fn pickTop(ctx: design.Ctx, gen_instances: []const []const Ast.Instance) design.Error!*const Ast.ModuleDecl {
     const file = ctx.file;
+    assert(gen_instances.len == file.modules.len);
     // Annex E: a candidate is a module the USER wrote. The shipped Table E.1
     // primitives instantiate nothing, so all nineteen are roots of the instance
     // graph and one of them would win every time. They still count as
@@ -168,6 +170,8 @@ fn lastNamed(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl) *const Ast.M
     for (file.userModules()) |*o| if (o.name == m.name) {
         last = o;
     };
+    assert(last.name == m.name);
+    assert(@intFromPtr(last) >= @intFromPtr(m)); // the last of its name, so not before `m`
     return last;
 }
 

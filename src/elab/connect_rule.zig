@@ -17,6 +17,7 @@
 //! - `pub fn domain(file: *const Ast.SourceFile, d: Ast.StrId) ?Ast.DisciplineDecl.Domain`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
@@ -96,6 +97,8 @@ pub fn ruleOf(self: *Flatten, ins: *const Ast.ConnectInsertion, report: bool) de
         side.discipline = ov[1];
         if (ov[0] != .unspecified) side.dir = ov[0];
     };
+    assert(r.module.is_connect);
+    assert(r.cont.port != r.disc.port); // one continuous and one discrete port
     return r;
 }
 
@@ -106,6 +109,7 @@ pub fn ruleOf(self: *Flatten, ins: *const Ast.ConnectInsertion, report: bool) de
 /// pair names no scenario the module could be inserted in, so the statement
 /// is refused (E0982). A port with no direction is not judged here.
 pub fn checkDirections(self: *Flatten, r: Rule) design.Error!void {
+    assert(r.module.is_connect);
     const c = r.cont.dir;
     const d = r.disc.dir;
     if (c == .unspecified or d == .unspecified) return;
@@ -124,6 +128,7 @@ pub fn checkDirections(self: *Flatten, r: Rule) design.Error!void {
 /// port selects it. `report` as in `ruleOf`. Returns whether every entry
 /// named an overridable parameter.
 pub fn paramsDeclared(self: *Flatten, ins: *const Ast.ConnectInsertion, m: *const Ast.ModuleDecl, report: bool) design.Error!bool {
+    assert(m.is_connect);
     const file = self.ctx.file;
     if (ins.params.len == 0) return true;
     const named = ins.params[0].name != .none;
@@ -208,6 +213,8 @@ pub fn matchRules(file: *const Ast.SourceFile, rules: []const Rule, dir: Ast.Dir
         count += 1;
         if (found == null) found = ri;
     };
+    assert(count <= rules.len);
+    if (found != null) assert(count != 0);
     return .{ found, count };
 }
 
@@ -260,6 +267,8 @@ fn matches(file: *const Ast.SourceFile, r: Rule, dir: Ast.Direction, upper: Ast.
 
 /// E0927 for a mixed port no connect statement matches.
 fn unmatched(self: *Flatten, tok: u32, port: Ast.StrId, inst: Ast.StrId, lower: Ast.StrId, net: Ast.StrId, upper: Ast.StrId) design.Error!void {
+    assert(port != .none);
+    assert(inst != .none);
     const file = self.ctx.file;
     try self.err(tok, .E0927, "port `{s}` of `{s}` is {s}{s}{s} and its net `{s}` is {s}{s}{s}, and no connect statement bridges them", .{
         file.str(port), file.str(inst), q(lower), discName(file, lower), q(lower), file.str(net), q(upper), discName(file, upper), q(upper),

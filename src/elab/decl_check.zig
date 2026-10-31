@@ -9,6 +9,7 @@
 //! - `pub fn checkNetDisciplines(self: *Flatten) design.Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
@@ -23,6 +24,7 @@ const fixture = @import("fixture.zig");
 /// puts no order on descriptions, so the connect module or discipline may be
 /// declared after the block.
 pub fn checkConnectRules(self: *Flatten) design.Error!void {
+    assert(!self.dry); // once per compilation, before any walk
     for (self.ctx.file.connectrules) |cr| {
         for (cr.insertions) |*ins| {
             // §7.7.1 "connect connectmodule_identifier": the name must be
@@ -83,6 +85,7 @@ pub fn checkNetDisciplines(self: *Flatten) design.Error!void {
     // `require_std_includes`: annex D.1's disciplines reach
     // only a source that includes disciplines.vams. A user discipline of the
     // same name comes later in `disciplines`, so `declOf` finds it first.
+    assert(file.hidden_disciplines <= file.disciplines.len);
     if (file.hidden_disciplines != 0) for (file.userModules()) |*m| {
         for (m.ports) |x| try hiddenDiscipline(self, x.discipline, x.name, x.main_tok);
         for (m.nets) |x| try hiddenDiscipline(self, x.discipline, x.name, x.main_tok);
@@ -109,10 +112,12 @@ pub fn checkNetDisciplines(self: *Flatten) design.Error!void {
 /// E0371 when `name` resolves only to a prelude annex D.1 discipline the
 /// source did not include.
 fn hiddenDiscipline(self: *Flatten, name: Ast.StrId, decl_name: Ast.StrId, tok: u32) design.Error!void {
+    assert(decl_name != .none);
     if (name == .none) return;
     const file = self.ctx.file;
     const d = discipline.declOf(file, name) orelse return;
     const index = (@intFromPtr(d) - @intFromPtr(file.disciplines.ptr)) / @sizeOf(Ast.DisciplineDecl);
+    assert(index < file.disciplines.len); // `declOf` answers with a row
     if (index >= file.hidden_disciplines) return;
     try self.err(tok, .E0371, "`{s}` in the declaration of `{s}` is annex D.1's: add `include \"disciplines.vams\"", .{ file.str(name), file.str(decl_name) });
 }

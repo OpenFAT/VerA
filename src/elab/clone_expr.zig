@@ -47,6 +47,17 @@ const GenCond = struct { cond: Ast.ExprId, negate: bool };
 /// for its next instance.
 pub fn cloneExpr(self: *Flatten, e: Ast.ExprId) design.Error!Ast.ExprId {
     if (e == .none) return .none;
+    const out = try cloneRow(self, e);
+    // Every arm appends a row, or answers with another expression.
+    assert(out != .none);
+    assert(out != e);
+    return out;
+}
+
+// ---- private ----
+
+fn cloneRow(self: *Flatten, e: Ast.ExprId) design.Error!Ast.ExprId {
+    assert(e != .none);
     const x = &self.ctx.file.exprs;
     var n = x.get(e);
     var local_only = false;
@@ -181,7 +192,7 @@ pub inline fn cloneArgs(self: *Flatten, src: []const Ast.ExprId) design.Error!u3
     return self.ctx.file.exprs.addExprList(self.ctx.arena, out);
 }
 
-// ---- private ----
+
 
 /// §6.4.1: "The right-hand side can be composed of numbers, parameters, and
 /// hierarchical out-of-module references to local parameters of a different
@@ -199,6 +210,7 @@ pub inline fn cloneArgs(self: *Flatten, src: []const Ast.ExprId) design.Error!u3
 /// same-named paramset parameter. §6.4.1's worked example does not nest.
 /// The upgrade path is a recursive substitution keyed on the owning module.
 fn paramsetOomr(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.ExprId {
+    assert(self.ctx.file.exprs.tag(e) == .hier_ident);
     if (!self.in_paramset) return null;
     const parts = self.ctx.file.exprs.nameParts(e);
     if (parts.len != 2) return null;
@@ -227,9 +239,14 @@ fn paramsetOomr(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.ExprId {
 /// (12.6 restricts scope_name to a hierarchical_inst_identifier) or a named
 /// generate block of that name, nearest first.
 fn upward(self: *Flatten, e: Ast.ExprId, parts: []const Ast.StrId) design.Error!Upward {
+    assert(e != .none);
     if (parts.len < 2) return .keep;
     var at: ?*const Flatten.Unit = &self.unit;
+    var hops: usize = 0;
     while (at) |u| : (at = u.up) {
+        // One unit per inlined instance, the top's and a paramset body's.
+        assert(hops <= self.out.units.len + 1);
+        hops += 1;
         const m = u.module orelse return .keep;
         // The top's names are its flat names; below it, the unit bound it.
         if (declaresInstance(self, m, parts[0])) return if (u.up == null) .keep else .{ .head = u.rename.get(parts[0]) orelse return .keep };
@@ -243,6 +260,7 @@ fn upward(self: *Flatten, e: Ast.ExprId, parts: []const Ast.StrId) design.Error!
 /// Whether `m` declares a (non-array) module instance `name`, in its body or
 /// in a generate block.
 fn declaresInstance(self: *Flatten, m: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+    assert(name != .none);
     for (m.instances) |inst| if (inst.name == name and inst.range == null) return true;
     for (self.genInstancesOf(m)) |inst| if (inst.name == name and inst.range == null) return true;
     return false;
@@ -253,6 +271,7 @@ fn declaresInstance(self: *Flatten, m: *const Ast.ModuleDecl, name: Ast.StrId) b
 /// loop generate is `name[i]` (§6.6.1) and a case arm's needs its selector
 /// matched, so neither is found here.
 fn genBlock(self: *Flatten, id: Ast.StmtId, name: Ast.StrId, conds: *std.ArrayList(GenCond)) design.Error!?Ast.SeqBlock {
+    assert(name != .none);
     if (id == .none) return null;
     // A miss pops every scheme it pushed; a hit leaves its path on.
     const depth = conds.items.len;
@@ -283,6 +302,8 @@ fn genBlock(self: *Flatten, id: Ast.StmtId, name: Ast.StrId, conds: *std.ArrayLi
 /// (§3.4.1's conversion), keeps the flat name, which lowering resolves or
 /// refuses (E0901). The upgrade is `bindGenLocals`-style substitution.
 fn genBlockRef(self: *Flatten, e: Ast.ExprId, u: *const Flatten.Unit, b: Ast.SeqBlock, conds: []const GenCond, parts: []const Ast.StrId) design.Error!Upward {
+    assert(parts.len >= 2); // `upward` asks only for a dotted name
+    assert(b.gen_name != .none); // `genBlock` finds generate scopes only
     const saved = self.unit;
     self.unit = u.*;
     defer self.unit = saved;
@@ -307,6 +328,7 @@ fn genBlockRef(self: *Flatten, e: Ast.ExprId, u: *const Flatten.Unit, b: Ast.Seq
 
 /// Whether `e` reads the identifier `name`.
 fn readsName(file: *const Ast.SourceFile, e: Ast.ExprId, name: Ast.StrId) bool {
+    assert(name != .none);
     if (e == .none) return false;
     if (file.exprs.tag(e) == .ident and file.exprs.strOf(e) == name) return true;
     var buf: [3]Ast.ExprId = undefined;
@@ -320,6 +342,7 @@ fn readsName(file: *const Ast.SourceFile, e: Ast.ExprId, name: Ast.StrId) bool {
 /// the port's local name, else null. At the top (`unit.up == null`) the
 /// host binds the ports and `I(<a>)` is its own exact unknown.
 fn ownPortFlow(self: *Flatten, e: Ast.ExprId) ?Ast.StrId {
+    assert(e != .none);
     if (self.unit.up == null or self.unit.path.len == 0) return null;
     const m = self.unit.module orelse return null;
     const x = &self.ctx.file.exprs;
@@ -342,6 +365,7 @@ fn ownPortFlow(self: *Flatten, e: Ast.ExprId) ?Ast.StrId {
 /// §5.4.3 whether the walk split this unit's `port` onto an internal net of
 /// its own (`Design.port_ammeters`), so its flow is a probe lowering reads.
 fn ammetered(self: *Flatten, port: Ast.StrId) bool {
+    assert(port != .none);
     const flat = self.unit.rename.get(port) orelse return false;
     for (self.out.port_ammeters.items) |am| if (am.internal == flat) return true;
     return false;
@@ -355,6 +379,7 @@ fn rewriteSysCall(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.ExprId {
     const x = &self.ctx.file.exprs;
     const name = x.strOf(e);
     const tok = x.mainTok(e);
+    assert(x.tag(e) == .sys_call);
     if (hier_param.Kind.fromName(self.ctx.file.str(name))) |kind| {
         const value = self.unit.hier.get(kind);
         return if (value == .none) null else value;

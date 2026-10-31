@@ -253,7 +253,8 @@ fn defparamKey(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, 
     // `path` ends in `sep`; each shorter prefix ending in `sep` (or empty)
     // is an ancestor's.
     var end = path.len;
-    while (true) {
+    // One ancestor per pass, so at most one pass per `sep` of `path`, plus the top.
+    for (0..path.len + 1) |_| {
         const prefix = path[0..end];
         const unit = for (self.out.units.items(.path), self.out.units.items(.module)) |up, um| {
             if (std.mem.eql(u8, up, prefix)) break self.ctx.file.str(um);
@@ -271,6 +272,7 @@ fn defparamKey(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, 
         end = if (std.mem.findScalarLast(u8, path[0 .. end - 1], sep)) |k| k + 1 else 0;
         assert(end < was); // one level up per pass, so the walk ends at the top
     }
+    unreachable; // `end` reached 0 within `path.len` passes, which returned
 }
 
 /// The first identifier `e` reads that names no parameter the flat module

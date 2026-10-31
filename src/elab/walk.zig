@@ -132,9 +132,14 @@ pub fn walkInstances(
     const base = stack.items.len;
     var levels: std.ArrayList(Level) = .empty;
     if (try enterLevel(self, top, "", stack.items)) |l| try levels.append(a, l);
-    while (levels.items.len != 0) {
+    const units_before = self.out.units.len;
+    var steps: usize = 0;
+    while (levels.items.len != 0) : (steps += 1) {
         // Every level below the top pushed its module; the top's was there.
         assert(stack.items.len + 1 == base + levels.items.len);
+        // Each step inlines one instance or closes one level, and every level
+        // but the top's was opened by an inlining.
+        assert(steps <= 2 * (self.out.units.len - units_before) + 1);
         if (try nextChild(self, &levels.items[levels.items.len - 1], stack.items)) |c| {
             const parent = try instance.inlineInstance(self, c.inst, c.child, c.ps, c.path, c.gate);
             try stack.append(a, c.child.name);
@@ -243,7 +248,9 @@ fn enterLevel(self: *Flatten, source_module: *const Ast.ModuleDecl, path: []cons
 fn nextChild(self: *Flatten, lv: *Level, stack: []const Ast.StrId) design.Error!?Child {
     const module = lv.module;
     const path = lv.path;
+    // Every pass moves `(idx, k)` forward, and both are bounded.
     while (true) {
+        assert(lv.idx <= lv.all.len);
         if (!lv.started) {
             if (lv.idx == lv.all.len) return null;
             if (!try startInstance(self, lv)) {

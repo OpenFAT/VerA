@@ -23,6 +23,8 @@ const fixture = @import("fixture.zig");
 /// Copies one statement and everything under it into the pool, renamed into
 /// the unit's flat namespace, scaling flow contributions by $mfactor (§6.3.6).
 pub fn cloneStmt(self: *Flatten, id: Ast.StmtId) design.Error!Ast.StmtId {
+    // A unit is in force: the top's body is never cloned.
+    assert(self.unit.path.len != 0 or self.unit.up == null);
     if (id == .none) return .none;
     const file = self.ctx.file;
     const tok = file.stmtTok(id);
@@ -145,7 +147,10 @@ pub fn cloneStmt(self: *Flatten, id: Ast.StmtId) design.Error!Ast.StmtId {
         },
         .jump => |v| .{ .jump = .{ .kind = v.kind, .value = try clone_expr.cloneExpr(self, v.value) } },
     };
-    return file.addStmt(self.ctx.arena, out, tok);
+    const cloned = try file.addStmt(self.ctx.arena, out, tok);
+    assert(cloned != .none);
+    assert(cloned != id); // appended, never the source row
+    return cloned;
 }
 
 // ---- private ----
@@ -166,6 +171,7 @@ fn cloneTarget(self: *Flatten, e: Ast.ExprId) design.Error!Ast.ExprId {
 /// path on demand, which the rename map already carries for every other
 /// name of the unit.
 fn joinLocal(self: *Flatten, name: Ast.StrId) design.Error!Ast.StrId {
+    assert(name != .none);
     if (self.unit.rename.get(name)) |flat_id| return flat_id;
     // A dotted `disable` target (A.9.3) is a path already, not a label.
     if (std.mem.findScalar(u8, self.ctx.file.str(name), sep) != null) return name;

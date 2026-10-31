@@ -18,6 +18,7 @@
 //! - `pub fn flat(self: *Flatten, local: Ast.StrId) Ast.StrId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
@@ -88,6 +89,7 @@ pub fn flatReference(file: *const Ast.SourceFile, arena: std.mem.Allocator, modu
         if (i != 0) try out.append(arena, sep);
         try out.appendSlice(arena, file.str(p));
     }
+    assert(parts.len != 0); // a prefix is dropped only ahead of another part
     return out.toOwnedSlice(arena);
 }
 
@@ -105,6 +107,7 @@ pub fn flatReference(file: *const Ast.SourceFile, arena: std.mem.Allocator, modu
 /// ponytail: blocks nested inside a loop's block are not listed; their
 /// prefixes carry the iteration index. The upgrade is `loopInstances`'s walk.
 pub fn unnamedGenScopes(file: *const Ast.SourceFile, arena: std.mem.Allocator, m: *const Ast.ModuleDecl, path: []const u8, out: *std.ArrayList([]const u8)) std.mem.Allocator.Error!void {
+    if (path.len != 0) assert(path[path.len - 1] == sep);
     for (m.analog) |blk| try genScopesIn(file, arena, blk.body, path, out);
 }
 
@@ -112,6 +115,7 @@ pub fn unnamedGenScopes(file: *const Ast.SourceFile, arena: std.mem.Allocator, m
 /// at `m`'s own scope (not nested in a named block): the first part of a
 /// hierarchical name written in `m` that would open it (§6.6.2, E0998).
 pub fn namesUnnamedGen(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+    assert(name != .none);
     for (m.analog) |blk| if (unnamedGenIn(file, blk.body, name)) return true;
     return false;
 }
@@ -119,6 +123,8 @@ pub fn namesUnnamedGen(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, na
 /// Returns `path ++ local`, interned. The flat name is the §6.7 path, so the
 /// path table (`Design.names`) needs no row for it.
 pub fn join(self: *Flatten, path: []const u8, local: Ast.StrId) design.Error!Ast.StrId {
+    assert(local != .none);
+    if (path.len != 0) assert(path[path.len - 1] == sep);
     const s = try self.ctx.arena.print("{s}{s}", .{ path, self.ctx.file.str(local) });
     return self.ctx.file.intern(self.ctx.arena, s);
 }
@@ -126,6 +132,8 @@ pub fn join(self: *Flatten, path: []const u8, local: Ast.StrId) design.Error!Ast
 /// Binds `local` to its flat name `path ++ local` in `unit`'s rename map,
 /// unless it is already bound (a port joined to the parent's net).
 pub fn bind(self: *Flatten, unit: *Unit, path: []const u8, local: Ast.StrId) design.Error!void {
+    assert(local != .none);
+    if (path.len != 0) assert(path[path.len - 1] == sep);
     // A port already bound to the parent's net keeps that binding: `inout p;
     // electrical p;` leaves a NetDecl behind for the same name, and rewriting
     // it here would disconnect the port.
@@ -143,6 +151,7 @@ pub fn flat(self: *Flatten, local: Ast.StrId) Ast.StrId {
 // ---- private ----
 
 fn genScopesIn(file: *const Ast.SourceFile, arena: std.mem.Allocator, id: Ast.StmtId, prefix: []const u8, out: *std.ArrayList([]const u8)) std.mem.Allocator.Error!void {
+    if (prefix.len != 0) assert(prefix[prefix.len - 1] == sep);
     if (id == .none) return;
     switch (file.stmt(id)) {
         .block => |b| {
@@ -168,6 +177,7 @@ fn genScopesIn(file: *const Ast.SourceFile, arena: std.mem.Allocator, id: Ast.St
 }
 
 fn unnamedGenIn(file: *const Ast.SourceFile, id: Ast.StmtId, name: Ast.StrId) bool {
+    assert(name != .none);
     if (id == .none) return false;
     switch (file.stmt(id)) {
         // A generate scope's own blocks are a level further down.

@@ -45,6 +45,8 @@ const LocalAccess = struct { name: Ast.StrId, local_only: bool = false };
 /// a §7.7.2 `resolveto` re-decided after the walk (`resolveMultiCandidates`)
 /// is not seen, the same ceiling `primitiveAccess` and `mfactorScale` have.
 pub fn localAccess(self: *Flatten, access: Ast.StrId, net: Ast.ExprId, flat_net: Ast.ExprId, tok: u32) design.Error!LocalAccess {
+    assert(access != .none);
+    assert(!self.unit.primitive); // a primitive's accesses are `primitive.primitiveAccess`'s
     const file = self.ctx.file;
     const keep: LocalAccess = .{ .name = access };
     const local = self.unit.port_disc.get(lookup.netRefName(self, net) orelse return keep) orelse return keep;
@@ -81,6 +83,7 @@ pub fn localAccess(self: *Flatten, access: Ast.StrId, net: Ast.ExprId, flat_net:
 /// ponytail: a plain identifier only; a vector port element (`c[0]`) or a
 /// named branch over the port is still judged by the joined net.
 pub fn checkTypedPort(self: *Flatten, access: Ast.StrId, net: Ast.ExprId, tok: u32) design.Error!void {
+    assert(access != .none);
     assert(!self.unit.primitive);
     const name = lookup.netRefName(self, net) orelse return;
     if (!(self.unit.connected.get(name) orelse return)) return;
@@ -114,6 +117,8 @@ pub fn mfactorScale(
     op: Ast.BinaryOp,
     tok: u32,
 ) design.Error!?Ast.ExprId {
+    assert(value != .none);
+    assert(access != .none);
     if (self.unit.hier.get(.mfactor) == .none) return null;
     const name = lookup.netRefName(self, accessNet(self, net)) orelse return null;
     const disc = self.res.disc_of.get(name) orelse return null;
@@ -138,6 +143,8 @@ pub fn mfactorScale(
 /// `ac_stim` is a stimulus, not noise, and keeps rule 1 alone. The top's
 /// $mfactor stays with the host, as in `mfactorScale`.
 pub fn mfactorNoise(self: *Flatten, call: Ast.ExprId) design.Error!Ast.ExprId {
+    assert(call != .none);
+    assert(self.ctx.file.exprs.tag(call) == .noise_call);
     const m = self.unit.hier.get(.mfactor);
     if (m == .none) return call;
     const x = &self.ctx.file.exprs;

@@ -50,6 +50,9 @@ pub fn cloneParams(
     aliases: []const Ast.AliasParam,
     over: *const std.AutoHashMapUnmanaged(Ast.StrId, Ast.ExprId),
 ) design.Error!void {
+    // Every override names one of `params` (`override.collectOverrides`).
+    assert(over.count() <= params.len);
+    const params_before = self.decls.params.items.len;
     for (params) |p| {
         var out = p;
         out.name = flat_name.flat(self, p.name);
@@ -90,6 +93,8 @@ pub fn cloneParams(
             .target = flat_name.flat(self, al.target),
         });
     }
+    // One flat row per parameter, plus one per geometry alias.
+    assert(self.decls.params.items.len >= params_before + params.len);
 }
 
 /// Clones a range's bounds into the flat namespace; null stays null.
@@ -105,11 +110,13 @@ pub fn cloneDelay(self: *Flatten, d: Ast.Delay3) design.Error!Ast.Delay3 {
 
 /// Returns named event `e` under its flat name, dimensions cloned.
 pub fn cloneEvent(self: *Flatten, e: Ast.EventDecl) design.Error!Ast.EventDecl {
+    assert(e.name != .none);
     return .{ .name = flat_name.flat(self, e.name), .dims = try cloneDims(self, e.dims), .main_tok = e.main_tok };
 }
 
 /// Returns `v` under its flat name, with dimensions and initializer cloned.
 pub fn cloneVar(self: *Flatten, v: Ast.VarDecl) design.Error!Ast.VarDecl {
+    assert(v.name != .none);
     var out = v;
     out.name = flat_name.flat(self, v.name);
     out.dims = try cloneDims(self, v.dims);
@@ -123,6 +130,7 @@ pub fn cloneVar(self: *Flatten, v: Ast.VarDecl) design.Error!Ast.VarDecl {
 /// map for the body; otherwise a formal sharing a module-level name would be
 /// rewritten to the module's.
 pub fn cloneFunc(self: *Flatten, fd: Ast.FuncDecl) design.Error!Ast.FuncDecl {
+    assert(fd.name != .none);
     var out = fd;
     out.name = flat_name.flat(self, fd.name);
     var hidden: std.ArrayList(HiddenName) = try .initCapacity(self.ctx.arena, fd.args.len + fd.params.len + fd.vars.len);
@@ -132,6 +140,7 @@ pub fn cloneFunc(self: *Flatten, fd: Ast.FuncDecl) design.Error!Ast.FuncDecl {
     out.params = try cloneLocalParams(self, fd.params);
     out.vars = try cloneLocalVars(self, fd.vars);
     out.body = try clone_stmt.cloneStmt(self, fd.body);
+    assert(hidden.items.len == fd.args.len + fd.params.len + fd.vars.len);
     unhide(self, hidden.items);
     return out;
 }
@@ -140,8 +149,10 @@ pub fn cloneFunc(self: *Flatten, fd: Ast.FuncDecl) design.Error!Ast.FuncDecl {
 /// the old binding in `list`, which the caller sized for every local it hides.
 /// The caller restores the whole list with `unhide`, in reverse order.
 pub fn hide(self: *Flatten, list: *std.ArrayList(HiddenName), name: Ast.StrId) void {
+    assert(list.items.len < list.capacity); // the caller sized it for every local
     list.appendAssumeCapacity(.{ .name = name, .was = self.unit.rename.get(name) });
     _ = self.unit.rename.remove(name);
+    assert(!self.unit.rename.contains(name));
 }
 
 pub fn unhide(self: *Flatten, list: []const HiddenName) void {
@@ -156,12 +167,15 @@ pub fn unhide(self: *Flatten, list: []const HiddenName) void {
             _ = self.unit.rename.remove(list[i].name);
         }
     }
+    assert(i == 0);
+    if (list.len != 0) assert((self.unit.rename.get(list[0].name)) == list[0].was);
 }
 
 /// A block's or function's own declarations: cloned for their initializers
 /// and ranges, but not renamed: they are locals of a scope lowering already
 /// pushes and pops.
 pub fn cloneLocalParams(self: *Flatten, ps: []const Ast.ParamDecl) design.Error![]const Ast.ParamDecl {
+    assert(ps.len < std.math.maxInt(u32));
     if (ps.len == 0) return &.{};
     const out = try self.ctx.arena.alloc(Ast.ParamDecl, ps.len);
     for (ps, out) |p, *o| {
@@ -175,6 +189,7 @@ pub fn cloneLocalParams(self: *Flatten, ps: []const Ast.ParamDecl) design.Error!
 }
 
 pub fn cloneLocalVars(self: *Flatten, vs: []const Ast.VarDecl) design.Error![]const Ast.VarDecl {
+    assert(vs.len < std.math.maxInt(u32));
     if (vs.len == 0) return &.{};
     const out = try self.ctx.arena.alloc(Ast.VarDecl, vs.len);
     for (vs, out) |v, *o| {
@@ -200,6 +215,7 @@ pub fn cloneLocalVars(self: *Flatten, vs: []const Ast.VarDecl) design.Error![]co
 /// from a defparam elsewhere is accepted. The upgrade is recording each
 /// override's source module in `over`.
 fn checkArraySize(self: *Flatten, p: Ast.ParamDecl, overridden: bool) design.Error!void {
+    assert(p.dims.len != 0); // only an array parameter is judged
     const got, const want = patternMismatch(self, p.default, p.dims) orelse return;
     const tok = if (overridden) self.ctx.file.exprs.mainTok(p.default) else p.main_tok;
     if (overridden)
@@ -212,6 +228,7 @@ fn checkArraySize(self: *Flatten, p: Ast.ParamDecl, overridden: bool) design.Err
 /// pattern `e` and `dims`, outermost dimension first; null when they agree
 /// or when either side does not fold (lowering owns those diagnostics).
 fn patternMismatch(self: *Flatten, e: Ast.ExprId, dims: []const Ast.Dim) ?struct { i128, i128 } {
+    assert(dims.len < 64); // one recursion level per dimension
     if (dims.len == 0) return null;
     const ex = &self.ctx.file.exprs;
     if (e == .none or (ex.tag(e) != .assign_pattern and ex.tag(e) != .concat)) return null;
@@ -232,6 +249,7 @@ fn patternMismatch(self: *Flatten, e: Ast.ExprId, dims: []const Ast.Dim) ?struct
 }
 
 fn cloneDims(self: *Flatten, dims: []const Ast.Dim) design.Error![]const Ast.Dim {
+    assert(dims.len < std.math.maxInt(u32));
     if (dims.len == 0) return &.{};
     const out = try self.ctx.arena.alloc(Ast.Dim, dims.len);
     for (dims, out) |d, *o| o.* = (try cloneDim(self, d)).?;
@@ -239,6 +257,7 @@ fn cloneDims(self: *Flatten, dims: []const Ast.Dim) design.Error![]const Ast.Dim
 }
 
 fn cloneRanges(self: *Flatten, rs: []const Ast.ValueRange) design.Error![]const Ast.ValueRange {
+    assert(rs.len < std.math.maxInt(u32));
     if (rs.len == 0) return &.{};
     const out = try self.ctx.arena.alloc(Ast.ValueRange, rs.len);
     for (rs, out) |r, *o| {
