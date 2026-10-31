@@ -5,17 +5,22 @@
 //! the seed; a hidden held seed slot for a seed that is no variable; a row in
 //! `Lowered.rng_auto_seeds` for an omitted one.
 //!
-//! LRM clauses this file's code cites: §4.2.3, §6.4, §9.13, §9.13.1, §9.13.2, §9.13.3.
-//! IEEE 1364-2005 clauses cited: §17.9.3.
+//! Cites: §4.2.3, §6.4, A.6.9, §9.13, §9.13.1, §9.13.2, §9.13.3, §17.9.3;
+//! IEEE 1364-2005 §17.9.3.
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!?TypedValue`
 
 const std = @import("std");
-const Lower = @import("lower.zig");
-const lower_constfold = @import("constfold.zig");
-const lower_expr = @import("expr.zig");
-const lower_var = @import("var.zig");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const dist = @import("elab").dist;
+const Lower = @import("Lower.zig");
+const lower_constfold = @import("constfold.zig");
+const lower_expr = @import("expr.zig");
+const lower_var = @import("var.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const VarSlot = Lower.VarSlot;
@@ -34,6 +39,7 @@ pub const State = struct {
 
 /// The two held integers behind a seed that is not a variable.
 const InternalSeed = struct { seed: VarSlot, ready: VarSlot };
+
 /// §9.13 Table 9-10, whose "supported in analog context" column reads Yes for
 /// every one of the 17 names. One source call becomes TWO pure calls over the
 /// seed's incoming value — the variate, and the updated seed §9.13.1/§9.13.2
@@ -48,6 +54,8 @@ const InternalSeed = struct { seed: VarSlot, ready: VarSlot };
 ///
 /// Returns null when `name` is not one of the 17.
 pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.ExprId) Oom!?TypedValue {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    assert(self.blockValid(self.cur));
     const d = dist.of(name) orelse return null;
     const ex = &self.file.exprs;
     self.out.uses.insert(.rng);
@@ -211,10 +219,13 @@ pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.E
     } };
 }
 
+// ---- private ----
+
 /// Repeated execution of one source site shares its hidden seed. A first-call
 /// flag defers a model-card parameter's initialization until the call runs;
 /// neither an unevaluated branch nor a discarded Newton iterate consumes it.
 fn internalSeed(self: *Lower, tok: u32) Oom!InternalSeed {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     const scope = self.inlining.last() orelse self.scope_path;
     const key = try self.arena.print("{d}:{s}:{d}", .{ self.cur_unit, scope, tok });
     const entry = try self.random_state.rng_internal.getOrPut(self.arena, key);

@@ -9,25 +9,40 @@
 //! Spine: `collectDisciplines`, then `checkNatureTable`, once per module;
 //! `checkNetCompat` per access function, branch and port connection.
 //!
-//! LRM clauses this file's code cites: §1.3.1.1, §2.6.2, §3.6, §3.6.1,
-//! §3.6.1.1, §3.6.1.2, §3.6.1.3, §3.6.2, §3.6.2.1, §3.6.2.2, §3.6.2.3,
-//! §3.6.2.5, §3.6.2.7, §3.11, §3.11.1, §3.12, §3.13, §3.13.1, §3.13.2, §4.4,
-//! §5.5.1, §7.4.3.
+//! Cites: §1.3.1.1, A.1.7, §2.6.2, §3.6, §3.6.1, §3.6.1.1, §3.6.1.2,
+//! §3.6.1.3, §3.6.2, §3.6.2.1, §3.6.2.2, §3.6.2.3, §3.6.2.5, §3.6.2.7, §3.11,
+//! §3.11.1, §3.12, §3.13, §3.13.1, §3.13.2, §4.4, §5.5.1, §7.4.3.
+//!
+//! Contents:
+//! - `pub fn collectDisciplines(self: *Lower) Oom!void`
+//! - `pub fn checkNatureTable(self: *Lower) Oom!void`
+//! - `pub fn natureOf(self: *Lower, name: Ast.StrId) NatureAttrs`
+//! - `pub fn disciplineDecl(self: *const Lower, name: []const u8) ?*const Ast.DisciplineDecl`
+//! - `pub fn nodeDisciplineConflict(self: *const Lower, an: []const u8, bn: []const u8) ?[]const u8`
+//! - `pub fn checkNetCompat(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void`
 
 const std = @import("std");
-const Lower = @import("lower.zig");
-const lower_constfold = @import("constfold.zig");
-const lower_contrib = @import("contrib.zig");
-const lower_node = @import("node.zig");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const rules = @import("elab").discipline_rules;
 const diag = @import("diag");
+const Lower = @import("Lower.zig");
+const lower_constfold = @import("constfold.zig");
+const lower_contrib = @import("contrib.zig");
+const lower_node = @import("node.zig");
+const lower_branch = @import("branch.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const DisciplineInfo = Lower.DisciplineInfo;
 
-// ---- §3.6 disciplines & natures --------------------------------------------
+/// The attributes `natureOf` resolves for one nature; null when neither it nor a parent sets one.
+const NatureAttrs = struct {
+    abstol: ?f64 = null,
+    access: ?[]const u8 = null,
+    /// §3.6.1.2 `units`, read for §3.11.1's Units Value Rule.
+    units: ?[]const u8 = null,
+};
 
 /// Builds the discipline table and the §3.6.1.2 access-name map. The
 /// preprocessor inlines annex D.1, so `electrical`, `thermal` and the rest arrive
@@ -40,8 +55,8 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
     // every discipline that binds the half they name. Registered in the same map
     // so they are "an alternative spelling": downstream sees an `Access` and cannot
     // tell which word produced it, except `checkAccessMatch`'s §3.6.1.2 name match.
-    try self.access_kind.put(self.arena, lower_contrib.generic_potential, .potential);
-    try self.access_kind.put(self.arena, lower_contrib.generic_flow, .flow);
+    try self.access_kind.put(self.arena, lower_branch.generic_potential, .potential);
+    try self.access_kind.put(self.arena, lower_branch.generic_flow, .flow);
 
     for (self.file.disciplines) |*d| {
         var info: DisciplineInfo = .{
@@ -282,6 +297,60 @@ pub fn checkNatureTable(self: *Lower) Oom!void {
     };
 }
 
+/// Returns a nature's `abstol`, `access` and `units`, walking a derived nature's
+/// parents for what it does not override (LRM §3.6.1.1, §3.6.1.2).
+pub fn natureOf(self: *Lower, name: Ast.StrId) NatureAttrs {
+    var out: NatureAttrs = .{};
+    // ponytail: share the AST's 16-hop walk; extend it there if deeper inheritance is needed.
+    if (self.file.natureAttrExpr(name, "abstol")) |v| {
+        if (lower_constfold.constEval(self, v)) |c| out.abstol = c.asReal();
+    }
+    if (self.file.natureAttrExpr(name, "access")) |v| {
+        if (self.file.exprs.tag(v) == .ident) out.access = self.file.str(self.file.exprs.strOf(v));
+    }
+    if (self.file.natureAttrExpr(name, "units")) |v| {
+        if (self.file.exprs.tag(v) == .str_literal) out.units = self.file.str(self.file.exprs.strOf(v));
+    }
+    return out;
+}
+
+/// Returns the declaration of the discipline named `name`, or null.
+pub fn disciplineDecl(self: *const Lower, name: []const u8) ?*const Ast.DisciplineDecl {
+    return rules.declOf(self.file, self.file.strings.find(name) orelse return null);
+}
+
+/// Returns why disciplines `an` and `bn` are incompatible, or null when they are
+/// compatible or either is undeclared (LRM §3.11.1).
+pub fn nodeDisciplineConflict(self: *const Lower, an: []const u8, bn: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, an, bn)) return null;
+    const a = self.file.strings.find(an) orelse return null;
+    const b = self.file.strings.find(bn) orelse return null;
+    return rules.disciplineConflict(self.file, a, b);
+}
+
+/// Reports E0355 when nodes `hi` and `lo` have incompatible disciplines. Used for
+/// access-function arguments (LRM §3.11), branch terminals (§3.12) and port
+/// connections (§7.4.3).
+pub fn checkNetCompat(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void {
+    assert(self.nodeValid(hi));
+    assert(self.nodeValid(lo));
+    // §1.3.1.1: ground is the global reference, not a second net; `V(p)` spans one discipline.
+    if (hi == ground or lo == ground) return;
+    const an = self.out.nodes.items(.disc)[hi];
+    const bn = self.out.nodes.items(.disc)[lo];
+    // A net with no discipline is E0337's to report.
+    if (an.len == 0 or bn.len == 0) return;
+    const why = nodeDisciplineConflict(self, an, bn) orelse return;
+    var d = self.errWith(tok, .E0355);
+    d.msg("`{s}` is of discipline `{s}` and `{s}` is of discipline `{s}`", .{
+        lower_node.nodeName(self, hi), an, lower_node.nodeName(self, lo), bn,
+    });
+    d.note("{s}", .{why});
+    try d.emit();
+}
+
+// ---- private ----
+
 /// §3.6.1.2/§3.6.1.3: the form each attribute's value has to take. `access = V`
 /// introduces a callable name; `access = "V"` is a value nothing can call.
 fn checkNatureAttrValue(self: *Lower, n: *const Ast.NatureDecl, a: Ast.NatureAttr, an: []const u8) Oom!void {
@@ -315,67 +384,8 @@ fn checkNatureAttrValue(self: *Lower, n: *const Ast.NatureDecl, a: Ast.NatureAtt
 /// Which source file a token came from (§3.13.1 scope comparisons). Only the
 /// preprocessor's segment map still knows; the prelude and user text are one stream.
 fn fileOf(self: *const Lower, tok: u32) diag.FileId {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     return self.bag.locate(self.tokenSpan(tok), null).file;
-}
-
-/// The attributes `natureOf` resolves for one nature; null when neither it nor a parent sets one.
-const NatureAttrs = struct {
-    abstol: ?f64 = null,
-    access: ?[]const u8 = null,
-    /// §3.6.1.2 `units`, read for §3.11.1's Units Value Rule.
-    units: ?[]const u8 = null,
-};
-
-/// Returns a nature's `abstol`, `access` and `units`, walking a derived nature's
-/// parents for what it does not override (LRM §3.6.1.1, §3.6.1.2).
-pub fn natureOf(self: *Lower, name: Ast.StrId) NatureAttrs {
-    var out: NatureAttrs = .{};
-    // ponytail: share the AST's 16-hop walk; extend it there if deeper inheritance is needed.
-    if (self.file.natureAttrExpr(name, "abstol")) |v| {
-        if (lower_constfold.constEval(self, v)) |c| out.abstol = c.asReal();
-    }
-    if (self.file.natureAttrExpr(name, "access")) |v| {
-        if (self.file.exprs.tag(v) == .ident) out.access = self.file.str(self.file.exprs.strOf(v));
-    }
-    if (self.file.natureAttrExpr(name, "units")) |v| {
-        if (self.file.exprs.tag(v) == .str_literal) out.units = self.file.str(self.file.exprs.strOf(v));
-    }
-    return out;
-}
-
-// ---- §3.11 net compatibility -----------------------------------------------
-
-/// Returns the declaration of the discipline named `name`, or null.
-pub fn disciplineDecl(self: *const Lower, name: []const u8) ?*const Ast.DisciplineDecl {
-    return rules.declOf(self.file, self.file.strings.find(name) orelse return null);
-}
-
-/// Returns why disciplines `an` and `bn` are incompatible, or null when they are
-/// compatible or either is undeclared (LRM §3.11.1).
-pub fn nodeDisciplineConflict(self: *const Lower, an: []const u8, bn: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, an, bn)) return null;
-    const a = self.file.strings.find(an) orelse return null;
-    const b = self.file.strings.find(bn) orelse return null;
-    return rules.disciplineConflict(self.file, a, b);
-}
-
-/// Reports E0355 when nodes `hi` and `lo` have incompatible disciplines. Used for
-/// access-function arguments (LRM §3.11), branch terminals (§3.12) and port
-/// connections (§7.4.3).
-pub fn checkNetCompat(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void {
-    // §1.3.1.1: ground is the global reference, not a second net; `V(p)` spans one discipline.
-    if (hi == ground or lo == ground) return;
-    const an = self.out.nodes.items(.disc)[hi];
-    const bn = self.out.nodes.items(.disc)[lo];
-    // A net with no discipline is E0337's to report.
-    if (an.len == 0 or bn.len == 0) return;
-    const why = nodeDisciplineConflict(self, an, bn) orelse return;
-    var d = self.errWith(tok, .E0355);
-    d.msg("`{s}` is of discipline `{s}` and `{s}` is of discipline `{s}`", .{
-        lower_node.nodeName(self, hi), an, lower_node.nodeName(self, lo), bn,
-    });
-    d.note("{s}", .{why});
-    try d.emit();
 }
 
 test "§3.6 natures and disciplines: the declaration rules" {
