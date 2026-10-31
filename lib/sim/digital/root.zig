@@ -709,12 +709,12 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     // site), so the slot space is final only now.
     r.growing = null;
     r.values = e.values.items;
-    r.watch = try arena.alloc(std.EnumSet(Watcher), r.values.len);
-    @memset(r.watch, .empty);
+    r.waits.watch = try arena.alloc(std.EnumSet(Watcher), r.values.len);
+    @memset(r.waits.watch, .empty);
     // §14.3.3 a module path's source is watched for its last transition; a
     // §14.2.4 condition is type-checked in the scope that declares the path.
     for (r.net_cold.items) |c| for (c.paths) |p| {
-        r.watch[p.src].insert(.path);
+        r.waits.watch[p.src].insert(.path);
         if (p.cond != .none) {
             r.scope = p.scope;
             try compile.checkExpr(&r, p.cond);

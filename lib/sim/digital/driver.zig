@@ -159,7 +159,7 @@ pub fn arm(r: *Run) Error!void {
 /// was scheduled (`scheduled`), so its maturing in the NBA region is not a
 /// second update.
 pub fn stored(r: *Run, slot: u32, changed: bool) Error!void {
-    if (!r.watch[slot].contains(.driver_update)) return;
+    if (!r.waits.watch[slot].contains(.driver_update)) return;
     const maturing = switch (r.scheduler.phase) {
         .dispatch => |region| region == .nba,
         .idle, .stopped => false,
@@ -171,7 +171,7 @@ pub fn stored(r: *Run, slot: u32, changed: bool) Error!void {
 /// `exec.enqueue` scheduled a write of `slot`: a pending value added to a
 /// `reg` driver (§9.22.5, and what §9.23 then reads back).
 pub fn scheduled(r: *Run, slot: u32) Error!void {
-    if (!r.watch[slot].contains(.driver_update)) return;
+    if (!r.waits.watch[slot].contains(.driver_update)) return;
     for (r.drv.sources.items) |s| if (s.slot == slot and s.reg) try waiters.wake(r, key(s.net), .x, .x);
 }
 
@@ -307,7 +307,7 @@ fn ordinary(r: *const Run, net: u32, i: ?u64) union(enum) { count: u32, driver: 
 fn watch(r: *Run, slot: u32, net: u32, reg: bool) Error!void {
     assert(slot < r.values.len);
     assert(net < r.nets.len);
-    r.watch[slot].insert(.driver_update);
+    r.waits.watch[slot].insert(.driver_update);
     try r.drv.sources.append(r.arena, .{ .slot = slot, .net = net, .reg = reg });
 }
 

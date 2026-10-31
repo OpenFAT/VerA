@@ -218,27 +218,6 @@ holds: std.ArrayList(Int.Literal) = .empty,
 /// `free_rows`, so this is bounded by the most events queued at once.
 pending: std.ArrayList(Row) = .empty,
 free_rows: std.ArrayList(u32) = .empty,
-/// §9.7 the processes suspended on an event control. A row is recycled
-/// once its process resumes or is disabled.
-susps: std.ArrayList(waiters.Susp) = .empty,
-free_susps: std.ArrayList(u32) = .empty,
-/// §5.10.1 per slot, the terms of the event controls waiting on it, made
-/// on the slot's first wait (most slots are never waited on, and a list
-/// header is three words); a slot no variable owns (`driver.key`,
-/// `registerMonitor`) is in `far_terms`.
-terms: []?*std.ArrayList(waiters.Term) = &.{},
-far_terms: std.AutoHashMapUnmanaged(u32, std.ArrayList(waiters.Term)) = .empty,
-/// The select and event fields of the terms that have them
-/// (`waiters.Term.ext`), and the rows free.
-term_exts: std.ArrayList(waiters.TermExt) = .empty,
-free_term_exts: std.ArrayList(u32) = .empty,
-/// §6.1 / §7.6 the static fan-out (`waiters.buildFanout`): per slot
-/// `fan[fan_start[slot]..fan_start[slot + 1]]` are the pcs of the
-/// continuous drivers and controlled switches reading it, and `armed[pc]`
-/// says that process is suspended on its operands right now.
-fan_start: []u32 = &.{},
-fan: []u32 = &.{},
-armed: []bool = &.{},
 /// The zero-delay-loop guard: events dispatched at one tick (`run_until.EventBudget`).
 event_budget: run_until.EventBudget = .{},
 /// §10 the subroutine activations in progress (`activations.Calls`).
@@ -261,6 +240,8 @@ routines: compile.Routines = .{},
 program: bytecode.Program = .{},
 /// Every expression's checked type and folded facts (`expr_types.Typing`).
 typing: expr_types.Typing = .{},
+/// Who waits on which slot (`waiters.Waits`): the write path reads this on every store.
+waits: waiters.Waits = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
@@ -278,11 +259,6 @@ tran_delays: std.AutoHashMapUnmanaged(u32, Ast.Delay3) = .empty,
 /// watch), its last transition, which picks the path whose delay a
 /// destination transition takes (`waiters.store` fills it).
 path_changed: std.AutoHashMapUnmanaged(u32, @import("net.zig").PathEdge) = .empty,
-/// Per slot, who is told when its value changes. `store` tests this on
-/// every change and nothing else: it is the one value-change hook, whose
-/// first watcher is §17.1.3's monitor; §18's value change dump and VAMS
-/// §8.5's implicit D2A are the same event, each a member of its own.
-watch: []std.EnumSet(Watcher) = &.{},
 /// Per-instruction scratch of `runUntil` (`exec.Scratch`): the fixed
 /// buffer every instruction starts from, and the arena behind it, reset
 /// at each event with its capacity kept, so a run of many calls (the
@@ -528,7 +504,7 @@ pub fn reset(self: *Run) Error!void {
         error.DigitalFailed => return self.fail(0, "IEEE 1364-2005 C.7: the reset could not elaborate the design again", .{}),
         else => |other| return other,
     };
-    if (fresh.watch.len != self.watch.len or fresh.drivers.len != self.drivers.len or fresh.checks.rows.items.len != self.checks.rows.items.len)
+    if (fresh.waits.watch.len != self.waits.watch.len or fresh.drivers.len != self.drivers.len or fresh.checks.rows.items.len != self.checks.rows.items.len)
         return self.fail(0, "IEEE 1364-2005 C.7: the design elaborated again into a different shape", .{});
     fresh.bag = self.bag;
     fresh.host.change = self.host.change;
@@ -539,7 +515,7 @@ pub fn reset(self: *Run) Error!void {
     fresh.tasks.file_io = self.tasks.file_io;
     fresh.analog.probe = self.analog.probe;
     fresh.analog.probe_ctx = self.analog.probe_ctx;
-    for (self.watch, fresh.watch) |old, *w| if (old.contains(.vpi)) w.insert(.vpi);
+    for (self.waits.watch, fresh.waits.watch) |old, *w| if (old.contains(.vpi)) w.insert(.vpi);
     for (self.drivers, fresh.drivers) |old, *d| d.delay = old.delay;
     for (self.checks.rows.items, fresh.checks.rows.items) |old, *c| c.lim = old.lim;
     self.* = fresh;

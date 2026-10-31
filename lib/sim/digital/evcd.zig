@@ -214,7 +214,7 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
             for (m.ports) |p| {
                 const slot = r.hier.names.get(.{ .scope = sc, .str = p.name }) orelse continue;
                 ports.appendAssumeCapacity(.{ .inst = sc, .slot = slot, .net = r.net_of.get(slot), .dir = p.direction });
-                r.watch[slot].insert(.ports);
+                r.waits.watch[slot].insert(.ports);
             }
         }
         try d.files.append(r.arena, .{

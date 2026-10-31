@@ -109,7 +109,7 @@ pub const Link = struct {
 /// implicit D2A. From now on a change of it makes `runUntil` stop with
 /// `.analog` at region 3b of the tick it happened in.
 pub fn watchAnalog(r: *Run, at: u32) void {
-    r.watch[at].insert(.analog);
+    r.waits.watch[at].insert(.analog);
 }
 
 /// VAMS §7.3.6.4: an analog variable a digital expression reads takes the
@@ -137,7 +137,7 @@ pub fn a2dWrite(r: *Run, at: u32, v: f64, assigned: bool) Error!void {
 /// event makes `runUntil` stop with `.explicit_d2a` at region 1b of its
 /// tick, with bit `site` set in `d2a_fired`.
 pub fn watchEvent(r: *Run, at: u32, edge: waiters.Edge, site: u6) Error!void {
-    r.watch[at].insert(.d2a);
+    r.waits.watch[at].insert(.d2a);
     try r.analog.d2a_sites.append(r.arena, .{ .slot = at, .edge = edge, .site = site });
 }
 

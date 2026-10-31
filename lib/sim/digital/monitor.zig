@@ -224,8 +224,8 @@ pub fn fmonitorPrint(self: *Run, a: std.mem.Allocator) Error!void {
 /// Marks (`on`) or unmarks every slot a standing monitor reads as a
 /// `.monitor` watch (`waiters.store` -> `monitorChanged`).
 fn watchAll(self: *Run, on: bool) void {
-    for (self.monitoring.slots.items) |at| self.watch[at].setPresent(.monitor, on);
-    for (self.monitoring.files.items) |m| for (m.slots) |at| self.watch[at].setPresent(.monitor, on);
+    for (self.monitoring.slots.items) |at| self.waits.watch[at].setPresent(.monitor, on);
+    for (self.monitoring.files.items) |m| for (m.slots) |at| self.waits.watch[at].setPresent(.monitor, on);
 }
 
 /// Whether argument `e`'s value can move only when a slot it reads does:

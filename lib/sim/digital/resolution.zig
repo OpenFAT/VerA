@@ -109,7 +109,7 @@ pub fn resolve(self: *Run, net: u32) Error!void {
     const n = self.nets[net];
     const drivers = self.netDrivers(net);
     // A §18.4 port's state can change with its drivers' strengths alone.
-    if (self.watch[n.slot].contains(.ports)) try waiters.requestVcd(self);
+    if (self.waits.watch[n.slot].contains(.ports)) try waiters.requestVcd(self);
     if (self.netCold(n).trans.len != 0) return resolveJoined(self, net);
     // VAMS §3.7: a wreal has at most one driver and is that driver's value
     // (no four-state resolution, no strength), and 0.0 with none.

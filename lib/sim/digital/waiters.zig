@@ -14,6 +14,7 @@
 //! - `pub const Term = struct`
 //! - `pub const no_ext`
 //! - `pub const TermExt = struct`
+//! - `pub const Waits = struct`
 //! - `pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64`
 //! - `pub fn store(self: *Run, target: u32, planes: []const u64) Error!void`
 //! - `pub fn trigger(self: *Run, at: u32) Error!void`
@@ -34,6 +35,7 @@
 //! - `pub fn buildFanout(r: *Run) Error!void`
 
 const std = @import("std");
+const Watcher = @import("root.zig").Watcher;
 const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
@@ -134,6 +136,40 @@ pub const TermExt = struct {
     x: u64 = 0,
 };
 
+/// A run's waiters: the suspended processes and the event-control terms each
+/// filed under the slots it waits on (near slots in `terms`, the rest in
+/// `far_terms`), the expression terms an automatic activation tests itself,
+/// the continuous drivers each slot fans out to, and per slot what is told
+/// when it changes (`watch`).
+pub const Waits = struct {
+    /// §9.7 the processes suspended on an event control. A row is recycled
+    /// once its process resumes or is disabled.
+    susps: std.ArrayList(Susp) = .empty,
+    free_susps: std.ArrayList(u32) = .empty,
+    /// §5.10.1 per slot, the terms of the event controls waiting on it, made
+    /// on the slot's first wait (most slots are never waited on, and a list
+    /// header is three words); a slot no variable owns (`driver.key`,
+    /// `registerMonitor`) is in `far_terms`.
+    terms: []?*std.ArrayList(Term) = &.{},
+    far_terms: std.AutoHashMapUnmanaged(u32, std.ArrayList(Term)) = .empty,
+    /// The select and event fields of the terms that have them
+    /// (`waiters.Term.ext`), and the rows free.
+    term_exts: std.ArrayList(TermExt) = .empty,
+    free_term_exts: std.ArrayList(u32) = .empty,
+    /// §6.1 / §7.6 the static fan-out (`waiters.buildFanout`): per slot
+    /// `fan[fan_start[slot]..fan_start[slot + 1]]` are the pcs of the
+    /// continuous drivers and controlled switches reading it, and `armed[pc]`
+    /// says that process is suspended on its operands right now.
+    fan_start: []u32 = &.{},
+    fan: []u32 = &.{},
+    armed: []bool = &.{},
+    /// Per slot, who is told when its value changes. `store` tests this on
+    /// every change and nothing else: it is the one value-change hook, whose
+    /// first watcher is §17.1.3's monitor; §18's value change dump and VAMS
+    /// §8.5's implicit D2A are the same event, each a member of its own.
+    watch: []std.EnumSet(Watcher) = &.{},
+};
+
 /// Bits `[lo, lo + width)` of `value`, `width` at most 64, as (values,
 /// unknowns) words.
 pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64 {
@@ -159,7 +195,7 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
     const dest = self.values[target];
     const before = dest.bit(0);
     // §14.3.3 a module path source's transitions, by time (`resolution.pathDelay`).
-    const path_source = target < self.watch.len and self.watch[target].contains(.path);
+    const path_source = target < self.waits.watch.len and self.waits.watch[target].contains(.path);
     const before_words: [2]u64 = if (path_source) .{ dest.values()[0], dest.unknowns()[0] } else undefined;
     const changed = changed: {
         if (self.overrides.count() != 0 and !self.overriding) if (self.overrides.get(target)) |o| {
@@ -189,7 +225,7 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
     if (!changed) return driver.stored(self, target, false);
     if (path_source) try self.path_changed.put(self.arena, target, .{ .time = self.scheduler.now, .before = before_words, .after = .{ dest.values()[0], dest.unknowns()[0] } });
     // Most slots have no watcher, so one test skips them all.
-    const watchers = self.watch[target];
+    const watchers = self.waits.watch[target];
     if (watchers.count() != 0) {
         if (watchers.contains(.monitor)) try @import("display.zig").monitorChanged(self, target);
         if (watchers.contains(.analog)) try requestAnalog(self);
@@ -207,8 +243,8 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
 
 /// §5.10.4 `-> e`: named event `at` occurs, resuming what waits on it.
 pub fn trigger(self: *Run, at: u32) Error!void {
-    if (self.watch[at].contains(.d2a)) try requestD2a(self, at, .x, .x);
-    if (self.watch[at].contains(.vcd)) {
+    if (self.waits.watch[at].contains(.d2a)) try requestD2a(self, at, .x, .x);
+    if (self.waits.watch[at].contains(.vcd)) {
         self.dumps.vcd.fire(&self.dumps.catalog.?, at);
         try requestVcd(self);
     }
@@ -299,10 +335,10 @@ pub fn wakeA2d(self: *Run, slot: u32) Error!void {
 /// Re-run the MOS switches reading `target` (§7.11), when its strength
 /// changed and its value may not have: no event control sees that.
 pub fn wakeSwitches(self: *Run, target: u32) Error!void {
-    if (target + 1 < self.fan_start.len) for (self.fan[self.fan_start[target]..self.fan_start[target + 1]]) |pc| if (self.armed[pc]) {
+    if (target + 1 < self.waits.fan_start.len) for (self.waits.fan[self.waits.fan_start[target]..self.waits.fan_start[target + 1]]) |pc| if (self.waits.armed[pc]) {
         const ins = self.program.code.items[pc];
         if (ins != .continuous or self.drivers[ins.continuous].source != .mos) continue;
-        self.armed[pc] = false;
+        self.waits.armed[pc] = false;
         _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
     };
 }
@@ -315,8 +351,8 @@ pub fn wakeSwitches(self: *Run, target: u32) Error!void {
 /// first, then the event controls in the order they suspended. §11.4.2 lets
 /// the processes one event resumes run in any order.
 pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void {
-    if (target + 1 < self.fan_start.len) for (self.fan[self.fan_start[target]..self.fan_start[target + 1]]) |pc| if (self.armed[pc]) {
-        self.armed[pc] = false;
+    if (target + 1 < self.waits.fan_start.len) for (self.waits.fan[self.waits.fan_start[target]..self.waits.fan_start[target + 1]]) |pc| if (self.waits.armed[pc]) {
+        self.waits.armed[pc] = false;
         _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
     };
     const list = termsOf(self, target) orelse return;
@@ -331,7 +367,7 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
     // disabled) is dropped.
     var keep: usize = 0;
     for (list.items) |t| {
-        const s = &self.susps.items[t.susp];
+        const s = &self.waits.susps.items[t.susp];
         if (s.gen != t.gen) {
             dropExt(self, t);
             continue;
@@ -363,20 +399,20 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
 /// above it (`driver.key`, a monitor's slot) is in `Run.far_terms`, whose
 /// rows a later `watch` of another far slot may move.
 pub fn termsOf(self: *Run, slot: u32) ?*std.ArrayList(Term) {
-    return if (slot < self.terms.len) self.terms[slot] else self.far_terms.getPtr(slot);
+    return if (slot < self.waits.terms.len) self.waits.terms[slot] else self.waits.far_terms.getPtr(slot);
 }
 
 /// Suspend the executing process at `pc` (§9.7). Its terms are filed with
 /// `watch` under the id returned. Invalidates pointers into `Run.susps`
 /// when no row is free for reuse.
 pub fn park(self: *Run, pc: u32) Error!u32 {
-    const id = self.free_susps.pop() orelse blk: {
-        try self.susps.append(self.arena, .{ .pc = 0, .ctx = 0, .gen = 0, .alive = false });
+    const id = self.waits.free_susps.pop() orelse blk: {
+        try self.waits.susps.append(self.arena, .{ .pc = 0, .ctx = 0, .gen = 0, .alive = false });
         // Room for every row on the free list, so `retire` cannot fail.
-        try self.free_susps.ensureTotalCapacity(self.arena, self.susps.items.len);
-        break :blk @as(u32, @intCast(self.susps.items.len - 1));
+        try self.waits.free_susps.ensureTotalCapacity(self.arena, self.waits.susps.items.len);
+        break :blk @as(u32, @intCast(self.waits.susps.items.len - 1));
     };
-    const s = &self.susps.items[id];
+    const s = &self.waits.susps.items[id];
     s.pc = pc;
     s.ctx = self.calls.ctx;
     s.alive = true;
@@ -393,23 +429,23 @@ pub fn watch(self: *Run, id: u32, slot: u32, edge: Edge) Error!void {
 /// `watch` of a term with an event select or a bit select (`TermExt`).
 pub fn watchExt(self: *Run, id: u32, slot: u32, edge: Edge, ext: TermExt) Error!void {
     assert(slot < self.values.len);
-    const k = self.free_term_exts.pop() orelse blk: {
-        try self.term_exts.append(self.arena, undefined);
-        break :blk @as(u32, @intCast(self.term_exts.items.len - 1));
+    const k = self.waits.free_term_exts.pop() orelse blk: {
+        try self.waits.term_exts.append(self.arena, undefined);
+        break :blk @as(u32, @intCast(self.waits.term_exts.items.len - 1));
     };
     // Room for every row on the free list, so `dropExt` cannot fail.
-    try self.free_term_exts.ensureTotalCapacity(self.arena, self.term_exts.items.len);
-    self.term_exts.items[k] = ext;
+    try self.waits.free_term_exts.ensureTotalCapacity(self.arena, self.waits.term_exts.items.len);
+    self.waits.term_exts.items[k] = ext;
     try fileTerm(self, id, slot, edge, k);
 }
 
 /// The process at suspension `id` is no longer waiting: every term it filed
 /// goes stale, and the row is free.
 pub fn retire(self: *Run, id: u32) void {
-    const s = &self.susps.items[id];
+    const s = &self.waits.susps.items[id];
     s.alive = false;
     s.gen +%= 1;
-    self.free_susps.appendAssumeCapacity(id);
+    self.waits.free_susps.appendAssumeCapacity(id);
 }
 
 /// The static fan-out of every continuous driver and controlled switch
@@ -432,12 +468,12 @@ pub fn buildFanout(r: *Run) Error!void {
         fill[at] += 1;
     };
     r.arena.free(fill); // the cursor is spent; a large one goes back now
-    r.fan_start = start;
-    r.fan = fan;
-    r.armed = try r.arena.alloc(bool, r.program.code.items.len);
-    @memset(r.armed, false);
-    r.terms = try r.arena.alloc(?*std.ArrayList(Term), n);
-    @memset(r.terms, null);
+    r.waits.fan_start = start;
+    r.waits.fan = fan;
+    r.waits.armed = try r.arena.alloc(bool, r.program.code.items.len);
+    @memset(r.waits.armed, false);
+    r.waits.terms = try r.arena.alloc(?*std.ArrayList(Term), n);
+    @memset(r.waits.terms, null);
 }
 
 // ---- private ----
@@ -457,7 +493,7 @@ fn selectChanged(e: *TermExt, edge: Edge, value: Int.Literal) bool {
 /// Whether a change of `target` from `before` to `after` resumes term `t`,
 /// which has a `TermExt`.
 fn extHit(self: *Run, t: Term, target: u32, before: Int.Bit, after: Int.Bit) Error!bool {
-    const e = &self.term_exts.items[t.ext];
+    const e = &self.waits.term_exts.items[t.ext];
     if (e.expr != .none) {
         var scratch = std.heap.ArenaAllocator.init(self.arena);
         defer scratch.deinit();
@@ -466,7 +502,7 @@ fn extHit(self: *Run, t: Term, target: u32, before: Int.Bit, after: Int.Bit) Err
         defer self.scope = scope;
         defer self.calls.ctx = ctx;
         self.scope = e.scope;
-        self.calls.ctx = self.susps.items[t.susp].ctx;
+        self.calls.ctx = self.waits.susps.items[t.susp].ctx;
         try @import("activations.zig").makeResident(self, self.calls.ctx);
         const value = try evaluate.eval(self, scratch.allocator(), e.expr, 0);
         try @import("activations.zig").makeResident(self, ctx);
@@ -478,7 +514,7 @@ fn extHit(self: *Run, t: Term, target: u32, before: Int.Bit, after: Int.Bit) Err
 
 /// A term leaves its list: its `TermExt` row, if any, is free.
 fn dropExt(self: *Run, t: Term) void {
-    if (t.ext != no_ext) self.free_term_exts.appendAssumeCapacity(t.ext);
+    if (t.ext != no_ext) self.waits.free_term_exts.appendAssumeCapacity(t.ext);
 }
 
 // ---- the write path (§5.10.1, §9.3, VAMS §8.5) ------------------------------
@@ -579,7 +615,7 @@ fn selectedEvent(self: *Run, e: TermExt, susp: u32, target: u32) Error!bool {
     defer self.scope = scope;
     defer self.calls.ctx = ctx;
     self.scope = e.scope;
-    self.calls.ctx = self.susps.items[susp].ctx;
+    self.calls.ctx = self.waits.susps.items[susp].ctx;
     try @import("activations.zig").makeResident(self, self.calls.ctx);
     const selected = try evaluate.address(self, scratch.allocator(), e.event_select);
     try @import("activations.zig").makeResident(self, ctx);
@@ -587,14 +623,14 @@ fn selectedEvent(self: *Run, e: TermExt, susp: u32, target: u32) Error!bool {
 }
 
 fn fileTerm(self: *Run, id: u32, slot: u32, edge: Edge, ext: u32) Error!void {
-    const list = termsOf(self, slot) orelse if (slot < self.terms.len) blk: {
+    const list = termsOf(self, slot) orelse if (slot < self.waits.terms.len) blk: {
         // Made on the slot's first wait, at an address that stays put.
         const l = try self.arena.create(std.ArrayList(Term));
         l.* = .empty;
-        self.terms[slot] = l;
+        self.waits.terms[slot] = l;
         break :blk l;
     } else blk: {
-        const g = try self.far_terms.getOrPut(self.arena, slot);
+        const g = try self.waits.far_terms.getOrPut(self.arena, slot);
         g.value_ptr.* = .empty;
         break :blk g.value_ptr;
     };
@@ -603,14 +639,14 @@ fn fileTerm(self: *Run, id: u32, slot: u32, edge: Edge, ext: u32) Error!void {
     // anyway past half full so a sweep is paid for by as many appends.
     if (list.items.len == list.capacity and list.capacity != 0) {
         var keep: usize = 0;
-        for (list.items) |t| if (self.susps.items[t.susp].gen == t.gen) {
+        for (list.items) |t| if (self.waits.susps.items[t.susp].gen == t.gen) {
             list.items[keep] = t;
             keep += 1;
         } else dropExt(self, t);
         list.shrinkRetainingCapacity(keep);
         if (keep > list.capacity / 2) try list.ensureTotalCapacity(self.arena, list.capacity * 2);
     }
-    try list.append(self.arena, .{ .susp = id, .gen = self.susps.items[id].gen, .ext = ext, .edge = edge });
+    try list.append(self.arena, .{ .susp = id, .gen = self.waits.susps.items[id].gen, .ext = ext, .edge = edge });
 }
 
 fn staticSlots(r: *const Run, ins: compile.Instruction) []const u32 {

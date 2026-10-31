@@ -248,7 +248,7 @@ pub fn enqueueMonitor(self: *Run, item: Pending) Error!void {
 /// the queued `.run_process` rows. Whether anything was.
 pub fn stopRange(self: *Run, start: u32, end: u32) Error!bool {
     var hit = false;
-    for (self.susps.items, 0..) |s, id| if (s.alive and s.pc >= start and s.pc < end) {
+    for (self.waits.susps.items, 0..) |s, id| if (s.alive and s.pc >= start and s.pc < end) {
         waiters.retire(self, @intCast(id));
         hit = true;
     };
@@ -562,7 +562,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                     try resolution.resolve(self, t.a);
                     try resolution.resolve(self, t.b);
                 }
-                self.armed[pc] = true;
+                self.waits.armed[pc] = true;
                 return;
             },
             .override_on => |o| {

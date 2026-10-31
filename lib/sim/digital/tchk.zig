@@ -248,11 +248,11 @@ pub fn arm(r: *Run) Error!void {
     for (r.checks.rows.items, 0..) |c, i| {
         const n: usize = if (c.kind == .width or c.kind == .period) 1 else 2;
         for (c.ev[0..n], 0..) |ev, k| {
-            r.watch[ev.slot].insert(.tchk);
+            r.waits.watch[ev.slot].insert(.tchk);
             const gop = try r.checks.by_slot.getOrPut(r.arena, ev.slot);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(r.arena, @intCast(i * 2 + k));
-            assert(r.watch[ev.slot].contains(.tchk));
+            assert(r.waits.watch[ev.slot].contains(.tchk));
         }
     }
 }

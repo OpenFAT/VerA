@@ -140,7 +140,7 @@ pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "
 /// process always ends here.
 pub fn continuous(self: *Run, scratch: std.mem.Allocator, at: u32, pc: u32) Error!void {
     assert(at < self.drivers.len);
-    assert(pc < self.armed.len);
+    assert(pc < self.waits.armed.len);
     const d = &self.drivers[at];
     // A driver's names resolve in the scope that wrote the
     // assignment, which for a port connection is the parent of
@@ -192,7 +192,7 @@ pub fn continuous(self: *Run, scratch: std.mem.Allocator, at: u32, pc: u32) Erro
         d.or_z = or_z;
         try resolution.resolve(self, d.net);
     }
-    self.armed[pc] = true;
+    self.waits.armed[pc] = true;
     return;
 }
 

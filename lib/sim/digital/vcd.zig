@@ -328,7 +328,7 @@ const Values = struct {
     }
     /// Marks `slot` dumped, so `store` requests the end-of-step section.
     pub fn dumpSlot(self: Values, slot: u32) void {
-        self.r.watch[slot].insert(.vcd);
+        self.r.waits.watch[slot].insert(.vcd);
     }
 };
 
