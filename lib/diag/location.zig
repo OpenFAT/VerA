@@ -272,6 +272,7 @@ pub fn toSourceOffset(marks: []const StripMark, off: u32) u32 {
     if (marks.len == 0 or off < marks[0].out) return off;
     const lo = std.sort.partitionPoint(StripMark, marks, off, markAtOrBefore) - 1;
     assert(marks[lo].out <= off);
+    assert(marks[lo].src >= marks[lo].out); // Stripping only ever shortens the text.
     return marks[lo].src +| (off - marks[lo].out);
 }
 

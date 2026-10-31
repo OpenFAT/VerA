@@ -19,7 +19,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Code = @import("code.zig").Code;
-const Levels = @import("level.zig").Levels;
+const level = @import("level.zig");
+const Levels = level.Levels;
+const severityOf = level.severityOf;
 const entry = @import("entry.zig");
 const location = @import("location.zig");
 const Builder = @import("builder.zig").Builder;
@@ -172,7 +174,9 @@ pub const Bag = struct {
     /// all, so a stage can skip building an expensive message for an allowed
     /// lint.
     pub fn enabled(self: *const Bag, c: Code) bool {
-        return self.levels.get(c) != .allow;
+        const on = self.levels.get(c) != .allow;
+        if (!on) assert(severityOf(c) == .warning); // An error cannot be allowed.
+        return on;
     }
 
     /// Returns the `i`'th diagnostic, in source order once `sort` has run.
@@ -298,7 +302,10 @@ pub const Bag = struct {
     /// segment search.
     pub fn locate(self: *const Bag, span: Span, file: FileId) location.SourceMap.Resolved {
         if (file != .none) return .{ .file = file, .offset = span.start, .seg = location.Segment.no_parent };
-        return self.map.resolve(span.start);
+        const r = self.map.resolve(span.start);
+        assert(r.file != .none);
+        if (self.map.segs.len == 0) assert(r.offset == span.start);
+        return r;
     }
 
     /// Sorts the rows into source order (start, then end, then code), so a

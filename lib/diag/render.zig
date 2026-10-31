@@ -107,7 +107,8 @@ const Pass = struct {
     }
 };
 
-const spaces_pad: [24]u8 = @splat(' ');
+/// The widest gutter: the digits of the largest `u32` line number.
+const spaces_pad: [10]u8 = @splat(' ');
 
 /// Renders `bag` to `w`: one block per kept diagnostic, in source order (the
 /// bag is sorted first, which invalidates every earlier `Entry.index`), then
@@ -349,6 +350,7 @@ fn renderFix(pass: Pass, fix: entry.Fix, file: FileId, gutter: u32) RenderError!
     const src_off = bag.toSourceOffset(r.file, r.offset);
     const src_end = @max(src_off, bag.toSourceOffset(r.file, r.offset +| fix.span.len()));
     const loc = index.loc(src_off);
+    assert(loc.col >= 1);
     const line = index.lineText(file_text, loc.line);
     const cut = @min(loc.col - 1, line.len);
     const cut_end = @min(cut + (src_end - src_off), line.len);
@@ -386,6 +388,7 @@ fn renderTrailer(pass: Pass, summary: bool) Writer.Error!void {
             p.warn, "warning", p.reset, bag.suppressed, bag_file.max_entries,
         });
     }
+    assert(bag.run_err_count <= bag.err_count);
     const compile_errs = bag.err_count - bag.run_err_count;
     if (!summary or (compile_errs == 0 and bag.warn_count == 0)) return;
     if (compile_errs != 0) {
@@ -402,11 +405,13 @@ fn renderTrailer(pass: Pass, summary: bool) Writer.Error!void {
 /// grapheme clusters or wcwidth: the approximation rustc makes, and no
 /// invalid-input error.
 fn displayCol(line: []const u8, byte_col: u32) u32 {
+    const bytes = line[0..@min(byte_col, line.len)];
     var col: u32 = 0;
-    for (line[0..@min(byte_col, line.len)]) |c| {
+    for (bytes) |c| {
         if (c & 0xc0 == 0x80) continue;
         col += if (c == '\t') tab_width else 1;
     }
+    assert(col <= bytes.len * tab_width);
     return col;
 }
 
@@ -425,5 +430,6 @@ fn digits(n: u32) u32 {
 }
 
 fn spaces(n: u32) []const u8 {
-    return spaces_pad[0..@min(n, spaces_pad.len)];
+    assert(n <= spaces_pad.len);
+    return spaces_pad[0..n];
 }
