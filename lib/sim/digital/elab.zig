@@ -226,6 +226,8 @@ const Wire = struct {
 /// (IEEE 1364-2005 §12.1.1: "A model shall contain at least one top-level
 /// module"), as `file.modules` rows.
 pub fn pickTops(r: *Run, modules: []const Ast.ModuleDecl) Error![]const u32 {
+    assert(modules.len == r.file.modules.len);
+    assert(r.hier.def_lib.len == modules.len);
     // IEEE 1364-2005 §13.3.1.1: a configuration's `design` statement names
     // the top-level cells, whatever else the source leaves uninstantiated.
     if (try binding.top(r)) |defs| {
@@ -251,24 +253,31 @@ pub fn pickTops(r: *Run, modules: []const Ast.ModuleDecl) Error![]const u32 {
         tops.appendAssumeCapacity(d);
     }
     if (tops.items.len == 0) return r.fail(0, "digital execution found no top-level module", .{});
+    assert(tops.items.len <= modules.len);
     return tops.items;
 }
 
 /// Whether scope `s` is named `n`, with array or generate index `k`.
 pub fn isScope(r: *const Run, s: u32, n: []const u8, k: ?i64) bool {
+    assert(s < r.hier.scopes.items.len);
+    assert(n.len > 0);
     const info = r.hier.scopes.items[s];
     return info.name != .none and std.mem.eql(u8, r.file.str(info.name), n) and std.meta.eql(info.index, k);
 }
 
 pub fn findModule(r: *Run, name: Ast.StrId, tok: u32) Error!*const Ast.ModuleDecl {
     assert(tok < r.starts.len);
+    assert(name != .none);
     for (r.file.modules) |*m| if (m.name == name) return connectable(r, m, tok);
     return r.fail(tok, "undeclared module in instantiation", .{});
 }
 
 /// The `file.modules` row `m` is.
 pub fn defOf(r: *const Run, m: *const Ast.ModuleDecl) u32 {
-    return @intCast(m - r.file.modules.ptr);
+    assert(@intFromPtr(m) >= @intFromPtr(r.file.modules.ptr));
+    const d: u32 = @intCast(m - r.file.modules.ptr);
+    assert(d < r.file.modules.len);
+    return d;
 }
 
 /// §6.2.2 one module or UDP instance, declared in `scope`, or IEEE 1364
@@ -285,8 +294,10 @@ pub fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dep
     const range = inst.range orelse return instantiateOne(r, e, scope, inst, depth, null);
     const msb = try r.declaredBound(range.msb, inst.main_tok);
     const lsb = try r.declaredBound(range.lsb, inst.main_tok);
+    assert(depth < max_depth);
     var k = @min(msb, lsb);
     while (k <= @max(msb, lsb)) : (k += 1) try instantiateOne(r, e, scope, inst, depth, k);
+    assert(k == @max(msb, lsb) + 1);
 }
 
 /// The next scope id. The caller appends its `scope_info` row, which must be
@@ -296,6 +307,7 @@ pub fn newScope(r: *Run, tok: u32) Error!u32 {
     r.hier.scope_count += 1;
     if (r.hier.scope_count == std.math.maxInt(u32)) return r.fail(tok, "too many digital instances", .{});
     try r.hier.scope_toks.put(r.arena, r.hier.scope_count, tok);
+    assert(r.hier.scope_count > 0); // Scope 0 is the first root's.
     return r.hier.scope_count;
 }
 
@@ -308,6 +320,7 @@ fn connectable(r: *Run, m: *const Ast.ModuleDecl, tok: u32) Error!*const Ast.Mod
     // automatically inserted (by the simulator)", in a mixed design, which is
     // the only one that can hold its continuous half.
     if (m.is_connect and !r.analog.mixed) return r.fail(tok, "a connect module is inserted by §7.6 discipline resolution, not instantiated", .{});
+    assert(defOf(r, m) < r.file.modules.len);
     return m;
 }
 
@@ -318,6 +331,9 @@ fn connectable(r: *Run, m: *const Ast.ModuleDecl, tok: u32) Error!*const Ast.Mod
 /// expression as specified in the range, starting with the right-hand index".
 fn arrayConn(r: *Run, e: *Elab, inst: *const Ast.Instance, child_scope: u32, port: Ast.Port, conn: Ast.PortConn, k: i64) Error!?PortBind {
     const refused = "§12.1.2: only an expression as wide as the port or as the port times the array size is connected across an instance array";
+    assert(conn.expr != .none);
+    assert(inst.range != null); // Only an instance array splits a connection.
+    assert(child_scope < r.hier.scopes.items.len);
     const w = try childPortWidth(r, child_scope, port);
     // `typeOf` reads the slots elaborated so far, as `sink` does.
     r.values = e.values.items;
@@ -434,6 +450,7 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
     if (inst.name != .none) if (index) |k| try selectable(r, scope, inst.name, k, child_scope) else try r.hier.instances.put(arena, .{ .scope = scope, .str = inst.name }, child_scope);
     try declareBody(r, e, child, child_scope, binds_out, depth + 1);
     r.scope = scope;
+    assert(r.hier.scopes.items[child_scope].parent == scope);
 }
 
 /// IEEE 1364-2005 §12.2.2 and §12.3.6: an instance's parameter value
@@ -441,6 +458,8 @@ fn instantiateOne(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dept
 /// a named one names a parameter (not a local one) or a port once; and no
 /// more ordered values are given than the module has parameters.
 fn checkLists(r: *Run, child: *const Ast.ModuleDecl, inst: *const Ast.Instance) Error!void {
+    assert(inst.main_tok < r.starts.len);
+    assert(defOf(r, child) < r.file.modules.len);
     for (inst.params, 0..) |o, i| {
         if ((o.name == .none) != (inst.params[0].name == .none))
             return r.fail(o.main_tok, "§12.2.2: a parameter value assignment mixes ordered and named parameter assignments", .{});

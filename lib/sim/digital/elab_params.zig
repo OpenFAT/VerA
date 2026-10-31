@@ -59,6 +59,7 @@ const ParamValue = struct { v: Int.Literal, real: bool = false };
 /// port connection converts widths, rather than Verilog-AMS, whose §6.5.7.1
 /// requires them to match.
 pub fn ieee1364(r: *const Run) bool {
+    comptime assert(std.enums.values(@TypeOf(r.opts.language)).len == 6); // Every arm below.
     return switch (r.opts.language) {
         .v1364_1995, .v1364_2001, .v1364_2001_noconfig, .v1364_2005 => true,
         .vams_2_3, .vams_2023 => false,
@@ -116,12 +117,15 @@ pub fn declareParams(r: *Run, scope: u32, declared_params: []const Ast.ParamDecl
         if (p.packed_range) |range| try putRange(r, at, range, p.main_tok);
     }
     r.values = g.items;
+    assert(params.len == declared_params.len);
 }
 
 /// Whether expression `e` reads the plain name `name`.
 pub fn names(r: *Run, e: Ast.ExprId, name: Ast.StrId) bool {
+    assert(name != .none);
     const ex = &r.file.exprs;
     if (e == .none) return false;
+    assert(@backingInt(e) < ex.len());
     if (ex.tag(e) == .ident) return ex.strOf(e) == name;
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (names(r, c, name)) return true;
@@ -165,7 +169,9 @@ fn specifyOrder(r: *Run, params: []const Ast.ParamDecl) Error![]const Ast.ParamD
             placed[i] = true;
             n += 1;
         };
+        assert(n > before); // Each round places one at least, so `params.len` rounds bound the loop.
     }
+    assert(n == params.len);
     return out;
 }
 
@@ -178,6 +184,8 @@ fn specifyOrder(r: *Run, params: []const Ast.ParamDecl) Error![]const Ast.ParamD
 /// not fold (a real, or one naming the analog block's), so the parameter is
 /// the analog block's alone. `real`: `v` holds a real's 64 bits.
 fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOverride, pos: usize, width: u32) Error!?ParamValue {
+    assert(scope < r.hier.scopes.items.len);
+    assert(p.name != .none);
     const Src = struct { e: Ast.ExprId, scope: u32 };
     const src: Src = blk: {
         // A defparam's path is relative to the scope `bindDefparam` bound
@@ -257,6 +265,7 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
 fn unresolved(r: *Run, e: Ast.ExprId) ?Ast.ExprId {
     assert(e != .none);
     const ex = &r.file.exprs;
+    assert(r.scope < r.hier.scopes.items.len);
     if (ex.tag(e) == .ident) return if (r.lookup(r.scope, ex.strOf(e)) == null) e else null;
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (c != .none) if (unresolved(r, c)) |x| return x;
@@ -267,6 +276,7 @@ fn unresolved(r: *Run, e: Ast.ExprId) ?Ast.ExprId {
 fn readsSpecparam(r: *Run, e: Ast.ExprId) bool {
     assert(e != .none);
     const ex = &r.file.exprs;
+    assert(r.scope < r.hier.scopes.items.len);
     if (ex.tag(e) == .ident) return if (r.lookup(r.scope, ex.strOf(e))) |at| r.decls.specparams.contains(at) else false;
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (c != .none and readsSpecparam(r, c)) return true;

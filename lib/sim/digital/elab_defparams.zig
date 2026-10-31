@@ -61,6 +61,8 @@ const names = elab_params.names;
 /// name, else `decl` or a scope above it by name, else a child that
 /// elaboration mints later.
 pub fn bindDefparam(r: *Run, decl: u32, d: Ast.Defparam, children: []const Ast.Instance) Error!void {
+    assert(decl < r.hier.scopes.items.len);
+    const bound = r.decls.bound_defparams.items.len;
     var path: []const u8 = r.file.str(d.path);
     if (d.indices.len != 0) {
         var out: std.ArrayList(u8) = .empty;
@@ -77,6 +79,8 @@ pub fn bindDefparam(r: *Run, decl: u32, d: Ast.Defparam, children: []const Ast.I
     const b = try defparamBase(r, decl, path, children, d.main_tok);
     try r.decls.defparams.put(r.arena, .{ .scope = b.at, .path = b.rest }, .{ .d = d, .decl = decl });
     try r.decls.bound_defparams.append(r.arena, .{ .decl = decl, .path = path, .at = b.at, .rest = b.rest, .tok = d.main_tok });
+    assert(r.decls.bound_defparams.items.len == bound + 1);
+    assert(b.at < r.hier.scopes.items.len);
 }
 
 /// IEEE 1364-2005 §12.8.2: "It shall be an error if a hierarchical name in a
@@ -84,7 +88,9 @@ pub fn bindDefparam(r: *Run, decl: u32, d: Ast.Defparam, children: []const Ast.I
 /// that name would resolve differently once the model is completely
 /// elaborated."
 pub fn checkDefparams(r: *Run) Error!void {
+    assert(r.hier.roots.len > 0); // The hierarchy is complete.
     for (r.decls.bound_defparams.items) |b| {
+        assert(b.decl < r.hier.scopes.items.len);
         const now = try defparamBase(r, b.decl, b.path, null, b.tok);
         if (now.at != b.at or !std.mem.eql(u8, now.rest, b.rest))
             return r.fail(b.tok, "§12.8.2: this defparam's hierarchical name was resolved before the hierarchy was complete and would resolve differently once it is", .{});
@@ -119,6 +125,7 @@ pub fn checkDefparams(r: *Run) Error!void {
             }
             if (isRoot(r, s)) break;
         }
+        assert(target < r.hier.scopes.items.len);
     }
 }
 
@@ -129,6 +136,7 @@ pub fn checkDefparams(r: *Run) Error!void {
 /// static view of `decl`'s children; null reads the complete hierarchy.
 fn defparamBase(r: *Run, decl: u32, path: []const u8, children: ?[]const Ast.Instance, tok: u32) Error!struct { at: u32, rest: []const u8 } {
     assert(tok < r.starts.len);
+    assert(decl < r.hier.scopes.items.len);
     const dot = std.mem.findScalar(u8, path, '.') orelse return .{ .at = decl, .rest = path };
     const name, const index = segment(path[0..dot]);
     if (children) |list| {
@@ -154,6 +162,8 @@ fn defparamBase(r: *Run, decl: u32, path: []const u8, children: ?[]const Ast.Ins
 /// decimal integer reads as no index.
 fn segment(seg: []const u8) struct { []const u8, ?i64 } {
     const bracket = std.mem.findScalar(u8, seg, '[') orelse return .{ seg, null };
+    assert(bracket < seg.len);
+    assert(seg[seg.len - 1] == ']');
     return .{ seg[0..bracket], std.fmt.parseInt(i64, seg[bracket + 1 .. seg.len - 1], 10) catch null };
 }
 
@@ -161,6 +171,8 @@ fn segment(seg: []const u8) struct { []const u8, ?i64 } {
 /// parameter, dropped), in the complete hierarchy; null when a segment
 /// names no scope.
 fn defparamScope(r: *const Run, at: u32, rest: []const u8) ?u32 {
+    assert(at < r.hier.scopes.items.len);
+    assert(rest.len > 0);
     var s = at;
     var it = std.mem.splitScalar(u8, rest[0 .. std.mem.findScalarLast(u8, rest, '.') orelse return s], '.');
     // ponytail: a scan of every scope per segment; elaboration runs it once
@@ -178,6 +190,8 @@ fn defparamScope(r: *const Run, at: u32, rest: []const u8) ?u32 {
 
 /// Whether scope `s` is `outer` or lies under it.
 fn within(r: *const Run, s: u32, outer: u32) bool {
+    assert(s < r.hier.scopes.items.len);
+    assert(outer < r.hier.scopes.items.len);
     var at = s;
     while (at != outer) : (at = r.hier.scopes.items[at].parent) if (isRoot(r, at)) return false;
     return true;

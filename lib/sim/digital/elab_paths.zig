@@ -113,6 +113,7 @@ pub fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error
             }
         }
     }
+    assert(r.scope == scope);
 }
 
 /// IEEE 1364-2005 §14.3.1 a path's A.7.4 delay expressions, folded in the
@@ -120,6 +121,7 @@ pub fn pathDelays(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error
 /// expression results in a negative value, it shall be treated as zero."
 pub fn pathTable(r: *Run, delays: []const Ast.ExprId, tok: u32) Error!net_mod.PathTable {
     assert(tok < r.starts.len);
+    assert(delays.len <= 12); // A.7.4: at most twelve path delay expressions.
     var ticks: [12]u64 = undefined;
     for (delays, ticks[0..delays.len]) |d, *t| {
         const v = try r.constant(d, tok);
@@ -136,6 +138,8 @@ pub fn pathTable(r: *Run, delays: []const Ast.ExprId, tok: u32) Error!net_mod.Pa
 /// none (the default, the path delay). "If only the reject limit value is
 /// specified, it shall apply to both the reject and error limits."
 fn pulseLimits(r: *Run, m: *const Ast.ModuleDecl, in: Ast.StrId, out: Ast.StrId) Error![2]?u64 {
+    assert(in != .none);
+    assert(out != .none);
     const specific = try std.fmt.allocPrint(r.arena, "PATHPULSE${s}${s}", .{ r.file.str(in), r.file.str(out) });
     var pick: ?Ast.PulseControl = null;
     for (m.pulses) |pc| {

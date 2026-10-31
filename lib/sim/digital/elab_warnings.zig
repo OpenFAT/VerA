@@ -99,8 +99,11 @@ pub fn sendPort(r: *Run, e: *Elab, operands: []const Sink, tok: u32, src: u32, w
 /// it warned.
 pub fn warnPort(r: *Run, p: Ast.Port, external: Ast.NetKind) Error!bool {
     if (!warnCell(p.kind, external)) return false;
+    assert(p.kind != external); // No net type warns against itself.
+    const warnings = r.bag.count();
     const at = r.starts[@min(p.main_tok, r.starts.len - 1)];
     try r.bag.add(.lower, .W1160, .{ .start = at, .end = at }, "§12.3.10: a `{s}` port joined to a `{s}` net is a Table 12-1 warn cell of the net type table", .{ @tagName(p.kind), @tagName(external) });
+    assert(r.bag.count() >= warnings); // A level of `allow` drops it.
     return true;
 }
 
@@ -154,5 +157,6 @@ pub fn warnCell(internal: Ast.NetKind, external: Ast.NetKind) bool {
         .supply0 => &.{.supply1},
         .supply1 => &.{.supply0},
     };
+    assert(std.mem.findScalar(Col, warns, col(internal)) == null); // Table 12-1's diagonal never warns.
     return std.mem.findScalar(Col, warns, col(external)) != null;
 }

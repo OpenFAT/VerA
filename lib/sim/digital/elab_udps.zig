@@ -54,6 +54,7 @@ const Elab = elab.Elab;
 const sink = elab_ports.sink;
 
 pub fn findUdp(file: *const Ast.SourceFile, name: Ast.StrId) ?*const Ast.UdpDecl {
+    assert(name != .none);
     for (file.udps) |*u| if (u.name == name) return u;
     return null;
 }
@@ -111,11 +112,14 @@ pub fn declareUdp(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, u: *
         };
         try e.wires.append(r.arena, .{ .net = out.net, .scope = scope, .source = .{ .udp = udp }, .s0 = inst.strength0, .s1 = inst.strength1, .delay = delay, .tok = tok });
     }
+    assert(inst.ports.len == u.ports.len);
 }
 
 /// The IEEE 1364-2005 §8.1 rules on a UDP declaration itself.
 pub fn checkUdp(r: *Run, u: *const Ast.UdpDecl) Error!void {
     const tok = u.main_tok;
+    assert(tok < r.starts.len);
+    assert(u.ports.len > 0);
     if (u.outputs != 1) return r.fail(tok, "§8.1.1: a UDP has exactly one output port", .{});
     if (u.output != u.ports[0]) return r.fail(tok, "§8.1.1: the output port shall be the first port of a UDP", .{});
     if (u.is_sequential and !u.has_reg) return r.fail(tok, "§8.1.2: a sequential UDP's output needs a reg declaration", .{});

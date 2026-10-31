@@ -229,6 +229,7 @@ pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_
         const net = try drivenNet(r, e, scope, p.out, p.main_tok, .gate, .{ p.strength, p.strength });
         try e.wires.append(r.arena, .{ .net = net, .scope = scope, .source = .{ .pull = if (p.one) .one else .zero }, .s0 = p.strength, .s1 = p.strength, .tok = p.main_tok });
     }
+    assert(r.scope == scope);
 }
 
 /// VAMS §7.8.4 `m`'s instances and primitives at `scope` as the analog
@@ -325,20 +326,24 @@ pub fn bridged(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!Br
         b.switches = switches;
         b.lanes = lanes.items;
     }
+    assert(b.instances.len >= m.instances.len); // Bridges are appended, none dropped.
     return b;
 }
 
 /// §6.7 the instance path of `scope`, each name followed by `.`: the prefix
 /// the analog compile's flatten gives the names declared there.
 pub fn scopePath(r: *Run, scope: u32) Error![]const u8 {
+    assert(scope < r.hier.scopes.items.len);
     if (scope == 0) return "";
     const info = r.hier.scopes.items[scope];
+    assert(info.name != .none); // Only a named scope lies on an instance path.
     return r.arena.print("{s}{s}.", .{ try scopePath(r, info.parent), r.file.str(info.name) });
 }
 
 /// VAMS §7.2.2: the variables a discrete process of `m` writes, the ones
 /// whose domain is digital.
 pub fn digitalWrites(r: *Run, m: *const Ast.ModuleDecl) Error!std.AutoHashMapUnmanaged(Ast.StrId, void) {
+    assert(r.analog.mixed); // Only a mixed module splits its variables by domain.
     var out: std.AutoHashMapUnmanaged(Ast.StrId, void) = .empty;
     const W = struct {
         r: *Run,
@@ -361,6 +366,7 @@ pub fn digitalWrites(r: *Run, m: *const Ast.ModuleDecl) Error!std.AutoHashMapUnm
     var writes: std.ArrayList(Ast.ExprId) = .empty;
     const w: W = .{ .r = r, .m = m, .out = &out, .writes = &writes };
     for (m.discrete) |blk| try w.stmt(blk.body);
+    assert(out.count() <= std.math.maxInt(u32));
     return out;
 }
 
@@ -372,8 +378,10 @@ pub fn digitalWrites(r: *Run, m: *const Ast.ModuleDecl) Error!std.AutoHashMapUnm
 /// an undeclared domain is continuous when a nature is bound.
 pub fn continuous(file: *const Ast.SourceFile, name: Ast.StrId) bool {
     if (name == .none) return false;
+    assert(name != .none);
     var i = file.disciplines.len;
     while (i > 0) {
+        assert(i <= file.disciplines.len);
         i -= 1;
         const d = &file.disciplines[i];
         if (d.name != name) continue;
@@ -390,12 +398,16 @@ pub fn continuous(file: *const Ast.SourceFile, name: Ast.StrId) bool {
 
 /// The index `k` of an instance-array lane's name `base[k]`, or null.
 fn laneIndex(name: []const u8, base: []const u8) ?i64 {
+    assert(base.len > 0);
+    assert(name.len > 0);
     if (name.len < base.len + 3 or !std.mem.startsWith(u8, name, base) or name[base.len] != '[' or name[name.len - 1] != ']') return null;
     return std.fmt.parseInt(i64, name[base.len + 1 .. name.len - 1], 10) catch null;
 }
 
 /// A name `elaborate` made sure the file holds.
 fn interned(r: *Run, name: []const u8) Error!Ast.StrId {
+    assert(name.len > 0);
+    assert(r.analog.mixed);
     return r.file.strings.find(name) orelse r.fail(0, "the inserted connect module names `{s}`, which the source does not declare", .{name});
 }
 

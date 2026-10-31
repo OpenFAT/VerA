@@ -106,8 +106,11 @@ pub const size_mismatch = "§6.5.7.1: the sizes of the port and the net connecte
 /// always resolves against a parent that is fully declared.
 pub fn declare(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, over: []const Ast.ParamOverride, depth: u32) Error!void {
     assert(scope < r.hier.scopes.items.len);
+    assert(r.growing != null); // Pass one: storage still grows.
+    const insts = e.insts.items.len;
     try declareHead(r, e, m, scope, over, depth);
-    return declareBody(r, e, m, scope, binds, depth);
+    try declareBody(r, e, m, scope, binds, depth);
+    assert(e.insts.items.len > insts); // This instance and its children.
 }
 
 /// `declare`'s first half: the instance's defparams, tasks and functions,
@@ -150,11 +153,16 @@ pub fn declareHead(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, over
         try r.routines.rows.append(arena, .{ .decl = t, .inst = scope, .frame = undefined });
     }
     try declareParams(r, scope, m.params, over);
+    assert(r.routines.base.get(scope).? <= r.routines.rows.items.len);
+    assert(e.insts.items[e.insts.items.len - 1].scope == scope or e.insts.items.len > 1);
 }
 
 /// `declare`'s second half: everything after the parameters, the ports
 /// bound by `binds` and the child instances last.
 pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, binds: []const PortBind, depth: u32) Error!void {
+    assert(scope < r.hier.scopes.items.len);
+    assert(depth < max_depth);
+    assert(r.routines.base.contains(scope)); // `declareHead` ran.
     const arena = r.arena;
     r.scope = scope;
     try declareEvents(r, m.events);
@@ -396,6 +404,8 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
 /// §12.3.3 asks of a port's two declarations.
 pub fn sameRange(r: *Run, a: Ast.Dim, b: Ast.Dim, tok: u32) Error!bool {
     assert(tok < r.starts.len);
+    assert(a.msb != .none);
+    assert(b.lsb != .none);
     return try r.declaredBound(a.msb, tok) == try r.declaredBound(b.msb, tok) and
         try r.declaredBound(a.lsb, tok) == try r.declaredBound(b.lsb, tok);
 }
@@ -404,6 +414,7 @@ pub fn sameRange(r: *Run, a: Ast.Dim, b: Ast.Dim, tok: u32) Error!bool {
 /// point on the waiter list; the stored value is never read or written.
 pub fn declareEvents(r: *Run, events: []const Ast.EventDecl) Error!void {
     const g = r.growing.?;
+    assert(r.scope < r.hier.scopes.items.len);
     for (events) |event| {
         const at: u32 = @intCast(g.items.len);
         try r.bind(event.name, at, event.main_tok);
@@ -414,6 +425,7 @@ pub fn declareEvents(r: *Run, events: []const Ast.EventDecl) Error!void {
             try r.decls.events.put(r.arena, at + @as(u32, @intCast(i)), .{ .tok = event.main_tok, .scope = r.scope });
         }
         r.values = g.items;
+        assert(r.values.len >= at + count);
     }
 }
 
@@ -441,6 +453,7 @@ pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
         },
         else => {}, // else: only a block is a scope
     }
+    assert(inner < r.hier.scopes.items.len);
     try r.file.stmtEdges(s, W{ .r = r, .scope = inner });
 }
 
@@ -466,6 +479,8 @@ pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
         const slot = try mintVar(r, v);
         if (automatic) try r.routines.auto_slots.put(r.arena, slot, {});
     }
+    assert(r.hier.scopes.items[at].parent == scope);
+    assert(r.hier.block_scopes.get(.{ .scope = scope, .stmt = s }).? == at);
     return at;
 }
 
@@ -475,6 +490,8 @@ pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
 /// `name` (whole, or a select of it), the use §12.3.8's coercion reads.
 // ponytail: an instance's output port driving `name` is not looked for.
 fn assignsTo(r: *const Run, m: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+    assert(name != .none);
+    assert(r.file.modules.len > 0);
     for (m.assigns) |a| if (namesIn(r, a.target, name)) return true;
     for (m.gates) |g| if (namesIn(r, g.out, name)) return true;
     return false;
@@ -482,6 +499,7 @@ fn assignsTo(r: *const Run, m: *const Ast.ModuleDecl, name: Ast.StrId) bool {
 
 fn namesIn(r: *const Run, e: Ast.ExprId, name: Ast.StrId) bool {
     assert(e != .none);
+    assert(name != .none);
     const ex = &r.file.exprs;
     return switch (ex.tag(e)) {
         .ident => ex.strOf(e) == name,
@@ -500,6 +518,7 @@ fn namesIn(r: *const Run, e: Ast.ExprId, name: Ast.StrId) bool {
 /// (`.r(!r)`); an assignment's target only as the whole of it.
 fn implicitNets(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl) Error!void {
     assert(scope < r.hier.scopes.items.len);
+    assert(r.growing != null);
     for (m.instances) |inst| for (inst.ports) |c| try implicitTerminal(r, e, scope, m, c.expr);
     for (m.gates) |g| {
         try implicitNet(r, e, scope, m, g.out);
@@ -516,6 +535,7 @@ fn implicitTerminal(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: 
     const ex = &r.file.exprs;
     if (x == .none) return;
     if (ex.tag(x) == .ident) return implicitNet(r, e, scope, m, x);
+    assert(ex.tag(x) != .ident);
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(x, &buf)) |c| try implicitTerminal(r, e, scope, m, c);
 }
@@ -536,6 +556,7 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
     // `default_nettype none: the name stays undeclared.
     const kind = std.meta.stringToEnum(Ast.NetKind, @tagName(t)) orelse return;
     _ = try mintNet(r, e, kind, 1, false, ex.strOf(x), tok);
+    assert(r.hier.names.contains(.{ .scope = scope, .str = ex.strOf(x) }));
     // §4.5's implicit net is the scope's from its start, so a terminal
     // before the one that declares it reads it (`lookupAt`).
     try r.hier.bound_at.put(r.arena, .{ .scope = scope, .str = ex.strOf(x) }, 0);
@@ -543,6 +564,8 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
 
 /// Does statement `s` hold a named block with declarations of its own?
 fn declares(file: *const Ast.SourceFile, s: Ast.StmtId) bool {
+    assert(s != .none);
+    assert(file.stmt(s) == .block); // `blockScopes` asks of a named block only.
     const W = struct {
         f: *const Ast.SourceFile,
         pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) error{Found}!void {}

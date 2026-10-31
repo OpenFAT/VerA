@@ -70,14 +70,18 @@ const SelectTerm = struct { slot: u32, first: u32, count: u32 };
 /// are in `self.arena`.
 pub fn sensitivity(self: *Run, e: Ast.ExprId, out: *std.ArrayList(u32)) Error!void {
     assert(e != .none);
+    const before = out.items.len;
     // ponytail: an array element operand watches every element of its array;
     // a per-array wake list if a big memory ever feeds one.
-    return sensitivityProbes(self, e, out, null);
+    try sensitivityProbes(self, e, out, null);
+    assert(out.items.len >= before); // Appended only, never removed.
 }
 
 /// Whether `e` is a VAMS §7.3.3 probe terminal the mixed-signal kernel reads:
 /// a simple or a §6.7.1 hierarchical name of a net or a named branch.
 pub fn probeTerminal(ex: *const Ast.ExprStore, e: Ast.ExprId) bool {
+    assert(e != .none);
+    assert(@backingInt(e) < ex.len());
     return ex.tag(e) == .ident or ex.tag(e) == .hier_ident;
 }
 
@@ -88,9 +92,12 @@ pub fn probeName(self: *const Run, a: std.mem.Allocator, e: Ast.ExprId) Error![]
     const ex = &self.file.exprs;
     if (ex.tag(e) == .ident) return self.file.str(ex.strOf(e));
     const ids = ex.nameParts(e);
+    assert(ids.len >= 2); // A hierarchical name has a scope and a leaf.
     const parts = try a.alloc([]const u8, ids.len);
     for (ids, parts) |id, *p| p.* = self.file.str(id);
-    return std.mem.join(a, ".", parts);
+    const joined = try std.mem.join(a, ".", parts);
+    assert(joined.len >= 2 * ids.len - 1);
+    return joined;
 }
 
 /// `sensitivity`, where each VAMS §7.3.6.3 analog probe is appended to
@@ -144,6 +151,9 @@ pub fn sensitivityProbes(self: *Run, e: Ast.ExprId, out: *std.ArrayList(u32), pr
 /// expression in it is type-checked.
 pub fn readSlots(self: *Run, id: Ast.StmtId, out: *std.ArrayList(u32)) Error!void {
     if (id == .none) return;
+    assert(self.growing != null); // Compile time: hidden term slots may still grow `values`.
+    const before = out.items.len;
+    defer assert(out.items.len >= before);
     if (deep.exhausted()) return self.deepFail(self.file.stmtTok(id));
     const ex = &self.file.exprs;
     switch (self.file.stmt(id)) {
@@ -189,8 +199,10 @@ pub fn readSlots(self: *Run, id: Ast.StmtId, out: *std.ArrayList(u32)) Error!voi
 }
 
 pub fn watch(self: *Run, at: u32, out: *std.ArrayList(u32)) Error!void {
+    assert(at < self.values.len);
     if (std.mem.findScalar(u32, out.items, at) != null) return;
     try out.append(self.arena, at);
+    assert(out.items[out.items.len - 1] == at);
 }
 
 /// §6.2.2/§6.1: a net is driven by a continuous assignment and a variable by
@@ -226,17 +238,22 @@ pub fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
     if (self.netlist.slot_nets.contains(at)) return self.exprFail(e, net_refused);
     if (self.decls.params.contains(at)) return self.exprFail(e, "§12.2: a parameter is a constant; it cannot be assigned");
     if (self.decls.events.contains(at)) return self.exprFail(e, "§9.7.3: a named event holds no data; it cannot be assigned");
+    assert(at < self.values.len);
 }
 
 /// Does intra-assignment control `s` leave its `.sample` only parking the
 /// value, the wait compiled after it: a `repeat` count, or an event control
 /// on a nonblocking assignment (§9.7.7)?
 pub fn parksOnly(s: @FieldType(Ast.Stmt, "assign")) bool {
+    assert(intraTimed(s));
+    if (s.timing_implicit) assert(s.timing == .none);
     return !s.timing_is_delay and (s.nonblocking or s.timing_repeat != .none or s.timing_implicit);
 }
 
 /// Whether assignment `s` carries an A.6.2 intra-assignment timing control.
 pub fn intraTimed(s: @FieldType(Ast.Stmt, "assign")) bool {
+    if (s.timing_repeat != .none) assert(s.timing != .none or s.timing_implicit); // `repeat` counts a control.
+    if (s.timing_is_delay) assert(!s.timing_implicit); // `#@*` does not parse.
     return s.timing != .none or s.timing_implicit;
 }
 
@@ -245,6 +262,8 @@ pub fn intraTimed(s: @FieldType(Ast.Stmt, "assign")) bool {
 /// IEEE 1364-2005 §9.7.5's list as `event_control`'s `@*` builds it from a
 /// statement.
 pub fn waitIntra(self: *Run, id: Ast.StmtId, s: @FieldType(Ast.Stmt, "assign")) Error!void {
+    assert(id != .none);
+    assert(!s.timing_is_delay);
     if (!s.timing_implicit) {
         _ = try append(self, .{ .wait_event = s.timing });
         return;
@@ -260,6 +279,7 @@ pub fn waitIntra(self: *Run, id: Ast.StmtId, s: @FieldType(Ast.Stmt, "assign")) 
 /// target, or a traced argument.
 pub fn notAutomatic(self: *Run, e: Ast.ExprId, comptime what: []const u8) Error!void {
     assert(e != .none);
+    comptime assert(what.len > 0);
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
         .concat => for (ex.args(e)) |x| try notAutomatic(self, x, what),
@@ -287,6 +307,7 @@ pub fn deferredReads(self: *Run, scope: u32, s: Ast.StmtId) Error!void {
     const saved = self.scope;
     defer self.scope = saved;
     self.scope = scope;
+    defer assert(self.scope < self.hier.scopes.items.len);
     switch (self.file.stmt(s)) {
         .block => self.scope = self.hier.block_scopes.get(.{ .scope = scope, .stmt = s }) orelse scope,
         .assign => |a| if (a.continuous != .none) {
@@ -305,8 +326,10 @@ pub fn deferredReads(self: *Run, scope: u32, s: Ast.StmtId) Error!void {
 /// have ended: none of its operands names an automatic variable. A
 /// hierarchical name cannot reach one (§10.2.1), so only plain names count.
 pub fn readsNoAutomatic(self: *Run, e: Ast.ExprId, comptime what: []const u8) Error!void {
+    comptime assert(what.len > 0);
     const ex = &self.file.exprs;
     if (e == .none) return;
+    assert(self.scope < self.hier.scopes.items.len);
     if (ex.tag(e) == .ident) {
         if (self.lookup(self.scope, ex.strOf(e))) |at| if (self.routines.auto_slots.contains(at))
             return self.exprFail(e, "§10.2.3: " ++ what ++ " cannot name a variable of an automatic task or function");
@@ -324,12 +347,14 @@ pub fn checkDelay(self: *Run, e: Ast.ExprId) Error!void {
     assert(e != .none);
     try checkExpr(self, e);
     if (typeOf(self, e).width > 64) return self.exprFail(e, "delay values wider than 64 bits are not implemented");
+    assert(typeOf(self, e).width >= 1 or typeOf(self, e).real);
 }
 
 /// Event terms resolve to watched slots at compile time; an indexed named
 /// event also validates each index for selection at an occurrence.
 pub fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
     assert(e != .none);
+    assert(self.scope < self.hier.scopes.items.len);
     const ex = &self.file.exprs;
     if (try eventReference(self, e) != null) return;
     switch (ex.tag(e)) {
@@ -381,6 +406,8 @@ pub fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
         try checkExpr(self, i);
         if (typeOf(self, i).real) return self.exprFail(i, "§9.7.3: an event array index must be integral");
     }
+    assert(at < self.values.len);
+    assert(x == c.base);
     return at;
 }
 
@@ -406,6 +433,8 @@ pub fn selectTerm(self: *Run, e: Ast.ExprId) Error!?SelectTerm {
     try checkExpr(self, e);
     const sel = (try evaluate.selection(self, self.arena, e)) orelse return null;
     if (sel.first < 0 or sel.count > 64 or sel.first + sel.count > self.values[at].width) return null;
+    assert(sel.count >= 1);
+    assert(at < self.values.len);
     return .{ .slot = at, .first = @intCast(sel.first), .count = sel.count };
 }
 
@@ -422,6 +451,7 @@ fn targetReads(self: *Run, target: Ast.ExprId, out: *std.ArrayList(u32)) Error!v
     }
     var x = target;
     while (ex.tag(x) == .index) : (x = ex.lhs(x)) try sensitivity(self, ex.rhs(x), out);
+    assert(ex.tag(x) != .index);
 }
 
 /// IEEE 1364-2005 §9.7.2: "An implicit event shall be detected on any change
@@ -447,6 +477,7 @@ fn exprTerm(self: *Run, e: Ast.ExprId) Error!void {
     try g.append(self.arena, try filled(self.arena, ty.width, ty.signed, if (ty.real) .zero else .x));
     if (ty.real) try self.decls.reals.put(self.arena, at, {});
     self.values = g.items;
+    assert(self.values.len == at + 1);
     var watched: std.ArrayList(u32) = .empty;
     try sensitivity(self, e, &watched);
     const start = try watcher(self, .{ .init_var = .{ .slot = at, .value = e } }, watched.items);

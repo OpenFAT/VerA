@@ -51,6 +51,7 @@ const Source = net_mod.Source;
 const filled = net_mod.filled;
 const undriven = net_mod.undriven;
 const elab = @import("elab.zig");
+const max_depth = elab.max_depth;
 const elab_declare = @import("elab_declare.zig");
 const elab_defparams = @import("elab_defparams.zig");
 const elab_drivers = @import("elab_drivers.zig");
@@ -77,6 +78,7 @@ const putRange = elab_ports.putRange;
 /// an `if` or `case` whose arms are blocks, or a `for` over a genvar (§12.4.1:
 /// what tells a loop generate from a loop statement is its genvar).
 pub fn isGenerate(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, s: Ast.StmtId) bool {
+    assert(s != .none);
     return switch (file.stmt(s)) {
         .if_stmt => |i| i.is_generate,
         .case_stmt => |c| c.is_generate,
@@ -100,6 +102,7 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
     // written with a genvar is folded once, with the first iteration's value;
     // a bit-select is read per iteration.
     if (s == .none) return;
+    assert(depth < max_depth);
     const tok = r.file.stmtTok(s);
     switch (r.file.stmt(s)) {
         .empty => {},
@@ -232,7 +235,9 @@ pub fn declareNet(r: *Run, e: *Elab, scope: u32, n: Ast.NetDecl) Error!void {
     // §4.9.1 a net array is one net per element, on consecutive slots,
     // the layout a variable array's elements have.
     const base: u32 = @intCast(e.values.items.len);
+    const nets = e.nets.items.len;
     const count = try declareArray(r, base, n.dims, n.main_tok);
+    defer assert(e.nets.items.len >= nets); // `defer`: an error leaves the nets minted so far.
     for (0..count) |k| {
         const at = try mintNet(r, e, n.kind, width, n.is_signed, if (k == 0) n.name else .none, n.main_tok);
         if (n.range) |range| try putRange(r, e.nets.items[at].slot, range, n.main_tok);
@@ -270,6 +275,7 @@ pub fn selectable(r: *Run, scope: u32, name: Ast.StrId, k: i64, at: u32) Error!v
     assert(scope < r.hier.scopes.items.len);
     if (name == .none) return;
     var buf: [256]u8 = undefined;
+    assert(at < r.hier.scopes.items.len);
     const text = std.mem.print(&buf, "{s}[{d}]", .{ r.file.str(name), k }) catch return;
     if (r.file.strings.find(text)) |str| try r.hier.instances.put(r.arena, .{ .scope = scope, .str = str }, at);
 }
@@ -277,6 +283,8 @@ pub fn selectable(r: *Run, scope: u32, name: Ast.StrId, k: i64, at: u32) Error!v
 /// Every module a generate construct instantiates, in either arm.
 pub fn generatedModules(file: *const Ast.SourceFile, s: Ast.StmtId, out: *std.ArrayList(Ast.StrId), a: std.mem.Allocator) std.mem.Allocator.Error!void {
     if (s == .none) return;
+    const before = out.items.len;
+    defer assert(out.items.len >= before);
     switch (file.stmt(s)) {
         .if_stmt => |i| {
             try generatedModules(file, i.then_s, out, a);
@@ -290,6 +298,7 @@ pub fn generatedModules(file: *const Ast.SourceFile, s: Ast.StmtId, out: *std.Ar
         },
         else => {}, // else: no other statement holds an instance
     }
+    assert(s != .none);
 }
 
 // ---- private ----
@@ -298,12 +307,14 @@ pub fn generatedModules(file: *const Ast.SourceFile, s: Ast.StmtId, out: *std.Ar
 /// null when the loop's index is no genvar of `m`.
 fn genvarOf(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, f: anytype) ?Ast.StrId {
     if (f.init == .none) return null;
+    assert(f.init != .none);
     const init = switch (file.stmt(f.init)) {
         .assign => |a| a,
         else => return null, // else: A.4.2 genvar_initialization is an assignment
     };
     if (file.exprs.tag(init.target) != .ident) return null;
     const name = file.exprs.strOf(init.target);
+    assert(name != .none);
     return if (std.mem.findScalar(Ast.StrId, m.genvars, name) != null) name else null;
 }
 
@@ -337,9 +348,13 @@ fn genvarSlot(r: *Run, e: *Elab, name: Ast.StrId, tok: u32) Error!u32 {
     try e.values.append(r.arena, try filled(r.arena, 32, true, .x));
     r.values = e.values.items;
     try r.decls.params.put(r.arena, at, {});
+    assert(r.values.len > at);
+    assert(e.values.items[at].width == 32); // §12.4.1: a genvar is an integer.
     return at;
 }
 
 fn setGenvar(r: *Run, e: *Elab, at: u32, value: Int.Literal) Error!void {
+    assert(at < e.values.items.len);
+    assert(r.decls.params.contains(at)); // `genvarSlot` made it.
     @memcpy(e.values.items[at].planes, (try evaluate.convert(r.arena, value, .{ .width = 32, .signed = true })).planes);
 }
