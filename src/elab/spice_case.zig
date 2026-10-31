@@ -7,6 +7,7 @@
 //! - `pub fn spiceCase(arena: std.mem.Allocator, file: *Ast.SourceFile) std.mem.Allocator.Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 
 /// E.2.1 from the netlist's side. SPICE is case-insensitive and the netlist
@@ -21,6 +22,8 @@ const Ast = @import("frontend").Ast;
 pub fn spiceCase(arena: std.mem.Allocator, file: *Ast.SourceFile) std.mem.Allocator.Error!void {
     const end = @min(file.builtin_modules, file.modules.len);
     const start = end - @min(file.netlist_modules, end);
+    assert(start <= end);
+    const modules_before = file.modules.len;
     var mods: ?[]Ast.ModuleDecl = null;
     for (start..end) |mi| {
         const insts = file.modules[mi].instances;
@@ -35,6 +38,8 @@ pub fn spiceCase(arena: std.mem.Allocator, file: *Ast.SourceFile) std.mem.Alloca
         mods.?[mi].instances = list;
     }
     if (mods) |list| file.modules = list;
+    // Respelled in place: no module is added or dropped, so every index holds.
+    assert(file.modules.len == modules_before);
 }
 
 // ---- private ----
@@ -42,6 +47,7 @@ pub fn spiceCase(arena: std.mem.Allocator, file: *Ast.SourceFile) std.mem.Alloca
 /// `inst` with its module and parameter names respelled as `spiceCase`
 /// says, or null when nothing moves.
 fn caseInstance(arena: std.mem.Allocator, file: *const Ast.SourceFile, inst: Ast.Instance) std.mem.Allocator.Error!?Ast.Instance {
+    assert(inst.module != .none);
     var out = inst;
     const Decl = struct { name: Ast.StrId, params: []const Ast.ParamDecl, aliases: []const Ast.AliasParam };
     var exact: ?Decl = null;

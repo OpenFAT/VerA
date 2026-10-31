@@ -15,6 +15,7 @@
 //! - `pub fn disciplineConflict(file: *const Ast.SourceFile, an: Ast.StrId, bn: Ast.StrId) ?[]const u8`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 
 /// §3.11.1 Derived Nature Rule — the base a (possibly derived) nature bottoms
@@ -42,6 +43,7 @@ pub fn baseNatureOf(file: *const Ast.SourceFile, name: Ast.StrId) Ast.StrId {
 /// the nature itself". `.none` for a base nature, or when that value is not
 /// a nature name (E0340 reports it where it is written).
 pub fn parentDerivNatureOf(file: *const Ast.SourceFile, nat: *const Ast.NatureDecl, attr: []const u8) Ast.StrId {
+    assert(attr.len != 0);
     const parent = parentNatureOf(file, nat);
     if (parent == .none) return .none;
     const v = file.natureAttrExpr(parent, attr) orelse return parent;
@@ -140,6 +142,7 @@ pub fn disciplineConflict(file: *const Ast.SourceFile, an: Ast.StrId, bn: Ast.St
 /// the discipline binds to that half in the second form (§3.6.2.6). `.none`
 /// for a base nature, or a discipline that binds nothing there.
 fn parentNatureOf(file: *const Ast.SourceFile, nat: *const Ast.NatureDecl) Ast.StrId {
+    assert(nat.name != .none);
     if (nat.parent == .none) return .none;
     const half = nat.parent_access orelse return nat.parent;
     const d = declOf(file, nat.parent) orelse return .none;

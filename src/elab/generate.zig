@@ -70,6 +70,8 @@ pub fn genvarLoop(comptime T: type, scheme: anytype, first: T) !LoopRun(T) {
 /// `e` with every identifier `name` replaced by `with`; rows unchanged where
 /// nothing below them changed.
 pub fn substIdent(self: *Flatten, e: Ast.ExprId, name: Ast.StrId, with: Ast.ExprId) design.Error!Ast.ExprId {
+    assert(name != .none);
+    assert(with != .none);
     const Subst = struct {
         name: Ast.StrId,
         with: Ast.ExprId,
@@ -128,6 +130,8 @@ pub fn genInstances(self: *Flatten, id: Ast.StmtId, gate: Ast.ExprId, prefix: []
 
 /// `a && c` (or `a && !c`), `a` = `.none` meaning true.
 pub fn conj(self: *Flatten, a: Ast.ExprId, c: Ast.ExprId, negate: bool) design.Error!Ast.ExprId {
+    assert(c != .none);
+    assert(a != c);
     const ex = &self.ctx.file.exprs;
     const tok = ex.mainTok(c);
     const t = if (!negate) c else try ex.add(self.ctx.arena, .{
@@ -158,6 +162,7 @@ fn LoopRun(comptime T: type) type {
 }
 
 fn genInstanceListIn(file: *Ast.SourceFile, id: Ast.StmtId, arena: std.mem.Allocator, prefix: []const u8, out: *std.ArrayList(Ast.Instance)) design.Error!void {
+    if (prefix.len != 0) assert(prefix[prefix.len - 1] == sep);
     if (id == .none) return;
     switch (file.stmt(id)) {
         .block => |b| {
@@ -181,6 +186,7 @@ fn genInstanceListIn(file: *Ast.SourceFile, id: Ast.StmtId, arena: std.mem.Alloc
 /// blocks may each hold a `u`. The prefix of the blocks enclosing `b`, plus
 /// `b`'s own name when it is a generate scope.
 fn blockPrefix(file: *Ast.SourceFile, arena: std.mem.Allocator, prefix: []const u8, b: Ast.SeqBlock) design.Error![]const u8 {
+    if (prefix.len != 0) assert(prefix[prefix.len - 1] == sep);
     if (b.gen_name == .none) return prefix;
     return arena.print("{s}{s}{c}", .{ prefix, file.str(b.gen_name), sep });
 }
@@ -188,6 +194,8 @@ fn blockPrefix(file: *Ast.SourceFile, arena: std.mem.Allocator, prefix: []const 
 /// `inst` named inside the generate scope `prefix` (see `blockPrefix`). The
 /// flat path joins on `sep`, so `g1.u` is the instance's hierarchical name.
 fn scoped(file: *Ast.SourceFile, arena: std.mem.Allocator, prefix: []const u8, inst: Ast.Instance) design.Error!Ast.Instance {
+    assert(inst.name != .none);
+    if (prefix.len != 0) assert(prefix[prefix.len - 1] == sep);
     if (prefix.len == 0) return inst;
     var out = inst;
     out.name = try file.intern(arena, try arena.print("{s}{s}", .{ prefix, file.str(inst.name) }));
@@ -279,6 +287,8 @@ fn mapIdents(self: *Flatten, e: Ast.ExprId, ctx: anytype) design.Error!Ast.ExprI
 /// a nested generate scheme or block is E0235; the upgrade is recursing
 /// through `genInstances` with the genvar bound.
 fn loopInstances(self: *Flatten, init: Ast.StmtId, cond: Ast.ExprId, step: Ast.StmtId, body: Ast.StmtId, gate: Ast.ExprId, prefix: []const u8, locals: []const Ast.ParamDecl, out: *std.ArrayList(Ast.Instance), gates: *std.ArrayList(Ast.ExprId)) design.Error!void {
+    assert(out.items.len >= gates.items.len);
+    if (prefix.len != 0) assert(prefix[prefix.len - 1] == sep);
     const file = self.ctx.file;
     var all: std.ArrayList(Ast.Instance) = .empty;
     try genInstanceList(file, body, self.ctx.arena, &all);
@@ -346,6 +356,8 @@ fn loopInstances(self: *Flatten, init: Ast.StmtId, cond: Ast.ExprId, step: Ast.S
 /// A genvar assignment's value, folded in the module's names with the genvar
 /// at `at` (null for the initialization), or null when it is no integer.
 fn constGenvar(self: *Flatten, e: Ast.ExprId, gv: Ast.StrId, at: ?Ast.ExprId) design.Error!?i64 {
+    assert(gv != .none);
+    assert(e != .none);
     const bound = if (at) |lit| try substIdent(self, e, gv, lit) else e;
     const c = fold.constValue(self, bound, true, null) orelse return null;
     return if (c == .int) c.int else null;

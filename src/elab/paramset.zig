@@ -212,6 +212,8 @@ fn paramsetStatements(
 /// Binds §6.4.3's `.name` (the parser's spelling, `parsePrimary`) to the
 /// instance's `name`. Interned only where a statement wrote it.
 fn bindDotted(self: *Flatten, path: []const u8, name: Ast.StrId) design.Error!void {
+    assert(name != .none);
+    assert(path.len != 0);
     const dotted = self.ctx.file.strings.find(try self.ctx.arena.print(".{s}", .{self.ctx.file.str(name)})) orelse return;
     try self.unit.rename.put(self.ctx.arena, dotted, try flat_name.join(self, path, name));
 }

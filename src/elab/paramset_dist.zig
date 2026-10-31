@@ -7,6 +7,7 @@
 //! - `pub fn rewriteParamsetDist(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.ExprId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const rng = @import("kernels").rng_kernels;
 const design = @import("design.zig");
@@ -38,6 +39,8 @@ const dist = @import("dist.zig");
 /// by the time this runs; folding through them needs the parameter values
 /// threaded in here. Add when a model writes one.
 pub fn rewriteParamsetDist(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.ExprId {
+    assert(self.in_paramset); // the one scope a `type_string` is legal in
+    assert(self.ctx.file.exprs.tag(e) == .sys_call);
     const x = &self.ctx.file.exprs;
     const name = self.ctx.file.str(x.strOf(e));
     const d = dist.of(name) orelse return null;

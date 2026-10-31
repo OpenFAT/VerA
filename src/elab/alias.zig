@@ -9,6 +9,7 @@
 //! - `pub fn checkFlat(ctx: Ctx, top: *const Ast.ModuleDecl, aliases: []const Ast.AliasParam) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const design = @import("design.zig");
 const flat_name = @import("flat_name.zig");
 const Kind = @import("hier_param.zig").Kind;
@@ -93,6 +94,7 @@ const Scan = struct {
 /// nothing, or it is a cycle. A §9.18 system parameter is an original.
 /// Invalid declarations remain the E0303/E0331 checks' job (lowering).
 pub fn original(file: *const Ast.SourceFile, params: []const Ast.ParamDecl, aliases: []const Ast.AliasParam, alias: Ast.AliasParam) ?Ast.StrId {
+    assert(alias.alias != .none);
     for (params) |p| if (p.name == alias.alias) return null;
     var target = alias.target;
     for (0..aliases.len + 1) |_| {
@@ -128,6 +130,7 @@ pub fn checkSource(ctx: Ctx) Error!void {
 /// names. Local reads were judged in their source scope already. Returns
 /// `error.DiagnosticsReported` if the bag holds any error afterwards.
 pub fn checkFlat(ctx: Ctx, top: *const Ast.ModuleDecl, aliases: []const Ast.AliasParam) Error!void {
+    assert(top.name != .none);
     if (aliases.len == 0) return;
     var scan: Scan = .{ .ctx = ctx, .aliases = aliases, .top = top };
     try scan.walk(top.*);

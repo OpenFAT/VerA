@@ -70,6 +70,7 @@ pub fn isOoc(name: []const u8) bool {
 /// precedence level illegal even when compatible, so this is a duplicate-key
 /// test, not a compatibility test.
 pub fn collectOoc(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8) design.Error!void {
+    if (path.len != 0) assert(path[path.len - 1] == sep);
     for (module.nets) |n| {
         if (!isOoc(self.ctx.file.str(n.name))) continue;
         const key = defparam.rootedPath(self, self.ctx.file.str(n.name)) orelse
@@ -103,6 +104,7 @@ pub fn collectOoc(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u
 /// told apart from a legal form this pass does not reach. The upgrade is a
 /// `used` flag on `ooc`, like `Defparam.used`.
 pub fn oocDiscipline(self: *Flatten, path: []const u8, local: Ast.StrId) ?Ast.StrId {
+    assert(local != .none);
     return oocIn(&self.oocs.decls, self, path, local);
 }
 
@@ -110,6 +112,7 @@ pub fn oocDiscipline(self: *Flatten, path: []const u8, local: Ast.StrId) ?Ast.St
 /// below the level being planned included (`Flatten.tree_ooc`), for
 /// `segment.up`.
 pub fn oocDisciplineBelow(self: *Flatten, path: []const u8, local: Ast.StrId) ?Ast.StrId {
+    assert(local != .none);
     return oocIn(&self.tree.ooc, self, path, local) orelse oocDiscipline(self, path, local);
 }
 
@@ -122,6 +125,8 @@ pub fn oocDisciplineBelow(self: *Flatten, path: []const u8, local: Ast.StrId) ?A
 /// An Annex E primitive's `electrical` is the placeholder E.3.2 resolves
 /// past, not a declaration of the net, so its ports are not judged.
 pub fn checkOocOverrides(self: *Flatten, child: *const Ast.ModuleDecl, path: []const u8) design.Error!void {
+    assert(path.len != 0); // the top is no instance, so nothing overrides it
+    assert(path[path.len - 1] == sep);
     if (lookup.isPrimitive(self, child)) return;
     for (child.ports) |p| try checkOocOverride(self, path, p.name, p.discipline);
     for (child.nets) |n| {
@@ -138,6 +143,7 @@ pub fn checkOocOverrides(self: *Flatten, child: *const Ast.ModuleDecl, path: []c
 /// declaration at the shallowest level wins: §3.6.3.2 makes a tie a race,
 /// and `collectOoc` order is the walk's.
 pub fn applyOocInits(self: *Flatten) design.Error!void {
+    assert(self.oocs.inits.items.len <= self.oocs.decls.count()); // one per collected declaration at most
     for (self.oocs.inits.items, 0..) |o, i| {
         const flat = flatText(self, o.key);
         const beaten = for (self.oocs.inits.items, 0..) |q, j| {
@@ -173,11 +179,13 @@ fn oocIn(map: *const std.StringHashMapUnmanaged(OocDecl), self: *Flatten, path: 
 }
 
 fn declaresPort(m: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+    assert(name != .none);
     for (m.ports) |p| if (p.name == name) return true;
     return false;
 }
 
 fn checkOocOverride(self: *Flatten, path: []const u8, local: Ast.StrId, declared: Ast.StrId) design.Error!void {
+    assert(local != .none);
     if (declared == .none) return;
     const file = self.ctx.file;
     const o = self.oocs.decls.getAdapted(flat_name.PathKey{ .path = path, .local = file.str(local) }, flat_name.PathKey.Context{}) orelse return;

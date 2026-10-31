@@ -312,6 +312,8 @@ pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src
 /// instance is inlined and reports anything wrong there, once. A set that does
 /// not narrow to one paramset here inserts nothing.
 pub fn moduleOf(self: *Flatten, inst: *const Ast.Instance, path: []const u8) design.Error!?*const Ast.ModuleDecl {
+    assert(path.len != 0);
+    assert(path[path.len - 1] == sep);
     if (lookup.findModule(self, inst.module)) |m| return m;
     var live: std.ArrayList(*const Ast.ParamsetDecl) = .empty;
     _ = try paramset_select.matchingParamsets(self, inst, path, &live);
@@ -332,6 +334,7 @@ pub fn moduleOf(self: *Flatten, inst: *const Ast.Instance, path: []const u8) des
 
 /// Whether `module` declares `name` with a range (§6.5.2, §3.6.3).
 fn isVector(module: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+    assert(name != .none);
     for (module.nets) |n| if (n.name == name and n.range != null) return true;
     for (module.ports) |p| if (p.name == name and (p.range != null or p.type_range != null)) return true;
     return false;
@@ -339,6 +342,8 @@ fn isVector(module: *const Ast.ModuleDecl, name: Ast.StrId) bool {
 
 /// A `segment` cache key: the segment's instance path and local name.
 fn segKey(self: *Flatten, path: []const u8, net: Ast.StrId) design.Error![]const u8 {
+    assert(net != .none);
+    assert(path.len != 0);
     return self.ctx.arena.print("{s}{s}", .{ path, self.ctx.file.str(net) });
 }
 
@@ -356,6 +361,8 @@ fn segmentName(
     h: Hit,
     owner: Hit,
 ) design.Error!struct { instance: Ast.StrId, segment: Ast.StrId } {
+    assert(h.sig != .none);
+    assert(lower_port != .none);
     const file = self.ctx.file;
     const a = self.ctx.arena;
     const leaf = if (!merged)
@@ -369,6 +376,7 @@ fn segmentName(
 }
 
 fn ident(self: *Flatten, name: Ast.StrId, tok: u32) design.Error!Ast.ExprId {
+    assert(name != .none);
     return self.ctx.file.exprs.add(self.ctx.arena, .{ .tag = .ident, .main_tok = tok, .str = name });
 }
 

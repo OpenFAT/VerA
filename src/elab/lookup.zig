@@ -15,6 +15,7 @@
 //! - `pub fn warnSpiceShadows(self: *Flatten) design.Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Lexer = @import("frontend").Lexer;
 const design = @import("design.zig");
@@ -37,6 +38,7 @@ const fixture = @import("fixture.zig");
 /// Table E.1 primitive alone is not issued. Two SPICE objects of the same
 /// name resolve primitive-first; Annex E does not order them.
 pub fn findModule(self: *Flatten, name: Ast.StrId) ?*const Ast.ModuleDecl {
+    assert(name != .none);
     const user = self.ctx.file.userModules();
     var i = user.len;
     while (i > 0) {
@@ -60,6 +62,7 @@ pub fn findModule(self: *Flatten, name: Ast.StrId) ?*const Ast.ModuleDecl {
 /// reference a primitive which is unsupported"). The name matches the card
 /// as E.2.1 matches netlist names, regardless of case.
 pub fn unknownModule(self: *Flatten, inst: *const Ast.Instance) design.Error!void {
+    assert(inst.module != .none);
     const want = self.ctx.file.str(inst.module);
     for (self.ctx.file.netlist_unsupported) |card| {
         const space = std.mem.findScalar(u8, card, ' ').?; // `name type`
@@ -128,6 +131,7 @@ pub fn paramsetChain(
 
 /// The module at the end of `ps`'s chain, or `null` after an E0904.
 pub fn chainEnd(self: *Flatten, ps: *const Ast.ParamsetDecl) design.Error!?*const Ast.ModuleDecl {
+    assert(ps.name != .none);
     var chain: std.ArrayList(*const Ast.ParamsetDecl) = .empty;
     if (!try paramsetChain(self, ps, &chain)) return null;
     return findModule(self, chain.items[chain.items.len - 1].target).?;
@@ -143,6 +147,7 @@ pub fn chainEnd(self: *Flatten, ps: *const Ast.ParamsetDecl) design.Error!?*cons
 /// card is a wrapper around a primitive, not a primitive, and its body is one
 /// instantiation with no access function of its own to substitute.
 pub fn isPrimitive(self: *Flatten, m: *const Ast.ModuleDecl) bool {
+    assert(self.ctx.file.tablePrimitives().len <= self.ctx.file.modules.len);
     // Table E.1's rows are one contiguous run of `modules`, so identity is an
     // address range test, not a scan.
     const rows = self.ctx.file.tablePrimitives();
@@ -158,6 +163,7 @@ pub fn isPrimitive(self: *Flatten, m: *const Ast.ModuleDecl) bool {
 /// elaborates alike in both engines. `findModule` and `pickTop` take the
 /// last definition.
 pub fn warnRedefinedModules(self: *Flatten) design.Error!void {
+    assert(self.out.units.len == 0); // once per compilation, before any walk
     const user = self.ctx.file.userModules();
     for (user, 0..) |m, i| for (user[i + 1 ..]) |later| {
         if (later.name != m.name) continue;
@@ -172,6 +178,7 @@ pub fn warnRedefinedModules(self: *Flatten) design.Error!void {
 /// names have E.2.1's canonical lowercase spelling; a differently cased HDL
 /// declaration leaves case-insensitive fallback available and does not warn.
 pub fn warnSpiceShadows(self: *Flatten) design.Error!void {
+    assert(self.out.units.len == 0); // once per compilation, before any walk
     const file = self.ctx.file;
     for (file.netlistModules()) |spice| {
         for (file.userModules()) |m| if (m.name == spice.name)
@@ -184,6 +191,8 @@ pub fn warnSpiceShadows(self: *Flatten) design.Error!void {
 // ---- private ----
 
 fn spiceShadowWarning(self: *Flatten, name: Ast.StrId, tok: u32, kind: []const u8) design.Error!void {
+    assert(name != .none);
+    assert(kind.len != 0);
     try self.ctx.bag.add(.lower, .W0951, Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, tok), "{s} `{s}` is used instead of the SPICE model or subcircuit when this name is instantiated", .{ kind, self.ctx.file.str(name) });
 }
 

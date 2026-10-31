@@ -226,6 +226,7 @@ pub fn connectionFor(inst: *const Ast.Instance, port: Ast.Port, i: usize) ?Ast.P
 /// (A.1.3, `nullPortName`'s tab-led name) names no net, so it has nothing
 /// to declare.
 pub fn checkPortDirections(self: *Flatten) design.Error!void {
+    assert(self.out.units.len == 0); // once per compilation, before any walk
     const file = self.ctx.file;
     for (file.userModules()) |*m| for (m.ports) |p| {
         if (p.direction != .unspecified) continue;
@@ -284,6 +285,7 @@ pub fn bindPorts(
 /// or `wreal` input is a real EXPRESSION, which §3.7 and IEEE 1364's input
 /// port rules allow, and the mixed-signal kernel decides those.
 pub fn checkVariableActuals(self: *Flatten, module: *const Ast.ModuleDecl, declared: *const std.AutoHashMapUnmanaged(Ast.StrId, void), inst: *const Ast.Instance) design.Error!void {
+    assert(inst.module != .none);
     const child = lookup.findModule(self, inst.module) orelse return;
     for (child.ports, 0..) |p, i| {
         const c = connectionFor(inst, p, i) orelse continue;
@@ -310,6 +312,7 @@ pub fn checkVariableActuals(self: *Flatten, module: *const Ast.ModuleDecl, decla
 /// to the ports of a particular module instance shall be all by order or
 /// all by name."
 pub fn checkConnectionShape(self: *Flatten, inst: *const Ast.Instance, child: *const Ast.ModuleDecl) design.Error!void {
+    assert(child.name != .none);
     const named = inst.ports.len != 0 and inst.ports[0].name != .none;
     if (!named) {
         if (inst.ports.len > child.ports.len) try self.err(
@@ -359,6 +362,8 @@ pub fn checkConnectionShape(self: *Flatten, inst: *const Ast.Instance, child: *c
 /// ponytail: a reader two or more levels up keeps `lower_expr.instancePortFlow`'s
 /// sum of flow contributions; scanning every ancestor is the upgrade.
 pub fn portFlowRead(self: *Flatten, child: *const Ast.ModuleDecl, parent: ?*const Ast.ModuleDecl, inst: Ast.StrId, port: Ast.StrId) design.Error!bool {
+    assert(inst != .none);
+    assert(port != .none);
     const file = self.ctx.file;
     const x = &file.exprs;
     const Scan = struct {

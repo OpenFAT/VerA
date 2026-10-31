@@ -73,6 +73,7 @@ comptime {
 /// `Flatten.paramset_defparams` for lowering to judge. Asserts that `path`
 /// is empty (the top) or ends in `sep`.
 pub fn collectDefparams(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8) design.Error!void {
+    if (path.len != 0) assert(path[path.len - 1] == sep);
     for (module.defparams) |dp| {
         if (self.unit.paramset_instance) |instance| {
             try self.out.paramset_defparams.append(self.ctx.arena, .{
@@ -125,6 +126,8 @@ pub fn mayBindEarly(file: *const Ast.SourceFile) bool {
 /// complete walk of the same design: every defparam it collected, with its
 /// key and its last value, is in force from the start of this one.
 pub fn seedDefparams(self: *Flatten, first: *const Flatten) design.Error!void {
+    assert(self.defparams.rows.count() == 0); // a fresh walk, seeded once
+    assert(first.out.units.len != 0); // a walk that ran
     var it = first.defparams.rows.iterator();
     while (it.next()) |dp| {
         var row = dp.value_ptr.*;
@@ -134,6 +137,7 @@ pub fn seedDefparams(self: *Flatten, first: *const Flatten) design.Error!void {
         try self.defparams.rows.put(self.ctx.arena, dp.key_ptr.*, row);
     }
     self.defparams.seed_params = first.decls.params.items;
+    assert(self.defparams.rows.count() == first.defparams.rows.count());
 }
 
 /// §6.3.1 on the top's own parameters: a seeded defparam (`seedDefparams`)
@@ -142,6 +146,7 @@ pub fn seedDefparams(self: *Flatten, first: *const Flatten) design.Error!void {
 /// so the host's model card, which stands where an instance override would,
 /// no longer sets it. Runs once the top's parameters are `self.decls.params`.
 pub fn applyTopDefparams(self: *Flatten) design.Error!void {
+    assert(self.out.units.len == 0); // the top's parameters, before any unit
     if (self.defparams.rows.count() == 0) return;
     for (self.decls.params.items) |*p| {
         if (p.is_local) continue;
@@ -186,6 +191,8 @@ pub fn rootedPath(self: *const Flatten, p: []const u8) ?[]const u8 {
 /// itself (a defparam whose value reads its own target), named as the cycle.
 /// Any chain without one is followed to its end.
 pub fn seededValue(self: *Flatten, path: []const u8, local: []const u8, dp: *Defparam) design.Error!?Ast.ExprId {
+    assert(local.len != 0);
+    assert(dp.value != .none);
     if (!dp.seeded or dp.collected) return dp.value;
     if (try substitutionCycle(self, dp.value)) |names| {
         dp.used = true;
@@ -213,6 +220,7 @@ pub fn seededValue(self: *Flatten, path: []const u8, local: []const u8, dp: *Def
 /// the instance a path names may be several levels below the module the
 /// defparam is written in.
 pub fn reportUnusedDefparams(self: *Flatten) design.Error!void {
+    assert(self.out.units.len != 0); // after the walk
     var it = self.defparams.rows.iterator();
     while (it.next()) |dp| if (dp.value_ptr.seeded and !dp.value_ptr.collected) {
         // §12.8.2's hazard in another form: the first walk's hierarchy held
@@ -240,6 +248,7 @@ pub fn reportUnusedDefparams(self: *Flatten) design.Error!void {
 /// of the path runs down from there. A top-level module's instance name is
 /// its module name. Nothing matching leaves the path downward, for E0907.
 fn defparamKey(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, dp: []const u8) design.Error![]const u8 {
+    assert(dp.len != 0);
     // The ancestor walk below cuts `path` at each `sep`.
     if (path.len != 0) assert(path[path.len - 1] == sep);
     if (rootedPath(self, dp)) |r| return r;
@@ -297,6 +306,7 @@ fn readsUndeclared(self: *Flatten, e: Ast.ExprId) ?Ast.ExprId {
 /// parameter by parameter (`` `a` → `b` → `a` ``), or null. A depth-first
 /// walk over "the final expression of `a` reads `b`", on a heap stack.
 fn substitutionCycle(self: *Flatten, e: Ast.ExprId) design.Error!?[]const u8 {
+    assert(e != .none);
     const Frame = struct { name: Ast.StrId, reads: []const Ast.StrId, next: usize = 0 };
     // true while on the walk's path, false once every name below is done.
     var on_path: std.AutoHashMapUnmanaged(Ast.StrId, bool) = .empty;
@@ -347,12 +357,14 @@ fn undeclaredReads(self: *Flatten, e: Ast.ExprId) design.Error![]const Ast.StrId
         var buf: [3]Ast.ExprId = undefined;
         for (x.children(n, &buf)) |c| if (c != .none) try todo.append(self.ctx.arena, c);
     }
+    assert(todo.items.len == 0);
     return out.items;
 }
 
 /// The final expression of flat parameter `name` in this design: a seeded
 /// defparam's value, else its first-walk value (scalars only).
 fn seedValueOf(self: *Flatten, name: Ast.StrId) ?Ast.ExprId {
+    assert(name != .none);
     if (self.defparams.rows.get(self.ctx.file.str(name))) |dp| if (dp.seeded) return dp.value;
     for (self.defparams.seed_params) |p| if (p.name == name and p.dims.len == 0) return p.default;
     return null;
@@ -363,6 +375,7 @@ fn seedValueOf(self: *Flatten, name: Ast.StrId) ?Ast.ExprId {
 /// `seedDefparams`' second walk applies every defparam the first collected,
 /// so this is reached only by one that `mayBindEarly` did not foresee.
 fn boundEarlier(self: *Flatten, key: []const u8) bool {
+    assert(key.len != 0);
     const k = (std.mem.findScalarLast(u8, key, sep) orelse return false) + 1;
     for (self.out.units.items(.path), self.out.units.items(.decl)) |up, decl| if (std.mem.eql(u8, up, key[0..k])) {
         for (decl.get(self.ctx.file).params) |p| if (!p.is_local and std.mem.eql(u8, self.ctx.file.str(p.name), key[k..])) return true;

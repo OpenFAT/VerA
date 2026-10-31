@@ -114,6 +114,8 @@ const Levels = struct {
 /// segment below (`ooc`), and under a dotted name they would reach lowering
 /// as a node nothing connects.
 pub fn addNets(self: *Flatten, nets: []const Ast.NetDecl) design.Error!void {
+    const before = self.decls.nets.items.len;
+    defer assert(self.decls.nets.items.len <= before + nets.len);
     for (nets) |n| {
         if (ooc.isOoc(self.ctx.file.str(n.name))) continue;
         try addNet(self, n);
@@ -123,13 +125,16 @@ pub fn addNets(self: *Flatten, nets: []const Ast.NetDecl) design.Error!void {
 /// Appends a net to the flattened module and records its discipline. The only
 /// way to append to `self.decls.nets`, which keeps `disc_of` complete.
 pub fn addNet(self: *Flatten, n: Ast.NetDecl) design.Error!void {
+    assert(n.name != .none);
     try self.decls.nets.append(self.ctx.arena, n);
     try noteDiscipline(self, n.name, n.discipline);
+    if (n.discipline != .none) assert(self.res.disc_of.contains(n.name));
 }
 
 /// Records a declared discipline for a flat net; the first one wins. See
 /// `disc_of` and `resolveDiscipline`.
 pub fn noteDiscipline(self: *Flatten, name: Ast.StrId, disc: Ast.StrId) design.Error!void {
+    assert(name != .none);
     if (disc == .none) return;
     const gop = try self.res.disc_of.getOrPut(self.ctx.arena, name);
     if (!gop.found_existing) gop.value_ptr.* = disc;
@@ -164,6 +169,8 @@ pub fn noteDiscipline(self: *Flatten, name: Ast.StrId, disc: Ast.StrId) design.E
 /// discipline from the attribute or the connected net instead, so there is
 /// no declaration to judge.
 pub fn resolveDiscipline(self: *Flatten, path: []const u8, p: Ast.Port, bound: Ast.StrId, at: ?u32) design.Error!void {
+    assert(bound != .none);
+    assert(p.name != .none);
     const disc = ooc.oocDiscipline(self, path, p.name) orelse p.discipline;
     try noteSignalDiscipline(self, bound, disc);
     // F.2 step 4.b's input: this port's lower connection is a child segment
@@ -220,6 +227,7 @@ pub fn resolveDiscipline(self: *Flatten, path: []const u8, p: Ast.Port, bound: A
 /// §7.2.4 keeps a segment's tolerance separate from the single discipline
 /// chosen for a flattened net by §7.4. Lowering owns nature-attribute folding.
 pub fn noteSignalDiscipline(self: *Flatten, net: Ast.StrId, disc: Ast.StrId) design.Error!void {
+    assert(net != .none);
     if (disc == .none) return;
     try self.out.signal_disciplines.append(self.ctx.arena, .{
         .net = net,
@@ -409,6 +417,7 @@ fn resolveLevel(self: *Flatten, net: Ast.StrId, s: *Segs, lv: *const Levels, gro
 ///
 /// A legally unknown net keeps its first arrival in the level's domain.
 fn levelAnswer(self: *Flatten, net: Ast.StrId, tok: u32, discs: []const Ast.StrId) design.Error!?Ast.StrId {
+    assert(net != .none);
     var net_continuous = false;
     for (discs) |d| {
         if (discipline.isContinuous(self.ctx.file, d)) net_continuous = true;
@@ -459,6 +468,7 @@ fn levelAnswer(self: *Flatten, net: Ast.StrId, tok: u32, discs: []const Ast.StrI
 /// "the contents of the list match"). First match across every
 /// `connectrules` block in source order, which is §7.7.2.1's tie-break.
 fn matchResolution(self: *Flatten, cands: []const Ast.StrId, report: bool) design.Error!?*const Ast.ConnectResolution {
+    assert(cands.len >= 2); // one candidate needs no resolution statement
     // §7.7.2.1: an exact set wins even over an earlier subset match.
     // In the fallback, the candidate set is a subset of the rule's list.
     for ([_]bool{ true, false }) |want_exact| {

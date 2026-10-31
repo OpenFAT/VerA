@@ -194,6 +194,7 @@ pub fn up(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: 
 /// A parent of unknown domain changes nothing: everything below it is
 /// unknown too.
 pub fn down(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: Ast.StrId, parent: Seg) design.Error!Seg {
+    assert(net != .none);
     const s = try up(self, module, path, net, 0);
     if (self.ctx.discipline_resolution == .basic) return s;
     if (s.declared or s.behavioral or s.domain == .continuous) return s;
@@ -208,6 +209,7 @@ pub fn down(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net
 
 /// `up`'s memo for segment `path ++ net`, if this level has answered it.
 fn memo(self: *Flatten, path: []const u8, net: Ast.StrId) ?Seg {
+    assert(net != .none);
     return self.seg.up.getAdapted(flat_name.PathKey{ .path = path, .local = self.ctx.file.str(net) }, flat_name.PathKey.Context{});
 }
 
@@ -297,6 +299,7 @@ fn combine(self: *Flatten, f: *const Frame) design.Error!Seg {
 }
 
 fn ofDiscipline(file: *const Ast.SourceFile, d: Ast.StrId, declared: bool) Seg {
+    assert(d != .none);
     const decl = discipline.declOf(file, d) orelse return .{ .disc = d, .declared = declared };
     return .{ .disc = d, .domain = discipline.domainOf(decl) orelse .unspecified, .declared = declared };
 }
@@ -308,6 +311,7 @@ fn ofDiscipline(file: *const Ast.SourceFile, d: Ast.StrId, declared: bool) Seg {
 /// up instead of scanning the module's declarations and every child per net,
 /// which was quadratic in a level's net and instance counts.
 fn indexOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, depth: u32) design.Error!*const UnitIndex {
+    if (path.len != 0) assert(path[path.len - 1] == sep);
     const gop = try self.seg.index.getOrPut(self.ctx.arena, path);
     if (gop.found_existing) return gop.value_ptr;
     gop.value_ptr.* = .{};
@@ -339,6 +343,7 @@ fn indexOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, dept
 /// else (no `connectrules`) the source instance list, a paramset instance
 /// resolved only at `depth == 0`, where `insert.plan` is planning.
 fn kidsOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, depth: u32) design.Error![]const walk.TreeKid {
+    if (path.len != 0) assert(path[path.len - 1] == sep);
     if (self.tree.kids.get(path)) |kids| return kids.items;
     var kids: std.ArrayList(walk.TreeKid) = .empty;
     for (module.instances) |*inst| {
@@ -358,6 +363,7 @@ fn kidsOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, depth
 /// Undeclared names reach here only as nets (§3.6.5's implicit nets of a
 /// port connection or an assignment target).
 fn digitalUse(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, net: Ast.StrId) bool {
+    assert(net != .none);
     const Walk = struct {
         file: *const Ast.SourceFile,
         net: Ast.StrId,
@@ -388,6 +394,7 @@ fn digitalUse(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, net: A
 /// The discipline `module` itself declares for `net`, on a port or a net
 /// declaration, if any: `UnitIndex.declared`'s answer, by a scan.
 fn declaredIn(module: *const Ast.ModuleDecl, net: Ast.StrId) ?Ast.StrId {
+    assert(net != .none);
     for (module.ports) |p| if (p.name == net and p.discipline != .none) return p.discipline;
     for (module.nets) |n| if (n.name == net and n.discipline != .none) return n.discipline;
     return null;

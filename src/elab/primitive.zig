@@ -10,6 +10,7 @@
 //! - `pub fn primitiveAccess(self: *Flatten, access: Ast.StrId, net: Ast.ExprId) Ast.StrId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Lexer = @import("frontend").Lexer;
 const constfold = @import("frontend").constfold;
@@ -34,6 +35,8 @@ const discipline = @import("discipline_rules.zig");
 /// instantiation (its module identifier, with no `;` before the instance
 /// name) or one of its port connections.
 pub fn checkPortDiscipline(self: *Flatten, module: *const Ast.ModuleDecl, inst: *const Ast.Instance) design.Error!void {
+    assert(inst.module != .none);
+    assert(inst.main_tok < self.ctx.tok_starts.len);
     for (module.attrs) |a| {
         if (!std.mem.eql(u8, self.ctx.file.str(a.name), "port_discipline")) continue;
         if (!decorates(self, decoratedTok(self, a.main_tok), inst)) continue;
@@ -66,6 +69,7 @@ pub fn checkPortDiscipline(self: *Flatten, module: *const Ast.ModuleDecl, inst: 
 /// port). Null when neither carries a valid one; `checkPortDiscipline`
 /// reports an invalid one.
 pub fn portDisciplineAttr(self: *Flatten, module: *const Ast.ModuleDecl, inst: *const Ast.Instance, conn: Ast.PortConn) ?Ast.StrId {
+    assert(inst.module != .none);
     var on_inst: ?Ast.StrId = null;
     for (module.attrs) |a| {
         if (!std.mem.eql(u8, self.ctx.file.str(a.name), "port_discipline")) continue;
@@ -100,6 +104,8 @@ pub fn portDisciplineAttr(self: *Flatten, module: *const Ast.ModuleDecl, inst: *
 /// resolves its net keeps V/I. Applies to prelude bodies only
 /// (`Unit.primitive`); a user module's `V` means V.
 pub fn primitiveAccess(self: *Flatten, access: Ast.StrId, net: Ast.ExprId) Ast.StrId {
+    assert(self.unit.primitive); // E.3.2's respelling is for prelude bodies only
+    assert(access != .none);
     const which: Ast.PotentialOrFlow = blk: {
         const a_ = self.ctx.file.str(access);
         if (std.mem.eql(u8, a_, "V")) break :blk .potential;
@@ -117,6 +123,7 @@ pub fn primitiveAccess(self: *Flatten, access: Ast.StrId, net: Ast.ExprId) Ast.S
 /// The first token after the run of `(* ... *)` instances that token `t`
 /// (an attr_name) is inside. §2.9 forbids nesting, so the first `*)` closes.
 fn decoratedTok(self: *Flatten, t: u32) u32 {
+    assert(t < self.ctx.tok_starts.len);
     const n: u32 = @intCast(self.ctx.tok_starts.len);
     var i = t;
     while (i < n) {
@@ -130,6 +137,7 @@ fn decoratedTok(self: *Flatten, t: u32) u32 {
 /// Is token `t` the start of `inst`'s instantiation or of one of its port
 /// connections? A.4.1 attaches `{ attribute_instance }` to both.
 fn decorates(self: *Flatten, t: u32, inst: *const Ast.Instance) bool {
+    assert(inst.main_tok < self.ctx.tok_starts.len);
     for (inst.ports) |c| if (c.main_tok == t) return true;
     if (t >= inst.main_tok or !std.mem.eql(u8, tokText(self, t), self.ctx.file.str(inst.module))) return false;
     // `resistor r1(a, b), r2(c, d);` shares one attribute list; a `;` between
@@ -141,6 +149,7 @@ fn decorates(self: *Flatten, t: u32, inst: *const Ast.Instance) bool {
 
 /// The source text of token `t`.
 fn tokText(self: *Flatten, t: u32) []const u8 {
+    assert(t < self.ctx.tok_starts.len);
     const sp = Lexer.tokenSpan(self.ctx.src, self.ctx.tok_starts, t);
     return self.ctx.src[sp.start..sp.end];
 }

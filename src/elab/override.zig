@@ -28,6 +28,7 @@ const flat_name = @import("flat_name.zig");
 const defparam = @import("defparam.zig");
 const hier_param = @import("hier_param.zig");
 const Unit = Flatten.Unit;
+const sep = design.sep;
 const fixture = @import("fixture.zig");
 
 /// One effective §6.3 override. A defparam value was cloned in its DECLARING
@@ -60,6 +61,8 @@ pub fn collectOverrides(
     unit: *Unit,
     path: []const u8,
 ) design.Error!void {
+    assert(path.len != 0);
+    assert(path[path.len - 1] == sep);
     var specified: hier_param.Values = .initFill(.none);
     var spellings: std.EnumArray(hier_param.Kind, Ast.StrId) = .initFill(.none);
 
@@ -150,6 +153,8 @@ pub fn collectOverrides(
     }
 
     try markGiven(self, child, over, unit);
+    // One answer per parameter, and an alias shares its target's.
+    assert(unit.given.count() <= child.params.len + child.aliasparams.len);
 }
 
 /// Returns how many of `params` an override can land on: the non-local ones
@@ -157,6 +162,7 @@ pub fn collectOverrides(
 pub fn overridableCount(params: []const Ast.ParamDecl) usize {
     var n: usize = 0;
     for (params) |p| n += @intFromBool(!p.is_local);
+    assert(n <= params.len);
     return n;
 }
 
@@ -165,6 +171,7 @@ pub fn overridableCount(params: []const Ast.ParamDecl) usize {
 /// forbids different original/alias spellings even across the two mechanisms.
 /// Inspection never consumes an override: only the selected instance does.
 pub fn parameterBinding(self: *Flatten, inst: *const Ast.Instance, params: []const Ast.ParamDecl, aliases: []const Ast.AliasParam, index: usize, path: []const u8, consume: bool) design.Error!?ParamBinding {
+    assert(index < params.len);
     const p = params[index];
     if (p.is_local) return null;
     var found: ?ParamBinding = null;
@@ -190,6 +197,7 @@ pub fn parameterBinding(self: *Flatten, inst: *const Ast.Instance, params: []con
     try parameterDefparam(self, path, p.name, p.name, consume, &found);
     for (aliases) |al| if (al.target == p.name)
         try parameterDefparam(self, path, p.name, al.alias, consume, &found);
+    if (found) |f| assert(f.value != .none);
     return found;
 }
 
@@ -207,6 +215,7 @@ pub fn constReal(self: *Flatten, e: Ast.ExprId) ?f64 {
 /// A value that reads the card is recorded for the card-time `checkCard`
 /// instead (`Design.system_checks`), under the name `path$kind`.
 pub fn checkSystemParam(self: *Flatten, kind: hier_param.Kind, tok: u32, e: Ast.ExprId, path: []const u8) design.Error!bool {
+    assert(e != .none);
     if (constfold.firstStateRead(self.ctx.file, e, self.decls.vars.items)) |what| {
         try self.err(tok, .E0363, "`{s}` override reads `{s}`", .{ kind.name(), what });
         return true;
@@ -227,6 +236,8 @@ pub fn checkSystemParam(self: *Flatten, kind: hier_param.Kind, tok: u32, e: Ast.
 /// Returns whether `child` has an overridable parameter `target`; otherwise
 /// reports E0907 naming it `shown` (an alias reads as written, §3.4.7).
 pub fn checkOverridable(self: *Flatten, child: *const Ast.ModuleDecl, target: Ast.StrId, shown: Ast.StrId, tok: u32) design.Error!bool {
+    assert(target != .none);
+    assert(shown != .none);
     const decl = for (child.params) |*p| {
         if (p.name == target) break p;
     } else {
@@ -245,6 +256,8 @@ pub fn checkOverridable(self: *Flatten, child: *const Ast.ModuleDecl, target: As
 /// flattened parameter (an alias shares its target's), so the clone can
 /// substitute a literal.
 pub fn markGiven(self: *Flatten, child: *const Ast.ModuleDecl, over: *const std.AutoHashMapUnmanaged(Ast.StrId, Ast.ExprId), unit: *Unit) design.Error!void {
+    // Every override names a parameter of `child` (`collectOverrides`).
+    assert(over.count() <= child.params.len);
     for (child.params) |p| try unit.given.put(self.ctx.arena, p.name, over.contains(p.name));
     for (child.aliasparams) |al| if (over.contains(al.target))
         try unit.given.put(self.ctx.arena, al.alias, true);
@@ -253,6 +266,8 @@ pub fn markGiven(self: *Flatten, child: *const Ast.ModuleDecl, over: *const std.
 // ---- private ----
 
 fn parameterDefparam(self: *Flatten, path: []const u8, original: Ast.StrId, spelling: Ast.StrId, consume: bool, found: *?ParamBinding) design.Error!void {
+    assert(original != .none);
+    assert(spelling != .none);
     const key = flat_name.PathKey{ .path = path, .local = self.ctx.file.str(spelling) };
     const dp = self.defparams.rows.getPtrAdapted(key, flat_name.PathKey.Context{}) orelse return;
     var value = dp.value;
@@ -266,6 +281,7 @@ fn parameterDefparam(self: *Flatten, path: []const u8, original: Ast.StrId, spel
 }
 
 fn collectSystemDefparam(self: *Flatten, path: []const u8, kind: hier_param.Kind, name: Ast.StrId, specified: *hier_param.Values, spellings: *std.EnumArray(hier_param.Kind, Ast.StrId)) design.Error!void {
+    assert(name != .none);
     const dp = self.defparams.rows.getPtrAdapted(flat_name.PathKey{ .path = path, .local = self.ctx.file.str(name) }, flat_name.PathKey.Context{}) orelse return;
     dp.used = true;
     const previous = spellings.get(kind);

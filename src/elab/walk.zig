@@ -169,6 +169,8 @@ pub fn walkInstances(
 /// primitives' disciplines. Null when the unit's instance list is refused
 /// (E0905, an unknown module), so nothing below it is walked.
 fn enterLevel(self: *Flatten, source_module: *const Ast.ModuleDecl, path: []const u8, stack: []const Ast.StrId) design.Error!?Level {
+    if (path.len != 0) assert(path[path.len - 1] == sep);
+    assert(stack.len != 0); // the level's own module is on it
     // §6.3/§6.4.2 an indexed defparam can select a different paramset for
     // each array element. Expand before §6.9.3 connect planning, so both
     // passes use the same external instance paths and selected modules.
@@ -367,6 +369,7 @@ fn startInstance(self: *Flatten, lv: *Level) design.Error!bool {
 /// Returns whether `name` is an IEEE 1364 UDP: a digital primitive the
 /// analog flatten never inlines (A.5.4).
 fn isUdp(file: *const Ast.SourceFile, name: Ast.StrId) bool {
+    assert(name != .none);
     for (file.udps) |u| if (u.name == name) return true;
     return false;
 }
@@ -378,6 +381,8 @@ fn isUdp(file: *const Ast.SourceFile, name: Ast.StrId) bool {
 /// end the recursion, so any cycle is refused (E0905), and any finite depth
 /// is walked.
 fn cycle(self: *Flatten, stack: []const Ast.StrId, child: Ast.StrId) design.Error!?[]const u8 {
+    assert(stack.len != 0);
+    assert(child != .none);
     const at = std.mem.findScalar(Ast.StrId, stack, child) orelse return null;
     var names: std.ArrayList(u8) = .empty;
     for (stack[at..]) |m| try names.print(self.ctx.arena, "`{s}` → ", .{self.ctx.file.str(m)});

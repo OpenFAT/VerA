@@ -54,6 +54,12 @@ pub fn cloneExpr(self: *Flatten, e: Ast.ExprId) design.Error!Ast.ExprId {
     return out;
 }
 
+pub inline fn cloneArgs(self: *Flatten, src: []const Ast.ExprId) design.Error!u32 {
+    const out = try self.ctx.arena.alloc(Ast.ExprId, src.len);
+    for (src, out) |s, *o| o.* = try cloneExpr(self, s);
+    return self.ctx.file.exprs.addExprList(self.ctx.arena, out);
+}
+
 // ---- private ----
 
 fn cloneRow(self: *Flatten, e: Ast.ExprId) design.Error!Ast.ExprId {
@@ -185,14 +191,6 @@ fn cloneRow(self: *Flatten, e: Ast.ExprId) design.Error!Ast.ExprId {
     }
     return out;
 }
-
-pub inline fn cloneArgs(self: *Flatten, src: []const Ast.ExprId) design.Error!u32 {
-    const out = try self.ctx.arena.alloc(Ast.ExprId, src.len);
-    for (src, out) |s, *o| o.* = try cloneExpr(self, s);
-    return self.ctx.file.exprs.addExprList(self.ctx.arena, out);
-}
-
-
 
 /// §6.4.1: "The right-hand side can be composed of numbers, parameters, and
 /// hierarchical out-of-module references to local parameters of a different

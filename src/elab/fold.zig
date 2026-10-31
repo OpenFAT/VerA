@@ -108,6 +108,7 @@ pub const ParamEnv = struct {
 /// names, to an integer; null when it does not fold or is real. A bound may
 /// read a parameter (§3.4), with this instance's overrides applied.
 pub fn constInt(self: *Flatten, e: Ast.ExprId) ?i64 {
+    assert(e != .none);
     const c = constfold.fold(self.ctx.file, e, ParamEnv{ .self = self, .local = true }) orelse return null;
     return if (c == .int) c.int else null;
 }
@@ -115,6 +116,7 @@ pub fn constInt(self: *Flatten, e: Ast.ExprId) ?i64 {
 /// `constInt` for an expression already in the flat namespace (a cloned
 /// declaration's range, say), so no name is renamed.
 pub fn constIntFlat(self: *Flatten, e: Ast.ExprId) ?i64 {
+    assert(e != .none);
     const c = constfold.fold(self.ctx.file, e, ParamEnv{ .self = self, .local = false }) orelse return null;
     return if (c == .int) c.int else null;
 }
@@ -132,6 +134,7 @@ pub fn gateHolds(self: *Flatten, gate: Ast.ExprId) bool {
 /// it records which flattened parameter values an overload choice used, for
 /// the same host shape check that protects §6.6 generate selection.
 pub fn constValue(self: *Flatten, e: Ast.ExprId, local: bool, reads: ?[]bool) ?constfold.Const {
+    if (reads) |r| assert(r.len == self.decls.params.items.len);
     return constfold.fold(self.ctx.file, e, ParamEnv{ .self = self, .local = local, .reads = reads });
 }
 
@@ -158,6 +161,7 @@ pub fn syncParamValues(self: *Flatten) design.Error!void {
 /// stack the parse reserved for `d`, and overflowed it). A parameter met
 /// again while its own default is folding is a cycle and declines.
 fn paramValue(self: *Flatten, i: usize, depth: u8) ?constfold.Const {
+    assert(i < self.decls.params.items.len);
     const rows = self.folds.values.items;
     assert(rows.len == self.decls.params.items.len); // `syncParamValues`
     switch (rows[i]) {
