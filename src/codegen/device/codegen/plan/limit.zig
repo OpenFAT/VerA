@@ -55,6 +55,7 @@ pub const Limits = struct {
     /// on demand, so the plan and the emitter cannot disagree about it.
     /// Asserts `calls[i]` is a `fetlimds` site. O(calls).
     pub fn ladderOf(g: Limits, i: usize) ?Ladder {
+        assert(i < g.calls.len);
         const me = g.calls[i];
         assert(me.alg == .fetlimds);
         var partner: usize = undefined;
@@ -84,6 +85,7 @@ pub const Limits = struct {
     /// for `ladderOf`'s reason. Asserts `calls[i]` is a `pnjlimds` site.
     /// O(calls).
     pub fn rungOf(g: Limits, i: usize) ?Rung {
+        assert(i < g.calls.len);
         const me = g.calls[i];
         assert(me.alg == .pnjlimds);
         var partner: usize = undefined;
@@ -109,6 +111,7 @@ pub const Limits = struct {
     /// Is this `limvds` site the channel rung of some ladder? Then `emitLadder`
     /// owns it and the flat list must not clamp it a second time. O(calls²).
     pub fn limvdsClaimed(g: Limits, k: usize) bool {
+        assert(k < g.calls.len);
         for (g.calls, 0..) |lc, i| {
             if (lc.alg != .fetlimds) continue;
             const lad = g.ladderOf(i) orelse continue;
@@ -122,6 +125,7 @@ pub const Limits = struct {
     /// node fights the sources and the other devices on it (`contract.zig`'s
     /// note on `limit`).
     pub fn writable(g: Limits, u: u32) bool {
+        assert(g.num_ports <= std.math.maxInt(u32));
         return u != none_u32 and u >= g.num_ports;
     }
 };
@@ -261,6 +265,7 @@ const Site = struct {
 /// seed tree; slices are owned by `g.arena`. Runs in `prepare` before
 /// `plan/jobs.zig`, which queues each honoured site's `argv` into the core.
 pub fn plan(g: Input, u_names: []const []const u8) Error!Limits {
+    assert(u_names.len >= g.lowered.nodes.len);
     var lim: Limits = .{ .num_ports = g.lowered.num_ports };
     var out: std.ArrayList(LimitCall) = .empty;
     var declined: std.ArrayList(Decline) = .empty;
@@ -385,6 +390,7 @@ pub fn plan(g: Input, u_names: []const []const u8) Error!Limits {
 
 /// Returns the name of unknown `u`, or "0" for §1.3.1.1 ground.
 pub fn uName(u_names: []const []const u8, u: u32) []const u8 {
+    assert(u == none_u32 or u < u_names.len);
     return if (u == none_u32) "0" else u_names[u];
 }
 
@@ -401,6 +407,7 @@ pub fn uName(u_names: []const []const u8, u: u32) []const u8 {
 /// component's root is ground if it holds it, else its lowest port, else its
 /// lowest net, at 0 V; every other node follows its edge from the root.
 fn planSeed(g: Input, u_names: []const []const u8, lim: *Limits) Error!void {
+    assert(u_names.len >= g.lowered.nodes.len);
     for (lim.calls) |lc| lim.seed_tree = lim.seed_tree or lc.seed != .undef or lc.alg == .pnjlimds;
     if (!lim.seed_tree) return;
     var dropped: std.ArrayList(Decline) = .empty;
@@ -520,6 +527,7 @@ fn planSeed(g: Input, u_names: []const []const u8, lim: *Limits) Error!void {
 /// Why `lim.calls[i]` cannot be honoured on its own, and the help line; null
 /// when it can.
 fn dangling(lim: Limits, i: usize) ?[2][]const u8 {
+    assert(i < lim.calls.len);
     return switch (lim.calls[i].alg) {
         .fetlimds => if (lim.ladderOf(i) == null) .{
             "no complete mode ladder",
@@ -535,6 +543,7 @@ fn dangling(lim: Limits, i: usize) ?[2][]const u8 {
 
 /// `$limit(V(a,b), "alg")` as it reads in the source, for the declined list.
 fn spell(g: Input, u_names: []const []const u8, args: []const Mir.Value) []const u8 {
+    assert(u_names.len >= g.lowered.nodes.len);
     const alg = strArg(g, args, 1) orelse "?";
     const pair = probePair(g, args) orelse
         return g.arena.print("$limit(…, \"{s}\")", .{alg}) catch "$limit(…)";
@@ -544,6 +553,7 @@ fn spell(g: Input, u_names: []const []const u8, args: []const Mir.Value) []const
 /// §4.4 `V(a,b)` lowers to `fsub` of two probes and `V(a)` to a bare probe.
 /// Anything else (a flow probe, an expression) has no node pair to correct.
 fn probePair(g: Input, args: []const Mir.Value) ?[2]u32 {
+    assert(g.an.vty.len == g.an.nv);
     if (args.len == 0) return null;
     const v = g.an.rv(args[0]);
     const pair: [2]u32 = switch (g.mir.valueDef(v)) {
@@ -567,6 +577,7 @@ fn probePair(g: Input, args: []const Mir.Value) ?[2]u32 {
 }
 
 fn algOf(g: Input, args: []const Mir.Value) ?Alg {
+    assert(g.an.vty.len == g.an.nv);
     // §4.5.15 bare `$limit(V(a,b))` asks for the simulator's own choice of
     // algorithm. Ours is none: inventing a clamp the model did not name would
     // change its answers with no way to say so in the source.

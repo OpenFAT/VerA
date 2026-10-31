@@ -54,7 +54,7 @@ pub fn emitStatusHelpers(self: *Gen) Error!void {
     try self.w("}};\n\n", .{});
     const code = try statusVal(self, self.lowered.status);
     // The `.{ }` below spells four arguments.
-    comptime std.debug.assert(Lowered.status_arg_max == 4);
+    comptime assert(Lowered.status_arg_max == 4);
     var args: [Lowered.status_arg_max][]const u8 = undefined;
     var reads_m = std.mem.startsWith(u8, code, "m.");
     for (&args, self.lowered.status_args) |*s, a| {

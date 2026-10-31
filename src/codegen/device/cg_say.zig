@@ -13,6 +13,7 @@
 //! - `pub fn emitSay(g: *Gen, inst: Mir.Inst) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const cg = @import("codegen.zig");
 const Gen = cg.Gen;
@@ -42,6 +43,8 @@ pub const SaySite = struct {
 /// value has no numeric record (a string that is not a constant, a number
 /// under `%s`) is W0850 here.
 pub fn planSay(g: *Gen) Error![]const SaySite {
+    assert(g.display == .record);
+    assert(g.say.len == 0);
     var out: std.ArrayList(SaySite) = .empty;
     for (g.lowered.displays.items) |d| {
         const c: Mir.Callee = .fromName(d.name);
@@ -74,6 +77,8 @@ pub fn planSay(g: *Gen) Error![]const SaySite {
 /// `$itor` carrier). Such a unit takes a `comptime pass: contract.SayPass`
 /// and gates each call on it (`gen_call.gateOpen`).
 pub fn planPasses(g: *Gen) Error!void {
+    assert(g.display == .emit);
+    assert(!g.passes);
     var init: std.ArrayList(Mir.Inst) = .empty;
     for (g.lowered.displays.items) |d| {
         const c: Mir.Callee = .fromName(d.name);
@@ -108,6 +113,8 @@ pub fn sayRecords(c: Mir.Callee) bool {
 /// appends its record to the host's `out`, each value as an f64. A task
 /// `planSay` did not keep renders void.
 pub fn emitSay(g: *Gen, inst: Mir.Inst) Error!void {
+    assert(g.display == .record);
+    assert(g.mir.instOp(inst) == .call);
     const call = g.an.rv(g.mir.instResult(inst));
     const k = for (g.say, 0..) |site, j| {
         if (site.call == call) break j;
@@ -140,6 +147,9 @@ pub fn emitSay(g: *Gen, inst: Mir.Inst) Error!void {
 /// arguments to `vals`. False when one has no numeric record: a string that
 /// is not a constant, or a number under `%s` (§9.4.5's bytes).
 fn sayFormat(g: *Gen, args: []const Mir.Value, fmt: *std.ArrayList(u8), vals: *std.ArrayList(Mir.Value)) Error!bool {
+    assert(vals.items.len == 0); // `fmt` may already hold a §9.7.3 severity prefix.
+    const fmt_before = fmt.items.len;
+    defer assert(fmt.items.len >= fmt_before);
     var i: usize = 0;
     while (i < args.len) {
         const s = g.strArg(args, i) orelse {
@@ -198,6 +208,8 @@ fn sayFormat(g: *Gen, args: []const Mir.Value, fmt: *std.ArrayList(u8), vals: *s
 
 /// `%d` with `v`'s automatic field (`decimalField`), `%11d` for an `integer`.
 fn sayDecimal(g: *Gen, fmt: *std.ArrayList(u8), v: Mir.Value) Error!void {
+    const len_before = fmt.items.len;
+    defer assert(fmt.items.len >= len_before);
     const cols = cg_format.decimalField(g, v) orelse return fmt.appendSlice(g.arena, "%d");
     var buf: [8]u8 = undefined;
     try fmt.appendSlice(g.arena, std.mem.print(&buf, "%{d}d", .{cols}) catch unreachable);
@@ -205,6 +217,8 @@ fn sayDecimal(g: *Gen, fmt: *std.ArrayList(u8), v: Mir.Value) Error!void {
 
 /// `text` into a format as itself: each `%` doubled.
 fn appendLiteral(g: *Gen, fmt: *std.ArrayList(u8), text: []const u8) Error!void {
+    const len_before = fmt.items.len;
+    defer assert(fmt.items.len >= len_before);
     for (text) |ch| {
         if (ch == '%') try fmt.append(g.arena, '%');
         try fmt.append(g.arena, ch);

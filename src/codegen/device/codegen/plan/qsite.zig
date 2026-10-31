@@ -55,6 +55,7 @@ const Term = struct { sign: f64, contrib: u32 };
 /// `branch_u` is `Names.branch_u`, one entry per contribution; `sinv` is
 /// `Sinv.val`. O(rows · terms · sites); a module has tens of each.
 pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []const bool) Error!QSites {
+    assert(branch_u.len == in.lowered.contributions.items.len);
     const a = in.arena;
     const lw = in.lowered;
 
@@ -177,6 +178,7 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
 
 /// Does a charge with this end-of-block value move in time?
 fn live(in: Input, sinv: []const bool, v0: Mir.Value) bool {
+    assert(sinv.len == 0 or sinv.len == in.an.nv);
     const v = in.an.rv(v0);
     if (in.an.foldConst(v, false) != null) return false;
     const i = @backingInt(v);

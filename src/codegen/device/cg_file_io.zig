@@ -23,6 +23,8 @@ const cg_format = @import("cg_format.zig");
 /// instruction id, the per-call-site key for its formatted bytes (`zSBuf`).
 /// Aborts codegen for a callee `codegen.isFileCall` does not route here.
 pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) Error!void {
+    assert(Mir.callee.isFileCall(c));
+    assert(g.cur.emitting_display);
     // §9.5.1/§9.5.2/§9.5.6: `$fclose`, `$fflush` and the five output tasks are
     // tasks, so `Mir.callee.ty` types them real like every void call, but the
     // kernels return integers. The cast lives here because the value only
@@ -54,6 +56,7 @@ pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize
 /// Emits §9.4.1's registration half: arms the monitor latch of the site keyed
 /// by `args[0]` (`str_kernels.zMonitorArm`).
 pub fn emitMonitorArm(g: *Gen, args: []const Mir.Value) Error!void {
+    assert(args.len != 0);
     return g.b("S.con(zMonitorArm({d}))", .{monitorKey(g, args)});
 }
 
@@ -62,6 +65,7 @@ pub fn emitMonitorArm(g: *Gen, args: []const Mir.Value) Error!void {
 /// reported step. `$abstime` and `$realtime` are left out, "with the exception
 /// of the $abstime or $realtime system functions".
 pub fn monitorValues(g: *Gen, ops: []const cg_format.PrintArg) Error!void {
+    assert(ops.len <= std.math.maxInt(u32));
     try g.b("&[_]u64{{", .{});
     var first = true;
     for (ops) |p| {
@@ -98,6 +102,7 @@ pub fn monitorValues(g: *Gen, ops: []const cg_format.PrintArg) Error!void {
 /// The site key `Lower.armMonitor` put first in a monitor's registration and
 /// report: a literal, so it can key a comptime latch.
 pub fn monitorKey(g: *const Gen, args: []const Mir.Value) i64 {
+    assert(args.len != 0);
     assert(args.len > 0);
     const def = g.mir.valueDef(g.an.rv(args[0]));
     assert(def == .int_const);
@@ -107,6 +112,7 @@ pub fn monitorKey(g: *const Gen, args: []const Mir.Value) i64 {
 // ---- private ----
 
 fn emitFileCallInner(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) Error!void {
+    assert(Mir.callee.isFileCall(c));
     switch (c) {
         // §9.5.2's five output tasks, and the two descriptor tasks that take no
         // text (`callee.zig`'s `.file_out` family).
@@ -202,6 +208,7 @@ fn emitFileCallInner(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usiz
 /// (`zFLineAt`), so the value is the one the read statement left. A count that
 /// is not a direct read call (no site to name) reads the channel (`zFLine`).
 fn emitReadLine(g: *Gen, args: []const Mir.Value) Error!void {
+    assert(args.len >= 2); // A synthetic reader carries its count and fd.
     const n = if (args.len > 0) args[0] else Mir.Value.zero;
     const def = g.mir.valueDef(g.an.rv(n));
     if (def == .inst_result and g.mir.instOp(def.inst_result) == .call) {
@@ -217,6 +224,8 @@ fn emitReadLine(g: *Gen, args: []const Mir.Value) Error!void {
 
 /// The first two operands every synthetic reader carries: count, then fd.
 inline fn emitLine(g: *Gen, args: []const Mir.Value, comptime kernel: []const u8) Error!void {
+    comptime assert(kernel.len != 0);
+    assert(args.len >= 2);
     try g.b(kernel ++ "(", .{});
     try g.renderVal(if (args.len > 0) args[0] else Mir.Value.zero, .int);
     try g.b(", ", .{});
@@ -229,6 +238,7 @@ inline fn emitLine(g: *Gen, args: []const Mir.Value, comptime kernel: []const u8
 /// (`$fwrite`, like `$write`, does not end the line). Syntax 9-3 has no
 /// radix-suffixed spelling, so the default conversion is the operand's own.
 fn emitFileWrite(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) Error!void {
+    assert(Mir.callee.isFileCall(c));
     // §9.5.1 `$fclose` and §9.5.6 `$fflush` take a descriptor and no text.
     if (c == .@"$fclose" or c == .@"$fflush") {
         try g.b("{s}(", .{if (c == .@"$fclose") "zFClose" else "zFFlush"});

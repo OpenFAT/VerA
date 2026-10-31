@@ -93,6 +93,7 @@ pub fn buildArgs(
 /// bound on its literal part) plus each operand's `textMax`, never below
 /// `strcap.row`, the row every site had.
 pub fn siteCap(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Error!u64 {
+    assert(ops.len <= std.math.maxInt(u32));
     var n: u64 = fmt.len;
     for (ops) |p| n +|= try p.textMax(g);
     return @max(n, strcap.row);
@@ -102,6 +103,7 @@ pub fn siteCap(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Error!
 /// row of `cap` bytes (`str_kernels.zSRow`, slot 0). Asserts that `cap` is
 /// at least `strcap.row` (`siteCap`, `strcap.rtFormatCap`).
 pub fn emitRow(g: *Gen, site: usize, cap: u64) Error!void {
+    assert(cap > 0);
     assert(cap >= strcap.row);
     if (cap == strcap.row or !try fits(g, site, cap)) return g.b("zSBuf({d})", .{site});
     return g.b("zSRow({d}, 0, {d})", .{ site, cap });
@@ -111,6 +113,8 @@ pub fn emitRow(g: *Gen, site: usize, cap: u64) Error!void {
 /// prints to stderr (the transcript; stdout belongs to a host that pipes
 /// data). `inst` keys `$monitor`'s scratch row. `$fatal` also halts.
 pub fn emitDisplayTask(g: *Gen, c: Mir.Callee, args: []const Mir.Value, inst: Mir.Inst) Error!void {
+    assert(g.display == .emit);
+    assert(g.mir.instOp(inst) == .call);
     const site: usize = @backingInt(inst);
     var fmt: std.ArrayList(u8) = .empty;
     var ops: Ops = .empty;
@@ -181,6 +185,8 @@ pub fn emitDisplayTask(g: *Gen, c: Mir.Callee, args: []const Mir.Value, inst: Mi
 /// into; add a debugger hook in the runner when something interactive can
 /// resume.
 pub fn emitSimCtl(g: *Gen, name: []const u8, args: []const Mir.Value, inst: Mir.Inst) Error!void {
+    assert(name.len != 0);
+    assert(g.mir.instOp(inst) == .call);
     const level = finishLevel(g, args);
     try g.b("zd: {{ ", .{});
     // §5.10.2: "final_step will also generate a global event upon the
@@ -204,6 +210,7 @@ pub fn emitSimCtl(g: *Gen, name: []const u8, args: []const Mir.Value, inst: Mir.
 /// block's value is the formatted string. §3.3 removes NUL bytes only after
 /// formatting, so field widths count the original bytes.
 pub fn emitStringFormat(g: *Gen, args: []const Mir.Value, site: usize) Error!void {
+    assert(site < g.mir.insts.len);
     var fmt: std.ArrayList(u8) = .empty;
     var ops: Ops = .empty;
     try buildArgs(g, args, &fmt, &ops);
@@ -224,6 +231,7 @@ pub fn emitStringFormat(g: *Gen, args: []const Mir.Value, site: usize) Error!voi
 /// `str_kernels.zSFormatRt`, which walks the format at run time. `%m` prints
 /// what `translateFormat` prints for it.
 pub fn emitStringFormatRt(g: *Gen, args: []const Mir.Value, site: usize) Error!void {
+    assert(site < g.mir.insts.len);
     try g.b("zStringStore(zSFormatRt(", .{});
     try emitRow(g, site, try strcap.rtFormatCap(g, args));
     try g.b(", ", .{});
@@ -283,6 +291,7 @@ pub fn endsLine(c: Mir.Callee) bool {
 /// expression; an overrun is E1011 (`zSOver`). Past `fmt_chunk` operands the
 /// text goes through one fixed writer, a print per chunk.
 pub fn emitBufPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg, site: usize) Error!void {
+    assert(site < g.mir.insts.len);
     const cap = try siteCap(g, fmt, ops);
     if (ops.len <= fmt_chunk) {
         try g.b("std.mem.print(", .{});
@@ -308,6 +317,7 @@ pub fn emitBufPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg, s
 /// array, or call `site`'s static row for operand i (`zSRow` slot i + 1) when
 /// the field is wider than `Spec.max_stack`.
 pub fn emitScratch(g: *Gen, ops: []const cg_format.PrintArg, site: usize) Error!void {
+    assert(site < g.mir.insts.len);
     for (ops, 0..) |p, i| {
         const n = p.scratch() orelse continue;
         if (p.onStack())
@@ -323,6 +333,7 @@ pub fn emitScratch(g: *Gen, ops: []const cg_format.PrintArg, site: usize) Error!
 /// `strcap.max_row` it is more than a device can address, which is E1011
 /// at compile time (memory, the one bound a row has).
 fn fits(g: *Gen, site: usize, cap: u64) Error!bool {
+    assert(site < g.mir.insts.len);
     if (cap <= strcap.max_row) return true;
     if (g.diags) |bag| try bag.add(.codegen, .E1011, g.lowered.tokenSpan(g.mir.instTok(@fromBackingInt(@intCast(site)))), "the text here can need {d} bytes, more than a device can address", .{cap});
     g.poison("a string row is larger than a device can address");
@@ -332,6 +343,7 @@ fn fits(g: *Gen, site: usize, cap: u64) Error!bool {
 
 /// `std.debug.print(fmt, .{ops})`, one print per `fmt_chunk` operands.
 fn emitDebugPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Error!void {
+    assert(g.display == .emit);
     var k: usize = 0;
     while (true) : (k += fmt_chunk) {
         // One print per chunk, and one for no operands at all.
@@ -349,6 +361,8 @@ fn emitDebugPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Err
 fn chunkText(fmt: []const u8, ops: []const cg_format.PrintArg, k: usize, end: usize) []const u8 {
     assert(k <= end);
     assert(end <= ops.len);
+    assert(k <= end);
+    assert(end <= ops.len);
     const from = if (k == 0) 0 else ops[k].at;
     const to = if (end == ops.len) fmt.len else ops[end].at;
     assert(from <= to);
@@ -357,6 +371,7 @@ fn chunkText(fmt: []const u8, ops: []const cg_format.PrintArg, k: usize, end: us
 
 /// Operands `ops`, the first of which is the call's operand `first`.
 fn renderPrintArgs(g: *Gen, ops: []const cg_format.PrintArg, first: usize) Error!void {
+    assert(ops.len <= std.math.maxInt(u32));
     for (ops, first..) |p, i| {
         if (i != first) try g.b(", ", .{});
         try cg_format.renderPrintArg(g, p, i);
@@ -380,6 +395,7 @@ fn finishLevel(g: *Gen, args: []const Mir.Value) i64 {
 /// one reports the simulation time, or the host's dc sweep point, through
 /// `zWhen` at `sim.t`, which also prints Table 9-25 `level` 2's statistics.
 fn emitWhen(g: *Gen, task: []const u8, inst: Mir.Inst, level: i64) Error!void {
+    assert(task.len != 0);
     if (std.mem.findScalar(Mir.Inst, g.init_calls, inst) != null)
         return g.b("std.debug.print(\"{s}: initialization\", .{{}}); ", .{task});
     g.cur.uses.sim = true;

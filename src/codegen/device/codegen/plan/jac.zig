@@ -39,6 +39,7 @@ pub const JacConst = struct {
 
 /// Returns the coefficient row `row` holds on `col`, 0 when it has none.
 pub fn lookup(row: LinRow, col: u32) f64 {
+    assert(row.items.len <= std.math.maxInt(u32));
     for (row.items) |t| if (t.col == col) return t.k;
     return 0;
 }

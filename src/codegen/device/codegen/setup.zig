@@ -19,6 +19,7 @@
 //! - `pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const codegen = @import("../codegen.zig");
 const kt = @import("kernel_text.zig");
 const Gen = codegen.Gen;
@@ -81,6 +82,7 @@ pub const Setup = struct {
 /// or a declared copy when the device has §9.21 tables, whose first-call
 /// state must not be initialized at a trial bias.
 pub fn probeInstance(self: *Gen) Error![]const u8 {
+    assert(self.out.items.len != 0);
     if (self.lowered.table_samples.items.len == 0) return "inst";
     try self.w("    var table_probe = inst.*;\n", .{});
     return "&table_probe";
@@ -91,6 +93,8 @@ pub fn probeInstance(self: *Gen) Error![]const u8 {
 /// reaches. Must run after the core is planned and before anything is
 /// emitted, since `emitInstance` sizes `Setup` from the roots.
 pub fn planSetup(self: *Gen) Error!void {
+    assert(self.su.vals.len == 0);
+    assert(self.out.items.len == 0);
     const a = self.arena;
     const nv = self.an.nv;
     self.su.idx = try a.alloc(u32, nv);
@@ -160,6 +164,7 @@ pub fn planSetup(self: *Gen) Error!void {
 /// Returns the text reading root `v`'s `Setup` field, as an f64 (`as_f64`)
 /// or in its own type. Arena-owned.
 pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
+    assert(@backingInt(v) < self.an.nv);
     const i = @backingInt(v);
     const k = self.su.idx[i];
     self.cur.uses.model = true;
@@ -176,6 +181,7 @@ pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
 
 /// Emits `pub const Setup`, the type of `Model.su`.
 pub fn emitSetupDecl(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     if (self.su.vals.len == 0) return;
     const n_flag = self.su.vals.len - self.su.real - self.su.int;
     try self.w(
@@ -201,6 +207,7 @@ pub fn emitSetupDecl(self: *Gen) Error!void {
 /// Asserts the body read no unknown and refused nothing: `prove/setup.zig`
 /// admits only solve-invariant, constant-renderable roots.
 pub fn emitSetup(self: *Gen) Error!void {
+    assert(!self.cur.emitting_common);
     try emitSetupInstance(self);
     if (self.su.vals.len == 0) return;
     const save_idx = self.cur.plan.lo_idx;
@@ -260,7 +267,7 @@ pub fn emitSetup(self: *Gen) Error!void {
     if (!namesS(self.out.items[at_body..])) {
         const decl = "    const S = V;\n";
         const discard = "    _ = V;\n";
-        std.debug.assert(std.mem.eql(u8, self.out.items[at_body - decl.len .. at_body], decl));
+        assert(std.mem.eql(u8, self.out.items[at_body - decl.len .. at_body], decl));
         try self.out.replaceRange(self.gpa, at_body - decl.len, decl.len, discard);
         at_stop = at_body - decl.len + discard.len;
     }
@@ -273,11 +280,11 @@ pub fn emitSetup(self: *Gen) Error!void {
     // branch may, for the arm that flag never runs: it reads a default
     // Instance, so the text compiles and nothing stored depends on it.
     if (self.cur.uses.inst) {
-        std.debug.assert(self.su.stop);
+        assert(self.su.stop);
         try self.out.insertSlice(self.gpa, at_stop, "    const inst: *const Instance = &.{};\n");
     }
-    std.debug.assert(!self.cur.uses.x);
-    std.debug.assert(self.cur.fatal == null);
+    assert(!self.cur.uses.x);
+    assert(self.cur.fatal == null);
     if (self.out.items.len - at_doc < setup_chunk.chunk_bytes) return;
     // A large `setup` becomes chunks a split build compiles in parallel.
     // The split is a text transform whose working copies (several times the
@@ -297,6 +304,7 @@ pub fn emitSetup(self: *Gen) Error!void {
 /// runtime `zs_stop` flag at a per-eval loop (`emitTree`). In dead text
 /// (`dead`) only the leaving remains.
 pub fn emitStores(self: *Gen, depth: u32, stop: []const u8) Error!void {
+    assert(self.su.mode);
     if (self.su.dead) {
         try self.ind(depth);
         return self.b("{s}return;\n", .{stop});
@@ -344,6 +352,7 @@ pub fn mergePays(self: *const Gen) bool {
 /// that was defined in an inner scope is hoisted like any other slot read
 /// outside its block (`probeBody`), so every exit stores the same bits.
 pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void {
+    assert(self.cur.plan.slot.len == self.an.nv);
     if (!self.su.merge) return gen_cfg.emitTree(self, 0, 1, target);
     try self.ind(1);
     try self.b("zs_done: {{\n", .{});
@@ -361,6 +370,7 @@ pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void {
 
 /// Returns which of `Setup`'s arrays holds `v`: 0 real, 1 integer, 2 a 0/1 flag.
 fn rootGroup(self: *const Gen, v: Mir.Value) u2 {
+    assert(@backingInt(v) < self.an.nv);
     const i = @backingInt(v);
     if (self.an.vty[i] == .real) return 0;
     const def = self.mir.valueDef(v);
@@ -437,10 +447,13 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
 
 /// Returns whether `setup` computes `a` wherever it computes `b`.
 fn placedOver(self: *const Gen, a: Mir.Value, b: Mir.Value) bool {
+    assert(@backingInt(a) < self.an.nv);
+    assert(@backingInt(b) < self.an.nv);
     return self.an.dominates(placeOf(self, a), placeOf(self, b));
 }
 
 fn placeOf(self: *const Gen, v: Mir.Value) u32 {
+    assert(@backingInt(v) < self.sinv.home.len);
     const h = self.sinv.home[@backingInt(v)];
     if (h != none_u32) return h;
     const b = self.an.def_block[@backingInt(v)];
@@ -453,6 +466,7 @@ fn placeOf(self: *const Gen, v: Mir.Value) u32 {
 /// (§2.9) caches and a latched §9.7.3 status. The host calls it per instance
 /// after `setup` (`contract.validateHost`'s `calls_setup`).
 fn emitSetupInstance(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     const tp = self.lowered.timepoints.items.len != 0;
     if (!tp and !gen_status.hasStatus(self)) return;
     try self.w(
@@ -469,6 +483,7 @@ fn emitSetupInstance(self: *Gen) Error!void {
 /// Emits the §9.15 `$simparam`s `setup` reads, so a host knows which writes
 /// need a new `setup` call. Collected while `emitSetup` plans its slice.
 fn emitSimparams(self: *Gen) Error!void {
+    assert(self.out.items.len != 0);
     var names: std.ArrayList([]const u8) = .empty;
     for (self.cur.plan.live.items) |lv| {
         const def = self.mir.valueDef(lv);

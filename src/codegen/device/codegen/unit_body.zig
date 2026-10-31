@@ -100,7 +100,7 @@ pub const Place = struct {
     // hisimhv_va: 10097), walked whole by `probeBody`: 12 bytes, two
     // offsets and four one-byte facts.
     comptime {
-        std.debug.assert(@sizeOf(Place) == 12);
+        assert(@sizeOf(Place) == 12);
     }
 };
 
