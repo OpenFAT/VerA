@@ -1,0 +1,17 @@
+/// Past 256 unknowns a `Dual` is n_u lanes wide and a Debug `eval` frame
+/// holds one per temporary; a large §3.2.2 array is a frame local, and
+/// a large held one is in `Instance`, which the runner copies. Either
+/// outgrows the main thread's 8 MiB, so `main` runs the testbench (`run`)
+/// on a thread whose stack grows with them (#29). Virtual size only: a
+/// stack is touched as deep as it is used.
+/// ponytail: about 128 lane-wide temporaries per unknown and sixteen
+/// copies of each array (a Debug frame copies by value; measured on
+/// array_past_2_20_elements.va); a device far past that needs more.
+const big_stack_bytes = @sizeOf(Row) * n_u * 128 + 16 * (@sizeOf(D.Instance) + mem_bytes);
+const big_stack = n_u > 256 or big_stack_bytes > (1 << 20);
+fn bigStack(init: std.process.Init.Minimal) void {
+    const t = std.Thread.spawn(.{ .stack_size = (8 << 20) + big_stack_bytes }, run, .{init}) catch |e|
+        std.debug.panic("testbench: no thread for {d} unknowns: {t}", .{ n_u, e });
+    t.join();
+}
+

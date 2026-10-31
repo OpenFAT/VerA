@@ -1,0 +1,159 @@
+
+export fn vera_vpi_systf(ctx: ?*anyopaque, h: ?HostCall, o: ?HostOut) callconv(.c) void {
+    host_ctx = ctx;
+    host_call = h;
+    host_out = o;
+    host_systf.out = if (o != null) viaHostOut else null;
+}
+/// `systf_calls[k].outs`: the arguments the device reads back.
+export fn vera_vpi_systf_outs(k: usize) callconv(.c) u64 {
+    if (comptime n_systf == 0) unreachable;
+    return D.systf_calls[k].outs;
+}
+export fn vera_vpi_n_u() callconv(.c) usize {
+    return n_u;
+}
+/// §5.10.3.3 the device's next timer instant after `t`, or inf: the
+/// host places a time point there.
+export fn vera_vpi_breakpoint(t: f64) callconv(.c) f64 {
+    const m: ?f64 = if (comptime @hasDecl(D, "nextBreakpoint")) D.nextBreakpoint(&g_model, t) else null;
+    const i: ?f64 = if (comptime @hasDecl(D, "pendingBreakpoint")) D.pendingBreakpoint(&g_inst, t) else null;
+    return (if (m != null and i != null) @min(m.?, i.?) else m orelse i) orelse std.math.inf(f64);
+}
+/// The index into `vera_vpi_x` of the unknown named `name`, or -1: a
+/// mixed design's digital half probes a net by name (§7.3.3).
+export fn vera_vpi_node(name_ptr: [*]const u8, len: usize) callconv(.c) isize {
+    const name = name_ptr[0..len];
+    inline for (@typeInfo(D.U).@"enum".field_names, 0..) |f, i| if (std.mem.eql(u8, f, name)) return i;
+    return -1;
+}
+/// The solution the last `vera_vpi_solve` reached, tentative or accepted.
+export fn vera_vpi_x() callconv(.c) [*]const f64 {
+    return &g_x;
+}
+/// §5.6.1.3/§9.4.6: the last solution is final. The model's own §9.4
+/// output for it, then the accepted-step bookkeeping every §4.5 operator
+/// reads its history from.
+export fn vera_vpi_accept() callconv(.c) void {
+    sayPoint(&g_x, &g_model, &g_inst);
+    if (stepPost(&g_model, &g_inst, &g_x, &g_state, g_solved)) |r| retryUnsupported(r);
+}
+/// §4.6.3/§12.8 the small-signal solution at angular frequency `w` around
+/// the last solution, the AC sweep's operating point:
+///
+///     (G + jw·C + acDyn) X = -B
+///
+/// G and C the resistive and reactive Jacobians there, evaluated as
+/// `.ac` (so `ac_dyn_slots` come from `acDyn`), B the `ac_gens` phasors
+/// as the residual carries a contribution (+ at the row, - at the
+/// column, none when row == col, a branch to ground). A forced unknown
+/// is a DC source, so X is 0 there; a column
+/// with no usable pivot is a free direction and reads 0, as in `solve`.
+/// Real parts into `re`, imaginary into `im`. False when nothing pivots.
+export fn vera_vpi_ac(w: f64, re: [*]f64, im: [*]f64) callconv(.c) bool {
+    const C = std.math.Complex(f64);
+    const kind = sim_state.kind;
+    defer sim_state.kind = kind;
+    sim_state.kind = .ac;
+    var a: [n_u][n_u]C = undefined;
+    var b: [n_u]C = @splat(.init(0.0, 0.0));
+    const r = withConst(Dual, D.eval(Dual, &g_x, &g_model, &g_inst, sim_state), &g_model, false);
+    for (0..n_u) |i| for (0..n_u) |j| {
+        a[i][j] = .init(r[i].d[j], 0.0);
+    };
+    if (comptime @hasDecl(D, "q")) {
+        const qq = withConst(Dual, qRowsOf(Dual, &g_x, &g_model, &g_inst), &g_model, true);
+        for (0..n_u) |i| for (0..n_u) |j| {
+            a[i][j].im += w * qq[i].d[j];
+        };
+    }
+    if (comptime @hasDecl(D, "ac_dyn_slots")) {
+        var dyn: [D.ac_dyn_slots.len]C = undefined;
+        D.acDyn(f64, &g_model, &g_inst, &g_x, sim_state, w, &dyn);
+        for (D.ac_dyn_slots, dyn) |s, v| a[s / n_u][s % n_u] = a[s / n_u][s % n_u].add(v);
+    }
+    if (comptime @hasDecl(D, "ac_gens")) {
+        const ph = D.acStim(Val, g_x, &g_model, &g_inst, sim_state);
+        for (D.ac_gens, ph) |g, p| {
+            // §4.6.3 only the stimuli of this analysis: an `.ac` sweep
+            // this host labels nothing.
+            if (!contract.acStimActive(g.name, .ac, "")) continue;
+            const v = C.init(p.mag * @cos(p.phase), p.mag * @sin(p.phase));
+            b[g.row] = b[g.row].sub(v);
+            // row == col: a branch to ground, which has no row.
+            if (g.col != g.row) b[g.col] = b[g.col].add(v);
+        }
+    }
+    for (0..n_u) |i| if (g_forced[i] != null) {
+        a[i] = @splat(.init(0.0, 0.0));
+        a[i][i] = .init(1.0, 0.0);
+        b[i] = .init(0.0, 0.0);
+    };
+    // Gaussian elimination with partial pivoting; `luSolve`'s rule for
+    // what is usable, relative to the largest entry.
+    var big: f64 = 0.0;
+    for (a) |row| for (row) |e| {
+        big = @max(big, e.magnitude());
+    };
+    const eps = 1e-14 * big;
+    var used: [n_u]bool = @splat(false);
+    var pivot: [n_u]?usize = @splat(null);
+    var any = false;
+    for (0..n_u) |k| {
+        var best: ?usize = null;
+        var best_v: f64 = eps;
+        for (0..n_u) |i| if (!used[i] and a[i][k].magnitude() > best_v) {
+            best = i;
+            best_v = a[i][k].magnitude();
+        };
+        const p = best orelse continue;
+        used[p] = true;
+        pivot[k] = p;
+        any = true;
+        for (0..n_u) |i| if (i != p and a[i][k].magnitude() != 0.0) {
+            const f = a[i][k].div(a[p][k]);
+            for (0..n_u) |j| a[i][j] = a[i][j].sub(f.mul(a[p][j]));
+            b[i] = b[i].sub(f.mul(b[p]));
+        };
+    }
+    for (0..n_u) |k| {
+        const x = if (pivot[k]) |p| b[p].div(a[p][k]) else C.init(0.0, 0.0);
+        re[k] = x.re;
+        im[k] = x.im;
+    }
+    return any or n_u == 0;
+}
+const n_rows = if (@hasDecl(D, "vpiContribs")) D.vpi_contrib_access.len else 0;
+export fn vera_vpi_n_rows() callconv(.c) usize {
+    return n_rows;
+}
+/// Row k's shape: access (0 potential, 1 flow), the terminal unknowns and
+/// a potential source's flow unknown, -1 for ground / none.
+export fn vera_vpi_row(k: usize, out: *[4]i32) callconv(.c) void {
+    if (comptime n_rows == 0) return;
+    out.* = .{ D.vpi_contrib_access[k], D.vpi_contrib_hi[k], D.vpi_contrib_lo[k], D.vpi_contrib_flow_u[k] };
+}
+/// Every row's (resistive, reactive) value at the current x, into `out`
+/// (2 per row).
+export fn vera_vpi_rows(out: [*]f64) callconv(.c) void {
+    if (comptime n_rows == 0) return;
+    const v = D.vpiContribs(Dual, &g_x, &g_model, &g_inst, sim_state);
+    for (v, 0..) |r, k| {
+        out[2 * k] = r[0];
+        out[2 * k + 1] = r[1];
+    }
+}
+const n_shares = if (@hasDecl(D, "vpiShares")) D.vpi_share_row.len else 0;
+export fn vera_vpi_n_shares() callconv(.c) usize {
+    return n_shares;
+}
+/// Each instance's share of a shared row (`D.vpiShares`), (resistive,
+/// reactive) at the current x, into `out` (2 per share).
+export fn vera_vpi_shares(out: [*]f64) callconv(.c) void {
+    if (comptime n_shares == 0) return;
+    const v = D.vpiShares(Dual, &g_x, &g_model, &g_inst, sim_state);
+    for (v, 0..) |r, k| {
+        out[2 * k] = r[0];
+        out[2 * k + 1] = r[1];
+    }
+}
