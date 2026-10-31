@@ -18,7 +18,7 @@
 //! - `pub const Codegen = struct`, `pub const Device = struct`,
 //!   `Device.deinit(d: *Device, gpa: Allocator) void`
 //! - `pub fn deinit(r: *Result, gpa: Allocator) void`
-//! - `pub fn generate(r: *const Result, gpa: Allocator, opts: Codegen, bag: ?*diag.Bag) codegen.Error!Device`
+//! - `pub fn generate(r: *const Result, gpa: Allocator, opts: Codegen, bag: ?*diag.Bag) device.Error!Device`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -27,11 +27,11 @@ const BigArena = @import("base").BigArena;
 const deep_stack = @import("base").deep_stack;
 const diag = @import("diag");
 const Ast = @import("frontend").Ast;
-const Elaborate = @import("elab").Elaborate;
+const Unit = @import("elab").design.Unit;
 const Mir = @import("ir").Mir;
 const Lowered = @import("ir").Lowered;
 const proof = @import("prove").proof;
-const codegen = @import("device").codegen;
+const device = @import("device");
 
 /// Owns every slice and pointer below except `verdict.unit_modes`.
 arena: *BigArena,
@@ -43,8 +43,8 @@ file: *const Ast.SourceFile,
 /// The module lowered (§6.2), elaboration's flattened top.
 module: ?*const Ast.ModuleDecl,
 /// §9.15/§9.16 the module and instance path of each inlined analog block,
-/// by `Ast.AnalogBlock.unit`.
-unit_paths: []const Elaborate.UnitPath,
+/// by `Ast.AnalogBlock.unit` (`elab.Design.units`).
+unit_paths: std.MultiArrayList(Unit).Slice,
 /// The top module's MIR, if-converted and proven. Nothing writes it again.
 mir: *const Mir,
 /// Lowering's output. Nothing after lowering can reach a symbol table, a
@@ -57,7 +57,7 @@ diags: *const diag.Bag,
 /// One float mode per unit; `unit_modes` is gpa-owned.
 verdict: proof.Verdict,
 /// The §9.4 mode lowering ran under; `generate` builds the device for it.
-display: codegen.Display,
+display: device.Display,
 /// The source's nesting depth (`Parser.deepest`): codegen's walks run on a
 /// `deep_stack` reserved for it.
 nesting: u32,
@@ -78,7 +78,7 @@ pub const Codegen = struct {
 /// A generated device.zig. `output.text` is the caller's (gpa); the per-unit
 /// file map in `output` borrows from the `Result` and lives until its `deinit`.
 pub const Device = struct {
-    output: codegen.Output,
+    output: device.Output,
     /// Codegen refused a construct, in an `@compileError` unit or in metadata
     /// outside the units: the text is not a usable device. It is kept so a
     /// caller can name what was refused.
@@ -107,18 +107,16 @@ pub fn deinit(r: *Result, gpa: Allocator) void {
 /// grow the result's arena. A codegen diagnostic (E0515) goes to `bag`. A
 /// stack the system will not reserve for `nesting` is `error.OutOfMemory`.
 /// Asserts that the verdict accepted the model, which `analyze` guarantees.
-pub fn generate(r: *const Result, gpa: Allocator, opts: Codegen, bag: ?*diag.Bag) codegen.Error!Device {
+pub fn generate(r: *const Result, gpa: Allocator, opts: Codegen, bag: ?*diag.Bag) device.Error!Device {
     assert(r.verdict.ok());
     assert(r.verdict.unit_modes.len == proof.unitCount(r.lowered));
-    var refused = false;
-    const output = deep_stack.run(r.nesting, codegen.generate, .{
+    const d = deep_stack.run(r.nesting, device.generate, .{
         gpa,
         r.arena.allocator(),
         r.mir,
         r.lowered,
         r.verdict,
-        &refused,
-        codegen.Options{
+        device.Options{
             .display = r.display,
             .jac_f32 = opts.jac_f32,
             .jac_f32_host = opts.jac_f32_host,
@@ -130,6 +128,6 @@ pub fn generate(r: *const Result, gpa: Allocator, opts: Codegen, bag: ?*diag.Bag
         error.DeepStackUnavailable => return error.OutOfMemory,
         else => |e| return e,
     };
-    assert(output.text.len != 0);
-    return .{ .output = output, .refused = refused };
+    assert(d.output.text.len != 0);
+    return .{ .output = d.output, .refused = d.compile_error };
 }

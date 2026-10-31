@@ -268,7 +268,7 @@ pub fn parse(cli: *Cli, gpa: Allocator, args: anytype, out: *Io.Writer, err: *Io
             try cli.defines.append(gpa, d);
         } else if (std.mem.startsWith(u8, arg, "--")) {
             // --allow=X / --warn=X / --deny=X / --forbid=X
-            const applied = cli.levels.parseFlag(gpa, arg[2..]) catch |e| switch (e) {
+            const applied = cli.levels.parseFlag(arg[2..]) catch |e| switch (e) {
                 error.CannotAllowError => {
                     try err.print("error: `{s}`: an error code cannot be allowed or warned away — it is a statement about the program, not a preference\n", .{arg});
                     return 2;
@@ -277,7 +277,6 @@ pub fn parse(cli: *Cli, gpa: Allocator, args: anytype, out: *Io.Writer, err: *Io
                     try err.print("error: `{s}`: this code was already --forbid'd\n", .{arg});
                     return 2;
                 },
-                error.OutOfMemory => return error.OutOfMemory,
             };
             if (!applied) {
                 try err.print("error: unknown option `{s}`\n", .{arg});
@@ -886,6 +885,15 @@ test "parse: lint levels, and what may not be allowed or un-forbidden" {
     try fixtures.expectRefused(&.{ "--forbid=W0650", "--allow=W0650" }, "error: `--allow=W0650`: this code was already --forbid'd\n");
     try fixtures.expectRefused(&.{"--deny=W9999"}, "error: unknown option `--deny=W9999`\n");
     try fixtures.expectRefused(&.{"--no-such-flag"}, "error: unknown option `--no-such-flag`\n");
+}
+
+test "parse: an empty argument is an input as typed; there is no `--spice=` form" {
+    // `vera ""` reaches the read, which reports it (`main.zig`'s test).
+    var l: fixtures.Line = .init();
+    defer l.deinit();
+    try std.testing.expectEqual(@as(?u8, null), try l.read(&.{""}));
+    try std.testing.expectEqualStrings("", l.cli.paths.items[0]);
+    try fixtures.expectRefused(&.{ "--spice=", "m.va" }, "error: unknown option `--spice=`\n");
 }
 
 test "parse: every argument that is not a flag is an input, in order" {

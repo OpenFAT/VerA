@@ -23,12 +23,6 @@
 //! - `pub const ReadError`, `pub const readFailed`, `pub const CompileError`,
 //!   `pub const Request`, `pub const Outcome`
 //! - `pub fn compile(gpa: Allocator, io: Io, arena: Allocator, source: []const u8, req: Request, bag: *diag.Bag, o: *Outcome) CompileError!void`
-//! - compat, delete in pass 2: `pub const Target`, `pub const Error`,
-//!   `pub const Options`, `pub const CompileResult`, `pub const compileSource`,
-//!   `pub const compileSourceOpts`, `pub const buildArtifact`,
-//!   `pub const BigArena`, `pub const Preprocessor`, `pub const libmap`,
-//!   `pub const codegen`, `pub const orchestrator`, `pub const tb`,
-//!   `pub const Elaborate` (`src/compat.zig`)
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -44,7 +38,6 @@ const osdi = @import("Compilation/osdi.zig");
 const verilog = @import("Compilation/verilog.zig");
 const testbench = @import("Compilation/testbench.zig");
 const library = @import("Compilation/library.zig");
-const compat = @import("compat.zig");
 // The tests' own: the stages a test inspects.
 const proof = @import("prove").proof;
 const deep_stack = @import("base").deep_stack;
@@ -55,20 +48,20 @@ pub const version = @import("kernels").vera_version;
 /// Diagnostic codes, the `Bag` every stage reports into, and rendering.
 pub const diag = @import("diag");
 /// §9.4's display modes (`Settings.display`).
-pub const Display = @import("device").codegen.Display;
+pub const Display = @import("device").Display;
 /// A `--param name=value` compile-time override (`Settings.param_overrides`, §3.4).
-pub const ParamOverride = @import("analog").Lower.ParamOverride;
+pub const ParamOverride = @import("base").ParamOverride;
 /// §7.4.4 resolution mode (`Settings.discipline_resolution`).
-pub const DisciplineResolution = @import("elab").Elaborate.DisciplineResolution;
+pub const DisciplineResolution = @import("base").DisciplineResolution;
 /// The settings of one analysis.
 pub const Settings = @import("Compilation/Settings.zig");
 /// One analysed source; `Result.generate` makes its device.
 pub const Result = @import("Compilation/Result.zig");
 
 /// The keyword set a `--std=` selects (`Settings.language`).
-pub const KeywordSet = frontend.token.KeywordSet;
+pub const KeywordSet = frontend.keyword.KeywordSet;
 /// The language family a `--sim=` selects (`Settings.sim`).
-pub const Sim = frontend.token.Sim;
+pub const Sim = frontend.keyword.Sim;
 /// A generated device.zig, owned by the caller.
 pub const Device = Result.Device;
 /// What `Result.generate` emits beyond what the analysis fixed.
@@ -78,7 +71,7 @@ pub const AnalyzeError = analysis.Error;
 /// Source text to a proven `Result`; see `Compilation/analyze.zig`.
 pub const analyze = analysis.analyze;
 
-/// What reading a source file can fail with (`Preprocessor.readText`).
+/// What reading a source file can fail with (`frontend.preprocessor.readText`).
 pub const ReadError = read_failed.ReadError;
 /// Writes the one line `vera` prints for a source that could not be read.
 pub const readFailed = read_failed.readFailed;
@@ -89,22 +82,6 @@ pub const CompileError = request.CompileError;
 pub const Request = request.Request;
 /// What `compile` did, for its caller to print.
 pub const Outcome = request.Outcome;
-
-// Compat, delete in pass 2: the pre-rewrite API (`src/compat.zig`).
-pub const Target = compat.Target;
-pub const Error = compat.Error;
-pub const Options = compat.Options;
-pub const CompileResult = compat.CompileResult;
-pub const compileSource = compat.compileSource;
-pub const compileSourceOpts = compat.compileSourceOpts;
-pub const buildArtifact = compat.buildArtifact;
-pub const BigArena = compat.BigArena;
-pub const Preprocessor = compat.Preprocessor;
-pub const libmap = compat.libmap;
-pub const codegen = compat.codegen;
-pub const orchestrator = compat.orchestrator;
-pub const Elaborate = compat.Elaborate;
-pub const tb = compat.tb;
 
 /// The tests' sources and helpers; Zig analyses this only for `zig test`.
 const fixtures = struct {
@@ -157,7 +134,7 @@ const fixtures = struct {
     ;
     /// Lints `src` with `display` and returns how many W0850 rows have a
     /// headline containing `needle` ("" counts every W0850 row).
-    fn countW0850(src: []const u8, display: codegen.Display, needle: []const u8) !usize {
+    fn countW0850(src: []const u8, display: Display, needle: []const u8) !usize {
         const gpa = std.testing.allocator;
         var bag: diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
@@ -200,7 +177,7 @@ pub fn compile(
 
     // --emit-exe's `//!` directives, read up front: a `//! param` card of a
     // SHAPE parameter is a compile-time value (below).
-    const bench: exe.Directives = if (req.exe == null) .{} else exe.parse(arena, source) catch |e| {
+    const spec: exe.Spec = if (req.exe == null) .{} else exe.Spec.parse(arena, source, null) catch |e| {
         try err.print("error: {s}: `//!` directive: {t}\n", .{ in_path, e });
         return o.done(2);
     };
@@ -211,19 +188,19 @@ pub fn compile(
     // continuation makes a card longer than a line. Without `--spice`, a
     // testbench's own `//! spice` cards are the netlist, read beside the source.
     const netlist: []const u8 = if (req.spice_path) |p|
-        frontend.Preprocessor.readText(io, .cwd(), p, arena) catch |e| {
+        frontend.preprocessor.readText(io, .cwd(), p, arena) catch |e| {
             try readFailed(err, p, e);
             return o.done(2);
         }
     else
-        bench.spice;
+        spec.harness.spice;
     var settings = req.options;
     settings.spice_netlist = netlist;
-    settings.spice_path = req.spice_path orelse if (bench.spice.len != 0) in_path else "";
+    settings.spice_path = req.spice_path orelse if (spec.harness.spice.len != 0) in_path else "";
     // A check accepts a source_text with no module; a device request does not.
     settings.empty_unit_ok = req.check or req.lints();
-    if (bench.display_record) settings.display = .record;
-    if (bench.discipline_resolution == .detail) settings.discipline_resolution = .detail;
+    if (spec.harness.display_record) settings.display = .record;
+    if (spec.harness.discipline_resolution == .detail) settings.discipline_resolution = .detail;
 
     o.result = analyze(gpa, source, settings, bag) catch |e| switch (e) {
         // Checked, and nothing to build: what the bag holds are warnings.
@@ -241,7 +218,7 @@ pub fn compile(
     // values; a `--param` of the same name wins. The second pass reports
     // everything again, so the first pass' bag is dropped.
     const typed = req.options.param_overrides;
-    const overrides = try withShapeCards(arena, typed, bench, &o.result.?);
+    const overrides = try withShapeCards(arena, typed, spec.bench.params, &o.result.?);
     if (overrides.len != typed.len) {
         bag.deinit(gpa);
         bag.* = .init(gpa);
@@ -260,7 +237,7 @@ pub fn compile(
     // codegen reports too (E0515), and the bag is printed whole.
     o.report = .after;
     if (req.lints()) return;
-    if (req.verilog) |v| return verilog.emit(io, arena, result, v, req.out_path, in_path, err, o);
+    if (req.verilog) |v| return verilog.emit(gpa, io, arena, result, v, req.out_path, in_path, err, o);
 
     // What OSDI 0.4 cannot carry is named before a library is built.
     if (req.osdi) {
@@ -293,9 +270,14 @@ pub fn compile(
     // --check type-checks the device here, where its .va can still be named.
     // --emit-so runs the same check only after its build fails.
     if (req.check) {
-        if (try zigbuild.typeCheck(gpa, io, err, req.build.zig_exe, req.build.contract.?, text, in_path)) |code| return o.done(code);
+        if (try zigbuild.typeCheck(gpa, io, .{
+            .zig_exe = req.build.zig_exe,
+            .contract = req.build.contract.?,
+            .device = text,
+            .source_path = in_path,
+        }, err) == .fails) return o.done(1);
     }
-    if (req.exe) |x| return testbench.build(gpa, io, arena, req, x, bench, result, text, bag, err, o);
+    if (req.exe) |x| return testbench.build(gpa, io, arena, req, x, &spec, result, text, bag, err, o);
     if (req.so) {
         try library.build(gpa, io, arena, req, result, o.device.?.output, err, o);
         if (o.status != 0) return;
@@ -313,12 +295,12 @@ pub fn compile(
 // ---- private ----
 
 /// The typed `--param`s, then each testbench shape card no `--param` names
-/// (`exe.shapeOverrides`), in the arena. The same length as `typed` when the
+/// (`exe.shapeCards`), in the arena. The same length as `typed` when the
 /// testbench moves no shape parameter.
-fn withShapeCards(arena: Allocator, typed: []const ParamOverride, bench: exe.Directives, result: *const Result) Allocator.Error![]const ParamOverride {
+fn withShapeCards(arena: Allocator, typed: []const ParamOverride, cards: []const exe.Binding, result: *const Result) Allocator.Error![]const ParamOverride {
     var all: std.ArrayList(ParamOverride) = .empty;
     try all.appendSlice(arena, typed);
-    for (try exe.shapeOverrides(arena, bench, result.lowered)) |card| {
+    for (try exe.shapeCards(arena, cards, result.lowered)) |card| {
         for (all.items) |ov| {
             if (std.mem.eql(u8, ov.name, card.name)) break;
         } else try all.append(arena, card);
@@ -495,8 +477,7 @@ test "lint levels: --deny promotes a warning into a hard failure" {
     // --deny=W0650: same diagnostic, now an error, and the compile fails.
     {
         var levels: diag.Levels = .empty;
-        defer levels.deinit(gpa);
-        try levels.set(gpa, .W0650, .deny);
+        try levels.set(.W0650, .deny);
 
         var bag: diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
@@ -508,8 +489,7 @@ test "lint levels: --deny promotes a warning into a hard failure" {
     // --allow=W0650: not collected at all, and still a clean compile.
     {
         var levels: diag.Levels = .empty;
-        defer levels.deinit(gpa);
-        try levels.set(gpa, .W0650, .allow);
+        try levels.set(.W0650, .allow);
 
         var bag: diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
@@ -653,7 +633,7 @@ test "10,000-level ?: chain, else-if chain and nested ifs: device text is linear
         var lines = std.mem.splitScalar(u8, text, '\n');
         while (lines.next()) |l| {
             const lead = l.len - std.mem.trimStart(u8, l, " ").len;
-            try std.testing.expect(lead <= codegen.Gen.indWidth(std.math.maxInt(u32)));
+            try std.testing.expect(lead <= @import("device").indentWidth(std.math.maxInt(u32)));
         }
     }
 }
@@ -766,17 +746,17 @@ test "a --deny fails the compilation even with no bag to report into, and frees 
     // arena; the testing allocator fails the test on a leak.
     const gpa = std.testing.allocator;
     var levels: diag.Levels = .empty;
-    defer levels.deinit(gpa);
-    try levels.set(gpa, .W0650, .deny);
+    try levels.set(.W0650, .deny);
     try std.testing.expectError(error.CompileFailed, analyze(gpa, fixtures.unbounded_exp, .{ .lint = levels }, null));
 }
 
 test "a failed compilation with no bag leaks nothing" {
     const gpa = std.testing.allocator;
-    try std.testing.expectError(error.CompileFailed, compileSource(
+    try std.testing.expectError(error.CompileFailed, analyze(
         gpa,
         "module bad(p); inout p; electrical p; analog I(p) <+ ;\nendmodule\n",
-        .lint,
+        .{},
+        null,
     ));
 }
 
@@ -792,7 +772,7 @@ test "§9.4 W0850 names each task the requested device drops, and no other" {
     ;
     // §9.4.1 `$monitor` needs change detection across accepted points, state
     // a device does not keep, so `say` does not record it
-    // (`cg_display.sayRecords`; ch09_system_tasks/say_device_records.va).
+    // (`device.sayRecords`; ch09_system_tasks/say_device_records.va).
     const monitor =
         \\module d(p, n); inout p, n; electrical p, n;
         \\  analog begin
@@ -846,8 +826,7 @@ test "§9.4 W0850 names each task the requested device drops, and no other" {
 // forces analysis of every top-level pub decl of every stage.
 test "every top-level pub decl of every stage type-checks" {
     const fe = @import("frontend");
-    const dev = @import("device");
-    inline for (.{ @This(), @import("base").BigArena, fe.token, fe.Preprocessor, fe.Lexer, fe.Ast, fe.Parser, @import("ir").Mir, @import("prove").Analysis, @import("analog").Ssa, @import("elab").Elaborate, @import("analog").Lower, @import("prove").proof, @import("ir").names, dev.codegen, dev.cg_display, dev.cg_filters, zigbuild, Settings, Result, request, analysis, osdi, verilog, testbench, library, read_failed, compat }) |stage| {
+    inline for (.{ @This(), @import("base").BigArena, fe.token, fe.keyword, fe.preprocessor, fe.lexer, fe.Ast, fe.Parser, @import("ir").Mir, @import("prove").Analysis, @import("analog").Ssa, @import("elab"), @import("analog").Lower, @import("prove").proof, @import("ir").names, @import("device"), zigbuild, Settings, Result, request, analysis, osdi, verilog, testbench, library, read_failed }) |stage| {
         std.testing.refAllDecls(stage);
     }
 }

@@ -23,20 +23,22 @@ const BigArena = @import("base").BigArena;
 const deep_stack = @import("base").deep_stack;
 const diag = @import("diag");
 const frontend = @import("frontend");
-const Preprocessor = frontend.Preprocessor;
-const Lexer = frontend.Lexer;
+const preprocessor = frontend.preprocessor;
+const prelude = frontend.prelude;
+const lexer = frontend.lexer;
 const Parser = frontend.Parser;
 const Ast = frontend.Ast;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const Mir = @import("ir").Mir;
 const Lowered = @import("ir").Lowered;
 const Lower = @import("analog").Lower;
 const prove = @import("prove");
 const proof = prove.proof;
 const ifconv = prove.ifconv;
+const held = prove.held;
 const verify = prove.verify;
 const device = @import("device");
-const Display = device.codegen.Display;
+const Display = device.Display;
 const Settings = @import("Settings.zig");
 const Result = @import("Result.zig");
 
@@ -58,7 +60,7 @@ const Parsed = struct {
     file: *Ast.SourceFile,
     text: []const u8,
     starts: []const u32,
-    directives: Preprocessor.Directives,
+    directives: frontend.directive_events.Directives,
     nesting: u32,
 };
 
@@ -69,11 +71,11 @@ const Parsed = struct {
 /// carry warnings (W0650). The caller frees it with `bag.deinit(gpa)`.
 /// Asserts that `bag` holds nothing on entry (fresh from `Bag.init`): it is
 /// overwritten, not appended to. Asserts that `source` is at most
-/// `Preprocessor.max_text_bytes`, the bound `Preprocessor.readText` enforces
+/// `preprocessor.max_text_bytes`, the bound `preprocessor.readText` enforces
 /// at the file boundary.
 pub fn analyze(gpa: Allocator, source: []const u8, settings: Settings, bag: ?*diag.Bag) Error!Result {
     if (bag) |b| assert(b.isEmpty());
-    assert(source.len <= Preprocessor.max_text_bytes);
+    assert(source.len <= preprocessor.max_text_bytes);
     const arena_state = try gpa.create(BigArena);
     arena_state.* = .init(gpa);
 
@@ -139,7 +141,7 @@ fn stages(gpa: Allocator, arena_state: *BigArena, source: []const u8, settings: 
 /// Preprocess, lex, parse, check, overlay: text to the AST every later stage
 /// reads. A diagnosed stage stops here with `error.CompileFailed`.
 fn front(arena: Allocator, source: []const u8, settings: Settings, bag: *diag.Bag) Error!Parsed {
-    const pp = Preprocessor.process(arena, source, .{
+    const pp = preprocessor.process(arena, source, .{
         .include_dirs = settings.include_dirs,
         .defines = settings.defines,
         .file_name = settings.file_name,
@@ -165,17 +167,17 @@ fn front(arena: Allocator, source: []const u8, settings: Settings, bag: *diag.Ba
     // The annex D.2/D.1/E.1 prelude is a fixed byte prefix of the text when
     // `std_defs` is on, so its tokens and AST are made once per process and
     // copied in; both seeds come from one snapshot gated on `std_defs`.
-    var tokens = try Lexer.Lexer.tokenizeSeeded(arena, pp.text, try Preprocessor.preludeTokens(settings.std_defs));
+    var tokens = try lexer.tokenize(arena, pp.text, try prelude.preludeTokens(settings.std_defs));
     const tags = tokens.items(.tag);
     const starts = tokens.items(.start);
-    const seed = try Preprocessor.preludeAst(settings.std_defs);
+    const seed = try prelude.preludeAst(settings.std_defs);
     var p = try Parser.Parser.initSeeded(arena, pp.text, tags, starts, bag, seed);
     p.setLanguage(settings.language);
     p.verilog_a = settings.sim == .verilog_a;
     // The Table E.1 primitives lead the text, the annex E.2 netlist modules
     // follow them before the source, so together they lead `file.modules`.
     // This is the one place that knows how many the netlist added.
-    const builtins: u32 = Preprocessor.spice_module_count + pp.netlist_modules;
+    const builtins: u32 = frontend.annex_e.spice_module_count + pp.netlist_modules;
     const parse = try arena.create(Ast.SourceFile);
     parse.* = p.parseSourceFile() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -215,7 +217,7 @@ fn front(arena: Allocator, source: []const u8, settings: Settings, bag: *diag.Ba
 /// The stages after the parse, through the proof, on `stages`' deep stack.
 fn back(gpa: Allocator, arena_state: *BigArena, parsed: Parsed, settings: Settings, bag: *diag.Bag) Error!Result {
     const arena = arena_state.allocator();
-    try Elaborate.spiceCase(arena, parsed.file);
+    try elab.spiceCase(arena, parsed.file);
     // §3.7/§6.5.3: the digital runner calls the same check, so both routes
     // refuse the same wirings.
     try frontend.wreal.check(parsed.file, parsed.starts, bag);
@@ -248,16 +250,16 @@ fn back(gpa: Allocator, arena_state: *BigArena, parsed: Parsed, settings: Settin
     // §3.2: drop the held slots no card can observe, before ifconv's selects
     // hide the merges it reads. `prove` decides and rewrites the MIR;
     // lowering, `Lowered`'s one writer, drops the rows.
-    if (try prove.setup.pruneHeld(arena, mir, lowered)) |keep| Lower.dropHeld(lowered, keep);
-    try verify.check(mir, lowered, "pruneHeld");
+    if (try held.prune(arena, mir, lowered)) |keep| Lower.dropHeld(lowered, keep);
+    try verify.check(mir, lowered, "held.prune");
 
     // Pure diamonds to §4.2.12 selects before the proof, which then sees the
     // guard facts the CFG edge carried (`markSelectArms`).
-    _ = try ifconv.run(arena, mir);
+    _ = try ifconv.run(arena, mir, .pure, null);
     try verify.check(mir, lowered, "ifconv");
 
     // The proof gates every target and raises W0650, which is why a lint runs it.
-    const verdict = try proof.proveOpts(gpa, mir, lowered, settings.proof, bag);
+    const verdict = try proof.prove(gpa, mir, lowered, settings.proof, bag);
     errdefer verdict.deinit(gpa);
     assert(verdict.unit_modes.len == proof.unitCount(lowered));
     // §4.3.2: a domain violation is a compile error on every target.
@@ -270,7 +272,7 @@ fn back(gpa: Allocator, arena_state: *BigArena, parsed: Parsed, settings: Settin
     for (verdict.unit_modes, lowered.contributions.items) |m, c| if (m == .optimized)
         try roots.appendSlice(arena, &.{ c.resist_val, c.react_val });
     var keep = try ifconv.keepSlice(arena, mir, roots.items);
-    _ = try ifconv.runMode(arena, mir, .speculate, &keep);
+    _ = try ifconv.run(arena, mir, .speculate, &keep);
     try verify.check(mir, lowered, "ifconv.speculate");
 
     // §9.4/§9.5: whether a side effect is kept depends on what the caller
@@ -302,7 +304,7 @@ fn warnDroppedDisplays(bag: *diag.Bag, lowered: *const Lowered, display: Display
         // §9.7.3: a device reports these through its status channel.
         if (c == .@"$fatal" or c == .@"$error") continue;
         // §9.4: a `.record` device's `say` records these.
-        if (display == .record and device.cg_display.sayRecords(c)) continue;
+        if (display == .record and device.sayRecords(c)) continue;
         const span = lowered.tokenSpan(d.tok);
         // §9.5: a file task is kept for sequencing, and its answer is §9.5.1's
         // zero descriptor rather than a dropped print.

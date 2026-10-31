@@ -15,7 +15,7 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const zigbuild = @import("zigbuild");
-const Output = @import("device").codegen.Output;
+const Output = @import("device").Output;
 const request = @import("request.zig");
 const Request = request.Request;
 const Outcome = request.Outcome;
@@ -52,7 +52,7 @@ pub fn build(
         .{ .name = "contract", .root = b.contract.? },
         .{ .name = "dyn", .root = dyn, .deps = &.{"contract"} },
     };
-    var r = zigbuild.compileRelease(gpa, io, .{
+    var r = zigbuild.buildLibrary(gpa, io, .{
         .work_dir = wd,
         .name = try zigbuild.fileStem(arena, result.mir.name),
         .optimize = b.optimize,
@@ -69,20 +69,25 @@ pub fn build(
     };
     defer r.deinit(gpa);
     switch (r) {
-        .ok => |a| if (req.osdi) {
+        .ok => |so_path| if (req.osdi) {
             const dest = req.out_path orelse try arena.print("{s}.osdi", .{result.mir.name});
-            Io.Dir.cwd().copyFile(a.so_path, Io.Dir.cwd(), dest, io, .{}) catch |e| {
+            Io.Dir.cwd().copyFile(so_path, Io.Dir.cwd(), dest, io, .{}) catch |e| {
                 try err.print("error: cannot write `{s}`: {t}\n", .{ dest, e });
                 return o.done(1);
             };
             o.path = dest;
         } else {
-            o.path = try arena.dupe(u8, a.so_path);
+            o.path = try arena.dupe(u8, so_path);
         },
         .failed => |bundle| {
             // An error typeCheck can see is the device's own (an engine bug),
             // reported against the .va as a check would have.
-            if (try zigbuild.typeCheck(gpa, io, err, b.zig_exe, b.contract.?, device.text, in_path)) |code| return o.done(code);
+            if (try zigbuild.typeCheck(gpa, io, .{
+                .zig_exe = b.zig_exe,
+                .contract = b.contract.?,
+                .device = device.text,
+                .source_path = in_path,
+            }, err) == .fails) return o.done(1);
             try err.print("error: {s}: the generated device did not compile:\n", .{in_path});
             try bundle.renderToWriter(.{}, err);
             return o.done(1);

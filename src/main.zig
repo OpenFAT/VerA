@@ -28,7 +28,7 @@ const Io = std.Io;
 const vera = @import("vera");
 const diag = vera.diag;
 const zigbuild = @import("zigbuild");
-const Preprocessor = @import("frontend").Preprocessor;
+const preprocessor = @import("frontend").preprocessor;
 const args = @import("cli/args.zig");
 const analog = @import("cli/analog.zig");
 const digital_cli = @import("cli/digital.zig");
@@ -38,21 +38,33 @@ const report = @import("cli/report.zig");
 /// backend is comptime-dead.
 const ams = @import("build_options").ams;
 
-/// Returns the process exit status (see the file header).
+/// Returns the process exit status (see the file header). A stream that
+/// cannot be flushed is an error, not exit 0: `--emit-zig` cut short on a
+/// full disk must not pass for a device.
 pub fn main(init: std.process.Init) !u8 {
-    const gpa = init.gpa;
     const io = init.io;
-
     var stdout_buf: [1 << 16]u8 = undefined;
     var stdout = Io.File.stdout().writerStreaming(io, &stdout_buf);
-    const out = &stdout.interface;
-    defer out.flush() catch {}; // Nothing is left to report a failed flush to.
-
     var stderr_buf: [1 << 16]u8 = undefined;
     var stderr = Io.File.stderr().writerStreaming(io, &stderr_buf);
-    const err = &stderr.interface;
-    defer err.flush() catch {}; // As above.
+    const status = drive(init, stderr.file, &stdout.interface, &stderr.interface);
+    // Both streams are flushed whatever `drive` returned; its error, then
+    // stdout's, then stderr's is the one `main` returns.
+    const out_flushed = stdout.interface.flush();
+    const err_flushed = stderr.interface.flush();
+    const code = try status;
+    try out_flushed;
+    try err_flushed;
+    return code;
+}
 
+// ---- private ----
+
+/// `main` once the streams exist: everything the file header lists, in
+/// order. Buffers on `out` and `err`; `main` flushes them.
+fn drive(init: std.process.Init, stderr_file: Io.File, out: *Io.Writer, err: *Io.Writer) !u8 {
+    const gpa = init.gpa;
+    const io = init.io;
     var cli: args.Cli = .{};
     defer cli.deinit(gpa);
     var argv = try init.minimal.args.iterateAllocator(gpa);
@@ -82,11 +94,11 @@ pub fn main(init: std.process.Init) !u8 {
     const style: report.Style = .{ .json = cli.json, .color = switch (cli.color) {
         .always => true,
         .never => false,
-        .auto => stderr.file.isTty(io) catch false,
+        .auto => stderr_file.isTty(io) catch false,
     } };
     if (try refuseLanguage(gpa, in_path, style, err)) |code| return code;
 
-    const source = Preprocessor.readText(io, .cwd(), in_path, gpa) catch |e| {
+    const source = preprocessor.readText(io, .cwd(), in_path, gpa) catch |e| {
         try vera.readFailed(err, in_path, e);
         return 2;
     };
@@ -107,8 +119,6 @@ pub fn main(init: std.process.Init) !u8 {
     }
     return analog.run(gpa, io, arena, init.environ_map, &cli, source, .{ .optimize = opt, .backend = backend, .style = style }, out, err);
 }
-
-// ---- private ----
 
 /// Refuses an input whose language has no compilation path: IEEE 1800 is
 /// E1104, VHDL a plain refusal. Null for any other extension.
@@ -228,6 +238,16 @@ test {
     _ = lsp;
     _ = @import("cli/global_cache.zig");
     _ = @import("cli/usage.zig");
+}
+
+test "an empty input path is refused as the read reports it: `vera \"\"`" {
+    // The read `drive` makes for `cli.paths[0]`, and the line it prints.
+    // Oracle: the OS's answer for an empty path before `readText` asserted.
+    try std.testing.expectError(error.FileNotFound, preprocessor.readText(std.testing.io, .cwd(), "", std.testing.allocator));
+    var buf: [64]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try vera.readFailed(&w, "", error.FileNotFound);
+    try std.testing.expectEqualStrings("error: cannot read ``: FileNotFound\n", w.buffered());
 }
 
 test simTree {

@@ -21,7 +21,7 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const vera = @import("vera");
 const diag = vera.diag;
-const Preprocessor = @import("frontend").Preprocessor;
+const preprocessor = @import("frontend").preprocessor;
 /// `-Dlanguage=ams`: the parity test needs the analog pipeline.
 const ams = @import("build_options").ams;
 
@@ -92,7 +92,7 @@ const Lines = struct {
         elsewhere: ?[]const u8 = null,
     };
 
-    fn place(l: *Lines, span: diag.Span, file: ?diag.FileId, doc_uri: []const u8) !Place {
+    fn place(l: *Lines, span: diag.Span, file: diag.FileId, doc_uri: []const u8) !Place {
         const zero: Range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } };
         if (span.isNone()) return .{ .uri = doc_uri, .range = zero };
         const a = l.bag.locate(span, file);
@@ -140,8 +140,8 @@ pub fn diagnostics(arena: Allocator, bag: *diag.Bag, uri: []const u8, utf16: boo
         // The text renderer's headline, then what it draws at the caret.
         try w.writeAll(meta.title);
         if (e.message.len != 0) try w.print(": {s}", .{e.message});
-        // `--explain`'s citation: an annex is a letter.
-        if (meta.lrm.len != 0) try w.print(" (LRM {s}{s})", .{ if (std.ascii.isUpper(meta.lrm[0])) "annex " else "", meta.lrm });
+        // `--explain`'s citation, as the text renderer prints it.
+        if (meta.lrm.len != 0) try w.print(" (LRM {s}{s})", .{ meta.annexPrefix(), meta.lrm });
         if (e.point.len != 0) try w.print("\n{s}", .{e.point});
 
         var nbuf: [diag.max_children]diag.Note = undefined;
@@ -287,7 +287,7 @@ test "parity: the server's diagnostics are `--diagnostics=json`'s, on every fixt
             defer arena_state.deinit();
             const arena = arena_state.allocator();
             const path = try std.fs.path.join(arena, &.{ dir, entry.path });
-            const text = Preprocessor.readText(io, .cwd(), path, arena) catch continue;
+            const text = try preprocessor.readText(io, .cwd(), path, arena);
 
             var bag: diag.Bag = .init(gpa);
             defer bag.deinit(gpa);

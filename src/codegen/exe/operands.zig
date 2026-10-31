@@ -21,7 +21,7 @@
 
 const std = @import("std");
 const naming = @import("ir").names;
-const Lexer = @import("frontend").Lexer;
+const token_value = @import("frontend").token_value;
 const spec = @import("spec.zig");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
@@ -78,7 +78,7 @@ pub fn digits(s: []const u8) bool {
 pub fn number(raw: []const u8) ParseError!f64 {
     const t = std.mem.trim(u8, raw, " \t");
     if (t.len == 0) return error.BadNumber;
-    const exp = Lexer.scaleExp(t[t.len - 1]) orelse
+    const exp = token_value.scaleExp(t[t.len - 1]) orelse
         return std.fmt.parseFloat(f64, t) catch error.BadNumber;
     const head = std.mem.trim(u8, t[0 .. t.len - 1], " \t");
     if (head.len == 0) return error.BadNumber;
@@ -420,7 +420,7 @@ fn pair(s: []const u8) ParseError!struct { row: []const u8, col: []const u8, res
 test number {
     // §2.6 every scale factor, against the Zig literal with the same
     // exponent: the suffix becomes an exponent before the one parse, as
-    // `Lexer.scaleExp` makes the model's lexer do.
+    // `token_value.scaleExp` makes the model's lexer do.
     const cases = [_]struct { []const u8, f64 }{
         .{ "1T", 1e12 },
         .{ "1G", 1e9 },

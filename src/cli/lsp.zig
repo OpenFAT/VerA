@@ -27,7 +27,7 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const vera = @import("vera");
 const diag = vera.diag;
-const Preprocessor = @import("frontend").Preprocessor;
+const preprocessor = @import("frontend").preprocessor;
 const args = @import("args.zig");
 const lspd = @import("lsp_diagnostics.zig");
 const Range = lspd.Range;
@@ -39,7 +39,7 @@ const pathToUri = lspd.pathToUri;
 const ams = @import("build_options").ams;
 
 /// The largest message body read. A `didOpen` carries the whole document, and
-/// the compiler takes no source past `Preprocessor.max_text_bytes`; a body
+/// the compiler takes no source past `preprocessor.max_text_bytes`; a body
 /// past this is refused and the session ends (the stream cannot be resynced).
 pub const max_message_bytes: usize = 1 << 28;
 /// The most header fields one message may carry before its blank line; a
@@ -284,7 +284,7 @@ fn readFlags(s: *Server, arena: Allocator, root: []const u8) !void {
     assert(!s.initialized); // Read once: `cli` borrows the bytes.
     assert(s.flags_text.len == 0);
     const path = try std.fs.path.join(arena, &.{ root, ".vera-flags" });
-    s.flags_text = Preprocessor.readText(s.io, .cwd(), path, s.gpa) catch |e| switch (e) {
+    s.flags_text = preprocessor.readText(s.io, .cwd(), path, s.gpa) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return, // no `.vera-flags`: the command line's flags alone
     };
