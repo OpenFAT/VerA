@@ -20,6 +20,7 @@ const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_mask = @import("mask.zig");
 const gen_instance = @import("instance.zig");
+const gen_timepoint = @import("timepoint.zig");
 const family = @import("family.zig");
 const Mir = @import("ir").Mir;
 const Error = codegen.Error;
@@ -161,7 +162,7 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
             // the array, the copy goes to its slot (`zArrWT`), always through
             // the pointer check: a store before the statement may have
             // copied it into `a<id>` already.
-            const tp = gen_instance.tpSlotAt(self, @backingInt(self.mir.instBlock(inst)), id);
+            const tp = gen_timepoint.tpSlotAt(self, @backingInt(self.mir.instBlock(inst)), id);
             if (tp != null) self.cur.uses.inst = true;
             if (inPlace(self, id) and gen_instance.dirtyTracked(self, id))
                 try self.b("zArrStD({s}, p{d}, &inst.{s}__dirty, ", .{ ty, id, self.names.held_names[m.held] })

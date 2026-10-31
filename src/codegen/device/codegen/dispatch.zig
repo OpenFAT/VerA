@@ -21,6 +21,7 @@ const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_file = @import("file.zig");
 const gen_instance = @import("instance.zig");
+const gen_status = @import("status.zig");
 const gen_unit = @import("unit.zig");
 const gen_mask = @import("mask.zig");
 const Mir = @import("ir").Mir;
@@ -88,7 +89,7 @@ pub const Jac = struct {
 // Dispatchers: §5.6 residual assembly, §1.3.1.2 reference directions
 // =======================================================================
 
-/// §9.7.3 a status device's entry points (`gen_instance.hasStatus`): a
+/// §9.7.3 a status device's entry points (`gen_status.hasStatus`): a
 /// latched status returns zero rows without running the core, and the core's
 /// own report latches and does the same. One result variable, seeded zero,
 /// and one return: an early `return` per guard left three copies of the
@@ -290,7 +291,7 @@ fn emitDisplay(self: *Gen) Error!void {
             \\
         , .{});
         for (self.say) |site| {
-            const at = gen_instance.srcLine(self, site.tok);
+            const at = gen_status.srcLine(self, site.tok);
             try self.w("    .{{ .fmt = \"{f}\", .file = \"{f}\", .line = {d}, .nargs = {d} }},\n", .{
                 std.zig.fmtString(site.fmt), std.zig.fmtString(at.file), at.line, site.vals.len,
             });
@@ -362,7 +363,7 @@ fn emitEval(self: *Gen) Error!void {
     try self.w("    return res;\n}}\n\n", .{});
 
     try self.w("/// §5.6 resistive residual: KCL at every unknown (§1.3.2)\n", .{});
-    const st = gen_instance.hasStatus(self);
+    const st = gen_status.hasStatus(self);
     if (self.cur.core_wanted and (self.lowered.timepoints.items.len != 0 or st)) {
         // VerA's `vera_timepoint` (§2.9): the core result fills a stale cache.
         // §9.7.3 a status latches, and a latched one zeroes every row.
@@ -428,7 +429,7 @@ fn emitFused(self: *Gen) Error!void {
     , .{});
     try writeLead(self, "evalQ", ".{ .res = out.res, .q = out.q }");
     const tp = if (self.lowered.timepoints.items.len != 0) "    zTpStore(inst, sim, m);\n" else "";
-    if (gen_instance.hasStatus(self)) {
+    if (gen_status.hasStatus(self)) {
         try self.w(
             \\    var res: contract.Rows(Self, S) = zRowsZero(S);
             \\    var qs: contract.Sites(Self, S) = zSitesZero(S);

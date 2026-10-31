@@ -16,6 +16,7 @@ const codegen = @import("../codegen.zig");
 const Gen = codegen.Gen;
 const gen_file = @import("file.zig");
 const gen_instance = @import("instance.zig");
+const gen_status = @import("status.zig");
 const family = @import("family.zig");
 const gen_mask = @import("mask.zig");
 const Error = codegen.Error;
@@ -61,7 +62,7 @@ pub fn emitQ(self: *Gen) Error!void {
         \\
     , .{});
     try gen_dispatch.writeLead(self, "q", "out");
-    if (gen_instance.hasStatus(self)) {
+    if (gen_status.hasStatus(self)) {
         try self.w(
             \\    var out: contract.Sites(Self, S) = zSitesZero(S);
             \\    if (inst.vera_status__ == 0) {{

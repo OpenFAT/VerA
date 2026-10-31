@@ -27,6 +27,7 @@ const gen_unit = @import("unit.zig");
 const gen_unit_body = @import("unit_body.zig");
 const gen_cfg = @import("cfg.zig");
 const gen_instance = @import("instance.zig");
+const gen_status = @import("status.zig");
 const plan_setup = @import("prove").setup;
 const setup_chunk = @import("setup_chunk.zig");
 const Mir = @import("ir").Mir;
@@ -453,7 +454,7 @@ fn placeOf(self: *const Gen, v: Mir.Value) u32 {
 /// after `setup` (`contract.validateHost`'s `calls_setup`).
 fn emitSetupInstance(self: *Gen) Error!void {
     const tp = self.lowered.timepoints.items.len != 0;
-    if (!tp and !gen_instance.hasStatus(self)) return;
+    if (!tp and !gen_status.hasStatus(self)) return;
     try self.w(
         \\/// Call for every instance after `setup`, or after any write to
         \\/// `Model` or this instance: it drops what the instance cached from
@@ -462,7 +463,7 @@ fn emitSetupInstance(self: *Gen) Error!void {
         \\{s}{s}}}
         \\
         \\
-    , .{ if (tp) "    zTpDrop(inst);\n" else "", if (gen_instance.hasStatus(self)) gen_instance.status_drop else "" });
+    , .{ if (tp) "    zTpDrop(inst);\n" else "", if (gen_status.hasStatus(self)) gen_status.status_drop else "" });
 }
 
 /// Emits the §9.15 `$simparam`s `setup` reads, so a host knows which writes

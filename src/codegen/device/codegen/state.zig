@@ -21,6 +21,9 @@ const operator_ctrl = @import("operator_ctrl.zig");
 const gen_dispatch = @import("dispatch.zig");
 const gen_file = @import("file.zig");
 const gen_instance = @import("instance.zig");
+const gen_state_ctl = @import("state_ctl.zig");
+const gen_timepoint = @import("timepoint.zig");
+const gen_status = @import("status.zig");
 const gen_setup = @import("setup.zig");
 const gen_unit = @import("unit.zig");
 const render_array = @import("render_array.zig");
@@ -124,7 +127,7 @@ pub fn inPlaceArrays(self: *Gen) Error![]const bool {
         if (self.mir.instOp(inst) != .anew) continue;
         const d = self.mir.instData(inst).anew;
         const tp = d.tp orelse continue;
-        if (!gen_instance.tpInPlace(self, self.lowered.timepoints.items[tp.block].slots[tp.slot])) flags[d.array] = false;
+        if (!gen_timepoint.tpInPlace(self, self.lowered.timepoints.items[tp.block].slots[tp.slot])) flags[d.array] = false;
     }
     if (std.mem.findScalar(bool, flags, true) == null) return &.{};
     return flags;
@@ -172,7 +175,7 @@ pub fn emitStateMachine(self: *Gen) Error!void {
         "    limiter_previous: [{d}]f64 = @splat(0.0),\n",
         .{self.lowered.limit_slots.items.len},
     );
-    try gen_instance.emitStateTwins(self, acc.reads_t_prev);
+    try gen_state_ctl.emitStateTwins(self, acc.reads_t_prev);
     // VerA's `vera_timepoint` (§2.9): a fresh state is a fresh cache. A
     // dirty-tracked held array (`instance.dirtyTracked`): the fresh `State`
     // differs from `inst` anywhere, so its range is the whole array.
@@ -189,7 +192,7 @@ pub fn emitStateMachine(self: *Gen) Error!void {
         \\/// of each new analysis": so does every field `updateState` advances.
         \\pub fn initState(_: *const Model, {s}: *Instance) State {{
         \\
-    , .{if (tp or dirty or restart or gen_instance.hasStatus(self)) "inst" else "_"});
+    , .{if (tp or dirty or restart or gen_status.hasStatus(self)) "inst" else "_"});
     for (self.hist.items) |h| try self.w("    inst.{s} = z_inst0.{s};\n", .{ h, h });
     for (0..self.core.prev_lo.len) |k| try self.w("    inst.pb__{d} = z_inst0.pb__{d};\n", .{ k, k });
     for (0..self.core.acc_lo.len) |k| try self.w("    inst.pq__{d} = z_inst0.pq__{d};\n", .{ k, k });
@@ -198,7 +201,7 @@ pub fn emitStateMachine(self: *Gen) Error!void {
     for (self.names.units, self.names.unit_names) |u, n| if (u.role == .analog_op and u.op == .absdelay)
         try self.w("    inst.{0s}__t = z_inst0.{0s}__t;\n    inst.{0s}__v = z_inst0.{0s}__v;\n", .{n});
     if (tp) try self.w("    zTpDrop(inst);\n", .{});
-    if (gen_instance.hasStatus(self)) try self.w(gen_instance.status_drop, .{});
+    if (gen_status.hasStatus(self)) try self.w(gen_status.status_drop, .{});
     for (self.lowered.held_vars.items, self.names.held_names) |h, n| {
         if (h.array == none_u32 or !gen_instance.dirtyTracked(self, h.array)) continue;
         try self.w("    inst.{s}__dirty = .{{ 0, {d} }};\n", .{ n, self.lowered.mem_arrays.items[h.array].len - 1 });
@@ -229,7 +232,7 @@ pub fn emitStateMachine(self: *Gen) Error!void {
     try self.w("sim: contract.SimState) contract.UpdateResult {{\n", .{});
     const body = self.out.items.len;
     // §9.7.3 a latched status: the device stopped, so its state stays put.
-    if (gen_instance.hasStatus(self)) try self.w("    if (inst.vera_status__ != 0) return .ok;\n", .{});
+    if (gen_status.hasStatus(self)) try self.w("    if (inst.vera_status__ != 0) return .ok;\n", .{});
     // §9.21.1 + §9.3 (VD-095): a `$table_model` capture becomes the
     // instance's at an accepted point. The core runs once more at `x`; each
     // first call it makes captures, and those are kept. Every evaluation
@@ -281,7 +284,7 @@ pub fn emitStateMachine(self: *Gen) Error!void {
         \\
     , .{});
     try emitStateClass(self);
-    try gen_instance.emitStateCtl(self, acc.reads_t_prev);
+    try gen_state_ctl.emitStateCtl(self, acc.reads_t_prev);
     try emitAdvanceIteration(self);
     try gen_accept.emitAcceptQ(self, acc);
 }

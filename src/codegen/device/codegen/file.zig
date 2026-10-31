@@ -30,6 +30,7 @@ const gen_breakpoints = @import("breakpoints.zig");
 const gen_collapse = @import("collapse.zig");
 const gen_unit = @import("unit.zig");
 const gen_instance = @import("instance.zig");
+const gen_status = @import("status.zig");
 const gen_family = @import("family.zig");
 const gen_setup = @import("setup.zig");
 const cg_limit = @import("../cg_limit.zig");
@@ -185,7 +186,7 @@ pub fn emitFile(self: *Gen) Error!void {
     try gen_instance.emitInstance(self);
     try self.w("const InstancePtr = contract.InstancePtr(@This());\n", .{});
     // VerA's `vera_timepoint` (§2.9): `eval` fills the per-timepoint caches.
-    if (self.lowered.table_samples.items.len != 0 or self.lowered.timepoints.items.len != 0 or gen_instance.hasStatus(self)) try self.w("pub const mutable_eval = true;\n", .{});
+    if (self.lowered.table_samples.items.len != 0 or self.lowered.timepoints.items.len != 0 or gen_status.hasStatus(self)) try self.w("pub const mutable_eval = true;\n", .{});
     try gen_setup.emitSetup(self);
     try gen_unit.emitUnits(self);
     try self.w("/// What `eval`, `q` and `evalQ` read of `SimState` (`contract.SimReads`).\n" ++
@@ -198,7 +199,7 @@ pub fn emitFile(self: *Gen) Error!void {
     // §4.5.2's accepted-step sweep also carries §9.13.1's internal-seed
     // advance, the only place a stream may move: a per-iteration draw makes
     // the residual non-deterministic and Newton never converges.
-    if (f.stateful or self.lowered.rng_auto_seeds.items.len != 0 or gen_instance.pathLatches(self) or gen_instance.hasStatus(self)) try gen_state.emitStateMachine(self);
+    if (f.stateful or self.lowered.rng_auto_seeds.items.len != 0 or gen_instance.pathLatches(self) or gen_status.hasStatus(self)) try gen_state.emitStateMachine(self);
     try cg_limit.emit(self);
     try gen_collapse.emitCollapse(self, cpairs);
     try gen_breakpoints.emitNextBreakpoint(self);
@@ -322,7 +323,7 @@ pub fn fmtF64(self: *Gen, x: f64) Error![]const u8 {
 /// cache or status latch (each stores one point's values).
 fn batchOk(self: *const Gen) bool {
     assert(self.out.items.len != 0);
-    return !self.float.pinned and self.lowered.timepoints.items.len == 0 and !gen_instance.hasStatus(self);
+    return !self.float.pinned and self.lowered.timepoints.items.len == 0 and !gen_status.hasStatus(self);
 }
 
 fn usesQuad(self: *const Gen) bool {

@@ -27,6 +27,7 @@ const gen_mask = @import("codegen/mask.zig");
 const gen_family = @import("codegen/family.zig");
 const gen_dispatch = @import("codegen/dispatch.zig");
 const gen_instance = @import("codegen/instance.zig");
+const gen_timepoint = @import("codegen/timepoint.zig");
 const gen_setup = @import("codegen/setup.zig");
 const gen_host = @import("codegen/host_expr.zig");
 const cg_filters = @import("cg_filters.zig");
@@ -104,7 +105,7 @@ pub fn prepare(g: *Gen) Error!void {
     g.cur.plan.arr_lanes = g.arr_s;
     // Reads the full core's `lo_idx` and the final `arr_s`.
     g.tp_lo_idx = g.core.lo_idx;
-    g.tp_of_block = try gen_instance.tpBlocks(g);
+    g.tp_of_block = try gen_timepoint.tpBlocks(g);
     // Last, and before any emission: the roots are what the core's slice
     // reaches, and `emitInstance` sizes `Setup` from them.
     try gen_setup.planSetup(g);

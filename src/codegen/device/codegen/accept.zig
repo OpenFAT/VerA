@@ -20,6 +20,7 @@ const gen_host = @import("host_expr.zig");
 const gen_dispatch = @import("dispatch.zig");
 const dispatch_q = @import("dispatch_q.zig");
 const gen_instance = @import("instance.zig");
+const gen_status = @import("status.zig");
 const gen_unit = @import("unit.zig");
 const render_array = @import("render_array.zig");
 const Mir = @import("ir").Mir;
@@ -39,7 +40,7 @@ pub fn emitAcceptQ(self: *Gen, acc: gen_state.Accept) Error!void {
     if (self.lowered.reject_step != .undef) return;
     // §9.7.3 a latched status leaves the state alone, which `updateState`
     // checks first; a status device calls `q` and `updateState`.
-    if (gen_instance.hasStatus(self)) return;
+    if (gen_status.hasStatus(self)) return;
     // §9.21.1 (VD-095) `updateState` keeps a table capture from its own core
     // run; a table device's host calls `q` and `updateState`.
     if (self.lowered.table_samples.items.len != 0) return;

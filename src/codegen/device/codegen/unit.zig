@@ -27,6 +27,7 @@ const gen_noise = @import("noise.zig");
 const gen_opvars = @import("opvars.zig");
 const gen_file = @import("file.zig");
 const gen_instance = @import("instance.zig");
+const gen_status = @import("status.zig");
 const gen_state = @import("state.zig");
 const render_array = @import("render_array.zig");
 const family = @import("family.zig");
@@ -428,7 +429,7 @@ fn openSig(self: *Gen, name: []const u8) Error!Slots {
     // A `vera_timepoint` array cached in place (`instance.tpInPlace`) is
     // the exception: `anytype`, so `eval`'s mutable `Instance` reaches the
     // statement's stores and every `*const` caller keeps the local copy.
-    const eval_writes = self.lowered.timepoints.items.len != 0 or gen_instance.hasStatus(self);
+    const eval_writes = self.lowered.timepoints.items.len != 0 or gen_status.hasStatus(self);
     const inst_ty = if (self.core.in_place.len != 0)
         "*Instance"
     else if (self.lowered.table_samples.items.len == 0 and eval_writes)
