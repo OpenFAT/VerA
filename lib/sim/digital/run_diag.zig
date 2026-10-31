@@ -64,11 +64,13 @@ const own_files = system.own;
 /// and returns `error.DigitalFailed` for the caller to propagate.
 pub fn fail(self: *Run, tok: u32, comptime fmt: []const u8, args: anytype) Error {
     assert(tok < self.starts.len);
+    comptime assert(fmt.len > 0);
     return self.failWith(.E1100, tok, fmt, args);
 }
 
 /// The stage a diagnostic raised now belongs to (`diag_stage`, #72).
 pub fn stage(self: *const Run) diag.Stage {
+    assert(self.starts.len > 0); // Every Run reports against a lexed source.
     return self.diag_stage;
 }
 
@@ -76,6 +78,7 @@ pub fn stage(self: *const Run) diag.Stage {
 pub fn failWith(self: *Run, code: diag.Code, tok: u32, comptime fmt: []const u8, args: anytype) Error {
     assert(tok < self.starts.len);
     const start = self.starts[@min(tok, self.starts.len - 1)];
+    comptime assert(fmt.len > 0);
     self.bag.add(self.stage(), code, .{ .start = start, .end = start }, fmt, args) catch return error.OutOfMemory;
     return error.DigitalFailed;
 }
@@ -83,11 +86,13 @@ pub fn failWith(self: *Run, code: diag.Code, tok: u32, comptime fmt: []const u8,
 /// A walk ran out of the stack `deep.runGuarded` reserved, at token `tok`.
 pub fn deepFail(self: *Run, tok: u32) Error {
     assert(tok < self.starts.len);
+    assert(deep.exhausted()); // Only a stack near its limit fails this way.
     return self.fail(tok, deep.message, .{deep.mib()});
 }
 
 /// `fail` at expression `e`'s main token, with a fixed message.
 pub fn exprFail(self: *Run, e: Ast.ExprId, comptime msg: []const u8) Error {
     assert(e != .none);
+    comptime assert(msg.len > 0);
     return self.fail(self.file.exprs.mainTok(e), "{s}", .{msg});
 }

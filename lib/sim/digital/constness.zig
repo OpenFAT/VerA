@@ -146,6 +146,7 @@ pub fn notConstant(self: *Run, idx: u32) Error!?[]const u8 {
 // boundary until qualified, stopping at self-determined expression results.
 pub fn unsizedConcatOperand(self: *Run, e: Ast.ExprId) bool {
     assert(e != .none);
+    assert(@backingInt(e) < self.file.exprs.len());
     const ex = &self.file.exprs;
     return switch (ex.tag(e)) {
         .int_literal => ex.intLiteral(e).width == 0,
@@ -169,6 +170,7 @@ pub fn unsizedConcatOperand(self: *Run, e: Ast.ExprId) bool {
 
 fn isConstantExpression(self: *Run, e: Ast.ExprId, attribute: bool) bool {
     assert(e != .none);
+    assert(self.scope < self.hier.scopes.items.len);
     const ex = &self.file.exprs;
     switch (ex.tag(e)) {
         .int_literal, .logic_literal, .str_literal, .real_literal => return true,

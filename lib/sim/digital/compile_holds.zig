@@ -58,12 +58,14 @@ pub const Slice = struct {
     pub fn from(s: ?Slice) Slice {
         const out = s orelse none;
         if (s != null) assert(out.of != 0);
+        if (s == null) assert(out.of == 0);
         return out;
     }
 
     /// Returns the slice a row field holds, null for `none`.
     pub fn some(s: Slice) ?Slice {
         if (s.of == 0) assert(s.lo == 0);
+        if (s.of != 0) assert(s.lo < s.of); // A slice lies inside its whole.
         return if (s.of == 0) null else s;
     }
 };
@@ -80,12 +82,14 @@ pub const Bits = struct {
     pub fn from(b: ?Bits) Bits {
         const out = b orelse none;
         if (b != null) assert(out.width != 0);
+        if (b == null) assert(out.width == 0);
         return out;
     }
 
     /// Returns the range a row field holds, null for `none`.
     pub fn some(b: Bits) ?Bits {
         if (b.width == 0) assert(b.lo == 0);
+        if (b.width != 0) assert(b.lo <= std.math.maxInt(u32) - b.width);
         return if (b.width == 0) null else b;
     }
 };
@@ -155,6 +159,7 @@ fn overTarget(self: *Run, x: Ast.ExprId) Error!OverTarget {
             if (index != .none and !constantExpression(self, index)) return self.exprFail(x, refused);
             const sel = (try evaluate.selection(self, self.arena, x)) orelse return self.exprFail(x, "§9.3.2: the select's index is x or z");
             if (sel.first < 0 or sel.first + sel.count > self.values[at].width) return self.exprFail(x, "§9.3.2: the select is outside its net");
+            assert(sel.count >= 1);
             return .{ .at = at, .bits = .{ .lo = @intCast(sel.first), .width = sel.count } };
         },
         else => return self.exprFail(x, refused), // else: no other expression names storage

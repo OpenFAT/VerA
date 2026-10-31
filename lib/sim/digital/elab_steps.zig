@@ -144,6 +144,7 @@ pub fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
         try compile.checkExpr(r, x);
         constant = constant and compile.constantExpression(r, x);
     };
+    if (!d.any()) assert(constant);
     return constant;
 }
 
@@ -151,6 +152,7 @@ pub fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
 /// `name`: one that is not a localparam.
 pub fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool {
     assert(name.len != 0);
+    assert(m.name != .none);
     for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) return true;
     return false;
 }
@@ -223,6 +225,7 @@ pub fn driverBits(d: Driver, width: u32) [2]u32 {
         .udp => |u| u.out_bit,
         .expr, .pull => null,
     };
+    if (bit) |b| assert(b < width or width == 0);
     const range: [2]u32 = if (bit) |b| .{ b, b + 1 } else .{ 0, width };
     assert(range[0] <= range[1]);
     return range;
@@ -235,6 +238,7 @@ pub fn driverBits(d: Driver, width: u32) [2]u32 {
 /// processes. A mixed module's initialized variables are the analog block's
 /// and were never declared here.
 pub fn initVars(r: *Run, vars: []const Ast.VarDecl) Error!void {
+    assert(r.scope < r.hier.scopes.items.len);
     for (vars) |v| if (v.init != .none) {
         const at = r.hier.names.get(.{ .scope = r.scope, .str = v.name }) orelse continue;
         try compile.checkExpr(r, v.init);
@@ -259,6 +263,7 @@ pub fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
         if (process.is_always and try levelControlled(r, process.body)) {
             try r.program.early.append(r.arena, start);
         } else _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
+        assert(r.program.code.items.len > start);
     }
 }
 
