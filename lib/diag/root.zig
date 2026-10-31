@@ -1,74 +1,93 @@
-//! The diagnostic system: stage events -> one `Bag` of `Record` rows -> text
-//! on a writer, or JSON for a tool.
+//! The diagnostic system: stage events in, one `Bag` of coded rows, then
+//! terminal text, JSON Lines or an `--explain` entry out.
 //!
-//! Every stage reports into one collector with one location currency (`Span`,
-//! a byte range in the preprocessed text), so diagnostics from different stages
+//! Every stage reports into one bag in one location currency (`Span`, a byte
+//! range in the preprocessed text), so diagnostics from different stages
 //! sort into source order. A code's severity is its first letter (`E`/`W`).
 //!
-//! The spine, one diagnostic at a time:
-//!   `Bag.build` -> `Builder` parts -> `Builder.emit` (level, cap, dedupe)
-//!   -> `Bag.records` + `Bag.string_bytes`
-//! and once per compilation: `Bag.detach` (optional) -> `render`/`renderJson`,
-//! which sort the rows and resolve spans through `Bag.map` and `Bag.files`.
+//! The spine, one diagnostic at a time: `Bag.build` -> `Builder` parts ->
+//! `Builder.emit` (level, dedupe, cap) -> `Bag.rows` and its children; once
+//! per compilation: `Bag.detach` (optional) -> `render` / `renderJson`, which
+//! sort the rows and resolve spans through `Bag.map` and `Bag.files`.
 //!
-//! This file only aliases what other modules call; that list IS the API.
-//! The diagnostic system cites no LRM clause: the clause a diagnostic
-//! enforces is cited where the stage reports it, and in its `--explain` entry.
+//! Cites no LRM clause: the clause a diagnostic enforces is cited where the
+//! stage reports it, and in its catalogue row (`info(code).lrm`).
+//!
+//! Contents: only re-exports; this list IS the API.
+//! - catalogue: `Code`, `Info`, `info`
+//! - levels: `Severity`, `severityOf`, `Level`, `Levels`, `SetError`
+//! - locations: `Span`, `Loc`, `FileId`, `files_max`, `Segment`, `File`,
+//!   `StripMark`, `SourceMap`, `LineIndex`, `toSourceOffset`
+//! - entries: `Stage`, `String`, `max_children`, `Fix`, `Note`, `Label`, `Entry`
+//! - the bag: `Bag`, `Builder`, `max_entries`, `AddFileError`
+//! - suggestions: `editDistance`, `didYouMean`, `didYouMeanMap`, `Nearest`, `name_len_max`
+//! - rendering: `render`, `renderJson`, `explain`, `RenderOptions`, `RenderError`, `Palette`
 
-const code_table = @import("code.zig");
+const code = @import("code.zig");
+const level = @import("level.zig");
+const location = @import("location.zig");
+const entry = @import("entry.zig");
+const bag = @import("bag.zig");
+const builder = @import("builder.zig");
+const suggest = @import("suggest.zig");
+const render_text = @import("render.zig");
+const render_json = @import("json.zig");
 
-pub const Code = code_table.Code;
-pub const info = code_table.info;
+pub const Code = code.Code;
+pub const Info = code.Info;
+pub const info = code.info;
 
-// Levels: a code -> how hard it fails — diag/level.zig
-const diag_level = @import("level.zig");
-pub const Severity = diag_level.Severity;
-pub const severityOf = diag_level.severityOf;
-pub const Level = diag_level.Level;
-pub const Levels = diag_level.Levels;
+pub const Severity = level.Severity;
+pub const severityOf = level.severityOf;
+pub const Level = level.Level;
+pub const Levels = level.Levels;
+pub const SetError = level.SetError;
 
-// Locations: byte offset to line and column, spans and labels — diag/location.zig
-const diag_location = @import("location.zig");
-pub const Span = diag_location.Span;
-pub const FileId = diag_location.FileId;
-pub const Segment = diag_location.Segment;
-pub const StripMark = diag_location.StripMark;
-pub const LineIndex = diag_location.LineIndex;
-pub const Loc = diag_location.Loc;
-pub const SourceMap = diag_location.SourceMap;
+pub const Span = location.Span;
+pub const Loc = location.Loc;
+pub const FileId = location.FileId;
+pub const files_max = location.files_max;
+pub const Segment = location.Segment;
+pub const File = location.File;
+pub const StripMark = location.StripMark;
+pub const SourceMap = location.SourceMap;
+pub const LineIndex = location.LineIndex;
+pub const toSourceOffset = location.toSourceOffset;
 
-// Entries: the wire format and its decoded views — diag/entry.zig
-const diag_entry = @import("entry.zig");
-pub const Stage = diag_entry.Stage;
-pub const Note = diag_entry.Note;
-pub const Label = diag_entry.Label;
-pub const max_children = diag_entry.max_children;
-pub const Entry = diag_entry.Entry;
+pub const Stage = entry.Stage;
+pub const String = entry.String;
+pub const max_children = entry.max_children;
+pub const Fix = entry.Fix;
+pub const Note = entry.Note;
+pub const Label = entry.Label;
+pub const Entry = entry.Entry;
 
-// The bag: every diagnostic of one compilation, collected, deduplicated and sorted — diag/bag.zig
-const diag_bag = @import("bag.zig");
-pub const Bag = diag_bag.Bag;
-pub const Builder = diag_bag.Builder;
-pub const max_entries = diag_bag.max_entries;
+pub const Bag = bag.Bag;
+pub const Builder = builder.Builder;
+pub const max_entries = bag.max_entries;
+pub const AddFileError = bag.AddFileError;
 
-// Name suggestions for "unknown name" diagnostics — diag/suggest.zig
-const diag_suggest = @import("suggest.zig");
-pub const didYouMean = diag_suggest.didYouMean;
-pub const didYouMeanMap = diag_suggest.didYouMeanMap;
-pub const editDistance = diag_suggest.editDistance;
+pub const editDistance = suggest.editDistance;
+pub const didYouMean = suggest.didYouMean;
+pub const didYouMeanMap = suggest.didYouMeanMap;
+pub const Nearest = suggest.Nearest;
+pub const name_len_max = suggest.name_len_max;
 
-// Rendering: the bag as terminal text or JSON — diag/render.zig
-const diag_render = @import("render.zig");
-pub const renderJson = diag_render.renderJson;
-pub const explain = diag_render.explain;
-pub const render = diag_render.render;
-pub const RenderOptions = diag_render.RenderOptions;
+pub const render = render_text.render;
+pub const renderJson = render_json.renderJson;
+pub const explain = render_text.explain;
+pub const RenderOptions = render_text.RenderOptions;
+pub const RenderError = render_text.RenderError;
+pub const Palette = render_text.Palette;
 
 test {
-    _ = diag_level;
-    _ = diag_location;
-    _ = diag_entry;
-    _ = diag_bag;
-    _ = diag_suggest;
-    _ = diag_render;
+    _ = code;
+    _ = level;
+    _ = location;
+    _ = entry;
+    _ = bag;
+    _ = builder;
+    _ = suggest;
+    _ = render_text;
+    _ = render_json;
 }
