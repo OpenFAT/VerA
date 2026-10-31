@@ -5,7 +5,7 @@
 //! without a diagnostic, except a `.MODEL` of a type VerA has no primitive
 //! for, which is recorded so an instance of it is refused by name (E0952,
 //! E.1.2). The text is prepended to the source like
-//! `Preprocessor.spice_primitives`, so §6 instantiation, overrides and their
+//! `@import("pp/annex_e.zig").spice_primitives`, so §6 instantiation, overrides and their
 //! diagnostics apply unchanged. Input is lower-cased at ingest (E.2.1), file
 //! names excepted.
 //!
@@ -98,7 +98,7 @@ const Refusals = struct {
 ///
 /// `ports` is pre-joined in Table E.1's order, which E.3 makes normative for
 /// connection by order. A test pins each row against
-/// `Preprocessor.spice_primitives`.
+/// `@import("pp/annex_e.zig").spice_primitives`.
 const model_types = [_]struct { type_: []const u8, prim: []const u8, ports: []const u8 }{
     .{ .type_ = "npn", .prim = "bjt", .ports = "c, b, e, s" },
     .{ .type_ = "pnp", .prim = "bjt", .ports = "c, b, e, s" },
@@ -1381,11 +1381,11 @@ fn modelParams(
     return .{ .decls = decls.items, .args = args.items };
 }
 
-/// The body of `Preprocessor.spice_primitives`'s module for `prim`, between its
+/// The body of `@import("pp/annex_e.zig").spice_primitives`'s module for `prim`, between its
 /// header and its `endmodule`. Empty if there is no such row; a test pins that
 /// every `model_types` row exists.
 fn primitiveBody(prim: []const u8) []const u8 {
-    const prelude = Preprocessor.spice_primitives;
+    const prelude = @import("pp/annex_e.zig").spice_primitives;
     var buf: [64]u8 = undefined;
     const header = std.mem.print(&buf, "\nmodule {s}(", .{prim}) catch return "";
     const at = std.mem.find(u8, prelude, header) orelse return "";
@@ -1500,7 +1500,7 @@ fn spell(arena: Allocator, t: []const u8) Allocator.Error![]const u8 {
 test "model_types names a real Table E.1 module with the ports it lists" {
     // A row whose primitive or port order does not match the prelude would be
     // wrong without any other test noticing.
-    const prelude = Preprocessor.spice_primitives;
+    const prelude = @import("pp/annex_e.zig").spice_primitives;
     for (model_types) |r| {
         const header = try std.testing.allocator.print(
             "module {s}({s});",

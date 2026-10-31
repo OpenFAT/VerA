@@ -9480,26 +9480,28 @@ pub const preprocessor_tests = struct {
     //! LRM §2.2, §2.4, §2.6.2, §2.7, §2.8, §9.15, §10; IEEE 1364 §13.4.1, §19.
 
     const std = @import("std");
-    const Preprocessor = @import("frontend").Preprocessor;
+    const frontend = @import("frontend");
+    const preprocessor = frontend.preprocessor;
+    const directive_events = frontend.directive_events;
     const Allocator = std.mem.Allocator;
     const diag = @import("diag");
     const lexer = @import("frontend").lexer;
     const token = @import("frontend").token;
     const Parser = @import("frontend").Parser;
-    const DefaultDiscipline = Preprocessor.DefaultDiscipline;
-    const DefaultTransition = Preprocessor.DefaultTransition;
-    const Timescale = Preprocessor.Timescale;
-    const NetType = Preprocessor.NetType;
-    const NetTypeRegion = Preprocessor.NetTypeRegion;
-    const CellRegion = Preprocessor.CellRegion;
-    const Drive = Preprocessor.Drive;
-    const DriveRegion = Preprocessor.DriveRegion;
-    const predefined_macros = Preprocessor.predefined_macros;
-    const process = Preprocessor.process;
-    const Pp = Preprocessor.Pp;
-    const scan_stops = Preprocessor.scan_stops;
-    const findStop = Preprocessor.findStop;
-    const Qualifier = Preprocessor.Qualifier;
+    const DefaultDiscipline = directive_events.DefaultDiscipline;
+    const DefaultTransition = directive_events.DefaultTransition;
+    const Timescale = directive_events.Timescale;
+    const NetType = directive_events.NetType;
+    const NetTypeRegion = directive_events.NetTypeRegion;
+    const CellRegion = directive_events.CellRegion;
+    const Drive = directive_events.Drive;
+    const DriveRegion = directive_events.DriveRegion;
+    const predefined_macros = preprocessor.predefined_macros;
+    const process = preprocessor.process;
+    const Pp = frontend.Pp;
+    const scan_stops = frontend.pp_scan.scan_stops;
+    const findStop = frontend.pp_scan.findStop;
+    const Qualifier = directive_events.Qualifier;
     const vera = @import("vera");
 
     // ---------------------------------------------------------------------------
@@ -9723,7 +9725,7 @@ pub const preprocessor_tests = struct {
             \\`pragma protect end_protected
             \\`IN
         ;
-        const keys: Preprocessor.protect.Keys = .{
+        const keys: frontend.protect.Keys = .{
             .iv = .{ 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef },
             .keys = &.{.{ .owner = "o", .name = "k", .key = .{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef } }},
         };
@@ -9756,7 +9758,7 @@ pub const preprocessor_tests = struct {
             "CEwlPH76i0/T4ErznDzLTXiO/fE6M6hG3GhSHNfS7/xDln8Ij9YhlGvDdSAiWfxQwSrnuASTQUpW74zwFRsSJn9W7P96MsHSpspQji6DPl8OZgiasP3VMkEDmOyydfAs",
             "CEwlPH76i0/T4ErznDzLTf2CoUC4gdarIYnP3ZIMKbeRxjsdv/x8HzRzbmiT/cbcKjOyXX+w/u5DBgRZCS+jhtg4w9j0XU9Yjek/BBdWArASDFx6mvaKTKeskF+d+fkK",
         };
-        const keys: Preprocessor.protect.Keys = .{
+        const keys: frontend.protect.Keys = .{
             .iv = .{ 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef },
             .keys = &.{.{ .owner = "o", .name = "k", .key = .{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef } }},
         };
@@ -9810,7 +9812,7 @@ pub const preprocessor_tests = struct {
             \\iRM7BMo+TyISaFZ2SU/cwn3BCebCzX3m
             \\`pragma protect end_protected
         ;
-        const keys: Preprocessor.protect.Keys = .{
+        const keys: frontend.protect.Keys = .{
             .iv = .{ 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef },
             .keys = &.{.{ .owner = "VerAConformance", .name = "exchange-fixture", .key = .{ 0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1 } }},
         };
@@ -9885,7 +9887,7 @@ pub const preprocessor_tests = struct {
         // `M(x)` is `(x)`, so n nested uses expand to n parentheses around 1 and
         // need n live expansions, argument pre-expansion included. 129 was one
         // past the old 128-level cap (E0119); 10,000 crosses many stack segments
-        // (`Preprocessor.segment_levels`). Each level copies the text inside it,
+        // (`preprocessor.segment_levels`). Each level copies the text inside it,
         // so the text built is quadratic: 10,000 levels is 50 MB of it.
         for ([_]usize{ 129, 10_000 }) |n| {
             var src: std.ArrayList(u8) = .empty;
@@ -10407,7 +10409,7 @@ pub const preprocessor_tests = struct {
             std.mem.count(u8, a, "discipline electrical;"),
         );
         // The replayed prelude is the snapshot's text, byte for byte.
-        const n1 = (try Preprocessor.preludeSnapshot()).text.len;
+        const n1 = (try frontend.prelude.preludeSnapshot()).text.len;
         try testing.expect(std.mem.find(u8, a[0..n1], "nature Voltage;") != null);
         // The re-`include collapses to just the newlines it consumed (line numbers
         // inside an included file are preserved even when its guard empties it).
@@ -10434,7 +10436,7 @@ pub const preprocessor_tests = struct {
         }
         try pp.runStdDefs();
 
-        const p = try Preprocessor.preludeSnapshot();
+        const p = try frontend.prelude.preludeSnapshot();
         try testing.expectEqualStrings(pp.out.items, p.text);
         try testing.expectEqual(pp.segs.items.len, p.segs.len);
         for (pp.segs.items, p.segs) |a, b| {
@@ -10486,7 +10488,7 @@ pub const preprocessor_tests = struct {
 
             // The long way: no seed, one scan of the whole buffer.
             const long = try lexer.tokenize(arena, text, null);
-            const seeded = try lexer.tokenize(arena, text, try Preprocessor.preludeTokens(true));
+            const seeded = try lexer.tokenize(arena, text, try frontend.prelude.preludeTokens(true));
 
             try testing.expectEqual(long.len, seeded.len);
             try testing.expectEqualSlices(token.Tag, long.items(.tag), seeded.items(.tag));
@@ -10494,7 +10496,7 @@ pub const preprocessor_tests = struct {
 
             // The premise the seam rests on, checked rather than asserted in prose:
             // the snapshot's bytes are a prefix of the text, at offset 0.
-            const p = try Preprocessor.preludeSnapshot();
+            const p = try frontend.prelude.preludeSnapshot();
             try testing.expect(std.mem.startsWith(u8, text, p.text));
             // ...and the snapshot stops one token short of `.eof`, which belongs to
             // whatever buffer is actually being lexed.
@@ -10509,10 +10511,10 @@ pub const preprocessor_tests = struct {
         var bag: diag.Bag = .init(arena);
         const text = (try process(arena, "module m; endmodule\n", .{ .std_defs = false, .bag = &bag })).text;
 
-        try testing.expectEqual(@as(?lexer.Seed, null), try Preprocessor.preludeTokens(false));
-        try testing.expectEqual(@as(?*const Parser.Parser.Seed, null), try Preprocessor.preludeAst(false));
+        try testing.expectEqual(@as(?lexer.Seed, null), try frontend.prelude.preludeTokens(false));
+        try testing.expectEqual(@as(?*const Parser.Parser.Seed, null), try frontend.prelude.preludeAst(false));
         const long = try lexer.tokenize(arena, text, null);
-        const seeded = try lexer.tokenize(arena, text, try Preprocessor.preludeTokens(false));
+        const seeded = try lexer.tokenize(arena, text, try frontend.prelude.preludeTokens(false));
         try testing.expectEqualSlices(token.Tag, long.items(.tag), seeded.items(.tag));
         try testing.expectEqualSlices(u32, long.items(.start), seeded.items(.start));
     }
@@ -10591,7 +10593,7 @@ pub const preprocessor_tests = struct {
             const long = try lp.parseSourceFile();
 
             var sbag: diag.Bag = .init(arena);
-            const seed = (try Preprocessor.preludeAst(true)).?;
+            const seed = (try frontend.prelude.preludeAst(true)).?;
             var sp = try Parser.Parser.initSeeded(arena, text, tags, starts, &sbag, seed);
             // The seed is doing something: the resumed parse starts deep in the file.
             try testing.expect(sp.pos > 2000 and sp.pos < tags.len - 1);
@@ -10678,7 +10680,7 @@ pub const preprocessor_tests = struct {
         // ... at its line number, not one measured in the preprocessed text.
         const want = std.mem.countScalar(
             u8,
-            Preprocessor.disciplines_vams[0..std.mem.find(u8, Preprocessor.disciplines_vams, needle).?],
+            frontend.annex_d.disciplines_vams[0..std.mem.find(u8, frontend.annex_d.disciplines_vams, needle).?],
             '\n',
         ) + 1;
         const idx = try diag.LineIndex.build(arena, bag.fileText(r.file));
@@ -10824,8 +10826,8 @@ pub const preprocessor_tests = struct {
     }
 
     /// Expects every published event list in text-stream order and inside `text`.
-    fn expectSortedEvents(d: Preprocessor.Directives, text: []const u8) !void {
-        inline for (@typeInfo(Preprocessor.Directives).@"struct".field_names) |name| {
+    fn expectSortedEvents(d: directive_events.Directives, text: []const u8) !void {
+        inline for (@typeInfo(directive_events.Directives).@"struct".field_names) |name| {
             const list = @field(d, name);
             for (list, 0..) |e, k| {
                 try testing.expect(e.at <= text.len);
@@ -10882,10 +10884,10 @@ pub const preprocessor_tests = struct {
             var bag: diag.Bag = .init(arena);
             var pp: Pp = .{ .arena = arena, .scratch = arena, .opts = .{ .bag = &bag } };
             _ = try bag.addFile("<source>", "ab/*c*/d");
-            const s = try Preprocessor.stripComments(&pp, "ab/*c*/d");
+            const s = try frontend.pp_comments.stripComments(&pp, "ab/*c*/d");
             try testing.expectEqualStrings("ab d", s.text);
             try testing.expectEqualSlices(diag.StripMark, &.{.{ .out = 3, .src = 7 }}, s.marks);
-            const l = try Preprocessor.stripComments(&pp, "x//c\ny");
+            const l = try frontend.pp_comments.stripComments(&pp, "x//c\ny");
             try testing.expectEqualStrings("x\ny", l.text);
             try testing.expectEqualSlices(diag.StripMark, &.{.{ .out = 1, .src = 4 }}, l.marks);
         }
@@ -10902,7 +10904,7 @@ pub const preprocessor_tests = struct {
             var bag: diag.Bag = .init(arena);
             var pp: Pp = .{ .arena = arena, .scratch = arena, .opts = .{ .bag = &bag } };
             const id = try bag.addFile("<source>", raw);
-            const s = Preprocessor.stripComments(&pp, raw) catch |e| switch (e) {
+            const s = frontend.pp_comments.stripComments(&pp, raw) catch |e| switch (e) {
                 error.PreprocessFailed => continue, // E0102, an unclosed `/*`
                 error.OutOfMemory => return e,
             };
@@ -10923,7 +10925,7 @@ pub const preprocessor_tests = struct {
             var bag2: diag.Bag = .init(arena);
             var pp2: Pp = .{ .arena = arena, .scratch = arena, .opts = .{ .bag = &bag2 } };
             _ = try bag2.addFile("<source>", s.text);
-            const again = try Preprocessor.stripComments(&pp2, s.text);
+            const again = try frontend.pp_comments.stripComments(&pp2, s.text);
             try testing.expectEqualStrings(s.text, again.text);
             try testing.expectEqual(@as(usize, 0), again.marks.len);
         }
@@ -11168,7 +11170,7 @@ pub const preprocessor_tests = struct {
         {
             var f = try tmp.dir.createFile(io, "huge.vh", .{});
             defer f.close(io);
-            try f.setLength(io, Preprocessor.max_text_bytes + 1);
+            try f.setLength(io, preprocessor.max_text_bytes + 1);
         }
         try tmp.dir.writeFile(io, .{ .sub_path = "big.vh", .data = "" });
         const any = try tmp.dir.realPathFileAlloc(io, "big.vh", testing.allocator);
@@ -11304,7 +11306,7 @@ pub const preprocessor_tests = struct {
 
     test "IEEE 1364 §19.3.1: every directive name is refused as a macro name, escaped or not" {
         // §2.8.1: `\include` is the identifier `include`.
-        for (Preprocessor.directive_map.keys()) |name| {
+        for (frontend.pp_directive.directive_map.keys()) |name| {
             for ([_][]const u8{ "", "\\" }) |prefix| {
                 const src = try testing.allocator.print("`define {s}{s} 1\n", .{ prefix, name });
                 defer testing.allocator.free(src);
@@ -11394,7 +11396,7 @@ pub const preprocessor_tests = struct {
         // inside a module).
         try testing.expectEqualStrings("`resetall\n", out.text);
         const d = out.directives;
-        inline for (@typeInfo(Preprocessor.Directives).@"struct".field_names) |name| {
+        inline for (@typeInfo(directive_events.Directives).@"struct".field_names) |name| {
             try testing.expectEqual(@as(usize, 1), @field(d, name).len);
         }
         try testing.expectEqual(NetType.wire, d.nettypes[0].value);
@@ -11575,7 +11577,7 @@ pub const preprocessor_tests = struct {
         for (0..256) |c| {
             const b: u8 = @intCast(c);
             const want = (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or b == '_' or b == '$';
-            try testing.expectEqual(want, Preprocessor.isIdentStart(b));
+            try testing.expectEqual(want, frontend.pp_scan.isIdentStart(b));
         }
     }
 
@@ -11588,7 +11590,7 @@ pub const preprocessor_tests = struct {
             .{ .text = "\"a\\", .want = 3 },
             .{ .text = "\"a\\\nb\"", .want = 5 },
         };
-        for (cases) |c| try testing.expectEqual(c.want, Preprocessor.stringStop(c.text, 0));
+        for (cases) |c| try testing.expectEqual(c.want, frontend.pp_scan.stringStop(c.text, 0));
 
         // Oracle: the per-byte loop `stringStop` replaced, on random text dense in
         // the three bytes it branches on, from the empty body past three vectors.
@@ -11615,14 +11617,14 @@ pub const preprocessor_tests = struct {
                 };
                 for (0..@min(len, 4)) |start| {
                     buf[start] = '"';
-                    try testing.expectEqual(scalar(buf[0..len], start), Preprocessor.stringStop(buf[0..len], start));
+                    try testing.expectEqual(scalar(buf[0..len], start), frontend.pp_scan.stringStop(buf[0..len], start));
                 }
             }
         }
     }
 
     test "Rest reads identifiers and escaped identifiers where the lexer splits them" {
-        var r: Preprocessor.Rest = .{ .s = "  a$1_ \\b-c d" };
+        var r: frontend.pp_scan.Rest = .{ .s = "  a$1_ \\b-c d" };
         try testing.expectEqualStrings("a$1_", r.ident().?);
         // A backslash starts no simple identifier, and a letter no escaped one.
         try testing.expect(r.ident() == null);

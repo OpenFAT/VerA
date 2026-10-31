@@ -13,6 +13,16 @@
 //!   `isMathFunction`, `isFilterFunction`, `isSmallSignalFunction`, `isEventFunction`
 //! - `pub const Lexer = struct`: `TokenList`, `tokenSpan`, `stringContents`,
 //!   `scaleExp`, `parseReal`, `Lexer.Seed`, `Lexer.tokenize`, `Lexer.tokenizeSeeded`
+//! - `pub const Preprocessor = struct`: every old `Preprocessor` name (`Options`,
+//!   `protect`, `File`, `Error`, `Output`, `Directives`, `max_text_bytes`,
+//!   `segment_levels`, `caller_levels`, `readText`, `Directive`, `Qualifier`,
+//!   `DefaultDiscipline`, `DefaultTransition`, `TimescaleEvent`, `Timescale`,
+//!   `Region`, `NetType`, `NetTypeRegion`, `CellRegion`, `Drive`, `DriveRegion`,
+//!   `directive_map`, `predefined_macros`, `builtin_includes`, `process`,
+//!   `preludeTokens`, `preludeAst`, `preludeSnapshot`, `disciplines_vams`,
+//!   `Macro`, `Events`, `Pp`, `stripComments`, `scan_stops`, `findStop`, `scan`,
+//!   `stringStop`, `Rest`, `isSpace`, `isIdentChar`, `identEnd`, `escapedEnd`,
+//!   `isIdentStart`, `spice_primitives`, `spice_module_count`)
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -21,6 +31,12 @@ const token_file = @import("token.zig");
 const keyword = @import("keyword.zig");
 const lexer = @import("lexer.zig");
 const token_value = @import("token_value.zig");
+const preprocessor = @import("preprocessor.zig");
+const events = @import("pp/events.zig");
+const pp_directive = @import("pp/directive.zig");
+const pp_scan = @import("pp/scan.zig");
+const pp_prelude = @import("pp/prelude.zig");
+const pp_annex_e = @import("pp/annex_e.zig");
 
 /// The old `frontend.token`: token.zig and keyword.zig in one namespace.
 pub const token = struct {
@@ -86,4 +102,58 @@ pub const Lexer = struct {
             return lexer.tokenize(gpa, src, seed);
         }
     };
+};
+
+/// The old `frontend.Preprocessor` (preprocessor.zig with every pp/ name in
+/// it). Use `frontend.preprocessor` for the API, `frontend.directive_events`
+/// for the published event types, `frontend.prelude`, `frontend.protect`,
+/// `frontend.annex_d`, `frontend.annex_e`, and `frontend.pp_*` for the scan
+/// internals the tests drive.
+pub const Preprocessor = struct {
+    pub const Options = preprocessor.Options;
+    pub const protect = @import("pp/protect.zig");
+    pub const File = preprocessor.File;
+    pub const Error = preprocessor.Error;
+    pub const Output = preprocessor.Output;
+    pub const max_text_bytes = preprocessor.max_text_bytes;
+    pub const segment_levels = preprocessor.segment_levels;
+    pub const caller_levels = preprocessor.caller_levels;
+    pub const readText = preprocessor.readText;
+    pub const process = preprocessor.process;
+    pub const predefined_macros = preprocessor.predefined_macros;
+    pub const Directives = events.Directives;
+    pub const Qualifier = events.Qualifier;
+    pub const DefaultDiscipline = events.DefaultDiscipline;
+    pub const DefaultTransition = events.DefaultTransition;
+    pub const TimescaleEvent = events.TimescaleEvent;
+    pub const Timescale = events.Timescale;
+    pub const Region = events.Region;
+    pub const NetType = events.NetType;
+    pub const NetTypeRegion = events.NetTypeRegion;
+    pub const CellRegion = events.CellRegion;
+    pub const Drive = events.Drive;
+    pub const DriveRegion = events.DriveRegion;
+    pub const Events = events.Events;
+    pub const Directive = pp_directive.Directive;
+    pub const directive_map = pp_directive.directive_map;
+    pub const builtin_includes = @import("pp/include.zig").builtin_includes;
+    pub const preludeTokens = pp_prelude.preludeTokens;
+    pub const preludeAst = pp_prelude.preludeAst;
+    pub const preludeSnapshot = pp_prelude.preludeSnapshot;
+    pub const disciplines_vams = @import("pp/annex_d.zig").disciplines_vams;
+    pub const Pp = @import("pp/Pp.zig");
+    pub const Macro = Pp.Macro;
+    pub const stripComments = @import("pp/comments.zig").stripComments;
+    pub const scan_stops = pp_scan.scan_stops;
+    pub const findStop = pp_scan.findStop;
+    pub const scan = pp_scan.scan;
+    pub const stringStop = pp_scan.stringStop;
+    pub const Rest = pp_scan.Rest;
+    pub const isIdentStart = pp_scan.isIdentStart;
+    pub const isSpace = lexer.isSpace;
+    pub const isIdentChar = lexer.isIdentChar;
+    pub const identEnd = lexer.identEnd;
+    pub const escapedEnd = lexer.escapedEnd;
+    pub const spice_primitives = pp_annex_e.spice_primitives;
+    pub const spice_module_count = pp_annex_e.spice_module_count;
 };

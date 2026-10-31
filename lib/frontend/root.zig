@@ -17,8 +17,29 @@ pub const keyword = @import("keyword.zig");
 pub const lexer = @import("lexer.zig");
 /// Token text in, §2.6.2 reals and §2.7 strings out.
 pub const token_value = @import("token_value.zig");
+/// The old preprocessor namespace (compat.zig), until pass 2.
+pub const Preprocessor = compat.Preprocessor;
 /// Clause 10 directives and comment stripping: source files in, one text out.
-pub const Preprocessor = @import("preprocessor.zig");
+pub const preprocessor = @import("preprocessor.zig");
+/// The positional directive events `preprocessor.Output.directives` holds.
+pub const directive_events = @import("pp/events.zig");
+/// The annex D/E prelude, preprocessed, lexed and parsed once per process.
+pub const prelude = @import("pp/prelude.zig");
+/// IEEE 1364-2005 §28 decryption envelopes and the key file.
+pub const protect = @import("pp/protect.zig");
+/// Annex D.1 and D.2 as embedded text.
+pub const annex_d = @import("pp/annex_d.zig");
+/// Annex E Table E.1's SPICE primitives as modules, and annex D.3.
+pub const annex_e = @import("pp/annex_e.zig");
+/// The preprocessor's scan state (a struct file), for the tests that drive a
+/// step without `process`.
+pub const Pp = @import("pp/Pp.zig");
+/// The main scan and the byte scans every preprocessor file shares.
+pub const pp_scan = @import("pp/scan.zig");
+/// §2.4 comment stripping.
+pub const pp_comments = @import("pp/comments.zig");
+/// Directive dispatch and the directive table.
+pub const pp_directive = @import("pp/directive.zig");
 /// The old lexer namespace (compat.zig): use `lexer` and `token_value`.
 pub const Lexer = compat.Lexer;
 /// The AST; `Ast.SourceFile` is the root every later stage reads.

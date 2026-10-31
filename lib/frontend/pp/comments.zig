@@ -1,19 +1,22 @@
 //! Comment stripping: source bytes in, the bytes with each comment replaced by
 //! its newlines (or one space) out, plus marks mapping stripped offsets back
 //! to source offsets for diagnostics.
-//! LRM §2.2, §2.4, §2.7, §2.8.1.
+//! Cites: LRM §2.2, §2.4, §2.7, §2.8.1; IEEE 1364-2005 §19.3.1, §28.4.3.
+//!
+//! Contents:
+//! - `pub const Stripped = struct`
+//! - `pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped`
 
 const std = @import("std");
-const Preprocessor = @import("../preprocessor.zig");
+const assert = std.debug.assert;
 const diag = @import("diag");
-const Error = Preprocessor.Error;
-const Pp = Preprocessor.Pp;
-const findStop = Preprocessor.findStop;
-const stringStop = Preprocessor.stringStop;
-
-// ---------------------------------------------------------------------------
-// §2.4 comments
-// ---------------------------------------------------------------------------
+const escapedEnd = @import("../lexer.zig").escapedEnd;
+const Pp = @import("Pp.zig");
+const Error = Pp.Error;
+const pp_scan = @import("scan.zig");
+const findStop = pp_scan.findStop;
+const stringStop = pp_scan.stringStop;
+const protect = @import("protect.zig");
 
 /// `stripComments`' result. Both slices are on `Pp.arena`, exactly sized,
 /// because the bag keeps them for rendering after the compilation's
@@ -31,6 +34,7 @@ pub const Stripped = struct { text: []const u8, marks: []const diag.StripMark };
 /// unterminated block comment is E0102, reported in `pp.cur_file_id`, which
 /// must already name `src`. O(src.len).
 pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
+    assert(src.len <= std.math.maxInt(u32));
     // The output never grows, so every append below fits. It is the last
     // allocation on `pp.arena` until the return, so the shrink there hands
     // the bytes the comments freed back to the arena. The marks grow on
@@ -56,7 +60,7 @@ pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
             // opaque up to the next whitespace, so `//` inside cannot start a
             // comment.
             const start = i;
-            i = Preprocessor.escapedEnd(src, i + 1);
+            i = escapedEnd(src, i + 1);
             out.appendSliceAssumeCapacity(src[start..i]);
             continue;
         }
@@ -123,7 +127,7 @@ pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
             const nl = std.mem.findScalarPos(u8, src, i, '\n') orelse src.len;
             const start = i;
             i += 1;
-            if (Preprocessor.protect.opensBlock(src[start..nl])) {
+            if (protect.opensBlock(src[start..nl])) {
                 i = nl;
                 while (i < src.len) {
                     const next = std.mem.findScalarPos(u8, src, i + 1, '\n') orelse src.len;
@@ -145,21 +149,29 @@ pub fn stripComments(pp: *Pp, src: []const u8) Error!Stripped {
             i = end;
         }
     }
+    assert(i == src.len);
+    // Comments only ever shrink the text.
+    assert(out.items.len <= src.len);
     const text = try out.toOwnedSlice(pp.arena);
     return .{ .text = text, .marks = try pp.arena.dupe(diag.StripMark, marks.items) };
 }
+
+// ---- private ----
 
 /// Whether the end of `out` sits on a `define's logical line: walk back over
 /// `\`-continued physical lines to the first, and look for the word there.
 fn inDefine(out: []const u8) bool {
     var line_end = out.len;
-    while (true) {
+    // Each pass moves `line_end` back past one newline.
+    for (0..out.len + 1) |_| {
         const line_start = if (std.mem.findScalarLast(u8, out[0..line_end], '\n')) |n| n + 1 else 0;
         const line = std.mem.trimStart(u8, out[line_start..line_end], " \t");
         if (std.mem.startsWith(u8, line, "`define")) return true;
         if (line_start == 0) return false;
         const prev = std.mem.trimEnd(u8, out[0 .. line_start - 1], " \t\r");
         if (prev.len == 0 or prev[prev.len - 1] != '\\') return false;
+        assert(line_start - 1 < line_end);
         line_end = line_start - 1;
     }
+    unreachable;
 }

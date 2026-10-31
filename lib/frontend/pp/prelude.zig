@@ -1,25 +1,29 @@
 //! Prelude snapshot: the embedded annex D.2, D.1 and Table E.1 text in, its
 //! preprocessed output, macros, tokens and parse out, built once per process
 //! and replayed into every compilation that uses the standard definitions.
-//! LRM annex D, annex E, §10.5.
+//! Cites: LRM annex D, annex E, §10.5.
+//!
+//! Contents:
+//! - `pub const Prelude = struct`
+//! - `pub fn preludeTokens(std_defs: bool) Allocator.Error!?lexer.Seed`
+//! - `pub fn preludeAst(std_defs: bool) Allocator.Error!?*const Parser.Parser.Seed`
+//! - `pub fn preludeSnapshot() Allocator.Error!*const Prelude`
+//! - `pub fn buildPrelude() Allocator.Error!*const Prelude`
 
 const std = @import("std");
-const Preprocessor = @import("../preprocessor.zig");
-const pp_annex_d = @import("annex_d.zig");
-const pp_annex_e = @import("annex_e.zig");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const diag = @import("diag");
-const Lexer = @import("../lexer.zig");
+const lexer = @import("../lexer.zig");
 const keyword = @import("../keyword.zig");
 const token = @import("../token.zig");
 const Parser = @import("../parser.zig");
-const predefined_macros = Preprocessor.predefined_macros;
-const Macro = Preprocessor.Macro;
-const Pp = Preprocessor.Pp;
-
-// ---------------------------------------------------------------------------
-// The prelude snapshot
-// ---------------------------------------------------------------------------
+const predefined_macros = @import("../preprocessor.zig").predefined_macros;
+const Pp = @import("Pp.zig");
+const Macro = Pp.Macro;
+const Events = @import("events.zig").Events;
+const pp_annex_d = @import("annex_d.zig");
+const pp_annex_e = @import("annex_e.zig");
 
 /// Annex D.2, D.1 and Table E.1, preprocessed, lexed and parsed once per
 /// process.
@@ -35,7 +39,7 @@ const Pp = Preprocessor.Pp;
 /// source-map segments, macros, and the file registrations the segments index
 /// by position), plus the lexed tokens (`preludeTokens`) and the parse
 /// (`preludeAst`). A `Pp` or `Parser` field the prelude can write must be
-/// added here too; the equivalence tests in pp/test.zig catch a miss.
+/// added here too; the equivalence tests in tests/unit.zig's preprocessor_tests catch a miss.
 ///
 /// Lifetime: process-long, never freed, immutable after publication. Thread
 /// safe: published by a release compare-exchange and read by an acquire load.
@@ -44,7 +48,7 @@ const Pp = Preprocessor.Pp;
 pub const Prelude = struct {
     text: []const u8,
     /// `text`'s tokens, `.eof` excluded (see `preludeTokens`). Two columns, the
-    /// shape `Lexer.Seed` takes.
+    /// shape `lexer.Seed` takes.
     tags: []const token.Tag,
     starts: []const u32,
     /// The parse of the same tokens (see `preludeAst`).
@@ -68,16 +72,19 @@ pub const Prelude = struct {
 
 var prelude_snapshot: std.atomic.Value(?*const Prelude) = .init(null);
 
-/// Returns the prelude's tokens for `Lexer.tokenizeSeeded`, so a compilation
+/// Returns the prelude's tokens for `lexer.tokenize`'s seed, so a compilation
 /// lexes only the bytes after the prelude; null when `std_defs` is off.
 ///
 /// Sound because `process` writes the prelude first, so `Prelude.text` is a
 /// byte-exact prefix of every preprocessed text with `std_defs`, and
-/// `Lexer.next` reads no state but the cursor. The columns are
+/// `lexer.Lexer.next` reads no state but the cursor. The columns are
 /// process-lifetime and immutable (see `Prelude`); the caller copies them.
-pub fn preludeTokens(std_defs: bool) Allocator.Error!?Lexer.Seed {
+pub fn preludeTokens(std_defs: bool) Allocator.Error!?lexer.Seed {
     if (!std_defs) return null;
     const p = try preludeSnapshot();
+    assert(p.tags.len == p.starts.len);
+    // `.eof` was dropped: every start lies inside the prelude's text.
+    if (p.starts.len != 0) assert(p.starts[p.starts.len - 1] < p.text.len);
     return .{ .tags = p.tags, .starts = p.starts, .len = @intCast(p.text.len) };
 }
 
@@ -95,6 +102,8 @@ pub fn preludeTokens(std_defs: bool) Allocator.Error!?Lexer.Seed {
 pub fn preludeAst(std_defs: bool) Allocator.Error!?*const Parser.Parser.Seed {
     if (!std_defs) return null;
     const p = try preludeSnapshot();
+    // The parse stopped on `.eof`: its cursor is the token count.
+    assert(p.ast.pos == p.tags.len);
     return &p.ast;
 }
 
@@ -103,6 +112,7 @@ pub fn preludeSnapshot() Allocator.Error!*const Prelude {
     if (prelude_snapshot.load(.acquire)) |p| return p;
     const p = try buildPrelude();
     if (prelude_snapshot.cmpxchgStrong(null, p, .release, .acquire)) |won| return won.?;
+    assert(prelude_snapshot.load(.acquire) == p);
     return p;
 }
 
@@ -137,10 +147,10 @@ pub fn buildPrelude() Allocator.Error!*const Prelude {
     // The rest of `Pp`'s output surface is empty: the shipped files hold no
     // positional directive and no unclosed `ifdef. A prelude file that writes
     // one must extend `Prelude` rather than lose the event.
-    inline for (@typeInfo(Preprocessor.Events).@"struct".field_names) |name| {
-        std.debug.assert(@field(pp.events, name).items.len == 0);
+    inline for (@typeInfo(Events).@"struct".field_names) |name| {
+        assert(@field(pp.events, name).items.len == 0);
     }
-    std.debug.assert(pp.conds.items.len == 0);
+    assert(pp.conds.items.len == 0);
 
     // `process` inserts the §10.5 predefined macros itself.
     var n_macros: usize = 0;
@@ -152,11 +162,12 @@ pub fn buildPrelude() Allocator.Error!*const Prelude {
         if (e.value_ptr.predefined) continue;
         macros.appendAssumeCapacity(.{ .name = e.key_ptr.*, .macro = e.value_ptr.* });
     }
-    std.debug.assert(macros.items.len == n_macros);
+    assert(macros.items.len == n_macros);
 
     // Lex the same bytes.
-    var toks = try Lexer.tokenize(arena, pp.out.items, null);
-    std.debug.assert(toks.len > 0 and toks.items(.tag)[toks.len - 1] == .eof);
+    var toks = try lexer.tokenize(arena, pp.out.items, null);
+    assert(toks.len > 0);
+    assert(toks.items(.tag)[toks.len - 1] == .eof);
 
     // Parse the whole token list including `.eof`, which `Parser.init`
     // requires. The parse stops on it, so `pos` is the prelude's token count
@@ -170,18 +181,26 @@ pub fn buildPrelude() Allocator.Error!*const Prelude {
     // The rest of `Parser`'s state is back at its `init` value: the shipped
     // files leave no `begin_keywords, generate region, analog function or
     // connect module open. A prelude file that does must extend `Parser.Seed`.
-    std.debug.assert(!parser.failed and bag.isEmpty());
-    std.debug.assert(parser.pos == toks.len - 1);
-    std.debug.assert(parser.kw_set == keyword.default_keyword_set);
-    std.debug.assert(parser.kw_stack.items.len == 0);
-    std.debug.assert(parser.attrs.items.len == 0 and parser.attr_depth == 0);
-    std.debug.assert(!parser.in_analog_fn and !parser.analog_expr and !parser.analog_event_block and !parser.in_connect_module and !parser.in_discrete and !parser.in_digital_delay);
-    std.debug.assert(parser.gen_depth == 0 and parser.gen_construct_depth == 0);
+    assert(!parser.failed);
+    assert(bag.isEmpty());
+    assert(parser.pos == toks.len - 1);
+    assert(parser.kw_set == keyword.default_keyword_set);
+    assert(parser.kw_stack.items.len == 0);
+    assert(parser.attrs.items.len == 0);
+    assert(parser.attr_depth == 0);
+    assert(!parser.in_analog_fn);
+    assert(!parser.analog_expr);
+    assert(!parser.analog_event_block);
+    assert(!parser.in_connect_module);
+    assert(!parser.in_discrete);
+    assert(!parser.in_digital_delay);
+    assert(parser.gen_depth == 0);
+    assert(parser.gen_construct_depth == 0);
 
     const access = try arena.alloc([]const u8, parser.access_names.count());
     var ait = parser.access_names.keyIterator();
     for (access) |*a| a.* = ait.next().?.*;
-    std.debug.assert(ait.next() == null);
+    assert(ait.next() == null);
 
     // Drop `.eof` from the seed columns: the compilation's buffer ends past the
     // user's source, not here.
