@@ -18,7 +18,7 @@
 //! §4.5, §5.6, §5.6.7, §5.10, §7.3.1, §7.3.2, §8.5.3.6, §9.4, §9.17.
 
 const std = @import("std");
-const Mir = @import("mir.zig");
+const Mir = @import("Mir.zig");
 const Lowered = @import("lowered.zig");
 const opdb = @import("op.zig");
 

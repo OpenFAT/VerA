@@ -1,21 +1,169 @@
-//! IR facts about each `Mir.Opcode`, one row per opcode: operand class, result
-//! type, LRM domain obligation (Tables 4-14/4-15), comparison relation and
-//! constant fold. `table` is a `std.EnumArray`, so a new opcode does not
-//! compile until its row exists. Target spellings live in
-//! `src/codegen/device/codegen/opcode_zig.zig`: lib/ir does not know the target is Zig.
+//! The MIR opcode set and one row of facts per opcode: an `Opcode` in, its
+//! operand class, result type, LRM domain obligation (Tables 4-14/4-15),
+//! comparison relation and constant fold out. `table` is a `std.EnumArray`
+//! built with `init`, so a new opcode does not compile until its row exists.
+//! Target spellings live in `src/codegen/device/codegen/opcode_zig.zig`: `ir`
+//! does not know the target is Zig.
 //!
-//! LRM clauses this file's code cites: §2.7, §3.2, §3.2.2, §4.2, §4.2.1.1, §4.2.1.2,
-//! §4.2.1.3, §4.2.4, §4.2.5, §4.2.7, §4.2.8, §4.2.9, §4.2.11, §4.3.1, §4.3.2.
+//! Cites: §2.7, §2.9, §3.2, §3.2.2, §4.2, §4.2.1.1, §4.2.1.2, §4.2.1.3,
+//! §4.2.3, §4.2.4, §4.2.5, §4.2.7, §4.2.8, §4.2.9, §4.2.10, §4.2.11, §4.2.12,
+//! §4.3.1, §4.3.2, §5.6.1.2, §5.8, §5.9, §5.10; IEEE 1364-2005 §5.1.5.
+//!
+//! Contents:
+//! - `pub const Opcode = enum(u8)`
+//! - `pub const OpClass = enum(u8)`
+//! - `pub const Domain = enum(u8)`
+//! - `pub const Relation = enum(u8)`
+//! - `pub const Fold = union(enum)`
+//! - `pub fn Kernel(comptime Op: type) type`
+//! - `pub const Info = struct`
+//! - `pub const table: std.EnumArray(Opcode, Info)`
+//! - `pub fn get(op: Opcode) Info`
+//! - `pub fn class(op: Opcode) OpClass`
+//! - `pub fn isInteger(op: Opcode) bool`
+//! - `pub fn operandCount(c: OpClass) ?u8`
+//! - `pub fn fold(op: Opcode, args: []const Const) ?Const`
+//! - `pub fn label(op: Opcode) []const u8`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const value_fold = @import("kernels").fold;
 const Const = value_fold.Const;
-const Mir = @import("mir.zig");
-const Opcode = Mir.Opcode;
+
+/// Opcode set: §4.2 arithmetic, relational, logical, bitwise and shift
+/// operators, §4.3 math, casts, §3.2.2 arrays and §5.8/§5.9 control. Naming:
+/// a leading `f` is the real-valued form, a leading `i` the integer form.
+/// Math functions (§4.3) are always real-valued and carry the bare LRM name.
+pub const Opcode = enum(u8) {
+    // --- arithmetic §4.2.4 (+ unary §4.2.3, modulus §4.2.4) ---
+    fadd,
+    fsub,
+    fmul,
+    fdiv,
+    fmod,
+    fneg,
+    iadd,
+    isub,
+    imul,
+    idiv,
+    imod,
+    ineg,
+    // --- relational §4.2.5 / equality §4.2.7 (yield integer 0/1) ---
+    flt,
+    fgt,
+    fle,
+    fge,
+    feq,
+    fne,
+    ilt,
+    igt,
+    ile,
+    ige,
+    ieq,
+    ine,
+    // --- logical §4.2.8 (integer 0/1 result) ---
+    logand,
+    logor,
+    lognot,
+    // --- bitwise §4.2.9 (integer only; reduction §4.2.10 is digital-only) ---
+    bitand,
+    bitor,
+    bitxor,
+    bitxnor,
+    bitnot,
+    // --- shifts §4.2.11 (logical << >> only; <<< >>> are illegal in analog) ---
+    shl,
+    shr,
+    // --- standard math, LRM Table 4-14 §4.3.1 ---
+    sqrt,
+    exp,
+    expm1,
+    ln,
+    ln1p,
+    log10,
+    pow,
+    hypot,
+    floor,
+    ceil,
+    fabs,
+    fmin,
+    fmax, // real forms
+    iabs,
+    imin,
+    imax, // integer forms (§4.3.1: int operands ⇒ int result)
+    /// §4.2.1.3 `**` over two integers: integer, not §4.3.1's real `pow`.
+    /// IEEE 1364-2005 §5.1.5 Table 5-6 at §3.2's 32-bit width; `kernels.fold.ipow32`
+    /// is the definition.
+    ipow,
+    // --- trigonometric + hyperbolic, LRM Table 4-15 §4.3.2 ---
+    sin,
+    cos,
+    tan,
+    asin,
+    acos,
+    atan,
+    atan2,
+    sinh,
+    cosh,
+    tanh,
+    asinh,
+    acosh,
+    atanh,
+    // --- casts §4.2.1.1 (real→integer, rounds) / §4.2.1.2 (integer→real) ---
+    fi_cast,
+    if_cast,
+    /// Optimization fence (engine-internal): stops codegen from folding or
+    /// reassociating across it. Unary, value-preserving.
+    opt_barrier,
+    /// Derivative stop (no LRM basis; VerA's `vera_nodiff` attribute, §2.9):
+    /// the operand's value with every derivative lane zero. So its `deps` is
+    /// empty although the value still varies with x (`Analysis.xDep`).
+    dstop,
+    /// Committed-value latch (engine-internal): reads the Instance field
+    /// `pb__<k>`, the operand's value at the last accepted solve; gradient
+    /// zero. Serves §5.6.1.2 path-integrated reactive terms `A*ddt(B)`:
+    /// q = path_acc + A·(B - path_prev(B)), so the charge increment is A·ΔB
+    /// (the capacitance form) and dA reaches the Jacobian only times ΔB,
+    /// which is 0 at every committed point (AC sees exactly A·∂B/∂x).
+    path_prev,
+    /// Committed accumulator latch: reads `pq__<k>`, the sum of the operand's
+    /// values over all accepted solves; gradient zero. Carries the charge base
+    /// Σ A·ΔB for `path_prev`. The base is fixed across one Newton attempt, so
+    /// the reactive residual is one smooth function per attempt and its AD
+    /// Jacobian is exact.
+    path_acc,
+    // --- value-form conditional §4.2.12 (`?:` that needs no CFG split) ---
+    select,
+    // --- §3.2.2 memory-backed arrays (`Lowered.mem_arrays`) ---
+    /// A fresh version of array `a` (an index into `Lowered.mem_arrays`, not a
+    /// Value): every element zero, or for a §5.10 held array the values the
+    /// last accepted evaluation left in its `Instance` field.
+    anew,
+    /// Element `b` of array version `a`; real / integer by the array's type.
+    /// `b` is the flat element index, and any index outside `0..len` reads
+    /// the element type's zero (§3.2.2 names no element there; lowering's
+    /// `runtimeArrayIndex` encodes an invalid subscript as -1).
+    fload,
+    iload,
+    /// Array version `arr` with element `index` set to `value`: a new version. An index
+    /// outside `0..len` writes nothing. Every version of one array shares one
+    /// storage, so a version is dead once a store has been made from it; no
+    /// pass may make one live again (if-conversion keeps any arm that stores).
+    store,
+    // --- control §5.8/§5.9 ---
+    phi,
+    branch,
+    jump,
+    call,
+};
+
+/// Operand shape of an opcode; selects the `Mir.InstData` variant and the
+/// row encoding (`Mir.InstRow`).
+pub const OpClass = enum(u8) { unary, binary, ternary, phi, branch, jump, call, anew, load, store };
 
 /// LRM Tables 4-14 / 4-15 domains. The operand of each must be proven in-domain
 /// (else compile error), except the "All x" group which governs float mode only.
-pub const Domain = enum {
+pub const Domain = enum(u8) {
     all, // exp, expm1, sinh, cosh, tanh, sin, cos, floor, ceil, min, max, abs; §4.3.1/§4.3.2
     positive, // ln, log10                                   §4.3.1  (x > 0)
     gt_neg_one, // ln1p                                       §4.3.1  (x > -1)
@@ -29,7 +177,7 @@ pub const Domain = enum {
 };
 
 /// `lhs REL rhs` for the twelve comparison opcodes (`Info.rel`).
-const Relation = enum { lt, le, gt, ge, eq, ne };
+pub const Relation = enum(u8) { lt, le, gt, ge, eq, ne };
 
 /// How the one constant kernel (`kernels.fold`) folds an opcode.
 /// No default: a new opcode states its fold or does not compile.
@@ -49,19 +197,10 @@ pub const Fold = union(enum) {
     math: Kernel(value_fold.MathFn),
 };
 
-/// One kernel operation. The operands are first converted to the opcode's
-/// type (`int` or real) because a MIR opcode, unlike a source operator,
-/// already names it: `fadd` is real whatever its operands folded to. `wrap`
-/// applies §3.2's 32 bits to the result where the device does (`wrap32`);
-/// `+ - * << /` and `**` already wrap in the kernel.
-pub fn Kernel(comptime Op: type) type {
-    return struct { f: Op, int: bool = false, wrap: bool = false };
-}
-
 /// One row of `table`.
 pub const Info = struct {
     /// Operand shape; drives `Mir.instData` decoding.
-    class: Mir.OpClass,
+    class: OpClass,
     /// The result is a §3.2 integer rather than a real. Relational, equality
     /// and logical operators yield integer 0/1 (§4.2.5, §4.2.7, §4.2.8).
     int: bool = false,
@@ -91,7 +230,7 @@ pub const Info = struct {
     fold: Fold,
 };
 
-/// Per-opcode facts, total over `Mir.Opcode`.
+/// Per-opcode facts, total over `Opcode`.
 pub const table = std.EnumArray(Opcode, Info).init(.{
     .fadd = .{ .class = .binary, .fold = .{ .binary = .{ .f = .add } } },
     .fsub = .{ .class = .binary, .fold = .{ .binary = .{ .f = .sub } } },
@@ -176,9 +315,63 @@ pub const table = std.EnumArray(Opcode, Info).init(.{
     .call = .{ .class = .call, .fold = .none },
 });
 
+// The facts every row must agree on, checked once at build time: a 0/1 result
+// is an integer, only a 0/1 result is a predicate, a relation is exactly a
+// comparison (every predicate but `!`), a label exists to name a domain error,
+// and a folding row's kernel takes as many operands as its class.
+comptime {
+    @setEvalBranchQuota(10_000);
+    assert(@sizeOf(Opcode) == 1);
+    assert(@sizeOf(OpClass) == 1);
+    for (std.enums.values(Opcode)) |op| {
+        const info = table.get(op);
+        if (info.bool01) assert(info.int);
+        if (info.predicate) assert(info.bool01);
+        assert((info.predicate and op != .lognot) == (info.rel != null));
+        if (info.label != null) assert(info.domain != .all);
+        switch (info.fold) {
+            .unary, .identity, .to_real, .to_int => assert(info.class == .unary),
+            .binary => assert(info.class == .binary),
+            .math => |k| assert(info.class == if (k.f.arity() == 1) OpClass.unary else .binary),
+            .none => {},
+        }
+    }
+}
+
+/// Returns the row type of one kernel operation. The operands are first
+/// converted to the opcode's type (`int` or real) because a MIR opcode,
+/// unlike a source operator, already names it: `fadd` is real whatever its
+/// operands folded to. `wrap` applies §3.2's 32 bits to the result where the
+/// device does (`wrap32`); `+ - * << /` and `**` already wrap in the kernel.
+pub fn Kernel(comptime Op: type) type {
+    return struct { f: Op, int: bool = false, wrap: bool = false };
+}
+
 /// Returns `op`'s row of `table`.
 pub fn get(op: Opcode) Info {
-    return table.getPtrConst(op).*;
+    return table.get(op);
+}
+
+/// Returns the operand shape of `op`, which drives `Mir.instData` decoding.
+pub fn class(op: Opcode) OpClass {
+    return table.getPtrConst(op).class;
+}
+
+/// Returns whether `op` yields a §3.2 integer rather than a real.
+/// Relational, equality and logical operators yield integer 0/1 (§4.2.5, §4.2.8).
+pub fn isInteger(op: Opcode) bool {
+    return table.getPtrConst(op).int;
+}
+
+/// Returns how many Value operands `Mir.emit` takes for class `c`, or null
+/// for a class with its own builder (phi, branch, jump, call, anew).
+pub fn operandCount(c: OpClass) ?u8 {
+    return switch (c) {
+        .unary => 1,
+        .binary, .load => 2,
+        .ternary, .store => 3,
+        .phi, .branch, .jump, .call, .anew => null,
+    };
 }
 
 /// Returns `op` over already-folded operands, through the one constant kernel: the
@@ -189,53 +382,55 @@ pub fn get(op: Opcode) Info {
 /// Asserts that `args.len` is that operand count for every opcode that
 /// folds (a `.none` row reads no operand and takes any slice).
 pub fn fold(op: Opcode, args: []const Const) ?Const {
-    return switch (table.getPtrConst(op).fold) {
+    const row = table.getPtrConst(op);
+    if (row.fold != .none) assert(args.len == operandCount(row.class).?);
+    const result: ?Const = switch (row.fold) {
         .none => null,
-        .identity => blk: {
-            std.debug.assert(args.len == 1);
-            break :blk args[0];
-        },
+        .identity => args[0],
         // §4.2.1.1/§4.2.1.2 convert a number; `asReal` would read a string as 0.
-        .to_real => blk: {
-            std.debug.assert(args.len == 1);
-            break :blk if (args[0] == .str) null else .{ .real = args[0].asReal() };
-        },
-        .to_int => blk: {
-            std.debug.assert(args.len == 1);
-            break :blk if (args[0] == .str) null else .{ .int = std.math.lossyCast(i64, @round(args[0].asReal())) };
-        },
-        .unary => |k| blk: {
-            std.debug.assert(args.len == 1);
-            break :blk wrapped(k.wrap, value_fold.unary(k.f, as(k.int, args[0]) orelse return null));
-        },
-        .binary => |k| blk: {
-            std.debug.assert(args.len == 2);
-            break :blk wrapped(k.wrap, value_fold.binary(
-                k.f,
-                as(k.int, args[0]) orelse return null,
-                as(k.int, args[1]) orelse return null,
-                null,
-            ));
-        },
+        .to_real => if (args[0] == .str) null else .{ .real = args[0].asReal() },
+        .to_int => if (args[0] == .str) null else .{ .int = std.math.lossyCast(i64, @round(args[0].asReal())) },
+        .unary => |k| wrapped(k.wrap, value_fold.unary(k.f, as(k.int, args[0]) orelse return null)),
+        .binary => |k| wrapped(k.wrap, value_fold.binary(
+            k.f,
+            as(k.int, args[0]) orelse return null,
+            as(k.int, args[1]) orelse return null,
+            null,
+        )),
         .math => |k| blk: {
-            std.debug.assert(args.len == k.f.arity());
-            var buf: [2]Const = undefined;
-            for (args, 0..) |a, i| buf[i] = as(k.int, a) orelse return null;
+            assert(args.len == k.f.arity());
+            var buf: [value_fold.MathFn.arity_max]Const = undefined;
+            for (args, buf[0..args.len]) |a, *b| b.* = as(k.int, a) orelse return null;
             break :blk wrapped(k.wrap, value_fold.math(k.f, buf[0..args.len]));
         },
     };
+    // A fold never produces a string, and an integer opcode folds to an integer.
+    if (result) |r| assert(r != .str);
+    if (result) |r| if (row.int and row.fold != .identity) assert(r == .int);
+    return result;
 }
+
+/// Returns the diagnostic spelling of `op` (see `Info.label`).
+pub fn label(op: Opcode) []const u8 {
+    const text = table.getPtrConst(op).label orelse @tagName(op);
+    assert(text.len != 0);
+    return text;
+}
+
+// ---- private ----
 
 /// A folded operand in the opcode's type. An integer from a real is
 /// `fi_cast`'s rounding; a string is not an operand of any opcode.
 fn as(int: bool, c: Const) ?Const {
     if (c == .str) return null;
     if (!int) return .{ .real = c.asReal() };
-    return .{ .int = switch (c) {
-        .int => |i| i,
-        .real => |r| std.math.lossyCast(i64, @round(r)),
-        .str => unreachable,
-    } };
+    return .{
+        .int = switch (c) {
+            .int => |i| i,
+            .real => |r| std.math.lossyCast(i64, @round(r)),
+            .str => unreachable, // returned above
+        },
+    };
 }
 
 fn wrapped(wrap: bool, r: ?Const) ?Const {
@@ -262,33 +457,25 @@ test "fold: an opcode's type, not its operands', decides the kernel's rule" {
     try std.testing.expectEqual(@as(?Const, null), fold(.path_prev, &.{.{ .real = 1 }}));
 }
 
-/// Returns the diagnostic spelling of `op` (see `Info.label`).
-pub fn label(op: Opcode) []const u8 {
-    return table.getPtrConst(op).label orelse @tagName(op);
-}
-
 test "opcode: each row's flags agree with the LRM typing and its fold's shape" {
-    for (std.enums.values(Opcode)) |op| {
-        errdefer std.debug.print("opcode `{s}`\n", .{@tagName(op)});
-        const info = table.getPtrConst(op).*;
-        // §4.2.5/§4.2.7/§4.2.8: a 0/1 result is an integer, and only a 0/1
-        // result is a predicate.
-        if (info.bool01) try std.testing.expect(info.int);
-        if (info.predicate) try std.testing.expect(info.bool01);
-        // A relation is exactly a comparison: every predicate but `!`.
-        try std.testing.expectEqual(info.predicate and op != .lognot, info.rel != null);
-        // A label exists to name a domain error.
-        if (info.label != null) try std.testing.expect(info.domain != .all);
-        // The kernel a row folds through takes as many operands as its class.
-        switch (info.fold) {
-            .unary, .identity, .to_real, .to_int => try std.testing.expectEqual(Mir.OpClass.unary, info.class),
-            .binary => try std.testing.expectEqual(Mir.OpClass.binary, info.class),
-            .math => |k| try std.testing.expectEqual(if (k.f.arity() == 1) Mir.OpClass.unary else .binary, info.class),
-            .none => {},
-        }
-        try std.testing.expectEqual(info.class, Mir.opClass(op));
-        try std.testing.expectEqual(info.int, Mir.opIsInteger(op));
+    // The comptime block above is the check; this pins the spec cases it
+    // must classify, so a table edit that keeps the relations but moves a
+    // row out of its clause still fails.
+    // §4.2.5/§4.2.7: every comparison is a predicate with a relation.
+    for ([_]Opcode{ .flt, .fgt, .fle, .fge, .feq, .fne, .ilt, .igt, .ile, .ige, .ieq, .ine }) |op| {
+        try std.testing.expect(get(op).predicate);
+        try std.testing.expect(get(op).rel != null);
+        try std.testing.expect(isInteger(op));
     }
+    // §4.2.8: `!` is a predicate without a relation; `&&`/`||` are 0/1, no predicate.
+    try std.testing.expect(get(.lognot).predicate and get(.lognot).rel == null);
+    try std.testing.expect(get(.logand).bool01 and !get(.logand).predicate);
+    // §4.3.1/§4.3.2: math is real even over integers.
+    for ([_]Opcode{ .sqrt, .exp, .pow, .sin, .atan2, .hypot }) |op| try std.testing.expect(!isInteger(op));
+    // The class column agrees with the operand count `emit` asserts.
+    try std.testing.expectEqual(OpClass.binary, class(.pow));
+    try std.testing.expectEqual(@as(?u8, 3), operandCount(class(.store)));
+    try std.testing.expectEqual(@as(?u8, null), operandCount(class(.call)));
 }
 
 test "fold: hand-derived values for every operator family" {

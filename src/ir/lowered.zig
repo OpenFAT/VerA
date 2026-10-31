@@ -30,7 +30,7 @@
 const std = @import("std");
 const base = @import("base");
 const diag = @import("diag");
-const Mir = @import("mir.zig");
+const Mir = @import("Mir.zig");
 const simparam = @import("simparam.zig");
 
 /// Lowering's output; later stages read it through `*const Lowered`.

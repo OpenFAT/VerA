@@ -9,7 +9,7 @@
 //! LRM clauses this file's code cites: §4.5, §5.10.3, §9.15, §9.17.
 
 /// SSA instruction set every stage after lowering reads.
-pub const Mir = @import("mir.zig");
+pub const Mir = @import("Mir.zig");
 /// §4.5 / §5.10.3 / §9.17 the stateful operator set, `OpKind`.
 pub const op = @import("op.zig");
 /// What lowering hands every later stage, and the row types of its tables.
