@@ -87,7 +87,7 @@ setup_mode: bool = false,
 sinv: []const bool = &.{},
 
 /// While planning `setup`: value -> the block `setup` computes it in when that
-/// is not its own (`Sinv.home`).
+/// is not its own (`Invariance.home`).
 su_home: []const u32 = &.{},
 
 /// Set by `analyze`: did this unit end up reading the core? Drives the one
@@ -424,7 +424,7 @@ fn analyzeUnitOnce(self: *UnitPlan, target: Mir.Value) Error!void {
         if (self.eager_use[v] != 0 or self.arm_use[v] == 0) continue;
         // Read at more than one arm position: a slot, computed once where it
         // is defined, rather than re-rendering its whole slice at every arm.
-        // Eager is sound here: proof.markSelectArms guards only a slice owned
+        // Eager is sound here: prove's `guards.markSelectArms` guards only a slice owned
         // through use-count-1 links, so a value with two uses (and whatever it
         // alone reads) was proved on every path. And ifconv's `.pure` pass
         // keeps an arm holding a domain-restricted op as a CFG diamond; one

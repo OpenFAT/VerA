@@ -53,7 +53,7 @@ const Term = struct { sign: f64, contrib: u32 };
 /// A site whose charge is constant or solve-invariant has dq/dt = 0 and gets
 /// no slot; nor does a site that stamps no row (a ground-ground branch).
 /// `branch_u` is `Names.branch_u`, one entry per contribution; `sinv` is
-/// `Sinv.val`. O(rows · terms · sites); a module has tens of each.
+/// `Invariance.invariant`. O(rows · terms · sites); a module has tens of each.
 pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []const bool) Error!QSites {
     assert(branch_u.len == in.lowered.contributions.items.len);
     const a = in.arena;

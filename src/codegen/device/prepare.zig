@@ -84,7 +84,7 @@ pub fn prepare(g: *Gen) Error!void {
     // Solve invariance first: the charge-site plan reads it to leave the
     // time-constant charges out of `q`, and the jobs queue what it keeps.
     g.sinv = try plan_setup.plan(g.input());
-    g.qs = try plan_qsite.plan(g.input(), g.names.branch_u, g.topo, g.sinv.val);
+    g.qs = try plan_qsite.plan(g.input(), g.names.branch_u, g.topo, g.sinv.invariant);
     if (g.display == .record) g.say = try cg_say.planSay(g);
     if (g.display == .emit) try cg_say.planPasses(g);
     g.jobs = try plan_jobs.plan(g.input(), .{
@@ -170,7 +170,7 @@ fn reportNoise(g: *Gen) Error!void {
 /// has one).
 fn reportTimepoints(g: *Gen) Error!void {
     for (g.lowered.timepoints.items) |t| {
-        const v = try plan_setup.timepointVarying(g.input(), t) orelse continue;
+        const v = try @import("prove").timepoint.varying(g.input(), t) orelse continue;
         g.any_fatal = true;
         const bag = g.diags orelse continue;
         var d = bag.build(.codegen, .E0531, g.lowered.tokenSpan(t.tok));

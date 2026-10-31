@@ -103,7 +103,7 @@ pub const Harness = struct {
     // The harness bag is arena-lived and never detached, so unlike the
     // driver's it is still the right one to hand codegen.
     fn proveAndGenerate(self: *Harness, gpa: std.mem.Allocator, opts: codegen.Options) !codegen.Device {
-        const v = try proof.proveOpts(gpa, &self.mir, &self.lowered, .{}, &self.bag);
+        const v = try proof.prove(gpa, &self.mir, &self.lowered, .{}, &self.bag);
         defer v.deinit(gpa);
         const a = self.arena_state.allocator();
         return generate(a, a, &self.mir, &self.lowered, v, opts);

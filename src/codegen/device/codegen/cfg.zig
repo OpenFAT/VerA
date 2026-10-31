@@ -381,7 +381,7 @@ fn emitTerm(self: *Gen, bi: u32, depth: u32, stack: *std.ArrayList(Resume), targ
             try self.ind(depth);
             try self.b("if (", .{});
             var else_dead = self.su.dead;
-            if (self.su.mode and !self.sinv.val[@backingInt(self.an.rv(d.cond))]) {
+            if (self.su.mode and !self.sinv.invariant[@backingInt(self.an.rv(d.cond))]) {
                 // `setup` takes a per-eval branch `then` without testing it:
                 // neither arm holds setup work, and a §5.10.2 initial-step
                 // arm is exactly what it must compute (prove/setup.zig's

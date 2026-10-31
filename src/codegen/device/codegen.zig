@@ -213,11 +213,11 @@ test "generate: a case of 2500 arms generates on a 1 MiB stack" {
             if (r.lowered) |_| {
                 const ifconv = @import("prove").ifconv;
                 const a = r.h.arena_state.allocator();
-                _ = ifconv.run(a, &r.h.mir) catch |e| {
+                _ = ifconv.run(a, &r.h.mir, .pure, null) catch |e| {
                     r.lowered = e;
                 };
                 // A `.strict` unit keeps nothing as CFG: every arm speculates.
-                _ = ifconv.runMode(a, &r.h.mir, .speculate, null) catch |e| {
+                _ = ifconv.run(a, &r.h.mir, .speculate, null) catch |e| {
                     r.lowered = e;
                 };
             } else |_| {}

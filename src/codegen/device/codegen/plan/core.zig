@@ -80,7 +80,7 @@ const none_u32 = std.math.maxInt(u32);
 
 const Mark = struct {
     in: Input,
-    cds: struct { off: []const u32, cd: []const plan_setup.Cd },
+    cds: plan_setup.ControlDeps,
     need: []bool,
     blk: []bool,
     work: std.ArrayList(Mir.Value) = .empty,
@@ -101,9 +101,9 @@ const Mark = struct {
     fn block(m: *Mark, b: u32) Error!void {
         assert(m.blk.len == m.in.an.nb);
         try m.pushBlock(b);
-        while (m.blk_work.pop()) |bb| for (m.cds.cd[m.cds.off[bb]..m.cds.off[bb + 1]]) |c| {
-            try m.mark(plan_setup.branchCond(m.in, c.a).?);
-            try m.pushBlock(c.a);
+        while (m.blk_work.pop()) |bb| for (m.cds.of(bb)) |c| {
+            try m.mark(plan_setup.branchCond(m.in, c.branch).?);
+            try m.pushBlock(c.branch);
         };
     }
 
@@ -257,7 +257,7 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
     assert(out.held_only.len == 0);
     assert(out.lo_vals.len != 0);
     const a = in.arena;
-    const n: u32 = @intCast(in.mir.insts.len);
+    const n = in.mir.instCount();
     var any = false;
     for (0..n) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
@@ -267,8 +267,7 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
     }
     if (!any) return;
 
-    const cds = try plan_setup.controlDeps(in, in.an.ipdom);
-    var m: Mark = .{ .in = in, .cds = .{ .off = cds.off, .cd = cds.cd }, .need = try a.alloc(bool, in.an.nv), .blk = try a.alloc(bool, in.an.nb) };
+    var m: Mark = .{ .in = in, .cds = try plan_setup.controlDeps(in), .need = try a.alloc(bool, in.an.nv), .blk = try a.alloc(bool, in.an.nb) };
     @memset(m.need, false);
     @memset(m.blk, false);
     for (jobs) |job| if (evalRoot(job.kind)) try m.mark(job.target);
