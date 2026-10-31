@@ -32,6 +32,7 @@ const gen_setup = @import("codegen/setup.zig");
 const gen_host = @import("codegen/host_expr.zig");
 const cg_filters = @import("cg_filters.zig");
 const cg_display = @import("cg_display.zig");
+const cg_say = @import("cg_say.zig");
 const Gen = @import("Gen.zig");
 const Error = @import("codegen.zig").Error;
 
@@ -84,8 +85,8 @@ pub fn prepare(g: *Gen) Error!void {
     // time-constant charges out of `q`, and the jobs queue what it keeps.
     g.sinv = try plan_setup.plan(g.input());
     g.qs = try plan_qsite.plan(g.input(), g.names.branch_u, g.topo, g.sinv.val);
-    if (g.display == .record) g.say = try cg_display.planSay(g);
-    if (g.display == .emit) try cg_display.planPasses(g);
+    if (g.display == .record) g.say = try cg_say.planSay(g);
+    if (g.display == .emit) try cg_say.planPasses(g);
     g.jobs = try plan_jobs.plan(g.input(), .{
         .names = &g.names,
         .unit_modes = g.verdict.unit_modes,

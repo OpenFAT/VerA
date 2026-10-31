@@ -16,7 +16,7 @@
 //! - `pub const Error = codegen_file.Error`
 //! - `pub const Display = codegen_file.Display`
 //! - `pub const Output = codegen_file.Output`
-//! - `pub const sayRecords = cg_display_file.sayRecords`
+//! - `pub const sayRecords = cg_say.sayRecords`
 //! - `pub const indentWidth = codegen_file.Gen.indWidth`
 //! - `pub const codegen = compat.codegen`
 //! - `pub const cg_display = compat.cg_display`
@@ -24,7 +24,7 @@
 //! - `pub const cg_limit = compat.cg_limit`
 
 const codegen_file = @import("codegen.zig");
-const cg_display_file = @import("cg_display.zig");
+const cg_say = @import("cg_say.zig");
 const compat = @import("compat.zig");
 
 /// Test support: a source lowered and generated (codegen/harness.zig).
@@ -52,7 +52,7 @@ pub const Display = codegen_file.Display;
 pub const Output = codegen_file.Output;
 
 /// §9.4: whether a `.record` device's `say` records display call `inst`.
-pub const sayRecords = cg_display_file.sayRecords;
+pub const sayRecords = cg_say.sayRecords;
 
 /// The spaces the emitter indents `n` levels with (capped, so deep nesting
 /// stays linear in text).
@@ -75,7 +75,7 @@ pub const cg_limit = compat.cg_limit;
 test {
     @import("std").testing.refAllDecls(@This());
     _ = codegen_file;
-    _ = cg_display_file;
+    _ = @import("cg_display.zig");
     _ = @import("cg_filters.zig");
     _ = @import("cg_limit.zig");
     _ = @import("cg_strcap.zig");

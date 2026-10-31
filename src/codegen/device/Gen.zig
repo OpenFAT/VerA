@@ -44,6 +44,7 @@ const plan_qsite = @import("codegen/plan/qsite.zig");
 const float_mode = @import("codegen/float/mode.zig");
 const cg_filters = @import("cg_filters.zig");
 const cg_display = @import("cg_display.zig");
+const cg_say = @import("cg_say.zig");
 const gen_setup = @import("codegen/setup.zig");
 const gen_file = @import("codegen/file.zig");
 const gen_unit = @import("codegen/unit.zig");
@@ -119,11 +120,11 @@ arr_mask: []u64 = &.{},
 /// The setup roots and `setup`'s emission state (`codegen/setup.zig`).
 su: gen_setup.Setup = .{},
 /// §9.4 the display tasks a `.record` device's `say` records
-/// (`cg_display.planSay`), in `say_sites` order. Empty otherwise.
-say: []const cg_display.SaySite = &.{},
+/// (`cg_say.planSay`), in `say_sites` order. Empty otherwise.
+say: []const cg_say.SaySite = &.{},
 /// §9.4.1/§9.5.9 a printing artifact's display unit runs in passes
 /// (`contract.SayPass`): set when it has a `$debug`, `$fdebug` or `$fatal`,
-/// the tasks that run at every iteration (`cg_display.planPasses`).
+/// the tasks that run at every iteration (`cg_say.planPasses`).
 passes: bool = false,
 /// §5.2.1 the calls an `analog initial` block makes: a pass performs its
 /// §9.5 and `$debug`/`$fdebug` ones once per analysis, and a §9.7

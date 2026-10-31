@@ -61,7 +61,7 @@ pub const codegen = struct {
 /// Old `device.cg_display`, of which only `sayRecords` was used outside.
 pub const cg_display = struct {
     /// Now `device.sayRecords`.
-    pub const sayRecords = @import("cg_display.zig").sayRecords;
+    pub const sayRecords = @import("cg_say.zig").sayRecords;
 };
 
 /// Old `device.cg_filters`: named only in `Compilation.zig`'s refAllDecls list.

@@ -29,6 +29,8 @@ const gen_host = @import("host_expr.zig");
 const gen_wide = @import("wide.zig");
 const Mir = @import("ir").Mir;
 const cg_display = @import("../cg_display.zig");
+const cg_file_io = @import("../cg_file_io.zig");
+const cg_say = @import("../cg_say.zig");
 const cg_strcap = @import("../cg_strcap.zig");
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;
@@ -217,7 +219,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             },
             // A device's `say` records the task (`contract.SaySite`); a task
             // it does not record, and every other unit, renders it void.
-            .record => if (self.cur.emitting_display) cg_display.emitSay(self, inst) else call_gate.voidTask(self),
+            .record => if (self.cur.emitting_display) cg_say.emitSay(self, inst) else call_gate.voidTask(self),
             .drop => call_gate.voidTask(self),
         },
         // §9.7.1/§9.7.2 same gate: in a printing artifact the run ends at the
@@ -233,7 +235,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$monitor$arm" => {
             if (!self.cur.emitting_display or self.display != .emit) return call_gate.voidTask(self);
             const gated = try call_gate.gateOpen(self, c, inst);
-            try cg_display.emitMonitorArm(self, args);
+            try cg_file_io.emitMonitorArm(self, args);
             return if (gated) call_gate.gateClose(self) else {};
         },
         .@"$monitoron", .@"$monitoroff" => return call_gate.voidTask(self),
@@ -263,7 +265,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         => {
             if (!self.cur.emitting_display or self.display != .emit) return call_gate.emitFileCallDropped(self, c, args, @backingInt(inst));
             const gated = try call_gate.gateOpen(self, c, inst);
-            try cg_display.emitFileCall(self, c, args, @backingInt(inst));
+            try cg_file_io.emitFileCall(self, c, args, @backingInt(inst));
             if (!gated) return;
             try self.b(" else ", .{});
             try call_gate.emitFileCallDropped(self, c, args, @backingInt(inst));
