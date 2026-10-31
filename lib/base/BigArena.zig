@@ -1,6 +1,7 @@
-//! An arena whose large blocks are the backing allocator's own: allocator
-//! calls → small ones bumped from a `std.heap.ArenaAllocator`, large ones
-//! passed through and remembered so `deinit` frees them with the rest.
+//! The compilation arena: allocator calls in, blocks out, every one freed by
+//! one `deinit`. Small blocks are bumped from a `std.heap.ArenaAllocator`;
+//! large ones are passed through to the backing allocator and remembered so
+//! `deinit` frees them with the rest.
 //!
 //! Why: a plain arena can grow only its latest allocation in place, so every
 //! list that doubles on it leaves its previous buffer behind until the arena
@@ -19,45 +20,69 @@
 //! Owners: `vera.CompileResult` (one per compilation) and `src/main.zig`'s
 //! `.v` design arena.
 //!
-//! Cites no LRM clause: memory management, which no standard governs.
+//! Cites: no standard (memory management).
+//!
+//! Contents:
+//! - `pub const large: usize`
+//! - `pub fn init(child: Allocator) BigArena`
+//! - `pub fn deinit(self: *BigArena) void`
+//! - `pub fn allocator(self: *BigArena) Allocator`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Alignment = std.mem.Alignment;
-
-const BigArena = @This();
 
 /// The length from which a block is the backing allocator's. From 64 KiB up
 /// `smp_allocator` maps pages and remaps them in place; from 16 KiB to 64 KiB
 /// it serves a slab size class, so a grown list still copies, but its old
 /// buffer goes back to the slab at once instead of lying dead in the arena.
-/// Measured 2026-10-03 against 64 KiB (ReleaseFast `--emit-zig`, peak RSS,
-/// best of 3): psp103 -7.9%, bsim4va -11.4%, hisimhv -6.2%, at equal user
-/// instructions. 4, 8 and 32 KiB each saved less.
+// Measured 2026-10-03 against 64 KiB (ReleaseFast `--emit-zig`, peak RSS,
+// best of 3): psp103 -7.9%, bsim4va -11.4%, hisimhv -6.2%, at equal user
+// instructions. 4, 8 and 32 KiB each saved less.
 pub const large = 16 * 1024;
 
+/// The arena every small block is bumped from.
 small: std.heap.ArenaAllocator,
+/// The backing allocator: every large block's, and `small`'s and `blocks`'s.
 child: Allocator,
 /// Address → extent of every live large block, for `deinit`. Few entries:
 /// one per large table, not per allocation (at most 50 live on hisimhv,
-/// counted at the 64 KiB threshold), so the map's per-entry cost is immaterial.
+/// counted at the 64 KiB threshold), so the map's per-entry cost is
+/// immaterial. Callers read it only to test it.
 blocks: std.AutoHashMapUnmanaged(usize, Block) = .empty,
 
+const BigArena = @This();
+
+/// A large block's extent, as `free` must pass it back to `child`.
 const Block = struct { len: usize, alignment: Alignment };
+
+comptime {
+    // A block is large from one `large` up; zero-length blocks never are.
+    assert(large > 0);
+    assert(std.math.isPowerOfTwo(large));
+}
 
 /// Returns an empty arena over `child`, which must outlive it.
 pub fn init(child: Allocator) BigArena {
-    return .{ .small = .init(child), .child = child };
+    const self: BigArena = .{ .small = .init(child), .child = child };
+    assert(self.blocks.count() == 0);
+    return self;
 }
 
 /// Frees every block, large and small, and invalidates every pointer the
-/// arena handed out.
+/// arena handed out and every allocator taken from it.
 pub fn deinit(self: *BigArena) void {
     var it = self.blocks.iterator();
-    while (it.next()) |e| {
+    var freed: u32 = 0;
+    while (it.next()) |e| : (freed += 1) {
+        assert(e.value_ptr.len >= large);
+        // SAFETY: the key is the address `alloc` or `remap` returned for this
+        // live block, recorded with its length; nothing else writes the map.
         const p: [*]u8 = @ptrFromInt(e.key_ptr.*);
         self.child.rawFree(p[0..e.value_ptr.len], e.value_ptr.alignment, @returnAddress());
     }
+    assert(freed == self.blocks.count());
     self.blocks.deinit(self.child);
     self.small.deinit();
     self.* = undefined;
@@ -68,47 +93,61 @@ pub fn deinit(self: *BigArena) void {
 /// a large block to the backing allocator at once and a small one only when
 /// it was the arena's latest allocation. A `resize` or `remap` that would take
 /// a block across `large` fails, so the caller copies (`realloc` does).
-/// Asserts that a large block passed back to it is one it handed out and
-/// has not freed.
+/// Asserts (on each call through it) that a large block passed back is one
+/// it handed out and has not freed.
 pub fn allocator(self: *BigArena) Allocator {
     return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
 }
 
+// ---- private ----
+
 fn alloc(ctx: *anyopaque, n: usize, a: Alignment, ra: usize) ?[*]u8 {
+    // SAFETY: `allocator` sets `ptr` to a live `*BigArena`.
     const self: *BigArena = @ptrCast(@alignCast(ctx));
     if (n < large) return self.small.allocator().rawAlloc(n, a, ra);
+    // The entry is reserved before the block, so a failure of either leaves
+    // nothing half-recorded.
     self.blocks.ensureUnusedCapacity(self.child, 1) catch return null;
     const p = self.child.rawAlloc(n, a, ra) orelse return null;
-    self.blocks.putAssumeCapacity(@intFromPtr(p), .{ .len = n, .alignment = a });
+    assert(a.check(@intFromPtr(p)));
+    self.blocks.putAssumeCapacityNoClobber(@intFromPtr(p), .{ .len = n, .alignment = a });
     return p;
 }
 
 fn resize(ctx: *anyopaque, m: []u8, a: Alignment, n: usize, ra: usize) bool {
+    // SAFETY: `allocator` sets `ptr` to a live `*BigArena`.
     const self: *BigArena = @ptrCast(@alignCast(ctx));
     if ((m.len < large) != (n < large)) return false;
     if (m.len < large) return self.small.allocator().rawResize(m, a, n, ra);
+    const block = self.blocks.getPtr(@intFromPtr(m.ptr)).?; // Live: the caller's contract.
+    assert(block.len == m.len);
     if (!self.child.rawResize(m, a, n, ra)) return false;
-    self.blocks.getPtr(@intFromPtr(m.ptr)).?.len = n;
+    block.len = n;
     return true;
 }
 
 fn remap(ctx: *anyopaque, m: []u8, a: Alignment, n: usize, ra: usize) ?[*]u8 {
+    // SAFETY: `allocator` sets `ptr` to a live `*BigArena`.
     const self: *BigArena = @ptrCast(@alignCast(ctx));
     if ((m.len < large) != (n < large)) return null;
     if (m.len < large) return self.small.allocator().rawRemap(m, a, n, ra);
+    assert(self.blocks.get(@intFromPtr(m.ptr)).?.len == m.len);
     // Room for the moved key first: after a successful remap the old address
     // is gone, and failing then would lose the block.
     self.blocks.ensureUnusedCapacity(self.child, 1) catch return null;
     const p = self.child.rawRemap(m, a, n, ra) orelse return null;
-    std.debug.assert(self.blocks.remove(@intFromPtr(m.ptr)));
-    self.blocks.putAssumeCapacity(@intFromPtr(p), .{ .len = n, .alignment = a });
+    assert(self.blocks.remove(@intFromPtr(m.ptr)));
+    self.blocks.putAssumeCapacityNoClobber(@intFromPtr(p), .{ .len = n, .alignment = a });
     return p;
 }
 
 fn free(ctx: *anyopaque, m: []u8, a: Alignment, ra: usize) void {
+    // SAFETY: `allocator` sets `ptr` to a live `*BigArena`.
     const self: *BigArena = @ptrCast(@alignCast(ctx));
     if (m.len < large) return self.small.allocator().rawFree(m, a, ra);
-    std.debug.assert(self.blocks.remove(@intFromPtr(m.ptr)));
+    const block = self.blocks.fetchRemove(@intFromPtr(m.ptr)).?; // The pair of `alloc`'s put.
+    assert(block.value.len == m.len);
+    assert(block.value.alignment == a);
     self.child.rawFree(m, a, ra);
 }
 
@@ -190,37 +229,37 @@ test "big arena: a large resize in place records the new length" {
     try std.testing.expectEqual(@as(u32, 1), arena.blocks.count());
 }
 
-/// `std.testing.allocator` whose `remap` always moves the block, so the
-/// re-keying half of `remap` runs on every call instead of only when the
-/// address space happens to make the backing allocator move.
-const moving: Allocator = .{ .ptr = undefined, .vtable = &.{
-    .alloc = struct {
-        fn f(_: *anyopaque, n: usize, a: Alignment, ra: usize) ?[*]u8 {
-            return std.testing.allocator.rawAlloc(n, a, ra);
-        }
-    }.f,
-    .resize = struct {
-        fn f(_: *anyopaque, m: []u8, a: Alignment, n: usize, ra: usize) bool {
-            return std.testing.allocator.rawResize(m, a, n, ra);
-        }
-    }.f,
-    .remap = struct {
-        fn f(_: *anyopaque, m: []u8, a: Alignment, n: usize, ra: usize) ?[*]u8 {
-            const p = std.testing.allocator.rawAlloc(n, a, ra) orelse return null;
-            const kept = @min(m.len, n);
-            @memcpy(p[0..kept], m[0..kept]);
-            std.testing.allocator.rawFree(m, a, ra);
-            return p;
-        }
-    }.f,
-    .free = struct {
-        fn f(_: *anyopaque, m: []u8, a: Alignment, ra: usize) void {
-            std.testing.allocator.rawFree(m, a, ra);
-        }
-    }.f,
-} };
-
 test "big arena: a large remap re-keys the block under its new address" {
+    // `std.testing.allocator` whose `remap` always moves the block, so the
+    // re-keying half of `remap` runs on every call instead of only when the
+    // address space happens to make the backing allocator move.
+    const moving: Allocator = .{ .ptr = undefined, .vtable = &.{
+        .alloc = struct {
+            fn f(_: *anyopaque, n: usize, a: Alignment, ra: usize) ?[*]u8 {
+                return std.testing.allocator.rawAlloc(n, a, ra);
+            }
+        }.f,
+        .resize = struct {
+            fn f(_: *anyopaque, m: []u8, a: Alignment, n: usize, ra: usize) bool {
+                return std.testing.allocator.rawResize(m, a, n, ra);
+            }
+        }.f,
+        .remap = struct {
+            fn f(_: *anyopaque, m: []u8, a: Alignment, n: usize, ra: usize) ?[*]u8 {
+                const p = std.testing.allocator.rawAlloc(n, a, ra) orelse return null;
+                const kept = @min(m.len, n);
+                @memcpy(p[0..kept], m[0..kept]);
+                std.testing.allocator.rawFree(m, a, ra);
+                return p;
+            }
+        }.f,
+        .free = struct {
+            fn f(_: *anyopaque, m: []u8, a: Alignment, ra: usize) void {
+                std.testing.allocator.rawFree(m, a, ra);
+            }
+        }.f,
+    } };
+
     var arena: BigArena = .init(moving);
     defer arena.deinit();
     const a = arena.allocator();
@@ -250,25 +289,26 @@ test "big arena: a large block keeps its alignment, and deinit frees it with it"
     try std.testing.expectEqual(page, arena.blocks.get(@intFromPtr(m.ptr)).?.alignment);
 }
 
-/// Five allocations reach `child`, in this order: the map's table, three
-/// large blocks, and the small arena's first chunk.
-fn bigArenaSequence(child: Allocator) !void {
-    var arena: BigArena = .init(child);
-    defer arena.deinit();
-    const a = arena.allocator();
-    _ = try a.alloc(u8, large);
-    const y = try a.alloc(u8, 2 * large);
-    _ = try a.alloc(u8, 3 * large);
-    a.free(y);
-    _ = try a.alloc(u8, 16);
-}
-
 test "big arena: a failure of any backing allocation is OutOfMemory and leaks nothing" {
     // Oracle: `checkAllAllocationFailures` fails the n-th backing allocation
     // for every n, and fails the test if the failure is swallowed or the
     // bytes allocated and freed differ. The map entry is reserved before the
     // block, so a failure of either leaves nothing half-recorded.
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, bigArenaSequence, .{});
+    const S = struct {
+        // Five allocations reach `child`, in this order: the map's table, three
+        // large blocks, and the small arena's first chunk.
+        fn bigArenaSequence(child: Allocator) !void {
+            var arena: BigArena = .init(child);
+            defer arena.deinit();
+            const a = arena.allocator();
+            _ = try a.alloc(u8, large);
+            const y = try a.alloc(u8, 2 * large);
+            _ = try a.alloc(u8, 3 * large);
+            a.free(y);
+            _ = try a.alloc(u8, 16);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, S.bigArenaSequence, .{});
 }
 
 test "big arena: a seeded random op sequence keeps `blocks` equal to the live large blocks" {
