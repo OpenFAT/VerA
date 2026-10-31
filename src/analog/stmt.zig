@@ -17,7 +17,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
 const lower_constfold = @import("constfold.zig");
@@ -210,7 +210,7 @@ fn lowerSeqBlock(self: *Lower, b: Ast.SeqBlock) Oom!void {
     const outer_scope = self.scope_path;
     defer self.scope_path = outer_scope;
     if (try scopeElem(self, b)) |elem|
-        self.scope_path = if (outer_scope.len == 0) elem else try self.arena.print("{s}{c}{s}", .{ outer_scope, Elaborate.sep, elem });
+        self.scope_path = if (outer_scope.len == 0) elem else try self.arena.print("{s}{c}{s}", .{ outer_scope, elab.sep, elem });
     for (b.params) |*p| try lower_param.lowerParamDecl(self, p); // §5.3.2 local parameters
     try lower_var.checkOneItemPerScope(self, b.params, b.vars, &.{}, &.{});
     for (b.vars) |*v| try lower_var.declareVarDecl(self, v, .local);
@@ -248,7 +248,7 @@ fn scopeElem(self: *Lower, b: Ast.SeqBlock) Oom!?[]const u8 {
     }
     if (b.name == .none) return null;
     const label = self.file.str(b.name);
-    const unit = if (self.cur_unit < self.design.units.len) self.design.units[self.cur_unit].path else "";
+    const unit = if (self.cur_unit < self.design.units.len) self.design.units.items(.path)[self.cur_unit] else "";
     return if (std.mem.startsWith(u8, label, unit)) label[unit.len..] else label;
 }
 
@@ -271,7 +271,7 @@ fn publishBlockLocals(self: *Lower, label: []const u8, b: Ast.SeqBlock) Oom!void
         // slot under the bare name; §5.3.2's example is a scalar and no fixture
         // names an element hierarchically.
         const slot = self.vars.get(local) orelse continue;
-        const q = try self.arena.print("{s}{c}{s}", .{ label, Elaborate.sep, local });
+        const q = try self.arena.print("{s}{c}{s}", .{ label, elab.sep, local });
         try self.vars.put(self.arena, q, slot);
         try self.block_locals.put(self.arena, q, {});
     }
@@ -280,7 +280,7 @@ fn publishBlockLocals(self: *Lower, label: []const u8, b: Ast.SeqBlock) Oom!void
     // same "all identifiers" sentence. They live in `consts`.
     for (b.params) |p| {
         const c = self.consts.get(self.file.str(p.name)) orelse continue;
-        const q = try self.arena.print("{s}{c}{s}", .{ label, Elaborate.sep, self.file.str(p.name) });
+        const q = try self.arena.print("{s}{c}{s}", .{ label, elab.sep, self.file.str(p.name) });
         try self.consts.put(self.arena, q, c);
     }
 }

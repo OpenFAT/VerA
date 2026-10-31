@@ -21,7 +21,7 @@ const Ast = @import("frontend").Ast;
 const lexer = @import("frontend").lexer;
 const directive_events = @import("frontend").directive_events;
 const constfold = @import("frontend").constfold;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const Lower = @import("Lower.zig");
 const lower_context = @import("context.zig");
 const lower_contrib = @import("contrib.zig");
@@ -66,7 +66,7 @@ pub fn lowerFile(self: *Lower) Error!Lowered {
     assert(!self.had_error);
     try rejectFourStateLiterals(self);
     if (self.had_error) return error.DiagnosticsReported;
-    const design = try Elaborate.elaborate(.{
+    const design = try elab.elaborate(.{
         .arena = self.arena,
         .file = self.file,
         .src = self.src,
@@ -77,13 +77,13 @@ pub fn lowerFile(self: *Lower) Error!Lowered {
         .default_disciplines = self.opts.directives.disciplines,
     });
     self.design = design;
-    self.out.hier_names = design.names;
+    self.out.hier_names = try spelledNames(self);
     self.out.inserts = design.inserts;
     // IEEE 1364 §19.2 on §3.6.5's STRUCTURAL implicit nets, which is the half
     // elaboration made but could not judge. Before `lowerModule`, so a design
     // built on a mistyped instance terminal fails at the mistype, not at a
     // later E0337 on the invented floating node.
-    for (design.implicit_nets) |n| try lower_node_discipline.rejectImplicitNet(self, n.name, n.main_tok);
+    for (design.implicit_nets) |n| try lower_node_discipline.rejectImplicitNet(self, self.file.str(n.name), n.main_tok);
     try lowerModule(self, design.top);
     if (self.had_error) return error.DiagnosticsReported;
     try lower_node.collectSignalAbstols(self, design.signal_disciplines);
@@ -131,6 +131,18 @@ fn rejectFourStateLiterals(self: *Lower) Oom!void {
 // large blocks of the compile arena's backing allocator, mapped but never
 // touched past what lowering writes, so that costs address space, not RSS.
 // `max_exprs` caps it at about 30 MB of address space all the same.
+/// `Lowered.hier_names`: the design's §6.7 path table with each flat net
+/// spelled, since `Lowered` holds no Ast for the VPI to read an id through.
+fn spelledNames(self: *const Lower) Oom!std.StringHashMapUnmanaged([]const u8) {
+    const names = self.design.names;
+    var out: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try out.ensureTotalCapacity(self.arena, names.count());
+    var it = names.iterator();
+    while (it.next()) |kv| out.putAssumeCapacityNoClobber(kv.key_ptr.*, self.file.str(kv.value_ptr.*));
+    assert(out.count() == names.count());
+    return out;
+}
+
 fn reserveMir(self: *Lower) Oom!void {
     const max_exprs = 1 << 20;
     assert(self.mir.blockCount() == 0); // before the entry block
@@ -191,7 +203,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     try lower_node_ref.declareBranches(self, module); // §3.12
     // §5.4.3 each split port's flow probe, whether or not a read of it is
     // lowered: without its branch the port's net would hang free.
-    for (self.design.port_ammeters) |am| _ = try lower_expr_access.ammeterFlow(self, am.internal);
+    for (self.design.port_ammeters) |am| _ = try lower_expr_access.ammeterFlow(self, self.file.str(am.internal));
 
     // §3.5 genvars exist only for unrolling; they carry no runtime storage.
     // §3.2/§3.3 module-level variables. The §5.10 scan runs first: whether a

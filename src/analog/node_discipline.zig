@@ -153,7 +153,7 @@ pub fn applyUnconnectedDrive(self: *Lower) Oom!void {
     for (self.design.unconnected_inputs) |site| {
         const drive = directive_events.DriveRegion.inForce(self.opts.directives.drives, self.tokStart(site.main_tok), .default);
         if (drive == .float) continue;
-        const idx = self.node_voltages.get(site.name) orelse continue;
+        const idx = self.node_voltages.get(self.file.str(site.name)) orelse continue;
         if (idx == ground) continue;
         const info = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse continue;
         if (!info.has_potential) continue;

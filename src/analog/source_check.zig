@@ -199,12 +199,13 @@ pub fn checkSourceLoops(self: *Lower) Oom!void {
             at = if (e.a == at) e.b else e.a;
         }
         const theirs = other orelse continue;
+        const their_path = if (theirs < self.design.units.len) self.design.units.items(.path)[theirs] else "";
         var d = self.errWith(c.tok, .E0477);
         d.msg("`V({s},{s})` closes a loop of potential sources with a contribution from `{s}`", .{
             lower_node.nodeName(self, c.hi),
             lower_node.nodeName(self, c.lo),
-            if (theirs < self.design.units.len and self.design.units[theirs].path.len != 0)
-                self.design.units[theirs].path[0 .. self.design.units[theirs].path.len - 1] // drop the trailing separator
+            if (their_path.len != 0)
+                their_path[0 .. their_path.len - 1] // drop the trailing separator
             else
                 "the top-level module",
         });

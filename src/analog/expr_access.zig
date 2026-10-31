@@ -17,7 +17,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const diag = @import("diag");
 const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
@@ -161,10 +161,10 @@ pub fn lowerPortAccess(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 pub fn ammeterFlow(self: *Lower, internal: []const u8) Oom!?TypedValue {
     assert(self.blockValid(self.cur));
     const am = for (self.design.port_ammeters) |am| {
-        if (std.mem.eql(u8, am.internal, internal)) break am;
+        if (std.mem.eql(u8, self.file.str(am.internal), internal)) break am;
     } else return null;
-    const into = try lower_node.internNode(self, am.internal, "");
-    const from = try lower_node.internNode(self, am.bound, "");
+    const into = try lower_node.internNode(self, self.file.str(am.internal), "");
+    const from = try lower_node.internNode(self, self.file.str(am.bound), "");
     const u = try lower_node.flowUnknown(self, @min(from, into), @max(from, into));
     const v = try lower_node.probe(self, u);
     assert(from != into); // the split put the port on a net of its own
@@ -268,18 +268,18 @@ fn instancePortFlow(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
     const ex = &self.file.exprs;
     const lhs = ex.lhs(e);
     if (ex.tag(lhs) != .hier_ident) return null;
-    const path = try Elaborate.flatReference(self.file, self.arena, self.module, lhs);
-    const cut = std.mem.findScalarLast(u8, path, Elaborate.sep) orelse return null;
+    const path = try elab.flatReference(self.file, self.arena, self.module, lhs);
+    const cut = std.mem.findScalarLast(u8, path, elab.sep) orelse return null;
     const inst = path[0 .. cut + 1];
-    const units = self.design.units;
-    const lo: u32 = for (units, 0..) |u, i| {
-        if (std.mem.eql(u8, u.path, inst)) break @intCast(i);
+    const paths = self.design.units.items(.path);
+    const lo: u32 = for (paths, 0..) |up, i| {
+        if (std.mem.eql(u8, up, inst)) break @intCast(i);
     } else return null;
     // Units are numbered depth first, so `inst`'s hierarchy is one run.
     var hi = lo + 1;
-    while (hi < units.len and std.mem.startsWith(u8, units[hi].path, inst)) hi += 1;
+    while (hi < paths.len and std.mem.startsWith(u8, paths[hi], inst)) hi += 1;
     const port_name = path[cut + 1 ..];
-    const decl = units[lo].decl;
+    const decl = self.design.units.items(.decl)[lo].get(self.file);
     for (decl.ports) |pt| {
         if (std.mem.eql(u8, self.file.str(pt.name), port_name)) break;
     } else {

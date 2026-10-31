@@ -65,7 +65,7 @@ const Ast = @import("frontend").Ast;
 const lexer = @import("frontend").lexer;
 const directive_events = @import("frontend").directive_events;
 const Mir = @import("ir").Mir;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const diag = @import("diag");
 const Ssa = @import("ssa.zig");
 const lower_module = @import("module.zig");
@@ -160,7 +160,7 @@ pub const Const = Lowered.Const;
 /// §3.4 "parameters can be modified at compilation time": the value a
 /// `--param name=value` gives the top module's parameter `name`, in place of
 /// its declaration value. A card is written in reals; `lowerParamDecl` converts.
-pub const ParamOverride = Elaborate.ParamOverride;
+pub const ParamOverride = elab.design.ParamOverride;
 
 /// A §3.12 named branch: a node pair carrying a flow and a potential.
 pub const BranchInfo = struct {
@@ -240,7 +240,7 @@ pub const Options = struct {
     /// hold that only a print could observe is no hold.
     displays_dropped: bool = false,
     /// §7.4.4's resolution mode.
-    discipline_resolution: Elaborate.DisciplineResolution = .basic,
+    discipline_resolution: elab.design.DisciplineResolution = .basic,
     /// §12.32.1 the user analog system functions a VPI application registered
     /// with sysfunctype vpiIntFunc: a call to one is an integer. Every other
     /// unresolved `$name` is real.
@@ -255,8 +255,9 @@ pub const Output = struct {
     /// The module lowered (§6.2): elaboration's flattened top.
     module: ?*const Ast.ModuleDecl,
     /// §9.15/§9.16, indexed by `Ast.AnalogBlock.unit`: the module a block was
-    /// written in and the instance path it was inlined at (`Design.units`).
-    unit_paths: []const Elaborate.UnitPath,
+    /// written in, the instance path it was inlined at and the declaration it
+    /// was inlined from (`elab.Design.units`, read by column).
+    unit_paths: std.MultiArrayList(elab.design.Unit).Slice,
 };
 
 /// The pass's spine over an `init`ed Lower (module.zig): elaborates the file,
@@ -291,7 +292,7 @@ mir: *Mir,
 /// Everything a later stage reads, built in place and returned by `lowerFile`
 /// (lowered.zig). The fields below it are lowering's own.
 out: Lowered,
-/// Mutable only because `Elaborate.elaborate` appends to its stores (§6.7 flat
+/// Mutable only because `elab.elaborate` appends to its stores (§6.7 flat
 /// names, cloned rows) as the first step of `lowerFile`, before anything
 /// caches an index into them. An overlay of the parse
 /// (`Ast.SourceFile.overlay`), so those appends never reach the parse.
@@ -312,7 +313,7 @@ opts: Options = .{},
 /// selection parameters, §9.18's card-time checks and IEEE 1364 §19.9's
 /// unconnected inputs. Before `lowerFile` every table is empty: the test
 /// harness reaches constant folding without elaborating.
-design: Elaborate.Design = .{ .top = undefined },
+design: elab.Design = .{ .top = undefined },
 builder: Ssa.SsaBuilder,
 /// The block statements are currently being appended to.
 cur: Mir.Block = .entry,
@@ -468,7 +469,7 @@ in_analog_initial: bool = false,
 /// wrote it. Read by `discardOpposite` only; see `newContrib`.
 cur_unit: u32 = 0,
 /// §6.6.2 the flat prefixes of every unnamed generate block in the design
-/// (`Elaborate.unnamedGenScopes`), built on the first hierarchical name
+/// (`elab.unnamedGenScopes`), built on the first hierarchical name
 /// `lower_expr_name.refuseUnnamedGen` judges.
 unnamed_gen: ?[]const []const u8 = null,
 /// Index into the flat module's `analog` of the block being lowered, so a

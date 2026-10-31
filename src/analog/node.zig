@@ -23,7 +23,7 @@
 //! - `pub fn indexedRange(decl: VecRange, base: i64, width: i64, down: bool) VecRange`
 //! - `pub fn partOf(decl: VecRange, r: VecRange) bool`
 //! - `pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!u32`
-//! - `pub fn collectSignalAbstols(self: *Lower, segments: []const Elaborate.SignalDiscipline) Oom!void`
+//! - `pub fn collectSignalAbstols(self: *Lower, segments: []const elab.design.SignalDiscipline) Oom!void`
 //! - `pub fn opStateNode(self: *Lower, op: []const u8, abstol: f64) Oom!u32`
 //! - `pub fn nodeName(self: *const Lower, idx: u32) []const u8`
 //! - `pub fn probe(self: *Lower, idx: u32) Oom!Mir.Value`
@@ -32,7 +32,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const Ast = @import("frontend").Ast;
 const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
@@ -213,10 +213,11 @@ pub fn bindPortConnections(self: *Lower) Oom!void {
     // §6.5.7.1 "The sizes of the ports and net must match." A net this module
     // never interned (a discrete input) has no width here to compare.
     for (self.design.port_widths) |pw| {
+        const pw_net = self.file.str(pw.net);
         const port: u64 = if (pw.range) |d| ((try lower_node_ref.foldDim(self, d, pw.main_tok)) orelse continue).size() else 1;
-        const net: u64 = if (self.out.vectors.get(pw.net)) |v| v.size() else if (self.node_voltages.contains(pw.net)) 1 else continue;
+        const net: u64 = if (self.out.vectors.get(pw_net)) |v| v.size() else if (self.node_voltages.contains(pw_net)) 1 else continue;
         if (port != net)
-            try self.err(pw.main_tok, .E0925, "`{s}` is {d} wide and the port it connects is {d}", .{ pw.net, net, port });
+            try self.err(pw.main_tok, .E0925, "`{s}` is {d} wide and the port it connects is {d}", .{ pw_net, net, port });
     }
 
     // §6.5.7.1 a vector port bound to a concatenated net expression or to
@@ -224,8 +225,9 @@ pub fn bindPortConnections(self: *Lower) Oom!void {
     // connection, so its key names that bit's node.
     var bits: std.ArrayList(u32) = .empty;
     for (self.design.port_concats) |pc| {
+        const pc_name = self.file.str(pc.name);
         bits.clearRetainingCapacity();
-        var ok = for (pc.parts) |part| {
+        var ok = for (pc.parts.of(self.design.net_parts)) |part| {
             if (!try partNodes(self, part, pc.main_tok, &bits)) break false;
         } else true;
         const r: ?VecRange = if (pc.range) |d| (try lower_node_ref.foldDim(self, d, pc.main_tok)) orelse continue else null;
@@ -242,12 +244,12 @@ pub fn bindPortConnections(self: *Lower) Oom!void {
         // port add no diagnostics of their own.
         // §6.5.5 a scalar port on one bit of a net (`.v(bus[1])`) is that bit.
         const v = r orelse {
-            try self.node_voltages.put(self.arena, pc.name, if (ok) bits.items[0] else ground);
+            try self.node_voltages.put(self.arena, pc_name, if (ok) bits.items[0] else ground);
             continue;
         };
         for (0..width) |k|
-            try self.node_voltages.put(self.arena, try self.arena.print("{s}[{d}]", .{ pc.name, v.at(@intCast(k)) }), if (ok) bits.items[k] else ground);
-        try self.out.vectors.put(self.arena, pc.name, v);
+            try self.node_voltages.put(self.arena, try self.arena.print("{s}[{d}]", .{ pc_name, v.at(@intCast(k)) }), if (ok) bits.items[k] else ground);
+        try self.out.vectors.put(self.arena, pc_name, v);
     }
 }
 
@@ -284,17 +286,18 @@ pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!u3
 /// §7.2.4: the node's potential tolerance is the smallest among the
 /// continuous segments sharing it. Preserve the net's resolved discipline:
 /// §5.5.3 still reads that net's local nature attributes, not this minimum.
-pub fn collectSignalAbstols(self: *Lower, segments: []const Elaborate.SignalDiscipline) Oom!void {
+pub fn collectSignalAbstols(self: *Lower, segments: []const elab.design.SignalDiscipline) Oom!void {
     var key_buf: [lower_shape.elem_key_len]u8 = undefined;
     for (segments) |s| {
-        const info = self.out.disciplines.get(s.discipline) orelse continue;
+        const info = self.out.disciplines.get(self.file.str(s.discipline)) orelse continue;
         if (info.is_discrete or !info.has_potential) continue;
-        if (self.out.vectors.get(s.net)) |r| {
+        const net = self.file.str(s.net);
+        if (self.out.vectors.get(net)) |r| {
             for (0..r.size()) |k| {
-                const key = try lower_shape.elemKey(self, &key_buf, s.net, &.{r.at(@intCast(k))});
+                const key = try lower_shape.elemKey(self, &key_buf, net, &.{r.at(@intCast(k))});
                 collectNodeAbstol(self, key, info.potential_abstol);
             }
-        } else collectNodeAbstol(self, s.net, info.potential_abstol);
+        } else collectNodeAbstol(self, net, info.potential_abstol);
     }
 }
 
@@ -358,14 +361,15 @@ pub fn portFlowUnknown(self: *Lower, p: u32) Oom!u32 {
 /// or the elements a constant select names (§6.5.5), which must be a part of
 /// the net's declared range (E0351 on a net with none, E0352 outside it).
 /// Returns false after the diagnostic.
-fn partNodes(self: *Lower, part: Elaborate.NetPart, tok: u32, out: *std.ArrayList(u32)) Oom!bool {
+fn partNodes(self: *Lower, part: elab.design.NetPart, tok: u32, out: *std.ArrayList(u32)) Oom!bool {
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    const decl = self.out.vectors.get(part.net) orelse {
+    const net = self.file.str(part.net);
+    const decl = self.out.vectors.get(net) orelse {
         if (part.sel == .whole) {
-            try out.append(self.arena, try internNode(self, part.net, ""));
+            try out.append(self.arena, try internNode(self, net, ""));
             return true;
         }
-        try self.err(tok, .E0351, "`{s}` was not declared with a range", .{part.net});
+        try self.err(tok, .E0351, "`{s}` was not declared with a range", .{net});
         return false;
     };
     const r: VecRange = switch (part.sel) {
@@ -373,18 +377,18 @@ fn partNodes(self: *Lower, part: Elaborate.NetPart, tok: u32, out: *std.ArrayLis
         .bit => .{ .msb = part.a, .lsb = part.a },
         .range => .{ .msb = part.a, .lsb = part.b },
         .up, .down => if (part.b < 1) {
-            try self.err(tok, .E0352, "the indexed part-select of `{s}` is {d} wide", .{ part.net, part.b });
+            try self.err(tok, .E0352, "the indexed part-select of `{s}` is {d} wide", .{ net, part.b });
             return false;
         } else indexedRange(decl, part.a, part.b, part.sel == .down),
     };
     if (!partOf(decl, r)) {
         if (part.sel == .bit)
-            try self.err(tok, .E0352, "`{s}` is [{d}:{d}], so {d} is not one of its elements", .{ part.net, decl.msb, decl.lsb, part.a })
+            try self.err(tok, .E0352, "`{s}` is [{d}:{d}], so {d} is not one of its elements", .{ net, decl.msb, decl.lsb, part.a })
         else
-            try self.err(tok, .E0352, "`{s}` is [{d}:{d}], so [{d}:{d}] is not a part of it", .{ part.net, decl.msb, decl.lsb, r.msb, r.lsb });
+            try self.err(tok, .E0352, "`{s}` is [{d}:{d}], so [{d}:{d}] is not a part of it", .{ net, decl.msb, decl.lsb, r.msb, r.lsb });
         return false;
     }
-    for (0..r.size()) |k| try out.append(self.arena, try lower_node_ref.internNodeElem(self, part.net, r.at(@intCast(k))));
+    for (0..r.size()) |k| try out.append(self.arena, try lower_node_ref.internNodeElem(self, net, r.at(@intCast(k))));
     return true;
 }
 

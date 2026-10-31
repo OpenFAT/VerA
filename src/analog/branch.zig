@@ -19,7 +19,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const diag = @import("diag");
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
@@ -304,10 +304,10 @@ fn ownerUnit(self: *Lower, e: Ast.ExprId) Oom!u32 {
     for ([_]Ast.ExprId{ ex.lhs(e), ex.rhs(e) }) |t| {
         if (t == .none or ex.tag(t) != .hier_ident) continue;
         assert(self.design.units.len != 0); // `inst.branch(...)` reaches a child, so a tree of more than one
-        const path = try Elaborate.flatReference(self.file, self.arena, self.module, t);
-        const cut = std.mem.findScalarLast(u8, path, Elaborate.sep) orelse continue;
-        for (self.design.units, 0..) |u, i| {
-            if (std.mem.eql(u8, u.path, path[0 .. cut + 1])) return @intCast(i);
+        const path = try elab.flatReference(self.file, self.arena, self.module, t);
+        const cut = std.mem.findScalarLast(u8, path, elab.sep) orelse continue;
+        for (self.design.units.items(.path), 0..) |up, i| {
+            if (std.mem.eql(u8, up, path[0 .. cut + 1])) return @intCast(i);
         }
     }
     return self.cur_unit;
@@ -326,7 +326,8 @@ fn portDiscipline(self: *Lower, e: Ast.ExprId) Oom!?[]const u8 {
     assert(self.module != null);
     const ex = &self.file.exprs;
     if (ex.tag(e) != .branch_access or ex.tag(ex.lhs(e)) != .hier_ident) return null;
-    return self.design.port_disciplines.get(try Elaborate.flatReference(self.file, self.arena, self.module, ex.lhs(e)));
+    const disc = self.design.port_disciplines.get(try elab.flatReference(self.file, self.arena, self.module, ex.lhs(e))) orelse return null;
+    return self.file.str(disc);
 }
 
 test canonical {

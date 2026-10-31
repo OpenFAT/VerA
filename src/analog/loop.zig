@@ -14,7 +14,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_expr = @import("expr.zig");
@@ -178,7 +178,7 @@ fn tryUnrollFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
         }
     };
     const scheme: Scheme = .{ .self = self, .gv = gv, .cond = cond, .step = assignValueOf(self, step) orelse .none };
-    switch (try Elaborate.genvarLoop(Const, scheme, start)) {
+    switch (try elab.genvarLoop(Const, scheme, start)) {
         .repeats => |v| {
             _ = self.consts.remove(gv);
             try self.err(self.file.exprs.mainTok(cond), .E0420, "`{s}` repeats the value {d}, so the loop never ends", .{ gv, v.asInt() });

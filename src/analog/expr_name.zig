@@ -21,7 +21,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const naming = @import("ir").names;
-const Elaborate = @import("elab").Elaborate;
+const elab = @import("elab");
 const diag = @import("diag");
 const Lower = @import("Lower.zig");
 const lower_analog_op = @import("analog_op.zig");
@@ -89,19 +89,19 @@ pub fn lowerHierIdent(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 }
 
 /// Returns the flat spelling of a §6.7 `.hier_ident` path: its parts joined by
-/// `Elaborate.sep`. Flattening renamed each child entity to `path.name`, so
+/// `elab.sep`. Flattening renamed each child entity to `path.name`, so
 /// this string is the name the flat design carries.
 ///
 /// Allocates the result in `self.arena` on every call.
 pub fn flatName(self: *Lower, e: Ast.ExprId) Oom![]const u8 {
     assert(self.module != null); // elaboration is done: flat names exist
     assert(e == .none or self.exprValid(e));
-    const path = try Elaborate.flatReference(self.file, self.arena, self.module, e);
+    const path = try elab.flatReference(self.file, self.arena, self.module, e);
     if (self.scope_path.len != 0) if (try inScope(self, path)) |hit| return hit;
     // The one place the join is NOT the answer: a child port bound to a parent
     // net is the same signal as that net, so `u.a` denotes `p` and there is no
     // `u.a` to find. `Design.names` holds those aliases and nothing else.
-    const flat = self.out.hier_names.get(path) orelse path;
+    const flat = if (self.design.names.get(path)) |id| self.file.str(id) else path;
     assert(flat.len != 0);
     return flat;
 }
@@ -116,14 +116,14 @@ pub fn unnamedGenScope(self: *Lower, e: Ast.ExprId) Oom!?[]const u8 {
         var out: std.ArrayList([]const u8) = .empty;
         // A tree of one has no unit table; its module is the source's own.
         if (self.design.units.len == 0) {
-            if (self.module) |m| try Elaborate.unnamedGenScopes(self.file, self.arena, m, "", &out);
-        } else for (self.design.units) |u| try Elaborate.unnamedGenScopes(self.file, self.arena, u.decl, u.path, &out);
+            if (self.module) |m| try elab.unnamedGenScopes(self.file, self.arena, m, "", &out);
+        } else for (self.design.units.items(.decl), self.design.units.items(.path)) |ud, up| try elab.unnamedGenScopes(self.file, self.arena, ud.get(self.file), up, &out);
         self.unnamed_gen = out.items;
         break :blk out.items;
     };
     if (scopes.len == 0) return null;
-    const path = try Elaborate.flatReference(self.file, self.arena, self.module, e);
-    const own = if (self.cur_unit < self.design.units.len) self.design.units[self.cur_unit].path else "";
+    const path = try elab.flatReference(self.file, self.arena, self.module, e);
+    const own = if (self.cur_unit < self.design.units.len) self.design.units.items(.path)[self.cur_unit] else "";
     for (scopes) |s| if (std.mem.startsWith(u8, path, s) and !std.mem.startsWith(u8, own, s)) return s;
     assert(self.unnamed_gen != null); // the scopes are built once and kept
     return null;
@@ -135,10 +135,10 @@ pub fn unnamedGenScope(self: *Lower, e: Ast.ExprId) Oom!?[]const u8 {
 pub fn refuseUnnamedGen(self: *Lower, e: Ast.ExprId) Oom!bool {
     assert(e == .none or self.exprValid(e));
     const scope = try unnamedGenScope(self, e) orelse return false;
-    assert(scope.len != 0); // a flat prefix, ending in `Elaborate.sep`
+    assert(scope.len != 0); // a flat prefix, ending in `elab.sep`
     var b = self.errWith(self.file.exprs.mainTok(e), .E0998);
     b.msg("`{s}` reaches into `{s}`, an unnamed generate block", .{
-        try Elaborate.flatReference(self.file, self.arena, self.module, e), scope[0 .. scope.len - 1],
+        try elab.flatReference(self.file, self.arena, self.module, e), scope[0 .. scope.len - 1],
     });
     b.help("name the block (`begin : g`) and reach it as `g.<item>`", .{});
     try b.emit();
@@ -211,19 +211,19 @@ pub fn funcParamShadows(self: *const Lower, name: []const u8) bool {
 fn inScope(self: *Lower, path: []const u8) Oom!?[]const u8 {
     assert(path.len != 0);
     assert(self.scope_path.len != 0); // the caller asks only inside a scope
-    const unit = if (self.cur_unit < self.design.units.len) self.design.units[self.cur_unit].path else "";
+    const unit = if (self.cur_unit < self.design.units.len) self.design.units.items(.path)[self.cur_unit] else "";
     var scope = self.scope_path;
     // Each pass drops one trailing segment, so the walk ends within the
     // path's byte count.
     var steps: usize = 0;
     while (scope.len != 0) : (steps += 1) {
         assert(steps <= self.scope_path.len);
-        const cand = try self.arena.print("{s}{s}{c}{s}", .{ unit, scope, Elaborate.sep, path });
-        const flat = self.out.hier_names.get(cand) orelse cand;
+        const cand = try self.arena.print("{s}{s}{c}{s}", .{ unit, scope, elab.sep, path });
+        const flat = if (self.design.names.get(cand)) |id| self.file.str(id) else cand;
         if (self.param_index.contains(flat) or self.vars.contains(flat) or self.consts.contains(flat) or
             self.node_voltages.contains(flat) or self.branches.contains(flat) or self.port_branches.contains(flat))
             return flat;
-        scope = scope[0 .. std.mem.findScalarLast(u8, scope, Elaborate.sep) orelse 0];
+        scope = scope[0 .. std.mem.findScalarLast(u8, scope, elab.sep) orelse 0];
     }
     return null;
 }

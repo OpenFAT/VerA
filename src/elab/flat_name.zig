@@ -68,7 +68,7 @@ pub fn flatReference(file: *const Ast.SourceFile, arena: std.mem.Allocator, modu
     // `$root.mymodule.u1`), and a flattened design's one top-level instance is
     // the device itself, so the top module's name drops with it.
     //
-    // Not done in `Elaborate`'s clone: the top module's body is never cloned,
+    // Not done in elaboration's clone: the top module's body is never cloned,
     // so the rule would only reach children. Here it applies to every unit.
     if (parts.len > 1 and file.strings.eql(parts[0], "$root")) parts = parts[1..];
     // The top module's own name, with or without `$root`: IEEE 1364 §12.6's
