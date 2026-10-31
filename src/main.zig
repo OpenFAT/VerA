@@ -175,7 +175,7 @@ pub fn main(init: std.process.Init) !u8 {
     var bag: diag.Bag = .init(gpa);
     defer bag.deinit(gpa);
     var o: vera.Outcome = .{};
-    defer o.deinit();
+    defer o.deinit(gpa);
     vera.compile(gpa, io, arena.allocator(), source, .{
         .options = .{
             .file_name = in_path,
@@ -189,10 +189,9 @@ pub fn main(init: std.process.Init) !u8 {
             .proof = .{ .unknown_bound = cli.unknown_bound },
             .discipline_resolution = cli.discipline_resolution,
             .display = cli.display,
-            .jac_f32 = cli.jac_f32,
-            .jac_f32_host = cli.jac_f32_host,
             .param_overrides = cli.overrides.items,
         },
+        .codegen = .{ .jac_f32 = cli.jac_f32, .jac_f32_host = cli.jac_f32_host },
         .spice_path = cli.spice_path,
         .verilog = if (cli.emit_verilog) .{ .digital_pins = cli.digital_pins, .power_pins = cli.power_pins, .vdd = cli.vdd } else null,
         .osdi = cli.emit_osdi,
