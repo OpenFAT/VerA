@@ -268,7 +268,7 @@ pub fn parse(cli: *Cli, gpa: Allocator, args: anytype, out: *Io.Writer, err: *Io
             try cli.defines.append(gpa, d);
         } else if (std.mem.startsWith(u8, arg, "--")) {
             // --allow=X / --warn=X / --deny=X / --forbid=X
-            const applied = cli.levels.parseFlag(gpa, arg[2..]) catch |e| switch (e) {
+            const applied = cli.levels.parseFlag(arg[2..]) catch |e| switch (e) {
                 error.CannotAllowError => {
                     try err.print("error: `{s}`: an error code cannot be allowed or warned away — it is a statement about the program, not a preference\n", .{arg});
                     return 2;
@@ -277,7 +277,6 @@ pub fn parse(cli: *Cli, gpa: Allocator, args: anytype, out: *Io.Writer, err: *Io
                     try err.print("error: `{s}`: this code was already --forbid'd\n", .{arg});
                     return 2;
                 },
-                error.OutOfMemory => return error.OutOfMemory,
             };
             if (!applied) {
                 try err.print("error: unknown option `{s}`\n", .{arg});

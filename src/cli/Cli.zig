@@ -1,8 +1,8 @@
 //! `vera`'s command line as typed (`args.parse` fills it, `args.resolve`
 //! settles it). Every slice borrows from the argv iterator, which must
-//! outlive this value; the lists and `levels` are owned and freed by
-//! `deinit`. A later flag of the same kind overwrites an earlier one except
-//! where a field says otherwise.
+//! outlive this value; the lists are owned and freed by `deinit`. A later
+//! flag of the same kind overwrites an earlier one except where a field says
+//! otherwise.
 //!
 //! Cites: LRM 3.4 (`overrides`), annex C (`sim`), IEEE 1364-2005 §13.2,
 //! §13.7.1, §15.5.4, §28 (the `.v` fields).
@@ -100,7 +100,7 @@ optimize: ?std.lang.Optimize = null,
 zig_backend: ?zigbuild.Backend = null,
 spice_path: ?[]const u8 = null,
 /// `--protect-keys`: the key file for IEEE 1364-2005 §28 decryption
-/// envelopes (`Preprocessor.protect.parseKeys`).
+/// envelopes (`frontend.protect.parseKeys`).
 protect_keys: ?[]const u8 = null,
 schedule: native.Schedule = .static,
 event_budget: u64 = digital.max_events_per_tick,
@@ -112,9 +112,8 @@ negative_timing: bool = false,
 
 const Cli = @This();
 
-/// Frees the lists and the lint levels; `gpa` is the one `parse` was given.
+/// Frees the lists; `gpa` is the one `parse` was given.
 pub fn deinit(cli: *Cli, gpa: Allocator) void {
-    cli.levels.deinit(gpa);
     cli.include_dirs.deinit(gpa);
     cli.defines.deinit(gpa);
     cli.overrides.deinit(gpa);

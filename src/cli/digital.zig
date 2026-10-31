@@ -138,7 +138,7 @@ const fixtures = struct {
         var cli: args.Cli = .{ .emit_zig = true, .emit_zig_typed = true, .codegen_flag = "--emit-zig" };
         defer cli.deinit(testing.allocator);
         try cli.paths.append(testing.allocator, t.paths[0]);
-        if (deny) try testing.expect(try cli.levels.parseFlag(testing.allocator, "deny=W1155"));
+        if (deny) try testing.expect(try cli.levels.parseFlag("deny=W1155"));
         var env: std.process.Environ.Map = .init(testing.allocator);
         defer env.deinit();
         var out: Io.Writer.Allocating = .init(arena);
@@ -188,11 +188,11 @@ pub fn run(
     };
     if (!try libraries(&j, cli.paths.items, cli.libmaps.items, cli.search.items)) return 1;
     if (cli.protect_keys) |p| {
-        const text = frontend.Preprocessor.readText(io, .cwd(), p, arena) catch |e| {
+        const text = frontend.preprocessor.readText(io, .cwd(), p, arena) catch |e| {
             try vera.readFailed(err, p, e);
             return 1;
         };
-        j.opts.protect_keys = frontend.Preprocessor.protect.parseKeys(arena, text) catch |e| {
+        j.opts.protect_keys = frontend.protect.parseKeys(arena, text) catch |e| {
             try err.print("error: --protect-keys {s}: not a key file ({s})\n", .{ p, @errorName(e) });
             return 1;
         };
@@ -285,7 +285,7 @@ fn libraries(j: *Job, paths: []const []const u8, libmaps: []const []const u8, se
     const more = try arena.alloc(digital.Unit, paths.len - 1);
     for (paths[1..], libs[1..], more) |p, l, *u| u.* = .{
         .name = p,
-        .text = frontend.Preprocessor.readText(io, .cwd(), p, arena) catch |e| {
+        .text = frontend.preprocessor.readText(io, .cwd(), p, arena) catch |e| {
             try vera.readFailed(j.err, p, e);
             return false;
         },
@@ -371,7 +371,7 @@ fn emitDigital(j: Job, build: zigbuild.BuildOptions, schedule: native.Schedule, 
     if (logic == .auto and prog.fallback == null) if (prog.four) |k| {
         try err.print("note: {s}: 4-state: {s}", .{ name, k.why });
         if (k.tok) |t| {
-            const loc = r.bag.locate(.{ .start = r.starts[t], .end = r.starts[t] }, null);
+            const loc = r.bag.locate(.{ .start = r.starts[t], .end = r.starts[t] }, .none);
             const text = r.bag.fileText(loc.file);
             const line = 1 + std.mem.count(u8, text[0..@min(loc.offset, text.len)], "\n");
             try err.print(" ({s}:{d})", .{ r.bag.fileName(loc.file), line });
@@ -495,20 +495,20 @@ fn buildLibrary(j: Job, dev: @typeInfo(@typeInfo(@TypeOf(native.emitDevice)).@"f
             },
         }
     }
-    var r = zigbuild.compileRelease(j.gpa, j.io, o, .{ .text = dev.zig }, 1) catch |e| {
+    var r = zigbuild.buildLibrary(j.gpa, j.io, o, .{ .text = dev.zig }, 1) catch |e| {
         try err.print("error: {s}: building the device failed: {t}\n", .{ name, e });
         return 1;
     };
     defer r.deinit(j.gpa);
     switch (r) {
-        .ok => |a| if (f.osdi) {
+        .ok => |so_path| if (f.osdi) {
             const dest = f.out_path orelse try j.arena.print("{s}.osdi", .{dev.name});
-            Io.Dir.cwd().copyFile(a.so_path, Io.Dir.cwd(), dest, j.io, .{}) catch |e| {
+            Io.Dir.cwd().copyFile(so_path, Io.Dir.cwd(), dest, j.io, .{}) catch |e| {
                 try err.print("error: cannot write `{s}`: {t}\n", .{ dest, e });
                 return 1;
             };
             try j.out.print("{s}\n", .{dest});
-        } else try j.out.print("{s}\n", .{a.so_path}),
+        } else try j.out.print("{s}\n", .{so_path}),
         .failed => |b| {
             try err.print("error: {s}: the generated device did not compile:\n", .{name});
             try b.renderToWriter(.{}, err);

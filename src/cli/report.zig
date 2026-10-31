@@ -21,8 +21,8 @@ pub const Style = struct {
 };
 
 /// What rendering can fail with: the writer, or the renderer's scratch
-/// memory. Inferred in `diag` until its rewrite names it (`diag.RenderError`).
-pub const RenderError = ErrorOf(diag.render) || ErrorOf(diag.renderJson);
+/// memory.
+pub const RenderError = diag.RenderError;
 
 /// Renders `bag` on `w`, as JSON or as text coloured when `style.color`, and
 /// flushes `w`. An empty bag prints nothing. Sorts the bag.
@@ -36,12 +36,6 @@ pub fn report(bag: *diag.Bag, w: *Io.Writer, style: Style) RenderError!void {
     }
     assert(bag.count() == rows); // Rendering reorders rows, never drops one.
     try w.flush();
-}
-
-// ---- private ----
-
-fn ErrorOf(comptime f: anytype) type {
-    return @typeInfo(@typeInfo(@TypeOf(f)).@"fn".return_type.?).error_union.error_set;
 }
 
 test report {

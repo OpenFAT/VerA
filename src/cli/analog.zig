@@ -24,7 +24,7 @@ const globalCache = @import("global_cache.zig").globalCache;
 
 /// Every way `run` fails rather than refuses: the spine's failures, the
 /// report's, and a testbench that could not be spawned.
-pub const Error = vera.CompileError || report.RenderError || std.process.SpawnError || ErrorOf(std.process.Child.wait);
+pub const Error = vera.CompileError || report.RenderError || std.process.SpawnError || std.process.Child.WaitError;
 
 /// Compiles `source` (named `cli.paths[0]`) as `cli` asks and returns the
 /// exit status. Every slice it hands out lives in `arena`.
@@ -85,10 +85,9 @@ pub fn run(
         },
     }, &bag, &o) catch |e| {
         // Past the `--param` check the bag is final, and an error leaves
-        // through the same report as every other exit.
-        // The spine's error is the one returned; a report that fails on top
-        // of it has nothing to add.
-        if (o.report == .after) report.report(&bag, err, b.style) catch {};
+        // through the same report as every other exit. A report that fails
+        // on top of it is returned in its place.
+        if (o.report == .after) try report.report(&bag, err, b.style);
         return e;
     };
     switch (o.report) {
@@ -99,11 +98,33 @@ pub fn run(
         },
         .after => {},
     }
-    // Warnings on a successful analysis, on every exit below: codegen
-    // reports too (E0515), and `render` prints the whole bag.
-    // A `defer` cannot return: a report that fails here leaves the exit
-    // status the build gave.
-    defer report.report(&bag, err, b.style) catch {};
+    // Warnings on a successful analysis, after whatever `deliver` printed or
+    // ran: codegen reports too (E0515), and `render` prints the whole bag.
+    const code = deliver(io, arena, cli, &o, out, err) catch |e| {
+        try report.report(&bag, err, b.style);
+        return e;
+    };
+    try report.report(&bag, err, b.style);
+    return code;
+}
+
+// ---- private ----
+
+/// Reports a failed analysis' diagnostics and returns exit status 1. The
+/// error's name is printed only for an undiagnosed failure.
+fn compileFailed(bag: *diag.Bag, err: *Io.Writer, style: report.Style, e: vera.AnalyzeError) (report.RenderError || Io.Writer.Error)!u8 {
+    try report.report(bag, err, style);
+    switch (e) {
+        error.CompileFailed, error.NoModule => {},
+        error.OutOfMemory, error.NothingToElaborate => try err.print("error: {t}\n", .{e}),
+    }
+    return 1;
+}
+
+/// Prints what a successful `compile` built and, under `--run`, runs the
+/// testbench with its plusargs; returns the exit status.
+fn deliver(io: Io, arena: Allocator, cli: *const Cli, o: *const vera.Outcome, out: *Io.Writer, err: *Io.Writer) !u8 {
+    assert(o.report == .after);
     if (o.path) |p| try out.print("{s}\n", .{p});
     try out.writeAll(o.text);
     try err.writeAll(o.err);
@@ -123,23 +144,6 @@ pub fn run(
         .exited => |c| c,
         else => 1,
     };
-}
-
-// ---- private ----
-
-/// Reports a failed analysis' diagnostics and returns exit status 1. The
-/// error's name is printed only for an undiagnosed failure.
-fn compileFailed(bag: *diag.Bag, err: *Io.Writer, style: report.Style, e: vera.AnalyzeError) (report.RenderError || Io.Writer.Error)!u8 {
-    try report.report(bag, err, style);
-    switch (e) {
-        error.CompileFailed, error.NoModule => {},
-        error.OutOfMemory, error.NothingToElaborate => try err.print("error: {t}\n", .{e}),
-    }
-    return 1;
-}
-
-fn ErrorOf(comptime f: anytype) type {
-    return @typeInfo(@typeInfo(@TypeOf(f)).@"fn".return_type.?).error_union.error_set;
 }
 
 test compileFailed {
