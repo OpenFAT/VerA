@@ -67,9 +67,13 @@ const Error = root.Error;
 /// A function compiled early for a §10.4.5 constant call binds its own at
 /// once (`elab.earlyFrame`): it runs before the other processes exist.
 pub fn bindDisables(r: *Run, from: usize) Error!void {
+    assert(from <= r.program.disables.items.len);
+    defer for (r.program.disables.items[from..]) |d| assert(r.program.code.items[d.at] == .disable_block or r.program.code.items[d.at] == .disable_task);
     disabling: for (r.program.disables.items[from..]) |d| {
         var s = d.name.scope;
-        while (true) {
+        var climbs: usize = 0;
+        while (true) : (climbs += 1) {
+            assert(climbs < r.hier.scopes.items.len); // A lexical chain ends at its instance.
             if (r.program.blocks.get(.{ .scope = s, .str = d.name.str })) |range| {
                 r.program.code.items[d.at] = .{ .disable_block = .{ .start = range.start, .end = range.end } };
                 continue :disabling;
@@ -91,6 +95,8 @@ pub fn bindDisables(r: *Run, from: usize) Error!void {
 pub fn mixedTimescales(arena: std.mem.Allocator, events: []const Front.Preprocessor.TimescaleEvent) Error![]const Front.Preprocessor.TimescaleEvent {
     const out = try arena.dupe(Front.Preprocessor.TimescaleEvent, events);
     if (out.len != 0) out[0].at = 0;
+    assert(out.len == events.len);
+    if (out.len != 0) assert(out[0].at == 0);
     return out;
 }
 
@@ -106,6 +112,8 @@ pub fn netRuns(
     comptime netOf: anytype,
     comptime per_row: usize,
 ) Error!struct { start: []u32, items: []u32 } {
+    comptime assert(per_row >= 1);
+    assert(n_items <= std.math.maxInt(u32));
     const start = try arena.alloc(u32, n_nets + 1);
     @memset(start, 0);
     for (rows) |row| inline for (0..per_row) |k| {
@@ -120,6 +128,7 @@ pub fn netRuns(
         items[fill[net]] = @intCast(i);
         fill[net] += 1;
     };
+    assert(start[n_nets] == n_items); // Every row's nets were counted once.
     return .{ .start = start, .items = items };
 }
 
@@ -129,6 +138,7 @@ pub fn netRuns(
 pub fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
     // Every value is checked, not only those before the first variable one:
     // `exec.variableDelay` types each of them at run time.
+    assert(d.rise != .none or (d.fall == .none and d.off == .none)); // A.2.2.3 lists rise first.
     var constant = true;
     for ([_]Ast.ExprId{ d.rise, d.fall, d.off }) |x| if (x != .none) {
         try compile.checkExpr(r, x);
@@ -140,6 +150,7 @@ pub fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
 /// Whether top-level module `m` declares a parameter `--param` may set,
 /// `name`: one that is not a localparam.
 pub fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool {
+    assert(name.len != 0);
     for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) return true;
     return false;
 }
@@ -153,6 +164,7 @@ pub fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: 
 pub fn processOrder(r: *Run, e: *const elab.Elab) Error![]const u32 {
     const a = r.arena;
     const n = r.hier.scopes.items.len;
+    assert(n != 0); // Scope 0 is the first root.
     const groups = try a.alloc(std.ArrayList(u32), n);
     @memset(groups, .empty);
     for (e.insts.items, 0..) |inst, k| try groups[inst.scope].append(a, @intCast(k));
@@ -171,7 +183,9 @@ pub fn processOrder(r: *Run, e: *const elab.Elab) Error![]const u32 {
     var stack: std.ArrayList([2]u32) = .empty;
     for (r.hier.roots) |root_scope| {
         try stack.append(a, .{ root_scope, 0 });
-        while (stack.items.len != 0) {
+        var steps: usize = 0;
+        while (stack.items.len != 0) : (steps += 1) {
+            assert(steps <= 2 * n); // Each scope is pushed and popped once.
             const top = &stack.items[stack.items.len - 1];
             const kids = children[top[0]].items;
             if (top[1] < kids.len) {
@@ -191,6 +205,7 @@ pub fn processOrder(r: *Run, e: *const elab.Elab) Error![]const u32 {
 /// Whether expression `e` calls a function, user or system.
 pub fn calls(ex: *const Ast.ExprStore, e: Ast.ExprId) bool {
     if (e == .none) return false;
+    assert(@backingInt(e) < ex.len());
     switch (ex.tag(e)) {
         .call, .sys_call => return true,
         else => {}, // else: an operator or operand, whose operands are searched
@@ -208,7 +223,9 @@ pub fn driverBits(d: Driver, width: u32) [2]u32 {
         .udp => |u| u.out_bit,
         .expr, .pull => null,
     };
-    return if (bit) |b| .{ b, b + 1 } else .{ 0, width };
+    const range: [2]u32 = if (bit) |b| .{ b, b + 1 } else .{ 0, width };
+    assert(range[0] <= range[1]);
+    return range;
 }
 
 /// Compiles each of `blocks` in `r.scope` and queues it at time 0.
@@ -225,6 +242,7 @@ pub fn initVars(r: *Run, vars: []const Ast.VarDecl) Error!void {
         if (!compile.constantExpression(r, v.init)) return r.exprFail(v.init, "§6.2.1: a constant expression is required here");
         const start = try compile.append(r, .{ .init_var = .{ .slot = at, .value = v.init } });
         _ = try compile.append(r, .stop);
+        assert(r.program.code.items[start + 1] == .stop);
         _ = try exec.enqueue(r, .{ .run_process = start }, null, false);
     };
 }
@@ -232,6 +250,7 @@ pub fn initVars(r: *Run, vars: []const Ast.VarDecl) Error!void {
 pub fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
     for (blocks) |process| {
         const start: u32 = @intCast(r.program.code.items.len);
+        assert(r.program.scope_of.items.len == start); // One scope row per instruction.
         try compile.compileStmt(r, process.body, 0);
         _ = try compile.append(r, if (process.is_always)
             .{ .restart = .{ .target = start, .tok = process.main_tok } }
@@ -252,6 +271,7 @@ pub fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
 /// they see the time-0 changes the others make, as iverilog does (ivtest
 /// pr1026, pr1956211, pr2986528).
 fn levelControlled(r: *Run, body: Ast.StmtId) Error!bool {
+    assert(body != .none);
     const st = r.file.stmt(body);
     if (st != .event_control or st.event_control.kind != .event) return false;
     const L = struct {
