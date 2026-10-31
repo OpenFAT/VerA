@@ -5130,7 +5130,7 @@ pub const proof_tests = struct {
     //! on std.testing.allocator. LRM §3.2.1, §3.4.2, §4.2.4, §4.2.12, §4.3.1, §4.3.2, §5.6.1.3, §5.8.
 
     const std = @import("std");
-    const proof = @import("prove").proof;
+    const proof = @import("prove").next.proof;
     const Ast = @import("frontend").Ast;
     const Mir = @import("ir").Mir;
     const Lower = @import("analog").Lower;
@@ -5140,7 +5140,6 @@ pub const proof_tests = struct {
     const Verdict = proof.Verdict;
     const Options = proof.Options;
     const unitCount = proof.unitCount;
-    const proveOpts = proof.proveOpts;
 
     /// The frontend preprocessor the harness runs.
     const Preprocessor = @import("frontend").Preprocessor;
@@ -5182,7 +5181,7 @@ pub const proof_tests = struct {
         /// Run the prover against this harness's own bag, so a test can assert on
         /// the CODES that came out rather than on prose.
         fn prove(self: *Harness, gpa: std.mem.Allocator, opts: Options) !Verdict {
-            return proveOpts(gpa, &self.mir, &self.lowered, opts, &self.bag);
+            return proof.prove(gpa, &self.mir, &self.lowered, opts, &self.bag);
         }
 
         fn has(self: *const Harness, code: diag.Code) bool {
@@ -6258,13 +6257,13 @@ pub const proof_tests = struct {
         }
     }
 
-    test "max_errors: violations past the cap are neither counted nor reported" {
-        // max_errors + 6 distinct provably-negative ln arguments in one unit.
+    test "errors_max: violations past the cap are neither counted nor reported" {
+        // errors_max + 6 distinct provably-negative ln arguments in one unit.
         const gpa = std.testing.allocator;
         var src: std.ArrayList(u8) = .empty;
         defer src.deinit(gpa);
         try src.appendSlice(gpa, head ++ "  parameter real k = -2.0 from [-10:-1];\n  analog I(p, n) <+ 0.0");
-        for (1..proof.max_errors + 7) |i| try src.print(gpa, " + ln(k * {d}.0)", .{i});
+        for (1..proof.errors_max + 7) |i| try src.print(gpa, " + ln(k * {d}.0)", .{i});
         try src.appendSlice(gpa, ";" ++ tail);
 
         var h: Harness = undefined;
@@ -6272,8 +6271,8 @@ pub const proof_tests = struct {
         defer h.deinit();
         defer v.deinit(gpa);
         try std.testing.expect(!v.ok());
-        try std.testing.expectEqual(@as(u32, proof.max_errors), v.error_count);
-        try std.testing.expectEqual(@as(usize, proof.max_errors), h.bag.count());
+        try std.testing.expectEqual(proof.errors_max, v.error_count);
+        try std.testing.expectEqual(@as(usize, proof.errors_max), h.bag.count());
         try std.testing.expectEqual(FloatMode.strict, v.unit_modes[0]);
     }
 
@@ -6287,7 +6286,7 @@ pub const proof_tests = struct {
         try std.testing.expectEqual(FloatMode.strict, v.unit_modes[0]);
     }
 
-    test "proveOpts: proving the same lowering twice gives the same verdict" {
+    test "prove: proving the same lowering twice gives the same verdict" {
         var h: Harness = undefined;
         const body =
             \\  parameter real k = 1.0;
@@ -6573,9 +6572,11 @@ pub const prove_oom_tests = struct {
     const Lowered = @import("ir").Lowered;
     const diag = @import("diag");
     const Analysis = @import("prove").Analysis;
-    const ifconv = @import("prove").ifconv;
-    const proof = @import("prove").proof;
-    const setup = @import("prove").setup;
+    const ifconv = @import("prove").next.ifconv;
+    const proof = @import("prove").next.proof;
+    const setup = @import("prove").next.setup;
+    const timepoint = @import("prove").timepoint;
+    const held = @import("prove").held;
     const Input = @import("prove").Input;
 
     /// A diamond on a probe with a `sqrt` arm and a `$held_real` slot, through
@@ -6603,17 +6604,17 @@ pub const prove_oom_tests = struct {
         const out = try mir.emitPhi(a, j, &.{ .{ .block = t, .value = tv }, .{ .block = e, .value = ev } });
         try lw.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 0, .resist_val = out });
 
-        if (try setup.pruneHeld(a, &mir, &lw)) |keep| std.debug.assert(keep.len == 1);
-        _ = try ifconv.run(a, &mir);
+        if (try held.prune(a, &mir, &lw)) |keep| std.debug.assert(keep.len == 1);
+        _ = try ifconv.run(a, &mir, .pure, null);
         var bag = diag.Bag.init(a);
-        const v = try proof.proveOpts(gpa, &mir, &lw, .{}, &bag);
+        const v = try proof.prove(gpa, &mir, &lw, .{}, &bag);
         defer v.deinit(gpa);
         var keep = try ifconv.keepSlice(a, &mir, &.{out});
-        _ = try ifconv.runMode(a, &mir, .speculate, &keep);
+        _ = try ifconv.run(a, &mir, .speculate, &keep);
         const an = try Analysis.build(a, &mir, &lw);
         const in: Input = .{ .arena = a, .mir = &mir, .an = &an, .lowered = &lw };
         _ = try setup.plan(in);
-        _ = try setup.timepointVarying(in, .{ .tok = 0, .miss = t, .join = j });
+        _ = try timepoint.varying(in, .{ .tok = 0, .miss = t, .join = j });
     }
 
     test "prove passes: every allocation failure is reported, none leaks" {
