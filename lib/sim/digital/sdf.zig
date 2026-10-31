@@ -25,6 +25,14 @@
 //! rest of the file still applies. A file that cannot be read or is not
 //! S-expressions ends the run (E1102): carrying on would simulate timing the
 //! file was meant to set.
+//!
+//! Contents:
+//! - `pub const Node = struct`
+//! - `Node.head(n: Node) []const u8`
+//! - `pub const ParseError = error`
+//! - `pub fn parse(a: std.mem.Allocator, text: []const u8, line: *u32) ParseError!Node`
+//! - `pub fn rvalue(n: Node, mtm: u2) error{Syntax}!?f64`
+//! - `pub fn annotate(r: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, tok: u32) Error!void`
 
 const std = @import("std");
 const Front = @import("frontend");
@@ -63,27 +71,6 @@ pub const Node = struct {
 };
 
 pub const ParseError = error{ OutOfMemory, Syntax };
-
-/// Parses `text` into its one top-level list. `line` is set to where a
-/// syntax error was found.
-pub fn parse(a: std.mem.Allocator, text: []const u8, line: *u32) ParseError!Node {
-    var p: Parser = .{ .a = a, .text = text };
-    p.skip();
-    if (p.at >= text.len or text[p.at] != '(') {
-        line.* = p.line;
-        return error.Syntax;
-    }
-    const n = p.node() catch |e| {
-        line.* = p.line;
-        return e;
-    };
-    p.skip();
-    if (p.at != text.len) {
-        line.* = p.line;
-        return error.Syntax;
-    }
-    return n;
-}
 
 const Parser = struct {
     a: std.mem.Allocator,
@@ -152,88 +139,6 @@ const Parser = struct {
     }
 };
 
-/// An SDF identifier's text without its escapes (`\&dut\[0\]` is `&dut[0]`).
-fn unescape(a: std.mem.Allocator, raw: []const u8) ![]const u8 {
-    if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
-    var out: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    while (i < raw.len) : (i += 1) {
-        if (raw[i] == '\\' and i + 1 < raw.len) i += 1;
-        try out.append(a, raw[i]);
-    }
-    return out.items;
-}
-
-/// A hierarchical SDF path split on its unescaped `divider`, each part
-/// unescaped.
-fn splitPath(a: std.mem.Allocator, raw: []const u8, divider: u8) ![]const []const u8 {
-    var parts: std.ArrayList([]const u8) = .empty;
-    var start: usize = 0;
-    var i: usize = 0;
-    while (i < raw.len) : (i += 1) {
-        if (raw[i] == '\\') {
-            i += 1;
-            continue;
-        }
-        if (raw[i] == divider) {
-            try parts.append(a, try unescape(a, raw[start..i]));
-            start = i + 1;
-        }
-    }
-    try parts.append(a, try unescape(a, raw[start..]));
-    return parts.items;
-}
-
-/// §16.6 one rvalue: `()` is null, `(v)` is v, `(min:typ:max)` the member
-/// `mtm` picks (0, 1, 2), any of which may be empty.
-pub fn rvalue(n: Node, mtm: u2) error{Syntax}!?f64 {
-    if (n.atom != null) return error.Syntax;
-    if (n.kids.len == 0) return null;
-    if (n.kids.len != 1 or n.kids[0].atom == null or n.kids[0].string) return error.Syntax;
-    const t = n.kids[0].atom.?;
-    var parts = std.mem.splitScalar(u8, t, ':');
-    var got: [3][]const u8 = undefined;
-    var k: usize = 0;
-    while (parts.next()) |s| : (k += 1) {
-        if (k == 3) return error.Syntax;
-        got[k] = s;
-    }
-    const pick = if (k == 1) got[0] else if (k == 3) got[mtm] else return error.Syntax;
-    if (pick.len == 0) return null;
-    return std.fmt.parseFloat(f64, pick) catch error.Syntax;
-}
-
-test rvalue {
-    const one: Node = .{ .kids = &.{.{ .atom = "3.0:7:11", .line = 1 }}, .line = 1 };
-    try std.testing.expectEqual(@as(?f64, 3), try rvalue(one, 0));
-    try std.testing.expectEqual(@as(?f64, 7), try rvalue(one, 1));
-    try std.testing.expectEqual(@as(?f64, 11), try rvalue(one, 2));
-    const gap: Node = .{ .kids = &.{.{ .atom = "1::3", .line = 1 }}, .line = 1 };
-    try std.testing.expectEqual(@as(?f64, null), try rvalue(gap, 1));
-    try std.testing.expectEqual(@as(?f64, null), try rvalue(.{ .line = 1 }, 1));
-    const bad: Node = .{ .kids = &.{.{ .atom = "1:2", .line = 1 }}, .line = 1 };
-    try std.testing.expectError(error.Syntax, rvalue(bad, 1));
-}
-
-test parse {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    var line: u32 = 0;
-    const n = try parse(arena.allocator(),
-        \\ /* c */ (DELAYFILE // x
-        \\  (DIVIDER /) (CELL (CELLTYPE "a b") (INSTANCE \&d\[0\]/u)))
-    , &line);
-    try std.testing.expect(n.is("delayfile"));
-    try std.testing.expectEqualStrings("a b", n.kids[2].kids[1].kids[1].atom.?);
-    const parts = try splitPath(arena.allocator(), n.kids[2].kids[2].kids[1].atom.?, '/');
-    try std.testing.expectEqual(@as(usize, 2), parts.len);
-    try std.testing.expectEqualStrings("&d[0]", parts[0]);
-    try std.testing.expectError(error.Syntax, parse(arena.allocator(), "(A (B)", &line));
-    try std.testing.expectEqual(@as(u32, 1), line);
-}
-
-// ---- the annotator ---------------------------------------------------------
-
 /// One `$sdf_annotate` call's settings and where it reports.
 const Ctx = struct {
     r: *Run,
@@ -264,6 +169,57 @@ const Ctx = struct {
         return if (v < 0) -@as(i128, t) else t;
     }
 };
+
+/// A `port_spec`: a port, or `(posedge port)` / `(negedge port)`; a bit
+/// select is read as its whole port.
+// ponytail: `a[3]` matches every path from `a`.
+const PortSpec = struct { name: []const u8, edge: Ast.SpecEdge = .none };
+
+/// Table 16-4's transitions of the 12 positions, in `net.pathTable`'s order.
+const positions = [12][2]Int.Bit{
+    .{ .zero, .one }, .{ .one, .zero }, .{ .zero, .z }, .{ .z, .one },  .{ .one, .z }, .{ .z, .zero },
+    .{ .zero, .x },   .{ .x, .one },    .{ .one, .x },  .{ .x, .zero }, .{ .x, .z },   .{ .z, .x },
+};
+
+/// Parses `text` into its one top-level list. `line` is set to where a
+/// syntax error was found.
+pub fn parse(a: std.mem.Allocator, text: []const u8, line: *u32) ParseError!Node {
+    var p: Parser = .{ .a = a, .text = text };
+    p.skip();
+    if (p.at >= text.len or text[p.at] != '(') {
+        line.* = p.line;
+        return error.Syntax;
+    }
+    const n = p.node() catch |e| {
+        line.* = p.line;
+        return e;
+    };
+    p.skip();
+    if (p.at != text.len) {
+        line.* = p.line;
+        return error.Syntax;
+    }
+    return n;
+}
+
+/// §16.6 one rvalue: `()` is null, `(v)` is v, `(min:typ:max)` the member
+/// `mtm` picks (0, 1, 2), any of which may be empty.
+pub fn rvalue(n: Node, mtm: u2) error{Syntax}!?f64 {
+    if (n.atom != null) return error.Syntax;
+    if (n.kids.len == 0) return null;
+    if (n.kids.len != 1 or n.kids[0].atom == null or n.kids[0].string) return error.Syntax;
+    const t = n.kids[0].atom.?;
+    var parts = std.mem.splitScalar(u8, t, ':');
+    var got: [3][]const u8 = undefined;
+    var k: usize = 0;
+    while (parts.next()) |s| : (k += 1) {
+        if (k == 3) return error.Syntax;
+        got[k] = s;
+    }
+    const pick = if (k == 1) got[0] else if (k == 3) got[mtm] else return error.Syntax;
+    if (pick.len == 0) return null;
+    return std.fmt.parseFloat(f64, pick) catch error.Syntax;
+}
 
 /// §17.2.10 `$sdf_annotate ( "sdf_file" [, module_instance [, "config_file"
 /// [, "log_file" [, "mtm_spec" [, "scale_factors" [, "scale_type" ]]]]]] )`.
@@ -306,6 +262,40 @@ pub fn annotate(r: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, tok: u3
         // else: SDFVERSION, DESIGN, DATE, VENDOR, PROGRAM, VERSION, VOLTAGE,
         // PROCESS and TEMPERATURE inform and set nothing.
     }
+}
+
+// ---- private ----
+
+/// An SDF identifier's text without its escapes (`\&dut\[0\]` is `&dut[0]`).
+fn unescape(a: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        if (raw[i] == '\\' and i + 1 < raw.len) i += 1;
+        try out.append(a, raw[i]);
+    }
+    return out.items;
+}
+
+/// A hierarchical SDF path split on its unescaped `divider`, each part
+/// unescaped.
+fn splitPath(a: std.mem.Allocator, raw: []const u8, divider: u8) ![]const []const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        if (raw[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (raw[i] == divider) {
+            try parts.append(a, try unescape(a, raw[start..i]));
+            start = i + 1;
+        }
+    }
+    try parts.append(a, try unescape(a, raw[start..]));
+    return parts.items;
 }
 
 /// `(TIMESCALE 1ns)` or `(TIMESCALE 100 ps)`.
@@ -401,11 +391,6 @@ fn portSlot(r: *const Run, scope: u32, name: []const u8) ?u32 {
     return null;
 }
 
-/// A `port_spec`: a port, or `(posedge port)` / `(negedge port)`; a bit
-/// select is read as its whole port.
-// ponytail: `a[3]` matches every path from `a`.
-const PortSpec = struct { name: []const u8, edge: Ast.SpecEdge = .none };
-
 fn portSpec(c: *Ctx, n: Node) Error!?PortSpec {
     var edge: Ast.SpecEdge = .none;
     var raw = n.atom;
@@ -437,12 +422,6 @@ fn destNets(c: *Ctx, slot: u32) Error![]const u32 {
     for (r.drivers) |d| if (d.source == .bridge and d.source.bridge.src == slot) try out.append(c.a, d.net);
     return out.items;
 }
-
-/// Table 16-4's transitions of the 12 positions, in `net.pathTable`'s order.
-const positions = [12][2]Int.Bit{
-    .{ .zero, .one }, .{ .one, .zero }, .{ .zero, .z }, .{ .z, .one },  .{ .one, .z }, .{ .z, .zero },
-    .{ .zero, .x },   .{ .x, .one },    .{ .one, .x },  .{ .x, .zero }, .{ .x, .z },   .{ .z, .x },
-};
 
 /// One ABSOLUTE or INCREMENT entry on instance `s`.
 fn delayEntry(c: *Ctx, s: u32, e: Node, increment: bool) Error!void {
@@ -646,3 +625,34 @@ fn pathPulse(c: *Ctx, s: u32, e: Node) Error!void {
     }
     if (!hit) try c.warn(e.line, "PATHPULSE names no module path of this instance", .{});
 }
+
+test rvalue {
+    const one: Node = .{ .kids = &.{.{ .atom = "3.0:7:11", .line = 1 }}, .line = 1 };
+    try std.testing.expectEqual(@as(?f64, 3), try rvalue(one, 0));
+    try std.testing.expectEqual(@as(?f64, 7), try rvalue(one, 1));
+    try std.testing.expectEqual(@as(?f64, 11), try rvalue(one, 2));
+    const gap: Node = .{ .kids = &.{.{ .atom = "1::3", .line = 1 }}, .line = 1 };
+    try std.testing.expectEqual(@as(?f64, null), try rvalue(gap, 1));
+    try std.testing.expectEqual(@as(?f64, null), try rvalue(.{ .line = 1 }, 1));
+    const bad: Node = .{ .kids = &.{.{ .atom = "1:2", .line = 1 }}, .line = 1 };
+    try std.testing.expectError(error.Syntax, rvalue(bad, 1));
+}
+
+test parse {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var line: u32 = 0;
+    const n = try parse(arena.allocator(),
+        \\ /* c */ (DELAYFILE // x
+        \\  (DIVIDER /) (CELL (CELLTYPE "a b") (INSTANCE \&d\[0\]/u)))
+    , &line);
+    try std.testing.expect(n.is("delayfile"));
+    try std.testing.expectEqualStrings("a b", n.kids[2].kids[1].kids[1].atom.?);
+    const parts = try splitPath(arena.allocator(), n.kids[2].kids[2].kids[1].atom.?, '/');
+    try std.testing.expectEqual(@as(usize, 2), parts.len);
+    try std.testing.expectEqualStrings("&d[0]", parts[0]);
+    try std.testing.expectError(error.Syntax, parse(arena.allocator(), "(A (B)", &line));
+    try std.testing.expectEqual(@as(u32, 1), line);
+}
+
+// ---- the annotator ---------------------------------------------------------

@@ -6,6 +6,15 @@
 //! methods.
 //! Clauses: IEEE 1364-2005 §3.8, §15, §26.6.11, §26.6.19, §27.32;
 //! VAMS §2.9, §12.30.
+//!
+//! Contents:
+//! - `pub const VpiValue = union(enum)`
+//! - `pub fn vpiEval(r: *Run, a: std.mem.Allocator, instance: u32, e: Ast.ExprId) Error!VpiValue`
+//! - `pub fn vpiConstantIndex(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprId) Error!?i64`
+//! - `pub fn vpiPutUdp(r: *Run, at: u32, bit: Int.Bit) Error!void`
+//! - `pub fn vpiAttributeValue(r: *Run, a: std.mem.Allocator, scope: u32, e: Ast.ExprId) Error!VpiValue`
+//! - `pub fn tchkSite(r: *const Run, check: u32) struct { scope: u32, tok: u32 }`
+
 const std = @import("std");
 const Front = @import("frontend");
 const Ast = Front.Ast;

@@ -4,6 +4,19 @@
 //! at run time, the values of `$driver_count` … `$receiver_count` and the
 //! wake-ups of `driver_update`. VAMS §7.9, §9.22.1-§9.22.6, §9.23.1-§9.23.4,
 //! Annex D.3; IEEE 1364-2005 §7.10 (the strength scale §9.22.4 encodes).
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn key(net: u32) u32`
+//! - `pub fn segregate(r: *Run, e: *elab.Elab) Error!void`
+//! - `pub fn checkUpdate(r: *Run, e: Ast.ExprId) Error!void`
+//! - `pub fn arm(r: *Run) Error!void`
+//! - `pub fn stored(r: *Run, slot: u32, changed: bool) Error!void`
+//! - `pub fn scheduled(r: *Run, slot: u32) Error!void`
+//! - `pub fn of(f: compile.SysFn) ?Fn`
+//! - `pub fn infer(r: *Run, e: Ast.ExprId, f: Fn) Error!compile.Type`
+//! - `pub fn eval(r: *Run, a: std.mem.Allocator, e: Ast.ExprId, f: Fn) Error!Int.Literal`
+//! - `pub fn evalReal(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64`
 
 const std = @import("std");
 const Front = @import("frontend");
@@ -37,6 +50,12 @@ pub const State = struct {
 /// it is an update; an expression driver's operand updates it only by
 /// changing, which is when a continuous assignment re-evaluates (§6.1).
 const Source = struct { slot: u32, net: u32, reg: bool };
+
+/// The driver access functions, one per VAMS §9.22.1-§9.22.4 / §9.23.1-
+/// §9.23.4 `$driver_*` name (`of` maps the `compile.SysFn` row).
+const Fn = enum { count, receiver_count, state, strength, delay, next_state, next_strength, type };
+
+const Pend = struct { bit: Int.Bit, time: u64 };
 
 /// The waiter slot of `driver_update` on the net whose slot is `net`: one no
 /// variable owns, like `registerMonitor`'s (which count down from the top).
@@ -97,37 +116,6 @@ pub fn segregate(r: *Run, e: *elab.Elab) Error!void {
     };
 }
 
-/// The instance scope at a `Mixed.Insert` path (`a.b.`, empty at the root).
-fn scopeAt(r: *const Run, path: []const u8) ?u32 {
-    var scope: u32 = 0;
-    var parts = std.mem.tokenizeScalar(u8, path, '.');
-    while (parts.next()) |part| {
-        const name = r.file.strings.find(part) orelse return null;
-        scope = r.instances.get(.{ .scope = scope, .str = name }) orelse return null;
-    }
-    return scope;
-}
-
-/// §9.22 ¶3: is `scope` inside a connect module, whose drivers "the driver
-/// access functions … only access drivers found in ordinary modules" skip?
-fn isConnect(r: *const Run, scope: u32) bool {
-    return r.file.modules[r.scope_info.items[r.instanceOf(scope)].def].is_connect;
-}
-
-/// §9.22.1 the `i`'th ordinary driver of `net`, "arbitrarily numbered from 0
-/// to N-1" (here in declaration order), or its count N when `i` is null.
-fn ordinary(r: *const Run, net: u32, i: ?u64) union(enum) { count: u32, driver: ?u32 } {
-    var n: u32 = 0;
-    for (r.netDrivers(net)) |d| {
-        if (isConnect(r, r.drivers[d].scope)) continue;
-        if (i) |want| if (n == want) return .{ .driver = d };
-        n += 1;
-    }
-    return if (i == null) .{ .count = n } else .{ .driver = null };
-}
-
-// ---- driver_update (§9.22.5) --------------------------------------------------
-
 /// `@(driver_update x)`: `x` names a net, and its drivers are watched once the
 /// slot space is final (`arm`).
 pub fn checkUpdate(r: *Run, e: Ast.ExprId) Error!void {
@@ -162,11 +150,6 @@ pub fn arm(r: *Run) Error!void {
     }
 }
 
-fn watch(r: *Run, slot: u32, net: u32, reg: bool) Error!void {
-    r.watch[slot].insert(.driver_update);
-    try r.drv.sources.append(r.arena, .{ .slot = slot, .net = net, .reg = reg });
-}
-
 /// `waiters.store` wrote `slot`. §9.22.5: "an update is defined as the addition
 /// of a new pending value to the driver. This is true whether or not there is
 /// a change in the resolved value of the signal", so a `reg` driver updates on
@@ -191,10 +174,6 @@ pub fn scheduled(r: *Run, slot: u32) Error!void {
 }
 
 // ---- the access functions (§9.22.1 to §9.22.4, §9.23.1 to §9.23.4) ----------------
-
-/// The driver access functions, one per VAMS §9.22.1-§9.22.4 / §9.23.1-
-/// §9.23.4 `$driver_*` name (`of` maps the `compile.SysFn` row).
-const Fn = enum { count, receiver_count, state, strength, delay, next_state, next_strength, type };
 
 /// The system function a `compile.SysFn` driver row stands for.
 pub fn of(f: compile.SysFn) ?Fn {
@@ -285,7 +264,43 @@ pub fn evalReal(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
     return scale.realAt(p.time) - scale.realAt(r.scheduler.now);
 }
 
-const Pend = struct { bit: Int.Bit, time: u64 };
+// ---- private ----
+
+/// The instance scope at a `Mixed.Insert` path (`a.b.`, empty at the root).
+fn scopeAt(r: *const Run, path: []const u8) ?u32 {
+    var scope: u32 = 0;
+    var parts = std.mem.tokenizeScalar(u8, path, '.');
+    while (parts.next()) |part| {
+        const name = r.file.strings.find(part) orelse return null;
+        scope = r.instances.get(.{ .scope = scope, .str = name }) orelse return null;
+    }
+    return scope;
+}
+
+/// §9.22 ¶3: is `scope` inside a connect module, whose drivers "the driver
+/// access functions … only access drivers found in ordinary modules" skip?
+fn isConnect(r: *const Run, scope: u32) bool {
+    return r.file.modules[r.scope_info.items[r.instanceOf(scope)].def].is_connect;
+}
+
+/// §9.22.1 the `i`'th ordinary driver of `net`, "arbitrarily numbered from 0
+/// to N-1" (here in declaration order), or its count N when `i` is null.
+fn ordinary(r: *const Run, net: u32, i: ?u64) union(enum) { count: u32, driver: ?u32 } {
+    var n: u32 = 0;
+    for (r.netDrivers(net)) |d| {
+        if (isConnect(r, r.drivers[d].scope)) continue;
+        if (i) |want| if (n == want) return .{ .driver = d };
+        n += 1;
+    }
+    return if (i == null) .{ .count = n } else .{ .driver = null };
+}
+
+// ---- driver_update (§9.22.5) --------------------------------------------------
+
+fn watch(r: *Run, slot: u32, net: u32, reg: bool) Error!void {
+    r.watch[slot].insert(.driver_update);
+    try r.drv.sources.append(r.arena, .{ .slot = slot, .net = net, .reg = reg });
+}
 
 /// The earliest value scheduled onto driver `dr` and not yet active: its own
 /// A.6.1 delayed transition, or, for a `reg` driver, a scheduled write of the

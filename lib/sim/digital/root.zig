@@ -422,7 +422,7 @@ pub const Run = struct {
     /// executing process is in (0 for none), every one in progress, and the
     /// rows free for reuse.
     ctx: u32 = 0,
-    acts: std.ArrayList(exec.Act) = .empty,
+    acts: std.ArrayList(@import("activations.zig").Act) = .empty,
     free_acts: std.ArrayList(u32) = .empty,
     /// The instruction a system task is running from, so `%m` can name the
     /// §5.3.2 named blocks around it.
@@ -961,7 +961,7 @@ pub const Run = struct {
                 },
                 .@"resume" => |x| {
                     r.ctx = x.ctx;
-                    try exec.makeResident(r, x.ctx);
+                    try @import("activations.zig").makeResident(r, x.ctx);
                     try exec.execute(r, &scratch, x.pc);
                 },
                 .a2d => |at| try waiters.wakeA2d(r, at),

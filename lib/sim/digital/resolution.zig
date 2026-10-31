@@ -5,6 +5,22 @@
 //! Clauses: IEEE 1364-2005 §3.7, §3.8, §6.1.3 inertial delay, §7.6 MOS and
 //! pass switches, §7.8.5 gates, §7.9, §7.10, §7.11, §7.12, §8 UDPs,
 //! §8.5.3.5; VAMS §3.7 wreal.
+//!
+//! Contents:
+//! - `Switches.switches(g: Switches, net: u32) []const u32`
+//! - `Switches.tran(g: Switches, ti: u32) Tran`
+//! - `Switches.conduction(g: Switches, ti: u32) Tran.State`
+//! - `Switches.fixed(g: Switches, net: u32) bool`
+//! - `pub fn resolve(self: *Run, net: u32) Error!void`
+//! - `pub fn initial(self: *Run, net: u32) void`
+//! - `pub fn mosValue(self: *Run, scratch: std.mem.Allocator, at: u32, m: net_mod.Mos, or_z: *bool) Error!Int.Literal`
+//! - `pub fn contribution(dr: net_mod.Driver, at: u32) Signal`
+//! - `pub fn schedule(self: *Run, from: Int.Literal, from_or_z: bool, to: Int.Literal, to_or_z: bool, st: *Inertial) Error!bool`
+//! - `pub fn switchAfter(self: *Run, at: u32, next: Tran.State) Error!void`
+//! - `pub fn gateValue(self: *Run, scratch: std.mem.Allocator, g: Gate, width: u32, or_z: *bool) Error!Int.Literal`
+//! - `pub fn udpValue(self: *Run, scratch: std.mem.Allocator, u: *net_mod.Udp, width: u32) Error!Int.Literal`
+//! - `pub fn window(self: *Run, scratch: std.mem.Allocator, b: Bridge, width: u32) Error!Int.Literal`
+
 const std = @import("std");
 const Int = @import("kernels").Integer;
 const Error = @import("root.zig").Error;
@@ -29,6 +45,59 @@ const foldUniform = net_mod.foldUniform;
 const evaluate = @import("evaluate.zig");
 const exec = @import("exec.zig");
 const waiters = @import("waiters.zig");
+
+/// A transition's delay in ticks from now, and the §14.6.1 reject and error
+/// limits its pulses are judged by.
+const Timed = struct { ticks: u64, reject: u64, err: u64 };
+
+/// `net.reach`'s and `net.switchPaths`'s view of the run's switches: each
+/// net's `NetCold.trans` list and the conduction held in its `Tran` row.
+const Switches = struct {
+    r: *const Run,
+    pub fn switches(g: Switches, net: u32) []const u32 {
+        return g.r.netCold(g.r.nets[net]).trans;
+    }
+    pub fn tran(g: Switches, ti: u32) Tran {
+        return g.r.trans[ti];
+    }
+    pub fn conduction(g: Switches, ti: u32) Tran.State {
+        return g.r.trans[ti].state;
+    }
+    pub fn fixed(g: Switches, net: u32) bool {
+        return switch (g.r.nets[net].kind) {
+            .supply0, .supply1 => true,
+            else => false, // else: every other net kind is a conductor
+        };
+    }
+};
+
+const bus_source =
+    \\`timescale 1ns/1ns
+    \\module leaf(input [3:0] i, output [3:0] o); assign o = i; endmodule
+    \\module m;
+    \\reg [1:0] sel; reg [69:0] d0, d1;
+    \\wire [69:0] bus; wire [3:0] w; wire p;
+    \\assign bus = sel[0] ? d0 : 70'bz;
+    \\assign bus = sel[1] ? d1 : 70'bz;
+    \\assign (weak0, weak1) p = d0[0];
+    \\assign p = sel[1] ? d1[0] : 1'bz;
+    \\leaf u({d0[1:0], d1[1:0]}, w);
+    \\initial begin
+    \\  d0 = {1'b1, 65'b0, 4'b0101}; d1 = {1'b0, 65'b0, 4'b0011}; sel = 1;
+    \\  #1 $display("%b %b %b %b", bus[69], bus[3:0], p, w);
+    \\  sel = 3;
+    \\  #1 $display("%b %b %b", bus[69], bus[3:0], p);
+    \\  force bus[1] = 1'b0; sel = 2;
+    \\  #1 $display("%b %b", bus[69], bus[3:0]);
+    \\  release bus[1];
+    \\  #1 $display("%b %b", bus[69], bus[3:0]);
+    \\  sel = 0;
+    \\  #1 $display("%b %b %b", bus[69], bus[3:0], p);
+    \\end
+    \\endmodule
+;
+
+const bus_expected = "1 0101 1 0111\nx 0xx1 1\n0 0001\n0 0011\nz zzzz 1\n";
 
 /// §7.9: a net's value is the wired-logic resolution of all its drivers, so
 /// it is recomputed whole on every driver update and published through
@@ -141,9 +210,136 @@ pub fn initial(self: *Run, net: u32) void {
     @memcpy(self.values[n.slot].planes, n.resolved.planes);
 }
 
-/// A transition's delay in ticks from now, and the §14.6.1 reject and error
-/// limits its pulses are judged by.
-const Timed = struct { ticks: u64, reject: u64, err: u64 };
+/// §7.6 what a MOS switch drives: its data's value, at the data's strength
+/// reduced by §7.12 (the resolved strength of a net, strong for anything
+/// else), when its gate conducts; z when it does not; §7.10.2's H or L when
+/// the gate is x or z. A z on the data is z whatever the gate ("a switch
+/// transmits the z through"), where a switch differs from a bufif.
+pub fn mosValue(self: *Run, scratch: std.mem.Allocator, at: u32, m: net_mod.Mos, or_z: *bool) Error!Int.Literal {
+    const ex = &self.file.exprs;
+    const gv = try evaluate.eval(self, scratch, m.gate, 1);
+    const g = gv.bit(if (gv.width > 1) m.lane.? else 0);
+    const dv = try evaluate.eval(self, scratch, m.data, 1);
+    const bit = if (dv.width > 1) m.lane.? else 0;
+    var sig: Signal = .of(dv.bit(bit), .strong, .strong);
+    if (ex.tag(m.data) == .ident) if (self.net_of.get(try self.slot(m.data))) |net| {
+        sig = self.signals[self.nets[net].signal + bit];
+    };
+    const d = &self.drivers[at];
+    d.s0 = net_mod.reduce(if (sig.lo < 0) @fromBackingInt(@intCast(@as(u8, @intCast(-sig.lo)))) else .highz, m.resistive);
+    d.s1 = net_mod.reduce(if (sig.hi > 0) @fromBackingInt(@intCast(@as(u8, @intCast(sig.hi)))) else .highz, m.resistive);
+    const value = sig.collapse();
+    const on: Int.Bit = if (m.n_type) .one else .zero;
+    const out: Int.Bit = if (value == .z or (g != on and (g == .zero or g == .one))) .z else value;
+    or_z.* = out != .z and g != on;
+    const result = try filled(scratch, d.current.width, false, .z);
+    setBit(result, m.out_bit orelse 0, out);
+    return result;
+}
+
+/// What one driver asserts on bit `at`: its value at its strengths, or §7.10.2's
+/// H/L when a gate's control is unknown.
+pub fn contribution(dr: net_mod.Driver, at: u32) Signal {
+    const b = dr.current.bit(at);
+    return if (dr.or_z and b != .z) .orZ(b, dr.s0, dr.s1) else .of(b, dr.s0, dr.s1);
+}
+
+/// §6.1.3's inertial rule, shared by a driver's delay and a net's: "if the
+/// value changes before the delay has elapsed, the scheduled event is
+/// cancelled". Returns whether a new transition to `to` is needed, having
+/// already cancelled whatever it displaced and recorded `to` as the target;
+/// the caller schedules it and keeps the handle in `st.in_flight`.
+///
+/// False covers the two cases that make a pulse shorter than the delay
+/// vanish rather than arrive late: the value is back to what is published,
+/// and the value is what is already on its way.
+pub fn schedule(self: *Run, from: Int.Literal, from_or_z: bool, to: Int.Literal, to_or_z: bool, st: *Inertial) Error!bool {
+    const settled = if (st.in_flight != null) st.target else from;
+    const settled_or_z = if (st.in_flight != null) st.or_z else from_or_z;
+    if (std.mem.eql(u64, settled.planes, to.planes) and settled_or_z == to_or_z) return false;
+    if (st.in_flight) |h| try exec.cancel(self, h);
+    st.in_flight = null;
+    if (st.target.planes.len != to.planes.len) st.target.planes = try self.arena.alloc(u64, to.planes.len);
+    @memcpy(st.target.planes, to.planes);
+    st.target.width = to.width;
+    st.target.signed = to.signed;
+    st.or_z = to_or_z;
+    return true;
+}
+
+/// §7.6 a controlled pass switch with a delay: it turns on after the first
+/// delay, off after the second, and to unknown conduction after the smaller.
+/// A control that returns before its change lands cancels it (§7.14's
+/// inertial reading, as a gate's).
+pub fn switchAfter(self: *Run, at: u32, next: Tran.State) Error!void {
+    const t = &self.trans[at];
+    const settled = if (t.pending != null) t.target else t.state;
+    if (settled == next) return;
+    if (t.pending) |h| try exec.cancel(self, h);
+    t.pending = null;
+    if (next == t.state) return;
+    t.target = next;
+    t.pending = try exec.enqueue(self, .{ .tran_switch = at }, t.delay.to(switch (next) {
+        .on => .one,
+        .off => .zero,
+        .unknown => .x,
+    }), false);
+}
+
+/// What a gate driver contributes: §7.8.5's one output bit, and whether it is
+/// §7.10.2's H/L.
+pub fn gateValue(self: *Run, scratch: std.mem.Allocator, g: Gate, width: u32, or_z: *bool) Error!Int.Literal {
+    // Scratch, which `execute` resets each instruction, so `gateBit` stays a
+    // pure function of the input bits, read straight off §7.8.5's tables.
+    const bits = try scratch.alloc(Int.Bit, g.ins.len);
+    for (g.ins, bits) |in, *b| {
+        const v = try evaluate.eval(self, scratch, in, 1);
+        b.* = v.bit(if (v.width > 1) g.lane orelse 0 else 0);
+    }
+    const out = try filled(scratch, width, false, .z);
+    const o = gateBit(g.kind, bits);
+    setBit(out, g.out_bit orelse 0, o.bit);
+    or_z.* = o.or_z;
+    return out;
+}
+
+/// What a UDP driver contributes (IEEE 1364-2005 §8). Its inputs are read with
+/// z as x (§8.1.6). A combinational table is simply consulted; a sequential
+/// one takes each input that changed since the last evaluation as one event,
+/// in terminal order, and its state follows the entries matched (§8.6).
+pub fn udpValue(self: *Run, scratch: std.mem.Allocator, u: *net_mod.Udp, width: u32) Error!Int.Literal {
+    const bits = try scratch.alloc(Int.Bit, u.ins.len);
+    for (u.ins, bits) |in, *b| {
+        const w = try evaluate.eval(self, scratch, in, 1);
+        const v = w.bit(if (w.width > 1) u.lane orelse 0 else 0);
+        b.* = if (v == .z) .x else v;
+    }
+    const out = if (!u.sequential) net_mod.udpEval(u.rows, false, bits, .x, null, .x) else blk: {
+        for (bits, 0..) |b, k| {
+            if (b == u.prev[k]) continue;
+            const from = u.prev[k];
+            u.prev[k] = b;
+            u.state = net_mod.udpEval(u.rows, true, u.prev, u.state, @intCast(k), from);
+        }
+        break :blk u.state;
+    };
+    const result = try filled(scratch, width, false, .z);
+    setBit(result, u.out_bit orelse 0, out);
+    return result;
+}
+
+/// What a `Bridge` driver contributes: its window, z everywhere else.
+pub fn window(self: *Run, scratch: std.mem.Allocator, b: Bridge, width: u32) Error!Int.Literal {
+    const out = try filled(scratch, width, false, .z);
+    evaluate.copyBits(out, b.dst_lo, self.values[b.src], b.src_lo, b.width);
+    const fill: Int.Bit = if (b.sign_at) |at| self.values[b.src].bit(at) else .zero;
+    for (0..b.ext) |j| setBit(out, b.dst_lo + b.width + @as(u32, @intCast(j)), fill);
+    return out;
+}
+
+// ---- tests ------------------------------------------------------------------
+
+// ---- private ----
 
 /// The delay of net `c`'s transition from `from` to `to`: its own `delay3`
 /// (§6.1.3), its module paths' (`pathDelay`), or of the two "the larger"
@@ -364,103 +560,6 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
     for (touched.items) |t| try waiters.store(self, self.nets[t].slot, self.nets[t].resolved.planes);
 }
 
-/// `net.reach`'s and `net.switchPaths`'s view of the run's switches: each
-/// net's `NetCold.trans` list and the conduction held in its `Tran` row.
-const Switches = struct {
-    r: *const Run,
-    pub fn switches(g: Switches, net: u32) []const u32 {
-        return g.r.netCold(g.r.nets[net]).trans;
-    }
-    pub fn tran(g: Switches, ti: u32) Tran {
-        return g.r.trans[ti];
-    }
-    pub fn conduction(g: Switches, ti: u32) Tran.State {
-        return g.r.trans[ti].state;
-    }
-    pub fn fixed(g: Switches, net: u32) bool {
-        return switch (g.r.nets[net].kind) {
-            .supply0, .supply1 => true,
-            else => false, // else: every other net kind is a conductor
-        };
-    }
-};
-
-/// §7.6 what a MOS switch drives: its data's value, at the data's strength
-/// reduced by §7.12 (the resolved strength of a net, strong for anything
-/// else), when its gate conducts; z when it does not; §7.10.2's H or L when
-/// the gate is x or z. A z on the data is z whatever the gate ("a switch
-/// transmits the z through"), where a switch differs from a bufif.
-pub fn mosValue(self: *Run, scratch: std.mem.Allocator, at: u32, m: net_mod.Mos, or_z: *bool) Error!Int.Literal {
-    const ex = &self.file.exprs;
-    const gv = try evaluate.eval(self, scratch, m.gate, 1);
-    const g = gv.bit(if (gv.width > 1) m.lane.? else 0);
-    const dv = try evaluate.eval(self, scratch, m.data, 1);
-    const bit = if (dv.width > 1) m.lane.? else 0;
-    var sig: Signal = .of(dv.bit(bit), .strong, .strong);
-    if (ex.tag(m.data) == .ident) if (self.net_of.get(try self.slot(m.data))) |net| {
-        sig = self.signals[self.nets[net].signal + bit];
-    };
-    const d = &self.drivers[at];
-    d.s0 = net_mod.reduce(if (sig.lo < 0) @fromBackingInt(@intCast(@as(u8, @intCast(-sig.lo)))) else .highz, m.resistive);
-    d.s1 = net_mod.reduce(if (sig.hi > 0) @fromBackingInt(@intCast(@as(u8, @intCast(sig.hi)))) else .highz, m.resistive);
-    const value = sig.collapse();
-    const on: Int.Bit = if (m.n_type) .one else .zero;
-    const out: Int.Bit = if (value == .z or (g != on and (g == .zero or g == .one))) .z else value;
-    or_z.* = out != .z and g != on;
-    const result = try filled(scratch, d.current.width, false, .z);
-    setBit(result, m.out_bit orelse 0, out);
-    return result;
-}
-
-/// What one driver asserts on bit `at`: its value at its strengths, or §7.10.2's
-/// H/L when a gate's control is unknown.
-pub fn contribution(dr: net_mod.Driver, at: u32) Signal {
-    const b = dr.current.bit(at);
-    return if (dr.or_z and b != .z) .orZ(b, dr.s0, dr.s1) else .of(b, dr.s0, dr.s1);
-}
-
-/// §6.1.3's inertial rule, shared by a driver's delay and a net's: "if the
-/// value changes before the delay has elapsed, the scheduled event is
-/// cancelled". Returns whether a new transition to `to` is needed, having
-/// already cancelled whatever it displaced and recorded `to` as the target;
-/// the caller schedules it and keeps the handle in `st.in_flight`.
-///
-/// False covers the two cases that make a pulse shorter than the delay
-/// vanish rather than arrive late: the value is back to what is published,
-/// and the value is what is already on its way.
-pub fn schedule(self: *Run, from: Int.Literal, from_or_z: bool, to: Int.Literal, to_or_z: bool, st: *Inertial) Error!bool {
-    const settled = if (st.in_flight != null) st.target else from;
-    const settled_or_z = if (st.in_flight != null) st.or_z else from_or_z;
-    if (std.mem.eql(u64, settled.planes, to.planes) and settled_or_z == to_or_z) return false;
-    if (st.in_flight) |h| try exec.cancel(self, h);
-    st.in_flight = null;
-    if (st.target.planes.len != to.planes.len) st.target.planes = try self.arena.alloc(u64, to.planes.len);
-    @memcpy(st.target.planes, to.planes);
-    st.target.width = to.width;
-    st.target.signed = to.signed;
-    st.or_z = to_or_z;
-    return true;
-}
-
-/// §7.6 a controlled pass switch with a delay: it turns on after the first
-/// delay, off after the second, and to unknown conduction after the smaller.
-/// A control that returns before its change lands cancels it (§7.14's
-/// inertial reading, as a gate's).
-pub fn switchAfter(self: *Run, at: u32, next: Tran.State) Error!void {
-    const t = &self.trans[at];
-    const settled = if (t.pending != null) t.target else t.state;
-    if (settled == next) return;
-    if (t.pending) |h| try exec.cancel(self, h);
-    t.pending = null;
-    if (next == t.state) return;
-    t.target = next;
-    t.pending = try exec.enqueue(self, .{ .tran_switch = at }, t.delay.to(switch (next) {
-        .on => .one,
-        .off => .zero,
-        .unknown => .x,
-    }), false);
-}
-
 /// §3.8 charge decay. The countdown restarts on each entry into the
 /// capacitive state, so this takes the state and acts on its edge.
 // ponytail: whole-net, not per-bit: a vector `trireg` with some bits driven
@@ -483,58 +582,14 @@ fn chargeState(self: *Run, net: u32, floating: bool) Error!void {
     c.decay_event = try exec.enqueue(self, .{ .decay = net }, after, false);
 }
 
-/// What a gate driver contributes: §7.8.5's one output bit, and whether it is
-/// §7.10.2's H/L.
-pub fn gateValue(self: *Run, scratch: std.mem.Allocator, g: Gate, width: u32, or_z: *bool) Error!Int.Literal {
-    // Scratch, which `execute` resets each instruction, so `gateBit` stays a
-    // pure function of the input bits, read straight off §7.8.5's tables.
-    const bits = try scratch.alloc(Int.Bit, g.ins.len);
-    for (g.ins, bits) |in, *b| {
-        const v = try evaluate.eval(self, scratch, in, 1);
-        b.* = v.bit(if (v.width > 1) g.lane orelse 0 else 0);
-    }
-    const out = try filled(scratch, width, false, .z);
-    const o = gateBit(g.kind, bits);
-    setBit(out, g.out_bit orelse 0, o.bit);
-    or_z.* = o.or_z;
-    return out;
+fn runBus(gpa: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var bag = @import("diag").Bag.init(arena.allocator());
+    var output = std.Io.Writer.Allocating.init(arena.allocator());
+    try @import("root.zig").run(arena.allocator(), bus_source, .{}, &bag, &output.writer);
+    try std.testing.expectEqualStrings(bus_expected, output.written());
 }
-
-/// What a UDP driver contributes (IEEE 1364-2005 §8). Its inputs are read with
-/// z as x (§8.1.6). A combinational table is simply consulted; a sequential
-/// one takes each input that changed since the last evaluation as one event,
-/// in terminal order, and its state follows the entries matched (§8.6).
-pub fn udpValue(self: *Run, scratch: std.mem.Allocator, u: *net_mod.Udp, width: u32) Error!Int.Literal {
-    const bits = try scratch.alloc(Int.Bit, u.ins.len);
-    for (u.ins, bits) |in, *b| {
-        const w = try evaluate.eval(self, scratch, in, 1);
-        const v = w.bit(if (w.width > 1) u.lane orelse 0 else 0);
-        b.* = if (v == .z) .x else v;
-    }
-    const out = if (!u.sequential) net_mod.udpEval(u.rows, false, bits, .x, null, .x) else blk: {
-        for (bits, 0..) |b, k| {
-            if (b == u.prev[k]) continue;
-            const from = u.prev[k];
-            u.prev[k] = b;
-            u.state = net_mod.udpEval(u.rows, true, u.prev, u.state, @intCast(k), from);
-        }
-        break :blk u.state;
-    };
-    const result = try filled(scratch, width, false, .z);
-    setBit(result, u.out_bit orelse 0, out);
-    return result;
-}
-
-/// What a `Bridge` driver contributes: its window, z everywhere else.
-pub fn window(self: *Run, scratch: std.mem.Allocator, b: Bridge, width: u32) Error!Int.Literal {
-    const out = try filled(scratch, width, false, .z);
-    evaluate.copyBits(out, b.dst_lo, self.values[b.src], b.src_lo, b.width);
-    const fill: Int.Bit = if (b.sign_at) |at| self.values[b.src].bit(at) else .zero;
-    for (0..b.ext) |j| setBit(out, b.dst_lo + b.width + @as(u32, @intCast(j)), fill);
-    return out;
-}
-
-// ---- tests ------------------------------------------------------------------
 
 test "continuous vector delay audit_assignment_pending_same_value" {
     try expectRun(
@@ -751,44 +806,8 @@ test "§7.6 a controlled pass switch with a delay turns on and off after it" {
     , "z11z\n");
 }
 
-const bus_source =
-    \\`timescale 1ns/1ns
-    \\module leaf(input [3:0] i, output [3:0] o); assign o = i; endmodule
-    \\module m;
-    \\reg [1:0] sel; reg [69:0] d0, d1;
-    \\wire [69:0] bus; wire [3:0] w; wire p;
-    \\assign bus = sel[0] ? d0 : 70'bz;
-    \\assign bus = sel[1] ? d1 : 70'bz;
-    \\assign (weak0, weak1) p = d0[0];
-    \\assign p = sel[1] ? d1[0] : 1'bz;
-    \\leaf u({d0[1:0], d1[1:0]}, w);
-    \\initial begin
-    \\  d0 = {1'b1, 65'b0, 4'b0101}; d1 = {1'b0, 65'b0, 4'b0011}; sel = 1;
-    \\  #1 $display("%b %b %b %b", bus[69], bus[3:0], p, w);
-    \\  sel = 3;
-    \\  #1 $display("%b %b %b", bus[69], bus[3:0], p);
-    \\  force bus[1] = 1'b0; sel = 2;
-    \\  #1 $display("%b %b", bus[69], bus[3:0]);
-    \\  release bus[1];
-    \\  #1 $display("%b %b", bus[69], bus[3:0]);
-    \\  sel = 0;
-    \\  #1 $display("%b %b %b", bus[69], bus[3:0], p);
-    \\end
-    \\endmodule
-;
-const bus_expected = "1 0101 1 0111\nx 0xx1 1\n0 0001\n0 0011\nz zzzz 1\n";
-
 test "§7.9 a bus of tri-state drivers resolves across a word boundary, under a forced select and beside a weaker driver" {
     try expectRun(bus_source, bus_expected);
-}
-
-fn runBus(gpa: std.mem.Allocator) !void {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    var bag = @import("diag").Bag.init(arena.allocator());
-    var output = std.Io.Writer.Allocating.init(arena.allocator());
-    try @import("root.zig").run(arena.allocator(), bus_source, .{}, &bag, &output.writer);
-    try std.testing.expectEqualStrings(bus_expected, output.written());
 }
 
 test "allocation failure anywhere in net resolution, a port window or a forced select cleans up" {

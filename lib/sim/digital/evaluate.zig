@@ -410,7 +410,7 @@ pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
             break :blk @bitCast(v.values()[0] & ~v.unknowns()[0]);
         },
         // §10.4.1 a real or realtime function: its result variable's bits.
-        .call => @bitCast((try exec.callSync(self, a, self.sub_base.get(self.instanceOf(self.scope)).? + self.call_subs.get(e).?, ex.args(e))).values()[0]),
+        .call => @bitCast((try @import("activations.zig").callSync(self, a, self.sub_base.get(self.instanceOf(self.scope)).? + self.call_subs.get(e).?, ex.args(e))).values()[0]),
         .unary => switch (ex.unOp(e)) {
             .minus => -(try evalReal(self, a, ex.lhs(e))),
             else => try evalReal(self, a, ex.lhs(e)), // else: `+`, the only other real-valued unary
@@ -750,7 +750,7 @@ pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Er
         },
         .call => {
             const idx = self.sub_base.get(self.instanceOf(self.scope)).? + self.call_subs.get(e).?;
-            return normalize(a, try exec.callSync(self, a, idx, ex.args(e)), ty);
+            return normalize(a, try @import("activations.zig").callSync(self, a, idx, ex.args(e)), ty);
         },
         .multi_concat => {
             const value = try eval(self, a, ex.rhs(e), 0);

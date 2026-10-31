@@ -6,6 +6,31 @@
 //! through `Catalog`, the values through the engine's `src` (`Vcd.tick`).
 //! Also cited: §17.4.1 (`$finish` before the step's dump), §18.4.1 (the
 //! header's `$date` and `$version`).
+//!
+//! Contents:
+//! - `pub const Op = enum`
+//! - `pub const Catalog = struct`
+//! - `pub const Scope = struct`
+//! - `pub const Var = struct`
+//! - `pub const Target = union(enum)`
+//! - `pub const Failure = error`
+//! - `pub const Vcd = struct`
+//! - `Vcd.setFile(self: *Vcd, gpa: std.mem.Allocator, name: ?[]const u8, call: []const u8) Failure!void`
+//! - `Vcd.select(self: *Vcd, gpa: std.mem.Allocator, now: u64, tok: u32, levels: u32, targets: []const Target) Failure!void`
+//! - `Vcd.fire(self: *Vcd, cat: *const Catalog, slot: u32) void`
+//! - `Vcd.control(self: *Vcd, a: std.mem.Allocator, io: ?std.Io, cat: *const Catalog, src: anytype, now: u64, op: Op) Failure!void`
+//! - `Vcd.tick(self: *Vcd, gpa: std.mem.Allocator, a: std.mem.Allocator, io: ?std.Io, cat: *const Catalog, src: anytype, now: u64) Failure!void`
+//! - `Values.dumpPlanes(self: Values, v: Var, out: []u64) void`
+//! - `Values.dumpSlot(self: Values, slot: u32) void`
+//! - `pub fn message(e: Failure) []const u8`
+//! - `pub fn callText(text: []const u8, start: u32) []const u8`
+//! - `pub fn preamble(w: *std.Io.Writer, io: std.Io, call: []const u8, finest: i32) std.Io.Writer.Error!void`
+//! - `pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void`
+//! - `pub fn target(r: *Run, e: Ast.ExprId) Error!Target`
+//! - `pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog`
+//! - `pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void`
+//! - `pub fn tick(r: *Run, a: std.mem.Allocator) Error!void`
+
 const std = @import("std");
 const Front = @import("frontend");
 const Ast = Front.Ast;
@@ -49,36 +74,8 @@ pub const Var = struct { slot: u32, off: u32 = 0, width: u32, real: bool, event:
 /// `$dumpvars` names a scope (with its level count) or a variable.
 pub const Target = union(enum) { scope: u32, slot: u32 };
 
-/// One identifier code (§18.2.1): a catalog variable and the value last
-/// written for it, both planes. Two references to one slot (a port
-/// collapsed onto its parent's net) share the code, which §18.2.3.7 b)
-/// permits.
-const Code = struct {
-    v: u32,
-    last: []u64,
-    /// An event's code: triggered in this time step (§18.2.2).
-    fired: bool = false,
-
-    // Budget: `changes` walks every code each dumped step.
-    comptime {
-        std.debug.assert(@sizeOf(Code) <= 24);
-        std.debug.assert(@sizeOf(Var) <= 48);
-    }
-};
-
 /// Why a dump stops; `message` gives each non-memory, non-writer one's text.
 pub const Failure = error{ NoFilesystem, CannotCreate, CannotWrite, DumpvarsTime } || std.mem.Allocator.Error || std.Io.Writer.Error;
-
-/// The text of a `Failure` other than memory and writing, with the file's name.
-pub fn message(e: Failure) []const u8 {
-    return switch (e) {
-        error.NoFilesystem => "$dumpvars needs a filesystem to write `{s}`",
-        error.CannotCreate => "cannot create the dump file `{s}`",
-        error.CannotWrite => "cannot write the dump file `{s}`",
-        error.DumpvarsTime => "§18.1.2: every $dumpvars shall execute at the same simulation time",
-        error.OutOfMemory, error.WriteFailed => "the dump file `{s}` failed",
-    };
-}
 
 /// The dump's state and writer.
 pub const Vcd = struct {
@@ -290,6 +287,47 @@ pub const Vcd = struct {
     }
 };
 
+/// One identifier code (§18.2.1): a catalog variable and the value last
+/// written for it, both planes. Two references to one slot (a port
+/// collapsed onto its parent's net) share the code, which §18.2.3.7 b)
+/// permits.
+const Code = struct {
+    v: u32,
+    last: []u64,
+    /// An event's code: triggered in this time step (§18.2.2).
+    fired: bool = false,
+
+    // Budget: `changes` walks every code each dumped step.
+    comptime {
+        std.debug.assert(@sizeOf(Code) <= 24);
+        std.debug.assert(@sizeOf(Var) <= 48);
+    }
+};
+
+/// The interpreter as `Vcd`'s `src`.
+const Values = struct {
+    r: *Run,
+    /// Copies `v`'s current planes into `out`, which is exactly as long.
+    pub fn dumpPlanes(self: Values, v: Var, out: []u64) void {
+        @memcpy(out, self.r.values[v.slot].planes);
+    }
+    /// Marks `slot` dumped, so `store` requests the end-of-step section.
+    pub fn dumpSlot(self: Values, slot: u32) void {
+        self.r.watch[slot].insert(.vcd);
+    }
+};
+
+/// The text of a `Failure` other than memory and writing, with the file's name.
+pub fn message(e: Failure) []const u8 {
+    return switch (e) {
+        error.NoFilesystem => "$dumpvars needs a filesystem to write `{s}`",
+        error.CannotCreate => "cannot create the dump file `{s}`",
+        error.CannotWrite => "cannot write the dump file `{s}`",
+        error.DumpvarsTime => "§18.1.2: every $dumpvars shall execute at the same simulation time",
+        error.OutOfMemory, error.WriteFailed => "the dump file `{s}` failed",
+    };
+}
+
 /// The source text of the task call whose name starts `text` at `start`,
 /// through its closing parenthesis: `$dumpfile(fname)`.
 pub fn callText(text: []const u8, start: u32) []const u8 {
@@ -325,6 +363,143 @@ pub fn preamble(w: *std.Io.Writer, io: std.Io, call: []const u8, finest: i32) st
     const k: i32 = @divFloor(finest, 3);
     try w.print("$timescale {d}{s} $end\n", .{ std.math.pow(u32, 10, @intCast(finest - 3 * k)), units[@intCast(k + 5)] });
 }
+
+/// Refuses a malformed §18.1 call before the run.
+pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+    for (args) |a| if (a == .none) return r.fail(tok, "the §18.1 dump tasks take no null arguments", .{});
+    switch (op) {
+        // §18.1.1: the filename is optional.
+        .file => {
+            if (args.len > 1) return r.fail(tok, "$dumpfile takes at most one filename", .{});
+            for (args) |a| try compile.checkExpr(r, a);
+        },
+        .vars => if (args.len != 0) {
+            try compile.checkExpr(r, args[0]);
+            for (args[1..]) |a| _ = try target(r, a);
+        },
+        .limit => {
+            if (args.len != 1) return r.fail(tok, "$dumplimit takes one file size", .{});
+            try compile.checkExpr(r, args[0]);
+        },
+        .off, .on, .all, .flush => if (args.len != 0) return r.fail(tok, "$dumpoff, $dumpon, $dumpall and $dumpflush take no arguments", .{}),
+    }
+}
+
+/// §18.1.2 `module_or_variable`: a module instance (the root by its module
+/// name, or a downward path) or a variable, by slot.
+pub fn target(r: *Run, e: Ast.ExprId) Error!Target {
+    const ex = &r.file.exprs;
+    const parts: []const Ast.StrId = switch (ex.tag(e)) {
+        .ident => &.{ex.strOf(e)},
+        .hier_ident => ex.nameParts(e),
+        else => return r.exprFail(e, "$dumpvars names a module instance or a variable"), // else: A.8.x forms that name no scope or variable
+    };
+    var scope = r.instanceOf(r.scope);
+    var first = true;
+    for (parts, 0..) |p, i| {
+        const last = i + 1 == parts.len;
+        if (r.instances.get(.{ .scope = scope, .str = p })) |child| {
+            scope = child;
+        } else if (if (first) rootNamed(r, p) else null) |t| {
+            scope = t;
+        } else if (last) {
+            const at = (if (parts.len == 1) r.lookup(scope, p) else r.names.get(.{ .scope = scope, .str = p })) orelse
+                return r.exprFail(e, "$dumpvars names a module instance or a variable");
+            return .{ .slot = at };
+        } else return r.exprFail(e, "undeclared instance in a hierarchical reference");
+        first = false;
+    }
+    return .{ .scope = scope };
+}
+
+/// `r`'s `Catalog`: `offs` gives each slot's first plane word (a native
+/// executable's layout), or is empty.
+pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
+    const scopes = try a.alloc(Scope, r.scope_info.items.len);
+    const var_start = try a.alloc(u32, scopes.len + 1);
+    var vars: std.ArrayList(Var) = .empty;
+    // §18.2.3.4 a static task's or function's frame is a scope of its own.
+    const subs = try a.alloc(?*const Ast.Subroutine, scopes.len);
+    @memset(subs, null);
+    for (r.subs.items) |sub| if (sub.framed and !sub.decl.automatic) {
+        subs[sub.frame.scope] = sub.decl;
+    };
+    for (r.scope_info.items, scopes, subs, 0..) |info, *sc, sub, s| {
+        var line: std.Io.Writer.Allocating = .init(a);
+        const kind = if (sub) |t| (if (t.is_function) "function" else "task") else if (info.lexical) "begin" else "module";
+        try line.writer.print("$scope {s} {s}", .{ kind, r.file.str(info.name) });
+        if (info.index) |i| try line.writer.print("[{d}]", .{i});
+        try line.writer.writeAll(" $end\n");
+        sc.* = .{ .line = line.written(), .parent = info.parent, .lexical = info.lexical, .child = sub != null or !(info.lexical and info.index == null) };
+        var_start[s] = @intCast(vars.items.len);
+        if (sub == null and info.lexical) continue;
+        const m = &r.file.modules[info.def];
+        // Exact: a subroutine's ports and variables, or a module's ports,
+        // nets, variables and events.
+        var decls: std.ArrayList(Ast.VarDecl) = try .initCapacity(a, if (sub) |t| t.ports.len + t.vars.len else m.vars.len);
+        var names: std.ArrayList(Ast.StrId) = try .initCapacity(a, if (sub) |t| t.ports.len + t.vars.len else m.ports.len + m.nets.len + m.vars.len + m.events.len);
+        var events: []const Ast.EventDecl = &.{};
+        if (sub) |t| {
+            for (t.ports) |p| decls.appendAssumeCapacity(p.v);
+            decls.appendSliceAssumeCapacity(t.vars);
+        } else {
+            for (m.ports) |p| names.appendAssumeCapacity(p.name);
+            for (m.nets) |n| names.appendAssumeCapacity(n.name);
+            decls.appendSliceAssumeCapacity(m.vars);
+            events = m.events;
+        }
+        for (decls.items) |d| names.appendAssumeCapacity(d.name);
+        for (events) |event| names.appendAssumeCapacity(event.name);
+        std.debug.assert(names.items.len == names.capacity);
+        for (names.items, 0..) |name, i| {
+            if (std.mem.findScalar(Ast.StrId, names.items[0..i], name) != null) continue;
+            const at = r.names.get(.{ .scope = @intCast(s), .str = name }) orelse continue;
+            if (r.arrays.contains(at) or r.params.contains(at)) continue;
+            try vars.append(a, try variable(r, a, decls.items, name, at, if (offs.len == 0) 0 else offs[at]));
+        }
+    }
+    var_start[scopes.len] = @intCast(vars.items.len);
+    return .{ .scopes = scopes, .var_start = var_start, .vars = vars.items, .finest = r.finest };
+}
+
+/// The interpreter's run of one §18.1 task.
+pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+    const v = &r.vcd;
+    switch (op) {
+        .file => if (args.len == 1 and !v.started) {
+            const name = try @import("system.zig").text(a, try evaluate.eval(r, a, args[0], 0));
+            v.setFile(r.arena, name, callText(r.text, r.starts[tok])) catch |e| return failed(r, e);
+        },
+        .vars => {
+            var levels: u32 = 0;
+            const targets = try a.alloc(Target, if (args.len == 0) r.roots.len else args.len - 1);
+            if (args.len == 0) {
+                for (r.roots, targets) |s, *t| t.* = .{ .scope = s };
+            } else {
+                levels = std.math.lossyCast(u32, (try evaluate.eval(r, a, args[0], 0)).asInt() orelse 0);
+                for (args[1..], targets) |e, *t| t.* = try target(r, e);
+            }
+            v.select(r.arena, r.scheduler.now, tok, levels, targets) catch |e| {
+                if (e == error.DumpvarsTime) return r.fail(tok, message(error.DumpvarsTime), .{});
+                return failed(r, e);
+            };
+            try waiters.requestVcd(r);
+        },
+        .limit => v.limit = std.math.lossyCast(u64, (try evaluate.eval(r, a, args[0], 0)).asInt() orelse 0),
+        .flush, .off, .on, .all => v.control(a, r.io, try catalogOf(r), Values{ .r = r }, r.scheduler.now, op) catch |e| return failed(r, e),
+    }
+}
+
+/// The end of a time step with dumped changes (`Vcd.tick`).
+/// The step's `.vcd_tick` serves the four-state dump, once `$dumpvars`
+/// selected it, and the extended one (`evcd.tick`).
+pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
+    r.vcd.pending = false;
+    if (r.vcd.selected_at != null) r.vcd.tick(r.arena, a, r.io, try catalogOf(r), Values{ .r = r }, r.scheduler.now) catch |e| return failed(r, e);
+    try @import("evcd.zig").tick(r, a);
+}
+
+// ---- private ----
 
 fn words(w: u32) u32 {
     return (w + 63) / 64;
@@ -394,62 +569,6 @@ fn strip(s: []const u8) []const u8 {
     return if (t[t.len - 1] == '.') t[0 .. t.len - 1] else t;
 }
 
-test "§18.2.1 %.16g" {
-    var buf: [64]u8 = undefined;
-    for ([_]f64{ 1.5, -2.25e10, 0.25, 6.02e23, 1e16, 0.0, 1.0 / 3.0, 1e-5, 123456789012345678.0 }, [_][]const u8{ "1.5", "-22500000000", "0.25", "6.02e+23", "1e+16", "0", "0.3333333333333333", "1e-05", "1.234567890123457e+17" }) |r, want|
-        try std.testing.expectEqualStrings(want, g16(&buf, r));
-}
-
-// ---- compile time -----------------------------------------------------------
-
-/// Refuses a malformed §18.1 call before the run.
-pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
-    for (args) |a| if (a == .none) return r.fail(tok, "the §18.1 dump tasks take no null arguments", .{});
-    switch (op) {
-        // §18.1.1: the filename is optional.
-        .file => {
-            if (args.len > 1) return r.fail(tok, "$dumpfile takes at most one filename", .{});
-            for (args) |a| try compile.checkExpr(r, a);
-        },
-        .vars => if (args.len != 0) {
-            try compile.checkExpr(r, args[0]);
-            for (args[1..]) |a| _ = try target(r, a);
-        },
-        .limit => {
-            if (args.len != 1) return r.fail(tok, "$dumplimit takes one file size", .{});
-            try compile.checkExpr(r, args[0]);
-        },
-        .off, .on, .all, .flush => if (args.len != 0) return r.fail(tok, "$dumpoff, $dumpon, $dumpall and $dumpflush take no arguments", .{}),
-    }
-}
-
-/// §18.1.2 `module_or_variable`: a module instance (the root by its module
-/// name, or a downward path) or a variable, by slot.
-pub fn target(r: *Run, e: Ast.ExprId) Error!Target {
-    const ex = &r.file.exprs;
-    const parts: []const Ast.StrId = switch (ex.tag(e)) {
-        .ident => &.{ex.strOf(e)},
-        .hier_ident => ex.nameParts(e),
-        else => return r.exprFail(e, "$dumpvars names a module instance or a variable"), // else: A.8.x forms that name no scope or variable
-    };
-    var scope = r.instanceOf(r.scope);
-    var first = true;
-    for (parts, 0..) |p, i| {
-        const last = i + 1 == parts.len;
-        if (r.instances.get(.{ .scope = scope, .str = p })) |child| {
-            scope = child;
-        } else if (if (first) rootNamed(r, p) else null) |t| {
-            scope = t;
-        } else if (last) {
-            const at = (if (parts.len == 1) r.lookup(scope, p) else r.names.get(.{ .scope = scope, .str = p })) orelse
-                return r.exprFail(e, "$dumpvars names a module instance or a variable");
-            return .{ .slot = at };
-        } else return r.exprFail(e, "undeclared instance in a hierarchical reference");
-        first = false;
-    }
-    return .{ .scope = scope };
-}
-
 /// The top-level module named `name`.
 fn rootNamed(r: *const Run, name: Ast.StrId) ?u32 {
     for (r.roots) |t| if (r.scope_info.items[t].name == name) return t;
@@ -457,56 +576,6 @@ fn rootNamed(r: *const Run, name: Ast.StrId) ?u32 {
 }
 
 // ---- the interpreter's half ---------------------------------------------------
-
-/// `r`'s `Catalog`: `offs` gives each slot's first plane word (a native
-/// executable's layout), or is empty.
-pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
-    const scopes = try a.alloc(Scope, r.scope_info.items.len);
-    const var_start = try a.alloc(u32, scopes.len + 1);
-    var vars: std.ArrayList(Var) = .empty;
-    // §18.2.3.4 a static task's or function's frame is a scope of its own.
-    const subs = try a.alloc(?*const Ast.Subroutine, scopes.len);
-    @memset(subs, null);
-    for (r.subs.items) |sub| if (sub.framed and !sub.decl.automatic) {
-        subs[sub.frame.scope] = sub.decl;
-    };
-    for (r.scope_info.items, scopes, subs, 0..) |info, *sc, sub, s| {
-        var line: std.Io.Writer.Allocating = .init(a);
-        const kind = if (sub) |t| (if (t.is_function) "function" else "task") else if (info.lexical) "begin" else "module";
-        try line.writer.print("$scope {s} {s}", .{ kind, r.file.str(info.name) });
-        if (info.index) |i| try line.writer.print("[{d}]", .{i});
-        try line.writer.writeAll(" $end\n");
-        sc.* = .{ .line = line.written(), .parent = info.parent, .lexical = info.lexical, .child = sub != null or !(info.lexical and info.index == null) };
-        var_start[s] = @intCast(vars.items.len);
-        if (sub == null and info.lexical) continue;
-        const m = &r.file.modules[info.def];
-        // Exact: a subroutine's ports and variables, or a module's ports,
-        // nets, variables and events.
-        var decls: std.ArrayList(Ast.VarDecl) = try .initCapacity(a, if (sub) |t| t.ports.len + t.vars.len else m.vars.len);
-        var names: std.ArrayList(Ast.StrId) = try .initCapacity(a, if (sub) |t| t.ports.len + t.vars.len else m.ports.len + m.nets.len + m.vars.len + m.events.len);
-        var events: []const Ast.EventDecl = &.{};
-        if (sub) |t| {
-            for (t.ports) |p| decls.appendAssumeCapacity(p.v);
-            decls.appendSliceAssumeCapacity(t.vars);
-        } else {
-            for (m.ports) |p| names.appendAssumeCapacity(p.name);
-            for (m.nets) |n| names.appendAssumeCapacity(n.name);
-            decls.appendSliceAssumeCapacity(m.vars);
-            events = m.events;
-        }
-        for (decls.items) |d| names.appendAssumeCapacity(d.name);
-        for (events) |event| names.appendAssumeCapacity(event.name);
-        std.debug.assert(names.items.len == names.capacity);
-        for (names.items, 0..) |name, i| {
-            if (std.mem.findScalar(Ast.StrId, names.items[0..i], name) != null) continue;
-            const at = r.names.get(.{ .scope = @intCast(s), .str = name }) orelse continue;
-            if (r.arrays.contains(at) or r.params.contains(at)) continue;
-            try vars.append(a, try variable(r, a, decls.items, name, at, if (offs.len == 0) 0 else offs[at]));
-        }
-    }
-    var_start[scopes.len] = @intCast(vars.items.len);
-    return .{ .scopes = scopes, .var_start = var_start, .vars = vars.items, .finest = r.finest };
-}
 
 /// §18.2.3.7 `$var var_type size identifier_code reference $end`.
 fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast.StrId, at: u32, off: u32) Error!Var {
@@ -532,19 +601,6 @@ fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast
     return .{ .slot = at, .off = off, .width = width, .real = r.reals.contains(at), .event = event, .head = head, .tail = tail.written() };
 }
 
-/// The interpreter as `Vcd`'s `src`.
-const Values = struct {
-    r: *Run,
-    /// Copies `v`'s current planes into `out`, which is exactly as long.
-    pub fn dumpPlanes(self: Values, v: Var, out: []u64) void {
-        @memcpy(out, self.r.values[v.slot].planes);
-    }
-    /// Marks `slot` dumped, so `store` requests the end-of-step section.
-    pub fn dumpSlot(self: Values, slot: u32) void {
-        self.r.watch[slot].insert(.vcd);
-    }
-};
-
 fn catalogOf(r: *Run) Error!*const Catalog {
     if (r.vcd_catalog == null) r.vcd_catalog = try catalog(r, r.arena, &.{});
     return &r.vcd_catalog.?;
@@ -558,42 +614,36 @@ fn failed(r: *Run, e: Failure) Error {
     };
 }
 
-/// The interpreter's run of one §18.1 task.
-pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
-    const v = &r.vcd;
-    switch (op) {
-        .file => if (args.len == 1 and !v.started) {
-            const name = try @import("system.zig").text(a, try evaluate.eval(r, a, args[0], 0));
-            v.setFile(r.arena, name, callText(r.text, r.starts[tok])) catch |e| return failed(r, e);
-        },
-        .vars => {
-            var levels: u32 = 0;
-            const targets = try a.alloc(Target, if (args.len == 0) r.roots.len else args.len - 1);
-            if (args.len == 0) {
-                for (r.roots, targets) |s, *t| t.* = .{ .scope = s };
-            } else {
-                levels = std.math.lossyCast(u32, (try evaluate.eval(r, a, args[0], 0)).asInt() orelse 0);
-                for (args[1..], targets) |e, *t| t.* = try target(r, e);
-            }
-            v.select(r.arena, r.scheduler.now, tok, levels, targets) catch |e| {
-                if (e == error.DumpvarsTime) return r.fail(tok, message(error.DumpvarsTime), .{});
-                return failed(r, e);
-            };
-            try waiters.requestVcd(r);
-        },
-        .limit => v.limit = std.math.lossyCast(u64, (try evaluate.eval(r, a, args[0], 0)).asInt() orelse 0),
-        .flush, .off, .on, .all => v.control(a, r.io, try catalogOf(r), Values{ .r = r }, r.scheduler.now, op) catch |e| return failed(r, e),
+/// Reads back an identifier code `codeText` wrote (least significant
+/// character first): the inverse the codes' uniqueness is checked with.
+fn codeValue(text: []const u8) u32 {
+    var i = text.len - 1;
+    var n: u32 = text[i] - '!';
+    while (i != 0) {
+        i -= 1;
+        n = (text[i] - '!') + 94 * (n + 1);
     }
+    return n;
 }
 
-/// The end of a time step with dumped changes (`Vcd.tick`).
-/// The step's `.vcd_tick` serves the four-state dump, once `$dumpvars`
-/// selected it, and the extended one (`evcd.tick`).
-pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
-    r.vcd.pending = false;
-    if (r.vcd.selected_at != null) r.vcd.tick(r.arena, a, r.io, try catalogOf(r), Values{ .r = r }, r.scheduler.now) catch |e| return failed(r, e);
-    try @import("evcd.zig").tick(r, a);
+fn testLiteral(a: std.mem.Allocator, bits: []const u8) !@import("kernels").Integer.Literal {
+    const v = try @import("net.zig").filled(a, @intCast(bits.len), false, .zero);
+    for (bits, 0..) |c, i| @import("net.zig").setBit(v, @intCast(bits.len - 1 - i), switch (c) {
+        '0' => .zero,
+        '1' => .one,
+        'x' => .x,
+        else => .z,
+    });
+    return v;
 }
+
+test "§18.2.1 %.16g" {
+    var buf: [64]u8 = undefined;
+    for ([_]f64{ 1.5, -2.25e10, 0.25, 6.02e23, 1e16, 0.0, 1.0 / 3.0, 1e-5, 123456789012345678.0 }, [_][]const u8{ "1.5", "-22500000000", "0.25", "6.02e+23", "1e+16", "0", "0.3333333333333333", "1e-05", "1.234567890123457e+17" }) |r, want|
+        try std.testing.expectEqualStrings(want, g16(&buf, r));
+}
+
+// ---- compile time -----------------------------------------------------------
 
 test "§18.2.1 %.16g at the edges of its two styles" {
     var buf: [64]u8 = undefined;
@@ -615,18 +665,6 @@ test "§18.2.1 %.16g at the edges of its two styles" {
         .{ std.math.nan(f64), "nan" },
     };
     for (cases) |c| try std.testing.expectEqualStrings(c[1], g16(&buf, c[0]));
-}
-
-/// Reads back an identifier code `codeText` wrote (least significant
-/// character first): the inverse the codes' uniqueness is checked with.
-fn codeValue(text: []const u8) u32 {
-    var i = text.len - 1;
-    var n: u32 = text[i] - '!';
-    while (i != 0) {
-        i -= 1;
-        n = (text[i] - '!') + 94 * (n + 1);
-    }
-    return n;
 }
 
 test codeText {
@@ -654,17 +692,6 @@ test codeText {
         try std.testing.expectEqual(@as(u32, @intCast(code)), codeValue(w.buffered()));
         for (w.buffered()) |ch| try std.testing.expect(ch >= '!' and ch <= '~');
     }
-}
-
-fn testLiteral(a: std.mem.Allocator, bits: []const u8) !@import("kernels").Integer.Literal {
-    const v = try @import("net.zig").filled(a, @intCast(bits.len), false, .zero);
-    for (bits, 0..) |c, i| @import("net.zig").setBit(v, @intCast(bits.len - 1 - i), switch (c) {
-        '0' => .zero,
-        '1' => .one,
-        'x' => .x,
-        else => .z,
-    });
-    return v;
 }
 
 test value {

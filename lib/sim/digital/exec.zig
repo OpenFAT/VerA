@@ -3,12 +3,39 @@
 //! until it suspends, stops or finishes, the events it queues and its
 //! display output. Each instruction's work is in a sibling: `evaluate.zig`
 //! (expressions), `waiters.zig` (the write path and what it wakes) and
-//! `resolution.zig` (nets); this file owns the payload rows, the process
-//! control and the subroutine activations.
+//! `resolution.zig` (nets); this file owns the payload rows and the process
+//! control; `activations.zig` owns the subroutine activations and
+//! `instructions.zig` the non-control instructions.
 //! Clauses: IEEE 1364-2005 §6.1/§6.1.3, §8.5.3.3/§8.5.3.4 intra-assignment
 //! timing, §9.3, §9.5/§9.5.1, §9.6, §9.7.1, §9.7.5 to §9.7.7, §9.8.2,
 //! §10.2.2, §10.2.3, §10.3, §10.4.2, §17.1.2, §17.1.3, §17.3.2, §17.4.1;
 //! VAMS §7.3.6.1 A2D events.
+//!
+//!
+//! Contents:
+//! - `pub const address`
+//! - `pub const store`
+//! - `pub const trigger`
+//! - `pub const release`
+//! - `pub const forceValue`
+//! - `pub const Pending = union(enum)`
+//! - `pub const Row = struct`
+//! - `pub const Scratch = struct`
+//! - `Scratch.init(buffer: []u8, arena: *std.heap.ArenaAllocator) Scratch`
+//! - `Scratch.allocator(self: *Scratch) std.mem.Allocator`
+//! - `Scratch.reset(self: *Scratch) void`
+//! - `pub const scratch_fixed_bytes: usize`
+//! - `pub fn cancel(self: *Run, h: Handle) Error!void`
+//! - `pub fn scheduleFailure(self: *Run, e: anyerror, comptime what: []const u8) Error`
+//! - `pub fn enqueueMonitor(self: *Run, item: Pending) Error!void`
+//! - `pub fn stopRange(self: *Run, start: u32, end: u32) Error!bool`
+//! - `pub fn resumption(pc: u32, ctx: u32) Pending`
+//! - `pub fn enqueue(self: *Run, item: Pending, delay: ?u64, nba: bool) Error!Handle`
+//! - `pub fn enqueueFirst(self: *Run, item: Pending) Error!void`
+//! - `pub fn execute(self: *Run, scratch: *Scratch, start: u32) Error!void`
+//! - `pub fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!Delay`
+//! - `pub fn doneFlush(self: *Run, start: u32) Error!void`
+
 const std = @import("std");
 const Front = @import("frontend");
 const Ast = Front.Ast;
@@ -36,8 +63,28 @@ const driver = @import("driver.zig");
 const evaluate = @import("evaluate.zig");
 const resolution = @import("resolution.zig");
 const waiters = @import("waiters.zig");
+const activations = @import("activations.zig");
+const instructions = @import("instructions.zig");
+const callSync = activations.callSync;
+const callTimed = activations.callTimed;
+const returnTimed = activations.returnTimed;
 
 // ---- scheduler rows (§6.1.3, §17.1.2, §17.1.3) -------------------------------
+
+/// `evaluate.address`: the element an lvalue names right now.
+pub const address = evaluate.address;
+
+/// `waiters.store`: the one write path, which wakes what watches the slot.
+pub const store = waiters.store;
+
+/// `waiters.trigger`: §5.10.4 `-> e`.
+pub const trigger = waiters.trigger;
+
+/// `waiters.release`: §9.3 `deassign` or `release`.
+pub const release = waiters.release;
+
+/// `waiters.forceValue`: a VPI force of a constant.
+pub const forceValue = waiters.forceValue;
 
 /// One scheduled event's payload, consumed whole by its dispatch. A `.write`
 /// value lives in its row's own planes (`Row`), never in variable storage.
@@ -169,39 +216,6 @@ pub const Scratch = struct {
 /// `Run.scratch_buf`'s size: the fixed half of `runUntil`'s `Scratch`.
 pub const scratch_fixed_bytes: usize = 64 << 10;
 
-test "Scratch: the fixed buffer serves until it is full, the arena after, and reset frees both" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    var buf: [64]u8 = undefined;
-    var sc: Scratch = .init(&buf, &arena);
-    const a = sc.allocator();
-    const small = try a.alloc(u8, 48);
-    try std.testing.expect(sc.fixed.ownsSlice(small) and !sc.spilled);
-    const big = try a.alloc(u8, 48);
-    try std.testing.expect(!sc.fixed.ownsSlice(big) and sc.spilled);
-    try std.testing.expect(a.resize(big, 40));
-    a.free(big);
-    sc.reset();
-    try std.testing.expect(!sc.spilled and sc.fixed.end_index == 0);
-    var none: Scratch = .init(&.{}, &arena);
-    _ = try none.allocator().alloc(u8, 1);
-    try std.testing.expect(none.spilled);
-}
-
-// The VPI (src/vpi/value.zig) writes and triggers through `digital.exec`,
-// as a process does; these are the entry points it reaches.
-
-/// `evaluate.address`: the element an lvalue names right now.
-pub const address = evaluate.address;
-/// `waiters.store`: the one write path, which wakes what watches the slot.
-pub const store = waiters.store;
-/// `waiters.trigger`: §5.10.4 `-> e`.
-pub const trigger = waiters.trigger;
-/// `waiters.release`: §9.3 `deassign` or `release`.
-pub const release = waiters.release;
-/// `waiters.forceValue`: a VPI force of a constant.
-pub const forceValue = waiters.forceValue;
-
 /// Cancels one queued event and gives its row back. A handle no longer
 /// pending (dispatched, or cancelled already) is a no-op.
 pub fn cancel(self: *Run, h: Handle) Error!void {
@@ -219,120 +233,12 @@ pub fn scheduleFailure(self: *Run, e: anyerror, comptime what: []const u8) Error
 
 // ---- process control and scheduling (§9.7.1, §17.1.3, 1364 §10.3) -----------
 
-/// The run-time counterpart of `checkDelay`, in the module's precision.
-fn delayOf(self: *Run, scratch: std.mem.Allocator, e: Ast.ExprId, tok: u32) Error!u64 {
-    if (compile.typeOf(self, e).real) {
-        return self.timeOf(self.scope).scale.realDelay(try evaluate.evalReal(self, scratch, e)) catch |err|
-            return self.fail(tok, "digital delay cannot be represented: {t}", .{err});
-    }
-    const value = try evaluate.eval(self, scratch, e, 0);
-    // §9.7.1 leaves an x/z delay undefined; zero is the reading that keeps
-    // the process running rather than losing it.
-    if (value.hasUnknown()) return 0;
-    if (value.width > 64) return self.exprFail(e, "delay values wider than 64 bits are not implemented");
-    const scale = self.timeOf(self.scope).scale;
-    return (if (value.signed) scale.signedDelay(value.asInt().?) else scale.unsignedDelay(value.values()[0])) catch |err|
-        return self.fail(tok, "digital delay cannot be represented: {t}", .{err});
-}
-
-/// A driver's `delay3` that reads a variable (`Run.driver_delays`), its
-/// values now, defaulted as `Run.declaredDelay3` defaults a constant one.
-fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!Delay {
-    var out: Delay = .{ .present = true };
-    out.rise = try delayOf(self, scratch, d.rise, tok);
-    out.fall = if (d.fall != .none) try delayOf(self, scratch, d.fall, tok) else out.rise;
-    out.off = if (d.off != .none) try delayOf(self, scratch, d.off, tok) else @min(out.rise, out.fall);
-    return out;
-}
-
-fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
-    const ex = &self.file.exprs;
-    const edge: waiters.Edge = switch (ex.tag(e)) {
-        .event_or => {
-            try suspendOn(self, ex.lhs(e), id);
-            return suspendOn(self, ex.rhs(e), id);
-        },
-        .event_posedge => .posedge,
-        .event_negedge => .negedge,
-        .event_function => {
-            const slot = self.monitorSlot(e, self.instanceOf(self.scope)).?; // registered by checkEvent
-            return waiters.watch(self, id, slot, .any);
-        },
-        // VAMS §9.22.5: woken by `driver.stored`/`driver.scheduled`.
-        .event_driver_update => return waiters.watch(self, id, driver.key(try self.slot(ex.lhs(e))), .any),
-        else => .any, // else: a name, or an expression checkEvent gave a slot
-    };
-    const watched = if (edge == .any) e else ex.lhs(e);
-    if (ex.tag(watched) == .index) {
-        const base = try self.slot(self.chainBase(watched).base);
-        if (self.events.contains(base)) {
-            const arr = self.arrays.get(base).?;
-            for (0..arr.count) |k| {
-                const slot = base + @as(u32, @intCast(k));
-                try waiters.watchExt(self, id, slot, .any, .{ .event_select = watched, .scope = self.scope });
-            }
-            return;
-        }
-    }
-    if (try compile.selectTerm(self, watched)) |sel| {
-        const now = waiters.termBits(self.values[sel.slot], sel.first, sel.count);
-        return waiters.watchExt(self, id, sel.slot, edge, .{ .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] });
-    }
-    if (self.auto_terms.get(.{ .scope = self.scope, .e = watched })) |reads| {
-        var scratch = std.heap.ArenaAllocator.init(self.arena);
-        defer scratch.deinit();
-        const width = compile.typeOf(self, watched).width;
-        const now = waiters.termBits(try evaluate.eval(self, scratch.allocator(), watched, 0), 0, width);
-        for (reads) |slot| try waiters.watchExt(self, id, slot, edge, .{ .expr = watched, .scope = self.scope, .width = width, .v = now[0], .x = now[1] });
-        return;
-    }
-    try waiters.watch(self, id, try self.termSlot(watched), edge);
-}
-
 /// Queues `item` in the `.monitor` region of the current time, §17.1.2 and
 /// §17.1.3's "end of the timestep", which the scheduler orders after active,
 /// inactive and NBA.
 pub fn enqueueMonitor(self: *Run, item: Pending) Error!void {
     const at = try claim(self, item);
     self.pending.items[at].handle = self.scheduler.schedule(self.arena, .monitor, at) catch |e| return scheduleFailure(self, e, "scheduling");
-}
-
-/// A row for `item`: a recycled one when there is one. A `.write` value is
-/// copied into the row's own planes, so the caller's may be scratch.
-fn claim(self: *Run, item: Pending) Error!u32 {
-    const at: u32 = self.free_rows.pop() orelse blk: {
-        if (self.pending.items.len == std.math.maxInt(u32)) return self.fail(0, "too many digital events", .{});
-        try self.pending.append(self.arena, .{ .item = item });
-        break :blk @intCast(self.pending.items.len - 1);
-    };
-    const row = &self.pending.items[at];
-    row.item = item;
-    switch (item) {
-        .write => |w| {
-            if (row.buf.len < w.value.planes.len) row.buf = try self.arena.alloc(u64, w.value.planes.len);
-            const planes = row.buf[0..w.value.planes.len];
-            @memcpy(planes, w.value.planes);
-            row.item.write.value.planes = planes;
-        },
-        .run_process, .@"resume", .strobe, .monitor_tick, .vcd_tick, .tran_switch, .drive, .net_update, .decay, .a2d, .analog_point, .tchk_expiry, .tchk_event => {},
-    }
-    return at;
-}
-
-/// IEEE 1364-2005 §10.3 `disable`: it "terminates the activity" of a named
-/// block, and "execution continues with the statement following the block".
-/// Drops every resumption into [start, end) (`stopRange`) and, only if one
-/// was dropped, resumes at `end` once and returns true: a block nobody is
-/// suspended in has no activity, and resuming there would run the tail of a
-/// body twice. A process disabling a block it runs inside stops on true, so
-/// the statement after the block runs once, not once per process; on false
-/// its own jump past the block is its dispatch arm's.
-fn disable(self: *Run, start: u32, end: u32) Error!bool {
-    // ponytail: an NBA already scheduled from inside the block still lands; it
-    // is a write the block completed before it was disabled.
-    if (!try stopRange(self, start, end)) return false;
-    _ = try enqueue(self, .{ .run_process = end }, null, false);
-    return true;
 }
 
 /// Drop every resumption point in [start, end): the waiters parked there and
@@ -383,6 +289,133 @@ pub fn enqueueFirst(self: *Run, item: Pending) Error!void {
     self.pending.items[at].handle = self.scheduler.scheduleFirst(self.arena, .active, at) catch |e| return scheduleFailure(self, e, "scheduling");
 }
 
+/// Runs the process at `start` until it suspends, stops or finishes;
+/// `scratch` is reset before each instruction.
+pub fn execute(self: *Run, scratch: *Scratch, start: u32) Error!void {
+    // A VPI calltf may register the first cbStmt while this process is
+    // running. Recorded sites therefore keep dispatch available before a
+    // hook exists; ordinary runs still use the branch without callbacks.
+    return if (self.stmt_sites != null or self.stmt_hook != null) run(self, scratch, start, true) else run(self, scratch, start, false);
+}
+
+/// A driver's `delay3` that reads a variable (`Run.driver_delays`), its
+/// values now, defaulted as `Run.declaredDelay3` defaults a constant one.
+pub fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!Delay {
+    var out: Delay = .{ .present = true };
+    out.rise = try delayOf(self, scratch, d.rise, tok);
+    out.fall = if (d.fall != .none) try delayOf(self, scratch, d.fall, tok) else out.rise;
+    out.off = if (d.off != .none) try delayOf(self, scratch, d.off, tok) else @min(out.rise, out.fall);
+    return out;
+}
+
+/// Reports the `assign`/`force` whose override process starts at `start` to
+/// `Run.done_hook`, once: when the process first writes the target, or when
+/// the override is undone or replaced before it ran.
+pub fn doneFlush(self: *Run, start: u32) Error!void {
+    const h = self.done_hook orelse return;
+    if (self.done_pending.fetchRemove(start)) |kv| try h(self, kv.value);
+}
+
+// ---- private ----
+
+/// The run-time counterpart of `checkDelay`, in the module's precision.
+fn delayOf(self: *Run, scratch: std.mem.Allocator, e: Ast.ExprId, tok: u32) Error!u64 {
+    if (compile.typeOf(self, e).real) {
+        return self.timeOf(self.scope).scale.realDelay(try evaluate.evalReal(self, scratch, e)) catch |err|
+            return self.fail(tok, "digital delay cannot be represented: {t}", .{err});
+    }
+    const value = try evaluate.eval(self, scratch, e, 0);
+    // §9.7.1 leaves an x/z delay undefined; zero is the reading that keeps
+    // the process running rather than losing it.
+    if (value.hasUnknown()) return 0;
+    if (value.width > 64) return self.exprFail(e, "delay values wider than 64 bits are not implemented");
+    const scale = self.timeOf(self.scope).scale;
+    return (if (value.signed) scale.signedDelay(value.asInt().?) else scale.unsignedDelay(value.values()[0])) catch |err|
+        return self.fail(tok, "digital delay cannot be represented: {t}", .{err});
+}
+
+fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
+    const ex = &self.file.exprs;
+    const edge: waiters.Edge = switch (ex.tag(e)) {
+        .event_or => {
+            try suspendOn(self, ex.lhs(e), id);
+            return suspendOn(self, ex.rhs(e), id);
+        },
+        .event_posedge => .posedge,
+        .event_negedge => .negedge,
+        .event_function => {
+            const slot = self.monitorSlot(e, self.instanceOf(self.scope)).?; // registered by checkEvent
+            return waiters.watch(self, id, slot, .any);
+        },
+        // VAMS §9.22.5: woken by `driver.stored`/`driver.scheduled`.
+        .event_driver_update => return waiters.watch(self, id, driver.key(try self.slot(ex.lhs(e))), .any),
+        else => .any, // else: a name, or an expression checkEvent gave a slot
+    };
+    const watched = if (edge == .any) e else ex.lhs(e);
+    if (ex.tag(watched) == .index) {
+        const base = try self.slot(self.chainBase(watched).base);
+        if (self.events.contains(base)) {
+            const arr = self.arrays.get(base).?;
+            for (0..arr.count) |k| {
+                const slot = base + @as(u32, @intCast(k));
+                try waiters.watchExt(self, id, slot, .any, .{ .event_select = watched, .scope = self.scope });
+            }
+            return;
+        }
+    }
+    if (try compile.selectTerm(self, watched)) |sel| {
+        const now = waiters.termBits(self.values[sel.slot], sel.first, sel.count);
+        return waiters.watchExt(self, id, sel.slot, edge, .{ .lo = sel.first, .width = sel.count, .v = now[0], .x = now[1] });
+    }
+    if (self.auto_terms.get(.{ .scope = self.scope, .e = watched })) |reads| {
+        var scratch = std.heap.ArenaAllocator.init(self.arena);
+        defer scratch.deinit();
+        const width = compile.typeOf(self, watched).width;
+        const now = waiters.termBits(try evaluate.eval(self, scratch.allocator(), watched, 0), 0, width);
+        for (reads) |slot| try waiters.watchExt(self, id, slot, edge, .{ .expr = watched, .scope = self.scope, .width = width, .v = now[0], .x = now[1] });
+        return;
+    }
+    try waiters.watch(self, id, try self.termSlot(watched), edge);
+}
+
+/// A row for `item`: a recycled one when there is one. A `.write` value is
+/// copied into the row's own planes, so the caller's may be scratch.
+fn claim(self: *Run, item: Pending) Error!u32 {
+    const at: u32 = self.free_rows.pop() orelse blk: {
+        if (self.pending.items.len == std.math.maxInt(u32)) return self.fail(0, "too many digital events", .{});
+        try self.pending.append(self.arena, .{ .item = item });
+        break :blk @intCast(self.pending.items.len - 1);
+    };
+    const row = &self.pending.items[at];
+    row.item = item;
+    switch (item) {
+        .write => |w| {
+            if (row.buf.len < w.value.planes.len) row.buf = try self.arena.alloc(u64, w.value.planes.len);
+            const planes = row.buf[0..w.value.planes.len];
+            @memcpy(planes, w.value.planes);
+            row.item.write.value.planes = planes;
+        },
+        .run_process, .@"resume", .strobe, .monitor_tick, .vcd_tick, .tran_switch, .drive, .net_update, .decay, .a2d, .analog_point, .tchk_expiry, .tchk_event => {},
+    }
+    return at;
+}
+
+/// IEEE 1364-2005 §10.3 `disable`: it "terminates the activity" of a named
+/// block, and "execution continues with the statement following the block".
+/// Drops every resumption into [start, end) (`stopRange`) and, only if one
+/// was dropped, resumes at `end` once and returns true: a block nobody is
+/// suspended in has no activity, and resuming there would run the tail of a
+/// body twice. A process disabling a block it runs inside stops on true, so
+/// the statement after the block runs once, not once per process; on false
+/// its own jump past the block is its dispatch arm's.
+fn disable(self: *Run, start: u32, end: u32) Error!bool {
+    // ponytail: an NBA already scheduled from inside the block still lands; it
+    // is a write the block completed before it was disabled.
+    if (!try stopRange(self, start, end)) return false;
+    _ = try enqueue(self, .{ .run_process = end }, null, false);
+    return true;
+}
+
 fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool {
     std.debug.assert(value.width == label.width);
     if (kind == .normal) return value.equality(.case_equal, label) == .one;
@@ -401,212 +434,6 @@ fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool 
 }
 
 // ---- synchronous subroutines (IEEE 1364-2005 §10) ----------------------------
-
-/// Runs subroutine `idx` to completion as one activation (§10.2.2, §10.4) and
-/// returns a function's result, in `a`. The arguments are evaluated in the
-/// caller before anything of the callee's changes (a recursive call's argument
-/// reads the calling activation), copied into the formals, the body runs on a
-/// scratch arena of its own, and the outputs are copied back. An automatic
-/// subroutine's frame is saved, set to x, and restored after (§10.2.3, §10.4.2).
-/// Nests as deep as the stack `deep.runGuarded` reserved (`deep.exhausted`). After
-/// a §10.3 `disable` of the subroutine, outputs are not copied back.
-pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.ExprId) Error!Int.Literal {
-    // ponytail: `repeat` counters are per site, so a recursive body that loops
-    // with `repeat` across its own recursion shares one.
-    // §10.4.5: a constant function call folded before pass two compiles the
-    // bodies (a generate condition calling a function already framed).
-    if (!self.subs.items[idx].compiled) {
-        const saved = self.scope;
-        defer self.scope = saved;
-        try compile.compileSub(self, idx);
-    }
-    const sub = &self.subs.items[idx];
-    const decl = sub.decl;
-    const f = sub.frame;
-    // An activation's frames are large: the bound is the stack itself.
-    if (deep.exhausted()) return self.deepFail(decl.main_tok);
-    const inputs = try a.alloc(?Int.Literal, args.len);
-    for (decl.ports, args, inputs, f.ports) |p, arg, *in, slot| {
-        in.* = null;
-        if (p.direction == .output) continue;
-        // A copy: an actual that is the callee's own formal (`f(n)` inside
-        // `f`) is that frame's storage, which the automatic reset below
-        // overwrites.
-        in.* = try copyLiteral(a, try evaluate.evalFor(self, a, arg, self.slotType(slot)));
-    }
-    const saved_len = self.saved_planes.items.len;
-    // §10.4.5: a call elaboration folds "has no effect on the initial values
-    // of the variables used either at simulation time or among multiple
-    // invocations of a function at elaboration time", so it runs as an
-    // automatic one does.
-    const fresh = decl.automatic or self.growing != null or self.folding_constant;
-    if (fresh) {
-        for (f.first..f.first + f.count) |s| try self.saved_planes.appendSlice(self.arena, self.values[s].planes);
-        try resetFrame(self, a, f);
-    }
-    for (inputs, f.ports) |in, slot| if (in) |v| @memcpy(self.values[slot].planes, v.planes);
-    const caller_scope = self.scope;
-    const caller_pc = self.pc;
-    sub.active += 1;
-    {
-        var body = std.heap.ArenaAllocator.init(self.arena);
-        defer body.deinit();
-        var body_scratch: Scratch = .init(&.{}, &body);
-        try execute(self, &body_scratch, sub.entry);
-    }
-    sub.active -= 1;
-    self.scope = caller_scope;
-    self.pc = caller_pc;
-    const result = if (decl.is_function) try copyLiteral(a, self.values[f.result]) else try filled(a, 1, false, .x);
-    // §10.2.2, §10.2.3: capture the callee's outputs before restoring the
-    // caller's automatic frame. A recursive actual may name a local in
-    // that frame, including a select whose index belongs to the caller.
-    // Reuse the input copies, which are no longer needed after the body.
-    // §10.3: a disabled task's outputs are not copied back.
-    for (decl.ports, inputs, f.ports) |p, *out, slot|
-        out.* = if (p.direction != .input and self.unwind == null) try copyLiteral(a, self.values[slot]) else null;
-    if (fresh) {
-        loadFrame(self, f, self.saved_planes.items[saved_len..]);
-        self.saved_planes.shrinkRetainingCapacity(saved_len);
-    }
-    for (args, inputs, f.ports) |arg, out, slot| if (out) |v|
-        try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
-    if (self.unwind == idx and sub.active == 0) self.unwind = null;
-    return result;
-}
-
-// ---- activations of a recursive timed task (IEEE 1364-2005 §10.2.3) ---------
-
-/// One activation of a task that suspends and reaches itself: where its
-/// caller resumes, the actuals its outputs copy back to, and its own storage,
-/// saved while another activation of the same automatic task is resident.
-pub const Act = struct { sub: u32, ret_pc: u32, ret_ctx: u32, args: []const Ast.ExprId, storage: []u64 = &.{} };
-
-/// §10.2.2 enable task `idx` as a new activation: the inputs are evaluated in
-/// the caller, an automatic task's frame is set aside for a fresh one
-/// ("initialized to the default initialization value whenever execution
-/// enters their scope"), and the body runs in this process from `Sub.body`.
-/// Returns the pc to continue at.
-fn callTimed(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.ExprId, pc: u32) Error!u32 {
-    const sub = &self.subs.items[idx];
-    const f = sub.body.?.frame;
-    const inputs = try a.alloc(?Int.Literal, args.len);
-    for (sub.decl.ports, args, inputs, f.ports) |p, arg, *in, slot|
-        in.* = if (p.direction == .output) null else try copyLiteral(a, try evaluate.evalFor(self, a, arg, self.slotType(slot)));
-    if (self.acts.items.len == 0) try self.acts.append(self.arena, undefined); // 0 is "no activation"
-    const act: Act = .{ .sub = idx, .ret_pc = pc + 1, .ret_ctx = self.ctx, .args = args };
-    const id: u32 = if (self.free_acts.pop()) |k| blk: {
-        self.acts.items[k] = act;
-        break :blk k;
-    } else blk: {
-        try self.acts.append(self.arena, act);
-        break :blk @intCast(self.acts.items.len - 1);
-    };
-    if (sub.decl.automatic) {
-        try evict(self, idx);
-        try resetFrame(self, a, f);
-        sub.resident = id;
-    }
-    for (inputs, f.ports) |in, slot| if (in) |v| @memcpy(self.values[slot].planes, v.planes);
-    self.ctx = id;
-    return sub.body.?.entry;
-}
-
-/// The end of an activation's body: its outputs are read while its storage
-/// is still resident, the caller's activation (if any) becomes resident, and
-/// the outputs are copied to the caller's actuals in the caller's scope.
-fn returnTimed(self: *Run, a: std.mem.Allocator, idx: u32) Error!u32 {
-    const sub = &self.subs.items[idx];
-    const f = sub.body.?.frame;
-    const done = self.ctx;
-    const act = self.acts.items[done];
-    const outs = try a.alloc(Int.Literal, f.ports.len);
-    for (f.ports, outs) |slot, *o| o.* = try copyLiteral(a, self.values[slot]);
-    if (sub.resident == done) sub.resident = 0; // dead: nothing to save
-    try self.free_acts.append(self.arena, done);
-    self.ctx = act.ret_ctx;
-    try makeResident(self, self.ctx);
-    self.scope = self.code_scope.items[act.ret_pc - 1];
-    for (sub.decl.ports, act.args, f.ports, outs) |p, arg, slot, v| if (p.direction != .input)
-        try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
-    return act.ret_pc;
-}
-
-/// Save the resident activation of automatic task `idx`, freeing its frame.
-fn evict(self: *Run, idx: u32) Error!void {
-    const sub = &self.subs.items[idx];
-    if (sub.resident == 0) return;
-    const f = sub.body.?.frame;
-    const act = &self.acts.items[sub.resident];
-    var len: usize = 0;
-    for (f.first..f.first + f.count) |s| len += self.values[s].planes.len;
-    if (act.storage.len != len) act.storage = try self.arena.alloc(u64, len);
-    var at: usize = 0;
-    for (f.first..f.first + f.count) |s| {
-        const planes = self.values[s].planes;
-        @memcpy(act.storage[at..][0..planes.len], planes);
-        at += planes.len;
-    }
-    sub.resident = 0;
-}
-
-/// Copies `from`, frame `f`'s slots' planes laid end to end in slot order
-/// (as `evict` and `callSync` save them), back into the slots.
-fn loadFrame(self: *Run, f: Frame, from: []const u64) void {
-    var at: usize = 0;
-    for (f.first..f.first + f.count) |s| {
-        const planes = self.values[s].planes;
-        @memcpy(planes, from[at..][0..planes.len]);
-        at += planes.len;
-    }
-}
-
-/// Sets every slot of frame `f` to what entering its scope gives it
-/// (§10.2.3): x, or 0.0 for a real. `filled` keeps the bits past the width
-/// 0, as every slot's are; a whole-word memset would set them.
-fn resetFrame(self: *Run, a: std.mem.Allocator, f: Frame) Error!void {
-    for (f.first..f.first + f.count) |s| {
-        const v = self.values[s];
-        const fill: Int.Bit = if (self.reals.contains(@intCast(s))) .zero else .x;
-        @memcpy(v.planes, (try filled(a, v.width, v.signed, fill)).planes);
-    }
-}
-
-/// Put activation `ctx`'s storage in its task's frame, if it is not there.
-pub fn makeResident(self: *Run, ctx: u32) Error!void {
-    if (ctx == 0) return;
-    const act = self.acts.items[ctx];
-    const sub = &self.subs.items[act.sub];
-    if (!sub.decl.automatic or sub.resident == ctx) return;
-    try evict(self, act.sub);
-    loadFrame(self, sub.body.?.frame, act.storage);
-    sub.resident = ctx;
-}
-
-fn copyLiteral(a: std.mem.Allocator, v: Int.Literal) Error!Int.Literal {
-    const out = try filled(a, v.width, v.signed, .zero);
-    @memcpy(out.planes, v.planes);
-    return out;
-}
-
-// ---- the interpreter loop (A.6.5, §6.1, §8.5.3.3) ---------------------------
-
-/// Runs the process at `start` until it suspends, stops or finishes;
-/// `scratch` is reset before each instruction.
-pub fn execute(self: *Run, scratch: *Scratch, start: u32) Error!void {
-    // A VPI calltf may register the first cbStmt while this process is
-    // running. Recorded sites therefore keep dispatch available before a
-    // hook exists; ordinary runs still use the branch without callbacks.
-    return if (self.stmt_sites != null or self.stmt_hook != null) run(self, scratch, start, true) else run(self, scratch, start, false);
-}
-
-/// Reports the `assign`/`force` whose override process starts at `start` to
-/// `Run.done_hook`, once: when the process first writes the target, or when
-/// the override is undone or replaced before it ran.
-fn doneFlush(self: *Run, start: u32) Error!void {
-    const h = self.done_hook orelse return;
-    if (self.done_pending.fetchRemove(start)) |kv| try h(self, kv.value);
-}
 
 /// One pass back to the top of a loop (a backward jump, a `repeat`'s next
 /// iteration): an untimed loop never returns to the scheduler, so each pass
@@ -658,82 +485,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 return;
             },
             .task => |s| {
-                // §10.4.5: a system task in a constant function is ignored
-                // while the function folds a constant.
-                if (self.growing != null or self.folding_constant) {
-                    pc += 1;
-                    continue;
-                }
-                self.pc = pc;
-                switch (s.task) {
-                    .show => |sh| try display.display(self, s.args, scratch, sh),
-                    // §17.1.2: the arguments are NOT captured, the call is.
-                    // What it reports is the value at the end of the timestep,
-                    // so evaluation waits for the `.monitor` region.
-                    .strobe => |sh| try enqueueMonitor(self, .{ .strobe = .{ .args = s.args, .show = sh, .scope = self.scope, .pc = pc } }),
-                    // §17.1.3 one standing monitor: a new one replaces the
-                    // old, watch list and all; §17.2.2 any number of
-                    // $fmonitors.
-                    .monitor => |sh| try display.install(self, scratch, s.args, sh, pc),
-                    // "$monitoron shall produce a display immediately after
-                    // it is invoked, regardless of whether a value change has
-                    // taken place", so whether it was already on is not asked.
-                    // Turning it off is silent.
-                    .monitor_enable => |on| {
-                        self.monitor_on = on;
-                        if (on) try display.monitorPrint(self, scratch);
-                    },
-                    .timeformat => {
-                        if (s.args.len == 0) {
-                            self.time_format = .{ .units = self.finest };
-                        } else {
-                            const ex = &self.file.exprs;
-                            const units = try evaluate.eval(self, scratch, s.args[0], 0);
-                            const precision = try evaluate.eval(self, scratch, s.args[1], 0);
-                            const width = try evaluate.eval(self, scratch, s.args[3], 0);
-                            self.time_format = .{
-                                .units = std.math.lossyCast(i32, units.asInt() orelse 0),
-                                .precision = std.math.lossyCast(u32, precision.asInt() orelse 0),
-                                .suffix = self.file.str(ex.strOf(s.args[2])),
-                                .width = std.math.lossyCast(u32, width.asInt() orelse 0),
-                            };
-                        }
-                        // §26.6.41 follows execution, including a no-argument
-                        // reset. A task's lexical frame is in this instance.
-                        self.active_timeformat = .{ .scope = self.instanceOf(self.scope), .tok = s.tok };
-                    },
-                    .readmem => |radix| try display.readMemory(self, scratch, s.args, radix),
-                    .queue => |op| try system.queueTask(self, scratch, op, s.args),
-                    .pla => |p| try system.pla(self, scratch, p, s.args),
-                    .fclose => try system.fclose(self, scratch, s.args),
-                    .fflush => {},
-                    .user => try self.systf.?.call(self, self.instanceOf(self.scope), s.tok, null),
-                    .fshow => |sh| try system.fdisplay(self, scratch, s.args, sh),
-                    .sshow => |sh| try system.sformat(self, scratch, s.args, sh),
-                    .sformat => try system.sformat(self, scratch, s.args, null),
-                    .printtimescale => try display.printTimescale(self, s.args),
-                    .sdf_annotate => try @import("sdf.zig").annotate(self, scratch, s.args, s.tok),
-                    .dump => |op| try vcd.task(self, scratch, op, s.args, s.tok),
-                    .ports => |op| try evcd.task(self, scratch, op, s.args, s.tok),
-                    .finish => |stop| {
-                        // An x/z level has no verbosity to select; the fullest
-                        // report is the reading that loses nothing.
-                        const verbose = s.args.len == 0 or ((try evaluate.eval(self, scratch, s.args[0], 0)).asInt() orelse 1) != 0;
-                        if (verbose) {
-                            const start_byte = self.starts[s.tok];
-                            const loc = self.bag.locate(.{ .start = start_byte, .end = start_byte }, null);
-                            const fmt_s = "{s} at tick {d}, {s} byte {d}\n";
-                            const args = .{ if (stop) "$stop" else "$finish", self.scheduler.now, self.bag.fileName(loc.file), loc.offset };
-                            if (stop) std.debug.print(fmt_s, args) else try self.out.print(fmt_s, args);
-                        }
-                        // iverilog's reading of §17.4.1's "exit": the rest of
-                        // this time step (other processes, NBA updates, the
-                        // monitor, the dump) runs, no later one does; this
-                        // process ends here (monitor4, pr243).
-                        self.scheduler.finishStep();
-                        return;
-                    },
-                }
+                if (try instructions.task(self, scratch, s, pc) == .ended) return;
                 pc += 1;
                 continue;
             },
@@ -821,61 +573,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
             // §6.1: drive this assignment's own value, resolve the net from
             // every driver of it, then suspend on the operands. The
             // resumption point is this same pc, so a change re-drives.
-            .continuous => |at| {
-                const d = &self.drivers[at];
-                // A driver's names resolve in the scope that wrote the
-                // assignment, which for a port connection is the parent of
-                // the net it feeds, not the dispatch's scope.
-                self.scope = d.scope;
-                // A.2.2.3: a delay that reads a variable is read when the
-                // driver schedules (§6.1.3).
-                const timing = if (self.driver_delays.get(at)) |d3| try variableDelay(self, scratch, d3, d.tok) else d.delay;
-                var or_z = false;
-                const value = switch (d.source) {
-                    .bridge => |b| try resolution.window(self, scratch, b, d.current.width),
-                    .gate => |g| try resolution.gateValue(self, scratch, g, d.current.width, &or_z),
-                    .udp => |u| try resolution.udpValue(self, scratch, u, d.current.width),
-                    .mos => |mo| try resolution.mosValue(self, scratch, at, mo, &or_z),
-                    .pull => |b| try filled(scratch, d.current.width, false, b),
-                    .expr => |x| blk: {
-                        if (x.slice) |sl| {
-                            const whole = try evaluate.eval(self, scratch, x.e, sl.total);
-                            const part = try filled(scratch, d.current.width, false, .z);
-                            evaluate.copyBits(part, 0, whole, sl.lo, d.current.width);
-                            break :blk part;
-                        }
-                        break :blk try evaluate.evalFor(self, scratch, x.e, self.slotType(self.nets[d.net].slot));
-                    },
-                };
-                // A.6.1's `[ delay3 ]` delays what this driver contributes,
-                // not what the net shows: the other drivers are unaffected
-                // and the net re-resolves when the delayed value lands.
-                // §8.5: a UDP's initial output is published at time 0; only
-                // later transitions wait for the instance delay.
-                const first_udp = if (d.source == .udp) d.source.udp.sequential and !d.source.udp.started else false;
-                // A combinational one's output is x until its first delayed value.
-                if (d.source == .udp and !d.source.udp.started and !first_udp and timing.present) try resolution.resolve(self, d.net);
-                if (d.source == .udp) d.source.udp.started = true;
-                if (timing.present and !first_udp) {
-                    const st = try self.driverTransition(at);
-                    if (try resolution.schedule(self, d.current, d.or_z, value, or_z, st)) {
-                        const delay = switch (d.source) {
-                            .expr => timing.continuous(d.current.truth(), st.target),
-                            .gate => |g| timing.to(st.target.bit(g.out_bit orelse 0)),
-                            .udp => |u| timing.to(st.target.bit(u.out_bit orelse 0)),
-                            .mos => |mo| timing.to(st.target.bit(mo.out_bit orelse 0)),
-                            .bridge, .pull => timing.to(st.target.bit(0)),
-                        };
-                        st.in_flight = try enqueue(self, .{ .drive = at }, delay, false);
-                    }
-                } else {
-                    @memcpy(d.current.planes, value.planes);
-                    d.or_z = or_z;
-                    try resolution.resolve(self, d.net);
-                }
-                self.armed[pc] = true;
-                return;
-            },
+            .continuous => |at| return instructions.continuous(self, scratch, at, pc),
             // §7.6 a controlled pass switch: read the control, re-resolve
             // both sides, then wait on the control's operands.
             .switch_ctrl => |s| {
@@ -892,71 +590,17 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 return;
             },
             .override_on => |o| {
-                const entry = try self.overrides.getOrPut(self.arena, o.slot);
-                if (!entry.found_existing) entry.value_ptr.* = .{};
-                if (o.bits) |bits| {
-                    const parts = &entry.value_ptr.parts;
-                    const range: PcRange = .{ .start = o.start, .end = o.end };
-                    for (parts.items) |*p| {
-                        if (!std.meta.eql(p.bits, bits)) continue;
-                        try doneFlush(self, p.range.start);
-                        _ = try stopRange(self, p.range.start, p.range.end);
-                        p.range = range;
-                        break;
-                    } else try parts.append(self.arena, .{ .bits = bits, .range = range });
-                    _ = try enqueue(self, .{ .run_process = o.start }, null, false);
-                    if (self.done_hook != null and self.done_sites.contains(pc)) try self.done_pending.put(self.arena, o.start, pc);
-                    pc += 1;
-                    continue;
-                }
-                const layer = if (o.force) &entry.value_ptr.force else &entry.value_ptr.assign;
-                if (layer.*) |old| {
-                    try doneFlush(self, old.start);
-                    _ = try stopRange(self, old.start, old.end);
-                }
-                layer.* = .{ .start = o.start, .end = o.end };
-                _ = try enqueue(self, .{ .run_process = o.start }, null, false);
-                // The host hears of it once the process has written the
-                // target (`doneFlush`).
-                if (self.done_hook != null and self.done_sites.contains(pc)) try self.done_pending.put(self.arena, o.start, pc);
+                try instructions.overrideOn(self, o, pc);
                 pc += 1;
                 continue;
             },
             .override_eval => |o| {
-                const layers = self.overrides.get(o.slot) orelse Overrides{};
-                // An assign under a force keeps tracking but does not write.
-                if (o.force or layers.force == null) {
-                    const w = if (o.bits) |b| b.width else self.values[o.slot].width;
-                    const value = if (o.slice) |sl|
-                        try evaluate.bitsOf(scratch, try evaluate.evalFor(self, scratch, o.value, .{ .width = sl.of, .signed = false }), sl.lo, w)
-                    else if (o.bits != null)
-                        try evaluate.evalFor(self, scratch, o.value, .{ .width = w, .signed = false })
-                    else
-                        try evaluate.evalFor(self, scratch, o.value, self.slotType(o.slot));
-                    self.overriding = true;
-                    defer self.overriding = false;
-                    if (o.bits) |b|
-                        try evaluate.write(self, scratch, .{ .slot = o.slot, .sel = .{ .first = b.lo, .count = b.width } }, value)
-                    else
-                        try waiters.store(self, o.slot, value.planes);
-                }
-                // A forced net drives the switch-connected nets joined to it
-                // (`resolution.resolveJoined`), which follow its new value.
-                if (o.force and o.bits == null) if (self.net_of.get(o.slot)) |net| if (self.netCold(self.nets[net]).trans.len != 0)
-                    try resolution.resolve(self, net);
-                try doneFlush(self, pc);
+                try instructions.overrideEval(self, scratch, o, pc);
                 pc += 1;
                 continue;
             },
             .override_off => |o| {
-                // An override undone before its process ran was still executed.
-                if (self.overrides.get(o.slot)) |layers| {
-                    if (o.bits) |bits| {
-                        for (layers.parts.items) |p| if (std.meta.eql(p.bits, bits)) try doneFlush(self, p.range.start);
-                    } else if (if (o.force) layers.force else layers.assign) |layer| try doneFlush(self, layer.start);
-                }
-                if (o.bits) |bits| try waiters.releaseBits(self, o.slot, bits) else try waiters.release(self, o.slot, o.force);
-                if (self.done_hook) |h| if (self.done_sites.contains(pc)) try h(self, pc);
+                try instructions.overrideOff(self, o, pc);
                 pc += 1;
                 continue;
             },
@@ -1107,6 +751,28 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
 }
 
 // ---- tests ------------------------------------------------------------------
+
+test "Scratch: the fixed buffer serves until it is full, the arena after, and reset frees both" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    var sc: Scratch = .init(&buf, &arena);
+    const a = sc.allocator();
+    const small = try a.alloc(u8, 48);
+    try std.testing.expect(sc.fixed.ownsSlice(small) and !sc.spilled);
+    const big = try a.alloc(u8, 48);
+    try std.testing.expect(!sc.fixed.ownsSlice(big) and sc.spilled);
+    try std.testing.expect(a.resize(big, 40));
+    a.free(big);
+    sc.reset();
+    try std.testing.expect(!sc.spilled and sc.fixed.end_index == 0);
+    var none: Scratch = .init(&.{}, &arena);
+    _ = try none.allocator().alloc(u8, 1);
+    try std.testing.expect(none.spilled);
+}
+
+// The VPI (src/vpi/value.zig) writes and triggers through `digital.exec`,
+// as a process does; these are the entry points it reaches.
 
 test "§9.5.1 casez/casex per plane word agree with the per-bit wildcard rule" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
