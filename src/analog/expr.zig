@@ -41,6 +41,7 @@ const lower_expr_cond = @import("expr_cond.zig");
 const lower_expr_access = @import("expr_access.zig");
 const lower_math = @import("math.zig");
 const lower_timer = @import("timer.zig");
+const lower_noise_op = @import("noise_op.zig");
 const Oom = Lower.Oom;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
@@ -171,7 +172,7 @@ fn lowerExprInner(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: 
         .builtin_call => return lower_math.lowerBuiltin(self, e), // §4.3
         .sys_call => return lower_sysfunc.lowerSysCall(self, e), // ch9
         .filter_call => return lower_analog_op.lowerFilter(self, e), // §4.5
-        .noise_call => return lower_analog_op.lowerNoise(self, e), // §4.6
+        .noise_call => return lower_noise_op.lowerNoise(self, e), // §4.6
 
         .branch_access => return lower_expr_access.lowerBranchAccess(self, e), // §4.4.1
         .port_access => return lower_expr_access.lowerPortAccess(self, e), // §4.4.2/§5.4.3

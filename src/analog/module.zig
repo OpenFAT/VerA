@@ -41,6 +41,12 @@ const lower_source_check = @import("source_check.zig");
 const lower_timer = @import("timer.zig");
 const lower_kernel_ctl = @import("kernel_ctl.zig");
 const lower_display = @import("display.zig");
+const lower_discrete_input = @import("discrete_input.zig");
+const lower_discrete_mark = @import("discrete_mark.zig");
+const lower_initial_state = @import("initial_state.zig");
+const lower_node_discipline = @import("node_discipline.zig");
+const lower_node_ref = @import("node_ref.zig");
+const lower_held = @import("held.zig");
 const Lowered = Lower.Lowered;
 const Oom = Lower.Oom;
 const Error = Lower.Error;
@@ -76,7 +82,7 @@ pub fn lowerFile(self: *Lower) Error!Lowered {
     // elaboration made but could not judge. Before `lowerModule`, so a design
     // built on a mistyped instance terminal fails at the mistype, not at a
     // later E0337 on the invented floating node.
-    for (design.implicit_nets) |n| try lower_node.rejectImplicitNet(self, n.name, n.main_tok);
+    for (design.implicit_nets) |n| try lower_node_discipline.rejectImplicitNet(self, n.name, n.main_tok);
     try lowerModule(self, design.top);
     if (self.had_error) return error.DiagnosticsReported;
     try lower_node.collectSignalAbstols(self, design.signal_disciplines);
@@ -97,7 +103,7 @@ fn rejectFourStateLiterals(self: *Lower) Oom!void {
     assert(self.mir.blockCount() == 0); // before elaboration and any lowering
     const discrete = try self.arena.alloc(bool, self.file.exprs.len());
     @memset(discrete, false);
-    lower_context.markDiscreteExprs(self.file, discrete);
+    lower_discrete_mark.markDiscreteExprs(self.file, discrete);
     var refused: u32 = 0;
     for (discrete, 0..) |in_discrete, i| {
         const e: Ast.ExprId = @fromBackingInt(@intCast(i));
@@ -153,7 +159,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
 
     try lower_discipline.collectDisciplines(self); // §3.6.1/§3.6.2 (annex D.1 is inlined here)
     try lower_discipline.checkNatureTable(self); // §3.6.1/§3.13 — the declaration table itself
-    try lower_node.checkPortBranchDecls(self); // §3.12.1 — per source module, before flattening's renames matter
+    try lower_node_ref.checkPortBranchDecls(self); // §3.12.1 — per source module, before flattening's renames matter
 
     // §3.4 parameters before the ports, because a range is a constant
     // expression over them (§6.5.2.2's `input [1:width] dt`).
@@ -167,7 +173,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     });
     // §7.3.6.5: a mixed module's digital-owned values are host-written inputs.
     // Before the ports and nets, so none of them becomes an analog node.
-    try lower_context.declareDiscreteInputs(self, module);
+    try lower_discrete_input.declareDiscreteInputs(self, module);
     try lower_context.checkSwitchTerminals(self, module); // A.3.3, §8.5.3.5
     // §8.5.3.5 switch processing is the discrete cycle's; with no discrete
     // half to run it on, the device carries nothing for the switch.
@@ -178,10 +184,10 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     try lower_node.declarePorts(self, module);
     try lower_node.declareNets(self, module); // §3.6.3, §3.6.4
     try lower_node.bindPortConnections(self); // §6.5.7.1
-    try lower_node.resolveDisciplines(self, module); // §7.4, §10.2
+    try lower_node_discipline.resolveDisciplines(self, module); // §7.4, §10.2
     // After the parameters and their defaults are in (§6.3.4).
     try lower_param.declareAliasParams(self, module); // §3.4.7
-    try lower_node.declareBranches(self, module); // §3.12
+    try lower_node_ref.declareBranches(self, module); // §3.12
     // §5.4.3 each split port's flow probe, whether or not a read of it is
     // lowered: without its branch the port's net would hang free.
     for (self.design.port_ammeters) |am| _ = try lower_expr_access.ammeterFlow(self, am.internal);
@@ -190,15 +196,15 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // §3.2/§3.3 module-level variables. The §5.10 scan runs first: whether a
     // variable needs a persistent slot is decided at its declaration, not at
     // the assignment that reveals it (see `holdSlot`).
-    try lower_var.markHeldVars(self, module);
-    try lower_var.markMemArrays(self, module);
+    try lower_held.markHeldVars(self, module);
+    try lower_held.markMemArrays(self, module);
     try lower_var.checkOneItemPerScope(self, module.params, module.vars, module.nets, module.ports);
     // A.6.2 the digital `initial` block, for the same reason and at the same
     // point as the §5.10 scan above: what a variable holds at the top of every
     // evaluation is decided at its declaration. `initial x = 3;` and
     // `integer x = 3;` therefore lower to one write, and the AST edit below is
     // the whole of the difference.
-    try lower_context.collectInitialState(self, module);
+    try lower_initial_state.collectInitialState(self, module);
     const analog_writes = try lower_var.analogWrites(self, module);
     self.analog_writes = analog_writes;
     try declareModuleVars(self, module);
@@ -237,7 +243,7 @@ fn lowerModule(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // IEEE 1364 §19.9, also before the body and for a related reason: the pull
     // on an unconnected `input` is the OUTSIDE driving the port, so it is there
     // when the child's equations read it, not added after them.
-    try lower_node.applyUnconnectedDrive(self);
+    try lower_node_discipline.applyUnconnectedDrive(self);
 
     // §5.2 analog blocks, concatenated (§6.9.1).
     self.runtime_error_phase = .core;

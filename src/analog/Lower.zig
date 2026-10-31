@@ -119,6 +119,8 @@ const lower_source_check = @import("source_check.zig");
 const lower_branch = @import("branch.zig");
 const lower_accum = @import("accum.zig");
 const lower_timer = @import("timer.zig");
+const lower_discrete_input = @import("discrete_input.zig");
+const lower_held = @import("held.zig");
 
 /// What lowering produces (`ir`'s `Lowered`).
 pub const Lowered = @import("ir").Lowered;
@@ -234,7 +236,7 @@ pub const Options = struct {
     param_overrides: []const ParamOverride = &.{},
     /// §9.4 the build drops the display family (`codegen.Options.display`), so
     /// a variable those tasks read is not read at all in the device. The
-    /// default, false, counts those reads. Only `lower_var.Exposed` asks: a §3.2
+    /// default, false, counts those reads. Only `lower_held.Exposed` asks: a §3.2
     /// hold that only a print could observe is no hold.
     displays_dropped: bool = false,
     /// §7.4.4's resolution mode.
@@ -278,7 +280,7 @@ pub const expectBodies = harness.expectBodies;
 /// A node's §1.3.1 display name, for diagnostics and tests.
 pub const nodeName = lower_node.nodeName;
 /// Applies `prove.setup.pruneHeld`'s held-row mask to `Lowered`.
-pub const dropHeld = lower_var.dropHeld;
+pub const dropHeld = lower_held.dropHeld;
 /// Reports whether a §9.15 simulation parameter is answered at run time.
 pub const simparamIsRuntime = Lowered.simparamIsRuntime;
 /// The §9.15 simulation parameters a host supplies, in `Model` field order.
@@ -547,7 +549,7 @@ scope_path: []const u8 = "",
 /// block's scope is `name[i]`.
 gen_iter: ?i64 = null,
 /// §7.3.1 the digital arrays the analog block reads, each one input per
-/// element (`lower_context.declareDiscreteArray`): name → declared bounds.
+/// element (`lower_discrete_input.declareDiscreteArray`): name → declared bounds.
 discrete_arrays: std.StringHashMapUnmanaged(struct { lo: i64, hi: i64 }) = .empty,
 /// A.6.2 the digital `initial` block's assignments, name -> the constant
 /// expression it leaves in that variable. Collected before the module's

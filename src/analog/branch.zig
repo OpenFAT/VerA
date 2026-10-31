@@ -27,6 +27,7 @@ const lower_discipline = @import("discipline.zig");
 const lower_node = @import("node.zig");
 const lower_shape = @import("shape.zig");
 const lower_expr_name = @import("expr_name.zig");
+const lower_node_ref = @import("node_ref.zig");
 const Oom = Lower.Oom;
 const unnamed_branch = Lower.unnamed_branch;
 const ground = Lower.ground;
@@ -141,8 +142,8 @@ pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
             }
         }
     }
-    const hi = try lower_node.nodeOf(self, first);
-    const lo = if (ex.rhs(e) == .none) ground else try lower_node.nodeOf(self, ex.rhs(e));
+    const hi = try lower_node_ref.nodeOf(self, first);
+    const lo = if (ex.rhs(e) == .none) ground else try lower_node_ref.nodeOf(self, ex.rhs(e));
     const access = try accessOn(self, e, name, global, hi, lo);
     try checkAccessMatch(self, e, name, access, hi);
     // §3.11's own example of the rule: "if an access function has two nets as

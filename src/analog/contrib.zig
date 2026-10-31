@@ -33,6 +33,8 @@ const lower_branch = @import("branch.zig");
 const lower_accum = @import("accum.zig");
 const lower_reactive = @import("reactive.zig");
 const lower_noise_src = @import("noise_src.zig");
+const lower_node_discipline = @import("node_discipline.zig");
+const lower_noise_op = @import("noise_op.zig");
 const Target = lower_branch.Target;
 const Oom = Lower.Oom;
 const unnamed_branch = Lower.unnamed_branch;
@@ -140,7 +142,7 @@ pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void 
     // meant to be driven, and E0360 already refuses an `inout` signal-flow port.
     for ([_]u32{ target.hi, target.lo }) |n| {
         if (n >= self.out.nodes.len or self.out.nodes.items(.dir)[n] != .input) continue;
-        if (!lower_node.isSignalFlow(self, self.out.nodes.items(.disc)[n])) continue;
+        if (!lower_node_discipline.isSignalFlow(self, self.out.nodes.items(.disc)[n])) continue;
         try self.err(self.file.exprs.mainTok(lhs), .E0425, "`{s}` is an `input` port of discipline `{s}`", .{ self.out.nodes.items(.name)[n], self.out.nodes.items(.disc)[n] });
         return;
     }
@@ -221,7 +223,7 @@ pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void 
             for (srcs.items) |*s| {
                 if (s.nonlinear) continue;
                 const g = self.noise_val.get(s.id) orelse continue;
-                switch (try lower_analog_op.noiseCoeff(self, v0, g)) {
+                switch (try lower_noise_op.noiseCoeff(self, v0, g)) {
                     .absent => {},
                     // No factor describes this use. Fall back to 1 and stop
                     // accumulating, so a later statement cannot make the row
@@ -231,7 +233,7 @@ pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void 
                         s.coeff = .f_one;
                     },
                     .value => |d| {
-                        const signed = if (target.neg) try lower_analog_op.coeffNeg(self, d) else d;
+                        const signed = if (target.neg) try lower_noise_op.coeffNeg(self, d) else d;
                         s.coeff = if (s.coeff == .f_zero) signed else try self.emit(.fadd, &.{ s.coeff, signed });
                     },
                 }

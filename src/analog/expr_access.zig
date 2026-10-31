@@ -26,6 +26,7 @@ const lower_hier_name = @import("hier_name.zig");
 const lower_node = @import("node.zig");
 const lower_expr = @import("expr.zig");
 const lower_branch = @import("branch.zig");
+const lower_node_ref = @import("node_ref.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
@@ -239,7 +240,7 @@ fn nodeUnrefused(self: *Lower, e: Ast.ExprId) Oom!?u32 {
     assert(e == .none or self.exprValid(e));
     const had = self.had_error;
     self.had_error = false;
-    const p = try lower_node.nodeOf(self, e);
+    const p = try lower_node_ref.nodeOf(self, e);
     const refused = self.had_error;
     self.had_error = had or refused;
     if (!refused) assert(self.nodeValid(p));

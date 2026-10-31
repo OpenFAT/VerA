@@ -13,28 +13,19 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Lower = @import("Lower.zig");
-const lower_constfold = @import("constfold.zig");
-const lower_node = @import("node.zig");
-const lower_param = @import("param.zig");
 const discipline_rules = @import("elab").discipline_rules;
-const lower_event = @import("event.zig");
-const lower_sysfunc = @import("sysfunc.zig");
-const lower_systask = @import("systask.zig");
-const lower_contrib = @import("contrib.zig");
-const lower_shape = @import("shape.zig");
-const lower_expr = @import("expr.zig");
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
 const Mir = @import("ir").Mir;
-const naming = @import("ir").names;
+const Lower = @import("Lower.zig");
+const lower_discrete_mark = @import("discrete_mark.zig");
+const lower_constfold = @import("constfold.zig");
 const lower_expr_name = @import("expr_name.zig");
-const lower_expr_select = @import("expr_select.zig");
-const lower_expr_case = @import("expr_case.zig");
 const lower_branch = @import("branch.zig");
 const lower_event_args = @import("event_args.zig");
 const lower_format = @import("format.zig");
 const lower_sysfunc_context = @import("sysfunc_context.zig");
+const Edge = lower_discrete_mark.Edge;
 const Oom = Lower.Oom;
 
 // ---- §7.2.2 the discrete context -------------------------------------------
@@ -118,7 +109,7 @@ const Shadows = struct {
 /// all is the kernel's scheme to decide (§6.6).
 ///
 /// Takes the file rather than the `Lower`: it is a question about the AST.
-fn isMixed(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl) bool {
+pub fn isMixed(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl) bool {
     if (module.assigns.len != 0) return true;
     // §3.7 a wreal is a digital net, and only the digital kernel holds its
     // value — 0.0 undriven, or its single driver's.
@@ -192,7 +183,7 @@ fn constantExpr(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, e: A
 /// net of a discrete discipline, or one with none). With `out`, every such
 /// read is appended to it and the walk does not stop at the first. An access
 /// function's operands are nodes, not values, and are not reads.
-fn analogDiscreteNets(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, id: Ast.StmtId, out: ?struct { a: std.mem.Allocator, list: *std.ArrayList(Ast.ExprId) }) Oom!bool {
+pub fn analogDiscreteNets(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, id: Ast.StmtId, out: ?struct { a: std.mem.Allocator, list: *std.ArrayList(Ast.ExprId) }) Oom!bool {
     // Only a net or port of no continuous discipline can be such a read
     // (`discreteName`), and most modules have none: then the walk (13% of a
     // large compact model's lint) is skipped. One pass, not `discreteName`
@@ -314,7 +305,7 @@ fn suspends(file: *const Ast.SourceFile, id: Ast.StmtId) bool {
 /// design (`lib/sim/digital`); this is the analog compile's copy, so a mixed
 /// `.va` is refused before a device is built rather than when its digital
 /// half first runs.
-fn checkWrealDrivers(self: *Lower, module: *const Ast.ModuleDecl, name: Ast.StrId, declared: bool) Oom!void {
+pub fn checkWrealDrivers(self: *Lower, module: *const Ast.ModuleDecl, name: Ast.StrId, declared: bool) Oom!void {
     const ex = &self.file.exprs;
     var count: u32 = @intFromBool(declared);
     for (module.assigns) |a| {
@@ -324,411 +315,10 @@ fn checkWrealDrivers(self: *Lower, module: *const Ast.ModuleDecl, name: Ast.StrI
     }
 }
 
-/// Declares the analog block's view of a mixed module's digital half
-/// (§7.3.1, §7.3.6.5, §8.5). Every variable a discrete process writes and every
-/// net a continuous assignment drives is digital-owned (§7.2.2), and the analog
-/// block reads its value at "the greatest digital time tick which is less than
-/// or equal to the analog time" (§7.3.6.5). So each one the analog block reads
-/// becomes a host-written input: a hidden §3.4 parameter of the same name (a
-/// `Model` field the mixed-signal host writes before every solve), typed per
-/// Table 7-1. No-op for a module that is not mixed.
-///
-/// Must run before the ports and nets are interned, so a digital-owned net
-/// never becomes an analog node.
-pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    // ponytail: a Model field is per model, and a discrete input is per
-    // instance. Exact for the testbench (one instance), wrong for a host that
-    // instantiates one mixed device twice; the right home is an `Instance`
-    // field, which is codegen's to emit.
-    if (!isMixed(self.file, module)) return;
-    self.out.mixed_signal = true;
-    const ex = &self.file.exprs;
-    for (module.nets) |n| if (n.kind == .wreal) try checkWrealDrivers(self, module, n.name, n.init != .none);
-    for (module.ports) |p| if (p.kind == .wreal) try checkWrealDrivers(self, module, p.name, false);
-    var owned: std.ArrayList(Ast.ExprId) = .empty;
-    for (module.assigns) |a| {
-        const t = self.file.lvalueBase(a.target);
-        // IEEE 1364-2005 §6.1 (via VAMS §1.1): A.6.1's `net_assignment`
-        // drives a `net_lvalue` — a variable has no driver to add. A port
-        // with no net or variable declaration is a net: §12.3.3 "If a port
-        // declaration does not include a net or variable type, then the port
-        // can be again declared in a net or variable declaration", and
-        // undeclared it is an implicit net of the default net type.
-        if (t == .none or (netOf(module, ex.strOf(t)) == null and !isNetName(module, ex.strOf(t)))) {
-            try self.err(a.main_tok, .E0438, "", .{});
-            continue;
-        }
-        const discipline = if (netOf(module, ex.strOf(t))) |n| n.discipline else for (module.ports) |p| {
-            if (p.name == ex.strOf(t)) break p.discipline;
-        } else unreachable; // `isNetName` found it among the nets or the ports
-        // The declaration kind decided E0438; the domain decides this one.
-        // §7.2: "only digital blocks and primitives can drive a discrete net",
-        // and §7.3: "Write operations of nets ... are only allowed from the
-        // context of their domain" — and a continuous assignment is the
-        // discrete context. A `ddiscrete` net (§3.6.2.2 `domain discrete`) is
-        // a net exactly as `wire` is, and legal here.
-        if (discipline_rules.isContinuous(self.file, discipline)) {
-            try self.err(a.main_tok, .E0435, "`{s}` is driven by a continuous assignment", .{self.file.str(ex.strOf(t))});
-            continue;
-        }
-        try owned.append(self.arena, t);
-    }
-    for (module.discrete) |blk| try collectWrites(self, blk.body, &owned);
-    // A task (A.2.7) is enabled only from the discrete context, so what its
-    // body writes is digital-owned too.
-    // ponytail: every task's body, enabled or not, and a formal or local that
-    // shadows a module variable counts as that variable; the output actuals
-    // of an enable are not collected. Follow the enables when a source needs it.
-    for (module.tasks) |t| try collectWrites(self, t.body, &owned);
-    // §7.2 "only digital blocks and primitives can drive a discrete net": a
-    // discrete net on a switch terminal takes its value from the switch-level
-    // resolution of its whole network (§8.5.3.5), which the kernel computes.
-    for (module.switches) |sw| for (sw.terms) |t| if (discreteNet(self.file, module, t)) |id| try owned.append(self.arena, id);
-    // §7.3.1 "Read operations of nets ... are allowed from both contexts": a
-    // discrete net the analog block reads holds the kernel's value, z when
-    // nothing drives it.
-    for (module.analog) |blk| _ = try analogDiscreteNets(self.file, module, blk.body, .{ .a = self.arena, .list = &owned });
-    var owned_names: std.ArrayList(struct { name: Ast.StrId, tok: u32 }) = .empty;
-    for (owned.items) |t| try owned_names.append(self.arena, .{ .name = ex.strOf(t), .tok = ex.mainTok(t) });
-    // §3.7 "If no driver is connected to a wreal net, its value shall be zero
-    // (0.0)": a wreal is digital-owned whether or not anything drives it.
-    for (module.nets) |n| if (n.kind == .wreal) try owned_names.append(self.arena, .{ .name = n.name, .tok = n.main_tok });
-    // What a digital event term in an analog event control may watch (§7.3.4):
-    // a digital-owned value, or a named event the digital context triggers
-    // (§5.10.4 / §5.10.5).
-    var digital: std.StringHashMapUnmanaged(void) = .empty;
-    for (owned_names.items) |t| try digital.put(self.arena, self.file.str(t.name), {});
-    var trig: EventRefs = .{ .l = self, .module = module, .triggers_only = true };
-    for (module.discrete) |blk| try trig.stmt(blk.body);
-    for (trig.names.keys()) |name| try digital.put(self.arena, name, {});
-    // Only what the analog block READS crosses: an owned value it never names
-    // is the digital engine's alone, and must not make a solve fail on an x
-    // (§7.3.2) that nothing analog ever sees.
-    var reads: Reads = .{ .l = self, .digital = &digital };
-    for (module.analog) |blk| try reads.stmt(blk.body);
-    // §7.3.6.4 / §7.3.1, A2D: "Read operations of nets and variables in both
-    // domains are allowed from both contexts", so a module variable a digital
-    // expression reads and no digital context assigns is the analog block's.
-    const DReads = struct {
-        l: *Lower,
-        module: *const Ast.ModuleDecl,
-        digital: *const std.StringHashMapUnmanaged(void),
-        pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {
-            if (e == .none) return;
-            const fx = &w.l.file.exprs;
-            if (fx.tag(e) == .ident) for (w.module.params) |p| {
-                if (p.name != fx.strOf(e)) continue;
-                const name = w.l.file.str(p.name);
-                if (!w.l.out.discrete_params.contains(name)) {
-                    try w.l.out.discrete_params.put(w.l.arena, name, fx.mainTok(e));
-                    // §6.3.4 a later parameter can depend on this one, even
-                    // when its name never appears directly in a process.
-                    try w.expr(p.default, .read);
-                }
-                break;
-            };
-            if (fx.tag(e) == .ident) for (w.module.vars) |v| {
-                const name = w.l.file.str(v.name);
-                if (v.name != fx.strOf(e) or w.digital.contains(name)) continue;
-                if (!w.l.out.discrete_reads.contains(name)) try w.l.out.discrete_reads.put(w.l.arena, name, fx.mainTok(e));
-                break;
-            };
-            var buf: [3]Ast.ExprId = undefined;
-            for (fx.children(e, &buf)) |c| try w.expr(c, .read);
-        }
-        pub fn stmt(w: @This(), s: Ast.StmtId) Oom!void {
-            if (s != .none) try w.l.file.stmtEdges(s, w);
-        }
-    };
-    const dreads: DReads = .{ .l = self, .module = module, .digital = &digital };
-    for (module.assigns) |a| try dreads.expr(a.value, .read);
-    for (module.discrete) |blk| try dreads.stmt(blk.body);
-    // §8.5 each explicit D2A term is a host-set flag.
-    for (reads.sites.items, 0..) |site, k| {
-        const param = try self.arena.print("__d2a{d}", .{k});
-        try self.out.discrete_events.put(self.arena, site.term, .{ .name = site.name, .edge = site.edge, .param = param });
-        try lower_param.addParam(self, param, .integer, try self.mir.addIntConst(self.arena, 0), .{ .int = 0 }, &.{}, false, ex.mainTok(site.term));
-    }
-    for (owned_names.items) |t| {
-        const name = self.file.str(t.name);
-        if (!reads.guarded.contains(name) and !reads.names.contains(name)) continue;
-        const ty: Ast.Type = for (module.vars) |v| {
-            if (v.name == t.name) break v.ty;
-        } else if (netOf(module, t.name)) |n| (if (n.kind == .wreal) .real else .integer) else for (module.ports) |p| {
-            if (p.name == t.name) break if (p.kind == .wreal) .real else .integer;
-        } else continue; // an undeclared name is §6.8's, reported elsewhere
-        // VAMS Table 7-1: a bit grouping, a net and an `integer` read as an
-        // integer, a `real` "with no conversion".
-        const real = switch (ty) {
-            .integer => false,
-            .real => true,
-            else => { // else: Table 7-1 has no row for any other type
-                try self.err(t.tok, .E0437, "`{s}` is a digital `{t}`, and Table 7-1 converts only integer, bit and real values", .{ name, ty });
-                continue;
-            },
-        };
-        const zero = if (real) try self.mir.addFloatConst(self.arena, 0) else try self.mir.addIntConst(self.arena, 0);
-        const folded: Lower.Const = if (real) .{ .real = 0 } else .{ .int = 0 };
-        if (reads.guarded.contains(name) and !self.out.discrete_snaps.contains(name)) {
-            // §8.5.3.6: the guarded read's region-1b snapshot.
-            try self.out.discrete_snaps.put(self.arena, name, t.tok);
-            const snap = try naming.snapField(self.arena, name);
-            try lower_param.addParam(self, snap, ty, zero, folded, &.{}, false, t.tok);
-        }
-        if (self.out.discrete_inputs.contains(name) or !reads.names.contains(name)) continue;
-        // §7.3.1 Table 7-1's `reg [0:9] r[0:7]`: an element of a digital
-        // array reads as an integer, so each element is an input of its own,
-        // `name[k]` (`lower_expr_select.lowerIndex` selects among them).
-        const dims: []const Ast.Dim = for (module.vars) |v| {
-            if (v.name == t.name) break v.dims;
-        } else &.{};
-        if (dims.len != 0) {
-            if (self.discrete_arrays.contains(name)) continue; // written more than once
-            try declareDiscreteArray(self, name, dims, ty, zero, folded, t.tok, reads.guarded.contains(name));
-            continue;
-        }
-        try self.out.discrete_inputs.put(self.arena, name, t.tok);
-        try lower_param.addParam(self, name, ty, zero, folded, &.{}, false, t.tok);
-        // §7.3.1 a `reg` input: its packed range, for a select's bits, and
-        // past 32 bits one more `Model` field per 32-bit word, so a select
-        // anywhere in it reads exact bits (`lower_expr_select.lowerRegSelect`).
-        if (!real) for (module.vars) |v| {
-            if (v.name != t.name or v.storage != .reg or v.dims.len != 0) continue;
-            const range = v.packed_range orelse break;
-            const width = lower_shape.packedShapeWidth(self, range) orelse break;
-            const m = lower_constfold.constEval(self, range.msb) orelse break;
-            const l = lower_constfold.constEval(self, range.lsb) orelse break;
-            const right = l.asIntExact() orelse 0;
-            try self.reg_ranges.put(self.arena, name, .{ .right = right, .asc = (m.asIntExact() orelse 0) < right, .width = width, .signed = v.is_signed });
-            if (width <= 32) break;
-            const n_words: u32 = (width + 31) / 32;
-            try self.out.discrete_words.put(self.arena, name, n_words);
-            for (1..n_words) |k| try lower_param.addParam(self, try naming.wordField(self.arena, name, k), .integer, zero, folded, &.{}, false, t.tok);
-            break;
-        };
-        if (!real and reads.fourStateOnly(name)) {
-            // §7.3.2 the unknown plane, for `===`/`!==`/`case` (`lower_expr_case.fourState`).
-            // A name also read any other way keeps the x/z error at every
-            // solve (the runner's `mixedInput`), and compares two-state.
-            try self.out.discrete_xz.put(self.arena, name, {});
-            const xz = try naming.xzField(self.arena, name);
-            try lower_param.addParam(self, xz, .integer, try self.mir.addIntConst(self.arena, 0), .{ .int = 0 }, &.{}, false, t.tok);
-        }
-    }
-}
-
-/// The most elements a digital array the analog block reads may have: each
-/// is a `Model` field the mixed runner copies at every digital tick.
-const max_discrete_elems = 4096;
-
-/// §7.3.1 one input per element of the digital array `name` (one dimension,
-/// constant bounds), `name[k]` for each declared `k`, read as its scalar
-/// inputs are (`Lower.discrete_arrays`). A guarded read's snapshot and a
-/// second dimension are refused (E0437).
-fn declareDiscreteArray(self: *Lower, name: []const u8, dims: []const Ast.Dim, ty: Ast.Type, zero: Mir.Value, folded: Lower.Const, tok: u32, guarded: bool) Oom!void {
-    if (dims.len != 1 or guarded) {
-        try self.err(tok, .E0437, "`{s}` is a digital array the analog block reads {s}; VerA reads one dimension, outside an explicit D2A event's body", .{ name, if (guarded) "in an explicit D2A event's body" else "with more than one dimension" });
-        return;
-    }
-    const range = try lower_node.foldDim(self, dims[0], tok) orelse return;
-    const lo = @min(range.msb, range.lsb);
-    const hi = @max(range.msb, range.lsb);
-    if (hi - lo + 1 > max_discrete_elems) {
-        try self.err(tok, .E0437, "`{s}` is a digital array of {d} elements the analog block reads; VerA copies at most {d}", .{ name, hi - lo + 1, max_discrete_elems });
-        return;
-    }
-    var k = lo;
-    while (k <= hi) : (k += 1) {
-        const elem = try self.arena.print("{s}[{d}]", .{ name, k });
-        try self.out.discrete_inputs.put(self.arena, elem, tok);
-        try lower_param.addParam(self, elem, ty, zero, folded, &.{}, false, tok);
-    }
-    try self.discrete_arrays.put(self.arena, name, .{ .lo = lo, .hi = hi });
-}
-
-/// Marks, in `marks` (indexed by `Ast.ExprId`), every expression §7.2.2's
-/// discrete context owns in a mixed module (`isMixed`): the bodies of its
-/// `initial`/`always` blocks and continuous assignments, plus every module's
-/// task bodies. Those run on the four-state kernel, so an x or z literal there
-/// is ordinary IEEE 1364. A non-mixed module's `initial` is not marked:
-/// `collectInitialState` folds it into analog initial values, where an x has
-/// nowhere to live. Asserts that `marks` has one slot per expression id.
-pub fn markDiscreteExprs(file: *const Ast.SourceFile, marks: []bool) void {
-    assert(marks.len == file.exprs.len());
-    const Mark = struct {
-        file: *const Ast.SourceFile,
-        marks: []bool,
-        pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) error{}!void {
-            if (e == .none) return;
-            w.marks[@backingInt(e)] = true;
-            var buf: [3]Ast.ExprId = undefined;
-            for (w.file.exprs.children(e, &buf)) |c| try w.expr(c, .read);
-        }
-        pub fn stmt(w: @This(), s: Ast.StmtId) error{}!void {
-            if (s != .none) try w.file.stmtEdges(s, w);
-        }
-    };
-    // §7.3.2 in an analog block, an x/z literal compared by `===`/`!==` or as a
-    // `case`/`casex`/`casez` label is the four-state comparison the clause
-    // provides (`lower_expr_case.caseEquality`); anywhere else it stays E0130. Every
-    // module, not only a mixed one: the clause's own `a2d` has no discrete block
-    // and reads its input net with `dnet === 1'bx`.
-    //
-    // §6.6.1 a genvar loop's initialization and iteration values are folded at
-    // elaboration, never executed, so an x/z literal there is not E0130's: it
-    // is §6.6.1's own error ("any bit of the genvar is set to x or z", E0486,
-    // `control.tryUnrollFor`).
-    const Cmp = struct {
-        file: *const Ast.SourceFile,
-        marks: []bool,
-        genvars: []const Ast.StrId,
-        fn lit(w: @This(), e: Ast.ExprId) void {
-            if (e != .none and w.file.exprs.tag(e) == .logic_literal) w.marks[@backingInt(e)] = true;
-        }
-        fn lits(w: @This(), e: Ast.ExprId) void {
-            if (e == .none) return;
-            w.lit(e);
-            var buf: [3]Ast.ExprId = undefined;
-            for (w.file.exprs.children(e, &buf)) |c| w.lits(c);
-        }
-        fn genvarAssign(w: @This(), s: Ast.StmtId) ?Ast.ExprId {
-            if (s == .none or w.file.stmt(s) != .assign) return null;
-            const a = w.file.stmt(s).assign;
-            if (w.file.exprs.tag(a.target) != .ident) return null;
-            for (w.genvars) |g| if (g == w.file.exprs.strOf(a.target)) return a.value;
-            return null;
-        }
-        pub fn expr(w: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) error{}!void {
-            if (e == .none) return;
-            const ex = &w.file.exprs;
-            if (ex.tag(e) == .binary and (ex.binOp(e) == .case_eq or ex.binOp(e) == .case_neq)) {
-                w.lit(ex.lhs(e));
-                w.lit(ex.rhs(e));
-            }
-            var buf: [3]Ast.ExprId = undefined;
-            for (ex.children(e, &buf)) |c| try w.expr(c, .read);
-        }
-        pub fn stmt(w: @This(), s: Ast.StmtId) error{}!void {
-            if (s == .none) return;
-            switch (w.file.stmt(s)) {
-                .case_stmt => |c| for (c.arms) |arm| for (arm.labels) |l| w.lit(l),
-                .for_stmt => |f| if (w.genvarAssign(f.init)) |init| {
-                    w.lits(init);
-                    // The iteration of a genvar loop: whichever name it
-                    // assigns, it is folded (or refused as E0419) like init.
-                    if (f.step != .none and w.file.stmt(f.step) == .assign) w.lits(w.file.stmt(f.step).assign.value);
-                },
-                else => {}, // else: only a case statement has labels, a genvar loop a folded scheme
-            }
-            try w.file.stmtEdges(s, w);
-        }
-    };
-    const w: Mark = .{ .file = file, .marks = marks };
-    for (file.modules) |*m| {
-        // A task (A.2.7) runs only on the kernel, in any module: the analog
-        // backend never executes its body.
-        for (m.tasks) |t| w.stmt(t.body) catch unreachable;
-        for (m.analog) |blk| (Cmp{ .file = file, .marks = marks, .genvars = m.genvars }).stmt(blk.body) catch unreachable;
-        if (!isMixed(file, m)) continue;
-        for (m.discrete) |blk| w.stmt(blk.body) catch unreachable;
-        for (m.assigns) |a| for ([_]Ast.ExprId{ a.target, a.value, a.delay.rise, a.delay.fall, a.delay.off }) |e|
-            w.expr(e, .read) catch unreachable;
-    }
-}
-
-/// Every identifier an analog statement tree reads, split by §8.4.3.2: a read
-/// inside a statement guarded by an explicit D2A event (`guarded`) does not
-/// make the block implicitly sensitive, and §8.5.3.6 gives it the region-1b
-/// value; every other read (`names`) is a live, implicitly sensitive input.
-const Reads = struct {
-    l: *Lower,
-    /// Digital-owned values and digitally triggered named events.
-    digital: *const std.StringHashMapUnmanaged(void),
-    /// Unguarded reads, counted.
-    names: std.StringHashMapUnmanaged(u32) = .empty,
-    guarded: std.StringHashMapUnmanaged(void) = .empty,
-    /// §7.3.2 reads as an operand of `===`/`!==` or as a `case` subject,
-    /// counted: a name all of whose reads are these is read four-state.
-    xz: std.StringHashMapUnmanaged(u32) = .empty,
-    sites: std.ArrayList(Site) = .empty,
-    in_d2a: bool = false,
-    const Site = struct { term: Ast.ExprId, name: []const u8, edge: Edge };
-
-    pub fn stmt(w: *Reads, s: Ast.StmtId) Oom!void {
-        if (s == .none) return;
-        switch (w.l.file.stmt(s)) {
-            .event_control => |c| if (c.kind == .event and c.event != .none) {
-                const before = w.sites.items.len;
-                try w.eventTerms(c.event);
-                const prev = w.in_d2a;
-                defer w.in_d2a = prev;
-                if (w.sites.items.len != before) w.in_d2a = true;
-                return w.stmt(c.body);
-            },
-            .case_stmt => |c| try w.caseOperand(c.scrutinee),
-            else => {}, // else: every other statement is read edge by edge
-        }
-        try w.l.file.stmtEdges(s, w);
-    }
-
-    /// §7.3.4 Syntax 7-2: an `or` list's digital terms are explicit D2A sites;
-    /// the rest (cross, timer, an analog named event) are read as expressions.
-    fn eventTerms(w: *Reads, e: Ast.ExprId) Oom!void {
-        const ex = &w.l.file.exprs;
-        if (ex.tag(e) == .event_or) {
-            try w.eventTerms(ex.lhs(e));
-            return w.eventTerms(ex.rhs(e));
-        }
-        if (d2aTerm(w.l.file, e, w.digital)) |t|
-            return w.sites.append(w.l.arena, .{ .term = e, .name = t.name, .edge = t.edge });
-        // A bare name that is not digital is an analog named event, not a read.
-        if (ex.tag(e) != .ident) try w.expr(e, .read);
-    }
-
-    fn caseOperand(w: *Reads, e: Ast.ExprId) Oom!void {
-        const ex = &w.l.file.exprs;
-        if (w.in_d2a or e == .none or ex.tag(e) != .ident) return;
-        const n = try w.xz.getOrPutValue(w.l.arena, w.l.file.str(ex.strOf(e)), 0);
-        n.value_ptr.* += 1;
-    }
-
-    /// Every unguarded read of `name` is §7.3.2's four-state comparison, so an
-    /// x or z it holds is a value and not the clause's error.
-    fn fourStateOnly(w: *const Reads, name: []const u8) bool {
-        const n = w.xz.get(name) orelse return false;
-        return n == w.names.get(name).?;
-    }
-
-    pub fn expr(w: *Reads, e: Ast.ExprId, _: Ast.SourceFile.Edge) Oom!void {
-        if (e == .none) return;
-        const ex = &w.l.file.exprs;
-        if (ex.tag(e) == .ident) {
-            const name = w.l.file.str(ex.strOf(e));
-            if (w.in_d2a) try w.guarded.put(w.l.arena, name, {}) else (try w.names.getOrPutValue(w.l.arena, name, 0)).value_ptr.* += 1;
-        }
-        if (ex.tag(e) == .binary and (ex.binOp(e) == .case_eq or ex.binOp(e) == .case_neq)) {
-            try w.caseOperand(ex.lhs(e));
-            try w.caseOperand(ex.rhs(e));
-        }
-        var buf: [3]Ast.ExprId = undefined;
-        for (ex.children(e, &buf)) |c| {
-            // §4.4: a bare name in `V(d)` is the net the access function is
-            // applied to, not a Table 7-1 read of its digital value. Making it
-            // a discrete input would drop the node and turn a ddiscrete net's
-            // E0501 ("binds no potential nature") into a false E0337 ("has no
-            // discipline"). An index expression inside the argument is a read.
-            if (c != .none and ex.tag(e) == .branch_access and ex.tag(c) == .ident) continue;
-            try w.expr(c, .read);
-        }
-    }
-};
-
-const Edge = @FieldType(Lower.Lowered.DiscreteEvent, "edge");
-
 /// §7.3.4 a digital event term over one name: `posedge d`, `negedge d`, or a
 /// bare `d` (a change of a digital value, or a digitally triggered named
 /// event). Null for anything else, which stays an analog event.
-fn d2aTerm(file: *const Ast.SourceFile, e: Ast.ExprId, digital: *const std.StringHashMapUnmanaged(void)) ?struct { name: []const u8, edge: Edge } {
+pub fn d2aTerm(file: *const Ast.SourceFile, e: Ast.ExprId, digital: *const std.StringHashMapUnmanaged(void)) ?struct { name: []const u8, edge: Edge } {
     const ex = &file.exprs;
     const tag = ex.tag(e);
     const operand = switch (tag) {
@@ -749,7 +339,7 @@ fn d2aTerm(file: *const Ast.SourceFile, e: Ast.ExprId, digital: *const std.Strin
 }
 
 /// `e` when it names a net of `module` with no continuous discipline, else null.
-fn discreteNet(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, e: Ast.ExprId) ?Ast.ExprId {
+pub fn discreteNet(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, e: Ast.ExprId) ?Ast.ExprId {
     if (e == .none or file.exprs.tag(e) != .ident) return null;
     const n = netOf(module, file.exprs.strOf(e)) orelse return null;
     return if (discipline_rules.isContinuous(file, n.discipline)) null else e;
@@ -770,7 +360,7 @@ fn discreteName(file: *const Ast.SourceFile, module: *const Ast.ModuleDecl, name
 /// declaration re-declares (an undeclared port is an implicit wire)? A name
 /// declared as both a discipline net and a `reg` (`ddiscrete cm; reg cm;`,
 /// §7.6's connect modules) is the variable. Undeclared names are §6.8's.
-fn isNetName(module: *const Ast.ModuleDecl, name: Ast.StrId) bool {
+pub fn isNetName(module: *const Ast.ModuleDecl, name: Ast.StrId) bool {
     for (module.vars) |v| if (v.name == name) return false;
     if (netOf(module, name) != null) return true;
     for (module.ports) |p| if (p.name == name) return true;
@@ -845,7 +435,7 @@ pub fn checkSwitchTerminals(self: *Lower, module: *const Ast.ModuleDecl) Oom!voi
 
 /// The net `name` declares in `module`, of any discipline, or null (a
 /// variable, or undeclared). Its domain is the caller's question.
-fn netOf(module: *const Ast.ModuleDecl, name: Ast.StrId) ?*const Ast.NetDecl {
+pub fn netOf(module: *const Ast.ModuleDecl, name: Ast.StrId) ?*const Ast.NetDecl {
     for (module.nets) |*n| if (n.name == name) return n;
     return null;
 }
@@ -876,7 +466,7 @@ pub fn collectWrites(self: *Lower, id: Ast.StmtId, out: *std.ArrayList(Ast.ExprI
 
 /// Every §5.10.4 named event of `module` a statement tree triggers or waits on,
 /// name → first token.
-const EventRefs = struct {
+pub const EventRefs = struct {
     l: *Lower,
     module: *const Ast.ModuleDecl,
     names: std.StringArrayHashMapUnmanaged(u32) = .empty,
@@ -997,89 +587,6 @@ pub fn checkDiscreteContext(self: *Lower, module: *const Ast.ModuleDecl) Oom!voi
     // discrete set has to be complete first. §7.2.2 is symmetric; the conflict
     // is reported at the analog statement.
     for (module.analog) |blk| try scanContext(self, blk.body, false, blk.is_initial, &ctx);
-}
-
-/// Collects a non-mixed module's A.6.2 `initial` blocks as constant initial
-/// values.
-///
-/// The one shape accepted is a body of assignments of constant expressions to
-/// module variables. §7.2.2 gives such a target to the discrete context and
-/// forbids the continuous one to assign it (E0432), so the block runs once
-/// before the analysis and the constant is the variable's value throughout.
-/// This records the expression and `lowerModule` installs it as the variable's
-/// initial value, where an A.2.2.1 declaration assignment lands.
-///
-/// Every other body made the module mixed (`isMixed`, `constantShape`) and
-/// runs on the kernel. E0433 is what is left: a body `constantShape` admits
-/// whose value `constEval` still cannot fold.
-pub fn collectInitialState(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
-    // A mixed module's `initial` blocks run on the kernel, with the rest of
-    // its digital half: their writes are discrete inputs, not constants.
-    if (self.out.mixed_signal) return;
-    for (module.discrete) |blk| {
-        // `always` is refused at the keyword (E0205, parser): it re-runs on an
-        // event, so it has no constant reading to collect. Reporting its body
-        // here as well would be a second diagnostic for one decision.
-        if (blk.is_always) continue;
-        try collectInitialStmt(self, blk.body);
-    }
-}
-
-fn collectInitialStmt(self: *Lower, id: Ast.StmtId) Oom!void {
-    if (id == .none) return;
-    const ex = &self.file.exprs;
-    switch (self.file.stmt(id)) {
-        .empty => {},
-        // A.6.3 `seq_block` — transparent. Its own local declarations are not:
-        // a name declared inside the block is not the module variable the
-        // continuous context reads, so there is nothing to install.
-        .block => |b| {
-            if (b.vars.len != 0 or b.params.len != 0)
-                try self.err(self.file.stmtTok(id), .E0433, "a local declaration inside an initial block", .{});
-            for (b.body) |s| try collectInitialStmt(self, s);
-        },
-        .assign => |a| {
-            const tok = self.file.stmtTok(id);
-            if (a.target == .none or ex.tag(a.target) != .ident) {
-                // §3.2.2 `bus[i] = …`: the element is representable, but which
-                // element is a question about a value, and the arrays this ever
-                // applies to are the ones a digital kernel would drive.
-                try self.err(tok, .E0433, "the assignment target is not a plain variable name", .{});
-                return;
-            }
-            const name = self.file.str(ex.strOf(a.target));
-            if (lower_constfold.constEval(self, a.value) == null) {
-                var b = self.errWith(tok, .E0433);
-                b.msg("`{s}` is assigned a value that is not constant", .{name});
-                b.note(
-                    "an initial block runs once, before the analysis, so a value it computes " ++
-                        "from anything the analysis produces does not exist yet",
-                    .{},
-                );
-                try b.emit();
-                return;
-            }
-            // Last assignment wins — the body is sequential, so a later one
-            // overwrites an earlier one, and both overwrite an A.2.2.1
-            // declaration assignment (which happens at elaboration, before this
-            // block runs).
-            try self.initial_state.put(self.arena, name, .{ .value = a.value, .tok = tok });
-        },
-        // An analog-only task is §9.2's E0821 (`scanContext`), which names the
-        // rule; E0433 on top would blame the initial-block model instead.
-        .sys_task => |s| if (!lower_sysfunc_context.isAnalogOnlySysFunc(self.file.str(s.name))) try self.err(
-            self.file.stmtTok(id),
-            .E0433,
-            "only assignments of constant expressions are supported here",
-            .{},
-        ),
-        else => try self.err( // else: E0433 names every other statement; a new one is refused, not dropped
-            self.file.stmtTok(id),
-            .E0433,
-            "only assignments of constant expressions are supported here",
-            .{},
-        ),
-    }
 }
 
 /// Collect discrete §7.2.2 assignment targets, then check the continuous side
@@ -1395,51 +902,6 @@ test isMixed {
     }
 }
 
-test markDiscreteExprs {
-    // §7.3.2: in an analog block an x or z literal is a value only as a
-    // `case` label or an operand of `===`/`!==`; anywhere else it stays
-    // E0130's. Only literals with an unknown bit are counted, so the
-    // prelude's two-state literals do not enter.
-    var h: Lower.Harness = undefined;
-    try h.init(std.testing.allocator,
-        \\module m(p);
-        \\  inout p; electrical p;
-        \\  integer k;
-        \\  analog begin
-        \\    case (k) 1'bx: k = 1; endcase
-        \\    k = (k === 1'bz) + 2'bx1;
-        \\    I(p) <+ V(p);
-        \\  end
-        \\endmodule
-    );
-    defer h.deinit();
-    const ex = &h.file.exprs;
-    const marks = try std.testing.allocator.alloc(bool, ex.len());
-    defer std.testing.allocator.free(marks);
-    @memset(marks, false);
-    markDiscreteExprs(&h.file, marks);
-    var marked: usize = 0;
-    var unmarked: usize = 0;
-    for (marks, 0..) |m, i| {
-        const e: Ast.ExprId = @fromBackingInt(@intCast(i));
-        if (ex.tag(e) != .logic_literal) continue;
-        if (!ex.logicValue(e).hasUnknown()) continue;
-        if (m) marked += 1 else unmarked += 1;
-    }
-    try std.testing.expectEqual(2, marked);
-    try std.testing.expectEqual(1, unmarked);
-}
-
-test "collectInitialState: A.6.2 a constant initial installs its value; an undeclared target is E0313" {
-    // A body that is not the constant shape is `isMixed`'s (its test, #57).
-    const cases = [_]struct { decls: []const u8, want: ?diag.Code }{
-        .{ .decls = "  real x;\n  initial x = 2.0;", .want = null },
-        // §6.8: a name the module never declared.
-        .{ .decls = "  initial zz = 1.0;", .want = .E0313 },
-    };
-    for (cases) |c| try Lower.expectBodyVerdict(c.decls, "", c.want);
-}
-
 test "checkDiscreteContext: §5.2.1 and §7.2.2 judge the analog side against the digital writes" {
     // §5.2.1: "digital values cannot be accessed from the analog initial
     // block" (E0431); the ordinary analog block reads one through §7.3.1.
@@ -1469,30 +931,6 @@ test "§5.7: an analog procedural assignment never targets a reg" {
     // reg inside the block, so neither §5.7 nor §7.2.2 (E0432) sees the reg.
     try Lower.expectBodyVerdict("  reg value;\n  initial value = 1;", "    begin : inner\n      integer value;\n      value = -1;\n    end", null);
     try Lower.expectBodyVerdict("  reg value;", "    begin : inner\n      integer k;\n      value = -1;\n    end", .E0316);
-}
-
-test "§7.3.1 a digital reg array the analog block reads is one input per element" {
-    // Table 7-1 lists `reg [0:9] r[0:7];` among the discrete variables read
-    // in the continuous context "as integer numbers": each element its own
-    // host-set input, the array no analog variable of its own.
-    var h: Lower.Harness = undefined;
-    try h.init(std.testing.allocator,
-        \\module m(p);
-        \\  inout p; electrical p;
-        \\  reg [3:0] r[1:3];
-        \\  integer k;
-        \\  initial begin r[1] = 1; r[3] = 3; end
-        \\  analog begin
-        \\    k = $rtoi(V(p));
-        \\    I(p) <+ r[2] + r[k];
-        \\  end
-        \\endmodule
-    );
-    defer h.deinit();
-    _ = try h.low.lowerFile();
-    for ([_][]const u8{ "r[1]", "r[2]", "r[3]" }) |e| try std.testing.expect(h.low.out.discrete_inputs.contains(e));
-    try std.testing.expect(!h.low.out.discrete_inputs.contains("r"));
-    try std.testing.expect(h.low.arrays.get("r") == null);
 }
 
 test "§6.3.4 monitored-event parameters retain their dependencies, not unrelated reals" {
