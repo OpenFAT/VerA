@@ -2,20 +2,82 @@
 //! (preprocessor, lexer, parser; LRM clauses 2 to 10 and annexes D and E).
 //! Depends on `base`, `diag` and `kernels`; `elab`, `analog` and the backends
 //! import this layer, never the reverse (`ir` does not import it at all).
+//!
+//! Contents:
+//! - `pub const Integer = @import("kernels").Integer`
+//! - `pub const token = compat.token`
+//! - `pub const keyword = @import("keyword.zig")`
+//! - `pub const lexer = @import("lexer.zig")`
+//! - `pub const token_value = @import("token_value.zig")`
+//! - `pub const Preprocessor = compat.Preprocessor`
+//! - `pub const preprocessor = @import("preprocessor.zig")`
+//! - `pub const directive_events = @import("pp/events.zig")`
+//! - `pub const prelude = @import("pp/prelude.zig")`
+//! - `pub const protect = @import("pp/protect.zig")`
+//! - `pub const annex_d = @import("pp/annex_d.zig")`
+//! - `pub const annex_e = @import("pp/annex_e.zig")`
+//! - `pub const Pp = @import("pp/Pp.zig")`
+//! - `pub const pp_scan = @import("pp/scan.zig")`
+//! - `pub const pp_comments = @import("pp/comments.zig")`
+//! - `pub const pp_directive = @import("pp/directive.zig")`
+//! - `pub const Lexer = compat.Lexer`
+//! - `pub const Ast = @import("ast.zig")`
+//! - `pub const Parser = @import("parser.zig")`
+//! - `pub const constfold = @import("constfold.zig")`
+//! - `pub const spice_cards = @import("spice_cards.zig")`
+//! - `pub const wreal = @import("wreal.zig")`
+//! - `pub const libmap = @import("libmap.zig")`
+//! - `pub const deep_stack = @import("base").deep_stack`
 
 /// §2.6.1 integer literals and the IEEE 1364-2005 §5 four-state operations
 /// on them: `kernels.Integer`, re-exported for callers that reach it
 /// through `frontend`.
 pub const Integer = @import("kernels").Integer;
-/// Token tags, the annex B keyword table and the §10.6 keyword sets.
-pub const token = @import("token.zig");
+
+const compat = @import("compat.zig");
+/// The annex B keyword table and the §10.6 reserved-word sets.
+pub const keyword = @import("keyword.zig");
+
+/// Preprocessed text in, `{tag, start}` token rows out.
+pub const lexer = @import("lexer.zig");
+
+/// Token text in, §2.6.2 reals and §2.7 strings out.
+pub const token_value = @import("token_value.zig");
+
 /// Clause 10 directives and comment stripping: source files in, one text out.
-pub const Preprocessor = @import("preprocessor.zig");
-/// The lexer file; its cursor type is `Lexer.Lexer`, its token list
-/// `Lexer.TokenList`.
-pub const Lexer = @import("lexer.zig");
+pub const preprocessor = @import("preprocessor.zig");
+
+/// The positional directive events `preprocessor.Output.directives` holds.
+pub const directive_events = @import("pp/events.zig");
+
+/// The annex D/E prelude, preprocessed, lexed and parsed once per process.
+pub const prelude = @import("pp/prelude.zig");
+
+/// IEEE 1364-2005 §28 decryption envelopes and the key file.
+pub const protect = @import("pp/protect.zig");
+
+/// Annex D.1 and D.2 as embedded text.
+pub const annex_d = @import("pp/annex_d.zig");
+
+/// Annex E Table E.1's SPICE primitives as modules, and annex D.3.
+pub const annex_e = @import("pp/annex_e.zig");
+
+/// The preprocessor's scan state (a struct file), for the tests that drive a
+/// step without `process`.
+pub const Pp = @import("pp/Pp.zig");
+
+/// The main scan and the byte scans every preprocessor file shares.
+pub const pp_scan = @import("pp/scan.zig");
+
+/// §2.4 comment stripping.
+pub const pp_comments = @import("pp/comments.zig");
+
+/// Directive dispatch and the directive table.
+pub const pp_directive = @import("pp/directive.zig");
+
 /// The AST; `Ast.SourceFile` is the root every later stage reads.
 pub const Ast = @import("ast.zig");
+
 /// The parser file; its state type is `Parser.Parser`.
 pub const Parser = @import("parser.zig");
 
@@ -38,6 +100,18 @@ pub const libmap = @import("libmap.zig");
 /// nesting is bounded by memory: `base.deep_stack`, re-exported for callers
 /// that reach it through `frontend`.
 pub const deep_stack = @import("base").deep_stack;
+
+/// Token tags and the per-tag facts (token.zig). The old merged namespace
+/// with keyword.zig's names, until pass 2 points it at token.zig.
+pub const token = compat.token;
+
+/// The old preprocessor namespace (compat.zig), until pass 2.
+pub const Preprocessor = compat.Preprocessor;
+
+/// The old lexer namespace (compat.zig): use `lexer` and `token_value`.
+pub const Lexer = compat.Lexer;
+
+// ---- private ----
 
 test {
     @import("std").testing.refAllDecls(@This());

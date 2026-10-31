@@ -7,8 +7,15 @@
 //!
 //! LRM clauses cited: §2.9, §3.4, §3.5, §3.7, §3.12, §4.7, §5.2, §5.10.4,
 //! §6.2, §6.3, §6.3.1, §6.5, §6.6, §7.6, §10.6.
+//!
+//! Contents:
+//! - `pub const Body = struct`
+//! - `pub fn parseModule(self: *Parser) Error!Ast.ModuleDecl`
+//! - `pub fn addPort(self: *Parser, b: *Body, p: Ast.Port) error`
+//! - `pub fn parseModuleItem(self: *Parser, b: *Body) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_decl = @import("decl.zig");
@@ -22,6 +29,7 @@ const parse_net = @import("net.zig");
 const parse_stmt = @import("stmt.zig");
 const parse_udp = @import("udp.zig");
 const token = @import("../token.zig");
+const keyword = @import("../keyword.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
@@ -97,9 +105,8 @@ comptime {
     std.debug.assert(@sizeOf(GenBlock) == 12);
 }
 
-// -----------------------------------------------------------------------
-// A.1.2 module_declaration, LRM §6.2
-// -----------------------------------------------------------------------
+/// The `Body` lists whose rows a module item's §2.9 attribute prefix reaches.
+const attributed_lists = .{ "ports", "params", "vars", "nets", "instances", "defparams", "events", "functions", "analog", "discrete", "assigns", "gates", "pulls", "tasks", "switches", "paths", "timing_checks" };
 
 /// Parses one `module`, `macromodule` or `connectmodule` through `endmodule`
 /// (LRM §6.2): the header's parameter port list and ports (§6.5), then the
@@ -108,6 +115,9 @@ comptime {
 /// Takes every attribute in `self.attrs`, including those collected before
 /// the `module` keyword, and clears the list.
 pub fn parseModule(self: *Parser) Error!Ast.ModuleDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     const is_connect = self.peek() == .kw_connectmodule;
     self.pos += 1; // 'module' | 'macromodule' | 'connectmodule'
@@ -207,6 +217,43 @@ pub fn parseModule(self: *Parser) Error!Ast.ModuleDecl {
     };
 }
 
+/// Appends `p` to `b.ports` and, if its name is new, to `b.port_index`.
+/// On OOM neither table grows.
+pub fn addPort(self: *Parser, b: *Body, p: Ast.Port) error{OutOfMemory}!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    try b.ports.ensureUnusedCapacity(self.arena, 1);
+    const slot = try b.port_index.getOrPut(self.arena, p.name);
+    if (!slot.found_existing) slot.value_ptr.* = @intCast(b.ports.items.len);
+    b.ports.appendAssumeCapacity(p);
+}
+
+/// Parses one A.1.4 module_item into `b`. A token that begins no item is
+/// E0240.
+pub fn parseModuleItem(self: *Parser, b: *Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const tok = self.pos;
+    const tag = self.peek();
+    const outer_item = self.item_tok;
+    self.item_tok = tok;
+    defer self.item_tok = outer_item;
+    // The lengths, not a copy of `b`: an item only appends to these lists.
+    var before: [attributed_lists.len]usize = undefined;
+    inline for (attributed_lists, 0..) |field, i| before[i] = @field(b.*, field).items.len;
+    try parseModuleItemBody(self, b);
+    if (tag == .kw_generate) return; // the region's items own their own prefixes
+    // §2.9 Example 5: a declaration's prefix belongs to every item in its
+    // list, including comma-separated instances and continuous assignments.
+    inline for (attributed_lists, 0..) |field, i| {
+        for (@field(b.*, field).items[before[i]..]) |item| try self.copyAttributes(tok, item.main_tok);
+    }
+}
+
+// ---- private ----
+
 /// Parses A.1.3 list_of_ports or list_of_port_declarations (§6.5) into
 /// `b.ports`. Both styles fall out of one loop: a direction keyword starts a
 /// new declaration whose direction, discipline and range stick to the
@@ -217,6 +264,9 @@ pub fn parseModule(self: *Parser) Error!Ast.ModuleDecl {
 /// result of the concatenation operator") appends one `Ast.Port` per
 /// port_reference.
 fn parsePortList(self: *Parser, b: *Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     _ = try self.expect(.lparen);
     if (self.eat(.rparen)) return;
     var dir: Ast.Direction = .unspecified;
@@ -316,15 +366,6 @@ fn parsePortList(self: *Parser, b: *Body) Error!void {
     _ = try self.expect(.rparen);
 }
 
-/// Appends `p` to `b.ports` and, if its name is new, to `b.port_index`.
-/// On OOM neither table grows.
-pub fn addPort(self: *Parser, b: *Body, p: Ast.Port) error{OutOfMemory}!void {
-    try b.ports.ensureUnusedCapacity(self.arena, 1);
-    const slot = try b.port_index.getOrPut(self.arena, p.name);
-    if (!slot.found_existing) slot.value_ptr.* = @intCast(b.ports.items.len);
-    b.ports.appendAssumeCapacity(p);
-}
-
 /// The internal name of a null port, the next `b.ports` entry. A digital
 /// parse leaves it `.none`, which `sim/digital/elab.zig` skips. The analog
 /// pipeline keys every port by name and keeps it as a terminal (the host
@@ -334,17 +375,19 @@ pub fn addPort(self: *Parser, b: *Body, p: Ast.Port) error{OutOfMemory}!void {
 /// parent's actual reaches no node of the child, and on the top-level device
 /// the terminal touches nothing.
 fn nullPortName(self: *Parser, b: *const Body) Error!Ast.StrId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (self.digital) return .none;
     return self.file.intern(self.arena, try self.arena.print("\tnull{d}", .{b.ports.items.len + 1}));
 }
 
-// -----------------------------------------------------------------------
-// A.1.4 module_item, LRM §6.2 and Clause 3
-// -----------------------------------------------------------------------
-
 /// Parses module items into `b` until `end`, `endmodule` or end of file,
 /// recovering at the next statement after each failed item.
 fn parseModuleItems(self: *Parser, b: *Body, end: token.Tag) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     // An item, or `recoverStatement`'s one token at least.
     var before: u32 = undefined;
     while (true) : (std.debug.assert(self.pos > before)) {
@@ -360,36 +403,16 @@ fn parseModuleItems(self: *Parser, b: *Body, end: token.Tag) Error!void {
     }
 }
 
-/// Parses one A.1.4 module_item into `b`. A token that begins no item is
-/// E0240.
-pub fn parseModuleItem(self: *Parser, b: *Body) Error!void {
-    const tok = self.pos;
-    const tag = self.peek();
-    const outer_item = self.item_tok;
-    self.item_tok = tok;
-    defer self.item_tok = outer_item;
-    // The lengths, not a copy of `b`: an item only appends to these lists.
-    var before: [attributed_lists.len]usize = undefined;
-    inline for (attributed_lists, 0..) |field, i| before[i] = @field(b.*, field).items.len;
-    try parseModuleItemBody(self, b);
-    if (tag == .kw_generate) return; // the region's items own their own prefixes
-    // §2.9 Example 5: a declaration's prefix belongs to every item in its
-    // list, including comma-separated instances and continuous assignments.
-    inline for (attributed_lists, 0..) |field, i| {
-        for (@field(b.*, field).items[before[i]..]) |item| try self.copyAttributes(tok, item.main_tok);
-    }
-}
-
-/// The `Body` lists whose rows a module item's §2.9 attribute prefix reaches.
-const attributed_lists = .{ "ports", "params", "vars", "nets", "instances", "defparams", "events", "functions", "analog", "discrete", "assigns", "gates", "pulls", "tasks", "switches", "paths", "timing_checks" };
-
 fn parseModuleItemBody(self: *Parser, b: *Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     // Under a 1364 language a keyword the §10.6 set frees, followed by a name
     // or a `#`, is a name opening an instance or a declaration (IEEE 1364-2005
     // annex B reserves no Verilog-AMS word, so `connect u(a, b);` instantiates
     // `connect`). Under Verilog-AMS the construct wins: §10.6's own example
     // keeps `analog I(sin, n) <+ ...` under "1364-2005".
-    const freed = @backingInt(self.language) < @backingInt(token.KeywordSet.vams_2_3) and
+    const freed = @backingInt(self.language) < @backingInt(keyword.KeywordSet.vams_2_3) and
         token.isKeyword(self.peek()) and self.identLike(self.pos) and
         (self.identLike(self.pos + 1) or self.peekAt(1) == .hash);
     if (!freed) try self.refuseAms();
@@ -750,6 +773,9 @@ fn parseModuleItemBody(self: *Parser, b: *Body) Error!void {
 /// Parses an A.6.2 `analog [initial]` construct into `b.analog`, or an
 /// `analog function` declaration into `b.functions`. Cursor on `analog`.
 fn parseAnalog(self: *Parser, b: *Body) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     self.pos += 1; // 'analog'
     if (self.peek() == .kw_function) return parse_function.parseFuncDecl(self, b, main_tok, true);

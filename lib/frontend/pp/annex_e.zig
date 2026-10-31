@@ -1,7 +1,12 @@
 //! Annex E Table E.1 SPICE primitives as embedded Verilog-AMS modules, and
 //! annex D.3 driver_access.vams. Data only: one module per primitive, so a
 //! SPICE-named instance elaborates like any other module.
-//! LRM annex D.3, annex E; §4.6.1, §4.6.3, §6.2.2, §6.3, §6.5.5, §6.7.1.
+//! Cites: LRM annex D.3, annex E; §4.6.1, §4.6.3, §6.2.2, §6.3, §6.5.5, §6.7.1.
+//!
+//! Contents:
+//! - `pub const spice_primitives: []const u8`
+//! - `pub const spice_module_count: u32`
+//! - `pub const driver_access_vams: []const u8`
 
 const std = @import("std");
 

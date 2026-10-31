@@ -5,8 +5,14 @@
 //! (`Elaborate.sep` is the same `.`, an array element is `[k]`).
 //!
 //! LRM clauses cited: §6.3.6, §6.7, annex F.2.1; IEEE 1364-2005 §12.5, §4.2.
+//!
+//! Contents:
+//! - `pub fn parseDottedPath(self: *Parser, allow_index: bool, unfolded: ?*std.ArrayList(Ast.ExprId)) Error!Ast.StrId`
+//! - `pub fn instanceSelectAhead(self: *const Parser) bool`
+//! - `pub fn parseInstanceSelect(self: *Parser, name: Ast.StrId, unfolded: *std.ArrayList(Ast.ExprId)) Error!Ast.StrId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_expr = @import("expr.zig");
@@ -29,6 +35,9 @@ const Error = parser.Error;
 /// `false`, because there a `[` after the name is A.2.1.3's vector range.
 /// A §6.3.6 system name (`u.$xposition`) ends the path.
 pub fn parseDottedPath(self: *Parser, allow_index: bool, unfolded: ?*std.ArrayList(Ast.ExprId)) Error!Ast.StrId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     // A.9.3 `hierarchical_identifier ::= [ $root . ] ...`: `$root` is part
     // 0 of the flat string, which its consumer roots (`override.rootedPath`).
     const first = if (self.peek() == .system_identifier and self.peekAt(1) == .dot and
@@ -97,6 +106,9 @@ pub fn instanceSelectAhead(self: *const Parser) bool {
 /// fold (a genvar's, §12.4.1) is spelled `name[]` and appended to
 /// `unfolded`, for `SourceFile.hier_indices`.
 pub fn parseInstanceSelect(self: *Parser, name: Ast.StrId, unfolded: *std.ArrayList(Ast.ExprId)) Error!Ast.StrId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     self.pos += 1;
     const idx = try parse_expr.parseExpr(self);
@@ -107,6 +119,8 @@ pub fn parseInstanceSelect(self: *Parser, name: Ast.StrId, unfolded: *std.ArrayL
     };
     return self.file.intern(self.arena, try self.arena.print("{s}[{d}]", .{ self.file.str(name), k }));
 }
+
+// ---- private ----
 
 /// Folds A.9.3's `[ constant_expression ]` over literals only, with §4.2's
 /// integer typing: the same kernel elaboration applies to the instance-array

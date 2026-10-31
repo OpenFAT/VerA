@@ -1,84 +1,90 @@
-//! Preprocessed text → token stream of `{tag, start}` rows, and literal value
-//! decoding (LRM §2.1-§2.8, Tables 2-1 and 2-2). `Lexer.next` depends only on
-//! (src, pos), so `tokenEnd` recovers a token's end by re-lexing. The lexer never
-//! fails except on OOM: malformed input becomes one `.invalid` token for the parser
-//! to report. Only the identifier scan is a vector block compare (`identEnd`);
-//! the white space and literal scans stay per-byte, where a block lost.
+//! Lexer: preprocessed text in, one `{tag, start}` token row per token out
+//! (`TokenList`), ending with `.eof`. `Lexer.next` depends only on `(src,
+//! pos)`, so a token's end is recovered by re-lexing from its start
+//! (`tokenEnd`, `tokenSpan`) and no length is stored. The lexer never fails
+//! except on OOM: malformed text becomes one `.invalid` row for the parser to
+//! report. Literal values are decoded later, from the token's text
+//! (token_value.zig).
+//! Cites: LRM §2.1-§2.9, Table 2-1; IEEE 1364-2005 §3.5.1, §19 (the
+//! directives the preprocessor passes through), A.6.5.
+//!
+//! Only the identifier scan is a vector block compare (`identEnd`, probed in
+//! tests/codegen_probe.zig); the white space and literal scans stay per-byte,
+//! where a block lost.
+//!
+//! Contents:
+//! - `pub const TokenList = std.MultiArrayList(token.Stored)`
+//! - `pub const source_bytes_max: u32`
+//! - `pub const Error = error{OutOfMemory}`
+//! - `pub const Seed = struct`
+//! - `pub const Lexer = struct`, `Lexer.next(self: *Lexer) token.Stored`
+//! - `pub fn tokenize(gpa: Allocator, src: []const u8, seed: ?Seed) Error!TokenList`
+//! - `pub fn tokenEnd(src: []const u8, start: u32) u32`
+//! - `pub fn tokenText(src: []const u8, start: u32) []const u8`
+//! - `pub fn tokenSpan(src: []const u8, starts: []const u32, tok: u32) diag.Span`
+//! - `pub fn isSpace(c: u8) bool`
+//! - `pub fn isIdentChar(c: u8) bool`
+//! - `pub fn identEnd(s: []const u8, i: usize) usize`
+//! - `pub fn escapedEnd(s: []const u8, i: usize) usize`
+//! - `pub fn isBasedDigit(c: u8, radix: u8) bool`
 
 const std = @import("std");
-const token = @import("token.zig");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
 const diag = @import("diag");
+const token = @import("token.zig");
+const keyword = @import("keyword.zig");
+const token_value = @import("token_value.zig");
+const scaleExp = token_value.scaleExp;
+const stringRunaway = token_value.stringRunaway;
+const StringRunaway = token_value.StringRunaway;
+const testing = std.testing;
 
-/// Token rows in SoA form: the `.tag` and `.start` columns.
+/// Token rows in SoA form: the `.tag` and `.start` columns, 5 bytes a row.
 pub const TokenList = std.MultiArrayList(token.Stored);
 
-/// A cursor over preprocessed source. `pos` is the only state.
+/// Longest text the lexer takes: a token start is a `u32` byte offset. The
+/// preprocessor refuses a longer text first (E1013), so past it is a bug.
+pub const source_bytes_max: u32 = std.math.maxInt(u32);
+
+/// Every way `tokenize` fails. Malformed text is never an error: it lexes to
+/// `.invalid` rows.
+pub const Error = error{
+    /// The token list could not grow. Nothing is returned; the partial list
+    /// is freed.
+    OutOfMemory,
+};
+
+/// Already-lexed tokens for a prefix of the text, replayed by `tokenize`
+/// instead of re-scanned (`pp.preludeTokens` makes one for the annex D/E
+/// prelude). `len` is the prefix's byte length; the columns are its tokens
+/// without `.eof`, every `start` an absolute offset below `len`. The prefix
+/// must end between tokens.
+pub const Seed = struct {
+    tags: []const token.Tag,
+    starts: []const u32,
+    len: u32,
+};
+
+/// A cursor over preprocessed source. `pos` is the only state, so a scan
+/// from any token start reproduces that token.
 pub const Lexer = struct {
     src: []const u8,
     pos: u32 = 0,
 
-    // Budget: the scan's whole state, three words in registers (4 B of
-    // padding after `pos`). A u32 `pos` matches the u32 token starts.
+    // The scan's whole state: three words in registers (4 B of padding after
+    // `pos`). A u32 `pos` matches the u32 token starts.
     comptime {
-        std.debug.assert(@sizeOf(Lexer) <= 24);
+        assert(@sizeOf(Lexer) <= 24);
     }
 
-    /// Already-lexed tokens for a prefix of `src`, replayed by `tokenizeSeeded`
-    /// instead of re-scanned. `len` is the prefix's byte length; the columns are
-    /// its tokens without `.eof`, and every `start` is an absolute offset into
-    /// `src`. The prefix must end between tokens.
-    /// Produced by `Preprocessor.preludeTokens` for the annex D/E prelude.
-    pub const Seed = struct {
-        tags: []const token.Tag,
-        starts: []const u32,
-        len: u32,
-    };
-
-    /// Lexes all of `src`; the list ends with `.eof`. Fails only with
-    /// `OutOfMemory`: malformed text becomes `.invalid` rows.
-    /// The caller owns the list and frees it with `list.deinit(arena)`.
-    pub fn tokenize(arena: std.mem.Allocator, src: []const u8) !TokenList {
-        return tokenizeSeeded(arena, src, null);
-    }
-
-    /// Same as `tokenize`, but copies `seed`'s tokens and scans only the rest.
-    /// Asserts `src.len` fits in u32 and the seed lies within `src`. Correct
-    /// because `next` carries no state across tokens; the prelude equivalence
-    /// test in preprocessor.zig checks it against a full scan.
-    pub fn tokenizeSeeded(arena: std.mem.Allocator, src: []const u8, seed: ?Seed) !TokenList {
-        std.debug.assert(src.len <= std.math.maxInt(u32));
-
-        var list: TokenList = .empty;
-        errdefer list.deinit(arena);
-        var start: u32 = 0;
-        if (seed) |s| {
-            std.debug.assert(s.tags.len == s.starts.len);
-            std.debug.assert(s.len <= src.len);
-            // About 4 source bytes per token, over the part still to be scanned.
-            try list.ensureTotalCapacity(arena, s.tags.len + (src.len - s.len) / 4 + 8);
-            list.len = s.tags.len;
-            @memcpy(list.items(.tag), s.tags);
-            @memcpy(list.items(.start), s.starts);
-            start = s.len;
-        } else {
-            // About 4 source bytes per token including separators: one allocation in practice.
-            try list.ensureTotalCapacity(arena, src.len / 4 + 8);
-        }
-
-        var lx: Lexer = .{ .src = src, .pos = start };
-        while (true) {
-            const t = lx.next();
-            try list.append(arena, t);
-            if (t.tag == .eof) return list;
-        }
-    }
-
-    /// Scans the token at `pos` and advances past it (LRM §2.2). Returns `.eof`
-    /// at the end, repeatedly. Asserts that `pos` is within the source, and
-    /// that every other token advanced it by at least one byte: the
-    /// tokenizer's loop ends only because each pass moves.
+    /// Scans the token at `pos` and advances past it (LRM §2.2). Returns
+    /// `.eof` at the end, repeatedly. Asserts that `pos` is within the
+    /// source; every other token advances it by at least one byte, which is
+    /// what bounds `tokenize`'s loop.
     pub fn next(self: *Lexer) token.Stored {
-        std.debug.assert(self.pos <= self.src.len);
+        assert(self.pos <= self.src.len);
+        assert(self.src.len <= source_bytes_max);
         // §2.3 white space only separates. The preprocessor strips every §2.4
         // comment (pp/comments.zig), so `//` or `/*` here is two operators, as
         // IEEE 1364 §19.3.1 makes of macro text pasted into one.
@@ -97,37 +103,18 @@ pub const Lexer = struct {
             '`' => self.lexDirective(), // the directives the preprocessor passes through
             else => self.lexOperator(), // §2.5, §2.9
         };
-        std.debug.assert(self.pos > start);
-        std.debug.assert(self.pos <= self.src.len);
+        assert(self.pos > start);
+        assert(self.pos <= self.src.len);
         return .{ .tag = tag, .start = start };
     }
 
-    /// Returns the end offset of the token starting at `start`, by re-lexing it.
-    /// Cost is one token scan per call.
-    fn tokenEnd(self: *const Lexer, start: u32) u32 {
-        var relex: Lexer = .{ .src = self.src, .pos = start };
-        _ = relex.next();
-        return relex.pos;
-    }
+    // ---- private ----
 
-    /// Returns the source text of the token starting at `start` (one token scan).
-    pub fn tokenText(self: *const Lexer, start: u32) []const u8 {
-        return self.src[start..self.tokenEnd(start)];
-    }
-
-    // ---- scanners ---------------------------------------------------------
-
-    /// Whether the last non-space byte before `at` is a `#`.
-    fn afterHash(src: []const u8, at: usize) bool {
-        var k = at;
-        while (k > 0 and isSpace(src[k - 1])) k -= 1;
-        return k > 0 and src[k - 1] == '#';
-    }
-
-    /// LRM §2.6.1 (integer constants) and §2.6.2 (real constants). Cursor is on
-    /// a decimal digit. Underscores are legal anywhere but first (§2.6.1).
+    /// LRM §2.6.1 (integer constants) and §2.6.2 (real constants). The cursor
+    /// is on a decimal digit. Underscores are legal anywhere but first.
     fn lexNumber(self: *Lexer) token.Tag {
         const start = self.pos;
+        assert(std.ascii.isDigit(self.src[start]));
         self.skipUnsignedNumber(); // `size`, or the whole integer/mantissa
 
         // §2.6.1 sized based constant: size ' [s|S] base digits.
@@ -183,19 +170,20 @@ pub const Lexer = struct {
             self.pos += 1;
             return .real_literal;
         }
-
+        assert(self.pos > start);
         return if (is_real) .real_literal else .int_literal;
     }
 
-    /// LRM §2.6.1 based-constant tail: `' [s|S] base_char digits`. Cursor is on
-    /// the apostrophe. Returns null (cursor untouched) if this is not a
-    /// base_format.
+    /// LRM §2.6.1 based-constant tail: `' [s|S] base_char digits`. The cursor
+    /// is on the apostrophe. Returns null, the cursor untouched, when this is
+    /// not a base_format.
     ///
     /// White space is legal between the base format and the digits ("optionally
     /// preceded by white space", §2.6.1, as in `'h 837FF`) but not inside the
     /// apostrophe group (`8 ' h`). It stays inside the token span, and
     /// `integer.parse` skips it at the same place.
     fn lexBasedTail(self: *Lexer) ?token.Tag {
+        assert(self.src[self.pos] == '\'');
         var i = self.pos + 1;
         if (i < self.src.len and (self.src[i] == 's' or self.src[i] == 'S')) i += 1; // signed designator
         if (i >= self.src.len) return null;
@@ -218,17 +206,22 @@ pub const Lexer = struct {
             self.pos = after_base;
             return .invalid;
         }
+        assert(i > after_base);
         self.pos = i;
         return .int_literal;
     }
 
-    /// LRM §2.6.1 unsigned_number: decimal digits with `_` separators. A trailing
-    /// `_` is legal (`236.123_763_e-12` is an LRM example).
+    /// LRM §2.6.1 unsigned_number: decimal digits with `_` separators. A
+    /// trailing `_` is legal (`236.123_763_e-12` is an LRM example).
     fn skipUnsignedNumber(self: *Lexer) void {
-        while (true) {
-            const c = self.peek(0);
-            if (std.ascii.isDigit(c) or c == '_') self.pos += 1 else return;
+        const start = self.pos;
+        while (self.pos < self.src.len) {
+            const c = self.src[self.pos];
+            if (!std.ascii.isDigit(c) and c != '_') break;
+            self.pos += 1;
         }
+        assert(self.pos >= start);
+        assert(self.pos <= self.src.len);
     }
 
     /// LRM §2.8 simple identifier or §2.8.2 keyword. Escaped identifiers never
@@ -236,7 +229,8 @@ pub const Lexer = struct {
     fn lexIdentOrKeyword(self: *Lexer) token.Tag {
         const start = self.pos;
         self.pos = @intCast(identEnd(self.src, self.pos));
-        return token.lookupKeyword(self.src[start..self.pos]) orelse .identifier;
+        assert(self.pos > start);
+        return keyword.lookupKeyword(self.src[start..self.pos]) orelse .identifier;
     }
 
     /// LRM §10.6 `begin_keywords / `end_keywords, §10.3 `default_transition,
@@ -244,20 +238,24 @@ pub const Lexer = struct {
     /// preprocessor passes through because only the parser can check where
     /// they sit (`passed_directives`). Any other backtick is one `.invalid` byte.
     fn lexDirective(self: *Lexer) token.Tag {
+        assert(self.src[self.pos] == '`');
         const name = self.pos + 1; // past the '`'
         const end: u32 = @intCast(identEnd(self.src, name));
         const tag = passed_directives.get(self.src[name..end]) orelse {
             self.pos = name;
             return .invalid;
         };
+        assert(end > name);
         self.pos = end;
         return tag;
     }
 
-    /// LRM §2.8.1: `\` then printable ASCII 33 to 126, terminated by white space.
-    /// Neither the backslash nor the terminator is part of the identifier, but
-    /// both are inside the token span (the parser strips them).
+    /// LRM §2.8.1: `\` then printable ASCII 33 to 126, terminated by white
+    /// space. Neither the backslash nor the terminator is part of the
+    /// identifier, but the backslash is inside the token span (the parser
+    /// strips it).
     fn lexEscapedIdentifier(self: *Lexer) token.Tag {
+        assert(self.src[self.pos] == '\\');
         const body = self.pos + 1;
         self.pos = @intCast(escapedEnd(self.src, body));
         return if (self.pos == body) .invalid else .escaped_identifier;
@@ -265,6 +263,7 @@ pub const Lexer = struct {
 
     /// LRM §2.8.3: `$` immediately followed by [a-zA-Z0-9_$]+ (no white space).
     fn lexSystemIdentifier(self: *Lexer) token.Tag {
+        assert(self.src[self.pos] == '$');
         self.pos += 1;
         const body = self.pos;
         self.pos = @intCast(identEnd(self.src, self.pos));
@@ -272,8 +271,10 @@ pub const Lexer = struct {
     }
 
     /// LRM §2.7: double-quoted, single line, `\` escapes (decoded by
-    /// `stringContents`). An unterminated string ends at the newline/EOF.
+    /// `token_value.stringContents`). An unterminated string ends at the
+    /// newline or the end of the text.
     fn lexString(self: *Lexer) token.Tag {
+        assert(self.src[self.pos] == '"');
         self.pos += 1;
         while (self.pos < self.src.len) {
             const c = self.src[self.pos];
@@ -285,16 +286,20 @@ pub const Lexer = struct {
             }
             if (c == '"') return .string_literal;
         }
+        assert(self.pos == self.src.len or self.src[self.pos] == '\n');
         return .invalid;
     }
 
     /// `'{` assignment pattern (§4.2.14) or an unsized based constant (§2.6.1).
     fn lexApostrophe(self: *Lexer) token.Tag {
+        const start = self.pos;
+        assert(self.src[start] == '\'');
         if (self.peek(1) == '{') {
             self.pos += 2;
             return .apostrophe_lbrace;
         }
         if (self.lexBasedTail()) |t| return t;
+        assert(self.pos == start);
         self.pos += 1;
         return .invalid;
     }
@@ -303,9 +308,10 @@ pub const Lexer = struct {
     /// Digital-only sequences with no tag (`=>`, `*>`, `&&&`) are consumed
     /// whole as `.invalid` so the parser reports one error, not three.
     fn lexOperator(self: *Lexer) token.Tag {
+        const start = self.pos;
         const c = self.src[self.pos];
         self.pos += 1;
-        return switch (c) {
+        const tag: token.Tag = switch (c) {
             '+' => .plus,
             // §5.10.4/A.6.5 `event_trigger ::= -> hierarchical_event_identifier`,
             // which §5.10 also allows in analog blocks.
@@ -348,16 +354,22 @@ pub const Lexer = struct {
             // the lexer is an unknown or unbalanced directive.
             else => .invalid,
         };
+        // Longest operator: three bytes (`<<<`, `===`, `&&&`).
+        assert(self.pos - start <= 3);
+        return tag;
     }
 
-    /// The byte `n` past the cursor, or 0 past the end.
+    /// The byte `n` past the cursor, or 0 past the end (NUL never appears in
+    /// a token, so 0 matches no scanner's test).
     fn peek(self: *const Lexer, n: u32) u8 {
+        assert(n <= 2);
         // usize: `pos + n` may pass maxInt(u32) on a source of that length.
         const i = @as(usize, self.pos) + n;
-        return if (i < self.src.len) self.src[i] else 0; // NUL never appears in source
+        return if (i < self.src.len) self.src[i] else 0;
     }
 
     fn eat(self: *Lexer, c: u8) bool {
+        assert(c != 0);
         if (self.pos < self.src.len and self.src[self.pos] == c) {
             self.pos += 1;
             return true;
@@ -378,6 +390,79 @@ const passed_directives = std.StaticStringMap(token.Tag).initComptime(.{
     .{ "default_transition", .dir_outside_module },
 });
 
+/// Lexes all of `src` into a new list ending with `.eof`; with a `seed`, its
+/// rows are copied and only the text after `seed.len` is scanned, which gives
+/// the same rows because `next` carries no state across tokens.
+/// The caller owns the list and frees it with `list.deinit(gpa)`.
+/// Asserts that `src.len <= source_bytes_max` and that the seed lies within
+/// `src` with equal-length columns.
+pub fn tokenize(gpa: Allocator, src: []const u8, seed: ?Seed) Error!TokenList {
+    assert(src.len <= source_bytes_max);
+    var list: TokenList = .empty;
+    errdefer list.deinit(gpa);
+    var start: u32 = 0;
+    if (seed) |s| {
+        assert(s.tags.len == s.starts.len);
+        assert(s.len <= src.len);
+        // About 4 source bytes per token, over the part still to be scanned.
+        try list.ensureTotalCapacity(gpa, s.tags.len + (src.len - s.len) / 4 + 8);
+        list.len = s.tags.len;
+        @memcpy(list.items(.tag), s.tags);
+        @memcpy(list.items(.start), s.starts);
+        start = s.len;
+    } else {
+        // About 4 source bytes per token including separators: one
+        // allocation in practice.
+        try list.ensureTotalCapacity(gpa, src.len / 4 + 8);
+    }
+
+    var lx: Lexer = .{ .src = src, .pos = start };
+    // Every token but `.eof` advances by a byte, so `src.len - start + 1`
+    // passes bound the loop.
+    const passes_max = src.len - start + 1;
+    for (0..passes_max) |_| {
+        const t = lx.next();
+        try list.append(gpa, t);
+        if (t.tag == .eof) break;
+    } else unreachable;
+    assert(list.items(.tag)[list.len - 1] == .eof);
+    return list;
+}
+
+/// Returns the end offset of the token starting at `start`, by re-lexing it
+/// (one token scan). Asserts that `start <= src.len`.
+pub fn tokenEnd(src: []const u8, start: u32) u32 {
+    assert(start <= src.len);
+    var relex: Lexer = .{ .src = src, .pos = start };
+    _ = relex.next();
+    assert(relex.pos >= start);
+    return relex.pos;
+}
+
+/// Returns the source text of the token starting at `start` (one token scan).
+/// Asserts that `start <= src.len`.
+pub fn tokenText(src: []const u8, start: u32) []const u8 {
+    const end = tokenEnd(src, start);
+    assert(end <= src.len);
+    return src[start..end];
+}
+
+/// Returns the byte range of token `tok`, for a diagnostic caret. `starts` is
+/// the token list's `.start` column; the end costs one re-lex. An index past
+/// the column is a zero-width span at the end of the text, for "expected X,
+/// found end of file".
+pub fn tokenSpan(src: []const u8, starts: []const u32, tok: u32) diag.Span {
+    assert(src.len <= source_bytes_max);
+    if (tok >= starts.len) {
+        const end: u32 = @intCast(src.len);
+        return .{ .start = end, .end = end };
+    }
+    const start = starts[tok];
+    const span: diag.Span = .{ .start = start, .end = tokenEnd(src, start) };
+    assert(span.end >= span.start);
+    return span;
+}
+
 /// §2.3: "White space shall contain the characters for spaces, tabs,
 /// newlines, and formfeeds." Carriage return is added so CRLF source reads as
 /// LF source; vertical tab, which `std.ascii.isWhitespace` also admits, is not
@@ -392,9 +477,9 @@ pub fn isIdentChar(c: u8) bool {
 }
 
 /// Returns the first index at or after `i` whose byte is not `isIdentChar`,
-/// else `s.len`. Asserts `i <= s.len`.
+/// else `s.len`. Asserts that `i <= s.len`.
 pub fn identEnd(s: []const u8, i: usize) usize {
-    std.debug.assert(i <= s.len);
+    assert(i <= s.len);
     var k = i;
     // One block compare and one predictable branch per 32 bytes, in place of
     // a loop exit mispredicted at the end of nearly every identifier: lexing
@@ -416,22 +501,27 @@ pub fn identEnd(s: []const u8, i: usize) usize {
         }
     }
     while (k < s.len and isIdentChar(s[k])) k += 1;
+    assert(k >= i);
     return k;
 }
 
 /// Returns where the §2.8.1 escaped identifier whose body starts at `i` (just
-/// past the `\`) ends. The body is printable ASCII 33 to 126; any other byte ends it.
+/// past the `\`) ends. The body is printable ASCII 33 to 126; any other byte
+/// ends it. Asserts that `i <= s.len`.
 pub fn escapedEnd(s: []const u8, i: usize) usize {
+    assert(i <= s.len);
     var k = i;
     while (k < s.len and s[k] >= 33 and s[k] <= 126) k += 1;
+    assert(k == s.len or s[k] < 33 or s[k] > 126);
     return k;
 }
 
 /// Returns whether `c` is a §2.6.1 digit of `radix`, `_`, or a four-state digit
 /// (x/X/z/Z/?, decoded by `integer.parse`). The parser calls it with radix 16 to
 /// tell §2.6.1 Example 1's `4af` (a based number missing its base format) from
-/// `1g` (a number and an identifier).
+/// `1g` (a number and an identifier). Asserts that `radix` is 2, 8, 10 or 16.
 pub fn isBasedDigit(c: u8, radix: u8) bool {
+    assert(radix == 2 or radix == 8 or radix == 10 or radix == 16);
     return switch (c) {
         '_', 'x', 'X', 'z', 'Z', '?' => true,
         '0'...'9' => c - '0' < radix,
@@ -440,248 +530,28 @@ pub fn isBasedDigit(c: u8, radix: u8) bool {
     };
 }
 
-/// Returns the exponent text a §2.6.2 Table 2-1 scale factor stands for, or null.
-/// `M` is 1e6 and `m` is 1e-3; `K` and `k` are both 1e3.
-/// Callers append it to the mantissa and parse once: `200u` → `200e-6` rounds
-/// once, while `200.0 * 1e-6` rounds twice and gives a different double. The
-/// testbench's `//! time` parser uses it so both read the same value; do not
-/// re-spell the table elsewhere.
-pub fn scaleExp(c: u8) ?[]const u8 {
-    return switch (c) {
-        'T' => "e12",
-        'G' => "e9",
-        'M' => "e6",
-        'K', 'k' => "e3",
-        'm' => "e-3",
-        'u' => "e-6",
-        'n' => "e-9",
-        'p' => "e-12",
-        'f' => "e-15",
-        'a' => "e-18",
-        else => null,
-    };
+// ---- private ----
+
+/// Whether the last non-space byte before `at` is a `#`.
+fn afterHash(src: []const u8, at: usize) bool {
+    assert(at <= src.len);
+    var k = at;
+    while (k > 0 and isSpace(src[k - 1])) k -= 1;
+    return k > 0 and src[k - 1] == '#';
 }
-
-// ---- source locations (diagnostics) ---------------------------------------
-
-/// Returns the byte range of token `tok`, for a diagnostic caret. `starts` is
-/// the token list's `.start` column; the end costs one re-lex.
-/// An out-of-range index yields a zero-width span at end of file, for
-/// "expected X, found end of file".
-pub fn tokenSpan(src: []const u8, starts: []const u32, tok: u32) diag.Span {
-    if (tok >= starts.len) {
-        const end: u32 = @intCast(src.len);
-        return .{ .start = end, .end = end };
-    }
-    const start = starts[tok];
-    const lx: Lexer = .{ .src = src };
-    return .{ .start = start, .end = lx.tokenEnd(start) };
-}
-
-/// Why a `.invalid` token that opened with `"` never closed, so the parser can
-/// give that common mistake its own message.
-const StringRunaway = enum {
-    /// Not a string literal at all; the caller's own message stands.
-    none,
-    /// Ran off the end of the line (or the file) with no closing quote.
-    unterminated,
-    /// Ended the line with a backslash: the SystemVerilog line continuation.
-    line_continuation,
-};
-
-/// Classifies the `.invalid` token spanning `span`.
-///
-/// §2.7: a string literal is "contained on a single line", and Table 2-2 has no
-/// `\<newline>` escape. Continuing a string across a line is IEEE 1800 §5.9,
-/// which some foundry models use, so `.line_continuation` lets the message name
-/// the rule. The body is walked with `lexString`'s escape pairing, because in
-/// `"a\\` the final backslash is half of an escape, not a continuation.
-pub fn stringRunaway(src: []const u8, span: diag.Span) StringRunaway {
-    if (span.start >= src.len or src[span.start] != '"') return .none;
-    const text = src[span.start..span.end];
-    var i: usize = 1;
-    while (i < text.len) : (i += 1) {
-        if (text[i] == '"') return .none; // closed on its own line after all
-        if (text[i] != '\\') continue;
-        // A `\` with nothing left in the token is the one `lexString` refused
-        // to pair, i.e. it sat immediately before the newline that stopped it.
-        if (i + 1 == text.len) {
-            return if (span.end < src.len) .line_continuation else .unterminated;
-        }
-        i += 1; // skip the escaped character
-    }
-    return .unterminated;
-}
-
-// ---- token value decoding (§2.6, §2.7) ------------------------------------
-
-/// `parseReal`'s errors. §2.6.1 integer decoding is `integer.parse`, with its
-/// own error set.
-pub const ValueError = error{
-    /// `std.fmt.parseFloat` refused the text. The lexer never produces such a
-    /// literal; a value too large for f64 is not this error but inf (§2.6.2
-    /// leaves it to IEEE 754).
-    Overflow,
-    OutOfMemory,
-};
-
-/// A decoded §2.6.1 integer constant. `width` is the declared size in bits, or
-/// 0 for an unsized constant, which §4.2.13 forbids in a concatenation.
-pub const IntLiteral = struct {
-    value: i64,
-    width: u32,
-    signed: bool,
-    /// §2.6.1 the radix the base format names (2, 8, 10 or 16); 10 for a
-    /// literal written without one. IEEE 1364-2005 §26.6.26's vpiConstType.
-    radix: u8 = 10,
-    /// An unsized based constant's digit count times its digit's bits
-    /// (`'h0001` is 16), saturating; 0 for any other. The digital engine
-    /// sizes the constant by it past 32 bits (specification/Vague_Decisions.md
-    /// VD-131).
-    digit_bits: u16 = 0,
-};
-
-// Budget: 16 bytes, one per `.int_literal` row (4,750 on hisimhv_va).
-comptime {
-    std.debug.assert(@sizeOf(IntLiteral) == 16);
-}
-
-/// Decodes a `.real_literal`'s text (LRM §2.6.2), of any length. Strips `_`
-/// and rewrites a Table 2-1 scale factor into an exponent, so IEEE-754
-/// rounding happens once. A literal past 512 bytes is decoded in a `gpa`
-/// buffer freed before return.
-pub fn parseReal(gpa: std.mem.Allocator, text: []const u8) ValueError!f64 {
-    // A scale factor is always the final character and never coexists with an
-    // exponent, so one look at the last byte decides.
-    var body = text;
-    var suffix: []const u8 = "";
-    if (text.len > 0) {
-        if (scaleExp(text[text.len - 1])) |s| {
-            suffix = s;
-            body = text[0 .. text.len - 1];
-        }
-    }
-
-    var small: [512]u8 = undefined;
-    const need = body.len + suffix.len;
-    const buf = if (need <= small.len) small[0..need] else try gpa.alloc(u8, need);
-    defer if (need > small.len) gpa.free(buf);
-    var n: usize = 0;
-    for (body) |c| {
-        if (c == '_') continue; // §2.6.2: underscores are ignored
-        buf[n] = c;
-        n += 1;
-    }
-    @memcpy(buf[n..][0..suffix.len], suffix);
-    n += suffix.len;
-
-    // The lexer only produces well-formed real literals; overflow yields inf,
-    // which §2.6.2 leaves to IEEE 754; clamping would change the value.
-    return std.fmt.parseFloat(f64, buf[0..n]) catch error.Overflow;
-}
-
-/// Decodes a `.string_literal`'s text (quotes included) into its bytes
-/// (LRM §2.7 Table 2-2: \n \t \\ \" and \ddd, 1 to 3 octal digits).
-/// An escape Table 2-2 does not list decodes to the escaped character alone
-/// (`\q` is `q`), and an octal escape above `\377` keeps its low 8 bits;
-/// `badEscape` finds both so the caller can report them first.
-/// Asserts `text` is quoted. Caller owns returned memory and must free it
-/// with `gpa`.
-pub fn stringContents(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
-    std.debug.assert(text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"');
-    const body = text[1 .. text.len - 1];
-
-    var out = try gpa.alloc(u8, body.len); // escapes only ever shrink
-    errdefer gpa.free(out);
-
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < body.len) {
-        const c = body[i];
-        if (c != '\\') {
-            out[n] = c;
-            n += 1;
-            i += 1;
-            continue;
-        }
-        i += 1;
-        if (i >= body.len) break;
-        switch (body[i]) {
-            'n' => {
-                out[n] = '\n';
-                i += 1;
-            },
-            't' => {
-                out[n] = '\t';
-                i += 1;
-            },
-            '0'...'7' => { // \ddd, 1 to 3 octal digits
-                var v: u16 = 0;
-                var k: usize = 0;
-                while (k < 3 and i < body.len and body[i] >= '0' and body[i] <= '7') : (k += 1) {
-                    v = v * 8 + (body[i] - '0');
-                    i += 1;
-                }
-                out[n] = @truncate(v); // above \377 is refused first (`badEscape`)
-            },
-            // ponytail: backslash, quote and undefined escapes pass through
-            // (an undefined one warns W0149, `badEscape`); add an arm only
-            // for an escape with a distinct byte mapping.
-            else => {
-                out[n] = body[i];
-                i += 1;
-            },
-        }
-        n += 1;
-    }
-    return gpa.realloc(out, n);
-}
-
-/// An escape in a `.string_literal` that `stringContents` would decode by
-/// VerA's choice rather than by Table 2-2, as byte offsets into the text.
-const BadEscape = struct {
-    start: u32,
-    end: u32,
-    /// `\ddd` above `\377` (E0148); otherwise an escape Table 2-2 does not
-    /// list (W0149).
-    above_377: bool,
-};
-
-/// Returns the first escape at or after byte `from` of a `.string_literal`'s
-/// text (quotes included) that LRM §2.7 Table 2-2 does not define, or null.
-pub fn badEscape(text: []const u8, from: u32) ?BadEscape {
-    var i: u32 = @max(from, 1);
-    const end: u32 = @intCast(text.len -| 1);
-    while (i < end) : (i += 1) {
-        if (text[i] != '\\' or i + 1 >= end) continue;
-        const start = i;
-        i += 1;
-        switch (text[i]) {
-            'n', 't', '\\', '"' => {},
-            '0'...'7' => {
-                var v: u16 = 0;
-                var k: usize = 0;
-                while (k < 3 and i < end and text[i] >= '0' and text[i] <= '7') : (k += 1) {
-                    v = v * 8 + (text[i] - '0');
-                    i += 1;
-                }
-                if (v > 0o377) return .{ .start = start, .end = i, .above_377 = true };
-                i -= 1;
-            },
-            else => return .{ .start = start, .end = i + 1, .above_377 = false },
-        }
-    }
-    return null;
-}
-
-// ---- checks ---------------------------------------------------------------
-
-const testing = std.testing;
 
 fn expectTags(src: []const u8, expected: []const token.Tag) !void {
-    var list = try Lexer.tokenize(testing.allocator, src);
+    var list = try tokenize(testing.allocator, src, null);
     defer list.deinit(testing.allocator);
     try testing.expectEqualSlices(token.Tag, expected, list.items(.tag));
+}
+
+fn tokenizeMany(gpa: std.mem.Allocator) !void {
+    // Past the up-front estimate of one token per 4 bytes, so the list grows.
+    const semis: [100]u8 = @splat(';');
+    var list = try tokenize(gpa, &semis, null);
+    defer list.deinit(gpa);
+    try testing.expectEqual(@as(usize, 101), list.len);
 }
 
 test "operators are longest-match (§2.5)" {
@@ -780,7 +650,7 @@ test "stringRunaway names the §2.7 mistake (E0138)" {
         .{ .src = "4'b01xz", .want = .none },
     };
     for (cases) |c| {
-        var list = try Lexer.tokenize(testing.allocator, c.src);
+        var list = try tokenize(testing.allocator, c.src, null);
         defer list.deinit(testing.allocator);
         const span = tokenSpan(c.src, list.items(.start), 0);
         try testing.expectEqual(c.want, stringRunaway(c.src, span));
@@ -791,56 +661,22 @@ test "tokenEnd recomputes exact spans (no len is stored)" {
     const src =
         \\analog I(p,n) <+ 1.5k * V(p,n); // c
     ;
-    var list = try Lexer.tokenize(testing.allocator, src);
+    var list = try tokenize(testing.allocator, src, null);
     defer list.deinit(testing.allocator);
 
-    const lx: Lexer = .{ .src = src };
     const expected = [_][]const u8{
         "analog", "I", "(", "p", ",", "n", ")", "<+", "1.5k", "*",
         "V",      "(", "p", ",", "n", ")", ";",
     };
     for (list.items(.start)[0..expected.len], expected) |start, text| {
-        try testing.expectEqualStrings(text, lx.tokenText(start));
+        try testing.expectEqualStrings(text, tokenText(src, start));
     }
     // Re-lexing is idempotent: asking twice gives the same end.
-    try testing.expectEqual(lx.tokenEnd(0), lx.tokenEnd(0));
-}
-
-test "scale factors: M is 1e6, m is 1e-3 (§2.6.2 Table 2-1)" {
-    try testing.expectEqual(@as(f64, 1e6), try parseReal(testing.allocator, "1M"));
-    try testing.expectEqual(@as(f64, 1e-3), try parseReal(testing.allocator, "1m"));
-    try testing.expectEqual(@as(f64, 1e3), try parseReal(testing.allocator, "1K"));
-    try testing.expectEqual(@as(f64, 1e3), try parseReal(testing.allocator, "1k"));
-    try testing.expectEqual(@as(f64, 1e12), try parseReal(testing.allocator, "1T"));
-    try testing.expectEqual(@as(f64, 1e9), try parseReal(testing.allocator, "1G"));
-    try testing.expectEqual(@as(f64, 1e-6), try parseReal(testing.allocator, "1u"));
-    try testing.expectEqual(@as(f64, 1e-9), try parseReal(testing.allocator, "1n"));
-    try testing.expectEqual(@as(f64, 1e-12), try parseReal(testing.allocator, "1p"));
-    try testing.expectEqual(@as(f64, 1e-15), try parseReal(testing.allocator, "1f"));
-    try testing.expectEqual(@as(f64, 1e-18), try parseReal(testing.allocator, "1a"));
-    try testing.expectEqual(@as(f64, 1300.0), try parseReal(testing.allocator, "1.3k"));
-    try testing.expectEqual(@as(f64, 1.2e12), try parseReal(testing.allocator, "1.2E12"));
-    try testing.expectEqual(@as(f64, 1234.567), try parseReal(testing.allocator, "1_234.5_67"));
-    try testing.expectEqual(@as(f64, 236.123763e-12), try parseReal(testing.allocator, "236.123_763_e-12"));
-}
-
-test "§2.6.2 a scale factor rounds ONCE: 2.2n is parseFloat(\"2.2e-9\"), not 2.2 * 1e-9" {
-    // §2.6.2 describes "24.7K" as "24.7 multiplied by 10 to the third power",
-    // which read literally rounds twice (mantissa, then product). VerA parses
-    // the joined text instead, so the value is the double nearest the literal;
-    // §2.6.2 does not forbid that, and exact cases (1.3k) are unchanged. The
-    // difference is 1 ulp for some literals and reaches emitted device text.
-    try testing.expectEqual(@as(f64, 2.2e-9), try parseReal(testing.allocator, "2.2n"));
-    // Both operands must be runtime `f64`s: Zig folds a comptime_float product
-    // at arbitrary precision, which is exactly the double rounding under test.
-    const mantissa: f64 = 2.2;
-    const scale: f64 = 1e-9;
-    try testing.expect((try parseReal(testing.allocator, "2.2n")) != mantissa * scale);
-    try testing.expectEqual(@as(f64, 1.3e3), try parseReal(testing.allocator, "1.3k"));
+    try testing.expectEqual(tokenEnd(src, 0), tokenEnd(src, 0));
 }
 
 test "§2.6.1 white space splits the base format from the digits, and nothing else" {
-    var list = try Lexer.tokenize(testing.allocator, "8'h Af 8'h + 8 ' h 3");
+    var list = try tokenize(testing.allocator, "8'h Af 8'h + 8 ' h 3", null);
     defer list.deinit(testing.allocator);
     const tags = list.items(.tag);
     // One token for the spaced literal...
@@ -864,36 +700,9 @@ test "§10.6 the two keyword directives survive the preprocessor as tokens" {
     try testing.expectEqual(token.Tag.invalid, lx.next().tag);
 }
 
-test "stringContents decodes Table 2-2 escapes (§2.7)" {
-    const s1 = try stringContents(testing.allocator, "\"line1\\nline2\\tend\"");
-    defer testing.allocator.free(s1);
-    try testing.expectEqualStrings("line1\nline2\tend", s1);
-
-    const s2 = try stringContents(testing.allocator, "\"quote=\\\" slash=\\\\\"");
-    defer testing.allocator.free(s2);
-    try testing.expectEqualStrings("quote=\" slash=\\", s2);
-
-    const s3 = try stringContents(testing.allocator, "\"A\\101\\0\"");
-    defer testing.allocator.free(s3);
-    try testing.expectEqualStrings("AA\x00", s3);
-}
-
-test "badEscape finds an octal escape above \\377 (§2.7)" {
-    try testing.expectEqual(null, badEscape("\"\\377\\\\477 \\n\\t\\\"\"", 0));
-    const b = badEscape("\"x\\4777\"", 0).?;
-    try testing.expectEqual(BadEscape{ .start = 2, .end = 6, .above_377 = true }, b);
-    try testing.expectEqual(null, badEscape("\"x\\4777\"", b.end));
-}
-
-test "badEscape finds an escape Table 2-2 does not list (§2.7)" {
-    const b = badEscape("\"\\n\\q\\\\\"", 0).?;
-    try testing.expectEqual(BadEscape{ .start = 3, .end = 5, .above_377 = false }, b);
-    try testing.expectEqual(null, badEscape("\"\\n\\q\\\\\"", b.end));
-}
-
 test "tokenSpan covers exactly the token" {
     const src = "module foo;";
-    var list = try Lexer.tokenize(testing.allocator, src);
+    var list = try tokenize(testing.allocator, src, null);
     defer list.deinit(testing.allocator);
     const starts = list.items(.start);
 
@@ -923,7 +732,7 @@ test "a real .va fixture lexes with no invalid tokens" {
         \\    end
         \\endmodule
     ;
-    var list = try Lexer.tokenize(testing.allocator, src);
+    var list = try tokenize(testing.allocator, src, null);
     defer list.deinit(testing.allocator);
     for (list.items(.tag), list.items(.start)) |tag, start| {
         // The backtick is the preprocessor's job; everything else must lex.
@@ -956,27 +765,19 @@ test "next returns .eof at the end, repeatedly, past trailing white space" {
 
 test "tokenizeSeeded equals tokenize for a seed ending at every token boundary" {
     const src = "module m(a); real x = 8 'h ff + 1.5k; $strobe(\"s\"); endmodule\n";
-    var full = try Lexer.tokenize(testing.allocator, src);
+    var full = try tokenize(testing.allocator, src, null);
     defer full.deinit(testing.allocator);
     const tags = full.items(.tag);
     const starts = full.items(.start);
     // A prefix ends between tokens: at any token's start (the last one is
     // `.eof`'s, the end of the text).
     for (0..tags.len) |k| {
-        const seed: Lexer.Seed = .{ .tags = tags[0..k], .starts = starts[0..k], .len = starts[k] };
-        var got = try Lexer.tokenizeSeeded(testing.allocator, src, seed);
+        const seed: Seed = .{ .tags = tags[0..k], .starts = starts[0..k], .len = starts[k] };
+        var got = try tokenize(testing.allocator, src, seed);
         defer got.deinit(testing.allocator);
         try testing.expectEqualSlices(token.Tag, tags, got.items(.tag));
         try testing.expectEqualSlices(u32, starts, got.items(.start));
     }
-}
-
-fn tokenizeMany(gpa: std.mem.Allocator) !void {
-    // Past the up-front estimate of one token per 4 bytes, so the list grows.
-    const semis: [100]u8 = @splat(';');
-    var list = try Lexer.tokenize(gpa, &semis);
-    defer list.deinit(gpa);
-    try testing.expectEqual(@as(usize, 101), list.len);
 }
 
 test "tokenize leaks nothing when any allocation fails" {
@@ -1021,7 +822,7 @@ test "tokens tile the text: only white space between them, each re-lexes to its 
     for (0..4000) |_| {
         const src = buf[0..rand.uintAtMost(usize, buf.len)];
         for (src) |*b| b.* = alphabet[rand.uintLessThan(usize, alphabet.len)];
-        var list = try Lexer.tokenize(testing.allocator, src);
+        var list = try tokenize(testing.allocator, src, null);
         defer list.deinit(testing.allocator);
         const starts = list.items(.start);
         var prev_end: u32 = 0;
@@ -1116,78 +917,6 @@ test "string corners (§2.7): empty, escaped quote last, runaway at end of file"
     try expectTags("\"a\\\"\"", &.{ .string_literal, .eof });
     try expectTags("\"abc", &.{ .invalid, .eof });
     try expectTags("\"abc\\", &.{ .invalid, .eof });
-}
-
-test "stringContents corners: empty, undefined escape, short and long octal, the byte wrap" {
-    const cases = [_]struct { text: []const u8, want: []const u8 }{
-        .{ .text = "\"\"", .want = "" },
-        .{ .text = "\"\\q\"", .want = "q" },
-        // Table 2-2: fewer than three digits when the next byte is no octal digit.
-        .{ .text = "\"\\08\"", .want = "\x008" },
-        // At most three digits: 0o123 is 'S', and the 4 is a character.
-        .{ .text = "\"\\1234\"", .want = "S4" },
-        // 0o777 = 511 keeps its low byte; `badEscape` reports it first.
-        .{ .text = "\"\\777\"", .want = "\xff" },
-        .{ .text = "\"tab\\tnl\\n\"", .want = "tab\tnl\n" },
-    };
-    for (cases) |c| {
-        const got = try stringContents(testing.allocator, c.text);
-        defer testing.allocator.free(got);
-        try testing.expectEqualStrings(c.want, got);
-    }
-}
-
-fn decodeOnce(gpa: std.mem.Allocator) !void {
-    const s = try stringContents(gpa, "\"a\\101\\q\"");
-    defer gpa.free(s);
-    try testing.expectEqualStrings("aAq", s);
-}
-
-test "stringContents frees its buffer when any allocation fails" {
-    try testing.checkAllAllocationFailures(testing.allocator, decodeOnce, .{});
-}
-
-test "badEscape corners: from past the end, an escaped backslash, a short octal escape" {
-    try testing.expectEqual(BadEscape{ .start = 1, .end = 3, .above_377 = false }, badEscape("\"\\q\"", 0).?);
-    try testing.expectEqual(@as(?BadEscape, null), badEscape("\"\\q\"", 4));
-    // `\\` then `q`: an escaped backslash and a plain q.
-    try testing.expectEqual(@as(?BadEscape, null), badEscape("\"\\\\q\"", 0));
-    // `\1` then `8`: Table 2-2's short form; the 8 is a character.
-    try testing.expectEqual(@as(?BadEscape, null), badEscape("\"\\18\"", 0));
-    // \400 is the first value above \377.
-    try testing.expectEqual(BadEscape{ .start = 1, .end = 5, .above_377 = true }, badEscape("\"\\400\"", 0).?);
-}
-
-test "parseReal: any length, underscores free, overflow is inf" {
-    // 512 bytes decode on the stack; 513 and far past it in a heap buffer
-    // (the old 512-byte cap, E0134).
-    var buf: [600]u8 = @splat('1');
-    buf[1] = '.';
-    try testing.expect(std.math.isFinite(try parseReal(testing.allocator, buf[0..512])));
-    try testing.expect(std.math.isFinite(try parseReal(testing.allocator, buf[0..513])));
-    // The rewritten scale factor is part of the text: 511 + "e-3".
-    buf[511] = 'm';
-    try testing.expectApproxEqRel(try parseReal(testing.allocator, buf[0..511]) * 1e-3, try parseReal(testing.allocator, buf[0..512]), 1e-15);
-    // "0.", 100,000 zeros, "1e100001": 10^-100001 * 10^100001 = 1.0
-    // exactly, which only a decoder that reads every digit gets.
-    const long = try testing.allocator.alloc(u8, 100_010);
-    defer testing.allocator.free(long);
-    @memcpy(long[0..2], "0.");
-    @memset(long[2..100_002], '0');
-    @memcpy(long[100_002..], "1e100001");
-    try testing.expectEqual(@as(f64, 1.0), try parseReal(testing.allocator, long));
-    // `_` is dropped before decoding.
-    var spaced: [1022]u8 = undefined;
-    spaced[0] = '1';
-    spaced[1] = '.';
-    for (0..510) |i| {
-        spaced[2 + 2 * i] = '1';
-        spaced[3 + 2 * i] = '_';
-    }
-    try testing.expect(std.math.isFinite(try parseReal(testing.allocator, &spaced)));
-    // §2.6.2 leaves overflow to IEEE 754: inf, not an error.
-    try testing.expect(std.math.isPositiveInf(try parseReal(testing.allocator, "1e400")));
-    try testing.expectEqual(@as(f64, 0), try parseReal(testing.allocator, "1e-400"));
 }
 
 test "tokenSpan of an empty token column is the end of the text; stringRunaway past it is .none" {
