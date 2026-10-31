@@ -18,14 +18,9 @@
 //! - `pub const Output = codegen_file.Output`
 //! - `pub const sayRecords = cg_say.sayRecords`
 //! - `pub const indentWidth = codegen_file.Gen.indWidth`
-//! - `pub const codegen = compat.codegen`
-//! - `pub const cg_display = compat.cg_display`
-//! - `pub const cg_filters = compat.cg_filters`
-//! - `pub const cg_limit = compat.cg_limit`
 
 const codegen_file = @import("codegen.zig");
 const cg_say = @import("cg_say.zig");
-const compat = @import("compat.zig");
 
 /// Test support: a source lowered and generated (codegen/harness.zig).
 pub const Harness = @import("codegen/harness.zig").Harness;
@@ -57,18 +52,6 @@ pub const sayRecords = cg_say.sayRecords;
 /// The spaces the emitter indents `n` levels with (capped, so deep nesting
 /// stays linear in text).
 pub const indentWidth = codegen_file.Gen.indWidth;
-
-/// Pass-1 shim: the old `device.codegen` namespace. Delete in pass 2.
-pub const codegen = compat.codegen;
-
-/// Pass-1 shim: the old `device.cg_display` namespace. Delete in pass 2.
-pub const cg_display = compat.cg_display;
-
-/// Pass-1 shim: the old `device.cg_filters` namespace. Delete in pass 2.
-pub const cg_filters = compat.cg_filters;
-
-/// Pass-1 shim: the old `device.cg_limit` namespace. Delete in pass 2.
-pub const cg_limit = compat.cg_limit;
 
 // ---- private ----
 
