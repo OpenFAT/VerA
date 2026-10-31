@@ -19,11 +19,11 @@
 //!   `int_systfs: []const []const u8`
 
 const diag = @import("diag");
-const token = @import("frontend").token;
+const keyword = @import("frontend").keyword;
 const prove = @import("prove");
-const Display = @import("device").codegen.Display;
-const ParamOverride = @import("analog").Lower.ParamOverride;
-const DisciplineResolution = @import("elab").Elaborate.DisciplineResolution;
+const Display = @import("device").Display;
+const ParamOverride = @import("base").ParamOverride;
+const DisciplineResolution = @import("base").DisciplineResolution;
 
 /// The name diagnostics print for the top-level source.
 file_name: []const u8 = "<source>",
@@ -41,11 +41,11 @@ std_defs: bool = true,
 /// library caller compiling text it generated keeps the implicit prelude.
 require_std_includes: bool = false,
 /// The keyword set, `vera --std=`.
-language: token.KeywordSet = token.default_keyword_set,
+language: keyword.KeywordSet = keyword.default_keyword_set,
 /// `vera --sim=`: all of Verilog-AMS, or annex C's Verilog-A subset, in
 /// which a digital or mixed-signal construct is E0250. `.verilog` never
 /// reaches the analysis: a `.v` design goes through `sim.digital`.
-sim: token.Sim = .verilog_ams,
+sim: keyword.Sim = .verilog_ams,
 /// §3.4 compile-time values for the top module's parameters (`--param`).
 /// A shape parameter is compiled to its value and its card may not move
 /// it; any other stays a run-time card value whose default this replaces.

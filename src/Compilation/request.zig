@@ -6,7 +6,7 @@
 //! (what `Request.osdi` refuses).
 //!
 //! Contents:
-//! - `pub const CompileError = Allocator.Error || Io.Writer.Error || TypeCheckError`
+//! - `pub const CompileError = Allocator.Error || Io.Writer.Error || zigbuild.CheckError`
 //! - `pub const Request = struct` (`Request.Verilog`, `Request.Exe`,
 //!   `Request.Build`), `Request.lints(req: Request) bool`
 //! - `pub const Outcome = struct` (`Outcome.Report`), `Outcome.deinit(o: *Outcome, gpa: Allocator) void`,
@@ -24,7 +24,7 @@ const analysis = @import("analyze.zig");
 /// Every way `compile` fails, as opposed to refusing (`Outcome.status`):
 /// memory, a message the arena could not hold, or a `zig` child that could
 /// not be run for `--check`. `o` is filled as far as the call got.
-pub const CompileError = Allocator.Error || Io.Writer.Error || TypeCheckError;
+pub const CompileError = Allocator.Error || Io.Writer.Error || zigbuild.CheckError;
 
 /// What one `compile` call builds: the analysis' settings, then one field per
 /// target. With no target on, the call is `vera --lint`: the analysis, then
@@ -154,7 +154,3 @@ pub const Outcome = struct {
         o.status = status;
     }
 };
-
-/// `zigbuild.typeCheck`'s failures: the OS errors of a child process and its
-/// pipe. Inferred until zigbuild names it (`CheckError`).
-const TypeCheckError = @typeInfo(@typeInfo(@TypeOf(zigbuild.typeCheck)).@"fn".return_type.?).error_union.error_set;

@@ -1,5 +1,5 @@
 //! A source file that could not be read -> the one line `vera` prints for
-//! it: E1013 for a file past `Preprocessor.max_text_bytes` (the u32 offsets
+//! it: E1013 for a file past `preprocessor.max_text_bytes` (the u32 offsets
 //! the lexer uses), else the error's name. The text is user-visible and
 //! frozen; `vera`, its `.v` route and `--emit-verilog`'s pin file share it.
 //!
@@ -12,17 +12,17 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
-const Preprocessor = @import("frontend").Preprocessor;
+const preprocessor = @import("frontend").preprocessor;
 
-/// What reading a source file can fail with (`Preprocessor.readText`).
-pub const ReadError = @typeInfo(@typeInfo(@TypeOf(Preprocessor.readText)).@"fn".return_type.?).error_union.error_set;
+/// What reading a source file can fail with (`preprocessor.readText`).
+pub const ReadError = preprocessor.ReadError;
 
 /// Writes the line for `path` failing with `e` on `w`. `path` is the user's
 /// text, so it may be anything, the empty string included.
 pub fn readFailed(w: *Io.Writer, path: []const u8, e: ReadError) Io.Writer.Error!void {
-    comptime assert(Preprocessor.max_text_bytes > 0);
+    comptime assert(preprocessor.max_text_bytes > 0);
     if (e == error.StreamTooLong)
-        try w.print("error[E1013]: `{s}` is larger than {d} bytes; see `vera --explain E1013`\n", .{ path, Preprocessor.max_text_bytes })
+        try w.print("error[E1013]: `{s}` is larger than {d} bytes; see `vera --explain E1013`\n", .{ path, preprocessor.max_text_bytes })
     else
         try w.print("error: cannot read `{s}`: {t}\n", .{ path, e });
 }
