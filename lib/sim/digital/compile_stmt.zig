@@ -370,7 +370,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     }
                     // ponytail: one dimension; §17.2.9's order over several
                     // is the row-major walk, when a source loads one.
-                    const arr = if (s.args[1] == .none or ex.tag(s.args[1]) != .ident) null else self.arrays.get(try self.slot(s.args[1]));
+                    const arr = if (s.args[1] == .none or ex.tag(s.args[1]) != .ident) null else self.decls.arrays.get(try self.slot(s.args[1]));
                     if (arr == null or arr.?.rest.len != 0)
                         return self.exprFail(s.args[1], "$readmemb/$readmemh load a one-dimensional unpacked array");
                     // Syntax 17-7 prints `" file_name "`, a string literal;
@@ -403,7 +403,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     if (s.args.len != 3 or s.args[0] == .none or s.args[1] == .none or s.args[2] == .none)
                         return self.fail(tok, "a §17.5 PLA task takes (memory, inputs, outputs)", .{});
                     const ex = &self.file.exprs;
-                    const arr = if (ex.tag(s.args[0]) != .ident) null else self.arrays.get(try self.slot(s.args[0]));
+                    const arr = if (ex.tag(s.args[0]) != .ident) null else self.decls.arrays.get(try self.slot(s.args[0]));
                     if (arr == null or arr.?.rest.len != 0) return self.exprFail(s.args[0], "a §17.5 personality is a one-dimensional memory");
                     // §17.5.3: "PLA input terms, output terms, and memory
                     // shall be specified in ascending order".

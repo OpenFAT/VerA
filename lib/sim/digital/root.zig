@@ -449,8 +449,8 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
                 .str = try file.intern(arena, try arena.print("{s}.{s}", .{ row.name, row.lower_port })),
             });
         }
-        r.inserts = mx.inserts;
-        r.insert_segs = segs;
+        r.decls.inserts = mx.inserts;
+        r.decls.insert_segs = segs;
     }
     // Allocated before pass one: a bound or a parameter is typed and folded
     // while the slot space is still growing (`Run.constant`).
@@ -732,8 +732,8 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
     try tchk.arm(&r);
     try waiters.buildFanout(&r);
     try driver.arm(&r);
-    r.slot_memo = try arena.alloc(SlotMemo, 1 << memo_bits);
-    @memset(r.slot_memo, .{});
+    r.decls.slot_memo = try arena.alloc(SlotMemo, 1 << memo_bits);
+    @memset(r.decls.slot_memo, .{});
     r.diag_stage = .run;
     return r;
 }

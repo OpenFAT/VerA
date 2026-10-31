@@ -92,7 +92,7 @@ pub fn mintVar(r: *Run, v: Ast.VarDecl) Error!u32 {
     // other variable starts at x (§3.2).
     for (0..count) |i| {
         try g.append(r.arena, try filled(r.arena, width, signed or real, if (real) .zero else .x));
-        if (real) try r.reals.put(r.arena, base + @as(u32, @intCast(i)), {});
+        if (real) try r.decls.reals.put(r.arena, base + @as(u32, @intCast(i)), {});
     }
     r.values = g.items;
     return base;
@@ -118,7 +118,7 @@ pub fn declareArray(r: *Run, base: u32, dims: []const Ast.Dim, tok: u32) Error!u
         const size = std.math.cast(u32, @as(i128, s.high) - s.low + 1) orelse return r.fail(tok, "unpacked array size is outside the supported u32 range", .{});
         count = std.math.mul(u32, count, size) catch return r.fail(tok, "unpacked array size is outside the supported u32 range", .{});
     }
-    try r.arrays.put(r.arena, base, .{ .count = count, .low = spans[0].low, .high = spans[0].high, .left = left, .right = right, .rest = spans[1..] });
+    try r.decls.arrays.put(r.arena, base, .{ .count = count, .low = spans[0].low, .high = spans[0].high, .left = left, .right = right, .rest = spans[1..] });
     return count;
 }
 
@@ -221,7 +221,7 @@ pub fn promoteWreal(r: *Run, e: *Elab, net: u32) Error!void {
     n.resolved = try filled(r.arena, 64, false, .z);
     e.values.items[n.slot] = try filled(r.arena, 64, true, .zero);
     r.values = e.values.items;
-    try r.reals.put(r.arena, n.slot, {});
+    try r.decls.reals.put(r.arena, n.slot, {});
 }
 
 /// One new net and its slot, `name` (unless `.none`) bound to it in the
@@ -238,7 +238,7 @@ pub fn mintNet(r: *Run, e: *Elab, kind: Ast.NetKind, width: u32, signed: bool, n
     // a wreal carries a real and "shall have an initial value of zero".
     const wreal = kind == .wreal;
     try e.values.append(r.arena, try filled(r.arena, if (wreal) 64 else width, signed or wreal, if (wreal) .zero else undriven(kind)));
-    if (wreal) try r.reals.put(r.arena, slot, {});
+    if (wreal) try r.decls.reals.put(r.arena, slot, {});
     if (e.signals.items.len > std.math.maxInt(u32) - width) return r.fail(tok, "too many digital net bits", .{});
     const signal: u32 = @intCast(e.signals.items.len);
     try e.signals.appendNTimes(r.arena, .{}, width);

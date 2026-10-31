@@ -75,8 +75,8 @@ pub fn bindDefparam(r: *Run, decl: u32, d: Ast.Defparam, children: []const Ast.I
         path = out.items;
     }
     const b = try defparamBase(r, decl, path, children, d.main_tok);
-    try r.defparams.put(r.arena, .{ .scope = b.at, .path = b.rest }, .{ .d = d, .decl = decl });
-    try r.bound_defparams.append(r.arena, .{ .decl = decl, .path = path, .at = b.at, .rest = b.rest, .tok = d.main_tok });
+    try r.decls.defparams.put(r.arena, .{ .scope = b.at, .path = b.rest }, .{ .d = d, .decl = decl });
+    try r.decls.bound_defparams.append(r.arena, .{ .decl = decl, .path = path, .at = b.at, .rest = b.rest, .tok = d.main_tok });
 }
 
 /// IEEE 1364-2005 §12.8.2: "It shall be an error if a hierarchical name in a
@@ -84,7 +84,7 @@ pub fn bindDefparam(r: *Run, decl: u32, d: Ast.Defparam, children: []const Ast.I
 /// that name would resolve differently once the model is completely
 /// elaborated."
 pub fn checkDefparams(r: *Run) Error!void {
-    for (r.bound_defparams.items) |b| {
+    for (r.decls.bound_defparams.items) |b| {
         const now = try defparamBase(r, b.decl, b.path, null, b.tok);
         if (now.at != b.at or !std.mem.eql(u8, now.rest, b.rest))
             return r.fail(b.tok, "§12.8.2: this defparam's hierarchical name was resolved before the hierarchy was complete and would resolve differently once it is", .{});
@@ -103,7 +103,7 @@ pub fn checkDefparams(r: *Run) Error!void {
         const leaf = b.rest[if (std.mem.findScalarLast(u8, b.rest, '.')) |d| d + 1 else 0..];
         const slot = if (r.file.strings.find(leaf)) |str| r.hier.names.get(.{ .scope = target, .str = str }) else null;
         // A mixed design leaves the analog block's parameters unbound here.
-        if (!r.analog.mixed and (slot == null or !r.params.contains(slot.?))) {
+        if (!r.analog.mixed and (slot == null or !r.decls.params.contains(slot.?))) {
             if (slot == null and target == b.at and std.mem.findScalar(u8, b.rest, '.') == null)
                 return r.failWith(.E0901, b.tok, "§12.2.1: this defparam's hierarchical name `{s}` names nothing in the design", .{b.path});
             return r.failWith(.E0907, b.tok, "§12.2.1: this defparam names `{s}`, which is no parameter of its module", .{leaf});

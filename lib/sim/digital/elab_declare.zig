@@ -308,7 +308,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
             }
             try r.bind(p.name, outer.slot, p.main_tok);
             if (p.is_signed != e.values.items[outer.slot].signed)
-                try r.port_signed.put(arena, .{ .scope = scope, .str = p.name }, p.is_signed);
+                try r.decls.port_signed.put(arena, .{ .scope = scope, .str = p.name }, p.is_signed);
             continue;
         }
         // `p.kind`, not `.wire`: the parser folds a body declaration naming a
@@ -411,7 +411,7 @@ pub fn declareEvents(r: *Run, events: []const Ast.EventDecl) Error!void {
         if (count > std.math.maxInt(u32) - g.items.len) return r.fail(event.main_tok, "too many digital storage slots", .{});
         for (0..count) |i| {
             try g.append(r.arena, try filled(r.arena, 1, false, .x));
-            try r.events.put(r.arena, at + @as(u32, @intCast(i)), .{ .tok = event.main_tok, .scope = r.scope });
+            try r.decls.events.put(r.arena, at + @as(u32, @intCast(i)), .{ .tok = event.main_tok, .scope = r.scope });
         }
         r.values = g.items;
     }

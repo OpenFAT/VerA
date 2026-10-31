@@ -736,7 +736,7 @@ test "VAMS §6.3.4 selected real parameters arrive from the derived host model" 
     try std.testing.expectEqual(@as(?u32, null), r.slotOf("base"));
     try std.testing.expectEqual(@as(?u32, null), r.slotOf("unused"));
     for ([_][]const u8{ "selected", "inferred", "local" }) |name|
-        try std.testing.expect(r.reals.contains(r.slotOf(name).?));
+        try std.testing.expect(r.decls.reals.contains(r.slotOf(name).?));
 }
 
 test "§12.4.2 a conditional generate instantiates only its selected arm" {

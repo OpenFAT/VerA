@@ -15,6 +15,7 @@
 //! - `pub const no_ext`
 //! - `pub const TermExt = struct`
 //! - `pub const Waits = struct`
+//! - `pub const ProcAssigns = struct`
 //! - `pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64`
 //! - `pub fn store(self: *Run, target: u32, planes: []const u64) Error!void`
 //! - `pub fn trigger(self: *Run, at: u32) Error!void`
@@ -35,6 +36,7 @@
 //! - `pub fn buildFanout(r: *Run) Error!void`
 
 const std = @import("std");
+const Overrides = @import("root.zig").Overrides;
 const Watcher = @import("root.zig").Watcher;
 const assert = std.debug.assert;
 const Front = @import("frontend");
@@ -170,6 +172,18 @@ pub const Waits = struct {
     watch: []std.EnumSet(Watcher) = &.{},
 };
 
+/// A run's §9.3 procedural continuous assignments: by slot, the process
+/// range of the `assign` and of the `force` holding it, and whether the
+/// write in flight is an override's own (which the guard lets through).
+pub const ProcAssigns = struct {
+    /// §9.3 the procedural continuous assignments in effect, by slot: the
+    /// process range of an `assign` and of a `force`. While one is, ordinary
+    /// writes to the slot do not land (`store`); a force outranks an assign.
+    layers: std.AutoHashMapUnmanaged(u32, Overrides) = .empty,
+    /// `store` from an override's own process, which the guard lets through.
+    active: bool = false,
+};
+
 /// Bits `[lo, lo + width)` of `value`, `width` at most 64, as (values,
 /// unknowns) words.
 pub fn termBits(value: Int.Literal, lo: u32, width: u32) [2]u64 {
@@ -198,7 +212,7 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
     const path_source = target < self.waits.watch.len and self.waits.watch[target].contains(.path);
     const before_words: [2]u64 = if (path_source) .{ dest.values()[0], dest.unknowns()[0] } else undefined;
     const changed = changed: {
-        if (self.overrides.count() != 0 and !self.overriding) if (self.overrides.get(target)) |o| {
+        if (self.assigns.layers.count() != 0 and !self.assigns.active) if (self.assigns.layers.get(target)) |o| {
             if (o.force != null or (o.assign != null and !self.netlist.slot_nets.contains(target))) return;
             // §9.3.2 a forced select of a net keeps its bits; the rest resolve.
             if (o.parts.items.len != 0) break :changed keepForced(dest, planes, o.parts.items);
@@ -208,7 +222,7 @@ pub fn store(self: *Run, target: u32, planes: []const u64) Error!void {
         const differ = !std.mem.eql(u64, dest.planes, planes);
         // Every real slot is 64 bits wide (§4.8, VAMS §3.7), so the width
         // test spares the hash lookup on most stores.
-        const changed = if (dest.width == 64 and self.reals.contains(target))
+        const changed = if (dest.width == 64 and self.decls.reals.contains(target))
             @as(f64, @bitCast(dest.planes[0])) != @as(f64, @bitCast(planes[0]))
         else
             differ;
@@ -255,14 +269,14 @@ pub fn trigger(self: *Run, at: u32) Error!void {
 /// Releasing what is not held is a no-op.
 pub fn release(self: *Run, slot: u32, force: bool) Error!void {
     assert(slot < self.values.len);
-    const layers = self.overrides.getPtr(slot) orelse return;
+    const layers = self.assigns.layers.getPtr(slot) orelse return;
     const layer = if (force) &layers.force else &layers.assign;
     if (layer.*) |old| _ = try exec.stopRange(self, old.start, old.end);
     layer.* = null;
     const held = layers.assign;
     // A forced select is a layer of its own (§9.3.2), released only by its
     // own select: the slot stays held while one remains.
-    if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.overrides.remove(slot);
+    if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.assigns.layers.remove(slot);
     // §9.3.2: a released net is its drivers' again; a released
     // variable keeps its value, unless an assign holds it.
     if (force) {
@@ -274,13 +288,13 @@ pub fn release(self: *Run, slot: u32, force: bool) Error!void {
 /// drivers' again, at once. Releasing what is not held is a no-op.
 pub fn releaseBits(self: *Run, slot: u32, bits: compile.Bits) Error!void {
     assert(slot < self.values.len);
-    const layers = self.overrides.getPtr(slot) orelse return;
+    const layers = self.assigns.layers.getPtr(slot) orelse return;
     for (layers.parts.items, 0..) |p, i| if (std.meta.eql(p.bits, bits)) {
         _ = try exec.stopRange(self, p.range.start, p.range.end);
         _ = layers.parts.orderedRemove(i);
         break;
     };
-    if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.overrides.remove(slot);
+    if (layers.force == null and layers.assign == null and layers.parts.items.len == 0) _ = self.assigns.layers.remove(slot);
     if (self.netlist.slot_nets.get(slot)) |net| try resolution.resolve(self, net);
 }
 
@@ -289,13 +303,13 @@ pub fn releaseBits(self: *Run, slot: u32, bits: compile.Bits) Error!void {
 /// so the force layer holds an empty process range.
 pub fn forceValue(self: *Run, slot: u32, planes: []const u64) Error!void {
     assert(slot < self.values.len);
-    const entry = try self.overrides.getOrPut(self.arena, slot);
+    const entry = try self.assigns.layers.getOrPut(self.arena, slot);
     if (!entry.found_existing) entry.value_ptr.* = .{};
     if (entry.value_ptr.force) |old| _ = try exec.stopRange(self, old.start, old.end);
     entry.value_ptr.force = .{ .start = 0, .end = 0 };
-    const was = self.overriding;
-    self.overriding = true;
-    defer self.overriding = was;
+    const was = self.assigns.active;
+    self.assigns.active = true;
+    defer self.assigns.active = was;
     try store(self, slot, planes);
 }
 
@@ -356,7 +370,7 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
         _ = try exec.enqueue(self, .{ .run_process = pc }, null, false);
     };
     const list = termsOf(self, target) orelse return;
-    const event = self.events.get(target);
+    const event = self.decls.events.get(target);
     const event_ctx = if (event) |e| eventContext(self, e.scope, self.calls.ctx) else 0;
     // §10.2.1: an automatic task's variables, too, are each activation's
     // own; a write in one activation is no change in another's.

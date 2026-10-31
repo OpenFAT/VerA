@@ -159,9 +159,9 @@ pub fn slotOf(self: *const Run, name: []const u8) ?u32 {
 /// final instance minted.
 pub fn slot(self: *Run, e: Ast.ExprId) Error!u32 {
     assert(e != .none);
-    if (self.slot_memo.len == 0) return self.resolveSlot(e);
+    if (self.decls.slot_memo.len == 0) return self.resolveSlot(e);
     const key = @backingInt(e) *% 0x9e3779b1 ^ self.scope *% 0x85ebca6b;
-    const m = &self.slot_memo[key >> (32 - memo_bits)];
+    const m = &self.decls.slot_memo[key >> (32 - memo_bits)];
     if (m.scope == self.scope and m.e == e) return m.at;
     const at = try self.resolveSlot(e);
     m.* = .{ .scope = self.scope, .e = e, .at = at };
@@ -253,7 +253,7 @@ pub fn termSlot(self: *Run, e: Ast.ExprId) Error!u32 {
 
 /// The type a slot's value has, for an assignment to it.
 pub fn slotType(self: *const Run, at: u32) compile.Type {
-    if (self.reals.contains(at)) return compile.real_type;
+    if (self.decls.reals.contains(at)) return compile.real_type;
     return .{ .width = self.values[at].width, .signed = self.values[at].signed };
 }
 
@@ -342,7 +342,7 @@ pub fn vecRange(self: *const Run, at: u32) VecRange {
 /// §4.3: "A net or reg declaration without a range specification shall
 /// be considered 1 bit wide and is known as a scalar."
 pub fn isScalar(self: *const Run, at: u32) bool {
-    return self.values[at].width == 1 and !self.typing.vec_ranges.contains(at) and !self.params.contains(at);
+    return self.values[at].width == 1 and !self.typing.vec_ranges.contains(at) and !self.decls.params.contains(at);
 }
 
 /// The slot an lvalue's width comes from: an array element reference is as
@@ -370,7 +370,7 @@ pub fn chainBase(self: *const Run, e: Ast.ExprId) struct { base: Ast.ExprId, dep
 pub fn scalarSlot(self: *Run, e: Ast.ExprId) Error!u32 {
     assert(e != .none);
     const at = try self.slot(e);
-    if (self.arrays.contains(at)) return self.exprFail(e, "an unpacked array reference requires an element index");
+    if (self.decls.arrays.contains(at)) return self.exprFail(e, "an unpacked array reference requires an element index");
     return at;
 }
 
@@ -382,7 +382,7 @@ pub fn indexedArray(self: *Run, e: Ast.ExprId) Error!?Array {
     if (ex.tag(e) != .index) return null;
     const c = self.chainBase(e);
     if (ex.tag(c.base) != .ident and ex.tag(c.base) != .hier_ident) return null;
-    const arr = self.arrays.get(try self.slot(c.base)) orelse return null;
+    const arr = self.decls.arrays.get(try self.slot(c.base)) orelse return null;
     if (c.depth != 1 + arr.rest.len) return null;
     // IEEE 1364-2005 §5.2.2: "the desired word shall first be selected by
     // supplying an address for each dimension"; a range there would

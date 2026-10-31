@@ -285,7 +285,7 @@ pub fn sformat(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, show:
 /// §17.5 one evaluation in the interpreter (`plaEval`).
 pub fn pla(self: *Run, a: std.mem.Allocator, p: Pla, args: []const Ast.ExprId) Error!void {
     const base = try self.slot(args[0]);
-    const arr = self.arrays.get(base).?; // compile proved it is an array
+    const arr = self.decls.arrays.get(base).?; // compile proved it is an array
     const in = try evaluate.eval(self, a, args[1], 0);
     const out = try filled(a, (try evaluate.targetType(self, args[2])).width, false, .x);
     plaEval(p, self.values[base..][0..arr.count], in, out);

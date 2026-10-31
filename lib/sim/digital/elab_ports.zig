@@ -180,7 +180,7 @@ pub fn bindPort(r: *Run, e: *Elab, port: Ast.Port, conn: Ast.PortConn, scope: u3
     if (conn.expr == .none) return .open;
     const ex = &r.file.exprs;
     // §12.3.7: "The real data type shall not be directly connected to a port."
-    if (ex.tag(conn.expr) == .ident) if (r.lookup(scope, ex.strOf(conn.expr))) |at| if (r.reals.contains(at) and !r.netlist.slot_nets.contains(at))
+    if (ex.tag(conn.expr) == .ident) if (r.lookup(scope, ex.strOf(conn.expr))) |at| if (r.decls.reals.contains(at) and !r.netlist.slot_nets.contains(at))
         return r.exprFail(conn.expr, "§12.3.7: a real cannot be connected to a port");
     // One whole net on the outside is a collapse, the only arm under which
     // the child's drive strengths reach the parent's resolution unchanged

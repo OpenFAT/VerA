@@ -322,7 +322,7 @@ pub fn memWord(a: std.mem.Allocator, token: []const u8, radix: Radix, width: u32
 pub fn readMemory(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, radix: Radix) Error!void {
     const ex = &self.file.exprs;
     const base = try self.slot(args[1]);
-    const arr = self.arrays.get(base).?;
+    const arr = self.decls.arrays.get(base).?;
     const tok = ex.mainTok(args[0]);
     const at = self.starts[@min(tok, self.starts.len - 1)];
     const site: diag.Span = .{ .start = at, .end = at };

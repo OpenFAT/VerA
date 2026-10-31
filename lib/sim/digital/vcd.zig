@@ -471,7 +471,7 @@ pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
         for (names.items, 0..) |name, i| {
             if (std.mem.findScalar(Ast.StrId, names.items[0..i], name) != null) continue;
             const at = r.hier.names.get(.{ .scope = @intCast(s), .str = name }) orelse continue;
-            if (r.arrays.contains(at) or r.params.contains(at)) continue;
+            if (r.decls.arrays.contains(at) or r.decls.params.contains(at)) continue;
             try vars.append(a, try variable(r, a, decls.items, name, at, if (offs.len == 0) 0 else offs[at]));
         }
     }
@@ -597,26 +597,26 @@ fn rootNamed(r: *const Run, name: Ast.StrId) ?u32 {
 
 /// §18.2.3.7 `$var var_type size identifier_code reference $end`.
 fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast.StrId, at: u32, off: u32) Error!Var {
-    const kind: []const u8 = if (r.events.contains(at)) "event" else if (r.netlist.slot_nets.get(at)) |n| switch (r.netlist.nets[n].kind) {
+    const kind: []const u8 = if (r.decls.events.contains(at)) "event" else if (r.netlist.slot_nets.get(at)) |n| switch (r.netlist.nets[n].kind) {
         // "a net of net type uwire shall have a variable type of wire"
         .uwire => "wire",
         .wreal => "real",
         .wire, .tri, .tri0, .tri1, .triand, .trior, .trireg, .wand, .wor, .supply0, .supply1 => @tagName(r.netlist.nets[n].kind),
-    } else if (r.reals.contains(at)) "real" else for (decls) |x| {
+    } else if (r.decls.reals.contains(at)) "real" else for (decls) |x| {
         if (x.name == name) break switch (x.storage) {
             .reg => "reg",
             .time => "time",
             .variable => "integer",
         };
     } else "reg";
-    const event = r.events.contains(at);
+    const event = r.decls.events.contains(at);
     const width = if (event) 1 else r.values[at].width;
     const head = try a.print("$var {s} {d} ", .{ kind, width });
     var tail: std.Io.Writer.Allocating = .init(a);
     try tail.writer.print(" {s}", .{r.file.str(name)});
     if (r.typing.vec_ranges.get(at)) |range| try tail.writer.print(" [{d}:{d}]", .{ range.msb, range.lsb });
     try tail.writer.writeAll(" $end\n");
-    return .{ .slot = at, .off = off, .width = width, .real = r.reals.contains(at), .event = event, .head = head, .tail = tail.written() };
+    return .{ .slot = at, .off = off, .width = width, .real = r.decls.reals.contains(at), .event = event, .head = head, .tail = tail.written() };
 }
 
 fn catalogOf(r: *Run) Error!*const Catalog {

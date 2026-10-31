@@ -97,7 +97,7 @@ pub fn event(r: *Run, t: *const Ast.TimingCheck, k: usize) Error!Event {
         },
         else => return r.failWith(.E1147, ex.mainTok(e), "a timing check event names a port or a constant select of one (A.7.3), not an expression", .{}), // else: A.7.3 admits a name and a select only
     }
-    if (r.reals.contains(ev.slot) or r.arrays.contains(ev.slot) or r.events.contains(ev.slot) or r.params.contains(ev.slot))
+    if (r.decls.reals.contains(ev.slot) or r.decls.arrays.contains(ev.slot) or r.decls.events.contains(ev.slot) or r.decls.params.contains(ev.slot))
         return r.failWith(.E1147, ex.mainTok(e), "a timing check event names a net or a variable with a logic value (A.7.3)", .{});
     if (ev.cond != .none) try compile.checkExpr(r, ev.cond);
     assert(ev.slot < r.values.len);

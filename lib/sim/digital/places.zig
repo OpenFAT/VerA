@@ -85,7 +85,7 @@ pub fn address(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?u32 {
     if (ex.tag(e) != .index) return try self.slot(e);
     const c = self.chainBase(e);
     const base = try self.slot(c.base);
-    const arr = self.arrays.get(base).?; // infer proved this is an array
+    const arr = self.decls.arrays.get(base).?; // infer proved this is an array
     // §4.9 row-major: the innermost select is the last dimension. Every
     // index is evaluated before an out-of-range one names no element.
     var offset: Offset = .{};

@@ -200,7 +200,7 @@ pub fn continuous(self: *Run, scratch: std.mem.Allocator, at: u32, pc: u32) Erro
 /// o.end)` now holds its target, replacing the one before it (§9.3).
 pub fn overrideOn(self: *Run, o: @FieldType(Instruction, "override_on"), pc: u32) Error!void {
     assert(o.start < o.end);
-    const entry = try self.overrides.getOrPut(self.arena, o.slot);
+    const entry = try self.assigns.layers.getOrPut(self.arena, o.slot);
     if (!entry.found_existing) entry.value_ptr.* = .{};
     if (o.bits) |bits| {
         const parts = &entry.value_ptr.parts;
@@ -232,8 +232,8 @@ pub fn overrideOn(self: *Run, o: @FieldType(Instruction, "override_on"), pc: u32
 /// `.override_eval`: the holding process writes its value, past the hold
 /// it owns (`Run.overriding`).
 pub fn overrideEval(self: *Run, scratch: std.mem.Allocator, o: @FieldType(Instruction, "override_eval"), pc: u32) Error!void {
-    assert(!self.overriding);
-    const layers = self.overrides.get(o.slot) orelse Overrides{};
+    assert(!self.assigns.active);
+    const layers = self.assigns.layers.get(o.slot) orelse Overrides{};
     // An assign under a force keeps tracking but does not write.
     if (o.force or layers.force == null) {
         const w = if (o.bits) |b| b.width else self.values[o.slot].width;
@@ -243,8 +243,8 @@ pub fn overrideEval(self: *Run, scratch: std.mem.Allocator, o: @FieldType(Instru
             try evaluate.evalFor(self, scratch, o.value, .{ .width = w, .signed = false })
         else
             try evaluate.evalFor(self, scratch, o.value, self.slotType(o.slot));
-        self.overriding = true;
-        defer self.overriding = false;
+        self.assigns.active = true;
+        defer self.assigns.active = false;
         if (o.bits) |b|
             try evaluate.write(self, scratch, .{ .slot = o.slot, .sel = .{ .first = b.lo, .count = b.width } }, value)
         else
@@ -262,7 +262,7 @@ pub fn overrideEval(self: *Run, scratch: std.mem.Allocator, o: @FieldType(Instru
 pub fn overrideOff(self: *Run, o: @FieldType(Instruction, "override_off"), pc: u32) Error!void {
     assert(pc < self.program.code.items.len);
     // An override undone before its process ran was still executed.
-    if (self.overrides.get(o.slot)) |layers| {
+    if (self.assigns.layers.get(o.slot)) |layers| {
         if (o.bits) |bits| {
             for (layers.parts.items) |p| if (std.meta.eql(p.bits, bits)) try doneFlush(self, p.range.start);
         } else if (if (o.force) layers.force else layers.assign) |layer| try doneFlush(self, layer.start);

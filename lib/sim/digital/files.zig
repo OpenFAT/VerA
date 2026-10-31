@@ -394,7 +394,7 @@ fn fread(self: *Run, a: std.mem.Allocator, t: contract.FileIo, args: []const Ast
     const d = (try descriptor(self, a, args[1])) orelse return 0;
     const ex = &self.file.exprs;
     const base = if (ex.tag(args[0]) == .ident) try self.slot(args[0]) else 0;
-    const arr = (if (ex.tag(args[0]) == .ident) self.arrays.get(base) else null) orelse {
+    const arr = (if (ex.tag(args[0]) == .ident) self.decls.arrays.get(base) else null) orelse {
         const width = (try evaluate.targetType(self, args[0])).width;
         const w = try readWord(a, t, d, width);
         if (w.value) |v| try evaluate.assign(self, a, args[0], overWord(v, try evaluate.eval(self, a, args[0], width), w.n));

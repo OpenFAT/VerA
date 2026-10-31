@@ -120,7 +120,7 @@ pub fn watchAnalog(r: *Run, at: u32) void {
 /// an event "regardless of whether the variable changes value or not".
 pub fn a2dWrite(r: *Run, at: u32, v: f64, assigned: bool) Error!void {
     const cur = r.values[at];
-    const real = r.reals.contains(at);
+    const real = r.decls.reals.contains(at);
     const lit = if (real) try evaluate.realLiteral(r.arena, v) else blk: {
         const w = try filled(r.arena, 64, true, .zero);
         w.values()[0] = @bitCast(std.math.lossyCast(i64, v));
@@ -194,7 +194,7 @@ pub fn analogTriggers(r: *Run, m: *const Ast.ModuleDecl, named: *const std.AutoH
                     for (body) |t| switch (f.stmt(t)) {
                         .event_trigger => |tr| if (f.exprs.tag(tr.target) == .ident and w.named.contains(f.exprs.strOf(tr.target))) {
                             const at = w.r.lookup(w.r.scope, f.exprs.strOf(tr.target)) orelse continue;
-                            if (w.r.events.contains(at)) try w.r.addMonitor(c.event, at);
+                            if (w.r.decls.events.contains(at)) try w.r.addMonitor(c.event, at);
                         },
                         else => {}, // else: only a trigger crosses to the digital context
                     };

@@ -219,7 +219,7 @@ pub fn evalFor(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, target: Type) Er
 pub fn convertSlot(self: *Run, a: std.mem.Allocator, slot: u32, target: Type) Error!Int.Literal {
     assert(slot < self.values.len);
     assert(target.real or target.width != 0);
-    return convertValue(a, self.values[slot], self.reals.contains(slot), target);
+    return convertValue(a, self.values[slot], self.decls.reals.contains(slot), target);
 }
 
 /// `v`, a real's 64 bits when `from_real`, converted for an assignment to

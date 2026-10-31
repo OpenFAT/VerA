@@ -548,7 +548,7 @@ fn resolveJoined(self: *Run, start: u32) Error!void {
                 // (ivtest pr2937417b/c). The forced net keeps its own value
                 // (`waiters.store` drops this resolution's write to it).
                 // ponytail: a whole-net force only, not a forced select.
-                if (self.overrides.count() != 0) if (self.overrides.get(n.slot)) |o| if (o.force != null) {
+                if (self.assigns.layers.count() != 0) if (self.assigns.layers.get(n.slot)) |o| if (o.force != null) {
                     own = .of(self.values[n.slot].bit(z.bit), .strong, .strong);
                 };
                 acc = acc.combine(crossed(own, z, y, p));

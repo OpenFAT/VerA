@@ -243,11 +243,11 @@ pub fn declareDrivers(r: *Run, e: *Elab, scope: u32, items: Ast.GenItems, lanes_
 pub fn bridged(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!Bridged {
     assert(scope < r.hier.scopes.items.len);
     var b: Bridged = .{ .instances = m.instances, .gates = m.gates, .pulls = m.pulls, .switches = m.switches };
-    if (r.inserts.len == 0) return b;
+    if (r.decls.inserts.len == 0) return b;
     const arena = r.arena;
     const path = try scopePath(r, scope);
     // The source's instances and at most one bridge per inserted row.
-    var out: std.ArrayList(Ast.Instance) = try .initCapacity(arena, m.instances.len + r.inserts.len);
+    var out: std.ArrayList(Ast.Instance) = try .initCapacity(arena, m.instances.len + r.decls.inserts.len);
     out.appendSliceAssumeCapacity(m.instances);
     // The primitives' terminals and copies of their rows, once one is bridged.
     var prims: ?[]const Ast.PrimTerm = null;
@@ -255,7 +255,7 @@ pub fn bridged(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32) Error!Br
     var pulls: []Ast.PullInst = &.{};
     var switches: []Ast.SwitchInst = &.{};
     var lanes: std.ArrayList(LaneSeg) = .empty;
-    for (r.inserts, r.insert_segs) |row, seg| {
+    for (r.decls.inserts, r.decls.insert_segs) |row, seg| {
         if (!std.mem.eql(u8, row.path, path)) continue;
         // The port's upper connection, and the width of the segment.
         const up: Ast.PortConn, const width: u32 = if (for (out.items[0..m.instances.len]) |*it| {

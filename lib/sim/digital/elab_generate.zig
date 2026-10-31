@@ -191,7 +191,7 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
             // §12.4: a generate block's nets are its scope's, one set per
             // loop iteration.
             for (b.gen.nets) |n| try declareNet(r, e, scope, n);
-            if (b.gen.nets.len != 0) try r.gen_nets.put(r.arena, scope, b.gen.nets);
+            if (b.gen.nets.len != 0) try r.decls.gen_nets.put(r.arena, scope, b.gen.nets);
             for (b.gen.defparams) |d| try bindDefparam(r, scope, d, b.instances);
             try declareEvents(r, b.gen.events);
             try declareDrivers(r, e, scope, b.gen.*, &.{});
@@ -336,7 +336,7 @@ fn genvarSlot(r: *Run, e: *Elab, name: Ast.StrId, tok: u32) Error!u32 {
     try r.bind(name, at, tok);
     try e.values.append(r.arena, try filled(r.arena, 32, true, .x));
     r.values = e.values.items;
-    try r.params.put(r.arena, at, {});
+    try r.decls.params.put(r.arena, at, {});
     return at;
 }
 

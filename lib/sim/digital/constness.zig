@@ -102,7 +102,7 @@ pub fn notConstant(self: *Run, idx: u32) Error!?[]const u8 {
             const f = v.sub.frame;
             v.why = switch (ex.tag(x)) {
                 .ident => if (v.r.lookup(f.scope, ex.strOf(x))) |at|
-                    if ((at >= f.first and at < f.first + f.count) or v.r.params.contains(at)) null else "it reads a name that is neither its own nor a parameter"
+                    if ((at >= f.first and at < f.first + f.count) or v.r.decls.params.contains(at)) null else "it reads a name that is neither its own nor a parameter"
                 else
                     "it reads a name that is neither its own nor a parameter",
                 .hier_ident => "it contains a hierarchical reference",
@@ -173,7 +173,7 @@ fn isConstantExpression(self: *Run, e: Ast.ExprId, attribute: bool) bool {
             // ponytail: such a name is taken as constant; checking it needs
             // each attribute's own scope.
             const at = self.lookup(self.scope, ex.strOf(e)) orelse return attribute;
-            return self.params.contains(at);
+            return self.decls.params.contains(at);
         },
         // §5: "constant bit-selects and part-selects of parameters" are
         // constant; the base is a name, which the arm above judges.

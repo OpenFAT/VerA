@@ -88,7 +88,7 @@ pub fn segregate(r: *Run, e: *elab.Elab) Error!void {
     // loop, which finds each segment by that name.
     const GateRead = struct { scope: u32, str: Ast.StrId, net: u32 };
     var gate_reads: std.ArrayList(GateRead) = .empty;
-    for (r.inserts, r.insert_segs) |row, seg| {
+    for (r.decls.inserts, r.decls.insert_segs) |row, seg| {
         const parent = scopeAt(r, row.path) orelse continue;
         // A continuous lower port minted no segment: nothing digital to split.
         const slot = r.hier.names.get(.{ .scope = parent, .str = r.file.exprs.strOf(seg) }) orelse continue;

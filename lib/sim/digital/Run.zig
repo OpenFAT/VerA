@@ -167,22 +167,6 @@ nettypes: []const Front.Preprocessor.NetTypeRegion = &.{},
 /// Variables, array elements and nets share one slot space, so one `store`
 /// wakes event waiters for all three.
 values: []Int.Literal,
-/// Keyed by the base slot of an unpacked array (§3.9).
-arrays: std.AutoHashMapUnmanaged(u32, Array) = .empty,
-/// IEEE 1364-2005 §12.4/§26.6.44: the net declarations belonging to each
-/// elaborated generate scope, retained for its VPI object relationships.
-gen_nets: std.AutoHashMapUnmanaged(u32, []const Ast.NetDecl) = .empty,
-/// The slots that are §5.10.4 named events. They occupy a slot only so that
-/// `@(e)` and `-> e` can meet on the waiter list; nothing is ever stored
-/// there, because §5.10's events "do not hold any data". Each scalar or
-/// array element maps to its declaration's token and lexical scope.
-events: std.AutoHashMapUnmanaged(u32, struct { tok: u32, scope: u32 }) = .empty,
-/// §9.3 the procedural continuous assignments in effect, by slot: the
-/// process range of an `assign` and of a `force`. While one is, ordinary
-/// writes to the slot do not land (`store`); a force outranks an assign.
-overrides: std.AutoHashMapUnmanaged(u32, Overrides) = .empty,
-/// `store` from an override's own process, which the guard lets through.
-overriding: bool = false,
 /// The zero-delay-loop guard: events dispatched at one tick (`run_until.EventBudget`).
 event_budget: run_until.EventBudget = .{},
 /// §10 the subroutine activations in progress (`activations.Calls`).
@@ -211,6 +195,10 @@ waits: waiters.Waits = .{},
 rows: exec.Rows = .{},
 /// The resolved nets, their drivers and switches (`run_nets.Netlist`).
 netlist: run_nets.Netlist = .{},
+/// What each slot was declared as (`declared.Decls`).
+decls: declared.Decls = .{},
+/// §9.3 the procedural continuous assignments in effect (`waiters.ProcAssigns`).
+assigns: waiters.ProcAssigns = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
@@ -238,17 +226,8 @@ diag_stage: diag.Stage = .lower,
 /// calls are: only the outermost resets it.
 resolve_scratch: std.heap.ArenaAllocator,
 resolve_depth: u32 = 0,
-/// `Mixed.inserts`, and each row's segment as an identifier expression
-/// (minted before pass one, while the expression tables can still grow).
-inserts: []const Insert = &.{},
-insert_segs: []const Ast.ExprId = &.{},
 /// VAMS §9.22 driver access and §9.22.6 segregation (`driver.zig`).
 drv: driver.State = .{},
-/// IEEE 1364-2005 §12.3.11 "the sign attribute shall not cross
-/// hierarchy": a port that COLLAPSED onto its parent's net shares the
-/// parent's slot but keeps its own declaration's signedness. Keyed by the
-/// port's name in the child, and present only where the two differ.
-port_signed: std.AutoHashMapUnmanaged(Name, bool) = .empty,
 /// Pass one's slot space while it is still growing: the view `constant`
 /// evaluates a bound or a parameter against before `values` is final.
 growing: ?*std.ArrayList(Int.Literal) = null,
@@ -256,33 +235,12 @@ growing: ?*std.ArrayList(Int.Literal) = null,
 /// be folded after slot allocation; their calls still have no runtime
 /// side effects and start with fresh function-local storage.
 folding_constant: bool = false,
-/// IEEE 1364-2005 §12.2.1 every `defparam`, by the scope its path is
-/// relative to and that path (`bindDefparam`, `paramValue`).
-/// Each value is evaluated in `decl`, the scope that declares it.
-defparams: std.HashMapUnmanaged(PathKey, struct { d: Ast.Defparam, decl: u32 }, PathKey.Ctx, 80) = .empty,
-/// Each defparam as pass one bound it, for §12.8.2's check against the
-/// complete hierarchy (`checkDefparams`).
-bound_defparams: std.ArrayList(struct { decl: u32, path: []const u8, at: u32, rest: []const u8, tok: u32 }) = .empty,
-/// §12.2 parameter slots: constants an expression may fold, never a
-/// target.
-params: std.AutoHashMapUnmanaged(u32, void) = .empty,
-/// IEEE 1364-2005 §4.10.3 the parameters that are specparams, each to
-/// its declaration's token: "declared before it is referenced".
-specparams: std.AutoHashMapUnmanaged(u32, u32) = .empty,
-/// IEEE 1364-2005 §4.8 `real` variables and VAMS §3.7 `wreal` nets: slots
-/// holding a double's 64 bits, which typing, conversion and change
-/// detection read as a real.
-reals: std.AutoHashMapUnmanaged(u32, void) = .empty,
 /// IEEE 1364-2005 §15 the timing checks (`tchk.Checks`).
 checks: tchk.Checks = .{},
 /// The source and options `elaborate` ran, which IEEE 1364-2005 C.7's
 /// reset elaborates again (`reset`).
 source: []const u8 = "",
 opts: Options = .{},
-/// `slot`'s answers by (scope, expression), direct-mapped, from the end
-/// of `elaborate`: every name is bound by then, so an answer never goes
-/// stale. Empty while elaborating.
-slot_memo: []SlotMemo = &.{},
 
 /// `run_until.runUntil`: Dispatch every event at a time <= `limit` (IEEE 1364 §11.4's loop,
 pub const runUntil = run_until.runUntil;

@@ -158,7 +158,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                     return self.exprFail(e, "a select is of a whole vector or an unpacked array element");
                 if (ex.tag(lhs) == .index) _ = try inferValue(self, lhs);
                 const at = try self.baseSlot(lhs);
-                if (self.reals.contains(at)) return self.exprFail(e, "§4.8: a real has no bits to select");
+                if (self.decls.reals.contains(at)) return self.exprFail(e, "§4.8: a real has no bits to select");
                 if (self.isScalar(at)) return self.exprFail(e, "§5.2.1: a scalar has no bits to select");
                 const rg = ex.rhs(e);
                 switch (ex.tag(rg)) {
@@ -204,8 +204,8 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                 if ((try inferValue(self, ex.rhs(x))).real) return self.exprFail(ex.rhs(x), "§4.8.1: a real is not an array index");
             }
             const base = try self.slot(x);
-            if (self.events.contains(base)) return self.exprFail(e, "§9.7.3: a named event holds no data; it can only be triggered and waited on");
-            if (self.reals.contains(base)) break :blk real_type;
+            if (self.decls.events.contains(base)) return self.exprFail(e, "§9.7.3: a named event holds no data; it can only be triggered and waited on");
+            if (self.decls.reals.contains(base)) break :blk real_type;
             const v = self.values[base];
             break :blk .{ .width = v.width, .signed = v.signed };
         },
@@ -310,7 +310,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
                         if (arg == .none and f == .fread and i == 2) continue;
                         if (arg == .none) return self.exprFail(e, "wrong number of arguments to a §17.2 file function");
                         // §17.2.4.4 "the reg myreg or the memory mem".
-                        if (f == .fread and i == 0 and ex.tag(arg) == .ident) if (self.arrays.get(try self.slot(arg))) |arr| {
+                        if (f == .fread and i == 0 and ex.tag(arg) == .ident) if (self.decls.arrays.get(try self.slot(arg))) |arr| {
                             if (arr.rest.len != 0) return self.exprFail(arg, "§17.2.4.4: $fread loads a one-dimensional memory");
                             continue;
                         };
@@ -419,7 +419,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
             const sub = self.routines.rows.items[idx];
             try checkArgs(self, sub.decl, ex.args(e), ex.mainTok(e));
             try self.routines.calls.put(self.arena, e, idx - self.routines.base.get(inst).?);
-            if (self.reals.contains(sub.frame.result)) break :blk real_type;
+            if (self.decls.reals.contains(sub.frame.result)) break :blk real_type;
             const result = self.values[sub.frame.result];
             break :blk .{ .width = result.width, .signed = result.signed };
         },
@@ -482,14 +482,14 @@ fn leafType(self: *Run, e: Ast.ExprId) Error!Type {
             const at = try self.scalarSlot(e);
             // §5.10: events "do not hold any data", so a named event has no
             // value an expression could read.
-            if (self.events.contains(at)) return self.exprFail(e, "§5.10: a named event holds no data; it can only be triggered and waited on");
+            if (self.decls.events.contains(at)) return self.exprFail(e, "§5.10: a named event holds no data; it can only be triggered and waited on");
             // IEEE 1364-2005 §4.10.3: "A specify parameter declared outside a
             // specify block shall be declared before it is referenced."
-            if (self.specparams.get(at)) |decl| if (ex.tag(e) == .ident and ex.mainTok(e) < decl)
+            if (self.decls.specparams.get(at)) |decl| if (ex.tag(e) == .ident and ex.mainTok(e) < decl)
                 return self.exprFail(e, "§4.10.3: a specify parameter is declared before it is referenced");
-            if (self.reals.contains(at)) break :blk real_type;
+            if (self.decls.reals.contains(at)) break :blk real_type;
             const v = self.values[at];
-            const own = if (ex.tag(e) == .ident) self.port_signed.get(.{ .scope = self.scope, .str = ex.strOf(e) }) else null;
+            const own = if (ex.tag(e) == .ident) self.decls.port_signed.get(.{ .scope = self.scope, .str = ex.strOf(e) }) else null;
             break :blk .{ .width = v.width, .signed = own orelse v.signed };
         },
         .int_literal => blk: {

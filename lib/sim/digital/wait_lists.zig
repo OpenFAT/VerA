@@ -209,7 +209,7 @@ pub fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
     const net_refused = "a net is driven by a continuous assignment; there is no procedural assignment to a net";
     if (try self.indexedArray(e) != null) {
         const base = try self.slot(self.chainBase(e).base);
-        if (self.events.contains(base)) return self.exprFail(e, "§9.7.3: a named event holds no data; it cannot be assigned");
+        if (self.decls.events.contains(base)) return self.exprFail(e, "§9.7.3: a named event holds no data; it cannot be assigned");
         // §4.9.1 an element of a net array is a net.
         if (self.netlist.slot_nets.contains(base)) return self.exprFail(e, net_refused);
         var x = e;
@@ -224,8 +224,8 @@ pub fn checkTarget(self: *Run, e: Ast.ExprId) Error!void {
     if (ex.tag(e) == .index) try checkExpr(self, e);
     const at = try self.baseSlot(e);
     if (self.netlist.slot_nets.contains(at)) return self.exprFail(e, net_refused);
-    if (self.params.contains(at)) return self.exprFail(e, "§12.2: a parameter is a constant; it cannot be assigned");
-    if (self.events.contains(at)) return self.exprFail(e, "§9.7.3: a named event holds no data; it cannot be assigned");
+    if (self.decls.params.contains(at)) return self.exprFail(e, "§12.2: a parameter is a constant; it cannot be assigned");
+    if (self.decls.events.contains(at)) return self.exprFail(e, "§9.7.3: a named event holds no data; it cannot be assigned");
 }
 
 /// Does intra-assignment control `s` leave its `.sample` only parking the
@@ -347,11 +347,11 @@ pub fn checkEvent(self: *Run, e: Ast.ExprId) Error!void {
                 try exprTerm(self, x);
             }
             // An `auto_terms` expression is never real.
-            if (!self.routines.auto_terms.contains(.{ .scope = self.scope, .e = x }) and self.reals.contains(try self.termSlot(x)))
+            if (!self.routines.auto_terms.contains(.{ .scope = self.scope, .e = x }) and self.decls.reals.contains(try self.termSlot(x)))
                 return self.exprFail(e, "§4.8.1: posedge and negedge do not apply to a real variable");
         },
         .hier_ident => _ = try self.scalarSlot(e),
-        .ident => if (self.events.get(try self.scalarSlot(e))) |decl| if (ex.mainTok(e) < decl.tok)
+        .ident => if (self.decls.events.get(try self.scalarSlot(e))) |decl| if (ex.mainTok(e) < decl.tok)
             return self.exprFail(e, "§9.7.3: a named event is declared before it is used"),
         // VAMS §7.3.5 an analog event in a discrete event control: the
         // mixed-signal kernel monitors it and delivers an A2D event.
@@ -370,9 +370,9 @@ pub fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32 {
     const c = self.chainBase(e);
     if (ex.tag(c.base) != .ident and ex.tag(c.base) != .hier_ident) return null;
     const at = try self.slot(c.base);
-    const decl = self.events.get(at) orelse return null;
+    const decl = self.decls.events.get(at) orelse return null;
     if (ex.tag(c.base) == .ident and ex.mainTok(e) < decl.tok) return self.exprFail(e, "§9.7.3: a named event is declared before it is used");
-    const dimensions: usize = if (self.arrays.get(at)) |arr| arr.rest.len + 1 else 0;
+    const dimensions: usize = if (self.decls.arrays.get(at)) |arr| arr.rest.len + 1 else 0;
     if (c.depth != dimensions) return self.exprFail(e, "§9.7.3: a named event array requires one index per dimension");
     var x = e;
     while (ex.tag(x) == .index) : (x = ex.lhs(x)) {
@@ -396,7 +396,7 @@ pub fn selectTerm(self: *Run, e: Ast.ExprId) Error!?SelectTerm {
     const v = ex.lhs(e);
     if (ex.tag(v) != .ident and ex.tag(v) != .hier_ident) return null;
     const at = try self.slot(v);
-    if (self.arrays.contains(at) or self.events.contains(at) or self.reals.contains(at)) return null;
+    if (self.decls.arrays.contains(at) or self.decls.events.contains(at) or self.decls.reals.contains(at)) return null;
     const rg = ex.rhs(e);
     switch (ex.tag(rg)) {
         .range => {},
@@ -445,7 +445,7 @@ fn exprTerm(self: *Run, e: Ast.ExprId) Error!void {
     const at: u32 = @intCast(g.items.len);
     entry.value_ptr.* = at;
     try g.append(self.arena, try filled(self.arena, ty.width, ty.signed, if (ty.real) .zero else .x));
-    if (ty.real) try self.reals.put(self.arena, at, {});
+    if (ty.real) try self.decls.reals.put(self.arena, at, {});
     self.values = g.items;
     var watched: std.ArrayList(u32) = .empty;
     try sensitivity(self, e, &watched);

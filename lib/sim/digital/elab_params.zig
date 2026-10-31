@@ -107,11 +107,11 @@ pub fn declareParams(r: *Run, scope: u32, declared_params: []const Ast.ParamDecl
         const slot_value = try filled(arena, ty.width, ty.signed, .zero);
         @memcpy(slot_value.planes, converted.planes);
         try g.append(arena, slot_value);
-        try r.params.put(arena, at, {});
-        if (ty.real) try r.reals.put(arena, at, {});
+        try r.decls.params.put(arena, at, {});
+        if (ty.real) try r.decls.reals.put(arena, at, {});
         // A specify block's specparam has no declare-before-reference rule
         // (§4.10.3 binds only one outside a block): token 0 never trips it.
-        if (p.is_spec) try r.specparams.put(arena, at, if (p.in_specify) 0 else p.main_tok);
+        if (p.is_spec) try r.decls.specparams.put(arena, at, if (p.in_specify) 0 else p.main_tok);
         // §4.10.1: a select of a ranged parameter indexes its declared range.
         if (p.packed_range) |range| try putRange(r, at, range, p.main_tok);
     }
@@ -186,7 +186,7 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
         var at = scope;
         var path: []const u8 = r.file.str(p.name);
         while (true) {
-            if (r.defparams.get(.{ .scope = at, .path = path })) |dp| {
+            if (r.decls.defparams.get(.{ .scope = at, .path = path })) |dp| {
                 if (p.is_local) return r.fail(dp.d.main_tok, "§12.2: `{s}` is a local parameter, which a defparam cannot override", .{r.file.str(p.name)});
                 break :blk .{ .e = dp.d.value, .scope = dp.decl };
             }
@@ -197,7 +197,7 @@ fn paramValue(r: *Run, p: Ast.ParamDecl, scope: u32, over: []const Ast.ParamOver
                 const full = try r.arena.print("{s}.{s}", .{ r.file.str(info.name), path });
                 for (r.hier.roots) |t| {
                     if (t == at) continue;
-                    if (r.defparams.get(.{ .scope = t, .path = full })) |dp| break :blk .{ .e = dp.d.value, .scope = dp.decl };
+                    if (r.decls.defparams.get(.{ .scope = t, .path = full })) |dp| break :blk .{ .e = dp.d.value, .scope = dp.decl };
                 }
                 break;
             }
@@ -267,7 +267,7 @@ fn unresolved(r: *Run, e: Ast.ExprId) ?Ast.ExprId {
 fn readsSpecparam(r: *Run, e: Ast.ExprId) bool {
     assert(e != .none);
     const ex = &r.file.exprs;
-    if (ex.tag(e) == .ident) return if (r.lookup(r.scope, ex.strOf(e))) |at| r.specparams.contains(at) else false;
+    if (ex.tag(e) == .ident) return if (r.lookup(r.scope, ex.strOf(e))) |at| r.decls.specparams.contains(at) else false;
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| if (c != .none and readsSpecparam(r, c)) return true;
     return false;

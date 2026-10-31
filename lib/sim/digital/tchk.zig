@@ -236,7 +236,7 @@ pub fn notifier(r: *Run, e: Ast.ExprId) Error!?u32 {
     if (ex.tag(e) != .ident and ex.tag(e) != .hier_ident) return r.failWith(.E1147, ex.mainTok(e), "a notifier is a variable identifier (A.7.5.2)", .{});
     const at = try r.slot(e);
     assert(at < r.values.len);
-    if (r.netlist.slot_nets.contains(at) or r.reals.contains(at) or r.arrays.contains(at) or r.events.contains(at) or r.params.contains(at))
+    if (r.netlist.slot_nets.contains(at) or r.decls.reals.contains(at) or r.decls.arrays.contains(at) or r.decls.events.contains(at) or r.decls.params.contains(at))
         return r.failWith(.E1147, ex.mainTok(e), "this notifier is not a reg (IEEE 1364-2005 §15.5: \"The notifier is a reg\")", .{});
     return at;
 }

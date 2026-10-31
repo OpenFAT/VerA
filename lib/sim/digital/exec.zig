@@ -355,8 +355,8 @@ fn suspendOn(self: *Run, e: Ast.ExprId, id: u32) Error!void {
     const watched = if (edge == .any) e else ex.lhs(e);
     if (ex.tag(watched) == .index) {
         const base = try self.slot(self.chainBase(watched).base);
-        if (self.events.contains(base)) {
-            const arr = self.arrays.get(base).?;
+        if (self.decls.events.contains(base)) {
+            const arr = self.decls.arrays.get(base).?;
             for (0..arr.count) |k| {
                 const slot = base + @as(u32, @intCast(k));
                 try waiters.watchExt(self, id, slot, .any, .{ .event_select = watched, .scope = self.scope });

@@ -137,7 +137,7 @@ pub fn callSync(self: *Run, a: std.mem.Allocator, idx: u32, args: []const Ast.Ex
         self.calls.saved.shrinkRetainingCapacity(saved_len);
     }
     for (args, inputs, f.ports) |arg, out, slot| if (out) |v|
-        try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
+        try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.decls.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
     if (self.calls.unwind == idx and sub.active == 0) self.calls.unwind = null;
     return result;
 }
@@ -201,7 +201,7 @@ pub fn returnTimed(self: *Run, a: std.mem.Allocator, idx: u32) Error!u32 {
     try makeResident(self, self.calls.ctx);
     self.scope = self.program.scope_of.items[act.ret_pc - 1];
     for (sub.decl.ports, act.args, f.ports, outs) |p, arg, slot, v| if (p.direction != .input)
-        try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
+        try evaluate.put(self, a, arg, try evaluate.convertValue(a, v, self.decls.reals.contains(slot), try evaluate.targetType(self, arg)), false, null);
     return act.ret_pc;
 }
 
@@ -242,7 +242,7 @@ fn loadFrame(self: *Run, f: Frame, from: []const u64) void {
 fn resetFrame(self: *Run, a: std.mem.Allocator, f: Frame) Error!void {
     for (f.first..f.first + f.count) |s| {
         const v = self.values[s];
-        const fill: Int.Bit = if (self.reals.contains(@intCast(s))) .zero else .x;
+        const fill: Int.Bit = if (self.decls.reals.contains(@intCast(s))) .zero else .x;
         @memcpy(v.planes, (try filled(a, v.width, v.signed, fill)).planes);
     }
 }

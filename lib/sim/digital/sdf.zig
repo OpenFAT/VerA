@@ -523,7 +523,7 @@ fn label(c: *Ctx, s: u32, e: Node, increment: bool) Error!void {
     var units = v * c.ts_mult;
     units = if (k >= 0) units * p else units / p;
     const dst = r.values[at];
-    if (r.reals.contains(at)) {
+    if (r.decls.reals.contains(at)) {
         const old: f64 = @bitCast(dst.values()[0]);
         dst.values()[0] = @bitCast(if (increment) old + units else units);
     } else {
