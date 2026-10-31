@@ -21,6 +21,8 @@ const switch_row = @import("switch_row.zig");
 const gen_noise = @import("noise.zig");
 const gen_opvars = @import("opvars.zig");
 const gen_state = @import("state.zig");
+const gen_breakpoints = @import("breakpoints.zig");
+const gen_collapse = @import("collapse.zig");
 const gen_unit = @import("unit.zig");
 const gen_instance = @import("instance.zig");
 const gen_family = @import("family.zig");
@@ -163,9 +165,9 @@ pub fn emitFile(self: *Gen) Error!void {
     // the residual non-deterministic and Newton never converges.
     if (f.stateful or self.lowered.rng_auto_seeds.items.len != 0 or gen_instance.pathLatches(self) or gen_instance.hasStatus(self)) try gen_state.emitStateMachine(self);
     try cg_limit.emit(self);
-    try gen_state.emitCollapse(self, cpairs);
-    try gen_state.emitNextBreakpoint(self);
-    try gen_state.emitDelays(self);
+    try gen_collapse.emitCollapse(self, cpairs);
+    try gen_breakpoints.emitNextBreakpoint(self);
+    try gen_breakpoints.emitDelays(self);
     try jac_tables.emitDerivReads(self, if (self.limits.calls.len != 0) (try cg_limit.liveSets(self)).writes else self.zero_mask);
     const k = try gen_family.constant(self);
     if (k.g or k.c) try self.w(
