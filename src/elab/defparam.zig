@@ -163,9 +163,10 @@ pub fn rootedPath(self: *const Flatten, p: []const u8) ?[]const u8 {
     const root = "$root" ++ [_]u8{sep};
     if (!std.mem.startsWith(u8, p, root)) return null;
     const rest = p[root.len..];
-    const top = for (self.out.units.items) |u| {
-        if (u.path.len == 0) break u.module;
-    } else return p;
+    // Row 0 is the top, whose path is the only empty one.
+    if (self.out.units.len == 0) return p;
+    assert(self.out.units.items(.path)[0].len == 0);
+    const top = self.ctx.file.str(self.out.units.items(.module)[0]);
     if (rest.len > top.len and rest[top.len] == sep and std.mem.startsWith(u8, rest, top)) return rest[top.len + 1 ..];
     return p;
 }
@@ -252,15 +253,15 @@ fn defparamKey(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, 
     var end = path.len;
     while (true) {
         const prefix = path[0..end];
-        const unit = for (self.out.units.items) |u| {
-            if (std.mem.eql(u8, u.path, prefix)) break u;
+        const unit = for (self.out.units.items(.path), self.out.units.items(.module)) |up, um| {
+            if (std.mem.eql(u8, up, prefix)) break self.ctx.file.str(um);
         } else null;
-        if (unit) |u| {
-            const own = if (end == 0) u.module else blk: {
+        if (unit) |module_name| {
+            const own = if (end == 0) module_name else blk: {
                 const parent_end = if (std.mem.findScalarLast(u8, prefix[0 .. end - 1], sep)) |k| k + 1 else 0;
                 break :blk prefix[parent_end .. end - 1];
             };
-            if (std.mem.eql(u8, own, first) or std.mem.eql(u8, u.module, first))
+            if (std.mem.eql(u8, own, first) or std.mem.eql(u8, module_name, first))
                 return self.ctx.arena.print("{s}{s}", .{ prefix, dp[dot + 1 ..] });
         }
         if (end == 0) return downward;
@@ -359,8 +360,8 @@ fn seedValueOf(self: *Flatten, name: Ast.StrId) ?Ast.ExprId {
 /// so this is reached only by one that `mayBindEarly` did not foresee.
 fn boundEarlier(self: *Flatten, key: []const u8) bool {
     const k = (std.mem.findScalarLast(u8, key, sep) orelse return false) + 1;
-    for (self.out.units.items) |u| if (std.mem.eql(u8, u.path, key[0..k])) {
-        for (u.decl.params) |p| if (!p.is_local and std.mem.eql(u8, self.ctx.file.str(p.name), key[k..])) return true;
+    for (self.out.units.items(.path), self.out.units.items(.decl)) |up, decl| if (std.mem.eql(u8, up, key[0..k])) {
+        for (decl.get(self.ctx.file).params) |p| if (!p.is_local and std.mem.eql(u8, self.ctx.file.str(p.name), key[k..])) return true;
     };
     return false;
 }
@@ -374,7 +375,7 @@ test rootedPath {
     var fl = try fixture.flatten(&f);
     // Before `run` records unit 0 there is no top name to strip.
     try std.testing.expectEqualStrings("$root.top.u.g", rootedPath(&fl, "$root.top.u.g").?);
-    try fl.out.units.append(f.arena.allocator(), .{ .module = "top", .path = "", .decl = &f.file.modules[0] });
+    try fl.out.units.append(f.arena.allocator(), .{ .module = fixture.id(&f.file, "top").?, .path = "", .decl = .of(&f.file, &f.file.modules[0]) });
     // §6.2.1: `$root.<top>.` names the device, the flat namespace's root.
     try std.testing.expectEqualStrings("u.g", rootedPath(&fl, "$root.top.u.g").?);
     // Only the whole first part is the top's name, and `$root.top` alone

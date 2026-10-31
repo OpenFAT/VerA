@@ -376,7 +376,7 @@ test "§6.4.2 ties: the greatest number of ranged localparams, then the fewest u
         \\module one(a); inout a; electrical a; parameter real k = 0.0; endmodule
     );
     const dg = try elaborate.elaborate(g.ctx());
-    try std.testing.expectEqualStrings("one", dg.units[1].module);
+    try std.testing.expectEqualStrings("one", g.file.str(dg.units.items(.module)[1]));
     try std.testing.expectEqual(@as(f64, 20.0), g.file.exprs.realValue(fixture.paramNamed(&g.file, dg.top, "u.k").?.default));
 
     // Two indistinguishable paramsets survive every rule.

@@ -15,6 +15,7 @@
 //! - `pub fn applyOocInits(self: *Flatten) design.Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const design = @import("design.zig");
 const Flatten = @import("Flatten.zig");
@@ -136,10 +137,10 @@ pub fn checkOocOverrides(self: *Flatten, child: *const Ast.ModuleDecl, path: []c
 /// and `collectOoc` order is the walk's.
 pub fn applyOocInits(self: *Flatten) design.Error!void {
     for (self.oocs.inits.items, 0..) |o, i| {
-        const flat = self.out.names.get(o.key) orelse o.key;
+        const flat = flatText(self, o.key);
         const beaten = for (self.oocs.inits.items, 0..) |q, j| {
             if (j == i) continue;
-            if (!std.mem.eql(u8, self.out.names.get(q.key) orelse q.key, flat)) continue;
+            if (!std.mem.eql(u8, flatText(self, q.key), flat)) continue;
             if (q.depth < o.depth or (q.depth == o.depth and j < i)) break true;
         } else false;
         if (beaten) continue;
@@ -155,6 +156,14 @@ pub fn applyOocInits(self: *Flatten) design.Error!void {
 }
 
 // ---- private ----
+
+/// The flat net segment `key` names: a connected port's net (`names`), else
+/// the key itself. Spelled, not interned: only the winner is interned.
+fn flatText(self: *const Flatten, key: []const u8) []const u8 {
+    assert(key.len != 0);
+    const id = self.out.names.get(key) orelse return key;
+    return self.ctx.file.str(id);
+}
 
 fn oocIn(map: *const std.StringHashMapUnmanaged(OocDecl), self: *Flatten, path: []const u8, local: Ast.StrId) ?Ast.StrId {
     const d = map.getAdapted(flat_name.PathKey{ .path = path, .local = self.ctx.file.str(local) }, flat_name.PathKey.Context{}) orelse return null;

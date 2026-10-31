@@ -202,7 +202,7 @@ fn paramsetStatements(
             try self.decls.vars.append(self.ctx.arena, out);
             if (v.desc) try self.out.ps_outputs.append(self.ctx.arena, .{
                 .report = try self.ctx.arena.print("{s}{s}", .{ path, file.str(v.name) }),
-                .flat = file.str(out.name),
+                .flat = out.name,
             });
         }
         for (link.body) |st| try stmts.append(self.ctx.arena, try clone_stmt.cloneStmt(self, st));

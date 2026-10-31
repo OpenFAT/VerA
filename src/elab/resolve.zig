@@ -217,8 +217,8 @@ pub fn resolveDiscipline(self: *Flatten, path: []const u8, p: Ast.Port, bound: A
 pub fn noteSignalDiscipline(self: *Flatten, net: Ast.StrId, disc: Ast.StrId) design.Error!void {
     if (disc == .none) return;
     try self.out.signal_disciplines.append(self.ctx.arena, .{
-        .net = self.ctx.file.str(net),
-        .discipline = self.ctx.file.str(disc),
+        .net = net,
+        .discipline = disc,
     });
 }
 

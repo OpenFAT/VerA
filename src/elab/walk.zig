@@ -311,7 +311,7 @@ fn startInstance(self: *Flatten, lv: *Level) design.Error!bool {
         const n = lookup.netRefName(self, c.expr) orelse continue;
         if (lv.declared.contains(n)) continue;
         try self.out.implicit_nets.append(self.ctx.arena, .{
-            .name = self.ctx.file.str(n),
+            .name = n,
             .main_tok = c.main_tok,
         });
     };
@@ -455,8 +455,8 @@ test "§6.2.2 an instance array is one instance per element, lowest index first;
     );
     const d = try elaborate.elaborate(f.ctx());
     try std.testing.expectEqual(@as(usize, 3), d.units.len);
-    try std.testing.expectEqualStrings("u[0].", d.units[1].path);
-    try std.testing.expectEqualStrings("u[1].", d.units[2].path);
+    try std.testing.expectEqualStrings("u[0].", d.units.items(.path)[1]);
+    try std.testing.expectEqualStrings("u[1].", d.units.items(.path)[2]);
 
     var g: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
     defer g.deinit();
@@ -485,7 +485,7 @@ test "§6.2.2 an instance array at the top of i64 is one element; a reversed ran
         try fixture.parse(&f, try f.arena.allocator().print(src, .{c.range}));
         const d = try elaborate.elaborate(f.ctx());
         try std.testing.expectEqual(c.paths.len + 1, d.units.len);
-        for (c.paths, d.units[1..]) |want, u| try std.testing.expectEqualStrings(want, u.path);
+        for (c.paths, d.units.items(.path)[1..]) |want, path| try std.testing.expectEqualStrings(want, path);
     }
 }
 

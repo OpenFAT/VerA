@@ -341,8 +341,7 @@ fn ownPortFlow(self: *Flatten, e: Ast.ExprId) ?Ast.StrId {
 /// its own (`design.Design.port_ammeters`), so its flow is a probe lowering reads.
 fn ammetered(self: *Flatten, port: Ast.StrId) bool {
     const flat = self.unit.rename.get(port) orelse return false;
-    const name = self.ctx.file.str(flat);
-    for (self.out.port_ammeters.items) |am| if (std.mem.eql(u8, am.internal, name)) return true;
+    for (self.out.port_ammeters.items) |am| if (am.internal == flat) return true;
     return false;
 }
 
@@ -401,8 +400,8 @@ test "§5.4.3 a child reading the flow into its own port gets a net of its own; 
     );
     const d = try elaborate.elaborate(own.ctx());
     try std.testing.expectEqual(@as(usize, 1), d.port_ammeters.len);
-    try std.testing.expectEqualStrings("u.a", d.port_ammeters[0].internal);
-    try std.testing.expectEqualStrings("p", d.port_ammeters[0].bound);
+    try std.testing.expectEqualStrings("u.a", own.file.str(d.port_ammeters[0].internal));
+    try std.testing.expectEqualStrings("p", own.file.str(d.port_ammeters[0].bound));
 
     var good: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
     defer good.deinit();

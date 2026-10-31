@@ -295,8 +295,8 @@ test "§6.6 an if-generate's instances are elaborated under their arm's scheme; 
     // §6.6.1: one generate block instance per genvar value, `blk[i]`.
     const dg = try elaborate(g.ctx());
     try std.testing.expectEqual(@as(usize, 3), dg.units.len);
-    try std.testing.expectEqualStrings("blk[0].a.", dg.units[1].path);
-    try std.testing.expectEqualStrings("blk[1].a.", dg.units[2].path);
+    try std.testing.expectEqualStrings("blk[0].a.", dg.units.items(.path)[1]);
+    try std.testing.expectEqualStrings("blk[1].a.", dg.units.items(.path)[2]);
 
     var h: Fixture = .{ .arena = .init(std.testing.allocator) };
     defer h.deinit();

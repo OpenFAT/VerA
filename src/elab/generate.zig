@@ -476,7 +476,7 @@ test "§6.6.3 an instance in a named generate block is named through the block; 
     );
     const d = try elaborate.elaborate(f.ctx());
     try std.testing.expectEqual(@as(usize, 3), d.units.len);
-    try std.testing.expectEqualStrings("g1.u.", d.units[1].path);
-    try std.testing.expect(std.mem.startsWith(u8, d.units[2].path, "genblk"));
-    try std.testing.expect(std.mem.endsWith(u8, d.units[2].path, ".v."));
+    try std.testing.expectEqualStrings("g1.u.", d.units.items(.path)[1]);
+    try std.testing.expect(std.mem.startsWith(u8, d.units.items(.path)[2], "genblk"));
+    try std.testing.expect(std.mem.endsWith(u8, d.units.items(.path)[2], ".v."));
 }

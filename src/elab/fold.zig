@@ -202,7 +202,7 @@ test "a chain of parameter defaults folds within the stack reserved for one defa
     try fixture.parse(&f, text.items);
     const dsg = try elaborateDeep(&f, d + 2);
     try std.testing.expectEqual(@as(usize, 2), dsg.units.len);
-    try std.testing.expectEqualStrings(try f.arena.allocator().print("u[{d}].", .{links * d}), dsg.units[1].path);
+    try std.testing.expectEqualStrings(try f.arena.allocator().print("u[{d}].", .{links * d}), dsg.units.items(.path)[1]);
 }
 
 test "parameter folds: a forward reference still folds, a cycle declines (E0909)" {
@@ -219,7 +219,7 @@ test "parameter folds: a forward reference still folds, a cycle declines (E0909)
         , .{case[0]}));
         if (case[1]) {
             const d = try elaborate.elaborate(f.ctx());
-            try std.testing.expectEqualStrings("u[3].", d.units[1].path);
+            try std.testing.expectEqualStrings("u[3].", d.units.items(.path)[1]);
         } else {
             try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
             try std.testing.expect(fixture.hasCode(&f.bag, .E0909));

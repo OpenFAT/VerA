@@ -170,13 +170,14 @@ pub const Decls = struct {
 pub const Out = struct {
     /// §9.15/§9.16 one row per unit id, in issue order (so index == unit id):
     /// the top's, appended by `run`, then each inlined instance's.
-    units: std.ArrayList(design.UnitPath) = .empty,
-    names: std.StringHashMapUnmanaged([]const u8) = .empty,
-    port_disciplines: std.StringHashMapUnmanaged([]const u8) = .empty,
+    units: std.MultiArrayList(design.Unit) = .empty,
+    names: std.StringHashMapUnmanaged(Ast.StrId) = .empty,
+    port_disciplines: std.StringHashMapUnmanaged(Ast.StrId) = .empty,
     implicit_nets: std.ArrayList(design.NameSite) = .empty,
     unconnected_inputs: std.ArrayList(design.NameSite) = .empty,
     inserts: std.ArrayList(design.Inserted) = .empty,
     port_concats: std.ArrayList(design.PortConcat) = .empty,
+    net_parts: std.ArrayList(design.NetPart) = .empty,
     port_widths: std.ArrayList(design.PortWidth) = .empty,
     signal_disciplines: std.ArrayList(design.SignalDiscipline) = .empty,
     attribute_disciplines: std.AutoHashMapUnmanaged(Ast.ExprId, Ast.StrId) = .empty,
@@ -279,7 +280,7 @@ pub fn err(self: *Flatten, tok: u32, code: diag.Code, comptime fmt: []const u8, 
 /// passes and publishes `Design`. Asserts that this state has not run yet.
 /// Every pointer in the result points into `ctx.arena`.
 pub fn run(self: *Flatten, top: *const Ast.ModuleDecl) Error!Design {
-    assert(self.out.units.items.len == 0);
+    assert(self.out.units.len == 0);
     assert(self.decls.params.items.len == 0);
     try seedTop(self, top);
 
@@ -373,16 +374,16 @@ fn seedTop(self: *Flatten, top: *const Ast.ModuleDecl) Error!void {
     try self.decls.gates.appendSlice(a, top.gates);
     try self.decls.pulls.appendSlice(a, top.pulls);
     try self.decls.switches.appendSlice(a, top.switches);
-    try self.out.units.append(a, .{ .module = self.ctx.file.str(top.name), .path = "", .decl = top });
-    assert(self.out.units.items.len == 1);
+    try self.out.units.append(a, .{ .module = top.name, .path = "", .decl = .of(self.ctx.file, top) });
+    assert(self.out.units.len == 1);
     assert(self.decls.params.items.len >= top.params.len);
 }
 
 /// `Design` over the walk's tables, without copying a list.
 fn publish(self: *Flatten, out: *const Ast.ModuleDecl) Design {
     // `Design.units[i]` is unit i: the top, then one row per instance.
-    assert(self.out.units.items.len != 0);
-    assert(self.out.units.items[0].path.len == 0);
+    assert(self.out.units.len != 0);
+    assert(self.out.units.items(.path)[0].len == 0);
     const o = &self.out;
     return .{
         .top = out,
@@ -390,9 +391,10 @@ fn publish(self: *Flatten, out: *const Ast.ModuleDecl) Design {
         .port_disciplines = o.port_disciplines,
         .implicit_nets = o.implicit_nets.items,
         .unconnected_inputs = o.unconnected_inputs.items,
-        .units = o.units.items,
+        .units = o.units.slice(),
         .inserts = o.inserts.items,
         .port_concats = o.port_concats.items,
+        .net_parts = o.net_parts.items,
         .port_widths = o.port_widths.items,
         .signal_disciplines = o.signal_disciplines.items,
         .attribute_disciplines = o.attribute_disciplines,
