@@ -3,9 +3,23 @@
 //! parser and (for Annex E's prelude) preprocessor the compiler runs, so a
 //! test of any `elab/` file starts from Verilog-AMS text. Test-only:
 //! only `test` blocks reach it. LRM Annex E (the prelude).
+//!
+//! Contents:
+//! - `pub const Fixture = struct`
+//! -   `pub fn deinit(self: *Fixture) void`
+//! -   `pub fn ctx(self: *Fixture) design.Ctx`
+//! - `pub fn parse(out: *Fixture, text: []const u8) !void`
+//! - `pub fn parseWithPrelude(out: *Fixture, text: []const u8) !void`
+//! - `pub fn flatten(f: *Fixture) !Flatten`
+//! - `pub fn hasCode(bag: *const diag.Bag, code: diag.Code) bool`
+//! - `pub fn moduleNamed(file: *const Ast.SourceFile, name: []const u8) ?*const Ast.ModuleDecl`
+//! - `pub fn paramNamed(file: *const Ast.SourceFile, top: *const Ast.ModuleDecl, name: []const u8) ?Ast.ParamDecl`
+//! - `pub fn netNamed(file: *const Ast.SourceFile, top: *const Ast.ModuleDecl, name: []const u8) ?Ast.NetDecl`
+//! - `pub fn id(file: *const Ast.SourceFile, s: []const u8) ?Ast.StrId`
 
 const std = @import("std");
-const elaborate = @import("elaborate.zig");
+const design = @import("design.zig");
+const Flatten = @import("Flatten.zig");
 const Ast = @import("frontend").Ast;
 const Lexer = @import("frontend").Lexer;
 const Parser = @import("frontend").Parser;
@@ -32,7 +46,7 @@ pub const Fixture = struct {
     /// Returns the `Ctx` that elaborates this fixture: basic discipline
     /// resolution, no `--param` overrides. Its bag is undefined until a
     /// `parse*` has run.
-    pub fn ctx(self: *Fixture) elaborate.Ctx {
+    pub fn ctx(self: *Fixture) design.Ctx {
         return .{
             .arena = self.arena.allocator(),
             .file = &self.file,
@@ -75,7 +89,7 @@ pub fn parseWithPrelude(out: *Fixture, text: []const u8) !void {
 /// Returns a `Flatten` over `f`'s file before any walk: no table seeded, no
 /// unit entered, and an empty generate-instance list for every module, so a
 /// transform can be called on its own. Rows live in `f`'s arena.
-pub fn flatten(f: *Fixture) !elaborate.Flatten {
+pub fn flatten(f: *Fixture) !Flatten {
     const gen = try f.arena.allocator().alloc([]const Ast.Instance, f.file.modules.len);
     for (gen) |*g| g.* = &.{};
     return .{ .ctx = f.ctx(), .gen_instances = gen };
