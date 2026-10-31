@@ -50,7 +50,7 @@ pub fn anyTpInPlace(self: *const Gen) bool {
 
 /// Returns `Gen.tp_of_block`: per MIR block, the innermost `vera_timepoint`
 /// statement whose miss arm holds it (the blocks its miss block reaches
-/// before the join, as `plan_setup.timepointVarying` walks them), or
+/// before the join, as `prove.timepoint.varying` walks them), or
 /// `none_u32`. Empty when no slot is stored in place.
 pub fn tpBlocks(self: *Gen) Error![]const u32 {
     assert(self.tp_of_block.len == 0);
@@ -71,7 +71,7 @@ pub fn tpBlocks(self: *Gen) Error![]const u32 {
         // Each block is pushed at most once (its flag is set first).
         while (stack.pop()) |x| {
             of[x] = @intCast(b);
-            for (self.an.succs[x]) |y| {
+            for (self.an.succsOf(x)) |y| {
                 if (y == join or seen[y]) continue;
                 seen[y] = true;
                 stack.appendAssumeCapacity(y);

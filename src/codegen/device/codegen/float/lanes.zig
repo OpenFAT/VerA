@@ -23,7 +23,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
-const proof = @import("prove").proof;
 const codegen = @import("../../codegen.zig");
 const gen_render = @import("../render.zig");
 const opcode_zig = @import("../opcode_zig.zig");
@@ -77,7 +76,7 @@ pub fn eagerCostly(self: *Gen, v0: Mir.Value, depth: u32) bool {
 /// Returns whether `v`'s inline subtree may run unconditionally in a
 /// `.strict` unit. True for materialized values, leaves, and trees of ops
 /// total on all of R under IEEE semantics: no call, and
-/// `proof.domainOf == .all` (which excludes ln/sqrt/pow and the trapping
+/// `Mir.opcode.get(op).domain == .all` (which excludes ln/sqrt/pow and the trapping
 /// idiv/imod/fmod) or a guarded row (`Mir.guard_of`), which runs on a safe
 /// argument off its guard (`render.renderSubst`). "Inline" matches what
 /// `renderVal` inlines. Answers false past `eager_depth_max` operands deep.
@@ -95,7 +94,7 @@ pub fn eagerSafe(self: *Gen, v0: Mir.Value, depth: u32) bool {
     const inst = def.inst_result;
     const row = self.mir.instRow(inst);
     if (row.op == .call) return false;
-    if (proof.domainOf(row.op) != .all and self.mir.guardOf(inst) == null) return false;
+    if (Mir.opcode.get(row.op).domain != .all and self.mir.guardOf(inst) == null) return false;
     return switch (Mir.opClass(row.op)) {
         .phi => true, // function-scope var, assigned on edges before here
         .unary => eagerSafe(self, @fromBackingInt(@intCast(row.a)), depth + 1),

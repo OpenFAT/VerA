@@ -279,7 +279,7 @@ pub fn plan(g: Input, u_names: []const []const u8) Error!Limits {
     // reverse postorder can end on the body.
     const exit = blk: {
         for (g.an.rpo) |bi| {
-            if (g.an.succs[bi].len == 0) break :blk bi;
+            if (g.an.succsOf(bi).len == 0) break :blk bi;
         }
         break :blk g.an.rpo[g.an.rpo.len - 1];
     };

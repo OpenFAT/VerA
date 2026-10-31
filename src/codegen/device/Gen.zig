@@ -91,7 +91,7 @@ limits: plan_limit.Limits = .{},
 /// §4.6.3/§4.6.4 the small-signal source rows and tables (`plan/noise.zig`).
 noise: plan_noise.Noise = .{},
 /// Solve invariance per value, block and loop (`prove/setup.zig`).
-sinv: plan_setup.Sinv = .{},
+sinv: plan_setup.Invariance = .{},
 /// §5.6.1.2 the charge sites `q` returns and the rows they stamp
 /// (`plan/qsite.zig`).
 qs: plan_qsite.QSites = .{},

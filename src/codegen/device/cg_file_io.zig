@@ -54,7 +54,7 @@ pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize
 }
 
 /// Emits §9.4.1's registration half: arms the monitor latch of the site keyed
-/// by `args[0]` (`str_kernels.zMonitorArm`).
+/// by `args[0]` (`str_store.zMonitorArm`).
 pub fn emitMonitorArm(g: *Gen, args: []const Mir.Value) Error!void {
     assert(args.len != 0);
     return g.b("S.con(zMonitorArm({d}))", .{monitorKey(g, args)});
@@ -162,7 +162,7 @@ fn emitFileCallInner(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usiz
             return g.b(")", .{});
         },
         // §9.5.4.2 the count. Composed here because `file_kernels.zig` cannot
-        // call `str_kernels.zScan` (each kernel file compiles alone). Scan the
+        // call `str_scan.zScan` (each kernel file compiles alone). Scan the
         // unread window, widened until the scan stops inside it, then consume
         // exactly `zScan.used`: "the offending input character is left
         // unread". Operands are (fd, format); the item readers below re-scan

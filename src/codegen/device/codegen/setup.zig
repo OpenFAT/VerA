@@ -107,7 +107,7 @@ pub fn planSetup(self: *Gen) Error!void {
     if (self.lowered.table_samples.items.len != 0) return;
     if (self.core.lo_vals.len == 0 and self.jobs.display_name.len == 0) return;
     for (0..nv) |i| {
-        if (plan_setup.candidate(self.input(), self.sinv.val, @fromBackingInt(@intCast(i)))) self.su.idx[i] = 0;
+        if (plan_setup.candidate(self.input(), self.sinv.invariant, @fromBackingInt(@intCast(i)))) self.su.idx[i] = 0;
     }
     self.cur.plan.su_idx = self.su.idx;
     self.cur.plan.su_on = true;
@@ -216,7 +216,7 @@ pub fn emitSetup(self: *Gen) Error!void {
     self.cur.plan.lo_vals = self.su.vals;
     self.cur.plan.su_on = false; // computing the roots, not reading them
     self.cur.plan.setup_mode = true;
-    self.cur.plan.sinv = self.sinv.val;
+    self.cur.plan.sinv = self.sinv.invariant;
     self.cur.plan.su_home = self.sinv.home;
     self.cur.plan.display_unit = false;
     self.su.mode = true;
@@ -407,7 +407,7 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
     }.f;
     for (Mir.Value.first_dynamic..nv) |i| {
         const v: Mir.Value = @fromBackingInt(@intCast(i));
-        if (!plan_setup.candidate(self.input(), self.sinv.val, v) or self.an.rv(v) != v) continue;
+        if (!plan_setup.candidate(self.input(), self.sinv.invariant, v) or self.an.rv(v) != v) continue;
         // A parameter leaf is one value per parameter (`param_values`), so
         // it is its own number.
         if (self.mir.valueDef(v) != .inst_result) continue;
@@ -432,7 +432,7 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
         }
         if (row.op == .ine and key.b.tag == .i and key.b.x == 0 and key.a.tag == .val) {
             const x: Mir.Value = @fromBackingInt(@intCast(key.a.x));
-            if (rootGroup(self, x) == 2 and plan_setup.candidate(self.input(), self.sinv.val, x) and placedOver(self, x, v)) {
+            if (rootGroup(self, x) == 2 and plan_setup.candidate(self.input(), self.sinv.invariant, x) and placedOver(self, x, v)) {
                 same[i] = x;
                 continue;
             }

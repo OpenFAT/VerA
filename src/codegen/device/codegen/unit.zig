@@ -368,7 +368,7 @@ fn emitCoreDecl(self: *Gen, name: []const u8, doc: []const u8) Error!void {
 /// Parameters the body never reads are back-patched to `_`, padded to the
 /// name's width, in fixed slots reserved before the body is rendered.
 ///
-/// Returns the offset of the `fn` keyword, where `orchestrator.writeTree`
+/// Returns the offset of the `fn` keyword, where `zigbuild.writeTree`
 /// splices `pub ` for the split form. `text` itself stays private because
 /// `contract.rejectStrayPubDecls` allows only contract-recognized public names.
 fn emitUnit(self: *Gen, name: []const u8, target: Mir.Value, mode: proof.FloatMode, comment: []const u8) Error!usize {

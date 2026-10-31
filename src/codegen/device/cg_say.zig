@@ -18,7 +18,7 @@ const Mir = @import("ir").Mir;
 const cg = @import("codegen.zig");
 const Gen = cg.Gen;
 const Error = cg.Error;
-const str_k = @import("kernels").str_kernels;
+const str_real = @import("kernels").str_real;
 const cg_display = @import("cg_display.zig");
 const cg_format = @import("cg_format.zig");
 
@@ -168,7 +168,7 @@ fn sayFormat(g: *Gen, args: []const Mir.Value, fmt: *std.ArrayList(u8), vals: *s
             }
             const start = j;
             j += 1;
-            while (j < s.len and (std.ascii.isDigit(s[j]) or s[j] == '.' or str_k.zcFlag(s[j]) != null)) j += 1;
+            while (j < s.len and (std.ascii.isDigit(s[j]) or s[j] == '.' or str_real.zcFlag(s[j]) != null)) j += 1;
             if (j == s.len) {
                 try fmt.appendSlice(g.arena, s[start..]);
                 break;

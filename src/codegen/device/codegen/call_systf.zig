@@ -40,7 +40,7 @@ pub fn emitSystfTable(self: *Gen) Error!void {
     // made, rendered or not, so the set is the source's and not the plan's.
     const outs = try self.arena.alloc(u64, self.systf_names.items.len);
     @memset(outs, 0);
-    for (0..self.mir.insts.len) |ii| {
+    for (0..self.mir.instCount()) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         if (self.mir.instOp(inst) != .call) continue;
         const d = self.mir.instData(inst).call;

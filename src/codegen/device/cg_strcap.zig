@@ -1,6 +1,6 @@
 //! String capacities -> the size of each emitted string row. A device has no
 //! allocator, so every run-time string lives in a static row: a §9.5.3
-//! formatter's or a §3.3 concatenation's call-site row (`str_kernels.zSRow`)
+//! formatter's or a §3.3 concatenation's call-site row (`str_store.zSRow`)
 //! and a §5.10 held string's `Instance` field (`ZStrHeldN`). This sizes each
 //! from what the model can put there, so no legal model overruns one.
 //! LRM §3.3 (strings, Table 3-3), §5.10 (held values), §9.5.3/§9.5.4.
@@ -61,7 +61,7 @@ pub fn cap(g: *Gen, v0: Mir.Value) Error!u64 {
 }
 
 /// The row of a `$sformat` whose format is a string variable
-/// (`str_kernels.zSFormatRt`): the format's own text plus each operand's
+/// (`str_format.zSFormatRt`): the format's own text plus each operand's
 /// widest rendering. A width written in the run-time format can still ask
 /// for more (E1011).
 pub fn rtFormatCap(g: *Gen, args: []const Mir.Value) Error!u64 {

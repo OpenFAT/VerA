@@ -7,7 +7,8 @@
 //! - `pub const display_comment = "§9.4 display tasks, in source order"`
 //! - `pub const Jobs = struct`
 //! - `pub const Job = struct`
-//! - `pub fn plan(self: Input, from: From, dyn: anytype) !Jobs`
+//! - `pub fn PlanError(comptime Dyn: type) type`
+//! - `pub fn plan(self: Input, from: From, dyn: anytype) PlanError(@TypeOf(dyn))!Jobs`
 //! - members: `Job.Kind`, `always.isDynamic`
 
 const std = @import("std");
@@ -132,12 +133,19 @@ const always = struct {
     }
 }{};
 
+/// `plan`'s errors for a `dyn` of type `Dyn`: allocation, and every error
+/// `Dyn.isDynamic` returns.
+pub fn PlanError(comptime Dyn: type) type {
+    if (!@hasDecl(Dyn, "isDynamic")) @compileError(@typeName(Dyn) ++ " has no pub fn isDynamic");
+    const ret = @typeInfo(@TypeOf(Dyn.isDynamic)).@"fn".return_type.?;
+    return std.mem.Allocator.Error || @typeInfo(ret).error_union.error_set;
+}
+
 /// Returns every core target in queue order (`Job.Kind`); slices are owned by
 /// `self.arena`. `dyn.isDynamic(v)` answers whether a §4.5 control argument
 /// renders only off the core, so a test can pass a stub. Fails on
-/// allocation or with `dyn`'s error.
-pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
-    if (!@hasDecl(@TypeOf(dyn), "isDynamic")) @compileError(@typeName(@TypeOf(dyn)) ++ " has no pub fn isDynamic");
+/// allocation or with `dyn`'s error (`PlanError`).
+pub fn plan(self: Input, from: From, dyn: anytype) PlanError(@TypeOf(dyn))!Jobs {
     assert(from.names.units.len == from.names.unit_names.len);
     var out: Jobs = .{};
     var jobs: std.ArrayList(Job) = .empty;
@@ -427,7 +435,7 @@ fn readSet(self: Input, queued: []const Job) ![]bool {
     const read = try self.arena.alloc(bool, self.an.nv);
     @memset(read, false);
     for (queued) |j| read[@backingInt(self.an.rv(j.target))] = true;
-    for (0..self.mir.insts.len) |ii| {
+    for (0..self.mir.instCount()) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         switch (self.mir.instData(inst)) {
             .unary => |d| read[@backingInt(self.an.rv(d.operand))] = true,

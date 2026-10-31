@@ -8,14 +8,11 @@
 //! - `pub const tp_txt`
 //! - `pub const tp_arr_txt`
 //! - `pub const arr_txt`
-//! - `pub const hist_txt`
+//! - `pub const hist_txt = kernels.text.hist`
 //! - `pub const hist_quad_txt`
 
 const std = @import("std");
 const kernels = @import("kernels");
-
-// A file-level //! header cannot be spliced into the middle of device.zig.
-const hist_src = kernels.text.hist;
 
 /// VerA's `vera_timepoint` cache key. Emitted only for a device with one
 /// (`Lowered.timepoints`).
@@ -143,8 +140,7 @@ pub const arr_txt =
 
 /// The §4.5.7 `absdelay` history ring and its linear interpolation
 /// (`zAbsdelay`, `zHistAt`). Emitted only when `usesOp(.absdelay)`.
-pub const hist_txt = "// ---- §4.5.7 absdelay history (lib/kernels/hist_kernels.zig) ----\n\n" ++
-    hist_src[std.mem.find(u8, hist_src, "\n\n").? + 2 ..];
+pub const hist_txt = kernels.text.hist;
 
 /// `zAbsdelay` and `zHistAt` under VerA's `(* vera_interp = 2 *)`: 3-point
 /// Lagrange instead of §4.5.7's linear reading, as SPICE's lossless

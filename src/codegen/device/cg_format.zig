@@ -25,7 +25,7 @@ const Gen = cg.Gen;
 const Error = cg.Error;
 const VTy = Analysis.VTy;
 const strcap = @import("cg_strcap.zig");
-const str_k = @import("kernels").str_kernels;
+const str_real = @import("kernels").str_real;
 const cg_display = @import("cg_display.zig");
 
 /// One rendered `std.debug.print` operand: the value, the Zig type the chosen
@@ -62,7 +62,7 @@ pub const PrintArg = struct {
         /// field text is composed in per-op scratch and printed as `{s}`.
         cint,
         /// §9.4.3 Table 9-23's real conversions (`%e`, `%f`, `%g`, engineering
-        /// `%r`) through `str_kernels.zCReal`, which follows C11 7.21.6.1
+        /// `%r`) through `str_real.zCReal`, which follows C11 7.21.6.1
         /// (round half to even) where Zig's float verbs do not. The kernel
         /// composes the whole field, sign and padding included.
         creal,
@@ -148,7 +148,7 @@ pub const Spec = struct {
 
     // The scratch for a composed field is a stack array in the emitted block
     // up to what a field of this width and precision needs; a wider field's
-    // scratch is a static row (`str_kernels.zSRow`), so no field makes a
+    // scratch is a static row (`str_store.zSRow`), so no field makes a
     // huge frame (`PrintArg.onStack`).
     const max_stack = 4096;
     fn p(self: Spec, default: usize) usize {
@@ -223,12 +223,12 @@ pub fn translateFormat(
         // grants. Parsed into numbers here; `appendConv` decides per
         // conversion whether Zig can spell it or a composed field is needed.
         var spec: Spec = .{};
-        while (i < src.len) : (i += 1) switch (str_k.zcFlag(src[i]) orelse break) {
-            str_k.zc_left => spec.left = true,
-            str_k.zc_plus => spec.plus = true,
-            str_k.zc_space => spec.space = true,
-            str_k.zc_zero => spec.zero = true,
-            str_k.zc_alt => spec.alt = true,
+        while (i < src.len) : (i += 1) switch (str_real.zcFlag(src[i]) orelse break) {
+            str_real.zc_left => spec.left = true,
+            str_real.zc_plus => spec.plus = true,
+            str_real.zc_space => spec.space = true,
+            str_real.zc_zero => spec.zero = true,
+            str_real.zc_alt => spec.alt = true,
             else => unreachable, // `zcFlag` returns one of the five bits
         };
         const width_at = i;
@@ -470,14 +470,14 @@ pub fn renderPrintArg(g: *Gen, p: PrintArg, i: usize) Error!void {
             }
         },
         .creal => {
-            // C11 7.21.6.1's flag bits, `str_kernels.zc_*`: 1 '-', 2 '+',
+            // C11 7.21.6.1's flag bits, `str_real.zc_*`: 1 '-', 2 '+',
             // 4 ' ', 8 '0', 16 '#'. The kernel composes the whole field.
             assert(p.conv != 0); // the source's letter: 'e', 'f', 'g' or 'r', either case
-            const flags: u8 = (if (p.spec.left) str_k.zc_left else 0) |
-                (if (p.spec.plus) str_k.zc_plus else 0) |
-                (if (p.spec.space) str_k.zc_space else 0) |
-                (if (p.spec.zero) str_k.zc_zero else 0) |
-                (if (p.spec.alt) str_k.zc_alt else 0);
+            const flags: u8 = (if (p.spec.left) str_real.zc_left else 0) |
+                (if (p.spec.plus) str_real.zc_plus else 0) |
+                (if (p.spec.space) str_real.zc_space else 0) |
+                (if (p.spec.zero) str_real.zc_zero else 0) |
+                (if (p.spec.alt) str_real.zc_alt else 0);
             try g.b("zCReal({s}zb{d}, (", .{ p.amp(), i });
             try g.renderVal(p.v, .real);
             try g.b(").val(), '{c}', {d}, {d}, {d})", .{

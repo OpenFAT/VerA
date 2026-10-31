@@ -162,7 +162,7 @@ pub fn constant(self: *Gen) Error!Constant {
     defer self.gpa.free(host);
     @memset(host, false);
     var steered = false;
-    for (0..self.mir.insts.len) |i| {
+    for (0..self.mir.instCount()) |i| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(i));
         if (self.mir.instOp(inst) == .branch and self.an.xDep(self.mir.instData(inst).branch.cond)) steered = true;
     }

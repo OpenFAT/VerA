@@ -56,7 +56,7 @@ pub fn countUses(self: *UnitPlan, target: Mir.Value) void {
 /// `undo = false` counts, `undo = true` moves this instruction's eager uses
 /// into arm uses (called when the instruction itself became lazy).
 pub fn addUses(self: *UnitPlan, inst: Mir.Inst, undo: bool) void {
-    assert(@backingInt(inst) < self.mir.insts.len);
+    assert(@backingInt(inst) < self.mir.instCount());
     const bump = struct {
         fn f(g: *UnitPlan, v: Mir.Value, arm: bool, un: bool) void {
             const i = @backingInt(g.an.rv(v));
@@ -215,7 +215,7 @@ pub fn foldedExponent(self: *const UnitPlan, d: anytype) bool {
 /// against cannot drift from this answer. A `ternary`'s arms are lazy
 /// positions, counted in `arm_use`.
 fn eagerlyUses(self: *const UnitPlan, inst: Mir.Inst, v: Mir.Value) bool {
-    assert(@backingInt(inst) < self.mir.insts.len);
+    assert(@backingInt(inst) < self.mir.instCount());
     return switch (self.mir.instData(inst)) {
         .unary => |d| self.an.rv(d.operand) == v,
         .binary => |d| self.an.rv(d.lhs) == v or
