@@ -131,13 +131,17 @@ pub const Stamp = struct {
 
     /// Whether the latest occurrence is at `now`.
     fn at(s: Stamp, now: u64) bool {
+        if (s.last) |l| assert(l <= now); // A stamp is never in the future.
+        if (s.before) |b| assert(b <= s.last.?); // `before` is the occurrence preceding `last`.
         return if (s.last) |l| l == now else false;
     }
 
     /// The latest occurrence strictly before `now`.
     fn earlier(s: Stamp, now: u64) ?u64 {
         if (s.before) |b| assert(b <= now);
-        return if (s.at(now)) s.before else s.last;
+        const t = if (s.at(now)) s.before else s.last;
+        if (t) |v| assert(v <= now);
+        return t;
     }
 };
 
@@ -415,6 +419,7 @@ fn enabled(r: *Run, scope: u32, cond: Ast.ExprId) Error!bool {
     }
     const s = (try evaluate.eval(r, a, signal, 0)).bit(0);
     const known = s == .zero or s == .one;
+    assert(scope == r.scope);
     return switch (op) {
         .plain => s == .one,
         .invert => s == .zero,
@@ -564,6 +569,7 @@ fn noChange(r: *Run, i: u32, d: u64) Error!void {
 /// simultaneously").
 fn simultaneous(c: *const Tchk) bool {
     assert(c.lim.len == 2);
+    assert(c.kind != .width);
     return switch (c.kind) {
         .setup, .removal => false,
         .hold, .recovery, .setuphold, .recrem => c.lim[0] > 0 or c.lim[1] > 0,

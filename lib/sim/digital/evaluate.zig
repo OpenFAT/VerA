@@ -186,7 +186,9 @@ pub fn eval(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, width: u32) Error!I
 pub fn truthOf(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!Int.Bit {
     assert(e != .none);
     if (compile.typeOf(self, e).real) return if ((try evalReal(self, a, e)) != 0) .one else .zero;
-    return (try eval(self, a, e, 0)).truth();
+    const b = (try eval(self, a, e, 0)).truth();
+    assert(b != .z); // §5.1.13: a truth value is 0, 1 or x.
+    return b;
 }
 
 /// The type an assignment to `e` converts its value to: a select's own width,
@@ -202,6 +204,7 @@ pub fn targetType(self: *Run, e: Ast.ExprId) Error!Type {
     }
     if (ex.tag(e) == .index and try self.indexedArray(e) == null) return .{ .width = compile.typeOf(self, e).width, .signed = false };
     const at = try self.baseSlot(e);
+    assert(at < self.values.len);
     return self.slotType(at);
 }
 
@@ -501,12 +504,15 @@ fn unsizedFill(a: std.mem.Allocator, v: Int.Literal, ty: Type) Error!Int.Literal
 fn scalar(a: std.mem.Allocator, bit: Int.Bit) Error!Int.Literal {
     const out = try filled(a, 1, false, bit);
     assert(out.bit(0) == bit);
+    assert(out.width == 1);
     return out;
 }
 
 fn scalarContext(a: std.mem.Allocator, bit: Int.Bit, ty: Type) Error!Int.Literal {
     assert(ty.width != 0);
-    return normalize(a, try scalar(a, bit), ty);
+    const out = try normalize(a, try scalar(a, bit), ty);
+    assert(out.width == ty.width);
+    return out;
 }
 
 test "§3.5.1 an unsized x/z constant fills its context, a known top digit does not" {

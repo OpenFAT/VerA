@@ -150,6 +150,8 @@ pub const Decls = struct {
 /// (or a block) of: the one its delays, `$time` and `%t` are in. The
 /// root's when the scope is not a module instance (a UDP's).
 pub fn timeOf(self: *const Run, scope: u32) ModuleTime {
+    assert(self.time.scale != null); // `elaborate` fixed the design's precision.
+    assert(self.time.modules.len == self.file.modules.len);
     const root_time: ModuleTime = .{ .scale = self.time.scale.?, .unit_exp = self.time.unit_exp };
     if (scope >= self.hier.scopes.items.len) return root_time;
     return self.time.modules[self.hier.scopes.items[self.instanceOf(scope)].def];
@@ -217,6 +219,7 @@ pub fn declaredDelay3(self: *Run, d: Ast.Delay3, tok: u32) Error!Delay {
     out.rise = try self.declaredDelay(d.rise, tok);
     out.fall = try self.declaredDelay(d.fall, tok);
     out.off = if (d.off != .none) try self.declaredDelay(d.off, tok) else @min(out.rise, out.fall);
+    assert(out.present);
     return out;
 }
 
@@ -227,5 +230,6 @@ pub fn declaredWidth(self: *Run, range: Ast.Dim, tok: u32) Error!u32 {
     const lo = try self.declaredBound(range.lsb, tok);
     const span = @abs(@as(i128, hi) - lo);
     if (span >= std.math.maxInt(u32)) return self.fail(tok, "packed range is outside the supported u32 width", .{});
+    assert(span < std.math.maxInt(u32));
     return @intCast(span + 1);
 }

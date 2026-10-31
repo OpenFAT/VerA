@@ -239,6 +239,7 @@ fn logicBit(kind: Ast.GateKind, ins: []const Int.Bit) Int.Bit {
 /// input has already been read as x).
 fn udpLevel(sym: u8, b: Int.Bit) bool {
     assert(sym == std.ascii.toLower(sym)); // `udpRows` folds the case.
+    assert(b != .z); // §8: a z input reads as x before the table.
     return switch (sym) {
         '0' => b == .zero,
         '1' => b == .one,
@@ -269,6 +270,7 @@ fn udpEdge(sym: UdpSym, from: Int.Bit, to: Int.Bit) bool {
 
 fn udpOut(sym: u8, state: Int.Bit) Int.Bit {
     assert(sym == std.ascii.toLower(sym));
+    assert(state != .z); // §8.1.6: a UDP's output is never z.
     return switch (sym) {
         '0' => .zero,
         '1' => .one,

@@ -70,6 +70,7 @@
 //! - `pub fn reset(self: *Run) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const expr_types = @import("expr_types.zig");
 const bytecode = @import("bytecode.zig");
 const vcd_file = @import("vcd.zig");
@@ -414,6 +415,8 @@ const Run = @This();
 /// its hooks, its value-change watches, and the delays and timing check
 /// limits it put. Each reset leaves the old run's memory in the arena.
 pub fn reset(self: *Run) Error!void {
+    assert(!self.running); // A reset runs between `runUntil` calls.
+    assert(self.opts.mixed == null);
     // ponytail: a long run of resets wants the run in an arena of its own.
     // Its warnings are the first elaboration's again.
     var quiet = diag.Bag.init(self.arena);

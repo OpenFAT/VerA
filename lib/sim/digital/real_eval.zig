@@ -47,6 +47,7 @@ pub fn stringLiteral(a: std.mem.Allocator, text: []const u8) Error!Int.Literal {
         const shift: u32 = @intCast((text.len - 1 - i) * 8);
         value.values()[shift / 64] |= @as(u64, c) << @intCast(shift % 64);
     }
+    assert(value.width == compile.stringWidth(text));
     return value;
 }
 
@@ -55,6 +56,7 @@ pub fn realLiteral(a: std.mem.Allocator, r: f64) Error!Int.Literal {
     const out = try filled(a, 64, true, .zero);
     out.values()[0] = @bitCast(r);
     assert(out.width == 64);
+    assert(!out.hasUnknown());
     return out;
 }
 

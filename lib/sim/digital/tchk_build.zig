@@ -34,6 +34,7 @@ const reference = tchk.reference;
 /// Binds the A.7.5 checks of the instance being elaborated (`r.scope`) into
 /// `r.checks.rows`. Refuses (E1149) an argument `judge` does not evaluate.
 pub fn compileChecks(r: *Run, checks: []const Ast.TimingCheck) Error!void {
+    assert(r.scope < r.hier.scopes.items.len);
     const rows_before = r.checks.rows.items.len;
     for (checks) |*t| try compileOne(r, t);
     assert(r.checks.rows.items.len == rows_before + checks.len); // One row per check.
@@ -231,6 +232,7 @@ pub fn solveNegative(r: *Run) Error!void {
 
 fn arg(t: *const Ast.TimingCheck, k: usize) Ast.ExprId {
     assert(k < 9); // $setuphold and $recrem, the longest, have nine (A.7.5.1).
+    assert(t.args.len <= 9);
     return if (k < t.args.len) t.args[k] else .none;
 }
 

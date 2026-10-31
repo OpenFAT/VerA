@@ -7,6 +7,7 @@
 //! - `pub fn upward(self: *const Run, name: Ast.StrId) ?u32`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -180,6 +181,7 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
         r.scheduler.synced = false;
         return .vpi_sync;
     }
+    assert(r.running);
     return .idle;
 }
 
@@ -193,8 +195,11 @@ pub fn runUntil(r: *Run, limit: Tick) Error!Stop {
 /// scope too (§12.5), found by its name inside the scope around it and,
 /// from within, by its own.
 pub fn upward(self: *const Run, name: Ast.StrId) ?u32 {
+    assert(name != .none);
     var s = self.scope;
-    while (true) {
+    var steps: usize = 0;
+    while (true) : (steps += 1) {
+        assert(steps <= self.hier.scopes.items.len); // Each step climbs one scope.
         if (self.hier.instances.get(.{ .scope = s, .str = name })) |child| return child;
         if (self.hier.prim_names.contains(.{ .scope = s, .str = name })) return null;
         const info = self.hier.scopes.items[s];
