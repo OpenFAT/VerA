@@ -5,11 +5,26 @@
 //! these, so a parameter default and a folded opcode answer alike, and each
 //! §4.3 function is the one a device computes (`contract.gm`, or the
 //! `std.math` call `codegen/kernel_text.zig` makes).
-//! Implements §2.7 (string operands), §3.2's 32-bit integer wrap, §4.2.1.3,
-//! §4.2.4, §4.2.11, §4.2.12, §4.3 and Table 3-3; IEEE 1364-2005 §5.1.5
-//! Table 5-6, §5.1.12 and §17.11.1 (`$clog2`).
+//! Cites: VAMS §2.7 (string operands), §3.2 (the 32-bit integer wrap),
+//! §3.3 (Table 3-3), §4.2.1.1, §4.2.1.3, §4.2.4-§4.2.12, §4.3 (Tables 4-14
+//! and 4-15), A.8.6; IEEE 1364-2005 §5.1.5 (Table 5-6), §5.1.12, §17.11.1
+//! (`$clog2`).
+//!
+//! Contents:
+//! - `pub const UnaryOp = enum(u8)`, `pub const BinaryOp = enum(u8)` (A.8.6)
+//! - `pub const Const = union(enum) { int: i64, real: f64, str: []const u8 }` (`asReal`, `asIntExact`, `asInt`, `isTrue`)
+//! - `pub const MathFn = enum` (`fromName(name: []const u8) ?MathFn`, `arity(f: MathFn) usize`, `arity_max`)
+//! - `pub fn wrap32(x: i64) i64`
+//! - `pub fn ipow32(b: i64, n: i64) ?i64`
+//! - `pub fn unary(op: UnaryOp, a: Const) ?Const`
+//! - `pub fn binary(op: BinaryOp, a: Const, b: Const, lhs_signed: ?bool) ?Const`
+//! - `pub fn math(f: MathFn, args: []const Const) ?Const`
+//! - `pub fn clog2(value: i64, width: u32) i64`
+//! - `pub fn strToInt(s: []const u8, bits: u8) i64`
 
 const std = @import("std");
+const assert = std.debug.assert;
+const testing = std.testing;
 /// The devices' math (`contract.gm`): a fold gives the bits the device computes.
 const gm = @import("contract").gm;
 
@@ -111,6 +126,60 @@ pub const Const = union(enum) {
     }
 };
 
+/// The built-in math functions of §4.3 Tables 4-14 and 4-15, named by their
+/// source spelling. `log` is the decimal logarithm (§4.3.1); `ln` the natural.
+pub const MathFn = enum {
+    abs,
+    min,
+    max,
+    pow,
+    hypot,
+    atan2,
+    sqrt,
+    exp,
+    expm1,
+    ln,
+    ln1p,
+    log,
+    floor,
+    ceil,
+    sin,
+    cos,
+    tan,
+    asin,
+    acos,
+    atan,
+    sinh,
+    cosh,
+    tanh,
+    asinh,
+    acosh,
+    atanh,
+
+    /// Returns the function spelled `name`, or null for any other name.
+    pub fn fromName(name: []const u8) ?MathFn {
+        return std.meta.stringToEnum(MathFn, name);
+    }
+    /// Returns how many arguments §4.3's tables give `f`: 1 or 2.
+    pub fn arity(f: MathFn) usize {
+        return switch (f) {
+            .min, .max, .pow, .hypot, .atan2 => 2,
+            .abs, .sqrt, .exp, .expm1, .ln, .ln1p, .log, .floor, .ceil => 1,
+            .sin, .cos, .tan, .asin, .acos, .atan, .sinh, .cosh, .tanh, .asinh, .acosh, .atanh => 1,
+        };
+    }
+
+    /// The most arguments any function takes: `foldContext` folds a call's
+    /// arguments into a buffer this long, and `math` reads `args[0]` always.
+    pub const arity_max = 2;
+    comptime {
+        for (std.enums.values(MathFn)) |f| {
+            std.debug.assert(f.arity() >= 1);
+            std.debug.assert(f.arity() <= arity_max);
+        }
+    }
+};
+
 /// Truncates an integer arithmetic result to §3.2's 32-bit two's complement
 /// and widens it back: an `integer` "can hold values ranging from -2^31 to
 /// 2^31-1", so `2147483647 + 1` is -2147483648 (LRM §3.2).
@@ -126,15 +195,10 @@ pub const Const = union(enum) {
 /// Not applied to a literal: §2.5.1's `-2147483648` negates the unsigned
 /// 2147483648, and wrapping the operand first would make the result positive.
 pub fn wrap32(x: i64) i64 {
-    return @as(i32, @truncate(x));
-}
-
-/// §3.2's wrap for unary `-` and `abs`, whose result `r` comes from operand
-/// `a`: -(-2^31) is -2^31. An operand wider than 32 bits is a §2.6.1 literal
-/// ("at least 32" bits), and its negation keeps that width, as the literal
-/// itself does.
-fn wrapFrom(a: i64, r: i64) i64 {
-    return if (std.math.cast(i32, a) != null) wrap32(r) else r;
+    const r: i64 = @as(i32, @truncate(x));
+    assert(r >= std.math.minInt(i32));
+    assert(r <= std.math.maxInt(i32));
+    return r;
 }
 
 /// §4.2.1.3 `b ** n` with both operands integer: "a common data type for each
@@ -156,9 +220,11 @@ pub fn ipow32(b: i64, n: i64) ?i64 {
         -1 => if (@rem(n, 2) == 0) 1 else -1,
         else => 0, // else: every |b| > 1 truncates to 0, Table 5-6's "negative" row
     };
+    assert(n >= 0);
     var x: i32 = @truncate(b);
     var e = n;
     var r: i32 = 1;
+    // Square-and-multiply: one pass per exponent bit, at most 63.
     while (e > 0) : (e >>= 1) {
         if (e & 1 != 0) r *%= x;
         x *%= x;
@@ -166,31 +232,7 @@ pub fn ipow32(b: i64, n: i64) ?i64 {
     return r;
 }
 
-/// Folds Table 3-3's string operators. "Equality. Checks whether the two
-/// strings are equal. Result is 1 if they are equal and 0 if they are not" and
-/// "Relational operators return 1 if the corresponding condition is true using
-/// the lexicographical ordering of the two strings".
-///
-/// A mixed string/number pair declines to fold. §2.7 makes a string operand
-/// "unsigned integer constants" in an arithmetic context, but that conversion
-/// is lowering's (`strNum`), and declining leaves the runtime path to answer.
-fn strBinary(op: BinaryOp, a: Const, b: Const) ?Const {
-    if (a != .str or b != .str) return null;
-    const c = std.mem.order(u8, a.str, b.str);
-    return .{
-        .int = @intFromBool(switch (op) {
-            .eq => c == .eq,
-            .neq => c != .eq,
-            .lt => c == .lt,
-            .le => c != .gt,
-            .gt => c == .gt,
-            .ge => c != .lt,
-            else => return null, // else: Table 3-3 defines only the relations on strings
-        }),
-    };
-}
-
-/// Folds a unary operator over a folded operand. Returns null for the
+/// Returns a unary operator folded over a folded operand, or null for the
 /// reductions, which need a width a `Const` does not carry; `fold` answers
 /// them from the literal.
 pub fn unary(op: UnaryOp, a: Const) ?Const {
@@ -208,7 +250,7 @@ pub fn unary(op: UnaryOp, a: Const) ?Const {
     };
 }
 
-/// Folds a binary operator over two folded operands, or returns null when the
+/// Returns a binary operator folded over two folded operands, or null when the
 /// result has no constant value here: an integer zero divisor or a zero
 /// modulus, a string beside a number or under an operator Table 3-3 does not
 /// define, a shift count outside 0..63, a real under `<<<`, `>>>`, `===` or
@@ -295,61 +337,7 @@ pub fn binary(op: BinaryOp, a: Const, b: Const, lhs_signed: ?bool) ?Const {
     };
 }
 
-/// The built-in math functions of §4.3 Tables 4-14 and 4-15, named by their
-/// source spelling. `log` is the decimal logarithm (§4.3.1); `ln` the natural.
-pub const MathFn = enum {
-    abs,
-    min,
-    max,
-    pow,
-    hypot,
-    atan2,
-    sqrt,
-    exp,
-    expm1,
-    ln,
-    ln1p,
-    log,
-    floor,
-    ceil,
-    sin,
-    cos,
-    tan,
-    asin,
-    acos,
-    atan,
-    sinh,
-    cosh,
-    tanh,
-    asinh,
-    acosh,
-    atanh,
-
-    /// Returns the function spelled `name`, or null for any other name.
-    pub fn fromName(name: []const u8) ?MathFn {
-        return std.meta.stringToEnum(MathFn, name);
-    }
-    /// Returns how many arguments §4.3's tables give `f`: 1 or 2.
-    pub fn arity(f: MathFn) usize {
-        return switch (f) {
-            .min, .max, .pow, .hypot, .atan2 => 2,
-            .abs, .sqrt, .exp, .expm1, .ln, .ln1p, .log, .floor, .ceil => 1,
-            .sin, .cos, .tan, .asin, .acos, .atan, .sinh, .cosh, .tanh, .asinh, .acosh, .atanh => 1,
-        };
-    }
-
-    /// The most arguments any function takes: `foldContext` folds a call's
-    /// arguments into a buffer this long, and `math` reads `args[0]` always.
-    pub const arity_max = 2;
-    comptime {
-        for (std.enums.values(MathFn)) |f| {
-            std.debug.assert(f.arity() >= 1);
-            std.debug.assert(f.arity() <= arity_max);
-        }
-    }
-};
-
-/// Folds a §4.3 function over folded arguments, or returns null on a wrong
+/// Returns a §4.3 function folded over folded arguments, or null on a wrong
 /// arity or a string argument. §4.3.1: `abs`, `min` and `max` are integer
 /// when every argument is; every other function is real, `pow` included
 /// (§4.2.1.3's integer power is the operator `**`). Out-of-domain
@@ -357,6 +345,8 @@ pub const MathFn = enum {
 /// the folder, rules on domains.
 pub fn math(f: MathFn, args: []const Const) ?Const {
     if (args.len != f.arity()) return null;
+    assert(args.len >= 1);
+    assert(args.len <= MathFn.arity_max);
     for (args) |a| if (a == .str) return null;
     const x = args[0].asReal();
     const y = if (args.len > 1) args[1].asReal() else 0;
@@ -397,17 +387,22 @@ pub fn math(f: MathFn, args: []const Const) ?Const {
     };
 }
 
-/// §17.11.1's unsigned interpretation at the source operand's width.
+/// Returns `$clog2(value)` under §17.11.1's unsigned interpretation at the
+/// source operand's `width`: the least k with 2^k at or above the value.
 /// Wider signed literals that fit the i64 carrier repeat their sign bit;
 /// a negative one is therefore above 2**(width-1) and rounds up to width.
 pub fn clog2(value: i64, width: u32) i64 {
     if (width > 64 and value < 0) return width;
     const mask: u64 = if (width >= 64) std.math.maxInt(u64) else (@as(u64, 1) << @intCast(width)) - 1;
     const bits = @as(u64, @bitCast(value)) & mask;
-    return if (bits <= 1) 0 else 64 - @as(i64, @clz(bits - 1));
+    const k: i64 = if (bits <= 1) 0 else 64 - @as(i64, @clz(bits - 1));
+    assert(k >= 0);
+    assert(k <= 64);
+    return k;
 }
 
-/// Returns a §2.7 string literal's integer value. "A string literal used as an operand in expressions and assignments
+/// Returns a §2.7 string literal's integer value. "A string literal used as
+/// an operand in expressions and assignments
 /// shall be treated as unsigned integer constants represented by a sequence of
 /// 8-bit ASCII values, with one 8-bit ASCII value representing one character."
 /// A base-256 numeral, most significant character first: "AB" is
@@ -419,9 +414,58 @@ pub fn clog2(value: i64, width: u32) i64 {
 /// 32-bit "\377\377\377\377" is 4294967295, not -1; the first arithmetic on
 /// it wraps into range.
 pub fn strToInt(s: []const u8, bits: u8) i64 {
+    const kept = s[s.len - @min(s.len, bits / 8) ..];
+    assert(kept.len <= bits / 8);
     var acc: u64 = 0;
-    for (s[s.len - @min(s.len, bits / 8) ..]) |c| acc = acc << 8 | c;
+    for (kept) |c| acc = acc << 8 | c;
+    if (bits <= 32) assert(acc >> 32 == 0); // four bytes at most
     return @bitCast(acc);
+}
+
+// ---- private ----
+
+/// §3.2's wrap for unary `-` and `abs`, whose result `r` comes from operand
+/// `a`: -(-2^31) is -2^31. An operand wider than 32 bits is a §2.6.1 literal
+/// ("at least 32" bits), and its negation keeps that width, as the literal
+/// itself does.
+fn wrapFrom(a: i64, r: i64) i64 {
+    return if (std.math.cast(i32, a) != null) wrap32(r) else r;
+}
+
+/// Folds Table 3-3's string operators. "Equality. Checks whether the two
+/// strings are equal. Result is 1 if they are equal and 0 if they are not" and
+/// "Relational operators return 1 if the corresponding condition is true using
+/// the lexicographical ordering of the two strings".
+///
+/// A mixed string/number pair declines to fold. §2.7 makes a string operand
+/// "unsigned integer constants" in an arithmetic context, but that conversion
+/// is lowering's (`strNum`), and declining leaves the runtime path to answer.
+fn strBinary(op: BinaryOp, a: Const, b: Const) ?Const {
+    if (a != .str or b != .str) return null;
+    const c = std.mem.order(u8, a.str, b.str);
+    return .{
+        .int = @intFromBool(switch (op) {
+            .eq => c == .eq,
+            .neq => c != .eq,
+            .lt => c == .lt,
+            .le => c != .gt,
+            .gt => c == .gt,
+            .ge => c != .lt,
+            else => return null, // else: Table 3-3 defines only the relations on strings
+        }),
+    };
+}
+
+fn expectInt(want: i64, got: ?Const) !void {
+    const c = got orelse return error.TestExpectedEqual;
+    try testing.expect(c == .int);
+    try testing.expectEqual(want, c.int);
+}
+
+fn expectReal(want: f64, got: ?Const) !void {
+    const c = got orelse return error.TestExpectedEqual;
+    try testing.expect(c == .real);
+    try testing.expectEqual(want, c.real);
 }
 
 test "ipow32 is IEEE 1364-2005 Table 5-6 at 32 bits" {
@@ -483,20 +527,6 @@ test "Const conversions: §4.2.1.1 rounding, the i64 range, and truth" {
     try testing.expectEqual(@as(i64, -2147483648), wrap32(2147483648));
     try testing.expectEqual(@as(i64, 2147483647), wrap32(-2147483649));
     try testing.expectEqual(@as(i64, 0), wrap32(4294967296));
-}
-
-const testing = std.testing;
-
-fn expectInt(want: i64, got: ?Const) !void {
-    const c = got orelse return error.TestExpectedEqual;
-    try testing.expect(c == .int);
-    try testing.expectEqual(want, c.int);
-}
-
-fn expectReal(want: f64, got: ?Const) !void {
-    const c = got orelse return error.TestExpectedEqual;
-    try testing.expect(c == .real);
-    try testing.expectEqual(want, c.real);
 }
 
 test "ipow32 agrees with repeated 32-bit multiplication" {

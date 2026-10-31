@@ -26,6 +26,9 @@
 //!    read as the arithmetic operators, whose §5.1.5 rule already makes the
 //!    whole result x. Bitwise, shift, equality and the conditional follow
 //!    their own clauses' tables.
+//!
+//! Contents: nothing public; the file is an oracle and its tests. `V.format`
+//! is the std print hook a failing test reports operands through.
 
 const std = @import("std");
 const integer = @import("integer.zig");
@@ -34,57 +37,22 @@ const Literal = integer.Literal;
 /// One four-state bit, in the LRM tables' row and column order: 0 1 x z.
 const B = enum { b0, b1, x, z };
 
-fn cell(comptime c: u8) B {
-    return switch (c) {
-        '0' => .b0,
-        '1' => .b1,
-        'x' => .x,
-        'z' => .z,
-        else => @compileError("not a logic table cell"),
-    };
-}
-
-/// A 4×4 table, one string per row, as the LRM prints it.
-fn table(comptime rows: [4]*const [4]u8) [4][4]B {
-    var t: [4][4]B = undefined;
-    for (rows, 0..) |row, i| {
-        for (row, 0..) |c, j| t[i][j] = cell(c);
-    }
-    return t;
-}
-
 // Tables 5-12 (&), 5-13 (|), 5-14 (^) and 5-15 (^~): rows are the left
 // operand, columns the right. Tables 5-17 to 5-19, the reductions, repeat
 // 5-12 to 5-14 cell for cell.
 const t_and = table(.{ "0000", "01xx", "0xxx", "0xxx" });
+
 const t_or = table(.{ "01xx", "1111", "x1xx", "x1xx" });
+
 const t_xor = table(.{ "01xx", "10xx", "xxxx", "xxxx" });
+
 const t_xnor = table(.{ "10xx", "01xx", "xxxx", "xxxx" });
+
 // Table 5-21: the conditional's bit merge under an ambiguous condition.
 const t_cond = table(.{ "0xxx", "x1xx", "xxxx", "xxxx" });
+
 // Table 5-16 (~), one column.
 const t_not = [4]B{ cell('1'), cell('0'), cell('x'), cell('x') };
-
-fn idx(b: B) usize {
-    return switch (b) {
-        .b0 => 0,
-        .b1 => 1,
-        .x => 2,
-        .z => 3,
-    };
-}
-
-fn known(b: B) bool {
-    return b == .b0 or b == .b1;
-}
-
-fn not(a: B) B {
-    return t_not[idx(a)];
-}
-
-fn op2(t: *const [4][4]B, a: B, b: B) B {
-    return t[idx(a)][idx(b)];
-}
 
 /// The widest value either half of the test builds: fuzz_widths tops out at
 /// 129, and the random concatenations stay under this.
@@ -141,6 +109,82 @@ const V = struct {
     }
 };
 
+const Op2 = enum { bit_and, bit_or, bit_xor, bit_xnor };
+
+const Red = enum { r_and, r_nand, r_or, r_nor, r_xor, r_xnor };
+
+const Rel = enum { lt, le, gt, ge };
+
+const Sh = enum { shl, shr, ashl, ashr };
+
+const Ar = enum { add, sub, mul, div, rem };
+
+/// One operand, both ways.
+const Arg = struct { v: V, l: Literal };
+
+/// Scratch for each operation's result, reset per call: the operand
+/// `Literal`s outlive it, the results do not. A 129-bit power's big-integer
+/// temporaries are the largest user.
+const Scratch = struct {
+    buf: []u8,
+    fba: std.heap.FixedBufferAllocator = undefined,
+
+    fn init(a: std.mem.Allocator) !Scratch {
+        return .{ .buf = try a.alloc(u8, 1 << 20) };
+    }
+
+    fn get(self: *Scratch) std.mem.Allocator {
+        self.fba = .init(self.buf);
+        return self.fba.allocator();
+    }
+};
+
+/// tests/suite.zig's `fuzz_widths`: where the one-word and multiword
+/// paths of `integer.zig` meet.
+const fuzz_widths = [_]u32{ 1, 2, 3, 7, 8, 13, 16, 31, 32, 33, 48, 63, 64, 65, 100, 128, 129 };
+
+// ---- private ----
+
+fn cell(comptime c: u8) B {
+    return switch (c) {
+        '0' => .b0,
+        '1' => .b1,
+        'x' => .x,
+        'z' => .z,
+        else => @compileError("not a logic table cell"),
+    };
+}
+
+/// A 4×4 table, one string per row, as the LRM prints it.
+fn table(comptime rows: [4]*const [4]u8) [4][4]B {
+    var t: [4][4]B = undefined;
+    for (rows, 0..) |row, i| {
+        for (row, 0..) |c, j| t[i][j] = cell(c);
+    }
+    return t;
+}
+
+fn idx(b: B) usize {
+    return switch (b) {
+        .b0 => 0,
+        .b1 => 1,
+        .x => 2,
+        .z => 3,
+    };
+}
+
+fn known(b: B) bool {
+    return b == .b0 or b == .b1;
+}
+
+fn not(a: B) B {
+    return t_not[idx(a)];
+}
+
+fn op2(t: *const [4][4]B, a: B, b: B) B {
+    return t[idx(a)][idx(b)];
+}
+
 /// The low `w` bits of `x`: arithmetic modulo 2^w.
 fn fromInt(w: u32, s: bool, x: u256) V {
     var r: V = .{ .w = w, .s = s };
@@ -160,10 +204,6 @@ fn widen(v: *const V, w: u32, s: bool) V {
     for (0..w) |i| r.b[i] = v.ext(i, s);
     return r;
 }
-
-// ---- the operators -------------------------------------------------------
-
-const Op2 = enum { bit_and, bit_or, bit_xor, bit_xnor };
 
 /// §5.1.10: bit by bit through Tables 5-12 to 5-15. Table 5-22: the width is
 /// the larger operand's; §5.5.1: signed only when both are.
@@ -187,8 +227,6 @@ fn bitNot(a: *const V) V {
     for (0..a.w) |i| r.b[i] = not(a.b[i]);
     return r;
 }
-
-const Red = enum { r_and, r_nand, r_or, r_nor, r_xor, r_xnor };
 
 /// §5.1.11: the operator applied between the running result and each bit in
 /// turn; the n-forms invert the result through Table 5-16.
@@ -239,8 +277,6 @@ fn truth(a: *const V) B {
     return not(eq(a, &zero));
 }
 
-const Rel = enum { lt, le, gt, ge };
-
 /// §5.1.7: x when either operand holds an x or z; otherwise a signed
 /// comparison when both are signed, else unsigned (zero extension keeps an
 /// unsigned value's magnitude, sign extension a signed one's).
@@ -256,8 +292,6 @@ fn relational(op: Rel, a: *const V, b: *const V) B {
     };
     return if (holds) .b1 else .b0;
 }
-
-const Sh = enum { shl, shr, ashl, ashr };
 
 /// §5.1.12. The right operand is unsigned and self-determined; an x or z in
 /// it makes the result unknown. The result has the left operand's width and
@@ -282,8 +316,6 @@ fn shift(op: Sh, a: *const V, n: *const V) V {
     };
     return r;
 }
-
-const Ar = enum { add, sub, mul, div, rem };
 
 /// §5.1.5: any x or z bit makes the whole result x, so does a zero divisor;
 /// division truncates toward zero and the modulus takes the first operand's
@@ -386,8 +418,6 @@ fn resize(v: *const V, w: u32, sign: bool) V {
     return r;
 }
 
-// ---- the crossing --------------------------------------------------------
-
 /// `v` as a `Literal`, in the plane encoding `integer.zig` documents
 /// ((value, unknown) = 00/10/11/01 for 0/1/x/z), padding clear.
 fn lit(a: std.mem.Allocator, v: *const V) !Literal {
@@ -421,11 +451,6 @@ fn fromLit(l: Literal) V {
 fn sameV(got: *const V, want: *const V) bool {
     return got.w == want.w and got.s == want.s and std.mem.eql(B, got.b[0..got.w], want.b[0..want.w]);
 }
-
-// ---- the judge -----------------------------------------------------------
-
-/// One operand, both ways.
-const Arg = struct { v: V, l: Literal };
 
 fn expectV(what: []const u8, args: []const *const Arg, got: Literal, want: V) !void {
     if (got.width <= max_w) {
@@ -467,23 +492,6 @@ fn small(a: std.mem.Allocator, lo: u32, hi: u32) ![]Arg {
     };
     return out;
 }
-
-/// Scratch for each operation's result, reset per call: the operand
-/// `Literal`s outlive it, the results do not. A 129-bit power's big-integer
-/// temporaries are the largest user.
-const Scratch = struct {
-    buf: []u8,
-    fba: std.heap.FixedBufferAllocator = undefined,
-
-    fn init(a: std.mem.Allocator) !Scratch {
-        return .{ .buf = try a.alloc(u8, 1 << 20) };
-    }
-
-    fn get(self: *Scratch) std.mem.Allocator {
-        self.fba = .init(self.buf);
-        return self.fba.allocator();
-    }
-};
 
 fn binaryOps(sc: *Scratch, a: *const Arg, b: *const Arg) !void {
     const args = [_]*const Arg{ a, b };
@@ -567,6 +575,42 @@ fn unaryOps(sc: *Scratch, a: *const Arg) !void {
     }
 }
 
+/// A random operand: fully known half the time (or arithmetic would almost
+/// never leave its x path), else x and z sprinkled or uniform, with the
+/// patterns that end ranges (0, all ones, the sign bit alone) mixed in.
+fn randomV(r: std.Random, w: u32) V {
+    var v: V = .{ .w = w, .s = r.boolean() };
+    switch (r.uintLessThan(u8, 8)) {
+        0 => {},
+        1 => @memset(v.b[0..w], .b1),
+        2 => v.b[w - 1] = .b1,
+        3, 4, 5 => for (0..w) |i| {
+            v.b[i] = if (r.boolean()) .b1 else .b0;
+        },
+        6 => for (0..w) |i| {
+            v.b[i] = switch (r.uintLessThan(u8, 16)) {
+                0 => .x,
+                1 => .z,
+                else => if (r.boolean()) .b1 else .b0,
+            };
+        },
+        else => for (0..w) |i| {
+            v.b[i] = switch (r.uintLessThan(u8, 4)) {
+                0 => .b0,
+                1 => .b1,
+                2 => .x,
+                else => .z,
+            };
+        },
+    }
+    return v;
+}
+
+fn randomArg(a: std.mem.Allocator, r: std.Random, w: u32) !Arg {
+    const v = randomV(r, w);
+    return .{ .v = v, .l = try lit(a, &v) };
+}
+
 test "ref4: the crossing reads back every small value through Literal.bit" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -606,46 +650,6 @@ test "ref4 §5.1.13 Table 5-21: the conditional, exhaustive over 1-2 bit conditi
     const arms = try small(arena.allocator(), 1, 3);
     var sc: Scratch = try .init(arena.allocator());
     for (conds) |*c| for (arms) |*y| for (arms) |*n| try condOp(&sc, c, y, n);
-}
-
-/// tests/suite.zig's `fuzz_widths`: where the one-word and multiword
-/// paths of `integer.zig` meet.
-const fuzz_widths = [_]u32{ 1, 2, 3, 7, 8, 13, 16, 31, 32, 33, 48, 63, 64, 65, 100, 128, 129 };
-
-/// A random operand: fully known half the time (or arithmetic would almost
-/// never leave its x path), else x and z sprinkled or uniform, with the
-/// patterns that end ranges (0, all ones, the sign bit alone) mixed in.
-fn randomV(r: std.Random, w: u32) V {
-    var v: V = .{ .w = w, .s = r.boolean() };
-    switch (r.uintLessThan(u8, 8)) {
-        0 => {},
-        1 => @memset(v.b[0..w], .b1),
-        2 => v.b[w - 1] = .b1,
-        3, 4, 5 => for (0..w) |i| {
-            v.b[i] = if (r.boolean()) .b1 else .b0;
-        },
-        6 => for (0..w) |i| {
-            v.b[i] = switch (r.uintLessThan(u8, 16)) {
-                0 => .x,
-                1 => .z,
-                else => if (r.boolean()) .b1 else .b0,
-            };
-        },
-        else => for (0..w) |i| {
-            v.b[i] = switch (r.uintLessThan(u8, 4)) {
-                0 => .b0,
-                1 => .b1,
-                2 => .x,
-                else => .z,
-            };
-        },
-    }
-    return v;
-}
-
-fn randomArg(a: std.mem.Allocator, r: std.Random, w: u32) !Arg {
-    const v = randomV(r, w);
-    return .{ .v = v, .l = try lit(a, &v) };
 }
 
 test "ref4 §5.1 every operator on seeded random operands at the fuzzer's widths" {

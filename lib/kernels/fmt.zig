@@ -1,12 +1,35 @@
 //! An operand's planes, width and signedness, radix and field width (or a
-//! time and the `$timeformat` state) -> its IEEE 1364-2005 §17.1 text.
-//! The interpreter (`digital/display.zig`) and a native executable (`rt/`)
-//! both print through these, so the two cannot disagree about a digit.
-//! A conversion's flags, width and precision are read here too (`spec`),
-//! with which flags each conversion takes (`flagVerdict`).
-//! Clauses: VAMS §9.4.3 Table 9-22; IEEE 1364-2005 §17.1.1.2, §17.1.1.3,
-//! §17.1.1.4, §17.1.1.7, §17.3, §19.8.
+//! time and the `$timeformat` state) in, its IEEE 1364-2005 §17.1 text out,
+//! written to the caller's `std.Io.Writer`. The interpreter
+//! (`digital/display.zig`) and a native executable (`rt/`) both print
+//! through these, so the two cannot disagree about a digit. A conversion's
+//! flags, width and precision are read here too (`spec`), with which flags
+//! each conversion takes (`flagVerdict`). Host Zig, not device text.
+//! Cites: VAMS §9.4.3 Table 9-22, §9.4.7; IEEE 1364-2005 §4.8, §17.1.1.2,
+//! §17.1.1.3, §17.1.1.4, §17.1.1.7, §17.3, §17.3.2, §19.8;
+//! docs/specification/Vague_Decisions.md VD-129.
+//!
+//! Contents:
+//! - `pub const Radix = enum(u8) { binary, octal, decimal, hex }` (`perDigit(self: Radix) u32`)
+//! - `pub const TimeFormat = struct` (`field(self: TimeFormat, width: ?u64, precision: i64) TimeFormat`)
+//! - `pub const Error = std.mem.Allocator.Error || std.Io.Writer.Error`
+//! - `pub const Spec = struct { flags: u8, width: ?u64, precision: i64 }`
+//! - `pub const FlagVerdict = enum { ok, alt, c_flag }`
+//! - `pub fn byteAt(v: Int.Literal, n: u32) u8`
+//! - `pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io.Writer.Error!void`
+//! - `pub fn time(out: *std.Io.Writer, t: f64, f: TimeFormat, unit_exp: i32) std.Io.Writer.Error!void`
+//! - `pub fn timeInt(out: *std.Io.Writer, gpa: Allocator, v: Int.Literal, f: TimeFormat, unit_exp: i32) Error!void`
+//! - `pub fn timeUnknown(out: *std.Io.Writer, v: Int.Literal, f: TimeFormat) std.Io.Writer.Error!void`
+//! - `pub fn timeOperand(v: Int.Literal) f64`
+//! - `pub fn decade(out: *std.Io.Writer, e: i32) std.Io.Writer.Error!void`
+//! - `pub fn value(out: *std.Io.Writer, gpa: Allocator, v: Int.Literal, radix: Radix, width: ?u64) Error!void`
+//! - `pub fn valueFill(out: *std.Io.Writer, gpa: Allocator, v: Int.Literal, radix: Radix, width: ?u64, zero: bool) Error!void`
+//! - `pub fn spec(t: []const u8, i: *usize) Spec`
+//! - `pub fn flagVerdict(flags: u8, conv: u8) FlagVerdict`
+
 const std = @import("std");
+const assert = std.debug.assert;
+const testing = std.testing;
 const Int = @import("integer.zig");
 const str_k = @import("str_real.zig");
 
@@ -19,8 +42,8 @@ pub const Radix = enum(u8) {
     decimal = 10,
     hex = 16,
 
-    /// Bits consumed per printed digit. Asserts `self` is not `.decimal`,
-    /// which reads the whole operand at once.
+    /// Returns the bits one printed digit consumes. Asserts that `self` is
+    /// not `.decimal`, which reads the whole operand at once.
     pub fn perDigit(self: Radix) u32 {
         return switch (self) {
             .binary => 1,
@@ -40,7 +63,7 @@ pub const TimeFormat = struct {
     suffix: []const u8 = "",
     width: u64 = 20,
 
-    /// This format under one `%t`'s own field width (`%0t`: none) and
+    /// Returns this format under one `%t`'s own field width (`%0t`: none) and
     /// precision (`%.700t`; -1: none), which replace $timeformat's for that
     /// field as iverilog does (§17.3.2 names only $timeformat's).
     pub fn field(self: TimeFormat, width: ?u64, precision: i64) TimeFormat {
@@ -55,11 +78,28 @@ pub const TimeFormat = struct {
 /// caller's allocator (`wideDecimal`).
 pub const Error = std.mem.Allocator.Error || std.Io.Writer.Error;
 
-/// Byte `n` of `v` counting from the least significant, unknown bits read as
-/// 0 and bits at or past `v.width` absent (0).
+/// One conversion's `[flags][width][.precision]`, read after its `%`.
+pub const Spec = struct {
+    /// C11 7.21.6.1p6's flags as `str_real.zc_*` bits.
+    flags: u8 = 0,
+    /// The field width; null when none is written (§17.1.1.3's automatic
+    /// sizing). A '0' flag alone is width 0: `%0d`, the override.
+    width: ?u64 = null,
+    /// The precision; -1 when none is written.
+    precision: i64 = -1,
+};
+
+/// `flagVerdict`'s answer: the flags render, '#' has no form here (E0825),
+/// or a C flag the conversion refuses (E0827).
+pub const FlagVerdict = enum { ok, alt, c_flag };
+
+/// Returns byte `n` of `v` counting from the least significant, unknown
+/// bits read as 0 and bits at or past `v.width` absent (0).
 pub fn byteAt(v: Int.Literal, n: u32) u8 {
+    assert(v.width >= 1);
     const lo = @as(u64, n) * 8;
     if (lo >= v.width) return 0;
+    assert(lo / 64 < v.values().len);
     // A byte never straddles a word: the known ones of its word (a 1 is
     // value set, unknown clear), shifted down and cut at the width.
     const word: usize = @intCast(lo / 64);
@@ -69,7 +109,7 @@ pub fn byteAt(v: Int.Literal, n: u32) u8 {
     return @as(u8, @truncate(known >> @intCast(lo % 64))) & keep;
 }
 
-/// §17.1.1.7 `%s` (`char` false) or `%c`, right-justified in `width` columns:
+/// Writes §17.1.1.7 `%s` (`char` false) or `%c`, right-justified in `width` columns:
 /// "each 8 bits representing a single character ... right-justified so that
 /// the rightmost bit of the value is the least significant bit of the last
 /// character", and "leading zeros are never printed". A `%s` NUL byte is
@@ -77,6 +117,7 @@ pub fn byteAt(v: Int.Literal, n: u32) u8 {
 /// characters; a written width (`%0s`, `%5s`) drops the leading ones and
 /// pads what is left to it (VD-129, iverilog's text).
 pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io.Writer.Error!void {
+    assert(v.width >= 1);
     var n: u32 = if (char) 1 else (v.width + 7) / 8;
     if (!char and width != null) while (n != 0 and byteAt(v, n - 1) == 0) {
         n -= 1;
@@ -89,7 +130,7 @@ pub fn text(out: *std.Io.Writer, v: Int.Literal, char: bool, width: ?u64) std.Io
     }
 }
 
-/// §17.3 `%t`. The operand is a time in the invoking module's time unit
+/// Writes §17.3 `%t` of a real time `t`. The operand is a time in the invoking module's time unit
 /// (what `$time` returns, and what a literal `1` there means), and
 /// `$timeformat`'s `units_number` says which power of ten of a second to
 /// report it in. So the printed number is
@@ -109,6 +150,7 @@ pub fn time(out: *std.Io.Writer, t: f64, f: TimeFormat, unit_exp: i32) std.Io.Wr
     const q = @min(f.precision, 400);
     var buf: [1024]u8 = undefined;
     const body = str_k.zCReal(&buf, scaled, 'f', 0, 0, q);
+    assert(body.len <= buf.len);
     const extra: usize = f.precision - q;
     const len = body.len + extra + f.suffix.len;
     if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
@@ -117,17 +159,21 @@ pub fn time(out: *std.Io.Writer, t: f64, f: TimeFormat, unit_exp: i32) std.Io.Wr
     try out.writeAll(f.suffix);
 }
 
-/// `%t` of a known integral operand `v`, a count of 10^`unit_exp` s, in
+/// Writes `%t` of a known integral operand `v`, a count of 10^`unit_exp` s, in
 /// `f`'s units: exact at any width, the fractional digits past `f`'s
 /// precision cut, not rounded, as iverilog prints it (§17.3.2 names the
 /// precision, not how a finer value meets it; ivtest br_gh1591a/b/c).
+/// Asserts that `v` has no x or z bit (`timeUnknown` prints those). Its
+/// decimal scratch comes from `gpa` and is freed before returning.
 pub fn timeInt(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, f: TimeFormat, unit_exp: i32) Error!void {
+    assert(!v.hasUnknown());
     var dec: std.Io.Writer.Allocating = .init(gpa);
     defer dec.deinit();
     try value(&dec.writer, gpa, v, .decimal, 0);
     const all = dec.written();
     const neg = all.len != 0 and all[0] == '-';
     const digits = all[@intFromBool(neg)..];
+    assert(digits.len >= 1);
     const k = unit_exp - f.units;
     // The integer digits, then every fractional digit the shift gives.
     var int_part: []const u8 = digits;
@@ -167,6 +213,340 @@ pub fn timeInt(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, f: T
     try out.writeAll(f.suffix);
 }
 
+/// Writes `%t` of an integral operand with an x or z bit: §17.1.1.4's decimal
+/// character for it (x, X, z or Z), then `f`'s point and precision zeros and
+/// its suffix, padded to its width, as iverilog prints it (§17.3.2 says
+/// nothing of an unknown time; 1364-2005 §4.8 makes an unset `time` x).
+/// Asserts that `v` has an x or z bit.
+pub fn timeUnknown(out: *std.Io.Writer, v: Int.Literal, f: TimeFormat) std.Io.Writer.Error!void {
+    assert(v.hasUnknown());
+    var buf: [1]u8 = undefined;
+    const ch = decimalText(&buf, v);
+    assert(ch.len == 1);
+    const len = 1 + (if (f.precision > 0) 1 + f.precision else 0) + f.suffix.len;
+    if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
+    try out.writeAll(ch);
+    if (f.precision > 0) {
+        try out.writeByte('.');
+        try out.splatByteAll('0', @intCast(f.precision));
+    }
+    try out.writeAll(f.suffix);
+}
+
+/// Returns an integral `%t` operand as the real `time` formats (one with an x or z
+/// bit is 0 here; the display prints it with `timeUnknown`). A signed one
+/// wider than 64 bits is 0 too; an unsigned one wider
+/// than 64 bits is read by its low 64.
+pub fn timeOperand(v: Int.Literal) f64 {
+    if (v.hasUnknown()) return 0;
+    if (v.signed) return @floatFromInt(v.asInt() orelse 0);
+    return @floatFromInt(v.values()[0]);
+}
+
+/// Writes 10^e seconds in §19.8's spelling: 1, 10 or 100 of s, ms, us, ns,
+/// ps, fs. Asserts that `e` is in [-15, 2], the range of §19.8's 18 operands.
+pub fn decade(out: *std.Io.Writer, e: i32) std.Io.Writer.Error!void {
+    assert(e >= -15);
+    assert(e <= 2);
+    const k = @divFloor(e, 3);
+    const units = [_][]const u8{ "fs", "ps", "ns", "us", "ms", "s" };
+    const mantissa: u32 = std.math.pow(u32, 10, @intCast(e - 3 * k));
+    try out.print("{d}{s}", .{ mantissa, units[@intCast(k + 5)] });
+}
+
+/// Writes one operand, in one radix, sized by IEEE 1364-2005 §17.1.1.3 unless the
+/// format gave an explicit width. A decimal operand wider than 64 bits with
+/// no x or z bit is divided out with scratch from `gpa` (`wideDecimal`).
+///
+/// The three power-of-two radices are a GROUP walk and decimal is not, and
+/// that is the whole split: a hex digit is four bits of this operand and
+/// says nothing about the other bits, so a group that is entirely unknown
+/// prints as unknown while its neighbours print normally. A decimal
+/// rendering has no such locality (one unknown bit makes the whole number
+/// unknown), which is why §17.1.1.4 gives it its own rule.
+pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix: Radix, width: ?u64) Error!void {
+    return valueFill(out, gpa, v, radix, width, false);
+}
+
+/// Writes `value`, with C's `0` flag when `zero`: an explicit width is filled with
+/// zeros after the sign, not spaces (`%08d` of 65 is `00000065`). 1364
+/// grants no flags to the radix conversions; VerA prints iverilog's text
+/// (VD-129).
+pub fn valueFill(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix: Radix, width: ?u64, zero: bool) Error!void {
+    assert(v.width >= 1);
+    const field = width orelse autoWidth(v, radix);
+    const fill: u8 = if (zero and width != null) '0' else ' ';
+    if (radix == .decimal) {
+        // ponytail: a wide decimal pads with spaces even under `0`.
+        if (v.width > 64 and !v.hasUnknown()) return wideDecimal(out, gpa, v, field);
+        var buf: [24]u8 = undefined;
+        var t = decimalText(&buf, v);
+        if (fill == '0' and t.len < field and t[0] == '-') {
+            try out.writeByte('-');
+            t = t[1..];
+            try out.splatByteAll('0', @intCast(field - t.len - 1));
+        } else if (t.len < field) try out.splatByteAll(fill, @intCast(field - t.len));
+        return out.writeAll(t);
+    }
+    // §17.1.1.3: a zero width overrides the automatic size, so a group radix
+    // loses its leading zero digits too (`%0h` of 12'd10 is "a").
+    var d = autoWidth(v, radix);
+    if (width == 0) while (d > 1 and groupDigit(v, radix, d - 1) == '0') {
+        d -= 1;
+    };
+    assert(d >= 1);
+    // §17.1.1.3's automatic size. Right-justified with leading spaces, not
+    // zeros: `%d` of an 8-bit 7 is "  7" and not "007". A group radix is
+    // already exactly its own width, so padding only ever shows up under
+    // decimal or an explicit format width.
+    if (d < field) try out.splatByteAll(fill, @intCast(field - d));
+    while (d != 0) {
+        d -= 1;
+        try out.writeByte(groupDigit(v, radix, d));
+    }
+}
+
+/// Returns the `Spec` at `t[i.*..]`, with `i.*` moved past it to the
+/// conversion letter (or to the end). Flags are `str_real.zcFlag`'s set, the one
+/// lowering, the device and the host read; leading zeros are the '0' flag,
+/// so `%05d` is the '0' flag and width 5, the width digits `%05d` always
+/// had. Width and precision saturate: §17.1.1.2 bounds neither, and no
+/// width is buffered (`display.real`, `value`).
+pub fn spec(t: []const u8, i: *usize) Spec {
+    assert(i.* <= t.len);
+    var s: Spec = .{};
+    while (i.* < t.len) : (i.* += 1) s.flags |= str_k.zcFlag(t[i.*]) orelse break;
+    if (s.flags & str_k.zc_zero != 0) s.width = 0;
+    while (i.* < t.len and t[i.*] >= '0' and t[i.*] <= '9') : (i.* += 1)
+        s.width = (s.width orelse 0) *| 10 +| (t[i.*] - '0');
+    if (i.* < t.len and t[i.*] == '.') {
+        i.* += 1;
+        s.precision = 0;
+        while (i.* < t.len and t[i.*] >= '0' and t[i.*] <= '9') : (i.* += 1)
+            s.precision = s.precision *| 10 +| (t[i.*] - '0');
+    }
+    assert(i.* <= t.len);
+    return s;
+}
+
+/// Returns whether conversion `conv` takes the flags in `flags` in the digital
+/// context. IEEE 1364-2005 §17.1.1.2 grants "the full formatting
+/// capabilities available in the C language" to its real conversions only
+/// (`%e %f %g`, and VAMS §9.4.7's `%r`), so every flag renders there but
+/// '#' on `%r` (`str_real.zcAltOk`). The others are sized by §17.1.1.3,
+/// whose one override is the zero (`%0d`): '#' on them is `.alt` (E0825)
+/// and '-', '+' or ' ' is `.c_flag` (E0827), refused rather than ignored.
+pub fn flagVerdict(flags: u8, conv: u8) FlagVerdict {
+    assert(flags < 32); // the five `zc_*` bits
+    if (flags & str_k.zc_alt != 0 and !str_k.zcAltOk(conv)) return .alt;
+    const real = switch (conv | 0x20) {
+        'e', 'f', 'g', 'r' => true,
+        else => false,
+    };
+    // '-' left-justifies a `%t` field too: §17.3.2 gives it a minimum field
+    // width, so its pad has a side, which iverilog puts on the right
+    // (`display.Fill`, ivtest br_gh1591a's `%-700t`). '+' and ' ' stay the
+    // real conversions'.
+    const left_ok = conv | 0x20 == 't';
+    if (!real and flags & (str_k.zc_plus | str_k.zc_space) != 0) return .c_flag;
+    if (!real and !left_ok and flags & str_k.zc_left != 0) return .c_flag;
+    return .ok;
+}
+
+// ---- private ----
+
+/// §17.1.1.3: "a radix conversion is sized to the operand's declared width,
+/// and the default decimal field is sized to the largest value the operand
+/// can hold". For a signed operand the largest printed value is the
+/// negative one, because of its sign: a 32-bit `integer` is 11 columns
+/// ("-2147483648"), not 10. Exact at every width, so an x in a 128-bit `%d`
+/// is right-justified in 39 columns.
+fn autoWidth(v: Int.Literal, radix: Radix) u32 {
+    if (radix != .decimal) {
+        const per = radix.perDigit();
+        return (v.width + per - 1) / per;
+    }
+    // The count of decimal digits in 2^n - 1 (unsigned) or 2^(n-1)
+    // (signed magnitude, plus one column for the sign). 2^n is never a
+    // power of ten for n >= 1, so 2^n - 1 has 2^n's digits,
+    // floor(n log10 2) + 1, and n = 0 has one. The floor is taken with
+    // log10(2) in 64-bit fixed point: short by less than n / 2^64, which
+    // leaves it exact for every width up to `Int.max_width` (checked
+    // against an exact digit count of 2^n over that range).
+    const bits: u32 = if (v.signed and v.width != 0) v.width - 1 else v.width;
+    const log10_2: u128 = 0x4d104d427de7fbcc; // floor(log10(2) * 2^64)
+    const digits: u32 = @intCast((@as(u128, bits) * log10_2) >> 64);
+    assert(digits <= bits); // a bit holds less than one decimal digit
+    return digits + 1 + @intFromBool(v.signed);
+}
+
+/// Digit `d` of a power-of-two radix, counting from the least significant
+/// group. Bits past the operand's width are absent, not zero: they
+/// contribute nothing to the digit's value and nothing to its unknown-ness,
+/// which is what makes an all-x 8-bit operand print "xxx" in octal rather
+/// than "Xxx": the top group holds two x bits and no third bit at all.
+fn groupDigit(v: Int.Literal, radix: Radix, d: u32) u8 {
+    // Both planes' bits of the group at once, cut at the width: one or two
+    // word reads per digit instead of one `bit` call per bit.
+    const lo = d * radix.perDigit();
+    assert(lo < v.width);
+    const present: u6 = @intCast(@min(radix.perDigit(), v.width - lo));
+    const live = (@as(u64, 1) << present) - 1;
+    const val = groupBits(v.values(), lo) & live;
+    const unk = groupBits(v.unknowns(), lo) & live;
+    // An x bit is value and unknown set, a z bit unknown alone.
+    const xs = @popCount(val & unk);
+    const zs = @popCount(~val & unk);
+    // §17.1.1.4: all unknown prints lowercase, partly unknown prints
+    // uppercase; the case is the only sign that the digit's known bits
+    // were thrown away.
+    return if (xs == present) 'x' //
+    else if (zs == present) 'z' //
+    else if (xs != 0) 'X' //
+    else if (zs != 0) 'Z' //
+    else "0123456789abcdef"[@intCast(val)];
+}
+
+/// The bits of `plane` from bit `lo` up, as many as one word holds: a group
+/// of a power-of-two radix that straddles a word takes the next word's low
+/// bits. Asserts `lo` is inside `plane`.
+fn groupBits(plane: []const u64, lo: u32) u64 {
+    const w = lo / 64;
+    assert(w < plane.len);
+    const off: u6 = @truncate(lo);
+    var bits = plane[w] >> off;
+    if (off != 0 and w + 1 < plane.len) bits |= plane[w + 1] << @intCast(64 - @as(u7, off));
+    return bits;
+}
+
+/// Decimal, where one unknown bit poisons the whole number (§17.1.1.4), as
+/// a slice of `buf`. Asserts `buf` holds 20 bytes, the longest i64 or u64,
+/// and that a known `v` is at most 64 bits wide (`wideDecimal` is the rest).
+fn decimalText(buf: []u8, v: Int.Literal) []const u8 {
+    assert(buf.len >= 1);
+    if (v.hasUnknown()) {
+        // An x bit is value and unknown set, a z bit unknown alone.
+        var xs: u32 = 0;
+        var zs: u32 = 0;
+        for (v.values(), v.unknowns(), 0..) |val, unk, j| {
+            const m = widthMask(v.width, j);
+            xs += @popCount(val & unk & m);
+            zs += @popCount(~val & unk & m);
+        }
+        buf[0] = if (xs == v.width) 'x' //
+            else if (zs == v.width) 'z' //
+            else if (xs != 0) 'X' //
+            else 'Z';
+        return buf[0..1];
+    }
+    assert(v.width <= 64);
+    assert(buf.len >= 20);
+    const raw = v.values()[0];
+    if (v.signed) return std.mem.print(buf, "{d}", .{v.asInt().?}) catch unreachable;
+    // Not `asInt`: it bit-casts, so an unsigned 64-bit operand at or above
+    // 2^63 would print negative. $time is exactly that operand.
+    return std.mem.print(buf, "{d}", .{raw}) catch unreachable;
+}
+
+/// §17.1.1.3 `%d` of a known operand of any width, right-justified in
+/// `field` columns. The magnitude (negated over the width when `v` is signed
+/// and its top bit is set) is divided by 10^19 until it is zero, each
+/// remainder one 19-digit group, and the groups print most significant
+/// first. The scratch comes from `gpa` and is freed before returning.
+fn wideDecimal(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, field: u64) Error!void {
+    // ponytail: schoolbook division, quadratic in the word count; a
+    // divide-and-conquer radix conversion if multi-megabit %d ever matters.
+    assert(v.width > 64);
+    assert(!v.hasUnknown());
+    const words = (v.width + 63) / 64;
+    const mag = try gpa.alloc(u64, words);
+    defer gpa.free(mag);
+    for (mag, v.values()[0..words], 0..) |*m, val, j| m.* = val & widthMask(v.width, j);
+    const negative = v.signed and v.bit(v.width - 1) == .one;
+    if (negative) {
+        // -v over `v.width` bits: invert, add one, cut at the width.
+        var carry: u1 = 1;
+        for (mag, 0..) |*m, j| {
+            const sum = @addWithOverflow(~m.*, @as(u64, carry));
+            m.* = sum[0] & widthMask(v.width, j);
+            carry = sum[1];
+        }
+    }
+    const base: u64 = 10_000_000_000_000_000_000;
+    // 10^19 > 2^63, so each group takes more than 63 bits off the magnitude.
+    const groups = try gpa.alloc(u64, words + words / 63 + 1);
+    defer gpa.free(groups);
+    var n: usize = 0;
+    var top = words;
+    while (true) {
+        while (top != 0 and mag[top - 1] == 0) top -= 1;
+        if (top == 0 and n != 0) break;
+        assert(n < groups.len); // bounds the loop: each group is a slot
+        var rem: u128 = 0;
+        var j = top;
+        while (j != 0) {
+            j -= 1;
+            const cur = (rem << 64) | mag[j];
+            mag[j] = @intCast(cur / base);
+            rem = cur % base;
+        }
+        groups[n] = @intCast(rem);
+        n += 1;
+    }
+    const len = std.fmt.count("{d}", .{groups[n - 1]}) + 19 * (n - 1) + @intFromBool(negative);
+    if (len < field) try out.splatByteAll(' ', @intCast(field - len));
+    if (negative) try out.writeByte('-');
+    try out.print("{d}", .{groups[n - 1]});
+    var k = n - 1;
+    while (k != 0) {
+        k -= 1;
+        try out.print("{d:0>19}", .{groups[k]});
+    }
+}
+
+/// The bits of word `j` below bit `width`.
+fn widthMask(width: u32, j: usize) u64 {
+    const lo = 64 * @as(u64, j);
+    if (lo >= width) return 0;
+    const left = width - lo;
+    return if (left >= 64) std.math.maxInt(u64) else (@as(u64, 1) << @intCast(left)) - 1;
+}
+
+fn lit(planes: []u64, width: u32, signed: bool) Int.Literal {
+    return .{ .width = width, .signed = signed, .sized = true, .planes = planes };
+}
+
+fn wideDecimalAllocation(gpa: std.mem.Allocator) !void {
+    var planes: [32]u64 = @splat(0);
+    planes[15] = 1 << 40;
+    var buf: [400]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try value(&w, gpa, lit(&planes, 1001, true), .decimal, null);
+}
+
+/// The decimal digits of 2^n, by doubling a digit string: an oracle that
+/// shares no arithmetic with `autoWidth`.
+fn digitsOfPow2(n: u32) u32 {
+    // ponytail: u32 digits, not u8. The Debug x86_64 backend fails to encode
+    // the u8 version (`emit MIR failed: CannotEncode`, Zig 0.17.0).
+    var d: [128]u32 = @splat(0);
+    d[0] = 1;
+    var len: u32 = 1;
+    for (0..n) |_| {
+        var carry: u32 = 0;
+        for (d[0..len]) |*digit| {
+            const doubled = digit.* * 2 + carry;
+            digit.* = doubled % 10;
+            carry = doubled / 10;
+        }
+        if (carry != 0) {
+            d[len] = carry;
+            len += 1;
+        }
+    }
+    return len;
+}
+
 test timeInt {
     var out_buf: [128]u8 = undefined;
     var w: std.Io.Writer = .fixed(&out_buf);
@@ -197,298 +577,6 @@ test timeInt {
     try timeInt(&w, testing.allocator, lit(&wide, 100, false), .{ .units = -6, .precision = 2, .width = 0 }, ns);
     try testing.expectEqualStrings("1237940039285380274899126.22", w.buffered());
 }
-
-/// `%t` of an integral operand with an x or z bit: §17.1.1.4's decimal
-/// character for it (x, X, z or Z), then `f`'s point and precision zeros and
-/// its suffix, padded to its width, as iverilog prints it (§17.3.2 says
-/// nothing of an unknown time; 1364-2005 §4.8 makes an unset `time` x).
-pub fn timeUnknown(out: *std.Io.Writer, v: Int.Literal, f: TimeFormat) std.Io.Writer.Error!void {
-    var buf: [1]u8 = undefined;
-    const ch = decimalText(&buf, v);
-    const len = 1 + (if (f.precision > 0) 1 + f.precision else 0) + f.suffix.len;
-    if (len < f.width) try out.splatByteAll(' ', @intCast(f.width - len));
-    try out.writeAll(ch);
-    if (f.precision > 0) {
-        try out.writeByte('.');
-        try out.splatByteAll('0', @intCast(f.precision));
-    }
-    try out.writeAll(f.suffix);
-}
-
-/// An integral `%t` operand as the real `time` formats (one with an x or z
-/// bit is 0 here; the display prints it with `timeUnknown`). A signed one
-/// wider than 64 bits is 0 too; an unsigned one wider
-/// than 64 bits is read by its low 64.
-pub fn timeOperand(v: Int.Literal) f64 {
-    if (v.hasUnknown()) return 0;
-    if (v.signed) return @floatFromInt(v.asInt() orelse 0);
-    return @floatFromInt(v.values()[0]);
-}
-
-/// 10^e seconds in §19.8's spelling: 1, 10 or 100 of s, ms, us, ns, ps, fs.
-/// Asserts `e` is in [-15, 2], the range of §19.8's 18 operands.
-pub fn decade(out: *std.Io.Writer, e: i32) std.Io.Writer.Error!void {
-    const k = @divFloor(e, 3);
-    const units = [_][]const u8{ "fs", "ps", "ns", "us", "ms", "s" };
-    const mantissa: u32 = std.math.pow(u32, 10, @intCast(e - 3 * k));
-    try out.print("{d}{s}", .{ mantissa, units[@intCast(k + 5)] });
-}
-
-/// One operand, in one radix, sized by IEEE 1364-2005 §17.1.1.3 unless the
-/// format gave an explicit width. A decimal operand wider than 64 bits with
-/// no x or z bit is divided out with scratch from `gpa` (`wideDecimal`).
-///
-/// The three power-of-two radices are a GROUP walk and decimal is not, and
-/// that is the whole split: a hex digit is four bits of this operand and
-/// says nothing about the other bits, so a group that is entirely unknown
-/// prints as unknown while its neighbours print normally. A decimal
-/// rendering has no such locality (one unknown bit makes the whole number
-/// unknown), which is why §17.1.1.4 gives it its own rule.
-pub fn value(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix: Radix, width: ?u64) Error!void {
-    return valueFill(out, gpa, v, radix, width, false);
-}
-
-/// `value`, with C's `0` flag when `zero`: an explicit width is filled with
-/// zeros after the sign, not spaces (`%08d` of 65 is `00000065`). 1364
-/// grants no flags to the radix conversions; VerA prints iverilog's text
-/// (VD-129).
-pub fn valueFill(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, radix: Radix, width: ?u64, zero: bool) Error!void {
-    const field = width orelse autoWidth(v, radix);
-    const fill: u8 = if (zero and width != null) '0' else ' ';
-    if (radix == .decimal) {
-        // ponytail: a wide decimal pads with spaces even under `0`.
-        if (v.width > 64 and !v.hasUnknown()) return wideDecimal(out, gpa, v, field);
-        var buf: [24]u8 = undefined;
-        var t = decimalText(&buf, v);
-        if (fill == '0' and t.len < field and t[0] == '-') {
-            try out.writeByte('-');
-            t = t[1..];
-            try out.splatByteAll('0', @intCast(field - t.len - 1));
-        } else if (t.len < field) try out.splatByteAll(fill, @intCast(field - t.len));
-        return out.writeAll(t);
-    }
-    // §17.1.1.3: a zero width overrides the automatic size, so a group radix
-    // loses its leading zero digits too (`%0h` of 12'd10 is "a").
-    var d = autoWidth(v, radix);
-    if (width == 0) while (d > 1 and groupDigit(v, radix, d - 1) == '0') {
-        d -= 1;
-    };
-    // §17.1.1.3's automatic size. Right-justified with leading spaces, not
-    // zeros: `%d` of an 8-bit 7 is "  7" and not "007". A group radix is
-    // already exactly its own width, so padding only ever shows up under
-    // decimal or an explicit format width.
-    if (d < field) try out.splatByteAll(fill, @intCast(field - d));
-    while (d != 0) {
-        d -= 1;
-        try out.writeByte(groupDigit(v, radix, d));
-    }
-}
-
-/// §17.1.1.3: "a radix conversion is sized to the operand's declared width,
-/// and the default decimal field is sized to the largest value the operand
-/// can hold". For a signed operand the largest printed value is the
-/// negative one, because of its sign: a 32-bit `integer` is 11 columns
-/// ("-2147483648"), not 10. Exact at every width, so an x in a 128-bit `%d`
-/// is right-justified in 39 columns.
-fn autoWidth(v: Int.Literal, radix: Radix) u32 {
-    if (radix != .decimal) {
-        const per = radix.perDigit();
-        return (v.width + per - 1) / per;
-    }
-    // The count of decimal digits in 2^n - 1 (unsigned) or 2^(n-1)
-    // (signed magnitude, plus one column for the sign). 2^n is never a
-    // power of ten for n >= 1, so 2^n - 1 has 2^n's digits,
-    // floor(n log10 2) + 1, and n = 0 has one. The floor is taken with
-    // log10(2) in 64-bit fixed point: short by less than n / 2^64, which
-    // leaves it exact for every width up to `Int.max_width` (checked
-    // against an exact digit count of 2^n over that range).
-    const bits: u32 = if (v.signed and v.width != 0) v.width - 1 else v.width;
-    const log10_2: u128 = 0x4d104d427de7fbcc; // floor(log10(2) * 2^64)
-    const digits: u32 = @intCast((@as(u128, bits) * log10_2) >> 64);
-    return digits + 1 + @intFromBool(v.signed);
-}
-
-/// Digit `d` of a power-of-two radix, counting from the least significant
-/// group. Bits past the operand's width are absent, not zero: they
-/// contribute nothing to the digit's value and nothing to its unknown-ness,
-/// which is what makes an all-x 8-bit operand print "xxx" in octal rather
-/// than "Xxx": the top group holds two x bits and no third bit at all.
-fn groupDigit(v: Int.Literal, radix: Radix, d: u32) u8 {
-    // Both planes' bits of the group at once, cut at the width: one or two
-    // word reads per digit instead of one `bit` call per bit.
-    const lo = d * radix.perDigit();
-    const present: u6 = @intCast(@min(radix.perDigit(), v.width - lo));
-    const live = (@as(u64, 1) << present) - 1;
-    const val = groupBits(v.values(), lo) & live;
-    const unk = groupBits(v.unknowns(), lo) & live;
-    // An x bit is value and unknown set, a z bit unknown alone.
-    const xs = @popCount(val & unk);
-    const zs = @popCount(~val & unk);
-    // §17.1.1.4: all unknown prints lowercase, partly unknown prints
-    // uppercase; the case is the only sign that the digit's known bits
-    // were thrown away.
-    return if (xs == present) 'x' //
-    else if (zs == present) 'z' //
-    else if (xs != 0) 'X' //
-    else if (zs != 0) 'Z' //
-    else "0123456789abcdef"[@intCast(val)];
-}
-
-/// The bits of `plane` from bit `lo` up, as many as one word holds: a group
-/// of a power-of-two radix that straddles a word takes the next word's low
-/// bits. Asserts `lo` is inside `plane`.
-fn groupBits(plane: []const u64, lo: u32) u64 {
-    const w = lo / 64;
-    const off: u6 = @truncate(lo);
-    var bits = plane[w] >> off;
-    if (off != 0 and w + 1 < plane.len) bits |= plane[w + 1] << @intCast(64 - @as(u7, off));
-    return bits;
-}
-
-/// Decimal, where one unknown bit poisons the whole number (§17.1.1.4), as
-/// a slice of `buf`. Asserts `buf` holds 20 bytes, the longest i64 or u64,
-/// and that a known `v` is at most 64 bits wide (`wideDecimal` is the rest).
-fn decimalText(buf: []u8, v: Int.Literal) []const u8 {
-    if (v.hasUnknown()) {
-        // An x bit is value and unknown set, a z bit unknown alone.
-        var xs: u32 = 0;
-        var zs: u32 = 0;
-        for (v.values(), v.unknowns(), 0..) |val, unk, j| {
-            const m = widthMask(v.width, j);
-            xs += @popCount(val & unk & m);
-            zs += @popCount(~val & unk & m);
-        }
-        buf[0] = if (xs == v.width) 'x' //
-            else if (zs == v.width) 'z' //
-            else if (xs != 0) 'X' //
-            else 'Z';
-        return buf[0..1];
-    }
-    std.debug.assert(v.width <= 64);
-    const raw = v.values()[0];
-    if (v.signed) return std.mem.print(buf, "{d}", .{v.asInt().?}) catch unreachable;
-    // Not `asInt`: it bit-casts, so an unsigned 64-bit operand at or above
-    // 2^63 would print negative. $time is exactly that operand.
-    return std.mem.print(buf, "{d}", .{raw}) catch unreachable;
-}
-
-/// §17.1.1.3 `%d` of a known operand of any width, right-justified in
-/// `field` columns. The magnitude (negated over the width when `v` is signed
-/// and its top bit is set) is divided by 10^19 until it is zero, each
-/// remainder one 19-digit group, and the groups print most significant
-/// first. The scratch comes from `gpa` and is freed before returning.
-fn wideDecimal(out: *std.Io.Writer, gpa: std.mem.Allocator, v: Int.Literal, field: u64) Error!void {
-    // ponytail: schoolbook division, quadratic in the word count; a
-    // divide-and-conquer radix conversion if multi-megabit %d ever matters.
-    const words = (v.width + 63) / 64;
-    const mag = try gpa.alloc(u64, words);
-    defer gpa.free(mag);
-    for (mag, v.values()[0..words], 0..) |*m, val, j| m.* = val & widthMask(v.width, j);
-    const negative = v.signed and v.bit(v.width - 1) == .one;
-    if (negative) {
-        // -v over `v.width` bits: invert, add one, cut at the width.
-        var carry: u1 = 1;
-        for (mag, 0..) |*m, j| {
-            const sum = @addWithOverflow(~m.*, @as(u64, carry));
-            m.* = sum[0] & widthMask(v.width, j);
-            carry = sum[1];
-        }
-    }
-    const base: u64 = 10_000_000_000_000_000_000;
-    // 10^19 > 2^63, so each group takes more than 63 bits off the magnitude.
-    const groups = try gpa.alloc(u64, words + words / 63 + 1);
-    defer gpa.free(groups);
-    var n: usize = 0;
-    var top = words;
-    while (true) {
-        while (top != 0 and mag[top - 1] == 0) top -= 1;
-        if (top == 0 and n != 0) break;
-        var rem: u128 = 0;
-        var j = top;
-        while (j != 0) {
-            j -= 1;
-            const cur = (rem << 64) | mag[j];
-            mag[j] = @intCast(cur / base);
-            rem = cur % base;
-        }
-        groups[n] = @intCast(rem);
-        n += 1;
-    }
-    const len = std.fmt.count("{d}", .{groups[n - 1]}) + 19 * (n - 1) + @intFromBool(negative);
-    if (len < field) try out.splatByteAll(' ', @intCast(field - len));
-    if (negative) try out.writeByte('-');
-    try out.print("{d}", .{groups[n - 1]});
-    var k = n - 1;
-    while (k != 0) {
-        k -= 1;
-        try out.print("{d:0>19}", .{groups[k]});
-    }
-}
-
-// The bits of word `j` below bit `width`.
-fn widthMask(width: u32, j: usize) u64 {
-    const lo = 64 * @as(u64, j);
-    if (lo >= width) return 0;
-    const left = width - lo;
-    return if (left >= 64) std.math.maxInt(u64) else (@as(u64, 1) << @intCast(left)) - 1;
-}
-
-/// One conversion's `[flags][width][.precision]`, read after its `%`.
-pub const Spec = struct {
-    /// C11 7.21.6.1p6's flags as `str_kernels.zc_*` bits.
-    flags: u8 = 0,
-    /// The field width; null when none is written (§17.1.1.3's automatic
-    /// sizing). A '0' flag alone is width 0: `%0d`, the override.
-    width: ?u64 = null,
-    /// The precision; -1 when none is written.
-    precision: i64 = -1,
-};
-
-/// The `Spec` at `t[i.*..]`, with `i.*` moved past it to the conversion
-/// letter (or to the end). Flags are `str_kernels.zcFlag`'s set, the one
-/// lowering, the device and the host read; leading zeros are the '0' flag,
-/// so `%05d` is the '0' flag and width 5, the width digits `%05d` always
-/// had. Width and precision saturate: §17.1.1.2 bounds neither, and no
-/// width is buffered (`display.real`, `value`).
-pub fn spec(t: []const u8, i: *usize) Spec {
-    var s: Spec = .{};
-    while (i.* < t.len) : (i.* += 1) s.flags |= str_k.zcFlag(t[i.*]) orelse break;
-    if (s.flags & str_k.zc_zero != 0) s.width = 0;
-    while (i.* < t.len and t[i.*] >= '0' and t[i.*] <= '9') : (i.* += 1)
-        s.width = (s.width orelse 0) *| 10 +| (t[i.*] - '0');
-    if (i.* < t.len and t[i.*] == '.') {
-        i.* += 1;
-        s.precision = 0;
-        while (i.* < t.len and t[i.*] >= '0' and t[i.*] <= '9') : (i.* += 1)
-            s.precision = s.precision *| 10 +| (t[i.*] - '0');
-    }
-    return s;
-}
-
-/// Whether conversion `conv` takes the flags in `flags` in the digital
-/// context. IEEE 1364-2005 §17.1.1.2 grants "the full formatting
-/// capabilities available in the C language" to its real conversions only
-/// (`%e %f %g`, and VAMS §9.4.7's `%r`), so every flag renders there but
-/// '#' on `%r` (`str_kernels.zcAltOk`). The others are sized by §17.1.1.3,
-/// whose one override is the zero (`%0d`): '#' on them is `.alt` (E0825)
-/// and '-', '+' or ' ' is `.c_flag` (E0827), refused rather than ignored.
-pub fn flagVerdict(flags: u8, conv: u8) enum { ok, alt, c_flag } {
-    if (flags & str_k.zc_alt != 0 and !str_k.zcAltOk(conv)) return .alt;
-    const real = switch (conv | 0x20) {
-        'e', 'f', 'g', 'r' => true,
-        else => false,
-    };
-    // '-' left-justifies a `%t` field too: §17.3.2 gives it a minimum field
-    // width, so its pad has a side, which iverilog puts on the right
-    // (`display.Fill`, ivtest br_gh1591a's `%-700t`). '+' and ' ' stay the
-    // real conversions'.
-    const left_ok = conv | 0x20 == 't';
-    if (!real and flags & (str_k.zc_plus | str_k.zc_space) != 0) return .c_flag;
-    if (!real and !left_ok and flags & str_k.zc_left != 0) return .c_flag;
-    return .ok;
-}
-
-const testing = std.testing;
 
 test "§17.1.1.2 spec: C's flags, then the width and precision; leading zeros are the '0' flag" {
     const cases = [_]struct { t: []const u8, want: Spec, rest: []const u8 }{
@@ -526,10 +614,6 @@ test "§17.1.1.2 flagVerdict: C's flags on the real conversions only (#43)" {
         try testing.expect(flagVerdict(str_k.zc_plus, c) == .c_flag);
         try testing.expect(flagVerdict(str_k.zc_space, c) == .c_flag);
     }
-}
-
-fn lit(planes: []u64, width: u32, signed: bool) Int.Literal {
-    return .{ .width = width, .signed = signed, .sized = true, .planes = planes };
 }
 
 test "perDigit: one octal digit is 3 bits, one hex digit 4" {
@@ -737,39 +821,8 @@ test "%d of a known operand past 64 bits is its whole decimal value (§17.1.1.3)
     try testing.expectEqualStrings("10715086071862673209484250490600018105614048117055336074437503883703510511249361224931983788156958581275946729175531468251871452856923140435984577574698574803934567774824230985421074605062371141877954182153046474983581941267398767559165543946077062914571196477686542167660429831652624386837205668069376", lw.buffered());
 }
 
-fn wideDecimalAllocation(gpa: std.mem.Allocator) !void {
-    var planes: [32]u64 = @splat(0);
-    planes[15] = 1 << 40;
-    var buf: [400]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    try value(&w, gpa, lit(&planes, 1001, true), .decimal, null);
-}
-
 test "%d past 64 bits frees its scratch on every allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, wideDecimalAllocation, .{});
-}
-
-/// The decimal digits of 2^n, by doubling a digit string: an oracle that
-/// shares no arithmetic with `autoWidth`.
-fn digitsOfPow2(n: u32) u32 {
-    // ponytail: u32 digits, not u8. The Debug x86_64 backend fails to encode
-    // the u8 version (`emit MIR failed: CannotEncode`, Zig 0.17.0).
-    var d: [128]u32 = @splat(0);
-    d[0] = 1;
-    var len: u32 = 1;
-    for (0..n) |_| {
-        var carry: u32 = 0;
-        for (d[0..len]) |*digit| {
-            const doubled = digit.* * 2 + carry;
-            digit.* = doubled % 10;
-            carry = doubled / 10;
-        }
-        if (carry != 0) {
-            d[len] = carry;
-            len += 1;
-        }
-    }
-    return len;
 }
 
 test "autoWidth is the width of the operand's largest value, at every width" {
