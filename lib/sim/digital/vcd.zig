@@ -476,7 +476,7 @@ pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
         }
     }
     var_start[scopes.len] = @intCast(vars.items.len);
-    return .{ .scopes = scopes, .var_start = var_start, .vars = vars.items, .finest = r.finest };
+    return .{ .scopes = scopes, .var_start = var_start, .vars = vars.items, .finest = r.time.finest };
 }
 
 /// The interpreter's run of one §18.1 task.

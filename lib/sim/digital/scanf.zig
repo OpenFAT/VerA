@@ -319,7 +319,7 @@ pub fn scanContext(self: *Run, a: std.mem.Allocator, sc: *Scan, outs: []const As
     const widths = try a.alloc(u32, outs.len);
     for (outs, widths) |e, *w| w.* = (try evaluate.targetType(self, e)).width;
     sc.widths = widths;
-    sc.time = .{ .units = self.time_format.units, .precision = self.time_format.precision, .unit_exp = self.timeOf(self.scope).unit_exp };
+    sc.time = .{ .units = self.time.format.units, .precision = self.time.format.precision, .unit_exp = self.timeOf(self.scope).unit_exp };
     var path: std.Io.Writer.Allocating = .init(a);
     const saved = self.out;
     self.out = &path.writer;

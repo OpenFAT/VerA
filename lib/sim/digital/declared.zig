@@ -4,6 +4,7 @@
 //! Contents:
 //! - `pub const tchkLimits`
 //! - `pub const tchkSite`
+//! - `pub const Times = struct`
 //! - `pub fn timeOf(self: *const Run, scope: u32) ModuleTime`
 //! - `pub fn constant(self: *Run, e: Ast.ExprId, tok: u32) Error!Int.Literal`
 //! - `pub fn declaredBound(self: *Run, e: Ast.ExprId, tok: u32) Error!i64`
@@ -71,13 +72,35 @@ pub const tchkLimits = tchk.putLimits;
 /// `vpi.tchkSite`: a timing check's VPI handle site.
 pub const tchkSite = vpi.tchkSite;
 
+/// A run's time scales: the design's finest precision (the tick), each
+/// module's §19.8 timescale, and the §17.3.2 `$timeformat` in force.
+pub const Times = struct {
+    /// The ROOT module's time scale; every module's own is in `module_times`.
+    scale: ?Time.Scale = null,
+    /// The root module's time unit as a power of ten of a second. `Scale`
+    /// stores only ratios, and `%t` needs the absolute magnitude to reach
+    /// §17.3's `units_number`.
+    unit_exp: i32 = 0,
+    /// IEEE 1364 §19.8 each module definition's own time scale, per
+    /// `file.modules` row. Read through `timeOf`.
+    modules: []const ModuleTime = &.{},
+    format: TimeFormat = .{},
+    /// IEEE 1364-2005 §26.6.41: the call that selected `time_format`, absent
+    /// before execution of any $timeformat. The instance disambiguates the
+    /// same source token executed in two instantiations of one definition.
+    active_format: ?struct { scope: u32, tok: u32 } = null,
+    /// §17.3.2 Table 17-11's default `units_number`: "the smallest time
+    /// precision argument of all the `timescale compiler directives".
+    finest: i32 = 0,
+};
+
 /// IEEE 1364 §19.8 the time scale of the module `scope` is an instance
 /// (or a block) of: the one its delays, `$time` and `%t` are in. The
 /// root's when the scope is not a module instance (a UDP's).
 pub fn timeOf(self: *const Run, scope: u32) ModuleTime {
-    const root_time: ModuleTime = .{ .scale = self.scale.?, .unit_exp = self.unit_exp };
+    const root_time: ModuleTime = .{ .scale = self.time.scale.?, .unit_exp = self.time.unit_exp };
     if (scope >= self.scope_info.items.len) return root_time;
-    return self.module_times[self.scope_info.items[self.instanceOf(scope)].def];
+    return self.time.modules[self.scope_info.items[self.instanceOf(scope)].def];
 }
 
 /// A constant expression's value at elaboration (IEEE 1364-2005 §5.2 /

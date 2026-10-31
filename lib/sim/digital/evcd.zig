@@ -272,7 +272,7 @@ pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
         f.file = std.Io.Dir.cwd().createFile(io, f.name, .{}) catch return r.fail(0, "cannot create the dump file `{s}`", .{f.name});
         f.started = true;
         var w: std.Io.Writer.Allocating = .init(a);
-        try vcd.preamble(&w.writer, io, f.call, r.finest);
+        try vcd.preamble(&w.writer, io, f.call, r.time.finest);
         // §18.4.2: "$scope module <full instance path> $end", then one
         // `$var port <size> <n> <name> $end` per port.
         var n: u32 = 0;

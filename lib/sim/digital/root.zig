@@ -406,14 +406,14 @@ fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, ba
         .scale = Time.Scale.init(l.unit, l.precision, finest) catch return r.fail(def.main_tok, "invalid timescale", .{}),
         .unit_exp = @backingInt(l.unit),
     };
-    r.module_times = module_times;
+    r.time.modules = module_times;
     const root_time = module_times[elab.defOf(&r, m)];
-    r.scale = root_time.scale;
-    r.unit_exp = root_time.unit_exp;
+    r.time.scale = root_time.scale;
+    r.time.unit_exp = root_time.unit_exp;
     // §17.3: "the default ... is the smallest time precision argument of
     // all the `timescale compiler directives in the source description".
-    r.time_format.units = @backingInt(finest);
-    r.finest = r.time_format.units;
+    r.time.format.units = @backingInt(finest);
+    r.time.finest = r.time.format.units;
     // Pass one: storage. Variables, array elements and nets share one slot
     // space, so one `store` publishes all three and wakes the same event
     // waiters. §6.2.2 elaboration walks the instance tree parent-first, which

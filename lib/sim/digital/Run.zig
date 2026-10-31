@@ -362,28 +362,13 @@ analog: analog_link.Link = .{},
 dumps: vcd_file.Dumps = .{},
 /// The state §17 system tasks keep across calls (`system.TaskState`).
 tasks: system.TaskState = .{},
+/// IEEE 1364-2005 §19.8 the design's timescales and §17.3 `$timeformat` (`declared.Times`).
+time: declared.Times = .{},
 scheduler: Scheduler,
 /// The source's own path, so §17.2.9's memory file resolves beside the
 /// module that names it.
 file_name: []const u8 = "",
 io: ?std.Io = null,
-/// The ROOT module's time scale; every module's own is in `module_times`.
-scale: ?Time.Scale = null,
-/// The root module's time unit as a power of ten of a second. `Scale`
-/// stores only ratios, and `%t` needs the absolute magnitude to reach
-/// §17.3's `units_number`.
-unit_exp: i32 = 0,
-/// IEEE 1364 §19.8 each module definition's own time scale, per
-/// `file.modules` row. Read through `timeOf`.
-module_times: []const ModuleTime = &.{},
-time_format: TimeFormat = .{},
-/// IEEE 1364-2005 §26.6.41: the call that selected `time_format`, absent
-/// before execution of any $timeformat. The instance disambiguates the
-/// same source token executed in two instantiations of one definition.
-active_timeformat: ?struct { scope: u32, tok: u32 } = null,
-/// §17.3.2 Table 17-11's default `units_number`: "the smallest time
-/// precision argument of all the `timescale compiler directives".
-finest: i32 = 0,
 /// §17.1.3 the standing monitor and §17.2.2 the `$fmonitor`s (`monitor.Monitoring`).
 monitoring: monitor.Monitoring = .{},
 /// Per driver index, a `delay3` that reads a variable: A.2.2.3 lets a

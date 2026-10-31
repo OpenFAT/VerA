@@ -591,7 +591,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                         var field: std.Io.Writer.Allocating = .init(a);
                         const fill = fieldFill(sp, format[i]);
                         if (fill != null) self.out = &field.writer;
-                        const tf = self.time_format.field(width, precision);
+                        const tf = self.time.format.field(width, precision);
                         const unit_exp = self.timeOf(self.scope).unit_exp;
                         if (compile.typeOf(self, args[arg]).real)
                             try fmt.time(self.out, try evaluate.evalReal(self, a, args[arg]), tf, unit_exp)

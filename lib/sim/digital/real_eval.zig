@@ -157,7 +157,7 @@ pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
             const args = ex.args(e);
             break :blk switch (f) {
                 .realtime => self.timeOf(self.scope).scale.realAt(self.scheduler.now),
-                .abstime => @import("../time.zig").secondsAt(self.scheduler.now, self.finest),
+                .abstime => @import("../time.zig").secondsAt(self.scheduler.now, self.time.finest),
                 .itor => if (compile.typeOf(self, args[0]).real)
                     @import("../rt/logic/root.zig").itorReal(try evalReal(self, a, args[0]))
                 else
