@@ -8,7 +8,7 @@
 //! Cites: none (it realises `contract.family_fns` and `contract.Constant`).
 //!
 //! Contents:
-//! - `pub const Constant = struct { g: bool, c: bool }`
+//! - `pub const Constant = struct`
 //! - `pub fn mask(self: *const Gen, v: Mir.Value) []const u64`
 //! - `pub fn acDyn(self: *const Gen, v: Mir.Value) []const u64`
 //! - `pub fn openTo(self: *Gen, m: []const u64) Error!void`

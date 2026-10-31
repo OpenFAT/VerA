@@ -8,7 +8,7 @@
 //! Cites: §3.2, §3.4.6, §4.5, §4.5.14, §6.3.4, §9.14, §9.15, Table 3-3.
 //!
 //! Contents:
-//! - `pub const depth_max: u32`
+//! - `pub const depth_max: u32 = 32`
 //! - `pub fn f64Const(self: *Gen, v0: Mir.Value, depth: u32, in_unit: bool) Error!?[]const u8`
 //! - `pub fn i64Const(self: *Gen, v0: Mir.Value, depth: u32) Error!?[]const u8`
 //! - `pub fn f64Expr(self: *Gen, v0: Mir.Value) Error![]const u8`
@@ -28,7 +28,6 @@ const render_op = @import("render_op.zig");
 const gen_setup = @import("setup.zig");
 const gen_unit = @import("unit.zig");
 const opcode_zig = @import("opcode_zig.zig");
-
 const Gen = codegen.Gen;
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;

@@ -4,6 +4,12 @@
 //! X and closed before Y's code, so every edge into Y is `break :B<Y>`; a back
 //! edge is `continue :L<X>`. Exact for every reducible CFG. Phis are copied on
 //! each incoming edge. LRM clauses cited: §5.6.1.3.
+//!
+//! Contents:
+//! - `pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void`
+//! - `pub fn emitBlockInsts(self: *Gen, bi: u32, depth: u32, comptime decl: bool) Error!void`
+//! - `pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void`
+//! - `pub fn renderCond(self: *Gen, cond: Mir.Value) Error!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -20,6 +26,30 @@ const gen_mask = @import("mask.zig");
 const Mir = @import("ir").Mir;
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;
+
+/// A piece `emitTree` writes next: a block's subtree (`tree`, which may open
+/// a loop), a block's own code (`code`), or an edge.
+const Step = union(enum) {
+    tree: struct { bi: u32, depth: u32 },
+    code: struct { bi: u32, depth: u32 },
+    edge: struct { from: u32, to: u32, depth: u32 },
+};
+
+/// What is left to write once the piece below it is done.
+const Resume = union(enum) {
+    /// Close `L<bi>: while (true) {`, putting `su.dead` back.
+    loop_end: struct { depth: u32, was_dead: bool },
+    /// After a block's terminator: drop a fall-through label (`emitCode`'s
+    /// peephole, unless `peeped`), then close each merge label `mc[j..]`
+    /// and write that child.
+    merge_kids: struct { mc: []const u32, j: usize, depth: u32, at_inner: usize, body_start: usize, peeped: bool, dropped: bool },
+    /// After an `if`'s `then` arm: `} else {` and the `else` arm.
+    /// `init_at`: where the arm's text starts when the branch tests
+    /// §5.10.2 `initial_step` (`Gen.init_arms`).
+    else_arm: struct { from: u32, to: u32, depth: u32, else_dead: bool, init_at: ?usize = null },
+    /// After the `else` arm: the closing brace, putting `su.dead` back.
+    if_end: struct { depth: u32, was_dead: bool },
+};
 
 /// Writes a body's exit: a unit returns its contribution value, the shared
 /// core returns its whole cache, and `setup` stores its roots.
@@ -72,6 +102,46 @@ pub fn emitBlockInsts(self: *Gen, bi: u32, depth: u32, comptime decl: bool) Erro
     };
 }
 
+/// Writes block `bi` and the dominator subtree it heads, wrapping a loop
+/// header in `L<bi>: while (true)`.
+///
+/// The walk is a loop over a heap stack of what is left to write after each
+/// nested piece (`Resume`), not a recursion: an `if` nested, chained or
+/// following another 100,000 deep is a dominator tree that deep, and each
+/// level costs a stack row instead of a few native frames. The text is the
+/// recursion's, byte for byte (`emitStep`'s pieces are its bodies in order).
+pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void {
+    var stack: std.ArrayList(Resume) = .empty;
+    defer stack.deinit(self.gpa);
+    var next: ?Step = .{ .tree = .{ .bi = bi, .depth = depth } };
+    while (true) {
+        if (next) |s| {
+            next = try emitStep(self, s, &stack, target);
+            continue;
+        }
+        const r = stack.pop() orelse return;
+        next = try emitResume(self, r, &stack);
+    }
+}
+
+/// Writes `cond` as a Zig bool (`!= 0` on its scalar value) and pins lanes
+/// if it depends on x.
+pub fn renderCond(self: *Gen, cond: Mir.Value) Error!void {
+    const v = self.an.rv(cond);
+    if (self.an.tyOf(v) == .int) {
+        float_lanes.pinLanes(self, cond);
+        try gen_render.renderVal(self, v, .int);
+        try self.b(" != 0", .{});
+    } else {
+        float_lanes.leadLanes(self, cond);
+        try self.b("zCmp(S, .neq, ", .{});
+        try gen_render.renderVal(self, v, .real);
+        try self.b(", S.con(0.0))", .{});
+    }
+}
+
+// ---- private ----
+
 fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!void {
     const i = @backingInt(self.an.i_res[@backingInt(inst)]);
     if (!self.cur.plan.needed.isSet(i)) return;
@@ -105,52 +175,6 @@ fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!v
     if (m != null) try self.b(")", .{});
     try self.b(";\n", .{});
 }
-
-/// Writes block `bi` and the dominator subtree it heads, wrapping a loop
-/// header in `L<bi>: while (true)`.
-///
-/// The walk is a loop over a heap stack of what is left to write after each
-/// nested piece (`Resume`), not a recursion: an `if` nested, chained or
-/// following another 100,000 deep is a dominator tree that deep, and each
-/// level costs a stack row instead of a few native frames. The text is the
-/// recursion's, byte for byte (`emitStep`'s pieces are its bodies in order).
-pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void {
-    var stack: std.ArrayList(Resume) = .empty;
-    defer stack.deinit(self.gpa);
-    var next: ?Step = .{ .tree = .{ .bi = bi, .depth = depth } };
-    while (true) {
-        if (next) |s| {
-            next = try emitStep(self, s, &stack, target);
-            continue;
-        }
-        const r = stack.pop() orelse return;
-        next = try emitResume(self, r, &stack);
-    }
-}
-
-/// A piece `emitTree` writes next: a block's subtree (`tree`, which may open
-/// a loop), a block's own code (`code`), or an edge.
-const Step = union(enum) {
-    tree: struct { bi: u32, depth: u32 },
-    code: struct { bi: u32, depth: u32 },
-    edge: struct { from: u32, to: u32, depth: u32 },
-};
-
-/// What is left to write once the piece below it is done.
-const Resume = union(enum) {
-    /// Close `L<bi>: while (true) {`, putting `su.dead` back.
-    loop_end: struct { depth: u32, was_dead: bool },
-    /// After a block's terminator: drop a fall-through label (`emitCode`'s
-    /// peephole, unless `peeped`), then close each merge label `mc[j..]`
-    /// and write that child.
-    merge_kids: struct { mc: []const u32, j: usize, depth: u32, at_inner: usize, body_start: usize, peeped: bool, dropped: bool },
-    /// After an `if`'s `then` arm: `} else {` and the `else` arm.
-    /// `init_at`: where the arm's text starts when the branch tests
-    /// §5.10.2 `initial_step` (`Gen.init_arms`).
-    else_arm: struct { from: u32, to: u32, depth: u32, else_dead: bool, init_at: ?usize = null },
-    /// After the `else` arm: the closing brace, putting `su.dead` back.
-    if_end: struct { depth: u32, was_dead: bool },
-};
 
 /// Writes `s` up to its first nested piece, pushing what follows that piece
 /// onto `stack`, and returns the nested piece (null when `s` had none).
@@ -383,22 +407,6 @@ fn initialStep(self: *const Gen, cond: Mir.Value) bool {
     const def = self.mir.valueDef(self.an.rv(cond));
     if (def != .inst_result or self.mir.instOp(def.inst_result) != .call) return false;
     return self.mir.instData(def.inst_result).call.callee == .initial_step;
-}
-
-/// Writes `cond` as a Zig bool (`!= 0` on its scalar value) and pins lanes
-/// if it depends on x.
-pub fn renderCond(self: *Gen, cond: Mir.Value) Error!void {
-    const v = self.an.rv(cond);
-    if (self.an.tyOf(v) == .int) {
-        float_lanes.pinLanes(self, cond);
-        try gen_render.renderVal(self, v, .int);
-        try self.b(" != 0", .{});
-    } else {
-        float_lanes.leadLanes(self, cond);
-        try self.b("zCmp(S, .neq, ", .{});
-        try gen_render.renderVal(self, v, .real);
-        try self.b(", S.con(0.0))", .{});
-    }
 }
 
 /// Writes the phi copies on the edge `from -> to`. They go through

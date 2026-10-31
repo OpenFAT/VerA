@@ -8,8 +8,7 @@
 //! Cites: none (it realises `contract.MaskOf`).
 //!
 //! Contents:
-//! - `pub const Hex = struct { m: []const u64, pad: bool }`
-//! - `pub fn format(h: Hex, w: *std.Io.Writer) std.Io.Writer.Error!void` (on `Hex`)
+//! - `pub const Hex = struct`
 //! - `pub fn zero(a: Allocator, w: u32) Allocator.Error![]u64`
 //! - `pub fn set(m: []u64, u: u32) void`
 //! - `pub fn has(m: []const u64, u: usize) bool`
@@ -21,6 +20,7 @@
 //! - `pub fn lessThan(_: void, a: []const u64, b: []const u64) bool`
 //! - `pub fn typeName(buf: *[16]u8, n_u: u32) []const u8`
 //! - `pub fn hex(m: []const u64, pad: bool) Hex`
+//! - members: `Hex.format`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -138,6 +138,8 @@ pub fn hex(m: []const u64, pad: bool) Hex {
     assert(m.len != 0);
     return .{ .m = m, .pad = pad };
 }
+
+// ---- private ----
 
 test "a one-word mask prints as the u64 literal did, a wider one as one literal" {
     var buf: [64]u8 = undefined;

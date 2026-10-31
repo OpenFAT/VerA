@@ -7,15 +7,15 @@
 //! Cites: §5, §4.5, Clause 9, §8.3.
 //!
 //! Contents:
-//! - `pub const Error = Allocator.Error || error{ DomainErrors, UnsupportedParameterDefault }`
-//! - `pub const none_u32: u32`
-//! - `pub const Output = zigbuild.Output`
-//! - `pub const Display = enum { drop, record, emit }`
+//! - `pub const Output = @import("zigbuild").Output`
+//! - `pub const Gen = @import("Gen.zig")`
+//! - `pub const Error`
+//! - `pub const none_u32: u32 = std.math.maxInt(u32)`
+//! - `pub const Display = plan_args.Display`
 //! - `pub const VTy = Analysis.VTy`
 //! - `pub const Options = struct`
-//! - `pub const Device = struct { output: Output, compile_error: bool }`
-//! - `pub const Gen = @import("Gen.zig")`
-//! - `pub fn generate(gpa, arena, mir, lowered, verdict, opts: Options) Error!Device`
+//! - `pub const Device = struct`
+//! - `pub fn generate(gpa: Allocator, arena: Allocator, mir: *const Mir, lowered: *const Lowered, verdict: proof.Verdict, opts: Options) Error!Device`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -32,6 +32,7 @@ const prepare = @import("prepare.zig");
 /// and builds, defined there (`zigbuild.Output`) so the build never imports
 /// codegen. `generate` produces it.
 pub const Output = @import("zigbuild").Output;
+
 /// The emitter's state; see `Gen.zig`.
 pub const Gen = @import("Gen.zig");
 
@@ -151,6 +152,8 @@ pub fn generate(
         },
     };
 }
+
+// ---- private ----
 
 test {
     _ = Gen;

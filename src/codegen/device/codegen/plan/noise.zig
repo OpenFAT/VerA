@@ -3,6 +3,14 @@
 //! emitted from, with §4.6.4.3/.4 tables folded and sorted. Refusals
 //! (E0519/E0520) are recorded for `Gen.prepare` to report. Clauses:
 //! §1.3.1.1, §4.6.3, §4.6.4, §4.6.4.1, §4.6.4.3, §4.6.4.4, §4.6.4.6.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Noise = struct`
+//! - `pub const NoiseRow = struct`
+//! - `pub fn plan(self: Input, branch_u: []const u32) Error!Noise`
+//! - `pub fn psdConst(mir: *const Mir, v: Mir.Value) ?f64`
+//! - members: `Noise.Refusal`
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
@@ -10,6 +18,7 @@ const Lower = @import("ir").Lowered;
 const diag = @import("diag");
 const Input = @import("prove").Input;
 const plan_topo = @import("topology.zig");
+const Fixture = @import("prove").Fixture;
 
 /// Every fallible call here fails only on allocation.
 pub const Error = std.mem.Allocator.Error;
@@ -77,6 +86,9 @@ pub const NoiseRow = struct {
     /// value, which cannot happen through `plan` and is read as 1.
     coeff: Mir.Value,
 };
+
+/// `plan/names.zig`'s "no branch current" marker, for the tests' `branch_u`.
+const names_none = std.math.maxInt(u32);
 
 /// Flattens every contribution's generator set into `Noise.rows`, in the
 /// order `noise_gens` declares them; slices are owned by `self.arena`.
@@ -182,6 +194,17 @@ pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
     out.ac_rows = ac.items;
     return out;
 }
+
+/// Returns `v` as a compile-time f64, or null when only the core can answer.
+pub fn psdConst(mir: *const Mir, v: Mir.Value) ?f64 {
+    return switch (mir.valueDef(v)) {
+        .float_const => |x| x,
+        .int_const => |x| @floatFromInt(x),
+        .undef, .str_const, .param_ref, .block_param, .inst_result => null,
+    };
+}
+
+// ---- private ----
 
 /// §4.6.4.3/.4 folds one `noise_table`/`noise_table_log` argument into a
 /// sorted `(frequency, power)` table appended to `tabs`, and returns its
@@ -308,17 +331,6 @@ fn refuseNoise(
     if (out.fatal == null)
         out.fatal = try self.arena.print("LRM 4.6.4: {s}", .{msg});
 }
-
-/// Returns `v` as a compile-time f64, or null when only the core can answer.
-pub fn psdConst(mir: *const Mir, v: Mir.Value) ?f64 {
-    return switch (mir.valueDef(v)) {
-        .float_const => |x| x,
-        .int_const => |x| @floatFromInt(x),
-        .undef, .str_const, .param_ref, .block_param, .inst_result => null,
-    };
-}
-
-const Fixture = @import("prove").Fixture;
 
 test "a noise table is sorted, and a repeated frequency is refused" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -488,9 +500,6 @@ test "§4.6.4.1 a generator in a potential contribution is row == col on the bra
     try std.testing.expectEqual(@as(u32, 0), n.rows[2].col);
     try std.testing.expect(!n.rows[2].neg);
 }
-
-/// `plan/names.zig`'s "no branch current" marker, for the tests' `branch_u`.
-const names_none = std.math.maxInt(u32);
 
 test "§4.6.4.6 one table call shared by two branches is one generator: one table, or one refusal" {
     for ([_]bool{ true, false }) |valid| {

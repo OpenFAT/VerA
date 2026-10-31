@@ -6,7 +6,7 @@
 //! Cites: §7.3.1; IEEE 1364-2005 §4.8.2, §5.1, §5.1.9, §5.1.12, §5.4.1, §5.5.
 //!
 //! Contents:
-//! - `pub const Read = enum { bits, int }`
+//! - `pub const Read = enum`
 //! - `pub fn zigTy(self: *Gen, width: u32) Error![]const u8`
 //! - `pub fn emitWide(self: *Gen, args: []const Mir.Value, read: Read) Error!void`
 //! - `pub fn emitConstInit(self: *Gen, v: Mir.Value) Error!bool`
@@ -19,7 +19,6 @@ const codegen = @import("../codegen.zig");
 const float_lanes = @import("float/lanes.zig");
 const gen_render = @import("render.zig");
 const render_sysfunc = @import("render_sysfunc.zig");
-
 const Gen = codegen.Gen;
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;

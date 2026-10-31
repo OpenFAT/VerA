@@ -6,6 +6,17 @@
 //! and relooper as the core. `pub fn setupInstance` drops what an instance
 //! caches from the card (`vera_timepoint`, a §9.7.3 status).
 //! LRM: §2.9, §4.4, §5.10.2, §9.4, §9.15.
+//!
+//! Contents:
+//! - `pub const Setup = struct`
+//! - `pub fn probeInstance(self: *Gen) Error![]const u8`
+//! - `pub fn planSetup(self: *Gen) Error!void`
+//! - `pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8`
+//! - `pub fn emitSetupDecl(self: *Gen) Error!void`
+//! - `pub fn emitSetup(self: *Gen) Error!void`
+//! - `pub fn emitStores(self: *Gen, depth: u32, stop: []const u8) Error!void`
+//! - `pub fn mergePays(self: *const Gen) bool`
+//! - `pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void`
 
 const std = @import("std");
 const codegen = @import("../codegen.zig");
@@ -144,95 +155,6 @@ pub fn planSetup(self: *Gen) Error!void {
     self.cur.plan.su_on = vals.items.len != 0;
 }
 
-/// Returns which of `Setup`'s arrays holds `v`: 0 real, 1 integer, 2 a 0/1 flag.
-fn rootGroup(self: *const Gen, v: Mir.Value) u2 {
-    const i = @backingInt(v);
-    if (self.an.vty[i] == .real) return 0;
-    const def = self.mir.valueDef(v);
-    return if (def == .inst_result and Mir.opcode.get(self.mir.instOp(def.inst_result)).bool01) 2 else 1;
-}
-
-/// Maps each value to an earlier candidate with the same pure op over the
-/// same operands, placed so `setup` has it wherever it has this one (itself
-/// if none). Lowering does not number values, so a card expression written
-/// twice would otherwise be two roots. `x != 0` over a 0/1 flag `x` is `x`.
-/// Caller owns the returned slice and frees it with `self.gpa`.
-fn valueNumbers(self: *Gen) Error![]Mir.Value {
-    const Opnd = struct { tag: enum(u8) { none, val, f, i, param }, x: u64 };
-    const Key = struct { op: Mir.Opcode, a: Opnd, b: Opnd, c: Opnd };
-    const nv = self.an.nv;
-    const same = try self.gpa.alloc(Mir.Value, nv);
-    errdefer self.gpa.free(same);
-    for (same, 0..) |*r, i| r.* = @fromBackingInt(@intCast(i));
-    // Scratch for this pass alone: on the gpa and freed on return, so its
-    // doublings do not stay in the compilation arena.
-    var seen: std.AutoHashMapUnmanaged(Key, Mir.Value) = .empty;
-    defer seen.deinit(self.gpa);
-    const opnd = struct {
-        fn f(g: *Gen, sm: []const Mir.Value, raw: u32) ?Opnd {
-            const v = g.an.rv(@fromBackingInt(@intCast(raw)));
-            return switch (g.mir.valueDef(v)) {
-                .inst_result => .{ .tag = .val, .x = @backingInt(sm[@backingInt(v)]) },
-                .float_const => |k| .{ .tag = .f, .x = @bitCast(k) },
-                .int_const => |k| .{ .tag = .i, .x = @bitCast(k) },
-                .param_ref => |k| .{ .tag = .param, .x = k },
-                .undef, .str_const, .block_param => null,
-            };
-        }
-    }.f;
-    for (Mir.Value.first_dynamic..nv) |i| {
-        const v: Mir.Value = @fromBackingInt(@intCast(i));
-        if (!plan_setup.candidate(self.input(), self.sinv.val, v) or self.an.rv(v) != v) continue;
-        // A parameter leaf is one value per parameter (`param_values`), so
-        // it is its own number.
-        if (self.mir.valueDef(v) != .inst_result) continue;
-        const inst = self.mir.valueDef(v).inst_result;
-        if (self.mir.guardOf(inst) != null) continue; // the guard is not in the key
-        const row = self.mir.instRow(inst);
-        const none: Opnd = .{ .tag = .none, .x = 0 };
-        var key: Key = .{ .op = row.op, .a = none, .b = none, .c = none };
-        switch (Mir.opClass(row.op)) {
-            .unary => key.a = opnd(self, same, row.a) orelse continue,
-            .binary => {
-                key.a = opnd(self, same, row.a) orelse continue;
-                key.b = opnd(self, same, row.b) orelse continue;
-            },
-            .ternary => {
-                const d = self.mir.instData(inst).ternary;
-                key.a = opnd(self, same, @backingInt(d.cond)) orelse continue;
-                key.b = opnd(self, same, @backingInt(d.then_val)) orelse continue;
-                key.c = opnd(self, same, @backingInt(d.else_val)) orelse continue;
-            },
-            .phi, .branch, .jump, .call, .anew, .load, .store => continue,
-        }
-        if (row.op == .ine and key.b.tag == .i and key.b.x == 0 and key.a.tag == .val) {
-            const x: Mir.Value = @fromBackingInt(@intCast(key.a.x));
-            if (rootGroup(self, x) == 2 and plan_setup.candidate(self.input(), self.sinv.val, x) and placedOver(self, x, v)) {
-                same[i] = x;
-                continue;
-            }
-        }
-        const gop = try seen.getOrPut(self.gpa, key);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = v;
-        } else if (placedOver(self, gop.value_ptr.*, v)) same[i] = gop.value_ptr.*;
-    }
-    return same;
-}
-
-/// Returns whether `setup` computes `a` wherever it computes `b`.
-fn placedOver(self: *const Gen, a: Mir.Value, b: Mir.Value) bool {
-    return self.an.dominates(placeOf(self, a), placeOf(self, b));
-}
-
-fn placeOf(self: *const Gen, v: Mir.Value) u32 {
-    const h = self.sinv.home[@backingInt(v)];
-    if (h != none_u32) return h;
-    const b = self.an.def_block[@backingInt(v)];
-    // A leaf (a parameter) has no block: `setup` has it from the entry.
-    return if (b == none_u32) 0 else b;
-}
-
 /// Returns the text reading root `v`'s `Setup` field, as an f64 (`as_f64`)
 /// or in its own type. Arena-owned.
 pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
@@ -267,47 +189,6 @@ pub fn emitSetupDecl(self: *Gen) Error!void {
     if (self.su.int != 0) try self.w("    /// One per invariant integer; `eval` reads `model.su.i[k]`.\n    i: [{d}]i64 = @splat(0),\n", .{self.su.int});
     if (n_flag != 0) try self.w("    /// One bit per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: std.StaticBitSet({d}) = .empty,\n", .{n_flag});
     try self.w("}};\n\n", .{});
-}
-
-/// Emits `pub fn setupInstance` when an instance caches what a card, a
-/// temperature or a `$simparam` write invalidates: VerA's `vera_timepoint`
-/// (§2.9) caches and a latched §9.7.3 status. The host calls it per instance
-/// after `setup` (`contract.validateHost`'s `calls_setup`).
-fn emitSetupInstance(self: *Gen) Error!void {
-    const tp = self.lowered.timepoints.items.len != 0;
-    if (!tp and !gen_instance.hasStatus(self)) return;
-    try self.w(
-        \\/// Call for every instance after `setup`, or after any write to
-        \\/// `Model` or this instance: it drops what the instance cached from
-        \\/// them (`vera_timepoint` caches, a latched status).
-        \\pub fn setupInstance(_: *const Model, inst: *Instance) void {{
-        \\{s}{s}}}
-        \\
-        \\
-    , .{ if (tp) "    zTpDrop(inst);\n" else "", if (gen_instance.hasStatus(self)) gen_instance.status_drop else "" });
-}
-
-/// Emits the §9.15 `$simparam`s `setup` reads, so a host knows which writes
-/// need a new `setup` call. Collected while `emitSetup` plans its slice.
-fn emitSimparams(self: *Gen) Error!void {
-    var names: std.ArrayList([]const u8) = .empty;
-    for (self.cur.plan.live.items) |lv| {
-        const def = self.mir.valueDef(lv);
-        if (def != .inst_result or self.mir.instOp(def.inst_result) != .call) continue;
-        const d = self.mir.instData(def.inst_result).call;
-        if (d.callee != .@"$simparam") continue;
-        const nm = @import("prove").strArg(self.input(), d.args, 0) orelse continue;
-        for (names.items) |n| {
-            if (std.mem.eql(u8, n, nm)) break;
-        } else try names.append(self.arena, nm);
-    }
-    try self.w(
-        \\/// §9.15 the `$simparam` names `setup` reads: after writing one of them
-        \\/// (a homotopy rung's gmin, say) the host calls `setup` again.
-        \\pub const setup_simparams = [_][]const u8{{
-    , .{});
-    for (names.items, 0..) |n, k| try self.w("{s}\"{f}\"", .{ if (k == 0) " " else ", ", std.zig.fmtString(n) });
-    try self.w("{s}}};\n\n", .{if (names.items.len == 0) "" else " "});
 }
 
 /// Emits `pub fn setup`: the invariant slice, through the same plan and
@@ -409,13 +290,6 @@ pub fn emitSetup(self: *Gen) Error!void {
     self.su.chunks = c.n;
 }
 
-/// Returns whether emitted text uses the identifier `S`.
-fn namesS(text: []const u8) bool {
-    // Outside string literals and comments: a §3.4.6 string comparison puts
-    // the literal "S" in a body that may never name the scalar.
-    return setup_chunk.hasWord(text, "S");
-}
-
 /// Emits `emitReturn` inside `setup`: stores every root from wherever the
 /// body holds it, then leaves, unconditionally at an exit block or on the
 /// runtime `zs_stop` flag at a per-eval loop (`emitTree`). In dead text
@@ -479,6 +353,145 @@ pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void {
     self.su.merge = false;
     defer self.su.merge = true;
     try emitStores(self, 1, "");
+}
+
+// ---- private ----
+
+/// Returns which of `Setup`'s arrays holds `v`: 0 real, 1 integer, 2 a 0/1 flag.
+fn rootGroup(self: *const Gen, v: Mir.Value) u2 {
+    const i = @backingInt(v);
+    if (self.an.vty[i] == .real) return 0;
+    const def = self.mir.valueDef(v);
+    return if (def == .inst_result and Mir.opcode.get(self.mir.instOp(def.inst_result)).bool01) 2 else 1;
+}
+
+/// Maps each value to an earlier candidate with the same pure op over the
+/// same operands, placed so `setup` has it wherever it has this one (itself
+/// if none). Lowering does not number values, so a card expression written
+/// twice would otherwise be two roots. `x != 0` over a 0/1 flag `x` is `x`.
+/// Caller owns the returned slice and frees it with `self.gpa`.
+fn valueNumbers(self: *Gen) Error![]Mir.Value {
+    const Opnd = struct { tag: enum(u8) { none, val, f, i, param }, x: u64 };
+    const Key = struct { op: Mir.Opcode, a: Opnd, b: Opnd, c: Opnd };
+    const nv = self.an.nv;
+    const same = try self.gpa.alloc(Mir.Value, nv);
+    errdefer self.gpa.free(same);
+    for (same, 0..) |*r, i| r.* = @fromBackingInt(@intCast(i));
+    // Scratch for this pass alone: on the gpa and freed on return, so its
+    // doublings do not stay in the compilation arena.
+    var seen: std.AutoHashMapUnmanaged(Key, Mir.Value) = .empty;
+    defer seen.deinit(self.gpa);
+    const opnd = struct {
+        fn f(g: *Gen, sm: []const Mir.Value, raw: u32) ?Opnd {
+            const v = g.an.rv(@fromBackingInt(@intCast(raw)));
+            return switch (g.mir.valueDef(v)) {
+                .inst_result => .{ .tag = .val, .x = @backingInt(sm[@backingInt(v)]) },
+                .float_const => |k| .{ .tag = .f, .x = @bitCast(k) },
+                .int_const => |k| .{ .tag = .i, .x = @bitCast(k) },
+                .param_ref => |k| .{ .tag = .param, .x = k },
+                .undef, .str_const, .block_param => null,
+            };
+        }
+    }.f;
+    for (Mir.Value.first_dynamic..nv) |i| {
+        const v: Mir.Value = @fromBackingInt(@intCast(i));
+        if (!plan_setup.candidate(self.input(), self.sinv.val, v) or self.an.rv(v) != v) continue;
+        // A parameter leaf is one value per parameter (`param_values`), so
+        // it is its own number.
+        if (self.mir.valueDef(v) != .inst_result) continue;
+        const inst = self.mir.valueDef(v).inst_result;
+        if (self.mir.guardOf(inst) != null) continue; // the guard is not in the key
+        const row = self.mir.instRow(inst);
+        const none: Opnd = .{ .tag = .none, .x = 0 };
+        var key: Key = .{ .op = row.op, .a = none, .b = none, .c = none };
+        switch (Mir.opClass(row.op)) {
+            .unary => key.a = opnd(self, same, row.a) orelse continue,
+            .binary => {
+                key.a = opnd(self, same, row.a) orelse continue;
+                key.b = opnd(self, same, row.b) orelse continue;
+            },
+            .ternary => {
+                const d = self.mir.instData(inst).ternary;
+                key.a = opnd(self, same, @backingInt(d.cond)) orelse continue;
+                key.b = opnd(self, same, @backingInt(d.then_val)) orelse continue;
+                key.c = opnd(self, same, @backingInt(d.else_val)) orelse continue;
+            },
+            .phi, .branch, .jump, .call, .anew, .load, .store => continue,
+        }
+        if (row.op == .ine and key.b.tag == .i and key.b.x == 0 and key.a.tag == .val) {
+            const x: Mir.Value = @fromBackingInt(@intCast(key.a.x));
+            if (rootGroup(self, x) == 2 and plan_setup.candidate(self.input(), self.sinv.val, x) and placedOver(self, x, v)) {
+                same[i] = x;
+                continue;
+            }
+        }
+        const gop = try seen.getOrPut(self.gpa, key);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = v;
+        } else if (placedOver(self, gop.value_ptr.*, v)) same[i] = gop.value_ptr.*;
+    }
+    return same;
+}
+
+/// Returns whether `setup` computes `a` wherever it computes `b`.
+fn placedOver(self: *const Gen, a: Mir.Value, b: Mir.Value) bool {
+    return self.an.dominates(placeOf(self, a), placeOf(self, b));
+}
+
+fn placeOf(self: *const Gen, v: Mir.Value) u32 {
+    const h = self.sinv.home[@backingInt(v)];
+    if (h != none_u32) return h;
+    const b = self.an.def_block[@backingInt(v)];
+    // A leaf (a parameter) has no block: `setup` has it from the entry.
+    return if (b == none_u32) 0 else b;
+}
+
+/// Emits `pub fn setupInstance` when an instance caches what a card, a
+/// temperature or a `$simparam` write invalidates: VerA's `vera_timepoint`
+/// (§2.9) caches and a latched §9.7.3 status. The host calls it per instance
+/// after `setup` (`contract.validateHost`'s `calls_setup`).
+fn emitSetupInstance(self: *Gen) Error!void {
+    const tp = self.lowered.timepoints.items.len != 0;
+    if (!tp and !gen_instance.hasStatus(self)) return;
+    try self.w(
+        \\/// Call for every instance after `setup`, or after any write to
+        \\/// `Model` or this instance: it drops what the instance cached from
+        \\/// them (`vera_timepoint` caches, a latched status).
+        \\pub fn setupInstance(_: *const Model, inst: *Instance) void {{
+        \\{s}{s}}}
+        \\
+        \\
+    , .{ if (tp) "    zTpDrop(inst);\n" else "", if (gen_instance.hasStatus(self)) gen_instance.status_drop else "" });
+}
+
+/// Emits the §9.15 `$simparam`s `setup` reads, so a host knows which writes
+/// need a new `setup` call. Collected while `emitSetup` plans its slice.
+fn emitSimparams(self: *Gen) Error!void {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (self.cur.plan.live.items) |lv| {
+        const def = self.mir.valueDef(lv);
+        if (def != .inst_result or self.mir.instOp(def.inst_result) != .call) continue;
+        const d = self.mir.instData(def.inst_result).call;
+        if (d.callee != .@"$simparam") continue;
+        const nm = @import("prove").strArg(self.input(), d.args, 0) orelse continue;
+        for (names.items) |n| {
+            if (std.mem.eql(u8, n, nm)) break;
+        } else try names.append(self.arena, nm);
+    }
+    try self.w(
+        \\/// §9.15 the `$simparam` names `setup` reads: after writing one of them
+        \\/// (a homotopy rung's gmin, say) the host calls `setup` again.
+        \\pub const setup_simparams = [_][]const u8{{
+    , .{});
+    for (names.items, 0..) |n, k| try self.w("{s}\"{f}\"", .{ if (k == 0) " " else ", ", std.zig.fmtString(n) });
+    try self.w("{s}}};\n\n", .{if (names.items.len == 0) "" else " "});
+}
+
+/// Returns whether emitted text uses the identifier `S`.
+fn namesS(text: []const u8) bool {
+    // Outside string literals and comments: a §3.4.6 string comparison puts
+    // the literal "S" in a body that may never name the scalar.
+    return setup_chunk.hasWord(text, "S");
 }
 
 test namesS {

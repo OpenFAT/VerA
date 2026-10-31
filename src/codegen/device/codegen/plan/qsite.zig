@@ -4,6 +4,12 @@
 //! each charge alone) and the signed rows each stamps. `dispatch.emitQ`
 //! formats it. Clauses: §1.3.1.2, §4.5.15, §5.4.2, §5.4.3, §5.6, §5.6.1.2,
 //! §5.6.1.3, §5.6.5.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Stamp = struct`
+//! - `pub const QSites = struct`
+//! - `pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []const bool) Error!QSites`
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
@@ -11,10 +17,10 @@ const Lower = @import("ir").Lowered;
 const Input = @import("prove").Input;
 const plan_topo = @import("topology.zig");
 const assert = std.debug.assert;
+const Fixture = @import("prove").Fixture;
 
 /// Every fallible call here fails only on allocation.
 pub const Error = std.mem.Allocator.Error;
-const none_u32 = std.math.maxInt(u32);
 
 /// One row entry: row `row` gains `sign · q[slot]`.
 pub const Stamp = struct { slot: u32, row: u32, sign: f64 };
@@ -26,6 +32,8 @@ pub const QSites = struct {
     /// Sorted by (row, slot), no duplicate pair, no zero sign.
     stamps: []Stamp = &.{},
 };
+
+const none_u32 = std.math.maxInt(u32);
 
 /// One signed contribution term of a row, before sites are expanded.
 const Term = struct { sign: f64, contrib: u32 };
@@ -165,6 +173,8 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
     return .{ .sites = sites.items, .stamps = out.items };
 }
 
+// ---- private ----
+
 /// Does a charge with this end-of-block value move in time?
 fn live(in: Input, sinv: []const bool, v0: Mir.Value) bool {
     const v = in.an.rv(v0);
@@ -172,8 +182,6 @@ fn live(in: Input, sinv: []const bool, v0: Mir.Value) bool {
     const i = @backingInt(v);
     return !(i < sinv.len and sinv[i] and in.mir.valueDef(v) == .inst_result);
 }
-
-const Fixture = @import("prove").Fixture;
 
 test "two charges on one pin are two slots; a flow contribution stamps +hi and −lo" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

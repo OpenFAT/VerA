@@ -4,8 +4,8 @@
 //! Cites: none of its own (the contract's family, `lib/contract.zig`).
 //!
 //! Contents:
-//! - `pub const family_txt: []const u8`
-//! - `pub const family_dev_txt: []const u8`
+//! - `pub const family_txt`
+//! - `pub const family_dev_txt`
 
 /// The scalar-family helpers (`codegen/family.zig`), emitted after `ops_txt`:
 /// how every body and kernel reaches a family. Masks are narrowed by `zdr`,

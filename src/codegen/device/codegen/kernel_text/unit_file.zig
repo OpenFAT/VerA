@@ -5,8 +5,8 @@
 //! Cites: none (VerA's own unit-file layout, `zigbuild`).
 //!
 //! Contents:
-//! - `pub const helpers_head_txt: []const u8`
-//! - `pub const prelude_head_txt: []const u8`
+//! - `pub const helpers_head_txt`
+//! - `pub const prelude_head_txt`
 //! - `pub fn appendAliases(out: *std.ArrayList(u8), gpa: Allocator, src: []const u8) Allocator.Error!void`
 //! - `pub fn declKeyword(line: []const u8) ?usize`
 
@@ -82,6 +82,8 @@ pub fn declKeyword(line: []const u8) ?usize {
     }
     return null;
 }
+
+// ---- private ----
 
 test appendAliases {
     const gpa = std.testing.allocator;

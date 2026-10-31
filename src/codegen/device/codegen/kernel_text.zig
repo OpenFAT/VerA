@@ -9,16 +9,36 @@
 //! §4.5.15, §5.10.3.3, §9.4.3, §9.5, §9.7, §9.13, §9.21; IEEE 1364-2005 §5.4.
 //!
 //! Contents:
-//! - `pub const nan_lit`, `inf_lit`, `header_txt`: fixed literals
-//! - `pub const ops_txt`, `timer_txt`, `str_txt`, `rng_txt`, `table_txt`,
-//!   `file_txt`, `wide_txt`, `limit_txt`, `filt_txt`: embedded from `lib/kernels`
-//! - `pub const display_txt`: §9.4.3 padding and §9.7 control helpers
-//! - `pub const math_txt`, `domain_quiet_txt`, `domain_report_txt` (`kernel_text/math.zig`)
-//! - `pub const family_txt`, `family_dev_txt` (`kernel_text/family.zig`)
-//! - `pub const ac_txt`, `ac_fam_txt` (`kernel_text/ac.zig`)
-//! - `pub const tp_txt`, `tp_arr_txt`, `arr_txt`, `hist_txt`, `hist_quad_txt` (`kernel_text/storage.zig`)
-//! - `pub const helpers_head_txt`, `prelude_head_txt`, `appendAliases`, `declKeyword` (`kernel_text/unit_file.zig`)
-//! - `pub const deprecated_std: [4][]const u8`
+//! - `pub const nan_lit = "@as(f64, @bitCast(@as(u64, 0x7ff8000000000000)))"`
+//! - `pub const inf_lit = "@as(f64, @bitCast(@as(u64, 0x7ff0000000000000)))"`
+//! - `pub const header_txt`
+//! - `pub const ops_txt = kernels.text.ops`
+//! - `pub const timer_txt`
+//! - `pub const str_txt`
+//! - `pub const rng_txt`
+//! - `pub const table_txt`
+//! - `pub const file_txt`
+//! - `pub const wide_txt`
+//! - `pub const limit_txt`
+//! - `pub const filt_txt`
+//! - `pub const display_txt`
+//! - `pub const math_txt = math.math_txt`
+//! - `pub const domain_quiet_txt = math.domain_quiet_txt`
+//! - `pub const domain_report_txt = math.domain_report_txt`
+//! - `pub const family_txt = family.family_txt`
+//! - `pub const family_dev_txt = family.family_dev_txt`
+//! - `pub const ac_txt = ac.ac_txt`
+//! - `pub const ac_fam_txt = ac.ac_fam_txt`
+//! - `pub const tp_txt = storage.tp_txt`
+//! - `pub const tp_arr_txt = storage.tp_arr_txt`
+//! - `pub const arr_txt = storage.arr_txt`
+//! - `pub const hist_txt = storage.hist_txt`
+//! - `pub const hist_quad_txt = storage.hist_quad_txt`
+//! - `pub const helpers_head_txt = unit_file.helpers_head_txt`
+//! - `pub const prelude_head_txt = unit_file.prelude_head_txt`
+//! - `pub const appendAliases = unit_file.appendAliases`
+//! - `pub const declKeyword = unit_file.declKeyword`
+//! - `pub const deprecated_std`
 
 const std = @import("std");
 const kernels = @import("kernels");
@@ -27,6 +47,7 @@ const family = @import("kernel_text/family.zig");
 const ac = @import("kernel_text/ac.zig");
 const storage = @import("kernel_text/storage.zig");
 const unit_file = @import("kernel_text/unit_file.zig");
+
 // A file-level //! header cannot be spliced into the middle of device.zig.
 const timer_src = kernels.text.timer;
 
@@ -35,6 +56,7 @@ const timer_src = kernels.text.timer;
 /// field default is evaluated in one comptime context, so a device with
 /// ~140 timer/setup defaults exceeded the 1000-branch quota.
 pub const nan_lit = "@as(f64, @bitCast(@as(u64, 0x7ff8000000000000)))";
+
 /// +inf as a bit-pattern literal; `nan_lit` says why not `std.math.inf`.
 pub const inf_lit = "@as(f64, @bitCast(@as(u64, 0x7ff0000000000000)))";
 
@@ -142,35 +164,50 @@ pub const display_txt =
 
 /// LRM Tables 4-14/4-15 in value form (`kernel_text/math.zig`).
 pub const math_txt = math.math_txt;
+
 /// `zDomain` for a solver device: an empty guard (§4.3.2).
 pub const domain_quiet_txt = math.domain_quiet_txt;
+
 /// `zDomain` for the printing executable: reports and stops (§4.3.2).
 pub const domain_report_txt = math.domain_report_txt;
+
 /// The scalar-family helpers every body reaches a family through.
 pub const family_txt = family.family_txt;
+
 /// device.zig's half of the family helpers.
 pub const family_dev_txt = family.family_dev_txt;
+
 /// The small-signal side of the frequency-dependent operators.
 pub const ac_txt = ac.ac_txt;
+
 /// `zAc`, the family `acDyn` evaluates the core with (device.zig only).
 pub const ac_fam_txt = ac.ac_fam_txt;
+
 /// VerA's `vera_timepoint` cache key (§2.9).
 pub const tp_txt = storage.tp_txt;
+
 /// VerA's `vera_timepoint` arrays cached in place (§2.9).
 pub const tp_arr_txt = storage.tp_arr_txt;
+
 /// §3.2.2 memory-backed arrays.
 pub const arr_txt = storage.arr_txt;
+
 /// The §4.5.7 `absdelay` history ring and its linear interpolation.
 pub const hist_txt = storage.hist_txt;
+
 /// The §4.5.7 history's 3-point reading under `(* vera_interp = 2 *)`.
 pub const hist_quad_txt = storage.hist_quad_txt;
+
 /// The `h.zig` header.
 pub const helpers_head_txt = unit_file.helpers_head_txt;
+
 /// The `u/<key>.zig` prologue head.
 pub const prelude_head_txt = unit_file.prelude_head_txt;
+
 /// Appends the `zh` alias of each `z*` helper a text declares; see
 /// `kernel_text/unit_file.zig`.
 pub const appendAliases = unit_file.appendAliases;
+
 /// Returns the length of a top-level helper declaration's keyword, or null.
 pub const declKeyword = unit_file.declKeyword;
 
@@ -178,6 +215,8 @@ pub const declKeyword = unit_file.declKeyword;
 /// whatever Zig its host has, so one of these in device text breaks every
 /// device that carries it.
 pub const deprecated_std = [_][]const u8{ "std.fmt.bufPrint", "std.fmt.allocPrint", "std.mem.indexOf", "std.mem.lastIndexOf" };
+
+// ---- private ----
 
 test "no fixed device text names a std decl Zig 0.17 deprecates" {
     const texts = [_][]const u8{

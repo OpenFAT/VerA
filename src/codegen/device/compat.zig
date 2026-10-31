@@ -5,11 +5,13 @@
 //! Cites: none.
 //!
 //! Contents:
-//! - `pub const codegen = struct` (`Error`, `Display`, `Options`, `Output`,
-//!   `generate`, `Gen.indWidth`, `Harness`, `kernel_text`)
-//! - `pub const cg_display = struct` (`sayRecords`)
-//! - `pub const cg_filters = struct` (`FilterPlan`)
-//! - `pub const cg_limit = struct` (empty)
+//! - `pub const codegen = struct`
+//! - `pub const cg_display = struct`
+//! - `pub const cg_filters = struct`
+//! - `pub const cg_limit = struct`
+//! - members: `codegen.Error`, `codegen.Display`, `codegen.Options`, `codegen.Output`,
+//!   `codegen.Harness`, `codegen.kernel_text`, `codegen.generate`, `codegen.Gen`,
+//!   `codegen.Gen.indWidth`, `cg_display.sayRecords`, `cg_filters.FilterPlan`
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

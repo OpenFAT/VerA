@@ -3,24 +3,25 @@
 //! LRM §4.5.11 (`laplace_*`), §4.5.12 (`zi_*`).
 //! Planning makes every numeric decision before any text exists. The kernels the
 //! sections call are `filter_kernels.zig`, spliced verbatim into the device.
+//!
+//! Contents:
+//! - `pub const FilterPlan = struct`
+//! - `pub fn planAll(g: *Gen) Error!void`
+//! - `pub fn planOf(g: *Gen, unit: usize) FilterPlan`
+//! - `pub fn emitFilterSections(g: *Gen, n: []const u8, p: FilterPlan, z: bool) Error!usize`
 
 const std = @import("std");
 const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
+
 // ponytail: filter planning reuses Gen's analysis and expression renderers.
 const cg = @import("codegen.zig");
 const Gen = cg.Gen;
 const Error = cg.Error;
 const gen_host = @import("codegen/host_expr.zig");
-
 // =======================================================================
 // §4.5.11 / §4.5.12 filters
 // =======================================================================
-
-/// One polynomial in ascending powers of `s` (§4.5.11) or `z⁻¹` (§4.5.12), as
-/// emitted expression text: a literal or `model.<p>`, so a model-card override
-/// reaches the coefficient without a rebuild.
-const Poly = []const []const u8;
 
 /// A filter realised as a cascade of sections, `H = ∏ num[i]/den[i]`.
 ///
@@ -71,6 +72,106 @@ pub const FilterPlan = struct {
         return result;
     }
 };
+
+/// One polynomial in ascending powers of `s` (§4.5.11) or `z⁻¹` (§4.5.12), as
+/// emitted expression text: a literal or `model.<p>`, so a model-card override
+/// reaches the coefficient without a rebuild.
+const Poly = []const []const u8;
+
+/// One flattened vector argument: its elements and the index of the argument
+/// after it.
+const Vec = struct { elems: []const Mir.Value, next: usize };
+
+/// Renders filter coefficients, collecting the ones §4.5.14 samples.
+const Coefs = struct {
+    sampled: std.ArrayList(Mir.Value) = .empty,
+
+    /// Returns coefficient `e` as `__sec` text: `k[<j>]` for one the solve
+    /// moves (§4.5.14 "the value of the dynamic expression at the start of
+    /// the analysis"), else `f64Expr`'s text over Model.
+    fn text(cx: *Coefs, g: *Gen, e: Mir.Value) Error![]const u8 {
+        if (!try gen_host.ctrlIsDynamic(g, e)) return g.f64Expr(e);
+        try cx.sampled.append(g.arena, e);
+        return g.arena.print("k[{d}]", .{cx.sampled.items.len - 1});
+    }
+};
+
+/// Plans every §4.5.11/§4.5.12 operator once into `Gen.filters`, indexed by
+/// unit, so the emitters that read a plan share one fold. Allocates in
+/// `g.arena`; must run before any `planOf`.
+pub fn planAll(g: *Gen) Error!void {
+    g.filters = try g.arena.alloc(?FilterPlan, g.names.units.len);
+    @memset(g.filters, null);
+    const saved_tok = g.cur.ctrl_tok;
+    defer g.cur.ctrl_tok = saved_tok;
+    for (g.names.units, 0..) |u, i| {
+        if (u.role != .analog_op or u.inst == .none) continue;
+        const k = u.op;
+        if (k != .laplace and k != .zi) continue;
+        // `emitOperator` set this before planning, and E0515 falls back to it
+        // for a coefficient with no token of its own.
+        g.cur.ctrl_tok = g.mir.instTok(u.inst);
+        const saved = g.cur.fatal;
+        g.cur.fatal = null;
+        var p = try filterPlan(g, u.inst, g.mir.instData(u.inst).call.args);
+        p.fatal = g.cur.fatal;
+        g.cur.fatal = saved;
+        g.filters[i] = p;
+    }
+}
+
+/// Returns filter unit `unit`'s plan, replaying the refusal planning raised the
+/// way `f64Expr` raises it (sticky `any_fatal`, first `fatal` wins).
+/// Asserts that `planAll` ran and `unit` is a `laplace`/`zi` unit.
+pub fn planOf(g: *Gen, unit: usize) FilterPlan {
+    assert(unit < g.filters.len);
+    const p = g.filters[unit].?;
+    if (p.fatal) |m| g.poison(m);
+    return p;
+}
+
+/// Emits `pub fn <n>__sec(model)`, the cascade's coefficients read from Model
+/// on every call so a card override needs no recompile. It is `pub` in the
+/// device because a host doing `.ac`/`.noise` builds `H(jω)` from exactly these
+/// numbers. A filter with §4.5.14 sampled coefficients takes them as `k`
+/// after `model`. Returns the output offset where the fn starts. Asserts that
+/// `p` is a usable plan (no refusal, at least one section) of kind `z`.
+pub fn emitFilterSections(g: *Gen, n: []const u8, p: FilterPlan, z: bool) Error!usize {
+    assert(p.err == null);
+    assert(p.ns > 0);
+    if (z) assert(p.period != null);
+    const var_name = if (z) "z⁻¹" else "s";
+    try g.w(
+        "/// §4.5.{s} cascade sections of `{s}`: H = ∏ [i][0]({s}) / [i][1]({s}),\n" ++
+            "/// coefficients ascending. Read from Model on every evaluation.\n",
+        .{ if (z) "12" else "11", n, var_name, var_name },
+    );
+    const at_fn = g.out.items.len;
+    try g.w("pub fn {s}__sec({s}: *const Model", .{ n, if (p.uses_model) "model" else "_" });
+    // §4.5.14 the sampled coefficients, which the caller picks (`sampledCoefs`).
+    if (p.sampled.len != 0) try g.w(", k: [{d}]f64", .{p.sampled.len});
+    try g.w(") [{d}][2][{d}]f64 {{\n", .{ p.ns, p.deg + 1 });
+    for (p.lets) |l| try g.w("    {s}\n", .{l});
+    try g.w("    return .{{\n", .{});
+    for (0..p.ns) |i| {
+        try g.w("        .{{ ", .{});
+        for ([_]bool{ true, false }, 0..) |numerator, s| {
+            if (s == 1) try g.w(", ", .{});
+            try g.w(".{{ ", .{});
+            const poly = p.poly(numerator, i);
+            for (0..p.deg + 1) |c| {
+                if (c != 0) try g.w(", ", .{});
+                try g.w("{s}", .{if (c < poly.len) poly[c] else "0.0"});
+            }
+            try g.w(" }}", .{});
+        }
+        try g.w(" }},\n", .{});
+    }
+    try g.w("    }};\n}}\n\n", .{});
+    return at_fn;
+}
+
+// ---- private ----
 
 /// Decodes one `laplace_*`/`zi_*` call into its cascade, or a plan whose `err`
 /// names the violated §4.5.11/§4.5.12 rule. Lowering flattened each vector
@@ -170,44 +271,6 @@ fn filterPlan(g: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!FilterPlan
     return p;
 }
 
-/// Plans every §4.5.11/§4.5.12 operator once into `Gen.filters`, indexed by
-/// unit, so the emitters that read a plan share one fold. Allocates in
-/// `g.arena`; must run before any `planOf`.
-pub fn planAll(g: *Gen) Error!void {
-    g.filters = try g.arena.alloc(?FilterPlan, g.names.units.len);
-    @memset(g.filters, null);
-    const saved_tok = g.cur.ctrl_tok;
-    defer g.cur.ctrl_tok = saved_tok;
-    for (g.names.units, 0..) |u, i| {
-        if (u.role != .analog_op or u.inst == .none) continue;
-        const k = u.op;
-        if (k != .laplace and k != .zi) continue;
-        // `emitOperator` set this before planning, and E0515 falls back to it
-        // for a coefficient with no token of its own.
-        g.cur.ctrl_tok = g.mir.instTok(u.inst);
-        const saved = g.cur.fatal;
-        g.cur.fatal = null;
-        var p = try filterPlan(g, u.inst, g.mir.instData(u.inst).call.args);
-        p.fatal = g.cur.fatal;
-        g.cur.fatal = saved;
-        g.filters[i] = p;
-    }
-}
-
-/// Returns filter unit `unit`'s plan, replaying the refusal planning raised the
-/// way `f64Expr` raises it (sticky `any_fatal`, first `fatal` wins).
-/// Asserts that `planAll` ran and `unit` is a `laplace`/`zi` unit.
-pub fn planOf(g: *Gen, unit: usize) FilterPlan {
-    assert(unit < g.filters.len);
-    const p = g.filters[unit].?;
-    if (p.fatal) |m| g.poison(m);
-    return p;
-}
-
-/// One flattened vector argument: its elements and the index of the argument
-/// after it.
-const Vec = struct { elems: []const Mir.Value, next: usize };
-
 /// Reads the flattened vector argument at `i`: a literal count followed by that
 /// many elements. Returns null when `args[i]` is not an `int_const` count, which
 /// means the argument was never a vector.
@@ -219,20 +282,6 @@ fn readVec(g: *const Gen, args: []const Mir.Value, i: usize) ?Vec {
     if (i + 1 + n > args.len) return null;
     return .{ .elems = args[i + 1 ..][0..n], .next = i + 1 + n };
 }
-
-/// Renders filter coefficients, collecting the ones §4.5.14 samples.
-const Coefs = struct {
-    sampled: std.ArrayList(Mir.Value) = .empty,
-
-    /// Returns coefficient `e` as `__sec` text: `k[<j>]` for one the solve
-    /// moves (§4.5.14 "the value of the dynamic expression at the start of
-    /// the analysis"), else `f64Expr`'s text over Model.
-    fn text(cx: *Coefs, g: *Gen, e: Mir.Value) Error![]const u8 {
-        if (!try gen_host.ctrlIsDynamic(g, e)) return g.f64Expr(e);
-        try cx.sampled.append(g.arena, e);
-        return g.arena.print("k[{d}]", .{cx.sampled.items.len - 1});
-    }
-};
 
 /// Appends one side of a filter to `out` as sections. `roots` selects the
 /// root-vector reading (real/imaginary pairs) over the coefficient reading.
@@ -410,45 +459,4 @@ fn conjugateOf(g: *Gen, elems: []const Mir.Value, used: []const bool, re: []cons
         if (std.mem.eql(u8, jre, re)) return j;
     }
     return null;
-}
-
-/// Emits `pub fn <n>__sec(model)`, the cascade's coefficients read from Model
-/// on every call so a card override needs no recompile. It is `pub` in the
-/// device because a host doing `.ac`/`.noise` builds `H(jω)` from exactly these
-/// numbers. A filter with §4.5.14 sampled coefficients takes them as `k`
-/// after `model`. Returns the output offset where the fn starts. Asserts that
-/// `p` is a usable plan (no refusal, at least one section) of kind `z`.
-pub fn emitFilterSections(g: *Gen, n: []const u8, p: FilterPlan, z: bool) Error!usize {
-    assert(p.err == null);
-    assert(p.ns > 0);
-    if (z) assert(p.period != null);
-    const var_name = if (z) "z⁻¹" else "s";
-    try g.w(
-        "/// §4.5.{s} cascade sections of `{s}`: H = ∏ [i][0]({s}) / [i][1]({s}),\n" ++
-            "/// coefficients ascending. Read from Model on every evaluation.\n",
-        .{ if (z) "12" else "11", n, var_name, var_name },
-    );
-    const at_fn = g.out.items.len;
-    try g.w("pub fn {s}__sec({s}: *const Model", .{ n, if (p.uses_model) "model" else "_" });
-    // §4.5.14 the sampled coefficients, which the caller picks (`sampledCoefs`).
-    if (p.sampled.len != 0) try g.w(", k: [{d}]f64", .{p.sampled.len});
-    try g.w(") [{d}][2][{d}]f64 {{\n", .{ p.ns, p.deg + 1 });
-    for (p.lets) |l| try g.w("    {s}\n", .{l});
-    try g.w("    return .{{\n", .{});
-    for (0..p.ns) |i| {
-        try g.w("        .{{ ", .{});
-        for ([_]bool{ true, false }, 0..) |numerator, s| {
-            if (s == 1) try g.w(", ", .{});
-            try g.w(".{{ ", .{});
-            const poly = p.poly(numerator, i);
-            for (0..p.deg + 1) |c| {
-                if (c != 0) try g.w(", ", .{});
-                try g.w("{s}", .{if (c < poly.len) poly[c] else "0.0"});
-            }
-            try g.w(" }}", .{});
-        }
-        try g.w(" }},\n", .{});
-    }
-    try g.w("    }};\n}}\n\n", .{});
-    return at_fn;
 }

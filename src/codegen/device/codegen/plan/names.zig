@@ -1,6 +1,12 @@
 //! Names: the lowered module -> `Names`, every identifier the device declares
 //! and the unknowns behind them, decided before a byte is written. Clauses:
 //! §3.4.7, §5.4.1, §5.4.2, §5.6, §5.6.7.1, §5.10, §9.19.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Names = struct`
+//! - `pub fn plan(in: Input, n_unit_modes: usize) Error!Names`
+//! - members: `Names.opInstOf`, `Names.opArgs`
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
@@ -8,10 +14,10 @@ const Analysis = @import("prove").Analysis;
 const Lowered = @import("ir").Lowered;
 const naming = @import("ir").names;
 const Input = @import("prove").Input;
+const Fixture = @import("prove").Fixture;
 
 /// Allocation only: a name has no length bound (VAMS 2.8, VD-054).
 pub const Error = std.mem.Allocator.Error;
-const none_u32 = std.math.maxInt(u32);
 
 /// Every identifier the device declares, and the unknowns behind them.
 pub const Names = struct {
@@ -59,6 +65,8 @@ pub const Names = struct {
         return mir.instData(inst).call.args;
     }
 };
+
+const none_u32 = std.math.maxInt(u32);
 
 /// Returns every declared name and the unknowns behind them; slices are owned
 /// by `in.arena`. `n_unit_modes` is `Verdict.unit_modes.len`: the
@@ -164,6 +172,8 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
     return self;
 }
 
+// ---- private ----
+
 /// `nm`, or `nm#k` for the first `k` that no unknown claims yet. `sanitize`
 /// escapes `#`, so the emitted U member stays a legal, injective name. O(k ·
 /// unknowns); `k` is the number of existing spellings it collides with.
@@ -186,8 +196,6 @@ fn uNameTaken(lowered: *const Lowered, nm: []const u8, extra: []const []const u8
     }
     return false;
 }
-
-const Fixture = @import("prove").Fixture;
 
 test "a potential source gets a branch current; two on one branch get two" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

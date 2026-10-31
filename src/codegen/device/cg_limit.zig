@@ -10,8 +10,8 @@
 //! Cites: §4.5.15, §9.17.1, §9.17.3.
 //!
 //! Contents:
-//! - `pub const Live = struct { reads: []u64, writes: []u64 }`
-//! - `pub const emitCore = cg_limit_args.emitCore` (`emitCore(g: *Gen) Error!void`)
+//! - `pub const Live = struct`
+//! - `pub const emitCore = args.emitCore`
 //! - `pub fn liveSets(g: *const Gen) Error!Live`
 //! - `pub fn emit(g: *Gen) Error!void`
 
@@ -21,6 +21,7 @@ const Mir = @import("ir").Mir;
 const cg = @import("codegen.zig");
 const Gen = cg.Gen;
 const Error = cg.Error;
+
 // The pure half: which sites are honoured, and the questions both halves ask.
 const plan_limit = @import("codegen/plan/limit.zig");
 const gen_mask = @import("codegen/mask.zig");
@@ -29,7 +30,6 @@ const limit_seed = @import("cg_limit_seed.zig");
 const LimitCall = plan_limit.LimitCall;
 const Ladder = plan_limit.Ladder;
 const Rung = plan_limit.Rung;
-
 const none_u32 = cg.none_u32;
 
 /// Which unknowns `limit` touches: `reads` is every `cur[u]`/`old[u]` the body

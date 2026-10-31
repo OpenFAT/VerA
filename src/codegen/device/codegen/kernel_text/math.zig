@@ -5,9 +5,9 @@
 //! Cites: §4.2.4, §4.3, §4.3.1, §4.3.2, §9.21.2.
 //!
 //! Contents:
-//! - `pub const math_txt: []const u8`
-//! - `pub const domain_quiet_txt: []const u8`
-//! - `pub const domain_report_txt: []const u8`
+//! - `pub const math_txt`
+//! - `pub const domain_quiet_txt`
+//! - `pub const domain_report_txt`
 
 /// LRM Tables 4-14/4-15 in value form: a function the scalar family does
 /// not provide (`contract.family_primitives`) is composed from the ones it

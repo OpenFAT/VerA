@@ -4,6 +4,10 @@
 //! variable is LRM §3.2.1's output variable: a module-scope variable with a
 //! `desc` or `units` attribute, or both, whose value a simulator shall report.
 //! LRM: §2.9.2, §3.2.1, §4.5.14.
+//!
+//! Contents:
+//! - `pub fn emitOpVarCore(self: *Gen) Error!void`
+//! - `pub fn emitOpVarTable(self: *Gen) Error!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -93,6 +97,8 @@ pub fn emitOpVarTable(self: *Gen) Error!void {
     for (ovs, 0..) |ov, k| try self.w("{s}{s}", .{ if (k == 0) " " else ", ", try opVarRef(self, ov.final) });
     try self.w(" }};\n}}\n\n", .{});
 }
+
+// ---- private ----
 
 /// The text of one `opVars` entry: the slice's field, as an f64.
 fn opVarRef(self: *Gen, final: Mir.Value) Error![]const u8 {

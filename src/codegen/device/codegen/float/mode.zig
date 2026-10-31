@@ -6,9 +6,9 @@
 //!
 //! Contents:
 //! - `pub const Float = struct`
-//! - `pub const Jac = enum { off, permit, host }`
-//! - `pub fn of(jac_f32: bool, jac_f32_host: bool) Jac` (on `Jac`)
+//! - `pub const Jac = enum`
 //! - `pub fn coreMode(jobs: []const Job) proof.FloatMode`
+//! - members: `Jac.of`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -75,6 +75,8 @@ pub fn coreMode(jobs: []const Job) proof.FloatMode {
     if (served == 0) assert(mode == .optimized);
     return mode;
 }
+
+// ---- private ----
 
 test "the core is strict if any served job is; the f32 knob normalises host ⇒ permit" {
     const j = struct {

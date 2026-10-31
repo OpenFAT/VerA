@@ -5,14 +5,15 @@
 //! Cites: §2.9, §3.2.2, §4.5.7, §5.10.2.
 //!
 //! Contents:
-//! - `pub const tp_txt: []const u8`
-//! - `pub const tp_arr_txt: []const u8`
-//! - `pub const arr_txt: []const u8`
-//! - `pub const hist_txt: []const u8`
-//! - `pub const hist_quad_txt: []const u8`
+//! - `pub const tp_txt`
+//! - `pub const tp_arr_txt`
+//! - `pub const arr_txt`
+//! - `pub const hist_txt`
+//! - `pub const hist_quad_txt`
 
 const std = @import("std");
 const kernels = @import("kernels");
+
 // A file-level //! header cannot be spliced into the middle of device.zig.
 const hist_src = kernels.text.hist;
 

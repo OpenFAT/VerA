@@ -7,6 +7,11 @@
 //! piece. Every statement still runs once, in order, on the same values, so
 //! every root keeps its bits.
 //! LRM: none (build orchestration).
+//!
+//! Contents:
+//! - `pub const chunk_bytes: usize = 256 * 1024`
+//! - `pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked`
+//! - `pub fn hasWord(text: []const u8, word: []const u8) bool`
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -44,6 +49,35 @@ const State = struct {
     guards: u32 = 0,
     /// A statement no larger than this is one piece.
     small: usize,
+};
+
+const Arms = struct { cond: []const u8, then: Lines, @"else": Lines, has_else: bool };
+
+/// The identifiers of Zig text, outside literals and comments, that are not
+/// a field or builtin name (`.x`, `@x`).
+const Idents = struct {
+    text: []const u8,
+    i: usize = 0,
+
+    fn next(it: *Idents) ?[]const u8 {
+        const t = it.text;
+        while (it.i < t.len) {
+            const c = t[it.i];
+            if (c == '"' or c == '\'') {
+                it.i = skipLit(t, it.i) + 1;
+            } else if (c == '/' and it.i + 1 < t.len and t[it.i + 1] == '/') {
+                it.i = std.mem.findScalarPos(u8, t, it.i, '\n') orelse t.len;
+            } else if (isIdent(c)) {
+                const s = it.i;
+                while (it.i < t.len and isIdent(t[it.i])) it.i += 1;
+                // A field follows ONE dot; after `..` the name is a range bound.
+                const field = s > 0 and t[s - 1] == '.' and !(s > 1 and t[s - 2] == '.');
+                if (std.ascii.isDigit(c) or field or (s > 0 and t[s - 1] == '@')) continue;
+                return t[s..it.i];
+            } else it.i += 1;
+        }
+        return null;
+    }
 };
 
 /// Splits `setup` (`text`: its doc comment and function as `emitSetup`
@@ -233,6 +267,15 @@ pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
     return .{ .text = out.items, .n = n };
 }
 
+/// Whether `text` uses `word` as an identifier.
+pub fn hasWord(text: []const u8, word: []const u8) bool {
+    var it: Idents = .{ .text = text };
+    while (it.next()) |id| if (std.mem.eql(u8, id, word)) return true;
+    return false;
+}
+
+// ---- private ----
+
 fn note(a: Allocator, readers: *std.StringHashMapUnmanaged(u32), several: *std.StringHashMapUnmanaged(void), id: []const u8, k: u32) Error!void {
     const g = try readers.getOrPut(a, id);
     if (!g.found_existing) {
@@ -339,8 +382,6 @@ fn stripTail(a: Allocator, body: Lines, br: []const u8) Error!?Lines {
     return out.items;
 }
 
-const Arms = struct { cond: []const u8, then: Lines, @"else": Lines, has_else: bool };
-
 /// `if (C) {` A [`} else {` E] `}` as its parts, the arms at indent 0; null
 /// for any other statement, an `else if` chain included.
 fn splitIf(a: Allocator, s: Lines) Error!?Arms {
@@ -440,33 +481,6 @@ fn skipLit(t: []const u8, i: usize) usize {
     return j;
 }
 
-/// The identifiers of Zig text, outside literals and comments, that are not
-/// a field or builtin name (`.x`, `@x`).
-const Idents = struct {
-    text: []const u8,
-    i: usize = 0,
-
-    fn next(it: *Idents) ?[]const u8 {
-        const t = it.text;
-        while (it.i < t.len) {
-            const c = t[it.i];
-            if (c == '"' or c == '\'') {
-                it.i = skipLit(t, it.i) + 1;
-            } else if (c == '/' and it.i + 1 < t.len and t[it.i + 1] == '/') {
-                it.i = std.mem.findScalarPos(u8, t, it.i, '\n') orelse t.len;
-            } else if (isIdent(c)) {
-                const s = it.i;
-                while (it.i < t.len and isIdent(t[it.i])) it.i += 1;
-                // A field follows ONE dot; after `..` the name is a range bound.
-                const field = s > 0 and t[s - 1] == '.' and !(s > 1 and t[s - 2] == '.');
-                if (std.ascii.isDigit(c) or field or (s > 0 and t[s - 1] == '@')) continue;
-                return t[s..it.i];
-            } else it.i += 1;
-        }
-        return null;
-    }
-};
-
 /// Appends `text` with every identifier in `moved` read as `z.<name>`.
 fn rename(a: Allocator, out: *std.ArrayList(u8), text: []const u8, moved: *const std.StringHashMapUnmanaged(void)) Error!void {
     var it: Idents = .{ .text = text };
@@ -479,13 +493,6 @@ fn rename(a: Allocator, out: *std.ArrayList(u8), text: []const u8, moved: *const
         done = at + id.len;
     }
     try out.appendSlice(a, text[done..]);
-}
-
-/// Whether `text` uses `word` as an identifier.
-pub fn hasWord(text: []const u8, word: []const u8) bool {
-    var it: Idents = .{ .text = text };
-    while (it.next()) |id| if (std.mem.eql(u8, id, word)) return true;
-    return false;
 }
 
 test "chunk opens tail-break blocks, guards if arms, and moves shared values" {

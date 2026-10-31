@@ -3,6 +3,18 @@
 //! (reported as W0853 by `cg_limit.emit`) and the §9.17.3 seed tree. The
 //! questions plan and emitter both ask (`ladderOf`, `limvdsClaimed`,
 //! `writable`) are methods here so the two always agree.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Limits = struct`
+//! - `pub const Alg = enum`
+//! - `pub const LimitCall = struct`
+//! - `pub const Rung = struct`
+//! - `pub const Ladder = struct`
+//! - `pub fn plan(g: Input, u_names: []const []const u8) Error!Limits`
+//! - `pub fn uName(u_names: []const []const u8, u: u32) []const u8`
+//! - members: `Limits.ladderOf`, `Limits.rungOf`, `Limits.limvdsClaimed`, `Limits.writable`,
+//!   `Alg.arity`
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
@@ -10,10 +22,10 @@ const Input = @import("prove").Input;
 const plan_topo = @import("topology.zig");
 const strArg = @import("prove").strArg;
 const assert = std.debug.assert;
+const Fixture = @import("prove").Fixture;
 
 /// Every fallible call here fails only on allocation.
 pub const Error = std.mem.Allocator.Error;
-const none_u32 = std.math.maxInt(u32);
 
 /// §4.5.15 the `$limit` call sites this device honours, in source order, and
 /// one `Decline` per site it does not. `plan/jobs.zig` queues the honoured
@@ -163,25 +175,6 @@ pub const Alg = enum {
     }
 };
 
-const max_args = 2;
-
-/// The `Alg` spellings, comma-separated, for the unknown-name warning.
-const alg_names = blk: {
-    var s: []const u8 = "";
-    for (@typeInfo(Alg).@"enum".field_names, 0..) |n, i| s = s ++ (if (i == 0) "" else ", ") ++ n;
-    break :blk s;
-};
-
-/// A `$limit` site this device does not honour: its probe is returned
-/// unchanged, which §9.17.3 permits. `tok` is the call's token.
-const Decline = struct {
-    tok: u32,
-    /// The call as written and why it is declined.
-    msg: []const u8,
-    /// The model-side change that would get the site honoured, if one exists.
-    help: ?[]const u8 = null,
-};
-
 /// One resolved `$limit` call site.
 pub const LimitCall = struct {
     alg: Alg,
@@ -210,8 +203,59 @@ pub const LimitCall = struct {
     /// `$limit(type*V(a,b), ...)` is refused in lowering (E0891).
     sign: Mir.Value = .f_zero,
 };
-
 // -------------------------------------------------------------------- plan
+
+/// A resolved bulk rung: indices into `calls` of the vbs leg, the vbd leg,
+/// and the `limvds` site whose probe orients them, as `Ladder` does.
+pub const Rung = struct { bs: u32, bd: u32, ds: u32 };
+
+/// A resolved mode ladder: indices into `calls` of the vgs leg, the vgd leg,
+/// and the `limvds` site whose probe orients them. `limvds` reads V(di,si),
+/// so the leg landing on its `lo` is the source leg (vgs) and the one landing
+/// on its `hi` is the drain leg (vgd).
+pub const Ladder = struct { gs: u32, gd: u32, ds: u32 };
+
+const none_u32 = std.math.maxInt(u32);
+
+const max_args = 2;
+
+/// The `Alg` spellings, comma-separated, for the unknown-name warning.
+const alg_names = blk: {
+    var s: []const u8 = "";
+    for (@typeInfo(Alg).@"enum".field_names, 0..) |n, i| s = s ++ (if (i == 0) "" else ", ") ++ n;
+    break :blk s;
+};
+
+/// A `$limit` site this device does not honour: its probe is returned
+/// unchanged, which §9.17.3 permits. `tok` is the call's token.
+const Decline = struct {
+    tok: u32,
+    /// The call as written and why it is declined.
+    msg: []const u8,
+    /// The model-side change that would get the site honoured, if one exists.
+    help: ?[]const u8 = null,
+};
+
+/// One node of the seed tree: `s[node] = s[from] ± raw(site)`, the
+/// sign picked by which end of `site`'s branch `node` is. `from` is ground
+/// (0 V) when `none_u32`; `site == none_u32` is a component root, set to 0.
+const SeedStep = struct { node: u32, from: u32, site: u32 };
+
+const Site = struct {
+    g: Input,
+    u_names: []const []const u8,
+    list: *std.ArrayList(Decline),
+    tok: u32,
+    args: []const Mir.Value,
+
+    fn decline(s: Site, why: []const u8, help: ?[]const u8) Error!void {
+        try s.list.append(s.g.arena, .{
+            .tok = s.tok,
+            .msg = try s.g.arena.print("{s}: {s}", .{ spell(s.g, s.u_names, s.args), why }),
+            .help = help,
+        });
+    }
+};
 
 /// Resolves every `$limit` call into honoured sites, declines (W0853) and the
 /// seed tree; slices are owned by `g.arena`. Runs in `prepare` before
@@ -339,10 +383,12 @@ pub fn plan(g: Input, u_names: []const []const u8) Error!Limits {
     return lim;
 }
 
-/// One node of the seed tree: `s[node] = s[from] ± raw(site)`, the
-/// sign picked by which end of `site`'s branch `node` is. `from` is ground
-/// (0 V) when `none_u32`; `site == none_u32` is a component root, set to 0.
-const SeedStep = struct { node: u32, from: u32, site: u32 };
+/// Returns the name of unknown `u`, or "0" for §1.3.1.1 ground.
+pub fn uName(u_names: []const []const u8, u: u32) []const u8 {
+    return if (u == none_u32) "0" else u_names[u];
+}
+
+// ---- private ----
 
 /// `$limit`'s seed argument and SPICE `MODEINITJCT` (mos1load.c:397-408):
 /// ngspice starts a device at BRANCH values, vgs = vto, vds = 0, vbs = -1,
@@ -487,43 +533,12 @@ fn dangling(lim: Limits, i: usize) ?[2][]const u8 {
     };
 }
 
-/// A resolved bulk rung: indices into `calls` of the vbs leg, the vbd leg,
-/// and the `limvds` site whose probe orients them, as `Ladder` does.
-pub const Rung = struct { bs: u32, bd: u32, ds: u32 };
-
-/// A resolved mode ladder: indices into `calls` of the vgs leg, the vgd leg,
-/// and the `limvds` site whose probe orients them. `limvds` reads V(di,si),
-/// so the leg landing on its `lo` is the source leg (vgs) and the one landing
-/// on its `hi` is the drain leg (vgd).
-pub const Ladder = struct { gs: u32, gd: u32, ds: u32 };
-
-const Site = struct {
-    g: Input,
-    u_names: []const []const u8,
-    list: *std.ArrayList(Decline),
-    tok: u32,
-    args: []const Mir.Value,
-
-    fn decline(s: Site, why: []const u8, help: ?[]const u8) Error!void {
-        try s.list.append(s.g.arena, .{
-            .tok = s.tok,
-            .msg = try s.g.arena.print("{s}: {s}", .{ spell(s.g, s.u_names, s.args), why }),
-            .help = help,
-        });
-    }
-};
-
 /// `$limit(V(a,b), "alg")` as it reads in the source, for the declined list.
 fn spell(g: Input, u_names: []const []const u8, args: []const Mir.Value) []const u8 {
     const alg = strArg(g, args, 1) orelse "?";
     const pair = probePair(g, args) orelse
         return g.arena.print("$limit(…, \"{s}\")", .{alg}) catch "$limit(…)";
     return g.arena.print("$limit(V({s},{s}), \"{s}\")", .{ uName(u_names, pair[0]), uName(u_names, pair[1]), alg }) catch "$limit(…)";
-}
-
-/// Returns the name of unknown `u`, or "0" for §1.3.1.1 ground.
-pub fn uName(u_names: []const []const u8, u: u32) []const u8 {
-    return if (u == none_u32) "0" else u_names[u];
 }
 
 /// §4.4 `V(a,b)` lowers to `fsub` of two probes and `V(a)` to a bare probe.
@@ -560,8 +575,6 @@ fn algOf(g: Input, args: []const Mir.Value) ?Alg {
     // (`Lower.lowerLimitUser`) and it never reaches the clamp list.
     return std.meta.stringToEnum(Alg, strArg(g, args, 1) orelse return null);
 }
-
-const Fixture = @import("prove").Fixture;
 
 test "an honoured pnjlim, and the declines that say why" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

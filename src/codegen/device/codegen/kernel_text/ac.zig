@@ -4,8 +4,8 @@
 //! Cites: §4.5.7, §4.5.11, §4.5.12, §4.6.1.
 //!
 //! Contents:
-//! - `pub const ac_txt: []const u8`
-//! - `pub const ac_fam_txt: []const u8`
+//! - `pub const ac_txt`
+//! - `pub const ac_fam_txt`
 
 /// The small-signal side of the operators whose response depends on frequency
 /// (`ir.op.acDynamic`): §4.5.7 `absdelay`, §4.5.11 `laplace_*`, §4.5.12

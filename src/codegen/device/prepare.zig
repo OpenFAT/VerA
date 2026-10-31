@@ -9,7 +9,7 @@
 //!
 //! Contents:
 //! - `pub fn prepare(g: *Gen) Error!void`
-//! - `DynCtrl.isDynamic` (private type; `plan_jobs`' comptime interface)
+//! - members: `DynCtrl.isDynamic`
 
 const std = @import("std");
 const assert = std.debug.assert;

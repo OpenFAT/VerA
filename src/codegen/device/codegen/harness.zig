@@ -2,6 +2,11 @@
 //! lowered into MIR, with `gen*` running proof and codegen over it. Used by
 //! the codegen tests (`tests/unit.zig`) and the display tests beside
 //! `cg_display.zig`. Analysed only by a test. No clause of its own.
+//!
+//! Contents:
+//! - `pub const Harness = struct`
+//! - members: `Harness.run`, `Harness.runOver`, `Harness.gen`, `Harness.genDisplay`,
+//!   `Harness.genOut`, `Harness.genWith`, `Harness.deinit`
 
 const std = @import("std");
 const codegen = @import("../codegen.zig");

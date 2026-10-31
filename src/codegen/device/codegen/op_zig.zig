@@ -8,9 +8,9 @@
 //! §5.10.3, §9.17.1, §9.17.2.
 //!
 //! Contents:
-//! - `pub const Slot = struct { suffix, default, note }`
-//! - `pub const Row = struct { lrm, needs_dt, slots, shape }`
-//! - `pub const table: std.EnumArray(OpKind, Row)`
+//! - `pub const Slot = struct`
+//! - `pub const Row = struct`
+//! - `pub const table`
 //! - `pub fn get(k: OpKind) Row`
 
 const std = @import("std");
@@ -176,6 +176,8 @@ pub fn get(k: OpKind) Row {
     if (r.shape != .static) assert(r.slots.len == 0);
     return r;
 }
+
+// ---- private ----
 
 test "op_zig: the table is total and internally consistent" {
     // Totality is already a compile-time property of EnumArray; what a test can

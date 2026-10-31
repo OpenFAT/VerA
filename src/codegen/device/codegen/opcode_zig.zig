@@ -5,9 +5,9 @@
 //! Cites: §3.2.2, §4.3, §4.3.1 (Table 4-14), §4.3.2 (Table 4-15), §6.3.4.
 //!
 //! Contents:
-//! - `pub const Spell = union(enum) { custom, method, helper, helper_s }`
+//! - `pub const Spell = union(enum)`
 //! - `pub const Row = struct`
-//! - `pub const table: std.EnumArray(Mir.Opcode, Row)`
+//! - `pub const table`
 //! - `pub fn get(op: Mir.Opcode) Row`
 
 const std = @import("std");
@@ -165,6 +165,8 @@ pub fn get(op: Mir.Opcode) Row {
     if (r.host_f64) |h| assert(h.len >= 2);
     return r;
 }
+
+// ---- private ----
 
 test "opcode_zig: every row agrees with the IR table's shape" {
     for (std.meta.tags(Mir.Opcode)) |op| {
