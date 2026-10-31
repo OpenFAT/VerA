@@ -103,6 +103,6 @@ a number.
 ## The testbench's batch family
 
 VerA's own testbench carries a W-point batch family with the protocol
-(`src/codegen/exe/tb/runner_text.zig`, `@Vector(NL, f64)`), and the fixture suite
+(`src/codegen/exe/text/body.zig.txt`, `@Vector(NL, f64)`), and the fixture suite
 checks every `batch_ok` device against the scalar result point by point. It
 is a working reference for writing your own.
