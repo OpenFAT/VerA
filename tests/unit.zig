@@ -17092,19 +17092,22 @@ pub const digital_tests = struct {
 
 pub const exe_tests = struct {
     //! Tests for directive parsing and runner generation: fixture text in,
-    //! verdicts on the parsed `tb.Directives` and the rendered runner out.
+    //! verdicts on the parsed `tb.Spec` and the rendered runner out.
     //! LRM: §2.6, §3.4.1, §4.2.1.1, §4.6.3, §4.6.4, §4.6.4.6, §5.2.1, §5.4.2, §5.6,
     //! §5.8, §5.10.2, §6.5.2, §7.3.1, §9.15.
     //!
     //! The plan, as bug class, then oracle, then where:
-    //!   - a malformed line checks nothing: the grammar `tb.zig` documents;
-    //!     directive.zig's per-keyword test and the refusals here.
+    //!   - a malformed line checks nothing: the grammar `parse.zig` and
+    //!     `operands.zig` document; parse.zig's per-keyword test and the
+    //!     refusals here.
     //!   - a number reads differently from the model's own literal: §2.6's table
-    //!     and Zig's literals; directive.zig's `test number`.
+    //!     and Zig's literals; operands.zig's `test number`.
     //!   - a rendered testbench does not build: AstGen, the compiler's own front
     //!     half, over generated directive sets ("every directive set ...").
     //!   - a value reaches the testbench changed: Zig's literal reader;
-    //!     runner.zig's `test fmtF64`.
+    //!     parts.zig's `test fmtF64`.
+    //!   - a sweep expands in the wrong order: the product written out by hand;
+    //!     points.zig's test and "sweep expansion ..." here.
     //!   - the build command is wrong: argv derived by hand; src/zigbuild/exe.zig's tests.
     //! The emitted solver and gates execute only in the fixture suite (`zig
     //! build benchmark`), which builds and runs a testbench per fixture.
@@ -17114,6 +17117,52 @@ pub const exe_tests = struct {
     const Analysis = tb.Analysis;
 
     const testing = std.testing;
+
+    /// `Spec.parse` with no diagnostics.
+    fn parse(arena: std.mem.Allocator, src: []const u8) tb.ParseError!tb.Spec {
+        return tb.Spec.parse(arena, src, null);
+    }
+
+    /// `writeRunner` of `s.bench` under `facts`, into `arena`; a writer
+    /// failure is the arena's out of memory.
+    fn runnerWith(arena: std.mem.Allocator, title: []const u8, s: tb.Spec, facts: tb.Facts) ![]const u8 {
+        var aw: std.Io.Writer.Allocating = .init(arena);
+        tb.writeRunner(&aw.writer, arena, title, &s.bench, facts) catch |e| return switch (e) {
+            error.WriteFailed => error.OutOfMemory,
+            else => |x| x,
+        };
+        return aw.written();
+    }
+
+    /// `runnerWith` and no compile facts.
+    fn runner(arena: std.mem.Allocator, title: []const u8, s: tb.Spec) ![]const u8 {
+        return runnerWith(arena, title, s, .{});
+    }
+
+    /// `writeVpiLib` of `s.bench` under `facts`, into `arena`.
+    fn vpiLibWith(arena: std.mem.Allocator, title: []const u8, s: tb.Spec, facts: tb.Facts) ![]const u8 {
+        var aw: std.Io.Writer.Allocating = .init(arena);
+        tb.writeVpiLib(&aw.writer, title, &s.bench, facts) catch return error.OutOfMemory;
+        return aw.written();
+    }
+
+    /// `vpiLibWith` and no compile facts.
+    fn vpiLib(arena: std.mem.Allocator, title: []const u8, s: tb.Spec) ![]const u8 {
+        return vpiLibWith(arena, title, s, .{});
+    }
+
+    /// Every point of `bench` as its column values, through `pointCount` and `Row`.
+    fn expand(arena: std.mem.Allocator, bench: tb.Bench) ![]const []const f64 {
+        const count = try tb.pointCount(&bench);
+        const rows = try arena.alloc([]const f64, count);
+        for (rows, 0..) |*row, n| {
+            var it: tb.Row = .init(&bench, count, @intCast(n));
+            var cells: std.ArrayList(f64) = .empty;
+            while (it.next()) |v| try cells.append(arena, v);
+            row.* = cells.items;
+        }
+        return rows;
+    }
 
     /// Asserts that `src` parses and passes AstGen: every check a testbench
     /// build makes before it resolves `device` and `contract` (unused or
@@ -17132,7 +17181,7 @@ pub const exe_tests = struct {
         return error.TestUnexpectedResult;
     }
 
-    /// A mixed-signal plan with every naming hazard `renderMixed` escapes: a
+    /// A mixed-signal plan with every naming hazard `writeMixed` escapes: a
     /// quote and a backslash in the source, an `x`/`z` input, a three-word `reg`,
     /// a `Z` (the escape marker) in a name, an event and an inserted module.
     const sample_mixed: tb.Mixed = .{
@@ -17151,13 +17200,13 @@ pub const exe_tests = struct {
     test "directives: defaults when the source has none" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
-        const d = try tb.parse(arena_state.allocator(), "module m; endmodule\n");
-        try testing.expectEqual(@as(usize, 0), d.sweeps.len);
-        try testing.expectEqual(@as(usize, 0), d.params.len);
-        try testing.expectEqual(@as(f64, 300.15), d.temp);
-        try testing.expectEqual(Analysis.dc, d.analysis);
-        try testing.expect(d.print_residual);
-        try testing.expect(!d.solve_free);
+        const d = try parse(arena_state.allocator(), "module m; endmodule\n");
+        try testing.expectEqual(@as(usize, 0), d.bench.sweeps.len);
+        try testing.expectEqual(@as(usize, 0), d.bench.params.len);
+        try testing.expectEqual(@as(f64, 300.15), d.bench.temperature_k);
+        try testing.expectEqual(Analysis.dc, d.bench.analysis);
+        try testing.expect((d.bench.print == .residual));
+        try testing.expect(!d.bench.solve_free);
     }
 
     test "§5.6 `//! solve` unties the unknowns nothing else names" {
@@ -17167,14 +17216,14 @@ pub const exe_tests = struct {
 
         // Default netlist: every unknown tied to the reference, so `//! bias V(p)`
         // on a two-terminal device is the potential across it.
-        const tied = try tb.renderRunner(arena, "065_tied", try tb.parse(arena, "//! bias V(p) = 0.5\n"));
+        const tied = try runner(arena, "065_tied", try parse(arena, "//! bias V(p) = 0.5\n"));
         try testing.expect(std.mem.find(u8, tied, "var forced: [n_u]?f64 = @splat(0.0);") != null);
         try testing.expect(std.mem.find(u8, tied, "set(&x, &forced, \"p\", 0.5);") != null);
 
         // With `solve`, only what a directive names stays pinned.
-        const d = try tb.parse(arena, "//! bias V(ctrl) = 1.5\n//! solve\n");
-        try testing.expect(d.solve_free);
-        const free = try tb.renderRunner(arena, "066_free", d);
+        const d = try parse(arena, "//! bias V(ctrl) = 1.5\n//! solve\n");
+        try testing.expect(d.bench.solve_free);
+        const free = try runner(arena, "066_free", d);
         try testing.expect(std.mem.find(u8, free, "var forced: [n_u]?f64 = @splat(null);") != null);
         try testing.expect(std.mem.find(u8, free, "set(&x, &forced, \"ctrl\", 1.5);") != null);
         // The solve runs before the model prints (§5.6: semantics at a solution).
@@ -17182,13 +17231,13 @@ pub const exe_tests = struct {
         try testing.expect(solve_at < std.mem.find(u8, free, "point(0, &x").?);
 
         // It takes no operand.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! solve V(p)\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! solve V(p)\n"));
     }
 
     test "directives: every form, including the §2.6 suffixes" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
-        const d = try tb.parse(arena_state.allocator(),
+        const d = try parse(arena_state.allocator(),
             \\//! param is = 1e-14, n = 1.05
             \\//! bias V(c) = 0
             \\//! sweep V(a) = 0, 0.3, 0.6
@@ -17198,32 +17247,32 @@ pub const exe_tests = struct {
             \\//! print none
             \\module m(a, c); endmodule
         );
-        try testing.expectEqual(@as(usize, 2), d.params.len);
-        try testing.expectEqualStrings("is", d.params[0].name);
-        try testing.expectEqual(@as(f64, 1e-14), d.params[0].value);
-        try testing.expectEqualStrings("c", d.bias[0].name);
-        try testing.expectEqualStrings("a", d.sweeps[0].name);
-        try testing.expectEqual(@as(usize, 3), d.sweeps[0].values.len);
-        try testing.expectEqual(@as(f64, 0.6), d.sweeps[0].values[2]);
-        try testing.expectEqual(@as(f64, 350), d.temp);
-        try testing.expectEqual(@as(f64, 1e-9), d.times[1]);
-        try testing.expectEqual(Analysis.tran, d.analysis);
-        try testing.expect(!d.print_residual);
+        try testing.expectEqual(@as(usize, 2), d.bench.params.len);
+        try testing.expectEqualStrings("is", d.bench.params[0].name);
+        try testing.expectEqual(@as(f64, 1e-14), d.bench.params[0].value);
+        try testing.expectEqualStrings("c", d.bench.bias[0].name);
+        try testing.expectEqualStrings("a", d.bench.sweeps[0].name);
+        try testing.expectEqual(@as(usize, 3), d.bench.sweeps[0].values.len);
+        try testing.expectEqual(@as(f64, 0.6), d.bench.sweeps[0].values[2]);
+        try testing.expectEqual(@as(f64, 350), d.bench.temperature_k);
+        try testing.expectEqual(@as(f64, 1e-9), d.bench.times_s[1]);
+        try testing.expectEqual(Analysis.tran, d.bench.analysis);
+        try testing.expect(!(d.bench.print == .residual));
     }
 
     test "§5.10.3.1 an unwritten analysis is tran under a time grid, dc without one" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const a = arena_state.allocator();
-        try testing.expectEqual(Analysis.tran, (try tb.parse(a, "//! time 0, 1n\n")).analysis);
-        try testing.expectEqual(Analysis.dc, (try tb.parse(a, "//! time 0\n")).analysis);
-        try testing.expectEqual(Analysis.dc, (try tb.parse(a, "//! time 0, 1n\n//! analysis dc\n")).analysis);
+        try testing.expectEqual(Analysis.tran, (try parse(a, "//! time 0, 1n\n")).bench.analysis);
+        try testing.expectEqual(Analysis.dc, (try parse(a, "//! time 0\n")).bench.analysis);
+        try testing.expectEqual(Analysis.dc, (try parse(a, "//! time 0, 1n\n//! analysis dc\n")).bench.analysis);
     }
 
     test "§5.4.2 `I(...)` names the flow unknown, not the node potential" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
-        const d = try tb.parse(arena_state.allocator(),
+        const d = try parse(arena_state.allocator(),
             \\//! bias V(a) = 1.0
             \\//! bias I(b) = 0.125
             \\//! sweep I(<c>) = 0, 1
@@ -17233,30 +17282,30 @@ pub const exe_tests = struct {
         );
         // `V(a)` is the node; the `I` forms are flow unknowns, sanitized as codegen
         // spells them.
-        try testing.expectEqualStrings("a", d.bias[0].name);
-        try testing.expectEqualStrings("flowZ28bZ2cgndZ29", d.bias[1].name);
-        try testing.expectEqualStrings("flowZ28Z3ccZ3eZ29", d.sweeps[0].name);
+        try testing.expectEqualStrings("a", d.bench.bias[0].name);
+        try testing.expectEqualStrings("flowZ28bZ2cgndZ29", d.bench.bias[1].name);
+        try testing.expectEqualStrings("flowZ28Z3ccZ3eZ29", d.bench.sweeps[0].name);
         // §5.4.2's two-terminal branch flow and a §6.5.2 vector element `b[i]`
         // must land on the members `emitTopology` prints (codegen's "the `U` block
         // is the SPELLING contract" test pins the other end).
-        try testing.expectEqualStrings("flowZ28aZ2cbZ29", d.sweeps[1].name);
-        try testing.expectEqualStrings("dZ5b1Z5d", d.bias[2].name);
+        try testing.expectEqualStrings("flowZ28aZ2cbZ29", d.bench.sweeps[1].name);
+        try testing.expectEqualStrings("dZ5b1Z5d", d.bench.bias[2].name);
         // `parseBindings` splits on top-level commas, so `I(a,b)` works in `bias`
         // as it does in `sweep`.
-        const d2 = try tb.parse(arena_state.allocator(), "//! bias I(a,b) = 0.25, V(z) = 3\n");
-        try testing.expectEqualStrings("flowZ28aZ2cbZ29", d2.bias[0].name);
-        try testing.expectEqual(@as(f64, 0.25), d2.bias[0].value);
-        try testing.expectEqualStrings("z", d2.bias[1].name);
+        const d2 = try parse(arena_state.allocator(), "//! bias I(a,b) = 0.25, V(z) = 3\n");
+        try testing.expectEqualStrings("flowZ28aZ2cbZ29", d2.bench.bias[0].name);
+        try testing.expectEqual(@as(f64, 0.25), d2.bench.bias[0].value);
+        try testing.expectEqualStrings("z", d2.bench.bias[1].name);
         // A binding with no `=` is still an error.
-        try testing.expectError(error.BadSyntax, tb.parse(arena_state.allocator(), "//! bias I(a,b)\n"));
+        try testing.expectError(error.BadSyntax, parse(arena_state.allocator(), "//! bias I(a,b)\n"));
     }
 
     test "directives: a typo is an error, not a silently skipped test" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
-        try testing.expectError(error.UnknownDirective, tb.parse(arena_state.allocator(), "//! sweeep V(a) = 1\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena_state.allocator(), "//! sweep V(a)\n"));
-        try testing.expectError(error.BadNumber, tb.parse(arena_state.allocator(), "//! temp warm\n"));
+        try testing.expectError(error.UnknownDirective, parse(arena_state.allocator(), "//! sweeep V(a) = 1\n"));
+        try testing.expectError(error.BadSyntax, parse(arena_state.allocator(), "//! sweep V(a)\n"));
+        try testing.expectError(error.BadNumber, parse(arena_state.allocator(), "//! temp warm\n"));
     }
 
     test "directives: an lrm cite is a section, and an xfail points either way" {
@@ -17264,31 +17313,31 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena, "//! lrm 4.5.11\n//! lrm A.8.3\n//! reject E0130\n//! xfail VerA accepts it\n");
-        try testing.expectEqual(@as(usize, 2), d.lrm.len);
-        try testing.expectEqualStrings("4.5.11", d.lrm[0]);
-        try testing.expectEqualStrings("A.8.3", d.lrm[1]);
-        try testing.expectEqualStrings("VerA accepts it", d.xfail.?);
+        const d = try parse(arena, "//! lrm 4.5.11\n//! lrm A.8.3\n//! reject E0130\n//! xfail VerA accepts it\n");
+        try testing.expectEqual(@as(usize, 2), d.harness.lrm.len);
+        try testing.expectEqualStrings("4.5.11", d.harness.lrm[0]);
+        try testing.expectEqualStrings("A.8.3", d.harness.lrm[1]);
+        try testing.expectEqualStrings("VerA accepts it", d.harness.xfail.?);
 
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm §5.8\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm 5.\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm Z.1\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm §5.8\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm 5.\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm Z.1\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm\n"));
 
         // An IEEE 1364 clause never reaches `lrm`, and `lrm` refuses one.
-        const inh = try tb.parse(arena, "//! inherited IEEE 1364-2005 18.1 ($dumpfile)\n//! inherited IEEE 1364-2005 8.1.4,8.2\n");
-        try testing.expectEqual(@as(usize, 0), inh.lrm.len);
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm inherited IEEE 1364-2005 18.1\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! inherited 18.1\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! inherited IEEE 1364-2005 §18\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! inherited IEEE 1364-2005\n"));
+        const inh = try parse(arena, "//! inherited IEEE 1364-2005 18.1 ($dumpfile)\n//! inherited IEEE 1364-2005 8.1.4,8.2\n");
+        try testing.expectEqual(@as(usize, 0), inh.harness.lrm.len);
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm inherited IEEE 1364-2005 18.1\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! inherited 18.1\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! inherited IEEE 1364-2005 §18\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! inherited IEEE 1364-2005\n"));
 
         // On a run fixture too: VerA cannot yet build a legal example.
-        const run = try tb.parse(arena, "//! xfail no array formals in analog functions\n");
-        try testing.expectEqual(@as(usize, 0), run.reject.len);
-        try testing.expectEqualStrings("no array formals in analog functions", run.xfail.?);
+        const run = try parse(arena, "//! xfail no array formals in analog functions\n");
+        try testing.expectEqual(@as(usize, 0), run.harness.reject.len);
+        try testing.expectEqualStrings("no array formals in analog functions", run.harness.xfail.?);
         // A reason is required.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! xfail\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! xfail\n"));
     }
 
     test "directives: a sentence cite names one normative sentence of a clause" {
@@ -17296,14 +17345,14 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena, "//! lrm 5.6.1.3:2\n//! lrm A.6.4:12\n//! inherited IEEE 1364-2005 9.2.2:1\n");
-        try testing.expectEqualStrings("5.6.1.3:2", d.lrm[0]);
-        try testing.expectEqualStrings("A.6.4:12", d.lrm[1]);
+        const d = try parse(arena, "//! lrm 5.6.1.3:2\n//! lrm A.6.4:12\n//! inherited IEEE 1364-2005 9.2.2:1\n");
+        try testing.expectEqualStrings("5.6.1.3:2", d.harness.lrm[0]);
+        try testing.expectEqualStrings("A.6.4:12", d.harness.lrm[1]);
         // Sentences count from 1, and the ordinal is a number.
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm 5.6.1.3:0\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm 5.6.1.3:\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm 5.6.1.3:2a\n"));
-        try testing.expectError(error.BadLrmSection, tb.parse(arena, "//! lrm :2\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm 5.6.1.3:0\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm 5.6.1.3:\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm 5.6.1.3:2a\n"));
+        try testing.expectError(error.BadLrmSection, parse(arena, "//! lrm :2\n"));
     }
 
     test "directives: reject-only refuses alone, and a neighbour belongs to a refusal" {
@@ -17311,19 +17360,19 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena, "//! reject-only E0310\n//! neighbour legal_twin.va\n");
-        try testing.expect(d.reject_only);
-        try testing.expectEqualStrings("E0310", d.reject[0]);
-        try testing.expectEqualStrings("legal_twin.va", d.neighbours[0]);
+        const d = try parse(arena, "//! reject-only E0310\n//! neighbour legal_twin.va\n");
+        try testing.expect(d.harness.reject_only);
+        try testing.expectEqualStrings("E0310", d.harness.reject[0]);
+        try testing.expectEqualStrings("legal_twin.va", d.harness.neighbours[0]);
         // A plain reject is not exclusive.
-        try testing.expect(!(try tb.parse(arena, "//! reject E0310\n")).reject_only);
+        try testing.expect(!(try parse(arena, "//! reject E0310\n")).harness.reject_only);
         // `reject-only` is still a reject: no check count, no warnings.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! reject-only E0310\n//! checks 1\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! reject-only\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! reject-only E0310\n//! checks 1\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! reject-only\n"));
         // A neighbour on a positive fixture has nothing to be the neighbour of.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! neighbour legal_twin.va\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! neighbour legal_twin.va\n"));
         // One path per line, no spaces.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! reject E1\n//! neighbour a.va b.va\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! reject E1\n//! neighbour a.va b.va\n"));
     }
 
     test "directives: reject-run is a refusal the run makes, with a failing status" {
@@ -17331,19 +17380,19 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena, "//! reject-run E0816\n//! neighbour legal.va\n//! checks 1\n");
-        try testing.expectEqualStrings("E0816", d.reject_run[0]);
-        try testing.expectEqual(@as(usize, 0), d.reject.len);
+        const d = try parse(arena, "//! reject-run E0816\n//! neighbour legal.va\n//! checks 1\n");
+        try testing.expectEqualStrings("E0816", d.harness.reject_run[0]);
+        try testing.expectEqual(@as(usize, 0), d.harness.reject.len);
         // The run compiles and may assert before it is refused.
-        try testing.expectEqual(@as(?usize, 1), d.expected_checks);
+        try testing.expectEqual(@as(?u32, 1), d.harness.expected_checks);
         // The status every run-time `error[...]` exits with, unless named.
-        try testing.expectEqual(1, d.expected_exit);
-        try testing.expectEqual(3, (try tb.parse(arena, "//! exit 3\n//! reject-run E0601\n")).expected_exit);
+        try testing.expectEqual(1, d.harness.expected_exit);
+        try testing.expectEqual(3, (try parse(arena, "//! exit 3\n//! reject-run E0601\n")).harness.expected_exit);
         // A refusal that exits 0 is not one.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! reject-run E0601\n//! exit 0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! reject-run E0601\n//! exit 0\n"));
         // Refused by the compiler or by the run, never both; and never unnamed.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! reject-run E0601\n//! reject E0601\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! reject-run\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! reject-run E0601\n//! reject E0601\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! reject-run\n"));
     }
 
     test "§4.6.4.6 `//! noise` states a correlation coefficient with another row" {
@@ -17351,8 +17400,8 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena, "//! noise thermal(a,b)#0 corr=1:-1 corr=2:0\n");
-        const w = d.noise[0];
+        const d = try parse(arena, "//! noise thermal(a,b)#0 corr=1:-1 corr=2:0\n");
+        const w = d.bench.noise.?[0];
         try testing.expectEqual(@as(usize, 2), w.corrs.len);
         try testing.expectEqual(@as(u16, 1), w.corrs[0].with);
         try testing.expectEqual(@as(f64, -1), w.corrs[0].rho);
@@ -17361,7 +17410,7 @@ pub const exe_tests = struct {
         try testing.expect(w.needsPoint());
         for ([_][]const u8{ "corr=1", "corr=:1", "corr=x:1", "corr=1:", "corr=-1:1" }) |bad| {
             // BadSyntax or BadNumber: either way the line asserts nothing silently.
-            if (tb.parse(arena, try arena.print("//! noise thermal(a,b)#0 {s}\n", .{bad}))) |_| {
+            if (parse(arena, try arena.print("//! noise thermal(a,b)#0 {s}\n", .{bad}))) |_| {
                 return error.TestUnexpectedResult;
             } else |_| {}
         }
@@ -17372,21 +17421,21 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! meta parameter res units="Ohms" desc="Resistance"
             \\//! meta variable cgs desc="gate-source capacitance"
             \\//! meta net d   desc="drain terminal"
             \\
         );
-        try testing.expect(d.asserts_meta);
+        try testing.expect((d.bench.meta != null));
         // `desc` before `units`, one space apart, whatever order the line used.
-        try testing.expectEqualStrings("parameter res desc=\"Resistance\" units=\"Ohms\"", d.meta[0]);
-        try testing.expectEqualStrings("variable cgs desc=\"gate-source capacitance\"", d.meta[1]);
-        try testing.expectEqualStrings("net d desc=\"drain terminal\"", d.meta[2]);
-        const none = try tb.parse(arena, "//! meta none\n");
-        try testing.expect(none.asserts_meta and none.meta.len == 0);
+        try testing.expectEqualStrings("parameter res desc=\"Resistance\" units=\"Ohms\"", d.bench.meta.?[0]);
+        try testing.expectEqualStrings("variable cgs desc=\"gate-source capacitance\"", d.bench.meta.?[1]);
+        try testing.expectEqualStrings("net d desc=\"drain terminal\"", d.bench.meta.?[2]);
+        const none = try parse(arena, "//! meta none\n");
+        try testing.expect((none.bench.meta != null) and none.bench.meta.?.len == 0);
         for ([_][]const u8{ "port p desc=\"x\"", "net", "net d desc=x", "net d desc=\"x", "net d note=\"x\"", "net d desc=\"a\" desc=\"b\"" }) |bad| {
-            try testing.expectError(error.BadSyntax, tb.parse(arena, try arena.print("//! meta {s}\n", .{bad})));
+            try testing.expectError(error.BadSyntax, parse(arena, try arena.print("//! meta {s}\n", .{bad})));
         }
     }
 
@@ -17394,13 +17443,13 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! noise thermal(a,b)#0 corr=1:-1
             \\//! noise thermal(c,d)#0
             \\//! meta parameter r desc="R" units="Ohm"
             \\
         );
-        const src = try tb.renderRunner(arena, "corr_meta", d);
+        const src = try runner(arena, "corr_meta", d);
         const z = try arena.dupeSentinel(u8, src, 0);
         var ast = try std.zig.Ast.parse(testing.allocator, z, .{ .mode = .zig });
         defer ast.deinit(testing.allocator);
@@ -17417,26 +17466,26 @@ pub const exe_tests = struct {
         // Bit equality with the same spelling in the model (`Lexer.scaleExp`):
         // `200 * 1e-6` is a different double from `200e-6`.
         // In increasing order, as a time grid must be.
-        const d = try tb.parse(arena, "//! time 0, 1n, 200u, 2.5m, 1K\n");
-        try testing.expectEqual(@as(f64, 0.0), d.times[0]);
-        try testing.expectEqual(@as(f64, 1e-9), d.times[1]);
-        try testing.expectEqual(@as(f64, 200e-6), d.times[2]);
-        try testing.expectEqual(@as(f64, 2.5e-3), d.times[3]);
-        try testing.expectEqual(@as(f64, 1e3), d.times[4]);
+        const d = try parse(arena, "//! time 0, 1n, 200u, 2.5m, 1K\n");
+        try testing.expectEqual(@as(f64, 0.0), d.bench.times_s[0]);
+        try testing.expectEqual(@as(f64, 1e-9), d.bench.times_s[1]);
+        try testing.expectEqual(@as(f64, 200e-6), d.bench.times_s[2]);
+        try testing.expectEqual(@as(f64, 2.5e-3), d.bench.times_s[3]);
+        try testing.expectEqual(@as(f64, 1e3), d.bench.times_s[4]);
         // The product must be computed at run time: comptime float arithmetic is
         // exact, so a literal `200.0 * 1e-6` would already be correctly rounded.
         var two_hundred: f64 = 200;
         _ = &two_hundred;
         const multiplied = two_hundred * 1e-6;
-        try testing.expect(d.times[2] == 200e-6);
+        try testing.expect(d.bench.times_s[2] == 200e-6);
         try testing.expect(multiplied != 200e-6);
-        try testing.expect(d.times[2] != multiplied);
+        try testing.expect(d.bench.times_s[2] != multiplied);
 
         // A bare suffix is not a number, and neither is a suffix on nothing.
-        try testing.expectError(error.BadNumber, tb.parse(arena, "//! temp u\n"));
+        try testing.expectError(error.BadNumber, parse(arena, "//! temp u\n"));
         // A plain float still goes straight through.
-        const plain = try tb.parse(arena, "//! temp 300.15\n");
-        try testing.expectEqual(@as(f64, 300.15), plain.temp);
+        const plain = try parse(arena, "//! temp 300.15\n");
+        try testing.expectEqual(@as(f64, 300.15), plain.bench.temperature_k);
     }
 
     test "§5.4.2 a branch potential is not a solver unknown" {
@@ -17446,18 +17495,18 @@ pub const exe_tests = struct {
 
         // `V(a,c)` is a potential difference, derived from two unknowns; refused
         // at parse time rather than failing the testbench build.
-        try testing.expectError(error.BadUnknownName, tb.parse(arena, "//! bias V(a,c) = 0.6\n"));
-        try testing.expectError(error.BadUnknownName, tb.parse(arena, "//! bias V(a, c) = 0.6\n"));
-        try testing.expectError(error.BadUnknownName, tb.parse(arena, "//! sweep V(a,c) = 0, 1\n"));
+        try testing.expectError(error.BadUnknownName, parse(arena, "//! bias V(a,c) = 0.6\n"));
+        try testing.expectError(error.BadUnknownName, parse(arena, "//! bias V(a, c) = 0.6\n"));
+        try testing.expectError(error.BadUnknownName, parse(arena, "//! sweep V(a,c) = 0, 1\n"));
 
         // A branch flow is an unknown (§5.4.2), spelled through `naming.sanitize`
         // as codegen spells its `U` member.
-        const flow = try tb.parse(arena, "//! bias I(a,c) = 0.25\n");
-        try testing.expectEqualStrings("flowZ28aZ2ccZ29", flow.bias[0].name);
+        const flow = try parse(arena, "//! bias I(a,c) = 0.25\n");
+        try testing.expectEqualStrings("flowZ28aZ2ccZ29", flow.bench.bias[0].name);
 
         // Whitespace inside the access function is not part of the name.
-        const spaced = try tb.parse(arena, "//! bias V( a ) = 0.5\n");
-        try testing.expectEqualStrings("a", spaced.bias[0].name);
+        const spaced = try parse(arena, "//! bias V( a ) = 0.5\n");
+        try testing.expectEqualStrings("a", spaced.bench.bias[0].name);
     }
 
     test "§4.6.4 `//! noise` states the exported generator table" {
@@ -17465,36 +17514,36 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena, "//! noise thermal(a,b)#0\n//! noise flicker(d,s)#null\n");
-        try testing.expect(d.asserts_noise);
-        try testing.expectEqual(@as(usize, 2), d.noise.len);
-        try testing.expectEqualStrings("thermal(a,b)#0", d.noise[0].topo);
-        try testing.expectEqualStrings("flicker(d,s)#null", d.noise[1].topo);
+        const d = try parse(arena, "//! noise thermal(a,b)#0\n//! noise flicker(d,s)#null\n");
+        try testing.expect((d.bench.noise != null));
+        try testing.expectEqual(@as(usize, 2), d.bench.noise.?.len);
+        try testing.expectEqualStrings("thermal(a,b)#0", d.bench.noise.?[0].topo);
+        try testing.expectEqualStrings("flicker(d,s)#null", d.bench.noise.?[1].topo);
         // A line with no `key=value` tail asserts the topology only.
-        try testing.expect(d.noise[0].name == null);
-        try testing.expect(d.noise[0].white == null);
-        try testing.expect(!d.noise[0].needsPoint());
+        try testing.expect(d.bench.noise.?[0].name == null);
+        try testing.expect(d.bench.noise.?[0].white == null);
+        try testing.expect(!d.bench.noise.?[0].needsPoint());
 
         // `none` asserts an empty table, unlike an absent directive.
-        const none = try tb.parse(arena, "//! noise none\n");
-        try testing.expect(none.asserts_noise);
-        try testing.expectEqual(@as(usize, 0), none.noise.len);
+        const none = try parse(arena, "//! noise none\n");
+        try testing.expect((none.bench.noise != null));
+        try testing.expectEqual(@as(usize, 0), none.bench.noise.?.len);
 
-        const silent = try tb.parse(arena, "//! analysis dc\n");
-        try testing.expect(!silent.asserts_noise);
+        const silent = try parse(arena, "//! analysis dc\n");
+        try testing.expect(!(silent.bench.noise != null));
 
         // A misspelled kind is caught at parse time.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise pink(a,b)#0\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise thermal a,b\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise thermal(a)#0\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise thermal(,b)#0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise pink(a,b)#0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise thermal a,b\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise thermal(a)#0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise thermal(,b)#0\n"));
         // The §4.6.4.6 source id (digits or `null`) is mandatory.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise thermal(a,b)\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise thermal(a,b)#\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise thermal(a,b)#x\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise thermal(a,b)\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise thermal(a,b)#\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise thermal(a,b)#x\n"));
         // A node name is not checked: the unknowns are not known at parse time.
-        const odd = try tb.parse(arena, "//! noise shot(nosuchnode,b)#3\n");
-        try testing.expectEqual(@as(usize, 1), odd.noise.len);
+        const odd = try parse(arena, "//! noise shot(nosuchnode,b)#3\n");
+        try testing.expectEqual(@as(usize, 1), odd.bench.noise.?.len);
     }
 
     test "§4.6.4 a `//! noise` line states the row's contents as well as its place" {
@@ -17502,47 +17551,47 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! noise thermal(p,n)#0 name=thermal white=4e-18
             \\//! noise flicker(p,n)#1 name=flicker flicker=1e-20 ef=1.25 rtol=1e-4
             \\//! noise table(p,n)#2 name=tbl interp=log points=1.0:1e-18,1e3:1e-21
             \\
         );
-        try testing.expectEqual(@as(usize, 3), d.noise.len);
+        try testing.expectEqual(@as(usize, 3), d.bench.noise.?.len);
 
         // The fields are a tail; the topology string is unchanged.
-        try testing.expectEqualStrings("thermal(p,n)#0", d.noise[0].topo);
-        try testing.expectEqualStrings("thermal", d.noise[0].name.?);
-        try testing.expectEqual(@as(f64, 4e-18), d.noise[0].white.?);
-        try testing.expectEqual(@as(f64, 1e-12), d.noise[0].rtol); // the default
-        try testing.expect(d.noise[0].needsPoint());
+        try testing.expectEqualStrings("thermal(p,n)#0", d.bench.noise.?[0].topo);
+        try testing.expectEqualStrings("thermal", d.bench.noise.?[0].name.?);
+        try testing.expectEqual(@as(f64, 4e-18), d.bench.noise.?[0].white.?);
+        try testing.expectEqual(@as(f64, 1e-12), d.bench.noise.?[0].rtol); // the default
+        try testing.expect(d.bench.noise.?[0].needsPoint());
 
-        try testing.expectEqual(@as(f64, 1e-20), d.noise[1].flicker.?);
-        try testing.expectEqual(@as(f64, 1.25), d.noise[1].ef.?);
-        try testing.expectEqual(@as(f64, 1e-4), d.noise[1].rtol);
+        try testing.expectEqual(@as(f64, 1e-20), d.bench.noise.?[1].flicker.?);
+        try testing.expectEqual(@as(f64, 1.25), d.bench.noise.?[1].ef.?);
+        try testing.expectEqual(@as(f64, 1e-4), d.bench.noise.?[1].rtol);
 
         // `interp`/`points` are comptime table data and need no bias.
-        try testing.expectEqualStrings("log", d.noise[2].interp.?);
-        try testing.expectEqualSlices([2]f64, &.{ .{ 1.0, 1e-18 }, .{ 1e3, 1e-21 } }, d.noise[2].points.?);
-        try testing.expect(!d.noise[2].needsPoint());
+        try testing.expectEqual(.log, d.bench.noise.?[2].interp.?);
+        try testing.expectEqualSlices([2]f64, &.{ .{ 1.0, 1e-18 }, .{ 1e3, 1e-21 } }, d.bench.noise.?[2].points.?);
+        try testing.expect(!d.bench.noise.?[2].needsPoint());
 
         // `psd` is the same pair syntax, densities at frequencies, and also needs
         // no bias: it reads the table, not `noisePsd`.
-        const with_psd = try tb.parse(arena, "//! noise table(p,n)#0 psd=4e3:1.7e-17,1.0:9e-18\n");
-        try testing.expectEqualSlices([2]f64, &.{ .{ 4e3, 1.7e-17 }, .{ 1.0, 9e-18 } }, with_psd.noise[0].psd.?);
-        try testing.expect(with_psd.noise[0].points == null);
-        try testing.expect(!with_psd.noise[0].needsPoint());
+        const with_psd = try parse(arena, "//! noise table(p,n)#0 psd=4e3:1.7e-17,1.0:9e-18\n");
+        try testing.expectEqualSlices([2]f64, &.{ .{ 4e3, 1.7e-17 }, .{ 1.0, 9e-18 } }, with_psd.bench.noise.?[0].psd.?);
+        try testing.expect(with_psd.bench.noise.?[0].points == null);
+        try testing.expect(!with_psd.bench.noise.?[0].needsPoint());
 
         // A space inside the parentheses still parses.
-        const spaced = try tb.parse(arena, "//! noise thermal(p, n)#0 name=x\n");
-        try testing.expectEqualStrings("thermal(p, n)#0", spaced.noise[0].topo);
+        const spaced = try parse(arena, "//! noise thermal(p, n)#0 name=x\n");
+        try testing.expectEqualStrings("thermal(p, n)#0", spaced.bench.noise.?[0].topo);
 
         // An unknown key is refused, since nothing would check it.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise thermal(a,b)#0 whte=1\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise thermal(a,b)#0 name\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise table(a,b)#0 interp=spline\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise table(a,b)#0 points=1.0\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! noise table(a,b)#0 psd=\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise thermal(a,b)#0 whte=1\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise thermal(a,b)#0 name\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise table(a,b)#0 interp=spline\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise table(a,b)#0 points=1.0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! noise table(a,b)#0 psd=\n"));
     }
 
     test "§9.17.3 `//! seed` and `//! limit` state the published cold start and clamp" {
@@ -17550,26 +17599,26 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! seed V(si) = -0.7, V(b) = -1.7
             \\//! seed V(g) = 0
             \\//! limit V(b) = 0 -> V(b) = 0.1, converged = 0
             \\//! limit -> V(b) = 1.5
             \\
         );
-        try testing.expect(d.asserts_seed);
-        try testing.expectEqual(@as(usize, 3), d.seeds.len);
-        try testing.expectEqualStrings("b", d.seeds[1].name);
-        try testing.expectEqual(@as(usize, 2), d.limits.len);
-        try testing.expectEqual(@as(usize, 1), d.limits[0].old.len);
-        try testing.expectEqualStrings("converged", d.limits[0].want[1].name);
-        try testing.expectEqual(@as(usize, 0), d.limits[1].old.len);
+        try testing.expect((d.bench.seeds != null));
+        try testing.expectEqual(@as(usize, 3), d.bench.seeds.?.len);
+        try testing.expectEqualStrings("b", d.bench.seeds.?[1].name);
+        try testing.expectEqual(@as(usize, 2), d.bench.limits.len);
+        try testing.expectEqual(@as(usize, 1), d.bench.limits[0].old.len);
+        try testing.expectEqualStrings("converged", d.bench.limits[0].want[1].name);
+        try testing.expectEqual(@as(usize, 0), d.bench.limits[1].old.len);
 
-        const none = try tb.parse(arena, "//! seed none\n");
-        try testing.expect(none.asserts_seed and none.seeds.len == 0);
+        const none = try parse(arena, "//! seed none\n");
+        try testing.expect((none.bench.seeds != null) and none.bench.seeds.?.len == 0);
         // No `->` names no output, and no output is no assertion.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! limit V(b) = 0\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! limit V(b) = 0 ->\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! limit V(b) = 0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! limit V(b) = 0 ->\n"));
     }
 
     test "§4.6.3 `//! acstim` states the exported stimulus table" {
@@ -17577,36 +17626,36 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! acstim (p,n) name=ac mag=2.0 phase=1.0471975511965976
             \\//! acstim (q, n) mag=1.0 phase=1.5707963267948966 rtol=1e-6
             \\
         );
-        try testing.expect(d.asserts_acstim);
-        try testing.expectEqual(@as(usize, 2), d.acstim.len);
-        try testing.expectEqualStrings("(p,n)", d.acstim[0].topo);
-        try testing.expectEqualStrings("ac", d.acstim[0].name.?);
-        try testing.expectEqual(@as(f64, 2.0), d.acstim[0].mag.?);
-        try testing.expectEqual(@as(f64, 1e-12), d.acstim[0].rtol); // the default
-        try testing.expectEqual(@as(f64, 1e-6), d.acstim[1].rtol);
-        try testing.expect(d.acstim[0].needsPoint());
+        try testing.expect((d.bench.acstim != null));
+        try testing.expectEqual(@as(usize, 2), d.bench.acstim.?.len);
+        try testing.expectEqualStrings("(p,n)", d.bench.acstim.?[0].topo);
+        try testing.expectEqualStrings("ac", d.bench.acstim.?[0].name.?);
+        try testing.expectEqual(@as(f64, 2.0), d.bench.acstim.?[0].mag.?);
+        try testing.expectEqual(@as(f64, 1e-12), d.bench.acstim.?[0].rtol); // the default
+        try testing.expectEqual(@as(f64, 1e-6), d.bench.acstim.?[1].rtol);
+        try testing.expect(d.bench.acstim.?[0].needsPoint());
 
         // Canonicalised to the device's spelling.
-        try testing.expectEqualStrings("(q,n)", d.acstim[1].topo);
+        try testing.expectEqualStrings("(q,n)", d.bench.acstim.?[1].topo);
         // `name=` is optional; §4.6.3 defaults `analysis_name` to "ac".
-        try testing.expect(d.acstim[1].name == null);
+        try testing.expect(d.bench.acstim.?[1].name == null);
 
         // `none` asserts an empty table.
-        const none = try tb.parse(arena, "//! acstim none\n");
-        try testing.expect(none.asserts_acstim);
-        try testing.expectEqual(@as(usize, 0), none.acstim.len);
+        const none = try parse(arena, "//! acstim none\n");
+        try testing.expect((none.bench.acstim != null));
+        try testing.expectEqual(@as(usize, 0), none.bench.acstim.?.len);
 
         // An unknown key is refused.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! acstim (a,b) magnitude=1\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! acstim (a,b) mag\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! acstim a,b mag=1\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! acstim (a) mag=1\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! acstim (,b) mag=1\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! acstim (a,b) magnitude=1\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! acstim (a,b) mag\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! acstim a,b mag=1\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! acstim (a) mag=1\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! acstim (,b) mag=1\n"));
     }
 
     test "`//! acdyn` names a slot, a frequency and the complex term" {
@@ -17614,44 +17663,44 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        const d = try tb.parse(arena, "//! acdyn (out, in) f=125M re=0.5 im=-0.5 tol=1e-9\n");
-        try testing.expectEqual(@as(usize, 1), d.acdyn.len);
-        try testing.expectEqualStrings("out", d.acdyn[0].row);
-        try testing.expectEqualStrings("in", d.acdyn[0].col);
-        try testing.expectEqual(@as(f64, 125e6), d.acdyn[0].f);
-        try testing.expectEqual(@as(f64, -0.5), d.acdyn[0].im);
-        try testing.expectEqual(@as(f64, 1e-9), d.acdyn[0].tol);
+        const d = try parse(arena, "//! acdyn (out, in) f=125M re=0.5 im=-0.5 tol=1e-9\n");
+        try testing.expectEqual(@as(usize, 1), d.bench.acdyn.len);
+        try testing.expectEqualStrings("out", d.bench.acdyn[0].row);
+        try testing.expectEqualStrings("in", d.bench.acdyn[0].col);
+        try testing.expectEqual(@as(f64, 125e6), d.bench.acdyn[0].f_hz);
+        try testing.expectEqual(@as(f64, -0.5), d.bench.acdyn[0].im);
+        try testing.expectEqual(@as(f64, 1e-9), d.bench.acdyn[0].tol);
         // f, re and im are each required; an unknown key is refused.
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! acdyn (out,in) re=1 im=0\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! acdyn (out,in) f=1 im=0\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! acdyn (out,in) f=1 re=1 im=0 phase=0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! acdyn (out,in) re=1 im=0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! acdyn (out,in) f=1 im=0\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! acdyn (out,in) f=1 re=1 im=0 phase=0\n"));
     }
 
     test "analysis takes an optional §9.15 analysis_name after the kind" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const named = try tb.parse(arena, "//! analysis dc mydc\n");
-        try testing.expectEqual(.dc, named.analysis);
-        try testing.expectEqualStrings("mydc", named.analysis_name);
-        try testing.expectEqualStrings("", (try tb.parse(arena, "//! analysis tran\n")).analysis_name);
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! analysis dc two words\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! analysis nosuch\n"));
+        const named = try parse(arena, "//! analysis dc mydc\n");
+        try testing.expectEqual(.dc, named.bench.analysis);
+        try testing.expectEqualStrings("mydc", named.bench.analysis_name);
+        try testing.expectEqualStrings("", (try parse(arena, "//! analysis tran\n")).bench.analysis_name);
+        try testing.expectError(error.BadSyntax, parse(arena, "//! analysis dc two words\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! analysis nosuch\n"));
     }
 
     test "plusargs preserves tokens, duplicate arguments and repeated-line order" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena, "//! plusargs +HELLO\t+gain=7 +gain=8\r\n//! plusargs +HELLO +empty= +literal=$HOME;*\n");
+        const d = try parse(arena, "//! plusargs +HELLO\t+gain=7 +gain=8\r\n//! plusargs +HELLO +empty= +literal=$HOME;*\n");
         const want = [_][]const u8{ "+HELLO", "+gain=7", "+gain=8", "+HELLO", "+empty=", "+literal=$HOME;*" };
-        try testing.expectEqual(want.len, d.plusargs.len);
-        for (want, d.plusargs) |expected, actual| try testing.expectEqualStrings(expected, actual);
+        try testing.expectEqual(want.len, d.harness.plusargs.len);
+        for (want, d.harness.plusargs) |expected, actual| try testing.expectEqualStrings(expected, actual);
         // Existing defaults are unaffected; metacharacters above are literal bytes.
-        try testing.expectEqual(0, d.expected_exit);
-        try testing.expectEqual(null, d.expected_checks);
-        try testing.expect(d.print_residual);
-        try testing.expectEqual(0, (try tb.parse(arena, "//! checks 2\n")).plusargs.len);
+        try testing.expectEqual(0, d.harness.expected_exit);
+        try testing.expectEqual(null, d.harness.expected_checks);
+        try testing.expect((d.bench.print == .residual));
+        try testing.expectEqual(0, (try parse(arena, "//! checks 2\n")).harness.plusargs.len);
     }
 
     test "plusargs rejects malformed operands rather than dropping them" {
@@ -17660,7 +17709,7 @@ pub const exe_tests = struct {
         const arena = arena_state.allocator();
         for ([_][]const u8{ "", "+", "HELLO", "+ok missingplus", "+s=\"hello\"", "+s='hello'", "+s=\\value", "+s=\x00", "+s=\x7f", "+s=\x80", "+a\r+b" }) |bad| {
             const source = try arena.print("//! plusargs {s}\n", .{bad});
-            try testing.expectError(error.BadSyntax, tb.parse(arena, source));
+            try testing.expectError(error.BadSyntax, parse(arena, source));
         }
     }
 
@@ -17668,51 +17717,51 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        try testing.expectEqual(0, (try tb.parse(arena, "")).expected_exit);
-        try testing.expectEqual(1, (try tb.parse(arena, "//! exit 1\n")).expected_exit);
-        try testing.expectEqual(255, (try tb.parse(arena, "//! exit 255\n")).expected_exit);
-        try testing.expectError(error.BadNumber, tb.parse(arena, "//! exit 256\n"));
-        try testing.expectError(error.BadNumber, tb.parse(arena, "//! exit -1\n"));
+        try testing.expectEqual(0, (try parse(arena, "")).harness.expected_exit);
+        try testing.expectEqual(1, (try parse(arena, "//! exit 1\n")).harness.expected_exit);
+        try testing.expectEqual(255, (try parse(arena, "//! exit 255\n")).harness.expected_exit);
+        try testing.expectError(error.BadNumber, parse(arena, "//! exit 256\n"));
+        try testing.expectError(error.BadNumber, parse(arena, "//! exit -1\n"));
     }
 
     test "expected runtime check count is positive, unique and not a rejection" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        try testing.expectEqual(null, (try tb.parse(arena, "")).expected_checks);
-        try testing.expectEqual(@as(?usize, 215), (try tb.parse(arena, "//! checks 215\n")).expected_checks);
+        try testing.expectEqual(null, (try parse(arena, "")).harness.expected_checks);
+        try testing.expectEqual(@as(?u32, 215), (try parse(arena, "//! checks 215\n")).harness.expected_checks);
         for ([_][]const u8{ "", "0", "-1", "+1", "1.0", "1_0", "two" }) |bad| {
             const source = try arena.print("//! checks {s}\n", .{bad});
-            try testing.expectError(error.BadNumber, tb.parse(arena, source));
+            try testing.expectError(error.BadNumber, parse(arena, source));
         }
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! checks 1\n//! checks 2\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! checks 1\n//! reject E0208\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! checks 1\n//! checks 2\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! checks 1\n//! reject E0208\n"));
     }
 
     test "warn is a named substring on a compiling fixture; nowarn stands alone" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena, "//! warn W0853\n//! warn not applied at this call\n");
-        try testing.expectEqual(@as(usize, 2), d.warn.len);
-        try testing.expectEqualStrings("not applied at this call", d.warn[1]);
-        try testing.expect((try tb.parse(arena, "//! nowarn\n")).nowarn);
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! warn\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! nowarn W0853\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! warn W0853\n//! nowarn\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! warn W0853\n//! reject E0208\n"));
-        try testing.expectError(error.BadSyntax, tb.parse(arena, "//! nowarn\n//! reject E0208\n"));
+        const d = try parse(arena, "//! warn W0853\n//! warn not applied at this call\n");
+        try testing.expectEqual(@as(usize, 2), d.harness.warn.len);
+        try testing.expectEqualStrings("not applied at this call", d.harness.warn[1]);
+        try testing.expect((try parse(arena, "//! nowarn\n")).harness.nowarn);
+        try testing.expectError(error.BadSyntax, parse(arena, "//! warn\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! nowarn W0853\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! warn W0853\n//! nowarn\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! warn W0853\n//! reject E0208\n"));
+        try testing.expectError(error.BadSyntax, parse(arena, "//! nowarn\n//! reject E0208\n"));
     }
 
     test "sweep expansion is the cartesian product, last fastest" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! sweep V(a) = 0, 1
             \\//! sweep V(b) = 10, 20, 30
         );
-        const pts = try tb.expand(arena, d);
+        const pts = try expand(arena, d.bench);
         try testing.expectEqual(@as(usize, 6), pts.len);
         try testing.expectEqualSlices(f64, &.{ 0, 10 }, pts[0]);
         try testing.expectEqualSlices(f64, &.{ 0, 20 }, pts[1]);
@@ -17721,52 +17770,69 @@ pub const exe_tests = struct {
         try testing.expectEqualSlices(f64, &.{ 1, 30 }, pts[5]);
     }
 
-    test "sweep expansion stops at max_points, counting the product" {
+    test "sweep expansion stops at points_max, counting the product" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const vals = try arena.alloc(f64, tb.max_points + 1);
+        const vals = try arena.alloc(f64, tb.points_max + 1);
         for (vals, 0..) |*v, i| v.* = @floatFromInt(i);
-        const at_cap: tb.Directives = .{ .sweeps = &.{.{ .name = "a", .values = vals[0..tb.max_points] }} };
-        try testing.expectEqual(tb.max_points, (try tb.expand(arena, at_cap)).len);
-        const over: tb.Directives = .{ .sweeps = &.{.{ .name = "a", .values = vals }} };
-        try testing.expectError(error.TooManyPoints, tb.expand(arena, over));
+        const at_cap: tb.Bench = .{ .sweeps = &.{.{ .name = "a", .values = vals[0..tb.points_max] }} };
+        try testing.expectEqual(tb.points_max, (try expand(arena, at_cap)).len);
+        const over: tb.Bench = .{ .sweeps = &.{.{ .name = "a", .values = vals }} };
+        try testing.expectError(error.TooManyPoints, expand(arena, over));
         // 64 x 65 is past the cap, though neither column is.
-        const product: tb.Directives = .{
+        const product: tb.Bench = .{
             .sweeps = &.{.{ .name = "a", .values = vals[0..64] }},
             .psweeps = &.{.{ .name = "r", .values = vals[0..65] }},
         };
-        try testing.expectError(error.TooManyPoints, tb.expand(arena, product));
+        try testing.expectError(error.TooManyPoints, expand(arena, product));
         // Unknown columns first, then parameter columns, the parameter fastest.
-        const both: tb.Directives = .{
+        const both: tb.Bench = .{
             .sweeps = &.{.{ .name = "a", .values = vals[0..2] }},
             .psweeps = &.{.{ .name = "r", .values = vals[5..8] }},
         };
-        const pts = try tb.expand(arena, both);
+        const pts = try expand(arena, both);
         try testing.expectEqual(@as(usize, 6), pts.len);
         try testing.expectEqualSlices(f64, &.{ 0, 5 }, pts[0]);
         try testing.expectEqualSlices(f64, &.{ 0, 7 }, pts[2]);
         try testing.expectEqualSlices(f64, &.{ 1, 5 }, pts[3]);
         // No sweep is one point with no columns.
-        const one = try tb.expand(arena, .{});
+        const one = try expand(arena, .{});
         try testing.expectEqual(@as(usize, 1), one.len);
         try testing.expectEqual(@as(usize, 0), one[0].len);
+    }
+
+    test "a bench past points_max is refused before a byte is written" {
+        // Oracle: the writer's own count of what it was handed.
+        var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const vals = try arena.alloc(f64, 65);
+        for (vals, 0..) |*v, i| v.* = @floatFromInt(i);
+        const over: tb.Bench = .{
+            .sweeps = &.{.{ .name = "a", .values = vals[0..64] }},
+            .psweeps = &.{.{ .name = "r", .values = vals }},
+        };
+        var aw: std.Io.Writer.Allocating = .init(arena);
+        try testing.expectError(error.TooManyPoints, tb.writeRunner(&aw.writer, arena, "over", &over, .{}));
+        try testing.expectError(error.TooManyPoints, tb.writeRunner(&aw.writer, arena, "over", &over, .{ .mixed = sample_mixed }));
+        try testing.expectEqual(0, aw.written().len);
     }
 
     test "a wave is per-timepoint and holds its last value" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! time 0, 1n, 2n, 3n
             \\//! wave V(in) = 0, 1
             \\//! bias V(out) = 0
         );
-        try testing.expectEqual(@as(usize, 4), d.times.len);
-        try testing.expectEqualStrings("in", d.waves[0].name);
-        try testing.expectEqual(@as(usize, 2), d.waves[0].values.len);
+        try testing.expectEqual(@as(usize, 4), d.bench.times_s.len);
+        try testing.expectEqualStrings("in", d.bench.waves[0].name);
+        try testing.expectEqual(@as(usize, 2), d.bench.waves[0].values.len);
 
-        const src = try tb.renderRunner(arena, "060_wave", d);
+        const src = try runner(arena, "060_wave", d);
         // Four points, `in` = 1 after the first, and one `stepPost` per point so
         // operator state advances.
         try testing.expectEqual(@as(usize, 4), std.mem.count(u8, src, "        point("));
@@ -17779,18 +17845,18 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! sweep V(a) = 0, 1, 2
             \\//! time 0, 1n
         );
-        const src = try tb.renderRunner(arena, "061_reset", d);
+        const src = try runner(arena, "061_reset", d);
         // Three sweep points x two times, one `newState` per sweep point.
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "        point("));
         try testing.expectEqual(@as(usize, 3), std.mem.count(u8, src, "= newState("));
         // Point numbers are global, so no two transcript blocks share a label.
         try testing.expect(std.mem.find(u8, src, "point(5, &x") != null);
         // §4.6.2 a dc sweep is one analysis: its points share one `State`.
-        const dc = try tb.renderRunner(arena, "061_dc", try tb.parse(arena, "//! sweep V(a) = 0, 1, 2"));
+        const dc = try runner(arena, "061_dc", try parse(arena, "//! sweep V(a) = 0, 1, 2"));
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, dc, "= newState("));
     }
 
@@ -17800,7 +17866,7 @@ pub const exe_tests = struct {
         const arena = arena_state.allocator();
 
         // A dc sweep is one analysis: events on its first and last step only.
-        const swept = try tb.renderRunner(arena, "062_sweep", try tb.parse(arena, "//! sweep V(a) = 0, 1, 2\n"));
+        const swept = try runner(arena, "062_sweep", try parse(arena, "//! sweep V(a) = 0, 1, 2\n"));
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, swept, "sim_state.initial_step = true;"));
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, swept, "sim_state.final_step = true;"));
         try testing.expect(std.mem.find(u8, swept, "sim_state.initial_step = true;\n        sim_state.final_step = false;\n        sim_state.analog_initial = true;\n        var solved0 = solve(&x, &forced, &model, &inst);\n        if (crossRetry(&model, &inst, &x, &state)) |r| solved0 = locate(r, 0, &x, &forced, &model, &inst, &state, 0);\n        point(0,") != null);
@@ -17810,14 +17876,14 @@ pub const exe_tests = struct {
         try testing.expectEqual(@as(usize, 3), std.mem.count(u8, swept, "sim_state.analog_initial = true;"));
 
         // With `//! time` each sweep block is its own transient analysis.
-        const tran = try tb.renderRunner(arena, "063_tran", try tb.parse(arena, "//! sweep V(a) = 0, 1\n//! time 0, 1n, 2n\n"));
+        const tran = try runner(arena, "063_tran", try parse(arena, "//! sweep V(a) = 0, 1\n//! time 0, 1n, 2n\n"));
         try testing.expectEqual(@as(usize, 2), std.mem.count(u8, tran, "sim_state.initial_step = true;"));
         try testing.expectEqual(@as(usize, 2), std.mem.count(u8, tran, "sim_state.final_step = true;"));
         // Two blocks, so two sub-tasks: one analog-initial pass each, at dt = 0.
         try testing.expectEqual(@as(usize, 2), std.mem.count(u8, tran, "sim_state.analog_initial = true;"));
 
         // The single-point default is the Table 5-1 DCOP column: both events fire.
-        const op = try tb.renderRunner(arena, "064_op", .{});
+        const op = try runner(arena, "064_op", .{});
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, op, "sim_state.initial_step = true;"));
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, op, "sim_state.final_step = true;"));
     }
@@ -17826,12 +17892,12 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena,
+        const d = try parse(arena,
             \\//! param g = 2m
             \\//! sweep V(p) = 0, 1
             \\//! bias V(n) = 0
         );
-        const src = try tb.renderRunner(arena, "001_demo", d);
+        const src = try runner(arena, "001_demo", d);
         const z = try arena.dupeSentinel(u8, src, 0);
         var ast = try std.zig.Ast.parse(testing.allocator, z, .{ .mode = .zig });
         defer ast.deinit(testing.allocator);
@@ -17896,20 +17962,21 @@ pub const exe_tests = struct {
                 try src.appendSlice(arena, pool[r.uintLessThan(usize, pool.len)]);
                 try src.append(arena, '\n');
             }
-            var d = tb.parse(arena, src.items) catch continue;
-            d.op_states = if (r.boolean()) &.{ 0, 3 } else &.{};
-            d.validate_contract = r.boolean();
-            d.certify = r.boolean();
-            d.finite_proved = r.boolean();
-            const fixed = tb.renderRunner(arena, "gen \"t\" \\", d) catch |e| switch (e) {
+            const d = parse(arena, src.items) catch continue;
+            var facts: tb.Facts = .{
+                .op_states = if (r.boolean()) &.{ 0, 3 } else &.{},
+                .validate_contract = r.boolean(),
+                .certify = r.boolean(),
+                .finite_proved = r.boolean(),
+            };
+            const fixed = runnerWith(arena, "gen \"t\" \\", d, facts) catch |e| switch (e) {
                 error.TooManyPoints => continue,
                 else => return e,
             };
             try expectAstGen(fixed);
-            try expectAstGen(try tb.renderVpiLib(arena, "gen", d));
-            var dm = d;
-            dm.mixed = sample_mixed;
-            try expectAstGen(try tb.renderRunner(arena, "gen", dm));
+            try expectAstGen(try vpiLibWith(arena, "gen", d, facts));
+            facts.mixed = sample_mixed;
+            try expectAstGen(try runnerWith(arena, "gen", d, facts));
             rendered += 1;
         }
         // Most draws are compatible lines; a run that renders few has stopped
@@ -17922,7 +17989,7 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        try expectAstGen(try tb.renderRunner(arena, "seed_none", try tb.parse(arena, "//! seed none\n")));
+        try expectAstGen(try runner(arena, "seed_none", try parse(arena, "//! seed none\n")));
     }
 
     test "no rendered testbench uses a name Zig 0.17 deprecates" {
@@ -17932,13 +17999,11 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena, "//! noise thermal(a,b)#0\n//! acstim (a,b)\n//! seed V(a) = 1\n//! abstol V(a) = 1e-6\n");
-        var dm = d;
-        dm.mixed = sample_mixed;
+        const d = try parse(arena, "//! noise thermal(a,b)#0\n//! acstim (a,b)\n//! seed V(a) = 1\n//! abstol V(a) = 1e-6\n");
         const texts = [_][]const u8{
-            try tb.renderRunner(arena, "dep", d),
-            try tb.renderRunner(arena, "dep", dm),
-            try tb.renderVpiLib(arena, "dep", d),
+            try runner(arena, "dep", d),
+            try runnerWith(arena, "dep", d, .{ .mixed = sample_mixed }),
+            try vpiLib(arena, "dep", d),
         };
         for (texts) |src| for (deprecated) |name| {
             if (std.mem.find(u8, src, name)) |at| {
@@ -17955,10 +18020,10 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
         for ([_][]const u8{ "0, 2n, 1n", "0, 1n, 1n", "1n, 0" }) |bad| {
-            try testing.expectError(error.BadSyntax, tb.parse(arena, try arena.print("//! time {s}\n", .{bad})));
+            try testing.expectError(error.BadSyntax, parse(arena, try arena.print("//! time {s}\n", .{bad})));
         }
-        try testing.expectEqual(@as(usize, 1), (try tb.parse(arena, "//! time 5n\n")).times.len);
-        try testing.expectEqual(@as(usize, 3), (try tb.parse(arena, "//! time 0, 1n, 1.5n\n")).times.len);
+        try testing.expectEqual(@as(usize, 1), (try parse(arena, "//! time 5n\n")).bench.times_s.len);
+        try testing.expectEqual(@as(usize, 3), (try parse(arena, "//! time 0, 1n, 1.5n\n")).bench.times_s.len);
     }
 
     test "a time and a temperature are finite" {
@@ -17972,9 +18037,9 @@ pub const exe_tests = struct {
             "//! time NaN\n",
             "//! time infinity\n",
             "//! time 0, infinity\n",
-        }) |line| try testing.expectError(error.BadSyntax, tb.parse(arena, line));
+        }) |line| try testing.expectError(error.BadSyntax, parse(arena, line));
         for ([_][]const u8{ "//! temp NaN\n", "//! temp infinity\n", "//! temp -infinity\n" }) |line|
-            try testing.expectError(error.BadNumber, tb.parse(arena, line));
+            try testing.expectError(error.BadNumber, parse(arena, line));
     }
 
     test "the operand forms of meta, acstim and acdyn refuse what they cannot read" {
@@ -17996,17 +18061,17 @@ pub const exe_tests = struct {
             "//! noise thermal(a,b)#x\n", // a source is digits or null
             "//! noise hum(a,b)#0\n", // not a generator kind
             "//! noise thermal(a,b)#0 points=\n", // an empty knot list
-        }) |line| try testing.expectError(error.BadSyntax, tb.parse(arena, line));
+        }) |line| try testing.expectError(error.BadSyntax, parse(arena, line));
     }
 
-    /// `parse` then `renderRunner`, in an arena over `gpa`.
+    /// `parse` then `writeRunner` and `writeVpiLib`, in an arena over `gpa`.
     fn parseRender(gpa: std.mem.Allocator, src: []const u8) !void {
         var arena_state = std.heap.ArenaAllocator.init(gpa);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena, src);
-        _ = try tb.renderRunner(arena, "oom", d);
-        _ = try tb.renderVpiLib(arena, "oom", d);
+        const d = try parse(arena, src);
+        _ = try runner(arena, "oom", d);
+        _ = try vpiLib(arena, "oom", d);
     }
 
     test "parse and render report OutOfMemory at every allocation" {
@@ -18022,7 +18087,7 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
         for ([_][]const u8{ "+1", "1_0", "0x1", "1 2" }) |bad| {
-            try testing.expectError(error.BadNumber, tb.parse(arena, try arena.print("//! exit {s}\n", .{bad})));
+            try testing.expectError(error.BadNumber, parse(arena, try arena.print("//! exit {s}\n", .{bad})));
         }
     }
 
@@ -18036,14 +18101,14 @@ pub const exe_tests = struct {
             "//! seed V() = 1\n",
             "//! abstol x[] = 1e-6\n",
             "//! limit V() = 0 -> V(a) = 1\n",
-        }) |line| try testing.expectError(error.BadSyntax, tb.parse(arena, line));
+        }) |line| try testing.expectError(error.BadSyntax, parse(arena, line));
     }
 
     test "§8.2 each psweep point is its own card, derived and set up" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const src = try tb.renderRunner(arena, "ps", try tb.parse(arena, "//! sweep V(a) = 0, 1\n//! psweep r = 1, 2, 3\n"));
+        const src = try runner(arena, "ps", try parse(arena, "//! sweep V(a) = 0, 1\n//! psweep r = 1, 2, 3\n"));
         try expectAstGen(src);
         // 2 x 3 points, the parameter column fastest.
         try testing.expectEqual(@as(usize, 6), std.mem.count(u8, src, "        var pm = model;\n"));
@@ -18056,9 +18121,8 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        var d = try tb.parse(arena, "//! sweep V(a) = 0, 1\n//! time 0, 1n\n//! wave V(in) = 0, 1\n//! noise none\n");
-        d.mixed = sample_mixed;
-        const src = try tb.renderRunner(arena, "mx", d);
+        const d = try parse(arena, "//! sweep V(a) = 0, 1\n//! time 0, 1n\n//! wave V(in) = 0, 1\n//! noise none\n");
+        const src = try runnerWith(arena, "mx", d, .{ .mixed = sample_mixed });
         try expectAstGen(src);
         // A sweep point is an analysis; the time grid is `sim.mixed.run`'s.
         try testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "        runMixed(&model, &inst, &x, &forced, &state, &n);\n"));
@@ -18074,8 +18138,8 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena, "//! param g = 2m\n//! bias V(n) = 0\n//! time 0, 1n\n//! wave V(in) = 0, 1\n");
-        const src = try tb.renderVpiLib(arena, "vpi", d);
+        const d = try parse(arena, "//! param g = 2m\n//! bias V(n) = 0\n//! time 0, 1n\n//! wave V(in) = 0, 1\n");
+        const src = try vpiLib(arena, "vpi", d);
         try expectAstGen(src);
         for ([_][]const u8{
             "    g_model.g = cardValue(@TypeOf(g_model.g), \"g\", 0.002);\n",
@@ -18092,9 +18156,8 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        var d = try tb.parse(arena, "//! sweep V(a) = 0, 1\n");
-        d.op_states = &.{ 2, 5 };
-        const src = try tb.renderRunner(arena, "ops", d);
+        const d = try parse(arena, "//! sweep V(a) = 0, 1\n");
+        const src = try runnerWith(arena, "ops", d, .{ .op_states = &.{ 2, 5 } });
         try testing.expectEqual(@as(usize, 2), std.mem.count(u8, src, "        forced[5] = null;\n"));
         // After the tie-everything default, before the directives' own pins.
         const untie = std.mem.find(u8, src, "forced[2] = null;").?;
@@ -18106,8 +18169,8 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const off = try tb.renderRunner(arena, "f", .{});
-        const on = try tb.renderRunner(arena, "f", .{ .validate_contract = true, .certify = true, .finite_proved = true });
+        const off = try runner(arena, "f", .{});
+        const on = try runnerWith(arena, "f", .{}, .{ .validate_contract = true, .certify = true, .finite_proved = true });
         try testing.expect(std.mem.find(u8, off, "pub const vera_validate_contract = false;\n") != null);
         try testing.expect(std.mem.find(u8, off, "const fd_certify = false;\n") != null);
         try testing.expect(std.mem.find(u8, off, "const finite_proved = false;\n") != null);
@@ -18120,10 +18183,10 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const tran = try tb.renderRunner(arena, "an", try tb.parse(arena, "//! time 0, 1n\n"));
+        const tran = try runner(arena, "an", try parse(arena, "//! time 0, 1n\n"));
         try testing.expect(std.mem.find(u8, tran, "const analysis_name = \"tran\";\n") != null);
         try testing.expect(std.mem.find(u8, tran, "    run_kind = .tran;\n") != null);
-        const named = try tb.renderRunner(arena, "an", try tb.parse(arena, "//! analysis dc mydc\n"));
+        const named = try runner(arena, "an", try parse(arena, "//! analysis dc mydc\n"));
         try testing.expect(std.mem.find(u8, named, "const analysis_name = \"mydc\";\n") != null);
         try testing.expect(std.mem.find(u8, named, "    run_kind = .dc;\n") != null);
     }
@@ -18132,20 +18195,20 @@ pub const exe_tests = struct {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena, "//! spice R1 a b 1k\n//! spice + tc1=0\n//! lrm 5.8\n//! spice C1 b 0 1p\n");
-        try testing.expectEqualStrings("R1 a b 1k\n+ tc1=0\nC1 b 0 1p", d.spice);
-        try testing.expectEqualStrings("", (try tb.parse(arena, "")).spice);
+        const d = try parse(arena, "//! spice R1 a b 1k\n//! spice + tc1=0\n//! lrm 5.8\n//! spice C1 b 0 1p\n");
+        try testing.expectEqualStrings("R1 a b 1k\n+ tc1=0\nC1 b 0 1p", d.harness.spice);
+        try testing.expectEqualStrings("", (try parse(arena, "")).harness.spice);
     }
 
     test "the directive line rule: indentation, CRLF and a marker with no space" {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const d = try tb.parse(arena, "  //! temp 310\r\n\t//!lrm 5.8\r\n// ! temp 999\n//!\n//!   \n");
-        try testing.expectEqual(@as(f64, 310), d.temp);
-        try testing.expectEqualStrings("5.8", d.lrm[0]);
+        const d = try parse(arena, "  //! temp 310\r\n\t//!lrm 5.8\r\n// ! temp 999\n//!\n//!   \n");
+        try testing.expectEqual(@as(f64, 310), d.bench.temperature_k);
+        try testing.expectEqualStrings("5.8", d.harness.lrm[0]);
         // `//!!` opens with the word `!`, which no directive is.
-        try testing.expectError(error.UnknownDirective, tb.parse(arena, "//!! lrm 5.8\n"));
+        try testing.expectError(error.UnknownDirective, parse(arena, "//!! lrm 5.8\n"));
     }
 
     test "an lrm cite's annex is one letter, A to H" {
