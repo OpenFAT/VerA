@@ -111,6 +111,62 @@
   formula; the AUR and the `OmarSiwy/homebrew-vera` tap are updated when
   their secrets are set.
 
+- **The device contract is a directory** (#98): `lib/contract.zig` is a
+  root importing `lib/contract/`, one transformation per file. A host that
+  copies the single file must ship `share/vera/contract/` beside it; the
+  ABI, `SimState` and every public name are unchanged. The flake, AUR,
+  Homebrew, `.deb`/`.rpm` and `tools/install.sh` install the tree.
+- **`%e` with a precision of 59 or more prints the number** instead of `?`,
+  and **`acosh(x)` for x ≤ -2 is NaN** (C99), not a finite value (#98).
+- **Every module is rewritten** to one transformation per file, with typed
+  handles, named error sets, bounded loops and asserted contracts (#95-#113).
+  On the 23121 golden files, the only differences are the kernel text each
+  device embeds (now its kernel files' own bytes), the ten kernel helpers a
+  split device no longer re-exports, and the runner text that names the
+  regrouped digital `Run`.
+- **`--emit-rtlil` refusals are coded** (E1200-E1278, one per construct, at
+  its line), and four fixtures that panicked emit RTLIL or a refusal: null
+  ports, a connection to no port (E1100), a range past RTLIL's 32-bit offset,
+  and a port-header select, which was emitted full width (#113, #INT).
+  Constants fold by IEEE 1364-2005 rules (`HI-7` was folded to -8), an
+  ascending range's offset is its lower bound, and an escaped name keeps its
+  `.` and `\`.
+- **Inputs that aborted `vera` are refused or accepted**: `vera ""`, an empty
+  path to `--spice`/`--protect-keys`/`--digital-pins`, a defparam through an
+  escaped name holding `[` or `.` (`\a__g[1]__in1`), a display-only device's
+  noise and AC tables, `ac_stim` with four arguments (E0506), a NaN noise-table
+  knot, and a 5000-statement chain or 5000-arm `case` on a 1 MiB thread (#INT).
+- **Device codegen is linear on long select chains**: a 5000-arm `case` takes
+  2.05 s in Debug, from 68.2 s (#INT).
+- **VPI**: the analog library's runner reports the device's `mem_bytes` as
+  `--emit-exe` does (it said 0); ports answer `vpiLowConn` and `vpiHighConn`;
+  `vpiName` keeps a `.` inside an escaped name; a derivtf with NULL partials
+  (BADPARTIALS), a callback with no context (NOCTX), a non-`$` call name and a
+  zero-length transient window are refused (#INT).
+- **E0154**: more than 65535 source files through an include tree is a coded
+  error, not a crash; a design nested past the reserved stack while
+  elaborating is E0241 (#INT).
+- **`--emit-exe`** refuses a negative `//! time`, a time at or past 2^64
+  ticks, more than 64 explicit D2A event ports (E0437, which the emitted Zig
+  failed to compile) and `//! checks N` past 2^32-1 (#108, #INT).
+- **A cached `--emit-osdi` or `--emit-so` rebuilds when a file of its module
+  changes**: the artifact key hashed only the root file (#100).
+- **The suite compares names, never counts**: `suite -- ams` printed its first
+  FAIL lines under zig build's summary, where they were lost; it now prints
+  its FAIL and XFAIL names after the summary and holds them to
+  `tests/suite.xfail`. A skipped test fails, and the suite's work directories
+  moved out of the shared `.zig-cache` to `.vera-work/` (#101, #INT).
+- **New oracles under `zig build test`**: a degenerate-argv table, wide-input
+  and escaped-identifier generators through every pass, a VPI negative-input
+  table, an `--emit-so` golden with VPI contributions, `--emit-verilog` and
+  `--emit-rtlil` goldens, a compile of every runner template and an assembly
+  probe of the branchless limit kernels (#INT).
+- **Twelve conformance fixtures are expected failures** (`tools/vera.xfail`):
+  they still expect what this release's own changes above revise (an analog
+  assignment to a `reg` is E0316, an instance port's flow is read exactly, a
+  run-time `$simprobe` name is accepted). The suite's fixtures follow in
+  OpenFAT/VAMS-Conformance-Suite.
+
 ## v0.20.0 — 2026-10-25
 
 On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Verilog-AMS 754/754, Cumulative: 6817/6817.
