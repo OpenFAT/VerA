@@ -368,6 +368,27 @@ pub fn build(b: *Build) void {
     escaped.expectStdOutMatch("vpi-escaped=ok objects=32 ");
     test_step.dependOn(&escaped.step);
     b.step("test-vpi-escaped", "Run the escaped-identifier vpi_handle_by_name round trip (tests/vpi_escaped) only").dependOn(&escaped.step);
+    // The VPI analog library's runner sizes a device's arrays as `vera
+    // --emit-exe`'s does: `tbl`'s 4096 reals are 32768 bytes (the .va's header,
+    // by hand). Read from the library's own runner, which nothing at run time
+    // prints.
+    const mem_app = vpiApp(b, target, optimize, vpi_host, "tests/vpi_mem/memory_array_library.c");
+    mem_app.addFileArg2(b.path("tests/vpi_mem/memory_array_library.va"), .{ .make_absolute = true });
+    mem_app.addFileArg2(b.path("tests/vpi_mem/memory_array_library.c"), .{ .make_absolute = true });
+    mem_app.setCwd(b.tmpPath());
+    mem_app.expectExitCode(0);
+    const mem_bytes = b.addSystemCommand(&.{
+        "sh", "-c",
+        \\f="$1/memory_array_library/memory_array_library.tb.zig"
+        \\grep -F 'const mem_bytes: usize = 32768;' "$f" || { echo "$f does not size tbl as 32768 bytes:" >&2; grep -F mem_bytes "$f" >&2; exit 1; }
+        ,
+        "sh", checkoutWorkDir(b, "vera-vpi"),
+    });
+    mem_bytes.step.dependOn(&mem_app.step);
+    mem_bytes.has_side_effects = true; // reads the library's work tree
+    mem_bytes.expectExitCode(0);
+    test_step.dependOn(&mem_bytes.step);
+    b.step("test-vpi-mem", "Check the VPI analog library's runner sizes a memory-backed array (tests/vpi_mem) only").dependOn(&mem_bytes.step);
     for (vpiRuns(b)) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
         // Each run gets its own cwd: an application writes fixed names there

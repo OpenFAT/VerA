@@ -50,6 +50,7 @@ directories hold VerA's own test inputs, and `conformance/` is the suite.
 | `host.py` | Host observations: `diagnostic_observations` and `paired_compiler_observations` drive the build's `vera`; the profiles bind a real host through an adapter (below); `selftest` |
 | `host/` | The hosts that drive a device: `*_host.zig`, the `*_gpu.zig` twin, `*_dyn.zig`, `vdev_*.zig`, `vpi_host.zig` (in `test`) |
 | `vpi_escaped/` | `roundtrip.c` over `escaped.v`: every object's `vpiFullName` through `vpi_handle_by_name` and back (`test-vpi-escaped`, in `test`) |
+| `vpi_mem/` | A memory-backed array through the VPI analog library; `test-vpi-mem` reads `mem_bytes` from the library's runner |
 | `canary/` | The wrong-on-purpose fixtures the canary in `test` judges, with their `EXPECT.tsv` |
 | `rtlil/`, `beh_verilog/`, `osdi/` | The `--emit-rtlil`, `--emit-verilog` and `--emit-osdi` inputs |
 | `vpi_negative/` | The VPI negative-input table (`test`, `test-vpi-negative`): a C application handing every exported `vpi_*` entry point each invalid argument it takes, and the design it probes |
