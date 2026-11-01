@@ -53,17 +53,26 @@ const formatted = @extern(*const fn (buf: [*]u8, format: [*:0]const u8, ...) cal
 /// `%n` is not supported: it writes through an application pointer, and a
 /// logging routine that stores into memory is a hazard this one does not take.
 ///
-/// False when the writer failed (out of memory).
+/// False when the writer failed (out of memory). `w` is a writer that keeps
+/// what it is given (`Io.Writer.fixed` or `.Allocating`): asserts that it
+/// only grows.
 pub fn cformat(w: *Io.Writer, format: [*:0]const u8, ap: *List) bool {
+    std.debug.assert(w.end <= w.buffer.len);
+    const before = w.end;
     expand(w, std.mem.span(format), ap) catch return false;
+    std.debug.assert(w.end >= before);
     return true;
 }
 
 // ---- private ----
 
 fn expand(w: *Io.Writer, fmt: []const u8, ap: *List) Io.Writer.Error!void {
+    std.debug.assert(w.end <= w.buffer.len);
     var i: usize = 0;
-    while (i < fmt.len) {
+    // Bound: each pass consumes at least one byte of `fmt`.
+    var passes: usize = 0;
+    while (i < fmt.len) : (passes += 1) {
+        std.debug.assert(passes < fmt.len);
         if (fmt[i] != '%') {
             const end = std.mem.findScalarPos(u8, fmt, i, '%') orelse fmt.len;
             try w.writeAll(fmt[i..end]);
@@ -73,20 +82,24 @@ fn expand(w: *Io.Writer, fmt: []const u8, ap: *List) Io.Writer.Error!void {
         const start = i;
         i += 1;
         var s: Spec = .{};
-        while (i < fmt.len) : (i += 1) switch (fmt[i]) {
-            '-' => s.left = true,
-            '+' => s.plus = true,
-            ' ' => s.space = true,
-            '#' => s.alt = true,
-            '0' => s.zero = true,
-            else => break,
-        };
+        while (i < fmt.len) : (i += 1) {
+            std.debug.assert(i < fmt.len);
+            switch (fmt[i]) {
+                '-' => s.left = true,
+                '+' => s.plus = true,
+                ' ' => s.space = true,
+                '#' => s.alt = true,
+                '0' => s.zero = true,
+                else => break,
+            }
+        }
         if (i < fmt.len and fmt[i] == '*') {
             i += 1;
             const v = va.arg(ap, c_int);
             if (v < 0) s.left = true;
             s.width = @abs(v);
         } else while (i < fmt.len and std.ascii.isDigit(fmt[i])) : (i += 1) {
+            std.debug.assert(i < fmt.len);
             s.width = s.width *| 10 +| (fmt[i] - '0');
         }
         if (i < fmt.len and fmt[i] == '.') {
@@ -97,7 +110,10 @@ fn expand(w: *Io.Writer, fmt: []const u8, ap: *List) Io.Writer.Error!void {
                 s.prec = if (v < 0) null else @intCast(v);
             } else {
                 var p: usize = 0;
-                while (i < fmt.len and std.ascii.isDigit(fmt[i])) : (i += 1) p = p *| 10 +| (fmt[i] - '0');
+                while (i < fmt.len and std.ascii.isDigit(fmt[i])) : (i += 1) {
+                    std.debug.assert(i < fmt.len);
+                    p = p *| 10 +| (fmt[i] - '0');
+                }
                 // C's precision is an `int`; past INT_MAX is undefined, and
                 // clamped here so the arithmetic on it stays in range.
                 s.prec = @min(p, std.math.maxInt(c_int));
@@ -196,20 +212,29 @@ fn expand(w: *Io.Writer, fmt: []const u8, ap: *List) Io.Writer.Error!void {
             else => try w.writeAll(fmt[start..i]),
         }
     }
+    // The whole format was read: a conversion never reads past its end.
+    std.debug.assert(i == fmt.len);
 }
 
 /// `text` in a field of `s.width`, space-padded on the side `-` selects.
+/// Asserts that the field is exactly `max(width, text.len)` bytes.
 fn padded(w: *Io.Writer, s: Spec, text: []const u8) Io.Writer.Error!void {
+    const before = w.end;
     const pad = s.width -| text.len;
+    std.debug.assert(pad == 0 or text.len + pad == s.width);
     if (!s.left) try w.splatByteAll(' ', pad);
     try w.writeAll(text);
     if (s.left) try w.splatByteAll(' ', pad);
+    std.debug.assert(w.end - before == @max(s.width, text.len));
 }
 
 /// A sign or prefix, zeros, then digits, laid into the field. C's '0' flag
 /// puts its padding BETWEEN the prefix and the digits, and is ignored when a
 /// precision is given or the field is left-justified.
 fn field(w: *Io.Writer, s: Spec, prefix: []const u8, zeros: usize, digits: []const u8, zero_ok: bool) Io.Writer.Error!void {
+    // A sign, or `0x`: never more.
+    std.debug.assert(prefix.len <= 2);
+    const before = w.end;
     const body = prefix.len + zeros + digits.len;
     const pad = s.width -| body;
     const zero_fill = s.zero and !s.left and zero_ok;
@@ -219,9 +244,13 @@ fn field(w: *Io.Writer, s: Spec, prefix: []const u8, zeros: usize, digits: []con
     try w.splatByteAll('0', zeros);
     try w.writeAll(digits);
     if (s.left) try w.splatByteAll(' ', pad);
+    std.debug.assert(w.end - before == @max(s.width, body));
 }
 
 fn integer(w: *Io.Writer, s: Spec, mag: u64, neg: bool, base: u8, upper: bool) Io.Writer.Error!void {
+    std.debug.assert(base == 8 or base == 10 or base == 16);
+    // Only %d and %i are signed.
+    std.debug.assert(!neg or base == 10);
     var buf: [64]u8 = undefined;
     var digits: []const u8 = buf[0..std.fmt.printInt(&buf, mag, base, if (upper) .upper else .lower, .{})];
     // "The result of converting a zero value with a precision of zero is no
@@ -247,6 +276,9 @@ fn integer(w: *Io.Writer, s: Spec, mag: u64, neg: bool, base: u8, upper: bool) I
 /// logging routine; exact binary-to-decimal is the upgrade if an application
 /// ever depends on it.
 fn real(w: *Io.Writer, s: Spec, v: f64, conv: u8) Io.Writer.Error!void {
+    std.debug.assert(std.mem.findScalar(u8, "fFeEgG", conv) != null);
+    // `expand` keeps a precision within C's `int`.
+    std.debug.assert((s.prec orelse 0) <= std.math.maxInt(c_int));
     const upper = std.ascii.isUpper(conv);
     const neg = std.math.signbit(v);
     const sign: []const u8 = if (neg) "-" else if (s.plus) "+" else if (s.space) " " else "";
@@ -289,15 +321,23 @@ fn real(w: *Io.Writer, s: Spec, v: f64, conv: u8) Io.Writer.Error!void {
 /// The decimal exponent of `a` printed as %e with `p` fraction digits — which
 /// can be one more than `a`'s own when rounding carries (9.99 at p=1 is 1.0e1).
 fn exponentAfterRounding(a: f64, p: usize) i32 {
+    std.debug.assert(a >= 0);
+    std.debug.assert(std.math.isFinite(a));
     var buf: [64]u8 = undefined;
     const r = std.fmt.float.render(&buf, a, .{ .mode = .scientific, .precision = @min(p, max_sci) }) catch return 0;
     const e = std.mem.findScalar(u8, r, 'e') orelse return 0;
-    return std.fmt.parseInt(i32, r[e + 1 ..], 10) catch 0;
+    const x = std.fmt.parseInt(i32, r[e + 1 ..], 10) catch 0;
+    // An f64's decimal exponents, 4.9e-324 to 1.8e308.
+    std.debug.assert(x >= -324 and x <= 309);
+    return x;
 }
 
 fn fixed(buf: []u8, a: f64, p: usize, alt: bool) Body {
+    std.debug.assert(a >= 0);
+    std.debug.assert(std.math.isFinite(a));
     const r = std.fmt.float.render(buf, a, .{ .mode = .decimal, .precision = @min(p, max_fixed) }) catch return .{ .head = "?" };
     if (p == 0 and alt) {
+        std.debug.assert(r.len < buf.len);
         buf[r.len] = '.';
         return .{ .head = buf[0 .. r.len + 1] };
     }
@@ -307,6 +347,8 @@ fn fixed(buf: []u8, a: f64, p: usize, alt: bool) Body {
 /// Zig renders `1.5e3`; C wants `1.500000e+03` — at least two exponent digits
 /// and an explicit sign.
 fn sci(buf: []u8, a: f64, p: usize, upper: bool, alt: bool) Body {
+    std.debug.assert(a >= 0);
+    std.debug.assert(std.math.isFinite(a));
     var tmp: [64]u8 = undefined;
     const r = std.fmt.float.render(&tmp, a, .{ .mode = .scientific, .precision = @min(p, max_sci) }) catch return .{ .head = "?" };
     const e = std.mem.findScalar(u8, r, 'e') orelse return .{ .head = "?" };
@@ -317,6 +359,8 @@ fn sci(buf: []u8, a: f64, p: usize, upper: bool, alt: bool) Body {
     const tail = std.mem.print(buf[head.len..], "{c}{c}{d:0>2}", .{
         @as(u8, if (upper) 'E' else 'e'), @as(u8, if (x < 0) '-' else '+'), @abs(x),
     }) catch return .{ .head = "?" };
+    // `e`, a sign and at least two digits.
+    std.debug.assert(tail.len >= 4);
     return .{ .head = head, .zeros = p -| max_sci, .tail = tail };
 }
 
@@ -326,19 +370,31 @@ fn sci(buf: []u8, a: f64, p: usize, upper: bool, alt: bool) Body {
 fn stripZeros(s: []const u8) []const u8 {
     if (std.mem.findScalar(u8, s, '.') == null) return s;
     var end = s.len;
-    while (end > 0 and s[end - 1] == '0') end -= 1;
+    while (end > 0 and s[end - 1] == '0') {
+        std.debug.assert(end <= s.len);
+        end -= 1;
+    }
     if (end > 0 and s[end - 1] == '.') end -= 1;
+    // A `.` came before every stripped zero, so a digit is left of it.
+    std.debug.assert(end != 0);
+    std.debug.assert(s[end - 1] != '.');
     return s[0..end];
 }
 
 /// `cformat` into `buf`, for `varargs.c`'s `vera_vpi_format`: 0 when it fails.
 export fn vera_vpi_cformat(buf: [*]u8, len: usize, format: [*:0]const u8, ap: *List) usize {
+    // `varargs.c` hands its own buffer, never an empty one.
+    std.debug.assert(len != 0);
     var w: Io.Writer = .fixed(buf[0..len]);
     if (!cformat(&w, format, ap)) return 0;
+    std.debug.assert(w.end <= len);
     return w.end;
 }
 
+/// The tests' check of a `formatted` call into `buf`, varargs.c's 512 bytes.
 fn expectFormat(want: []const u8, got_len: usize, buf: []const u8) !void {
+    std.debug.assert(buf.len == 512);
+    std.debug.assert(got_len <= buf.len);
     try std.testing.expectEqualStrings(want, buf[0..got_len]);
 }
 

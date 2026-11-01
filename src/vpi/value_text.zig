@@ -31,13 +31,22 @@ const spread: [256]u64 = blk: {
     break :blk t;
 };
 
-/// §4.2.1.1 real-to-integer: nearest, ties away from zero.
+/// §4.2.1.1 real-to-integer: nearest, ties away from zero; 0 for a NaN or
+/// an infinity. Asserts that the result keeps `f`'s sign and, within i64's
+/// range, is at most a half away from it.
 pub fn roundAway(f: f64) i64 {
     if (!std.math.isFinite(f)) return 0;
-    return std.math.lossyCast(i64, @round(f));
+    const r = std.math.lossyCast(i64, @round(f));
+    std.debug.assert(r == 0 or (r > 0) == (f > 0));
+    std.debug.assert(@abs(f) >= 0x1p63 or @abs(@as(f64, @floatFromInt(r)) - f) <= 0.5);
+    return r;
 }
 
+/// The value of `b` as a real, x and z bits read as 0. Asserts that `b`'s
+/// planes are the same length and hold its width.
 pub fn toReal(b: Bits) f64 {
+    std.debug.assert(b.val.len == b.unk.len);
+    std.debug.assert(b.val.len * 64 >= b.width);
     if (b.width <= 64) {
         const x = b.low64();
         return if (b.signed) @floatFromInt(@as(i64, @bitCast(x))) else @floatFromInt(x);
@@ -50,10 +59,14 @@ pub fn toReal(b: Bits) f64 {
     const n: usize = (b.width + 63) / 64;
     const neg = b.signed and b.bit(b.width - 1) == .one;
     var lo: usize = 0;
-    while (lo < n and (b.val[lo] & ~b.unk[lo]) == 0) lo += 1;
+    while (lo < n and (b.val[lo] & ~b.unk[lo]) == 0) {
+        std.debug.assert(lo < n);
+        lo += 1;
+    }
     var r: f64 = 0;
     var k = n;
     while (k > 0) {
+        std.debug.assert(k <= n);
         k -= 1;
         const u = b.val[k] & ~b.unk[k];
         var w: u64 = if (!neg) u else if (k < lo) 0 else if (k == lo) 0 -% u else ~u;
@@ -66,8 +79,14 @@ pub fn toReal(b: Bits) f64 {
 /// Table 12-4's string formats. Octal and hex group from the LSB; a group
 /// that is ALL x (z) prints `x` (`z`), one that is only PARTLY x (z) prints
 /// `X` (`Z`) — x winning over z when a group holds both, as it would in any
-/// expression reading the group.
+/// expression reading the group. Asserts that `b`'s planes are the same
+/// length and hold its width, and that no text is longer than the binary
+/// one plus a sign.
 pub fn radixString(out: *std.ArrayList(u8), b: Bits, format: c_int) !void {
+    std.debug.assert(b.val.len == b.unk.len);
+    std.debug.assert(b.val.len * 64 >= b.width);
+    const before = out.items.len;
+    defer std.debug.assert(out.items.len - before <= b.width + 1);
     switch (format) {
         user.vpiBinStrVal => binText(try out.addManyAsSlice(gpa, b.width), b.val, b.unk),
         user.vpiOctStrVal, user.vpiHexStrVal => {
@@ -96,6 +115,7 @@ pub fn radixString(out: *std.ArrayList(u8), b: Bits, format: c_int) !void {
             try out.ensureUnusedCapacity(gpa, (b.width + 7) / 8);
             var k = (b.width + 7) / 8;
             while (k > 0) {
+                std.debug.assert(k <= (b.width + 7) / 8);
                 k -= 1;
                 const lo = k * 8;
                 const n = @min(8, b.width - lo);
@@ -107,23 +127,35 @@ pub fn radixString(out: *std.ArrayList(u8), b: Bits, format: c_int) !void {
     }
 }
 
+/// The low `n` bits set, all 64 for `n >= 64`. Asserts that they are
+/// exactly that many, and contiguous from bit 0.
 pub fn lowMask(n: u32) u64 {
-    return if (n >= 64) ~@as(u64, 0) else (@as(u64, 1) << @intCast(n)) - 1;
+    const m = if (n >= 64) ~@as(u64, 0) else (@as(u64, 1) << @intCast(n)) - 1;
+    std.debug.assert(@popCount(m) == @min(n, 64));
+    std.debug.assert(m & (m +% 1) == 0);
+    return m;
 }
 
-/// Two's-complement negation of the little-endian words in place.
+/// Two's-complement negation of the little-endian words in place. Asserts
+/// that there is a word, and that the low one is negated.
 pub fn negate(words: []u64) void {
+    std.debug.assert(words.len != 0);
+    const low = words[0];
     var carry: u1 = 1;
     for (words) |*w| {
         const r = @addWithOverflow(~w.*, @as(u64, carry));
         w.* = r[0];
         carry = r[1];
     }
+    std.debug.assert(words[0] == 0 -% low);
 }
 
 /// ORs the `n`-bit `bits` (n in 1..64) into `plane` at bit `lo`, dropping
-/// what falls at or past `width`; `plane` holds `width` bits.
+/// what falls at or past `width`; `plane` holds `width` bits. Asserts both.
 pub fn orField(plane: []u64, lo: usize, bits: u64, n: u32, width: u32) void {
+    std.debug.assert(n >= 1);
+    std.debug.assert(n <= 64);
+    std.debug.assert(plane.len * 64 >= width);
     if (lo >= width) return;
     const x = bits & lowMask(@intCast(@min(n, width - lo)));
     const w = lo / 64;
@@ -139,6 +171,8 @@ pub fn orField(plane: []u64, lo: usize, bits: u64, n: u32, width: u32) void {
 /// written. A byte of chars is 0x30 + v + 0x4a*u - 3*(v&u): '0', '1', 'z'
 /// (0x7a), 'x' (0x78), with no carry between bytes.
 fn binText(dst: []u8, val: []const u64, unk: []const u64) void {
+    std.debug.assert(val.len == unk.len);
+    std.debug.assert(val.len * 64 >= dst.len);
     const head = dst.len % 8;
     for (dst[0..head], 0..) |*c, j| {
         const i = dst.len - 1 - j;
@@ -150,12 +184,14 @@ fn binText(dst: []u8, val: []const u64, unk: []const u64) void {
     var k = head;
     var i = dst.len - head;
     while (i > 0) : (k += 8) {
+        std.debug.assert(i <= dst.len - head);
         i -= 8;
         const o: u6 = @truncate(i);
         const v = spread[@as(u8, @truncate(val[i / 64] >> o))];
         const u = spread[@as(u8, @truncate(unk[i / 64] >> o))];
         std.mem.writeInt(u64, dst[k..][0..8], 0x3030303030303030 +% v +% 0x4a *% u -% 3 *% (v & u), .little);
     }
+    std.debug.assert(k == dst.len);
 }
 
 /// Bits [lo, lo + n) of `plane`, n in 1..64, as the low bits of a word.
@@ -174,6 +210,8 @@ fn field(plane: []const u64, lo: u32, n: u32) u64 {
 /// `X` when any is x, `Z` when any is z, else the value's hex digit (which
 /// needs hi - lo <= 4).
 fn groupChar(b: Bits, lo: u32, hi: u32) u8 {
+    std.debug.assert(lo < hi);
+    std.debug.assert(hi <= b.width);
     var all_x = true;
     var all_z = true;
     var any_x = false;
@@ -181,6 +219,7 @@ fn groupChar(b: Bits, lo: u32, hi: u32) u8 {
     var d: u64 = 0;
     var i = lo;
     while (i < hi) {
+        std.debug.assert(i < hi);
         const n = @min(hi - i, 64);
         const m = lowMask(n);
         const v = field(b.val, i, n);
@@ -196,12 +235,17 @@ fn groupChar(b: Bits, lo: u32, hi: u32) u8 {
     if (all_z) return 'z';
     if (any_x) return 'X';
     if (any_z) return 'Z';
+    // A known group is a digit only when it is one: hi - lo <= 4.
+    std.debug.assert(d < 16);
     return "0123456789abcdef"[@intCast(d)];
 }
 
 /// Decimal of a fully known value, any width: repeated division of the
 /// magnitude by 10. Signed objects print their sign.
 fn decimal(out: *std.ArrayList(u8), b: Bits) !void {
+    // `radixString` prints a value with an x or z bit as one character.
+    std.debug.assert(b.known());
+    std.debug.assert(b.val.len * 64 >= b.width);
     // Up to 1024 bits on the stack: the common widths never allocate.
     var stack: [16]u64 = undefined;
     const words = if (b.val.len <= stack.len) stack[0..b.val.len] else try gpa.alloc(u64, b.val.len);
@@ -215,12 +259,17 @@ fn decimal(out: *std.ArrayList(u8), b: Bits) !void {
         if (b.width % 64 != 0) words[words.len - 1] &= lowMask(b.width % 64);
     }
     const start = out.items.len;
-    while (true) {
+    // Bound: a 64-bit word has at most 20 decimal digits.
+    const digits_max = 20 * words.len + 1;
+    var digits: usize = 0;
+    while (true) : (digits += 1) {
+        std.debug.assert(digits < digits_max);
         var rem: u128 = 0;
         var k = words.len;
         // OR of the quotient words: zero once the magnitude is.
         var left: u64 = 0;
         while (k > 0) {
+            std.debug.assert(k <= words.len);
             k -= 1;
             const cur = (rem << 64) | words[k];
             words[k] = @intCast(cur / 10);
