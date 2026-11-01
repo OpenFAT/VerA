@@ -497,11 +497,18 @@ test "§6.5.5 a connection list is all ordered or all named, at most as long as 
         "(.a(p), p)", // an ordered connection in a named list
         "(.zz(p))", // no such port
         "(.a(p), .a(p))", // IEEE 1364 §12.3.6 connected twice
-        "({})", // A.8.1: a concatenation has at least one member
     }) |conns| {
         var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
         defer f.deinit();
         try fixture.parse(&f, try f.arena.allocator().print(src, .{conns}));
+        try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
+        try std.testing.expect(fixture.hasCode(&f.bag, .E0906));
+    }
+    // A.8.1: a concatenation has at least one member, whatever the port's width.
+    for ([_][]const u8{ "kid(a, b); inout a, b; electrical a, b;", "kid(v); inout [1:0] v; electrical [1:0] v;" }) |kid| {
+        var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try fixture.parse(&f, try f.arena.allocator().print("module top(p); inout p; electrical p; kid u({{}}); endmodule\nmodule {s} endmodule", .{kid}));
         try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
         try std.testing.expect(fixture.hasCode(&f.bag, .E0906));
     }
