@@ -155,24 +155,9 @@ pub fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) abi.v
         last = i;
         const x = d.obj(.at(i));
         if (local and x.owner != o.owner) continue;
-        const hit = switch (x.kind) {
-            .code => switch (x.vtype) {
-                user.vpiPrimTerm => mentions(d, schema.edgeTo(x, user.vpiExpr), o) and switch (property.codeProp(x, user.vpiDirection)) {
-                    user.vpiOutput => drivers,
-                    user.vpiInout => true,
-                    else => !drivers,
-                },
-                user.vpiContAssign => mentions(d, schema.edgeTo(x, if (drivers) user.vpiLhs else user.vpiRhs), o),
-                user.vpiForce, user.vpiAssignStmt => activeOverride(d, x) and mentions(d, schema.edgeTo(x, if (drivers) user.vpiLhs else user.vpiRhs), o),
-                else => false, // else: §26.6.22/§26.6.23 list no other behavioural class
-            },
-            .port => o.kind == .net and x.owner == o.owner and std.mem.eql(u8, x.name, o.name) and switch (x.direction) {
-                .input => drivers,
-                .output => !drivers,
-                .inout => true,
-                .unspecified => false,
-            },
-            else => false, // else: no other class drives or loads a net or reg
+        const hit = relates(d, x, o, drivers) catch {
+            out.deinit(d.gpa);
+            return iterate.oomIter();
         };
         if (hit) out.appendAssumeCapacity(trust.handleOf(d.obj(.at(i))));
     }
@@ -181,6 +166,31 @@ pub fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) abi.v
 }
 
 // ---- private ----
+
+/// Whether candidate row `x` drives (`drivers`) or loads `o`.
+fn relates(d: *const Design, x: *const Obj, o: *const Obj, drivers: bool) error{OutOfMemory}!bool {
+    std.debug.assert(o.kind == .net or o.kind == .reg);
+    std.debug.assert(x != o);
+    return switch (x.kind) {
+        .code => switch (x.vtype) {
+            user.vpiPrimTerm => (try mentions(d.gpa, d, schema.edgeTo(x, user.vpiExpr), o)) and switch (property.codeProp(x, user.vpiDirection)) {
+                user.vpiOutput => drivers,
+                user.vpiInout => true,
+                else => !drivers,
+            },
+            user.vpiContAssign => try mentions(d.gpa, d, schema.edgeTo(x, if (drivers) user.vpiLhs else user.vpiRhs), o),
+            user.vpiForce, user.vpiAssignStmt => activeOverride(d, x) and (try mentions(d.gpa, d, schema.edgeTo(x, if (drivers) user.vpiLhs else user.vpiRhs), o)),
+            else => false, // else: §26.6.22/§26.6.23 list no other behavioural class
+        },
+        .port => o.kind == .net and x.owner == o.owner and std.mem.eql(u8, x.name, o.name) and switch (x.direction) {
+            .input => drivers,
+            .output => !drivers,
+            .inout => true,
+            .unspecified => false,
+        },
+        else => false, // else: no other class drives or loads a net or reg
+    };
+}
 
 /// `d`'s `Relations`, built on first use; null (and NOMEM recorded) when
 /// they cannot be.
@@ -256,25 +266,29 @@ fn addReach(gpa: std.mem.Allocator, d: *const Design, out: *std.ArrayList([2]u32
     if (parent != .none) try out.append(gpa, .{ parent.index(), u });
 }
 
-/// `mentions`' walk from `e`, inverted: every row it visits, and the slot of
-/// every non-`.code` one, lead to candidate `u`.
-fn addMentions(gpa: std.mem.Allocator, d: *const Design, by_obj: *std.ArrayList([2]u32), by_slot: *std.ArrayList([2]u32), e: ObjId, u: u32) error{OutOfMemory}!void {
+/// `mentions`' walk from `root`, inverted: every row it visits, and the
+/// slot of every non-`.code` one, lead to candidate `u`. A worklist: an
+/// operation nests as deep as the source does.
+fn addMentions(gpa: std.mem.Allocator, d: *const Design, by_obj: *std.ArrayList([2]u32), by_slot: *std.ArrayList([2]u32), root: ObjId, u: u32) error{OutOfMemory}!void {
     std.debug.assert(u < d.objects.len);
     std.debug.assert(d.objects[u].kind == .code); // a candidate is a behavioural row
-    if (e == .none) return;
-    try by_obj.append(gpa, .{ e.index(), u });
-    const x = d.obj(e);
-    if (x.kind != .code) {
-        if (x.slot.get()) |s| try by_slot.append(gpa, .{ s, u });
-        return;
-    }
-    switch (x.vtype) {
-        user.vpiPartSelect, user.vpiNetBit, user.vpiRegBit => try addMentions(gpa, d, by_obj, by_slot, schema.edgeTo(x, user.vpiParent), u),
-        user.vpiOperation, user.vpiFuncCall, user.vpiSysFuncCall => for (x.lists) |l| {
-            if (l.tag != user.vpiOperand and l.tag != user.vpiArgument) continue;
-            for (l.items) |i| try addMentions(gpa, d, by_obj, by_slot, i, u);
-        },
-        else => {}, // else: no other class is an expression with operands
+    var todo: std.ArrayList(ObjId) = .empty;
+    defer todo.deinit(gpa);
+    try todo.append(gpa, root);
+    var expanded: usize = 0;
+    while (todo.pop()) |e| {
+        if (e == .none) continue;
+        try by_obj.append(gpa, .{ e.index(), u });
+        const x = d.obj(e);
+        if (x.kind != .code) {
+            if (x.slot.get()) |s| try by_slot.append(gpa, .{ s, u });
+            continue;
+        }
+        // An expression's `.code` rows are a tree, each built for its one
+        // parent, so none is expanded twice.
+        expanded += 1;
+        std.debug.assert(expanded <= d.objects.len);
+        try pushOperands(gpa, &todo, x);
     }
 }
 
@@ -310,23 +324,60 @@ fn overrideRange(d: *const Design, o: *const Obj, r: *const sim.digital.Run, ran
     };
 }
 
-/// Does expression `e` read `target`'s storage: is it the same slot (or the
-/// same object), a select of it, or an operation or call with such an
-/// operand?
-fn mentions(d: *const Design, e: ObjId, target: *const Obj) bool {
+/// Does expression `root` read `target`'s storage: is it the same slot (or
+/// the same object), a select of it, or an operation or call with such an
+/// operand? A worklist, as `addMentions` is.
+fn mentions(gpa: std.mem.Allocator, d: *const Design, root: ObjId, target: *const Obj) error{OutOfMemory}!bool {
     std.debug.assert(target.kind == .net or target.kind == .reg); // `driversLoads`' object
-    std.debug.assert(e == .none or e.index() < d.objects.len);
-    if (e == .none) return false;
-    const x = d.obj(e);
-    if (x == target or (x.slot != .none and x.slot == target.slot and x.kind != .code)) return true;
-    if (x.kind != .code) return false;
+    std.debug.assert(root == .none or root.index() < d.objects.len);
+    var todo: std.ArrayList(ObjId) = .empty;
+    defer todo.deinit(gpa);
+    try todo.append(gpa, root);
+    var expanded: usize = 0;
+    while (todo.pop()) |e| {
+        if (e == .none) continue;
+        const x = d.obj(e);
+        if (x == target or (x.slot != .none and x.slot == target.slot and x.kind != .code)) return true;
+        if (x.kind != .code) continue;
+        expanded += 1;
+        std.debug.assert(expanded <= d.objects.len); // a tree, as in `addMentions`
+        try pushOperands(gpa, &todo, x);
+    }
+    return false;
+}
+
+/// The rows a `.code` expression row reads through: a select's vpiParent,
+/// an operation's operands, a call's arguments.
+fn pushOperands(gpa: std.mem.Allocator, todo: *std.ArrayList(ObjId), x: *const Obj) error{OutOfMemory}!void {
+    std.debug.assert(x.kind == .code);
     switch (x.vtype) {
-        user.vpiPartSelect, user.vpiNetBit, user.vpiRegBit => return mentions(d, schema.edgeTo(x, user.vpiParent), target),
+        user.vpiPartSelect, user.vpiNetBit, user.vpiRegBit => try todo.append(gpa, schema.edgeTo(x, user.vpiParent)),
         user.vpiOperation, user.vpiFuncCall, user.vpiSysFuncCall => for (x.lists) |l| {
             if (l.tag != user.vpiOperand and l.tag != user.vpiArgument) continue;
-            for (l.items) |i| if (mentions(d, i, target)) return true;
+            try todo.appendSlice(gpa, l.items);
         },
         else => {}, // else: no other class is an expression with operands
     }
-    return false;
+}
+
+test "§26.6.23 vpiLoad finds an assign that reads a net 2 * 10^5 operators deep, on the caller's stack" {
+    // Oracle: IEEE 1364-2005 §26.6.23, a net's loads are the continuous
+    // assignments whose right side reads it: `w = b + b + ... + a` reads `a`
+    // once, at the bottom of the chain, and `b` at every level. The rewrite
+    // walked the operands recursively and overflowed the caller's stack.
+    const iterate_ = @import("iterate.zig");
+    const handle = @import("handle.zig");
+    const n = 200_000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "module t;\n  wire a, b;\n  wire w;\n  assign w = a");
+    for (0..n) |_| try src.appendSlice(std.testing.allocator, " + b");
+    try src.appendSlice(std.testing.allocator, ";\nendmodule\n");
+    var h: run.Harness = undefined;
+    try h.init(src.items);
+    defer h.deinit();
+    const loads = iterate_.vpi_iterate(user.vpiLoad, handle.vpi_handle_by_name("t.a", null)) orelse return error.TestUnexpectedResult;
+    const first = iterate_.vpi_scan(loads) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(c_int, user.vpiContAssign), property.vpi_get(user.vpiType, first));
+    try std.testing.expect(iterate_.vpi_scan(loads) == null);
 }

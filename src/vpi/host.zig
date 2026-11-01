@@ -23,6 +23,7 @@ const vera = @import("vera");
 const exe = @import("exe");
 const zigbuild = @import("zigbuild");
 const protect = @import("frontend").protect;
+const deep = @import("frontend").deep_stack;
 const vpi = @import("vpi");
 const sim = @import("sim");
 const Io = std.Io;
@@ -107,10 +108,14 @@ export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
     // §12.26's log file: the application's name with `.log`, in the cwd.
     var log_buf: [256]u8 = undefined;
     const app_name = std.fs.path.basename(std.mem.span(argv[0]));
-    vpi.print.setLogFile(std.mem.print(&log_buf, "{s}.log", .{app_name}) catch "vera.log") catch {};
+    // A name past the buffer falls back to `vera.log`; only the copy can fail.
+    vpi.print.setLogFile(std.mem.print(&log_buf, "{s}.log", .{app_name}) catch "vera.log") catch |e| {
+        std.debug.print("vpi_host: {t}\n", .{e});
+        return 1;
+    };
     const design = std.mem.span(argv[1]);
     const app = if (argc > 2) std.mem.span(argv[2]) else null;
-    const code = (if (std.mem.endsWith(u8, design, ".va")) analogHost(design, app) else digitalHost(design)) catch |e| {
+    const code = (if (std.mem.endsWith(u8, design, ".va")) analogHost(design, app) else deep.runGuarded(0, digitalHost, .{design})) catch |e| {
         std.debug.print("vpi_host: {t}\n", .{e});
         return 1;
     };
@@ -396,7 +401,11 @@ fn buildAnalogLib(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, path
     const stem = std.fs.path.stem(path);
     const spec = try exe.Spec.parse(arena, source, null);
     var runner: Io.Writer.Allocating = .init(arena);
-    exe.writeVpiLib(&runner.writer, stem, &spec.bench, .{ .validate_contract = true }) catch return error.OutOfMemory;
+    // The facts `vera --emit-exe` renders this device's runner with, so the
+    // two heads agree (the memory-backed arrays' `mem_bytes` included).
+    var facts = try exe.compileFacts(arena, res.lowered, res.mir);
+    facts.validate_contract = true;
+    exe.writeVpiLib(&runner.writer, stem, &spec.bench, facts) catch return error.OutOfMemory;
     const work_root = if (std.c.getenv("VERA_VPI_WORK")) |w| std.mem.span(w) else ".zig-cache/vera-vpi"; // os: the host links libc on every target
     const work = try std.fs.path.join(arena, &.{ work_root, app_stem });
     // The contract this library speaks (`lib/contract.zig` and
@@ -452,6 +461,9 @@ fn bindLib(l: *DynLib) !vpi.analog.Lib {
     return out;
 }
 
+/// A digital design under the application, on the stack `main` reserved
+/// (`deep_stack.runGuarded`): the engine's evaluation, as `vera --run`'s,
+/// recurses on the source's nesting.
 fn digitalHost(path: []const u8) !u8 {
     std.debug.assert(!std.mem.endsWith(u8, path, ".va"));
     std.debug.assert(vpi.session.design == null);

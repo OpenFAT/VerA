@@ -1017,3 +1017,34 @@ test "§12.36 with no run: every operation fails and says why" {
     defer std.testing.allocator.free(queues_now);
     try std.testing.expectEqual(@as(usize, 0), queues_now.len);
 }
+
+test "§26.6.27: 10^5 nested begin blocks build their model on the reserved stack, one vpiBegin a level" {
+    // Oracle: the source, counted. `initial begin begin ... x = 1; end end`
+    // n deep is n vpiBegin objects, each the one statement of its parent
+    // (IEEE 1364-2005 §26.6.27 begin ->> vpiStmt), and the assignment at the
+    // bottom. The rewrite built the model on the caller's stack, one
+    // recursion a level, and overflowed it.
+    const n = 100_000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "module t;\n  reg x;\n  initial ");
+    for (0..n) |_| try src.appendSlice(std.testing.allocator, "begin ");
+    try src.appendSlice(std.testing.allocator, "x = 1;");
+    for (0..n) |_| try src.appendSlice(std.testing.allocator, " end");
+    try src.appendSlice(std.testing.allocator, "\nendmodule\n");
+    var h: Harness = undefined;
+    try h.init(src.items);
+    defer h.deinit();
+    const procs = iterate.vpi_iterate(user.vpiProcess, handle.vpi_handle_by_name("t", null));
+    var s = handle.vpi_handle(user.vpiStmt, iterate.vpi_scan(procs));
+    _ = trust.vpi_free_object(procs);
+    var begins: usize = 0;
+    while (property.vpi_get(user.vpiType, s) == user.vpiBegin) : (begins += 1) {
+        try std.testing.expect(begins < n);
+        const inner = iterate.vpi_iterate(user.vpiStmt, s);
+        s = iterate.vpi_scan(inner);
+        try std.testing.expect(iterate.vpi_scan(inner) == null);
+    }
+    try std.testing.expectEqual(@as(usize, n), begins);
+    try std.testing.expectEqual(@as(c_int, user.vpiAssignment), property.vpi_get(user.vpiType, s));
+}

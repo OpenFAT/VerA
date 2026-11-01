@@ -14,6 +14,7 @@ const handle = @import("handle.zig");
 const iterate = @import("iterate.zig");
 const property = @import("property.zig");
 const trust = @import("trust.zig");
+const schema = @import("schema.zig");
 const user = @import("vpi_user.zig");
 const run = @import("run.zig");
 const Harness = run.Harness;
@@ -22,21 +23,186 @@ const Harness = run.Harness;
 /// associates left to right, the conditional right to left.
 const unary_prec: u8 = 12;
 
+/// One piece of text still to write: bytes as they are, or an expression,
+/// parenthesized as an operand of an operator of precedence `parent` when
+/// it binds looser (or as loose, on the right of a left-associative one).
+/// The default `parent` 0 never parenthesizes: a plain subexpression.
+const Item = union(enum) {
+    text: []const u8,
+    expr: struct { id: Ast.ExprId, parent: u8 = 0, right: bool = false },
+};
+
+/// The pieces still to write, the next one last. Every piece writes at
+/// least one byte (no text is empty, and every expression form writes one
+/// of its own), so more pieces than `w` has room for cannot fit: that is
+/// `w`'s own `error.WriteFailed`, and the stack never outgrows `w`.
+const Todo = struct {
+    w: *Writer,
+    items: *[schema.name_buf_len]Item,
+    len: usize = 0,
+
+    /// One stack for every call: vpi_get_str's text is one static buffer
+    /// too (`property.str_buf`), so no two decompiles overlap.
+    var stack: [schema.name_buf_len]Item = undefined;
+
+    fn init(w: *Writer) Todo {
+        std.debug.assert(w.buffer.len < schema.name_buf_len);
+        return .{ .w = w, .items = &stack };
+    }
+
+    /// Pushes `it`; an absent operand (`.none`) is no piece.
+    fn push(t: *Todo, it: Item) Writer.Error!void {
+        switch (it) {
+            .text => |x| std.debug.assert(x.len != 0),
+            .expr => |e| if (e.id == .none) return,
+        }
+        if (t.w.end + t.len + 1 > t.w.buffer.len) return error.WriteFailed;
+        std.debug.assert(t.len < t.items.len);
+        t.items[t.len] = it;
+        t.len += 1;
+    }
+
+    /// `pieces` in order: pushed last first.
+    fn seq(t: *Todo, pieces: []const Item) Writer.Error!void {
+        var k = pieces.len;
+        while (k > 0) {
+            k -= 1;
+            try t.push(pieces[k]);
+        }
+    }
+
+    /// `open`, the items separated by `, `, `close`.
+    fn list(t: *Todo, open: []const u8, items: []const Ast.ExprId, close: []const u8) Writer.Error!void {
+        std.debug.assert(open.len != 0);
+        std.debug.assert(close.len != 0);
+        try t.push(.{ .text = close });
+        var k = items.len;
+        while (k > 0) {
+            k -= 1;
+            try t.push(.{ .expr = .{ .id = items[k] } });
+            if (k != 0) try t.push(.{ .text = ", " });
+        }
+        try t.push(.{ .text = open });
+    }
+
+    /// Writes the pieces until none is left. Each expression is popped
+    /// once (its children are its own rows), and each pops at most nine
+    /// texts and its list's separators, so the loop is bounded by the
+    /// rows of `f`.
+    fn drain(t: *Todo, f: *const Ast.SourceFile) Writer.Error!void {
+        const pops_max = 16 * @as(usize, f.exprs.len()) + 16;
+        var pops: usize = 0;
+        while (t.len > 0) : (pops += 1) {
+            std.debug.assert(pops < pops_max);
+            t.len -= 1;
+            switch (t.items[t.len]) {
+                .text => |s| try t.w.writeAll(s),
+                .expr => |e| try t.expand(f, e.id, e.parent, e.right),
+            }
+        }
+        std.debug.assert(t.len == 0);
+    }
+
+    /// `id`'s own text, its subexpressions pushed in place.
+    fn expand(t: *Todo, f: *const Ast.SourceFile, id: Ast.ExprId, parent: u8, right: bool) Writer.Error!void {
+        std.debug.assert(id != .none); // `push` keeps no absent operand
+        std.debug.assert(parent <= unary_prec + 1);
+        const ex = &f.exprs;
+        const p = precOf(ex, id);
+        if (p < parent or (right and p == parent)) {
+            try t.w.writeByte('(');
+            try t.push(.{ .text = ")" });
+        }
+        const before = t.w.end + t.len;
+        defer std.debug.assert(t.w.end + t.len > before);
+        switch (ex.tag(id)) {
+            .ident, .hier_ident, .int_literal, .logic_literal, .real_literal, .str_literal, .pos_inf, .neg_inf, .event_initial_step, .event_final_step => try writeLeaf(t.w, f, id),
+            .unary => try t.seq(&.{ .{ .text = unarySpelling(ex.unOp(id)) }, .{ .text = " " }, .{ .expr = .{ .id = ex.lhs(id), .parent = unary_prec } } }),
+            .binary => {
+                const bp = binaryPrec(ex.binOp(id));
+                try t.seq(&.{ .{ .expr = .{ .id = ex.lhs(id), .parent = bp } }, .{ .text = " " }, .{ .text = binarySpelling(ex.binOp(id)) }, .{ .text = " " }, .{ .expr = .{ .id = ex.rhs(id), .parent = bp, .right = true } } });
+            },
+            .ternary => try t.seq(&.{ .{ .expr = .{ .id = ex.lhs(id), .right = true } }, .{ .text = " ? " }, .{ .expr = .{ .id = ex.rhs(id) } }, .{ .text = " : " }, .{ .expr = .{ .id = ex.ternaryElse(id) } } }),
+            .call, .builtin_call, .filter_call, .noise_call, .event_function => {
+                try t.list("(", ex.args(id), ")");
+                try t.push(.{ .text = f.str(ex.strOf(id)) });
+            },
+            // A.8.2 system_function_call: the parentheses come with arguments.
+            .sys_call => {
+                if (ex.args(id).len != 0) try t.list("(", ex.args(id), ")");
+                try t.push(.{ .text = f.str(ex.strOf(id)) });
+            },
+            .branch_access => if (ex.rhs(id) != .none)
+                try t.seq(&.{ .{ .text = f.str(ex.strOf(id)) }, .{ .text = "(" }, .{ .expr = .{ .id = ex.lhs(id) } }, .{ .text = ", " }, .{ .expr = .{ .id = ex.rhs(id) } }, .{ .text = ")" } })
+            else
+                try t.seq(&.{ .{ .text = f.str(ex.strOf(id)) }, .{ .text = "(" }, .{ .expr = .{ .id = ex.lhs(id) } }, .{ .text = ")" } }),
+            .port_access => try t.seq(&.{ .{ .text = f.str(ex.strOf(id)) }, .{ .text = "(<" }, .{ .expr = .{ .id = ex.lhs(id) } }, .{ .text = ">)" } }),
+            .concat => try t.list("{", ex.args(id), "}"),
+            .multi_concat => {
+                var inner = ex.rhs(id);
+                if (ex.tag(inner) == .concat and ex.args(inner).len == 1 and ex.tag(ex.args(inner)[0]) == .concat) inner = ex.args(inner)[0];
+                try t.seq(&.{ .{ .text = "{" }, .{ .expr = .{ .id = ex.lhs(id) } }, .{ .expr = .{ .id = inner } }, .{ .text = "}" } });
+            },
+            .assign_pattern => try t.list("'{", ex.args(id), "}"),
+            .pattern_repl => {
+                try t.push(.{ .text = "}" });
+                try t.list("{", ex.args(ex.rhs(id)), "}");
+                try t.seq(&.{ .{ .text = "'{" }, .{ .expr = .{ .id = ex.lhs(id) } } });
+            },
+            .index => try t.seq(&.{ .{ .expr = .{ .id = ex.lhs(id), .parent = unary_prec + 1 } }, .{ .text = "[" }, .{ .expr = .{ .id = ex.rhs(id) } }, .{ .text = "]" } }),
+            .range => try t.seq(&.{ .{ .expr = .{ .id = ex.lhs(id) } }, .{ .text = ":" }, .{ .expr = .{ .id = ex.rhs(id) } } }),
+            .indexed_range => try t.seq(&.{ .{ .expr = .{ .id = ex.lhs(id) } }, .{ .text = if (ex.extraOf(id) == 0) " +: " else " -: " }, .{ .expr = .{ .id = ex.rhs(id) } } }),
+            .event_or => try t.seq(&.{ .{ .expr = .{ .id = ex.lhs(id) } }, .{ .text = " or " }, .{ .expr = .{ .id = ex.rhs(id) } } }),
+            .event_posedge => try t.seq(&.{ .{ .text = "posedge " }, .{ .expr = .{ .id = ex.lhs(id) } } }),
+            .event_negedge => try t.seq(&.{ .{ .text = "negedge " }, .{ .expr = .{ .id = ex.lhs(id) } } }),
+            .event_driver_update => try t.seq(&.{ .{ .text = "driver_update " }, .{ .expr = .{ .id = ex.lhs(id) } } }),
+        }
+    }
+};
+
 /// §26.6.26 b): "a string with a functionally equivalent expression to the
 /// original expression within the HDL. Parentheses shall be added only to
 /// preserve precedence. Each operand and operator shall be separated by a
 /// single space character." A literal is spelled in its own base, and an
-/// x/z or wide one in binary. `w` keeps what it is given (`Writer.fixed`).
+/// x/z or wide one in binary. `w` is a `Writer.fixed` of fewer than
+/// `schema.name_buf_len` bytes; a text past it is `error.WriteFailed`.
 /// Asserts that `id` is `.none` or a row of `f`, and that the text only
 /// grows `w`.
 ///
-/// Recursive on the expression's depth, which the parser bounds.
+/// A worklist (`todo`), not a recursion: the expression nests as deep as
+/// the source does, on whatever thread the application calls from.
 pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Error!void {
     std.debug.assert(id == .none or @backingInt(id) < f.exprs.len());
     if (id == .none) return;
     const before = w.end;
     defer std.debug.assert(w.end >= before);
+    var todo: Todo = .init(w);
+    try todo.push(.{ .expr = .{ .id = id } });
+    try todo.drain(f);
+}
+
+/// §26.6.19 g): a system or user task call, "a functionally equivalent
+/// system task/function call to what was in the original HDL". Asserts
+/// that `id` is a task-call statement of `f` and that its name is written.
+pub fn decompileCall(w: *Writer, f: *const Ast.SourceFile, id: Ast.StmtId) Writer.Error!void {
+    std.debug.assert(id != .none);
+    std.debug.assert(f.stmt(id) == .sys_task);
+    const before = w.end;
+    const s = f.stmt(id).sys_task;
+    try w.writeAll(f.str(s.name));
+    var todo: Todo = .init(w);
+    if (s.args.len != 0) try todo.list("(", s.args, ")");
+    try todo.drain(f);
+    std.debug.assert(w.end > before);
+}
+
+// ---- private ----
+
+/// A name, a literal or an analysis event, written whole.
+fn writeLeaf(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Error!void {
     const ex = &f.exprs;
+    std.debug.assert(id != .none);
+    const before = w.end;
     switch (ex.tag(id)) {
         .ident => try w.writeAll(f.str(ex.strOf(id))),
         .hier_ident => for (ex.nameParts(id), 0..) |p, k| {
@@ -89,94 +255,6 @@ pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Er
         },
         .pos_inf => try w.writeAll("inf"),
         .neg_inf => try w.writeAll("-inf"),
-        .unary => {
-            try w.writeAll(unarySpelling(ex.unOp(id)));
-            try w.writeByte(' ');
-            try operand(w, f, ex.lhs(id), unary_prec, false);
-        },
-        .binary => {
-            const p = binaryPrec(ex.binOp(id));
-            try operand(w, f, ex.lhs(id), p, false);
-            try w.print(" {s} ", .{binarySpelling(ex.binOp(id))});
-            try operand(w, f, ex.rhs(id), p, true);
-        },
-        .ternary => {
-            try operand(w, f, ex.lhs(id), 0, true);
-            try w.writeAll(" ? ");
-            try decompile(w, f, ex.rhs(id));
-            try w.writeAll(" : ");
-            try decompile(w, f, ex.ternaryElse(id));
-        },
-        .call, .builtin_call, .filter_call, .noise_call, .event_function => {
-            try w.writeAll(f.str(ex.strOf(id)));
-            try list(w, f, "(", ex.args(id), ")");
-        },
-        // A.8.2 system_function_call: the parentheses come with arguments.
-        .sys_call => {
-            try w.writeAll(f.str(ex.strOf(id)));
-            if (ex.args(id).len != 0) try list(w, f, "(", ex.args(id), ")");
-        },
-        .branch_access => {
-            try w.print("{s}(", .{f.str(ex.strOf(id))});
-            try decompile(w, f, ex.lhs(id));
-            if (ex.rhs(id) != .none) try w.writeAll(", ");
-            try decompile(w, f, ex.rhs(id));
-            try w.writeByte(')');
-        },
-        .port_access => {
-            try w.print("{s}(<", .{f.str(ex.strOf(id))});
-            try decompile(w, f, ex.lhs(id));
-            try w.writeAll(">)");
-        },
-        .concat => try list(w, f, "{", ex.args(id), "}"),
-        .multi_concat => {
-            var inner = ex.rhs(id);
-            if (ex.tag(inner) == .concat and ex.args(inner).len == 1 and ex.tag(ex.args(inner)[0]) == .concat) inner = ex.args(inner)[0];
-            try w.writeByte('{');
-            try decompile(w, f, ex.lhs(id));
-            try decompile(w, f, inner);
-            try w.writeByte('}');
-        },
-        .assign_pattern => try list(w, f, "'{", ex.args(id), "}"),
-        .pattern_repl => {
-            try w.writeAll("'{");
-            try decompile(w, f, ex.lhs(id));
-            try list(w, f, "{", ex.args(ex.rhs(id)), "}");
-            try w.writeByte('}');
-        },
-        .index => {
-            try operand(w, f, ex.lhs(id), unary_prec + 1, false);
-            try w.writeByte('[');
-            try decompile(w, f, ex.rhs(id));
-            try w.writeByte(']');
-        },
-        .range => {
-            try decompile(w, f, ex.lhs(id));
-            try w.writeByte(':');
-            try decompile(w, f, ex.rhs(id));
-        },
-        .indexed_range => {
-            try decompile(w, f, ex.lhs(id));
-            try w.writeAll(if (ex.extraOf(id) == 0) " +: " else " -: ");
-            try decompile(w, f, ex.rhs(id));
-        },
-        .event_or => {
-            try decompile(w, f, ex.lhs(id));
-            try w.writeAll(" or ");
-            try decompile(w, f, ex.rhs(id));
-        },
-        .event_posedge => {
-            try w.writeAll("posedge ");
-            try decompile(w, f, ex.lhs(id));
-        },
-        .event_negedge => {
-            try w.writeAll("negedge ");
-            try decompile(w, f, ex.lhs(id));
-        },
-        .event_driver_update => {
-            try w.writeAll("driver_update ");
-            try decompile(w, f, ex.lhs(id));
-        },
         .event_initial_step, .event_final_step => {
             try w.writeAll(if (ex.tag(id) == .event_initial_step) "initial_step" else "final_step");
             const names = ex.nameParts(id);
@@ -186,35 +264,9 @@ pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Er
                 try w.writeByte(')');
             }
         },
+        else => unreachable, // else: `Todo.expand` writes only these whole
     }
-}
-
-/// §26.6.19 g): a system or user task call, "a functionally equivalent
-/// system task/function call to what was in the original HDL". Asserts
-/// that `id` is a task-call statement of `f` and that its name is written.
-pub fn decompileCall(w: *Writer, f: *const Ast.SourceFile, id: Ast.StmtId) Writer.Error!void {
-    std.debug.assert(id != .none);
-    std.debug.assert(f.stmt(id) == .sys_task);
-    const before = w.end;
-    const s = f.stmt(id).sys_task;
-    try w.writeAll(f.str(s.name));
-    if (s.args.len != 0) try list(w, f, "(", s.args, ")");
     std.debug.assert(w.end > before);
-}
-
-// ---- private ----
-
-fn list(w: *Writer, f: *const Ast.SourceFile, open: []const u8, items: []const Ast.ExprId, close: []const u8) Writer.Error!void {
-    std.debug.assert(open.len != 0);
-    std.debug.assert(close.len != 0);
-    const before = w.end;
-    try w.writeAll(open);
-    for (items, 0..) |e, k| {
-        if (k != 0) try w.writeAll(", ");
-        try decompile(w, f, e);
-    }
-    try w.writeAll(close);
-    std.debug.assert(w.end - before >= open.len + close.len);
 }
 
 /// Table 5-4's binary ranks: above the conditional's 0, below a unary's.
@@ -251,18 +303,6 @@ fn precOf(ex: *const Ast.ExprStore, id: Ast.ExprId) u8 {
     };
     std.debug.assert(p <= unary_prec + 1);
     return p;
-}
-
-/// An operand of an operator of precedence `parent`, parenthesized when it
-/// binds looser, or as loose on the right of a left-associative operator.
-fn operand(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId, parent: u8, right: bool) Writer.Error!void {
-    std.debug.assert(id != .none);
-    std.debug.assert(parent <= unary_prec + 1);
-    const p = precOf(&f.exprs, id);
-    const wrap = p < parent or (right and p == parent);
-    if (wrap) try w.writeByte('(');
-    try decompile(w, f, id);
-    if (wrap) try w.writeByte(')');
 }
 
 fn unarySpelling(op: Ast.UnaryOp) []const u8 {
@@ -364,4 +404,26 @@ test "§26.6.26 b): an equal-precedence right operand keeps its parentheses; lit
         try std.testing.expectEqualStrings(want, std.mem.span(property.vpi_get_str(user.vpiDecompile, handle.vpi_handle(user.vpiRhs, assign))));
     }
     try std.testing.expect(iterate.vpi_scan(itr) == null);
+}
+
+test "§26.6.26 b): a text nested past vpi_get_str's buffer is refused by its length, not by the stack" {
+    // Oracle: every decompiled level writes at least one byte of its own, so
+    // `a + a + ... + a` 10^5 operators deep (4 * 10^5 bytes) cannot fit the
+    // 4095-byte buffer: vpi_get_str answers null with an error, as for any
+    // text past it. The rewrite recursed to the chain's bottom before
+    // writing a byte and overflowed the caller's stack.
+    const n = 100_000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "module t;\n  wire a;\n  wire w;\n  assign w = a");
+    for (0..n) |_| try src.appendSlice(std.testing.allocator, " + a");
+    try src.appendSlice(std.testing.allocator, ";\nendmodule\n");
+    var h: Harness = undefined;
+    try h.init(src.items);
+    defer h.deinit();
+    const itr = iterate.vpi_iterate(user.vpiContAssign, handle.vpi_handle_by_name("t", null));
+    const assign = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
+    _ = trust.vpi_free_object(itr);
+    try std.testing.expect(property.vpi_get_str(user.vpiDecompile, handle.vpi_handle(user.vpiRhs, assign)) == null);
+    try std.testing.expect(@import("status.zig").vpi_chk_error(null) != 0);
 }

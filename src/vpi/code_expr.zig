@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
+const deep = @import("frontend").deep_stack;
 const code_tables = @import("code_tables.zig");
 const schema = @import("schema.zig");
 const ObjId = schema.ObjId;
@@ -43,10 +44,13 @@ pub fn expr(b: *Builder, id: Ast.ExprId) Error!ObjId {
 }
 
 /// The object `expr` answers for `id`, without its decompile source or
-/// attributes. Asserts that the answer is `none` or a row that exists, and
-/// that building only ever appends rows.
+/// attributes. Recursive on the expression's depth: past the stack the
+/// model build reserved (`session`), `error.TooDeep`. Asserts that the
+/// answer is `none` or a row that exists, and that building only ever
+/// appends rows.
 pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!ObjId {
     if (id == .none) return ObjId.none;
+    if (deep.exhausted()) return error.TooDeep;
     const ex = &b.file.exprs;
     const before = b.objects.hot.items.len;
     const at = try switch (ex.tag(id)) {
