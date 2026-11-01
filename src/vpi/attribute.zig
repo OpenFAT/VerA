@@ -186,7 +186,7 @@ pub fn supports(o: *const Obj) bool {
 /// Appends a vpiAttribute row to `parent` for each attribute the source binds
 /// to `owner`, its value folded (§3.8/AMS §2.9: no value is 1). A name
 /// repeated on one element keeps the later spelling. `definition` is
-/// vpiDefAttribute. A no-op for `code.none`. `error.NotElaborated`: a value
+/// vpiDefAttribute. A no-op for a `parent` of `.none`. `error.NotElaborated`: a value
 /// that does not fold, which the frontend should already have refused.
 pub fn attach(b: *Builder, parent: ObjId, owner: Ast.AttributeOwner, definition: bool) Error!void {
     if (parent == ObjId.none) return;
