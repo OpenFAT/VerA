@@ -153,6 +153,10 @@ files: std.MultiArrayList(gen_file.UnitFile) = .empty,
 /// where the conditionally-emitted helper blocks are already decided.
 prelude: []const u8 = "",
 helpers: []const u8 = "",
+/// The renderer's nesting (`render.renderInst`, one level per inline row):
+/// past `render.caller_levels` on the caller's stack, each next
+/// `render.segment_levels` run on a fresh stack.
+render_seg: @import("frontend").deep_stack.Segments = .{},
 /// `cg_strcap`'s memo: the capacity of each string Value asked about.
 str_caps: std.AutoHashMapUnmanaged(Mir.Value, u64) = .empty,
 /// `cg_strcap.heldCap` per `Lowered.held_vars` row, solved on first use.

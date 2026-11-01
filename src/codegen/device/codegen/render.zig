@@ -5,11 +5,14 @@
 //!
 //! Contents:
 //! - `pub const Subst = struct`
+//! - `pub const Spine = struct { op: Mir.Opcode, a: Mir.Value, b: Mir.Value }`
 //! - `pub fn renderToArena(self: *Gen, v: Mir.Value, want: VTy) Error![]const u8`
 //! - `pub fn renderVal(self: *Gen, v0: Mir.Value, want: VTy) Error!void`
 //! - `pub fn renderValueRef(self: *Gen, v: Mir.Value) Error!void`
 //! - `pub fn materialized(self: *const Gen, v: Mir.Value) bool`
+//! - `pub const caller_levels: u32 = 32`, `pub const segment_levels: u32 = 2048`
 //! - `pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void`
+//! - `pub fn spineNext(self: *Gen, v0: Mir.Value, want: VTy) Error!?Spine`
 //! - `pub fn foldHidesSlot(self: *Gen, v0: Mir.Value, depth: u32) bool`
 
 const std = @import("std");
@@ -37,6 +40,25 @@ const render_op = @import("render_op.zig");
 /// What `renderVal` writes in place of a guarded row's restricted operand
 /// (`Gen.subst`): `v` while the guard chain from `lit` holds, else `safe`.
 pub const Subst = struct { v: Mir.Value, lit: u32, safe: f64 };
+
+/// A real `+ - *` row of a fused chain (`spineNext`): its opcode and operands.
+pub const Spine = struct { op: Mir.Opcode, a: Mir.Value, b: Mir.Value };
+
+/// Render levels on the caller's stack: about 8 KiB each in Debug
+/// (`renderVal`, `renderValueRef`, `renderInst`, `renderOp` frames), so 32 is
+/// under 300 KiB of a thread that may be 1 MiB.
+pub const caller_levels: u32 = 32;
+/// Render levels per fresh stack, past the planner's `max_inline_depth`, so
+/// a fused chain takes one segment.
+pub const segment_levels: u32 = 2048;
+/// `deep_stack.run`'s depth hint for one segment, in its 16 KiB Debug levels:
+/// 16 MiB plus 1024 of them hold `segment_levels` render levels twice over.
+const segment_hint: usize = 1024;
+
+comptime {
+    assert(segment_levels > @import("plan/inline.zig").max_inline_depth);
+    assert(segment_hint * 16 * 1024 >= segment_levels * 8 * 1024);
+}
 
 /// One select row as the renderer reads it: its condition, both arms, the
 /// type it renders at and its result.
@@ -183,11 +205,85 @@ pub fn materialized(self: *const Gen, v: Mir.Value) bool {
         (self.cur.plan.isRoot(v) or self.cur.plan.cached(v) or self.cur.plan.slot[i] != none_u32);
 }
 
-/// Writes instruction `inst` as an expression.
+/// Writes instruction `inst` as an expression. Recurses once per inline
+/// operand (bounded by the planner's `max_inline_depth` for a fused chain;
+/// a lazy select arm's chain is `renderSelLazy`'s loop, a `+ - *` chain
+/// `render_op.renderArith`'s): `caller_levels` of it on the caller's stack,
+/// then each `segment_levels` on a fresh stack (`Gen.render_seg`), so no
+/// source shape exhausts a caller's thread. A stack the system will not
+/// reserve is `error.OutOfMemory`.
 /// Asserts that `inst` is a row of `mir`.
 /// Invalidates slices of `out.items` if additional memory is needed.
 pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
     assert(@backingInt(inst) < self.mir.instCount());
+    if (self.render_seg.due(caller_levels, segment_levels)) {
+        return self.render_seg.segment(segment_hint, renderInstHere, .{ self, inst }) catch |e| switch (e) {
+            error.DeepStackUnavailable => error.OutOfMemory,
+            else => |other| other,
+        };
+    }
+    return renderInstHere(self, inst);
+}
+
+/// Writes `renderVal(v0, want)` unless that would write `v0` as an inline
+/// real `+ - *` row, in which case it writes nothing and returns the row for
+/// `render_op.renderArith`'s loop to continue with. The steps are
+/// `renderVal`'s, `renderValueRef`'s and `renderInst`'s, in their order, each
+/// taken once, so the bytes are the recursion's.
+/// Invalidates slices of `out.items` if additional memory is needed.
+pub fn spineNext(self: *Gen, v0: Mir.Value, want: VTy) Error!?Spine {
+    assert(self.an.vty.len == self.an.nv);
+    const v = self.an.rv(v0);
+    const subst_hit = if (self.cur.subst) |su| su.v == v else false;
+    const def = self.mir.valueDef(v);
+    const op: Mir.Opcode = if (def == .inst_result) self.mir.instOp(def.inst_result) else .phi;
+    const arith = op == .fadd or op == .fsub or op == .fmul;
+    // A guarded row renders under its substitution: the recursion's.
+    if (subst_hit or !arith or self.an.tyOf(v) != want or want != .real or materialized(self, v) or
+        self.mir.guardOf(def.inst_result) != null)
+    {
+        try renderVal(self, v0, want);
+        return null;
+    }
+    // From here on this is `renderInst` on a `+ - *` row.
+    const inst = def.inst_result;
+    const res = self.mir.instResult(inst);
+    assert(res == v);
+    if (try writeDerivFree(self, res)) return null;
+    const row = self.mir.instRow(inst);
+    assert(self.an.vty[@backingInt(res)] == .real);
+    return .{ .op = op, .a = @fromBackingInt(@intCast(row.a)), .b = @fromBackingInt(@intCast(row.b)) };
+}
+
+/// Returns whether folding `v` to one number would leave a materialized
+/// temporary unread. `UnitPlan` already declared every slot, and an unread
+/// `const` does not compile. Walks only the shapes `foldConst` walks and
+/// answers true for the rest.
+pub fn foldHidesSlot(self: *Gen, v0: Mir.Value, depth: u32) bool {
+    // A recursion bounded by the depth cap, not by the input.
+    assert(depth <= 33);
+    if (depth > 32) return true;
+    const v = self.an.rv(v0);
+    if (depth > 0 and materialized(self, v)) return true;
+    const def = self.mir.valueDef(v);
+    if (def != .inst_result) return false;
+    const row = self.mir.instRow(def.inst_result);
+    return switch (Mir.opClass(row.op)) {
+        .unary => foldHidesSlot(self, @fromBackingInt(@intCast(row.a)), depth + 1),
+        .binary => foldHidesSlot(self, @fromBackingInt(@intCast(row.a)), depth + 1) or
+            foldHidesSlot(self, @fromBackingInt(@intCast(row.b)), depth + 1),
+        .ternary, .phi, .branch, .jump, .call, .anew, .load, .store => true,
+    };
+}
+
+// ---- private ----
+
+/// `renderInst` on the current stack: one level of `Gen.render_seg`.
+fn renderInstHere(self: *Gen, inst: Mir.Inst) Error!void {
+    // An inline row has one use, so a nesting visits each row at most once.
+    assert(self.render_seg.frames <= self.mir.instCount());
+    self.render_seg.frames += 1;
+    defer self.render_seg.frames -= 1;
     const row = self.mir.instRow(inst);
     const op = row.op;
     if (op == .call) return gen_call.emitCall(self, inst);
@@ -235,29 +331,6 @@ pub fn renderInst(self: *Gen, inst: Mir.Inst) Error!void {
     }
     return render_op.renderOp(self, op, a, b2, res_ty);
 }
-
-/// Returns whether folding `v` to one number would leave a materialized
-/// temporary unread. `UnitPlan` already declared every slot, and an unread
-/// `const` does not compile. Walks only the shapes `foldConst` walks and
-/// answers true for the rest.
-pub fn foldHidesSlot(self: *Gen, v0: Mir.Value, depth: u32) bool {
-    // A recursion bounded by the depth cap, not by the input.
-    assert(depth <= 33);
-    if (depth > 32) return true;
-    const v = self.an.rv(v0);
-    if (depth > 0 and materialized(self, v)) return true;
-    const def = self.mir.valueDef(v);
-    if (def != .inst_result) return false;
-    const row = self.mir.instRow(def.inst_result);
-    return switch (Mir.opClass(row.op)) {
-        .unary => foldHidesSlot(self, @fromBackingInt(@intCast(row.a)), depth + 1),
-        .binary => foldHidesSlot(self, @fromBackingInt(@intCast(row.a)), depth + 1) or
-            foldHidesSlot(self, @fromBackingInt(@intCast(row.b)), depth + 1),
-        .ternary, .phi, .branch, .jump, .call, .anew, .load, .store => true,
-    };
-}
-
-// ---- private ----
 
 /// Returns the select condition's unslotted real comparison, so rendering it
 /// in mask space leaves no unread `const`. Null for slotted predicates and

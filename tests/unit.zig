@@ -16891,6 +16891,59 @@ pub const codegen_tests = struct {
         if (std.mem.find(u8, body, "c.f") != null) try std.testing.expect(std.mem.find(u8, body, "const c = ") != null);
     }
 
+    test "generate: a chain of 5000 fused statements generates on a 1 MiB stack" {
+        // Length, not nesting: each statement reads the last one's value once,
+        // so the planner fuses them into one expression up to
+        // `max_inline_depth` deep, which no parse depth sizes the caller's
+        // stack for. The renderer took four frames (about 8 KiB in Debug) per
+        // fused operand and overflowed 1 MiB (pass-3 oracles' `wide`
+        // generator, `chain.va`). Two shapes: a `+` chain (`renderArith`'s
+        // loop) and `sin` between the sums (`renderInst`'s segments).
+        // Oracle: §4.3 arithmetic over literals; the text names every
+        // statement's constant, the last one's included.
+        const gpa = std.testing.allocator;
+        const n = 5000;
+        for ([_][]const u8{ "y + {d}.5", "sin(y) + {d}.5" }) |form| {
+            var src: std.ArrayList(u8) = .empty;
+            defer src.deinit(gpa);
+            try src.appendSlice(gpa, "module m(p, n);\n  inout p, n;\n  electrical p, n;\n  real y;\n  analog begin\n    y = V(p, n);\n");
+            for (0..n) |i| {
+                try src.appendSlice(gpa, "    y = ");
+                try src.print(gpa, "{s}", .{form[0..std.mem.find(u8, form, "{d}").?]});
+                try src.print(gpa, "{d}.5;\n", .{i});
+            }
+            try src.appendSlice(gpa, "    I(p, n) <+ y;\n  end\nendmodule\n");
+            const Run = struct {
+                h: Harness = undefined,
+                lowered: anyerror!void = {},
+                out: anyerror!Output = error.NotRun,
+                fn lower(r: *@This(), text: []const u8) void {
+                    r.lowered = Harness.run(std.testing.allocator, text, &r.h);
+                }
+                fn gen(r: *@This()) void {
+                    r.out = r.h.genWith(.{});
+                }
+            };
+            var r: Run = .{};
+            const t0 = try std.Thread.spawn(.{ .stack_size = 256 << 20 }, Run.lower, .{ &r, src.items });
+            t0.join();
+            defer r.h.deinit();
+            try r.lowered;
+            const t1 = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.gen, .{&r});
+            t1.join();
+            const out = try r.out;
+            var k: usize = 0;
+            while (k < n) : (k += 1) {
+                var buf: [16]u8 = undefined;
+                const lit = try std.fmt.bufPrint(&buf, "{d}.5", .{k});
+                std.testing.expect(std.mem.find(u8, out.text, lit) != null) catch |e| {
+                    std.debug.print("form `{s}`: no `{s}` in the text\n", .{ form, lit });
+                    return e;
+                };
+            }
+        }
+    }
+
     test "generate: a held string built by 20000 concatenations generates on a 1 MiB stack" {
         // Length, not nesting: one statement per concatenation, so no parse depth
         // sizes the caller's stack. Sizing the held string's row (`cg_strcap`)
