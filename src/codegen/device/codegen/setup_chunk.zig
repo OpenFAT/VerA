@@ -293,16 +293,30 @@ fn note(a: Allocator, readers: *std.StringHashMapUnmanaged(u32), several: *std.S
 }
 
 /// Appends the pieces of statement list `body` (indent 0) under `guards`.
-/// False when a statement cannot be read (unbalanced braces).
+/// False when a statement cannot be read (unbalanced braces). A block or an
+/// `if` arm is a frame of a heap stack, entered where the statement stood, so
+/// a body nested as deep as the source costs no call stack.
 fn pieces(st: *State, body: Lines, guards: Lines) Error!bool {
-    var i: usize = 0;
-    while (i < body.len) {
-        const end = stmtEnd(body, i) orelse return false;
-        const s = body[i..end];
-        i = end;
+    const Frame = struct { body: Lines, i: usize, guards: Lines };
+    var stack: std.ArrayList(Frame) = .empty;
+    try stack.append(st.a, .{ .body = body, .i = 0, .guards = guards });
+    while (stack.items.len != 0) {
+        // A frame is a statement's inside, shorter than the statement, so
+        // the stack is no deeper than `body` is long.
+        assert(stack.items.len <= body.len + 1);
+        const top = &stack.items[stack.items.len - 1];
+        if (top.i == top.body.len) {
+            _ = stack.pop();
+            continue;
+        }
+        assert(top.i < top.body.len);
+        const end = stmtEnd(top.body, top.i) orelse return false;
+        const s = top.body[top.i..end];
+        top.i = end;
+        const g0 = top.guards;
         if (bytesOf(s) > st.small) {
             if (try openBlock(st.a, s)) |inner| {
-                if (!try pieces(st, inner, guards)) return false;
+                try stack.append(st.a, .{ .body = inner, .i = 0, .guards = g0 });
                 continue;
             }
             const arms = try splitIf(st.a, s);
@@ -311,13 +325,15 @@ fn pieces(st: *State, body: Lines, guards: Lines) Error!bool {
                 st.guards += 1;
                 const g = try st.a.print("zg{d}", .{st.guards});
                 const decl = try st.a.print("const {s}: bool = {s};", .{ g, arms_.cond });
-                try st.pieces.append(st.a, .{ .guards = guards, .lines = try st.a.dupe([]const u8, &.{decl}) });
-                if (!try pieces(st, arms_.then, try cat(st.a, guards, g))) return false;
-                if (arms_.@"else".len != 0 and !try pieces(st, arms_.@"else", try cat(st.a, guards, try st.a.print("!{s}", .{g})))) return false;
+                try st.pieces.append(st.a, .{ .guards = g0, .lines = try st.a.dupe([]const u8, &.{decl}) });
+                // The then arm runs first: it goes on top.
+                if (arms_.@"else".len != 0)
+                    try stack.append(st.a, .{ .body = arms_.@"else", .i = 0, .guards = try cat(st.a, g0, try st.a.print("!{s}", .{g})) });
+                try stack.append(st.a, .{ .body = arms_.then, .i = 0, .guards = try cat(st.a, g0, g) });
                 continue;
             }
         }
-        try st.pieces.append(st.a, .{ .guards = guards, .lines = s });
+        try st.pieces.append(st.a, .{ .guards = g0, .lines = s });
     }
     return true;
 }
@@ -595,6 +611,93 @@ test "chunk keeps one function for a small, stopping or unrecognised body" {
     // Not `emitSetup`'s shape: no `pub fn setup(`, or not its closing.
     try std.testing.expect(try chunk(a, "fn other() void {}\n", 16) == null);
     try std.testing.expect(try chunk(a, text[0 .. text.len - 2], 16) == null);
+}
+
+test "pieces: the worklist cuts exactly the pieces the recursion it replaced cut" {
+    // Oracle: `T.recursive`, `pieces` as it was before its heap stack,
+    // character for character. Random setup bodies of plain statements,
+    // two-armed `if`s and tail-break blocks nested up to five deep, at piece
+    // sizes from one statement up.
+    const T = struct {
+        fn recursive(st: *State, list: Lines, guards: Lines) Error!bool {
+            var i: usize = 0;
+            while (i < list.len) {
+                const end = stmtEnd(list, i) orelse return false;
+                const s = list[i..end];
+                i = end;
+                if (bytesOf(s) > st.small) {
+                    if (try openBlock(st.a, s)) |inner| {
+                        if (!try recursive(st, inner, guards)) return false;
+                        continue;
+                    }
+                    const arms = try splitIf(st.a, s);
+                    if (arms != null and try selfContained(st.a, arms.?.then) and try selfContained(st.a, arms.?.@"else")) {
+                        const arms_ = arms.?;
+                        st.guards += 1;
+                        const g = try st.a.print("zg{d}", .{st.guards});
+                        const decl = try st.a.print("const {s}: bool = {s};", .{ g, arms_.cond });
+                        try st.pieces.append(st.a, .{ .guards = guards, .lines = try st.a.dupe([]const u8, &.{decl}) });
+                        if (!try recursive(st, arms_.then, try cat(st.a, guards, g))) return false;
+                        if (arms_.@"else".len != 0 and !try recursive(st, arms_.@"else", try cat(st.a, guards, try st.a.print("!{s}", .{g})))) return false;
+                        continue;
+                    }
+                }
+                try st.pieces.append(st.a, .{ .guards = guards, .lines = s });
+            }
+            return true;
+        }
+
+        fn gen(a: Allocator, w: *std.ArrayList([]const u8), r: std.Random, ind: usize, depth: u32, k: *u32) !void {
+            const pad = "                                        "[0..ind];
+            for (0..1 + r.uintLessThan(u32, 4)) |_| {
+                k.* += 1;
+                switch (if (depth == 0) 0 else r.uintLessThan(u32, 4)) {
+                    0, 1 => try w.append(a, try a.print("{s}h0[{d}] = t1.addC({d}.0);", .{ pad, k.* % 2, k.* })),
+                    2 => {
+                        try w.append(a, try a.print("{s}if (t2 != {d}) {{", .{ pad, k.* }));
+                        try gen(a, w, r, ind + 4, depth - 1, k);
+                        try w.append(a, try a.print("{s}}} else {{", .{pad}));
+                        try gen(a, w, r, ind + 4, depth - 1, k);
+                        try w.append(a, try a.print("{s}}}", .{pad}));
+                    },
+                    else => {
+                        const l = k.*;
+                        try w.append(a, try a.print("{s}B{d}: {{", .{ pad, l }));
+                        try gen(a, w, r, ind + 4, depth - 1, k);
+                        try w.append(a, try a.print("{s}    break :B{d};", .{ pad, l }));
+                        try w.append(a, try a.print("{s}}}", .{pad}));
+                    },
+                }
+            }
+        }
+    };
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cut: usize = 0;
+    for (0..1000) |seed| {
+        var prng: std.Random.DefaultPrng = .init(seed);
+        const r = prng.random();
+        var lines: std.ArrayList([]const u8) = .empty;
+        var k: u32 = 0;
+        try T.gen(a, &lines, r, 0, 1 + r.uintLessThan(u32, 5), &k);
+        const small = r.uintLessThan(usize, 200);
+        var want: State = .{ .a = a, .small = small };
+        var got: State = .{ .a = a, .small = small };
+        const ok = try T.recursive(&want, lines.items, &.{});
+        try std.testing.expectEqual(ok, try pieces(&got, lines.items, &.{}));
+        try std.testing.expectEqual(want.guards, got.guards);
+        try std.testing.expectEqual(want.pieces.items.len, got.pieces.items.len);
+        for (want.pieces.items, got.pieces.items) |pw, pg| {
+            try std.testing.expectEqual(pw.guards.len, pg.guards.len);
+            for (pw.guards, pg.guards) |x, y| try std.testing.expectEqualStrings(x, y);
+            try std.testing.expectEqual(pw.lines.len, pg.lines.len);
+            for (pw.lines, pg.lines) |x, y| try std.testing.expectEqualStrings(x, y);
+        }
+        cut += @intFromBool(want.guards != 0);
+    }
+    // The generator reaches the split: most bodies guard an arm.
+    try std.testing.expect(cut > 500);
 }
 
 test braceDelta {

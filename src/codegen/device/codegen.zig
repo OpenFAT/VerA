@@ -240,6 +240,45 @@ test "generate: a case of 2500 arms generates on a 1 MiB stack" {
     try std.testing.expect(std.mem.find(u8, out.text, "2499.0") != null);
 }
 
+test "generate: a held string built by 20000 concatenations generates on a 1 MiB stack" {
+    // Length, not nesting: one statement per concatenation, so no parse depth
+    // sizes the caller's stack. Sizing the held string's row (`cg_strcap`)
+    // walked the chain one call per piece before any site was emitted and
+    // overflowed it (8 MiB at 20000 pieces). Oracle: §3.3 Table 3-3 gives
+    // each `{s, sp}` the sum of its operands' lengths, and `sp` is a
+    // parameter a card may set, so every piece counts `cg_strcap.row` and the
+    // row the device declares is 20000 of them.
+    const gpa = std.testing.allocator;
+    const pieces = 20000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    try src.appendSlice(gpa, "module m(p);\n  inout p;\n  electrical p;\n  string s;\n  parameter string sp = \"x\";\n  analog begin\n    @(initial_step) begin\n      s = \"\";\n");
+    for (0..pieces) |_| try src.appendSlice(gpa, "      s = {s, sp};\n");
+    try src.appendSlice(gpa, "    end\n    I(p) <+ V(p);\n  end\nendmodule\n");
+    const Run = struct {
+        h: @import("codegen/harness.zig").Harness = undefined,
+        lowered: anyerror!void = {},
+        out: anyerror!Output = error.NotRun,
+        fn lower(r: *@This(), text: []const u8) void {
+            r.lowered = @import("codegen/harness.zig").Harness.run(std.testing.allocator, text, &r.h);
+        }
+        fn gen(r: *@This()) void {
+            r.out = r.h.genWith(.{ .display = .emit });
+        }
+    };
+    var r: Run = .{};
+    const t0 = try std.Thread.spawn(.{ .stack_size = 256 << 20 }, Run.lower, .{ &r, src.items });
+    t0.join();
+    defer r.h.deinit();
+    try r.lowered;
+    const t1 = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.gen, .{&r});
+    t1.join();
+    const out = try r.out;
+    const want = try gpa.print("ZStrHeldN({d})", .{pieces * @import("cg_strcap.zig").row});
+    defer gpa.free(want);
+    try std.testing.expect(std.mem.find(u8, out.text, want) != null);
+}
+
 test "generate: degenerate legal devices generate, or refuse with a code, never trip an assert" {
     // The class behind five integration bugs: an assertion on a shape a legal
     // source can take (a ground terminal, no unknowns, a one-point table, an
