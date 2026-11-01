@@ -39,8 +39,12 @@ const Rows = model.Rows;
 /// behavioural rows its parsed source, so `r` must outlive the result.
 /// `error.NotElaborated` for a design with a second top-level module, which
 /// one `Design` cannot name. Caller owns the result and frees it with
-/// `Design.deinit`. `model_gpa` holds the `Design`'s tables.
+/// `Design.deinit`. `model_gpa` holds the `Design`'s tables. Asserts that
+/// the run's first scope is the top instance, that every instance scope
+/// became one scope here, and that the model has the one top.
 pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Design {
+    std.debug.assert(r.hier.scopes.items.len >= 1);
+    std.debug.assert(!r.hier.scopes.items[0].lexical);
     var d: Design = .{ .gpa = model_gpa, .arena = .init(model_gpa) };
     errdefer d.deinit();
     const arena = d.arena.allocator();
@@ -76,8 +80,12 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
         if (e != 0) {
             path = try pathComponent(arena, file, info);
             var p = info.parent;
-            while (r.hier.scopes.items[p].lexical) : (p = r.hier.scopes.items[p].parent)
+            var climbed: usize = 0;
+            while (r.hier.scopes.items[p].lexical) : (p = r.hier.scopes.items[p].parent) {
+                std.debug.assert(climbed < r.hier.scopes.items.len);
+                climbed += 1;
                 path = try model.joinPath(arena, try pathComponent(arena, file, r.hier.scopes.items[p]), path);
+            }
             parent = vpi_of[p];
             path = try model.joinPath(arena, scopes.items[vpi_of[p]].path, path);
         }
@@ -97,6 +105,7 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
         });
         if (parent) |p| try scopes.items[p].children.append(gpa, .at(at));
     }
+    std.debug.assert(scopes.items.len == n_scopes);
 
     var objects: Rows = .{ .gpa = model_gpa };
     defer objects.deinit();
@@ -241,6 +250,7 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
     d.finest = @intCast(r.time.finest);
     d.search_up = false;
     d.file = file;
+    std.debug.assert(d.top_modules.len == 1);
     return d;
 }
 
@@ -255,7 +265,12 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
 ///
 /// ponytail: only instances written directly in the module body; one inside
 /// a generate block has none of these (its `Ast.Instance` is the block's).
+///
+/// Asserts that `b` builds one of `scopes` at module level, and that each
+/// instance's chain of child scopes ends.
 fn addConnections(b: *Builder, scopes: []Building, r: *const sim.digital.Run) Error!void {
+    std.debug.assert(b.scope < scopes.len);
+    std.debug.assert(b.inner == ObjId.none);
     const s = &scopes[b.scope];
     const m = s.decl;
     const file = b.file;
@@ -277,6 +292,7 @@ fn addConnections(b: *Builder, scopes: []Building, r: *const sim.digital.Run) Er
     defer b.gpa.free(next);
     var pos = s.children.items.len;
     while (pos > 0) {
+        std.debug.assert(pos <= next.len);
         pos -= 1;
         const g = try heads.getOrPut(b.gpa, r.hier.scopes.items[scopes[s.children.items[pos].index()].engine].name);
         next[pos] = if (g.found_existing) g.value_ptr.* else end;
@@ -298,7 +314,10 @@ fn addConnections(b: *Builder, scopes: []Building, r: *const sim.digital.Run) Er
             });
         };
         var made = heads.get(inst.name) orelse end;
+        var steps: usize = 0;
         while (made != end) : (made = next[made]) {
+            std.debug.assert(steps < next.len);
+            steps += 1;
             const c = s.children.items[made];
             try b.attributes(c, .{ .kind = .declaration, .tok = inst.main_tok }, false);
             const child = scopes[c.index()].decl;
@@ -342,7 +361,8 @@ fn addConnections(b: *Builder, scopes: []Building, r: *const sim.digital.Run) Er
 
 /// `name`, when it denotes a net of the engine that no net object of `s`
 /// holds yet (`have`, the slots of `s`'s nets): that net, added to `s`'s
-/// nets and to `have`.
+/// nets and to `have`. Asserts that `scope` is a module row already made,
+/// and that a net added is an implicit one `have` now holds.
 fn implicitNet(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -354,6 +374,7 @@ fn implicitNet(
     top_name: []const u8,
     name: Ast.StrId,
 ) Error!void {
+    std.debug.assert(scope < objects.hot.items.len);
     const at = r.hier.names.get(.{ .scope = s.engine, .str = name }) orelse return;
     if (!r.netlist.slot_nets.contains(at)) return;
     if ((try have.getOrPut(gpa, at)).found_existing) return;
@@ -361,9 +382,12 @@ fn implicitNet(
     var o = try digitalObj(r, arena, top_name, s.path, scope, name, .net, at);
     o.implicit = true;
     try objects.append(o);
+    std.debug.assert(have.contains(at));
 }
 
 /// One declared name of `scope`, bound to the slot `at` that stores it.
+/// Asserts that `at` is one of the run's slots and the full name is under
+/// the top's.
 fn digitalObj(
     r: *const sim.digital.Run,
     arena: std.mem.Allocator,
@@ -374,29 +398,38 @@ fn digitalObj(
     kind: Kind,
     at: ?u32,
 ) Error!Obj {
+    std.debug.assert(at == null or at.? < r.values.len);
     const local = try arena.dupe(u8, r.file.str(name));
+    const full = try model.joinPath(arena, top_name, try model.joinPath(arena, path, local));
+    std.debug.assert(std.mem.startsWith(u8, full, top_name));
     return .{
         .kind = kind,
         .owner = .of(scope),
         .name = local,
-        .full = try model.joinPath(arena, top_name, try model.joinPath(arena, path, local)),
+        .full = full,
         .size = if (at) |a| r.values[a].width else 1,
         .slot = .of(at),
     };
 }
 
 /// One `scope_info` row's path component: its name, and `[k]` for an
-/// instance array element or a loop-generate iteration (§12.4.1).
+/// instance array element or a loop-generate iteration (§12.4.1). Asserts
+/// that the row is named and the component begins with its name.
 fn pathComponent(arena: std.mem.Allocator, file: *const Ast.SourceFile, info: anytype) Error![]const u8 {
+    std.debug.assert(info.name != .none);
     const name = file.str(info.name);
-    const k = info.index orelse return arena.dupe(u8, name);
-    return arena.print("{s}[{d}]", .{ name, k });
+    const out = if (info.index) |k| try arena.print("{s}[{d}]", .{ name, k }) else try arena.dupe(u8, name);
+    std.debug.assert(std.mem.startsWith(u8, out, name));
+    return out;
 }
 
 /// `model.addBits` over the engine's declared range of the vector last
 /// appended (`Run.vecRange`); a row without an engine slot gets none.
+/// Asserts that a row was appended and its slot is the run's.
 fn addBits(arena: std.mem.Allocator, objects: *Rows, r: *const sim.digital.Run, vtype: c_int) Error!void {
+    std.debug.assert(objects.hot.items.len != 0);
     const slot = objects.at(.at(objects.hot.items.len - 1)).slot.get() orelse return;
+    std.debug.assert(slot < r.values.len);
     const range = r.vecRange(slot);
     try model_arrays.addBits(arena, objects, range.msb, range.lsb, vtype);
 }
@@ -410,7 +443,11 @@ fn addBits(arena: std.mem.Allocator, objects: *Rows, r: *const sim.digital.Run, 
 /// conditional generate's scope, have no gen scope yet; both are rows of
 /// `Run.scope_info` whose parent is itself lexical. Net arrays and other
 /// declarations within a gen scope are not modelled yet.
+///
+/// Asserts that `vpi_of` maps every engine scope, and that each group's
+/// instance is one of `scopes`.
 fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows, scopes: []Building, r: *sim.digital.Run, vpi_of: []const u32) Error!void {
+    std.debug.assert(vpi_of.len == r.hier.scopes.items.len);
     const Key = struct { scope: u32, name: Ast.StrId };
     var groups: std.array_hash_map.Auto(Key, std.ArrayList(u32)) = .empty;
     defer {
@@ -425,6 +462,7 @@ fn addGenScopes(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows
         try g.value_ptr.append(gpa, @intCast(e));
     }
     for (groups.keys(), groups.values()) |k, rows| {
+        std.debug.assert(k.scope < scopes.len);
         const module_full = objects.at(.at(k.scope)).full;
         const name = try arena.dupe(u8, r.file.str(k.name));
         const members = try arena.alloc(ObjId, rows.items.len);

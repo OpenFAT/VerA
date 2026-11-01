@@ -34,6 +34,8 @@ const UnnamedKey = struct { scope: u32, hi: u32, lo: u32 };
 ///
 /// Natures are appended first, then disciplines, so a discipline's nature
 /// edges and a nature's `users` are indices known when they are written.
+/// Asserts that every scope's module row is made, and that the sets
+/// returned are natures and disciplines.
 pub fn addAnalog(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -43,6 +45,7 @@ pub fn addAnalog(
     res: *const CompileResult,
     top_name: []const u8,
 ) Error!struct { disciplines: []const ObjId, natures: []const ObjId } {
+    std.debug.assert(scopes.len <= objects.hot.items.len);
     const lowered = res.lowered;
     const file = res.file;
     const flat = res.module.?;
@@ -222,6 +225,8 @@ pub fn addAnalog(
             if (sh.row == idx) try unnamedBranch(gpa, objects, scopes, &unnamed, by_path, res, node_of_row, c, idx, sh.unit);
         }
     }
+    std.debug.assert(natures.len == 0 or objects.at(natures[0]).kind == .nature);
+    std.debug.assert(disciplines.len == 0 or objects.at(disciplines[0]).kind == .discipline);
     return .{ .disciplines = disciplines, .natures = natures };
 }
 
@@ -246,13 +251,17 @@ fn addBranch(objects: *Rows, scope: u32, name: []const u8, full: []const u8, c: 
     return at;
 }
 
-/// Does discipline `d` bind nature `at` on either side?
+/// Does discipline `d` bind nature `at` on either side? Asserts that `at`
+/// is a row and `d` is a discipline's (no net's discipline edge).
 fn binds(d: *const Cold, at: ObjId) bool {
+    std.debug.assert(at != .none);
+    std.debug.assert(d.disc == .none);
     return d.flow == at or d.pot == at;
 }
 
 /// The §5.4.2 unnamed branch instance `unit` declares over row `idx`'s pair,
-/// made on first sight and bound to the row.
+/// made on first sight and bound to the row. Asserts that the instance's
+/// scope is one of `scopes` and its branch row is a branch.
 fn unnamedBranch(
     gpa: std.mem.Allocator,
     objects: *Rows,
@@ -270,6 +279,7 @@ fn unnamedBranch(
         by_path.get(std.mem.trimEnd(u8, res.unit_paths[unit].path, &.{Elaborate.sep})) orelse 0
     else
         0;
+    std.debug.assert(scope < scopes.len);
     const g = try unnamed.getOrPut(gpa, .{ .scope = scope, .hi = c.hi, .lo = c.lo });
     if (!g.found_existing) {
         const pos = nodeOfRow(node_of_row, c.hi);
@@ -290,12 +300,15 @@ fn unnamedBranch(
     const share: ?u32 = for (lowered.contrib_shares.items, 0..) |sh, s| {
         if (sh.row == idx and sh.unit == unit) break @intCast(s);
     } else null;
+    std.debug.assert(objects.at(g.value_ptr.*).kind == .branch);
     try bindRow(objects, g.value_ptr.*, c, idx, share);
 }
 
 /// Record contribution row `k` as the source of branch `at`'s potential or
 /// flow; `share`, its `Lowered.contrib_shares` entry when `k` is shared.
+/// Asserts that `at` is a branch and the row is then recorded on it.
 fn bindRow(objects: *Rows, at: ObjId, c: Lowered.Contribution, k: u32, share: ?u32) Error!void {
+    std.debug.assert(objects.at(at).kind == .branch);
     const unnamed = objects.at(at).full.len == 0;
     const b = try objects.coldFor(at);
     if (unnamed) {
@@ -313,20 +326,28 @@ fn bindRow(objects: *Rows, at: ObjId, c: Lowered.Contribution, k: u32, share: ?u
             if (unnamed and c.shared and share == null) b.flow_unknowable = true;
         },
     }
+    std.debug.assert(b.contrib_pot == k or b.contrib_flow == k);
 }
 
 /// The node object whose solver row is `row` (`node_of_row`, built in
 /// `addAnalog`); null for ground (§1.3.1.1 has no node row for it) and for a
-/// row no node object carries.
+/// row no node object carries. Asserts that ground is no row of the table.
 fn nodeOfRow(node_of_row: []const ObjId, row: u32) ObjId {
+    std.debug.assert(node_of_row.len < Lowered.ground);
     if (row == Lowered.ground or row >= node_of_row.len) return .none;
+    std.debug.assert(row < node_of_row.len);
     return node_of_row[row];
 }
 
 /// Does named branch `o` join rows `hi` and `lo`, in either order? §5.4.2's
 /// reference direction is the declaration's, and contributions are
 /// canonicalised to one spelling of the pair, so both orders are the branch.
+///
+/// Asserts that `o` is a branch's cold row: neither a quantity's branch
+/// edge nor its nature.
 fn branchSpans(objects: *const Rows, o: *const Cold, hi: u32, lo: u32) bool {
+    std.debug.assert(o.branch == .none);
+    std.debug.assert(o.nature == .none);
     const p: u32 = if (o.pos != .none) objects.coldOf(o.pos).row orelse return false else Lowered.ground;
     const n: u32 = if (o.neg != .none) objects.coldOf(o.neg).row orelse return false else Lowered.ground;
     return (p == hi and n == lo) or (p == lo and n == hi);
@@ -335,7 +356,8 @@ fn branchSpans(objects: *const Rows, o: *const Cold, hi: u32, lo: u32) bool {
 /// The node a branch terminal names: an identifier, read through
 /// `hier_names` as every flattened name is, to the net it denotes. Null
 /// for anything else (a bit-select of a vector node is §11.6.5's node BIT,
-/// which the model does not hold).
+/// which the model does not hold). Asserts that a terminal is written and
+/// the answer is `none` or a node.
 fn terminalNode(
     objects: *const Rows,
     net_at: *const std.StringHashMapUnmanaged(ObjId),
@@ -344,11 +366,14 @@ fn terminalNode(
     top_name: []const u8,
     e: Ast.ExprId,
 ) Error!ObjId {
+    std.debug.assert(e != .none);
     const lowered = res.lowered;
     const file = res.file;
     if (file.exprs.tag(e) != .ident) return .none;
     const name = file.str(file.exprs.strOf(e));
     const denoted = lowered.hier_names.get(name) orelse name;
     const net = net_at.get(try model.joinPath(arena, top_name, denoted)) orelse return .none;
-    return objects.coldOf(net).node;
+    const node = objects.coldOf(net).node;
+    std.debug.assert(node == .none or objects.at(node).kind == .node);
+    return node;
 }

@@ -36,7 +36,8 @@ const Rows = model.Rows;
 /// elaborated top (`error.NotElaborated` otherwise). The returned `Design`
 /// owns every string and slice it reports (`Design.arena`); `res` may be
 /// freed once this returns. Caller owns the result and frees it with
-/// `Design.deinit`. `model_gpa` holds the `Design`'s tables.
+/// `Design.deinit`. `model_gpa` holds the `Design`'s tables. Asserts that
+/// every unit became one scope, and the model has the one top.
 pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Design {
     const lowered = res.lowered;
     var d: Design = .{ .gpa = model_gpa, .arena = .init(model_gpa) };
@@ -87,6 +88,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
         if (parent) |p| try scopes.items[p].children.append(gpa, .at(at));
         try by_path.put(gpa, path, at);
     }
+    std.debug.assert(scopes.items.len == units.len);
 
     // --- the objects -------------------------------------------------------
     var objects: Rows = .{ .gpa = model_gpa };
@@ -232,6 +234,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
     try model.freeze(&d, &objects, scopes.items);
     d.disciplines = analog.disciplines;
     d.natures = analog.natures;
+    std.debug.assert(d.top_modules.len == 1);
     return d;
 }
 
@@ -244,15 +247,18 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
 /// substitutes a space for a period inside a §2.8.1 escaped identifier — so a
 /// period in a flattened name IS a join.
 /// `tests/conformance/tests/verilog-a/ch06_hierarchy/escaped_period_is_not_a_path.va` is the
-/// fixture on that substitution.
+/// fixture on that substitution. Asserts that `flat` is a name, and that a
+/// split finds one of the table's scopes and keeps the name's last part.
 pub fn splitPath(
     arena: std.mem.Allocator,
     by_path: *const std.StringHashMapUnmanaged(u32),
     flat: []const u8,
 ) Error!?struct { scope: u32, local: []const u8 } {
+    std.debug.assert(flat.len != 0);
     const at = std.mem.findScalarLast(u8, flat, Elaborate.sep);
     const path = if (at) |i| flat[0..i] else "";
     const scope = by_path.get(path) orelse return null;
+    std.debug.assert(scope < by_path.count());
     return .{ .scope = scope, .local = try arena.dupe(u8, if (at) |i| flat[i + 1 ..] else flat) };
 }
 
@@ -260,7 +266,8 @@ pub fn splitPath(
 
 /// §11.6.20/§11.6.21 the analog model's behaviour: each flattened `analog`
 /// block, in the scope of the instance that wrote it, with its statements,
-/// contributions and expressions.
+/// contributions and expressions. Asserts that every scope's module row is
+/// made, and that each instance's chain of child scopes ends.
 fn addAnalogCode(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -269,6 +276,7 @@ fn addAnalogCode(
     res: *const CompileResult,
     top_name: []const u8,
 ) Error!void {
+    std.debug.assert(scopes.len <= objects.hot.items.len);
     const lowered = res.lowered;
     const flat = res.module.?;
     var an: Builder.Analog = .{ .lowered = lowered };
@@ -301,6 +309,7 @@ fn addAnalogCode(
         defer gpa.free(next);
         var pos = s.children.items.len;
         while (pos > 0) {
+            std.debug.assert(pos <= next.len);
             pos -= 1;
             const g = try heads.getOrPut(gpa, objects.at(s.children.items[pos]).name);
             next[pos] = if (g.found_existing) g.value_ptr.* else end;
@@ -308,7 +317,10 @@ fn addAnalogCode(
         }
         for (s.decl.instances) |inst| {
             var made = heads.get(b.file.str(inst.name)) orelse end;
+            var steps: usize = 0;
             while (made != end) : (made = next[made]) {
+                std.debug.assert(steps < next.len);
+                steps += 1;
                 const child = s.children.items[made];
                 // §11.6.1: the instance is where the module is USED
                 // (IEEE 1364-2005 §26.3.3), the line `u1(...)` is written on.
@@ -330,18 +342,26 @@ fn addAnalogCode(
 /// at, through the compilation's source map (an `include`d file names
 /// itself, a macro expansion its invocation); null for a token lowering has
 /// no start for. The file name is copied into `arena`.
+///
+/// Asserts that the line is 1-based and the copy spells the file's name.
 fn srcLoc(arena: std.mem.Allocator, res: *const CompileResult, tok: u32) Error!?Loc {
     const starts = res.lowered.tok_starts;
     if (tok >= starts.len) return null;
     var at = schema.locate(res.diags, starts[tok]);
-    at.file = try arena.dupe(u8, at.file);
+    std.debug.assert(at.line >= 1);
+    const name = at.file;
+    at.file = try arena.dupe(u8, name);
+    std.debug.assert(std.mem.eql(u8, at.file, name));
     return at;
 }
 
 /// §3.4.5 as the SOURCE wrote it: is `name` a `localparam` of `decl`? `null`
 /// when `decl` declares no such parameter, which is the case for a parameter
-/// elaboration synthesized rather than copied.
+/// elaboration synthesized rather than copied. Asserts that `name` is a
+/// name of a named definition.
 fn declaredLocal(decl: *const Ast.ModuleDecl, file: *const Ast.SourceFile, name: []const u8) ?bool {
+    std.debug.assert(name.len != 0);
+    std.debug.assert(decl.name != .none);
     for (decl.params) |p| {
         if (std.mem.eql(u8, file.str(p.name), name)) return p.is_local;
     }
@@ -352,8 +372,13 @@ fn declaredLocal(decl: *const Ast.ModuleDecl, file: *const Ast.SourceFile, name:
 /// `Lowered.vectors` is the folded `[msb:lsb]` keyed by the flat name — the same
 /// fold lowering scalarised the net with, so this cannot disagree with the
 /// device's terminal count. A name absent from it is a scalar.
+///
+/// Asserts that `flat_name` is a name and its size at least one net.
 fn vectorSize(lowered: *const Lowered, flat_name: []const u8) u32 {
-    return if (lowered.vectors.get(flat_name)) |r| r.size() else 1;
+    std.debug.assert(flat_name.len != 0);
+    const n = if (lowered.vectors.get(flat_name)) |r| r.size() else 1;
+    std.debug.assert(n >= 1);
+    return n;
 }
 
 /// §11.6.9's `vpiSize` for a `reg [msb:lsb]`.
@@ -362,19 +387,27 @@ fn vectorSize(lowered: *const Lowered, flat_name: []const u8) u32 {
 /// regs). A non-literal range returns 0, which `vpi_get(vpiSize, ...)` reports
 /// as `vpiUndefined` plus an error. Upgrade path: lowering interns packed regs
 /// into `vectors` as it does nets, and this function disappears.
+///
+/// Asserts that a folded width is positive and fits a `u32`.
 fn packedWidth(file: *const Ast.SourceFile, v: Ast.VarDecl) u32 {
     const range = v.packed_range orelse return 1;
     if (file.exprs.tag(range.msb) != .int_literal or file.exprs.tag(range.lsb) != .int_literal) return 0;
     const hi = file.exprs.intValue(range.msb);
     const lo = file.exprs.intValue(range.lsb);
     if (hi < 0 or lo < 0) return 0;
-    return @intCast(@abs(hi - lo) + 1);
+    const w = @abs(hi - lo) + 1;
+    std.debug.assert(w >= 1);
+    std.debug.assert(w <= std.math.maxInt(u32));
+    return @intCast(w);
 }
 
 /// A declared unpacked dimension, folded when both bounds are literal integers
 /// — the same rule `packedWidth` applies. Null otherwise: the array is then
-/// not modelled rather than modelled with a guessed size.
+/// not modelled rather than modelled with a guessed size. Asserts that the
+/// dimension has both bounds written.
 fn literalDim(file: *const Ast.SourceFile, dim: Ast.Dim) ?struct { low: i64, high: i64 } {
+    std.debug.assert(dim.msb != .none);
+    std.debug.assert(dim.lsb != .none);
     if (file.exprs.tag(dim.msb) != .int_literal or file.exprs.tag(dim.lsb) != .int_literal) return null;
     const a = file.exprs.intValue(dim.msb);
     const b = file.exprs.intValue(dim.lsb);

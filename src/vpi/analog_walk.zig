@@ -32,6 +32,11 @@ const Analysis = analog.Analysis;
 const Error = analog.Error;
 const Lib = analog.Lib;
 
+/// The most solves of one time point: rejections backed up from (§12.31.3)
+/// and §12.36 vpiTransientFailConverge re-solves, before
+/// `error.BackupExhausted`.
+const backup_max = 60;
+
 /// `sim.mixed.run`'s analog side for `Binding.runMixed`: the library's
 /// solve behind the VPI walk's callbacks. The analog block reads no digital
 /// value here (`host.zig` refuses a design whose block does), so there are no
@@ -52,18 +57,36 @@ const Mixed = struct {
     /// The application rejected the solution `solveAt` last made.
     rejected_now: bool = false,
 
-    pub fn setInputs(_: *Mixed, _: *sim.digital.Run, fired: u64) !void {
+    /// No inputs to set (the block reads no digital value). Asserts that no
+    /// D2A event fired and the last finished solution is not after the
+    /// tentative one.
+    pub fn setInputs(m: *Mixed, _: *sim.digital.Run, fired: u64) !void {
         std.debug.assert(fired == 0);
+        std.debug.assert(m.t_prev == null or m.t_prev.? <= m.t_now);
     }
-    pub fn snapshot(_: *Mixed, _: *sim.digital.Run) !void {}
-    pub fn latch(_: *Mixed) !void {}
+
+    /// Nothing to snapshot. Asserts that the probe tables pair up and the
+    /// last finished solution is not after the tentative one.
+    pub fn snapshot(m: *Mixed, _: *sim.digital.Run) !void {
+        std.debug.assert(m.probe_names.len == m.probe_nodes.len);
+        std.debug.assert(m.t_prev == null or m.t_prev.? <= m.t_now);
+    }
+
+    /// No D2A event to latch. Asserts what `snapshot` does.
+    pub fn latch(m: *Mixed) !void {
+        std.debug.assert(m.probe_names.len == m.probe_nodes.len);
+        std.debug.assert(m.t_prev == null or m.t_prev.? <= m.t_now);
+    }
 
     /// A tentative solution, passed to acbConvergenceTest; §12.36's
-    /// vpiTransientFailConverge solves the same time again.
+    /// vpiTransientFailConverge solves the same time again. Asserts that the
+    /// step is not backwards, and that the tentative time is `t`.
     pub fn solveAt(m: *Mixed, t: f64, dt: f64, first: bool, last: bool) !void {
+        std.debug.assert(dt >= 0);
         var tries: u32 = 0;
         while (true) : (tries += 1) {
-            if (tries == 60) return error.BackupExhausted;
+            std.debug.assert(tries <= backup_max);
+            if (tries == backup_max) return error.BackupExhausted;
             try m.b.attempt(m.l, t, dt, first, last);
             const vetoed = callback_fire.convergenceRejected() or m.b.reject_step;
             if (!m.b.fail_converge) {
@@ -74,29 +97,46 @@ const Mixed = struct {
         m.first = first;
         m.last = last;
         m.t_now = t;
+        std.debug.assert(!m.rejected_now or !m.first);
     }
 
+    /// Whether the application rejected the solution `solveAt` last made;
+    /// the answer is given once. Asserts that the first solution is never
+    /// the one rejected (§12.31.3 has nothing earlier to back up to).
     pub fn rejected(m: *Mixed) !bool {
-        defer m.rejected_now = false;
-        return m.rejected_now;
+        const r = m.rejected_now;
+        m.rejected_now = false;
+        std.debug.assert(!r or !m.first);
+        std.debug.assert(!m.rejected_now);
+        return r;
     }
 
+    /// Accepts the tentative solution as the last finished one. Asserts
+    /// that time does not run backwards, and that the last finished time is
+    /// now the tentative one.
     pub fn finish(m: *Mixed) !void {
+        std.debug.assert(m.t_prev == null or m.t_prev.? <= m.t_now);
         m.b.accept(m.l, m.first, m.last);
         @memcpy(m.x_prev, m.l.x()[0..m.x_prev.len]);
         m.t_prev = m.t_now;
+        std.debug.assert(m.t_prev.? == m.b.t_accepted);
     }
 
-    /// §5.10.3.3 the device's next timer instant, if it has one.
+    /// §5.10.3.3 the device's next timer instant, if it has one. Asserts
+    /// that the walk asks at a time and keeps its probe tables paired.
     pub fn breakpoint(m: *Mixed, t: f64) ?f64 {
+        std.debug.assert(!std.math.isNan(t));
+        std.debug.assert(m.probe_names.len == m.probe_nodes.len);
         const bp = m.l.breakpoint(t);
         return if (std.math.isInf(bp)) null else bp;
     }
 
     /// §7.3.3 V(n1) or V(n1, n2) of the tentative solution when `t` is
     /// null, else §7.3.6.3's value at `t`, interpolated between the last
-    /// finished solution and the tentative one.
+    /// finished solution and the tentative one. Asserts that time does not
+    /// run backwards and the interpolation weight is in [0, 1].
     pub fn probe(m: *Mixed, t: ?f64, n1: []const u8, n2: ?[]const u8) !f64 {
+        std.debug.assert(m.t_prev == null or m.t_prev.? <= m.t_now);
         const now = m.l.x()[0..m.x_prev.len];
         const v_now = m.terminal(now, n1) - if (n2) |b| m.terminal(now, b) else 0.0;
         const at = t orelse return v_now;
@@ -104,6 +144,7 @@ const Mixed = struct {
         if (!(m.t_now > t0)) return v_now;
         const v0 = m.terminal(m.x_prev, n1) - if (n2) |b| m.terminal(m.x_prev, b) else 0.0;
         const w = std.math.clamp((at - t0) / (m.t_now - t0), 0.0, 1.0);
+        std.debug.assert(w >= 0.0 and w <= 1.0);
         return v0 + (v_now - v0) * w;
     }
 
@@ -112,13 +153,23 @@ const Mixed = struct {
     /// name; a name that is no unknown of the device is ground.
     // ponytail: names compared as written; a node whose `D.U` spelling is
     // sanitized (an escaped identifier) reads as ground.
+    //
+    // Asserts that `x` is a solution of the kept size and the probe tables
+    // pair up.
     fn terminal(m: *const Mixed, x: []const f64, name: []const u8) f64 {
+        std.debug.assert(x.len == m.x_prev.len);
+        std.debug.assert(m.probe_names.len == m.probe_nodes.len);
         for (m.probe_names, m.probe_nodes) |n, pair| if (std.mem.eql(u8, n, name))
             return m.nodeValue(x, pair[0]) - m.nodeValue(x, pair[1]);
         return m.nodeValue(x, name);
     }
 
+    /// Node `name`'s value in `x`, ground's 0 for a name that is no unknown
+    /// of the device. Asserts that `x` is a solution of the kept size and
+    /// `name` is a terminal's.
     fn nodeValue(m: *const Mixed, x: []const f64, name: []const u8) f64 {
+        std.debug.assert(x.len == m.x_prev.len);
+        std.debug.assert(name.len != 0);
         const k = m.l.node(name.ptr, name.len);
         return if (k < 0) 0.0 else x[@intCast(k)];
     }
@@ -136,7 +187,10 @@ const Mixed = struct {
 /// acbFinalStep (`Vague_Decisions.md` VD-098). A rejected solution
 /// leaves no history. §12.36 vpiTransientFailConverge solves the same
 /// time again. `BackupExhausted`: 60 rejections or re-solves of one step.
+/// Asserts that each accepted point is strictly after the one before, so
+/// the walk ends, and that it ends at `stop`.
 pub fn run(b: *Binding, a: Analysis) Error!void {
+    std.debug.assert(b.now_vals.len == 2 * b.prev_react.len);
     const l = b.lib orelse return error.NoLibrary;
     const prev = analog.enter(b);
     defer analog.leave(b, prev);
@@ -154,7 +208,8 @@ pub fn run(b: *Binding, a: Analysis) Error!void {
     // vpiTransientFailConverge needs none, so it is honoured here too.
     var first_tries: u32 = 0;
     while (true) : (first_tries += 1) {
-        if (first_tries == 60) return error.BackupExhausted;
+        std.debug.assert(first_tries <= backup_max);
+        if (first_tries == backup_max) return error.BackupExhausted;
         try b.attempt(l, a.start, 0, true, last0);
         _ = callback_fire.convergenceRejected();
         if (!b.fail_converge) break;
@@ -165,6 +220,9 @@ pub fn run(b: *Binding, a: Analysis) Error!void {
 
     const h = run_a.max_step;
     while (!analog.sameTime(b.t_accepted, a.stop) and b.t_accepted < a.stop) {
+        // Bound: `t_accepted` rises strictly toward `stop` (checked below).
+        std.debug.assert(b.t_accepted < a.stop);
+        const before = b.t_accepted;
         // The next grid point strictly after t, by index rather than by
         // accumulation, so a thousand steps do not drift off `stop`.
         const k = @floor((b.t_accepted - a.start) / h + 1e-9) + 1;
@@ -177,7 +235,8 @@ pub fn run(b: *Binding, a: Analysis) Error!void {
         if (a.stop - target < h * 1e-6) target = a.stop;
         var tries: u32 = 0;
         while (true) : (tries += 1) {
-            if (tries == 60) return error.BackupExhausted;
+            std.debug.assert(tries <= backup_max);
+            if (tries == backup_max) return error.BackupExhausted;
             try b.attempt(l, target, target - b.t_accepted, false, analog.sameTime(target, a.stop));
             const rejected = callback_fire.convergenceRejected() or b.reject_step;
             if (!(rejected or b.fail_converge)) break;
@@ -187,7 +246,9 @@ pub fn run(b: *Binding, a: Analysis) Error!void {
             if (rejected) target = b.t_accepted + (target - b.t_accepted) / 2;
         }
         b.accept(l, false, analog.sameTime(target, a.stop));
+        std.debug.assert(b.t_accepted > before);
     }
+    std.debug.assert(analog.sameTime(b.t_accepted, a.stop) or b.t_accepted >= a.stop);
 }
 
 /// `run` for a transient of a mixed-signal design (VAMS §8.4): the
@@ -229,8 +290,11 @@ pub fn runMixed(b: *Binding, a: Analysis, dig: *sim.digital.Run, tick: f64, prob
 /// accepted operating point. §12.31.3 names no per-frequency reason, so
 /// each is an acbAcceptedPoint, the last also acbFinalStep; §12.8's
 /// vpi_get_analog_freq() tells an application which kind of solution it
-/// is standing on.
+/// is standing on. Asserts that it sweeps an AC analysis and the solution
+/// buffer holds a real and an imaginary half.
 pub fn sweep(b: *Binding, l: Lib, a: Analysis) Error!void {
+    std.debug.assert(a.kind == .ac);
+    std.debug.assert(b.ac_x.len % 2 == 0);
     defer analog.setPoint(analog.current, analog.t_now, analog.delta, 0);
     const n = @max(a.points, 1);
     for (0..n) |k| {
@@ -243,7 +307,11 @@ pub fn sweep(b: *Binding, l: Lib, a: Analysis) Error!void {
     }
 }
 
+/// Solves the tentative point `t`, `dt` after the last accepted one, with
+/// every per-step request of the application cleared. Asserts that the
+/// step is not backwards and that a solution now awaits acceptance.
 pub fn attempt(b: *Binding, l: Lib, t: f64, dt: f64, first: bool, last: bool) Error!void {
+    std.debug.assert(dt >= 0);
     analog.setPoint(analog.current, t, dt, 0);
     b.have_solution = true;
     b.open_step = !first;
@@ -252,15 +320,22 @@ pub fn attempt(b: *Binding, l: Lib, t: f64, dt: f64, first: bool, last: bool) Er
     b.fail_converge = false;
     b.vals_fresh = false;
     _ = l.solve(t, dt, first, last);
+    std.debug.assert(b.awaiting and b.have_solution);
 }
 
+/// Accepts the solution `attempt` made, then delivers its §12.31.3
+/// callbacks. Asserts that a solution was awaiting acceptance and that the
+/// accepted time is now its time.
 pub fn accept(b: *Binding, l: Lib, first: bool, last: bool) void {
+    std.debug.assert(b.awaiting);
+    std.debug.assert(b.now_vals.len == 2 * b.prev_react.len);
     b.open_step = false;
     b.awaiting = false;
     // Row values are the accepted solution's, read before history moves.
     b.refreshRows(l);
     l.accept();
     b.t_accepted = analog.t_now;
+    std.debug.assert(!b.awaiting and !b.open_step);
     // §12.31.3 does not say whether the first solution (acbInitialStep)
     // is also an acbAcceptedPoint. VerA says no, so accepted points
     // strictly advance (p03_02 pins this reading); the final one is an
@@ -273,7 +348,12 @@ pub fn accept(b: *Binding, l: Lib, first: bool, last: bool) void {
     for (b.prev_react, 0..) |*q, k| q.* = b.now_vals[2 * k + 1];
 }
 
+/// Reads the current solution's contribution rows (and shares) into
+/// `now_vals`, once per solution. Asserts that `now_vals` holds a value pair
+/// per flow row, then a share per reactive value.
 pub fn refreshRows(b: *Binding, l: Lib) void {
+    std.debug.assert(b.now_vals.len >= 2 * b.flow_u.len);
+    std.debug.assert(b.now_vals.len == 2 * b.prev_react.len);
     if (b.vals_fresh or b.flow_u.len == 0) return;
     l.rows(b.now_vals.ptr);
     if (b.now_vals.len > 2 * b.flow_u.len) l.shares(b.now_vals[2 * b.flow_u.len ..].ptr);
