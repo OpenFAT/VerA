@@ -26,10 +26,11 @@ const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const fold = @import("rtlil_fold.zig");
 const rtlil_emitter = @import("rtlil_emitter.zig");
+const rtlil_table = @import("rtlil_table.zig");
 const Emitter = rtlil_emitter.Emitter;
 const Error = rtlil_emitter.Error;
-const Sym = rtlil_emitter.Sym;
-const Sig = rtlil_emitter.Sig;
+const Sym = rtlil_table.Sym;
+const Sig = rtlil_table.Sig;
 const Writer = std.Io.Writer;
 const StrId = Ast.StrId;
 
@@ -42,6 +43,10 @@ pub fn design(self: *Emitter) Error!void {
     if (f.udps.len != 0) return self.refuse(f.udps[0].main_tok, "a user-defined primitive", .{});
     if (f.disciplines.len != 0 or f.natures.len != 0 or f.paramsets.len != 0 or f.connectrules.len != 0)
         return self.refuse(0, "an analog or mixed-signal description: --emit-rtlil is digital only", .{});
+    self.own = try .init(self.arena, f.strings.len());
+    self.child = try .init(self.arena, f.strings.len());
+    self.shapes = try self.arena.alloc(rtlil_emitter.Shape, f.exprs.len());
+    @memset(self.shapes, .{});
     try self.out.writeAll("autoidx 1\n");
     for (f.modules) |*m| try self.module(m);
 }
@@ -52,9 +57,8 @@ pub fn module(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
     assert(self.proc == null);
     assert(m.name != .none);
     self.m = m;
-    self.syms = .empty;
-    self.values = .empty;
-    self.inits = .empty;
+    self.syms = &self.own;
+    try self.own.reset(self.arena, names(m));
     self.wires = .init(self.arena);
     self.cells = .init(self.arena);
     if (m.analog.len != 0) return self.refuse(m.analog[0].main_tok, "an analog block", .{});
@@ -114,13 +118,13 @@ pub fn dim(self: *Emitter, d: Ast.Dim, tok: u32, sym: *Sym) Error!void {
 /// assignment's left side is, and converts a real default (§4.8.2). A
 /// real parameter has no value here: an expression reading it is refused.
 pub fn params(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
-    assert(self.values.count() == 0);
-    defer assert(self.values.count() <= m.params.len);
+    assert(self.syms.rows.len == 0);
+    defer assert(self.syms.rows.len <= m.params.len);
     for (m.params) |*p| {
         var sym: Sym = .{ .width = 32, .signed = true, .kind = .param };
         const real_default = self.file.exprs.tag(p.default) == .real_literal;
         if (p.ty == .real or (real_default and p.ty == .unspecified and p.packed_range == null)) {
-            try self.syms.put(self.arena, p.name, sym);
+            _ = try self.syms.put(self.arena, p.name, sym);
             continue;
         }
         if (p.packed_range) |r| {
@@ -137,15 +141,16 @@ pub fn params(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
             sym.width = v.width;
             sym.signed = v.signed or p.is_signed;
         }
-        try self.values.put(self.arena, p.name, try self.convert(v, sym));
-        try self.syms.put(self.arena, p.name, sym);
+        const value = try self.convert(v, sym);
+        const r = try self.syms.put(self.arena, p.name, sym);
+        self.syms.rows.items(.value)[r] = value;
     }
 }
 
 /// Every port, net and variable as a `Sym`, before any is used.
 pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
-    assert(self.syms.count() <= m.params.len); // Only the parameters so far.
-    defer assert(self.syms.count() >= m.params.len);
+    assert(self.syms.rows.len <= m.params.len); // Only the parameters so far.
+    defer assert(self.syms.rows.len >= m.params.len);
     for (m.ports) |*p| {
         // A.1.3: a null port is a header position with no net inside.
         if (p.name == .none) continue;
@@ -163,7 +168,7 @@ pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
             // A `reg` port keeps its range; `output integer`/`time` are §4.2's widths.
             if (v.storage == .time) sym.width = 64 else if (v.storage == .variable and v.ty == .integer) sym.width = 32;
         };
-        try self.syms.put(self.arena, p.name, sym);
+        _ = try self.syms.put(self.arena, p.name, sym);
     }
     for (m.nets) |*n| {
         if (try self.redeclared(m, n.name, n.main_tok)) continue;
@@ -171,7 +176,7 @@ pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
         if (n.dims.len != 0) return self.refuse(n.main_tok, "a net array", .{});
         var sym: Sym = .{ .width = 1, .signed = n.is_signed, .kind = .wire };
         if (n.range) |r| try self.dim(r, n.main_tok, &sym);
-        try self.syms.put(self.arena, n.name, sym);
+        _ = try self.syms.put(self.arena, n.name, sym);
     }
     for (m.vars) |*v| {
         if (try self.redeclared(m, v.name, v.main_tok)) continue;
@@ -188,7 +193,7 @@ pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
             },
         }
         if (v.packed_range) |r| try self.dim(r, v.main_tok, &sym);
-        try self.syms.put(self.arena, v.name, sym);
+        _ = try self.syms.put(self.arena, v.name, sym);
     }
 }
 
@@ -207,7 +212,7 @@ pub fn redeclared(self: *Emitter, m: *const Ast.ModuleDecl, name: StrId, tok: u3
 /// `wire width W [signed] [offset O] [upto] [input|output|inout K] \name`.
 pub fn wireLines(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
     assert(self.proc == null);
-    assert(self.syms.count() >= m.params.len);
+    assert(self.syms.rows.len >= m.params.len);
     // A port's number is its header position (§12.1.2), null ones counted.
     for (m.ports, 1..) |*p, k| if (p.name != .none) {
         const s = self.syms.get(p.name).?;
@@ -222,7 +227,7 @@ pub fn wireLine(self: *Emitter, name: StrId, s: Sym, dir: Ast.Direction, port: u
     assert(name != .none);
     assert(s.width >= 1 and s.kind != .param);
     const w = &self.wires.writer;
-    if (self.inits.get(name)) |v| try w.print("  attribute \\init {s}\n", .{v.s});
+    if (self.syms.rows.items(.init)[self.syms.find(name).?]) |v| try w.print("  attribute \\init {s}\n", .{v.s});
     try w.print("  wire width {d}", .{s.width});
     if (s.signed) try w.writeAll(" signed");
     // Yosys's `offset` is the lower bound either way: [3:10] is `upto offset 3`.
@@ -299,17 +304,13 @@ pub fn instance(self: *Emitter, i: *const Ast.Instance) Error!void {
         if (c.name == i.module) break c;
     } else null;
     // The child's port widths fold in the child's own parameters.
-    var child_syms: std.AutoHashMapUnmanaged(StrId, Sym) = .empty;
     if (child) |c| {
-        const saved = self.syms;
-        const saved_values = self.values;
-        self.syms = .empty;
-        self.values = .empty;
+        assert(self.syms == &self.own);
+        defer self.syms = &self.own;
+        self.syms = &self.child;
+        try self.child.reset(self.arena, names(c));
         try self.params(c);
         try self.declare(c);
-        child_syms = self.syms;
-        self.syms = saved;
-        self.values = saved_values;
     }
     const w = &self.cells.writer;
     try w.print("  cell {s} {s}\n", .{ try self.id(i.module), try self.id(i.name) });
@@ -338,7 +339,7 @@ pub fn instance(self: *Emitter, i: *const Ast.Instance) Error!void {
         if (c.name == .none and port == null) return self.refuse(c.main_tok, "an ordered connection to `{s}`, which this source does not declare", .{self.str(i.module)});
         const pname = if (c.name != .none) c.name else port.?.name;
         // The child's port width is the context when the source declares it.
-        const pw: u32 = if (port) |p| child_syms.get(p.name).?.width else 0;
+        const pw: u32 = if (port) |p| self.child.get(p.name).?.width else 0;
         const s = try self.expr(c.expr, pw);
         try w.print("    connect {s} {s}\n", .{ try self.id(pname), (if (pw != 0) try self.fit(s, pw) else s).s });
     }
@@ -346,6 +347,11 @@ pub fn instance(self: *Emitter, i: *const Ast.Instance) Error!void {
 }
 
 // ---- private ----
+
+/// The most names `m` declares: a table row each.
+fn names(m: *const Ast.ModuleDecl) usize {
+    return m.params.len + m.ports.len + m.nets.len + m.vars.len;
+}
 
 fn isPort(m: *const Ast.ModuleDecl, name: StrId) bool {
     for (m.ports) |*p| if (p.name == name) return true;

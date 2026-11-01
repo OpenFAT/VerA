@@ -19,9 +19,10 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const rtlil_emitter = @import("rtlil_emitter.zig");
+const rtlil_table = @import("rtlil_table.zig");
 const Emitter = rtlil_emitter.Emitter;
 const Error = rtlil_emitter.Error;
-const Sig = rtlil_emitter.Sig;
+const Sig = rtlil_table.Sig;
 const Proc = rtlil_emitter.Proc;
 const Writer = std.Io.Writer;
 const ExprId = Ast.ExprId;
@@ -45,9 +46,10 @@ pub fn initial(self: *Emitter, d: *const Ast.DiscreteBlock) Error!void {
         if (a.timing != .none or a.continuous != .none) return self.refuse(tok, "an initial assignment with a delay or event control", .{});
         if (self.file.exprs.tag(a.target) != .ident) return self.refuse(tok, "an initial assignment to a select", .{});
         const name = self.file.exprs.strOf(a.target);
-        const sym = self.syms.get(name) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(name)});
+        const r = self.syms.find(name) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(name)});
+        const sym = self.syms.rows.items(.sym)[r];
         const v = (try self.foldValue(a.value, sym.width, tok, true)) orelse return self.refuse(tok, "an initial value that is not constant", .{});
-        try self.inits.put(self.arena, name, try self.logicSig(try self.convert(v, sym)));
+        self.syms.rows.items(.init)[r] = try self.logicSig(try self.convert(v, sym));
     }
 }
 
@@ -55,6 +57,7 @@ pub fn initial(self: *Emitter, d: *const Ast.DiscreteBlock) Error!void {
 pub fn flatten(self: *Emitter, s: StmtId, out: *std.ArrayList(StmtId)) Error!void {
     assert(self.proc == null);
     if (s == .none) return;
+    try self.deeper(self.file.stmtTok(s));
     switch (self.file.stmt(s)) {
         .block => |b| {
             if (b.vars.len != 0 or b.params.len != 0) return self.refuse(self.file.stmtTok(s), "a block with local declarations", .{});
@@ -90,10 +93,13 @@ pub fn always(self: *Emitter, d: *const Ast.DiscreteBlock) Error!void {
     var written: std.ArrayList(StrId) = .empty;
     try self.assigned(ec.body, &written);
     for (written.items) |name| {
-        const s = self.syms.get(name).?;
+        // `assigned` refused every name the module does not declare.
+        const r = self.syms.find(name).?;
+        const s = self.syms.rows.items(.sym)[r];
         const t: Sig = .{ .s = try self.arena.print("${d}{s}", .{ p.index, try self.id(name) }), .w = s.width, .signed = s.signed };
         try self.wires.writer.print("  wire width {d}{s} {s}\n", .{ t.w, if (t.signed) " signed" else "", t.s });
-        try p.temps.put(self.arena, name, t);
+        self.syms.rows.items(.temp)[r] = t;
+        self.syms.rows.items(.temp_proc)[r] = p.index;
         try p.w.print("    assign {s} {s}\n", .{ t.s, try self.id(name) });
     }
     self.proc = &p;
@@ -102,7 +108,7 @@ pub fn always(self: *Emitter, d: *const Ast.DiscreteBlock) Error!void {
     const syncs: usize = if (level) 1 else edges.items.len;
     for (0..syncs) |k| {
         if (level) try p.w.writeAll("    sync always\n") else try p.w.print("    sync {s} {s}\n", .{ if (edges.items[k].pos) "posedge" else "negedge", edges.items[k].sig.s });
-        for (written.items) |name| try p.w.print("      update {s} {s}\n", .{ try self.id(name), p.temps.get(name).?.s });
+        for (written.items) |name| try p.w.print("      update {s} {s}\n", .{ try self.id(name), self.syms.temp(name, p.index).s });
     }
     try self.cells.writer.print("  process $proc${d}\n{s}  end\n", .{ p.index, pw.written() });
 }
@@ -112,6 +118,7 @@ pub fn always(self: *Emitter, d: *const Ast.DiscreteBlock) Error!void {
 pub fn eventTerms(self: *Emitter, e: ExprId, edges: anytype, level: *bool) Error!void {
     assert(e != .none);
     const ex = &self.file.exprs;
+    try self.deeper(ex.mainTok(e));
     switch (ex.tag(e)) {
         .event_or => {
             try self.eventTerms(ex.lhs(e), edges, level);
@@ -130,6 +137,7 @@ pub fn assigned(self: *Emitter, s: StmtId, out: *std.ArrayList(StrId)) Error!voi
     assert(self.proc == null); // Before the process exists.
     if (s == .none) return;
     const tok = self.file.stmtTok(s);
+    try self.deeper(tok);
     switch (self.file.stmt(s)) {
         .assign => {
             var names: std.ArrayList(ExprId) = .empty;
@@ -138,6 +146,7 @@ pub fn assigned(self: *Emitter, s: StmtId, out: *std.ArrayList(StrId)) Error!voi
                 const base = self.file.lvalueBase(lv);
                 if (base == .none) return self.refuse(tok, "an assignment target that is not a declared name", .{});
                 const name = self.file.exprs.strOf(base);
+                if (self.syms.find(name) == null) return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(name)});
                 for (out.items) |have| {
                     if (have == name) break;
                 } else try out.append(self.arena, name);
@@ -159,6 +168,7 @@ pub fn stmt(self: *Emitter, p: *Proc, s: StmtId) Error!void {
     assert(self.proc == p);
     if (s == .none) return;
     const tok = self.file.stmtTok(s);
+    try self.deeper(tok);
     const ex = &self.file.exprs;
     switch (self.file.stmt(s)) {
         .empty => {},
@@ -177,7 +187,7 @@ pub fn stmt(self: *Emitter, p: *Proc, s: StmtId) Error!void {
             if (!a.nonblocking) {
                 var names: std.ArrayList(ExprId) = .empty;
                 try self.file.stmtWrites(&.{}, s, self.arena, &names);
-                for (names.items) |lv| try p.redirect.put(self.arena, ex.strOf(self.file.lvalueBase(lv)), {});
+                for (names.items) |lv| self.syms.rows.items(.redirect_proc)[self.syms.find(ex.strOf(self.file.lvalueBase(lv))).?] = p.index;
             }
         },
         .if_stmt => |i| {

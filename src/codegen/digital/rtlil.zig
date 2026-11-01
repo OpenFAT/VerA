@@ -35,6 +35,7 @@ const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const diag = @import("diag");
+const deep = @import("base").deep_stack;
 const digital = @import("sim").digital;
 const Emitter = @import("rtlil_emitter.zig").Emitter;
 const Allocator = std.mem.Allocator;
@@ -51,8 +52,16 @@ pub const Error = @import("rtlil_emitter.zig").Error;
 /// it, allocated in `arena`. A source the parser refuses, or an instance
 /// connection to no port of its module, is `error.DigitalFailed` with the
 /// diagnostics in `bag`; a construct outside the subset is `error.Refused`
-/// with `why` set (`line N: ...`), and nothing is emitted.
+/// with `why` set (`line N: ...`), and nothing is emitted. Runs on a
+/// reserved deep stack (`deep_stack.runGuarded`): the walks recurse on the
+/// source's nesting, and one that exhausts the stack is refused.
 pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag, why: *[]const u8) Error![]const u8 {
+    return deep.runGuarded(0, emitDeep, .{ arena, source, opts, bag, why });
+}
+
+// ---- private ----
+
+fn emitDeep(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag, why: *[]const u8) Error![]const u8 {
     const pp = Front.preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .defines = opts.defines, .std_defs = false, .more = more: {
         const more = try arena.alloc(Front.preprocessor.File, opts.more.len);
         for (opts.more, more) |u, *f| f.* = .{ .name = u.name, .text = u.text };

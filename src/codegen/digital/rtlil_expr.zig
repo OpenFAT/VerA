@@ -17,96 +17,25 @@ const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const fold = @import("rtlil_fold.zig");
 const rtlil_emitter = @import("rtlil_emitter.zig");
+const rtlil_table = @import("rtlil_table.zig");
 const Emitter = rtlil_emitter.Emitter;
 const Error = rtlil_emitter.Error;
-const Sym = rtlil_emitter.Sym;
-const Sig = rtlil_emitter.Sig;
+const Sym = rtlil_table.Sym;
+const Sig = rtlil_table.Sig;
 const Writer = std.Io.Writer;
 const ExprId = Ast.ExprId;
 
-/// §5.4.1 the self-determined width of `e`, and §5.5.1 its signedness.
+/// §5.4.1 the self-determined width of `e`, and §5.5.1 its signedness,
+/// computed once per expression (`Emitter.shapes`): `expr` asks it at every
+/// level, which would be quadratic in the nesting otherwise.
 pub fn shape(self: *Emitter, e: ExprId) Error!Sig {
     assert(e != .none);
-    const ex = &self.file.exprs;
-    const tok = ex.mainTok(e);
-    return switch (ex.tag(e)) {
-        .int_literal => blk: {
-            const l = ex.intLiteral(e);
-            break :blk .{ .s = "", .w = if (l.width == 0) 32 else l.width, .signed = l.signed };
-        },
-        .logic_literal => blk: {
-            const l = ex.logicValue(e);
-            break :blk .{ .s = "", .w = l.width, .signed = l.signed };
-        },
-        .ident => blk: {
-            const s = self.syms.get(ex.strOf(e)) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(ex.strOf(e))});
-            break :blk .{ .s = "", .w = s.width, .signed = s.signed };
-        },
-        .unary => blk: {
-            const a = try self.shape(ex.lhs(e));
-            break :blk switch (ex.unOp(e)) {
-                .plus, .minus, .bit_not => a,
-                .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => .{ .s = "", .w = 1 },
-            };
-        },
-        .binary => blk: {
-            const a = try self.shape(ex.lhs(e));
-            const b = try self.shape(ex.rhs(e));
-            break :blk switch (ex.binOp(e)) {
-                .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => .{ .s = "", .w = @max(a.w, b.w), .signed = a.signed and b.signed },
-                .pow, .shl, .shr, .ashl, .ashr => .{ .s = "", .w = a.w, .signed = a.signed },
-                .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => .{ .s = "", .w = 1 },
-            };
-        },
-        .ternary => blk: {
-            const a = try self.shape(ex.rhs(e));
-            const b = try self.shape(ex.ternaryElse(e));
-            break :blk .{ .s = "", .w = @max(a.w, b.w), .signed = a.signed and b.signed };
-        },
-        .concat => blk: {
-            var w: u32 = 0;
-            for (ex.args(e)) |a| w += (try self.shape(a)).w;
-            break :blk .{ .s = "", .w = w };
-        },
-        .multi_concat => blk: {
-            const n = (try self.foldInt(ex.lhs(e), tok)) orelse return self.refuse(tok, "a replication count that is not constant", .{});
-            if (n <= 0) return self.refuse(tok, "a replication count of {d}", .{n});
-            const rw = @as(i128, (try self.shape(ex.rhs(e))).w) * n;
-            if (rw > fold.max_width) return self.refuse(tok, "a replication wider than {d} bits", .{fold.max_width});
-            break :blk .{ .s = "", .w = @intCast(rw) };
-        },
-        .index => blk: {
-            if (ex.tag(ex.rhs(e)) == .range) {
-                const r = ex.rhs(e);
-                const hi = (try self.foldInt(ex.lhs(r), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
-                const lo = (try self.foldInt(ex.rhs(r), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
-                // A select wider than any RTLIL wire is outside its declared range.
-                const span = @abs(@as(i128, hi) - lo) + 1;
-                if (span > std.math.maxInt(i32)) return self.refuse(tok, "a select outside the declared range", .{});
-                break :blk .{ .s = "", .w = @intCast(span) };
-            }
-            if (ex.tag(ex.rhs(e)) == .indexed_range) {
-                const w = (try self.foldInt(ex.rhs(ex.rhs(e)), tok)) orelse return self.refuse(tok, "an indexed part-select width that is not constant", .{});
-                if (w <= 0) return self.refuse(tok, "an indexed part-select width of {d}", .{w});
-                if (w > std.math.maxInt(i32)) return self.refuse(tok, "a select outside the declared range", .{});
-                break :blk .{ .s = "", .w = @intCast(w) };
-            }
-            break :blk .{ .s = "", .w = 1 };
-        },
-        .sys_call => blk: {
-            const n = self.str(ex.strOf(e));
-            const args = ex.args(e);
-            if (std.mem.eql(u8, n, "$signed") and args.len == 1) break :blk .{ .s = "", .w = (try self.shape(args[0])).w, .signed = true };
-            if (std.mem.eql(u8, n, "$unsigned") and args.len == 1) break :blk .{ .s = "", .w = (try self.shape(args[0])).w };
-            if (std.mem.eql(u8, n, "$clog2")) break :blk .{ .s = "", .w = 32, .signed = true };
-            return self.refuse(tok, "the system function `{s}`", .{n});
-        },
-        .real_literal => return self.refuse(tok, "a real literal", .{}),
-        .str_literal => return self.refuse(tok, "a string literal", .{}),
-        .hier_ident => return self.refuse(tok, "a hierarchical reference", .{}),
-        .call => return self.refuse(tok, "a function call", .{}),
-        else => return self.refuse(tok, "an expression no synthesizable design has here", .{}), // else: analog, event and range tags
-    };
+    const memo = &self.shapes[@backingInt(e)];
+    if (memo.w != 0) return .{ .s = "", .w = memo.w, .signed = memo.signed };
+    const s = try shapeOf(self, e);
+    assert(s.w >= 1);
+    memo.* = .{ .w = s.w, .signed = s.signed };
+    return s;
 }
 
 /// `e` as a sigspec of at least `ctx` bits (§5.4: a context-determined
@@ -116,6 +45,7 @@ pub fn expr(self: *Emitter, e: ExprId, ctx: u32) Error!Sig {
     assert(e != .none);
     const ex = &self.file.exprs;
     const tok = ex.mainTok(e);
+    try self.deeper(tok);
     const own = try self.shape(e);
     const w = @max(own.w, ctx);
     switch (ex.tag(e)) {
@@ -128,10 +58,10 @@ pub fn expr(self: *Emitter, e: ExprId, ctx: u32) Error!Sig {
             const name = ex.strOf(e);
             const s = self.syms.get(name).?;
             if (s.kind == .param) {
-                const v = self.values.get(name) orelse return self.refuse(tok, "a real parameter in an expression", .{});
+                const v = self.syms.value(name) orelse return self.refuse(tok, "a real parameter in an expression", .{});
                 return self.logicSig(v);
             }
-            if (self.proc) |p| if (p.redirect.contains(name)) return p.temps.get(name).?;
+            if (self.proc) |p| if (self.syms.rows.items(.redirect_proc)[self.syms.find(name).?] == p.index) return self.syms.temp(name, p.index);
             return .{ .s = try self.id(name), .w = s.width, .signed = s.signed };
         },
         .unary => {
@@ -204,12 +134,7 @@ pub fn expr(self: *Emitter, e: ExprId, ctx: u32) Error!Sig {
             const parts = ex.args(e);
             if (parts.len == 1) return self.fit(try self.expr(parts[0], 0), own.w);
             var buf: Writer.Allocating = .init(self.arena);
-            try buf.writer.writeAll("{");
-            for (parts) |a| {
-                const s = try self.expr(a, 0);
-                try buf.writer.print(" {s}", .{(try self.fit(s, (try self.shape(a)).w)).s});
-            }
-            try buf.writer.writeAll(" }");
+            try concatInto(self, e, &buf.writer);
             return .{ .s = buf.written(), .w = own.w };
         },
         .multi_concat => {
@@ -298,17 +223,11 @@ pub fn lvalue(self: *Emitter, e: ExprId, in_proc: bool) Error!Sig {
     assert(in_proc == (self.proc != null));
     const ex = &self.file.exprs;
     const tok = ex.mainTok(e);
+    try self.deeper(tok);
     switch (ex.tag(e)) {
         .concat => {
             var buf: Writer.Allocating = .init(self.arena);
-            var w: u32 = 0;
-            try buf.writer.writeAll("{");
-            for (ex.args(e)) |a| {
-                const s = try self.lvalue(a, in_proc);
-                w += s.w;
-                try buf.writer.print(" {s}", .{s.s});
-            }
-            try buf.writer.writeAll(" }");
+            const w = try lvalueConcatInto(self, e, in_proc, &buf.writer);
             return .{ .s = buf.written(), .w = w };
         },
         .ident, .index => {
@@ -320,7 +239,7 @@ pub fn lvalue(self: *Emitter, e: ExprId, in_proc: bool) Error!Sig {
             const root: Sig = if (in_proc) blk: {
                 const p = self.proc.?;
                 if (s.kind != .reg) return self.refuse(tok, "a procedural assignment to the net `{s}`", .{self.str(name)});
-                break :blk p.temps.get(name).?;
+                break :blk self.syms.temp(name, p.index);
             } else .{ .s = try self.id(name), .w = s.width, .signed = s.signed };
             if (ex.tag(e) == .ident) return root;
             const sel = ex.rhs(e);
@@ -339,4 +258,138 @@ pub fn lvalue(self: *Emitter, e: ExprId, in_proc: bool) Error!Sig {
         },
         else => return self.refuse(tok, "an assignment target that is not a name, a select or a concatenation", .{}), // else: A.8.5 admits nothing else
     }
+}
+
+// ---- private ----
+
+/// `shape` of an expression not yet memoized.
+fn shapeOf(self: *Emitter, e: ExprId) Error!Sig {
+    assert(e != .none);
+    const ex = &self.file.exprs;
+    const tok = ex.mainTok(e);
+    try self.deeper(tok);
+    return switch (ex.tag(e)) {
+        .int_literal => blk: {
+            const l = ex.intLiteral(e);
+            break :blk .{ .s = "", .w = if (l.width == 0) 32 else l.width, .signed = l.signed };
+        },
+        .logic_literal => blk: {
+            const l = ex.logicValue(e);
+            break :blk .{ .s = "", .w = l.width, .signed = l.signed };
+        },
+        .ident => blk: {
+            const s = self.syms.get(ex.strOf(e)) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(ex.strOf(e))});
+            break :blk .{ .s = "", .w = s.width, .signed = s.signed };
+        },
+        .unary => blk: {
+            const a = try self.shape(ex.lhs(e));
+            break :blk switch (ex.unOp(e)) {
+                .plus, .minus, .bit_not => a,
+                .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => .{ .s = "", .w = 1 },
+            };
+        },
+        .binary => blk: {
+            const a = try self.shape(ex.lhs(e));
+            const b = try self.shape(ex.rhs(e));
+            break :blk switch (ex.binOp(e)) {
+                .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => .{ .s = "", .w = @max(a.w, b.w), .signed = a.signed and b.signed },
+                .pow, .shl, .shr, .ashl, .ashr => .{ .s = "", .w = a.w, .signed = a.signed },
+                .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => .{ .s = "", .w = 1 },
+            };
+        },
+        .ternary => blk: {
+            const a = try self.shape(ex.rhs(e));
+            const b = try self.shape(ex.ternaryElse(e));
+            break :blk .{ .s = "", .w = @max(a.w, b.w), .signed = a.signed and b.signed };
+        },
+        .concat => blk: {
+            var w: u32 = 0;
+            for (ex.args(e)) |a| w += (try self.shape(a)).w;
+            break :blk .{ .s = "", .w = w };
+        },
+        .multi_concat => blk: {
+            const n = (try self.foldInt(ex.lhs(e), tok)) orelse return self.refuse(tok, "a replication count that is not constant", .{});
+            if (n <= 0) return self.refuse(tok, "a replication count of {d}", .{n});
+            const rw = @as(i128, (try self.shape(ex.rhs(e))).w) * n;
+            if (rw > fold.max_width) return self.refuse(tok, "a replication wider than {d} bits", .{fold.max_width});
+            break :blk .{ .s = "", .w = @intCast(rw) };
+        },
+        .index => blk: {
+            if (ex.tag(ex.rhs(e)) == .range) {
+                const r = ex.rhs(e);
+                const hi = (try self.foldInt(ex.lhs(r), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
+                const lo = (try self.foldInt(ex.rhs(r), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
+                // A select wider than any RTLIL wire is outside its declared range.
+                const span = @abs(@as(i128, hi) - lo) + 1;
+                if (span > std.math.maxInt(i32)) return self.refuse(tok, "a select outside the declared range", .{});
+                break :blk .{ .s = "", .w = @intCast(span) };
+            }
+            if (ex.tag(ex.rhs(e)) == .indexed_range) {
+                const w = (try self.foldInt(ex.rhs(ex.rhs(e)), tok)) orelse return self.refuse(tok, "an indexed part-select width that is not constant", .{});
+                if (w <= 0) return self.refuse(tok, "an indexed part-select width of {d}", .{w});
+                if (w > std.math.maxInt(i32)) return self.refuse(tok, "a select outside the declared range", .{});
+                break :blk .{ .s = "", .w = @intCast(w) };
+            }
+            break :blk .{ .s = "", .w = 1 };
+        },
+        .sys_call => blk: {
+            const n = self.str(ex.strOf(e));
+            const args = ex.args(e);
+            if (std.mem.eql(u8, n, "$signed") and args.len == 1) break :blk .{ .s = "", .w = (try self.shape(args[0])).w, .signed = true };
+            if (std.mem.eql(u8, n, "$unsigned") and args.len == 1) break :blk .{ .s = "", .w = (try self.shape(args[0])).w };
+            if (std.mem.eql(u8, n, "$clog2")) break :blk .{ .s = "", .w = 32, .signed = true };
+            return self.refuse(tok, "the system function `{s}`", .{n});
+        },
+        .real_literal => return self.refuse(tok, "a real literal", .{}),
+        .str_literal => return self.refuse(tok, "a string literal", .{}),
+        .hier_ident => return self.refuse(tok, "a hierarchical reference", .{}),
+        .call => return self.refuse(tok, "a function call", .{}),
+        else => return self.refuse(tok, "an expression no synthesizable design has here", .{}), // else: analog, event and range tags
+    };
+}
+
+/// A concatenation of two or more parts as `{ a b ... }` into `w`. A part
+/// that is itself one is written in place rather than built and copied, so
+/// nested concatenations cost their length, not its square; the bytes are
+/// what `expr` gives the part, since a concatenation's sigspec is exactly
+/// its own width.
+fn concatInto(self: *Emitter, e: ExprId, w: *Writer) Error!void {
+    const ex = &self.file.exprs;
+    assert(ex.tag(e) == .concat);
+    assert(ex.args(e).len >= 2);
+    try self.deeper(ex.mainTok(e));
+    try w.writeAll("{");
+    for (ex.args(e)) |a| {
+        if (ex.tag(a) == .concat and ex.args(a).len >= 2) {
+            try w.writeByte(' ');
+            try concatInto(self, a, w);
+            continue;
+        }
+        const s = try self.expr(a, 0);
+        try w.print(" {s}", .{(try self.fit(s, (try self.shape(a)).w)).s});
+    }
+    try w.writeAll(" }");
+}
+
+/// An lvalue concatenation as `{ a b ... }` into `w`, nested ones in place
+/// (as `concatInto`); returns its width.
+fn lvalueConcatInto(self: *Emitter, e: ExprId, in_proc: bool, w: *Writer) Error!u32 {
+    const ex = &self.file.exprs;
+    assert(ex.tag(e) == .concat);
+    try self.deeper(ex.mainTok(e));
+    var width: u32 = 0;
+    try w.writeAll("{");
+    for (ex.args(e)) |a| {
+        if (ex.tag(a) == .concat) {
+            try w.writeByte(' ');
+            width += try lvalueConcatInto(self, a, in_proc, w);
+            continue;
+        }
+        const s = try self.lvalue(a, in_proc);
+        width += s.w;
+        try w.print(" {s}", .{s.s});
+    }
+    try w.writeAll(" }");
+    assert(width >= 1);
+    return width;
 }
