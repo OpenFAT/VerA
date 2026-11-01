@@ -49,7 +49,10 @@ pub const Relations = struct {
     ports: Csr,
 
     /// Frees the four indexes; `gpa` must be `Design.gpa`, which built them.
+    /// Asserts that the two object-keyed indexes have one key set.
     pub fn deinit(r: *Relations, gpa: std.mem.Allocator) void {
+        std.debug.assert(r.users.first.len == r.by_obj.first.len);
+        std.debug.assert(r.ports.first.len != 0); // n_keys + 1 offsets
         r.users.deinit(gpa);
         r.by_obj.deinit(gpa);
         r.by_slot.deinit(gpa);
@@ -65,13 +68,21 @@ pub const Relations = struct {
 ///
 /// ponytail: a bit select's own uses only (Details b adds the parent
 /// vector's and a containing part select's).
+///
+/// Asserts that `o` is a row of `d`, and answers at most one handle per
+/// user row.
 pub fn uses(d: *Design, o: *const Obj) abi.vpiHandle {
-    switch (o.kind) {
-        .net, .reg, .integer, .real_var, .time_var, .parameter, .word, .var_select => {},
-        .code => if (o.vtype != user.vpiNetBit and o.vtype != user.vpiRegBit) return useFail(o),
-        .module, .port, .reg_array, .var_array, .net_array, .module_array, .constant, .discipline, .nature, .node, .branch, .quantity => return useFail(o),
+    const simple = switch (o.kind) {
+        .net, .reg, .integer, .real_var, .time_var, .parameter, .word, .var_select => true,
+        .code => o.vtype == user.vpiNetBit or o.vtype == user.vpiRegBit,
+        .module, .port, .reg_array, .var_array, .net_array, .module_array, .constant, .discipline, .nature, .node, .branch, .quantity => false,
+    };
+    if (!simple) {
+        status.fail("NOTRAVERSE", "vpi_iterate: a {s} is no simple expression, so it has no vpiUse", .{schema.typeName(schema.typeOf(o))});
+        return null;
     }
     const target = d.idOf(o);
+    std.debug.assert(target.index() < d.objects.len);
     const rel = relationsOf(d) orelse return null;
     // At most one handle per user row.
     var out = std.ArrayList(abi.vpiHandle).initCapacity(d.gpa, rel.users.of(target.index()).len) catch return iterate.oomIter();
@@ -81,6 +92,7 @@ pub fn uses(d: *Design, o: *const Obj) abi.vpiHandle {
         last = u;
         out.appendAssumeCapacity(trust.handleOf(d.obj(.at(u))));
     }
+    std.debug.assert(out.items.len <= rel.users.of(target.index()).len);
     return iterate.ownedIter(d, &out);
 }
 
@@ -89,12 +101,16 @@ pub fn uses(d: *Design, o: *const Obj) abi.vpiHandle {
 /// the same scope, so these are the ports sharing `o`'s name, as `driversLoads`
 /// finds them. The analog model's nets never are one — a port-connected name
 /// is its `.port` row there (model/analog.zig) — so its set is always empty.
+/// Asserts that `o` is a net of `d`.
 pub fn lowConnPorts(d: *Design, o: *const Obj) abi.vpiHandle {
+    std.debug.assert(o.kind == .net);
+    std.debug.assert(d.idOf(o).index() < d.objects.len);
     const owner = o.owner;
     if (owner == .none) return null;
     const ports = d.scope(owner).ports;
     var out = std.ArrayList(abi.vpiHandle).initCapacity(d.gpa, ports.len) catch return iterate.oomIter();
     for (ports) |p| if (std.mem.eql(u8, d.obj(p).name, o.name)) out.appendAssumeCapacity(trust.handleOf(d.obj(p)));
+    std.debug.assert(out.items.len <= ports.len);
     return iterate.ownedIter(d, &out);
 }
 
@@ -115,7 +131,11 @@ pub fn lowConnPorts(d: *Design, o: *const Obj) abi.vpiHandle {
 ///
 /// ponytail: the parent's instance ports, delay terms and cont assign bits
 /// are not listed. Each needs its own relation.
+///
+/// Asserts that `o` is a net or reg, and answers at most one handle per
+/// candidate.
 pub fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) abi.vpiHandle {
+    std.debug.assert(o.kind == .net or o.kind == .reg);
     const rel = relationsOf(d) orelse return null;
     const target = d.idOf(o);
     const by_obj = rel.by_obj.of(target.index());
@@ -156,15 +176,11 @@ pub fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) abi.v
         };
         if (hit) out.appendAssumeCapacity(trust.handleOf(d.obj(.at(i))));
     }
+    std.debug.assert(out.items.len <= candidates.items.len);
     return iterate.ownedIter(d, &out);
 }
 
 // ---- private ----
-
-fn useFail(o: *const Obj) abi.vpiHandle {
-    status.fail("NOTRAVERSE", "vpi_iterate: a {s} is no simple expression, so it has no vpiUse", .{schema.typeName(schema.typeOf(o))});
-    return null;
-}
 
 /// `d`'s `Relations`, built on first use; null (and NOMEM recorded) when
 /// they cannot be.
@@ -173,10 +189,15 @@ fn relationsOf(d: *Design) ?*const Relations {
         _ = iterate.oomIter();
         return null;
     };
+    // Keyed by every row and every scope of `d`, whose rows are frozen.
+    std.debug.assert(d.relations.?.users.first.len == d.objects.len + 1);
+    std.debug.assert(d.relations.?.ports.first.len == d.scopes.len + 1);
     return &d.relations.?;
 }
 
 fn buildRelations(d: *const Design) error{OutOfMemory}!Relations {
+    std.debug.assert(d.relations == null);
+    std.debug.assert(d.objects.len <= Design.objects_max);
     const gpa = d.gpa;
     var users: std.ArrayList([2]u32) = .empty;
     defer users.deinit(gpa);
@@ -221,6 +242,8 @@ fn buildRelations(d: *const Design) error{OutOfMemory}!Relations {
 /// Row `u` uses item `at` and, when `at` is a part or bit select, the
 /// object its first vpiParent edge names.
 fn addReach(gpa: std.mem.Allocator, d: *const Design, out: *std.ArrayList([2]u32), at: ObjId, u: u32) error{OutOfMemory}!void {
+    std.debug.assert(u < d.objects.len);
+    std.debug.assert(d.objects[u].kind == .code); // only a behavioural row uses
     if (at == .none) return;
     try out.append(gpa, .{ at.index(), u });
     const x = d.obj(at);
@@ -236,6 +259,8 @@ fn addReach(gpa: std.mem.Allocator, d: *const Design, out: *std.ArrayList([2]u32
 /// `mentions`' walk from `e`, inverted: every row it visits, and the slot of
 /// every non-`.code` one, lead to candidate `u`.
 fn addMentions(gpa: std.mem.Allocator, d: *const Design, by_obj: *std.ArrayList([2]u32), by_slot: *std.ArrayList([2]u32), e: ObjId, u: u32) error{OutOfMemory}!void {
+    std.debug.assert(u < d.objects.len);
+    std.debug.assert(d.objects[u].kind == .code); // a candidate is a behavioural row
     if (e == .none) return;
     try by_obj.append(gpa, .{ e.index(), u });
     const x = d.obj(e);
@@ -257,10 +282,14 @@ fn addMentions(gpa: std.mem.Allocator, d: *const Design, by_obj: *std.ArrayList(
 /// not to the object whose loads or drivers are being queried. In particular
 /// a load is on the RHS, while the override registry is keyed by the LHS.
 fn activeOverride(d: *const Design, o: *const Obj) bool {
+    std.debug.assert(o.kind == .code);
+    std.debug.assert(o.vtype == user.vpiForce or o.vtype == user.vpiAssignStmt);
     if (schema.coldOf(o).override_expr == .none) return false;
     const r = run.attached() orelse return false;
     var it = r.assigns.layers.valueIterator();
-    while (it.next()) |layers| {
+    var seen: usize = 0;
+    while (it.next()) |layers| : (seen += 1) {
+        std.debug.assert(seen < r.assigns.layers.count());
         if (if (o.vtype == user.vpiForce) layers.force else layers.assign) |range|
             if (overrideRange(d, o, r, range)) return true;
         if (o.vtype == user.vpiForce) for (layers.parts.items) |part|
@@ -270,8 +299,10 @@ fn activeOverride(d: *const Design, o: *const Obj) bool {
 }
 
 fn overrideRange(d: *const Design, o: *const Obj, r: *const sim.digital.Run, range: sim.digital.PcRange) bool {
+    std.debug.assert(range.start <= range.end);
     // A VPI force has an empty range; it activates no HDL source statement.
     if (range.start == range.end) return false;
+    std.debug.assert(range.end <= r.program.code.items.len); // a range of the run's program
     if (r.instanceOf(r.program.scope_of.items[range.start]) != d.scope(o.owner).engine) return false;
     return switch (r.program.code.items[range.start]) {
         .override_eval => |op| op.value == schema.coldOf(o).override_expr and op.force == (o.vtype == user.vpiForce),
@@ -283,6 +314,8 @@ fn overrideRange(d: *const Design, o: *const Obj, r: *const sim.digital.Run, ran
 /// same object), a select of it, or an operation or call with such an
 /// operand?
 fn mentions(d: *const Design, e: ObjId, target: *const Obj) bool {
+    std.debug.assert(target.kind == .net or target.kind == .reg); // `driversLoads`' object
+    std.debug.assert(e == .none or e.index() < d.objects.len);
     if (e == .none) return false;
     const x = d.obj(e);
     if (x == target or (x.slot != .none and x.slot == target.slot and x.kind != .code)) return true;

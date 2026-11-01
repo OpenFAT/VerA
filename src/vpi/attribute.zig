@@ -42,23 +42,35 @@ pub const ByOwner = struct {
     pub const end: u32 = std.math.maxInt(u32);
 
     /// Indexes `file.attributes` in one pass, O(bindings). Caller owns the
-    /// result and frees it with `deinit` and the same `gpa`.
+    /// result and frees it with `deinit` and the same `gpa`. Asserts that
+    /// every binding is chained and every owner has a head.
     pub fn init(gpa: std.mem.Allocator, file: *const Ast.SourceFile) error{OutOfMemory}!ByOwner {
         const bindings = file.attributes.items;
+        std.debug.assert(bindings.len < end); // `end` is no binding index
         var self: ByOwner = .{ .next = try gpa.alloc(u32, bindings.len) };
-        errdefer self.deinit(gpa);
+        // Not `deinit`, whose asserts hold of a whole index only.
+        errdefer {
+            self.heads.deinit(gpa);
+            gpa.free(self.next);
+        }
         var k = bindings.len;
         while (k > 0) {
+            std.debug.assert(k <= bindings.len);
             k -= 1;
             const g = try self.heads.getOrPut(gpa, bindings[k].owner);
             self.next[k] = if (g.found_existing) g.value_ptr.* else end;
             g.value_ptr.* = @intCast(k);
         }
+        std.debug.assert(self.next.len == bindings.len);
+        std.debug.assert(self.heads.count() <= bindings.len);
         return self;
     }
 
-    /// Frees both tables; `gpa` must be the one `init` used.
+    /// Frees both tables; `gpa` must be the one `init` used. Asserts that
+    /// the owners are no more than the bindings.
     pub fn deinit(self: *ByOwner, gpa: std.mem.Allocator) void {
+        std.debug.assert(self.heads.count() <= self.next.len);
+        std.debug.assert(self.next.len == 0 or self.heads.count() != 0); // a binding has an owner
         self.heads.deinit(gpa);
         gpa.free(self.next);
     }
@@ -71,7 +83,10 @@ const AnalogEnv = struct {
 
     /// `constfold`'s leaf hook: a parameter's folded value, or one of the
     /// conversion calls the analog validator folds. Null: not a constant.
+    /// Asserts that `e` is an expression and no digital run folds it.
     pub fn leaf(env: AnalogEnv, e: Ast.ExprId) ?Const {
+        std.debug.assert(e != .none);
+        std.debug.assert(env.b.run == null); // a digital model folds through its run
         // These are the conversion calls the analog constant-expression
         // validator folds (src/analog/constfold.zig, AMS §9.11/§9.14).
         if (env.b.file.exprs.tag(e) == .sys_call) {
@@ -97,6 +112,8 @@ const AnalogEnv = struct {
         return env.b.objects.at(at).value;
     }
     fn parameter(env: AnalogEnv, e: Ast.ExprId) ?@import("ir").Lowered.ParamInfo {
+        std.debug.assert(e != .none);
+        std.debug.assert(env.b.run == null); // a digital model folds through its run
         if (env.b.file.exprs.tag(e) != .ident) return null;
         const at = env.b.lookup(env.b.file.str(env.b.file.exprs.strOf(e)));
         if (at == ObjId.none) return null;
@@ -108,23 +125,31 @@ const AnalogEnv = struct {
         return null;
     }
     /// `constfold`'s signedness hook; an `integer` parameter is signed.
+    /// Asserts that `e` is an expression and no digital run folds it.
     pub fn signed(env: AnalogEnv, e: Ast.ExprId) ?bool {
+        std.debug.assert(e != .none);
+        std.debug.assert(env.b.run == null); // a digital model folds through its run
         if (env.b.file.exprs.tag(e) != .ident) return constfold.clog2Signed(env.b.file, e, env);
         const p = env.parameter(e) orelse return null;
         return if (p.integer32) true else p.source_signed;
     }
     /// `constfold`'s width hook: 32 for an `integer` parameter, else the
-    /// source width.
+    /// source width. Asserts that a parameter's width is no zero.
     pub fn width(env: AnalogEnv, e: Ast.ExprId) ?u32 {
+        std.debug.assert(e != .none);
         const p = env.parameter(e) orelse return null;
-        return if (p.integer32) 32 else p.source_width;
+        const w = if (p.integer32) 32 else p.source_width;
+        std.debug.assert(w != 0);
+        return w;
     }
 };
 
 /// Is `o` one of IEEE 1364-2005 §26.6.42's decorated language elements, so
 /// `vpi_iterate(vpiAttribute, o)` is a relationship (empty when undecorated)
-/// rather than an error?
+/// rather than an error? Asserts that `o` is a row of the installed design.
 pub fn supports(o: *const Obj) bool {
+    std.debug.assert(session.design != null);
+    std.debug.assert(o.kind != .code or o.vtype != 0); // a `.code` row carries its type
     return switch (o.kind) {
         .module, .port, .net, .reg, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array => true,
         .code => switch (o.vtype) {
@@ -188,10 +213,16 @@ pub fn supports(o: *const Obj) bool {
 /// repeated on one element keeps the later spelling. `definition` is
 /// vpiDefAttribute. A no-op for a `parent` of `.none`. `error.NotElaborated`: a value
 /// that does not fold, which the frontend should already have refused.
+/// Asserts that `parent` is a row already built, and that each owner's
+/// chain visits each binding at most once.
 pub fn attach(b: *Builder, parent: ObjId, owner: Ast.AttributeOwner, definition: bool) Error!void {
     if (parent == ObjId.none) return;
+    std.debug.assert(parent.index() < b.objects.hot.items.len);
     var k = b.attrs.heads.get(owner) orelse ByOwner.end;
+    var seen: usize = 0;
     while (k != ByOwner.end) : (k = b.attrs.next[k]) {
+        std.debug.assert(seen < b.attrs.next.len);
+        seen += 1;
         const binding = b.file.attributes.items[k];
         for (binding.specs) |spec| {
             const name = b.file.str(spec.name);
@@ -219,6 +250,7 @@ pub fn attach(b: *Builder, parent: ObjId, owner: Ast.AttributeOwner, definition:
             } else {
                 value = constfold.fold(b.file, spec.value, AnalogEnv{ .b = b }) orelse return error.NotElaborated;
             }
+            std.debug.assert(b.objects.at(at).vtype == user.vpiAttribute);
             b.objects.at(at).name = try b.arena.dupe(u8, name);
             b.objects.at(at).src_tok = spec.main_tok;
             b.objects.at(at).value = value;

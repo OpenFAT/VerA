@@ -39,6 +39,8 @@ var str_buf: [schema.name_buf_len]u8 = undefined;
 /// for a property a class does not have — `vpiDirection` of a net, `vpiSize` of
 /// a module — is an error and not a zero: §11.6.8 simply gives a net no
 /// direction, and a 0 would be indistinguishable from `vpiNoDirection`.
+/// Asserts that an object handle `status.object` accepts is a row of the
+/// installed design, and a module's scope one of its scopes.
 pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
     // Not `enter`: callbacks, time queues, events and systf registrations are
     // objects without a design, and a handle to one still has a type.
@@ -53,7 +55,9 @@ pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
     // is protected when a §28 decryption envelope's cleartext declares it;
     // a handle that is no design object never is.
     if (prop == user.vpiProtected) {
-        if (trust.asObj(obj)) |o| return @intFromBool(isProtected(o));
+        // §26.3.5: declared in a decrypted envelope's cleartext, which the
+        // preprocessor registers as its own file.
+        if (trust.asObj(obj)) |o| return @intFromBool(if (location(o)) |at| std.mem.eql(u8, at.file, @import("vera").Preprocessor.protect.file_name) else false);
         if (other != null) return 0;
     }
     if (status.unansweredProp(prop)) |u| {
@@ -72,6 +76,7 @@ pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
         if (session.design) |d| if (d.finest) |f| return f;
     }
     const o = status.object("vpi_get", obj) orelse return user.vpiUndefined;
+    std.debug.assert(session.design != null); // asObj answers rows of an installed design only
     if (o.kind == .code and prop != user.vpiType and prop != user.vpiLineNo) return codeProp(o, prop);
     switch (prop) {
         user.vpiType => return schema.typeOf(o),
@@ -105,6 +110,7 @@ pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
         },
         user.vpiTimeUnit, user.vpiTimePrecision => {
             if (o.kind != .module) return propFail(prop, o);
+            std.debug.assert(o.scope < session.design.?.scopes.len);
             const sc = session.design.?.scopes[o.scope];
             return (if (prop == user.vpiTimeUnit) sc.time_unit else sc.time_precision) orelse propFail(prop, o);
         },
@@ -195,8 +201,11 @@ pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
 
 /// §11.6.16's two computed properties of a system call — whether the name is
 /// a registered user systf (NOTE 3) and, for a function, its sysfunctype —
-/// then the object's own `props` rows.
+/// then the object's own `props` rows. Asserts that `o` is a `.code` row
+/// and that `prop` is not vpiType, which `vpi_get` answers for every class.
 pub fn codeProp(o: *const Obj, prop: c_int) c_int {
+    std.debug.assert(o.kind == .code);
+    std.debug.assert(prop != user.vpiType);
     if (o.vtype == user.vpiSysTaskCall or o.vtype == user.vpiSysFuncCall) {
         const reg = systf.regOf(o);
         if (prop == user.vpiUserDefn) return @intFromBool(reg != null);
@@ -223,6 +232,7 @@ pub fn codeProp(o: *const Obj, prop: c_int) c_int {
 /// (`systf.active`). There the five properties are the analysis's
 /// (`analog_run.analysis`), asked of a NULL object; with no analysis, or for
 /// the AC-only frequencies outside an AC sweep, the answer is the error.
+/// Asserts that a running call is a row of the installed design.
 pub export fn vpi_get_real(prop: c_int, obj: abi.vpiHandle) f64 {
     const undef: f64 = @floatFromInt(user.vpiUndefined);
     if (status.refused("vpi_get_real")) return undef;
@@ -230,6 +240,8 @@ pub export fn vpi_get_real(prop: c_int, obj: abi.vpiHandle) f64 {
         status.fail("NOTANALOG", "vpi_get_real: available to analog tasks and functions only, and none is running", .{});
         return undef;
     };
+    std.debug.assert(session.design != null); // a call runs only on an installed design
+    std.debug.assert(at.index() < session.design.?.objects.len);
     if (!session.design.?.obj(at).in_analog) {
         status.fail("NOTANALOG", "vpi_get_real: the running system task or function is a digital one", .{});
         return undef;
@@ -269,6 +281,8 @@ pub export fn vpi_get_real(prop: c_int, obj: abi.vpiHandle) f64 {
 ///
 /// One buffer, reused, so the model stores names unterminated. A failing call
 /// returns NULL, the one value an application would not go on to print.
+/// Asserts that an object handle `status.object` accepts is a row of the
+/// design `status.enter` returned, and a module's scope one of its scopes.
 pub export fn vpi_get_str(prop: c_int, obj: abi.vpiHandle) [*c]u8 {
     const d = status.enter("vpi_get_str") orelse return null;
     if (status.unansweredProp(prop)) |u| {
@@ -279,6 +293,8 @@ pub export fn vpi_get_str(prop: c_int, obj: abi.vpiHandle) [*c]u8 {
     // handles that are not design objects (an iterator, a callback) included.
     if (prop == user.vpiType and trust.asObj(obj) == null and trust.issued(obj) != null) return copyStr(schema.typeName(vpi_get(user.vpiType, obj)));
     const o = status.object("vpi_get_str", obj) orelse return null;
+    std.debug.assert(d.idOf(o).index() < d.objects.len);
+    std.debug.assert(o.kind != .module or o.scope < d.scopes.len);
     const s: []const u8 = switch (prop) {
         // §11.6.7 lists no name for a quantity: it is reached from its
         // branch, and named only as `V(b)`/`I(b)` in source.
@@ -360,7 +376,7 @@ pub export fn vpi_get_str(prop: c_int, obj: abi.vpiHandle) [*c]u8 {
 /// IEEE 1364-2005 §26.6.6's vpiNetType, Annex G numbered; null for a
 /// `wreal`, which Annex G has no constant for.
 fn netType(k: Ast.NetKind) ?c_int {
-    return switch (k) {
+    const t: ?c_int = switch (k) {
         .wire => 1,
         .wand => 2,
         .wor => 3,
@@ -375,6 +391,10 @@ fn netType(k: Ast.NetKind) ?c_int {
         .uwire => 13,
         .wreal => null,
     };
+    // Annex G's vpiWire..vpiUwire; a wreal (VAMS) has no IEEE 1364 number.
+    std.debug.assert((t == null) == (k == .wreal));
+    std.debug.assert(t == null or (t.? >= 1 and t.? <= 13));
+    return t;
 }
 
 /// IEEE 1364-2005 §26.3.3 vpiLineNo and vpiFile: the location the model
@@ -384,28 +404,28 @@ fn netType(k: Ast.NetKind) ?c_int {
 ///
 /// ponytail: the physical line; §19.7's `line renumbering is not applied.
 fn location(o: *const Obj) ?Loc {
+    std.debug.assert(session.design != null);
     if (schema.coldOf(o).loc) |l| return l;
     if (o.src_tok == 0) return null;
     const r = run.attached() orelse return null;
+    std.debug.assert(o.src_tok < r.starts.len); // a row's token is the run's source's
     return schema.locate(r.bag, r.starts[o.src_tok]);
 }
 
-/// §26.3.5: whether `o` is declared in a decrypted envelope's cleartext,
-/// which the preprocessor registers as its own file.
-fn isProtected(o: *const Obj) bool {
-    const at = location(o) orelse return false;
-    return std.mem.eql(u8, at.file, @import("vera").Preprocessor.protect.file_name);
-}
-
 fn propFail(prop: c_int, o: *const Obj) c_int {
+    std.debug.assert(prop != user.vpiType); // every class answers vpiType
+    std.debug.assert(session.design != null);
     status.fail("NOPROP", "vpi_get: a {s} has no property {d}", .{ @tagName(o.kind), prop });
     return user.vpiUndefined;
 }
 
 fn copyStr(s: []const u8) [*c]u8 {
+    // A model string, never the buffer's own last answer: @memcpy may not overlap.
+    std.debug.assert(@intFromPtr(s.ptr) != @intFromPtr(&str_buf));
     const n = @min(s.len, str_buf.len - 1);
     @memcpy(str_buf[0..n], s[0..n]);
     str_buf[n] = 0;
+    std.debug.assert(n < str_buf.len);
     return @ptrCast(&str_buf);
 }
 
