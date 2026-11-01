@@ -37,6 +37,7 @@ names the clause behind it.
 | Downstream (ESPice) | a VerA change breaks a consumer | ESPice's decks and their oracle records | `spice.yaml` imports a pinned ESPice release and runs `zig build test-spice -Despice=PATH` (disabled until a release exists; not in the merge gate: VerA's build does not depend on ESPice); `pages.yaml` compiles ESPice's models |
 | Every module | an allocation failure swallowed or leaked | `checkAllAllocationFailures` | `tests/unit.zig`'s `oom_tests` |
 | Base (`lib/base`) | an interned id renumbered or lost | a linear-scan model of first-seen order, over a seeded op sequence through an overlay | `lib/base/interner.zig` (`test-base`) |
+| Kernels and emitters (`lib/kernels`, `src/codegen`, `lib/frontend`, `lib/sim/rt`) | a vectorised loop gone scalar, a branchless ladder (`limit_kernels`' `*Clamp`) branching again: right numbers, lost speed | the x86_64_v3 ReleaseFast assembly against each probe's `expect:` line (`vector>=N`, `branches==0`); the judge's own selftest must FAIL wrong assembly | `tests/codegen_probe.zig`, `tools/asm_probe.py` (`test-probe`, in `test`) |
 | The harness itself | a judge that passes everything | wrong-on-purpose fixtures must FAIL | `tests/canary/` (in `test`), `host.py selftest`, `conformance.py selftest` |
 
 Assertions in production code multiply every layer: tests run in Debug
