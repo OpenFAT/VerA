@@ -9,6 +9,7 @@
 //! - `pub fn genInstanceList(file: *Ast.SourceFile, id: Ast.StmtId, arena: std.mem.Allocator, out: *std.ArrayList(Ast.Instance)) design.Error!void`
 //! - `pub fn genvarLoop(comptime T: type, scheme: anytype, first: T) !LoopRun(T)`
 //! - `pub fn substIdent(self: *Flatten, e: Ast.ExprId, name: Ast.StrId, with: Ast.ExprId) design.Error!Ast.ExprId`
+//! - `pub fn substIdents(self: *Flatten, e: Ast.ExprId, with: *const std.AutoHashMapUnmanaged(Ast.StrId, Ast.ExprId)) design.Error!Ast.ExprId`
 //! -     `pub fn ident(sb: @This(), _: *Flatten, id: Ast.ExprId, n: Ast.StrId) design.Error!Ast.ExprId`
 //! - `pub fn genInstances(self: *Flatten, id: Ast.StmtId, gate: Ast.ExprId, prefix: []const u8, locals: []const Ast.ParamDecl, out: *std.ArrayList(Ast.Instance), gates: *std.ArrayList(Ast.ExprId)) design.Error!void`
 //! - `pub fn conj(self: *Flatten, a: Ast.ExprId, c: Ast.ExprId, negate: bool) design.Error!Ast.ExprId`
@@ -148,6 +149,18 @@ pub fn conj(self: *Flatten, a: Ast.ExprId, c: Ast.ExprId, negate: bool) design.E
         .rhs = t,
         .extra = @backingInt(Ast.BinaryOp.logical_and),
     });
+}
+
+/// `e` with every identifier `with` has a value for replaced by that value,
+/// in one walk that does not descend into a value it put in.
+pub fn substIdents(self: *Flatten, e: Ast.ExprId, with: *const std.AutoHashMapUnmanaged(Ast.StrId, Ast.ExprId)) design.Error!Ast.ExprId {
+    const Subst = struct {
+        with: *const std.AutoHashMapUnmanaged(Ast.StrId, Ast.ExprId),
+        pub fn ident(sb: @This(), _: *Flatten, id: Ast.ExprId, n: Ast.StrId) design.Error!Ast.ExprId {
+            return sb.with.get(n) orelse id;
+        }
+    };
+    return mapIdents(self, e, Subst{ .with = with });
 }
 
 // ---- private ----
