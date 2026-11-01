@@ -37,6 +37,7 @@ names the clause behind it.
 | Downstream (ESPice) | a VerA change breaks a consumer | ESPice's decks and their oracle records | `spice.yaml` imports a pinned ESPice release and runs `zig build test-spice -Despice=PATH` (disabled until a release exists; not in the merge gate: VerA's build does not depend on ESPice); `pages.yaml` compiles ESPice's models |
 | Every module | an allocation failure swallowed or leaked | `checkAllAllocationFailures` | `tests/unit.zig`'s `oom_tests` |
 | Base (`lib/base`) | an interned id renumbered or lost | a linear-scan model of first-seen order, over a seeded op sequence through an overlay | `lib/base/interner.zig` (`test-base`) |
+| The harness itself | a verdict lost from the log (`suite -- ams > log 2>&1` lost its first FAIL lines: a positional stdio writer wrote from offset 0, under `zig build`'s summary) | the log itself; a source scan that no stdout/stderr writer is positional; the FAIL and XFAIL name lists after the summary, compared by name against `tests/suite.xfail` (an unlisted FAIL and a listed pass, XPASS, both fail the run) | `tests/suite.zig` (`test-suite`), `suite -- ams` |
 | The harness itself | a judge that passes everything | wrong-on-purpose fixtures must FAIL | `tests/canary/` (in `test`), `host.py selftest`, `conformance.py selftest` |
 
 Assertions in production code multiply every layer: tests run in Debug

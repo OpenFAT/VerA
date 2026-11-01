@@ -79,7 +79,7 @@ const Suite = struct {
     ///
     ///   zig build suite                         # the suite, timed
     ///   zig build suite -- ch04                 # only paths matching `ch04`
-    ///   zig build suite -- --strict             # unasserted and xfail FAIL
+    ///   zig build suite -- --strict             # unasserted fixtures FAIL
     ///   zig build suite -- --fixture-root=DIR   # another tree laid out like the suite's tests/
     ///   zig build suite -- --sweep              # the generated size sweep instead
     ///   zig build suite -Doptimize=ReleaseFast  # the timing that ships
@@ -104,6 +104,18 @@ const Suite = struct {
             if (std.mem.eql(u8, a, "canary")) return canary.run(init);
         }
         return benchmark(init, vera_exe, first, &args, true);
+    }
+
+    // The oracle is the log `zig build suite -- ams > log 2>&1` writes: a
+    // positional writer on a redirected stdio file writes from offset 0, under
+    // the build's own summary, and the first FAIL lines of every run were lost.
+    test "every stdout and stderr writer of the runner streams" {
+        const source = @embedFile("suite.zig");
+        for ([_][]const u8{ "stdout", "stderr" }) |stream| {
+            var buf: [32]u8 = undefined;
+            const positional = try std.fmt.bufPrint(&buf, "{s}().{s}(", .{ stream, "writer" });
+            try std.testing.expect(std.mem.find(u8, source, positional) == null);
+        }
     }
 
     /// N per fixture, smaller than `harness/sweep.zig`'s `reps` because every fixture is timed. The min
@@ -141,7 +153,7 @@ const Suite = struct {
             if (std.mem.eql(u8, arg, "--sweep")) do_sweep = true //
             else if (std.mem.startsWith(u8, arg, "-")) {
                 var e_buf: [256]u8 = undefined;
-                var e = Io.File.stderr().writer(io, &e_buf);
+                var e = Io.File.stderr().writerStreaming(io, &e_buf);
                 try e.interface.print("benchmark: unknown flag `{s}`\n", .{arg});
                 try e.interface.flush();
                 return 2;
@@ -152,7 +164,7 @@ const Suite = struct {
         cfg.root = std.fs.path.resolveAlloc(arena, &.{cfg.root}) catch cfg.root;
 
         var out_buf: [1 << 16]u8 = undefined;
-        var stdout = Io.File.stdout().writer(io, &out_buf);
+        var stdout = Io.File.stdout().writerStreaming(io, &out_buf);
         const w = &stdout.interface;
         defer w.flush() catch {};
 
@@ -320,7 +332,8 @@ const Fixtures = struct {
     //! The verdict algebra is frozen behaviour: an `ok=1`
     //! transcript is `met` only through the compiler plug, `//! xfail` (or a
     //! `xfail_list` line) turns `unmet` into XFAIL and `met` into an XPASS FAIL,
-    //! and `--strict` fails unasserted and XFAIL fixtures.
+    //! and `--strict` fails unasserted fixtures. An XFAIL never fails a run:
+    //! the list of them is the checked-in marker list, compared by name.
 
     const std = @import("std");
     const tb = @import("exe");
@@ -538,7 +551,7 @@ const Fixtures = struct {
     /// Prints `why` and the usage line to stderr; returns exit code 2.
     pub fn usage(io: Io, why: []const u8) !u8 {
         var buf: [256]u8 = undefined;
-        var e = Io.File.stderr().writer(io, &buf);
+        var e = Io.File.stderr().writerStreaming(io, &buf);
         try e.interface.print(
             "suite: {s}\nusage: <vera-exe> [devices | ieee1364 | vpi | spice | benchmark args]\n",
             .{why},
@@ -691,7 +704,7 @@ const Fixtures = struct {
         const arena = arena_state.allocator();
 
         var stderr_buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &stderr_buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &stderr_buf);
         const w = &stderr.interface;
 
         const fixtures = try collect(arena, io, cfg.root, &ams_dirs, cfg.filter);
@@ -705,10 +718,12 @@ const Fixtures = struct {
 
         const strict = cfg.strict;
         var counts: Counts = .{};
+        const verdicts = try arena.alloc(Verdict, fixtures.len);
         if (cfg.jobs <= 1) {
             // Sequential: prints as it goes, showing the fixture a run is stuck on.
-            for (fixtures) |f| {
-                counts.add(try judge(gpa, io, arena, compiler, f, strict, w));
+            for (fixtures, verdicts) |f, *v| {
+                v.* = try judge(gpa, io, arena, compiler, f, strict, w);
+                counts.add(v.*);
                 try w.flush();
             }
         } else {
@@ -734,7 +749,8 @@ const Fixtures = struct {
 
             // Emit in SLOT order, i.e. the sorted walk, whatever order the pool
             // finished in. This is the whole reason the workers buffer.
-            for (slots) |s| {
+            for (slots, verdicts) |s, *v| {
+                v.* = s.verdict;
                 counts.add(s.verdict);
                 try w.writeAll(s.output);
                 gpa.free(s.output);
@@ -743,10 +759,28 @@ const Fixtures = struct {
         }
 
         try summarize(compiler, counts, fixtures.len, w);
+        try names(w, "FAIL", fixtures, verdicts, .fail);
+        try names(w, "XFAIL", fixtures, verdicts, .xfail);
         try w.flush();
         if (tally) |t| t.* = counts;
-        return if (counts.failed == 0 and
-            !(strict and (counts.unasserted != 0 or counts.xfail != 0))) 0 else 1;
+        // An XFAIL is a named marker (`xfail_list`), and its XPASS already
+        // failed: the run fails on an unlisted FAIL, never on a listed one.
+        return if (counts.failed == 0 and !(strict and counts.unasserted != 0)) 0 else 1;
+    }
+
+    /// The `verdict` fixtures' names after the summary, one a line, in walk
+    /// (path) order and in `xfail_list`'s key form, so a run's FAIL list is a
+    /// name list that diffs against the last one and pastes into the list.
+    fn names(w: *Io.Writer, label: []const u8, fixtures: []const Fixture, verdicts: []const Verdict, verdict: Verdict) !void {
+        std.debug.assert(fixtures.len == verdicts.len);
+        var any = false;
+        for (fixtures, verdicts) |f, v| {
+            if (v != verdict) continue;
+            if (!any) try w.print("{s} names:\n", .{label});
+            any = true;
+            const suite_root = std.fs.path.dirname(f.root) orelse f.root;
+            try w.print("  {s}\n", .{std.mem.trimStart(u8, f.path[@min(suite_root.len, f.path.len)..], "/")});
+        }
     }
 
     fn summarize(compiler: Compiler, c: Counts, total: usize, w: *Io.Writer) !void {
@@ -774,7 +808,7 @@ const Fixtures = struct {
                 "  `//! xfail` line or its xfail list row (printed with the reason above).\n" ++
                 "  Not a pass — nothing was proved. The day it starts meeting it the run\n" ++
                 "  FAILs with an XPASS, so the marker cannot outlive the limitation and\n" ++
-                "  quietly hide a regression. (`--strict` fails on these.)\n",
+                "  quietly hide a regression.\n",
             .{ c.xfail, compiler.name, compiler.name },
         );
     }
@@ -2127,7 +2161,7 @@ const Canary = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2250,7 +2284,7 @@ const CFixtures = struct {
         while (args.next()) |a| filter = a;
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2455,7 +2489,7 @@ const Devices = struct {
         }
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2962,7 +2996,7 @@ const Fuzz = struct {
         const gpa = init.gpa;
         const io = init.io;
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
         const exe = try Io.Dir.cwd().realPathFileAlloc(io, vera_exe, gpa);
@@ -3266,7 +3300,7 @@ const Golden = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -4380,7 +4414,7 @@ const SpiceDecks = struct {
         defer results.deinit();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 

@@ -201,6 +201,7 @@ pub fn build(b: *Build) void {
     const suite_run = testRun(b, "suite", suite_mod, runner, results_dir);
     suite_run.has_side_effects = true; // reads tests/conformance at test time
     test_step.dependOn(&suite_run.step);
+    b.step("test-suite", "Run the fixture runner's own tests (tests/suite.zig) only").dependOn(&suite_run.step);
 
     const check = b.step("check", "The pre-commit tier: type-check every root without emitting a binary, and `zig fmt --check` (`--watch -fincremental`: the edit loop)");
     check.dependOn(&fmt.step);

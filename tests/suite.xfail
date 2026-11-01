@@ -1,3 +1,15 @@
 # VerA's own expected failures under its fixture harness (zig build suite, test):
 # one suite-relative path per line, the reason after `#`. The suite dropped the fixtures'
 # `//! xfail` lines (a tool's known failures are tools/<tool>.xfail); these are theirs.
+tests/verilog-a/ch05_analog_behavior/port_access_hierarchical_potential_source_rejected.va # §5.4.3: a potential source on a hierarchical port compiles; VerA does not refuse it
+tests/verilog-a/ch05_analog_behavior/port_access_own_port_inside_instance_rejected.va # §5.4.3: port access to its own port inside an instance compiles; VerA does not refuse it
+tests/verilog-a/ch05_analog_behavior/port_branch_own_port_inside_instance_rejected.va # §5.4.3: a port branch on its own port inside an instance compiles; VerA does not refuse it
+tests/verilog-a/ch09_system_tasks/reject_simprobe_runtime_name.va # §9.16: a $simprobe name known only at run time compiles; VerA does not refuse it
+tests/verilog-ams/annex_a_syntax/net_and_variable_types.va # §5.7 (VAMS-2023): an analog assignment to a reg is E0316; reg targets are not lowered
+tests/verilog-ams/ch07_mixed_signal/discrete_bus_part_select_above_31_analog_assigned.va # §5.7: an analog assignment to a reg part-select is E0316
+tests/verilog-ams/ch07_mixed_signal/wide_reg_held_across_evaluations.va # §5.7: an analog assignment to a reg is E0316
+tests/verilog-ams/ch07_mixed_signal/wide_reg_matches_digital_300.va # §5.7: an analog assignment to a reg is E0316
+tests/verilog-ams/ch07_mixed_signal/wide_reg_matches_digital_65600.va # §5.7: an analog assignment to a reg is E0316
+tests/verilog-ams/ch07_mixed_signal/wide_reg_matches_digital_72.va # §5.7: an analog assignment to a reg is E0316
+tests/verilog-ams/ch09_system_tasks/clog2_inferred_parameter_width.va # §5.7: an analog assignment to a reg (child.bits) is E0316
+tests/verilog-ams/ch09_system_tasks/clog2_reg_analog_conversion.va # §5.7: an analog assignment to a reg is E0316
