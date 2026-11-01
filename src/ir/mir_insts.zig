@@ -107,7 +107,7 @@ pub fn emitJump(mir: *Mir, gpa: Allocator, block: Block, target: Block) Allocato
 /// Asserts that `name` is interned here and `args` fits the count field
 /// (the 24 bits above `callee_bits`).
 pub fn emitCall(mir: *Mir, gpa: Allocator, block: Block, name: StrId, args: []const Value) Allocator.Error!Value {
-    assert(args.len < 1 << (32 - Mir.callee_bits));
+    assert(args.len <= Mir.call_args_max);
     assert(name != .none);
     try mir.extra.ensureUnusedCapacity(gpa, 1 + args.len);
     const start = try addExtra(mir, gpa, &.{@backingInt(name)});

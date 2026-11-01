@@ -489,6 +489,8 @@ fn lowerSimprobeRuntime(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?
     var rt: [2]?TypedValue = .{ null, null };
     for ([2]?[]const u8{ inst, param }, args[0..2], &rt) |name, arg, *v| if (name == null) {
         const tv = try lower_expr.lowerExpr(self, arg);
+        // An omitted name (`$simprobe(, "g")`) is `lowerExpr`'s E0894 already.
+        if (arg == .none) return poison;
         if (tv.ty != .string) return runtimeName(self, arg, "§9.16 takes a string literal, string parameter or string variable");
         v.* = tv;
     };

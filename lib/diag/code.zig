@@ -452,6 +452,7 @@ pub const Code = enum(u16) {
     E1018,
     E1019,
     E1020,
+    E1021,
     E1100,
     E1101,
     /// IEEE 1364-2005 §17.2.10: an SDF file `$sdf_annotate` cannot read.
@@ -6519,7 +6520,7 @@ const table: std.enums.EnumArray(Code, Info) = .init(.{
         \\This is NOT "hierarchy is unsupported" any more — that was E0204,
         \\retired. §6.2.2 instantiation elaborates and `elab/elaborate.zig`
         \\flattens the tree, and because a flattened entity's name IS its
-        \\hierarchical path (`Elaborate.sep`), resolving a §6.7 reference is
+        \\hierarchical path (`elab.sep`), resolving a §6.7 reference is
         \\the ordinary lookup under the joined name. So this fires when the
         \\path is simply wrong: a misspelled instance name, an instance that
         \\was never declared, or a name that exists in a sibling rather than
@@ -7756,6 +7757,19 @@ const table: std.enums.EnumArray(Code, Info) = .init(.{
         \\with a placeholder 0 in that place.
         \\
         \\Report it with the source that produced it.
+        ,
+    },
+    .E1021 = .{
+        .title = "a call has more operands than its 24-bit count holds",
+        .lrm = "",
+        .explain =
+        \\Not a language rule and not a design limit. VerA's IR stores a
+        \\call's operand count in 24 bits, so one call takes up to 16777215
+        \\operands. An array or assignment pattern passed to a call
+        \\(`laplace_nd`'s coefficients, `$table_model`'s data, a
+        \\`noise_table`) is one operand per element, so a pattern like
+        \\`'{16777216{1.0}}` there passes the count. Split the data, or
+        \\compute it with fewer elements.
         ,
     },
     .E1099 = .{

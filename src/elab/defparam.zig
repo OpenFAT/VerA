@@ -375,8 +375,10 @@ fn seedValueOf(self: *Flatten, name: Ast.StrId) ?Ast.ExprId {
 /// `seedDefparams`' second walk applies every defparam the first collected,
 /// so this is reached only by one that `mayBindEarly` did not foresee.
 fn boundEarlier(self: *Flatten, key: []const u8) bool {
-    assert(key.len != 0);
+    // `key` comes from source text: a defparam rooted at a top whose
+    // escaped name holds a period can leave it empty, which names nothing.
     const k = (std.mem.findScalarLast(u8, key, sep) orelse return false) + 1;
+    assert(k <= key.len);
     for (self.out.units.items(.path), self.out.units.items(.decl)) |up, decl| if (std.mem.eql(u8, up, key[0..k])) {
         for (decl.get(self.ctx.file).params) |p| if (!p.is_local and std.mem.eql(u8, self.ctx.file.str(p.name), key[k..])) return true;
     };

@@ -2,7 +2,7 @@
 //! path, a config `instance` clause, an annex F.2.1 out-of-context net
 //! declaration and a digital §12.5 instance select, each interned as ONE
 //! `Ast.StrId` spelled the way elaboration spells the flat name
-//! (`Elaborate.sep` is the same `.`, an array element is `[k]`).
+//! (`elab.sep` is the same `.`, an array element is `[k]`).
 //!
 //! LRM clauses cited: §6.3.6, §6.7, annex F.2.1; IEEE 1364-2005 §12.5, §4.2.
 //!
@@ -21,7 +21,7 @@ const constfold = @import("../constfold.zig");
 const Error = parser.Error;
 
 /// Parses a §6.7 hierarchical name in a declaration position and interns it as
-/// one string with `.` between the parts. `Elaborate.sep` is the same period,
+/// one string with `.` between the parts. `elab.sep` is the same period,
 /// so the string a `defparam` path or an Annex F.2.1 out-of-context
 /// declaration writes is the flat name elaboration gives the entity. Each part
 /// went through `internTok`, so none carries a period of its own.

@@ -77,8 +77,9 @@ pub fn checkProbeBranches(self: *Lower) Oom!void {
 }
 
 /// `samePair`'s unordered pair as one map key.
+/// `hi == lo` is a branch whose two ends are one node: legal for a named
+/// branch, and for one a shorted instance port makes (`c u1(a, a)`).
 pub fn pairKey(hi: u32, lo: u32) u64 {
-    assert(hi != lo or hi == ground); // `branchOf` refuses `V(n, n)` (E0315)
     const key = @as(u64, @min(hi, lo)) << 32 | @max(hi, lo);
     assert(key >> 32 <= key & 0xffff_ffff); // the low word is the larger row
     return key;

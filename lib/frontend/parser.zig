@@ -500,7 +500,7 @@ pub const Parser = struct {
     /// Interns token `i`'s text as a name. Each period in an escaped identifier
     /// (§2.8.1: `\x.y ` is the identifier `x.y`) becomes a space, so that after
     /// this point a period in a name always means a hierarchy separator
-    /// (`Elaborate.sep`). Without it, `\x.y` inside instance `u` and net `y`
+    /// (`elab.sep`). Without it, `\x.y` inside instance `u` and net `y`
     /// inside `u.x` would flatten to the same `u.x.y`. A space cannot occur in
     /// an identifier, so the mapping is injective; `naming.sanitize` later
     /// spells it `Z20`. Allocates only for an escaped name with a period.
@@ -510,11 +510,12 @@ pub const Parser = struct {
         defer assert(self.pos >= pos_in);
         // The bytes are spelled out, not imported from `ir/`: the frontend owns
         // the source half of this convention and does not depend on the IR.
-        const text = self.tokenText(i);
-        if (self.tags[i] != .escaped_identifier) return self.file.intern(self.arena, text);
+        if (self.tags[i] != .escaped_identifier) return self.file.intern(self.arena, self.tokenText(i));
         // IEEE 1364-2005 §3.7.3: a system task or function "shall not be
         // escaped", so `\$display` keeps its `\` and names no system task.
-        if (text[0] == '$') return self.file.intern(self.arena, lexer.tokenText(self.src, self.starts[i]));
+        // Its periods map like any other escaped name's (`\$u.p` and port
+        // `p` of instance `\$u` are two names).
+        const text = if (self.tokenText(i)[0] == '$') lexer.tokenText(self.src, self.starts[i]) else self.tokenText(i);
         if (std.mem.findScalar(u8, text, '.') == null)
             return self.file.intern(self.arena, text);
         const buf = try self.arena.dupe(u8, text);

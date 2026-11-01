@@ -92,6 +92,10 @@ const Binder = struct {
         const all = &self.out.net_parts;
         const start = all.items.len;
         const is_concat = self.ctx.file.exprs.tag(c.expr) == .concat;
+        // A.8.1 `concatenation ::= { expression { , expression } }` has at
+        // least one member; the parser keeps `{}` for the digital path's E1100.
+        if (is_concat and self.ctx.file.exprs.args(c.expr).len == 0)
+            return self.err(c.main_tok, .E0906, "a port connection's concatenation lists no net (an empty concatenation is invalid)", .{});
         const ok = if (is_concat) for (self.ctx.file.exprs.args(c.expr)) |o| {
             if (!try netPart(self, b.parent, o, all)) break false;
         } else true else try netPart(self, b.parent, c.expr, all);
