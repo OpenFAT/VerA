@@ -159,8 +159,8 @@ test {
 test "text: each group's text starts with its provenance line and its alias, past every `//!` header" {
     inline for (.{ text.str, text.table, text.rng, text.filter, text.file, text.limit, text.timer, text.hist, text.wide, text.ops }) |t| {
         try std.testing.expect(std.mem.startsWith(u8, t, "// Device text of lib/kernels/"));
-        // kernel_text cuts timer and hist at the first blank line: the cut
-        // must leave the alias.
+        // `deviceText`'s layout: the provenance line, a blank line, then the
+        // alias; `kernel_text` splices the text whole, so nothing may precede it.
         const cut = t[std.mem.find(u8, t, "\n\n").? + 2 ..];
         try std.testing.expect(std.mem.startsWith(u8, cut, "const z"));
         try std.testing.expect(std.mem.find(u8, t, "//!") == null);

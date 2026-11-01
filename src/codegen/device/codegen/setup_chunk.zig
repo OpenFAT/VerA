@@ -801,7 +801,8 @@ test "a chunked setup builds one object per chunk into a library that runs" {
         defer r.deinit(gpa);
         const so = switch (r) {
             .failed => |b| {
-                b.renderToStderr(io, .{}, .off) catch {};
+                b.renderToStderr(io, .{}, .off) catch |e|
+                    std.debug.print("the setup-chunk device did not build, and its diagnostics did not render: {t}\n", .{e});
                 return error.UnexpectedBuildFailure;
             },
             .ok => |so_path| so_path,
