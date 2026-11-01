@@ -269,7 +269,7 @@ fn emitVpiValues(self: *Gen, name: []const u8, items: anytype) Error!void {
 }
 
 fn nodeCol(n: u32) i64 {
-    assert(n != std.math.maxInt(u32) - 1);
+    assert(n != Lower.none_u32); // a contribution terminal is a `nodes` row or `ground`
     return if (n == Lower.ground) -1 else n;
 }
 

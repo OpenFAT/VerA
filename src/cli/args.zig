@@ -485,9 +485,9 @@ fn takeSwitch(cli: *Cli, gpa: Allocator, s: Switch, arg: []const u8, args: anyty
     return null;
 }
 
-/// The `valued` row whose `--name=` begins `arg`, if any.
+/// The `valued` row whose `--name=` begins `arg`, if any. `arg` is user text
+/// and may be empty (`vera ""`), which matches no row.
 fn valuedKey(arg: []const u8) ?Valued {
-    assert(arg.len != 0);
     const eq = std.mem.findScalar(u8, arg, '=') orelse return null;
     return valued.get(arg[0 .. eq + 1]);
 }
