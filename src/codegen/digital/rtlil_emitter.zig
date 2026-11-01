@@ -1,8 +1,8 @@
 //! The state `rtlil.emit` carries through one source, and the sigspec and
 //! cell writers every transformation shares: a module's symbol and value
 //! tables, its wire and cell text, the `always` block being emitted, the
-//! fresh-name counter, and the refusal (`why`, uncoded) or design error
-//! (E1100, in the bag) that ends the run. The transformations are
+//! fresh-name counter, and the refusal (E1200 to E1278) or design error
+//! (E1100), in the bag, that ends the run. The transformations are
 //! `rtlil_module.zig` (the design, its declarations and drivers),
 //! `rtlil_expr.zig` (expressions and lvalues), `rtlil_proc.zig` (`initial`
 //! and `always` blocks) and `rtlil_fold.zig` (constants).
@@ -36,7 +36,7 @@
 //! - `pub const eventTerms = rtlil_proc.eventTerms`
 //! - `pub const assigned = rtlil_proc.assigned`
 //! - `pub const stmt = rtlil_proc.stmt`
-//! - `pub fn refuse(self: *Emitter, tok: u32, comptime fmt: []const u8, args: anytype) Error`
+//! - `pub fn refuse(self: *Emitter, tok: u32, comptime code: diag.Code, comptime fmt: []const u8, args: anytype) Error`
 //! - `pub fn deeper(self: *Emitter, tok: u32) Error!void`
 //! - `pub fn designError(self: *Emitter, tok: u32, comptime message: []const u8) Error`
 //! - `pub fn str(self: *const Emitter, name: StrId) []const u8`
@@ -74,8 +74,9 @@ const Table = rtlil_table.Table;
 const Sym = rtlil_table.Sym;
 const Sig = rtlil_table.Sig;
 
-/// `rtlil.Error`: `Refused` names a construct outside the subset in `why`;
-/// `DigitalFailed` leaves the diagnostics in the bag.
+/// `rtlil.Error`: `Refused`, a construct outside the subset (E1200 to
+/// E1278), and `DigitalFailed`, a design `vera --run` rejects (E1100), each
+/// with its diagnostic in the bag.
 pub const Error = error{ OutOfMemory, WriteFailed, Refused, DigitalFailed };
 
 /// The state of one `always` block's `process`. Its temps, and the regs a
@@ -102,7 +103,6 @@ pub const Emitter = struct {
     text: []const u8,
     starts: []const u32,
     out: *Writer,
-    why: *[]const u8,
     bag: *diag.Bag,
     /// The module being emitted.
     m: *const Ast.ModuleDecl = undefined,
@@ -169,13 +169,14 @@ pub const Emitter = struct {
     /// A statement as a process's `assign` and `switch` lines.
     pub const stmt = rtlil_proc.stmt;
 
-    /// Sets `why` to `line N: <what>` at token `tok` and returns `error.Refused`:
-    /// a construct outside the subset, uncoded like every `--emit-rtlil` refusal.
-    pub fn refuse(self: *Emitter, tok: u32, comptime fmt: []const u8, args: anytype) Error {
+    /// Reports a construct outside the subset at token `tok`, its `code`'s
+    /// title the construct and `fmt` the parts the source names (E1200 to
+    /// E1278), and returns `error.Refused`.
+    pub fn refuse(self: *Emitter, tok: u32, comptime code: diag.Code, comptime fmt: []const u8, args: anytype) Error {
+        comptime assert(@backingInt(code) >= @backingInt(diag.Code.E1200));
+        comptime assert(@backingInt(code) <= @backingInt(diag.Code.E1278));
         const at = if (tok < self.starts.len) self.starts[tok] else 0;
-        const line = 1 + std.mem.count(u8, self.text[0..@min(at, self.text.len)], "\n");
-        const what = try self.arena.print(fmt, args);
-        self.why.* = try self.arena.print("line {d}: {s}", .{ line, what });
+        self.bag.add(.codegen, code, .{ .start = at, .end = at }, fmt, args) catch return error.OutOfMemory;
         return error.Refused;
     }
 
@@ -183,7 +184,7 @@ pub const Emitter = struct {
     /// of the stack `rtlil.emit` reserved (`deep_stack.exhausted`): every
     /// walk whose depth the source controls calls it before it recurses.
     pub fn deeper(self: *Emitter, tok: u32) Error!void {
-        if (deep.exhausted()) return self.refuse(tok, deep.message, .{deep.mib()});
+        if (deep.exhausted()) return self.refuse(tok, .E1277, deep.message, .{deep.mib()});
     }
 
     /// A design `vera --run` rejects, in its words: E1100 in the bag.
@@ -240,8 +241,8 @@ pub const Emitter = struct {
         const folded = if (real) fold.assigned(self.arena, self.file, self.syms, e, ctx) else fold.fold(self.arena, self.file, self.syms, e, ctx);
         return folded catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            error.TooWide => self.refuse(tok, "a constant wider than {d} bits", .{fold.max_width}),
-            error.TooDeep => self.refuse(tok, "a constant expression nested deeper than {d} operators", .{fold.max_depth}),
+            error.TooWide => self.refuse(tok, .E1275, "{d} bits", .{fold.max_width}),
+            error.TooDeep => self.refuse(tok, .E1276, "{d} operators", .{fold.max_depth}),
         };
     }
 
@@ -361,8 +362,7 @@ pub const Emitter = struct {
 test "constSig: two's complement, MSB first, past 64 bits sign-extended" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var why: []const u8 = "";
-    var e: Emitter = .{ .arena = arena.allocator(), .file = undefined, .text = "", .starts = &.{}, .out = undefined, .why = &why, .bag = undefined };
+    var e: Emitter = .{ .arena = arena.allocator(), .file = undefined, .text = "", .starts = &.{}, .out = undefined, .bag = undefined };
     try std.testing.expectEqualStrings("4'0101", (try e.constSig(5, 4, false)).s);
     try std.testing.expectEqualStrings("4'1111", (try e.constSig(-1, 4, true)).s);
     try std.testing.expectEqualStrings("1'0", (try e.constSig(2, 1, false)).s);

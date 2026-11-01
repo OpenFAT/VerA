@@ -305,17 +305,12 @@ fn libraries(j: *Job, paths: []const []const u8, libmaps: []const []const u8, se
 
 /// `vera --emit-rtlil design.v`: the design as Yosys RTLIL (`native.rtlil`),
 /// to `out_path` or stdout. A construct outside the synthesizable subset is
-/// refused by name, with nothing written.
+/// refused by its code (E1200 to E1278), with nothing written.
 fn emitRtlil(j: Job, out_path: ?[]const u8) !u8 {
     assert(j.source.len == 0 or j.opts.file_name.len != 0);
-    var why: []const u8 = "";
-    const text = native.rtlil.emit(j.arena, j.source, j.opts, j.bag, &why) catch |e| switch (e) {
-        error.Refused => {
-            try j.reportBag();
-            try j.err.print("error: {s}: --emit-rtlil: {s}\n", .{ j.opts.file_name, why });
-            return 1;
-        },
-        error.DigitalFailed => {
+    const text = native.rtlil.emit(j.arena, j.source, j.opts, j.bag) catch |e| switch (e) {
+        // The refusal (E1200 to E1278) or the design error (E1100) is in the bag.
+        error.Refused, error.DigitalFailed => {
             try j.reportBag();
             return 1;
         },

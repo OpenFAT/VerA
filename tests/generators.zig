@@ -305,9 +305,8 @@ const wide = struct {
                         .elab => _ = try digital.elaborate(arena, source, opts, &bag, &sink.writer),
                         .run => try digital.run(arena, source, opts, &bag, &sink.writer),
                         .emit_rtlil => {
-                            var why: []const u8 = "";
-                            const text = native.rtlil.emit(arena, source, opts, &bag, &why) catch |e| switch (e) {
-                                error.Refused => return arena.print("refused: {s}", .{why}),
+                            const text = native.rtlil.emit(arena, source, opts, &bag) catch |e| switch (e) {
+                                error.Refused => return arena.print("refused: {t} {s}", .{ bag.at(0).code, bag.at(0).message }),
                                 else => |x| return x,
                             };
                             // RTLIL writes a constant in decimal or as 32 binary digits.
@@ -438,10 +437,7 @@ const escaped = struct {
     };
 
     pub const known: []const table.Known = &.{
-        .{ .row = "index_suffix --run", .why = "E0901 on a legal defparam: elab_defparams.segment reads a segment ending in `]` as name[k], so `\\a[5] ` is looked up as `a` indexed 5" },
-        .{ .row = "dot --run", .why = "E0901 on a legal defparam whose last segment starts with `$` and holds a `.` (`defparam u.\\$4.n  = 7;`): the name is kept as `\\$4.n` and names nothing (`\\$4 ` and `\\a.n ` work)" },
         .{ .row = "backslash --emit-rtlil", .why = "the parser interns `\\$x ` (the name `$x`) and `\\\\$x ` (the name `\\$x`) as one string, `\\$x` (Parser.internTok keeps a `$`-led escaped name's `\\`), so --emit-rtlil writes both as `\\$x`; a seed whose name starts with `\\$` fails. `\\\\a ` is written `\\\\a` since pass 3" },
-        .{ .row = "index_only --run", .why = "abort: elab.isScope asserts a name is not empty, and segment() makes `\\[3] ` the name \"\" indexed 3 (an assertion on source text)" },
     };
 
     pub fn rows(arena: Allocator, exe: []const u8, dir: []const u8) ![]const table.Row {
@@ -578,8 +574,7 @@ const escaped = struct {
                 for ([_]?[roles][]const u8{ null, ns }, &texts) |which, *text| {
                     const source = try rtlilDesign(arena, which);
                     var bag: vera.diag.Bag = .init(arena);
-                    var why: []const u8 = "";
-                    text.* = native.rtlil.emit(arena, source, opts, &bag, &why) catch |e| return arena.print("{t} {s} on\n{s}", .{ e, why, source });
+                    text.* = native.rtlil.emit(arena, source, opts, &bag) catch |e| return arena.print("{t} {s} on\n{s}", .{ e, try messages(arena, &bag), source });
                 }
                 // Longest first, so a name inside another is not cut out of it.
                 var renamed = texts[1];

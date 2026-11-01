@@ -8660,12 +8660,24 @@ pub const rtlil_tests = struct {
 
     fn emit(arena: std.mem.Allocator, src: []const u8) ![]const u8 {
         var bag: diag.Bag = .init(arena);
-        var why: []const u8 = "";
-        return digital.rtlil.emit(arena, src, .{}, &bag, &why) catch |e| {
-            if (e == error.Refused) std.debug.print("refused: {s}\n", .{why});
+        return digital.rtlil.emit(arena, src, .{}, &bag) catch |e| {
             for (0..bag.count()) |i| std.debug.print("{t}: {s}\n", .{ bag.at(i).code, bag.at(i).message });
             return e;
         };
+    }
+
+    /// Expects `src` refused with one diagnostic: `code`, `message`, at the
+    /// first occurrence of `at` in `src` (the token the refusal names).
+    fn expectRefused(src: []const u8, err: anyerror, code: diag.Code, message: []const u8, at: []const u8) !void {
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var bag: diag.Bag = .init(arena);
+        try std.testing.expectError(err, digital.rtlil.emit(arena, src, .{}, &bag));
+        try std.testing.expectEqual(@as(usize, 1), bag.count());
+        try std.testing.expectEqual(code, bag.at(0).code);
+        try std.testing.expectEqualStrings(message, bag.at(0).message);
+        try std.testing.expectEqual(@as(u32, @intCast(std.mem.find(u8, src, at).?)), bag.at(0).span.start);
     }
 
     fn expectHas(text: []const u8, needle: []const u8) !void {
@@ -8681,9 +8693,8 @@ pub const rtlil_tests = struct {
         const arena = arena_state.allocator();
         const src = "module m(input a, output y); `ifdef INV assign y = ~a; `else assign y = a; `endif endmodule";
         var bag: diag.Bag = .init(arena);
-        var why: []const u8 = "";
-        try expectHas(try digital.rtlil.emit(arena, src, .{ .defines = &.{"INV"} }, &bag, &why), "$not");
-        try std.testing.expect(std.mem.find(u8, try digital.rtlil.emit(arena, src, .{}, &bag, &why), "$not") == null);
+        try expectHas(try digital.rtlil.emit(arena, src, .{ .defines = &.{"INV"} }, &bag), "$not");
+        try std.testing.expect(std.mem.find(u8, try digital.rtlil.emit(arena, src, .{}, &bag), "$not") == null);
     }
 
     test "the counter: ports in order, a process per always block, edge and level syncs, cells, a named instance, gates" {
@@ -8718,24 +8729,26 @@ pub const rtlil_tests = struct {
         }) |needle| try expectHas(text, needle);
     }
 
-    test "a refusal names the construct and its line, and nothing is emitted" {
-        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        var bag: diag.Bag = .init(arena);
-        var why: []const u8 = "";
-        const src = "module m(input a, output reg y);\n  integer i;\n  always @* for (i = 0; i < 2; i = i + 1) y = a;\nendmodule\n";
-        try std.testing.expectError(error.Refused, digital.rtlil.emit(arena, src, .{}, &bag, &why));
-        try std.testing.expectEqualStrings("line 3: a loop in an always block", why);
-        // A real variable, a function and a hierarchical name are each named.
-        for ([_][2][]const u8{
-            .{ "module m; real r; endmodule\n", "line 1: a real variable" },
-            .{ "module m(input a, output y); assign y = m.a; endmodule\n", "line 1: a hierarchical reference" },
-            .{ "module m; wire [3:0] w = 5; wire x = w[6]; endmodule\n", "line 1: a select outside the declared range" },
-        }) |c| {
-            try std.testing.expectError(error.Refused, digital.rtlil.emit(arena, c[0], .{}, &bag, &why));
-            try std.testing.expectEqualStrings(c[1], why);
-        }
+    test "a refusal is one coded diagnostic at the construct, and nothing is emitted" {
+        // Oracle: the construct's own code (lib/diag E1200 to E1278, one per
+        // refusal) at its token, found in the source by hand.
+        try expectRefused("module m(input a, output reg y);\n  integer i;\n  always @* for (i = 0; i < 2; i = i + 1) y = a;\nendmodule\n", error.Refused, .E1263, "", "for");
+        try expectRefused("module m; real r; endmodule\n", error.Refused, .E1218, "", "r;");
+        try expectRefused("module m(input a, output y); assign y = m.a; endmodule\n", error.Refused, .E1227, "", "m.a");
+        try expectRefused("module m; wire [3:0] w = 5; wire x = w[6]; endmodule\n", error.Refused, .E1243, "", "[6]");
+    }
+
+    test "inputs the rewrite asserted on are refused: a parameter twice, {}, a declared width or a concatenation past the fold limit, an undeclared reg in an always block" {
+        // Oracle: `vera --run` of the same designs (E1100, its words) for the
+        // first two, §5.4.1 widths by hand against rtlil_fold.max_width
+        // (2^20) for the next three, and §4.5 for the last. Each panicked on
+        // rewrite/integrate (an assert or an overflow).
+        try expectRefused("module m; parameter P = 1; parameter P = 2; endmodule\n", error.DigitalFailed, .E1100, "duplicate digital variable", "P = 2");
+        try expectRefused("module m(o); output o; assign o = {}; endmodule\n", error.DigitalFailed, .E1100, "a concatenation requires a positive-width operand; zero-only and empty concatenations are invalid", "{}");
+        try expectRefused("module m; parameter [1048576:0] P = 0; endmodule\n", error.Refused, .E1275, "1048576 bits", "P = 0");
+        try expectRefused("module m; reg [1048576:0] r; initial r = 0; endmodule\n", error.Refused, .E1275, "1048576 bits", "r = 0");
+        try expectRefused("module m(o); output o; wire [2147483646:0] a; assign o = {a, a, a}; endmodule\n", error.Refused, .E1278, "1048576 bits", "{a, a, a}");
+        try expectRefused("module m(input c);\n  always @(posedge c) q = 1;\nendmodule\n", error.Refused, .E1224, "`q`", "q = 1");
     }
 
     test "null ports keep their header positions with no wire, and connect nothing (A.1.3, §12.1.2)" {
@@ -8766,8 +8779,7 @@ pub const rtlil_tests = struct {
             .{ "module m;\n  wire w;\n  reg w;\nendmodule\n", "duplicate digital variable" },
         }) |c| {
             var bag: diag.Bag = .init(arena);
-            var why: []const u8 = "";
-            try std.testing.expectError(error.DigitalFailed, digital.rtlil.emit(arena, c[0], .{}, &bag, &why));
+            try std.testing.expectError(error.DigitalFailed, digital.rtlil.emit(arena, c[0], .{}, &bag));
             try std.testing.expectEqual(@as(usize, 1), bag.count());
             try std.testing.expectEqual(diag.Code.E1100, bag.at(0).code);
             try std.testing.expectEqualStrings(c[1], bag.at(0).message);
@@ -8794,33 +8806,16 @@ pub const rtlil_tests = struct {
     test "a range whose bounds do not fit RTLIL's 32-bit offset is refused by its folded bounds" {
         // Oracle: §5.4.1 by hand. `HI - 7` is 64 bits signed: 2^63 - 8;
         // `LO + 7` is -2^63 + 7. Development overflowed in `dim`.
-        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        var bag: diag.Bag = .init(arena);
-        var why: []const u8 = "";
-        for ([_][2][]const u8{
-            .{ "module m;\n  localparam signed [63:0] HI = 64'sh7fffffffffffffff;\n  reg [HI:HI-7] v;\nendmodule\n", "line 3: a range whose bounds do not fit RTLIL's 32-bit wire offset (`[9223372036854775807:9223372036854775800]`)" },
-            .{ "module m;\n  localparam signed [63:0] LO = 64'sh8000000000000000;\n  reg [LO+7:LO] v;\nendmodule\n", "line 3: a range whose bounds do not fit RTLIL's 32-bit wire offset (`[-9223372036854775801:-9223372036854775808]`)" },
-            .{ "module m;\n  wire [2147483647:-2147483648] v;\nendmodule\n", "line 2: a range wider than RTLIL's 2^31 - 1 bits (`[2147483647:-2147483648]`)" },
-        }) |c| {
-            try std.testing.expectError(error.Refused, digital.rtlil.emit(arena, c[0], .{}, &bag, &why));
-            try std.testing.expectEqualStrings(c[1], why);
-        }
+        try expectRefused("module m;\n  localparam signed [63:0] HI = 64'sh7fffffffffffffff;\n  reg [HI:HI-7] v;\nendmodule\n", error.Refused, .E1221, "`[9223372036854775807:9223372036854775800]`", "v;");
+        try expectRefused("module m;\n  localparam signed [63:0] LO = 64'sh8000000000000000;\n  reg [LO+7:LO] v;\nendmodule\n", error.Refused, .E1221, "`[-9223372036854775801:-9223372036854775808]`", "v;");
+        try expectRefused("module m;\n  wire [2147483647:-2147483648] v;\nendmodule\n", error.Refused, .E1222, "`[2147483647:-2147483648]`", "v;");
     }
 
     test "a header port that selects part of its net is refused, not emitted at the net's width (A.1.3)" {
         // Oracle: A.1.3's `port_reference ::= port_identifier [ [
         // constant_range_expression ] ]`: `a[0]` is a one-bit port. Development
         // emitted `wire width 2 input 1 \a`, the whole net.
-        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        var bag: diag.Bag = .init(arena);
-        var why: []const u8 = "";
-        const src = "module m(a[0], y);\n  input [1:0] a;\n  output y;\n  assign y = a[0];\nendmodule\n";
-        try std.testing.expectError(error.Refused, digital.rtlil.emit(arena, src, .{}, &bag, &why));
-        try std.testing.expectEqualStrings("line 1: a port that is a select of its net (`a[...]`)", why);
+        try expectRefused("module m(a[0], y);\n  input [1:0] a;\n  output y;\n  assign y = a[0];\nendmodule\n", error.Refused, .E1213, "`a[...]`", "a[0], y");
     }
 
     /// `open` `n` times, then `mid`, then `close` `n` times: a source nested

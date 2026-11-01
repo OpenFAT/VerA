@@ -10,7 +10,8 @@
 //! a value, module instances, `always` blocks whose event control is edges
 //! or levels and whose body is assignments, `if` and `case`, and an `initial`
 //! block of constant assignments (the `init` attribute). Anything else is
-//! refused by name (`error.Refused`, `why`), never emitted half-right: the
+//! refused by name (`error.Refused`, E1200 to E1278 in the bag), never
+//! emitted half-right: the
 //! interpreter (`sim.digital`) is the reference for what the design does.
 //!
 //! ponytail: parameters fold at their defaults and an instance's override is
@@ -28,7 +29,7 @@
 //!
 //! Contents:
 //! - `pub const Error`
-//! - `pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag, why: *[]const u8) Error![]const u8`
+//! - `pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag) Error![]const u8`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -41,10 +42,10 @@ const Emitter = @import("rtlil_emitter.zig").Emitter;
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
-/// `Refused`: a construct outside the subset, named in `emit`'s `why`.
+/// `Refused`: a construct outside the subset (E1200 to E1278).
 /// `DigitalFailed`: the preprocessor or parser refused the source, or the
-/// design is one `vera --run` rejects (E1100), with the diagnostics in the
-/// bag. Either way nothing is returned.
+/// design is one `vera --run` rejects (E1100). Either way the diagnostic is
+/// in the bag and nothing is returned.
 pub const Error = @import("rtlil_emitter.zig").Error;
 
 /// Preprocesses and parses `source` as `vera --run` does (IEEE 1364, no annex
@@ -52,16 +53,16 @@ pub const Error = @import("rtlil_emitter.zig").Error;
 /// it, allocated in `arena`. A source the parser refuses, or an instance
 /// connection to no port of its module, is `error.DigitalFailed` with the
 /// diagnostics in `bag`; a construct outside the subset is `error.Refused`
-/// with `why` set (`line N: ...`), and nothing is emitted. Runs on a
+/// with its E12xx code in `bag`, and nothing is emitted. Runs on a
 /// reserved deep stack (`deep_stack.runGuarded`): the walks recurse on the
 /// source's nesting, and one that exhausts the stack is refused.
-pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag, why: *[]const u8) Error![]const u8 {
-    return deep.runGuarded(0, emitDeep, .{ arena, source, opts, bag, why });
+pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag) Error![]const u8 {
+    return deep.runGuarded(0, emitDeep, .{ arena, source, opts, bag });
 }
 
 // ---- private ----
 
-fn emitDeep(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag, why: *[]const u8) Error![]const u8 {
+fn emitDeep(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag) Error![]const u8 {
     const pp = Front.preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .defines = opts.defines, .std_defs = false, .more = more: {
         const more = try arena.alloc(Front.preprocessor.File, opts.more.len);
         for (opts.more, more) |u, *f| f.* = .{ .name = u.name, .text = u.text };
@@ -80,7 +81,7 @@ fn emitDeep(arena: Allocator, source: []const u8, opts: digital.Options, bag: *d
         error.ParseError => return error.DigitalFailed,
     };
     var out: Writer.Allocating = .init(arena);
-    var e: Emitter = .{ .arena = arena, .file = file, .text = pp.text, .starts = tokens.items(.start), .out = &out.writer, .why = why, .bag = bag };
+    var e: Emitter = .{ .arena = arena, .file = file, .text = pp.text, .starts = tokens.items(.start), .out = &out.writer, .bag = bag };
     try e.design();
     assert(out.written().len != 0); // `autoidx 1` at least.
     return out.written();

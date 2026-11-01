@@ -62,7 +62,7 @@ pub fn expr(self: *Emitter, e: ExprId, ctx: u32) Error!Sig {
             const name = ex.strOf(e);
             const s = self.syms.get(name).?;
             if (s.kind == .param) {
-                const v = self.syms.value(name) orelse return self.refuse(tok, "a real parameter in an expression", .{});
+                const v = self.syms.value(name) orelse return self.refuse(tok, .E1232, "", .{});
                 return self.logicSig(v);
             }
             if (self.proc) |p| if (self.syms.rows.items(.redirect_proc)[self.syms.find(name).?] == p.index) return self.syms.temp(name, p.index);
@@ -156,7 +156,7 @@ pub fn expr(self: *Emitter, e: ExprId, ctx: u32) Error!Sig {
             const n = self.str(ex.strOf(e));
             const args = ex.args(e);
             if (std.mem.eql(u8, n, "$clog2")) {
-                const v = (try self.foldInt(e, tok)) orelse return self.refuse(tok, "`$clog2` of a non-constant", .{});
+                const v = (try self.foldInt(e, tok)) orelse return self.refuse(tok, .E1231, "", .{});
                 return self.constSig(v, w, true);
             }
             var a = try self.expr(args[0], 0);
@@ -174,10 +174,10 @@ pub fn select(self: *Emitter, e: ExprId) Error!Sig {
     const ex = &self.file.exprs;
     const tok = ex.mainTok(e);
     const base = ex.lhs(e);
-    if (ex.tag(base) != .ident) return self.refuse(tok, "a select of something that is not a declared name", .{});
+    if (ex.tag(base) != .ident) return self.refuse(tok, .E1240, "", .{});
     const name = ex.strOf(base);
-    const s = self.syms.get(name) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(name)});
-    if (s.kind == .param) return self.refuse(tok, "a select of a parameter", .{});
+    const s = self.syms.get(name) orelse return self.refuse(tok, .E1224, "`{s}`", .{self.str(name)});
+    if (s.kind == .param) return self.refuse(tok, .E1241, "", .{});
     const root = try self.expr(base, 0);
     const sel = ex.rhs(e);
     switch (ex.tag(sel)) {
@@ -188,7 +188,7 @@ pub fn select(self: *Emitter, e: ExprId) Error!Sig {
         },
         .indexed_range => {
             const w = (try self.foldInt(ex.rhs(sel), tok)).?;
-            const b = (try self.foldInt(ex.lhs(sel), tok)) orelse return self.refuse(tok, "an indexed part-select with a variable base", .{});
+            const b = (try self.foldInt(ex.lhs(sel), tok)) orelse return self.refuse(tok, .E1239, "", .{});
             const up = ex.extraOf(sel) == 0;
             // §5.2.1: `+:` runs from the base upward, `-:` downward, in the source's numbering.
             const lo: i128 = if (up) b else @as(i128, b) - w + 1;
@@ -197,7 +197,7 @@ pub fn select(self: *Emitter, e: ExprId) Error!Sig {
         else => {}, // else: a bit select
     }
     if (try self.foldInt(sel, tok)) |i| return self.slice(root, s, i, i, tok);
-    if (!s.descending) return self.refuse(tok, "a variable bit select of an ascending (`[lo:hi]`) vector", .{});
+    if (!s.descending) return self.refuse(tok, .E1242, "", .{});
     var idx = try self.expr(sel, 0);
     if (s.lsb != 0) idx = try self.cell2("$sub", idx, try self.constSig(s.lsb, idx.w, false), false, idx.w, false);
     return self.cell2("$shiftx", root, idx, false, 1, false);
@@ -209,7 +209,7 @@ pub fn slice(self: *Emitter, root: Sig, s: Sym, hi: i128, lo: i128, tok: u32) Er
     assert(hi >= lo);
     const p_hi = if (s.descending) hi - s.lsb else s.lsb - lo;
     const p_lo = if (s.descending) lo - s.lsb else s.lsb - hi;
-    if (p_lo < 0 or p_hi >= s.width) return self.refuse(tok, "a select outside the declared range", .{});
+    if (p_lo < 0 or p_hi >= s.width) return self.refuse(tok, .E1243, "", .{});
     const w: u32 = @intCast(p_hi - p_lo + 1);
     if (w == s.width) return root;
     return .{
@@ -236,31 +236,31 @@ pub fn lvalue(self: *Emitter, e: ExprId, in_proc: bool) Error!Sig {
         },
         .ident, .index => {
             const base = self.file.lvalueBase(e);
-            if (base == .none) return self.refuse(tok, "an assignment target that is not a declared name", .{});
+            if (base == .none) return self.refuse(tok, .E1244, "", .{});
             const name = ex.strOf(base);
-            const s = self.syms.get(name) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(name)});
-            if (s.kind == .param) return self.refuse(tok, "an assignment to parameter `{s}`", .{self.str(name)});
+            const s = self.syms.get(name) orelse return self.refuse(tok, .E1224, "`{s}`", .{self.str(name)});
+            if (s.kind == .param) return self.refuse(tok, .E1246, "`{s}`", .{self.str(name)});
             const root: Sig = if (in_proc) blk: {
                 const p = self.proc.?;
-                if (s.kind != .reg) return self.refuse(tok, "a procedural assignment to the net `{s}`", .{self.str(name)});
+                if (s.kind != .reg) return self.refuse(tok, .E1247, "`{s}`", .{self.str(name)});
                 break :blk self.syms.temp(name, p.index);
             } else .{ .s = try self.id(name), .w = s.width, .signed = s.signed };
             if (ex.tag(e) == .ident) return root;
             const sel = ex.rhs(e);
-            if (ex.tag(ex.lhs(e)) != .ident) return self.refuse(tok, "a select of a select", .{});
+            if (ex.tag(ex.lhs(e)) != .ident) return self.refuse(tok, .E1248, "", .{});
             switch (ex.tag(sel)) {
                 .range => {
-                    const hi = (try self.foldInt(ex.lhs(sel), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
-                    const lo = (try self.foldInt(ex.rhs(sel), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
+                    const hi = (try self.foldInt(ex.lhs(sel), tok)) orelse return self.refuse(tok, .E1236, "", .{});
+                    const lo = (try self.foldInt(ex.rhs(sel), tok)) orelse return self.refuse(tok, .E1236, "", .{});
                     return self.slice(root, s, @max(hi, lo), @min(hi, lo), tok);
                 },
-                .indexed_range => return self.refuse(tok, "an indexed part-select as an assignment target", .{}),
+                .indexed_range => return self.refuse(tok, .E1249, "", .{}),
                 else => {}, // else: a bit select
             }
-            const i = (try self.foldInt(sel, tok)) orelse return self.refuse(tok, "a variable bit select as an assignment target", .{});
+            const i = (try self.foldInt(sel, tok)) orelse return self.refuse(tok, .E1250, "", .{});
             return self.slice(root, s, i, i, tok);
         },
-        else => return self.refuse(tok, "an assignment target that is not a name, a select or a concatenation", .{}), // else: A.8.5 admits nothing else
+        else => return self.refuse(tok, .E1245, "", .{}), // else: A.8.5 admits nothing else
     }
 }
 
@@ -282,7 +282,7 @@ fn shapeOf(self: *Emitter, e: ExprId) Error!Sig {
             break :blk .{ .s = "", .w = l.width, .signed = l.signed };
         },
         .ident => blk: {
-            const s = self.syms.get(ex.strOf(e)) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(ex.strOf(e))});
+            const s = self.syms.get(ex.strOf(e)) orelse return self.refuse(tok, .E1224, "`{s}`", .{self.str(ex.strOf(e))});
             break :blk .{ .s = "", .w = s.width, .signed = s.signed };
         },
         .unary => blk: {
@@ -310,30 +310,30 @@ fn shapeOf(self: *Emitter, e: ExprId) Error!Sig {
             if (ex.args(e).len == 0) return self.designError(tok, empty_concat);
             var w: u64 = 0;
             for (ex.args(e)) |a| w += (try self.shape(a)).w;
-            if (w > fold.max_width) return self.refuse(tok, "a concatenation wider than {d} bits", .{fold.max_width});
+            if (w > fold.max_width) return self.refuse(tok, .E1278, "{d} bits", .{fold.max_width});
             break :blk .{ .s = "", .w = @intCast(w) };
         },
         .multi_concat => blk: {
-            const n = (try self.foldInt(ex.lhs(e), tok)) orelse return self.refuse(tok, "a replication count that is not constant", .{});
-            if (n <= 0) return self.refuse(tok, "a replication count of {d}", .{n});
+            const n = (try self.foldInt(ex.lhs(e), tok)) orelse return self.refuse(tok, .E1233, "", .{});
+            if (n <= 0) return self.refuse(tok, .E1234, "{d}", .{n});
             const rw = @as(i128, (try self.shape(ex.rhs(e))).w) * n;
-            if (rw > fold.max_width) return self.refuse(tok, "a replication wider than {d} bits", .{fold.max_width});
+            if (rw > fold.max_width) return self.refuse(tok, .E1235, "{d} bits", .{fold.max_width});
             break :blk .{ .s = "", .w = @intCast(rw) };
         },
         .index => blk: {
             if (ex.tag(ex.rhs(e)) == .range) {
                 const r = ex.rhs(e);
-                const hi = (try self.foldInt(ex.lhs(r), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
-                const lo = (try self.foldInt(ex.rhs(r), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
+                const hi = (try self.foldInt(ex.lhs(r), tok)) orelse return self.refuse(tok, .E1236, "", .{});
+                const lo = (try self.foldInt(ex.rhs(r), tok)) orelse return self.refuse(tok, .E1236, "", .{});
                 // A select wider than any RTLIL wire is outside its declared range.
                 const span = @abs(@as(i128, hi) - lo) + 1;
-                if (span > std.math.maxInt(i32)) return self.refuse(tok, "a select outside the declared range", .{});
+                if (span > std.math.maxInt(i32)) return self.refuse(tok, .E1243, "", .{});
                 break :blk .{ .s = "", .w = @intCast(span) };
             }
             if (ex.tag(ex.rhs(e)) == .indexed_range) {
-                const w = (try self.foldInt(ex.rhs(ex.rhs(e)), tok)) orelse return self.refuse(tok, "an indexed part-select width that is not constant", .{});
-                if (w <= 0) return self.refuse(tok, "an indexed part-select width of {d}", .{w});
-                if (w > std.math.maxInt(i32)) return self.refuse(tok, "a select outside the declared range", .{});
+                const w = (try self.foldInt(ex.rhs(ex.rhs(e)), tok)) orelse return self.refuse(tok, .E1237, "", .{});
+                if (w <= 0) return self.refuse(tok, .E1238, "{d}", .{w});
+                if (w > std.math.maxInt(i32)) return self.refuse(tok, .E1243, "", .{});
                 break :blk .{ .s = "", .w = @intCast(w) };
             }
             break :blk .{ .s = "", .w = 1 };
@@ -344,13 +344,13 @@ fn shapeOf(self: *Emitter, e: ExprId) Error!Sig {
             if (std.mem.eql(u8, n, "$signed") and args.len == 1) break :blk .{ .s = "", .w = (try self.shape(args[0])).w, .signed = true };
             if (std.mem.eql(u8, n, "$unsigned") and args.len == 1) break :blk .{ .s = "", .w = (try self.shape(args[0])).w };
             if (std.mem.eql(u8, n, "$clog2")) break :blk .{ .s = "", .w = 32, .signed = true };
-            return self.refuse(tok, "the system function `{s}`", .{n});
+            return self.refuse(tok, .E1230, "`{s}`", .{n});
         },
-        .real_literal => return self.refuse(tok, "a real literal", .{}),
-        .str_literal => return self.refuse(tok, "a string literal", .{}),
-        .hier_ident => return self.refuse(tok, "a hierarchical reference", .{}),
-        .call => return self.refuse(tok, "a function call", .{}),
-        else => return self.refuse(tok, "an expression no synthesizable design has here", .{}), // else: analog, event and range tags
+        .real_literal => return self.refuse(tok, .E1225, "", .{}),
+        .str_literal => return self.refuse(tok, .E1226, "", .{}),
+        .hier_ident => return self.refuse(tok, .E1227, "", .{}),
+        .call => return self.refuse(tok, .E1228, "", .{}),
+        else => return self.refuse(tok, .E1229, "", .{}), // else: analog, event and range tags
     };
 }
 
@@ -397,7 +397,7 @@ fn lvalueConcatInto(self: *Emitter, e: ExprId, in_proc: bool, w: *Writer) Error!
         width += s.w;
         try w.print(" {s}", .{s.s});
     }
-    if (width > fold.max_width) return self.refuse(tok, "a concatenation wider than {d} bits", .{fold.max_width});
+    if (width > fold.max_width) return self.refuse(tok, .E1278, "{d} bits", .{fold.max_width});
     try w.writeAll(" }");
     assert(width >= 1);
     return @intCast(width);

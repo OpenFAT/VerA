@@ -41,14 +41,14 @@ pub fn initial(self: *Emitter, d: *const Ast.DiscreteBlock) Error!void {
         const a = switch (self.file.stmt(s)) {
             .assign => |a| a,
             .empty => continue,
-            else => return self.refuse(tok, "an initial block with anything but `reg = constant;`", .{}), // else: every other statement
+            else => return self.refuse(tok, .E1251, "", .{}), // else: every other statement
         };
-        if (a.timing != .none or a.continuous != .none) return self.refuse(tok, "an initial assignment with a delay or event control", .{});
-        if (self.file.exprs.tag(a.target) != .ident) return self.refuse(tok, "an initial assignment to a select", .{});
+        if (a.timing != .none or a.continuous != .none) return self.refuse(tok, .E1252, "", .{});
+        if (self.file.exprs.tag(a.target) != .ident) return self.refuse(tok, .E1253, "", .{});
         const name = self.file.exprs.strOf(a.target);
-        const r = self.syms.find(name) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(name)});
+        const r = self.syms.find(name) orelse return self.refuse(tok, .E1224, "`{s}`", .{self.str(name)});
         const sym = self.syms.rows.items(.sym)[r];
-        const v = (try self.foldValue(a.value, sym.width, tok, true)) orelse return self.refuse(tok, "an initial value that is not constant", .{});
+        const v = (try self.foldValue(a.value, sym.width, tok, true)) orelse return self.refuse(tok, .E1254, "", .{});
         self.syms.rows.items(.init)[r] = try self.logicSig(try self.convert(v, sym));
     }
 }
@@ -60,8 +60,8 @@ pub fn flatten(self: *Emitter, s: StmtId, out: *std.ArrayList(StmtId)) Error!voi
     try self.deeper(self.file.stmtTok(s));
     switch (self.file.stmt(s)) {
         .block => |b| {
-            if (b.vars.len != 0 or b.params.len != 0) return self.refuse(self.file.stmtTok(s), "a block with local declarations", .{});
-            if (b.parallel) return self.refuse(self.file.stmtTok(s), "a fork-join block", .{});
+            if (b.vars.len != 0 or b.params.len != 0) return self.refuse(self.file.stmtTok(s), .E1255, "", .{});
+            if (b.parallel) return self.refuse(self.file.stmtTok(s), .E1256, "", .{});
             for (b.body) |x| try self.flatten(x, out);
         },
         else => try out.append(self.arena, s), // else: a leaf statement
@@ -78,13 +78,13 @@ pub fn always(self: *Emitter, d: *const Ast.DiscreteBlock) Error!void {
     const tok = d.main_tok;
     const ec = switch (self.file.stmt(d.body)) {
         .event_control => |e| e,
-        else => return self.refuse(tok, "an always block without an event control", .{}), // else: a body that never waits
+        else => return self.refuse(tok, .E1257, "", .{}), // else: a body that never waits
     };
-    if (ec.kind != .event) return self.refuse(tok, "an always block that waits on a delay or a level", .{});
+    if (ec.kind != .event) return self.refuse(tok, .E1258, "", .{});
     var edges: std.ArrayList(struct { pos: bool, sig: Sig }) = .empty;
     var level = ec.event == .none;
     if (ec.event != .none) try self.eventTerms(ec.event, &edges, &level);
-    if (level and edges.items.len != 0) return self.refuse(tok, "an event control mixing edges and levels", .{});
+    if (level and edges.items.len != 0) return self.refuse(tok, .E1259, "", .{});
 
     var pw: Writer.Allocating = .init(self.arena);
     var p: Proc = .{ .w = &pw.writer, .index = self.n_procs };
@@ -144,9 +144,9 @@ pub fn assigned(self: *Emitter, s: StmtId, out: *std.ArrayList(StrId)) Error!voi
             try self.file.stmtWrites(&.{}, s, self.arena, &names);
             for (names.items) |lv| {
                 const base = self.file.lvalueBase(lv);
-                if (base == .none) return self.refuse(tok, "an assignment target that is not a declared name", .{});
+                if (base == .none) return self.refuse(tok, .E1244, "", .{});
                 const name = self.file.exprs.strOf(base);
-                if (self.syms.find(name) == null) return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(name)});
+                if (self.syms.find(name) == null) return self.refuse(tok, .E1224, "`{s}`", .{self.str(name)});
                 for (out.items) |have| {
                     if (have == name) break;
                 } else try out.append(self.arena, name);
@@ -173,13 +173,13 @@ pub fn stmt(self: *Emitter, p: *Proc, s: StmtId) Error!void {
     switch (self.file.stmt(s)) {
         .empty => {},
         .block => |b| {
-            if (b.vars.len != 0 or b.params.len != 0) return self.refuse(tok, "a block with local declarations", .{});
-            if (b.parallel) return self.refuse(tok, "a fork-join block", .{});
+            if (b.vars.len != 0 or b.params.len != 0) return self.refuse(tok, .E1255, "", .{});
+            if (b.parallel) return self.refuse(tok, .E1256, "", .{});
             for (b.body) |x| try self.stmt(p, x);
         },
         .assign => |a| {
-            if (a.timing != .none or a.timing_repeat != .none) return self.refuse(tok, "an intra-assignment delay or event control", .{});
-            if (a.continuous != .none) return self.refuse(tok, "a procedural continuous assignment (`assign`/`force`)", .{});
+            if (a.timing != .none or a.timing_repeat != .none) return self.refuse(tok, .E1260, "", .{});
+            if (a.continuous != .none) return self.refuse(tok, .E1261, "", .{});
             const t = try self.lvalue(a.target, true);
             const v = try self.fit(try self.expr(a.value, t.w), t.w);
             try self.indent(p);
@@ -212,7 +212,7 @@ pub fn stmt(self: *Emitter, p: *Proc, s: StmtId) Error!void {
             try p.w.writeAll("end\n");
         },
         .case_stmt => |c| {
-            if (c.kind != .normal) return self.refuse(tok, "a casex or casez", .{});
+            if (c.kind != .normal) return self.refuse(tok, .E1262, "", .{});
             const sel = try self.expr(c.scrutinee, 0);
             try self.indent(p);
             try p.w.print("switch {s}\n", .{sel.s});
@@ -235,11 +235,11 @@ pub fn stmt(self: *Emitter, p: *Proc, s: StmtId) Error!void {
         },
         // §17: a display or file task is simulation output, which synthesis has none of.
         .sys_task => {},
-        .for_stmt, .while_stmt, .repeat_stmt => return self.refuse(tok, "a loop in an always block", .{}),
-        .event_control => return self.refuse(tok, "a nested event or delay control", .{}),
-        .event_trigger => return self.refuse(tok, "an event trigger", .{}),
-        .disable => return self.refuse(tok, "a disable statement", .{}),
-        .jump => return self.refuse(tok, "a jump statement", .{}),
-        .contribute, .indirect => return self.refuse(tok, "an analog contribution", .{}),
+        .for_stmt, .while_stmt, .repeat_stmt => return self.refuse(tok, .E1263, "", .{}),
+        .event_control => return self.refuse(tok, .E1264, "", .{}),
+        .event_trigger => return self.refuse(tok, .E1265, "", .{}),
+        .disable => return self.refuse(tok, .E1266, "", .{}),
+        .jump => return self.refuse(tok, .E1267, "", .{}),
+        .contribute, .indirect => return self.refuse(tok, .E1268, "", .{}),
     }
 }
