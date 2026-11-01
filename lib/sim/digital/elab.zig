@@ -295,9 +295,13 @@ pub fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dep
     const msb = try r.declaredBound(range.msb, inst.main_tok);
     const lsb = try r.declaredBound(range.lsb, inst.main_tok);
     assert(depth < max_depth);
-    var k = @min(msb, lsb);
-    while (k <= @max(msb, lsb)) : (k += 1) try instantiateOne(r, e, scope, inst, depth, k);
-    assert(k == @max(msb, lsb) + 1);
+    // Counted in i128: a bound at maxInt(i64) has no successor in i64.
+    const lo: i128 = @min(msb, lsb);
+    const count: i128 = @as(i128, @max(msb, lsb)) - lo + 1;
+    var k: i128 = 0;
+    while (k < count) : (k += 1) try instantiateOne(r, e, scope, inst, depth, @intCast(lo + k));
+    assert(count >= 1);
+    assert(k == count);
 }
 
 /// The next scope id. The caller appends its `scope_info` row, which must be
@@ -1013,4 +1017,10 @@ test "§7.1.6 an instance array's port is sized by the child's parameters, not a
         \\module c(q, d); parameter W = 1; output [W-1:0] q; input [W-1:0] d; assign q = ~d; endmodule
         \\module top; parameter W = 2; wire [5:0] o; reg [5:0] i; c #(3) u[1:0](o, i); initial begin i = 6'b101100; #1 $display("%b", o); end endmodule
     , "010011\n");
+}
+
+test "§12.1.2 an instance array whose bounds are maxInt(i64) elaborates its one instance" {
+    // Oracle: §12.1.2, one instance per index from the lower bound to the
+    // upper, here the single index 2^63 - 1.
+    try root.expectRun("module c; initial $display(\"%m\"); endmodule module t; c u[64'sd9223372036854775807:64'sd9223372036854775807] (); endmodule", "t.u[9223372036854775807]\n");
 }

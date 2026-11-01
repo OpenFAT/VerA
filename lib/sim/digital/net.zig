@@ -623,11 +623,16 @@ pub fn wordMask(width: u32, w: usize) u64 {
 // ---- private ----
 
 /// The terminal of switch `tr` across from `u`, or null when `u` is neither.
+/// A switch whose two terminals are one net bit (`tran (a, a)`, or two
+/// ports bound to one net) is legal source and joins `u` to itself.
 fn across(tr: anytype, u: Node) ?Node {
-    assert(!(tr.a == tr.b and tr.a_bit == tr.b_bit)); // A switch joins two terminals.
-    if (tr.a == u.net and tr.a_bit == u.bit) return .{ .net = tr.b, .bit = tr.b_bit };
-    if (tr.b == u.net and tr.b_bit == u.bit) return .{ .net = tr.a, .bit = tr.a_bit };
-    return null;
+    const at_a = tr.a == u.net and tr.a_bit == u.bit;
+    const at_b = tr.b == u.net and tr.b_bit == u.bit;
+    if (!at_a and !at_b) return null;
+    const other: Node = if (at_a) .{ .net = tr.b, .bit = tr.b_bit } else .{ .net = tr.a, .bit = tr.a_bit };
+    if (at_a and at_b) assert(other.net == u.net);
+    if (at_a and at_b) assert(other.bit == u.bit);
+    return other;
 }
 
 test "continuous vector delay audit_assignment_vector_delay" {
@@ -821,4 +826,14 @@ test "§14.3.1 Table 14-2: two values are rise and fall, three add tz, twelve na
     try std.testing.expectEqual([6]u64{ 1, 2, 3, 1, 3, 2 }, [6]u64{ three[zero][one], three[one][zero], three[zero][z], three[z][one], three[one][z], three[z][zero] });
     const twelve = pathTable(&.{ 10, 12, 14, 15, 29, 36, 14, 15, 15, 14, 20, 30 });
     try std.testing.expectEqual([6]u64{ 14, 15, 15, 14, 20, 30 }, [6]u64{ twelve[zero][x], twelve[x][one], twelve[one][x], twelve[x][zero], twelve[x][z], twelve[z][x] });
+}
+
+test "§7.6 a pass switch whose two terminals are one net leaves that net its drivers' value" {
+    // Oracle: §7.6, a bidirectional switch only passes a signal between its
+    // terminals; with both on one net it carries nothing new, so the net
+    // resolves its drivers alone (§7.9). Port aliasing reaches the same
+    // switch through §12.3.10's collapsed ports.
+    try expectRun("module t; wire a; assign a = 1'b1; tran (a, a); initial #1 $display(\"%b\", a); endmodule", "1\n");
+    try expectRun("module t; wire a; reg c; assign a = 1'b0; rtranif1 (a, a, c); initial begin c = 1; #1 $display(\"%b\", a); end endmodule", "0\n");
+    try expectRun("module m(inout p, inout q); tran (p, q); endmodule module t; wire n; assign n = 1'b1; m u(n, n); initial #1 $display(\"%b\", n); endmodule", "1\n");
 }

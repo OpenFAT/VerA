@@ -146,6 +146,8 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
             if (r.hier.scopes.items[scope].index != null and r.hier.names.contains(.{ .scope = scope, .str = gv }))
                 return r.fail(tok, "§12.4.1: two nested loop generate constructs cannot use the same genvar", .{});
             const at = r.hier.names.get(.{ .scope = scope, .str = gv }) orelse try genvarSlot(r, e, gv, tok);
+            // A variable, net or parameter of the genvar's name, bound first.
+            if (!r.decls.genvars.contains(at)) return r.fail(tok, "§12.4.1: the loop generate's genvar `{s}` is also declared as something else in this scope", .{r.file.str(gv)});
             try setGenvar(r, e, at, try r.constant(r.file.stmt(f.init).assign.value, tok));
             // §12.4.3 an unnamed block's external name, genblk<n>.
             const name: Ast.StrId, const implicit = switch (r.file.stmt(f.body)) {
@@ -348,6 +350,7 @@ fn genvarSlot(r: *Run, e: *Elab, name: Ast.StrId, tok: u32) Error!u32 {
     try e.values.append(r.arena, try filled(r.arena, 32, true, .x));
     r.values = e.values.items;
     try r.decls.params.put(r.arena, at, {});
+    try r.decls.genvars.put(r.arena, at, {});
     assert(r.values.len > at);
     assert(e.values.items[at].width == 32); // §12.4.1: a genvar is an integer.
     return at;
@@ -356,5 +359,21 @@ fn genvarSlot(r: *Run, e: *Elab, name: Ast.StrId, tok: u32) Error!u32 {
 fn setGenvar(r: *Run, e: *Elab, at: u32, value: Int.Literal) Error!void {
     assert(at < e.values.items.len);
     assert(r.decls.params.contains(at)); // `genvarSlot` made it.
+    assert(r.decls.genvars.contains(at));
     @memcpy(e.values.items[at].planes, (try evaluate.convert(r.arena, value, .{ .width = 32, .signed = true })).planes);
+}
+
+test "§12.4.1 a loop generate's genvar declared again as a variable, net or parameter is refused" {
+    // Oracle: §12.4.1, "the genvar shall be declared" and is "an integer"
+    // local to the generate scope; a second declaration of the name in the
+    // module is §12.7's duplicate.
+    const loop = " generate for (i = 0; i < 2; i = i + 1) begin : g end endgenerate endmodule";
+    try root.expectRejected("module m; genvar i; integer i;" ++ loop, "also declared as something else");
+    try root.expectRejected("module m; genvar i; wire i;" ++ loop, "also declared as something else");
+    try root.expectRejected("module m; genvar i; parameter [63:0] i = 0;" ++ loop, "also declared as something else");
+    // Two loops over one genvar in one scope share its slot.
+    try root.expectRun("module m; genvar i;" ++
+        " generate for (i = 0; i < 2; i = i + 1) begin : a end endgenerate" ++
+        " generate for (i = 0; i < 3; i = i + 1) begin : b end endgenerate" ++
+        " initial $display(\"ok\"); endmodule", "ok\n");
 }

@@ -5,6 +5,7 @@
 //!
 //! Contents:
 //! - `pub fn State(comptime A: type) type`
+//! - `State.Error`
 //! - `State.monValue`
 //! - `State.monArgAt`
 //! - `State.refreshTimers`
@@ -15,14 +16,15 @@
 //! - `State.drainAbsdelta`
 //! - `State.active`
 //! - `State.timeOf(s: *const Self, k: Tick, target: f64, horizon: Tick) f64`
+//! - `State.tickNear(s: *const Self, t: f64) Tick`
 //! - `State.nowTime(s: *const Self) f64`
-//! - `State.solve(s: *Self, t: f64) !void`
-//! - `State.accept(s: *Self, t: f64) !void`
-//! - `State.solveCarrying(s: *Self, t: f64, comptime settle: bool) !void`
-//! - `State.settleA2d(s: *Self, horizon: Tick) !void`
-//! - `State.explicitD2a(s: *Self) anyerror!void`
-//! - `State.step(s: *Self, t_end: f64) !void`
-//! - `State.runDigital(s: *Self, horizon: Tick) !void`
+//! - `State.solve(s: *Self, t: f64) Error!void`
+//! - `State.accept(s: *Self, t: f64) Error!void`
+//! - `State.solveCarrying(s: *Self, t: f64, comptime settle: bool) Error!void`
+//! - `State.settleA2d(s: *Self, horizon: Tick) Error!void`
+//! - `State.explicitD2a(s: *Self) Error!void`
+//! - `State.step(s: *Self, t_end: f64) Error!void`
+//! - `State.runDigital(s: *Self, horizon: Tick) Error!void`
 //! - `State.probeHook(ctx: *anyopaque, n1: []const u8, n2: ?[]const u8) digital.Error!f64`
 
 const std = @import("std");
@@ -51,6 +53,8 @@ const max_cuts = run.max_cuts;
 pub fn State(comptime A: type) type {
     return struct {
         const Self = @This();
+        /// `run.RunError(A)`: what every step of the analysis can raise.
+        pub const Error = run.RunError(A);
         a: *A,
         dig: *digital.Run,
         opts: Options,
@@ -110,6 +114,15 @@ pub fn State(comptime A: type) type {
             return if (k == horizon and @abs(tk - target) <= ulps * target) target else tk;
         }
 
+        /// Returns the tick nearest `t` seconds. Asserts that `t` is at or
+        /// after 0 and below 2^64 ticks, as every time on `run`'s checked
+        /// timeline is (`run.checkTimeline`).
+        pub fn tickNear(s: *const Self, t: f64) Tick {
+            assert(t >= 0);
+            assert(t / s.opts.tick < 0x1p64);
+            return @intFromFloat(@round(t / s.opts.tick));
+        }
+
         /// The analog time of the digital tick being run: the tentative
         /// solution's when that is at or past this tick (time never runs
         /// back), else as `run` would solve it
@@ -126,7 +139,7 @@ pub fn State(comptime A: type) type {
         /// the host rejects (`A.rejected`) halves the step from `prev` and is
         /// solved again; the first solution of the analysis has no earlier
         /// time to back up to.
-        pub fn solve(s: *Self, t: f64) !void {
+        pub fn solve(s: *Self, t: f64) Error!void {
             if (s.prev) |p| assert(t >= p); // Time never runs back.
             var at = t;
             var tries: u32 = 0;
@@ -144,14 +157,14 @@ pub fn State(comptime A: type) type {
         }
 
         /// The solution at `t`: a new time finishes the tentative one first.
-        pub fn accept(s: *Self, t: f64) !void {
+        pub fn accept(s: *Self, t: f64) Error!void {
             return s.solveCarrying(t, true);
         }
 
         /// A solution at `t` carrying the pending explicit D2A terms. A new
         /// time finishes the tentative one first and, when `settle`, runs
         /// the A2D writes of that finished point (`settleA2d`).
-        pub fn solveCarrying(s: *Self, t: f64, comptime settle: bool) !void {
+        pub fn solveCarrying(s: *Self, t: f64, comptime settle: bool) Error!void {
             if (s.acc) |ta| if (ta != t) {
                 try s.a.finish();
                 s.prev = ta;
@@ -172,7 +185,7 @@ pub fn State(comptime A: type) type {
         // they cause (§8.4.3.2 "accept at wake-up time"); the next point is.
         /// Runs the digital ticks up to `horizon` that the finished point's
         /// A2D writes queued. Asserts that it does not nest.
-        pub fn settleA2d(s: *Self, horizon: Tick) !void {
+        pub fn settleA2d(s: *Self, horizon: Tick) Error!void {
             assert(!s.settling);
             s.settling = true;
             defer s.settling = false;
@@ -197,7 +210,7 @@ pub fn State(comptime A: type) type {
         // settles its A2D writes stays coalesced with the next.
         /// Region 1b: the pending explicit D2A terms evaluated, and this
         /// event's terms made pending (`digital.Run.d2a_fired`).
-        pub fn explicitD2a(s: *Self) anyerror!void {
+        pub fn explicitD2a(s: *Self) Error!void {
             if (s.pending != 0 and !s.settling) {
                 try s.solveCarrying(s.nowTime(), false);
                 try s.a.latch();
@@ -215,7 +228,7 @@ pub fn State(comptime A: type) type {
         /// then run the digital ticks at or before the step and re-solve at
         /// it for every D2A they cause (§8.4.3.2 "accept at wake-up time"),
         /// and re-check a `$monitor` that probes the solution at its tick.
-        pub fn step(s: *Self, t_end: f64) !void {
+        pub fn step(s: *Self, t_end: f64) Error!void {
             const base = s.acc.?;
             assert(t_end >= base); // `run` steps forward from the tentative time.
             for (s.mons, 0..) |*m, j| if (m.kind != .timer) {
@@ -261,7 +274,7 @@ pub fn State(comptime A: type) type {
                 if (!(t > base and t < s.acc.?)) break;
                 try s.solve(t);
             }
-            const tick: Tick = @intFromFloat(@round(s.acc.? / s.opts.tick));
+            const tick = s.tickNear(s.acc.?);
             for (s.mons, 0..) |*m, j| switch (m.kind) {
                 .timer => {}, // Refreshed together below, using current controls.
                 .absdelta => try s.observeAbsdelta(j),
@@ -286,7 +299,7 @@ pub fn State(comptime A: type) type {
         // interpolated events from the old solution.
         /// Runs the digital ticks at or before `horizon`, re-solving for every
         /// D2A they cause. Asserts that a tentative solution exists.
-        pub fn runDigital(s: *Self, horizon: Tick) !void {
+        pub fn runDigital(s: *Self, horizon: Tick) Error!void {
             assert(s.acc != null);
             while (true) switch (try s.dig.runUntil(horizon)) {
                 .idle => {

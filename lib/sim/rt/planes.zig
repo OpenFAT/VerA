@@ -327,8 +327,3 @@ test "the 2-state phase refuses an x or z store only where the mask selects it" 
     try Phase(false).set(s, 0, W{ .v = 0, .x = 2 }, @as(u64, 2));
     try testing.expectEqual(@as(u64, 2), s.x[0]);
 }
-
-test {
-    // `device.zig`'s test, until `root.zig`'s test block names the file.
-    _ = @import("device.zig");
-}

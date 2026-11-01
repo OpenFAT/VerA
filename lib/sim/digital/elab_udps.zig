@@ -122,6 +122,9 @@ pub fn checkUdp(r: *Run, u: *const Ast.UdpDecl) Error!void {
     assert(u.ports.len > 0);
     if (u.outputs != 1) return r.fail(tok, "§8.1.1: a UDP has exactly one output port", .{});
     if (u.output != u.ports[0]) return r.fail(tok, "§8.1.1: the output port shall be the first port of a UDP", .{});
+    // A.5.1 udp_port_list: the output, then at least one input. `udpRows`
+    // splits each table row into `ports.len - 1` input fields.
+    if (u.ports.len < 2) return r.fail(tok, "A.5.1: a UDP has an output port and at least one input port", .{});
     if (u.is_sequential and !u.has_reg) return r.fail(tok, "§8.1.2: a sequential UDP's output needs a reg declaration", .{});
     if (!u.is_sequential and u.has_reg) return r.fail(tok, "§8.1.2: a combinational UDP cannot contain a reg declaration", .{});
     if (u.init == .none) return;
@@ -133,4 +136,11 @@ pub fn checkUdp(r: *Run, u: *const Ast.UdpDecl) Error!void {
         else => 1, // else: `declareUdp` refuses anything but a literal
     };
     if (width > 1) return r.exprFail(u.init, "§8.1.3: a UDP initial value is a single-bit literal");
+}
+
+test "A.5.1 a UDP with no input port is refused, declared or instantiated" {
+    // Oracle: A.5.1's udp_port_list, `output_port_identifier ,
+    // input_port_identifier { , input_port_identifier }`.
+    try expectRejected("primitive p(q); output q; table endtable endprimitive module t; endmodule", "at least one input port");
+    try expectRejected("primitive p(q); output q; table endtable endprimitive module t; wire w; p g(w); endmodule", "at least one input port");
 }

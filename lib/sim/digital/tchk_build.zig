@@ -168,10 +168,12 @@ pub fn solveNegative(r: *Run) Error!void {
             try at.append(r.arena, pair);
             try rows.append(r.arena, @intCast(i));
         }
-        const d = try r.arena.alloc(i64, sigs.items.len);
+        // In i128: a limit is any i64, and a delay sums one per signal, so
+        // `d - s + eps` leaves i64 on legal limits near its ends.
+        const d = try r.arena.alloc(i128, sigs.items.len);
         // One retry per negative limit at most, each zeroing one, then one
         // without the margin, which a set with no negative limit always meets.
-        var eps: i64 = 1;
+        var eps: i128 = 1;
         var tries: usize = 2 * rows.items.len + 2;
         while (tries > 0) : (tries -= 1) {
             @memset(d, 0);
@@ -215,13 +217,22 @@ pub fn solveNegative(r: *Run) Error!void {
             try r.bag.add(r.stage(), .W1162, .{ .start = start, .end = start }, "the limits of the timing checks on this instance's signals cannot all be met by delayed signals; the most negative one is set to 0 (IEEE 1364-2005 §15.5.1)", .{});
         }
         for (rows.items, at.items) |i, pair| {
-            const s = window.signed(checks[i].lim[0]);
-            const h = window.signed(checks[i].lim[1]);
+            const s: i128 = window.signed(checks[i].lim[0]);
+            const h: i128 = window.signed(checks[i].lim[1]);
             const dr = d[pair[0]];
             const dd = d[pair[1]];
-            std.debug.assert(s + dr - dd >= 0 and h - dr + dd >= 0);
-            checks[i].lim = .{ @intCast(s + dr - dd), @intCast(h - dr + dd) };
-            r.checks.delay.items[i] = .{ @intCast(dr), @intCast(dd) };
+            assert(s + dr - dd >= 0); // The system settled: dR - dD >= -S.
+            assert(h - dr + dd >= 0); // And dD - dR >= -H.
+            const tok = checks[i].tok;
+            const too_far = "the limits of this timing check need delayed signals or limits past 2^64 ticks (IEEE 1364-2005 §15.5.1)";
+            checks[i].lim = .{
+                std.math.cast(u64, s + dr - dd) orelse return r.failWith(.E1148, tok, too_far, .{}),
+                std.math.cast(u64, h - dr + dd) orelse return r.failWith(.E1148, tok, too_far, .{}),
+            };
+            r.checks.delay.items[i] = .{
+                std.math.cast(u64, dr) orelse return r.failWith(.E1148, tok, too_far, .{}),
+                std.math.cast(u64, dd) orelse return r.failWith(.E1148, tok, too_far, .{}),
+            };
         }
     }
     // Every other check is non-negative already; its bits are its value.
@@ -404,4 +415,22 @@ fn signedLimit(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!u64 {
     const v = try limitTicks(r, t, e);
     if (!r.opts.negative_timing) assert(@max(v, 0) >= 0);
     return if (r.opts.negative_timing) @bitCast(v) else @intCast(@max(v, 0));
+}
+
+test "§15.5.1 negative limits at the ends of i64 are solved, not overflowed" {
+    // Oracle: §15.5.1, a set of limits no delayed signals can meet has its
+    // most negative limit changed to 0 (W1162) and the run goes on. The
+    // limits are i64's ends, where `d - S + eps` leaves i64.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var bag = @import("diag").Bag.init(arena.allocator());
+    var out = std.Io.Writer.Allocating.init(arena.allocator());
+    const src =
+        \\module t(input c, input d);
+        \\specify $setuphold(posedge c, d, -64'sd9223372036854775807, -64'sd9223372036854775807); endspecify
+        \\initial $display("ok");
+        \\endmodule
+    ;
+    try root.run(arena.allocator(), src, .{ .negative_timing = true }, &bag, &out.writer);
+    try std.testing.expectEqualStrings("ok\n", out.written());
 }

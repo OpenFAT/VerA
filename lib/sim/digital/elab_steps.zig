@@ -149,11 +149,14 @@ pub fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
 }
 
 /// Whether top-level module `m` declares a parameter `--param` may set,
-/// `name`: one that is not a localparam.
+/// `name`: one that is not a localparam. `name` is argv's and may be empty
+/// (`--param =5`), which no parameter is called.
 pub fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool {
-    assert(name.len != 0);
     assert(m.name != .none);
-    for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) return true;
+    for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) {
+        assert(name.len != 0); // A declared name is never empty.
+        return true;
+    };
     return false;
 }
 
@@ -292,4 +295,19 @@ fn levelControlled(r: *Run, body: Ast.StmtId) Error!bool {
         }
     };
     return st.event_control.event == .none or try L.level(r, st.event_control.event);
+}
+
+test "--param with an empty NAME is refused as no top-level parameter, not a crash" {
+    // Oracle: the --param contract, "no top-level module declares a
+    // parameter" for any NAME the top does not declare; argv may hold
+    // `--param =5`, whose NAME is empty.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var bag = diag.Bag.init(arena.allocator());
+    var out = std.Io.Writer.Allocating.init(arena.allocator());
+    const opts: root.Options = .{ .params = &.{.{ .name = "", .value = 5 }} };
+    try std.testing.expectError(error.DigitalFailed, root.run(arena.allocator(), "module m; parameter p = 1; endmodule", opts, &bag, &out.writer));
+    var messages = std.Io.Writer.Allocating.init(arena.allocator());
+    try diag.render(&bag, &messages.writer, .{});
+    try std.testing.expect(std.mem.find(u8, messages.written(), "no top-level module declares a parameter ``") != null);
 }

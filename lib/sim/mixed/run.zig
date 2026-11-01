@@ -19,7 +19,9 @@
 //! - `Fake.probe(f: *Fake, t: ?f64, _: []const u8, _: ?[]const u8) !f64`
 //! - `Fake.finish(f: *Fake) !void`
 //! - `Fake.breakpoint(f: *Fake, t: f64) ?f64`
-//! - `pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void`
+//! - `pub const Error`
+//! - `pub fn RunError(comptime A: type) type`
+//! - `pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) RunError(A)!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -43,6 +45,24 @@ pub const Options = struct {
     /// One scheduler tick, in seconds: the design's finest time precision.
     tick: f64,
 };
+
+/// What `run` refuses of its own, beside the digital engine's errors:
+/// `BadTimeline`, `Options.times` empty, holding a negative or non-finite
+/// time, running back, or ending past 2^64 ticks (a digital time is a u64
+/// tick count); `BackupExhausted`, a step the host rejected `max_rejects`
+/// times over.
+pub const Error = digital.Error || error{ BadTimeline, BackupExhausted };
+
+/// `run`'s error set over analog side `A`: `Error` and every error `A`'s
+/// methods return (`probe`'s are reported through the digital engine).
+pub fn RunError(comptime A: type) type {
+    var E: type = Error;
+    for (.{ "setInputs", "snapshot", "latch", "solveAt", "finish", "rejected" }) |name| if (@hasDecl(A, name)) {
+        const R = @typeInfo(@TypeOf(@field(A, name))).@"fn".return_type.?;
+        if (@typeInfo(R) == .error_union) E = E || @typeInfo(R).error_union.error_set;
+    };
+    return E;
+}
 
 /// Rejections of one tentative solution `solve` backs up from before it
 /// gives up, as the VPI walk does (`src/vpi/analog.zig`).
@@ -162,8 +182,12 @@ const Fake = struct {
 ///                                 the tentative one (§7.3.6.3)
 /// and installs its own `digital.Run.watchAnalog` on every slot it reads,
 /// which is what makes a change of one of them an implicit D2A.
-pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void {
-    std.debug.assert(opts.times.len != 0);
+///
+/// `opts.times` is the caller's (a deck's analysis line, a testbench's
+/// `//! time`s) and is checked here (`BadTimeline`). Asserts that
+/// `opts.tick` is positive.
+pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) RunError(A)!void {
+    try checkTimeline(opts);
     var s: State(A) = .{ .a = a, .dig = dig, .opts = opts, .final = opts.times[opts.times.len - 1] };
     // §7.3.5 / §7.3.6.3: a monitored analog event or a probe needs the analog
     // solution at every digital event time, so the analog steps to each one
@@ -274,6 +298,20 @@ pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void {
 }
 
 // ---- private ----
+
+/// `BadTimeline` unless `run` can walk `opts.times`: at least one time, the
+/// first at or after 0, none before the one ahead of it, and the last below
+/// 2^64 ticks. Each comparison is false on a NaN, so a NaN fails too.
+fn checkTimeline(opts: Options) error{BadTimeline}!void {
+    assert(opts.tick > 0); // 10^`finest` s, a §19.8 precision.
+    assert(std.math.isFinite(opts.tick));
+    const times = opts.times;
+    if (times.len == 0) return error.BadTimeline;
+    if (!(times[0] >= 0)) return error.BadTimeline;
+    for (times[1..], times[0 .. times.len - 1]) |t, before| if (!(t >= before)) return error.BadTimeline;
+    if (!(times[times.len - 1] / opts.tick < 0x1p64)) return error.BadTimeline;
+    assert(times[0] <= times[times.len - 1]);
+}
 
 fn drive(arena: std.mem.Allocator, source: []const u8, name: []const u8, times: []const f64) !Fake {
     var bag = diag.Bag.init(arena);
@@ -837,4 +875,22 @@ test "§5.10.3.3 runtime-invalid timer controls report E0517" {
         try testing.expectEqual(diag.Code.E0517, bag.at(0).code);
         try testing.expectEqual(@as(?i64, 1), dig.values[f.slot].asInt());
     }
+}
+
+test "run refuses a timeline it cannot walk: empty, negative, NaN, running back, infinite, past 2^64 ticks" {
+    // Oracle: VAMS §8.4 time starts at the DC point and only runs forward,
+    // and a digital time is a u64 tick count (`Options.tick` 1 ns here, so
+    // 1e20 s is 1e29 ticks). Equal times are a point solved once.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const bad = [_][]const f64{ &.{}, &.{-1e-9}, &.{ 0, std.math.nan(f64) }, &.{ 2e-9, 1e-9 }, &.{ 0, 3e-9, 2e-9, 4e-9 }, &.{ 0, std.math.inf(f64) }, &.{ 0, 1e20 } };
+    for (bad) |times| {
+        var bag = diag.Bag.init(arena.allocator());
+        var out = std.Io.Writer.Allocating.init(arena.allocator());
+        var dig = try digital.elaborate(arena.allocator(), "`timescale 1ns/1ns\nmodule m; reg v; endmodule", .{}, &bag, &out.writer);
+        var f: Fake = .{ .slot = dig.slotOf("v").?, .gpa = arena.allocator() };
+        try testing.expectError(error.BadTimeline, run(Fake, &f, &dig, .{ .times = times, .tick = 1e-9 }));
+    }
+    const f = try drive(arena.allocator(), "`timescale 1ns/1ns\nmodule m; reg v; endmodule", "v", &.{ 0, 1e-9, 1e-9 });
+    try expectPoints(f, &.{ .{ 0, -1 }, .{ 1e-9, -1 } });
 }
