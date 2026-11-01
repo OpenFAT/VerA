@@ -17,6 +17,7 @@
 //! - `pub fn bitOf(v: []const u64, x: []const u64, i: u32) Int.Bit`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -41,9 +42,12 @@ const shown = resolution.shown;
 /// `exec` `.continuous`: driver `i` asserts `planes` (values then unknowns,
 /// its net's width) and, when `or_z`, §7.10.2's H/L. With a `delay3` the
 /// value arrives by §6.1.3's inertial rule; without, the net resolves now.
+/// Asserts that `i` is a driver and `planes` is as wide as its net.
 pub fn drive(s: *State, i: u32, planes: []const u64, or_z: bool) Error!void {
     const t = &s.nets;
+    assert(i < t.drivers.len);
     const d = t.drivers[i];
+    assert(planes.len == 2 * words(t.nets[d.net].width));
     const cur = t.cur[t.at[i]..][0..planes.len];
     // §8.5: a sequential UDP's initial output is published at time 0
     // whatever its delay.
@@ -62,21 +66,29 @@ pub fn drive(s: *State, i: u32, planes: []const u64, or_z: bool) Error!void {
     }
     @memcpy(cur, planes);
     t.or_z[i] = or_z;
+    assert(t.started[i]);
     return resolve(s, d.net);
 }
 
-/// §7.8.5 gate driver `i` of type `kind` over its input bits.
+/// §7.8.5 gate driver `i` of type `kind` over its input bits. Asserts that
+/// `i` is a gate driver and it has an input.
 pub fn gate(s: *State, i: u32, comptime kind: Ast.GateKind, ins: []const Bit) Error!void {
+    assert(i < s.nets.drivers.len);
+    assert(s.nets.drivers[i].source == .gate);
+    assert(ins.len != 0);
     const o = dnet.gateBit(kind, @ptrCast(ins));
     return driveBit(s, i, s.nets.drivers[i].source.gate, o.bit, o.or_z);
 }
 
 /// §8 UDP driver `i` over its input bits (`resolution.udpValue`), any
-/// number of them.
+/// number of them. Asserts that `i` is a UDP driver given one bit per input.
 pub fn udp(s: *State, i: u32, ins: []const Bit) Error!void {
     const t = &s.nets;
+    assert(i < t.drivers.len);
+    assert(t.drivers[i].source == .udp);
     const k = t.drivers[i].source.udp;
     const u = t.udps[k];
+    assert(ins.len == u.ins);
     const bits = t.udp_bits[0..ins.len];
     // §8.1.6: a z input is read as x.
     for (ins, bits) |b, *o| o.* = if (b == .z) .x else int(b);
@@ -95,9 +107,12 @@ pub fn udp(s: *State, i: u32, ins: []const Bit) Error!void {
 
 /// §7.6 MOS switch driver `i` (`resolution.mosValue`): its data at the data
 /// net's strength, reduced by §7.12, while `gate` conducts; z when it does
-/// not; H/L when the gate is x or z. A z on the data passes as z.
+/// not; H/L when the gate is x or z. A z on the data passes as z. Asserts
+/// that `i` is a MOS switch driver.
 pub fn mos(s: *State, i: u32, data: Bit, gate_: Bit) Error!void {
     const t = &s.nets;
+    assert(i < t.drivers.len);
+    assert(t.drivers[i].source == .mos);
     const m = t.drivers[i].source.mos;
     t.mos_in[i] = .{ data, gate_ };
     const g = int(gate_);
@@ -107,12 +122,16 @@ pub fn mos(s: *State, i: u32, data: Bit, gate_: Bit) Error!void {
     const value = sig.collapse();
     const on: Int.Bit = if (m.n_type) .one else .zero;
     const out: Int.Bit = if (value == .z or (g != on and (g == .zero or g == .one))) .z else value;
+    if (value == .z) assert(out == .z); // A z on the data passes as z.
     return driveBit(s, i, 0, out, out != .z and g != on);
 }
 
 /// §6.5.7.1 port window driver `i`: its source's bits, z outside them.
+/// Asserts that `i` is a port window driver.
 pub fn bridge(s: *State, i: u32) Error!void {
     const t = &s.nets;
+    assert(i < t.drivers.len);
+    assert(t.drivers[i].source == .bridge);
     const b = t.drivers[i].source.bridge;
     const w = t.nets[t.drivers[i].net].width;
     const planes = t.scratch[0 .. 2 * words(w)];
@@ -126,9 +145,12 @@ pub fn bridge(s: *State, i: u32) Error!void {
     return drive(s, i, planes, false);
 }
 
-/// §19.9 `unconnected_drive` driver `i`: its level on every bit.
+/// §19.9 `unconnected_drive` driver `i`: its level on every bit. Asserts
+/// that `i` is a pull driver.
 pub fn pull(s: *State, i: u32) Error!void {
     const t = &s.nets;
+    assert(i < t.drivers.len);
+    assert(t.drivers[i].source == .pull);
     const w = t.nets[t.drivers[i].net].width;
     const planes = t.scratch[0 .. 2 * words(w)];
     fill(planes, w, t.drivers[i].source.pull);
@@ -136,20 +158,29 @@ pub fn pull(s: *State, i: u32) Error!void {
 }
 
 /// What driver `di` asserts on bit `at` of its net (`resolution.contribution`).
+/// Asserts that `di` is a driver and `at` lies in its net's words.
 pub fn contribution(t: *const Nets, di: u32, at: u32) Signal {
+    assert(di < t.drivers.len);
     const nw = words(t.nets[t.drivers[di].net].width);
+    assert(at / 64 < nw);
     const b = bitAt(t.cur[t.at[di]..][0 .. 2 * nw], at);
     return if (t.or_z[di] and b != .z) .orZ(b, t.s0[di], t.s1[di]) else .of(b, t.s0[di], t.s1[di]);
 }
 
 /// Returns `b` as the interpreter's `Integer.Bit`.
 pub fn int(b: Bit) Int.Bit {
+    // The cast keeps the encoding: both are (value, unknown) bit pairs.
+    comptime assert(@backingInt(Bit.z) == @backingInt(Int.Bit.z));
+    comptime assert(@backingInt(Bit.x) == @backingInt(Int.Bit.x));
     return @fromBackingInt(@intCast(@backingInt(b)));
 }
 
 /// `planes` (values then unknowns) of a `w`-bit value, every bit `b`.
+/// Asserts that `planes` holds exactly `w` bits per plane, rounded up.
 pub fn fill(planes: []u64, w: u32, b: Bit) void {
+    assert(planes.len % 2 == 0);
     const n = planes.len / 2;
+    assert(n == words(w));
     for (planes[0..n], planes[n..], 0..) |*v, *x, j| {
         const m = dnet.wordMask(w, j);
         v.* = if (@backingInt(b) & 1 != 0) m else 0;
@@ -157,24 +188,35 @@ pub fn fill(planes: []u64, w: u32, b: Bit) void {
     }
 }
 
-/// Bit `i` of `planes`, values then unknowns.
+/// Bit `i` of `planes`, values then unknowns. Asserts that `i` lies in them.
 pub fn bitAt(planes: []const u64, i: u32) Int.Bit {
+    assert(planes.len % 2 == 0);
     const n = planes.len / 2;
+    assert(i / 64 < n);
     return bitOf(planes[0..n], planes[n..], i);
 }
 
-/// `dnet.setBit` of bit `i` of `planes`, values then unknowns.
+/// `dnet.setBit` of bit `i` of `planes`, values then unknowns. Asserts
+/// that `i` lies in them.
 pub fn setBit(planes: []u64, i: u32, b: Int.Bit) void {
+    assert(planes.len % 2 == 0);
+    assert(i / 64 < planes.len / 2);
     dnet.setBit(literal(planes, 0), i, b);
 }
 
 /// Returns `planes` (both, `words(w)` each) as the `Literal` the shared tables read.
+/// Asserts that they hold `w` bits.
 pub fn literal(planes: []const u64, w: u32) Int.Literal {
+    assert(planes.len % 2 == 0);
+    assert(words(w) <= planes.len / 2);
     return .{ .width = w, .signed = false, .sized = true, .planes = @constCast(planes) };
 }
 
-/// Bit `i` of the value whose planes are `v` and `x`.
+/// Bit `i` of the value whose planes are `v` and `x`. Asserts that the
+/// planes pair up and hold bit `i`.
 pub fn bitOf(v: []const u64, x: []const u64, i: u32) Int.Bit {
+    assert(v.len == x.len);
+    assert(i / 64 < v.len);
     const sh: u6 = @intCast(i % 64);
     return dnet.planeBit(v[i / 64] >> sh, x[i / 64] >> sh);
 }
@@ -184,6 +226,8 @@ pub fn bitOf(v: []const u64, x: []const u64, i: u32) Int.Bit {
 /// `drive` of a value that is z but for bit `at`, which is `b`.
 fn driveBit(s: *State, i: u32, at: u32, b: Int.Bit, or_z: bool) Error!void {
     const t = &s.nets;
+    assert(i < t.drivers.len);
+    assert(at / 64 < words(t.nets[t.drivers[i].net].width));
     const planes = t.scratch[0 .. 2 * words(t.nets[t.drivers[i].net].width)];
     fill(planes, t.nets[t.drivers[i].net].width, .z);
     setBit(planes, at, b);
