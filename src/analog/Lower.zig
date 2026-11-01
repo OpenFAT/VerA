@@ -607,7 +607,7 @@ const RetCtx = struct { slot: VarSlot, exit: Mir.Block };
 // value (~1.5k on psp103), `BranchRead` one per access-function read.
 comptime {
     assert(@sizeOf(TypedValue) == 8);
-    assert(@sizeOf(VarSlot) == 16);
+    assert(@sizeOf(VarSlot) == 12);
     assert(@sizeOf(BranchRead) == 16);
     assert(@sizeOf(Accum) == 12);
     assert(@sizeOf(LoopCtx) == 8);

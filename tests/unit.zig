@@ -11353,8 +11353,8 @@ pub const preprocessor_tests = struct {
             try testing.expectError(error.PreprocessFailed, process(arena, "`define INC `include \"bad.vh\"\n`INC\n", .{ .std_defs = false, .bag = &bag, .include_dirs = dirs }));
             const e = bag.at(0);
             try testing.expectEqual(diag.Code.E0115, e.code);
-            try testing.expectEqualStrings("bad.vh", std.fs.path.basename(bag.fileName(e.file.?)));
-            const text = bag.fileText(e.file.?);
+            try testing.expectEqualStrings("bad.vh", std.fs.path.basename(bag.fileName(e.file)));
+            const text = bag.fileText(e.file);
             try testing.expect(e.span.end <= text.len);
             try testing.expectEqualStrings("`NOPE", text[e.span.start..e.span.end]);
         }
