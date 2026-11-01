@@ -9,6 +9,7 @@
 //!   `Harness.genOut`, `Harness.genWith`, `Harness.deinit`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const codegen = @import("../codegen.zig");
 const Mir = @import("ir").Mir;
 const Lower = @import("analog").Lower;
@@ -67,33 +68,44 @@ pub const Harness = struct {
             .param_overrides = over,
             .directives = pp.directives,
         })).lowered;
+        assert(out.file.base == parse);
+        assert(out.file.builtin_modules == annex_e.spice_module_count);
     }
 
     /// `genOut`'s device text.
     pub fn gen(self: *Harness, gpa: std.mem.Allocator) ![]const u8 {
-        return (try self.genOut(gpa)).text;
+        const o = try self.genOut(gpa);
+        assert(o.text.len != 0); // `generate` never returns an empty file
+        return o.text;
     }
 
     /// `gen` with §9.4 display tasks emitted: the printing artifact. Reports
     /// to no bag.
     pub fn genDisplay(self: *Harness, gpa: std.mem.Allocator) ![]const u8 {
-        return (try self.proveAndGenerate(gpa, .{ .display = .emit })).output.text;
+        const device = try self.proveAndGenerate(gpa, .{ .display = .emit });
+        assert(device.output.text.len != 0);
+        return device.output.text;
     }
 
     /// Proves with `gpa` and generates with the default options into the
     /// harness bag; a fatal generation still returns its output.
     pub fn genOut(self: *Harness, gpa: std.mem.Allocator) !Output {
-        return (try self.proveAndGenerate(gpa, .{ .diags = &self.bag })).output;
+        const device = try self.proveAndGenerate(gpa, .{ .diags = &self.bag });
+        assert(device.output.text.len != 0);
+        return device.output;
     }
 
     /// Proves and generates with `opts`, `.diags` set to the harness bag.
     /// Fails the test with the bag's count when generation is fatal: every
-    /// caller asserts on a device that was meant to compile.
+    /// caller asserts on a device that was meant to compile. Asserts that
+    /// `opts.diags` is unset: the harness supplies its own bag.
     pub fn genWith(self: *Harness, opts: codegen.Options) !Output {
+        assert(opts.diags == null);
         var o = opts;
         o.diags = &self.bag;
         const device = try self.proveAndGenerate(std.testing.allocator, o);
         if (device.compile_error) return error.GenerationWasFatal;
+        assert(device.output.text.len != 0);
         return device.output;
     }
 
@@ -104,10 +116,13 @@ pub const Harness = struct {
     // The harness bag is arena-lived and never detached, so unlike the
     // driver's it is still the right one to hand codegen.
     fn proveAndGenerate(self: *Harness, gpa: std.mem.Allocator, opts: codegen.Options) !codegen.Device {
+        if (opts.diags) |d| assert(d == &self.bag);
         const v = try proof.prove(gpa, &self.mir, &self.lowered, .{}, &self.bag);
         defer v.deinit(gpa);
         const a = self.arena_state.allocator();
-        return generate(a, a, &self.mir, &self.lowered, v, opts);
+        const device = try generate(a, a, &self.mir, &self.lowered, v, opts);
+        assert(device.output.unit_lo.len == device.output.unit_hi.len);
+        return device;
     }
 
     /// Frees everything `run` lowered and every output generated since.

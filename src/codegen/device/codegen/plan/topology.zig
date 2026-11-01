@@ -113,17 +113,20 @@ const max_visits = 1 << 16;
 /// Asserts that `branch_u` has one entry per contribution.
 pub fn plan(in: Input, branch_u: []const u32) Error!Topology {
     assert(branch_u.len == in.lowered.contributions.items.len);
-    assert(branch_u.len == in.lowered.contributions.items.len);
-    return .{
+    const t: Topology = .{
         .free_flows = try freeFlows(in, branch_u),
         .cpairs = try collapsePairs(in, branch_u),
     };
+    assert(t.free_flows.len <= in.lowered.flow_unknowns.count());
+    assert(t.cpairs.len <= branch_u.len);
+    return t;
 }
 
 /// Returns what is statically known about `c`'s §5.6.1.3 retention.
 pub fn retention(self: Input, c: Lower.Contribution) Retention {
     assert(self.an.vty.len == self.an.nv);
     const v = self.an.rv(c.wrote_val);
+    assert(@backingInt(v) < self.an.nv);
     return switch (self.mir.valueDef(v)) {
         .float_const => |x| if (x != 0.0) Retention.on else Retention.off,
         .int_const => |x| if (x != 0) Retention.on else Retention.off,
@@ -157,12 +160,14 @@ pub fn switchFlowOf(self: Input, pi: usize) ?usize {
 /// would inject the current twice. Asserts that `j` indexes a contribution.
 pub fn flowIsMerged(self: Input, j: usize) bool {
     assert(j < self.lowered.contributions.items.len);
-    assert(j < self.lowered.contributions.items.len);
     const f = self.lowered.contributions.items[j];
     if (f.kind != .direct or f.access != .flow) return false;
-    for (self.lowered.contributions.items) |c| {
+    for (self.lowered.contributions.items, 0..) |c, pi| {
         if (c.kind != .direct or c.access != .potential) continue;
         if (c.hi != f.hi or c.lo != f.lo or c.br != f.br) continue;
+        // Paired with `switchFlowOf`: `contribIndex` dedupes per (access,
+        // pair, branch), so `j` is this potential's one partner.
+        assert(switchFlowOf(self, pi) == j);
         return retention(self, c) == .runtime;
     }
     return false;
@@ -230,7 +235,6 @@ pub fn isFlowUnknown(self: Input, i: u32) bool {
 /// has one entry per contribution.
 fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
     assert(branch_u.len == self.lowered.contributions.items.len);
-    assert(branch_u.len == self.lowered.contributions.items.len);
     var out: std.ArrayList(FreeFlow) = .empty;
     var it = self.lowered.flow_unknowns.iterator();
     while (it.next()) |e| {
@@ -261,6 +265,7 @@ fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
         }
     }.lt);
     assert(out.items.len <= self.lowered.flow_unknowns.count());
+    for (1..@max(out.items.len, 1)) |k| assert(out.items[k - 1].u <= out.items[k].u);
     return out.items;
 }
 
@@ -280,6 +285,7 @@ fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
 /// outright.
 fn buildFree(self: Input, v0: Mir.Value, depth: u32) bool {
     assert(self.an.vty.len == self.an.nv);
+    assert(depth == 0); // a walk starts at its root
     var budget: u32 = max_visits;
     return constFree(self, v0, depth, true, &budget);
 }
@@ -289,11 +295,15 @@ fn buildFree(self: Input, v0: Mir.Value, depth: u32) bool {
 /// `derive` (it has no Instance) can compute.
 fn cardOnly(self: Input, v0: Mir.Value) bool {
     assert(self.an.vty.len == self.an.nv);
+    assert(@backingInt(self.an.rv(v0)) < self.an.nv);
     var budget: u32 = max_visits;
     return constFree(self, v0, 0, false, &budget);
 }
 
 fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool, budget: *u32) bool {
+    // The caps below stop the recursion one level past them.
+    assert(depth <= 65);
+    assert(budget.* <= max_visits);
     if (depth > 64 or budget.* == 0) return false;
     budget.* -= 1;
     const v = self.an.rv(v0);
@@ -354,8 +364,10 @@ fn constFree(self: Input, v0: Mir.Value, depth: u32, env: bool, budget: *u32) bo
 /// `<+ 0.0` is exactly this shape: entry-seeded 0, `discardOpposite`'s 0
 /// on the flow arm, `0 + 0.0` on its own.
 fn zeroOnEveryPath(self: Input, v0: Mir.Value, depth: u32) bool {
+    assert(depth <= 17); // the cap stops the recursion one level past it
     if (depth > 16) return false;
     const v = self.an.rv(v0);
+    assert(@backingInt(v) < self.an.nv);
     if (v == .f_zero) return true;
     if (self.an.foldConst(v, false)) |k| return k == 0.0;
     const def = self.mir.valueDef(v);
@@ -384,6 +396,7 @@ fn zeroOnEveryPath(self: Input, v0: Mir.Value, depth: u32) bool {
 /// value table, run once per collapse candidate (a model has few).
 fn unknownProbed(self: Input, u: u32) bool {
     assert(u != none_u32);
+    assert(self.an.nv == self.mir.valueCount());
     for (Mir.Value.first_dynamic..self.an.nv) |i| {
         const def = self.mir.valueDef(@fromBackingInt(@intCast(i)));
         if (def == .block_param and def.block_param == u) return true;
@@ -400,7 +413,6 @@ fn unknownProbed(self: Input, u: u32) bool {
 /// branch row, and catastrophic cancellation when its LU eliminates the short.
 /// Asserts that `branch_u` has one entry per contribution.
 fn collapsePairs(self: Input, branch_u: []const u32) Error![]CollapsePair {
-    assert(branch_u.len == self.lowered.contributions.items.len);
     assert(branch_u.len == self.lowered.contributions.items.len);
     var out: std.ArrayList(CollapsePair) = .empty;
     const np: u32 = @intCast(self.lowered.num_ports);
@@ -433,6 +445,7 @@ fn collapsePairs(self: Input, branch_u: []const u32) Error![]CollapsePair {
         assert(target < victim);
         assert(target < fu);
         assert(victim >= np);
+        assert(victim != Lower.ground); // a free end is never the ground
         try out.append(self.arena, .{ .victim = victim, .target = target, .flow_u = fu, .flag = ret.runtime, .card = cardOnly(self, ret.runtime) });
     }
     assert(out.items.len <= self.lowered.contributions.items.len);

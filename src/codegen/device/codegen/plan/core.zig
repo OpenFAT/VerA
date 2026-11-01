@@ -93,6 +93,7 @@ const Mark = struct {
         if (m.need[@backingInt(v)]) return;
         m.need[@backingInt(v)] = true;
         try m.work.append(m.in.arena, v);
+        assert(m.work.items.len <= m.in.an.nv); // `need` queues each value once
     }
 
     /// Block `b` runs only as the branches it is control-dependent on say.
@@ -105,6 +106,7 @@ const Mark = struct {
             try m.mark(plan_setup.branchCond(m.in, c.branch).?);
             try m.pushBlock(c.branch);
         };
+        if (b < m.blk.len) assert(m.blk[b]);
     }
 
     fn pushBlock(m: *Mark, b: u32) Error!void {
@@ -112,9 +114,11 @@ const Mark = struct {
         if (b >= m.blk.len or m.blk[b]) return;
         m.blk[b] = true;
         try m.blk_work.append(m.in.arena, b);
+        assert(m.blk_work.items.len <= m.in.an.nb); // `blk` queues each block once
     }
 
     fn visit(m: *Mark, v: Mir.Value) Error!void {
+        assert(m.need.len == m.in.an.nv);
         assert(m.need[@backingInt(v)]); // Only a marked value is queued.
         const def = m.in.mir.valueDef(v);
         if (def != .inst_result) return;
@@ -211,10 +215,14 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
         self.acc_vals = qv.items;
         self.acc_lo = ql.items;
     }
+    assert(self.prev_vals.len == self.prev_lo.len);
+    assert(self.acc_vals.len == self.acc_lo.len);
     self.mode = float_mode.coreMode(jobs);
     self.lo_vals = vals.items;
     // Exit invariant: `lo_idx` and `lo_vals` are inverse on the live-outs.
     for (self.lo_vals, 0..) |v, k| assert(self.lo_idx[@backingInt(v)] == k);
+    for (self.prev_lo) |k| assert(k < self.lo_vals.len);
+    for (self.acc_lo) |k| assert(k < self.lo_vals.len);
     // §5.10 which core field each held variable's write-back reads. Done
     // here rather than by scanning `jobs` in `emitStateMachine`, because
     // `lo_idx` is only meaningful once every job has been folded in.
@@ -222,6 +230,7 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
     for (in.lowered.held_vars.items, 0..) |h, i| {
         const v = in.an.rv(h.final);
         self.held_idx[i] = if (v == .f_zero) none_u32 else self.lo_idx[@backingInt(v)];
+        if (self.held_idx[i] != none_u32) assert(self.held_idx[i] < self.lo_vals.len);
     }
     if (self.lo_vals.len == 0) return self;
     try heldOnly(in, jobs, &self);
@@ -233,6 +242,7 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
         // and this one cannot.
         .target = "core",
     });
+    assert(self.name.len != 0);
     return self;
 }
 
@@ -279,6 +289,7 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
         for (d.args) |x| try m.mark(x);
     }
     while (m.work.pop()) |v| try m.visit(v);
+    assert(m.blk_work.items.len == 0);
 
     const skip = try a.alloc(bool, in.an.nv);
     @memset(skip, false);
@@ -294,6 +305,8 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
     }
     out.eval_need = m.need;
     if (some) out.held_only = skip;
+    assert(out.eval_need.len == in.an.nv);
+    if (!some) assert(out.held_only.len == 0);
 }
 
 /// The jobs `eval`, `q` and `evalQ` read out of the core (`dispatch.zig`).

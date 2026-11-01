@@ -56,6 +56,9 @@ pub const Names = struct {
     pub fn opInstOf(self: *const Names, unit: u32) ?Mir.Inst {
         assert(unit < self.units.len);
         const inst = self.units[unit].inst;
+        // `naming.Unit.inst` is set exactly on an operator unit.
+        if (self.units[unit].role == .analog_op) assert(inst != .none);
+        if (self.units[unit].role != .analog_op) assert(inst == .none);
         return if (inst == .none) null else inst;
     }
 
@@ -65,6 +68,7 @@ pub const Names = struct {
     pub fn opArgs(self: *const Names, mir: *const Mir, i: usize) []const Mir.Value {
         assert(i < self.units.len);
         const inst = self.opInstOf(@intCast(i)) orelse return &.{};
+        assert(mir.instOp(inst) == .call);
         return mir.instData(inst).call.args;
     }
 };
@@ -88,6 +92,7 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
     naming.assertCanonicalOrder(self.units, lowered, n_unit_modes);
     self.unit_names = try a.alloc([]const u8, self.units.len);
     for (self.units, 0..) |u, i| self.unit_names[i] = try naming.unitNameAlloc(a, mir.name, u);
+    assert(self.unit_names.len == self.units.len);
 
     // §5.6 potential contributions need a branch-current unknown. Lowering
     // allocates a `flow(a,b)` slot only where the model probes I(a,b), so
@@ -121,9 +126,11 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
             found = base + @as(u32, @intCast(extra.items.len));
             try extra.append(a, try freshUName(a, lowered, nm, extra.items));
         }
+        assert(found < base + extra.items.len); // a `nodes` slot or one appended
         self.branch_u[i] = found;
     }
     self.n_u = base + @as(u32, @intCast(extra.items.len));
+    assert(self.n_u >= base);
 
     self.u_names = try a.alloc([]const u8, self.n_u);
     for (lowered.nodes.items(.name), 0..) |n, i| {
@@ -189,8 +196,11 @@ fn freshUName(a: std.mem.Allocator, lowered: *const Lowered, nm: []const u8, ext
     var name = nm;
     var k: u32 = 1;
     while (uNameTaken(lowered, name, extra)) : (k += 1) {
+        // Bound: each spelling tried is a distinct taken name, of finitely many.
+        assert(k <= lowered.nodes.len + extra.len + 1);
         name = try a.print("{s}#{d}", .{ nm, k });
     }
+    assert(name.len >= nm.len);
     return name;
 }
 

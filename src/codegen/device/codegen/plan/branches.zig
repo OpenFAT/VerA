@@ -24,8 +24,10 @@ const Act = union(enum) { cont: u32, brk: u32 };
 /// phi, so the unit emits flat `const` code. Valid after `analyze` marked the
 /// slice.
 pub fn isStraightLine(self: *const UnitPlan) bool {
+    assert(self.needed.bit_length == self.an.nv);
     for (self.live.items) |lv| {
         const v = @backingInt(lv);
+        assert(self.needed.isSet(v)); // `mark` adds to `live` what it marks
         if (v < Mir.Value.first_dynamic) continue;
         // A cache or Instance-field read is a field of a value the body
         // already holds, so it has no block of its own.
@@ -76,6 +78,7 @@ pub fn planDeadBranches(self: *UnitPlan) void {
     while (k > 0) {
         k -= 1;
         const bi = self.an.rpo[k];
+        assert(bi < self.an.nb);
         const t = self.an.term[bi];
         if (t == .none or self.mir.instOp(t) != .branch) continue;
         const d = self.mir.instData(t).branch;
@@ -124,6 +127,7 @@ fn edgeAct(self: *const UnitPlan, from0: u32, to0: u32) ?Act {
         if (n_open + labels.len > opened.len) return null;
         @memcpy(opened[n_open..][0..labels.len], labels);
         n_open += labels.len;
+        assert(n_open <= opened.len);
         const t = self.an.term[to];
         if (t == .none) return null;
         from = to;

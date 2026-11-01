@@ -66,6 +66,9 @@ pub const Limits = struct {
             if (j != i) partner = j;
         }
         if (gate_legs != 2) return null;
+        // `me` is one of the two legs, so the other one was found.
+        assert(partner != i);
+        assert(g.calls[partner].alg == .fetlimds);
         const other = g.calls[partner];
         if (!g.writable(me.lo) or !g.writable(other.lo)) return null;
         for (g.calls, 0..) |lc, k| {
@@ -96,6 +99,8 @@ pub const Limits = struct {
             if (j != i) partner = j;
         }
         if (legs != 2 or me.hi == none_u32) return null;
+        assert(partner != i);
+        assert(g.calls[partner].alg == .pnjlimds);
         const other = g.calls[partner];
         if (me.lo == none_u32 or other.lo == none_u32) return null;
         for (g.calls, 0..) |lc, k| {
@@ -110,8 +115,10 @@ pub const Limits = struct {
 
     /// Is this `limvds` site the channel rung of some ladder? Then `emitLadder`
     /// owns it and the flat list must not clamp it a second time. O(calls²).
+    /// Asserts `calls[k]` is a `limvds` site.
     pub fn limvdsClaimed(g: Limits, k: usize) bool {
         assert(k < g.calls.len);
+        assert(g.calls[k].alg == .limvds);
         for (g.calls, 0..) |lc, i| {
             if (lc.alg != .fetlimds) continue;
             const lad = g.ladderOf(i) orelse continue;
@@ -170,12 +177,14 @@ pub const Alg = enum {
 
     /// Numeric arguments that follow the algorithm name.
     pub fn arity(a: Alg) usize {
-        return switch (a) {
+        const n: usize = switch (a) {
             .pnjlim, .pnjlimds => 2,
             .fetlim, .fetlimds => 1,
             .limvds => 0,
             .steplim => 1,
         };
+        assert(n <= max_args); // `LimitCall.argv` holds them
+        return n;
     }
 };
 
@@ -253,11 +262,13 @@ const Site = struct {
     args: []const Mir.Value,
 
     fn decline(s: Site, why: []const u8, help: ?[]const u8) Error!void {
+        assert(why.len != 0); // every reason is a literal of this file
         try s.list.append(s.g.arena, .{
             .tok = s.tok,
             .msg = try s.g.arena.print("{s}: {s}", .{ spell(s.g, s.u_names, s.args), why }),
             .help = help,
         });
+        assert(s.list.items.len != 0);
     }
 };
 
@@ -381,10 +392,14 @@ pub fn plan(g: Input, u_names: []const []const u8) Error!Limits {
             out.items[w_] = lc;
             w_ += 1;
         }
+        assert(w_ < out.items.len); // at least one site dangled
         lim.calls = out.items[0..w_];
+        // Validity is symmetric, so no surviving site dangles now.
+        for (lim.calls, 0..) |_, i| assert(dangling(lim, i) == null);
     }
     lim.declined = declined.items;
     try planSeed(g, u_names, &lim);
+    assert(lim.calls.len <= out.items.len);
     return lim;
 }
 
@@ -455,12 +470,18 @@ fn planSeed(g: Input, u_names: []const []const u8, lim: *Limits) Error!void {
     const find = struct {
         fn f(parent: []u32, x0: u32) u32 {
             var x = x0;
-            while (parent[x] != x) x = parent[x];
+            // Bound: a parent chain visits each element at most once.
+            var hops: usize = 0;
+            while (parent[x] != x) : (hops += 1) {
+                assert(hops < parent.len);
+                x = parent[x];
+            }
             return x;
         }
     }.f;
     const node = struct {
         fn f(u: u32, gnd: usize) u32 {
+            assert(u == none_u32 or u < gnd); // an unknown, or ground
             return if (u == none_u32) @intCast(gnd) else u;
         }
     }.f;
@@ -504,8 +525,11 @@ fn planSeed(g: Input, u_names: []const []const u8, lim: *Limits) Error!void {
         assert(root != none_u32);
         placed[root] = true;
         if (root != n) try steps.append(g.arena, .{ .node = root, .from = none_u32, .site = none_u32 });
+        // Bound: every round but the last places a node, of `n + 1`.
         var grew = true;
-        while (grew) {
+        var rounds: usize = 0;
+        while (grew) : (rounds += 1) {
+            assert(rounds <= n + 1);
             grew = false;
             for (tree.items) |e| {
                 const lc = lim.calls[e];
@@ -520,6 +544,10 @@ fn planSeed(g: Input, u_names: []const []const u8, lim: *Limits) Error!void {
             }
         }
     }
+    // A tree edge joins two components, and each node is placed once
+    // (ground, always a root when present, is never a step).
+    assert(tree.items.len <= edges.items.len);
+    assert(steps.items.len <= n);
     lim.seed_steps = steps.items;
     lim.seed_dropped = dropped.items;
 }
