@@ -215,11 +215,14 @@ ships, `tests/` the tests, `tools/` the scripts.
   test inputs in directories beside them: `host/` (the hosts that drive a
   device), `canary/` (the wrong-on-purpose fixtures), `rtlil/`,
   `beh_verilog/` and `osdi/` (the `--emit-rtlil`, `--emit-verilog` and
-  `--emit-osdi` inputs), `suite.xfail` (the fixture runner's known
+  `--emit-osdi` inputs), `vpi_negative/`, `vpi_escaped/` and `vpi_mem/`
+  (VerA's own VPI applications and designs), `suite.xfail` (the fixture runner's known
   failures) and the `conformance/` submodule. The roots: `unit.zig` (every module's public-API tests,
   one namespace per module), `suite.zig` (the fixture runner, one namespace
   per mode over the shared harness), `fuzz.zig`, `rng_reference.zig` (+ `.c`),
-  `printf_reference.zig`, `codegen_probe.zig`, `host.py` (the host
+  `printf_reference.zig`, `codegen_probe.zig`, `argv.zig` (the
+  degenerate-argv table), `generators.zig` (generated inputs through every
+  pass, one child per row), `host.py` (the host
   observation runners and their `selftest`). A nested namespace may not
   redeclare a file-scope name, so a merged root's file scope declares only
   its namespaces, `main` and the test that references them. `src/` and
@@ -234,7 +237,8 @@ ships, `tests/` the tests, `tools/` the scripts.
   `tests/README.md` lists the suites.
 - `tools/`: one file per script (`conformance.py`: the release measures and
   fixture-maintenance signals, `report.py`, `doctest.py`, `external_analog.py`
-  (the OSDI decks in ngspice), `update-sources.py`), `vera.xfail` and
+  (the OSDI decks in ngspice), `update-sources.py`, `asm_probe.py` (the
+  `codegen_probe.zig` assembly against its `expect:` lines)), `vera.xfail` and
   `zrunner.zig`.
 - A module imports `lib/` freely and `src/` never imports a module above it in
   `build.zig`'s `module_specs`; `lib/` imports nothing from `src/`.
