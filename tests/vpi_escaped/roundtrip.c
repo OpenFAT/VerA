@@ -2,7 +2,10 @@
  * escaped.v, whose names hold `[`, `]`, `.`, `(` and `)` (IEEE 1364-2005
  * §3.7.1), is looked up again by the vpiFullName VerA gives it. Oracle: the
  * round trip is the identity, `vpi_handle_by_name(vpi_get_str(vpiFullName,
- * obj), NULL)` compares equal to obj (§27.18, §27.6); each object's vpiName
+ * obj), NULL)` compares equal to obj (§27.18, §27.6), except that a port
+ * net's full name names its vpiPort (as the conformance suite's structure.c
+ * and object_traversal.c expect), accepted when that port stands for the net
+ * (`portOf`); each object's vpiName
  * is the identifier escaped.v declares, without its backslash and space
  * (§3.7.1: neither is part of the identifier); and the walk reaches the 32
  * objects escaped.v's header counts by hand. A name that resolves to nothing
@@ -19,17 +22,12 @@
 
 #define OBJECTS 32 /* escaped.v's header */
 
-#define PORT_NET "vpi_handle_by_name of a port net's vpiFullName returns its vpiPort (type 44), which has the same full name; also on plain names"
 #define DOT_NAME "a `.` inside an escaped name reads back as a space in vpiName and vpiFullName (`\\m.1 ` is `m 1`)"
 static const char *const known[][2] = {
-    {"vpi_escaped.m(0).u[1].in a", PORT_NET},
-    {"vpi_escaped.m(0).u[1].out(b)", PORT_NET},
-    {"vpi_escaped.m(0).u[1] v.in a", PORT_NET},
-    {"vpi_escaped.m(0).u[1] v.out(b)", PORT_NET},
-    {"vpi_escaped.m 1.u[1].in a", PORT_NET},
-    {"vpi_escaped.m 1.u[1].out(b)", PORT_NET},
-    {"vpi_escaped.m 1.u[1] v.in a", PORT_NET},
-    {"vpi_escaped.m 1.u[1] v.out(b)", PORT_NET},
+    {"vpi_escaped.m(0).u[1].in a", DOT_NAME},
+    {"vpi_escaped.m(0).u[1] v.in a", DOT_NAME},
+    {"vpi_escaped.m 1.u[1].in a", DOT_NAME},
+    {"vpi_escaped.m 1.u[1] v.in a", DOT_NAME},
     {"vpi_escaped.m(0).u[1] v", DOT_NAME},
     {"vpi_escaped.m 1", DOT_NAME},
     {"vpi_escaped.m 1.u[1] v", DOT_NAME},
@@ -42,6 +40,32 @@ static const char *const declared[] = {
 };
 
 static int bad, objects, xfails;
+
+/* Two (port, net) pairs `portOf` accepted, from different modules: the
+ * check that it refuses a port for another module's net of the same name. */
+static vpiHandle pair_port[2], pair_net[2];
+static int pairs;
+
+/* Whether `port`, which a net's full name named, stands for `net`: its
+ * vpiLowConn is the net (§12.? port diagram), or, where VerA models no
+ * vpiLowConn (vpi_user.h), it is a port of the net's own module carrying the
+ * net's name. */
+static int portOf(vpiHandle port, vpiHandle net) {
+    char name[256];
+    const char *n;
+    vpiHandle low, pm, nm;
+    if (vpi_get(vpiType, port) != vpiPort) return 0;
+    low = vpi_handle(vpiLowConn, port);
+    if (low != NULL) return vpi_compare_objects(low, net);
+    pm = vpi_handle(vpiModule, port);
+    nm = vpi_handle(vpiModule, net);
+    if (pm == NULL || nm == NULL || !vpi_compare_objects(pm, nm)) return 0;
+    n = vpi_get_str(vpiName, net);
+    if (n == NULL || strlen(n) >= sizeof name) return 0;
+    strcpy(name, n);
+    n = vpi_get_str(vpiName, port);
+    return n != NULL && strcmp(n, name) == 0;
+}
 static int seen[sizeof known / sizeof known[0]];
 
 static const char *knownReason(const char *full) {
@@ -66,8 +90,10 @@ static void check(vpiHandle obj) {
     strcpy(full, got);
     back = vpi_handle_by_name(full, NULL);
     if (back == NULL) why = "names nothing";
-    else if (!vpi_compare_objects(back, obj)) why = "names another object";
+    else if (!vpi_compare_objects(back, obj) && !portOf(back, obj)) why = "names another object";
     else {
+        if (!vpi_compare_objects(back, obj) && pairs < 2 && (pairs == 0 || !vpi_compare_objects(vpi_handle(vpiModule, back), vpi_handle(vpiModule, pair_port[0]))))
+            pair_port[pairs] = back, pair_net[pairs] = obj, pairs++;
         const char *name = vpi_get_str(vpiName, obj);
         size_t i;
         for (i = 0; name && i < sizeof declared / sizeof declared[0] && strcmp(declared[i], name) != 0; i++) {}
@@ -114,6 +140,10 @@ static PLI_INT32 start(p_cb_data d) {
         exit(1);
     }
     while ((top = vpi_scan(it)) != NULL) walk(top, 0);
+    /* The acceptance's own canary: a port never stands for another
+     * module's net. */
+    if (pairs != 2) bad = 1, printf("BAD walk: %d port nets in distinct modules, escaped.v has more\n", pairs);
+    else if (portOf(pair_port[0], pair_net[1]) || portOf(pair_port[1], pair_net[0])) bad = 1, printf("BAD portOf: accepts a port for another module's net\n");
     for (i = 0; known[i][0] != NULL; i++)
         if (!seen[i]) bad = 1, printf("BAD %s: known[] names no object\n", known[i][0]);
     if (objects != OBJECTS) bad = 1, printf("BAD walk: %d objects, escaped.v has %d\n", objects, OBJECTS);
