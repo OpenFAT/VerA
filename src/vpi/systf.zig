@@ -149,7 +149,7 @@ pub fn regOf(o: *const Obj) ?*Systf {
 
 /// The analog system functions registered with sysfunctype vpiIntFunc: the
 /// names a device is compiled to call as integers (§12.32.1,
-/// `vera.Options.int_systfs`). The slice is `a`'s; the names are this file's
+/// `vera.Settings.int_systfs`). The slice is `a`'s; the names are this file's
 /// until `reset`. Asserts that the registry's two tables agree.
 pub fn intAnalogNames(a: std.mem.Allocator) error{OutOfMemory}![]const []const u8 {
     std.debug.assert(regs.items.len == live.count());

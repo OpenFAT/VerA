@@ -51,7 +51,7 @@ const Cold = schema.Cold;
 const List = schema.List;
 const Obj = schema.Obj;
 
-/// `tb.renderVpiLib`'s C interface.
+/// `exe.writeVpiLib`'s C interface.
 pub const Lib = struct {
     open: *const fn (u8) callconv(.c) void,
     solve: *const fn (f64, f64, bool, bool) callconv(.c) bool,

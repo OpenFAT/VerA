@@ -13,7 +13,7 @@
 //! - `pub fn vpi_handle_by_multi_index(obj: abi.vpiHandle, num_index: c_int, index_array: ?[*]const c_int) abi.vpiHandle`
 
 const std = @import("std");
-const Elaborate = @import("vera").Elaborate;
+const elab = @import("elab");
 const abi = @import("abi.zig");
 const delays = @import("delays.zig");
 const run = @import("run.zig");
@@ -185,7 +185,7 @@ pub export fn vpi_handle_by_name(name: [*c]const u8, scope: abi.vpiHandle) abi.v
             std.debug.assert(hops < d.scopes.len);
             hops += 1;
             var buf: [schema.name_buf_len]u8 = undefined;
-            const full = std.mem.print(&buf, "{s}{c}{s}", .{ d.obj(at).full, Elaborate.sep, want }) catch continue;
+            const full = std.mem.print(&buf, "{s}{c}{s}", .{ d.obj(at).full, elab.sep, want }) catch continue;
             if (d.by_name.get(full)) |i| {
                 std.debug.assert(std.mem.eql(u8, d.obj(i).full, full));
                 return trust.handleOf(d.obj(i));

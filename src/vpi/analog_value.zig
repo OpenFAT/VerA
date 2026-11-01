@@ -169,7 +169,7 @@ fn holds(bi: *const Binding, row: u32) bool {
 /// phasor, elsewhere the large-signal value with imaginary part 0. A
 /// potential is the difference of two unknowns. A flow is an unknown for a
 /// potential source, and for a flow source the §5.6 row the device publishes
-/// (`codegen.Options.vpi_contribs`): resistive part plus the backward-Euler
+/// (`vera.Codegen.vpi_contribs`): resistive part plus the backward-Euler
 /// derivative of the reactive part over the step being solved. When several
 /// instances' unnamed branches share the row, it is this instance's own share
 /// (`vpiShares`, §5.4.1), the same way.

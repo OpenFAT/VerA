@@ -1,5 +1,5 @@
-//! The analog model: a `CompileResult` (an elaborated, flattened design) ->
-//! a `Design`. The scope tree is elaboration's (`CompileResult.unit_paths`), a
+//! The analog model: a `vera.Result` (an elaborated, flattened design) ->
+//! a `Design`. The scope tree is elaboration's (`Result.unit_paths`), a
 //! flat declaration belongs to the scope its §6.7 path names, and the analog
 //! classes (model_branches.zig) and behaviour (§11.6.20/§11.6.21) come after
 //! the declarations. Everything is copied into `Design.arena`, so the
@@ -8,13 +8,13 @@
 //! §11.6.21; IEEE 1364-2005 §26.3.3.
 //!
 //! Contents:
-//! - `pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Design`
+//! - `pub fn build(model_gpa: std.mem.Allocator, res: *const Result) Error!Design`
 //! - `pub fn splitPath( arena: std.mem.Allocator, by_path: *const std.StringHashMapUnmanaged(u32), flat: []const u8, ) Error!?struct`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
-const CompileResult = @import("vera").CompileResult;
-const Elaborate = @import("vera").Elaborate;
+const Result = @import("vera").Result;
+const elab = @import("elab");
 const Lowered = @import("ir").Lowered;
 const model = @import("model.zig");
 const model_arrays = @import("model_arrays.zig");
@@ -38,7 +38,7 @@ const Rows = model.Rows;
 /// freed once this returns. Caller owns the result and frees it with
 /// `Design.deinit`. `model_gpa` holds the `Design`'s tables. Asserts that
 /// every unit became one scope, and the model has the one top.
-pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Design {
+pub fn build(model_gpa: std.mem.Allocator, res: *const Result) Error!Design {
     const lowered = res.lowered;
     var d: Design = .{ .gpa = model_gpa, .arena = .init(model_gpa) };
     errdefer d.deinit();
@@ -57,14 +57,13 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
 
     // --- the scope tree ----------------------------------------------------
     // §11.6.1's `vpiInternalScope`, read from elaboration rather than walked
-    // again: `CompileResult.unit_paths` is one row per inlined instance, depth first
+    // again: `Result.unit_paths` is one row per inlined instance, depth first
     // in source order, with the definition it came from (`vpiDefName`).
     // Instance arrays, §6.4.2 paramsets and Annex E.2.1 were decided there. A
     // tree of one publishes no rows, so it is its own single row.
-    const units = if (res.unit_paths.len != 0) res.unit_paths else &[_]Elaborate.UnitPath{
-        .{ .module = top_name, .path = "", .decl = flat },
-    };
-    var scopes: std.ArrayList(Building) = try .initCapacity(gpa, units.len);
+    const units = res.unit_paths;
+    const n_units = @max(units.len, 1);
+    var scopes: std.ArrayList(Building) = try .initCapacity(gpa, n_units);
     defer {
         for (scopes.items) |*s| s.deinit(gpa);
         scopes.deinit(gpa);
@@ -73,22 +72,25 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
     // the flattened declarations costs a lookup per declaration.
     var by_path: std.StringHashMapUnmanaged(u32) = .empty;
     defer by_path.deinit(gpa);
-    for (units, 0..) |u, i| {
-        const path = try arena.dupe(u8, std.mem.trimEnd(u8, u.path, &.{Elaborate.sep}));
+    for (0..n_units) |i| {
+        const u_path = if (units.len != 0) units.items(.path)[i] else "";
+        const u_module = if (units.len != 0) file.str(units.items(.module)[i]) else top_name;
+        const u_decl = if (units.len != 0) units.items(.decl)[i].get(file) else flat;
+        const path = try arena.dupe(u8, std.mem.trimEnd(u8, u_path, &.{elab.sep}));
         const at: u32 = @intCast(i);
         // Rows come parent first, so the parent is already in the table. Unit 0
         // is the top, whose path is "".
-        const parent: ?u32 = if (i == 0) null else by_path.get(path[0 .. std.mem.findScalarLast(u8, path, Elaborate.sep) orelse 0]).?;
+        const parent: ?u32 = if (i == 0) null else by_path.get(path[0 .. std.mem.findScalarLast(u8, path, elab.sep) orelse 0]).?;
         scopes.appendAssumeCapacity(.{
-            .decl = u.decl,
-            .def_name = try arena.dupe(u8, u.module),
+            .decl = u_decl,
+            .def_name = try arena.dupe(u8, u_module),
             .path = path,
             .parent = .of(parent),
         });
         if (parent) |p| try scopes.items[p].children.append(gpa, .at(at));
         try by_path.put(gpa, path, at);
     }
-    std.debug.assert(scopes.items.len == units.len);
+    std.debug.assert(scopes.items.len == n_units);
 
     // --- the objects -------------------------------------------------------
     var objects: Rows = .{ .gpa = model_gpa };
@@ -107,7 +109,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
 
     // §11.6.4 ports. Read from the DEFINITION, not from the flattened module:
     // flattening collapses a child's port into the parent net it was bound to
-    // (`Elaborate.Design.names`), so the flat module holds only the top's ports
+    // (`elab.Design.names`), so the flat module holds only the top's ports
     // and a child's would otherwise have no object at all — even though §6.7
     // still lets source name it and `hier_names` still resolves it.
     //
@@ -136,7 +138,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
 
     // §11.6.8/§11.6.9/§11.6.12 — the contents of every scope, from the
     // ELABORATED module. Each flat name is its own §6.7 path, so the scope it
-    // belongs to is the part before the last `Elaborate.sep` and the `vpiName`
+    // belongs to is the part before the last `elab.sep` and the `vpiName`
     // is the part after. A declaration whose path names no scope is dropped
     // rather than guessed at; nothing a flatten produces has one, and inventing
     // a scope for it would be inventing hierarchy.
@@ -241,7 +243,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
 /// Split a flattened declaration's name into the scope it belongs to and the
 /// §11.6 `vpiName` inside it.
 ///
-/// The last `Elaborate.sep` is the split, and that is exact rather than a
+/// The last `elab.sep` is the split, and that is exact rather than a
 /// heuristic: §6.6 generate blocks add no path component in this compiler (they
 /// unroll inside a body, not into the declaration space), and `parser.internTok`
 /// substitutes a space for a period inside a §2.8.1 escaped identifier — so a
@@ -255,7 +257,7 @@ pub fn splitPath(
     flat: []const u8,
 ) Error!?struct { scope: u32, local: []const u8 } {
     std.debug.assert(flat.len != 0);
-    const at = std.mem.findScalarLast(u8, flat, Elaborate.sep);
+    const at = std.mem.findScalarLast(u8, flat, elab.sep);
     const path = if (at) |i| flat[0..i] else "";
     const scope = by_path.get(path) orelse return null;
     std.debug.assert(scope < by_path.count());
@@ -273,7 +275,7 @@ fn addAnalogCode(
     arena: std.mem.Allocator,
     objects: *Rows,
     scopes: []Building,
-    res: *const CompileResult,
+    res: *const Result,
     top_name: []const u8,
 ) Error!void {
     std.debug.assert(scopes.len <= objects.hot.items.len);
@@ -344,7 +346,7 @@ fn addAnalogCode(
 /// no start for. The file name is copied into `arena`.
 ///
 /// Asserts that the line is 1-based and the copy spells the file's name.
-fn srcLoc(arena: std.mem.Allocator, res: *const CompileResult, tok: u32) Error!?Loc {
+fn srcLoc(arena: std.mem.Allocator, res: *const Result, tok: u32) Error!?Loc {
     const starts = res.lowered.tok_starts;
     if (tok >= starts.len) return null;
     var at = schema.locate(res.diags, starts[tok]);

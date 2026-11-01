@@ -7,12 +7,12 @@
 //! §11.6.5-§11.6.7.
 //!
 //! Contents:
-//! - `pub fn addAnalog( gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows, scopes: []Building, by_path: *const std.StringHashMapUnmanaged(u32), res: *const CompileResult, top_name: []const u8, ) Error!struct`
+//! - `pub fn addAnalog( gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows, scopes: []Building, by_path: *const std.StringHashMapUnmanaged(u32), res: *const Result, top_name: []const u8, ) Error!struct`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
-const CompileResult = @import("vera").CompileResult;
-const Elaborate = @import("vera").Elaborate;
+const Result = @import("vera").Result;
+const elab = @import("elab");
 const Lowered = @import("ir").Lowered;
 const model = @import("model.zig");
 const model_analog = @import("model_analog.zig");
@@ -42,7 +42,7 @@ pub fn addAnalog(
     objects: *Rows,
     scopes: []Building,
     by_path: *const std.StringHashMapUnmanaged(u32),
-    res: *const CompileResult,
+    res: *const Result,
     top_name: []const u8,
 ) Error!struct { disciplines: []const ObjId, natures: []const ObjId } {
     std.debug.assert(scopes.len <= objects.hot.items.len);
@@ -268,7 +268,7 @@ fn unnamedBranch(
     scopes: []Building,
     unnamed: *std.AutoHashMapUnmanaged(UnnamedKey, ObjId),
     by_path: *const std.StringHashMapUnmanaged(u32),
-    res: *const CompileResult,
+    res: *const Result,
     node_of_row: []const ObjId,
     c: Lowered.Contribution,
     idx: u32,
@@ -276,7 +276,7 @@ fn unnamedBranch(
 ) Error!void {
     const lowered = res.lowered;
     const scope: u32 = if (unit < res.unit_paths.len)
-        by_path.get(std.mem.trimEnd(u8, res.unit_paths[unit].path, &.{Elaborate.sep})) orelse 0
+        by_path.get(std.mem.trimEnd(u8, res.unit_paths.items(.path)[unit], &.{elab.sep})) orelse 0
     else
         0;
     std.debug.assert(scope < scopes.len);
@@ -362,7 +362,7 @@ fn terminalNode(
     objects: *const Rows,
     net_at: *const std.StringHashMapUnmanaged(ObjId),
     arena: std.mem.Allocator,
-    res: *const CompileResult,
+    res: *const Result,
     top_name: []const u8,
     e: Ast.ExprId,
 ) Error!ObjId {

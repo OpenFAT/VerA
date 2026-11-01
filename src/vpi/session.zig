@@ -14,8 +14,8 @@
 //! - `pub var design: ?Design`
 //! - `pub var starting = false`
 //! - `pub const Error = error`
-//! - `pub fn open(gpa: std.mem.Allocator, res: *const @import("vera").CompileResult) !void`
-//! - `pub fn buildDesign(gpa: std.mem.Allocator, res: *const @import("vera").CompileResult) !Design`
+//! - `pub fn open(gpa: std.mem.Allocator, res: *const @import("vera").Result) !void`
+//! - `pub fn buildDesign(gpa: std.mem.Allocator, res: *const @import("vera").Result) !Design`
 //! - `pub fn close() void`
 //! - `pub fn runStartupRoutines() void`
 //! - `pub fn runStartupTable(table: ?[*]const ?StartupFn) void`
@@ -81,13 +81,13 @@ const startup_routines_max = 1 << 16;
 /// Builds the object model over one elaborated design and installs it,
 /// closing any previous one.
 ///
-/// `res` is what `vera.compileSource` produced: `res.module` is the
-/// elaborated top (`Elaborate.Design.top`), `res.file` its AST and
+/// `res` is what `vera.analyze` produced: `res.module` is the
+/// elaborated top (`elab.Design.top`), `res.file` its AST and
 /// `res.lowered.hier_names` its §6.7 path table. Everything read out of it is
-/// copied, so the caller may free the `CompileResult` the moment this returns.
+/// copied, so the caller may free the `Result` the moment this returns.
 /// Asserts that no startup routine is running and, on success, that the
 /// model is installed.
-pub fn open(gpa: std.mem.Allocator, res: *const @import("vera").CompileResult) !void {
+pub fn open(gpa: std.mem.Allocator, res: *const @import("vera").Result) !void {
     std.debug.assert(!starting);
     if (design != null) close();
     design = try buildDesign(gpa, res);
@@ -99,7 +99,7 @@ pub fn open(gpa: std.mem.Allocator, res: *const @import("vera").CompileResult) !
 /// makes the installed one while that library's calls run (VerA #84). The
 /// caller owns it until it hands it to `attach`. Asserts that the model
 /// holds its top module's row and scope.
-pub fn buildDesign(gpa: std.mem.Allocator, res: *const @import("vera").CompileResult) !Design {
+pub fn buildDesign(gpa: std.mem.Allocator, res: *const @import("vera").Result) !Design {
     const d = try model_analog.build(gpa, res);
     std.debug.assert(d.scopes.len != 0);
     std.debug.assert(d.scopes.len <= d.objects.len);

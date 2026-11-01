@@ -242,7 +242,7 @@ pub export fn vpi_register_cb(cb_data_p: ?*const CbData) abi.vpiHandle {
         // vpiSetInteractiveScope is the only such command here.
         // IEEE 1364-2005 §27.33.3 and VAMS 12.31.4's action reason
         // cbTchkViolation, "Timing check error occurred": the digital
-        // engine's timing checks (`digital.Run.tchk_hook`, `onTchk`).
+        // engine's timing checks (`digital.Run.checks.hook`, `onTchk`).
         // IEEE 1364-2005 §27.33.3's feature reasons cbStartOfReset and
         // cbEndOfReset, "Simulation reset begin" and "end": §12.36's
         // vpiReset (`run.simulate`).

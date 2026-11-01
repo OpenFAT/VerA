@@ -44,7 +44,7 @@ cold: []Cold = &.{},
 scopes: []Scope = &.{},
 
 /// §11.6.1 NOTE 1 — what `vpi_iterate(vpiModule, NULL)` walks. One entry:
-/// `Elaborate.pickTop` elaborates exactly one design root.
+/// `elab.elaborate` (its `pickTop`) elaborates exactly one design root.
 top_modules: []const ObjId = &.{},
 
 /// §11.6.2's two top-level sets: `vpi_iterate(vpiDiscipline, NULL)` and

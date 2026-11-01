@@ -126,7 +126,7 @@ pub fn interactiveScopeChange(scope: *const Obj) void {
     fireAll(user.cbInteractiveScopeChange, scope);
 }
 
-/// `digital.Run.tchk_hook`: timing check `check` of the run reported a
+/// `digital.Run.checks.hook`: timing check `check` of the run reported a
 /// violation. IEEE 1364-2005 §27.33.3 / VAMS 12.31.4 cbTchkViolation,
 /// "Timing check error occurred", and "For cbTchkViolation callbacks, the obj
 /// field shall be a handle to the timing check": the §11.6.15 object built

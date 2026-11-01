@@ -32,7 +32,7 @@
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
-const Elaborate = @import("vera").Elaborate;
+const elab = @import("elab");
 const model_arrays = @import("model_arrays.zig");
 const schema = @import("schema.zig");
 const user = @import("vpi_user.zig");
@@ -340,7 +340,7 @@ pub fn nameTable(gpa: std.mem.Allocator, objects: []const Obj) Error!std.StringH
     return names;
 }
 
-/// §6.7 join: `parent` and `local` with `Elaborate.sep` between them, or just
+/// §6.7 join: `parent` and `local` with `elab.sep` between them, or just
 /// `local` when `parent` is the empty root path. `vpiFullName` is this applied
 /// once more with the top module's own name on the left, which is the form
 /// §12.21's own example passes (`vpi_handle_by_name("top.mod1", …)`).
@@ -353,20 +353,20 @@ pub fn joinPath(arena: std.mem.Allocator, parent: []const u8, local: []const u8)
     else if (local.len == 0)
         try arena.dupe(u8, parent)
     else
-        try arena.print("{s}{c}{s}", .{ parent, Elaborate.sep, local });
+        try arena.print("{s}{c}{s}", .{ parent, elab.sep, local });
     std.debug.assert(out.len == parent.len + local.len + @intFromBool(both));
     std.debug.assert(std.mem.endsWith(u8, out, local));
     return out;
 }
 
-/// The `vpiName` part of a §6.7 path: what follows the last `Elaborate.sep`,
+/// The `vpiName` part of a §6.7 path: what follows the last `elab.sep`,
 /// or all of `path`. A slice of `path`, not a copy. Asserts that it is a
 /// suffix of `path` with no separator in it.
 pub fn lastComponent(path: []const u8) []const u8 {
-    const at = std.mem.findScalarLast(u8, path, Elaborate.sep) orelse return path;
+    const at = std.mem.findScalarLast(u8, path, elab.sep) orelse return path;
     const last = path[at + 1 ..];
     std.debug.assert(last.len < path.len);
-    std.debug.assert(std.mem.findScalar(u8, last, Elaborate.sep) == null);
+    std.debug.assert(std.mem.findScalar(u8, last, elab.sep) == null);
     return last;
 }
 

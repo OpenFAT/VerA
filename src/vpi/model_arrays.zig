@@ -37,7 +37,7 @@ pub const index_text_max = "[-9223372036854775808]".len;
 /// count is IEEE 1364-2005 §26.6.6/§26.6.7's vpiSize. A multidimensional
 /// element is named by all its indices (`m[1][2]`) and its vpiIndex is the
 /// innermost ("the index for the reg", §26.6.7 m). The digital engine stores
-/// element k of that order in `base + k` (`digital.Run.arrays`), which is the
+/// element k of that order in `base + k` (`digital.Run.decls.arrays`), which is the
 /// slot given each element here. Returns the array row; invalidates pointers
 /// into `objects`. Asserts that `[low:high]` is ascending, and that the
 /// array, then a constant and an element per member, are the rows appended.

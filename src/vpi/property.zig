@@ -57,7 +57,7 @@ pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
     if (prop == user.vpiProtected) {
         // §26.3.5: declared in a decrypted envelope's cleartext, which the
         // preprocessor registers as its own file.
-        if (trust.asObj(obj)) |o| return @intFromBool(if (location(o)) |at| std.mem.eql(u8, at.file, @import("vera").Preprocessor.protect.file_name) else false);
+        if (trust.asObj(obj)) |o| return @intFromBool(if (location(o)) |at| std.mem.eql(u8, at.file, @import("frontend").protect.file_name) else false);
         if (other != null) return 0;
     }
     if (status.unansweredProp(prop)) |u| {
@@ -103,7 +103,7 @@ pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
             else => propFail(prop, o),
         },
         // §11.6.1 — true for the root of the instance tree, the one module
-        // `Elaborate.pickTop` chose.
+        // `elab.elaborate` chose (its `pickTop`).
         user.vpiTopModule => {
             if (o.kind != .module) return propFail(prop, o);
             return @intFromBool(o.owner == .none);

@@ -523,7 +523,7 @@ pub fn typeName(t: c_int) []const u8 {
 /// physical line, and the file name, borrowed from `bag`. Asserts that the
 /// line is 1-based and not past the file's last.
 pub fn locate(bag: *const @import("vera").diag.Bag, start: u32) Loc {
-    const at = bag.locate(.{ .start = start, .end = start }, null);
+    const at = bag.locate(.{ .start = start, .end = start }, .none);
     const off = bag.toSourceOffset(at.file, at.offset);
     const text = bag.sourceText(at.file);
     const line = 1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n");

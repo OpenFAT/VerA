@@ -1024,15 +1024,15 @@ test "§12.30: vpiForceFlag overrides a net's driver, vpiReleaseFlag hands it ba
 }
 
 test "§12.16: an analog parameter reads the value lowering folded" {
-    var res = try @import("vera").compileSource(std.testing.allocator,
+    var res = try @import("vera").analyze(std.testing.allocator,
         \\module r(p, n);
         \\  inout p, n; electrical p, n;
         \\  parameter real g = 2.5;
         \\  parameter integer k = 3;
         \\  analog I(p,n) <+ g*k*V(p,n);
         \\endmodule
-    , .lint);
-    defer res.deinit();
+    , .{}, null);
+    defer res.deinit(std.testing.allocator);
     try session.open(std.testing.allocator, &res);
     defer session.close();
     var v: Value = std.mem.zeroes(Value);
