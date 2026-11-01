@@ -43,7 +43,10 @@ fn noSlot(name: []const u8) noreturn {
     std.process.exit(1);
 }
 
-fn mixedFail(bag: *diag.Bag, e: anyerror) noreturn {
+/// Every way the digital half fails: its file (`setSingleFile`), its
+/// elaboration and its watches (`sim.digital.Error`), and the run, the
+/// adapter's own errors included (`sim.mixed.RunError`).
+fn mixedFail(bag: *diag.Bag, e: (diag.AddFileError || sim.mixed.RunError(Analog))) noreturn {
     var buf = std.Io.Writer.Allocating.init(std.heap.page_allocator);
     // A report that cannot render still names the run's own error below.
     diag.render(bag, &buf.writer, .{ .explain_hint = false, .summary = false }) catch |r| std.debug.print("{s}: the diagnostics did not render: {t}\n", .{ title, r });

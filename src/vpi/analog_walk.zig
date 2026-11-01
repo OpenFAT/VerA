@@ -15,7 +15,7 @@
 //! - `pub fn Mixed.breakpoint(m: *Mixed, t: f64) ?f64`
 //! - `pub fn Mixed.probe(m: *Mixed, t: ?f64, n1: []const u8, n2: ?[]const u8) !f64`
 //! - `pub fn run(b: *Binding, a: Analysis) Error!void`
-//! - `pub fn runMixed(b: *Binding, a: Analysis, dig: *sim.digital.Run, tick: f64, probe_names: []const []const u8, probe_nodes: []const [2][]const u8) (Error || anyerror)!void`
+//! - `pub fn runMixed(b: *Binding, a: Analysis, dig: *sim.digital.Run, tick: f64, probe_names: []const []const u8, probe_nodes: []const [2][]const u8) (Error || sim.mixed.RunError(Mixed))!void`
 //! - `pub fn sweep(b: *Binding, l: Lib, a: Analysis) Error!void`
 //! - `pub fn attempt(b: *Binding, l: Lib, t: f64, dt: f64, first: bool, last: bool) Error!void`
 //! - `pub fn accept(b: *Binding, l: Lib, first: bool, last: bool) void`
@@ -264,7 +264,7 @@ pub fn run(b: *Binding, a: Analysis) Error!void {
 /// hierarchical net (`Lowered.discrete_probes`). A window that is not
 /// forward from 0 and finite, or a grid past `analog.tran_steps_max`
 /// steps, is `error.BadAnalysis` before anything runs.
-pub fn runMixed(b: *Binding, a: Analysis, dig: *sim.digital.Run, tick: f64, probe_names: []const []const u8, probe_nodes: []const [2][]const u8) (Error || anyerror)!void {
+pub fn runMixed(b: *Binding, a: Analysis, dig: *sim.digital.Run, tick: f64, probe_names: []const []const u8, probe_nodes: []const [2][]const u8) (Error || sim.mixed.RunError(Mixed))!void {
     std.debug.assert(probe_names.len == probe_nodes.len);
     std.debug.assert(a.kind == .tran);
     // The grid below converts its step count to an integer: an analysis
