@@ -792,6 +792,17 @@ pub const parser_tests = struct {
         }
     }
 
+    test "A.5.1 a UDP's port list is an output and at least one input, in both header arms" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        try expectFirstErrors(arena_state.allocator(), &.{
+            .{ .src = "primitive u(q); output q; table 0 : 1; endtable endprimitive", .code = .E0207 },
+            .{ .src = "primitive u(output q); table 0 : 1; endtable endprimitive", .code = .E0207 },
+            .{ .src = "primitive u(q, a); output q; input a; table 0 : 1; endtable endprimitive", .code = null },
+            .{ .src = "primitive u(output q, input a); table 0 : 1; endtable endprimitive", .code = null },
+        }, true);
+    }
+
     test "A.5.1 a udp_declaration survives the parse, both header arms" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
@@ -7892,6 +7903,9 @@ pub const lower_tests = struct {
                 start = i + 1;
             }
         }
+        // §5.6.7.2's indirect form reads its operator's first slot for a probe.
+        for ([_][]const u8{ "ddt(, 1u)", "idt(, 0.0)", "idtmod(, 0.0, 1.0)" }) |op|
+            _ = try bodyVerdict(try arena.print("analog V(p) : {s} == V(q);", .{op}));
         // The clauses that do judge an omitted slot.
         try expectBodyCode("analog I(p) <+ ddt(V(p), );", .E0505);
         try expectBodyCode("analog I(p) <+ ddx(V(p), );", .E0504);
@@ -7917,6 +7931,35 @@ pub const lower_tests = struct {
             "analog begin I(br) <+ ddt(V(q) * 1p); I(q) <+ I(br); end",
             "analog V(br) <+ 0.0;",
         }) |b| try expectBodyCode(try arena_state.allocator().print("branch (p, p) br;\n{s}", .{b}), null);
+    }
+
+    test "§4.4 one net named twice in an access is E0315; two ports a parent shorts are two nets" {
+        // Oracle: §4.4's "they shall not evaluate to the same signal", read on
+        // the module as written. A module is legal or not by its own text, so
+        // an instance connecting two ports to one net (`res r1(a, a)`, a SPICE
+        // `R1 a a`) cannot make it illegal; Table 4-16's `I(n1, n1)` can.
+        const res = "module res(p, n); inout p, n; electrical p, n; {s} endmodule\nmodule top(a); inout a; electrical a; res r1(a, a); endmodule\n";
+        for ([_]Lower.Case{
+            .{ .src = "analog I(p, n) <+ V(p, n) / 1k;", .code = null },
+            .{ .src = "branch (p, n) b; analog I(b) <+ V(b) / 1k;", .code = null },
+            .{ .src = "analog I(p, p) <+ V(p, n) / 1k;", .code = .E0315 },
+        }) |c| {
+            const src = try std.testing.allocator.print(res, .{c.src});
+            defer std.testing.allocator.free(src);
+            try Lower.expectVerdict(src, c.code);
+        }
+        // §1.3.1.1 collapses every ground net onto one node: two of them are
+        // two signals.
+        try expectBodyCode("ground g1, g2; analog I(p) <+ V(g1, g2);", null);
+    }
+
+    test "IEEE 1364-2005 §4.11 a genvar shares the module name space with parameters, variables and nets (E0362)" {
+        for ([_]Lower.Case{
+            .{ .src = "genvar i; real i; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar i; parameter real i = 1.0; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar i; electrical i; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar k; real i; analog I(p) <+ V(p);", .code = null },
+        }) |c| try expectBodyCode(c.src, c.code);
     }
 
     test "a call with more operands than its 24-bit count holds is E1021, and one with fewer lowers" {
@@ -11882,7 +11925,7 @@ pub const preprocessor_tests = struct {
         try testing.checkAllAllocationFailures(testing.allocator, preprocessAll, .{
             "`define F(x) [x]\n`include \"constants.vams\"\n`ifdef M_PI\n`F(`M_PI)\n`endif\n" ++
                 // An actual far longer than its body: substitution grows mid-body.
-                "`define G(y) y y\n`G(an_actual_longer_than_the_body)\n" ++
+                "`define G(y) y y\n`G(" ++ @as([8192]u8, @splat('a')) ++ ")\n" ++
                 "`timescale 1ns/1ps\n`default_discipline electrical\n/* c */ `__LINE__ `__FILE__\n",
         });
     }

@@ -23,7 +23,7 @@
 //! Contents:
 //! - `pub const State = struct`
 //! - `pub const ScopeEntry = struct`
-//! - `pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: []const Ast.VarDecl, nets: []const Ast.NetDecl, ports: []const Ast.Port) Oom!void`
+//! - `pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: []const Ast.VarDecl, nets: []const Ast.NetDecl, ports: []const Ast.Port, genvars: []const Ast.StrId) Oom!void`
 //! - `pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) Oom!void`
 //! - `pub fn literalReg(self: *const Lower, decl: *const Ast.VarDecl, scope: VarScope) bool`
 //! - `pub fn countAssign(self: *Lower, place: Ssa.Place) Oom!void`
@@ -135,8 +135,9 @@ const Scratch = enum { off, zero, uninit };
 /// to give an instance the same name as the name of the net connected to its
 /// output."
 ///
-/// Checked across parameters, variables and nets over one scope's declaration
-/// lists (not `self.vars`), so shadowing an outer name is not reported. Net
+/// Checked across parameters, variables, nets and genvars over one scope's
+/// declaration lists (not `self.vars`), so shadowing an outer name is not
+/// reported. A genvar clashes with any of the others. Net
 /// against net is allowed (a port direction and its discipline declare one
 /// item), and so is a discrete discipline against a variable (§7's `reg out;
 /// ddiscrete out;`). A discipline-less net (`wire x;`) clashes with a
@@ -146,7 +147,7 @@ const Scratch = enum { off, zero, uninit };
 ///
 /// One set per kind, so a scope of n names is O(n): a flattened instance
 /// array puts every instance's parameters in the top module's scope.
-pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: []const Ast.VarDecl, nets: []const Ast.NetDecl, ports: []const Ast.Port) Oom!void {
+pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: []const Ast.VarDecl, nets: []const Ast.NetDecl, ports: []const Ast.Port, genvars: []const Ast.StrId) Oom!void {
     const Set = std.AutoHashMapUnmanaged(Ast.StrId, void);
     var param_names: Set = .empty;
     defer param_names.deinit(self.arena);
@@ -181,6 +182,16 @@ pub fn checkOneItemPerScope(self: *Lower, params: []const Ast.ParamDecl, vars: [
     for (nets) |n| {
         if (param_names.contains(n.name)) try dupItem(self, n.main_tok, n.name);
     }
+    // IEEE 1364-2005 §4.11 puts genvars in the module name space with the
+    // rest. A genvar row has no token, so the clash is reported at the other
+    // declaration.
+    if (genvars.len == 0) return;
+    var genvar_names: Set = .empty;
+    defer genvar_names.deinit(self.arena);
+    for (genvars) |g| try genvar_names.put(self.arena, g, {});
+    for (params) |p| if (genvar_names.contains(p.name)) try dupItem(self, p.main_tok, p.name);
+    for (vars) |v| if (genvar_names.contains(v.name)) try dupItem(self, v.main_tok, v.name);
+    for (nets) |n| if (genvar_names.contains(n.name)) try dupItem(self, n.main_tok, n.name);
 }
 
 /// §3.2 declare and initialize. Verilog-AMS variables start at zero, so a read
