@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.21.0 — 2026-11-01
+
+On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Verilog-AMS 746/754, Cumulative: 6805/6817.
+
 - **`-D NAME[=TEXT]` reaches a `.v` design** under `--run`, `--elab`,
   `--emit-rtlil`, `--emit-exe` (the interpreted executable keeps them) and
   the contract device; it was refused.

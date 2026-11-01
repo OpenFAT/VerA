@@ -87,7 +87,7 @@ const validate_file = @import("contract/validate.zig");
 /// An additive optional declaration stays optional for a host that checks
 /// it with `@hasDecl`. Replaces the integer `abi_version` (last 6) and the
 /// device's `contract_abi`, 2026-10-18.
-pub const vera_version = "0.20.0";
+pub const vera_version = "0.21.0";
 
 // A mutable global, against the house rule, because it is ABI: generated
 // devices read it through `hostString` from every entry point, and a
