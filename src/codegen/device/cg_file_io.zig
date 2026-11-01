@@ -25,6 +25,8 @@ const cg_format = @import("cg_format.zig");
 pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) Error!void {
     assert(Mir.callee.isFileCall(c));
     assert(g.cur.emitting_display);
+    assert(site < g.mir.instCount());
+    const len_before = g.out.items.len;
     // §9.5.1/§9.5.2/§9.5.6: `$fclose`, `$fflush` and the five output tasks are
     // tasks, so `Mir.callee.ty` types them real like every void call, but the
     // kernels return integers. The cast lives here because the value only
@@ -51,12 +53,16 @@ pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize
     if (keep) try g.b(")", .{});
     if (wrap and from_int) try g.b("))", .{});
     if (wrap) try g.b(")", .{});
+    assert(g.out.items.len > len_before);
 }
 
 /// Emits §9.4.1's registration half: arms the monitor latch of the site keyed
 /// by `args[0]` (`str_store.zMonitorArm`).
 pub fn emitMonitorArm(g: *Gen, args: []const Mir.Value) Error!void {
     assert(args.len != 0);
+    // `call_gate` arms a monitor only in a printing artifact's display unit.
+    assert(g.cur.emitting_display);
+    assert(g.display == .emit);
     return g.b("S.con(zMonitorArm({d}))", .{monitorKey(g, args)});
 }
 
@@ -66,6 +72,7 @@ pub fn emitMonitorArm(g: *Gen, args: []const Mir.Value) Error!void {
 /// of the $abstime or $realtime system functions".
 pub fn monitorValues(g: *Gen, ops: []const cg_format.PrintArg) Error!void {
     assert(ops.len <= std.math.maxInt(u32));
+    const len_before = g.out.items.len;
     try g.b("&[_]u64{{", .{});
     var first = true;
     for (ops) |p| {
@@ -97,15 +104,17 @@ pub fn monitorValues(g: *Gen, ops: []const cg_format.PrintArg) Error!void {
         }
     }
     if (first) try g.b("}}", .{}) else try g.b(" }}", .{});
+    assert(g.out.items.len >= len_before + "&[_]u64{}".len);
 }
 
 /// The site key `Lower.armMonitor` put first in a monitor's registration and
 /// report: a literal, so it can key a comptime latch.
 pub fn monitorKey(g: *const Gen, args: []const Mir.Value) i64 {
     assert(args.len != 0);
-    assert(args.len > 0);
     const def = g.mir.valueDef(g.an.rv(args[0]));
     assert(def == .int_const);
+    // `Lower.armMonitor` numbers the sites from 0.
+    assert(def.int_const >= 0);
     return def.int_const;
 }
 
@@ -113,6 +122,7 @@ pub fn monitorKey(g: *const Gen, args: []const Mir.Value) i64 {
 
 fn emitFileCallInner(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) Error!void {
     assert(Mir.callee.isFileCall(c));
+    assert(site < g.mir.instCount());
     switch (c) {
         // §9.5.2's five output tasks, and the two descriptor tasks that take no
         // text (`callee.zig`'s `.file_out` family).
@@ -226,11 +236,13 @@ fn emitReadLine(g: *Gen, args: []const Mir.Value) Error!void {
 inline fn emitLine(g: *Gen, args: []const Mir.Value, comptime kernel: []const u8) Error!void {
     comptime assert(kernel.len != 0);
     assert(args.len >= 2);
+    const len_before = g.out.items.len;
     try g.b(kernel ++ "(", .{});
     try g.renderVal(if (args.len > 0) args[0] else Mir.Value.zero, .int);
     try g.b(", ", .{});
     try g.renderVal(if (args.len > 1) args[1] else Mir.Value.zero, .int);
     try g.b(")", .{});
+    assert(g.out.items.len > len_before + kernel.len);
 }
 
 /// §9.5.2's five output tasks, plus `$fclose`/`$fflush`. The descriptor is
@@ -250,9 +262,12 @@ fn emitFileWrite(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) E
     if (mon) assert(args.len > 0);
     const all = if (mon) args[1..] else args;
     const rest = if (all.len > 0) all[1..] else all;
+    assert(rest.len <= args.len);
     var fmt: std.ArrayList(u8) = .empty;
     var ops: cg_display.Ops = .empty;
     try cg_display.buildArgs(g, rest, &fmt, &ops);
+    // `appendConv` writes a `{…}` per operand.
+    assert(ops.items.len <= fmt.items.len);
     // The §9.4.1 task §9.5.2 names this one after decides the newline:
     // `$write` is the member that does not end the line, and so is `$fwrite`.
     if (cg_display.endsLine(c)) try fmt.append(g.arena, '\n');

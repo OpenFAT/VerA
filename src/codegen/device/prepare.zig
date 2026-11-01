@@ -63,6 +63,7 @@ pub fn prepare(g: *Gen) Error!void {
     try arrayLanes(g);
     g.names = try plan_names.plan(g.input(), g.verdict.unit_modes.len);
     g.mw = @intCast(@max(1, std.math.divCeil(u32, g.names.n_u, 64) catch unreachable));
+    assert(g.mw >= 1);
     g.deps = try widen(g.arena, g.an.deps, g.an.dep_words, g.mw);
     g.acdyn = try widen(g.arena, g.an.acdyn, g.an.dep_words, g.mw);
     g.zero_mask = try gen_mask.zero(g.arena, g.mw);
@@ -72,6 +73,7 @@ pub fn prepare(g: *Gen) Error!void {
     // subtracts.
     g.topo = try plan_topo.plan(g.input(), g.names.branch_u);
     try cg_filters.planAll(g);
+    assert(g.filters.len == g.names.units.len);
     // Before `plan_jobs`: §4.5.15 the algorithm arguments of every honoured
     // `$limit` become core live-outs, and the job list is what queues them.
     g.limits = try plan_limit.plan(g.input(), g.names.u_names);
@@ -87,6 +89,7 @@ pub fn prepare(g: *Gen) Error!void {
     g.qs = try plan_qsite.plan(g.input(), g.names.branch_u, g.topo, g.sinv.invariant);
     if (g.display == .record) g.say = try cg_say.planSay(g);
     if (g.display == .emit) try cg_say.planPasses(g);
+    if (g.display != .record) assert(g.say.len == 0);
     g.jobs = try plan_jobs.plan(g.input(), .{
         .names = &g.names,
         .unit_modes = g.verdict.unit_modes,
@@ -119,6 +122,7 @@ pub fn prepare(g: *Gen) Error!void {
 /// §3.2.2 marks each `Lowered.mem_arrays` row whose storage carries a
 /// derivative: some load reads a version a derivative-carrying store reached.
 fn arrayLanes(g: *Gen) Error!void {
+    assert(g.arr_s.len == 0); // planned once
     g.arr_s = try g.arena.alloc(bool, g.lowered.mem_arrays.items.len);
     @memset(g.arr_s, false);
     if (g.arr_s.len == 0) return;
@@ -135,6 +139,7 @@ fn arrayLanes(g: *Gen) Error!void {
 fn widen(arena: std.mem.Allocator, col: []const u64, words: u32, mw: u32) Error![]const u64 {
     assert(words <= mw);
     assert(words > 0);
+    assert(col.len % words == 0);
     if (words == mw) return col;
     const n = col.len / words;
     const out = try gen_mask.zero(arena, @intCast(n * mw));
@@ -146,6 +151,9 @@ fn widen(arena: std.mem.Allocator, col: []const u64, words: u32, mw: u32) Error!
 /// One storage holds every version of its array, so its elements are typed
 /// by the union of their masks.
 fn arrayMasks(g: *Gen) Error!void {
+    // After `arrayLanes` and the mask width.
+    assert(g.arr_s.len == g.lowered.mem_arrays.items.len);
+    assert(g.mw >= 1);
     g.arr_mask = try gen_mask.zero(g.arena, @intCast(g.arr_s.len * g.mw));
     if (g.arr_mask.len == 0) return;
     for (0..g.an.nv) |v| {
@@ -204,4 +212,5 @@ fn narrowHeldLanes(g: *Gen) void {
             if (g.core.eval_need[@backingInt(g.an.rv(g.an.i_res[ii]))]) break true;
         } else false;
     }
+    assert(g.arr_s.len == g.lowered.mem_arrays.items.len);
 }

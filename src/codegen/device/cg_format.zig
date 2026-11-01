@@ -97,6 +97,7 @@ pub const PrintArg = struct {
         // The widest scratch a field of `max_stack` width and precision
         // takes: `.creal`'s.
         const most = Spec.max_stack + 320 + 8;
+        comptime assert(most > Spec.max_stack);
         return (self.scratch() orelse 0) <= most;
     }
 
@@ -121,7 +122,9 @@ pub const PrintArg = struct {
                 .wide => unreachable, // lowering hands a task no wide value: a whole wide `reg` read is E0222
             },
         };
-        return @max(body, self.spec.width);
+        const most = @max(body, self.spec.width);
+        assert(most >= self.spec.width);
+        return most;
     }
 };
 
@@ -177,6 +180,7 @@ pub fn decimalField(g: *Gen, v: Mir.Value) ?usize {
         .str, .wide => return null,
     };
     const cols = fieldCols(r);
+    assert(cols >= 1);
     return if (cols > 1) cols else null;
 }
 
@@ -193,6 +197,7 @@ pub fn translateFormat(
     ops: *cg_display.Ops,
 ) Error!usize {
     const a = g.arena;
+    const ops_before = ops.items.len;
     var next: usize = 0;
     var i: usize = 0;
     var steps: usize = 0;
@@ -271,21 +276,29 @@ pub fn translateFormat(
         next += 1;
         try appendConv(g, fmt, ops, operand, conv, spec);
     }
+    // Every scan stops at the end of `src`, and each consuming conversion
+    // appended exactly one operand.
+    assert(i == src.len);
+    assert(ops.items.len - ops_before == next);
     return @min(next, operands.len);
 }
 
 /// The decimal columns of record `r`'s largest value: 2^bits - 1 unsigned,
 /// -2^(bits-1) signed (its magnitude's digits plus the sign).
 pub fn fieldCols(r: WidthRecord) usize {
-    assert(r.bits >= 1 and r.bits <= 64);
+    assert(r.bits >= 1);
+    assert(r.bits <= 64);
     const most: u64 = if (r.signed) @as(u64, 1) << @intCast(r.bits - 1) else @as(u64, std.math.maxInt(u64)) >> @intCast(@as(u8, 64) - r.bits);
     const cols = std.math.log10_int(most) + 1 + @intFromBool(r.signed);
+    assert(cols >= 1);
     assert(cols <= 20);
     return cols;
 }
 
 /// Appends one conversion's `{…}` to `fmt` and its operand to `ops`.
 /// `conv_raw == 0` means the §9.4.3 default: the operand's natural form.
+/// Asserts that `conv_raw` is not `%` (a `%%` is literal text) and that a
+/// default conversion comes with an empty spec.
 pub fn appendConv(
     g: *Gen,
     fmt: *std.ArrayList(u8),
@@ -294,6 +307,8 @@ pub fn appendConv(
     conv_raw: u8,
     spec_arg: Spec,
 ) Error!void {
+    assert(conv_raw != '%');
+    if (conv_raw == 0) assert(std.meta.eql(spec_arg, Spec{}));
     const a = g.arena;
     const v = operand;
     const rec = widthRecord(g, v);
@@ -415,6 +430,7 @@ pub fn appendConv(
 /// format layer through `.val()`. The `.ascii`/`.cint` arms emit labeled block
 /// expressions whose scratch is the `zb{i}` array `emitScratch` declared.
 pub fn renderPrintArg(g: *Gen, p: PrintArg, i: usize) Error!void {
+    const len_before = g.out.items.len;
     // `appendConv` pairs every helper mode with the type it reads.
     switch (p.how) {
         .pad, .cint, .chr, .bits, .ascii => assert(p.want == .int),
@@ -498,6 +514,7 @@ pub fn renderPrintArg(g: *Gen, p: PrintArg, i: usize) Error!void {
             .wide => unreachable, // lowering hands a task no wide value: a whole wide `reg` read is E0222
         },
     }
+    assert(g.out.items.len > len_before);
 }
 
 // ---- private ----
@@ -510,6 +527,7 @@ pub fn renderPrintArg(g: *Gen, p: PrintArg, i: usize) Error!void {
 fn appendZigSpec(g: *Gen, fmt: *std.ArrayList(u8), spec: Spec, extra_prec: ?[]const u8) Error!void {
     const a = g.arena;
     if (spec.width == 0 and spec.prec == null and extra_prec == null) return;
+    const len_before = fmt.items.len;
     var buf: [48]u8 = undefined;
     // `.{d}` of any usize fits, so the prints below cannot fail.
     comptime assert(buf.len >= std.math.log10_int(@as(usize, std.math.maxInt(usize))) + 2);
@@ -525,6 +543,8 @@ fn appendZigSpec(g: *Gen, fmt: *std.ArrayList(u8), spec: Spec, extra_prec: ?[]co
     } else if (extra_prec) |p| {
         try fmt.appendSlice(a, p);
     }
+    // The ':' and at least one of width, precision or `extra_prec`.
+    assert(fmt.items.len > len_before + 1);
 }
 
 /// `{s}` with the outer alignment, for a field composed in per-op scratch
@@ -532,6 +552,7 @@ fn appendZigSpec(g: *Gen, fmt: *std.ArrayList(u8), spec: Spec, extra_prec: ?[]co
 /// (a zero-filled integer), which no outer alignment may touch.
 fn appendStrField(g: *Gen, fmt: *std.ArrayList(u8), spec: Spec, full: bool) Error!void {
     const a = g.arena;
+    const len_before = fmt.items.len;
     if (full or spec.width == 0) return fmt.appendSlice(a, "{s}");
     var buf: [48]u8 = undefined;
     // `{s:<W}` of any usize W fits.
@@ -539,6 +560,7 @@ fn appendStrField(g: *Gen, fmt: *std.ArrayList(u8), spec: Spec, full: bool) Erro
     try fmt.appendSlice(a, std.mem.print(&buf, "{{s:{c}{d}}}", .{
         @as(u8, if (spec.left) '<' else '>'), spec.width,
     }) catch unreachable);
+    assert(fmt.items.len >= len_before + "{s:>0}".len);
 }
 
 fn widthRecord(g: *Gen, v: Mir.Value) ?WidthRecord {
@@ -550,7 +572,8 @@ fn widthRecord(g: *Gen, v: Mir.Value) ?WidthRecord {
     const args = data.call.args;
     assert(args.len == 2 or args.len == 3);
     const bits = g.mir.valueDef(args[1]).int_const;
-    assert(bits >= 1 and bits <= 64);
+    assert(bits >= 1);
+    assert(bits <= 64);
     return .{ .bits = @intCast(bits), .signed = args.len == 3 and g.mir.valueDef(args[2]).int_const != 0 };
 }
 

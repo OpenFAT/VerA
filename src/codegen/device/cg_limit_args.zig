@@ -56,6 +56,7 @@ pub fn emitCore(g: *Gen) Error!void {
         for ([_]Mir.Value{lc.sign} ++ lc.argv, 0..) |v, k| {
             if (k > lc.alg.arity() or !needsCore(g, v)) continue;
             const r = g.an.rv(v);
+            assert(@backingInt(r) < idx.len);
             if (idx[@backingInt(r)] != none_u32) continue;
             idx[@backingInt(r)] = @intCast(vals.items.len);
             try vals.append(g.arena, r);
@@ -65,6 +66,7 @@ pub fn emitCore(g: *Gen) Error!void {
     assert(vals.items.len != 0);
     assert(vals.items.len <= g.an.nv);
     g.lim_idx = idx;
+    assert(g.lim_idx.len == g.an.nv);
     try gen_unit.emitSlice(g, try coreName(g), vals.items, idx, if (g.limits.calls.len != 0)
         \\/// §4.5.15 the `$limit` arguments the core computes, and only what they
         \\/// read: `limit` evaluates them at `old` once per instance per iterate.
@@ -199,7 +201,10 @@ fn isLeaf(g: *const Gen, v0: Mir.Value) bool {
     assert(v0 != .f_zero);
     return switch (g.mir.valueDef(g.an.rv(v0))) {
         .float_const, .int_const => true,
-        .param_ref => |p| Analysis.tyOfParam(g.lowered.params.items[p].ty) != .str,
+        .param_ref => |p| blk: {
+            assert(p < g.lowered.params.items.len);
+            break :blk Analysis.tyOfParam(g.lowered.params.items[p].ty) != .str;
+        },
         .undef, .str_const, .block_param, .inst_result => false,
     };
 }

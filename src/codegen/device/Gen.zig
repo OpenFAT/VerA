@@ -396,6 +396,8 @@ pub fn indWidth(n: u32) u32 {
     // `@min` narrows to the comptime bound's width; widen before scaling.
     const width = @as(u32, @min(n, max_indent)) * 4;
     assert(width <= max_indent * 4);
+    assert(width % 4 == 0);
+    if (n <= max_indent) assert(width == n * 4);
     return width;
 }
 
@@ -404,6 +406,7 @@ pub fn indWidth(n: u32) u32 {
 pub fn arrMask(self: *const Gen, id: usize) []u64 {
     assert(id < self.arr_s.len);
     assert(self.arr_mask.len == self.arr_s.len * self.mw);
+    assert(self.mw >= 1);
     return self.arr_mask[id * self.mw ..][0..self.mw];
 }
 

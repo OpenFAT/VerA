@@ -138,6 +138,11 @@ pub fn generate(
     assert(g.out.items.len != 0);
     const files = g.files.slice();
     assert(files.items(.lo).len == files.items(.hi).len);
+    // Every unit row was closed: its declaration starts inside its range.
+    for (files.items(.lo), files.items(.fn_at), files.items(.hi)) |lo, at, hi| {
+        assert(lo <= at);
+        assert(at <= hi);
+    }
     return .{
         .compile_error = g.any_fatal or (if (opts.diags) |bag| bag.failed() else false),
         .output = .{
