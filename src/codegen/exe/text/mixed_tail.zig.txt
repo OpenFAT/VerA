@@ -23,23 +23,30 @@ fn setField(model: *D.Model, comptime field: []const u8, v: anytype) void {
 }
 
 fn mixedSlot(dig: *sim.digital.Run, name: []const u8) u32 {
+    // The whole name first: an escaped identifier (IEEE 1364-2005 §3.7.1)
+    // may hold a `[` and end in `]` and still be one variable.
+    if (dig.slotOf(name)) |slot| return slot;
     // §7.3.1 an element `base[k]` of a digital array: the array's slots
     // run from its lowest index (`sim.digital.evaluate.Offset`).
-    if (name.len != 0 and name[name.len - 1] == ']') if (std.mem.findScalarLast(u8, name, '[')) |open| {
-        const k = std.fmt.parseInt(i64, name[open + 1 .. name.len - 1], 10) catch unreachable; // `declareDiscreteArray` spelled it
+    if (name.len != 0 and name[name.len - 1] == ']') if (std.mem.findScalarLast(u8, name, '[')) |open| if (open != 0) {
+        const k = std.fmt.parseInt(i64, name[open + 1 .. name.len - 1], 10) catch noSlot(name);
         const base = mixedSlot(dig, name[0..open]);
-        const arr = dig.decls.arrays.get(base) orelse unreachable; // lowering declared it an array
-        return base + @as(u32, @intCast(k - arr.low));
+        const arr = dig.decls.arrays.get(base) orelse noSlot(name);
+        const off = std.math.sub(i64, k, arr.low) catch noSlot(name);
+        return base + (std.math.cast(u32, off) orelse noSlot(name));
     };
-    return dig.slotOf(name) orelse {
-        std.debug.print("{s}: FAIL the digital half holds no `{s}` for the analog block to read\n", .{ title, name });
-        std.process.exit(1);
-    };
+    noSlot(name);
+}
+
+fn noSlot(name: []const u8) noreturn {
+    std.debug.print("{s}: FAIL the digital half holds no `{s}` for the analog block to read\n", .{ title, name });
+    std.process.exit(1);
 }
 
 fn mixedFail(bag: *diag.Bag, e: anyerror) noreturn {
     var buf = std.Io.Writer.Allocating.init(std.heap.page_allocator);
-    diag.render(bag, &buf.writer, .{ .explain_hint = false, .summary = false }) catch {};
+    // A report that cannot render still names the run's own error below.
+    diag.render(bag, &buf.writer, .{ .explain_hint = false, .summary = false }) catch |r| std.debug.print("{s}: the diagnostics did not render: {t}\n", .{ title, r });
     std.debug.print("{s}FAIL {s}: the digital half did not run: {t}\n", .{ buf.written(), title, e });
     std.process.exit(1);
 }
@@ -51,7 +58,7 @@ fn runMixed(model: *D.Model, inst: *D.Instance, x: *[n_u]f64, forced: *[n_u]?f64
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var bag = diag.Bag.init(arena);
-    bag.setSingleFile(title, mixed_source) catch {};
+    bag.setSingleFile(title, mixed_source) catch |e| mixedFail(&bag, e);
     var dout = std.Io.Writer.Allocating.init(arena);
     var real_params: [mixed_real_ports.len]sim.digital.Param = undefined;
     inline for (mixed_real_ports, &real_params) |p, *value|

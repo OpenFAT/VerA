@@ -132,7 +132,10 @@ pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
             // §11.6.4 NOTE 3: scalar and vector are about the object's own
             // width and "shall not indicate anything about what is connected".
             return switch (prop) {
-                user.vpiSize => @intCast(o.size),
+                user.vpiSize => std.math.cast(c_int, o.size) orelse {
+                    status.fail("RANGE", "vpi_get: `{s}` is {d} bits wide, past a PLI_INT32", .{ o.full, o.size });
+                    return user.vpiUndefined;
+                },
                 user.vpiScalar => @intFromBool(o.size == 1),
                 else => @intFromBool(o.size > 1),
             };

@@ -45,6 +45,7 @@ const va = @import("va.zig");
 const value_put = @import("value_put.zig");
 const user = @import("vpi_user.zig");
 const CbData = abi.CbData;
+const Value = abi.Value;
 const List = va.List;
 const Time = abi.Time;
 
@@ -256,6 +257,9 @@ pub fn simulate() digital.Error!void {
         // it ends there as $stop does (VD-070, VD-106).
         if (!go) {
             r.scheduler.finish();
+            // A request the reset's own callbacks made goes unanswered: the
+            // run ends as this one's stop_value said.
+            reset_request = null;
             break;
         }
     }
@@ -926,6 +930,61 @@ test "§12.36/IEEE 1364-2005 C.7: a reset with stop_value 0 ends a batch run at 
     try simulate();
     try std.testing.expectEqualStrings("start s=x\n", h.out.written());
     try std.testing.expectEqual(@as(u64, 0), now());
+}
+
+test "§12.36/C.7: a vpiReset asked from the last reset's own cbEndOfReset goes unanswered; the run ends" {
+    // Oracle: C.7, stop_value 0 ends the batch run after the reset, so the
+    // request the reset's callback makes has no run to restart. The rewrite
+    // asserted no request was pending after the loop.
+    var h: Harness = undefined;
+    try h.init(restart_source);
+    defer h.deinit();
+    finish_seen = 0;
+    const S = struct {
+        fn resetFromReset(cd: *CbData) callconv(.c) c_int {
+            std.debug.assert(cd.reason == user.cbEndOfReset);
+            if (vpi_sim_control(user.vpiReset, @as(c_int, 0), @as(c_int, 0), @as(c_int, 0)) != 1) finish_seen = 999;
+            return 0;
+        }
+    };
+    const d: CbData = .{ .reason = user.cbEndOfReset, .cb_rtn = S.resetFromReset, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
+    try std.testing.expect(callback.vpi_register_cb(&d) != null);
+    try resetAt(0);
+    try simulate();
+    try std.testing.expect(finish_seen != 999);
+    try std.testing.expectEqualStrings("start s=x\n", h.out.written());
+    try std.testing.expectEqual(@as(u64, 0), now());
+}
+
+test "§12.31.1: a word whose index passes a PLI_INT32 calls no cbValueChange, and says why" {
+    // Oracle: §12.31.1's index is `s_cb_data.index`, a PLI_INT32, and §4.9
+    // bounds an array by any constant: 2^32 has no PLI_INT32 to report. A
+    // word in range still reports. The rewrite @intCast the index and trapped.
+    var h: Harness = undefined;
+    try h.init(
+        \\module t;
+        \\  reg [7:0] m [4294967296:4294967297];
+        \\  reg [7:0] n [0:1];
+        \\  initial begin #1 m[4294967296] = 1; n[1] = 2; end
+        \\endmodule
+    );
+    defer h.deinit();
+    finish_seen = 0;
+    const S = struct {
+        fn countChange(cd: *CbData) callconv(.c) c_int {
+            std.debug.assert(cd.reason == user.cbValueChange);
+            finish_seen += 1;
+            return 0;
+        }
+    };
+    var v: Value = .{ .format = user.vpiIntVal, .value = .{ .integer = 0 } };
+    for ([_][*:0]const u8{ "t.m", "t.n" }) |name| {
+        const d: CbData = .{ .reason = user.cbValueChange, .cb_rtn = S.countChange, .obj = handle.vpi_handle_by_name(name, null), .time = null, .value = &v, .index = 0, .user_data = null };
+        try std.testing.expect(callback.vpi_register_cb(&d) != null);
+    }
+    try simulate();
+    try std.testing.expectEqual(@as(u64, 1), finish_seen);
+    try std.testing.expect(status.vpi_chk_error(null) != 0);
 }
 
 test "§12.36: an application that asks vpiReset on every run fails by name after max_resets" {

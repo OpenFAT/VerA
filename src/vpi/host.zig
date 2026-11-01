@@ -35,6 +35,10 @@ const Io = std.Io;
 /// from writing `\r\n`, so its stdout is the bytes a test expects.
 extern "c" fn _setmode(fd: c_int, mode: c_int) c_int; // os: the C runtime's, declared on every target and called only on Windows
 
+/// The most steps a banner's `tran` grid may take: `analog_walk.runMixed`
+/// allocates a time per step.
+const tran_steps_max = 1 << 24;
+
 /// ESPice's shape (VerA #83, #84): a host that solves the circuit itself and
 /// binds VerA only to run the application's calltf. Each `Lib` is a built
 /// library's call table with no solution (`n_u = n_rows = n_shares = 0`), so
@@ -307,6 +311,9 @@ fn readAnalyses(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const v
             const start = try spiceNumber(words.next() orelse return error.BadAnalysis);
             const stop = try spiceNumber(words.next() orelse return error.BadAnalysis);
             const step = if (words.next()) |w| try spiceNumber(w) else 0;
+            // A window forward from 0, and no more steps than a run's grid holds.
+            if (start < 0 or stop <= start or step < 0) return error.BadAnalysis;
+            if (step > 0 and (stop - start) / step > tran_steps_max) return error.BadAnalysis;
             try out.append(arena, .{ .kind = .tran, .start = start, .stop = stop, .max_step = step });
         } else if (std.mem.eql(u8, kind, "ac")) {
             const fstart = try spiceNumber(words.next() orelse return error.BadAnalysis);
@@ -354,6 +361,9 @@ fn readPoints(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const Ext
         const kind = std.meta.stringToEnum(vpi.analog.Kind, words.next() orelse return error.BadAnalysis) orelse return error.UnsupportedAnalysis;
         var v: [3]f64 = undefined;
         for (&v) |*x| x.* = try spiceNumber(words.next() orelse return error.BadAnalysis);
+        // `analog.setPoint`'s contract: a step is not negative, and only an
+        // AC point has a frequency.
+        if (v[1] < 0 or v[2] < 0 or (v[2] != 0 and kind != .ac)) return error.BadAnalysis;
         try out.append(arena, .{ .kind = kind, .t = v[0], .dt = v[1], .freq = v[2] });
     }
     std.debug.assert(out.items.len <= seen);
@@ -369,10 +379,12 @@ fn spiceNumber(w: []const u8) !f64 {
         .{ .s = "n", .v = 1e-9 },  .{ .s = "u", .v = 1e-6 },  .{ .s = "m", .v = 1e-3 },
         .{ .s = "k", .v = 1e3 },   .{ .s = "g", .v = 1e9 },   .{ .s = "t", .v = 1e12 },
     };
-    for (scales) |sc| if (std.ascii.endsWithIgnoreCase(w, sc.s)) {
-        return (try std.fmt.parseFloat(f64, w[0 .. w.len - sc.s.len])) * sc.v;
-    };
-    return std.fmt.parseFloat(f64, w);
+    const v = for (scales) |sc| {
+        if (std.ascii.endsWithIgnoreCase(w, sc.s)) break (try std.fmt.parseFloat(f64, w[0 .. w.len - sc.s.len])) * sc.v;
+    } else try std.fmt.parseFloat(f64, w);
+    // `nan`, `inf` and an overflowing scale are no time or frequency.
+    if (!std.math.isFinite(v)) return error.BadAnalysis;
+    return v;
 }
 
 /// The design's device and the fixed solver as a shared library
