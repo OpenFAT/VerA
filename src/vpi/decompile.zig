@@ -1,32 +1,41 @@
-//! IEEE 1364-2005 §26.6.26 b) / §26.6.19 g) vpiDecompile: a source
-//! expression (or a task call) -> its text, written to a caller's `Writer`.
-//! Parentheses only where precedence needs them, one space between operands
-//! and operators, each literal in its own base. A pure function of the AST;
-//! property.zig's `vpi_get_str` supplies the buffer. Precedence and
-//! associativity: IEEE 1364-2005 §5.1.2, Table 5-4.
+//! A source expression or task call -> its vpiDecompile text, with only the
+//! parentheses precedence needs.
+//! Cites: IEEE 1364-2005 §5.1.2 (precedence), §26.6.19 g), §26.6.26 b).
+//!
+//! Contents:
+//! - `pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Error!void`
+//! - `pub fn decompileCall(w: *Writer, f: *const Ast.SourceFile, id: Ast.StmtId) Writer.Error!void`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
-const code = @import("code.zig");
+const Io = std.Io;
+const Writer = std.Io.Writer;
 const handle = @import("handle.zig");
 const iterate = @import("iterate.zig");
 const property = @import("property.zig");
-const root = @import("root.zig");
+const trust = @import("trust.zig");
+const user = @import("vpi_user.zig");
 const run = @import("run.zig");
+const Harness = run.Harness;
 
-const vpiProcess = code.vpiProcess;
-const vpiRhs = code.vpiRhs;
-const vpiStmt = code.vpiStmt;
-
-const Writer = std.Io.Writer;
+/// IEEE 1364-2005 §5.1.2 Table 5-4, highest first; every binary operator
+/// associates left to right, the conditional right to left.
+const unary_prec: u8 = 12;
 
 /// §26.6.26 b): "a string with a functionally equivalent expression to the
 /// original expression within the HDL. Parentheses shall be added only to
 /// preserve precedence. Each operand and operator shall be separated by a
 /// single space character." A literal is spelled in its own base, and an
-/// x/z or wide one in binary.
+/// x/z or wide one in binary. `w` keeps what it is given (`Writer.fixed`).
+/// Asserts that `id` is `.none` or a row of `f`, and that the text only
+/// grows `w`.
+///
+/// Recursive on the expression's depth, which the parser bounds.
 pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Error!void {
+    std.debug.assert(id == .none or @backingInt(id) < f.exprs.len());
     if (id == .none) return;
+    const before = w.end;
+    defer std.debug.assert(w.end >= before);
     const ex = &f.exprs;
     switch (ex.tag(id)) {
         .ident => try w.writeAll(f.str(ex.strOf(id))),
@@ -52,6 +61,7 @@ pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Er
             try w.print("{d}{s}b", .{ lit.width, if (lit.signed) "'s" else "'" });
             var k = lit.width;
             while (k > 0) {
+                std.debug.assert(k <= lit.width);
                 k -= 1;
                 const v = (lit.values()[k / 64] >> @intCast(k % 64)) & 1;
                 const u = (lit.unknowns()[k / 64] >> @intCast(k % 64)) & 1;
@@ -180,28 +190,36 @@ pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Er
 }
 
 /// §26.6.19 g): a system or user task call, "a functionally equivalent
-/// system task/function call to what was in the original HDL".
+/// system task/function call to what was in the original HDL". Asserts
+/// that `id` is a task-call statement of `f` and that its name is written.
 pub fn decompileCall(w: *Writer, f: *const Ast.SourceFile, id: Ast.StmtId) Writer.Error!void {
+    std.debug.assert(id != .none);
+    std.debug.assert(f.stmt(id) == .sys_task);
+    const before = w.end;
     const s = f.stmt(id).sys_task;
     try w.writeAll(f.str(s.name));
     if (s.args.len != 0) try list(w, f, "(", s.args, ")");
+    std.debug.assert(w.end > before);
 }
 
+// ---- private ----
+
 fn list(w: *Writer, f: *const Ast.SourceFile, open: []const u8, items: []const Ast.ExprId, close: []const u8) Writer.Error!void {
+    std.debug.assert(open.len != 0);
+    std.debug.assert(close.len != 0);
+    const before = w.end;
     try w.writeAll(open);
     for (items, 0..) |e, k| {
         if (k != 0) try w.writeAll(", ");
         try decompile(w, f, e);
     }
     try w.writeAll(close);
+    std.debug.assert(w.end - before >= open.len + close.len);
 }
 
-/// IEEE 1364-2005 §5.1.2 Table 5-4, highest first; every binary operator
-/// associates left to right, the conditional right to left.
-const unary_prec: u8 = 12;
-
+/// Table 5-4's binary ranks: above the conditional's 0, below a unary's.
 fn binaryPrec(op: Ast.BinaryOp) u8 {
-    return switch (op) {
+    const p: u8 = switch (op) {
         .pow => 11,
         .mul, .div, .mod => 10,
         .add, .sub => 9,
@@ -214,23 +232,32 @@ fn binaryPrec(op: Ast.BinaryOp) u8 {
         .logical_and => 2,
         .logical_or => 1,
     };
+    std.debug.assert(p >= 1);
+    std.debug.assert(p < unary_prec);
+    return p;
 }
 
 /// The precedence `id` binds at as an operand: its operator's, or above
 /// every operator for a primary.
 fn precOf(ex: *const Ast.ExprStore, id: Ast.ExprId) u8 {
-    return switch (ex.tag(id)) {
+    // An operator's operand always exists.
+    std.debug.assert(id != .none);
+    const p: u8 = switch (ex.tag(id)) {
         .unary => unary_prec,
         .binary => binaryPrec(ex.binOp(id)),
         .ternary => 0,
         // A primary: a literal, a name, a call, a select, a concatenation.
         .int_literal, .logic_literal, .real_literal, .str_literal, .pos_inf, .neg_inf, .ident, .hier_ident, .call, .builtin_call, .sys_call, .filter_call, .noise_call, .branch_access, .port_access, .concat, .multi_concat, .assign_pattern, .pattern_repl, .index, .range, .indexed_range, .event_or, .event_posedge, .event_negedge, .event_initial_step, .event_final_step, .event_function, .event_driver_update => unary_prec + 1,
     };
+    std.debug.assert(p <= unary_prec + 1);
+    return p;
 }
 
 /// An operand of an operator of precedence `parent`, parenthesized when it
 /// binds looser, or as loose on the right of a left-associative operator.
 fn operand(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId, parent: u8, right: bool) Writer.Error!void {
+    std.debug.assert(id != .none);
+    std.debug.assert(parent <= unary_prec + 1);
     const p = precOf(&f.exprs, id);
     const wrap = p < parent or (right and p == parent);
     if (wrap) try w.writeByte('(');
@@ -239,7 +266,7 @@ fn operand(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId, parent: u8, rig
 }
 
 fn unarySpelling(op: Ast.UnaryOp) []const u8 {
-    return switch (op) {
+    const s: []const u8 = switch (op) {
         .plus => "+",
         .minus => "-",
         .logical_not => "!",
@@ -251,10 +278,13 @@ fn unarySpelling(op: Ast.UnaryOp) []const u8 {
         .reduce_xor => "^",
         .reduce_xnor => "~^",
     };
+    std.debug.assert(s.len >= 1);
+    std.debug.assert(s.len <= 2);
+    return s;
 }
 
 fn binarySpelling(op: Ast.BinaryOp) []const u8 {
-    return switch (op) {
+    const s: []const u8 = switch (op) {
         .add => "+",
         .sub => "-",
         .mul => "*",
@@ -280,10 +310,13 @@ fn binarySpelling(op: Ast.BinaryOp) []const u8 {
         .ashl => "<<<",
         .ashr => ">>>",
     };
+    std.debug.assert(s.len >= 1);
+    std.debug.assert(s.len <= 3);
+    return s;
 }
 
 test "§26.6.26 b) vpiDecompile adds parentheses only where precedence needs them" {
-    var h: run.Harness = undefined;
+    var h: Harness = undefined;
     try h.init(
         \\module t;
         \\  reg [7:0] x, a, b, c, d;
@@ -291,13 +324,13 @@ test "§26.6.26 b) vpiDecompile adds parentheses only where precedence needs the
         \\endmodule
     );
     defer h.deinit();
-    const procs = iterate.vpi_iterate(vpiProcess, handle.vpi_handle_by_name("t", null));
+    const procs = iterate.vpi_iterate(user.vpiProcess, handle.vpi_handle_by_name("t", null));
     const init = iterate.vpi_scan(procs);
-    _ = root.vpi_free_object(procs);
-    const rhs = handle.vpi_handle(vpiRhs, handle.vpi_handle(vpiStmt, init));
+    _ = trust.vpi_free_object(procs);
+    const rhs = handle.vpi_handle(user.vpiRhs, handle.vpi_handle(user.vpiStmt, init));
     try std.testing.expectEqualStrings(
         "(a + b) * c - (d - a) - b ? {2{a[1:0], 1'b1}} : ~ (a & 4'hf) + - 2.5",
-        std.mem.span(property.vpi_get_str(root.vpiDecompile, rhs)),
+        std.mem.span(property.vpi_get_str(user.vpiDecompile, rhs)),
     );
 }
 
@@ -306,7 +339,7 @@ test "§26.6.26 b): an equal-precedence right operand keeps its parentheses; lit
     // `**` included, and the conditional right to left. So `a - (b - c)` and
     // `a ** (b ** c)` need theirs, `a - b - c` none, and a conditional as a
     // condition needs them where one as the else-branch does not.
-    var h: run.Harness = undefined;
+    var h: Harness = undefined;
     try h.init(
         \\module t;
         \\  reg [7:0] a, b, c;
@@ -319,7 +352,7 @@ test "§26.6.26 b): an equal-precedence right operand keeps its parentheses; lit
         \\endmodule
     );
     defer h.deinit();
-    const itr = iterate.vpi_iterate(code.vpiContAssign, handle.vpi_handle_by_name("t", null));
+    const itr = iterate.vpi_iterate(user.vpiContAssign, handle.vpi_handle_by_name("t", null));
     for ([_][]const u8{
         "a - (b - c)",
         "a - b - c",
@@ -328,7 +361,7 @@ test "§26.6.26 b): an equal-precedence right operand keeps its parentheses; lit
         "a ? b : c ? 4'b1x0z : 42",
     }) |want| {
         const assign = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
-        try std.testing.expectEqualStrings(want, std.mem.span(property.vpi_get_str(root.vpiDecompile, handle.vpi_handle(vpiRhs, assign))));
+        try std.testing.expectEqualStrings(want, std.mem.span(property.vpi_get_str(user.vpiDecompile, handle.vpi_handle(user.vpiRhs, assign))));
     }
     try std.testing.expect(iterate.vpi_scan(itr) == null);
 }
