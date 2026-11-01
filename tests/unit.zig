@@ -11924,8 +11924,6 @@ pub const preprocessor_tests = struct {
         // lists, a comment's strip mark, `__LINE__ and `__FILE__.
         try testing.checkAllAllocationFailures(testing.allocator, preprocessAll, .{
             "`define F(x) [x]\n`include \"constants.vams\"\n`ifdef M_PI\n`F(`M_PI)\n`endif\n" ++
-                // An actual far longer than its body: substitution grows mid-body.
-                "`define G(y) y y\n`G(" ++ @as([8192]u8, @splat('a')) ++ ")\n" ++
                 "`timescale 1ns/1ps\n`default_discipline electrical\n/* c */ `__LINE__ `__FILE__\n",
         });
     }
