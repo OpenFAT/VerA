@@ -455,7 +455,7 @@ fn emitDevice(j: Job, schedule: native.Schedule, logic: native.Logic, f: DeviceF
 /// `--emit-so`/`--emit-osdi` of a `.v` device: the library over the VerA
 /// tree `--contract` sits in, its path on stdout. Null on success, else the
 /// exit status with the reason on stderr.
-fn buildLibrary(j: Job, dev: @typeInfo(@typeInfo(@TypeOf(native.emitDevice)).@"fn".return_type.?).error_union.payload, f: DeviceFlags) !?u8 {
+fn buildLibrary(j: Job, dev: native.DeviceRoot, f: DeviceFlags) !?u8 {
     assert(f.so);
     assert(f.contract != null);
     const err = j.err;
