@@ -188,8 +188,6 @@ const wide = struct {
 
     /// Rows that fail on a real bug, with the bug. Empty is the goal.
     pub const known: []const table.Known = &.{
-        .{ .row = "chain.va --emit-zig", .why = device_chain },
-        .{ .row = "chain.va --emit-so-tree", .why = device_chain },
         .{ .row = "elsif.va --lint", .why = parser_caller },
         .{ .row = "elsif.va --emit-zig", .why = parser_caller },
         .{ .row = "elsif.va --emit-so-tree", .why = parser_caller },
@@ -199,7 +197,6 @@ const wide = struct {
         .{ .row = "nest.va --emit-so-tree", .why = parser_caller },
         .{ .row = "nest.va --emit-verilog", .why = parser_caller },
     };
-    const device_chain = "device codegen renders a value's operands recursively (render.zig renderVal -> renderInst -> render_op.renderOp), one call per `y = y + c` statement";
     const parser_caller = "the parser's first segment (parser/stmt.zig:69 parseStmt, generate.zig:113 parseIf) runs on the caller's stack, which deep_stack.zig says nesting is not bounded by; `--elab`/`--run` pass, under runGuarded";
 
     const Shape = enum { chain, case_arms, sum, elsif, nest };

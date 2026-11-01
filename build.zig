@@ -23,7 +23,7 @@ const module_specs = [_]struct {
     .{ .name = "prove", .path = "src/prove/root.zig", .imports = &.{ "diag", "ir", "contract" } },
     .{ .name = "zigbuild", .path = "src/zigbuild/root.zig", .imports = &.{ "contract", "dynlib" } },
     .{ .name = "device", .path = "src/codegen/device/root.zig", .imports = &.{ "diag", "dynlib", "frontend", "ir", "analog", "prove", "kernels", "zigbuild" } },
-    .{ .name = "verilog", .path = "src/codegen/verilog/root.zig", .imports = &.{ "ir", "prove" } },
+    .{ .name = "verilog", .path = "src/codegen/verilog/root.zig", .imports = &.{"ir"} },
     .{ .name = "exe", .path = "src/codegen/exe/root.zig", .imports = &.{ "diag", "frontend", "ir" } },
     .{ .name = "vera", .path = "src/Compilation.zig", .imports = &.{ "base", "diag", "frontend", "elab", "ir", "analog", "prove", "device", "verilog", "exe", "kernels", "zigbuild" } },
     .{ .name = "sim", .path = "lib/sim/root.zig", .imports = &.{ "contract", "base", "diag", "frontend", "kernels" } },
