@@ -190,17 +190,14 @@ const wide = struct {
     pub const known: []const table.Known = &.{
         .{ .row = "chain.va --emit-zig", .why = device_chain },
         .{ .row = "chain.va --emit-so-tree", .why = device_chain },
-        .{ .row = "sum.v --emit-rtlil", .why = "rtlil_expr.zig:53 recurses once per `+` term; overflows even the CLI's 16 MiB main thread (vera --emit-rtlil on a 5000-term sum crashes)" },
         .{ .row = "elsif.va --lint", .why = parser_caller },
         .{ .row = "elsif.va --emit-zig", .why = parser_caller },
         .{ .row = "elsif.va --emit-so-tree", .why = parser_caller },
         .{ .row = "elsif.va --emit-verilog", .why = parser_caller },
-        .{ .row = "elsif.v --emit-rtlil", .why = parser_caller },
         .{ .row = "nest.va --lint", .why = parser_caller },
         .{ .row = "nest.va --emit-zig", .why = parser_caller },
         .{ .row = "nest.va --emit-so-tree", .why = parser_caller },
         .{ .row = "nest.va --emit-verilog", .why = parser_caller },
-        .{ .row = "nest.v --emit-rtlil", .why = parser_caller },
     };
     const device_chain = "device codegen renders a value's operands recursively (render.zig renderVal -> renderInst -> render_op.renderOp), one call per `y = y + c` statement";
     const parser_caller = "the parser's first segment (parser/stmt.zig:69 parseStmt, generate.zig:113 parseIf) runs on the caller's stack, which deep_stack.zig says nesting is not bounded by; `--elab`/`--run` pass, under runGuarded";
