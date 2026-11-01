@@ -26,6 +26,7 @@
 const std = @import("std");
 const Ast = @import("frontend").Ast;
 const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const session = @import("session.zig");
 const user = @import("vpi_user.zig");
 const Error = session.Error;
@@ -35,23 +36,23 @@ const Prop = schema.Prop;
 
 /// The per-scope double arrows of §11.6.1 this file fills.
 pub const ScopeLists = struct {
-    cont_assigns: std.ArrayList(u32) = .empty,
-    processes: std.ArrayList(u32) = .empty,
-    tasks: std.ArrayList(u32) = .empty,
-    functions: std.ArrayList(u32) = .empty,
-    events: std.ArrayList(u32) = .empty,
-    event_arrays: std.ArrayList(u32) = .empty,
-    primitives: std.ArrayList(u32) = .empty,
-    mod_paths: std.ArrayList(u32) = .empty,
-    tchks: std.ArrayList(u32) = .empty,
-    gen_arrays: std.ArrayList(u32) = .empty,
+    cont_assigns: std.ArrayList(ObjId) = .empty,
+    processes: std.ArrayList(ObjId) = .empty,
+    tasks: std.ArrayList(ObjId) = .empty,
+    functions: std.ArrayList(ObjId) = .empty,
+    events: std.ArrayList(ObjId) = .empty,
+    event_arrays: std.ArrayList(ObjId) = .empty,
+    primitives: std.ArrayList(ObjId) = .empty,
+    mod_paths: std.ArrayList(ObjId) = .empty,
+    tchks: std.ArrayList(ObjId) = .empty,
+    gen_arrays: std.ArrayList(ObjId) = .empty,
     /// IEEE 1364-2005 §26.6.12: the `#(...)` assignments overriding this
     /// instance's parameters, written in its parent (model_digital.zig).
-    param_assigns: std.ArrayList(u32) = .empty,
+    param_assigns: std.ArrayList(ObjId) = .empty,
     /// IEEE 1364-2005 §26.6.3 the task, function and named block scopes
     /// written directly in the module; `model.freeze` joins its instances
     /// and gen scopes to them for `vpiInternalScope`.
-    internal: std.ArrayList(u32) = .empty,
+    internal: std.ArrayList(ObjId) = .empty,
 
     /// Frees the lists (owned by `gpa`); the rows they index stay.
     pub fn deinit(s: *ScopeLists, gpa: std.mem.Allocator) void {
@@ -61,17 +62,17 @@ pub const ScopeLists = struct {
     /// Frozen as tagged rows, the shape `vpi_iterate(tag, module)` reads.
     pub fn freeze(s: *const ScopeLists, arena: std.mem.Allocator) ![]const List {
         return arena.dupe(List, &.{
-            .{ .tag = user.vpiContAssign, .items = try arena.dupe(u32, s.cont_assigns.items) },
-            .{ .tag = user.vpiProcess, .items = try arena.dupe(u32, s.processes.items) },
-            .{ .tag = user.vpiTask, .items = try arena.dupe(u32, s.tasks.items) },
-            .{ .tag = user.vpiFunction, .items = try arena.dupe(u32, s.functions.items) },
-            .{ .tag = user.vpiNamedEvent, .items = try arena.dupe(u32, s.events.items) },
-            .{ .tag = user.vpiNamedEventArray, .items = try arena.dupe(u32, s.event_arrays.items) },
-            .{ .tag = user.vpiPrimitive, .items = try arena.dupe(u32, s.primitives.items) },
-            .{ .tag = user.vpiModPath, .items = try arena.dupe(u32, s.mod_paths.items) },
-            .{ .tag = user.vpiTchk, .items = try arena.dupe(u32, s.tchks.items) },
-            .{ .tag = user.vpiGenScopeArray, .items = try arena.dupe(u32, s.gen_arrays.items) },
-            .{ .tag = user.vpiParamAssign, .items = try arena.dupe(u32, s.param_assigns.items) },
+            .{ .tag = user.vpiContAssign, .items = try arena.dupe(ObjId, s.cont_assigns.items) },
+            .{ .tag = user.vpiProcess, .items = try arena.dupe(ObjId, s.processes.items) },
+            .{ .tag = user.vpiTask, .items = try arena.dupe(ObjId, s.tasks.items) },
+            .{ .tag = user.vpiFunction, .items = try arena.dupe(ObjId, s.functions.items) },
+            .{ .tag = user.vpiNamedEvent, .items = try arena.dupe(ObjId, s.events.items) },
+            .{ .tag = user.vpiNamedEventArray, .items = try arena.dupe(ObjId, s.event_arrays.items) },
+            .{ .tag = user.vpiPrimitive, .items = try arena.dupe(ObjId, s.primitives.items) },
+            .{ .tag = user.vpiModPath, .items = try arena.dupe(ObjId, s.mod_paths.items) },
+            .{ .tag = user.vpiTchk, .items = try arena.dupe(ObjId, s.tchks.items) },
+            .{ .tag = user.vpiGenScopeArray, .items = try arena.dupe(ObjId, s.gen_arrays.items) },
+            .{ .tag = user.vpiParamAssign, .items = try arena.dupe(ObjId, s.param_assigns.items) },
         });
     }
 };
@@ -189,7 +190,7 @@ pub fn gateType(k: Ast.GateKind) c_int {
 pub fn defName(o: *const Obj) ?[]const u8 {
     switch (o.vtype) {
         user.vpiUdpDefn => return schema.coldOf(o).def_name,
-        user.vpiUdp => return schema.coldOf(&session.design.?.objects[schema.edgeTo(o, user.vpiUdpDefn)]).def_name,
+        user.vpiUdp => return schema.coldOf(session.design.?.obj(schema.edgeTo(o, user.vpiUdpDefn))).def_name,
         user.vpiGate, user.vpiSwitch => {},
         else => return null,
     }

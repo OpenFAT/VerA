@@ -11,7 +11,7 @@
 //! - `pub const hook: digital.UserSystf`
 //! - `pub var result: ?Int.Literal`
 //! - `pub var misuse: ?[]const u8`
-//! - `pub var active: ?u32`
+//! - `pub var active: ?ObjId`
 //! - `pub var active_reg: ?*Systf`
 //! - `pub var active_inst: usize`
 //! - `pub const Pair = struct`
@@ -22,7 +22,7 @@
 //! - `pub fn kindOf(name: []const u8) ?digital.UserKind`
 //! - `pub fn asSystf(h: abi.vpiHandle) ?*Systf`
 //! - `pub fn buildCalls() void`
-//! - `pub fn partialsOf(call: u32) []const Pair`
+//! - `pub fn partialsOf(call: ObjId) []const Pair`
 //! - `pub fn reset() void`
 //! - `pub fn all(a: std.mem.Allocator) ![]abi.vpiHandle`
 //! - `pub fn add(s: Systf) abi.vpiHandle`
@@ -54,6 +54,7 @@ const AnalogSystfData = abi.AnalogSystfData;
 const CbData = abi.CbData;
 const ErrorInfo = abi.ErrorInfo;
 const Obj = schema.Obj;
+const ObjId = schema.ObjId;
 const Partials = abi.Partials;
 const SystfData = abi.SystfData;
 
@@ -88,7 +89,7 @@ pub var misuse: ?[]const u8 = null;
 /// The call site whose compiletf, sizetf, derivtf or calltf is running, as an
 /// object index into the open design: §11.6.16 NOTE 1's
 /// `vpi_handle(vpiSysTfCall, NULL)`. Null outside one.
-pub var active: ?u32 = null;
+pub var active: ?ObjId = null;
 
 /// `active`'s registration, found once as the call starts (`regOf`). Set and
 /// cleared with `active`.
@@ -108,10 +109,10 @@ pub const Pair = struct { of: c_int, wrt: c_int };
 /// IEEE 1364-2005 §27.31/§27.13 user data's key (`Design.userdata`): the
 /// call's object index and the host instance whose calltf was running
 /// (`active_inst`), so two instances of one device keep their own.
-pub const UserKey = struct { call: u32, inst: usize };
+pub const UserKey = struct { call: ObjId, inst: usize };
 
 /// Each digital call site, by (engine instance scope, main token).
-var sites: std.AutoHashMapUnmanaged([2]u32, u32) = .empty;
+var sites: std.AutoHashMapUnmanaged([2]u32, ObjId) = .empty;
 
 var regs: std.ArrayList(*Systf) = .empty;
 var live: std.AutoHashMapUnmanaged(usize, *Systf) = .empty;
@@ -127,7 +128,7 @@ pub fn find(name: []const u8, domain: Domain) ?*Systf {
 /// `find` for call object `o`, in its own domain. The running call's
 /// registration is `active_reg`, so a query on its own handle skips the scan.
 pub fn regOf(o: *const Obj) ?*Systf {
-    if (active) |at| if (&session.design.?.objects[at] == o) return active_reg.?;
+    if (active) |at| if (session.design.?.obj(at) == o) return active_reg.?;
     return find(o.name, if (o.in_analog) .analog else .digital);
 }
 
@@ -183,7 +184,7 @@ pub fn buildCalls() void {
             if (misuse == null) misuse = reg.name;
             continue;
         }
-        active = @intCast(i);
+        active = .at(i);
         active_reg = reg;
         defer {
             active = null;
@@ -196,19 +197,19 @@ pub fn buildCalls() void {
                 if (reg.digital.type == user.vpiSysFunc and (reg.digital.sysfunctype == user.vpiSizedFunc or reg.digital.sysfunctype == user.vpiSizedSignedFunc)) _ = width(reg);
             },
             .analog => {
-                var cb: CbData = .{ .reason = 0, .cb_rtn = null, .obj = @ptrCast(&d.objects[i]), .time = null, .value = null, .index = 0, .user_data = reg.analog.user_data };
+                var cb: CbData = .{ .reason = 0, .cb_rtn = null, .obj = @ptrCast(d.obj(.at(i))), .time = null, .value = null, .index = 0, .user_data = reg.analog.user_data };
                 if (reg.analog.compiletf) |f| _ = f(&cb);
                 // §12.32.2: derivtf "returns a pointer to a t_vpi_stf_partials
                 // data structure" declaring the derivative objects this call
                 // has. Copied: the application's structure is its own.
-                if (reg.analog.derivtf) |f| if (f(&cb)) |p| declarePartials(@intCast(i), p);
+                if (reg.analog.derivtf) |f| if (f(&cb)) |p| declarePartials(.at(i), p);
             },
         }
     }
 }
 
 /// The partials derivtf declared for `call` in the installed design.
-pub fn partialsOf(call: u32) []const Pair {
+pub fn partialsOf(call: ObjId) []const Pair {
     const d = &(session.design orelse return &.{});
     return d.partials.get(call) orelse &.{};
 }
@@ -406,10 +407,10 @@ fn callDigital(_: *digital.Run, scope: u32, tok: u32, returned: ?Int.Literal) di
     const d = &(session.design orelse return);
     if (sites.count() == 0) for (d.objects, 0..) |o, i| {
         if (o.kind != .code or o.in_analog or (o.vtype != user.vpiSysTaskCall and o.vtype != user.vpiSysFuncCall)) continue;
-        sites.put(gpa, .{ d.scopes[o.owner.get().?].engine, o.src_tok }, @intCast(i)) catch return error.OutOfMemory;
+        sites.put(gpa, .{ d.scope(o.owner).engine, o.src_tok }, .at(i)) catch return error.OutOfMemory;
     };
     const at = sites.get(.{ scope, tok }) orelse return;
-    const s = find(d.objects[at].name, .digital) orelse return;
+    const s = find(d.obj(at).name, .digital) orelse return;
     const f = s.digital.calltf orelse return;
     const outer = .{ active, active_reg, result };
     defer {
@@ -421,7 +422,7 @@ fn callDigital(_: *digital.Run, scope: u32, tok: u32, returned: ?Int.Literal) di
     _ = f(s.digital.user_data);
 }
 
-fn declarePartials(call: u32, p: *const Partials) void {
+fn declarePartials(call: ObjId, p: *const Partials) void {
     const d = &(session.design orelse return);
     const n: usize = @intCast(@max(p.count, 0));
     const pairs = d.gpa.alloc(Pair, n) catch return;
@@ -457,7 +458,7 @@ fn oom() abi.vpiHandle {
 
 /// `obj` as a system task or function call's object index, or null with the
 /// error recorded.
-fn callIndex(comptime who: []const u8, obj: abi.vpiHandle) ?u32 {
+fn callIndex(comptime who: []const u8, obj: abi.vpiHandle) ?ObjId {
     const d = &(session.design orelse {
         status.fail("NODESIGN", who ++ ": no design is open", .{});
         return null;
@@ -470,7 +471,7 @@ fn callIndex(comptime who: []const u8, obj: abi.vpiHandle) ?u32 {
         status.fail("NOTCALL", who ++ ": `{s}` is not a system task or function call", .{o.name});
         return null;
     }
-    return d.indexOf(o);
+    return d.idOf(o);
 }
 
 fn dCall(_: [*c]u8) callconv(.c) c_int {
@@ -676,13 +677,13 @@ test "§12.32.2: declared partials are copied, and a negative count declares non
     defer session.close();
     var of = [_]c_int{ 0, 1 };
     var wrt = [_]c_int{ 1, 2 };
-    declarePartials(3, &.{ .count = 2, .derivative_of = &of, .derivative_wrt = &wrt });
+    declarePartials(.at(3), &.{ .count = 2, .derivative_of = &of, .derivative_wrt = &wrt });
     // The application's arrays stay its own.
     of[0] = 9;
-    try std.testing.expectEqualSlices(Pair, &.{ .{ .of = 0, .wrt = 1 }, .{ .of = 1, .wrt = 2 } }, partialsOf(3));
-    declarePartials(4, &.{ .count = -1, .derivative_of = null, .derivative_wrt = null });
-    try std.testing.expectEqual(@as(usize, 0), partialsOf(4).len);
-    try std.testing.expectEqual(@as(usize, 0), partialsOf(5).len);
+    try std.testing.expectEqualSlices(Pair, &.{ .{ .of = 0, .wrt = 1 }, .{ .of = 1, .wrt = 2 } }, partialsOf(.at(3)));
+    declarePartials(.at(4), &.{ .count = -1, .derivative_of = null, .derivative_wrt = null });
+    try std.testing.expectEqual(@as(usize, 0), partialsOf(.at(4)).len);
+    try std.testing.expectEqual(@as(usize, 0), partialsOf(.at(5)).len);
 }
 
 test "IEEE 1364-2005 §27.31/§27.13: user data is per instance of the running call (VerA #84)" {

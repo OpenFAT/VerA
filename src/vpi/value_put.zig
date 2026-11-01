@@ -151,7 +151,7 @@ pub export fn vpi_put_value(obj: abi.vpiHandle, value_p: ?*Value, time_p: ?*cons
     }
     // IEEE 1364-2005 §20.3: the value the digital call whose calltf is
     // running returns.
-    if (o.kind == .code and o.vtype == user.vpiSysFuncCall) if (systf.result) |res| if (systf.active) |at| if (&session.design.?.objects[at] == o) {
+    if (o.kind == .code and o.vtype == user.vpiSysFuncCall) if (systf.result) |res| if (systf.active) |at| if (session.design.?.obj(at) == o) {
         const v = value_p orelse {
             status.fail("BADVALUE", "vpi_put_value: value_p is NULL", .{});
             return null;
@@ -427,7 +427,7 @@ fn cancel(r: *digital.Run, h: sim.scheduler.Handle) void {
 /// would need an event of its own: each is refused.
 fn putUdp(o: *const Obj, value_p: ?*const Value, mode: c_int) abi.vpiHandle {
     const r = run.attached() orelse return engineFail();
-    const scope = session.design.?.scopes[o.owner.get().?].engine;
+    const scope = session.design.?.scope(o.owner).engine;
     var found: ?u32 = null;
     for (r.netlist.drivers, 0..) |drv, k| if (drv.tok == o.src_tok and drv.scope == scope and drv.source == .udp) {
         if (found != null) {

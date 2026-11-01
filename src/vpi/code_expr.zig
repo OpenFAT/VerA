@@ -5,15 +5,16 @@
 //! §26.6.19, §26.6.26.
 //!
 //! Contents:
-//! - `pub fn expr(b: *Builder, id: Ast.ExprId) Error!u32`
-//! - `pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!u32`
-//! - `pub fn select(b: *Builder, id: Ast.ExprId) Error!u32`
+//! - `pub fn expr(b: *Builder, id: Ast.ExprId) Error!ObjId`
+//! - `pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!ObjId`
+//! - `pub fn select(b: *Builder, id: Ast.ExprId) Error!ObjId`
 //! - `pub fn eventIndexValue(b: *Builder, e: Ast.ExprId) Error!?i64`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
 const code_tables = @import("code_tables.zig");
 const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const user = @import("vpi_user.zig");
 const Builder = @import("Builder.zig");
 const session = @import("session.zig");
@@ -24,10 +25,10 @@ const Prop = schema.Prop;
 /// or `none` for `.none` or a form this model does not hold. An object
 /// built here remembers `id`, which §26.6.26 b)'s vpiDecompile spells;
 /// one resolved by name is the declared object, and keeps none.
-pub fn expr(b: *Builder, id: Ast.ExprId) Error!u32 {
+pub fn expr(b: *Builder, id: Ast.ExprId) Error!ObjId {
     const at = try b.exprObj(id);
-    if (at == schema.no_obj) return at;
-    const o = &b.objects.hot.items[at];
+    if (at == ObjId.none) return at;
+    const o = b.objects.at(at);
     if ((o.kind == .code or o.kind == .constant) and o.full.len == 0 and o.src_expr == .none) {
         o.src_expr = id;
         o.expr_scope = .of(b.scope);
@@ -37,8 +38,8 @@ pub fn expr(b: *Builder, id: Ast.ExprId) Error!u32 {
     return at;
 }
 
-pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!u32 {
-    if (id == .none) return schema.no_obj;
+pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!ObjId {
+    if (id == .none) return ObjId.none;
     const ex = &b.file.exprs;
     return switch (ex.tag(id)) {
         .ident => b.lookup(b.file.str(ex.strOf(id))),
@@ -104,41 +105,41 @@ pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!u32 {
         .event_or => b.operation(user.vpiEventOrOp, &.{ ex.lhs(id), ex.rhs(id) }),
         .index => b.select(id),
         .sys_call, .call => blk: {
-            const args = try b.arena.alloc(u32, ex.args(id).len);
+            const args = try b.arena.alloc(ObjId, ex.args(id).len);
             for (ex.args(id), args) |a, *arg| arg.* = try b.expr(a);
             const name = b.file.str(ex.strOf(id));
             const sys = ex.tag(id) == .sys_call;
-            const func = if (sys) schema.no_obj else b.lookupAs(name, .function);
+            const func = if (sys) ObjId.none else b.lookupAs(name, .function);
             // IEEE 1364-2005 §26.6.19 func call -> type int: vpiFuncType,
             // the function's (a system function's is computed in property.zig).
             var ftype: ?Prop = null;
-            if (func != schema.no_obj) for (b.objects.hot.items[func].props) |p| {
+            if (func != ObjId.none) for (b.objects.at(func).props) |p| {
                 if (p.prop == user.vpiFuncType) ftype = p;
             };
             const at = try b.code(if (sys) user.vpiSysFuncCall else user.vpiFuncCall, if (sys) &.{} else &.{.{ .tag = user.vpiFunction, .to = func }}, &.{.{ .tag = user.vpiArgument, .items = try b.many(args) }}, if (ftype) |p| &.{p} else &.{});
-            b.objects.hot.items[at].name = try b.arena.dupe(u8, name);
-            b.objects.hot.items[at].in_analog = b.analog != null;
-            b.objects.hot.items[at].src_tok = ex.mainTok(id);
+            b.objects.at(at).name = try b.arena.dupe(u8, name);
+            b.objects.at(at).in_analog = b.analog != null;
+            b.objects.at(at).src_tok = ex.mainTok(id);
             break :blk at;
         },
         // §11.6.19 accessfunc -> branches, discipline.
         .branch_access => blk: {
-            var branch = schema.no_obj;
+            var branch = ObjId.none;
             if (b.analog) |an| {
                 const first = ex.lhs(id);
-                if (ex.tag(first) == .ident and ex.rhs(id) == .none) branch = an.branches.get(b.file.str(ex.strOf(first))) orelse schema.no_obj;
+                if (ex.tag(first) == .ident and ex.rhs(id) == .none) branch = an.branches.get(b.file.str(ex.strOf(first))) orelse ObjId.none;
             }
-            const disc = if (branch != schema.no_obj) b.objects.coldOf(branch).disc orelse schema.no_obj else schema.no_obj;
+            const disc = if (branch != ObjId.none) b.objects.coldOf(branch).disc else ObjId.none;
             const at = try b.code(user.vpiAccessFunc, &.{
                 .{ .tag = user.vpiBranch, .to = branch },
                 .{ .tag = user.vpiDiscipline, .to = disc },
             }, &.{}, &.{});
-            b.objects.hot.items[at].name = try b.arena.dupe(u8, b.file.str(ex.strOf(id)));
+            b.objects.at(at).name = try b.arena.dupe(u8, b.file.str(ex.strOf(id)));
             break :blk at;
         },
         // Not modelled: the analog operators and filters, event
         // functions, patterns, infinities. No object.
-        .builtin_call, .filter_call, .noise_call, .port_access, .assign_pattern, .pattern_repl, .range, .indexed_range, .pos_inf, .neg_inf, .event_initial_step, .event_final_step, .event_driver_update, .event_function => schema.no_obj,
+        .builtin_call, .filter_call, .noise_call, .port_access, .assign_pattern, .pattern_repl, .range, .indexed_range, .pos_inf, .neg_inf, .event_initial_step, .event_final_step, .event_driver_update, .event_function => ObjId.none,
     };
 }
 
@@ -147,15 +148,15 @@ pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!u32 {
 /// bit of a vector is a net bit or reg bit with vpiParent and vpiIndex; a
 /// range is §11.6.19's part select, and an IEEE 1364-2005 §5.2.1
 /// indexed part-select is §26.6.26's, with its base and width.
-pub fn select(b: *Builder, id: Ast.ExprId) Error!u32 {
+pub fn select(b: *Builder, id: Ast.ExprId) Error!ObjId {
     const ex = &b.file.exprs;
     var event_base = id;
     var rank: usize = 0;
     while (ex.tag(event_base) == .index) : (event_base = ex.lhs(event_base)) rank += 1;
     if (ex.tag(event_base) == .ident or ex.tag(event_base) == .hier_ident) {
         const array = try b.expr(event_base);
-        if (array != schema.no_obj and b.objects.hot.items[array].vtype == user.vpiNamedEventArray) {
-            const indices = try b.arena.alloc(u32, rank);
+        if (array != ObjId.none and b.objects.at(array).vtype == user.vpiNamedEventArray) {
+            const indices = try b.arena.alloc(ObjId, rank);
             const values = try b.arena.alloc(?i64, rank);
             var x = id;
             for (indices, values) |*index, *v| {
@@ -164,17 +165,17 @@ pub fn select(b: *Builder, id: Ast.ExprId) Error!u32 {
                 x = ex.lhs(x);
             }
             for (b.objects.coldOf(array).members) |member| {
-                for (b.objects.hot.items[member].lists) |l| {
+                for (b.objects.at(member).lists) |l| {
                     if (l.tag != user.vpiIndex or l.items.len != rank) continue;
                     const matches = for (l.items, values) |want, have| {
-                        if (have == null or have.? != b.objects.hot.items[want].value.?.int) break false;
+                        if (have == null or have.? != b.objects.at(want).value.?.int) break false;
                     } else true;
                     if (matches) return member;
                 }
             }
-            const automatic = b.automatic or b.objects.hot.items[array].automatic;
+            const automatic = b.automatic or b.objects.at(array).automatic;
             const at = try b.code(user.vpiNamedEvent, &.{ .{ .tag = user.vpiParent, .to = array }, .{ .tag = user.vpiIndex, .to = indices[0] } }, &.{.{ .tag = user.vpiIndex, .items = indices }}, &.{ .{ .prop = user.vpiArray, .value = 1 }, .{ .prop = user.vpiAutomatic, .value = @intFromBool(automatic) } });
-            b.objects.hot.items[at].automatic = automatic;
+            b.objects.at(at).automatic = automatic;
             (try b.objects.coldFor(at)).event_ref = .{ .expr = id, .scope = b.engine };
             return at;
         }
@@ -187,16 +188,17 @@ pub fn select(b: *Builder, id: Ast.ExprId) Error!u32 {
             .{ .tag = user.vpiBaseExpr, .to = try b.expr(ex.lhs(ix)) },
             .{ .tag = user.vpiWidthExpr, .to = try b.expr(ex.rhs(ix)) },
         }, &.{}, &.{.{ .prop = user.vpiIndexedPartSelectType, .value = if (ex.extraOf(ix) == 0) user.vpiPosIndexed else user.vpiNegIndexed }});
-        b.objects.hot.items[at].owner = .none;
+        b.objects.at(at).owner = .none;
         return at;
     }
-    if (base != schema.no_obj) {
+    if (base != ObjId.none) {
         const members = b.objects.coldOf(base).members;
         if (members.len != 0 and ex.tag(ix) == .int_literal) {
             const want = ex.intValue(ix);
             for (members) |m| {
-                const c = b.objects.hot.items[m].index.get() orelse continue;
-                if (b.objects.hot.items[c].value.?.int == want) return m;
+                const c = b.objects.at(m).index;
+                if (c == .none) continue;
+                if (b.objects.at(c).value.?.int == want) return m;
             }
         }
     }
@@ -206,15 +208,15 @@ pub fn select(b: *Builder, id: Ast.ExprId) Error!u32 {
             .{ .tag = user.vpiLeftRange, .to = try b.expr(ex.lhs(ix)) },
             .{ .tag = user.vpiRightRange, .to = try b.expr(ex.rhs(ix)) },
         }, &.{}, &.{});
-        b.objects.hot.items[at].owner = .none;
+        b.objects.at(at).owner = .none;
         return at;
     }
-    const is_net = base != schema.no_obj and b.objects.hot.items[base].kind == .net;
+    const is_net = base != ObjId.none and b.objects.at(base).kind == .net;
     const at = try b.code(if (is_net) user.vpiNetBit else user.vpiRegBit, &.{
         .{ .tag = user.vpiParent, .to = base },
         .{ .tag = user.vpiIndex, .to = try b.expr(ix) },
     }, &.{}, &.{});
-    b.objects.hot.items[at].owner = .none;
+    b.objects.at(at).owner = .none;
     return at;
 }
 

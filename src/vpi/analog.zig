@@ -193,7 +193,7 @@ pub const OneCall = struct {
         .breakpoint = noBreakpoint,
         .node = noNode,
     };
-    const arg = [_]List{.{ .tag = user.vpiArgument, .items = &.{1} }};
+    const arg = [_]List{.{ .tag = user.vpiArgument, .items = &.{.at(1)} }};
 
     /// A design holding that call (object 0, full name `full`) and its
     /// argument (object 1): the same name, token and index in every design
@@ -217,7 +217,7 @@ pub const OneCall = struct {
         seen_full = o.full;
         seen_objects = d.objects.ptr;
         const tag: f64 = if (o.full[0] == 'A') 1 else 2;
-        _ = analog_call.putArg(&d.objects[1], tag + 10 * @as(f64, @floatFromInt(systf.active_inst)));
+        _ = analog_call.putArg(d.obj(.at(1)), tag + 10 * @as(f64, @floatFromInt(systf.active_inst)));
         return 0;
     }
 };
@@ -382,7 +382,7 @@ test "Binding: two libraries at once, each call in its own design, each (library
     _ = b.call(0, 0, &args, &p);
     try std.testing.expectEqualStrings("B.$c", OneCall.seen_full);
     try std.testing.expect(OneCall.seen_objects != session.design.?.objects.ptr);
-    try std.testing.expectEqualStrings("A.$c", session.design.?.objects[0].full);
+    try std.testing.expectEqualStrings("A.$c", session.design.?.obj(.at(0)).full);
     _ = a.call(1, 0, &args, &p);
 
     // Each (library, instance) reads back what its own calltf put: a value
@@ -408,7 +408,7 @@ test "§12.10 vpiStringVal: the real part's %g choice is the format reported, wh
     objs[0] = .{ .kind = .quantity, .owner = .none, .name = "", .full = "", .cold = 0 };
     objs[1] = .{ .kind = .branch, .owner = .none, .name = "b", .full = "b", .cold = 1 };
     const colds = try a.alloc(Cold, 2);
-    colds[0] = .{ .branch = 1 };
+    colds[0] = .{ .branch = .at(1) };
     colds[1] = .{ .hi_row = 0 };
     session.design = .{ .gpa = a, .arena = .init(a), .objects = objs, .cold = colds, .scopes = &.{}, .top_modules = &.{}, .by_name = .empty, .iters = .empty };
     // An AC point whose phasor is 2.5 + 1e-7 j: %g spells the real part as a
@@ -420,14 +420,14 @@ test "§12.10 vpiStringVal: the real part's %g choice is the format reported, wh
     setPoint(.{ .kind = .ac }, 0, 0, 1e3);
     defer setPoint(null, 0, 0, 0);
     var v: AnalogValue = .{ .format = user.vpiStringVal, .real = .{ .real = 0 }, .imaginary = .{ .real = 0 } };
-    analog_value.vpi_get_analog_value(trust.handleOf(&session.design.?.objects[0]), &v);
+    analog_value.vpi_get_analog_value(trust.handleOf(session.design.?.obj(.at(0))), &v);
     try std.testing.expectEqual(@as(c_int, 0), status.vpi_chk_error(null));
     try std.testing.expectEqualStrings("2.5", std.mem.span(v.real.str));
     try std.testing.expectEqualStrings("1e-07", std.mem.span(v.imaginary.str));
     try std.testing.expectEqual(user.vpiDecStrVal, v.format);
     // The real-only formats keep their format.
     v.format = user.vpiRealVal;
-    analog_value.vpi_get_analog_value(trust.handleOf(&session.design.?.objects[0]), &v);
+    analog_value.vpi_get_analog_value(trust.handleOf(session.design.?.obj(.at(0))), &v);
     try std.testing.expectEqual(@as(f64, 1e-7), v.imaginary.real);
     try std.testing.expectEqual(user.vpiRealVal, v.format);
 }

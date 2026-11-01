@@ -10,11 +10,15 @@
 //! - `pub const Edge = struct`
 //! - `pub const List = struct`
 //! - `pub const Prop = struct`
-//! - `pub const no_obj: u32`
 //! - `pub const Kind = enum`
-//! - `pub const OptU32 = enum`
-//! - `pub fn OptU32.of(v: ?u32) OptU32`
-//! - `pub fn OptU32.get(o: OptU32) ?u32`
+//! - `pub const ObjId = enum`
+//! - `pub fn ObjId.at(i: usize) ObjId`
+//! - `pub fn ObjId.of(v: ?u32) ObjId`
+//! - `pub fn ObjId.get(id: ObjId) ?u32`
+//! - `pub fn ObjId.index(id: ObjId) u32`
+//! - `pub const Slot = enum`
+//! - `pub fn Slot.of(v: ?u32) Slot`
+//! - `pub fn Slot.get(s: Slot) ?u32`
 //! - `pub const Obj = struct`
 //! - `pub const no_cold = std.math.maxInt(u32)`
 //! - `pub const Cold = struct`
@@ -25,7 +29,7 @@
 //! - `pub fn typeOf(o: *const Obj) c_int`
 //! - `pub fn typeName(t: c_int) []const u8`
 //! - `pub fn locate(bag: *const @import("vera").diag.Bag, start: u32) Loc`
-//! - `pub fn edgeTo(x: *const Obj, tag: c_int) u32`
+//! - `pub fn edgeTo(x: *const Obj, tag: c_int) ObjId`
 //! - `pub fn coldOf(o: *const Obj) *const Cold`
 
 const std = @import("std");
@@ -38,16 +42,13 @@ const session = @import("session.zig");
 const user = @import("vpi_user.zig");
 
 /// A single arrow: `vpi_handle(tag, obj)` answers object `to` (or `none`).
-pub const Edge = struct { tag: c_int, to: u32 };
+pub const Edge = struct { tag: c_int, to: ObjId };
 
 /// A double arrow: `vpi_iterate(tag, obj)` walks `items`.
-pub const List = struct { tag: c_int, items: []const u32 };
+pub const List = struct { tag: c_int, items: []const ObjId };
 
 /// An int or bool property `vpi_get(prop, obj)` answers.
 pub const Prop = struct { prop: c_int, value: c_int };
-
-/// "No object": an edge a diagram draws that this object does not have.
-pub const no_obj: u32 = std.math.maxInt(u32);
 
 /// The object classes the model answers; `typeOf` maps each to its `vpiType`.
 pub const Kind = enum(u8) {
@@ -96,24 +97,64 @@ pub const Kind = enum(u8) {
     code,
 };
 
-/// A `?u32` in four bytes rather than eight, for the `Obj` index fields most
-/// rows leave empty: `none` is null, which `maxInt(u32)` can be because no
-/// row, scope or engine slot index reaches it (`no_obj` is the same value).
-pub const OptU32 = enum(u32) {
+/// A row of `Design.objects`: the handle every edge, list and owner field
+/// holds. `none` is "no object", which an edge a diagram draws but this
+/// object does not have answers as NULL with no error (§11.5.3). Four bytes
+/// where `?u32` is eight; no table reaches `maxInt(u32)` rows
+/// (`Design.objects_max`).
+pub const ObjId = enum(u32) {
     none = std.math.maxInt(u32),
     _,
 
-    /// Packs `v`. Asserts that `v` is not `maxInt(u32)`, the value `none`
-    /// spends.
-    pub fn of(v: ?u32) OptU32 {
-        const x = v orelse return .none;
-        std.debug.assert(x != std.math.maxInt(u32));
-        return @fromBackingInt(@intCast(x));
+    /// The id of row `i`. Asserts that `i` is a row index, not `none`'s value.
+    pub fn at(i: usize) ObjId {
+        std.debug.assert(i < std.math.maxInt(u32));
+        const id: ObjId = @fromBackingInt(@intCast(i));
+        std.debug.assert(id != .none);
+        return id;
     }
 
-    /// Unpacks `o`: null for `none`.
-    pub fn get(o: OptU32) ?u32 {
-        return if (o == .none) null else @backingInt(o);
+    /// Packs an optional row index; null is `none`. Asserts that `v` is not
+    /// `maxInt(u32)`, the value `none` spends.
+    pub fn of(v: ?u32) ObjId {
+        const x = v orelse return .none;
+        return at(x);
+    }
+
+    /// Unpacks `id`: null for `none`.
+    pub fn get(id: ObjId) ?u32 {
+        return if (id == .none) null else @backingInt(id);
+    }
+
+    /// The row index of `id`. Asserts that `id` is not `none`.
+    pub fn index(id: ObjId) u32 {
+        std.debug.assert(id != .none);
+        const i = @backingInt(id);
+        std.debug.assert(i < std.math.maxInt(u32));
+        return i;
+    }
+};
+
+/// The digital engine's storage slot of an object (`sim.digital.Run.values`
+/// index), or `none` for an object the engine does not store: the analog
+/// model's rows, a parameter folded at compile time, an automatic variable.
+pub const Slot = enum(u32) {
+    none = std.math.maxInt(u32),
+    _,
+
+    /// Packs an optional slot; null is `none`. Asserts that `v` is not
+    /// `maxInt(u32)`, the value `none` spends.
+    pub fn of(v: ?u32) Slot {
+        const x = v orelse return .none;
+        std.debug.assert(x != std.math.maxInt(u32));
+        const s: Slot = @fromBackingInt(@intCast(x));
+        std.debug.assert(s != .none);
+        return s;
+    }
+
+    /// Unpacks `s`: null for `none`.
+    pub fn get(s: Slot) ?u32 {
+        return if (s == .none) null else @backingInt(s);
     }
 };
 
@@ -132,7 +173,7 @@ pub const Obj = struct {
     /// module's SCOPE INDEX. For a `.module` this is its parent module.
     /// A lexical containing scope, such as a gen scope, is a separate
     /// vpiScope edge; runtime time-scale/storage lookup keeps this owner.
-    owner: OptU32,
+    owner: ObjId,
     /// `.module` only: which `Design.scopes` row is this module's own scope.
     scope: u32 = 0,
     /// §11.6 `vpiName` — the local name.
@@ -163,16 +204,16 @@ pub const Obj = struct {
     /// The digital engine's storage slot for this object's value, when the
     /// design is a running digital one (`openDigital`). `.none` in the analog
     /// model, whose values come from analog.zig's solution.
-    slot: OptU32 = .none,
+    slot: Slot = .none,
     /// `.parameter` of the analog model: the constant lowering folded for it
     /// (`Lowered.consts`), copied; §11.6.12 NOTE 1's "the value of the
     /// parameter".
     value: ?Lower.Const = null,
     /// An element (word, var select, array member module): the array object
     /// it belongs to — §11.6.11's `vpiParent`, §6.2.2's `vpiModuleArray`.
-    parent: OptU32 = .none,
+    parent: ObjId = .none,
     /// An element: the `.constant` object its `vpiIndex` edge leads to.
-    index: OptU32 = .none,
+    index: ObjId = .none,
     /// `.code`: the object type and the diagram's edges, as data. Any other
     /// class may carry `edges` and `props` too, answered after its own.
     vtype: c_int = 0,
@@ -204,7 +245,7 @@ pub const Obj = struct {
     /// The instance supplying `src_expr`'s engine context. Expressions such
     /// as operations have no VPI scope relationship (`owner` is `.none`), but
     /// still need their original instance when an application reads them.
-    expr_scope: OptU32 = .none,
+    expr_scope: ObjId = .none,
     /// `.net` only: its A.2.2.1 net type, IEEE 1364-2005 §26.6.6 vpiNetType.
     net_type: Ast.NetKind = .wire,
     /// A continuous assignment's literal delays, in its module's time unit
@@ -231,12 +272,12 @@ pub const Cold = struct {
     /// IEEE §26.6.42: a folded attribute preserves its declared bit width
     /// and all x/z bits, which a signed i64 constant cannot represent.
     constant_bits: ?@import("frontend").Integer.Literal = null,
-    attributes: []const u32 = &.{},
+    attributes: []const ObjId = &.{},
     /// An array: its elements, in increasing index.
-    members: []const u32 = &.{},
+    members: []const ObjId = &.{},
     /// A digital array: its IEEE 1364-2005 §26.6.10 range, one `.code` object
     /// of vtype vpiRange (a slice, so vpi_iterate can walk it).
-    range: []const u32 = &.{},
+    range: []const ObjId = &.{},
     /// The one-to-one edges of the analog classes (§11.6.2, §11.6.5–§11.6.7),
     /// as object indices. Null is "no such object", which vpi_handle answers
     /// with NULL and no error (a base nature has no parent, a one-terminal
@@ -248,21 +289,21 @@ pub const Cold = struct {
     ///              discipline -> vpiFlowNature/vpiPotentialNature
     ///   nature     quantity -> its nature; nature -> vpiParent
     ///   branch     quantity -> vpiBranch
-    disc: ?u32 = null,
-    node: ?u32 = null,
-    pos: ?u32 = null,
-    neg: ?u32 = null,
-    flow: ?u32 = null,
-    pot: ?u32 = null,
-    nature: ?u32 = null,
-    branch: ?u32 = null,
+    disc: ObjId = .none,
+    node: ObjId = .none,
+    pos: ObjId = .none,
+    neg: ObjId = .none,
+    flow: ObjId = .none,
+    pot: ObjId = .none,
+    nature: ObjId = .none,
+    branch: ObjId = .none,
     /// The one-to-many edges of the analog classes:
     ///   nets       node ->> net
     ///   children   nature ->> nature (vpiChild), the natures derived from it
     ///   users      nature ->> discipline, the disciplines binding it
-    nets: []const u32 = &.{},
-    children: []const u32 = &.{},
-    users: []const u32 = &.{},
+    nets: []const ObjId = &.{},
+    children: []const ObjId = &.{},
+    users: []const ObjId = &.{},
     /// `.node` of the analog model: its `Lowered.nodes` row — the solver
     /// unknown whose value §12.10 reads for a potential. Null for a node the
     /// lowering never gave a row (declared, never reached by analog code).
@@ -319,7 +360,7 @@ pub const Loc = struct { line: c_int, file: []const u8 };
 /// is `objects[i]` (modules are appended first, in scope order), so an
 /// object's `owner` scope index is also its owner's object index.
 pub const Scope = struct {
-    parent: ?u32,
+    parent: ObjId,
     /// §11.6.1 `vpiDefName`: the module definition this is an instance of,
     /// which the flattened design does not carry.
     def_name: []const u8,
@@ -334,25 +375,25 @@ pub const Scope = struct {
     /// this instance's definition. Null in the analog model, which has none.
     time_unit: ?i8 = null,
     time_precision: ?i8 = null,
-    children: []const u32 = &.{},
+    children: []const ObjId = &.{},
     /// IEEE 1364-2005 §26.6.3 module ->> vpiInternalScope: the instances,
     /// then the gen scopes, tasks, functions and named blocks written here.
-    internal: []const u32 = &.{},
-    ports: []const u32 = &.{},
-    nets: []const u32 = &.{},
-    regs: []const u32 = &.{},
-    params: []const u32 = &.{},
-    integers: []const u32 = &.{},
-    reals: []const u32 = &.{},
-    reg_arrays: []const u32 = &.{},
+    internal: []const ObjId = &.{},
+    ports: []const ObjId = &.{},
+    nets: []const ObjId = &.{},
+    regs: []const ObjId = &.{},
+    params: []const ObjId = &.{},
+    integers: []const ObjId = &.{},
+    reals: []const ObjId = &.{},
+    reg_arrays: []const ObjId = &.{},
     /// IEEE 1364-2005 §26.6.1 module ->> net array and ->> variables (every
     /// integer, time and real variable and variable array, in declaration
     /// order).
-    net_arrays: []const u32 = &.{},
-    variables: []const u32 = &.{},
-    module_arrays: []const u32 = &.{},
-    nodes: []const u32 = &.{},
-    branches: []const u32 = &.{},
+    net_arrays: []const ObjId = &.{},
+    variables: []const ObjId = &.{},
+    module_arrays: []const ObjId = &.{},
+    nodes: []const ObjId = &.{},
+    branches: []const ObjId = &.{},
     /// §11.6.1's behavioural double arrows (code.zig), as tagged rows.
     lists: []const List = &.{},
     /// A digital model's `digital.Run` scope id for this instance.
@@ -363,7 +404,7 @@ pub const Scope = struct {
 /// it is a key of `Design.iters`.
 pub const Iter = struct {
     /// Object indices, in §11.6's order, which is source order.
-    items: []const u32,
+    items: []const ObjId,
     at: usize = 0,
     /// Handles to objects that are not in `Design.objects` (§11.6.25 time
     /// queues), OWNED by the iterator; scanned instead of `items` when set.
@@ -468,10 +509,10 @@ pub fn locate(bag: *const @import("vera").diag.Bag, start: u32) Loc {
     };
 }
 
-/// `x`'s first single arrow `tag`, or `no_obj`.
-pub fn edgeTo(x: *const Obj, tag: c_int) u32 {
+/// `x`'s first single arrow `tag`, or `none`.
+pub fn edgeTo(x: *const Obj, tag: c_int) ObjId {
     for (x.edges) |e| if (e.tag == tag) return e.to;
-    return no_obj;
+    return .none;
 }
 
 /// The cold fields of `o`, a row of the installed design.

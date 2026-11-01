@@ -180,11 +180,11 @@ pub export fn vpi_get_value(obj: abi.vpiHandle, value_p: ?*Value) void {
     // IEEE 1364-2005 §26.6.13: a prim term's value is its terminal's.
     if (o.kind == .code and o.vtype == user.vpiPrimTerm) {
         const e = schema.edgeTo(o, user.vpiExpr);
-        if (e == schema.no_obj) {
+        if (e == schema.ObjId.none) {
             status.fail("NOVALUE", "vpi_get_value: that terminal's expression is not one this model holds", .{});
             return;
         }
-        o = &session.design.?.objects[e];
+        o = session.design.?.obj(e);
     }
     read(o, v, &get_store);
 }
@@ -198,14 +198,14 @@ pub fn watch(o: *const Obj) void {
     // An array: every element (§12.31.1 "if the obj is a memory word or a
     // variable array, ... the index field shall contain the index").
     const d = &(session.design orelse return);
-    for (schema.coldOf(o).members) |m| if (d.objects[m].slot.get()) |at| r.waits.watch[at].insert(.vpi);
+    for (schema.coldOf(o).members) |m| if (d.obj(m).slot.get()) |at| r.waits.watch[at].insert(.vpi);
 }
 
 // ---- private ----
 
 fn activeCall(o: *const Obj) bool {
     return o.kind == .code and o.vtype == user.vpiSysFuncCall and
-        systf.active != null and &session.design.?.objects[systf.active.?] == o;
+        systf.active != null and session.design.?.obj(systf.active.?) == o;
 }
 
 fn source(o: *const Obj) ?Source {
@@ -246,7 +246,7 @@ fn bitsOf(lit: Int.Literal) Bits {
 /// concatenation, whose drivers each hold a part.
 fn driven(o: *const Obj) ?Source {
     const r = run.attached() orelse return null;
-    const scope = session.design.?.scopes[o.owner.get().?].engine;
+    const scope = session.design.?.scope(o.owner).engine;
     var found: ?usize = null;
     for (r.netlist.drivers, 0..) |drv, k| if (drv.tok == o.src_tok and drv.scope == scope) {
         if (found != null) return null;

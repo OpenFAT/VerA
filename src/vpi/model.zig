@@ -12,10 +12,12 @@
 //! Contents:
 //! - `pub const Rows = struct`
 //! - `pub fn Rows.deinit(rows: *Rows) void`
+//! - `pub fn Rows.next(rows: *const Rows) ObjId`
+//! - `pub fn Rows.at(rows: *const Rows, id: ObjId) *Obj`
 //! - `pub fn Rows.append(rows: *Rows, o: Obj) Error!void`
 //! - `pub fn Rows.appendCold(rows: *Rows, o: Obj, c: Cold) Error!void`
-//! - `pub fn Rows.coldFor(rows: *Rows, at: u32) Error!*Cold`
-//! - `pub fn Rows.coldOf(rows: *const Rows, at: u32) *const Cold`
+//! - `pub fn Rows.coldFor(rows: *Rows, id: ObjId) Error!*Cold`
+//! - `pub fn Rows.coldOf(rows: *const Rows, id: ObjId) *const Cold`
 //! - `pub const Building = struct`
 //! - `pub fn Building.deinit(s: *Building, gpa: std.mem.Allocator) void`
 //! - `pub const Csr = struct`
@@ -24,7 +26,7 @@
 //! - `pub fn Csr.of(c: Csr, key: usize) []const u32`
 //! - `pub fn freeze(d: *Design, rows: *Rows, scopes: []const Building) Error!void`
 //! - `pub fn decls(gpa: std.mem.Allocator, objects: []const Obj, n_scopes: usize) Error!Csr`
-//! - `pub fn nameTable(gpa: std.mem.Allocator, objects: []const Obj) Error!std.StringHashMapUnmanaged(u32)`
+//! - `pub fn nameTable(gpa: std.mem.Allocator, objects: []const Obj) Error!std.StringHashMapUnmanaged(ObjId)`
 //! - `pub fn joinPath(arena: std.mem.Allocator, parent: []const u8, local: []const u8) Error![]const u8`
 //! - `pub fn lastComponent(path: []const u8) []const u8`
 
@@ -41,6 +43,7 @@ const Cold = schema.Cold;
 const Error = session.Error;
 const Kind = schema.Kind;
 const Obj = schema.Obj;
+const ObjId = schema.ObjId;
 const Scope = schema.Scope;
 const ScopeLists = code_tables.ScopeLists;
 
@@ -59,35 +62,55 @@ pub const Rows = struct {
         rows.cold.deinit(rows.gpa);
     }
 
+    /// The id the next appended row receives.
+    pub fn next(rows: *const Rows) ObjId {
+        return .at(rows.hot.items.len);
+    }
+
+    /// Row `id`, to read or write. Asserts that `id` is a row appended so far.
+    /// The pointer is invalidated by the next append.
+    pub fn at(rows: *const Rows, id: ObjId) *Obj {
+        const i = id.index();
+        std.debug.assert(i < rows.hot.items.len);
+        return &rows.hot.items[i];
+    }
+
     /// Appends row `o`, with no cold fields. Invalidates pointers into `hot`.
+    /// `error.TooManyObjects` past `Design.objects_max` rows.
     pub fn append(rows: *Rows, o: Obj) Error!void {
+        if (rows.hot.items.len >= Design.objects_max) return error.TooManyObjects;
         try rows.hot.append(rows.gpa, o);
+        std.debug.assert(rows.hot.items.len <= Design.objects_max);
     }
 
     /// Appends row `o` with cold fields `c`. Invalidates pointers into `hot`
     /// and `cold`.
     pub fn appendCold(rows: *Rows, o: Obj, c: Cold) Error!void {
+        std.debug.assert(o.cold == schema.no_cold);
+        if (rows.hot.items.len >= Design.objects_max) return error.TooManyObjects;
         try rows.hot.ensureUnusedCapacity(rows.gpa, 1);
         var row = o;
         row.cold = @intCast(rows.cold.items.len);
         try rows.cold.append(rows.gpa, c);
         rows.hot.appendAssumeCapacity(row);
+        std.debug.assert(rows.hot.items[rows.hot.items.len - 1].cold == rows.cold.items.len - 1);
     }
 
-    /// Row `at`'s cold fields to write, its `Cold` row added on first use.
+    /// Row `id`'s cold fields to write, its `Cold` row added on first use.
     /// Invalidates earlier results of `coldFor` and `coldOf`.
-    pub fn coldFor(rows: *Rows, at: u32) Error!*Cold {
-        const o = &rows.hot.items[at];
+    pub fn coldFor(rows: *Rows, id: ObjId) Error!*Cold {
+        const o = rows.at(id);
         if (o.cold == schema.no_cold) {
             try rows.cold.append(rows.gpa, .{});
             o.cold = @intCast(rows.cold.items.len - 1);
         }
+        std.debug.assert(o.cold < rows.cold.items.len);
         return &rows.cold.items[o.cold];
     }
 
-    /// Row `at`'s cold fields to read: `Cold{}` when it has none.
-    pub fn coldOf(rows: *const Rows, at: u32) *const Cold {
-        const c = rows.hot.items[at].cold;
+    /// Row `id`'s cold fields to read: `Cold{}` when it has none.
+    pub fn coldOf(rows: *const Rows, id: ObjId) *const Cold {
+        const c = rows.at(id).cold;
         return if (c == schema.no_cold) &empty_cold else &rows.cold.items[c];
     }
 
@@ -104,22 +127,22 @@ pub const Building = struct {
     path: []const u8,
     time_unit: ?i8 = null,
     time_precision: ?i8 = null,
-    parent: ?u32,
+    parent: ObjId,
     /// A digital model's `digital.Run` scope id for this instance.
     engine: u32 = 0,
-    children: std.ArrayList(u32) = .empty,
-    ports: std.ArrayList(u32) = .empty,
-    nets: std.ArrayList(u32) = .empty,
-    regs: std.ArrayList(u32) = .empty,
-    params: std.ArrayList(u32) = .empty,
-    integers: std.ArrayList(u32) = .empty,
-    reals: std.ArrayList(u32) = .empty,
-    reg_arrays: std.ArrayList(u32) = .empty,
-    net_arrays: std.ArrayList(u32) = .empty,
-    variables: std.ArrayList(u32) = .empty,
-    module_arrays: std.ArrayList(u32) = .empty,
-    nodes: std.ArrayList(u32) = .empty,
-    branches: std.ArrayList(u32) = .empty,
+    children: std.ArrayList(ObjId) = .empty,
+    ports: std.ArrayList(ObjId) = .empty,
+    nets: std.ArrayList(ObjId) = .empty,
+    regs: std.ArrayList(ObjId) = .empty,
+    params: std.ArrayList(ObjId) = .empty,
+    integers: std.ArrayList(ObjId) = .empty,
+    reals: std.ArrayList(ObjId) = .empty,
+    reg_arrays: std.ArrayList(ObjId) = .empty,
+    net_arrays: std.ArrayList(ObjId) = .empty,
+    variables: std.ArrayList(ObjId) = .empty,
+    module_arrays: std.ArrayList(ObjId) = .empty,
+    nodes: std.ArrayList(ObjId) = .empty,
+    branches: std.ArrayList(ObjId) = .empty,
     code: ScopeLists = .{},
 
     /// Frees the growable lists, which live in `gpa`; the strings they index
@@ -211,19 +234,20 @@ pub fn freeze(d: *Design, rows: *Rows, scopes: []const Building) Error!void {
             .time_precision = s.time_precision,
             .internal = blk: {
                 var n = s.children.items.len + s.code.internal.items.len;
-                for (s.code.gen_arrays.items) |g| n += objects[g].lists[0].items.len;
-                var all: std.ArrayList(u32) = try .initCapacity(arena, n);
+                for (s.code.gen_arrays.items) |g| n += objects[g.index()].lists[0].items.len;
+                var all: std.ArrayList(ObjId) = try .initCapacity(arena, n);
                 all.appendSliceAssumeCapacity(s.children.items);
-                for (s.code.gen_arrays.items) |g| all.appendSliceAssumeCapacity(objects[g].lists[0].items);
+                for (s.code.gen_arrays.items) |g| all.appendSliceAssumeCapacity(objects[g.index()].lists[0].items);
                 all.appendSliceAssumeCapacity(s.code.internal.items);
                 break :blk all.items;
             },
             .lists = try s.code.freeze(arena),
             .engine = s.engine,
         };
-        inline for (Building.id_lists) |f| @field(sc, f) = try arena.dupe(u32, @field(s, f).items);
+        inline for (Building.id_lists) |f| @field(sc, f) = try arena.dupe(ObjId, @field(s, f).items);
     }
-    d.top_modules = try arena.dupe(u32, &[_]u32{0});
+    std.debug.assert(objects.len >= scopes.len);
+    d.top_modules = try arena.dupe(ObjId, &.{ObjId.at(0)});
     // A constant and a quantity have no name to be found by (§11.6.7 lists
     // none), and a node shares its net's name — the NET is what a name
     // denotes (§11.6.8), the node is reached from it. Disciplines and
@@ -232,11 +256,11 @@ pub fn freeze(d: *Design, rows: *Rows, scopes: []const Building) Error!void {
         .constant, .quantity, .node, .discipline, .nature => {},
         // A named block, task, function or named event has a full name; a
         // statement or expression does not.
-        .code => if (o.full.len != 0) try d.by_name.put(gpa, o.full, @intCast(i)),
+        .code => if (o.full.len != 0) try d.by_name.put(gpa, o.full, .at(i)),
         // An implicit net shares its name with the port that made it; the
         // name keeps denoting what the source declared.
-        .net => if (!o.implicit or !d.by_name.contains(o.full)) try d.by_name.put(gpa, o.full, @intCast(i)),
-        .module, .port, .reg, .parameter, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array, .word, .var_select, .module_array, .branch => try d.by_name.put(gpa, o.full, @intCast(i)),
+        .net => if (!o.implicit or !d.by_name.contains(o.full)) try d.by_name.put(gpa, o.full, .at(i)),
+        .module, .port, .reg, .parameter, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array, .word, .var_select, .module_array, .branch => try d.by_name.put(gpa, o.full, .at(i)),
     };
 }
 
@@ -261,12 +285,12 @@ pub fn decls(gpa: std.mem.Allocator, objects: []const Obj, n_scopes: usize) Erro
 /// behavioural objects. Built in object order, so where a port and a net
 /// share a name (a port of the top is declared as a net too) the net wins,
 /// as it does in `by_name`.
-pub fn nameTable(gpa: std.mem.Allocator, objects: []const Obj) Error!std.StringHashMapUnmanaged(u32) {
-    var names: std.StringHashMapUnmanaged(u32) = .empty;
+pub fn nameTable(gpa: std.mem.Allocator, objects: []const Obj) Error!std.StringHashMapUnmanaged(ObjId) {
+    var names: std.StringHashMapUnmanaged(ObjId) = .empty;
     errdefer names.deinit(gpa);
     for (objects, 0..) |o, i| switch (o.kind) {
         .constant, .quantity, .node, .discipline, .nature => {},
-        .module, .port, .net, .reg, .parameter, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array, .word, .var_select, .module_array, .branch, .code => if (o.full.len != 0) try names.put(gpa, o.full, @intCast(i)),
+        .module, .port, .net, .reg, .parameter, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array, .word, .var_select, .module_array, .branch, .code => if (o.full.len != 0) try names.put(gpa, o.full, .at(i)),
     };
     return names;
 }
@@ -312,47 +336,6 @@ test "§6.7 paths: lastComponent and joinPath" {
     try std.testing.expectEqualStrings("p", try joinPath(a, "p", ""));
     try std.testing.expectEqualStrings("p.x", try joinPath(a, "p", "x"));
     try std.testing.expectEqualStrings("", try joinPath(a, "", ""));
-}
-
-test "§11.6.11 addArray: elements row-major, named by every index, vpiIndex the innermost" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    var rows: Rows = .{ .gpa = std.testing.allocator };
-    defer rows.deinit();
-    // `reg [7:0] m [1:2][0:1]`, its first element in engine slot 100.
-    const at = try model_arrays.addArray(arena.allocator(), &rows, .reg_array, 0, "m", "t.m", .integer, 1, 2, &.{.{ .low = 0, .high = 1 }}, 8, 100);
-    try std.testing.expectEqual(@as(u32, 4), rows.hot.items[at].size);
-    const members = rows.coldOf(at).members;
-    for (members, [_]struct { []const u8, i64, u32 }{
-        .{ "t.m[1][0]", 0, 100 },
-        .{ "t.m[1][1]", 1, 101 },
-        .{ "t.m[2][0]", 0, 102 },
-        .{ "t.m[2][1]", 1, 103 },
-    }) |m, want| {
-        const e = rows.hot.items[m];
-        try std.testing.expectEqual(Kind.word, e.kind);
-        try std.testing.expectEqual(@as(u32, 8), e.size);
-        try std.testing.expectEqualStrings(want[0], e.full);
-        try std.testing.expectEqual(@as(?u32, want[2]), e.slot.get());
-        try std.testing.expectEqual(@as(?u32, at), e.parent.get());
-        const index = e.index.get() orelse return error.TestUnexpectedResult;
-        try std.testing.expectEqual(want[1], rows.hot.items[index].value.?.int);
-    }
-}
-
-test "IEEE 1364-2005 §26.6.10 addRange: bounds as written, size the element count either way" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    var rows: Rows = .{ .gpa = std.testing.allocator };
-    defer rows.deinit();
-    for ([_]struct { i64, i64, c_int }{ .{ 7, 0, 8 }, .{ 0, 7, 8 }, .{ -3, 4, 8 }, .{ 5, 5, 1 } }) |case| {
-        const at = try model_arrays.addRange(arena.allocator(), &rows, 0, case[0], case[1]);
-        const r = rows.hot.items[at];
-        try std.testing.expectEqual(user.vpiRange, r.vtype);
-        try std.testing.expectEqual(case[2], r.props[0].value);
-        try std.testing.expectEqual(case[0], rows.hot.items[r.edges[0].to].value.?.int);
-        try std.testing.expectEqual(case[1], rows.hot.items[r.edges[1].to].value.?.int);
-    }
 }
 
 test "decls: each scope's declaration rows, in object order" {

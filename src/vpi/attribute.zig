@@ -5,13 +5,14 @@
 //!
 //! Contents:
 //! - `pub const ByOwner = struct`
+//! - `pub const ByOwner.end: u32`
 //! - `pub fn ByOwner.init(gpa: std.mem.Allocator, file: *const Ast.SourceFile) error{OutOfMemory}!ByOwner`
 //! - `pub fn ByOwner.deinit(self: *ByOwner, gpa: std.mem.Allocator) void`
 //! - `pub fn AnalogEnv.leaf(env: AnalogEnv, e: Ast.ExprId) ?Const`
 //! - `pub fn AnalogEnv.signed(env: AnalogEnv, e: Ast.ExprId) ?bool`
 //! - `pub fn AnalogEnv.width(env: AnalogEnv, e: Ast.ExprId) ?u32`
 //! - `pub fn supports(o: *const Obj) bool`
-//! - `pub fn attach(b: *Builder, parent: u32, owner: Ast.AttributeOwner, definition: bool) Error!void`
+//! - `pub fn attach(b: *Builder, parent: ObjId, owner: Ast.AttributeOwner, definition: bool) Error!void`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
@@ -20,6 +21,7 @@ const Lowered = @import("ir").Lowered;
 const constfold = @import("frontend").constfold;
 const Const = Lower.Const;
 const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const user = @import("vpi_user.zig");
 const Builder = @import("Builder.zig");
 const session = @import("session.zig");
@@ -32,9 +34,12 @@ const Obj = schema.Obj;
 pub const ByOwner = struct {
     /// Owner -> its first binding's index in `file.attributes`.
     heads: std.AutoHashMapUnmanaged(Ast.AttributeOwner, u32) = .empty,
-    /// Binding index -> the next binding of the same owner, `code.none`
-    /// after the last.
+    /// Binding index -> the next binding of the same owner, `end` after
+    /// the last.
     next: []u32 = &.{},
+
+    /// The `next` of an owner's last binding.
+    pub const end: u32 = std.math.maxInt(u32);
 
     /// Indexes `file.attributes` in one pass, O(bindings). Caller owns the
     /// result and frees it with `deinit` and the same `gpa`.
@@ -46,7 +51,7 @@ pub const ByOwner = struct {
         while (k > 0) {
             k -= 1;
             const g = try self.heads.getOrPut(gpa, bindings[k].owner);
-            self.next[k] = if (g.found_existing) g.value_ptr.* else schema.no_obj;
+            self.next[k] = if (g.found_existing) g.value_ptr.* else end;
             g.value_ptr.* = @intCast(k);
         }
         return self;
@@ -88,14 +93,14 @@ const AnalogEnv = struct {
         }
         if (env.b.file.exprs.tag(e) != .ident) return null;
         const at = env.b.lookup(env.b.file.str(env.b.file.exprs.strOf(e)));
-        if (at == schema.no_obj or env.b.objects.hot.items[at].kind != .parameter) return null;
-        return env.b.objects.hot.items[at].value;
+        if (at == ObjId.none or env.b.objects.at(at).kind != .parameter) return null;
+        return env.b.objects.at(at).value;
     }
     fn parameter(env: AnalogEnv, e: Ast.ExprId) ?@import("ir").Lowered.ParamInfo {
         if (env.b.file.exprs.tag(e) != .ident) return null;
         const at = env.b.lookup(env.b.file.str(env.b.file.exprs.strOf(e)));
-        if (at == schema.no_obj) return null;
-        const full = env.b.objects.hot.items[at].full;
+        if (at == ObjId.none) return null;
+        const full = env.b.objects.at(at).full;
         const lowered = (env.b.analog orelse return null).lowered orelse return null;
         if (full.len <= env.b.top_name.len) return null;
         const name = full[env.b.top_name.len + 1 ..];
@@ -183,20 +188,20 @@ pub fn supports(o: *const Obj) bool {
 /// repeated on one element keeps the later spelling. `definition` is
 /// vpiDefAttribute. A no-op for `code.none`. `error.NotElaborated`: a value
 /// that does not fold, which the frontend should already have refused.
-pub fn attach(b: *Builder, parent: u32, owner: Ast.AttributeOwner, definition: bool) Error!void {
-    if (parent == schema.no_obj) return;
-    var k = b.attrs.heads.get(owner) orelse schema.no_obj;
-    while (k != schema.no_obj) : (k = b.attrs.next[k]) {
+pub fn attach(b: *Builder, parent: ObjId, owner: Ast.AttributeOwner, definition: bool) Error!void {
+    if (parent == ObjId.none) return;
+    var k = b.attrs.heads.get(owner) orelse ByOwner.end;
+    while (k != ByOwner.end) : (k = b.attrs.next[k]) {
         const binding = b.file.attributes.items[k];
         for (binding.specs) |spec| {
             const name = b.file.str(spec.name);
-            const found: ?u32 = for (b.objects.coldOf(parent).attributes) |at| {
-                const old = &b.objects.hot.items[at];
+            const found: ?ObjId = for (b.objects.coldOf(parent).attributes) |at| {
+                const old = b.objects.at(at);
                 if (std.mem.eql(u8, old.name, name) and old.props[0].value == @intFromBool(definition)) break at;
             } else null;
             // Declaration-list fan-out may copy an earlier prefix after a
             // later one was parsed. Source order, not append order, wins.
-            if (found) |at| if (b.objects.hot.items[at].src_tok >= spec.main_tok) continue;
+            if (found) |at| if (b.objects.at(at).src_tok >= spec.main_tok) continue;
             const at = found orelse try b.code(user.vpiAttribute, &.{.{ .tag = user.vpiParent, .to = parent }}, &.{}, &.{.{ .prop = user.vpiDefAttribute, .value = @intFromBool(definition) }});
             var value: ?Const = null;
             var bits: ?@import("frontend").Integer.Literal = null;
@@ -214,13 +219,13 @@ pub fn attach(b: *Builder, parent: u32, owner: Ast.AttributeOwner, definition: b
             } else {
                 value = constfold.fold(b.file, spec.value, AnalogEnv{ .b = b }) orelse return error.NotElaborated;
             }
-            b.objects.hot.items[at].name = try b.arena.dupe(u8, name);
-            b.objects.hot.items[at].src_tok = spec.main_tok;
-            b.objects.hot.items[at].value = value;
+            b.objects.at(at).name = try b.arena.dupe(u8, name);
+            b.objects.at(at).src_tok = spec.main_tok;
+            b.objects.at(at).value = value;
             if (bits != null or b.objects.coldOf(at).constant_bits != null)
                 (try b.objects.coldFor(at)).constant_bits = bits;
             if (found == null) {
-                const all = try std.mem.concat(b.arena, u32, &.{ b.objects.coldOf(parent).attributes, &.{at} });
+                const all = try std.mem.concat(b.arena, ObjId, &.{ b.objects.coldOf(parent).attributes, &.{at} });
                 (try b.objects.coldFor(parent)).attributes = all;
             }
         }

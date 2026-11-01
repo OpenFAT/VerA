@@ -3,12 +3,13 @@
 //! Cites: VAMS-2023 §11.6.14; IEEE 1364-2005 §26.6.14 Details a, A.5.3.
 //!
 //! Contents:
-//! - `pub fn udpDefns( gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows, file: *const Ast.SourceFile, attrs: *const ByOwner, out: *std.AutoHashMapUnmanaged(Ast.StrId, u32), ) Error![]const u32`
+//! - `pub fn udpDefns( gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows, file: *const Ast.SourceFile, attrs: *const ByOwner, out: *std.AutoHashMapUnmanaged(Ast.StrId, ObjId), ) Error![]const ObjId`
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
 const code_tables = @import("code_tables.zig");
 const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const user = @import("vpi_user.zig");
 const Builder = @import("Builder.zig");
 const attribute = @import("attribute.zig");
@@ -35,16 +36,16 @@ pub fn udpDefns(
     objects: *Rows,
     file: *const Ast.SourceFile,
     attrs: *const ByOwner,
-    out: *std.AutoHashMapUnmanaged(Ast.StrId, u32),
-) Error![]const u32 {
-    const defns = try arena.alloc(u32, file.udps.len);
+    out: *std.AutoHashMapUnmanaged(Ast.StrId, ObjId),
+) Error![]const ObjId {
+    const defns = try arena.alloc(ObjId, file.udps.len);
     for (file.udps, defns) |*u, *at| {
-        const ios = try arena.alloc(u32, u.ports.len);
+        const ios = try arena.alloc(ObjId, u.ports.len);
         for (u.ports, ios, 0..) |p, *io, k| {
-            io.* = @intCast(objects.hot.items.len);
+            io.* = objects.next();
             try objects.append(.{ .kind = .code, .owner = .none, .name = try arena.dupe(u8, file.str(p)), .full = "", .vtype = user.vpiIODecl, .props = try code_tables.ioProps(arena, if (k == 0) user.vpiOutput else user.vpiInput, 1, false) });
         }
-        const rows = try arena.alloc(u32, u.rows.len);
+        const rows = try arena.alloc(ObjId, u.rows.len);
         for (u.rows, rows) |r, *row| {
             var fields: c_int = 0;
             var in_edge = false;
@@ -62,28 +63,28 @@ pub fn udpDefns(
             };
             if (u.is_sequential) text.printAssumeCapacity(" : {c}", .{r.state});
             text.printAssumeCapacity(" : {c}", .{r.output});
-            row.* = @intCast(objects.hot.items.len);
+            row.* = objects.next();
             try objects.append(.{ .kind = .code, .owner = .none, .name = "", .full = "", .vtype = user.vpiTableEntry, .value = .{ .str = text.items }, .props = try arena.dupe(Prop, &.{
                 .{ .prop = user.vpiSize, .value = fields + @intFromBool(u.is_sequential) + 1 },
             }) });
         }
         // A.5.3's `initial output = init_val`: an initial process whose
         // statement assigns the output its io decl names.
-        var init = schema.no_obj;
+        var init = ObjId.none;
         if (u.init != .none) {
-            var no_names: std.StringHashMapUnmanaged(u32) = .empty;
+            var no_names: std.StringHashMapUnmanaged(ObjId) = .empty;
             var no_lists: ScopeLists = .{};
             var b: Builder = .{ .gpa = gpa, .arena = arena, .objects = objects, .file = file, .names = &no_names, .top_name = "", .scope = 0, .path = "", .lists = &no_lists, .attrs = attrs };
             const rhs = try b.expr(u.init);
-            const assign: u32 = @intCast(objects.hot.items.len);
+            const assign = objects.next();
             try objects.append(.{ .kind = .code, .owner = .none, .name = "", .full = "", .vtype = user.vpiAssignment, .edges = try arena.dupe(Edge, &.{
                 .{ .tag = user.vpiLhs, .to = ios[0] },
                 .{ .tag = user.vpiRhs, .to = rhs },
             }), .props = try arena.dupe(Prop, &.{.{ .prop = user.vpiBlocking, .value = 1 }}) });
-            init = @intCast(objects.hot.items.len);
+            init = objects.next();
             try objects.append(.{ .kind = .code, .owner = .none, .name = "", .full = "", .vtype = user.vpiInitial, .edges = try arena.dupe(Edge, &.{.{ .tag = user.vpiStmt, .to = assign }}) });
         }
-        at.* = @intCast(objects.hot.items.len);
+        at.* = objects.next();
         try objects.appendCold(.{
             .kind = .code,
             .owner = .none,

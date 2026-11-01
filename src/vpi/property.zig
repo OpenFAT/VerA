@@ -230,7 +230,7 @@ pub export fn vpi_get_real(prop: c_int, obj: abi.vpiHandle) f64 {
         status.fail("NOTANALOG", "vpi_get_real: available to analog tasks and functions only, and none is running", .{});
         return undef;
     };
-    if (!session.design.?.objects[at].in_analog) {
+    if (!session.design.?.obj(at).in_analog) {
         status.fail("NOTANALOG", "vpi_get_real: the running system task or function is a digital one", .{});
         return undef;
     }

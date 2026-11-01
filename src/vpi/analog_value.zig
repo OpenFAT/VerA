@@ -154,7 +154,9 @@ fn quantityValue(q: *const Obj) ValueError!Value {
     const l = bi.lib orelse return error.NoAnalysis;
     const d = &session.design.?;
     const flow_u = bi.flow_u;
-    const b = schema.coldOf(&d.objects[schema.coldOf(q).branch orelse return error.NoAnalysis]);
+    const branch = schema.coldOf(q).branch;
+    if (branch == .none) return error.NoAnalysis;
+    const b = schema.coldOf(d.obj(branch));
     // The library is outside data: every slot read below is checked against
     // what it published, before the solution is.
     if (!holds(bi, b.hi_row) or !holds(bi, b.lo_row)) return error.NoSolution;
@@ -164,7 +166,7 @@ fn quantityValue(q: *const Obj) ValueError!Value {
     const ac = analog.freq != 0;
     const x = if (ac) bi.ac_x.ptr else l.x();
     const xi = bi.ac_x[bi.ac_x.len / 2 ..].ptr;
-    const is_flow = b.flow != null and &d.objects[b.flow.?] == q;
+    const is_flow = b.flow != .none and d.obj(b.flow) == q;
     if (!is_flow) return .{
         .re = unknownAt(x, b.hi_row) - unknownAt(x, b.lo_row),
         .im = if (ac) unknownAt(xi, b.hi_row) - unknownAt(xi, b.lo_row) else 0,

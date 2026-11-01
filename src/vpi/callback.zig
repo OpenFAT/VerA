@@ -49,6 +49,7 @@ const CbData = abi.CbData;
 const ErrorInfo = abi.ErrorInfo;
 const Routine = abi.Routine;
 const Time = abi.Time;
+const ObjId = schema.ObjId;
 const Unanswered = status.Unanswered;
 
 /// One registration, owned by this file; see the header for its lifetime.
@@ -84,7 +85,7 @@ pub const Cb = struct {
 };
 
 /// One cbStmt firing point: engine code index `pc`, statement row `obj`.
-pub const Site = struct { pc: u32, obj: u32 };
+pub const Site = struct { pc: u32, obj: ObjId };
 
 /// Registration order, dead ones included until the next sweep.
 pub var cbs: std.ArrayList(*Cb) = .empty;
@@ -171,7 +172,7 @@ pub fn all(a: std.mem.Allocator, ref: abi.vpiHandle) ![]abi.vpiHandle {
             if (ref == null or queue != null) break :blk false;
             if (cb.reference == ref) break :blk true;
             for (cb.sites) |site| {
-                if (@as(abi.vpiHandle, @ptrCast(&session.design.?.objects[site.obj])) == ref)
+                if (@as(abi.vpiHandle, @ptrCast(session.design.?.obj(site.obj))) == ref)
                     break :blk true;
             }
             break :blk false;
@@ -265,7 +266,7 @@ pub export fn vpi_register_cb(cb_data_p: ?*const CbData) abi.vpiHandle {
                 status.fail("AUTOMATIC", "vpi_register_cb: `{s}` is an automatic variable, and a value change callback on one is illegal", .{o.full});
                 return null;
             }
-            if (o.slot == .none and (schema.coldOf(o).members.len == 0 or session.design.?.objects[schema.coldOf(o).members[0]].slot == .none)) {
+            if (o.slot == .none and (schema.coldOf(o).members.len == 0 or session.design.?.obj(schema.coldOf(o).members[0]).slot == .none)) {
                 status.fail("NOVALUE", "vpi_register_cb: `{s}` has no simulation value that can change", .{o.full});
                 return null;
             }
@@ -523,13 +524,13 @@ fn stmtSites(obj: abi.vpiHandle) ?[]const Site {
     const d = &session.design.?;
     const scope = if (one) o.owner.get().? else o.scope;
     // The statement objects this registration covers, by AST statement.
-    var covered: std.AutoHashMapUnmanaged(@import("frontend").Ast.StmtId, u32) = .empty;
+    var covered: std.AutoHashMapUnmanaged(@import("frontend").Ast.StmtId, ObjId) = .empty;
     defer covered.deinit(gpa);
     if (one) {
-        covered.put(gpa, o.stmt, d.indexOf(o)) catch return oomSites();
+        covered.put(gpa, o.stmt, d.idOf(o)) catch return oomSites();
     } else for (d.objects, 0..) |s, i| {
         if (s.kind != .code or s.owner.get() != scope or s.stmt == .none or s.vtype == user.vpiNullStmt) continue;
-        covered.put(gpa, s.stmt, @intCast(i)) catch return oomSites();
+        covered.put(gpa, s.stmt, .at(i)) catch return oomSites();
     }
     var out: std.ArrayList(Site) = .empty;
     const eng = d.scopes[scope].engine;

@@ -20,6 +20,7 @@ const model = @import("model.zig");
 const model_arrays = @import("model_arrays.zig");
 const model_branches = @import("model_branches.zig");
 const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const user = @import("vpi_user.zig");
 const Builder = @import("Builder.zig");
 const Design = @import("Design.zig");
@@ -81,9 +82,9 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
             .decl = u.decl,
             .def_name = try arena.dupe(u8, u.module),
             .path = path,
-            .parent = parent,
+            .parent = .of(parent),
         });
-        if (parent) |p| try scopes.items[p].children.append(gpa, at);
+        if (parent) |p| try scopes.items[p].children.append(gpa, .at(at));
         try by_path.put(gpa, path, at);
     }
 
@@ -96,7 +97,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
     // object index.
     for (scopes.items, 0..) |s, i| try objects.append(.{
         .kind = .module,
-        .owner = .of(s.parent),
+        .owner = s.parent,
         .scope = @intCast(i),
         .name = if (i == 0) top_name else model.lastComponent(s.path),
         .full = try model.joinPath(arena, top_name, s.path),
@@ -117,7 +118,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
             const local = try arena.dupe(u8, file.str(p.name));
             const path = try model.joinPath(arena, s.path, local);
             const node = lowered.hier_names.get(path) orelse path;
-            s.ports.appendAssumeCapacity(@intCast(objects.hot.items.len));
+            s.ports.appendAssumeCapacity(objects.next());
             try objects.append(.{
                 .kind = .port,
                 .owner = .of(@intCast(i)),
@@ -143,7 +144,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
         // §3.6.3's range as lowering folded it (`vectorSize`'s source); a
         // scalar is `[0:0]`, whose bit set is empty.
         const range = lowered.vectors.get(flat_name) orelse Lowered.VecRange{ .msb = 0, .lsb = 0 };
-        try scopes.items[split.scope].nets.append(gpa, @intCast(objects.hot.items.len));
+        try scopes.items[split.scope].nets.append(gpa, objects.next());
         try objects.append(.{
             .kind = .net,
             .owner = .of(split.scope),
@@ -167,7 +168,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
             const is_reg = v.storage == .reg;
             if (!is_reg and v.ty != .real and v.ty != .integer) continue;
             const at = try model_arrays.addArray(arena, &objects, if (is_reg) .reg_array else .var_array, split.scope, split.local, try model.joinPath(arena, top_name, flat_name), if (is_reg) .integer else v.ty, dim.low, dim.high, &.{}, if (is_reg) packedWidth(file, v) else if (v.ty == .real) 64 else 32, null);
-            objects.hot.items[at].src_tok = v.main_tok;
+            objects.at(at).src_tok = v.main_tok;
             const list = if (is_reg) &scopes.items[split.scope].reg_arrays else if (v.ty == .real) &scopes.items[split.scope].reals else &scopes.items[split.scope].integers;
             try list.append(gpa, at);
             if (!is_reg) try scopes.items[split.scope].variables.append(gpa, at);
@@ -176,8 +177,8 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
         if (v.dims.len != 0) continue;
         if (v.storage == .variable and (v.ty == .real or v.ty == .integer)) {
             const list = if (v.ty == .real) &scopes.items[split.scope].reals else &scopes.items[split.scope].integers;
-            try list.append(gpa, @intCast(objects.hot.items.len));
-            try scopes.items[split.scope].variables.append(gpa, @intCast(objects.hot.items.len));
+            try list.append(gpa, objects.next());
+            try scopes.items[split.scope].variables.append(gpa, objects.next());
             try objects.append(.{
                 .kind = if (v.ty == .real) .real_var else .integer,
                 .owner = .of(split.scope),
@@ -190,7 +191,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
             continue;
         }
         if (v.storage != .reg) continue;
-        try scopes.items[split.scope].regs.append(gpa, @intCast(objects.hot.items.len));
+        try scopes.items[split.scope].regs.append(gpa, objects.next());
         try objects.append(.{
             .kind = .reg,
             .owner = .of(split.scope),
@@ -204,7 +205,7 @@ pub fn build(model_gpa: std.mem.Allocator, res: *const CompileResult) Error!Desi
     for (flat.params) |p| {
         const flat_name = file.str(p.name);
         const split = (try splitPath(arena, &by_path, flat_name)) orelse continue;
-        try scopes.items[split.scope].params.append(gpa, @intCast(objects.hot.items.len));
+        try scopes.items[split.scope].params.append(gpa, objects.next());
         try objects.append(.{
             .kind = .parameter,
             .owner = .of(split.scope),
@@ -276,8 +277,8 @@ fn addAnalogCode(
     for (objects.hot.items, 0..) |o, i| switch (o.kind) {
         // Keyed by the declared name a statement spells; an unnamed branch
         // (§5.4.2) has none, and a statement reaches it by its node pair.
-        .branch => if (o.full.len > top_name.len) try an.branches.put(gpa, o.full[top_name.len + 1 ..], @intCast(i)),
-        .discipline => if (lowered.disciplines.get(o.name)) |info| try an.flow_access.put(gpa, @intCast(i), info.flow_access),
+        .branch => if (o.full.len > top_name.len) try an.branches.put(gpa, o.full[top_name.len + 1 ..], .at(i)),
+        .discipline => if (lowered.disciplines.get(o.name)) |info| try an.flow_access.put(gpa, .at(i), info.flow_access),
         .module, .port, .net, .reg, .parameter, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array, .word, .var_select, .module_array, .constant, .nature, .node, .quantity, .code => {},
     };
     var names = try model.nameTable(gpa, objects.hot.items);
@@ -288,11 +289,12 @@ fn addAnalogCode(
     defer attrs.deinit(gpa);
     for (scopes, 0..) |*s, i| {
         var b: Builder = .{ .gpa = gpa, .arena = arena, .objects = objects, .file = res.file, .names = &names, .top_name = top_name, .scope = @intCast(i), .path = s.path, .lists = &s.code, .analog = &an, .attrs = &attrs };
-        try b.attributes(@intCast(i), .{ .kind = .declaration, .tok = s.decl.main_tok }, true);
+        try b.attributes(.at(i), .{ .kind = .declaration, .tok = s.decl.main_tok }, true);
         for (decls.of(i)) |at|
-            try b.attributes(at, .{ .kind = .declaration, .tok = objects.hot.items[at].src_tok }, false);
+            try b.attributes(.at(at), .{ .kind = .declaration, .tok = objects.at(.at(at)).src_tok }, false);
         // The child scopes each instance name made, in child order: `next`
         // chains the positions in `s.children` that share a name.
+        const end: u32 = std.math.maxInt(u32); // `next` past a name's last
         var heads: std.StringHashMapUnmanaged(u32) = .empty;
         defer heads.deinit(gpa);
         const next = try gpa.alloc(u32, s.children.items.len);
@@ -300,21 +302,21 @@ fn addAnalogCode(
         var pos = s.children.items.len;
         while (pos > 0) {
             pos -= 1;
-            const g = try heads.getOrPut(gpa, objects.hot.items[s.children.items[pos]].name);
-            next[pos] = if (g.found_existing) g.value_ptr.* else schema.no_obj;
+            const g = try heads.getOrPut(gpa, objects.at(s.children.items[pos]).name);
+            next[pos] = if (g.found_existing) g.value_ptr.* else end;
             g.value_ptr.* = @intCast(pos);
         }
         for (s.decl.instances) |inst| {
-            var made = heads.get(b.file.str(inst.name)) orelse schema.no_obj;
-            while (made != schema.no_obj) : (made = next[made]) {
+            var made = heads.get(b.file.str(inst.name)) orelse end;
+            while (made != end) : (made = next[made]) {
                 const child = s.children.items[made];
                 // §11.6.1: the instance is where the module is USED
                 // (IEEE 1364-2005 §26.3.3), the line `u1(...)` is written on.
                 (try objects.coldFor(child)).loc = try srcLoc(arena, res, inst.main_tok);
                 try b.attributes(child, .{ .kind = .declaration, .tok = inst.main_tok }, false);
                 for (inst.ports, 0..) |conn, k| {
-                    const pt = if (conn.name == .none) (if (k < scopes[child].ports.items.len) scopes[child].ports.items[k] else continue) else for (scopes[child].ports.items) |p| {
-                        if (std.mem.eql(u8, objects.hot.items[p].name, b.file.str(conn.name))) break p;
+                    const pt = if (conn.name == .none) (if (k < scopes[child.index()].ports.items.len) scopes[child.index()].ports.items[k] else continue) else for (scopes[child.index()].ports.items) |p| {
+                        if (std.mem.eql(u8, objects.at(p).name, b.file.str(conn.name))) break p;
                     } else continue;
                     try b.attributes(pt, .{ .kind = .declaration, .tok = conn.main_tok }, false);
                 }

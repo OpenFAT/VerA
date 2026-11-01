@@ -7,8 +7,8 @@
 //!
 //! Contents:
 //! - `pub const index_text_max = "[-9223372036854775808]".len`
-//! - `pub fn addArray( arena: std.mem.Allocator, objects: *Rows, kind: Kind, owner: u32, name: []const u8, full: []const u8, ty: Ast.Type, low: i64, high: i64, rest: []const sim.digital.Span, width: u32, base: ?u32, ) Error!u32`
-//! - `pub fn addRange(arena: std.mem.Allocator, objects: *Rows, owner: u32, left: i64, right: i64) Error!u32`
+//! - `pub fn addArray( arena: std.mem.Allocator, objects: *Rows, kind: Kind, owner: u32, name: []const u8, full: []const u8, ty: Ast.Type, low: i64, high: i64, rest: []const sim.digital.Span, width: u32, base: ?u32, ) Error!ObjId`
+//! - `pub fn addRange(arena: std.mem.Allocator, objects: *Rows, owner: u32, left: i64, right: i64) Error!ObjId`
 //! - `pub fn addBits(arena: std.mem.Allocator, objects: *Rows, msb: i64, lsb: i64, vtype: c_int) Error!void`
 //! - `pub fn addModuleArrays(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows, scopes: []Building, top_name: []const u8) Error!void`
 
@@ -24,6 +24,7 @@ const Edge = schema.Edge;
 const Error = session.Error;
 const Kind = schema.Kind;
 const List = schema.List;
+const ObjId = schema.ObjId;
 const Prop = schema.Prop;
 const Rows = model.Rows;
 
@@ -52,11 +53,12 @@ pub fn addArray(
     rest: []const sim.digital.Span,
     width: u32,
     base: ?u32,
-) Error!u32 {
-    const at: u32 = @intCast(objects.hot.items.len);
+) Error!ObjId {
+    std.debug.assert(low <= high);
+    const at = objects.next();
     var count: u32 = @intCast(high - low + 1);
     for (rest) |sp| count *= @intCast(sp.high - sp.low + 1);
-    const members = try arena.alloc(u32, count);
+    const members = try arena.alloc(ObjId, count);
     try objects.appendCold(.{ .kind = kind, .owner = .of(owner), .name = name, .full = full, .size = count, .ty = ty }, .{ .members = members });
     const elem: Kind = switch (kind) {
         .reg_array => .word,
@@ -80,9 +82,9 @@ pub fn addArray(
             var buf: [index_text_max]u8 = undefined;
             suffix.insertSliceAssumeCapacity(0, std.mem.print(&buf, "[{d}]", .{i}) catch unreachable);
         }
-        const c: u32 = @intCast(objects.hot.items.len);
+        const c = objects.next();
         try objects.append(.{ .kind = .constant, .owner = .of(owner), .name = "", .full = "", .size = 32, .value = .{ .int = inner } });
-        members[k] = @intCast(objects.hot.items.len);
+        members[k] = objects.next();
         const local = try arena.print("{s}{s}", .{ name, suffix.items });
         try objects.append(.{
             .kind = elem,
@@ -92,10 +94,11 @@ pub fn addArray(
             .size = width,
             .ty = ty,
             .slot = .of(if (base) |b| b + @as(u32, @intCast(k)) else null),
-            .parent = .of(at),
-            .index = .of(c),
+            .parent = at,
+            .index = c,
         });
     }
+    std.debug.assert(objects.coldOf(at).members.len == count);
     return at;
 }
 
@@ -104,15 +107,16 @@ pub fn addArray(
 ///
 /// The caller adds one row for each dimension it models. Returns the range
 /// row; invalidates pointers into `objects`.
-pub fn addRange(arena: std.mem.Allocator, objects: *Rows, owner: u32, left: i64, right: i64) Error!u32 {
-    const l: u32 = @intCast(objects.hot.items.len);
+pub fn addRange(arena: std.mem.Allocator, objects: *Rows, owner: u32, left: i64, right: i64) Error!ObjId {
+    const l = objects.next().index();
     try objects.append(.{ .kind = .constant, .owner = .of(owner), .name = "", .full = "", .size = 32, .value = .{ .int = left } });
     try objects.append(.{ .kind = .constant, .owner = .of(owner), .name = "", .full = "", .size = 32, .value = .{ .int = right } });
-    const edges = try arena.dupe(Edge, &.{ .{ .tag = user.vpiLeftRange, .to = l }, .{ .tag = user.vpiRightRange, .to = l + 1 } });
+    const edges = try arena.dupe(Edge, &.{ .{ .tag = user.vpiLeftRange, .to = .at(l) }, .{ .tag = user.vpiRightRange, .to = .at(l + 1) } });
     const size: c_int = @intCast(@abs(left - right) + 1);
     const props = try arena.dupe(Prop, &.{.{ .prop = user.vpiSize, .value = size }});
     try objects.append(.{ .kind = .code, .vtype = user.vpiRange, .owner = .of(owner), .name = "", .full = "", .edges = edges, .props = props });
-    return l + 2;
+    std.debug.assert(objects.next().index() == l + 3);
+    return .at(l + 2);
 }
 
 /// IEEE 1364-2005 §26.6.6 Details a / §26.6.7: the bits of the vector net or
@@ -122,14 +126,15 @@ pub fn addRange(arena: std.mem.Allocator, objects: *Rows, owner: u32, left: i64,
 /// bounds are not read. Asserts that the vector's `size` is the range's.
 /// Invalidates pointers into `objects`.
 pub fn addBits(arena: std.mem.Allocator, objects: *Rows, msb: i64, lsb: i64, vtype: c_int) Error!void {
-    const v: u32 = @intCast(objects.hot.items.len - 1);
-    const vec = objects.hot.items[v];
+    std.debug.assert(objects.hot.items.len != 0);
+    const v: ObjId = .at(objects.hot.items.len - 1);
+    const vec = objects.at(v).*;
     if (vec.size < 2) {
-        objects.hot.items[v].lists = &.{.{ .tag = user.vpiBit, .items = &.{} }};
+        objects.at(v).lists = &.{.{ .tag = user.vpiBit, .items = &.{} }};
         return;
     }
     std.debug.assert(vec.size == @abs(msb - lsb) + 1);
-    const bits = try arena.alloc(u32, vec.size);
+    const bits = try arena.alloc(ObjId, vec.size);
     const step: i64 = if (msb >= lsb) -1 else 1;
     // A generated vector's module owner is not its enclosing gen scope.
     // §26.6.6/§26.6.44: each bit retains the vector's containing scope.
@@ -138,13 +143,13 @@ pub fn addBits(arena: std.mem.Allocator, objects: *Rows, msb: i64, lsb: i64, vty
     } else null;
     for (bits, 0..) |*bit, k| {
         const i = msb + step * @as(i64, @intCast(k));
-        const c: u32 = @intCast(objects.hot.items.len);
+        const c = objects.next();
         try objects.append(.{ .kind = .constant, .owner = vec.owner, .name = "", .full = "", .size = 32, .value = .{ .int = i } });
         const edges = try arena.alloc(Edge, if (scope != null) 3 else 2);
         edges[0] = .{ .tag = user.vpiParent, .to = v };
         edges[1] = .{ .tag = user.vpiIndex, .to = c };
         if (scope) |edge| edges[2] = edge;
-        bit.* = @intCast(objects.hot.items.len);
+        bit.* = objects.next();
         try objects.append(.{
             .kind = .code,
             .vtype = vtype,
@@ -156,7 +161,8 @@ pub fn addBits(arena: std.mem.Allocator, objects: *Rows, msb: i64, lsb: i64, vty
             .props = try arena.dupe(Prop, &.{.{ .prop = user.vpiSize, .value = 1 }}),
         });
     }
-    objects.hot.items[v].lists = try arena.dupe(List, &.{.{ .tag = user.vpiBit, .items = bits }});
+    objects.at(v).lists = try arena.dupe(List, &.{.{ .tag = user.vpiBit, .items = bits }});
+    std.debug.assert(objects.at(v).lists[0].items.len == vec.size);
 }
 
 /// §6.2.2 `name_of_module_instance ::= module_instance_identifier [ range ]`:
@@ -169,23 +175,24 @@ pub fn addModuleArrays(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects
         var i: usize = 0;
         while (i < parent.children.items.len) : (i += 1) {
             const first = parent.children.items[i];
-            const name = arrayBase(model.lastComponent(scopes[first].path)) orelse continue;
+            const name = arrayBase(model.lastComponent(scopes[first.index()].path)) orelse continue;
             // Already grouped under an earlier sibling?
-            if (objects.hot.items[first].parent != .none) continue;
+            if (objects.at(first).parent != .none) continue;
             var n: u32 = 0;
             for (parent.children.items[i..]) |c| n += @intFromBool(sameArray(scopes, c, name));
-            const members = try arena.alloc(u32, n);
+            std.debug.assert(n != 0); // `first` is one
+            const members = try arena.alloc(ObjId, n);
             n = 0;
             for (parent.children.items[i..]) |c| if (sameArray(scopes, c, name)) {
                 members[n] = c;
                 n += 1;
             };
-            std.mem.sort(u32, members, scopes, struct {
-                fn lt(s: []Building, a: u32, b: u32) bool {
+            std.mem.sort(ObjId, members, scopes, struct {
+                fn lt(s: []Building, a: ObjId, b: ObjId) bool {
                     return scopeIndex(s, a) < scopeIndex(s, b);
                 }
             }.lt);
-            const at: u32 = @intCast(objects.hot.items.len);
+            const at = objects.next();
             const path = if (parent.path.len == 0) name else try model.joinPath(arena, parent.path, name);
             try objects.appendCold(.{
                 .kind = .module_array,
@@ -196,10 +203,10 @@ pub fn addModuleArrays(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects
             }, .{ .members = members });
             try parent.module_arrays.append(gpa, at);
             for (members) |m| {
-                const c: u32 = @intCast(objects.hot.items.len);
+                const c = objects.next();
                 try objects.append(.{ .kind = .constant, .owner = .of(@intCast(p)), .name = "", .full = "", .size = 32, .value = .{ .int = scopeIndex(scopes, m) } });
-                objects.hot.items[m].parent = .of(at);
-                objects.hot.items[m].index = .of(c);
+                objects.at(m).parent = at;
+                objects.at(m).index = c;
             }
         }
     }
@@ -208,13 +215,13 @@ pub fn addModuleArrays(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects
 // ---- private ----
 
 /// Is child scope `c` an element of the instance array `name`?
-fn sameArray(scopes: []const Building, c: u32, name: []const u8) bool {
-    const other = arrayBase(model.lastComponent(scopes[c].path)) orelse return false;
+fn sameArray(scopes: []const Building, c: ObjId, name: []const u8) bool {
+    const other = arrayBase(model.lastComponent(scopes[c.index()].path)) orelse return false;
     return std.mem.eql(u8, other, name);
 }
 
-fn scopeIndex(scopes: []Building, m: u32) i64 {
-    return arrayIndex(model.lastComponent(scopes[m].path)).?;
+fn scopeIndex(scopes: []Building, m: ObjId) i64 {
+    return arrayIndex(model.lastComponent(scopes[m.index()].path)).?;
 }
 
 /// `u` of `u[3]`, or null when the name is not an array element's.
@@ -238,5 +245,46 @@ test "§6.2.2 instance-array names: the base and index of `u[k]`, and nothing el
     for ([_][]const u8{ "u", "u[]", "u[x]", "u]", "[", "u[3", "" }) |name| {
         try std.testing.expect(arrayBase(name) == null);
         try std.testing.expect(arrayIndex(name) == null);
+    }
+}
+
+test "§11.6.11 addArray: elements row-major, named by every index, vpiIndex the innermost" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var rows: Rows = .{ .gpa = std.testing.allocator };
+    defer rows.deinit();
+    // `reg [7:0] m [1:2][0:1]`, its first element in engine slot 100.
+    const at = try addArray(arena.allocator(), &rows, .reg_array, 0, "m", "t.m", .integer, 1, 2, &.{.{ .low = 0, .high = 1 }}, 8, 100);
+    try std.testing.expectEqual(@as(u32, 4), rows.at(at).size);
+    const members = rows.coldOf(at).members;
+    for (members, [_]struct { []const u8, i64, u32 }{
+        .{ "t.m[1][0]", 0, 100 },
+        .{ "t.m[1][1]", 1, 101 },
+        .{ "t.m[2][0]", 0, 102 },
+        .{ "t.m[2][1]", 1, 103 },
+    }) |m, want| {
+        const e = rows.at(m).*;
+        try std.testing.expectEqual(Kind.word, e.kind);
+        try std.testing.expectEqual(@as(u32, 8), e.size);
+        try std.testing.expectEqualStrings(want[0], e.full);
+        try std.testing.expectEqual(@as(?u32, want[2]), e.slot.get());
+        try std.testing.expectEqual(at, e.parent);
+        if (e.index == .none) return error.TestUnexpectedResult;
+        try std.testing.expectEqual(want[1], rows.at(e.index).value.?.int);
+    }
+}
+
+test "IEEE 1364-2005 §26.6.10 addRange: bounds as written, size the element count either way" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var rows: Rows = .{ .gpa = std.testing.allocator };
+    defer rows.deinit();
+    for ([_]struct { i64, i64, c_int }{ .{ 7, 0, 8 }, .{ 0, 7, 8 }, .{ -3, 4, 8 }, .{ 5, 5, 1 } }) |case| {
+        const at = try addRange(arena.allocator(), &rows, 0, case[0], case[1]);
+        const r = rows.at(at).*;
+        try std.testing.expectEqual(user.vpiRange, r.vtype);
+        try std.testing.expectEqual(case[2], r.props[0].value);
+        try std.testing.expectEqual(case[0], rows.at(r.edges[0].to).value.?.int);
+        try std.testing.expectEqual(case[1], rows.at(r.edges[1].to).value.?.int);
     }
 }

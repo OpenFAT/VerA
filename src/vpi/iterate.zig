@@ -26,6 +26,7 @@ const trust = @import("trust.zig");
 const user = @import("vpi_user.zig");
 const Design = @import("Design.zig");
 const Iter = schema.Iter;
+const ObjId = schema.ObjId;
 
 /// "If there are no objects of type `type` associated with the reference handle
 /// `ref`, then `vpi_iterate()` shall return NULL."
@@ -85,7 +86,7 @@ pub export fn vpi_scan(itr: abi.vpiHandle) abi.vpiHandle {
     }
     const idx = it.items[it.at];
     it.at += 1;
-    return trust.handleOf(&d.objects[idx]);
+    return trust.handleOf(d.obj(idx));
 }
 
 /// Frees `it` and the handles it owns, and removes it from `d.iters` first,
@@ -172,7 +173,7 @@ fn iterate(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
     if (obj_type == user.vpiRange and schema.coldOf(o).range.len != 0) return newIter(d, schema.coldOf(o).range);
     // The analog double arrows: node ->> net (§11.6.5), nature ->> nature
     // tagged vpiChild and nature ->> discipline (§11.6.2).
-    const analog: ?[]const u32 = switch (o.kind) {
+    const analog: ?[]const ObjId = switch (o.kind) {
         .node => if (obj_type == user.vpiNet) schema.coldOf(o).nets else null,
         .nature => if (obj_type == user.vpiChild) schema.coldOf(o).children else if (obj_type == user.vpiDiscipline) schema.coldOf(o).users else null,
         else => null, // else: no other class but module draws a double arrow VerA holds
@@ -189,7 +190,7 @@ fn iterate(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
     }
     const s = &d.scopes[o.scope];
     for (s.lists) |l| if (l.tag == obj_type) return if (l.items.len == 0) null else newIter(d, l.items);
-    const items: []const u32 = switch (obj_type) {
+    const items: []const ObjId = switch (obj_type) {
         user.vpiModule => s.children,
         user.vpiInternalScope => s.internal,
         user.vpiPort => s.ports,
@@ -228,7 +229,7 @@ fn newHandleIter(d: *Design, handles: []abi.vpiHandle) abi.vpiHandle {
     return h;
 }
 
-fn newIter(d: *Design, items: []const u32) abi.vpiHandle {
+fn newIter(d: *Design, items: []const ObjId) abi.vpiHandle {
     const it = d.gpa.create(Iter) catch return oomIter();
     it.* = .{ .items = items };
     d.iters.put(d.gpa, @intFromPtr(it), it) catch {

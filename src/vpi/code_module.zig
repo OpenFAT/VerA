@@ -10,14 +10,14 @@
 //! - `pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void`
 //! - `pub fn reserveModule(b: *Builder, m: *const Ast.ModuleDecl) Error!void`
 //! - `pub fn analogBlocks(b: *Builder, blocks: []const Ast.AnalogBlock) Error!void`
-//! - `pub fn primitive(b: *Builder, vtype: c_int, prim_type: c_int, terms: []const Ast.ExprId, dirs: []const c_int, props: []const Prop) Error!u32`
+//! - `pub fn primitive(b: *Builder, vtype: c_int, prim_type: c_int, terms: []const Ast.ExprId, dirs: []const c_int, props: []const Prop) Error!ObjId`
 //! - `pub fn subIndex(tasks: []const Ast.Subroutine, k: usize) usize`
 //! - `pub fn modPath(b: *Builder, p: Ast.SpecPath) Error!void`
 //! - `pub fn timingCheck(b: *Builder, t: Ast.TimingCheck) Error!void`
-//! - `pub fn term(b: *Builder, vtype: c_int, e: Ast.ExprId, dir: c_int, edge: Ast.SpecEdge) Error!u32`
-//! - `pub fn delayListExpr(b: *Builder, es: []const Ast.ExprId) Error!u32`
+//! - `pub fn term(b: *Builder, vtype: c_int, e: Ast.ExprId, dir: c_int, edge: Ast.SpecEdge) Error!ObjId`
+//! - `pub fn delayListExpr(b: *Builder, es: []const Ast.ExprId) Error!ObjId`
 //! - `pub fn foldAll(b: *Builder, es: []const Ast.ExprId) Error![]const f64`
-//! - `pub fn delayExpr(b: *Builder, d: Ast.Delay3) Error!u32`
+//! - `pub fn delayExpr(b: *Builder, d: Ast.Delay3) Error!ObjId`
 //! - `pub fn delays(b: *Builder, d: Ast.Delay3) Error![]const f64`
 
 const std = @import("std");
@@ -26,6 +26,7 @@ const sim = @import("sim");
 const code_tables = @import("code_tables.zig");
 const model_arrays = @import("model_arrays.zig");
 const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const user = @import("vpi_user.zig");
 const Builder = @import("Builder.zig");
 const session = @import("session.zig");
@@ -40,31 +41,31 @@ const Prop = schema.Prop;
 pub fn eventDecls(b: *Builder, declarations: []const Ast.EventDecl) Error!Builder.Events {
     var n_arrays: usize = 0;
     for (declarations) |e| n_arrays += @intFromBool(e.dims.len != 0);
-    var scalars: std.ArrayList(u32) = try .initCapacity(b.arena, declarations.len - n_arrays);
-    var arrays: std.ArrayList(u32) = try .initCapacity(b.arena, n_arrays);
+    var scalars: std.ArrayList(ObjId) = try .initCapacity(b.arena, declarations.len - n_arrays);
+    var arrays: std.ArrayList(ObjId) = try .initCapacity(b.arena, n_arrays);
     for (declarations) |e| {
         const slot = if (b.run) |r| r.hier.names.get(.{ .scope = b.engine, .str = e.name }) else null;
-        const scope: []const Edge = if (b.inner == schema.no_obj) &.{} else &.{.{ .tag = user.vpiScope, .to = b.inner }};
+        const scope: []const Edge = if (b.inner == ObjId.none) &.{} else &.{.{ .tag = user.vpiScope, .to = b.inner }};
         const auto_prop: Prop = .{ .prop = user.vpiAutomatic, .value = @intFromBool(b.automatic) };
         const at = try b.code(if (e.dims.len == 0) user.vpiNamedEvent else user.vpiNamedEventArray, scope, &.{.{ .tag = user.vpiIndex, .items = &.{} }}, if (e.dims.len == 0) &.{ .{ .prop = user.vpiArray, .value = 0 }, auto_prop } else &.{auto_prop});
         try b.setName(at, try b.arena.dupe(u8, b.file.str(e.name)));
-        b.objects.hot.items[at].src_tok = e.main_tok;
-        b.objects.hot.items[at].automatic = b.automatic;
+        b.objects.at(at).src_tok = e.main_tok;
+        b.objects.at(at).automatic = b.automatic;
         try b.attributes(at, .{ .kind = .declaration, .tok = e.main_tok }, false);
         if (e.dims.len == 0) {
-            b.objects.hot.items[at].slot = .of(if (b.automatic) null else slot);
+            b.objects.at(at).slot = .of(if (b.automatic) null else slot);
             scalars.appendAssumeCapacity(at);
             continue;
         }
         arrays.appendAssumeCapacity(at);
         const base = slot orelse continue;
         const arr = b.run.?.decls.arrays.get(base).?;
-        const ranges = try b.arena.alloc(u32, e.dims.len);
+        const ranges = try b.arena.alloc(ObjId, e.dims.len);
         ranges[0] = try model_arrays.addRange(b.arena, b.objects, b.scope, arr.left, arr.right);
         for (arr.rest, ranges[1..]) |sp, *range| range.* = try model_arrays.addRange(b.arena, b.objects, b.scope, if (sp.descending) sp.high else sp.low, if (sp.descending) sp.low else sp.high);
-        const members = try b.arena.alloc(u32, arr.count);
+        const members = try b.arena.alloc(ObjId, arr.count);
         for (members, 0..) |*member, k| {
-            const indices = try b.arena.alloc(u32, e.dims.len);
+            const indices = try b.arena.alloc(ObjId, e.dims.len);
             var suffix: std.ArrayList(u8) = try .initCapacity(b.arena, indices.len * model_arrays.index_text_max);
             var q: i64 = @intCast(k);
             for (indices, 0..) |*index, j| {
@@ -79,16 +80,16 @@ pub fn eventDecls(b: *Builder, declarations: []const Ast.EventDecl) Error!Builde
             }
             const local = try b.arena.print("{s}{s}", .{ b.file.str(e.name), suffix.items });
             member.* = try b.code(user.vpiNamedEvent, &.{ .{ .tag = user.vpiParent, .to = at }, .{ .tag = user.vpiIndex, .to = indices[0] } }, &.{.{ .tag = user.vpiIndex, .items = indices }}, &.{ .{ .prop = user.vpiArray, .value = 1 }, auto_prop });
-            if (scope.len != 0) b.objects.hot.items[member.*].edges = try b.arena.dupe(Edge, &.{ b.objects.hot.items[member.*].edges[0], b.objects.hot.items[member.*].edges[1], scope[0] });
+            if (scope.len != 0) b.objects.at(member.*).edges = try b.arena.dupe(Edge, &.{ b.objects.at(member.*).edges[0], b.objects.at(member.*).edges[1], scope[0] });
             try b.setName(member.*, local);
-            b.objects.hot.items[member.*].index = .of(indices[0]);
-            b.objects.hot.items[member.*].automatic = b.automatic;
-            b.objects.hot.items[member.*].slot = .of(if (b.automatic) null else base + @as(u32, @intCast(k)));
+            b.objects.at(member.*).index = indices[0];
+            b.objects.at(member.*).automatic = b.automatic;
+            b.objects.at(member.*).slot = .of(if (b.automatic) null else base + @as(u32, @intCast(k)));
         }
         const cold = try b.objects.coldFor(at);
         cold.members = members;
         cold.range = ranges;
-        b.objects.hot.items[at].lists = try b.arena.dupe(List, &.{ .{ .tag = user.vpiNamedEvent, .items = members }, .{ .tag = user.vpiRange, .items = ranges } });
+        b.objects.at(at).lists = try b.arena.dupe(List, &.{ .{ .tag = user.vpiNamedEvent, .items = members }, .{ .tag = user.vpiRange, .items = ranges } });
     }
     return .{ .scalars = scalars.items, .arrays = arrays.items };
 }
@@ -96,7 +97,7 @@ pub fn eventDecls(b: *Builder, declarations: []const Ast.EventDecl) Error!Builde
 /// The behavioural contents of one digital module instance: its named
 /// events, tasks and functions, continuous assignments and processes.
 pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
-    try b.attributes(b.scope, .{ .kind = .declaration, .tok = m.main_tok }, true);
+    try b.attributes(.at(b.scope), .{ .kind = .declaration, .tok = m.main_tok }, true);
     try b.reserveModule(m);
     const events = try b.eventDecls(m.events);
     try b.lists.events.appendSlice(b.gpa, events.scalars);
@@ -109,7 +110,7 @@ pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
         // §26.6.18/§26.6.19: publish all function types before building
         // any body, including calls of a later-declared function.
         const frame = b.subFrame(t);
-        if (t.is_function) b.objects.hot.items[at].props = try b.arena.dupe(Prop, &.{
+        if (t.is_function) b.objects.at(at).props = try b.arena.dupe(Prop, &.{
             .{ .prop = user.vpiSize, .value = b.declWidth(t.result, if (frame) |fr| fr.result else null) },
             .{ .prop = user.vpiSigned, .value = @intFromBool(t.result.is_signed) },
             .{ .prop = user.vpiFuncType, .value = code_tables.funcType(t.result) },
@@ -120,16 +121,16 @@ pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
         // A prefix on the declaration is in the containing scope;
         // only its formals/body see the subroutine's local parameters.
         try b.attributes(at, .{ .kind = .declaration, .tok = t.main_tok }, false);
-        var inner: std.ArrayList(u32) = .empty;
+        var inner: std.ArrayList(ObjId) = .empty;
         defer inner.deinit(b.gpa);
-        const saved = try b.enter(at, b.objects.hot.items[at].name, &inner);
+        const saved = try b.enter(at, b.objects.at(at).name, &inner);
         b.automatic = t.automatic;
         const frame = b.subFrame(t);
         if (frame) |fr| b.engine = fr.scope;
         const local_events = try b.eventDecls(t.events);
         var vars = try b.subVars(t);
         if (t.is_function) _ = try b.subVar(&vars, t.result, if (frame) |fr| fr.result else null, t.automatic);
-        const ios = try b.arena.alloc(u32, t.ports.len);
+        const ios = try b.arena.alloc(ObjId, t.ports.len);
         for (t.ports, ios, 0..) |p, *io, i| {
             const slot = if (frame) |fr| fr.ports[i] else null;
             const formal = try b.subVar(&vars, p.v, slot, t.automatic);
@@ -151,15 +152,15 @@ pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
         }
         const body = try b.stmt(t.body);
         b.leave(saved);
-        b.objects.hot.items[at].edges = try b.arena.dupe(Edge, &.{.{ .tag = user.vpiStmt, .to = body }});
-        b.objects.hot.items[at].lists = try b.arena.dupe(List, &.{
+        b.objects.at(at).edges = try b.arena.dupe(Edge, &.{.{ .tag = user.vpiStmt, .to = body }});
+        b.objects.at(at).lists = try b.arena.dupe(List, &.{
             .{ .tag = user.vpiIODecl, .items = ios },
             .{ .tag = user.vpiReg, .items = vars.regs.items },
             .{ .tag = user.vpiIntegerVar, .items = vars.ints.items },
             .{ .tag = user.vpiRealVar, .items = vars.reals.items },
             .{ .tag = user.vpiNamedEvent, .items = local_events.scalars },
             .{ .tag = user.vpiNamedEventArray, .items = local_events.arrays },
-            .{ .tag = user.vpiInternalScope, .items = try b.arena.dupe(u32, inner.items) },
+            .{ .tag = user.vpiInternalScope, .items = try b.arena.dupe(ObjId, inner.items) },
         });
     }
     // §11.6.17.
@@ -172,8 +173,8 @@ pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
             .{ .tag = user.vpiRhs, .to = rhs },
             .{ .tag = user.vpiDelay, .to = delay },
         }, &.{}, &.{.{ .prop = user.vpiNetDeclAssign, .value = 0 }});
-        b.objects.hot.items[at].delays = try b.delays(a.delay);
-        b.objects.hot.items[at].src_tok = a.main_tok;
+        b.objects.at(at).delays = try b.delays(a.delay);
+        b.objects.at(at).src_tok = a.main_tok;
         try b.attributes(at, .{ .kind = .declaration, .tok = a.main_tok }, false);
         b.lists.cont_assigns.appendAssumeCapacity(at);
     }
@@ -188,8 +189,8 @@ pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
             .{ .tag = user.vpiRhs, .to = try b.expr(n.init) },
             .{ .tag = user.vpiDelay, .to = try b.delayExpr(n.delay) },
         }, &.{}, &.{.{ .prop = user.vpiNetDeclAssign, .value = 1 }});
-        b.objects.hot.items[at].delays = try b.delays(n.delay);
-        b.objects.hot.items[at].src_tok = n.main_tok;
+        b.objects.at(at).delays = try b.delays(n.delay);
+        b.objects.at(at).src_tok = n.main_tok;
         b.lists.cont_assigns.appendAssumeCapacity(at);
     }
     // §11.6.13 gates, in source order, then pull sources, switches and
@@ -205,10 +206,10 @@ pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
         });
         if (g.name != .none) try b.setName(at, try b.arena.dupe(u8, b.file.str(g.name)));
         const delay = try b.delayExpr(g.delay);
-        b.objects.hot.items[at].delays = try b.delays(g.delay);
-        b.objects.hot.items[at].src_tok = g.main_tok;
+        b.objects.at(at).delays = try b.delays(g.delay);
+        b.objects.at(at).src_tok = g.main_tok;
         try b.attributes(at, .{ .kind = .declaration, .tok = g.main_tok }, false);
-        b.objects.hot.items[at].edges = try b.arena.dupe(Edge, &.{.{ .tag = user.vpiDelay, .to = delay }});
+        b.objects.at(at).edges = try b.arena.dupe(Edge, &.{.{ .tag = user.vpiDelay, .to = delay }});
     }
     // IEEE 1364-2005 §7.8: a pull source drives its one terminal, at its
     // strength on its own side (the other "shall be ignored").
@@ -236,7 +237,7 @@ pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
         const defn = udps.get(inst.module) orelse continue;
         const terms = try b.arena.alloc(Ast.ExprId, inst.ports.len);
         for (inst.ports, terms) |c, *t| t.* = c.expr;
-        const d = b.objects.hot.items[defn];
+        const d = b.objects.at(defn).*;
         const at = try b.primitive(user.vpiUdp, d.props[1].value, terms, &.{}, &.{
             .{ .prop = user.vpiArray, .value = @intFromBool(inst.range != null) },
             .{ .prop = user.vpiStrength0, .value = code_tables.drive(inst.strength0) },
@@ -244,10 +245,10 @@ pub fn module(b: *Builder, m: *const Ast.ModuleDecl) Error!void {
         });
         try b.setName(at, try b.arena.dupe(u8, b.file.str(inst.name)));
         const delay = try b.delayExpr(inst.delay);
-        b.objects.hot.items[at].delays = try b.delays(inst.delay);
-        b.objects.hot.items[at].src_tok = inst.main_tok;
+        b.objects.at(at).delays = try b.delays(inst.delay);
+        b.objects.at(at).src_tok = inst.main_tok;
         try b.attributes(at, .{ .kind = .declaration, .tok = inst.main_tok }, false);
-        b.objects.hot.items[at].edges = try b.arena.dupe(Edge, &.{
+        b.objects.at(at).edges = try b.arena.dupe(Edge, &.{
             .{ .tag = user.vpiUdpDefn, .to = defn },
             .{ .tag = user.vpiDelay, .to = delay },
         });
@@ -310,7 +311,7 @@ pub fn analogBlocks(b: *Builder, blocks: []const Ast.AnalogBlock) Error!void {
 /// ponytail: an array of instances (IEEE 1364-2005 §7.1.5) is this one
 /// object with vpiArray set, not one per index with a vpiIndex; splitting
 /// it needs §7.1.6's terminal split.
-pub fn primitive(b: *Builder, vtype: c_int, prim_type: c_int, terms: []const Ast.ExprId, dirs: []const c_int, props: []const Prop) Error!u32 {
+pub fn primitive(b: *Builder, vtype: c_int, prim_type: c_int, terms: []const Ast.ExprId, dirs: []const c_int, props: []const Prop) Error!ObjId {
     const dir = struct {
         fn at(ds: []const c_int, k: usize) c_int {
             return if (ds.len != 0) ds[k] else if (k == 0) user.vpiOutput else user.vpiInput;
@@ -327,7 +328,7 @@ pub fn primitive(b: *Builder, vtype: c_int, prim_type: c_int, terms: []const Ast
         props,
     });
     const at = try b.code(vtype, &.{}, &.{}, all);
-    const items = try b.arena.alloc(u32, terms.len);
+    const items = try b.arena.alloc(ObjId, terms.len);
     for (terms, items, 0..) |t, *item, k| {
         const e = try b.expr(t);
         item.* = try b.code(user.vpiPrimTerm, &.{
@@ -338,7 +339,7 @@ pub fn primitive(b: *Builder, vtype: c_int, prim_type: c_int, terms: []const Ast
             .{ .prop = user.vpiTermIndex, .value = @intCast(k) },
         });
     }
-    b.objects.hot.items[at].lists = try b.arena.dupe(List, &.{.{ .tag = user.vpiPrimTerm, .items = items }});
+    b.objects.at(at).lists = try b.arena.dupe(List, &.{.{ .tag = user.vpiPrimTerm, .items = items }});
     b.lists.primitives.appendAssumeCapacity(at);
     return at;
 }
@@ -356,11 +357,11 @@ pub fn subIndex(tasks: []const Ast.Subroutine, k: usize) usize {
 /// ->vpiCondition its `if` expression, and vpiPathType, vpiPolarity,
 /// vpiDataPolarity. Its delays are the A.7.4 list, for §12.11.
 pub fn modPath(b: *Builder, p: Ast.SpecPath) Error!void {
-    const ins = try b.arena.alloc(u32, p.ins.len);
+    const ins = try b.arena.alloc(ObjId, p.ins.len);
     for (p.ins, ins) |e, *t| t.* = try b.term(user.vpiPathTerm, e, user.vpiInput, p.edge);
-    const outs = try b.arena.alloc(u32, p.outs.len);
+    const outs = try b.arena.alloc(ObjId, p.outs.len);
     for (p.outs, outs) |e, *t| t.* = try b.term(user.vpiPathTerm, e, user.vpiOutput, .none);
-    const cond = if (p.cond != .none) try b.expr(p.cond) else schema.no_obj;
+    const cond = if (p.cond != .none) try b.expr(p.cond) else ObjId.none;
     const data = try b.term(user.vpiPathTerm, p.data, user.vpiInput, .none);
     const at = try b.code(user.vpiModPath, &.{
         .{ .tag = user.vpiCondition, .to = cond },
@@ -375,8 +376,8 @@ pub fn modPath(b: *Builder, p: Ast.SpecPath) Error!void {
         .{ .prop = user.vpiDataPolarity, .value = code_tables.polarity(p.data_polarity) },
         .{ .prop = user.vpiModPathHasIfNone, .value = @intFromBool(p.ifnone) },
     });
-    b.objects.hot.items[at].delays = try b.foldAll(p.delays);
-    b.objects.hot.items[at].src_tok = p.main_tok;
+    b.objects.at(at).delays = try b.foldAll(p.delays);
+    b.objects.at(at).src_tok = p.main_tok;
     b.lists.mod_paths.appendAssumeCapacity(at);
 }
 
@@ -398,11 +399,11 @@ pub fn timingCheck(b: *Builder, t: Ast.TimingCheck) Error!void {
     const r: usize = if (kind.data_first) 1 else 0;
     const dt: usize = 1 - r;
     const ref = try b.term(user.vpiTchkTerm, arg(t, r), 0, if (t.edges.len > r) t.edges[r] else .none);
-    const data = if (kind.data) try b.term(user.vpiTchkTerm, arg(t, dt), 0, if (t.edges.len > dt) t.edges[dt] else .none) else schema.no_obj;
-    const notifier = if (arg(t, kind.notifier) != .none) try b.expr(arg(t, kind.notifier)) else schema.no_obj;
+    const data = if (kind.data) try b.term(user.vpiTchkTerm, arg(t, dt), 0, if (t.edges.len > dt) t.edges[dt] else .none) else ObjId.none;
+    const notifier = if (arg(t, kind.notifier) != .none) try b.expr(arg(t, kind.notifier)) else ObjId.none;
     // Details b: every argument written, in order, the events as their
     // tchk terms.
-    const args = try b.arena.alloc(u32, t.args.len);
+    const args = try b.arena.alloc(ObjId, t.args.len);
     for (t.args, args, 0..) |a, *out, k| out.* = if (k == r) ref else if (kind.data and k == dt) data else if (k == kind.notifier) notifier else try b.expr(a);
     var limit_buf: [kind.limits.len]Ast.ExprId = undefined;
     const limits = limit_buf[0..kind.n_limits];
@@ -413,14 +414,14 @@ pub fn timingCheck(b: *Builder, t: Ast.TimingCheck) Error!void {
         .{ .tag = user.vpiTchkNotifier, .to = notifier },
         .{ .tag = user.vpiDelay, .to = try b.delayListExpr(limits) },
     }, &.{.{ .tag = user.vpiExpr, .items = try b.many(args) }}, &.{.{ .prop = user.vpiTchkType, .value = kind.type }});
-    b.objects.hot.items[at].delays = try b.foldAll(limits);
-    b.objects.hot.items[at].src_tok = t.main_tok;
+    b.objects.at(at).delays = try b.foldAll(limits);
+    b.objects.at(at).src_tok = t.main_tok;
     b.lists.tchks.appendAssumeCapacity(at);
 }
 
 /// A path or timing-check terminal: its expression, direction and edge.
-pub fn term(b: *Builder, vtype: c_int, e: Ast.ExprId, dir: c_int, edge: Ast.SpecEdge) Error!u32 {
-    if (e == .none) return schema.no_obj;
+pub fn term(b: *Builder, vtype: c_int, e: Ast.ExprId, dir: c_int, edge: Ast.SpecEdge) Error!ObjId {
+    if (e == .none) return ObjId.none;
     const x = try b.expr(e);
     const props: [2]Prop = .{ .{ .prop = user.vpiDirection, .value = dir }, .{ .prop = user.vpiEdge, .value = switch (edge) {
         .none => user.vpiNoEdge,
@@ -433,9 +434,9 @@ pub fn term(b: *Builder, vtype: c_int, e: Ast.ExprId, dir: c_int, edge: Ast.Spec
 
 /// IEEE 1364-2005 §26.3.4 vpiDelay: the one delay expression, or a
 /// vpiListOp operation over several; `none` when none is written.
-pub fn delayListExpr(b: *Builder, es: []const Ast.ExprId) Error!u32 {
+pub fn delayListExpr(b: *Builder, es: []const Ast.ExprId) Error!ObjId {
     return switch (es.len) {
-        0 => schema.no_obj,
+        0 => ObjId.none,
         1 => b.expr(es[0]),
         else => b.operation(user.vpiListOp, es),
     };
@@ -453,8 +454,8 @@ pub fn foldAll(b: *Builder, es: []const Ast.ExprId) Error![]const f64 {
 /// constant if there is only one delay specified or an operation if
 /// there are more than one delay specified. If multiple delays are
 /// specified, then the operation's vpiOpType shall be vpiListOp."
-pub fn delayExpr(b: *Builder, d: Ast.Delay3) Error!u32 {
-    if (!d.any()) return schema.no_obj;
+pub fn delayExpr(b: *Builder, d: Ast.Delay3) Error!ObjId {
+    if (!d.any()) return ObjId.none;
     // `parseDelay3` spreads a single delay over all three transitions.
     if (d.fall == d.rise) return b.expr(d.rise);
     return b.operation(user.vpiListOp, if (d.off == .none) &.{ d.rise, d.fall } else &.{ d.rise, d.fall, d.off });

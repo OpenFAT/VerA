@@ -24,6 +24,7 @@ const systf = @import("systf.zig");
 const trust = @import("trust.zig");
 const user = @import("vpi_user.zig");
 const Obj = schema.Obj;
+const ObjId = schema.ObjId;
 
 /// "Return the object of type `type` associated with object `ref`."
 ///
@@ -41,7 +42,7 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
     if (obj_type == user.vpiSysTfCall and ref == null) {
         if (status.refused("vpi_handle")) return null;
         const at = systf.active orelse return null;
-        return trust.handleOf(&session.design.?.objects[at]);
+        return trust.handleOf(session.design.?.obj(at));
     }
     const d = status.enter("vpi_handle") orelse return null;
     if (status.unansweredType(obj_type)) |u| {
@@ -68,8 +69,9 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
         const active = r.time.active_format orelse return null;
         for (d.objects) |*call| {
             if (call.vtype != user.vpiSysTaskCall or call.src_stmt == .none) continue;
-            const owner = call.owner.get() orelse continue;
-            if (d.scopes[owner].engine == active.scope and r.file.stmtTok(call.src_stmt) == active.tok)
+            const owner = call.owner;
+            if (owner == .none) continue;
+            if (d.scope(owner).engine == active.scope and r.file.stmtTok(call.src_stmt) == active.tok)
                 return trust.handleOf(call);
         }
         status.fail("NOCALL", "vpi_handle: the active $timeformat call has no VPI source object", .{});
@@ -85,8 +87,8 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
     // carry falls through to the containing-scope edge, and past that is
     // NOTRAVERSE.
     for (o.edges) |e| if (e.tag == obj_type) {
-        if (e.to == schema.no_obj) return null;
-        return trust.handleOf(&d.objects[e.to]);
+        if (e.to == ObjId.none) return null;
+        return trust.handleOf(d.obj(e.to));
     };
     // §11.6.16: sys task/func call -> user systf, for a name some
     // application registered (NOTE 3); NULL for a built-in one.
@@ -95,8 +97,8 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
         return @ptrCast(reg);
     }
     if (analogEdge(o, obj_type)) |edge| {
-        const at = edge orelse return null;
-        return trust.handleOf(&d.objects[at]);
+        if (edge == .none) return null;
+        return trust.handleOf(d.obj(edge));
     }
     switch (obj_type) {
         user.vpiScope, user.vpiModule => {
@@ -110,16 +112,18 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
                 // stmt -> scope).
                 .code => if (o.owner == .none) return noEdge(obj_type, o),
             }
-            const owner = o.owner.get() orelse return null;
-            return trust.handleOf(&d.objects[owner]);
+            const owner = o.owner;
+            if (owner == .none) return null;
+            return trust.handleOf(d.obj(owner));
         },
         // §11.6.11: a word or variable select's array. A module in an
         // instance array reaches its array by vpiModuleArray (§26.6.1).
         user.vpiParent, user.vpiModuleArray => {
             if (obj_type == user.vpiParent and o.kind != .word and o.kind != .var_select) return noEdge(obj_type, o);
             if (obj_type == user.vpiModuleArray and o.kind != .module) return noEdge(obj_type, o);
-            const p = o.parent.get() orelse return null;
-            return trust.handleOf(&d.objects[p]);
+            const p = o.parent;
+            if (p == .none) return null;
+            return trust.handleOf(d.obj(p));
         },
         // The index expression of an element. A module that is not in an
         // array has none, and that is an answer — NULL — not an error.
@@ -128,8 +132,9 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
                 .word, .var_select, .module => {},
                 else => return noEdge(obj_type, o),
             }
-            const c = o.index.get() orelse return null;
-            return trust.handleOf(&d.objects[c]);
+            const c = o.index;
+            if (c == .none) return null;
+            return trust.handleOf(d.obj(c));
         },
         else => {
             status.fail("NOTRAVERSE", "vpi_handle: no one-to-one relationship {d} from a {s}", .{ obj_type, @tagName(o.kind) });
@@ -161,11 +166,11 @@ pub export fn vpi_handle_by_name(name: [*c]const u8, scope: abi.vpiHandle) abi.v
         // §6.7's upward search. `scope` need not be a module: the scope of a
         // non-module object is the one it is declared in, and the scope of a
         // module is itself.
-        var at: ?u32 = if (from.kind == .module) from.scope else from.owner.get();
-        while (at) |sc| : (at = if (d.search_up) d.scopes[sc].parent else null) {
+        var at: ObjId = if (from.kind == .module) .at(from.scope) else from.owner;
+        while (at != .none) : (at = if (d.search_up) d.scope(at).parent else .none) {
             var buf: [schema.name_buf_len]u8 = undefined;
-            const full = std.mem.print(&buf, "{s}{c}{s}", .{ d.objects[sc].full, Elaborate.sep, want }) catch continue;
-            if (d.by_name.get(full)) |i| return trust.handleOf(&d.objects[i]);
+            const full = std.mem.print(&buf, "{s}{c}{s}", .{ d.obj(at).full, Elaborate.sep, want }) catch continue;
+            if (d.by_name.get(full)) |i| return trust.handleOf(d.obj(i));
         }
         if (!d.search_up) {
             status.fail("NONAME", "vpi_handle_by_name: `{s}` names no object in that scope", .{want});
@@ -174,11 +179,11 @@ pub export fn vpi_handle_by_name(name: [*c]const u8, scope: abi.vpiHandle) abi.v
         // The search ends at the top, where a hierarchical name is an absolute
         // one: `vpi_handle_by_name("top.u.k", any_scope)` is §12.21's
         // "hierarchical" spelling and resolves as it would with a NULL scope.
-        if (d.by_name.get(want)) |i| return trust.handleOf(&d.objects[i]);
+        if (d.by_name.get(want)) |i| return trust.handleOf(d.obj(i));
         status.fail("NONAME", "vpi_handle_by_name: `{s}` names no object from that scope", .{want});
         return null;
     }
-    if (d.by_name.get(want)) |i| return trust.handleOf(&d.objects[i]);
+    if (d.by_name.get(want)) |i| return trust.handleOf(d.obj(i));
     status.fail("NONAME", "vpi_handle_by_name: `{s}` names no object in the design", .{want});
     return null;
 }
@@ -204,7 +209,7 @@ pub export fn vpi_handle_by_index(obj: abi.vpiHandle, index: c_int) abi.vpiHandl
     if (o.kind == .code and (o.vtype == user.vpiSysFuncCall or o.vtype == user.vpiSysTaskCall)) {
         if (index == 0 and o.vtype == user.vpiSysFuncCall) return trust.handleOf(o);
         for (o.lists) |l| if (l.tag == user.vpiArgument) {
-            if (index >= 1 and index <= l.items.len) return trust.handleOf(&d.objects[l.items[@intCast(index - 1)]]);
+            if (index >= 1 and index <= l.items.len) return trust.handleOf(d.obj(l.items[@intCast(index - 1)]));
         };
         status.fail("NOINDEX", "vpi_handle_by_index: `{s}` has no argument {d}", .{ o.name, index });
         return null;
@@ -215,16 +220,17 @@ pub export fn vpi_handle_by_index(obj: abi.vpiHandle, index: c_int) abi.vpiHandl
             return null;
         }
         for (schema.coldOf(o).members) |m| {
-            const c = d.objects[m].index.get() orelse continue;
-            if (d.objects[c].value.?.int == index) return trust.handleOf(&d.objects[m]);
+            const c = d.obj(m).index;
+            if (c == .none) continue;
+            if (d.obj(c).value.?.int == index) return trust.handleOf(d.obj(m));
         }
         status.fail("NOINDEX", "vpi_handle_by_index: `{s}` has no element {d}", .{ o.full, index });
         return null;
     }
     if (o.kind != .code) for (o.lists) |l| if (l.tag == user.vpiBit) {
         for (l.items) |bit| {
-            const ix = schema.edgeTo(&d.objects[bit], user.vpiIndex);
-            if (ix != schema.no_obj and d.objects[ix].value.?.int == index) return trust.handleOf(&d.objects[bit]);
+            const ix = schema.edgeTo(d.obj(bit), user.vpiIndex);
+            if (ix != ObjId.none and d.obj(ix).value.?.int == index) return trust.handleOf(d.obj(bit));
         }
         status.fail("NOINDEX", "vpi_handle_by_index: `{s}` has no bit {d}", .{ o.full, index });
         return null;
@@ -253,12 +259,12 @@ pub export fn vpi_handle_by_multi_index(obj: abi.vpiHandle, num_index: c_int, in
     };
     if (o.kind == .code and o.vtype == user.vpiNamedEventArray) {
         if (num_index > 0 and num_index == schema.coldOf(o).range.len) for (schema.coldOf(o).members) |m| {
-            for (d.objects[m].lists) |l| {
+            for (d.obj(m).lists) |l| {
                 if (l.tag != user.vpiIndex) continue;
                 const matches = for (l.items, 0..) |ix, k| {
-                    if (d.objects[ix].value.?.int != idx[l.items.len - 1 - k]) break false;
+                    if (d.obj(ix).value.?.int != idx[l.items.len - 1 - k]) break false;
                 } else true;
-                if (matches) return trust.handleOf(&d.objects[m]);
+                if (matches) return trust.handleOf(d.obj(m));
             }
         };
         status.fail("NOINDEX", "vpi_handle_by_multi_index: no event in `{s}` has the supplied indices", .{o.full});
@@ -275,8 +281,8 @@ pub export fn vpi_handle_by_multi_index(obj: abi.vpiHandle, num_index: c_int, in
 
 /// The analog one-to-one edge `obj_type` from `o`: null when `o`'s class
 /// draws no such edge (the caller goes on to the other relationships), else
-/// the target — itself null for "no such object".
-fn analogEdge(o: *const Obj, obj_type: c_int) ??u32 {
+/// the target — itself `none` for "no such object".
+fn analogEdge(o: *const Obj, obj_type: c_int) ?ObjId {
     return switch (o.kind) {
         .net => switch (obj_type) {
             user.vpiNode => schema.coldOf(o).node,

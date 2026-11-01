@@ -34,6 +34,7 @@ const user = @import("vpi_user.zig");
 const Binding = @import("Binding.zig");
 const schema = @import("schema.zig");
 const Obj = schema.Obj;
+const ObjId = schema.ObjId;
 
 /// §12.22.2 one call's output arguments, as its latest calltf left them:
 /// `val[j - 1]` and row j - 1 of `part` (d(argument j)/d(argument i)) for each
@@ -57,7 +58,7 @@ pub const OutKey = struct { k: usize, inst: usize };
 
 /// The call whose §12.32 calltf is running: its binding, object, device
 /// call index and host instance.
-pub const Active = struct { b: *Binding, obj: u32, k: usize, inst: usize, result: f64, partials: []f64 };
+pub const Active = struct { b: *Binding, obj: ObjId, k: usize, inst: usize, result: f64, partials: []f64 };
 
 pub var active_call: ?*Active = null;
 
@@ -66,7 +67,7 @@ pub var active_call: ?*Active = null;
 /// out; a handle is ours iff its binding's `derivs` lists it. There are at
 /// most as many as derivtf declared (call, of, wrt) triples, since a
 /// repeated request returns the first handle.
-pub const Deriv = struct { call: u32, of: c_int, wrt: c_int, value: f64 = 0 };
+pub const Deriv = struct { call: ObjId, of: c_int, wrt: c_int, value: f64 = 0 };
 
 /// `HostCall`: `Binding.call` for a library behind a C ABI. `ctx` is the
 /// binding `attach` handed the library (`Lib.systf`).
@@ -104,7 +105,7 @@ pub fn putArg(o: *const Obj, v: f64) bool {
 pub fn argValue(o: *const Obj) ?f64 {
     const b = analog.bound() orelse return null;
     const d = &(session.design orelse return null);
-    return b.arg_values.get(d.indexOf(o));
+    return b.arg_values.get(d.idOf(o));
 }
 
 /// §12.30 onto the call calltf is running for: its returned value. False
@@ -112,7 +113,7 @@ pub fn argValue(o: *const Obj) ?f64 {
 pub fn putResult(o: *const Obj, v: f64) bool {
     const st = active_call orelse return false;
     const d = &session.design.?;
-    if (o != &d.objects[st.obj]) return false;
+    if (o != d.obj(st.obj)) return false;
     st.result = v;
     return true;
 }
@@ -191,17 +192,17 @@ pub fn putDerivative(dv: *Deriv, v: f64) bool {
 /// back, else null with a NOPUT error.
 fn outputOf(st: *const Active, j: usize, routine: []const u8) ?Out {
     if (j > 64 or (st.b.call_outs[st.k] >> @intCast(j - 1)) & 1 == 0) {
-        status.fail("NOPUT", "{s}: argument {d} of `{s}` is not a variable the design reads back after the call (§12.22.2)", .{ routine, j, session.design.?.objects[st.obj].name });
+        status.fail("NOPUT", "{s}: argument {d} of `{s}` is not a variable the design reads back after the call (§12.22.2)", .{ routine, j, session.design.?.obj(st.obj).name });
         return null;
     }
     return st.b.outs.get(.{ .k = st.k, .inst = st.inst });
 }
 
 /// Which argument (1-based) of call `obj` the object `o` is, or null.
-fn argPosition(obj: u32, o: *const Obj) ?usize {
+fn argPosition(obj: ObjId, o: *const Obj) ?usize {
     const d = &session.design.?;
-    for (d.objects[obj].lists) |l| if (l.tag == user.vpiArgument) {
-        for (l.items, 0..) |a, j| if (&d.objects[a] == o) return j + 1;
+    for (d.obj(obj).lists) |l| if (l.tag == user.vpiArgument) {
+        for (l.items, 0..) |a, j| if (d.obj(a) == o) return j + 1;
     };
     return null;
 }
@@ -216,10 +217,10 @@ fn derivOf(b: *const Binding, h: abi.vpiHandle) ?*Deriv {
 
 /// Which §12.32.2 position `h` is on call `obj`: 0 for the call itself (the
 /// returned value), 1.. for its arguments, null for neither.
-fn position(obj: u32, h: abi.vpiHandle) ?c_int {
+fn position(obj: ObjId, h: abi.vpiHandle) ?c_int {
     const d = &session.design.?;
     const o = trust.asObj(h) orelse return null;
-    if (o == &d.objects[obj]) return 0;
+    if (o == d.obj(obj)) return 0;
     return @intCast(argPosition(obj, o) orelse return null);
 }
 
@@ -238,14 +239,14 @@ test "asDeriv: a handle is a derivative only when its binding handed it out" {
     for (0..200) |k| {
         try b.derivs.ensureUnusedCapacity(gpa, 1);
         const dv = try gpa.create(Deriv);
-        dv.* = .{ .call = @intCast(k), .of = 0, .wrt = 1 };
+        dv.* = .{ .call = .at(k), .of = 0, .wrt = 1 };
         b.derivs.appendAssumeCapacity(dv);
         if (first == null) first = dv;
     }
     try std.testing.expect(derivOf(&b, @ptrCast(first.?)) == first.?);
-    try std.testing.expectEqual(@as(u32, 199), derivOf(&b, @ptrCast(b.derivs.items[199])).?.call);
+    try std.testing.expectEqual(ObjId.at(199), derivOf(&b, @ptrCast(b.derivs.items[199])).?.call);
     try std.testing.expect(derivOf(&b, @ptrFromInt(@intFromPtr(first.?) + 1)) == null);
-    var other: Deriv = .{ .call = 0, .of = 0, .wrt = 1 };
+    var other: Deriv = .{ .call = .at(0), .of = 0, .wrt = 1 };
     try std.testing.expect(derivOf(&b, @ptrCast(&other)) == null);
     // Another library's binding handed out none of them.
     const empty: Binding = .{};

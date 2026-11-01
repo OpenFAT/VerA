@@ -7,7 +7,10 @@
 //! §26.6.1 Details b, §27.19, §27.31.
 //!
 //! Contents:
-//! - `pub fn indexOf(d: *const Design, o: *const Obj) u32`
+//! - `pub const objects_max: u32`
+//! - `pub fn idOf(d: *const Design, o: *const Obj) ObjId`
+//! - `pub fn obj(d: *const Design, id: ObjId) *Obj`
+//! - `pub fn scope(d: *const Design, id: ObjId) *Scope`
 //! - `pub fn deinit(self: *Design) void`
 
 const std = @import("std");
@@ -18,6 +21,7 @@ const systf = @import("systf.zig");
 const Cold = schema.Cold;
 const Iter = schema.Iter;
 const Obj = schema.Obj;
+const ObjId = schema.ObjId;
 const Pair = systf.Pair;
 const Relations = reverse_index.Relations;
 const Scope = schema.Scope;
@@ -41,17 +45,17 @@ scopes: []Scope = &.{},
 
 /// §11.6.1 NOTE 1 — what `vpi_iterate(vpiModule, NULL)` walks. One entry:
 /// `Elaborate.pickTop` elaborates exactly one design root.
-top_modules: []const u32 = &.{},
+top_modules: []const ObjId = &.{},
 
 /// §11.6.2's two top-level sets: `vpi_iterate(vpiDiscipline, NULL)` and
 /// `vpi_iterate(vpiNature, NULL)`, in declaration order. Empty for a
 /// digital design, which declares neither.
-disciplines: []const u32 = &.{},
+disciplines: []const ObjId = &.{},
 
-natures: []const u32 = &.{},
+natures: []const ObjId = &.{},
 
 /// §11.6.14's circled arrow: `vpi_iterate(vpiUdpDefn, NULL)`.
-udp_defns: []const u32 = &.{},
+udp_defns: []const ObjId = &.{},
 
 /// How `vpi_handle_by_name` searches from a scope. Verilog-AMS §12.21
 /// uses "the scope search rules defined by the Verilog-AMS HDL", §6.7's
@@ -71,7 +75,7 @@ file: ?*const Ast.SourceFile = null,
 
 /// §11.6 `vpiFullName` → object index. Every object has one and they are
 /// unique, which is what makes §12.21 a lookup rather than a tree walk.
-by_name: std.StringHashMapUnmanaged(u32) = .empty,
+by_name: std.StringHashMapUnmanaged(ObjId) = .empty,
 
 /// The live iterators, keyed by handle value.
 iters: std.AutoHashMapUnmanaged(usize, *Iter) = .empty,
@@ -81,19 +85,44 @@ relations: ?Relations = null,
 
 /// §12.32.2 the partials each analog call's derivtf declared, by call
 /// object index (`systf.buildCalls`); the slices are owned (`gpa`).
-partials: std.AutoHashMapUnmanaged(u32, []const Pair) = .empty,
+partials: std.AutoHashMapUnmanaged(ObjId, []const Pair) = .empty,
 
 /// IEEE 1364-2005 §27.31 user data, by call object index and the host
 /// instance whose calltf was running (`systf.active_inst`).
 userdata: std.AutoHashMapUnmanaged(UserKey, ?*anyopaque) = .empty,
 
+/// Most rows one model holds: an `ObjId` spends `maxInt(u32)` on `none`.
+/// A design past it is refused when it is built (`error.TooManyObjects`).
+pub const objects_max: u32 = std.math.maxInt(u32) - 1;
+
 const Design = @This();
 
-/// The index of row `o`, which must point into `objects` (a pointer
-/// `asObj` returned, or `&objects[i]`); any other pointer is a wrong
-/// index or a safety panic.
-pub fn indexOf(d: *const Design, o: *const Obj) u32 {
-    return @intCast((@intFromPtr(o) - @intFromPtr(d.objects.ptr)) / @sizeOf(Obj));
+/// The id of row `o`, which must point into `objects` (a pointer `asObj`
+/// returned, or `&objects[i]`). Asserts that it does, on an element boundary.
+pub fn idOf(d: *const Design, o: *const Obj) ObjId {
+    const base = @intFromPtr(d.objects.ptr);
+    const addr = @intFromPtr(o);
+    std.debug.assert(addr >= base);
+    std.debug.assert((addr - base) % @sizeOf(Obj) == 0);
+    const i = (addr - base) / @sizeOf(Obj);
+    std.debug.assert(i < d.objects.len);
+    return .at(i);
+}
+
+/// Row `id`. Asserts that `id` is a row of `objects` (not `none`).
+pub fn obj(d: *const Design, id: ObjId) *Obj {
+    const i = id.index();
+    std.debug.assert(i < d.objects.len);
+    return &d.objects[i];
+}
+
+/// The scope whose module row is `id` (the `Scope` invariant, schema.zig:
+/// scope `i`'s module is row `i`). Asserts that `id` is a scope's.
+pub fn scope(d: *const Design, id: ObjId) *Scope {
+    const i = id.index();
+    std.debug.assert(i < d.scopes.len);
+    std.debug.assert(d.objects[i].kind == .module);
+    return &d.scopes[i];
 }
 
 /// Frees the model and every live iterator; all handles become invalid.

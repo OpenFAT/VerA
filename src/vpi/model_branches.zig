@@ -17,6 +17,7 @@ const Lowered = @import("ir").Lowered;
 const model = @import("model.zig");
 const model_analog = @import("model_analog.zig");
 const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const session = @import("session.zig");
 const Building = model.Building;
 const Cold = schema.Cold;
@@ -41,31 +42,31 @@ pub fn addAnalog(
     by_path: *const std.StringHashMapUnmanaged(u32),
     res: *const CompileResult,
     top_name: []const u8,
-) Error!struct { disciplines: []const u32, natures: []const u32 } {
+) Error!struct { disciplines: []const ObjId, natures: []const ObjId } {
     const lowered = res.lowered;
     const file = res.file;
     const flat = res.module.?;
 
     // --- natures: one object each, then the vpiParent edge and its inverse.
-    const natures = try arena.alloc(u32, file.natures.len);
-    var nature_at: std.StringHashMapUnmanaged(u32) = .empty;
+    const natures = try arena.alloc(ObjId, file.natures.len);
+    var nature_at: std.StringHashMapUnmanaged(ObjId) = .empty;
     defer nature_at.deinit(gpa);
     for (file.natures, natures) |n, *at| {
         const name = try arena.dupe(u8, file.str(n.name));
-        at.* = @intCast(objects.hot.items.len);
+        at.* = objects.next();
         try objects.append(.{ .kind = .nature, .owner = .none, .name = name, .full = name });
         try nature_at.put(gpa, name, at.*);
     }
     // --- disciplines, each with the natures it binds.
-    const disciplines = try arena.alloc(u32, file.disciplines.len);
-    var disc_at: std.StringHashMapUnmanaged(u32) = .empty;
+    const disciplines = try arena.alloc(ObjId, file.disciplines.len);
+    var disc_at: std.StringHashMapUnmanaged(ObjId) = .empty;
     defer disc_at.deinit(gpa);
     for (file.disciplines, disciplines) |dd, *at| {
         const name = try arena.dupe(u8, file.str(dd.name));
-        at.* = @intCast(objects.hot.items.len);
+        at.* = objects.next();
         try objects.appendCold(.{ .kind = .discipline, .owner = .none, .name = name, .full = name }, .{
-            .flow = if (dd.flow == .none) null else nature_at.get(file.str(dd.flow)),
-            .pot = if (dd.potential == .none) null else nature_at.get(file.str(dd.potential)),
+            .flow = if (dd.flow == .none) .none else nature_at.get(file.str(dd.flow)) orelse .none,
+            .pot = if (dd.potential == .none) .none else nature_at.get(file.str(dd.potential)) orelse .none,
         });
         try disc_at.put(gpa, name, at.*);
     }
@@ -75,24 +76,24 @@ pub fn addAnalog(
     for (file.natures, natures) |n, at| {
         if (n.parent == .none) continue;
         const pname = file.str(n.parent);
-        const parent: ?u32 = if (n.parent_access) |side| blk: {
-            const di = disc_at.get(pname) orelse break :blk null;
+        const parent: ObjId = if (n.parent_access) |side| blk: {
+            const di = disc_at.get(pname) orelse break :blk .none;
             break :blk switch (side) {
                 .potential => objects.coldOf(di).pot,
                 .flow => objects.coldOf(di).flow,
             };
-        } else nature_at.get(pname);
+        } else nature_at.get(pname) orelse .none;
         (try objects.coldFor(at)).nature = parent;
     }
     // The inverse edges, nature ->> nature (vpiChild) and nature ->> discipline.
     for (natures) |at| {
         var n_kids: usize = 0;
         for (natures) |other| n_kids += @intFromBool(objects.coldOf(other).nature == at);
-        var kids: std.ArrayList(u32) = try .initCapacity(arena, n_kids);
+        var kids: std.ArrayList(ObjId) = try .initCapacity(arena, n_kids);
         for (natures) |other| if (objects.coldOf(other).nature == at) kids.appendAssumeCapacity(other);
         var n_users: usize = 0;
         for (disciplines) |di| n_users += @intFromBool(binds(objects.coldOf(di), at));
-        var users: std.ArrayList(u32) = try .initCapacity(arena, n_users);
+        var users: std.ArrayList(ObjId) = try .initCapacity(arena, n_users);
         for (disciplines) |di| if (binds(objects.coldOf(di), at)) users.appendAssumeCapacity(di);
         const c = try objects.coldFor(at);
         c.children = kids.items;
@@ -101,13 +102,13 @@ pub fn addAnalog(
 
     // --- nodes: one per net of a continuous discipline (§3.6.2.2: a
     // discipline binding natures and not declared `domain discrete`).
-    var net_at: std.StringHashMapUnmanaged(u32) = .empty;
+    var net_at: std.StringHashMapUnmanaged(ObjId) = .empty;
     defer net_at.deinit(gpa);
     // A top-level port is its own net here (its declaration is the port's,
     // not a separate §11.6.8 object), so it is keyed too — nets after ports,
     // so a name that is both resolves to the net.
-    for (objects.hot.items, 0..) |o, i| if (o.kind == .port and o.owner.get() == 0) try net_at.put(gpa, o.full, @intCast(i));
-    for (objects.hot.items, 0..) |o, i| if (o.kind == .net) try net_at.put(gpa, o.full, @intCast(i));
+    for (objects.hot.items, 0..) |o, i| if (o.kind == .port and o.owner == ObjId.at(0)) try net_at.put(gpa, o.full, .at(i));
+    for (objects.hot.items, 0..) |o, i| if (o.kind == .net) try net_at.put(gpa, o.full, .at(i));
     const Decl = struct { name: Ast.StrId, discipline: Ast.StrId };
     var decls: std.ArrayList(Decl) = try .initCapacity(gpa, flat.ports.len + flat.nets.len);
     defer decls.deinit(gpa);
@@ -116,13 +117,13 @@ pub fn addAnalog(
     for (decls.items) |n| {
         if (n.discipline == .none) continue;
         const di = disc_at.get(file.str(n.discipline)) orelse continue;
-        if (file.disciplines[di - disciplines[0]].domain == .discrete) continue;
+        if (file.disciplines[di.index() - disciplines[0].index()].domain == .discrete) continue;
         const full = try model.joinPath(arena, top_name, file.str(n.name));
         const net = net_at.get(full) orelse continue;
         // A port declared and then typed by a net declaration is one node.
-        if (objects.coldOf(net).node != null) continue;
-        const at: u32 = @intCast(objects.hot.items.len);
-        const src = objects.hot.items[net];
+        if (objects.coldOf(net).node != .none) continue;
+        const at = objects.next();
+        const src = objects.at(net).*;
         try objects.appendCold(.{
             .kind = .node,
             .owner = src.owner,
@@ -134,12 +135,12 @@ pub fn addAnalog(
             // node <->> nets: the §11.6.8 net, when the name has one. A
             // top-level port's node reaches its port instead (§11.6.4's
             // port -> nodes edge), and has no net object to list.
-            .nets = if (src.kind == .net) try arena.dupe(u32, &.{net}) else &.{},
+            .nets = if (src.kind == .net) try arena.dupe(ObjId, &.{net}) else &.{},
         });
         const net_cold = try objects.coldFor(net);
         net_cold.node = at;
         net_cold.disc = di;
-        try scopes[src.owner.get().?].nodes.append(gpa, at);
+        try scopes[src.owner.index()].nodes.append(gpa, at);
     }
     // Each node's solver row: the `Lowered.nodes` row spelled by the node's
     // flattened name (`nodes` rows are named as `nets` are, §6.7 paths).
@@ -147,36 +148,37 @@ pub fn addAnalog(
         if (kind != .net) continue;
         const denoted = lowered.hier_names.get(name) orelse name;
         const net = net_at.get(try model.joinPath(arena, top_name, denoted)) orelse continue;
-        const node = objects.coldOf(net).node orelse continue;
+        const node = objects.coldOf(net).node;
+        if (node == .none) continue;
         if (objects.coldOf(node).row == null) (try objects.coldFor(node)).row = @intCast(row);
     }
     // The node object each solver row is the row of, the earliest when two
     // share one: what an unnamed branch's terminals resolve to. Every node
     // exists by now; branches add none.
-    const node_of_row = try gpa.alloc(?u32, lowered.nodes.len);
+    const node_of_row = try gpa.alloc(ObjId, lowered.nodes.len);
     defer gpa.free(node_of_row);
-    @memset(node_of_row, null);
-    for (objects.hot.items, 0..) |o, i| if (o.kind == .node) if (objects.coldOf(@intCast(i)).row) |row| {
-        if (row < node_of_row.len and node_of_row[row] == null) node_of_row[row] = @intCast(i);
+    @memset(node_of_row, .none);
+    for (objects.hot.items, 0..) |o, i| if (o.kind == .node) if (objects.coldOf(.at(i)).row) |row| {
+        if (row < node_of_row.len and node_of_row[row] == .none) node_of_row[row] = .at(i);
     };
 
     // --- branches, each with its two quantities. `named` keeps them in
     // object order: the rows a named contribution below is matched against.
     // At most one per declared branch.
-    var named: std.ArrayList(u32) = try .initCapacity(gpa, flat.branches.len);
+    var named: std.ArrayList(ObjId) = try .initCapacity(gpa, flat.branches.len);
     defer named.deinit(gpa);
     for (flat.branches) |b| {
         const flat_name = file.str(b.name);
         const split = (try model_analog.splitPath(arena, by_path, flat_name)) orelse continue;
         const pos = try terminalNode(objects, &net_at, arena, res, top_name, b.hi);
-        const neg = if (b.lo == .none) null else try terminalNode(objects, &net_at, arena, res, top_name, b.lo);
+        const neg = if (b.lo == .none) ObjId.none else try terminalNode(objects, &net_at, arena, res, top_name, b.lo);
         const full = try model.joinPath(arena, top_name, flat_name);
         const at = try addBranch(objects, split.scope, split.local, full, .{
-            .disc = if (pos) |p| objects.coldOf(p).disc else null,
+            .disc = if (pos != .none) objects.coldOf(pos).disc else .none,
             .pos = pos,
             .neg = neg,
-            .hi_row = if (pos) |p| objects.coldOf(p).row orelse Lowered.ground else Lowered.ground,
-            .lo_row = if (neg) |n| objects.coldOf(n).row orelse Lowered.ground else Lowered.ground,
+            .hi_row = if (pos != .none) objects.coldOf(pos).row orelse Lowered.ground else Lowered.ground,
+            .lo_row = if (neg != .none) objects.coldOf(neg).row orelse Lowered.ground else Lowered.ground,
         });
         if (full.len != 0) named.appendAssumeCapacity(at);
         try scopes[split.scope].branches.append(gpa, at);
@@ -193,7 +195,7 @@ pub fn addAnalog(
     // recorded as it lowered that instance's analog block. A potential and a
     // flow row of one instance over one pair are one branch.
     const rows = lowered.contributions.items;
-    var unnamed: std.AutoHashMapUnmanaged(UnnamedKey, u32) = .empty;
+    var unnamed: std.AutoHashMapUnmanaged(UnnamedKey, ObjId) = .empty;
     defer unnamed.deinit(gpa);
     for (rows, 0..) |c, k| {
         const idx: u32 = @intCast(k);
@@ -201,14 +203,15 @@ pub fn addAnalog(
             // A named branch: the one of this pair its instance declares. Two
             // named branches over one pair are told apart by an id lowering
             // keeps to itself, so this model does not guess between them.
-            var found: ?u32 = null;
+            var found: ObjId = .none;
             var twice = false;
             for (named.items) |i| {
                 if (!branchSpans(objects, objects.coldOf(i), c.hi, c.lo)) continue;
-                if (found != null) twice = true;
+                if (found != .none) twice = true;
                 found = i;
             }
-            const b = found orelse continue;
+            const b = found;
+            if (b == .none) continue;
             try bindRow(objects, b, c, idx, null);
             const bc = try objects.coldFor(b);
             bc.flow_unknowable = bc.flow_unknowable or twice;
@@ -228,20 +231,23 @@ pub fn addAnalog(
 /// quantities (`c.flow`, `c.pot` are set to them), each of the nature its
 /// discipline binds on that side (§11.6.7). Returns the branch row;
 /// invalidates pointers into `objects`.
-fn addBranch(objects: *Rows, scope: u32, name: []const u8, full: []const u8, c: Cold) Error!u32 {
-    const at: u32 = @intCast(objects.hot.items.len);
+fn addBranch(objects: *Rows, scope: u32, name: []const u8, full: []const u8, c: Cold) Error!ObjId {
+    std.debug.assert(c.flow == .none);
+    std.debug.assert(c.pot == .none);
+    const at = objects.next();
     var bc = c;
-    bc.flow = at + 1;
-    bc.pot = at + 2;
+    bc.flow = .at(at.index() + 1);
+    bc.pot = .at(at.index() + 2);
     try objects.appendCold(.{ .kind = .branch, .owner = .of(scope), .name = name, .full = full }, bc);
-    const d: ?Cold = if (c.disc) |di| objects.coldOf(di).* else null;
-    try objects.appendCold(.{ .kind = .quantity, .owner = .of(scope), .name = "", .full = "" }, .{ .branch = at, .nature = if (d) |o| o.flow else null });
-    try objects.appendCold(.{ .kind = .quantity, .owner = .of(scope), .name = "", .full = "" }, .{ .branch = at, .nature = if (d) |o| o.pot else null });
+    const d: ?Cold = if (c.disc != .none) objects.coldOf(c.disc).* else null;
+    try objects.appendCold(.{ .kind = .quantity, .owner = .of(scope), .name = "", .full = "" }, .{ .branch = at, .nature = if (d) |o| o.flow else .none });
+    try objects.appendCold(.{ .kind = .quantity, .owner = .of(scope), .name = "", .full = "" }, .{ .branch = at, .nature = if (d) |o| o.pot else .none });
+    std.debug.assert(objects.next().index() == at.index() + 3);
     return at;
 }
 
 /// Does discipline `d` bind nature `at` on either side?
-fn binds(d: *const Cold, at: u32) bool {
+fn binds(d: *const Cold, at: ObjId) bool {
     return d.flow == at or d.pot == at;
 }
 
@@ -251,10 +257,10 @@ fn unnamedBranch(
     gpa: std.mem.Allocator,
     objects: *Rows,
     scopes: []Building,
-    unnamed: *std.AutoHashMapUnmanaged(UnnamedKey, u32),
+    unnamed: *std.AutoHashMapUnmanaged(UnnamedKey, ObjId),
     by_path: *const std.StringHashMapUnmanaged(u32),
     res: *const CompileResult,
-    node_of_row: []const ?u32,
+    node_of_row: []const ObjId,
     c: Lowered.Contribution,
     idx: u32,
     unit: u32,
@@ -271,7 +277,7 @@ fn unnamedBranch(
         // §5.4.2 gives an unnamed branch no name; `vpiName` answers the empty
         // string, as §11.6.7's unnamed quantity does.
         const at = try addBranch(objects, scope, "", "", .{
-            .disc = if (pos) |p| objects.coldOf(p).disc else if (neg) |n| objects.coldOf(n).disc else null,
+            .disc = if (pos != .none) objects.coldOf(pos).disc else if (neg != .none) objects.coldOf(neg).disc else .none,
             .pos = pos,
             .neg = neg,
             .hi_row = c.hi,
@@ -289,8 +295,8 @@ fn unnamedBranch(
 
 /// Record contribution row `k` as the source of branch `at`'s potential or
 /// flow; `share`, its `Lowered.contrib_shares` entry when `k` is shared.
-fn bindRow(objects: *Rows, at: u32, c: Lowered.Contribution, k: u32, share: ?u32) Error!void {
-    const unnamed = objects.hot.items[at].full.len == 0;
+fn bindRow(objects: *Rows, at: ObjId, c: Lowered.Contribution, k: u32, share: ?u32) Error!void {
+    const unnamed = objects.at(at).full.len == 0;
     const b = try objects.coldFor(at);
     if (unnamed) {
         b.hi_row = c.hi;
@@ -312,8 +318,8 @@ fn bindRow(objects: *Rows, at: u32, c: Lowered.Contribution, k: u32, share: ?u32
 /// The node object whose solver row is `row` (`node_of_row`, built in
 /// `addAnalog`); null for ground (§1.3.1.1 has no node row for it) and for a
 /// row no node object carries.
-fn nodeOfRow(node_of_row: []const ?u32, row: u32) ?u32 {
-    if (row == Lowered.ground or row >= node_of_row.len) return null;
+fn nodeOfRow(node_of_row: []const ObjId, row: u32) ObjId {
+    if (row == Lowered.ground or row >= node_of_row.len) return .none;
     return node_of_row[row];
 }
 
@@ -321,8 +327,8 @@ fn nodeOfRow(node_of_row: []const ?u32, row: u32) ?u32 {
 /// reference direction is the declaration's, and contributions are
 /// canonicalised to one spelling of the pair, so both orders are the branch.
 fn branchSpans(objects: *const Rows, o: *const Cold, hi: u32, lo: u32) bool {
-    const p: u32 = if (o.pos) |n| objects.coldOf(n).row orelse return false else Lowered.ground;
-    const n: u32 = if (o.neg) |m| objects.coldOf(m).row orelse return false else Lowered.ground;
+    const p: u32 = if (o.pos != .none) objects.coldOf(o.pos).row orelse return false else Lowered.ground;
+    const n: u32 = if (o.neg != .none) objects.coldOf(o.neg).row orelse return false else Lowered.ground;
     return (p == hi and n == lo) or (p == lo and n == hi);
 }
 
@@ -332,17 +338,17 @@ fn branchSpans(objects: *const Rows, o: *const Cold, hi: u32, lo: u32) bool {
 /// which the model does not hold).
 fn terminalNode(
     objects: *const Rows,
-    net_at: *const std.StringHashMapUnmanaged(u32),
+    net_at: *const std.StringHashMapUnmanaged(ObjId),
     arena: std.mem.Allocator,
     res: *const CompileResult,
     top_name: []const u8,
     e: Ast.ExprId,
-) Error!?u32 {
+) Error!ObjId {
     const lowered = res.lowered;
     const file = res.file;
-    if (file.exprs.tag(e) != .ident) return null;
+    if (file.exprs.tag(e) != .ident) return .none;
     const name = file.str(file.exprs.strOf(e));
     const denoted = lowered.hier_names.get(name) orelse name;
-    const net = net_at.get(try model.joinPath(arena, top_name, denoted)) orelse return null;
+    const net = net_at.get(try model.joinPath(arena, top_name, denoted)) orelse return .none;
     return objects.coldOf(net).node;
 }

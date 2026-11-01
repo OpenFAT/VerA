@@ -110,8 +110,9 @@ pub fn onTchk(r: *digital.Run, check: u32) void {
     const d = &session.design.?;
     const tchk = for (d.objects) |*o| {
         if (o.kind != .code or o.vtype != user.vpiTchk or o.src_tok != site.tok) continue;
-        const owner = o.owner.get() orelse continue;
-        if (d.scopes[owner].engine == site.scope) break o;
+        const owner = o.owner;
+        if (owner == .none) continue;
+        if (d.scope(owner).engine == site.scope) break o;
     } else return;
     fireAll(user.cbTchkViolation, tchk);
 }
@@ -216,9 +217,9 @@ pub fn fireSlot(slot: u32) void {
         // select which changed value".
         const d = &session.design.?;
         for (schema.coldOf(target).members) |m| {
-            const word = &d.objects[m];
+            const word = d.obj(m);
             if (word.slot.get() != slot) continue;
-            _ = call(cb, @intCast(d.objects[word.index.get().?].value.?.int), word);
+            _ = call(cb, @intCast(d.obj(word.index).value.?.int), word);
         }
     }
     callback.sweep();
@@ -274,7 +275,7 @@ pub fn onDone(r: *digital.Run, pc: u32) digital.Error!void {
         else => user.vpiDeassign,
     };
     const stmt = for (d.objects) |*o| {
-        if (o.kind == .code and o.vtype == want and o.stmt == site.stmt and o.owner != .none and d.scopes[o.owner.get().?].engine == site.scope) break o;
+        if (o.kind == .code and o.vtype == want and o.stmt == site.stmt and o.owner != .none and d.scope(o.owner).engine == site.scope) break o;
     } else return;
     const n = callback.cbs.items.len;
     for (0..n) |i| {
@@ -307,7 +308,7 @@ pub fn fireStmt(_: *digital.Run, pc: u32) digital.Error!void {
         if (cb.reason != user.cbStmt) continue;
         for (cb.sites) |st| {
             if (cb.dead) break;
-            if (st.pc == pc) _ = call(cb, 0, &d.objects[st.obj]);
+            if (st.pc == pc) _ = call(cb, 0, d.obj(st.obj));
         }
     }
     callback.sweep();
@@ -421,7 +422,7 @@ fn lhsOf(from: ?*const Obj) ?*const Obj {
     const o = from orelse return null;
     if (o.stmt == .none) return o;
     const lhs = schema.edgeTo(o, user.vpiLhs);
-    return if (lhs == schema.no_obj) null else &session.design.?.objects[lhs];
+    return if (lhs == schema.ObjId.none) null else session.design.?.obj(lhs);
 }
 
 /// Whether any live callback has `reason`, so `onTchk` searches the design

@@ -28,6 +28,8 @@ const systf = @import("systf.zig");
 const user = @import("vpi_user.zig");
 const Design = @import("Design.zig");
 const abi = @import("abi.zig");
+const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const Active = analog_call.Active;
 const CbData = abi.CbData;
 const Deriv = analog_call.Deriv;
@@ -87,9 +89,9 @@ awaiting: bool = false,
 /// §12.36 vpiTransientFailConverge was called on the awaiting solution.
 fail_converge: bool = false,
 
-/// Per device call index: the VPI call object, or null when there is
+/// Per device call index: the VPI call object, or `none` when there is
 /// none or more than one.
-call_obj: []?u32 = &.{},
+call_obj: []ObjId = &.{},
 
 /// Per device call index: the arguments the device reads back after the
 /// call (`contract.Systf.outs`, bit j - 1 for argument j).
@@ -103,7 +105,7 @@ outs: std.AutoHashMapUnmanaged(OutKey, Out) = .empty,
 /// own (an access function, an operation), inside calltf and after it:
 /// the §12.32.3 sampler reads its expression from an acbAbsTime
 /// callback. Per call, not per instance: "the latest evaluation" is one.
-arg_values: std.AutoHashMapUnmanaged(u32, f64) = .empty,
+arg_values: std.AutoHashMapUnmanaged(ObjId, f64) = .empty,
 
 /// The §12.22.1 derivative handles handed out for this library's calls.
 derivs: std.ArrayList(*Deriv) = .empty,
@@ -153,7 +155,7 @@ pub fn attach(b: *Binding, l: Lib, own: ?Design) error{OutOfMemory}!void {
     // module instantiated twice) binds to none and is refused when
     // called rather than handed to the wrong one.
     const n_calls = l.n_systf();
-    b.call_obj = try gpa.alloc(?u32, n_calls);
+    b.call_obj = try gpa.alloc(ObjId, n_calls);
     b.call_outs = try gpa.alloc(u64, n_calls);
     const Site = struct { name: []const u8, tok: u32 };
     const SiteCtx = struct {
@@ -166,17 +168,17 @@ pub fn attach(b: *Binding, l: Lib, own: ?Design) error{OutOfMemory}!void {
     };
     // Each analog call site's object, or null when two objects share
     // it: one pass over the rows, not one per call.
-    var by_site: std.HashMapUnmanaged(Site, ?u32, SiteCtx, std.hash_map.default_max_load_percentage) = .empty;
+    var by_site: std.HashMapUnmanaged(Site, ObjId, SiteCtx, std.hash_map.default_max_load_percentage) = .empty;
     defer by_site.deinit(gpa);
     for (session.design.?.objects, 0..) |o, i| {
         if (o.kind != .code or !o.in_analog or (o.vtype != user.vpiSysFuncCall and o.vtype != user.vpiSysTaskCall)) continue;
         const g = try by_site.getOrPut(gpa, .{ .name = o.name, .tok = o.src_tok });
-        g.value_ptr.* = if (g.found_existing) null else @intCast(i);
+        g.value_ptr.* = if (g.found_existing) .none else .at(i);
     }
     for (b.call_obj, b.call_outs, 0..) |*c, *m, k| {
         var len: usize = 0;
         const name = l.systf_name(k, &len)[0..len];
-        c.* = by_site.get(.{ .name = name, .tok = l.systf_tok(k) }) orelse null;
+        c.* = by_site.get(.{ .name = name, .tok = l.systf_tok(k) }) orelse .none;
         m.* = l.systf_outs(k);
     }
     if (b.owns) systf.buildCalls();
@@ -235,15 +237,15 @@ pub fn detach(b: *Binding) void {
 pub fn call(b: *Binding, inst: usize, k: usize, args: []const f64, partials: []f64) f64 {
     std.debug.assert(partials.len == args.len);
     @memset(partials, 0);
-    const at = if (k < b.call_obj.len) b.call_obj[k] else null;
-    const obj = at orelse {
+    const obj = if (k < b.call_obj.len) b.call_obj[k] else ObjId.none;
+    if (obj == .none) {
         status.fail("AMBIGUOUS", "this analog system function call is not one call object of the design (a module instantiated twice shares its calls' source)", .{});
         return 0;
-    };
+    }
     const prev = analog.enter(b);
     defer analog.leave(b, prev);
     const n = args.len;
-    const o = &session.design.?.objects[obj];
+    const o = session.design.?.obj(obj);
     const reg = systf.find(o.name, .analog) orelse return 0;
     for (o.lists) |li| if (li.tag == user.vpiArgument) {
         for (li.items[0..@min(n, li.items.len)], 0..) |a, j| b.arg_values.put(gpa, a, args[j]) catch {};

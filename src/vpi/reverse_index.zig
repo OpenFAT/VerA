@@ -19,6 +19,7 @@ const iterate = @import("iterate.zig");
 const property = @import("property.zig");
 const run = @import("run.zig");
 const schema = @import("schema.zig");
+const ObjId = schema.ObjId;
 const status = @import("status.zig");
 const trust = @import("trust.zig");
 const user = @import("vpi_user.zig");
@@ -70,15 +71,15 @@ pub fn uses(d: *Design, o: *const Obj) abi.vpiHandle {
         .code => if (o.vtype != user.vpiNetBit and o.vtype != user.vpiRegBit) return useFail(o),
         .module, .port, .reg_array, .var_array, .net_array, .module_array, .constant, .discipline, .nature, .node, .branch, .quantity => return useFail(o),
     }
-    const target = d.indexOf(o);
+    const target = d.idOf(o);
     const rel = relationsOf(d) orelse return null;
     // At most one handle per user row.
-    var out = std.ArrayList(abi.vpiHandle).initCapacity(d.gpa, rel.users.of(target).len) catch return iterate.oomIter();
-    var last: u32 = schema.no_obj;
-    for (rel.users.of(target)) |u| {
+    var out = std.ArrayList(abi.vpiHandle).initCapacity(d.gpa, rel.users.of(target.index()).len) catch return iterate.oomIter();
+    var last: u32 = std.math.maxInt(u32);
+    for (rel.users.of(target.index())) |u| {
         if (u == last) continue;
         last = u;
-        out.appendAssumeCapacity(trust.handleOf(&d.objects[u]));
+        out.appendAssumeCapacity(trust.handleOf(d.obj(.at(u))));
     }
     return iterate.ownedIter(d, &out);
 }
@@ -89,10 +90,11 @@ pub fn uses(d: *Design, o: *const Obj) abi.vpiHandle {
 /// finds them. The analog model's nets never are one — a port-connected name
 /// is its `.port` row there (model/analog.zig) — so its set is always empty.
 pub fn lowConnPorts(d: *Design, o: *const Obj) abi.vpiHandle {
-    const owner = o.owner.get() orelse return null;
-    const ports = d.scopes[owner].ports;
+    const owner = o.owner;
+    if (owner == .none) return null;
+    const ports = d.scope(owner).ports;
     var out = std.ArrayList(abi.vpiHandle).initCapacity(d.gpa, ports.len) catch return iterate.oomIter();
-    for (ports) |p| if (std.mem.eql(u8, d.objects[p].name, o.name)) out.appendAssumeCapacity(trust.handleOf(&d.objects[p]));
+    for (ports) |p| if (std.mem.eql(u8, d.obj(p).name, o.name)) out.appendAssumeCapacity(trust.handleOf(d.obj(p)));
     return iterate.ownedIter(d, &out);
 }
 
@@ -115,10 +117,10 @@ pub fn lowConnPorts(d: *Design, o: *const Obj) abi.vpiHandle {
 /// are not listed. Each needs its own relation.
 pub fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) abi.vpiHandle {
     const rel = relationsOf(d) orelse return null;
-    const target = d.indexOf(o);
-    const by_obj = rel.by_obj.of(target);
+    const target = d.idOf(o);
+    const by_obj = rel.by_obj.of(target.index());
     const by_slot: []const u32 = if (o.slot.get()) |slot| rel.by_slot.of(slot) else &.{};
-    const ports: []const u32 = if (o.kind == .net) if (o.owner.get()) |owner| rel.ports.of(owner) else &.{} else &.{};
+    const ports: []const u32 = if (o.kind == .net) if (o.owner != .none) rel.ports.of(o.owner.index()) else &.{} else &.{};
     var candidates = std.ArrayList(u32).initCapacity(d.gpa, by_obj.len + by_slot.len + ports.len) catch return iterate.oomIter();
     defer candidates.deinit(d.gpa);
     candidates.appendSliceAssumeCapacity(by_obj);
@@ -127,11 +129,11 @@ pub fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) abi.v
     std.mem.sortUnstable(u32, candidates.items, {}, std.sort.asc(u32));
     // At most one handle per candidate.
     var out = std.ArrayList(abi.vpiHandle).initCapacity(d.gpa, candidates.items.len) catch return iterate.oomIter();
-    var last: u32 = schema.no_obj;
+    var last: u32 = std.math.maxInt(u32);
     for (candidates.items) |i| {
         if (i == last) continue;
         last = i;
-        const x = &d.objects[i];
+        const x = d.obj(.at(i));
         if (local and x.owner != o.owner) continue;
         const hit = switch (x.kind) {
             .code => switch (x.vtype) {
@@ -152,7 +154,7 @@ pub fn driversLoads(d: *Design, o: *const Obj, drivers: bool, local: bool) abi.v
             },
             else => false, // else: no other class drives or loads a net or reg
         };
-        if (hit) out.appendAssumeCapacity(trust.handleOf(&d.objects[i]));
+        if (hit) out.appendAssumeCapacity(trust.handleOf(d.obj(.at(i))));
     }
     return iterate.ownedIter(d, &out);
 }
@@ -218,25 +220,25 @@ fn buildRelations(d: *const Design) error{OutOfMemory}!Relations {
 
 /// Row `u` uses item `at` and, when `at` is a part or bit select, the
 /// object its first vpiParent edge names.
-fn addReach(gpa: std.mem.Allocator, d: *const Design, out: *std.ArrayList([2]u32), at: u32, u: u32) error{OutOfMemory}!void {
-    if (at == schema.no_obj) return;
-    try out.append(gpa, .{ at, u });
-    const x = &d.objects[at];
+fn addReach(gpa: std.mem.Allocator, d: *const Design, out: *std.ArrayList([2]u32), at: ObjId, u: u32) error{OutOfMemory}!void {
+    if (at == .none) return;
+    try out.append(gpa, .{ at.index(), u });
+    const x = d.obj(at);
     if (x.kind != .code) return;
     switch (x.vtype) {
         user.vpiPartSelect, user.vpiIndexedPartSelect, user.vpiNetBit, user.vpiRegBit => {},
         else => return, // else: only a select names a part of another object
     }
     const parent = schema.edgeTo(x, user.vpiParent);
-    if (parent != schema.no_obj) try out.append(gpa, .{ parent, u });
+    if (parent != .none) try out.append(gpa, .{ parent.index(), u });
 }
 
 /// `mentions`' walk from `e`, inverted: every row it visits, and the slot of
 /// every non-`.code` one, lead to candidate `u`.
-fn addMentions(gpa: std.mem.Allocator, d: *const Design, by_obj: *std.ArrayList([2]u32), by_slot: *std.ArrayList([2]u32), e: u32, u: u32) error{OutOfMemory}!void {
-    if (e == schema.no_obj) return;
-    try by_obj.append(gpa, .{ e, u });
-    const x = &d.objects[e];
+fn addMentions(gpa: std.mem.Allocator, d: *const Design, by_obj: *std.ArrayList([2]u32), by_slot: *std.ArrayList([2]u32), e: ObjId, u: u32) error{OutOfMemory}!void {
+    if (e == .none) return;
+    try by_obj.append(gpa, .{ e.index(), u });
+    const x = d.obj(e);
     if (x.kind != .code) {
         if (x.slot.get()) |s| try by_slot.append(gpa, .{ s, u });
         return;
@@ -270,7 +272,7 @@ fn activeOverride(d: *const Design, o: *const Obj) bool {
 fn overrideRange(d: *const Design, o: *const Obj, r: *const sim.digital.Run, range: sim.digital.PcRange) bool {
     // A VPI force has an empty range; it activates no HDL source statement.
     if (range.start == range.end) return false;
-    if (r.instanceOf(r.program.scope_of.items[range.start]) != d.scopes[o.owner.get().?].engine) return false;
+    if (r.instanceOf(r.program.scope_of.items[range.start]) != d.scope(o.owner).engine) return false;
     return switch (r.program.code.items[range.start]) {
         .override_eval => |op| op.value == schema.coldOf(o).override_expr and op.force == (o.vtype == user.vpiForce),
         else => false, // else: only an override_eval maintains a procedural continuous assignment
@@ -280,9 +282,9 @@ fn overrideRange(d: *const Design, o: *const Obj, r: *const sim.digital.Run, ran
 /// Does expression `e` read `target`'s storage: is it the same slot (or the
 /// same object), a select of it, or an operation or call with such an
 /// operand?
-fn mentions(d: *const Design, e: u32, target: *const Obj) bool {
-    if (e == schema.no_obj) return false;
-    const x = &d.objects[e];
+fn mentions(d: *const Design, e: ObjId, target: *const Obj) bool {
+    if (e == .none) return false;
+    const x = d.obj(e);
     if (x == target or (x.slot != .none and x.slot == target.slot and x.kind != .code)) return true;
     if (x.kind != .code) return false;
     switch (x.vtype) {

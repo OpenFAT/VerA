@@ -53,9 +53,18 @@ pub var design: ?Design = null;
 /// `refused` turns every other routine away (VD-044).
 pub var starting = false;
 
-/// `NotElaborated`: `lowered` carries no elaborated top, a sequencing bug in
-/// the caller rather than a diagnostic.
-pub const Error = error{ OutOfMemory, NotElaborated };
+/// Every way building a model fails. On any error nothing is installed and
+/// the previous model is already closed.
+pub const Error = error{
+    /// An allocation for the model's tables failed.
+    OutOfMemory,
+    /// The compilation carries no elaborated top, or the digital design has
+    /// a second top-level module, which one `Design` cannot name: a
+    /// sequencing bug in the caller rather than a diagnostic.
+    NotElaborated,
+    /// The design needs more than `Design.objects_max` object rows.
+    TooManyObjects,
+};
 
 /// The product's invocation, as its `main` received it. Kept by pointer: the
 /// C runtime owns `argv` for the life of the process, which outlives any

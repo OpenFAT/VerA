@@ -18321,14 +18321,14 @@ pub const vpi_tests = struct {
         // even though the flatten collapsed them into the parent's nets.
         try std.testing.expectEqual(@as(usize, 2), d.scopes[0].ports.len);
         try std.testing.expectEqual(@as(usize, 2), d.scopes[1].ports.len);
-        try std.testing.expectEqualStrings("top.u.v.x", d.objects[d.scopes[2].ports[0]].full);
+        try std.testing.expectEqualStrings("top.u.v.x", d.obj(d.scopes[2].ports[0]).*.full);
         // §11.6.8/§11.6.9/§11.6.12: one each per level, bucketed by §6.7 path.
-        try std.testing.expectEqualStrings("top.mid", d.objects[d.scopes[0].nets[0]].full);
-        try std.testing.expectEqualStrings("top.u.inner", d.objects[d.scopes[1].nets[0]].full);
-        try std.testing.expectEqualStrings("top.u.v.deep", d.objects[d.scopes[2].nets[0]].full);
-        try std.testing.expectEqualStrings("top.state", d.objects[d.scopes[0].regs[0]].full);
-        try std.testing.expectEqualStrings("top.u.flag", d.objects[d.scopes[1].regs[0]].full);
-        try std.testing.expectEqualStrings("top.u.v.r", d.objects[d.scopes[2].params[0]].full);
+        try std.testing.expectEqualStrings("top.mid", d.obj(d.scopes[0].nets[0]).*.full);
+        try std.testing.expectEqualStrings("top.u.inner", d.obj(d.scopes[1].nets[0]).*.full);
+        try std.testing.expectEqualStrings("top.u.v.deep", d.obj(d.scopes[2].nets[0]).*.full);
+        try std.testing.expectEqualStrings("top.state", d.obj(d.scopes[0].regs[0]).*.full);
+        try std.testing.expectEqualStrings("top.u.flag", d.obj(d.scopes[1].regs[0]).*.full);
+        try std.testing.expectEqualStrings("top.u.v.r", d.obj(d.scopes[2].params[0]).*.full);
     }
 
     test "vpi_iterate walks a level and vpi_scan frees the iterator at the end" {
@@ -18507,8 +18507,8 @@ pub const vpi_tests = struct {
             const b = vpi_scan(it).?;
             try std.testing.expect(vpi_scan(it) == null);
             const o = schema.coldOf(asObj(b).?);
-            try std.testing.expect(o.pos != null);
-            try std.testing.expect(o.neg == null); // gnd is §1.3.1.1's reference
+            try std.testing.expect(o.pos != .none);
+            try std.testing.expect(o.neg == .none); // gnd is §1.3.1.1's reference
             try std.testing.expectEqual(vpiQuantity, vpi_get(vpiType, vpi_handle(vpiFlow, b)));
         }
         const v1 = schema.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.v1"), null))).?).?);
@@ -19131,10 +19131,16 @@ pub const vpi_tests = struct {
 
     // ---- root.zig's own pieces --------------------------------------------------
 
-    test "OptU32 packs null as none and round-trips every other value" {
-        try std.testing.expectEqual(schema.OptU32.none, schema.OptU32.of(null));
-        try std.testing.expectEqual(@as(?u32, null), schema.OptU32.none.get());
-        for ([_]u32{ 0, 1, 0x7fff_ffff, std.math.maxInt(u32) - 1 }) |v| try std.testing.expectEqual(@as(?u32, v), schema.OptU32.of(v).get());
+    test "ObjId and Slot pack null as none and round-trip every other value" {
+        try std.testing.expectEqual(schema.ObjId.none, schema.ObjId.of(null));
+        try std.testing.expectEqual(@as(?u32, null), schema.ObjId.none.get());
+        try std.testing.expectEqual(schema.Slot.none, schema.Slot.of(null));
+        try std.testing.expectEqual(@as(?u32, null), schema.Slot.none.get());
+        for ([_]u32{ 0, 1, 0x7fff_ffff, std.math.maxInt(u32) - 1 }) |v| {
+            try std.testing.expectEqual(@as(?u32, v), schema.ObjId.of(v).get());
+            try std.testing.expectEqual(v, schema.ObjId.at(v).index());
+            try std.testing.expectEqual(@as(?u32, v), schema.Slot.of(v).get());
+        }
     }
 
     test "every declared class has a vpiType with a spelling" {

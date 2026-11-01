@@ -23,6 +23,7 @@ const schema = @import("schema.zig");
 const Delay = abi.Delay;
 const Obj = schema.Obj;
 const Time = abi.Time;
+const ObjId = schema.ObjId;
 
 /// The pulse limits a §12.29 put gave a module path, by object index: each
 /// written delay's reject and error limit, kept apart from the delays so a
@@ -33,7 +34,7 @@ const Time = abi.Time;
 /// arena; `reset` drops the table with the design.
 const Limits = struct { reject: []const f64, err: []const f64 };
 
-var limits: std.AutoHashMapUnmanaged(u32, Limits) = .empty;
+var limits: std.AutoHashMapUnmanaged(ObjId, Limits) = .empty;
 
 /// IEEE 1364-2005 §26.6.16's inter-module path: the interconnect from port
 /// row `ports[0]` (an output or inout) to port row `ports[1]` (an input or
@@ -41,7 +42,7 @@ var limits: std.AutoHashMapUnmanaged(u32, Limits) = .empty;
 /// `ports[0]`'s module's time unit. An interconnect nothing was put on has no
 /// delay, so they start at 0. Like a module path's, the delays are the
 /// model's: no simulation applies one (VD-114).
-const InterModPath = struct { ports: [2]u32, delays: [3]f64 = .{ 0, 0, 0 } };
+const InterModPath = struct { ports: [2]ObjId, delays: [3]f64 = .{ 0, 0, 0 } };
 
 /// Every inter-module path made since the design opened, each a handle.
 /// ponytail: scanned per lookup; an application asks for a handful. Key a
@@ -126,7 +127,7 @@ pub export fn vpi_get_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
     // A path's put limits, spread over its transitions as its delays are.
     var reject_buf: [12]f64 = undefined;
     var err_buf: [12]f64 = undefined;
-    const lim = if (o.vtype == user.vpiModPath) limits.get(session.design.?.indexOf(o)) else null;
+    const lim = if (o.vtype == user.vpiModPath) limits.get(session.design.?.idOf(o)) else null;
     const rejects: []const f64 = if (lim) |l| pathDelays(l.reject, &reject_buf) else values;
     const errs: []const f64 = if (lim) |l| pathDelays(l.err, &err_buf) else values;
     fill(d, values, rejects, errs, obj);
@@ -241,7 +242,7 @@ pub export fn vpi_put_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
     // What vpi_get_delays reads back: the written delays, in the module's
     // unit however they were given.
     const design = &session.design.?;
-    design.objects[design.indexOf(o)].delays = design.arena.allocator().dupe(f64, units[0..n]) catch {
+    design.obj(design.idOf(o)).delays = design.arena.allocator().dupe(f64, units[0..n]) catch {
         status.fail("NOMEM", "vpi_put_delays: out of memory", .{});
         return;
     };
@@ -294,8 +295,8 @@ pub fn interModPath(ref1: abi.vpiHandle, ref2: abi.vpiHandle) abi.vpiHandle {
         status.fail("BADPORT", who ++ ": `{s}` and `{s}` are not of the same size", .{ from.full, to.full });
         return null;
     }
-    const key = [2]u32{ session.design.?.indexOf(from), session.design.?.indexOf(to) };
-    for (paths.items) |m| if (std.mem.eql(u32, &m.ports, &key)) return @ptrCast(m);
+    const key = [2]ObjId{ session.design.?.idOf(from), session.design.?.idOf(to) };
+    for (paths.items) |m| if (std.mem.eql(ObjId, &m.ports, &key)) return @ptrCast(m);
     const gpa = std.heap.smp_allocator;
     const m = gpa.create(InterModPath) catch {
         status.fail("NOMEM", who ++ ": out of memory", .{});
@@ -400,7 +401,7 @@ fn putModelDelays(o: *const Obj, d: *const Delay) bool {
     const out = design.arena.allocator().alloc(f64, n) catch return noMem();
     for (out, 0..) |*v, k| v.* = part(d, k, 0).real;
     for (out) |v| if (!isDelay(v)) return notDelay(v);
-    const idx = design.indexOf(o);
+    const idx = design.idOf(o);
     // §12.29: a put with pulsere_flag sets a path's limits; one without
     // leaves them.
     if (d.pulsere_flag != 0 and o.vtype == user.vpiModPath) {
@@ -415,7 +416,7 @@ fn putModelDelays(o: *const Obj, d: *const Delay) bool {
         }
         limits.put(std.heap.smp_allocator, idx, .{ .reject = reject, .err = err }) catch return noMem();
     }
-    design.objects[idx].delays = out;
+    design.obj(idx).delays = out;
     return true;
 }
 
@@ -450,8 +451,8 @@ fn noMem() bool {
 }
 
 /// The port row `i` as a handle, for a time unit or an iteration.
-fn portHandle(i: u32) abi.vpiHandle {
-    return @ptrCast(&session.design.?.objects[i]);
+fn portHandle(i: ObjId) abi.vpiHandle {
+    return @ptrCast(session.design.?.obj(i));
 }
 
 /// §12.11: "For inter-module path objects, the no_of_delays value shall be 2
@@ -505,12 +506,12 @@ fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
     if (n < 3) got[2] = @min(got[0], got[1]);
     m.delays = got;
     const objects = session.design.?.objects;
-    const from = &objects[m.ports[0]];
+    const from = &objects[m.ports[0].index()];
     if (r.bag.enabled(.W0251)) {
         const start = r.starts[@min(from.src_tok, r.starts.len - 1)];
         r.bag.add(r.stage(), .W0251, .{ .start = start, .end = start }, "vpi_put_delays: the inter-module path from `{s}` to `{s}` holds its delays for vpi_get_delays; no simulation applies an interconnect delay", .{
             from.full,
-            objects[m.ports[1]].full,
+            objects[m.ports[1].index()].full,
         }) catch {
             status.fail("NOMEM", "vpi_put_delays: out of memory", .{});
             return;
