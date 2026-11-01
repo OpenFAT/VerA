@@ -25,6 +25,10 @@ const Sig = rtlil_table.Sig;
 const Writer = std.Io.Writer;
 const ExprId = Ast.ExprId;
 
+/// `vera --run`'s words for `{}` (E1100): §5.1.14 concatenates operands
+/// of a positive width.
+const empty_concat = "a concatenation requires a positive-width operand; zero-only and empty concatenations are invalid";
+
 /// §5.4.1 the self-determined width of `e`, and §5.5.1 its signedness,
 /// computed once per expression (`Emitter.shapes`): `expr` asks it at every
 /// level, which would be quadratic in the nesting otherwise.
@@ -303,9 +307,11 @@ fn shapeOf(self: *Emitter, e: ExprId) Error!Sig {
             break :blk .{ .s = "", .w = @max(a.w, b.w), .signed = a.signed and b.signed };
         },
         .concat => blk: {
-            var w: u32 = 0;
+            if (ex.args(e).len == 0) return self.designError(tok, empty_concat);
+            var w: u64 = 0;
             for (ex.args(e)) |a| w += (try self.shape(a)).w;
-            break :blk .{ .s = "", .w = w };
+            if (w > fold.max_width) return self.refuse(tok, "a concatenation wider than {d} bits", .{fold.max_width});
+            break :blk .{ .s = "", .w = @intCast(w) };
         },
         .multi_concat => blk: {
             const n = (try self.foldInt(ex.lhs(e), tok)) orelse return self.refuse(tok, "a replication count that is not constant", .{});
@@ -376,8 +382,10 @@ fn concatInto(self: *Emitter, e: ExprId, w: *Writer) Error!void {
 fn lvalueConcatInto(self: *Emitter, e: ExprId, in_proc: bool, w: *Writer) Error!u32 {
     const ex = &self.file.exprs;
     assert(ex.tag(e) == .concat);
-    try self.deeper(ex.mainTok(e));
-    var width: u32 = 0;
+    const tok = ex.mainTok(e);
+    try self.deeper(tok);
+    if (ex.args(e).len == 0) return self.designError(tok, empty_concat);
+    var width: u64 = 0;
     try w.writeAll("{");
     for (ex.args(e)) |a| {
         if (ex.tag(a) == .concat) {
@@ -389,7 +397,8 @@ fn lvalueConcatInto(self: *Emitter, e: ExprId, in_proc: bool, w: *Writer) Error!
         width += s.w;
         try w.print(" {s}", .{s.s});
     }
+    if (width > fold.max_width) return self.refuse(tok, "a concatenation wider than {d} bits", .{fold.max_width});
     try w.writeAll(" }");
     assert(width >= 1);
-    return width;
+    return @intCast(width);
 }

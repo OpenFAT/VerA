@@ -122,6 +122,8 @@ pub fn params(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
     defer assert(self.syms.rows.len <= m.params.len);
     for (m.params) |*p| {
         var sym: Sym = .{ .width = 32, .signed = true, .kind = .param };
+        // §4.10: a second declaration of the name, as `vera --run` reports it.
+        if (self.syms.find(p.name) != null) return self.designError(p.main_tok, "duplicate digital variable");
         const real_default = self.file.exprs.tag(p.default) == .real_literal;
         if (p.ty == .real or (real_default and p.ty == .unspecified and p.packed_range == null)) {
             _ = try self.syms.put(self.arena, p.name, sym);

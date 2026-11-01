@@ -97,6 +97,8 @@ const Folder = struct {
                 break :blk common(a, b);
             },
             .concat => blk: {
+                // `{}`: §5.1.14 gives it no width, and `vera --run` refuses it.
+                if (ex.args(e).len == 0) return null;
                 var w: u64 = 0;
                 for (ex.args(e)) |a| {
                     if (unsizedLiteral(f.file, a)) return null;
@@ -276,6 +278,8 @@ const Folder = struct {
 /// a construct this fold does not cover.
 pub fn fold(arena: Allocator, file: *const Ast.SourceFile, params: *const Params, e: ExprId, ctx: u32) Error!?Literal {
     assert(e != .none);
+    // A declared width past the limit is the source's, not a bug.
+    if (ctx > max_width) return error.TooWide;
     const f: Folder = .{ .arena = arena, .file = file, .params = params };
     const own = (try f.typeAt(e, 0)) orelse return null;
     const ty: Type = .{ .width = @max(own.width, ctx), .signed = own.signed };
@@ -290,6 +294,7 @@ pub fn fold(arena: Allocator, file: *const Ast.SourceFile, params: *const Params
 /// real, and for one outside 64 bits signed.
 pub fn assigned(arena: Allocator, file: *const Ast.SourceFile, params: *const Params, e: ExprId, ctx: u32) Error!?Literal {
     assert(e != .none);
+    if (ctx > max_width) return error.TooWide;
     const r = realOf(file, e) orelse return fold(arena, file, params, e, ctx);
     const n = @round(r);
     // -2^63 is an i64 and 2^63 is not; NaN and the infinities are neither.
