@@ -6,17 +6,17 @@
 //! Contents:
 //! - `pub const Mon = struct`
 //! - `pub fn Monitors(comptime Self: type) type`
-//! - `Monitors.monValue(s: *Self, j: usize) !f64`
-//! - `Monitors.monArgAt(s: *Self, j: usize, k: usize, t: ?f64) !?f64`
-//! - `Monitors.refreshTimers(s: *Self, t: f64) !bool`
+//! - `Monitors.monValue(s: *Self, j: usize) Self.Error!f64`
+//! - `Monitors.monArgAt(s: *Self, j: usize, k: usize, t: ?f64) Self.Error!?f64`
+//! - `Monitors.refreshTimers(s: *Self, t: f64) Self.Error!bool`
 //! - `Monitors.AbsdeltaArgs = struct`
-//! - `Monitors.absdeltaArgs(s: *Self, j: usize, t: ?f64) !AbsdeltaArgs`
-//! - `Monitors.refreshAbsdelta(s: *Self, t: f64) !bool`
-//! - `Monitors.observeAbsdelta(s: *Self, j: usize) !void`
+//! - `Monitors.absdeltaArgs(s: *Self, j: usize, t: ?f64) Self.Error!AbsdeltaArgs`
+//! - `Monitors.refreshAbsdelta(s: *Self, t: f64) Self.Error!bool`
+//! - `Monitors.observeAbsdelta(s: *Self, j: usize) Self.Error!void`
 //! - `Monitors.AbsdeltaEvent = struct`
-//! - `Monitors.nextAbsdelta(s: *Self, j: usize, base: f64, cursor: f64) !?AbsdeltaEvent`
-//! - `Monitors.drainAbsdelta(s: *Self, base: f64, horizon: Tick) !void`
-//! - `Monitors.active(s: *Self, enable: u8, j: usize) !bool`
+//! - `Monitors.nextAbsdelta(s: *Self, j: usize, base: f64, cursor: f64) Self.Error!?AbsdeltaEvent`
+//! - `Monitors.drainAbsdelta(s: *Self, base: f64, horizon: Tick) Self.Error!void`
+//! - `Monitors.active(s: *Self, enable: u8, j: usize) Self.Error!bool`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -71,15 +71,17 @@ pub fn Monitors(comptime Self: type) type {
     return struct {
         /// Returns monitor `j`'s expression on the tentative solution.
         /// Asserts that `j` names a monitor.
-        pub fn monValue(s: *Self, j: usize) !f64 {
+        pub fn monValue(s: *Self, j: usize) Self.Error!f64 {
             assert(j < s.mons.len);
+            assert(!s.mon_eval); // `monArgAt` holds it for one evaluation.
             return (try s.monArgAt(j, 0, null)).?;
         }
 
         /// Returns argument `k` of monitor `j`, its probes read at `t` (null:
         /// the tentative solution); null for an absent argument.
-        pub fn monArgAt(s: *Self, j: usize, k: usize, t: ?f64) !?f64 {
+        pub fn monArgAt(s: *Self, j: usize, k: usize, t: ?f64) Self.Error!?f64 {
             assert(!s.mon_eval); // Monitor evaluations do not nest.
+            assert(j < s.dig.analog.monitors.items.len);
             s.mon_eval = true;
             defer s.mon_eval = false;
             s.mon_time = t;
@@ -92,7 +94,9 @@ pub fn Monitors(comptime Self: type) type {
         /// the pending event. A changed start/period first replaces that
         /// deadline from its latest absolute grid, which may cancel an old
         /// event or place a new one at this very time (§5.10.3.3).
-        pub fn refreshTimers(s: *Self, t: f64) !bool {
+        pub fn refreshTimers(s: *Self, t: f64) Self.Error!bool {
+            assert(t >= 0); // On `run`'s checked timeline.
+            assert(s.mons.len == s.dig.analog.monitors.items.len);
             var posted = false;
             for (s.mons, 0..) |*m, j| if (m.kind == .timer) {
                 const tm = &m.kind.timer;
@@ -115,7 +119,7 @@ pub fn Monitors(comptime Self: type) type {
                 if (tm.consumed == t) continue;
                 tm.consumed = t;
                 if (enable == 0) continue;
-                try s.dig.deliverA2d(j, @intFromFloat(@round(t / s.opts.tick)));
+                try s.dig.deliverA2d(j, s.tickNear(t));
                 posted = true;
             };
             return posted;
@@ -126,8 +130,9 @@ pub fn Monitors(comptime Self: type) type {
 
         /// Returns monitor `j`'s absdelta arguments; E0517 on a negative
         /// tolerance or a non-integral enable (they are design values).
-        pub fn absdeltaArgs(s: *Self, j: usize, t: ?f64) !AbsdeltaArgs {
+        pub fn absdeltaArgs(s: *Self, j: usize, t: ?f64) Self.Error!AbsdeltaArgs {
             assert(s.mons[j].kind == .absdelta);
+            assert(s.dig.analog.monitors.items[j].kind == .absdelta);
             const delta = (try s.monArgAt(j, 1, t)).?;
             const ttol = (try s.monArgAt(j, 2, t)) orelse 0;
             const etol = (try s.monArgAt(j, 3, t)) orelse 0;
@@ -147,7 +152,9 @@ pub fn Monitors(comptime Self: type) type {
 
         /// Initialization and 0 -> nonzero enable are events even when expr
         /// has not moved. Disabled observations never advance the event baseline.
-        pub fn refreshAbsdelta(s: *Self, t: f64) !bool {
+        pub fn refreshAbsdelta(s: *Self, t: f64) Self.Error!bool {
+            assert(t >= 0); // On `run`'s checked timeline.
+            assert(s.mons.len == s.dig.analog.monitors.items.len);
             var posted = false;
             for (s.mons, 0..) |*m, j| if (m.kind == .absdelta) {
                 const ad = &m.kind.absdelta;
@@ -161,7 +168,7 @@ pub fn Monitors(comptime Self: type) type {
                 ad.last_time = t;
                 ad.direction = 0;
                 ad.extreme = ad.last;
-                try s.dig.deliverA2d(j, @intFromFloat(@round(t / s.opts.tick)));
+                try s.dig.deliverA2d(j, s.tickNear(t));
                 posted = true;
             };
             return posted;
@@ -169,7 +176,9 @@ pub fn Monitors(comptime Self: type) type {
 
         /// Record only observed changes here. A numeric control changing while
         /// expr is constant must not itself create an event (§5.10.3.4).
-        pub fn observeAbsdelta(s: *Self, j: usize) !void {
+        pub fn observeAbsdelta(s: *Self, j: usize) Self.Error!void {
+            assert(j < s.mons.len);
+            assert(s.mons[j].kind == .absdelta);
             const m = &s.mons[j];
             const ad = &m.kind.absdelta;
             ad.observed_event = false;
@@ -203,8 +212,9 @@ pub fn Monitors(comptime Self: type) type {
 
         /// Returns monitor `j`'s next event in `[cursor, acc]` of the step from
         /// `base`, or null. Asserts that `cursor >= base`.
-        pub fn nextAbsdelta(s: *Self, j: usize, base: f64, cursor: f64) !?AbsdeltaEvent {
+        pub fn nextAbsdelta(s: *Self, j: usize, base: f64, cursor: f64) Self.Error!?AbsdeltaEvent {
             assert(cursor >= base);
+            assert(s.mons[j].kind == .absdelta);
             const m = &s.mons[j];
             const ad = &m.kind.absdelta;
             if (!ad.enabled) return null;
@@ -225,6 +235,7 @@ pub fn Monitors(comptime Self: type) type {
             // solver breakpoint is requested for either interpolated time.
             const t = @max(@max(base + frac * (end - base), ad.last_time + args.time_tol), cursor);
             if (t > end) return observed;
+            assert(t >= cursor); // A candidate never lies behind the cursor.
             const value = m.v0 + (v1 - m.v0) * ((t - base) / (end - base));
             return .{ .monitor = j, .t = t, .value = value, .observed = t == end and ad.observed_event };
         }
@@ -232,7 +243,13 @@ pub fn Monitors(comptime Self: type) type {
         /// Consume one candidate at a time, interleaved with existing digital
         /// work. A monitor body can disable itself or change its controls;
         /// pre-queuing the rest of the ramp would execute stale events.
-        pub fn drainAbsdelta(s: *Self, base: f64, horizon: Tick) !void {
+        pub fn drainAbsdelta(s: *Self, base: f64, horizon: Tick) Self.Error!void {
+            assert(s.acc != null);
+            assert(base <= s.acc.?);
+            // ponytail: no count bounds the loop. Each pass runs a strictly
+            // later queued tick or moves `cursor` to a candidate at least
+            // `time_tol` (>= one tick) past the last event; a tiny `delta` on a
+            // long ramp is that many events, as a long digital clock is.
             var cursor = base;
             while (true) {
                 var next: ?AbsdeltaEvent = null;
@@ -241,7 +258,7 @@ pub fn Monitors(comptime Self: type) type {
                         if (next == null or candidate.t < next.?.t) next = candidate;
                     }
                 };
-                const event_tick: ?Tick = if (next) |e| @intFromFloat(@round(e.t / s.opts.tick)) else null;
+                const event_tick: ?Tick = if (next) |e| s.tickNear(e.t) else null;
                 if (s.dig.scheduler.peekTime()) |queued| {
                     if (queued <= horizon and (event_tick == null or queued < event_tick.?)) {
                         try s.runDigital(queued);
@@ -265,7 +282,9 @@ pub fn Monitors(comptime Self: type) type {
         /// §5.10.3.1: "If enable argument is specified and it is zero, then
         /// cross() is inactive, meaning that it does not generate an event at
         /// threshold crossings and does not act to control the timestep."
-        pub fn active(s: *Self, enable: u8, j: usize) !bool {
+        pub fn active(s: *Self, enable: u8, j: usize) Self.Error!bool {
+            assert(s.mons[j].kind == .crossing);
+            assert(enable == 3 or enable == 4); // `run`: above's argument 3, cross's 4.
             return ((try s.monArgAt(j, enable, null)) orelse 1) != 0;
         }
     };

@@ -83,11 +83,16 @@ pub fn failWith(self: *Run, code: diag.Code, tok: u32, comptime fmt: []const u8,
     return error.DigitalFailed;
 }
 
-/// A walk ran out of the stack `deep.runGuarded` reserved, at token `tok`.
+/// A walk ran out of the stack `deep.runGuarded` reserved, at token `tok`:
+/// E0241 while the design is elaborated (its source nests deeper than
+/// memory allows, as the parser reports it), E1100 once it runs (the
+/// design's own recursion, a run-time failure). The message names the
+/// reservation, the limit that was reached.
 pub fn deepFail(self: *Run, tok: u32) Error {
     assert(tok < self.starts.len);
     assert(deep.exhausted()); // Only a stack near its limit fails this way.
-    return self.fail(tok, deep.message, .{deep.mib()});
+    const code: diag.Code = if (self.diag_stage == .run) .E1100 else .E0241;
+    return self.failWith(code, tok, deep.message, .{deep.mib()});
 }
 
 /// `fail` at expression `e`'s main token, with a fixed message.

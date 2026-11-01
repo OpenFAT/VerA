@@ -149,11 +149,14 @@ pub fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
 }
 
 /// Whether top-level module `m` declares a parameter `--param` may set,
-/// `name`: one that is not a localparam.
+/// `name`: one that is not a localparam. `name` is argv's and may be empty
+/// (`--param =5`), which no parameter is called.
 pub fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool {
-    assert(name.len != 0);
     assert(m.name != .none);
-    for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) return true;
+    for (m.params) |p| if (!p.is_local and std.mem.eql(u8, file.str(p.name), name)) {
+        assert(name.len != 0); // A declared name is never empty.
+        return true;
+    };
     return false;
 }
 

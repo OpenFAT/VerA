@@ -295,9 +295,13 @@ pub fn instantiate(r: *Run, e: *Elab, scope: u32, inst: *const Ast.Instance, dep
     const msb = try r.declaredBound(range.msb, inst.main_tok);
     const lsb = try r.declaredBound(range.lsb, inst.main_tok);
     assert(depth < max_depth);
-    var k = @min(msb, lsb);
-    while (k <= @max(msb, lsb)) : (k += 1) try instantiateOne(r, e, scope, inst, depth, k);
-    assert(k == @max(msb, lsb) + 1);
+    // Counted in i128: a bound at maxInt(i64) has no successor in i64.
+    const lo: i128 = @min(msb, lsb);
+    const count: i128 = @as(i128, @max(msb, lsb)) - lo + 1;
+    var k: i128 = 0;
+    while (k < count) : (k += 1) try instantiateOne(r, e, scope, inst, depth, @intCast(lo + k));
+    assert(count >= 1);
+    assert(k == count);
 }
 
 /// The next scope id. The caller appends its `scope_info` row, which must be

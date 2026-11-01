@@ -53,6 +53,7 @@ const Int = @import("kernels").Integer;
 const compile = @import("compile.zig");
 const driver = @import("driver.zig");
 const Error = @import("root.zig").Error;
+const deep = @import("base").deep_stack;
 const Run = @import("root.zig").Run;
 const expectRun = @import("root.zig").expectRun;
 const Type = compile.Type;
@@ -243,6 +244,9 @@ pub fn convertValue(a: std.mem.Allocator, v: Int.Literal, from_real: bool, targe
 pub fn evalContext(self: *Run, a: std.mem.Allocator, e: Ast.ExprId, ty: Type) Error!Int.Literal {
     assert(e != .none);
     assert(ty.real or ty.width != 0);
+    // One frame per operand level: a host's thread (a contract device's,
+    // a VPI application's) has no reservation of its own.
+    if (deep.exhausted()) return self.deepFail(self.file.exprs.mainTok(e));
     const ex = &self.file.exprs;
     // §4.8: a real context is a double; a real operand in an integral
     // context is its §4.8.2 rounded integer. A real context comes first: an

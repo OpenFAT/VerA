@@ -438,6 +438,8 @@ pub fn declareEvents(r: *Run, events: []const Ast.EventDecl) Error!void {
 pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
     assert(scope < r.hier.scopes.items.len);
     if (s == .none) return;
+    // One frame per statement level, as deep as the source nests.
+    if (deep.exhausted()) return r.deepFail(r.file.stmtTok(s));
     const W = struct {
         r: *Run,
         scope: u32,
@@ -580,4 +582,31 @@ fn declares(file: *const Ast.SourceFile, s: Ast.StmtId) bool {
     };
     (W{ .f = file }).stmt(s) catch return true;
     return false;
+}
+
+test "blockScopes refuses a statement nest past its thread's stack with E0241, never a crash" {
+    // Oracle: deep_stack's contract: a walk on a thread `runGuarded` did not
+    // start (this test's; a host's) is given 4 MiB and refused by name past
+    // it, never a segfault; while a design is elaborated that refusal is
+    // E0241, "nested deeper than memory allows". `elaborate` walks the nest
+    // on its own reservation; here the same walk runs on the caller's stack.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const n = 100_000;
+    var src: std.ArrayList(u8) = .empty;
+    try src.appendSlice(a, "module m; initial ");
+    for (0..n) |_| try src.appendSlice(a, "begin ");
+    try src.appendSlice(a, "$display(\"ok\");");
+    for (0..n) |_| try src.appendSlice(a, " end");
+    try src.appendSlice(a, " endmodule");
+    var bag = diag.Bag.init(a);
+    var out = std.Io.Writer.Allocating.init(a);
+    var r = try root.elaborate(a, src.items, .{}, &bag, &out.writer);
+    r.diag_stage = .lower; // As in pass one.
+    try std.testing.expectError(error.DigitalFailed, blockScopes(&r, 0, r.file.modules[0].discrete[0].body));
+    var messages = std.Io.Writer.Allocating.init(a);
+    try diag.render(&bag, &messages.writer, .{});
+    try std.testing.expect(std.mem.find(u8, messages.written(), "E0241") != null);
+    try std.testing.expect(std.mem.find(u8, messages.written(), "exhausts the") != null);
 }

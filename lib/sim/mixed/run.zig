@@ -12,6 +12,7 @@
 //! - `pub const max_cuts`
 //! - `pub const default_time_tol`
 //! - `pub const default_expr_tol`
+//! - `pub const Error`
 //! - `Fake.setInputs(f: *Fake, dig: *digital.Run, fired: u64) !void`
 //! - `Fake.snapshot(f: *Fake, dig: *digital.Run) !void`
 //! - `Fake.latch(f: *Fake) !void`
@@ -19,7 +20,8 @@
 //! - `Fake.probe(f: *Fake, t: ?f64, _: []const u8, _: ?[]const u8) !f64`
 //! - `Fake.finish(f: *Fake) !void`
 //! - `Fake.breakpoint(f: *Fake, t: f64) ?f64`
-//! - `pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void`
+//! - `pub fn RunError(comptime A: type) type`
+//! - `pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) RunError(A)!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -61,6 +63,13 @@ pub const default_time_tol = 1e-12;
 
 /// §5.10.3.4 lets the tool choose an absent/zero expression tolerance.
 pub const default_expr_tol = 1e-12;
+
+/// What `run` refuses of its own, beside the digital engine's errors:
+/// `BadTimeline`, `Options.times` empty, holding a negative or non-finite
+/// time, running back, or ending past 2^64 ticks (a digital time is a u64
+/// tick count); `BackupExhausted`, a step the host rejected `max_rejects`
+/// times over.
+pub const Error = digital.Error || error{ BadTimeline, BackupExhausted };
 
 /// Test support: an analog side that reads one digital variable and
 /// records every solve and every finish.
@@ -116,6 +125,17 @@ const Fake = struct {
     }
 };
 
+/// `run`'s error set over analog side `A`: `Error` and every error `A`'s
+/// methods return (`probe`'s are reported through the digital engine).
+pub fn RunError(comptime A: type) type {
+    var E: type = Error;
+    for (.{ "setInputs", "snapshot", "latch", "solveAt", "finish", "rejected" }) |name| if (@hasDecl(A, name)) {
+        const R = @typeInfo(@TypeOf(@field(A, name))).@"fn".return_type.?;
+        if (@typeInfo(R) == .error_union) E = E || @typeInfo(R).error_union.error_set;
+    };
+    return E;
+}
+
 /// Runs one analysis over `opts.times`.
 ///
 /// Digital to analog: the solve at `t` sees every tick <= `t` (§7.3.6.5); a
@@ -162,8 +182,12 @@ const Fake = struct {
 ///                                 the tentative one (§7.3.6.3)
 /// and installs its own `digital.Run.watchAnalog` on every slot it reads,
 /// which is what makes a change of one of them an implicit D2A.
-pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void {
-    std.debug.assert(opts.times.len != 0);
+///
+/// `opts.times` is the caller's (a deck's analysis line, a testbench's
+/// `//! time`s) and is checked here (`BadTimeline`). Asserts that
+/// `opts.tick` is positive.
+pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) RunError(A)!void {
+    try checkTimeline(opts);
     var s: State(A) = .{ .a = a, .dig = dig, .opts = opts, .final = opts.times[opts.times.len - 1] };
     // §7.3.5 / §7.3.6.3: a monitored analog event or a probe needs the analog
     // solution at every digital event time, so the analog steps to each one
@@ -274,6 +298,20 @@ pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) !void {
 }
 
 // ---- private ----
+
+/// `BadTimeline` unless `run` can walk `opts.times`: at least one time, the
+/// first at or after 0, none before the one ahead of it, and the last below
+/// 2^64 ticks. Each comparison is false on a NaN, so a NaN fails too.
+fn checkTimeline(opts: Options) error{BadTimeline}!void {
+    assert(opts.tick > 0); // 10^`finest` s, a §19.8 precision.
+    assert(std.math.isFinite(opts.tick));
+    const times = opts.times;
+    if (times.len == 0) return error.BadTimeline;
+    if (!(times[0] >= 0)) return error.BadTimeline;
+    for (times[1..], times[0 .. times.len - 1]) |t, before| if (!(t >= before)) return error.BadTimeline;
+    if (!(times[times.len - 1] / opts.tick < 0x1p64)) return error.BadTimeline;
+    assert(times[0] <= times[times.len - 1]);
+}
 
 fn drive(arena: std.mem.Allocator, source: []const u8, name: []const u8, times: []const f64) !Fake {
     var bag = diag.Bag.init(arena);

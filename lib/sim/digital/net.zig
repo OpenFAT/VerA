@@ -623,11 +623,16 @@ pub fn wordMask(width: u32, w: usize) u64 {
 // ---- private ----
 
 /// The terminal of switch `tr` across from `u`, or null when `u` is neither.
+/// A switch whose two terminals are one net bit (`tran (a, a)`, or two
+/// ports bound to one net) is legal source and joins `u` to itself.
 fn across(tr: anytype, u: Node) ?Node {
-    assert(!(tr.a == tr.b and tr.a_bit == tr.b_bit)); // A switch joins two terminals.
-    if (tr.a == u.net and tr.a_bit == u.bit) return .{ .net = tr.b, .bit = tr.b_bit };
-    if (tr.b == u.net and tr.b_bit == u.bit) return .{ .net = tr.a, .bit = tr.a_bit };
-    return null;
+    const at_a = tr.a == u.net and tr.a_bit == u.bit;
+    const at_b = tr.b == u.net and tr.b_bit == u.bit;
+    if (!at_a and !at_b) return null;
+    const other: Node = if (at_a) .{ .net = tr.b, .bit = tr.b_bit } else .{ .net = tr.a, .bit = tr.a_bit };
+    if (at_a and at_b) assert(other.net == u.net);
+    if (at_a and at_b) assert(other.bit == u.bit);
+    return other;
 }
 
 test "continuous vector delay audit_assignment_vector_delay" {
