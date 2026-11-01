@@ -273,6 +273,19 @@ pub fn build(b: *Build) void {
         test_step.dependOn(&profile.step);
     }
 
+    // The degenerate-argv table: every documented flag x "", "-", "=", a
+    // 128 KiB value, missing, repeated, through this build's vera.
+    const argv_exe = b.addExecutable(.{ .name = "vera-argv", .root_module = m.make("tests/argv.zig", &.{}) });
+    all_step.dependOn(&argv_exe.step);
+    check.dependOn(&b.addExecutable(.{ .name = "check", .root_module = argv_exe.root_module, .use_llvm = false }).step);
+    const argv_run = b.addRunArtifact(argv_exe);
+    argv_run.addArtifactArg2(exe, .{ .make_absolute = true }); // the rows run in the scratch dir
+    _ = argv_run.addOutputDirectoryArg("argv");
+    argv_run.expectExitCode(0);
+    test_step.dependOn(&argv_run.step);
+    test_step.dependOn(&testRun(b, "argv", m.make("tests/argv.zig", &.{}), runner, results_dir).step);
+    b.step("test-argv", "Run the degenerate-argv table through the vera CLI only").dependOn(&argv_run.step);
+
     const canary = b.addRunArtifact(suite_exe);
     canary.addArtifactArg2(exe, .{});
     canary.addArg("canary");

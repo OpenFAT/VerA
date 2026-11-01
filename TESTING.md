@@ -17,6 +17,7 @@ names the clause behind it.
 |---|---|---|---|
 | Front end (`lib/frontend`, `src/elab`) | crash or hang on any input | no signal, a diagnostic from the declared set | `tests/fuzz.zig` (`zig build fuzz --fuzz`) |
 | | wrong accept or refusal | the language reference, clause by clause | `//! lrm` fixtures (`suite -- ams`, `suite -- devices`), the VAMS Conformance Suite (`zig build conformance`) |
+| Driver (`src/main.zig`, `src/cli`) | an abort or panic on a degenerate command line (an assertion on argv: `vera ""`) | the exit contract in `src/main.zig`: exit 0, 1 or 2, a nonzero exit with its reason on stderr, never a signal; every flag `vera --help` documents x "", "-", "=", a 128 KiB value (Linux's per-argument ceiling), missing, repeated, on no input, an empty and a real `.va`, a `.v`, and again after `--emit-so` | `tests/argv.zig` (`test-argv`, in `test`) |
 | Analog pipeline (`src/ir`, `src/analog`, `src/prove`) | wrong derivative | central difference of the residual | `suite -- --certify` (L4a, nightly) |
 | | wrong number, no crash | hand-derived values; ngspice | `//!` checks in fixtures; `tools/external_analog.py` (`tests/osdi` in ngspice) |
 | | a check too loose to see an error | the same check with its expected value moved 0.1% must fail | `suite -- --perturb` (L2b) |

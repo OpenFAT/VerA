@@ -44,6 +44,7 @@ directories hold VerA's own test inputs, and `conformance/` is the suite.
 | `fuzz.zig` | In-process fuzz targets: `zig build fuzz --fuzz` coverage-guided, replayed seeded under `test` |
 | `rng_reference.zig`, `rng_reference.c` | The RNG oracle (`rng_kernels` against the IEEE 1364 §17.9.3 C listing) and, as an executable, its domain refusals, one case per run |
 | `printf_reference.zig` | The formatting oracle: `zCReal` against glibc's `snprintf` |
+| `argv.zig` | The degenerate-argv table (`vera-argv`, `test-argv`, in `test`): every flag `--help` documents x degenerate values through the `vera` process; a signal, a panic or a silent nonzero exit is BAD |
 | `codegen_probe.zig` | Hand-built vectorisation probes (`zig build-obj … -femit-asm`); nothing in the build runs it |
 | `host.py` | Host observations: `diagnostic_observations` and `paired_compiler_observations` drive the build's `vera`; the profiles bind a real host through an adapter (below); `selftest` |
 | `host/` | The hosts that drive a device: `*_host.zig`, the `*_gpu.zig` twin, `*_dyn.zig`, `vdev_*.zig`, `vpi_host.zig` (in `test`) |
