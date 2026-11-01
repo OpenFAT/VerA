@@ -495,6 +495,88 @@ pub const Code = enum(u16) {
     W1162,
     /// IEEE 1364-2005 §15: a timing check reported a violation at run time.
     W1199,
+    // --------------------------------------------------------------- class 12
+    // `--emit-rtlil` refusals: a construct outside the synthesizable subset
+    // (src/codegen/digital/rtlil*.zig), one code per refusal.
+    E1200,
+    E1201,
+    E1202,
+    E1203,
+    E1204,
+    E1205,
+    E1206,
+    E1207,
+    E1208,
+    E1209,
+    E1210,
+    E1211,
+    E1212,
+    E1213,
+    E1214,
+    E1215,
+    E1216,
+    E1217,
+    E1218,
+    E1219,
+    E1220,
+    E1221,
+    E1222,
+    E1223,
+    E1224,
+    E1225,
+    E1226,
+    E1227,
+    E1228,
+    E1229,
+    E1230,
+    E1231,
+    E1232,
+    E1233,
+    E1234,
+    E1235,
+    E1236,
+    E1237,
+    E1238,
+    E1239,
+    E1240,
+    E1241,
+    E1242,
+    E1243,
+    E1244,
+    E1245,
+    E1246,
+    E1247,
+    E1248,
+    E1249,
+    E1250,
+    E1251,
+    E1252,
+    E1253,
+    E1254,
+    E1255,
+    E1256,
+    E1257,
+    E1258,
+    E1259,
+    E1260,
+    E1261,
+    E1262,
+    E1263,
+    E1264,
+    E1265,
+    E1266,
+    E1267,
+    E1268,
+    E1269,
+    E1270,
+    E1271,
+    E1272,
+    E1273,
+    E1274,
+    E1275,
+    E1276,
+    E1277,
+    E1278,
     W1050,
     W0950,
     W0951,
@@ -607,7 +689,7 @@ const retired_e0304_e0305 = retiredInfo(
 // binary. What does: one 48 B row per code of `.rodata` plus the text, and
 // nothing touched until a diagnostic renders. Rows of u32 offsets into one
 // blob would save ~14 KB of the binary and no RSS; not worth a second encoding.
-const table: std.enums.EnumArray(Code, Info) = .init(.{
+const rows: std.enums.EnumFieldStruct(Code, Info, null) = .{
     // ------------------------------------------------------------ class 1
     .E0101 = .{
         .title = "unterminated `ifdef",
@@ -7901,7 +7983,818 @@ const table: std.enums.EnumArray(Code, Info) = .init(.{
         \\td_max)) or take fewer, larger steps across the delay.
         ,
     },
-});
+    // ----------------------------------------------------------- class 12
+    .E1200 = .{
+        .title = "an analog or mixed-signal description --emit-rtlil does not lower",
+        .lrm = "",
+        .explain =
+        \\The source declares a discipline, nature, paramset or connectrules: it
+        \\is Verilog-AMS. RTLIL is a digital netlist with no analog side.
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL: it is digital only.
+        ,
+    },
+    .E1201 = .{
+        .title = "a user-defined primitive --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 8",
+        .explain =
+        \\A UDP's table has no RTLIL cell; Yosys reads UDPs only through its own
+        \\Verilog front end. `vera --run` simulates the design; --emit-rtlil
+        \\lowers only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL,
+        \\and refuses the rest by name rather than emit RTLIL whose circuit
+        \\differs.
+        ,
+    },
+    .E1202 = .{
+        .title = "an analog block --emit-rtlil does not lower",
+        .lrm = "",
+        .explain =
+        \\An `analog` block is continuous-time behaviour, which RTLIL cannot
+        \\express. --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL: it is digital only.
+        ,
+    },
+    .E1203 = .{
+        .title = "a connect module --emit-rtlil does not lower",
+        .lrm = "7.8",
+        .explain =
+        \\A connect module bridges a digital and an analog net; RTLIL has no
+        \\analog net. --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL: it is digital only.
+        ,
+    },
+    .E1204 = .{
+        .title = "a generate construct --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 12.4",
+        .explain =
+        \\Generate loops and conditionals are not elaborated by --emit-rtlil.
+        \\`vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1205 = .{
+        .title = "a defparam --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 12.2.1",
+        .explain =
+        \\A defparam overrides a parameter by hierarchical name; parameters fold
+        \\at their defaults here. Pass the value as an instance override
+        \\(`#(...)`). `vera --run` simulates the design; --emit-rtlil lowers only
+        \\the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses
+        \\the rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1206 = .{
+        .title = "a task --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 10.2",
+        .explain =
+        \\Tasks are not inlined into the processes that enable them. `vera --run`
+        \\simulates the design; --emit-rtlil lowers only the synthesizable subset
+        \\of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name rather
+        \\than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1207 = .{
+        .title = "a function --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 10.4",
+        .explain =
+        \\Functions are not inlined into the expressions that call them. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1208 = .{
+        .title = "a named event --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 9.7.3",
+        .explain =
+        \\A named event is a simulation synchronization with no hardware. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1209 = .{
+        .title = "a pullup or pulldown --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 7.8",
+        .explain =
+        \\A pull source drives a net at a strength; RTLIL nets carry no strength.
+        \\`vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1210 = .{
+        .title = "a switch primitive --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 7.5",
+        .explain =
+        \\MOS, CMOS and bidirectional pass switches are switch-level models with
+        \\no RTLIL cell. `vera --run` simulates the design; --emit-rtlil lowers
+        \\only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and
+        \\refuses the rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1211 = .{
+        .title = "an analog branch --emit-rtlil does not lower",
+        .lrm = "3.12",
+        .explain =
+        \\A branch joins two analog nodes; RTLIL has no analog node. --emit-rtlil
+        \\lowers only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL:
+        \\it is digital only.
+        ,
+    },
+    .E1212 = .{
+        .title = "a port expression --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 12.3.1",
+        .explain =
+        \\A header port written `.name(expr)` or as a concatenation is not a plain
+        \\port name, and an RTLIL wire port is one name. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1213 = .{
+        .title = "a header port that selects part of its net",
+        .lrm = "A.1.3",
+        .explain =
+        \\A.1.3's port_reference may select part of its net; that port is narrower
+        \\than the net, and an RTLIL port is a whole wire. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1214 = .{
+        .title = "a wreal port --emit-rtlil does not lower",
+        .lrm = "3.7",
+        .explain =
+        \\A wreal carries a real value; RTLIL wires are bits. --emit-rtlil lowers
+        \\only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL: it is
+        \\digital only.
+        ,
+    },
+    .E1215 = .{
+        .title = "a wreal net --emit-rtlil does not lower",
+        .lrm = "3.7",
+        .explain =
+        \\A wreal carries a real value; RTLIL wires are bits. --emit-rtlil lowers
+        \\only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL: it is
+        \\digital only.
+        ,
+    },
+    .E1216 = .{
+        .title = "a net array --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 4.9",
+        .explain =
+        \\A net with unpacked dimensions is not lowered to one RTLIL wire per
+        \\element. `vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1217 = .{
+        .title = "a memory --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 4.9.3",
+        .explain =
+        \\A reg array is not lowered to an RTLIL memory. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1218 = .{
+        .title = "a real variable --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 4.8",
+        .explain =
+        \\A real or realtime variable holds a floating-point value; RTLIL wires
+        \\are bits. `vera --run` simulates the design; --emit-rtlil lowers only
+        \\the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses
+        \\the rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1219 = .{
+        .title = "a string variable --emit-rtlil does not lower",
+        .lrm = "",
+        .explain =
+        \\A string variable has no RTLIL wire. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1220 = .{
+        .title = "a range --emit-rtlil cannot fold to a constant",
+        .lrm = "IEEE 1364-2005 4.3.1",
+        .explain =
+        \\A declared `[msb:lsb]` must fold to integers here, from literals and
+        \\parameters at their defaults; a function or a value outside 64 bits does
+        \\not. `vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1221 = .{
+        .title = "a range whose bounds do not fit RTLIL's 32-bit wire offset",
+        .lrm = "IEEE 1364-2005 4.3.1",
+        .explain =
+        \\RTLIL's wire offset is a C int: a bound outside -2^31 to 2^31 - 1 has no
+        \\spelling. `vera --run` simulates the design; --emit-rtlil lowers only
+        \\the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses
+        \\the rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1222 = .{
+        .title = "a range wider than RTLIL's 2^31 - 1 bits",
+        .lrm = "IEEE 1364-2005 4.3.1",
+        .explain =
+        \\RTLIL's wire width is a C int. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1223 = .{
+        .title = "a parameter default --emit-rtlil cannot fold to a constant",
+        .lrm = "IEEE 1364-2005 12.2",
+        .explain =
+        \\Parameters fold at their defaults, from literals and earlier parameters;
+        \\a function call or a system function other than `$clog2`, `$signed` and
+        \\`$unsigned` does not fold. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1224 = .{
+        .title = "a name not declared in its module",
+        .lrm = "IEEE 1364-2005 4.5",
+        .explain =
+        \\Every name an expression or a target reads must be a port, net, variable
+        \\or parameter of the module: --emit-rtlil creates no implicit net. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1225 = .{
+        .title = "a real literal --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 3.5.2",
+        .explain =
+        \\A real constant has no RTLIL bit value outside an `initial` or parameter
+        \\value that converts it. `vera --run` simulates the design; --emit-rtlil
+        \\lowers only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL,
+        \\and refuses the rest by name rather than emit RTLIL whose circuit
+        \\differs.
+        ,
+    },
+    .E1226 = .{
+        .title = "a string literal --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 3.6",
+        .explain =
+        \\A string literal is not lowered to its bits in an expression. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1227 = .{
+        .title = "a hierarchical reference --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 12.5",
+        .explain =
+        \\A hierarchical name reads a signal of another module, which an RTLIL
+        \\module cannot see. `vera --run` simulates the design; --emit-rtlil
+        \\lowers only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL,
+        \\and refuses the rest by name rather than emit RTLIL whose circuit
+        \\differs.
+        ,
+    },
+    .E1228 = .{
+        .title = "a function call --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 10.4",
+        .explain =
+        \\Functions are not inlined. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1229 = .{
+        .title = "an expression no synthesizable design has here",
+        .lrm = "IEEE 1364-2005 5",
+        .explain =
+        \\The expression is an analog, event or range form where a digital value
+        \\is read. `vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1230 = .{
+        .title = "a system function --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 17",
+        .explain =
+        \\Only `$signed`, `$unsigned` (one argument) and `$clog2` of a constant
+        \\are lowered. `vera --run` simulates the design; --emit-rtlil lowers only
+        \\the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses
+        \\the rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1231 = .{
+        .title = "a `$clog2` of a non-constant",
+        .lrm = "IEEE 1364-2005 17.11.1",
+        .explain =
+        \\`$clog2` folds at its constant argument; there is no RTLIL cell for it.
+        \\`vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1232 = .{
+        .title = "a real parameter read in an expression",
+        .lrm = "IEEE 1364-2005 12.2",
+        .explain =
+        \\A real parameter has no bit value to read. `vera --run` simulates the
+        \\design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1233 = .{
+        .title = "a replication count --emit-rtlil cannot fold to a constant",
+        .lrm = "IEEE 1364-2005 5.1.14",
+        .explain =
+        \\5.1.14: the count of `{n{...}}` is a constant expression. `vera --run`
+        \\simulates the design; --emit-rtlil lowers only the synthesizable subset
+        \\of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name rather
+        \\than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1234 = .{
+        .title = "a replication count that is zero or negative",
+        .lrm = "IEEE 1364-2005 5.1.14",
+        .explain =
+        \\A replication of zero or fewer copies has no bits to lower. `vera --run`
+        \\simulates the design; --emit-rtlil lowers only the synthesizable subset
+        \\of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name rather
+        \\than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1235 = .{
+        .title = "a replication wider than --emit-rtlil's constant limit",
+        .lrm = "IEEE 1364-2005 5.1.14",
+        .explain =
+        \\The replication's width passes rtlil_fold.max_width (2^20 bits). `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1236 = .{
+        .title = "a part-select bound --emit-rtlil cannot fold to a constant",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\5.2.1: the bounds of `[msb:lsb]` are constant expressions. `vera --run`
+        \\simulates the design; --emit-rtlil lowers only the synthesizable subset
+        \\of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name rather
+        \\than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1237 = .{
+        .title = "an indexed part-select width --emit-rtlil cannot fold to a constant",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\5.2.1: the width of `[base +: width]` is a constant expression. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1238 = .{
+        .title = "an indexed part-select width that is zero or negative",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\5.2.1: the width of `[base +: width]` is a positive constant. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1239 = .{
+        .title = "an indexed part-select with a variable base",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\Only a constant base is lowered, as a slice. `vera --run` simulates the
+        \\design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1240 = .{
+        .title = "a select of something that is not a declared name",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\Only a port, net or variable is selected from. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1241 = .{
+        .title = "a select of a parameter",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\A parameter's bits are not selected. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1242 = .{
+        .title = "a variable bit select of an ascending vector",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\A variable index is lowered as a `$shiftx` of a descending (`[hi:lo]`)
+        \\vector only. `vera --run` simulates the design; --emit-rtlil lowers only
+        \\the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses
+        \\the rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1243 = .{
+        .title = "a constant select outside the declared range",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\5.2.1 reads such a select as x; --emit-rtlil refuses it rather than emit
+        \\the x. `vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1244 = .{
+        .title = "an assignment target that is not a declared name",
+        .lrm = "A.8.5",
+        .explain =
+        \\The target's base is not a name. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1245 = .{
+        .title = "an assignment target that is not a name, a select or a concatenation",
+        .lrm = "A.8.5",
+        .explain =
+        \\A.8.5 admits nothing else. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1246 = .{
+        .title = "an assignment to a parameter",
+        .lrm = "IEEE 1364-2005 4.10",
+        .explain =
+        \\A parameter is a constant. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1247 = .{
+        .title = "a procedural assignment to a net",
+        .lrm = "IEEE 1364-2005 9.2",
+        .explain =
+        \\9.2: a procedural assignment's target is a variable. `vera --run`
+        \\simulates the design; --emit-rtlil lowers only the synthesizable subset
+        \\of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name rather
+        \\than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1248 = .{
+        .title = "a select of a select as an assignment target",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\Only one select of a declared name is a target. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1249 = .{
+        .title = "an indexed part-select as an assignment target",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\Write the target as a constant part-select `[msb:lsb]`. `vera --run`
+        \\simulates the design; --emit-rtlil lowers only the synthesizable subset
+        \\of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name rather
+        \\than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1250 = .{
+        .title = "a variable bit select as an assignment target",
+        .lrm = "IEEE 1364-2005 5.2.1",
+        .explain =
+        \\Only a constant bit select is a target: a variable one is a write
+        \\decoder --emit-rtlil does not build. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1251 = .{
+        .title = "an initial block that is not constant assignments",
+        .lrm = "IEEE 1364-2005 9.9.1",
+        .explain =
+        \\An `initial` block lowers only as `init` attributes: `reg = constant;`
+        \\statements, unnamed `begin`/`end` around them. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1252 = .{
+        .title = "an initial assignment with a delay or event control",
+        .lrm = "IEEE 1364-2005 9.9.1",
+        .explain =
+        \\A timed initial assignment is a waveform, not an initial value. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1253 = .{
+        .title = "an initial assignment to a select",
+        .lrm = "IEEE 1364-2005 9.9.1",
+        .explain =
+        \\The `init` attribute is the whole reg's value. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1254 = .{
+        .title = "an initial value --emit-rtlil cannot fold to a constant",
+        .lrm = "IEEE 1364-2005 9.9.1",
+        .explain =
+        \\The `init` attribute is a constant. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1255 = .{
+        .title = "a block with local declarations",
+        .lrm = "IEEE 1364-2005 9.8",
+        .explain =
+        \\A named block's own variables are not lowered. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1256 = .{
+        .title = "a fork-join block --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 9.8.2",
+        .explain =
+        \\Parallel blocks are a simulation construct. `vera --run` simulates the
+        \\design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1257 = .{
+        .title = "an always block without an event control",
+        .lrm = "IEEE 1364-2005 9.9.2",
+        .explain =
+        \\An `always` block lowers as a process whose body starts with `@(...)`.
+        \\`vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1258 = .{
+        .title = "an always block that waits on a delay or a level",
+        .lrm = "IEEE 1364-2005 9.7",
+        .explain =
+        \\A `#delay` or `wait` control has no RTLIL sync rule. `vera --run`
+        \\simulates the design; --emit-rtlil lowers only the synthesizable subset
+        \\of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name rather
+        \\than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1259 = .{
+        .title = "an event control mixing edges and levels",
+        .lrm = "IEEE 1364-2005 9.7.2",
+        .explain =
+        \\A process is either edge-triggered (`sync posedge`) or combinational
+        \\(`sync always`). `vera --run` simulates the design; --emit-rtlil lowers
+        \\only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and
+        \\refuses the rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1260 = .{
+        .title = "an intra-assignment delay or event control",
+        .lrm = "IEEE 1364-2005 9.7.7",
+        .explain =
+        \\Synthesis has no delay. `vera --run` simulates the design; --emit-rtlil
+        \\lowers only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL,
+        \\and refuses the rest by name rather than emit RTLIL whose circuit
+        \\differs.
+        ,
+    },
+    .E1261 = .{
+        .title = "a procedural continuous assignment",
+        .lrm = "IEEE 1364-2005 9.3",
+        .explain =
+        \\`assign`, `deassign`, `force` and `release` in a process are a
+        \\simulation construct. `vera --run` simulates the design; --emit-rtlil
+        \\lowers only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL,
+        \\and refuses the rest by name rather than emit RTLIL whose circuit
+        \\differs.
+        ,
+    },
+    .E1262 = .{
+        .title = "a casex or casez --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 9.5.1",
+        .explain =
+        \\Only `case` is lowered to an RTLIL switch. `vera --run` simulates the
+        \\design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1263 = .{
+        .title = "a loop --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 9.6",
+        .explain =
+        \\`for`, `while` and `repeat` are not unrolled. `vera --run` simulates the
+        \\design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1264 = .{
+        .title = "a nested event or delay control",
+        .lrm = "IEEE 1364-2005 9.7",
+        .explain =
+        \\Only the event control at the head of an `always` block is lowered.
+        \\`vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1265 = .{
+        .title = "an event trigger --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 9.7.3",
+        .explain =
+        \\A `->` trigger is a simulation synchronization. `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1266 = .{
+        .title = "a disable statement --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 10.3",
+        .explain =
+        \\Disabling a block is control flow RTLIL's switch rules cannot express.
+        \\`vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1267 = .{
+        .title = "a jump statement --emit-rtlil does not lower",
+        .lrm = "A.6.5",
+        .explain =
+        \\`return` and `break` are control flow RTLIL's switch rules cannot
+        \\express. `vera --run` simulates the design; --emit-rtlil lowers only the
+        \\synthesizable subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the
+        \\rest by name rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1268 = .{
+        .title = "an analog contribution --emit-rtlil does not lower",
+        .lrm = "5.6",
+        .explain =
+        \\A contribution drives a branch; RTLIL has no analog branch. --emit-rtlil
+        \\lowers only the synthesizable subset of IEEE 1364-2005 to Yosys RTLIL:
+        \\it is digital only.
+        ,
+    },
+    .E1269 = .{
+        .title = "an array of gate instances --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 7.1.5",
+        .explain =
+        \\A gate with a range is not expanded to one cell per element. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1270 = .{
+        .title = "an array of module instances --emit-rtlil does not lower",
+        .lrm = "IEEE 1364-2005 12.1.2",
+        .explain =
+        \\An instance with a range is not expanded to one cell per element. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1271 = .{
+        .title = "an ordered parameter override of a module this source does not declare",
+        .lrm = "IEEE 1364-2005 12.2.2.1",
+        .explain =
+        \\An ordered override names its parameter by position, which needs the
+        \\module's declaration. Name the parameter (`#(.P(v))`). `vera --run`
+        \\simulates the design; --emit-rtlil lowers only the synthesizable subset
+        \\of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name rather
+        \\than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1272 = .{
+        .title = "more ordered parameter overrides than the module declares",
+        .lrm = "IEEE 1364-2005 12.2.2.1",
+        .explain =
+        \\Each ordered override takes the next parameter of the module. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1273 = .{
+        .title = "a parameter override --emit-rtlil cannot fold to an integer",
+        .lrm = "IEEE 1364-2005 12.2.2",
+        .explain =
+        \\An override is passed to Yosys as a cell parameter, an integer. `vera
+        \\--run` simulates the design; --emit-rtlil lowers only the synthesizable
+        \\subset of IEEE 1364-2005 to Yosys RTLIL, and refuses the rest by name
+        \\rather than emit RTLIL whose circuit differs.
+        ,
+    },
+    .E1274 = .{
+        .title = "an ordered port connection to a module this source does not declare",
+        .lrm = "IEEE 1364-2005 12.3.6",
+        .explain =
+        \\An ordered connection names its port by position, which needs the
+        \\module's declaration. Connect by name (`.p(x)`). `vera --run` simulates
+        \\the design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1275 = .{
+        .title = "a constant wider than --emit-rtlil's fold limit",
+        .lrm = "",
+        .explain =
+        \\A folded constant passes rtlil_fold.max_width (2^20 bits), wider than
+        \\any RTLIL wire a synthesis flow reads. `vera --run` simulates the
+        \\design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1276 = .{
+        .title = "a constant expression nested deeper than --emit-rtlil's fold limit",
+        .lrm = "",
+        .explain =
+        \\The constant folder recurses on the expression and stops at
+        \\rtlil_fold.max_depth (4096) operators. `vera --run` simulates the
+        \\design; --emit-rtlil lowers only the synthesizable subset of IEEE
+        \\1364-2005 to Yosys RTLIL, and refuses the rest by name rather than emit
+        \\RTLIL whose circuit differs.
+        ,
+    },
+    .E1277 = .{
+        .title = "nesting deeper than the stack --emit-rtlil reserved",
+        .lrm = "",
+        .explain =
+        \\The expression or statement nests deeper than the stack VerA reserved
+        \\for --emit-rtlil's walk (the largest the machine allows). `vera --run`
+        \\reports the same limit as E1100. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+    .E1278 = .{
+        .title = "a concatenation wider than --emit-rtlil's constant limit",
+        .lrm = "IEEE 1364-2005 5.1.14",
+        .explain =
+        \\The concatenation's width passes rtlil_fold.max_width (2^20 bits), as a
+        \\replication's may not either. `vera --run` simulates the design;
+        \\--emit-rtlil lowers only the synthesizable subset of IEEE 1364-2005 to
+        \\Yosys RTLIL, and refuses the rest by name rather than emit RTLIL whose
+        \\circuit differs.
+        ,
+    },
+};
+
+// A catalogue of more than 500 codes passes `EnumArray.init`'s default quota.
+const table: std.enums.EnumArray(Code, Info) = blk: {
+    @setEvalBranchQuota(4 * @typeInfo(Code).@"enum".field_names.len);
+    break :blk .init(rows);
+};
 
 /// Returns the documentation for `c` with one indexed load.
 pub fn info(c: Code) Info {
@@ -7919,6 +8812,7 @@ fn retiredInfo(explanation: []const u8) Info {
 }
 
 test "every code has info and a well-formed name" {
+    @setEvalBranchQuota(4000);
     const e = @typeInfo(Code).@"enum";
     inline for (e.field_names) |name| {
         const i = info(@field(Code, name));
