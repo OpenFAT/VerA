@@ -20,6 +20,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const DynLib = @import("dynlib").DynLib;
 const vera = @import("vera");
+const exe = @import("exe");
+const zigbuild = @import("zigbuild");
+const protect = @import("frontend").protect;
 const vpi = @import("vpi");
 const sim = @import("sim");
 const Io = std.Io;
@@ -130,11 +133,11 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
     const dir = std.fs.path.dirname(path) orelse ".";
     const up = try std.fs.path.join(gpa, &.{ dir, "..", "..", "include" });
     defer gpa.free(up);
-    var res = vera.compileSourceOpts(gpa, source, .lint, .{ .file_name = path, .include_dirs = &.{ dir, up } }) catch |e| {
+    var res = vera.analyze(gpa, source, .{ .file_name = path, .include_dirs = &.{ dir, up } }, null) catch |e| {
         std.debug.print("vpi_host: `{s}` did not compile: {t}\n", .{ path, e });
         return 1;
     };
-    defer res.deinit();
+    defer res.deinit(gpa);
     try vpi.session.open(gpa, &res);
     defer vpi.session.close();
 
@@ -187,11 +190,11 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
         if (second) |name| {
             const path2 = try std.fs.path.join(arena, &.{ dir, name });
             const source2 = try Io.Dir.cwd().readFileAlloc(io, path2, arena, .limited(16 * 1024 * 1024));
-            var res2 = vera.compileSourceOpts(gpa, source2, .lint, .{ .file_name = path2, .include_dirs = &.{ dir, up } }) catch |e| {
+            var res2 = vera.analyze(gpa, source2, .{ .file_name = path2, .include_dirs = &.{ dir, up } }, null) catch |e| {
                 std.debug.print("vpi_host: `{s}` did not compile: {t}\n", .{ path2, e });
                 return 1;
             };
-            defer res2.deinit();
+            defer res2.deinit(gpa);
             // Its own work directory: two libraries built into one race.
             const stem2 = try arena.print("{s}-library", .{std.fs.path.stem(app.?)});
             const lib2_path = buildAnalogLib(gpa, arena, threaded.io(), path2, stem2, source2, &.{ dir, up }, try vpi.systf.intAnalogNames(arena)) catch |e| {
@@ -212,7 +215,7 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
     if (analyses.len == 0) return 0;
     // VAMS §8.4 a mixed-signal design: its digital half runs beside the
     // analog solve (`Binding.runMixed`), and VPI reads its variables.
-    if (vera.tb.mixedPlan(res.lowered, res.mir)) |mx| return mixedHost(arena, path, mx, analyses, &binding);
+    if (exe.mixedPlan(res.lowered, res.mir)) |mx| return mixedHost(arena, path, mx, analyses, &binding);
     vpi.callback_fire.startOfSimulation();
     for (analyses) |a| binding.run(a) catch |e| {
         std.debug.print("vpi_host: the {t} analysis of `{s}` failed: {t}\n", .{ a.kind, path, e });
@@ -229,7 +232,7 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
 /// what `Binding.runMixed`'s analog side does not carry yet (an analog block
 /// that reads a digital value, an explicit D2A event, an inserted connect
 /// module, a digital read of an analog variable).
-fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, analyses: []const vpi.analog.Analysis, binding: *vpi.Binding) !u8 {
+fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: exe.Mixed, analyses: []const vpi.analog.Analysis, binding: *vpi.Binding) !u8 {
     std.debug.assert(analyses.len != 0);
     std.debug.assert(binding.lib != null); // `analogHost` attached the design's library
     const why: ?[]const u8 = if (mx.inputs.len != 0 or mx.snaps.len != 0)
@@ -368,41 +371,47 @@ fn spiceNumber(w: []const u8) !f64 {
 }
 
 /// The design's device and the fixed solver as a shared library
-/// (`vera.tb.renderVpiLib`), compiled with the §5.6 rows published
+/// (`exe.writeVpiLib`), compiled with the §5.6 rows published
 /// (`vpi_contribs`) and the display tasks real, into the build's work root.
 /// Built under the APPLICATION's name: several applications run one design
 /// at once under `zig build`, and two compilers writing one directory race.
 fn buildAnalogLib(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, path: []const u8, app_stem: []const u8, source: []const u8, include: []const []const u8, int_systfs: []const []const u8) ![]const u8 {
     std.debug.assert(app_stem.len != 0); // one work directory per application
     std.debug.assert(include.len != 0);
-    var bag = vera.diag.Bag.init(arena);
-    var res = vera.compileSourceOpts(gpa, source, .build, .{
+    var bag = vera.diag.Bag.init(gpa);
+    defer bag.deinit(gpa);
+    var res = vera.analyze(gpa, source, .{
         .file_name = path,
         .include_dirs = include,
         .display = .emit,
-        .vpi_contribs = true,
         .int_systfs = int_systfs,
-        .diags = &bag,
-    }) catch |e| {
+    }, &bag) catch |e| {
         try vera.diag.render(&bag, stderrWriter(), .{});
         return e;
     };
-    defer res.deinit();
-    const device = try res.generateDevice();
-    if (res.device_has_compile_error) return error.CodegenRefused;
+    defer res.deinit(gpa);
+    var device = try res.generate(gpa, .{ .vpi_contribs = true }, &bag);
+    defer device.deinit(gpa);
+    if (device.refused) return error.CodegenRefused;
     const stem = std.fs.path.stem(path);
-    var d = try vera.tb.parse(arena, source);
-    d.validate_contract = true;
-    const runner = try vera.tb.renderVpiLib(arena, stem, d);
+    const spec = try exe.Spec.parse(arena, source, null);
+    var runner: Io.Writer.Allocating = .init(arena);
+    exe.writeVpiLib(&runner.writer, stem, &spec.bench, .{ .validate_contract = true }) catch return error.OutOfMemory;
     const work_root = if (std.c.getenv("VERA_VPI_WORK")) |w| std.mem.span(w) else ".zig-cache/vera-vpi"; // os: the host links libc on every target
     const work = try std.fs.path.join(arena, &.{ work_root, app_stem });
-    // The contract this library speaks, beside the device it is built against.
+    // The contract this library speaks (`lib/contract.zig` and
+    // `lib/contract/`), beside the device it is built against.
+    for (@import("sim_sources").files) |f| {
+        const rel = std.mem.cutPrefix(u8, f[0], "lib/") orelse continue;
+        if (!std.mem.startsWith(u8, rel, "contract")) continue;
+        const p = try std.fs.path.join(arena, &.{ work, rel });
+        try Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(p).?);
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = f[1] });
+    }
     const contract = try std.fs.path.join(arena, &.{ work, "contract.zig" });
-    try Io.Dir.cwd().createDirPath(io, work);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = contract, .data = @embedFile("contract_source") });
     const t = &builtin.target;
     const out = try arena.print("{s}/{s}{s}{s}", .{ work, t.libPrefix(), stem, t.dynamicLibSuffix() });
-    const built = try vera.tb.buildExe(gpa, io, device, runner, .{
+    const built = try zigbuild.buildExe(gpa, io, device.output.text, runner.written(), .{
         .work_dir = work,
         .contract = contract,
         .name = res.mir.name,
@@ -471,7 +480,7 @@ fn digitalHost(path: []const u8) !u8 {
     const dir = std.fs.path.dirname(path) orelse ".";
     // `$VERA_PROTECT_KEYS` names a key file as `vera --protect-keys` reads it:
     // the IEEE 1364-2005 §28.2 keys for the design's decryption envelopes.
-    var keys: vera.Preprocessor.protect.Keys = .{};
+    var keys: protect.Keys = .{};
     if (std.c.getenv("VERA_PROTECT_KEYS")) |k| if (std.mem.span(k).len != 0) { // os: the host links libc on every target
         const kpath = std.mem.span(k);
         const text = Io.Dir.cwd().readFileAlloc(io, kpath, arena, .limited(1 << 20)) catch |e| {
@@ -479,7 +488,7 @@ fn digitalHost(path: []const u8) !u8 {
             try err.flush();
             return 2;
         };
-        keys = vera.Preprocessor.protect.parseKeys(arena, text) catch |e| {
+        keys = protect.parseKeys(arena, text) catch |e| {
             try err.print("vpi_host: VERA_PROTECT_KEYS `{s}`: not a key file ({t})\n", .{ kpath, e });
             try err.flush();
             return 2;
