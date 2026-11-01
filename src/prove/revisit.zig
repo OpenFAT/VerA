@@ -56,6 +56,8 @@ pub const Revisit = struct {
     }
 
     pub fn deinit(r: *Revisit, gpa: Allocator) void {
+        assert(r.first.len > 0); // `init` ran
+        assert(r.in_due.bit_length == r.first.len);
         gpa.free(r.first);
         r.due.deinit(gpa);
         r.later.deinit(gpa);
@@ -69,6 +71,7 @@ pub const Revisit = struct {
     pub fn next(r: *Revisit) ?u32 {
         const b = r.due.pop() orelse return null;
         assert(r.in_due.isSet(b));
+        assert(b < r.first.len);
         r.in_due.unset(b);
         return b;
     }
@@ -80,9 +83,11 @@ pub const Revisit = struct {
         assert(reads.len > 0);
         try r.edges.ensureUnusedCapacity(gpa, reads.len);
         for (reads) |t| {
+            assert(t < r.first.len);
             r.edges.appendAssumeCapacity(.{ .block = b, .next = r.first[t] });
             r.first[t] = @intCast(r.edges.items.len - 1);
         }
+        assert(r.edges.items.len >= reads.len);
     }
 
     /// Makes due every block whose last visit read `t`: this round when it
@@ -95,6 +100,7 @@ pub const Revisit = struct {
         for (0..r.edges.items.len) |_| {
             if (e == none) return;
             const reader = r.edges.items[e];
+            assert(reader.block < r.first.len);
             if (reader.block > pos) {
                 if (!r.in_due.isSet(reader.block)) try r.due.push(gpa, reader.block);
                 r.in_due.set(reader.block);

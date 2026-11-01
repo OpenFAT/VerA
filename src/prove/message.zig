@@ -39,6 +39,7 @@ const iv_text_max: usize = 768;
 /// Returns the source span of `inst`, or none for an unattributed row.
 pub fn span(p: *const Prover, inst: Mir.Inst) diag.Span {
     assert(inst != .none);
+    assert(@backingInt(inst) < p.mir.instCount());
     const tok = p.mir.instTok(inst);
     // Token 0 is the first line of the annex D prelude, not a location.
     if (tok == Mir.no_tok) return .{};
@@ -48,6 +49,7 @@ pub fn span(p: *const Prover, inst: Mir.Inst) diag.Span {
 /// Returns the span of whatever defined `v`, so a label can point at the
 /// parameter or the sub-expression the prover is really complaining about.
 pub fn valueSpan(p: *const Prover, v: Mir.Value) diag.Span {
+    assert(@backingInt(v) < p.an.nv);
     switch (p.mir.valueDef(p.an.rv(v))) {
         .inst_result => |inst| return span(p, inst),
         .param_ref => |pi| {
@@ -72,6 +74,7 @@ pub fn violation(
     what: []const u8,
 ) Error!diag.Builder {
     assert(what.len != 0);
+    assert(p.error_count <= proof.errors_max);
     var buf: [iv_text_max]u8 = undefined;
     const at = span(p, inst);
     var b = p.bag.build(.proof, code, at);
@@ -97,6 +100,7 @@ pub fn emitError(p: *Prover, b: *diag.Builder) Error!void {
 /// depends on. The text lives in the prover's arena.
 pub fn describe(p: *const Prover, v: Mir.Value) Error![]const u8 {
     const rv = p.an.rv(v);
+    assert(@backingInt(rv) < p.an.nv);
     return switch (p.mir.valueDef(rv)) {
         .param_ref => |pi| if (pi < p.lowered.params.items.len)
             p.arena.print("parameter `{s}`", .{p.lowered.params.items[pi].name})
@@ -138,6 +142,7 @@ fn unboundedLeaf(p: *const Prover, root: Mir.Value) ?Mir.Value {
                 if (p.mir.instOp(inst) == .phi) continue;
                 var buf: [3]Mir.Value = undefined;
                 for (p.operands(inst, &buf)) |o| {
+                    assert(n <= stack.len);
                     if (n == stack.len) break;
                     stack[n] = o;
                     n += 1;
@@ -146,16 +151,20 @@ fn unboundedLeaf(p: *const Prover, root: Mir.Value) ?Mir.Value {
             .undef, .float_const, .int_const, .str_const => {},
         }
     }
+    assert(n == 0 or budget == 0); // the slice ran out, or the budget did
     return null;
 }
 
 fn ivText(buf: *[iv_text_max]u8, iv: Interval) []const u8 {
     if (iv.lo == -math.inf(f64) and iv.hi == math.inf(f64)) return " with no known bounds";
     // `iv_text_max` holds two doubles spelled in full and the words.
-    return std.mem.print(buf, " with known range {c}{d}:{d}{c}", .{
+    const r = std.mem.print(buf, " with known range {c}{d}:{d}{c}", .{
         @as(u8, if (iv.lo_open) '(' else '['),
         iv.lo,
         iv.hi,
         @as(u8, if (iv.hi_open) ')' else ']'),
     }) catch unreachable;
+    assert(r.len <= buf.len);
+    assert(r.len != 0);
+    return r;
 }

@@ -56,6 +56,8 @@ pub fn rateUnits(p: *Prover, modes: []proof.FloatMode) Error!void {
 /// null when the whole slice is finite. Each value is visited once per
 /// `gen`, so the walk is linear in the slice.
 fn firstNotFinite(p: *Prover, stack: *std.ArrayList(Mir.Value), seen: []u32, gen: u32) Error!?Mir.Value {
+    assert(seen.len == p.an.nv);
+    assert(gen != none);
     while (stack.pop()) |v| {
         const i = p.idxOf(v);
         if (seen[i] == gen) continue;
@@ -83,6 +85,7 @@ fn firstNotFinite(p: *Prover, stack: *std.ArrayList(Mir.Value), seen: []u32, gen
         var buf: [3]Mir.Value = undefined;
         for (p.operands(inst, &buf)) |o| try stack.append(p.arena, o);
     }
+    assert(stack.items.len == 0); // the whole slice was finite
     return null;
 }
 
@@ -94,6 +97,8 @@ fn firstNotFinite(p: *Prover, stack: *std.ArrayList(Mir.Value), seen: []u32, gen
 // control-dependent on, so a branch whose arms meet before the join is still
 // counted. Precise is a post-dominance frontier from `Analysis`.
 fn pushSteering(p: *Prover, stack: *std.ArrayList(Mir.Value), from: u32, stop: u32) Error!void {
+    assert(from < p.an.nb); // a phi pair's block (`verify`'s `handle`)
+    assert(stop == none or stop < p.an.nb);
     var b = from;
     for (0..p.an.nb) |_| {
         if (b == none or p.an.rpo_num[b] == none) return;
@@ -113,6 +118,8 @@ fn pushSteering(p: *Prover, stack: *std.ArrayList(Mir.Value), from: u32, stop: u
 fn warnNotFinite(p: *Prover, unit: usize, c: Lowered.Contribution, culprit: Mir.Value) Error!void {
     if (!p.bag.enabled(.W0650)) return;
     assert(!p.finite[p.idxOf(culprit)]);
+    assert(p.error_count == 0); // a rejected model warns nothing
+    assert(unit < p.lowered.contributions.items.len);
 
     const access: []const u8 = if (c.access == .potential) "V" else "I";
     var b = p.bag.build(.proof, .W0650, p.lowered.tokenSpan(c.tok));

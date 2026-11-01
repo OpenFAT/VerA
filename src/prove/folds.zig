@@ -39,6 +39,7 @@ pub const FoldColumn = struct {
     pub fn get(c: *const FoldColumn, v: Mir.Value) ?Const {
         const i = @backingInt(v);
         assert(i < c.kind.len);
+        assert(c.bits.len == c.kind.len);
         const b = c.bits[i];
         return switch (c.kind[i]) {
             .none => null,
@@ -91,6 +92,7 @@ pub fn build(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis.
 /// at most `nv` sweeps change. `resolve_params` looks through a parameter to
 /// its declared default. The column lives in `arena`.
 pub fn column(an: *const Analysis, arena: Allocator, lowered: *const Lowered, resolve_params: bool) Analysis.Error!FoldColumn {
+    assert(an.alias.len == an.nv);
     var col: FoldColumn = .{
         .kind = try arena.alloc(FoldColumn.Kind, an.nv),
         .bits = try arena.alloc(u64, an.nv),
@@ -118,6 +120,8 @@ pub fn column(an: *const Analysis, arena: Allocator, lowered: *const Lowered, re
 /// `v`'s fold given the current answers for its operands.
 fn step(an: *const Analysis, lowered: *const Lowered, v: Mir.Value, col: *const FoldColumn, resolve_params: bool) ?Const {
     const mir = an.mir;
+    assert(col.kind.len == an.nv);
+    assert(col.kind[@backingInt(v)] == .none); // `column` asks once per answer
     switch (mir.valueDef(an.rv(v))) {
         .float_const => |x| return .{ .real = x },
         .int_const => |x| return .{ .int = x },

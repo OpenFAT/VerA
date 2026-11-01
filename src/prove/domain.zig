@@ -51,6 +51,7 @@ pub fn check(p: *Prover, inst: Mir.Inst) Error!bool {
         .positive, .gt_neg_one, .non_negative, .unit_closed, .unit_open, .ge_one => try unaryDomain(p, inst, op, dom),
     };
     if (proven) assert(p.error_count == errors_before); // a proof reports nothing
+    if (dom == .all) assert(proven);
     return proven;
 }
 
@@ -79,6 +80,7 @@ fn divisor(p: *Prover, inst: Mir.Inst, op: Mir.Opcode) Error!bool {
     // Legal, but not silent: the guarded device division yields 0 for a zero
     // divisor, a value the LRM does not give.
     if (op == .idiv) try warnIntDivisor(p, inst, d.rhs, y);
+    assert(!y.excludesZero()); // the proven case returned above
     return false;
 }
 
@@ -87,6 +89,7 @@ fn divisor(p: *Prover, inst: Mir.Inst, op: Mir.Opcode) Error!bool {
 /// value pair violates.
 fn powSign(p: *Prover, inst: Mir.Inst) Error!bool {
     assert(Mir.opClass(p.mir.instOp(inst)) == .binary);
+    assert(Mir.opcode.get(p.mir.instOp(inst)).domain == .pow_sign);
     const d = p.mir.instData(inst).binary;
     const x = p.ivOf(d.lhs);
     const y = p.ivOf(d.rhs);
@@ -106,6 +109,7 @@ fn powSign(p: *Prover, inst: Mir.Inst) Error!bool {
         return violated(p, inst, .E0609, "pow() exponent", d.rhs, y, "must be an integer — the base is provably negative", "use `pow(abs(x), y)` with an explicit sign, or constrain the base with `from [0:inf)`");
     // Straddling either clause is NaN-capable but not provably violating:
     // IEEE-defined under `.strict`, so accept and forfeit finiteness.
+    assert(!x.gt(0)); // the x > 0 row proved above
     return false;
 }
 
@@ -114,6 +118,7 @@ fn powSign(p: *Prover, inst: Mir.Inst) Error!bool {
 /// at one. Unprovable -> `.strict`, where a pole yields an IEEE infinity.
 fn tanPoles(p: *const Prover, inst: Mir.Inst) bool {
     assert(Mir.opClass(p.mir.instOp(inst)) == .unary);
+    assert(Mir.opcode.get(p.mir.instOp(inst)).domain == .tan_poles);
     const a = p.ivOf(p.mir.instData(inst).unary.operand);
     if (a.isEmpty()) return true;
     if (!a.bounded()) return false;
@@ -123,6 +128,8 @@ fn tanPoles(p: *const Prover, inst: Mir.Inst) bool {
     const k = @floor((a.lo + math.pi / 2.0) / math.pi);
     const lo_pole = k * math.pi - math.pi / 2.0;
     const hi_pole = k * math.pi + math.pi / 2.0;
+    // `<=`, not `<`: past ~1e16 both poles round to the same double.
+    assert(lo_pole <= hi_pole);
     return a.gt(lo_pole) and a.lt(hi_pole);
 }
 
@@ -135,6 +142,7 @@ fn unaryDomain(p: *Prover, inst: Mir.Inst, op: Mir.Opcode, dom: Mir.opcode.Domai
     const a = p.ivOf(d.operand);
     if (a.isEmpty()) return true;
     const name = Mir.opcode.label(op);
+    assert(name.len != 0); // a message names the function
     return switch (dom) {
         .positive => if (a.gt(0)) true else if (a.le(0))
             violated(p, inst, .E0602, name, d.operand, a, "must be > 0", "add a range like `from (0:inf)` to the parameter, or guard the call with `if (x > 0)`")
@@ -171,11 +179,13 @@ fn unaryDomain(p: *Prover, inst: Mir.Inst, op: Mir.Opcode, dom: Mir.opcode.Domai
 fn provablyNonInteger(iv: Interval) bool {
     const fractional = iv.bounded() and @floor(iv.lo) == @floor(iv.hi) and iv.lo != @floor(iv.lo);
     if (fractional) assert(iv.hi != @floor(iv.hi) or iv.hi < iv.lo); // no integer end either
+    if (fractional) assert(math.isFinite(iv.lo));
     return fractional;
 }
 
 /// §4.3.1 pow with a negative base needs "all integer y".
 fn provablyInteger(p: *const Prover, v: Mir.Value) bool {
+    assert(@backingInt(v) < p.an.nv);
     switch (p.mir.valueDef(p.an.rv(v))) {
         .int_const => return true,
         .float_const => |c| return math.isFinite(c) and c == @trunc(c),
@@ -205,10 +215,13 @@ fn violated(
 ) Error!bool {
     assert(requirement.len != 0);
     assert(fix.len != 0);
+    const errors_before = p.error_count;
     var b = try message.violation(p, inst, code, operand, iv, what);
     b.point("{s}", .{requirement});
     b.help("{s}", .{fix});
     try message.emitError(p, &b);
+    assert(p.error_count >= errors_before); // counted, or dropped past the cap
+    assert(p.error_count - errors_before <= 1);
     return false;
 }
 
@@ -218,6 +231,7 @@ fn violated(
 /// integer cannot hold. Does not touch `error_count`.
 fn warnIntDivisor(p: *Prover, inst: Mir.Inst, divisor_v: Mir.Value, iv: Interval) Error!void {
     if (!p.bag.enabled(.W0653)) return;
+    assert(!iv.excludesZero()); // `divisor` warns only on an unproven divisor
     const errors_before = p.error_count;
     var b = try message.violation(p, inst, .W0653, divisor_v, iv, "integer `/` divisor");
     b.point("cannot be proven non-zero; if it is zero at run time the result is 0", .{});

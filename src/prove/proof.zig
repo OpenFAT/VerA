@@ -57,7 +57,10 @@ pub const FloatMode = enum(u8) {
     /// Codegen folds the shared core's mode through this join
     /// (`codegen/float/mode.zig` `coreMode`).
     pub fn strictest(a: FloatMode, b: FloatMode) FloatMode {
-        return if (a == .strict or b == .strict) .strict else .optimized;
+        const r: FloatMode = if (a == .strict or b == .strict) .strict else .optimized;
+        if (a == .strict) assert(r == .strict);
+        if (b == .strict) assert(r == .strict);
+        return r;
     }
 };
 
@@ -77,11 +80,15 @@ pub const Verdict = struct {
 
     /// Returns true when no domain error was reported.
     pub fn ok(v: Verdict) bool {
+        assert(v.error_count <= errors_max);
+        // The invariant above: a rejected model rates every unit `.strict`.
+        if (v.error_count != 0) for (v.unit_modes) |m| assert(m == .strict);
         return v.error_count == 0;
     }
 
     /// Frees `unit_modes`; `gpa` must be the allocator passed to `prove`.
     pub fn deinit(v: Verdict, gpa: Allocator) void {
+        assert(v.error_count <= errors_max);
         gpa.free(v.unit_modes);
     }
 };
@@ -143,6 +150,7 @@ pub fn prove(
 
     assert(modes.len == unitCount(lowered));
     assert(p.error_count <= errors_max);
+    assert(p.saved.items.len == 0); // every guard fact popped
     return .{ .unit_modes = modes, .error_count = p.error_count };
 }
 

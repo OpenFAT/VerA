@@ -65,6 +65,7 @@ fn walkDom(p: *Prover) Error!void {
     const Frame = struct { b: u32, mark: usize, active: bool, kid: u32 = 0 };
     var stack: std.ArrayList(Frame) = .empty;
     defer stack.deinit(p.gpa);
+    const mark0 = p.saved.items.len;
     try stack.append(p.gpa, .{ .b = 0, .mark = p.saved.items.len, .active = p.domain_active });
     try enterDom(p, 0);
     var entered: u32 = 1;
@@ -75,6 +76,7 @@ fn walkDom(p: *Prover) Error!void {
             const c = kids[top.kid];
             top.kid += 1;
             try stack.append(p.gpa, .{ .b = c, .mark = p.saved.items.len, .active = p.domain_active });
+            assert(stack.items.len <= p.an.nb); // a dominator path holds each block once
             try enterDom(p, c);
             entered += 1;
             continue;
@@ -84,6 +86,7 @@ fn walkDom(p: *Prover) Error!void {
         p.domain_active = done.active;
     }
     assert(entered == p.an.rpo.len); // each reachable block once
+    assert(p.saved.items.len == mark0); // every edge's facts popped
 }
 
 /// Pushes the facts of the edge into `b` and walks `b`'s own instructions.
@@ -94,6 +97,7 @@ fn enterDom(p: *Prover, b: u32) Error!void {
     if (b != 0) edge: {
         const parent = p.an.idom[b];
         if (parent == none or p.an.predsOf(b).len != 1) break :edge;
+        assert(parent != b); // only the entry is its own idom
         const term = p.an.term[parent];
         if (term == .none or p.mir.instOp(term) != .branch) break :edge;
         const br = p.mir.instData(term).branch;
@@ -106,15 +110,18 @@ fn enterDom(p: *Prover, b: u32) Error!void {
         try guards.pushFacts(p, guards.condFacts(p, br.cond, taken, &raw));
     }
     try walkBlock(p, b);
+    assert(p.visited_block[b]);
 }
 
 fn walkBlock(p: *Prover, b: u32) Error!void {
+    assert(b < p.visited_block.len);
     assert(!p.visited_block[b]);
     p.visited_block[b] = true;
     for (p.an.blockInstsFlat(b)) |inst| try evalInst(p, inst);
 }
 
 fn evalInst(p: *Prover, inst: Mir.Inst) Error!void {
+    assert(p.visited_block.len == p.an.nb); // `walk` runs it
     const result = p.mir.instResult(inst);
     const ri = p.idxOf(result);
 
@@ -142,12 +149,14 @@ fn evalInst(p: *Prover, inst: Mir.Inst) Error!void {
     if (top != none) p.def_seq[ri] = p.saved.items[top].seq;
     p.finite[ri] = out.finite and domain_proven;
     if (p.finite[ri]) assert(out.finite);
+    if (!domain_proven) assert(!p.finite[ri]);
 }
 
 /// The transfer of `inst`: intervals for the domain proof, and the separate
 /// finite bit (the rules on `proof.FloatMode`) that drives the float mode.
 fn transferOf(p: *const Prover, inst: Mir.Inst) transfer.Abstract {
     const op = p.mir.instOp(inst);
+    assert(p.iv.len == p.an.nv);
     // §4.2.5/§4.2.8: integer-valued results are finite by construction.
     if (Mir.opIsInteger(op)) return .{ .iv = transfer.integerIv(op), .finite = true };
     return switch (p.mir.instData(inst)) {
@@ -187,14 +196,17 @@ fn transferOf(p: *const Prover, inst: Mir.Inst) transfer.Abstract {
 
 /// §5.8 a join: the hull of its operands, finite when every one is.
 fn phiTransfer(p: *const Prover, inst: Mir.Inst, count: u32) transfer.Abstract {
+    assert(p.mir.instOp(inst) == .phi);
     if (count == 0) return .{ .iv = .top, .finite = false };
     var acc = p.ivOf(p.mir.phiPair(inst, 0).value);
     var fin = p.isFinite(p.mir.phiPair(inst, 0).value);
+    const first_fin = fin;
     for (1..count) |k| {
         const v = p.mir.phiPair(inst, @intCast(k)).value;
         acc = acc.join(p.ivOf(v));
         fin = fin and p.isFinite(v);
     }
+    if (fin) assert(first_fin);
     return .{ .iv = acc, .finite = fin };
 }
 
@@ -203,6 +215,7 @@ fn phiTransfer(p: *const Prover, inst: Mir.Inst, count: u32) transfer.Abstract {
 /// unsound for them, since `1.0/$vt(V(p,n))` and `1.0/limexp(V(p,n))` can
 /// divide by zero.
 fn callTransfer(p: *const Prover, c: Mir.Callee, args: []const Mir.Value) transfer.Abstract {
+    assert(p.finite.len == p.an.nv);
     if (args.len == 1) {
         const a = p.ivOf(args[0]);
         const af = p.isFinite(args[0]);

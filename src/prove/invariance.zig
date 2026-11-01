@@ -74,6 +74,7 @@ const Scan = struct {
 
     fn sv(s: *const Scan, v0: Mir.Value) bool {
         const v = s.in.an.rv(v0);
+        assert(@backingInt(v) < s.val.len);
         return switch (s.in.mir.valueDef(v)) {
             .undef, .float_const, .int_const, .str_const, .param_ref => true,
             .block_param => false,
@@ -85,6 +86,7 @@ const Scan = struct {
     /// whose end-of-block value is `phi` itself.
     fn heldEquiv(s: *const Scan, phi: Mir.Value, v0: Mir.Value) bool {
         const in = s.in;
+        assert(in.an.rv(phi) == phi); // `rule` asks only for an unaliased phi
         const def = in.mir.valueDef(in.an.rv(v0));
         if (def != .inst_result or in.mir.instOp(def.inst_result) != .call) return false;
         const d = in.mir.instData(def.inst_result).call;
@@ -102,6 +104,8 @@ const Scan = struct {
 
     /// Whether the edge `src -> y` runs only when the initial step does not.
     fn initElseEdge(s: *const Scan, src: u32, y: u32) bool {
+        assert(s.init_else.len == s.in.an.nb); // `solve`'s scan, not `fillHomes'`
+        assert(y < s.in.an.nb);
         if (s.init_else[src]) return true;
         const c = setup.branchCond(s.in, src) orelse return false;
         return initCond(s.in, c) and setup.elseOf(s.in, src) == y and setup.thenOf(s.in, src) != y;
@@ -120,6 +124,7 @@ const Scan = struct {
     /// `eval` as the IEEE NaN or inf unreported.
     fn speculable(s: *const Scan, inst: Mir.Inst, blk: u32) bool {
         const in = s.in;
+        assert(!s.plc[blk]); // `rule` asks only outside a placeable block
         if (in.an.loop_of[blk] != none or s.homeOf(blk) == none) return false;
         const row = in.mir.instRow(inst);
         const info = Mir.opcode.get(row.op);
@@ -132,11 +137,13 @@ const Scan = struct {
             .all, .positive, .gt_neg_one, .non_negative, .pow_sign, .tan_poles => {},
             .unit_closed, .unit_open, .ge_one, .nonzero_divisor => return false,
         }
-        return switch (Mir.opClass(row.op)) {
+        const r = switch (Mir.opClass(row.op)) {
             .unary => s.anchored(@fromBackingInt(@intCast(row.a))),
             .binary => s.anchored(@fromBackingInt(@intCast(row.a))) and s.anchored(@fromBackingInt(@intCast(row.b))),
             .ternary, .phi, .branch, .jump, .call, .anew, .load, .store => false,
         };
+        if (r) assert(s.home[blk] != none); // `fillHomes` relies on the home
+        return r;
     }
 
     /// An operand `setup` holds wherever it places a speculable op: a leaf,
@@ -146,7 +153,9 @@ const Scan = struct {
         const v = s.in.an.rv(v0);
         if (s.in.mir.valueDef(v) != .inst_result) return s.sv(v);
         const b = s.in.an.def_block[@backingInt(v)];
-        return s.val[@backingInt(v)] and b != none and s.in.an.loop_of[b] == none;
+        const r = s.val[@backingInt(v)] and b != none and s.in.an.loop_of[b] == none;
+        if (r) assert(b < s.in.an.nb);
+        return r;
     }
 
     /// The nearest placeable dominator of `b0`, or `none`. Memoized along the
@@ -178,16 +187,19 @@ const Scan = struct {
             if (up == none or up == b) break;
             b = up;
         }
+        assert(s.home[b0] == h);
         return h;
     }
 
     fn rule(s: *const Scan, v: Mir.Value) bool {
         const in = s.in;
+        assert(in.an.rv(v) == v); // an alias carries its target's answer
         const def = in.mir.valueDef(v);
         if (def != .inst_result) return s.sv(v);
         const inst = def.inst_result;
         const blk = in.an.def_block[@backingInt(v)];
         if (blk == none) return false;
+        assert(blk < in.an.nb);
         var g = in.mir.guardConds(inst);
         while (g.next()) |c| if (!(if (s.plc[blk]) s.sv(c) else s.anchored(c))) return false;
         if (!s.plc[blk]) return s.speculable(inst, blk);
@@ -309,6 +321,8 @@ pub fn solve(in: Input, placing: Placing) Error!setup.Invariance {
         if (!changed) break;
     }
     assert(s.val.len == nv);
+    assert(s.plc.len == nb);
+    assert(stack.items.len == 0);
     return .{ .invariant = s.val, .placeable = s.plc, .loop_varying = s.varying };
 }
 
@@ -319,6 +333,7 @@ pub fn fillHomes(in: Input, r: *setup.Invariance) Error!void {
     const a = in.arena;
     assert(r.invariant.len == in.an.nv);
     assert(r.placeable.len == in.an.nb);
+    assert(r.loop_varying.len == in.an.nb);
     const s: Scan = .{ .in = in, .val = r.invariant, .plc = r.placeable, .varying = r.loop_varying, .init_else = &.{}, .home = try a.alloc(u32, in.an.nb) };
     @memset(s.home, unknown_home);
     r.home = try a.alloc(u32, in.an.nv);
@@ -353,7 +368,7 @@ pub fn fillHomes(in: Input, r: *setup.Invariance) Error!void {
 /// here is per-eval. §6.3.6 `$mfactor` is an `Instance` field, so not here:
 /// instances sharing a row may differ in it.
 pub fn callInvariant(in: Input, d: Call) bool {
-    return switch (d.callee) {
+    const r = switch (d.callee) {
         .@"$temperature", .@"$vt", .@"$param_given", .@"$port_connected" => true,
         // §9.15 Table 9-27: every literal name but `iteration`, which moves
         // with each Newton step, and `dt`, with each timepoint. `tnom` is a
@@ -368,6 +383,9 @@ pub fn callInvariant(in: Input, d: Call) bool {
         .@"$pow", .@"$hypot", .@"$atan2", .@"$rtoi", .@"$itor", .@"$clog2" => true,
         else => false, // else: an ALLOWLIST — every other callee reads the solve, the time or state the host moves, until shown otherwise
     };
+    if (d.callee == .@"$mfactor") assert(!r); // an `Instance` field
+    if (d.callee == .@"$abstime") assert(!r); // moves with every timepoint
+    return r;
 }
 
 // ---- private ----
@@ -376,6 +394,7 @@ pub fn callInvariant(in: Input, d: Call) bool {
 /// the condition `setup` treats as true. A qualified `initial_step("tran")`
 /// is not one: in DC it keeps its initializer, so it is not a card function.
 fn initCond(in: Input, cond: Mir.Value) bool {
+    assert(@backingInt(cond) < in.an.nv);
     const def = in.mir.valueDef(in.an.rv(cond));
     if (def != .inst_result or in.mir.instOp(def.inst_result) != .call) return false;
     const d = in.mir.instData(def.inst_result).call;

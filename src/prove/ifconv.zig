@@ -116,6 +116,7 @@ const Trace = struct {
     }
 
     fn deinit(t: *Trace, gpa: Allocator) void {
+        assert(t.preds.len == t.live.len);
         gpa.free(t.preds);
         gpa.free(t.live);
         gpa.free(t.bad);
@@ -128,6 +129,7 @@ const Trace = struct {
     /// Publishes the predecessor counts this round changed, making due in
     /// the next round every block that read one.
     fn endRound(t: *Trace, gpa: Allocator, r: *Revisit) Error!void {
+        assert(t.preds.len == t.live.len);
         for (t.moved.items) |b| if (t.preds[b] != t.live[b]) {
             t.preds[b] = t.live[b];
             try r.notify(gpa, b, Revisit.none);
@@ -176,6 +178,7 @@ const Trace = struct {
     fn spliced(t: *Trace, to: Mir.Block, from: Mir.Block) void {
         if (!t.counted()) return;
         assert(to != from);
+        assert(@backingInt(to) < t.bad.len);
         t.bad[@backingInt(to)] += t.bad[@backingInt(from)];
         t.restricted[@backingInt(to)] += t.restricted[@backingInt(from)];
         t.bad[@backingInt(from)] = 0;
@@ -216,10 +219,12 @@ const Shape = struct {
             .{ .block = if (then_arm == .direct) s.entry else s.then_b, .value = s.then_val },
             .{ .block = if (else_arm == .direct) s.entry else s.else_b, .value = s.else_val },
         });
+        assert(s.join != s.entry);
         return s;
     }
 
     fn fillArm(a: Allocator, m: *Mir, arm: Mir.Block, join: Mir.Block, p: Mir.Value, kind: Arm) !Mir.Value {
+        assert(arm != join); // a `.direct` arm has no block of its own
         const v = switch (kind) {
             .direct => unreachable,
             .value => try m.emit(a, arm, .fmul, &.{ p, .f_two }),
@@ -240,6 +245,7 @@ const Shape = struct {
     fn select(s: *const Shape) ?Mir.InstData {
         const r = s.mir.resolveAlias(s.phi);
         if (r == s.phi) return null;
+        assert(s.mir.valueKind(r) == .inst_result); // a collapsed phi aliases its select
         return s.mir.instData(s.mir.valueDef(r).inst_result);
     }
 };
@@ -322,6 +328,7 @@ pub fn keepSlice(gpa: Allocator, mir: *const Mir, roots: []const Mir.Value) Erro
         }
     }
     for (roots) |r| assert(seen.isSet(@backingInt(mir.resolveAlias(r))));
+    assert(seen.bit_length == mir.valueCount());
     return seen;
 }
 
@@ -386,6 +393,7 @@ fn countPreds(mir: *const Mir, preds: []u32) void {
 /// sides validate before either moves.
 /// Appends every block it reads to `trace.reads`.
 fn classifyChain(gpa: Allocator, mir: *const Mir, x: Mir.Block, head: Mir.Block, preds: []const u32, mode: Mode, trace: *Trace) Error!?Side {
+    assert(@backingInt(head) < preds.len);
     var b = head;
     // A chain visits each block once: one more step than blocks is a cycle.
     for (0..preds.len) |_| {
@@ -420,6 +428,7 @@ fn armOf(mir: *const Mir, x: Mir.Block, arm: Mir.Block, preds: []const u32, mode
 /// `mode`, wherever it sits: what `classifyArm` refuses row by row, apart
 /// from a row after the terminator. A phi's answer changes when it collapses.
 fn refuses(mir: *const Mir, inst: Mir.Inst, mode: Mode) bool {
+    assert(@backingInt(inst) < mir.instCount());
     const op = mir.instOp(inst);
     const collapsed = op == .phi and mir.resolveAlias(mir.instResult(inst)) != mir.instResult(inst);
     if (mode == .speculate and collapsed) return false; // skipped before any test
@@ -434,6 +443,7 @@ fn refuses(mir: *const Mir, inst: Mir.Inst, mode: Mode) bool {
 
 /// Whether row `inst` is outside §4.2.4's total ops (`Mir.opcode` domain).
 fn restricts(mir: *const Mir, inst: Mir.Inst) bool {
+    assert(@backingInt(inst) < mir.instCount());
     return Mir.opcode.table.getPtrConst(mir.instOp(inst)).domain != .all;
 }
 
@@ -623,6 +633,7 @@ fn peelToBool(mir: *const Mir, cond0: Mir.Value) Mir.Value {
 /// counts and that row terminates: a well-formed block links one terminator
 /// (`verify`'s "a second terminator"), so the last row, when it is one, is it.
 fn terminatorOf(mir: *const Mir, b: Mir.Block, trace: *const Trace) ?Mir.Inst {
+    assert(@backingInt(b) < mir.blockCount());
     if (!trace.counted()) return terminator(mir, b);
     const last = mir.blockLast(b);
     if (last != .none) switch (Mir.opClass(mir.instOp(last))) {

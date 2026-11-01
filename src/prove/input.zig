@@ -33,6 +33,7 @@ pub const Input = struct {
 pub fn strArg(in: Input, args: []const Mir.Value, i: usize) ?[]const u8 {
     assert(in.an.mir == in.mir); // the analysis is over this MIR
     if (i >= args.len) return null;
+    assert(@backingInt(args[i]) < in.an.nv);
     const def = in.mir.valueDef(in.an.rv(args[i]));
     return if (def == .str_const) def.str_const else null;
 }

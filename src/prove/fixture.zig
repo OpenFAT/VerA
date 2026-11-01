@@ -39,6 +39,7 @@ pub const Fixture = struct {
 
     /// Frees everything the fixture and its tests allocated through `alloc`.
     pub fn deinit(f: *Fixture) void {
+        assert(f.mir.blockCount() > 0); // `init` ran
         f.arena.deinit();
     }
 
@@ -49,11 +50,14 @@ pub const Fixture = struct {
 
     /// Returns `V(net)`: the probe value of unknown `u`.
     pub fn probe(f: *Fixture, u: u32) Allocator.Error!Mir.Value {
+        assert(f.mir.blockCount() > 0); // `init` ran
         return f.mir.addBlockParam(f.alloc(), u);
     }
 
     /// Emits a call to the callee spelled `name` in the entry block.
     pub fn call(f: *Fixture, name: []const u8, args: []const Mir.Value) Allocator.Error!Mir.Value {
+        assert(f.mir.blockCount() > 0); // `init` ran: `.entry` exists
+        assert(name.len != 0);
         const a = f.alloc();
         return f.mir.emitCall(a, .entry, try f.mir.internString(a, name), args);
     }
@@ -62,6 +66,8 @@ pub const Fixture = struct {
     /// and `lowered` must not change afterwards (see `Input`).
     pub fn analysis(f: *Fixture) Analysis.Error!Analysis {
         assert(f.mir.blockCount() > 0); // `init` ran
-        return Analysis.build(f.alloc(), &f.mir, &f.lowered);
+        const an = try Analysis.build(f.alloc(), &f.mir, &f.lowered);
+        assert(an.nb == f.mir.blockCount());
+        return an;
     }
 };

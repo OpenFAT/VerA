@@ -52,6 +52,7 @@ pub const Invariance = struct {
     pub fn movedTo(s: Invariance, b: u32) []const Mir.Value {
         if (s.moved_off.len == 0) return &.{};
         assert(b + 1 < s.moved_off.len);
+        assert(s.moved_off[b] <= s.moved_off[b + 1]);
         return s.moved[s.moved_off[b]..s.moved_off[b + 1]];
     }
 };
@@ -81,6 +82,7 @@ pub const ControlDeps = struct {
     /// Returns block `b`'s control dependences. Asserts `b` is in range.
     pub fn of(c: ControlDeps, b: u32) []const ControlDep {
         assert(b + 1 < c.off.len);
+        assert(c.off[b] <= c.off[b + 1]);
         return c.deps[c.off[b]..c.off[b + 1]];
     }
 };
@@ -97,6 +99,7 @@ pub fn plan(in: Input) Error!Invariance {
     try invariance.fillHomes(in, &r);
     assert(r.home.len == in.an.nv);
     assert(r.moved_off.len == in.an.nb + 1);
+    assert(r.moved.len == r.moved_off[in.an.nb]);
     return r;
 }
 
@@ -108,6 +111,7 @@ pub fn plan(in: Input) Error!Invariance {
 /// Asserts that `invariant` has a row per Value.
 pub fn candidate(in: Input, invariant: []const bool, v: Mir.Value) bool {
     assert(invariant.len == in.an.nv);
+    assert(in.an.vty.len == in.an.nv); // `Analysis.build` ran
     const i = @backingInt(v);
     if (i < Mir.Value.first_dynamic or !invariant[i]) return false;
     // A string or a wide integer has no `Setup` field type.
@@ -122,9 +126,12 @@ pub fn candidate(in: Input, invariant: []const bool, v: Mir.Value) bool {
 /// Returns the condition of the `branch` ending block `bi`, or null when the
 /// block ends otherwise.
 pub fn branchCond(in: Input, bi: u32) ?Mir.Value {
+    assert(bi < in.an.nb);
     const t = in.an.term[bi];
     if (t == .none or in.mir.instOp(t) != .branch) return null;
-    return in.mir.instData(t).branch.cond;
+    const c = in.mir.instData(t).branch.cond;
+    assert(@backingInt(c) < in.an.nv);
+    return c;
 }
 
 /// Returns the `then` target of the branch ending block `bi`. Asserts that
@@ -132,7 +139,9 @@ pub fn branchCond(in: Input, bi: u32) ?Mir.Value {
 pub fn thenOf(in: Input, bi: u32) u32 {
     assert(in.an.term[bi] != .none);
     assert(in.mir.instOp(in.an.term[bi]) == .branch);
-    return @backingInt(in.mir.instData(in.an.term[bi]).branch.then_block);
+    const r = @backingInt(in.mir.instData(in.an.term[bi]).branch.then_block);
+    assert(r < in.an.nb);
+    return r;
 }
 
 /// Returns the `else` target of the branch ending block `bi`. Asserts that
@@ -140,7 +149,9 @@ pub fn thenOf(in: Input, bi: u32) u32 {
 pub fn elseOf(in: Input, bi: u32) u32 {
     assert(in.an.term[bi] != .none);
     assert(in.mir.instOp(in.an.term[bi]) == .branch);
-    return @backingInt(in.mir.instData(in.an.term[bi]).branch.else_block);
+    const r = @backingInt(in.mir.instData(in.an.term[bi]).branch.else_block);
+    assert(r < in.an.nb);
+    return r;
 }
 
 /// Returns every block's control dependences (the post-dominator frontier,
@@ -181,6 +192,7 @@ pub fn controlDeps(in: Input) Error!ControlDeps {
         }
     }
     for (0..nb) |b| assert(at[b] == off[b + 1]);
+    assert(deps.len == off[nb]);
     return .{ .off = off, .deps = deps };
 }
 
@@ -188,6 +200,7 @@ pub fn controlDeps(in: Input) Error!ControlDeps {
 
 /// entry: if (V(a) > 0) then else; then, else: join. Blocks 0..3.
 fn diamond(f: *Fixture) !struct { then_b: Mir.Block, else_b: Mir.Block, join: Mir.Block, c: Mir.Value } {
+    assert(f.mir.blockCount() == 1); // `init`'s entry alone
     const a = f.alloc();
     const then_b = try f.mir.addBlock(a);
     const else_b = try f.mir.addBlock(a);
@@ -196,6 +209,7 @@ fn diamond(f: *Fixture) !struct { then_b: Mir.Block, else_b: Mir.Block, join: Mi
     _ = try f.mir.emitBranch(a, .entry, c, then_b, else_b);
     _ = try f.mir.emitJump(a, then_b, join);
     _ = try f.mir.emitJump(a, else_b, join);
+    assert(f.mir.blockCount() == 4);
     return .{ .then_b = then_b, .else_b = else_b, .join = join, .c = c };
 }
 

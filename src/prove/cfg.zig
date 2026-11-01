@@ -71,6 +71,7 @@ fn flattenChains(an: *Analysis, arena: Allocator) Analysis.Error!void {
         }
     }
     assert(k == n);
+    assert(an.inst_off[0] == 0);
 }
 
 /// `term` and `succ_off`/`succ_pool`. A phi may sit anywhere in the chain
@@ -78,6 +79,7 @@ fn flattenChains(an: *Analysis, arena: Allocator) Analysis.Error!void {
 /// by position; the last one on the chain wins.
 fn linkSuccessors(an: *Analysis, arena: Allocator) Analysis.Error!void {
     const nb = an.nb;
+    assert(an.inst_off.len == nb + 1); // `flattenChains` ran
     an.term = try arena.alloc(Mir.Inst, nb);
     an.succ_off = try arena.alloc(u32, nb + 1);
     const pool = try arena.alloc(u32, 2 * @as(usize, nb)); // a branch has two
@@ -101,6 +103,7 @@ fn linkSuccessors(an: *Analysis, arena: Allocator) Analysis.Error!void {
             .unary, .binary, .ternary, .phi, .call, .anew, .load, .store => {},
         };
         an.succ_off[bi] = n;
+        if (an.term[bi] == .none) assert(ns == 0);
         @memcpy(pool[n..][0..ns], s[0..ns]);
         n += ns;
     }
@@ -113,6 +116,7 @@ fn linkSuccessors(an: *Analysis, arena: Allocator) Analysis.Error!void {
 /// so the order is deterministic.
 fn orderBlocks(an: *Analysis, arena: Allocator) Analysis.Error!void {
     const nb = an.nb;
+    assert(an.succ_off.len == nb + 1); // `linkSuccessors` ran
     an.rpo_num = try arena.alloc(u32, nb);
     @memset(an.rpo_num, none);
     const post = try arena.alloc(u32, nb);
@@ -146,6 +150,7 @@ fn orderBlocks(an: *Analysis, arena: Allocator) Analysis.Error!void {
         an.rpo[r] = bi;
     }
     assert(n_post >= 1);
+    assert(n_post <= nb);
     assert(an.rpo[0] == 0); // the DFS root finishes last
 }
 
@@ -153,6 +158,7 @@ fn orderBlocks(an: *Analysis, arena: Allocator) Analysis.Error!void {
 /// `is_merge`.
 fn linkPredecessors(an: *Analysis, arena: Allocator) Analysis.Error!void {
     const nb = an.nb;
+    assert(an.rpo.len >= 1); // `orderBlocks` ran
     an.pred_off = try arena.alloc(u32, nb + 1);
     @memset(an.pred_off, 0);
     for (an.rpo) |bi| for (an.succsOf(bi)) |s| {
@@ -169,11 +175,13 @@ fn linkPredecessors(an: *Analysis, arena: Allocator) Analysis.Error!void {
     for (an.is_merge, 0..) |*m, bi| m.* = an.predsOf(@intCast(bi)).len > 1;
     an.is_merge[0] = false; // the entry is never re-entered
     for (0..nb) |b| assert(fill[b] == an.pred_off[b + 1]);
+    assert(an.pred_pool.len <= an.succ_pool.len); // reachable edges only
 }
 
 /// `idom`: Cooper, Harvey and Kennedy's iteration over reverse postorder.
 fn findDominators(an: *Analysis, arena: Allocator) Analysis.Error!void {
     const nb = an.nb;
+    assert(an.pred_off.len == nb + 1); // `linkPredecessors` ran
     an.idom = try arena.alloc(u32, nb);
     @memset(an.idom, none);
     an.idom[0] = 0;
@@ -199,6 +207,7 @@ fn findDominators(an: *Analysis, arena: Allocator) Analysis.Error!void {
         }
     }
     assert(an.idom[0] == 0);
+    for (an.rpo) |b| assert(an.idom[b] != none); // every reachable block settled
 }
 
 fn intersect(an: *const Analysis, x0: u32, y0: u32) u32 {
@@ -213,6 +222,8 @@ fn intersect(an: *const Analysis, x0: u32, y0: u32) u32 {
         while (an.rpo_num[x] > an.rpo_num[y]) x = an.idom[x];
         while (an.rpo_num[y] > an.rpo_num[x]) y = an.idom[y];
     }
+    assert(an.rpo_num[x] <= an.rpo_num[x0]); // an ancestor of both
+    assert(an.rpo_num[x] <= an.rpo_num[y0]);
     return x;
 }
 
@@ -220,6 +231,8 @@ fn intersect(an: *const Analysis, x0: u32, y0: u32) u32 {
 /// (the merge-block ones) and the Euler tour `dom_in`/`dom_out`.
 fn buildDomTree(an: *Analysis, arena: Allocator) Analysis.Error!void {
     const nb = an.nb;
+    assert(an.idom.len == nb); // `findDominators` ran
+    assert(an.is_merge.len == nb);
     an.kid_off = try arena.alloc(u32, nb + 1);
     @memset(an.kid_off, 0);
     for (an.rpo[1..]) |bi| an.kid_off[an.idom[bi] + 1] += 1;
@@ -269,6 +282,7 @@ fn buildDomTree(an: *Analysis, arena: Allocator) Analysis.Error!void {
             f.kid += 1;
             an.dom_in[k] = clock;
             clock += 1;
+            assert(sp < nb); // each node is pushed once
             stack[sp] = .{ .node = k, .kid = 0 };
             sp += 1;
         } else {
@@ -283,6 +297,7 @@ fn buildDomTree(an: *Analysis, arena: Allocator) Analysis.Error!void {
 /// `phi_off`/`phi_pool` and `stmt_off`/`stmt_pool`, counted then filled.
 fn buildPools(an: *Analysis, arena: Allocator) Analysis.Error!void {
     const nb = an.nb;
+    assert(an.inst_off.len == nb + 1); // `flattenChains` ran
     an.phi_off = try arena.alloc(u32, nb + 1);
     an.stmt_off = try arena.alloc(u32, nb + 1);
     var n_phis: u32 = 0;
@@ -313,10 +328,12 @@ fn buildPools(an: *Analysis, arena: Allocator) Analysis.Error!void {
     }
     assert(kp == n_phis);
     assert(ks == n_stmts);
+    assert(kp + ks <= an.inst_pool.len); // a phi is never a statement
 }
 
 /// A phi whose result survives aliasing.
 fn livePhi(an: *const Analysis, inst: Mir.Inst) bool {
+    assert(@backingInt(inst) < an.i_op.len);
     if (an.i_op[@backingInt(inst)] != .phi) return false;
     const r = an.i_res[@backingInt(inst)];
     return an.rv(r) == r;
@@ -325,6 +342,7 @@ fn livePhi(an: *const Analysis, inst: Mir.Inst) bool {
 /// Everything a unit body may emit as a statement: phis are block headers,
 /// terminators are the emitter's, and an aliased result was rewritten away.
 fn liveStmt(an: *const Analysis, inst: Mir.Inst) bool {
+    assert(@backingInt(inst) < an.i_op.len);
     switch (Mir.opClass(an.i_op[@backingInt(inst)])) {
         .phi, .branch, .jump => return false,
         .unary, .binary, .ternary, .call, .anew, .load, .store => {},
@@ -341,6 +359,7 @@ fn liveStmt(an: *const Analysis, inst: Mir.Inst) bool {
 /// first write wins, so `loop_of` names the outermost nest.
 fn findLoops(an: *Analysis, arena: Allocator) Analysis.Error!void {
     const nb = an.nb;
+    assert(an.dom_in.len == nb); // `buildDomTree` ran
     an.is_loop = try arena.alloc(bool, nb);
     an.loop_of = try arena.alloc(u32, nb);
     @memset(an.is_loop, false);
@@ -368,6 +387,8 @@ fn findLoops(an: *Analysis, arena: Allocator) Analysis.Error!void {
         }
     }
     for (an.rpo) |h| if (an.is_loop[h]) assert(an.loop_of[h] != none);
+    // The pair of `Analysis.inLoop`: every `loop_of` names a header.
+    for (an.rpo) |b| if (an.loop_of[b] != none) assert(an.is_loop[an.loop_of[b]]);
 }
 
 test "analysis: CFG facts agree with their naive definitions on random structured CFGs" {

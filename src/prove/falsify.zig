@@ -168,6 +168,7 @@ fn body(a: Allocator, r: std.Random, prog: *Program, cur: *Mir.Block, depth: u32
         }
         try prog.pool.append(a, last);
     }
+    assert(m.valueCount() <= values_max); // the cap the loop checks
     return last;
 }
 
@@ -201,6 +202,7 @@ fn call(a: Allocator, r: std.Random, prog: *Program, b: Mir.Block) !Mir.Value {
     const names = [_][]const u8{ "$temperature", "$abstime", "$vt", "$vt", "limexp" };
     const k = r.uintLessThan(usize, names.len);
     const args: []const Mir.Value = if (k >= 3) &.{pick(r, prog)} else &.{};
+    assert(args.len <= 1);
     return m.emitCall(a, b, try m.internString(a, names[k]), args);
 }
 
@@ -210,6 +212,7 @@ fn array(a: Allocator, r: std.Random, prog: *Program, b: Mir.Block) !Mir.Value {
     const m = &prog.mir;
     if (prog.lowered.mem_arrays.items.len == arrays_max) return pick(r, prog);
     try prog.lowered.mem_arrays.append(a, .{ .name = "arr", .len = array_len, .ty = .real });
+    assert(prog.lowered.mem_arrays.items.len <= arrays_max);
     var ver = try m.emitAnew(a, b, @intCast(prog.lowered.mem_arrays.items.len - 1));
     for (0..1 + r.uintLessThan(u32, 2)) |_| {
         const at = try m.addIntConst(a, r.uintLessThan(u32, array_len + 1));
@@ -275,10 +278,12 @@ fn samplePoint(r: std.Random, prog: *const Program) Point {
     const times = [_]f64{ 0, 5e-324, 1e-9, 1, 1e300 };
     pt.temperature = temps[r.uintLessThan(usize, temps.len)];
     pt.abstime = times[r.uintLessThan(usize, times.len)];
+    assert(pt.temperature > 0); // the host contract `$vt` relies on
     return pt;
 }
 
 fn sampleProbe(r: std.Random, bound: ?f64) f64 {
+    if (bound) |b| assert(b > 0);
     const pts: []const f64 = if (bound) |b| &.{ -b, -1, -0.5, 0, 0.5, 1, b } else &.{ -1e300, -800, -1, 0, 1, 800, 1e300 };
     return pts[r.uintLessThan(usize, pts.len)];
 }
@@ -340,6 +345,7 @@ fn inDomain(op: Mir.Opcode, x: f64, y: f64) bool {
 /// Runs the program at one point and records every executed row.
 fn evaluate(prog: *const Program, pt: Point, run: *Run) void {
     const m = &prog.mir;
+    assert(m.blockCount() > 0);
     var prev: Mir.Block = .entry;
     var cur: Mir.Block = .entry;
     // Bound: the programs' only cycles are counted loops, each block of one
@@ -390,6 +396,7 @@ fn evaluate(prog: *const Program, pt: Point, run: *Run) void {
 fn exec(prog: *const Program, pt: Point, run: *Run, inst: Mir.Inst) void {
     const m = &prog.mir;
     const res = @backingInt(m.instResult(inst));
+    assert(res < values_max);
     switch (m.instData(inst)) {
         .unary => |u| {
             const x = value(m, pt, run, u.operand);
@@ -446,6 +453,7 @@ fn exec(prog: *const Program, pt: Point, run: *Run, inst: Mir.Inst) void {
 fn record(run: *Run, res: u32, op: Mir.Opcode, x: f64, y: f64) void {
     run.runs[res] += 1;
     run.inside[res] += @intFromBool(inDomain(op, x, y));
+    assert(run.inside[res] <= run.runs[res]);
     const finite = math.isFinite(run.vals[res]) and math.isFinite(x) and math.isFinite(y);
     run.nonfinite[res] = run.nonfinite[res] or !finite;
 }
@@ -473,6 +481,7 @@ fn slice(prog: *const Program, root: Mir.Value, in: *[values_max]bool) void {
     var n: usize = 1;
     stack[0] = root;
     while (n > 0) {
+        assert(n <= stack.len);
         n -= 1;
         const v = stack[n];
         const i = @backingInt(v);
@@ -517,6 +526,7 @@ fn slice(prog: *const Program, root: Mir.Value, in: *[values_max]bool) void {
             .branch, .jump => unreachable, // a terminator defines no Value
         }
     }
+    assert(in[@backingInt(root)]);
 }
 
 fn checkProgram(gpa: Allocator, r: std.Random, round: usize) !void {
@@ -528,6 +538,7 @@ fn checkProgram(gpa: Allocator, r: std.Random, round: usize) !void {
     var bag = diag.Bag.init(a);
     const v = try proof.prove(gpa, &prog.mir, &prog.lowered, .{ .unknown_bound = prog.bound }, &bag);
     defer v.deinit(gpa);
+    assert(v.unit_modes.len == 1); // `build` writes one contribution
 
     var in_slice: [values_max]bool = undefined;
     slice(&prog, prog.out, &in_slice);

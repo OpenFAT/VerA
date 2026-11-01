@@ -114,7 +114,9 @@ pub fn check(mir: *const Mir, lowered: *const Lowered, pass: []const u8) Error!v
     // This module's own optimize mode (0.17: `std.debug.runtime_safety` is
     // deprecated and reports the standard library's).
     if (!builtin.mode.runtimeSafety()) return;
+    assert(pass.len != 0); // a stage name the compiler spells
     const v = try verify(mir, lowered) orelse return;
+    assert(v.what.len != 0);
     const op: []const u8 = if (v.inst != .none and @backingInt(v.inst) < mir.instCount()) @tagName(mir.instOp(v.inst)) else "-";
     std.debug.panic("MIR verifier: after {s}, `{s}` broken in module `{s}`: {s} (block {?d}, inst {d} `{s}`)", .{
         pass,
@@ -153,6 +155,7 @@ pub fn verify(mir: *const Mir, lowered: *const Lowered) Error!?Violation {
     // dominator tree can be built.
     const an = try Analysis.buildStructure(a, mir);
     assert(an.nb == mir.blockCount());
+    assert(an.nv == mir.valueCount());
     if (uses(mir, lowered, &an, pos)) |v| return v;
     return held(mir, lowered, &an);
 }
@@ -166,7 +169,10 @@ fn bad(invariant: Invariant, block: ?Mir.Block, inst: Mir.Inst, what: []const u8
 }
 
 fn blockOf(bi: usize) Mir.Block {
-    return @fromBackingInt(@intCast(bi));
+    assert(bi < Analysis.blocks_max);
+    const b: Mir.Block = @fromBackingInt(@intCast(bi));
+    assert(@backingInt(b) == bi);
+    return b;
 }
 
 fn chains(mir: *const Mir, pos: []u32) ?Violation {
@@ -189,6 +195,7 @@ fn chains(mir: *const Mir, pos: []u32) ?Violation {
             prev = cur;
         }
         if (prev != tail) return bad(.chain, b, tail, "`last` is not the end of the chain");
+        assert(k <= pos.len); // each row is placed once
     }
     return null;
 }
@@ -201,6 +208,7 @@ fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
     assert(nv >= fd);
     const extra = mir.extra.items;
     const n_callees = std.meta.tags(Mir.Callee).len;
+    comptime assert(Mir.callee_bits == 8); // the tag test below truncates to `u8`
     for (0..nb) |bi| {
         const b = blockOf(bi);
         var term: Mir.Inst = .none;
@@ -279,6 +287,7 @@ fn rows(mir: *const Mir, lowered: *const Lowered) ?Violation {
 /// Per dynamic Value: its payload names a row, and its alias chain ends.
 fn values(a: Allocator, mir: *const Mir, lowered: *const Lowered) Allocator.Error!?Violation {
     const nv = mir.valueCount();
+    assert(nv >= fd);
     const results = mir.insts.items(.result);
     const alias = mir.alias.items;
     if (alias.len != mir.defs.len) return bad(.handle, null, .none, "the alias table is not parallel to `defs`");
@@ -315,6 +324,7 @@ fn values(a: Allocator, mir: *const Mir, lowered: *const Lowered) Allocator.Erro
             j = t - fd;
         }
     }
+    for (mark) |m| assert(m == 2); // every walk ended and was closed
     return null;
 }
 
@@ -332,6 +342,7 @@ fn uses(mir: *const Mir, lowered: *const Lowered, an: *const Analysis, pos: []co
             const r = mir.instResult(inst);
             const live = reachable and an.rv(r) == r;
             const at = pos[@backingInt(inst)];
+            assert(at != none); // `chains` placed every linked row
             switch (mir.instData(inst)) {
                 .phi => |d| if (live) {
                     for (0..d.count) |k| {
@@ -399,6 +410,7 @@ fn available(mir: *const Mir, an: *const Analysis, pos: []const u32, v: Mir.Valu
     const d = mir.valueDef(r).inst_result;
     if (pos[@backingInt(d)] == none) return "an operand's defining row is linked into no block";
     const db = @backingInt(mir.instBlock(d));
+    assert(db < an.nb); // a linked row names its block (`chains`)
     if (db == b) {
         if (at == none or mir.instOp(d) == .phi or pos[@backingInt(d)] < at) return null;
         return "an operand is defined at or after its use in the same block";
@@ -410,6 +422,7 @@ fn available(mir: *const Mir, an: *const Analysis, pos: []const u32, v: Mir.Valu
 /// ponytail: the defining opcode only, not `Analysis.buildArrOf`'s fixpoint, so
 /// a phi over no version at all passes. Run that fixpoint here if one appears.
 fn version(mir: *const Mir, an: *const Analysis, v: Mir.Value) bool {
+    assert(@backingInt(v) < an.nv); // `rows` checked every operand
     const def = mir.valueDef(an.rv(v));
     if (def != .inst_result) return false;
     return switch (mir.instOp(def.inst_result)) {
@@ -423,6 +436,7 @@ fn version(mir: *const Mir, an: *const Analysis, v: Mir.Value) bool {
 /// i, an array's seed the `anew` of the array whose `held` is i.
 fn held(mir: *const Mir, lowered: *const Lowered, an: *const Analysis) ?Violation {
     assert(an.alias.len == an.nv);
+    assert(an.nb == mir.blockCount());
     for (lowered.held_vars.items, 0..) |h, i| {
         if (@backingInt(h.seed) >= an.nv) return bad(.handle, null, .none, "a `held_vars` seed names no Value");
         const seed = mir.valueDef(an.rv(h.seed));
@@ -447,6 +461,7 @@ fn held(mir: *const Mir, lowered: *const Lowered, an: *const Analysis) ?Violatio
 ///   join:  m = phi(then: t, else: e); ddx(m, 0); a0 = anew 0;
 ///          s = store a0[0] = m; fload s[0]
 fn sample(a: Allocator, mir: *Mir, lw: *Lowered) !Sample {
+    assert(mir.blockCount() == 0); // a fresh module
     try lw.nodes.append(a, .{ .name = "a", .kind = .net, .disc = "", .dir = .unspecified });
     try lw.params.append(a, .{ .name = "k", .ty = .real, .default = .f_one });
     try lw.mem_arrays.append(a, .{ .name = "m", .len = 2, .ty = .real });
@@ -469,6 +484,7 @@ fn sample(a: Allocator, mir: *Mir, lw: *Lowered) !Sample {
     const a0 = try mir.emitAnew(a, join, 0);
     const s = try mir.emit(a, join, .store, &.{ a0, .zero, m });
     const l = try mir.emit(a, join, .fload, &.{ s, .zero });
+    assert(mir.blockCount() == 4);
     return .{
         .then_b = then_b,
         .else_b = else_b,

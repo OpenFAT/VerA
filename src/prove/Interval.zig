@@ -57,51 +57,77 @@ pub fn point(x: f64) Interval {
     if (math.isNan(x)) return top;
     const r: Interval = .{ .lo = x, .hi = x };
     assert(r.contains(x));
+    assert(!r.isEmpty());
+    assert(r.bounded() == math.isFinite(x));
     return r;
 }
 
 /// Returns whether both bounds are finite, so every member is a finite double.
 pub fn bounded(i: Interval) bool {
-    return math.isFinite(i.lo) and math.isFinite(i.hi);
+    const r = math.isFinite(i.lo) and math.isFinite(i.hi);
+    if (r) assert(i.excludesInf());
+    if (r) assert(!math.isNan(i.lo));
+    return r;
 }
 
 /// Returns whether no value satisfies the bounds (unreachable). A `nonzero`
 /// `[0, 0]` has no member either but reads non-empty.
 pub fn isEmpty(i: Interval) bool {
-    return i.lo > i.hi or (i.lo == i.hi and (i.lo_open or i.hi_open));
+    const r = i.lo > i.hi or (i.lo == i.hi and (i.lo_open or i.hi_open));
+    if (r) assert(!(i.lo < i.hi));
+    if (!r) assert(!(i.lo > i.hi));
+    return r;
 }
 
 /// Returns whether the interval excludes ±inf; an open infinite bound does.
 pub fn excludesInf(i: Interval) bool {
     const lo_ok = math.isFinite(i.lo) or (i.lo == -math.inf(f64) and i.lo_open);
     const hi_ok = math.isFinite(i.hi) or (i.hi == math.inf(f64) and i.hi_open);
+    // A +inf low end or a -inf high end has inf as a member (or none).
+    if (lo_ok) assert(i.lo != math.inf(f64));
+    if (hi_ok) assert(i.hi != -math.inf(f64));
     return lo_ok and hi_ok;
 }
 
 /// Returns whether every member x satisfies x > k.
 pub fn gt(i: Interval, k: f64) bool {
-    return i.lo > k or (i.lo == k and i.lo_open);
+    const r = i.lo > k or (i.lo == k and i.lo_open);
+    if (r) assert(i.ge(k));
+    if (!r) assert(!(i.lo > k));
+    return r;
 }
 
 /// Returns whether every member x satisfies x >= k.
 pub fn ge(i: Interval, k: f64) bool {
-    return i.lo >= k;
+    const r = i.lo >= k;
+    if (r) assert(!math.isNan(i.lo));
+    if (!r) assert(!(i.lo > k)); // `gt`'s negative space, without calling it
+    return r;
 }
 
 /// Returns whether every member x satisfies x < k.
 pub fn lt(i: Interval, k: f64) bool {
-    return i.hi < k or (i.hi == k and i.hi_open);
+    const r = i.hi < k or (i.hi == k and i.hi_open);
+    if (r) assert(i.le(k));
+    if (!r) assert(!(i.hi < k));
+    return r;
 }
 
 /// Returns whether every member x satisfies x <= k.
 pub fn le(i: Interval, k: f64) bool {
-    return i.hi <= k;
+    const r = i.hi <= k;
+    if (r) assert(!math.isNan(i.hi));
+    if (!r) assert(!(i.hi < k)); // `lt`'s negative space, without calling it
+    return r;
 }
 
 /// Returns whether 0 is provably not a member (a sign, or the §3.4.2
 /// `exclude 0` hole).
 pub fn excludesZero(i: Interval) bool {
-    return i.nonzero or i.gt(0) or i.lt(0);
+    const r = i.nonzero or i.gt(0) or i.lt(0);
+    if (r) assert(!i.contains(0));
+    if (!r) assert(!i.nonzero);
+    return r;
 }
 
 /// Returns the intersection; guard evidence is applied this way. Exact:
@@ -125,6 +151,9 @@ pub fn meet(a: Interval, b: Interval) Interval {
     // must not test outside data.
     assert(!(r.lo < a.lo));
     assert(!(r.hi > a.hi));
+    assert(!(r.lo < b.lo));
+    assert(!(r.hi > b.hi));
+    if (b.nonzero) assert(r.nonzero);
     return r;
 }
 
@@ -147,6 +176,9 @@ pub fn join(a: Interval, b: Interval) Interval {
     r.nonzero = r.nonzero and b.nonzero;
     assert(!(r.lo > a.lo));
     assert(!(r.hi < a.hi));
+    assert(!(r.lo > b.lo));
+    assert(!(r.hi < b.hi));
+    if (r.nonzero) assert(b.nonzero);
     return r;
 }
 
@@ -155,6 +187,8 @@ pub fn contains(i: Interval, x: f64) bool {
     if (i.nonzero and x == 0) return false;
     const above = x > i.lo or (x == i.lo and !i.lo_open);
     const below = x < i.hi or (x == i.hi and !i.hi_open);
+    if (above) assert(!math.isNan(x));
+    if (below) assert(!math.isNan(i.hi));
     return above and below;
 }
 
