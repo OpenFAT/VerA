@@ -25,6 +25,7 @@ const Mir = @import("ir").Mir;
 const Lowered = @import("ir").Lowered;
 const guards = @import("guards.zig");
 const verify = @import("verify.zig");
+const Revisit = @import("revisit.zig").Revisit;
 
 /// Which arms a pass converts.
 pub const Mode = enum {
@@ -49,6 +50,138 @@ const card_visits_max: u32 = 256;
 /// One side of a diamond: the blocks from the arm's head to `last`, which
 /// jumps to `join`.
 const Side = struct { last: Mir.Block, join: Mir.Block };
+
+/// The counts `tryConvert` reads and keeps, and what one call read and
+/// changed, for `run`'s schedule (`Revisit`).
+///
+/// A visit that refuses is a function of the blocks it read (`reads`), of
+/// their round-start predecessor counts, and of value aliases, which a
+/// conversion only adds (a phi collapsing to its select), and an alias only
+/// adds refusals (`cardOnly`, `firstPoint`). So a block needs another visit
+/// only once a block it read is relinked (`wrote`) or starts a round with
+/// another predecessor count (`moved`).
+const Trace = struct {
+    /// Each block's predecessor count when the round began: what `tryConvert`
+    /// compares, so a round sees the counts a fresh `countPreds` gives.
+    preds: []u32,
+    /// Blocks it read: X, each arm block it classified and each block whose
+    /// predecessor count it compared (the join among them). Repeats allowed.
+    reads: std.ArrayList(u32) = .empty,
+    /// Blocks whose rows a conversion relinked: X, each arm block, the join.
+    wrote: std.ArrayList(u32) = .empty,
+    /// Every block's predecessor count as the MIR stands now, kept current
+    /// edge by edge as a conversion unlinks and emits terminators.
+    live: []u32,
+    /// Blocks whose `live` count changed since the round began. Repeats allowed.
+    moved: std.ArrayList(u32) = .empty,
+    /// Per block, its linked rows that `refuses` under the run's mode, and
+    /// those outside their domain, kept current row by row. Empty in the
+    /// test's reference fixpoint, which then walks every arm.
+    bad: []u32 = &.{},
+    restricted: []u32 = &.{},
+    mode: Mode = .pure,
+
+    /// Counts one edge into `to` gone (`delta` -1) or added (+1).
+    fn edge(t: *Trace, gpa: Allocator, to: Mir.Block, delta: i2) Error!void {
+        const i = @backingInt(to);
+        assert(i < t.live.len);
+        if (delta < 0) assert(t.live[i] > 0);
+        t.live[i] = if (delta < 0) t.live[i] - 1 else t.live[i] + 1;
+        try t.moved.append(gpa, i);
+    }
+
+    /// Counts every block's predecessors and rows. Free with `deinit`.
+    fn init(gpa: Allocator, mir: *const Mir, mode: Mode) Error!Trace {
+        const nb = mir.blockCount();
+        const preds = try gpa.alloc(u32, nb);
+        errdefer gpa.free(preds);
+        countPreds(mir, preds);
+        const live = try gpa.dupe(u32, preds);
+        errdefer gpa.free(live);
+        const bad = try gpa.alloc(u32, nb);
+        errdefer gpa.free(bad);
+        const restricted = try gpa.alloc(u32, nb);
+        @memset(bad, 0);
+        @memset(restricted, 0);
+        for (0..nb) |b| {
+            var it = mir.blockInsts(@fromBackingInt(@intCast(b)));
+            while (it.next()) |inst| {
+                bad[b] += @intFromBool(refuses(mir, inst, mode));
+                restricted[b] += @intFromBool(restricts(mir, inst));
+            }
+        }
+        const t: Trace = .{ .preds = preds, .live = live, .bad = bad, .restricted = restricted, .mode = mode };
+        assert(t.counted() or nb == 0);
+        return t;
+    }
+
+    fn deinit(t: *Trace, gpa: Allocator) void {
+        gpa.free(t.preds);
+        gpa.free(t.live);
+        gpa.free(t.bad);
+        gpa.free(t.restricted);
+        t.reads.deinit(gpa);
+        t.wrote.deinit(gpa);
+        t.moved.deinit(gpa);
+    }
+
+    /// Publishes the predecessor counts this round changed, making due in
+    /// the next round every block that read one.
+    fn endRound(t: *Trace, gpa: Allocator, r: *Revisit) Error!void {
+        for (t.moved.items) |b| if (t.preds[b] != t.live[b]) {
+            t.preds[b] = t.live[b];
+            try r.notify(gpa, b, Revisit.none);
+        };
+        t.moved.clearRetainingCapacity();
+        assert(t.moved.items.len == 0);
+    }
+
+    /// Asserts that the counts kept edge by edge and row by row are a fresh
+    /// count's. Overwrites `live`, so it is the trace's last use.
+    fn assertCounts(t: *Trace, mir: *const Mir) void {
+        countPreds(mir, t.live);
+        assert(std.mem.eql(u32, t.preds, t.live));
+        for (t.bad, t.restricted, 0..) |bad, restricted, b| {
+            var n_bad: u32 = 0;
+            var n_restricted: u32 = 0;
+            var it = mir.blockInsts(@fromBackingInt(@intCast(b)));
+            while (it.next()) |inst| {
+                n_bad += @intFromBool(refuses(mir, inst, t.mode));
+                n_restricted += @intFromBool(restricts(mir, inst));
+            }
+            assert(bad == n_bad);
+            assert(restricted == n_restricted);
+        }
+    }
+
+    /// Whether the per-block row counts are kept (the worklist schedule).
+    fn counted(t: *const Trace) bool {
+        assert(t.bad.len == t.restricted.len);
+        return t.bad.len != 0;
+    }
+
+    /// Counts row `inst` into block `b` (`delta` +1) or out of it (-1).
+    fn row(t: *Trace, mir: *const Mir, b: Mir.Block, inst: Mir.Inst, delta: i2) void {
+        if (!t.counted()) return;
+        const i = @backingInt(b);
+        const r = @intFromBool(restricts(mir, inst));
+        const d = @intFromBool(refuses(mir, inst, t.mode));
+        if (delta < 0) assert(t.bad[i] >= d);
+        if (delta < 0) assert(t.restricted[i] >= r);
+        t.bad[i] = if (delta < 0) t.bad[i] - d else t.bad[i] + d;
+        t.restricted[i] = if (delta < 0) t.restricted[i] - r else t.restricted[i] + r;
+    }
+
+    /// Moves block `from`'s counts onto `to`, as `Mir.splice` moves its rows.
+    fn spliced(t: *Trace, to: Mir.Block, from: Mir.Block) void {
+        if (!t.counted()) return;
+        assert(to != from);
+        t.bad[@backingInt(to)] += t.bad[@backingInt(from)];
+        t.restricted[@backingInt(to)] += t.restricted[@backingInt(from)];
+        t.bad[@backingInt(from)] = 0;
+        t.restricted[@backingInt(from)] = 0;
+    }
+};
 
 /// Test scaffold: `entry: branch (p > 0) then else; arm: one row, jump join;
 /// join: phi`. An arm of kind `.direct` is the edge straight to the join (a
@@ -112,33 +245,48 @@ const Shape = struct {
 };
 
 /// Converts every diamond `mode` admits, to a fixpoint, and returns how many
-/// converted. Blocks are visited in index order, so equal MIR converts
-/// identically. `.speculate` also writes `mir.guard_of`, and leaves a diamond
-/// alone when `keep` holds one of its join phis (`keepSlice`). `gpa` backs
-/// one temporary per-block predecessor count and the emitted rows.
+/// converted. The fixpoint runs in rounds: each round visits blocks in index
+/// order, against the predecessor counts as they stood when it began, so
+/// equal MIR converts identically. A round revisits only the blocks whose
+/// last visit read a block a conversion has changed since (`Revisit`): the
+/// rest would refuse again (`Trace`), so the rows written are the ones a full
+/// scan per round writes, in its order, and a chain of `n` nested diamonds
+/// costs `n` rounds of a few visits each instead of `n` scans of every block.
+/// `.speculate` also writes `mir.guard_of`, and leaves a diamond alone when
+/// `keep` holds one of its join phis (`keepSlice`). `gpa` backs the schedule
+/// and the emitted rows.
+/// Asserts that `keep`, when given, has a bit for every value.
 /// Invalidates every `Mir.InstIterator` and any `Analysis` built over `mir`.
 pub fn run(gpa: Allocator, mir: *Mir, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) Error!u32 {
     const nb = mir.blockCount();
     if (nb == 0) return 0;
     if (keep) |k| assert(k.bit_length >= mir.valueCount());
-    const preds = try gpa.alloc(u32, nb);
-    defer gpa.free(preds);
+    var trace = try Trace.init(gpa, mir, mode);
+    defer trace.deinit(gpa);
+    var revisit = try Revisit.init(gpa, nb);
+    defer revisit.deinit(gpa);
 
     var converted: u32 = 0;
-    var changed = true;
-    while (changed) {
-        changed = false;
-        countPreds(mir, preds);
-        for (0..nb) |b| {
-            if (!try tryConvert(gpa, mir, @fromBackingInt(@intCast(b)), preds, mode, keep)) continue;
+    var rounds: u32 = 0;
+    while (true) : (rounds += 1) {
+        // Every round but the last converts a block, and a block converts once.
+        assert(rounds <= nb);
+        while (revisit.next()) |b| {
+            trace.reads.clearRetainingCapacity();
+            trace.wrote.clearRetainingCapacity();
+            const done = try tryConvert(gpa, mir, @fromBackingInt(b), trace.preds, mode, keep, &trace);
+            try revisit.listen(gpa, b, trace.reads.items);
+            if (!done) continue;
             converted += 1;
-            // Each conversion retires one block's branch and adds none, so
-            // this also bounds the fixpoint's rounds.
+            // Each conversion retires one block's branch and adds none.
             assert(converted <= nb);
-            changed = true;
+            for (trace.wrote.items) |t| try revisit.notify(gpa, t, b);
         }
+        try trace.endRound(gpa, &revisit);
+        if (!revisit.nextRound()) break;
     }
     assert(mir.blockCount() == nb); // conversion adds no block
+    trace.assertCounts(mir);
     return converted;
 }
 
@@ -236,15 +384,57 @@ fn countPreds(mir: *const Mir, preds: []u32) void {
 /// `.speculate` a chain of them (each jumping to the next, the next entered
 /// only from there). Returns null on any disqualifier. Does not mutate: both
 /// sides validate before either moves.
-fn classifyChain(mir: *const Mir, x: Mir.Block, head: Mir.Block, preds: []const u32, mode: Mode) ?Side {
+/// Appends every block it reads to `trace.reads`.
+fn classifyChain(gpa: Allocator, mir: *const Mir, x: Mir.Block, head: Mir.Block, preds: []const u32, mode: Mode, trace: *Trace) Error!?Side {
     var b = head;
     // A chain visits each block once: one more step than blocks is a cycle.
     for (0..preds.len) |_| {
-        const next = classifyArm(mir, x, b, preds, mode) orelse return null;
+        try trace.reads.append(gpa, @backingInt(b));
+        const next = armOf(mir, x, b, preds, mode, trace) orelse return null;
+        try trace.reads.append(gpa, @backingInt(next));
         if (mode == .pure or preds[@backingInt(next)] != 1) return .{ .last = b, .join = next };
         b = next;
     }
     return null;
+}
+
+/// `classifyArm` from the row counts when the trace keeps them and the
+/// block ends in its jump: no refused row and a jump last is exactly what the
+/// walk accepts, and any refused row is exactly what it refuses.
+fn armOf(mir: *const Mir, x: Mir.Block, arm: Mir.Block, preds: []const u32, mode: Mode, trace: *const Trace) ?Mir.Block {
+    assert(@backingInt(arm) < preds.len);
+    if (!trace.counted()) return classifyArm(mir, x, arm, preds, mode);
+    assert(trace.mode == mode);
+    if (arm == x) return null;
+    if (preds[@backingInt(arm)] != 1) return null;
+    if (trace.bad[@backingInt(arm)] != 0) return null;
+    const last = mir.blockLast(arm);
+    // Rows after the terminator (late phis): the walk decides.
+    if (last == .none or mir.instOp(last) != .jump) return classifyArm(mir, x, arm, preds, mode);
+    const j = mir.instData(last).jump.target;
+    if (j == x or j == arm) return null;
+    return j;
+}
+
+/// Whether row `inst` keeps every block linking it from being an arm under
+/// `mode`, wherever it sits: what `classifyArm` refuses row by row, apart
+/// from a row after the terminator. A phi's answer changes when it collapses.
+fn refuses(mir: *const Mir, inst: Mir.Inst, mode: Mode) bool {
+    const op = mir.instOp(inst);
+    const collapsed = op == .phi and mir.resolveAlias(mir.instResult(inst)) != mir.instResult(inst);
+    if (mode == .speculate and collapsed) return false; // skipped before any test
+    const by_row = switch (mir.instData(inst)) {
+        .unary => |u| u.op == .opt_barrier,
+        .binary, .ternary, .load, .jump => false,
+        .phi => !collapsed,
+        .anew, .store, .call, .branch => true,
+    };
+    return by_row or (mode == .pure and restricts(mir, inst));
+}
+
+/// Whether row `inst` is outside §4.2.4's total ops (`Mir.opcode` domain).
+fn restricts(mir: *const Mir, inst: Mir.Inst) bool {
+    return Mir.opcode.table.getPtrConst(mir.instOp(inst)).domain != .all;
 }
 
 /// Validates one block of an arm; returns the block it jumps to.
@@ -288,9 +478,14 @@ fn classifyArm(mir: *const Mir, x: Mir.Block, arm: Mir.Block, preds: []const u32
     return j;
 }
 
-fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) Error!bool {
+/// Converts the diamond or triangle X branches into, if it qualifies.
+/// Records in `trace` what it read and, on success, what it relinked; keeps
+/// `trace.live` current. Asserts that `preds` has a count per block.
+fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []const u32, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged, trace: *Trace) Error!bool {
     assert(preds.len == mir.blockCount());
-    const term = terminator(mir, x) orelse return false;
+    assert(trace.live.len == preds.len);
+    try trace.reads.append(gpa, @backingInt(x));
+    const term = terminatorOf(mir, x, trace) orelse return false;
     if (mir.instOp(term) != .branch) return false;
     const br = mir.instData(term).branch;
     if (br.then_block == br.else_block) return false;
@@ -302,8 +497,8 @@ fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode,
 
     // Resolve the two sides. At least one must be a real arm; the other may be
     // the join itself (triangle from `&&`/`||` and one-armed `if`).
-    const then_c = classifyChain(mir, x, br.then_block, preds, mode);
-    const else_c = classifyChain(mir, x, br.else_block, preds, mode);
+    const then_c = try classifyChain(gpa, mir, x, br.then_block, preds, mode, trace);
+    const else_c = try classifyChain(gpa, mir, x, br.else_block, preds, mode, trace);
     var join: Mir.Block = undefined;
     var then_arm: ?Side = null;
     var else_arm: ?Side = null;
@@ -352,18 +547,27 @@ fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode,
     // is orphaned with the branch. Under `.speculate` a domain-restricted row
     // takes this arm's literal as the outermost of its guard.
     mir.unlink(x, term);
+    trace.row(mir, x, term, -1);
+    try trace.edge(gpa, br.then_block, -1);
+    try trace.edge(gpa, br.else_block, -1);
+    try trace.wrote.append(gpa, @backingInt(x));
     for ([_]Mir.Block{ br.then_block, br.else_block }, [_]?Side{ then_arm, else_arm }, [_]bool{ true, false }) |head, arm, taken| if (arm) |a| {
         var b = head;
         for (0..preds.len) |_| {
-            const jmp = terminator(mir, b).?;
+            const jmp = terminatorOf(mir, b, trace).?;
             const next = mir.instData(jmp).jump.target;
-            if (mode == .speculate) {
+            // A block with no restricted row has nothing to guard.
+            if (mode == .speculate and (!trace.counted() or trace.restricted[@backingInt(b)] != 0)) {
                 var it = mir.blockInsts(b);
-                while (it.next()) |inst| if (Mir.opcode.get(mir.instOp(inst)).domain != .all)
+                while (it.next()) |inst| if (restricts(mir, inst))
                     try mir.addGuardLit(gpa, inst, cond, taken);
             }
             mir.unlink(b, jmp);
+            trace.row(mir, b, jmp, -1);
+            try trace.edge(gpa, next, -1);
+            try trace.wrote.append(gpa, @backingInt(b));
             mir.splice(x, b);
+            trace.spliced(x, b);
             if (b == a.last) break;
             b = next;
         } else unreachable; // `classifyChain` walked this chain to `a.last`
@@ -378,12 +582,17 @@ fn tryConvert(gpa: Allocator, mir: *Mir, x: Mir.Block, preds: []u32, mode: Mode,
         const vt = mir.phiIn(phi, then_key).?;
         const ve = mir.phiIn(phi, else_key).?;
         const sel = try mir.emit(gpa, x, .select, &.{ cond, vt, ve });
+        trace.row(mir, x, mir.valueDef(sel).inst_result, 1);
         // emit may relocate the borrowed column; the cursor itself is an index.
         phis.next_col = mir.insts.items(.next);
+        trace.row(mir, join, phi, -1);
         rewritePhi(mir, phi, then_key, else_key, x, sel);
+        trace.row(mir, join, phi, 1);
     }
-    _ = try mir.emitJump(gpa, x, join);
-    const now = terminator(mir, x).?;
+    trace.row(mir, x, try mir.emitJump(gpa, x, join), 1);
+    try trace.edge(gpa, join, 1);
+    try trace.wrote.append(gpa, @backingInt(join));
+    const now = terminatorOf(mir, x, trace).?;
     assert(mir.instOp(now) == .jump); // X falls through to the join now
     assert(mir.instData(now).jump.target == join);
     return true;
@@ -408,6 +617,19 @@ fn peelToBool(mir: *const Mir, cond0: Mir.Value) Mir.Value {
         if (!guards.isPredicateValue(mir, d.lhs)) return cond;
         cond = d.lhs;
     }
+}
+
+/// `terminator`, read off the block's last row when the trace keeps row
+/// counts and that row terminates: a well-formed block links one terminator
+/// (`verify`'s "a second terminator"), so the last row, when it is one, is it.
+fn terminatorOf(mir: *const Mir, b: Mir.Block, trace: *const Trace) ?Mir.Inst {
+    if (!trace.counted()) return terminator(mir, b);
+    const last = mir.blockLast(b);
+    if (last != .none) switch (Mir.opClass(mir.instOp(last))) {
+        .branch, .jump => return last,
+        .unary, .binary, .ternary, .phi, .call, .anew, .load, .store => {},
+    };
+    return terminator(mir, b);
 }
 
 /// `b`'s branch or jump, found by opcode and not by position: a phi row can
@@ -909,4 +1131,194 @@ test "if-conversion: .speculate keeps a branch the model card alone decides, and
     var keep = try keepSlice(a, &s.mir, &.{s.phi});
     defer keep.deinit(a);
     try std.testing.expectEqual(@as(u32, 0), try run(a, &s.mir, .speculate, &keep));
+}
+
+test "if-conversion: the worklist converts exactly what a full scan per round converts" {
+    // Oracle: `runFullScans`, the fixpoint as one scan of every block per
+    // round with the arm walk `classifyArm` and the terminator scan, as `run`
+    // was before its worklist and row counts. Equal MIR must come out byte for
+    // byte (rows, links, extra, aliases, guards) with the same count, over
+    // random structured control flow in both modes, whose `case` chains take
+    // the full scan one round per arm.
+    const T = struct {
+        /// The fixpoint `run` computes, as one full scan of every block per round
+        /// against a fresh `countPreds`: the schedule `run` had before its worklist,
+        /// kept as the reference its test compares against.
+        fn runFullScans(gpa: Allocator, mir: *Mir, mode: Mode, keep: ?*const std.DynamicBitSetUnmanaged) Error!u32 {
+            const nb = mir.blockCount();
+            if (nb == 0) return 0;
+            var trace: Trace = .{ .preds = try gpa.alloc(u32, nb), .live = try gpa.alloc(u32, nb) };
+            defer {
+                gpa.free(trace.preds);
+                gpa.free(trace.live);
+                trace.reads.deinit(gpa);
+                trace.wrote.deinit(gpa);
+                trace.moved.deinit(gpa);
+            }
+            var converted: u32 = 0;
+            var changed = true;
+            while (changed) {
+                changed = false;
+                countPreds(mir, trace.preds);
+                @memcpy(trace.live, trace.preds);
+                for (0..nb) |b| {
+                    if (!try tryConvert(gpa, mir, @fromBackingInt(@intCast(b)), trace.preds, mode, keep, &trace)) continue;
+                    converted += 1;
+                    changed = true;
+                }
+            }
+            return converted;
+        }
+
+        /// Test generator: random structured control flow over two block params.
+        /// A region is straight-line rows, a diamond, a triangle, a §5.8.3-style
+        /// `case` chain of nested joins, or two regions in sequence; arms hold pure
+        /// rows, a domain-restricted `sqrt`, or a call, so some diamonds convert under
+        /// `.pure`, more under `.speculate`, and some never. Blocks are handed out in
+        /// a shuffled order, so an index says nothing of where a block nests.
+        const RandomCfg = struct {
+            m: *Mir,
+            rng: std.Random,
+            p: [2]Mir.Value,
+            pool: [blocks_max]Mir.Block = undefined,
+            used: u32 = 0,
+
+            const blocks_max = 400;
+
+            fn build(m: *Mir, seed: u64) !Mir.Value {
+                const a = std.testing.allocator;
+                var prng: std.Random.DefaultPrng = .init(seed);
+                var g: RandomCfg = .{ .m = m, .rng = prng.random(), .p = undefined };
+                const entry = try m.addBlock(a);
+                for (&g.pool) |*b| b.* = try m.addBlock(a);
+                g.rng.shuffle(Mir.Block, &g.pool);
+                g.p = .{ try m.addBlockParam(a, 0), try m.addBlockParam(a, 1) };
+                var b = entry;
+                return g.region(&b, g.p[0], 3);
+            }
+
+            fn block(g: *RandomCfg) !Mir.Block {
+                if (g.used == blocks_max) return error.TestGeneratorOutOfBlocks;
+                g.used += 1;
+                return g.pool[g.used - 1];
+            }
+
+            /// Emits a region into `b.*`, leaves `b.*` at its last block, and returns
+            /// its value.
+            fn region(g: *RandomCfg, b: *Mir.Block, in: Mir.Value, depth: u32) !Mir.Value {
+                const a = std.testing.allocator;
+                const m = g.m;
+                const pick = if (depth == 0) 0 else g.rng.uintLessThan(u32, 6);
+                switch (pick) {
+                    0 => return g.row(b.*, in),
+                    1, 2 => {
+                        const c = try m.emit(a, b.*, .flt, &.{ in, g.p[1] });
+                        const t = try g.block();
+                        const triangle = pick == 2;
+                        const e = if (triangle) undefined else try g.block();
+                        const j = try g.block();
+                        _ = try m.emitBranch(a, b.*, c, t, if (triangle) j else e);
+                        var tb = t;
+                        const tv = try g.region(&tb, in, depth - 1);
+                        _ = try m.emitJump(a, tb, j);
+                        var eb = e;
+                        const ev = if (triangle) in else try g.region(&eb, in, depth - 1);
+                        if (!triangle) _ = try m.emitJump(a, eb, j);
+                        const ph = try m.emitPhi(a, j, &.{ .{ .block = tb, .value = tv }, .{ .block = if (triangle) b.* else eb, .value = ev } });
+                        b.* = j;
+                        return ph;
+                    },
+                    3 => {
+                        // `case`: arm k tests `in < k`, each else nests the next
+                        // test, and each level's join jumps to the one outside it.
+                        const arms = 1 + g.rng.uintLessThan(u32, 6);
+                        var joins: [8]Mir.Block = undefined;
+                        var arm_end: [8]Mir.Block = undefined;
+                        var arm_val: [8]Mir.Value = undefined;
+                        var cur = b.*;
+                        for (0..arms) |k| {
+                            const c = try m.emit(a, cur, .flt, &.{ in, try m.addFloatConst(a, @floatFromInt(k)) });
+                            const t = try g.block();
+                            const e = try g.block();
+                            joins[k] = try g.block();
+                            _ = try m.emitBranch(a, cur, c, t, e);
+                            var tb = t;
+                            arm_val[k] = try g.region(&tb, in, depth - 1);
+                            arm_end[k] = tb;
+                            cur = e;
+                        }
+                        var inner = try g.row(cur, in);
+                        var from = cur;
+                        var k = arms;
+                        while (k > 0) {
+                            k -= 1;
+                            _ = try m.emitJump(a, from, joins[k]);
+                            _ = try m.emitJump(a, arm_end[k], joins[k]);
+                            inner = try m.emitPhi(a, joins[k], &.{ .{ .block = arm_end[k], .value = arm_val[k] }, .{ .block = from, .value = inner } });
+                            from = joins[k];
+                        }
+                        b.* = from;
+                        return inner;
+                    },
+                    4 => {
+                        // One join for two branches: `b` branches to `d` or straight
+                        // to `j`, and `d` is a diamond into `j` too, so `j` merges
+                        // three edges. Once `d` converts, `b` is a triangle, in the
+                        // same round when `b` sits after `d`.
+                        const c = try m.emit(a, b.*, .flt, &.{ in, g.p[1] });
+                        const d = try g.block();
+                        const t = try g.block();
+                        const e = try g.block();
+                        const j = try g.block();
+                        _ = try m.emitBranch(a, b.*, c, d, j);
+                        const c2 = try m.emit(a, d, .fgt, &.{ in, g.p[0] });
+                        _ = try m.emitBranch(a, d, c2, t, e);
+                        var tb = t;
+                        const tv = try g.region(&tb, in, depth - 1);
+                        _ = try m.emitJump(a, tb, j);
+                        var eb = e;
+                        const ev = try g.region(&eb, in, depth - 1);
+                        _ = try m.emitJump(a, eb, j);
+                        const ph = try m.emitPhi(a, j, &.{ .{ .block = tb, .value = tv }, .{ .block = eb, .value = ev }, .{ .block = b.*, .value = in } });
+                        b.* = j;
+                        return ph;
+                    },
+                    else => {
+                        const v = try g.region(b, in, depth - 1);
+                        return g.region(b, v, depth - 1);
+                    },
+                }
+            }
+
+            /// One row on `in`: mostly pure, sometimes `sqrt` or a call.
+            fn row(g: *RandomCfg, b: Mir.Block, in: Mir.Value) !Mir.Value {
+                const a = std.testing.allocator;
+                return switch (g.rng.uintLessThan(u32, 8)) {
+                    0 => g.m.emit(a, b, .sqrt, &.{in}),
+                    1 => g.m.emitCall(a, b, try g.m.internString(a, "$abstime"), &.{}),
+                    else => g.m.emit(a, b, .fadd, &.{ in, g.p[g.rng.uintLessThan(u32, 2)] }),
+                };
+            }
+        };
+    };
+    const a = std.testing.allocator;
+    for (0..300) |seed| for ([_]Mode{ .pure, .speculate }) |mode| {
+        var want: Mir = .{};
+        defer want.deinit(a);
+        var got: Mir = .{};
+        defer got.deinit(a);
+        _ = try T.RandomCfg.build(&want, seed);
+        _ = try T.RandomCfg.build(&got, seed);
+        const n_want = try T.runFullScans(a, &want, mode, null);
+        const n_got = try run(a, &got, mode, null);
+        try std.testing.expectEqual(n_want, n_got);
+        inline for (.{ .op, .a, .b, .result, .next, .block }) |col|
+            try std.testing.expectEqualSlices(@TypeOf(want.insts.items(col)[0]), want.insts.items(col), got.insts.items(col));
+        inline for (.{ .first, .last }) |col|
+            try std.testing.expectEqualSlices(Mir.Inst, want.blocks.items(col), got.blocks.items(col));
+        try std.testing.expectEqualSlices(u32, want.extra.items, got.extra.items);
+        try std.testing.expectEqualSlices(Mir.Value, want.alias.items, got.alias.items);
+        try std.testing.expectEqualSlices(Mir.GuardLit, want.guard_lits.items, got.guard_lits.items);
+        for (0..want.instCount()) |i| try std.testing.expectEqual(want.guardOf(@fromBackingInt(@intCast(i))), got.guardOf(@fromBackingInt(@intCast(i))));
+    };
 }

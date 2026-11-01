@@ -39,4 +39,5 @@ test {
     _ = @import("cfg.zig");
     _ = @import("invariance.zig");
     _ = @import("falsify.zig");
+    _ = @import("revisit.zig");
 }
