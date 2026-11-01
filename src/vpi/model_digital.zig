@@ -211,7 +211,7 @@ pub fn buildDigital(model_gpa: std.mem.Allocator, r: *sim.digital.Run) Error!Des
             if (kind == .reg) try addBits(arena, &objects, r, user.vpiRegBit);
         }
         // §11.6.12 parameters. The engine folds each into a slot of its own
-        // (IEEE 1364 §12.2, `Run.params`), so NOTE 1's "final value of the
+        // (IEEE 1364 §12.2, `Run.decls.params`), so NOTE 1's "final value of the
         // parameter after all module instantiation overrides and defparams
         // have been resolved" is that slot, read like any other value.
         for (m.params) |p| {
@@ -441,7 +441,7 @@ fn addBits(arena: std.mem.Allocator, objects: *Rows, r: *const sim.digital.Run, 
 ///
 /// ponytail: a loop generate nested in another generate block, and a
 /// conditional generate's scope, have no gen scope yet; both are rows of
-/// `Run.scope_info` whose parent is itself lexical. Net arrays and other
+/// `Run.hier.scopes` whose parent is itself lexical. Net arrays and other
 /// declarations within a gen scope are not modelled yet.
 ///
 /// Asserts that `vpi_of` maps every engine scope, and that each group's
