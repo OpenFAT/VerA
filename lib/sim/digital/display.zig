@@ -68,8 +68,8 @@ const setBit = @import("net.zig").setBit;
 const Signal = @import("net.zig").Signal;
 const netPull = @import("net.zig").netPull;
 /// §9.4.3 Table 9-23's C conversion, the one the analog devices run.
-const str_k = @import("kernels").str_kernels;
-const zCReal = str_k.zCReal;
+const str_real = @import("kernels").str_real;
+const zCReal = str_real.zCReal;
 const system = @import("system.zig");
 const fmt = @import("kernels").fmt;
 const Radix = fmt.Radix;
@@ -295,7 +295,7 @@ pub fn sformat(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocat
 }
 
 /// §17.1.1.2 one real conversion (`%e %f %g`, §9.4.7 `%r`): C's text under
-/// C11 7.21.6.1p6's `flags` (`str_kernels.zc_*`; `fmt.flagVerdict` has
+/// C11 7.21.6.1p6's `flags` (`str_real.zc_*`; `fmt.flagVerdict` has
 /// refused '#' on `%r`), in a field `width` wide, for both engines. No width
 /// or precision is too large: the padding is written, not buffered, and the
 /// text goes through a buffer sized for this precision (from `gpa` past a
@@ -311,13 +311,13 @@ pub fn real(out: *std.Io.Writer, gpa: std.mem.Allocator, r: f64, conv: u8, flags
     // as `zCReal` would pad it: '-' on the right, '0' after the sign of a
     // finite value (C: the '0' flag is ignored for inf and nan), else
     // spaces on the left.
-    const text = zCReal(buf, r, conv, flags & ~(str_k.zc_left | str_k.zc_zero), 0, precision);
+    const text = zCReal(buf, r, conv, flags & ~(str_real.zc_left | str_real.zc_zero), 0, precision);
     const pad = (width orelse 0) -| text.len;
-    if (flags & str_k.zc_left != 0) {
+    if (flags & str_real.zc_left != 0) {
         try out.writeAll(text);
         return out.splatByteAll(' ', @intCast(pad));
     }
-    const zero = flags & str_k.zc_zero != 0 and std.math.isFinite(r);
+    const zero = flags & str_real.zc_zero != 0 and std.math.isFinite(r);
     const sign: usize = if (zero and text.len != 0 and (text[0] == '-' or text[0] == '+' or text[0] == ' ')) 1 else 0;
     try out.writeAll(text[0..sign]);
     try out.splatByteAll(if (zero) '0' else ' ', @intCast(pad));
@@ -328,8 +328,8 @@ pub fn real(out: *std.Io.Writer, gpa: std.mem.Allocator, r: f64, conv: u8, flags
 /// and a `%s` field's '0' pads with spaces still (iverilog: `%05s` of "ab"
 /// is "   ab", `%05c` of 65 "0000A").
 pub fn fieldFill(sp: fmt.Spec, conv: u8) ?Fill {
-    if (sp.flags & str_k.zc_left != 0) return .left;
-    if (sp.flags & str_k.zc_zero != 0 and (sp.width orelse 0) != 0 and conv | 0x20 != 's') return .zero;
+    if (sp.flags & str_real.zc_left != 0) return .left;
+    if (sp.flags & str_real.zc_zero != 0 and (sp.width orelse 0) != 0 and conv | 0x20 != 's') return .zero;
     return null;
 }
 
@@ -702,7 +702,7 @@ fn bareReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!void {
         const digits = std.math.log10_int(@as(u64, self.timeOf(self.scope).scale.local_per_unit));
         return real(self.out, a, r, 'f', 0, digits, null);
     }
-    try real(self.out, a, r, 'g', str_k.zc_alt, -1, null);
+    try real(self.out, a, r, 'g', str_real.zc_alt, -1, null);
 }
 
 /// §17.1.1.2 `%u` (`four` false: "unknown or high-impedance bits ... shall
@@ -923,7 +923,7 @@ test "§17.1.1.2 real pads its field as zCReal does, under every flag set (#43)"
     var buf: [600]u8 = undefined;
     for (values) |v| for ("eEfFgGrR") |conv| for (0..32) |flags| for ([_]usize{ 0, 1, 7, 20 }) |width| for ([_]i64{ -1, 0, 3 }) |prec| {
         const f: u8 = @intCast(flags);
-        if (f & str_k.zc_alt != 0 and !str_k.zcAltOk(conv)) continue; // E0825
+        if (f & str_real.zc_alt != 0 and !str_real.zcAltOk(conv)) continue; // E0825
         var got: std.Io.Writer.Allocating = .init(std.testing.allocator);
         defer got.deinit();
         try real(&got.writer, std.testing.allocator, v, conv, f, prec, width);

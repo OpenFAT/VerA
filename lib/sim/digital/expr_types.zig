@@ -80,8 +80,8 @@ pub const Typing = struct {
     part_selects: std.AutoHashMapUnmanaged(SpecExpr, VecRange) = .empty,
 };
 
-/// The lexer's literal row, which the frontend does not re-export.
-const IntLiteral = @typeInfo(@TypeOf(Ast.ExprStore.intLiteral)).@"fn".return_type.?;
+/// The AST's `.int_literal` side-table row.
+const IntLiteral = Ast.IntLiteral;
 
 /// A decimal literal's width: its size, or for an unsized one 32 bits, which
 /// §3.5.1 makes a minimum: a value that does not fit keeps the frontend's 64.

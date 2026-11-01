@@ -161,10 +161,10 @@ pc: u32 = 0,
 /// IEEE 1364 §19.9's regions, in text-stream order. Read once per
 /// unconnected input port; `src/analog/node.zig`'s `applyUnconnectedDrive` is
 /// the analog half of the same directive.
-drives: []const Front.Preprocessor.DriveRegion = &.{},
+drives: []const Front.directive_events.DriveRegion = &.{},
 /// IEEE 1364 §19.2's `default_nettype regions, in text-stream order: the
 /// type of a §4.5 implicit net.
-nettypes: []const Front.Preprocessor.NetTypeRegion = &.{},
+nettypes: []const Front.directive_events.NetTypeRegion = &.{},
 /// Variables, array elements and nets share one slot space, so one `store`
 /// wakes event waiters for all three.
 values: []Int.Literal,
@@ -221,7 +221,7 @@ running: bool = false,
 /// `.lower` while `elaborate` runs, `.run` once it returns, so an error
 /// from `runUntil` or from a host (VPI) between its calls is the run's.
 /// An emitter that compiles the elaborated design instead of running it
-/// (`src/codegen/digital/emit.zig` `program`, `device`) sets it back to `.lower`.
+/// (`src/codegen/digital/` `program`, `device`) sets it back to `.lower`.
 diag_stage: diag.Stage = .lower,
 /// `resolution.resolveJoined`'s scratch, likewise, and how deep its
 /// calls are: only the outermost resets it.

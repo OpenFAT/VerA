@@ -140,7 +140,7 @@ pub fn timeReal(self: *State, v: f64, unit_exp: i32, width: ?u64, precision: i64
 }
 
 /// One real conversion (§17.1.1.2 `%e %f %g`, §9.4.7 `%r`): C's text
-/// under `flags` (`str_kernels.zc_*`) in a field `width` wide
+/// under `flags` (`str_real.zc_*`) in a field `width` wide
 /// (`display.real`).
 pub fn real(self: *State, r: f64, conv: u8, flags: u8, precision: i64, width: ?u64) Error!void {
     return display.real(self.out, self.gpa, r, conv, flags, precision, width);

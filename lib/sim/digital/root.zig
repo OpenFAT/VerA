@@ -320,21 +320,21 @@ fn runDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *di
 }
 
 fn elaborateDeep(arena: std.mem.Allocator, source: []const u8, opts: Options, bag: *diag.Bag, out: *std.Io.Writer) Error!Run {
-    const pp: Front.Preprocessor.Output = if (opts.mixed) |mx| .{
+    const pp: Front.preprocessor.Output = if (opts.mixed) |mx| .{
         .text = source,
         .directives = .{ .timescales = try mixedTimescales(arena, mx.timescales) },
-    } else Front.Preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .defines = opts.defines, .std_defs = false, .more = more: {
-        const more = try arena.alloc(Front.Preprocessor.File, opts.more.len);
+    } else Front.preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .defines = opts.defines, .std_defs = false, .more = more: {
+        const more = try arena.alloc(Front.preprocessor.File, opts.more.len);
         for (opts.more, more) |u, *f| f.* = .{ .name = u.name, .text = u.text };
         break :more more;
-    }, .bag = bag, .std_1364 = @backingInt(opts.language) < @backingInt(Front.token.KeywordSet.vams_2_3), .protect_keys = opts.protect_keys }) catch |e| return switch (e) {
+    }, .bag = bag, .std_1364 = @backingInt(opts.language) < @backingInt(Front.keyword.KeywordSet.vams_2_3), .protect_keys = opts.protect_keys }) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.PreprocessFailed => error.DigitalFailed,
     };
     const text = pp.text;
     const times = pp.directives.timescales;
     const drives = pp.directives.drives;
-    var tokens = try Front.Lexer.Lexer.tokenize(arena, text);
+    var tokens = try Front.lexer.tokenize(arena, text, null);
     var parser = Front.Parser.Parser.init(arena, text, tokens.items(.tag), tokens.items(.start), bag);
     parser.digital = true;
     parser.setLanguage(opts.language);

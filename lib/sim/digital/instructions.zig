@@ -120,7 +120,7 @@ pub fn task(self: *Run, scratch: std.mem.Allocator, s: @FieldType(Instruction, "
             const verbose = args.len == 0 or ((try evaluate.eval(self, scratch, args[0], 0)).asInt() orelse 1) != 0;
             if (verbose) {
                 const start_byte = self.starts[s.tok];
-                const loc = self.bag.locate(.{ .start = start_byte, .end = start_byte }, null);
+                const loc = self.bag.locate(.{ .start = start_byte, .end = start_byte }, .none);
                 const fmt_s = "{s} at tick {d}, {s} byte {d}\n";
                 const fmt_args = .{ if (stop) "$stop" else "$finish", self.scheduler.now, self.bag.fileName(loc.file), loc.offset };
                 if (stop) std.debug.print(fmt_s, fmt_args) else try self.out.print(fmt_s, fmt_args);

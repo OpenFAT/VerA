@@ -206,7 +206,7 @@ comptime {
 }
 
 // ponytail: each row is one `SysFn` and its two evaluators (interpreter,
-// `src/codegen/digital/emit_expr.zig`) away from running.
+// `src/codegen/digital/expr_system.zig`) away from running.
 /// VAMS §9.2's functions whose "Supported in digital context" cell is Yes
 /// and that the digital engine does not run, each with its table: refused by
 /// name (E0829), never as an unknown form.

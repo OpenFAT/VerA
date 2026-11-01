@@ -55,7 +55,7 @@ pub fn show(em: *Emitter, args: []const Ast.ExprId, sh: display.Show, only_first
                 if (ex.tag(e) == .sys_call and r.typing.sys_calls[@backingInt(e)].? == .realtime)
                     try em.print(", 'f', 0, {d}, null);\n", .{std.math.log10_int(@as(u64, r.timeOf(r.scope).scale.local_per_unit))})
                 else
-                    try em.print(", 'g', {d}, -1, null);\n", .{kernels.str_kernels.zc_alt});
+                    try em.print(", 'g', {d}, -1, null);\n", .{kernels.str_real.zc_alt});
             } else try operand(em, e, sh.radix, null, false);
             continue;
         }
@@ -91,7 +91,7 @@ pub fn dynamicFormat(em: *Emitter, args: []const Ast.ExprId) Error!void {
         try em.print("            const c{d}_{d} = (try s.nextSpec(&f{d}, \"{f}\", \"{f}\")) orelse break :b{d};\n", .{ lb, k, lb, scope, lib, lb });
         try em.print("            switch (c{d}_{d}.conv) {{\n                'b', 'B', 'o', 'O', 'h', 'H', 'x', 'X', 'd', 'D' => try s.value(", .{ lb, k });
         var t = try expr.selfDetermined(em, a);
-        try em.print(", {d}, {}, switch (c{d}_{d}.conv) {{\n                    'b', 'B' => .binary,\n                    'o', 'O' => .octal,\n                    'h', 'H', 'x', 'X' => .hex,\n                    else => .decimal,\n                }}, c{d}_{d}.width, c{d}_{d}.flags & {d} != 0),\n", .{ t.width, t.signed, lb, k, lb, k, lb, k, kernels.str_kernels.zc_zero });
+        try em.print(", {d}, {}, switch (c{d}_{d}.conv) {{\n                    'b', 'B' => .binary,\n                    'o', 'O' => .octal,\n                    'h', 'H', 'x', 'X' => .hex,\n                    else => .decimal,\n                }}, c{d}_{d}.width, c{d}_{d}.flags & {d} != 0),\n", .{ t.width, t.signed, lb, k, lb, k, lb, k, kernels.str_real.zc_zero });
         if (compile.typeOf(r, a).real) {
             try em.print("                't', 'T' => try s.timeReal(", .{});
             try expr_real.real(em, a);

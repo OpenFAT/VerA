@@ -68,7 +68,7 @@ pub const Options = struct {
     file_name: []const u8 = "<digital>",
     include_dirs: []const []const u8 = &.{},
     /// `vera -D` macros, each `NAME` or `NAME=TEXT`, as
-    /// `Preprocessor.Options.defines` reads them.
+    /// `preprocessor.Options.defines` reads them.
     defines: []const []const u8 = &.{},
     /// Only IEEE 1364-2005 §17.2.9's `$readmemb`/`$readmemh` read files while
     /// a process runs; without an `Io` those two fail with a diagnostic and
@@ -77,7 +77,7 @@ pub const Options = struct {
     /// VAMS §7: elaborate the DIGITAL half of a mixed-signal module. See `Mixed`.
     mixed: ?Mixed = null,
     /// The source language, `vera --std=`. See `Parser.setLanguage`.
-    language: Front.token.KeywordSet = Front.token.default_keyword_set,
+    language: Front.keyword.KeywordSet = Front.keyword.default_keyword_set,
     /// IEEE 1364-2005 §13.2.3 the library `source`'s cells are compiled into.
     lib: []const u8 = "work",
     /// The source files after `source`, in command-line order (§13.4.1), in
@@ -101,7 +101,7 @@ pub const Options = struct {
     /// other as a §3.6 string.
     params: []const @import("base").ParamOverride = &.{},
     /// IEEE 1364-2005 §28.2 decryption keys (`vera --protect-keys`).
-    protect_keys: Front.Preprocessor.protect.Keys = .{},
+    protect_keys: Front.protect.Keys = .{},
     /// IEEE 1364-2005 §15.5.4's invocation option (`vera --negative-timing`):
     /// `$setuphold` and `$recrem` take negative limits, through delayed
     /// signals (`tchk.solveNegative`). Off, a negative limit is 0.
@@ -160,7 +160,7 @@ pub const Mixed = struct {
     /// `source` is the analog compile's own PREPROCESSED text, so it is not
     /// preprocessed again and the `timescale events it consumed come in
     /// here, at their offsets into `source`.
-    timescales: []const Front.Preprocessor.TimescaleEvent,
+    timescales: []const Front.directive_events.TimescaleEvent,
     /// VAMS §7.8.4 the connect modules the analog compile inserted: they are
     /// in its flattened design and not in `source`'s hierarchy.
     inserts: []const Insert = &.{},

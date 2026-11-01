@@ -462,7 +462,7 @@ test "fold: §12.2-typed 64-bit parameters keep their top half, where a 32-bit f
     const a = arena_state.allocator();
     var bag: @import("diag").Bag = .init(a);
     const src = "module m; localparam x = HI - 7; localparam y = NIB - 4'd4; localparam z = $clog2(65); endmodule";
-    var tokens = try @import("frontend").Lexer.Lexer.tokenize(a, src);
+    var tokens = try @import("frontend").lexer.tokenize(a, src, null);
     var parser = @import("frontend").Parser.Parser.init(a, src, tokens.items(.tag), tokens.items(.start), &bag);
     parser.digital = true;
     const file = &(try parser.parseSourceFile());

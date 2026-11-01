@@ -44,7 +44,7 @@ pub fn systemTask(em: *Emitter, pc: u32, t: Task) Error!void {
                 try em.print(", {d}, {}) orelse 1) != 0", .{ ty.width, ty.signed });
             }
             const start = r.starts[t.tok];
-            const loc = r.bag.locate(.{ .start = start, .end = start }, null);
+            const loc = r.bag.locate(.{ .start = start, .end = start }, .none);
             try em.print(", \"{f}\", {d});\n", .{ std.zig.fmtString(r.bag.fileName(loc.file)), loc.offset });
             return;
         },

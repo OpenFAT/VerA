@@ -18,7 +18,7 @@
 //! a module it read from Verilog; emit one module per override set when a
 //! parameterized child matters. Generate blocks, memories, loops, functions
 //! and real values are refused rather than lowered: `sim.digital.Run` has
-//! them elaborated, and an emitter over it (as `emit.zig` is) is the upgrade.
+//! them elaborated, and an emitter over it (as `Emitter.zig` is) is the upgrade.
 //!
 //! Clauses: IEEE 1364-2005 §3.2 (`reg`), §4.2 (`integer`), §5.1 (operators),
 //! §5.4 (expression widths), §5.5 (signedness), §6.1 (continuous assigns),
@@ -53,15 +53,15 @@ pub const Error = @import("rtlil_emitter.zig").Error;
 /// diagnostics in `bag`; a construct outside the subset is `error.Refused`
 /// with `why` set (`line N: ...`), and nothing is emitted.
 pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag, why: *[]const u8) Error![]const u8 {
-    const pp = Front.Preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .defines = opts.defines, .std_defs = false, .more = more: {
-        const more = try arena.alloc(Front.Preprocessor.File, opts.more.len);
+    const pp = Front.preprocessor.process(arena, source, .{ .file_name = opts.file_name, .include_dirs = opts.include_dirs, .defines = opts.defines, .std_defs = false, .more = more: {
+        const more = try arena.alloc(Front.preprocessor.File, opts.more.len);
         for (opts.more, more) |u, *f| f.* = .{ .name = u.name, .text = u.text };
         break :more more;
     }, .bag = bag }) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.PreprocessFailed => error.DigitalFailed,
     };
-    var tokens = try Front.Lexer.Lexer.tokenize(arena, pp.text);
+    var tokens = try Front.lexer.tokenize(arena, pp.text, null);
     var parser = Front.Parser.Parser.init(arena, pp.text, tokens.items(.tag), tokens.items(.start), bag);
     parser.digital = true;
     parser.setLanguage(opts.language);

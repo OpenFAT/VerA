@@ -32,7 +32,7 @@ pub const Embed = struct {
     /// `-D` macros.
     defines: []const []const u8 = &.{},
     /// `--std=`'s keyword set.
-    language: Front.token.KeywordSet,
+    language: Front.keyword.KeywordSet,
     /// §13.2.3 the library the source maps into.
     lib: []const u8 = "work",
     /// More sources, each with its own library (§13.2).

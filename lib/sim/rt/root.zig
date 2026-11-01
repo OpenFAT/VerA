@@ -1,5 +1,5 @@
 //! The runtime a `vera --emit-exe design.v` executable links: the emitted
-//! design (src/codegen/digital/emit.zig) in, its IEEE 1364 §17 transcript on
+//! design (src/codegen/digital/) in, its IEEE 1364 §17 transcript on
 //! stdout out (exit 0), or a diagnostic on stderr (exit 1). This file only
 //! names what the emitted code and the other modules reach as `sim.rt.<name>`;
 //! each name lives in the file that owns its data. The names are the emitted

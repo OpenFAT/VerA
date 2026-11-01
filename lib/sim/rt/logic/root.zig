@@ -1,4 +1,4 @@
-//! The four-state operators the emitted expressions call as `L.<name>` (`sim.rt.logic`): every name of the four files below, re-exported because the emitted code's text names them here (src/codegen/digital/emit_expr.zig). A rename is a golden change.
+//! The four-state operators the emitted expressions call as `L.<name>` (`sim.rt.logic`): every name of the four files below, re-exported because the emitted code's text names them here (src/codegen/digital/expr*.zig). A rename is a golden change.
 //! Cites: none here; each file's header names its clauses.
 //!
 //! Contents:

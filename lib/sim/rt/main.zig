@@ -25,7 +25,7 @@ const Error = design.Error;
 const prebuilt = design.prebuilt;
 
 /// Runs `source` through the interpreter, exactly `vera --run`: the
-/// executable of a design `src/codegen/digital/emit.zig` did not make native. Prints
+/// executable of a design `src/codegen/digital/` did not make native. Prints
 /// the transcript on stdout and diagnostics on stderr; returns `vera --run`'s
 /// exit status. The names in `opts` resolve against the working directory.
 pub fn interpret(init: std.process.Init, opts: digital.Options, source: []const u8) u8 {

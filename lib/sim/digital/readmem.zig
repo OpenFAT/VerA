@@ -47,8 +47,8 @@ const setBit = @import("net.zig").setBit;
 const Signal = @import("net.zig").Signal;
 const netPull = @import("net.zig").netPull;
 /// §9.4.3 Table 9-23's C conversion, the one the analog devices run.
-const str_k = @import("kernels").str_kernels;
-const zCReal = str_k.zCReal;
+const str_real = @import("kernels").str_real;
+const zCReal = str_real.zCReal;
 const system = @import("system.zig");
 const fmt = @import("kernels").fmt;
 const Radix = fmt.Radix;

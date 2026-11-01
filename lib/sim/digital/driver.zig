@@ -458,5 +458,5 @@ test "§9.22 a driver access function outside a connect module is E0818" {
         \\module top; wire w; assign w = 1'b1; initial $display("%0d", $driver_count(w)); endmodule
         \\
     , .{ .mixed = .{ .top = "top", .timescales = &.{} } }, &bag, &out.writer));
-    try std.testing.expectEqual(diag.Code.E0818, bag.records.items[0].code);
+    try std.testing.expectEqual(diag.Code.E0818, bag.at(0).code);
 }

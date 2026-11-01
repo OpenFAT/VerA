@@ -3,7 +3,7 @@
 //!
 //! Contents:
 //! - `pub fn bindDisables(r: *Run, from: usize) Error!void`
-//! - `pub fn mixedTimescales(arena: std.mem.Allocator, events: []const Front.Preprocessor.TimescaleEvent) Error![]const Front.Preprocessor.TimescaleEvent`
+//! - `pub fn mixedTimescales(arena: std.mem.Allocator, events: []const Front.directive_events.TimescaleEvent) Error![]const Front.directive_events.TimescaleEvent`
 //! - `pub fn netRuns(`
 //! - `pub fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool`
 //! - `pub fn topDeclares(file: *const Ast.SourceFile, m: *const Ast.ModuleDecl, name: []const u8) bool`
@@ -92,8 +92,8 @@ pub fn bindDisables(r: *Run, from: usize) Error!void {
 /// compile's text opens with VerA's own Annex D/E prelude, ahead of every
 /// directive the source wrote, and §19.8's "some modules have a `timescale
 /// specified and others do not" is about the source's modules, not those.
-pub fn mixedTimescales(arena: std.mem.Allocator, events: []const Front.Preprocessor.TimescaleEvent) Error![]const Front.Preprocessor.TimescaleEvent {
-    const out = try arena.dupe(Front.Preprocessor.TimescaleEvent, events);
+pub fn mixedTimescales(arena: std.mem.Allocator, events: []const Front.directive_events.TimescaleEvent) Error![]const Front.directive_events.TimescaleEvent {
+    const out = try arena.dupe(Front.directive_events.TimescaleEvent, events);
     if (out.len != 0) out[0].at = 0;
     assert(out.len == events.len);
     if (out.len != 0) assert(out[0].at == 0);

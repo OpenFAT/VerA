@@ -1,6 +1,6 @@
 //! One run of a native design: the planes, the queue and every table a process
 //! reads or writes in, the next event the design dispatches out. The
-//! emitted code (src/codegen/digital/emit.zig) calls every method as
+//! emitted code (src/codegen/digital/) calls every method as
 //! `s.<name>(...)`; each one lives in the file that owns its data and is
 //! declared here.
 //! Cites: IEEE 1364-2005 §11 (the dispatch loop), §11.4.2 (the `static` order).

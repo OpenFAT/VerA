@@ -332,7 +332,7 @@ pub fn declareBody(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, bind
             // (`src/analog/node.zig`'s `applyUnconnectedDrive`) cannot tie
             // with a `tri0` or lose to a `supply0`.
             .open => if (p.direction == .input) {
-                const drive = Front.Preprocessor.DriveRegion.inForce(r.drives, r.starts[@min(p.main_tok, r.starts.len - 1)], .default);
+                const drive = Front.directive_events.DriveRegion.inForce(r.drives, r.starts[@min(p.main_tok, r.starts.len - 1)], .default);
                 if (drive != .float) try e.wires.append(arena, .{
                     .net = at,
                     .scope = scope,
@@ -552,7 +552,7 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
         for (m.nets) |n| if (n.name == ex.strOf(x) and n.main_tok > tok and n.discipline == .none) return r.fail(n.main_tok, "duplicate digital variable", .{});
         return;
     }
-    const t = Front.Preprocessor.NetTypeRegion.inForce(r.nettypes, r.starts[@min(tok, r.starts.len - 1)], .default);
+    const t = Front.directive_events.NetTypeRegion.inForce(r.nettypes, r.starts[@min(tok, r.starts.len - 1)], .default);
     // `default_nettype none: the name stays undeclared.
     const kind = std.meta.stringToEnum(Ast.NetKind, @tagName(t)) orelse return;
     _ = try mintNet(r, e, kind, 1, false, ex.strOf(x), tok);

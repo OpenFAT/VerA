@@ -233,7 +233,7 @@ pub fn fileScan(a: std.mem.Allocator, t: contract.FileIo, descriptor_: ?i64, for
         try rest.append(a, @intCast(c));
     }
     // `$ungetc`'s characters came first (VD-084). The file's own bytes under
-    // them (at most 16, `file_kernels.ZFSlot.back`) tell which ones
+    // them (at most 16, `file_table.zig`'s `ZfSlot.back`) tell which ones
     // `finishFileScan` must push back after it repositions.
     _ = t.seek(d, start, 0);
     var pushed: usize = 0;
