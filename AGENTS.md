@@ -222,7 +222,8 @@ ships, `tests/` the tests, `tools/` the scripts.
   per mode over the shared harness), `fuzz.zig`, `rng_reference.zig` (+ `.c`),
   `printf_reference.zig`, `codegen_probe.zig`, `argv.zig` (the
   degenerate-argv table), `generators.zig` (generated inputs through every
-  pass, one child per row), `host.py` (the host
+  pass, one child per row), `runners.zig` (one runner per template variant,
+  compiled), `host.py` (the host
   observation runners and their `selftest`). A nested namespace may not
   redeclare a file-scope name, so a merged root's file scope declares only
   its namespaces, `main` and the test that references them. `src/` and
