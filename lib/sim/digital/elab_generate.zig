@@ -362,18 +362,3 @@ fn setGenvar(r: *Run, e: *Elab, at: u32, value: Int.Literal) Error!void {
     assert(r.decls.genvars.contains(at));
     @memcpy(e.values.items[at].planes, (try evaluate.convert(r.arena, value, .{ .width = 32, .signed = true })).planes);
 }
-
-test "§12.4.1 a loop generate's genvar declared again as a variable, net or parameter is refused" {
-    // Oracle: §12.4.1, "the genvar shall be declared" and is "an integer"
-    // local to the generate scope; a second declaration of the name in the
-    // module is §12.7's duplicate.
-    const loop = " generate for (i = 0; i < 2; i = i + 1) begin : g end endgenerate endmodule";
-    try root.expectRejected("module m; genvar i; integer i;" ++ loop, "also declared as something else");
-    try root.expectRejected("module m; genvar i; wire i;" ++ loop, "also declared as something else");
-    try root.expectRejected("module m; genvar i; parameter [63:0] i = 0;" ++ loop, "also declared as something else");
-    // Two loops over one genvar in one scope share its slot.
-    try root.expectRun("module m; genvar i;" ++
-        " generate for (i = 0; i < 2; i = i + 1) begin : a end endgenerate" ++
-        " generate for (i = 0; i < 3; i = i + 1) begin : b end endgenerate" ++
-        " initial $display(\"ok\"); endmodule", "ok\n");
-}

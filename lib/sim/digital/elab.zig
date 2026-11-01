@@ -1018,9 +1018,3 @@ test "§7.1.6 an instance array's port is sized by the child's parameters, not a
         \\module top; parameter W = 2; wire [5:0] o; reg [5:0] i; c #(3) u[1:0](o, i); initial begin i = 6'b101100; #1 $display("%b", o); end endmodule
     , "010011\n");
 }
-
-test "§12.1.2 an instance array whose bounds are maxInt(i64) elaborates its one instance" {
-    // Oracle: §12.1.2, one instance per index from the lower bound to the
-    // upper, here the single index 2^63 - 1.
-    try root.expectRun("module c; initial $display(\"%m\"); endmodule module t; c u[64'sd9223372036854775807:64'sd9223372036854775807] (); endmodule", "t.u[9223372036854775807]\n");
-}

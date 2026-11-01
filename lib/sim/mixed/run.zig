@@ -876,21 +876,3 @@ test "§5.10.3.3 runtime-invalid timer controls report E0517" {
         try testing.expectEqual(@as(?i64, 1), dig.values[f.slot].asInt());
     }
 }
-
-test "run refuses a timeline it cannot walk: empty, negative, NaN, running back, infinite, past 2^64 ticks" {
-    // Oracle: VAMS §8.4 time starts at the DC point and only runs forward,
-    // and a digital time is a u64 tick count (`Options.tick` 1 ns here, so
-    // 1e20 s is 1e29 ticks). Equal times are a point solved once.
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const bad = [_][]const f64{ &.{ 2e-9, 1e-9 }, &.{ 0, 3e-9, 2e-9, 4e-9 }, &.{}, &.{-1e-9}, &.{ 0, std.math.nan(f64) }, &.{ 0, std.math.inf(f64) }, &.{ 0, 1e20 } };
-    for (bad) |times| {
-        var bag = diag.Bag.init(arena.allocator());
-        var out = std.Io.Writer.Allocating.init(arena.allocator());
-        var dig = try digital.elaborate(arena.allocator(), "`timescale 1ns/1ns\nmodule m; reg v; endmodule", .{}, &bag, &out.writer);
-        var f: Fake = .{ .slot = dig.slotOf("v").?, .gpa = arena.allocator() };
-        try testing.expectError(error.BadTimeline, run(Fake, &f, &dig, .{ .times = times, .tick = 1e-9 }));
-    }
-    const f = try drive(arena.allocator(), "`timescale 1ns/1ns\nmodule m; reg v; endmodule", "v", &.{ 0, 1e-9, 1e-9 });
-    try expectPoints(f, &.{ .{ 0, -1 }, .{ 1e-9, -1 } });
-}

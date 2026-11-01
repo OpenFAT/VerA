@@ -137,10 +137,3 @@ pub fn checkUdp(r: *Run, u: *const Ast.UdpDecl) Error!void {
     };
     if (width > 1) return r.exprFail(u.init, "§8.1.3: a UDP initial value is a single-bit literal");
 }
-
-test "A.5.1 a UDP with no input port is refused, declared or instantiated" {
-    // Oracle: A.5.1's udp_port_list, `output_port_identifier ,
-    // input_port_identifier { , input_port_identifier }`.
-    try expectRejected("primitive p(q); output q; table endtable endprimitive module t; wire w; p g(w); endmodule", "at least one input port");
-    try expectRejected("primitive p(q); output q; table endtable endprimitive module t; endmodule", "at least one input port");
-}

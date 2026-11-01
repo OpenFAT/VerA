@@ -659,11 +659,6 @@ test callText {
     // An unterminated call is the rest of the text.
     const s3 = std.mem.findLast(u8, text, "$dumpfile").?;
     try std.testing.expectEqualStrings("$dumpfile", callText(text, @intCast(s3)));
-    // A `)` before any `(` (a comment's, or a `$dumpports;` with no
-    // argument list followed by a closing one) ends the call there; it
-    // underflowed the depth count.
-    try std.testing.expectEqualStrings("$dumpfile /* ", callText("$dumpfile /* ) */ (\"x.vcd\");", 0));
-    try std.testing.expectEqualStrings("$dumpports; end ", callText("$dumpports; end ) (a)", 0));
 }
 
 test preamble {

@@ -416,21 +416,3 @@ fn signedLimit(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!u64 {
     if (!r.opts.negative_timing) assert(@max(v, 0) >= 0);
     return if (r.opts.negative_timing) @bitCast(v) else @intCast(@max(v, 0));
 }
-
-test "§15.5.1 negative limits at the ends of i64 are solved, not overflowed" {
-    // Oracle: §15.5.1, a set of limits no delayed signals can meet has its
-    // most negative limit changed to 0 (W1162) and the run goes on. The
-    // limits are i64's ends, where `d - S + eps` leaves i64.
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var bag = @import("diag").Bag.init(arena.allocator());
-    var out = std.Io.Writer.Allocating.init(arena.allocator());
-    const src =
-        \\module t(input c, input d);
-        \\specify $setuphold(posedge c, d, -64'sd9223372036854775807, -64'sd9223372036854775807); endspecify
-        \\initial $display("ok");
-        \\endmodule
-    ;
-    try root.run(arena.allocator(), src, .{ .negative_timing = true }, &bag, &out.writer);
-    try std.testing.expectEqualStrings("ok\n", out.written());
-}

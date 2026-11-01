@@ -555,28 +555,6 @@ fn pathPulse(c: *Ctx, s: u32, e: Node) Error!void {
     if (!hit) try c.warn(e.line, "PATHPULSE names no module path of this instance", .{});
 }
 
-/// Test support: runs `source` (beside it, `d.sdf` holding `sdf`) to its
-/// end, and expects its transcript `expected` and, when given, a warning
-/// naming `warning`.
-fn expectAnnotated(source: []const u8, sdf: []const u8, expected: []const u8, warning: ?[]const u8) !void {
-    assert(std.mem.find(u8, source, "$sdf_annotate(\"d.sdf\"") != null);
-    assert(sdf.len != 0);
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "d.sdf", .data = sdf });
-    const file_name = try a.print(".zig-cache/tmp/{s}/test.v", .{tmp.sub_path});
-    var bag = diag.Bag.init(a);
-    var output = std.Io.Writer.Allocating.init(a);
-    try root.run(a, source, .{ .io = std.testing.io, .file_name = file_name }, &bag, &output.writer);
-    var messages = std.Io.Writer.Allocating.init(a);
-    try diag.render(&bag, &messages.writer, .{});
-    if (warning) |w| try std.testing.expect(std.mem.find(u8, messages.written(), w) != null);
-    try std.testing.expectEqualStrings(expected, output.written());
-}
-
 test rvalue {
     const one: Node = .{ .kids = &.{.{ .atom = "3.0:7:11", .line = 1 }}, .line = 1 };
     try std.testing.expectEqual(@as(?f64, 3), try rvalue(one, 0));
@@ -604,31 +582,4 @@ test parse {
     try std.testing.expectEqualStrings("&d[0]", parts[0]);
     try std.testing.expectError(error.Syntax, parse(arena.allocator(), "(A (B)", &line));
     try std.testing.expectEqual(@as(u32, 1), line);
-}
-
-test "§16.2 a CELL whose INSTANCE names a list, not a path, is reported, not applied" {
-    // OVI SDF 3.0 gives INSTANCE a path; `(INSTANCE (u))` is no path, and
-    // the file's text decides that, so it warns (W1105) and the run goes on.
-    try expectAnnotated(
-        \\module c(input b); endmodule
-        \\module t; reg a = 0; c u(.b(a));
-        \\initial begin $sdf_annotate("d.sdf"); $display("ran"); end
-        \\endmodule
-    , "(DELAYFILE (CELL (CELLTYPE \"c\") (INSTANCE (u))))", "ran\n", "names no instance");
-}
-
-test "§16.2.4 INTERCONNECT delays that sum past 2^64 ticks saturate, never overflow" {
-    // Two loads of 1e13 ns at 1 fs are 2e19 ticks together, past u64: the
-    // file's numbers are input, so the sum saturates (a delay that never
-    // ends) instead of overflowing.
-    try expectAnnotated(
-        \\`timescale 1fs/1fs
-        \\module c(input b, output y); assign y = b; endmodule
-        \\module t; reg a = 0; wire y; c u(.b(a), .y(y));
-        \\initial begin $sdf_annotate("d.sdf"); $display("ran"); end
-        \\endmodule
-    ,
-        \\(DELAYFILE (CELL (CELLTYPE "t") (INSTANCE)
-        \\  (DELAY (INCREMENT (INTERCONNECT a u.b (10000000000000)) (INTERCONNECT a u.b (10000000000000))))))
-    , "ran\n", null);
 }

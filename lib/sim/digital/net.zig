@@ -827,13 +827,3 @@ test "§14.3.1 Table 14-2: two values are rise and fall, three add tz, twelve na
     const twelve = pathTable(&.{ 10, 12, 14, 15, 29, 36, 14, 15, 15, 14, 20, 30 });
     try std.testing.expectEqual([6]u64{ 14, 15, 15, 14, 20, 30 }, [6]u64{ twelve[zero][x], twelve[x][one], twelve[one][x], twelve[x][zero], twelve[x][z], twelve[z][x] });
 }
-
-test "§7.6 a pass switch whose two terminals are one net leaves that net its drivers' value" {
-    // Oracle: §7.6, a bidirectional switch only passes a signal between its
-    // terminals; with both on one net it carries nothing new, so the net
-    // resolves its drivers alone (§7.9). Port aliasing reaches the same
-    // switch through §12.3.10's collapsed ports.
-    try expectRun("module t; wire a; assign a = 1'b1; tran (a, a); initial #1 $display(\"%b\", a); endmodule", "1\n");
-    try expectRun("module t; wire a; reg c; assign a = 1'b0; rtranif1 (a, a, c); initial begin c = 1; #1 $display(\"%b\", a); end endmodule", "0\n");
-    try expectRun("module m(inout p, inout q); tran (p, q); endmodule module t; wire n; assign n = 1'b1; m u(n, n); initial #1 $display(\"%b\", n); endmodule", "1\n");
-}

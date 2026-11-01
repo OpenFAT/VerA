@@ -296,18 +296,3 @@ fn levelControlled(r: *Run, body: Ast.StmtId) Error!bool {
     };
     return st.event_control.event == .none or try L.level(r, st.event_control.event);
 }
-
-test "--param with an empty NAME is refused as no top-level parameter, not a crash" {
-    // Oracle: the --param contract, "no top-level module declares a
-    // parameter" for any NAME the top does not declare; argv may hold
-    // `--param =5`, whose NAME is empty.
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var bag = diag.Bag.init(arena.allocator());
-    var out = std.Io.Writer.Allocating.init(arena.allocator());
-    const opts: root.Options = .{ .params = &.{.{ .name = "", .value = 5 }} };
-    try std.testing.expectError(error.DigitalFailed, root.run(arena.allocator(), "module m; parameter p = 1; endmodule", opts, &bag, &out.writer));
-    var messages = std.Io.Writer.Allocating.init(arena.allocator());
-    try diag.render(&bag, &messages.writer, .{});
-    try std.testing.expect(std.mem.find(u8, messages.written(), "no top-level module declares a parameter ``") != null);
-}

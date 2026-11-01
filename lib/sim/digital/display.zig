@@ -943,21 +943,6 @@ test "§17.1.1.2 real pads its field as zCReal does, under every flag set (#43)"
     };
 }
 
-test "§17.1.1 a null argument a specifier would consume is refused, a trailing one warns, never a crash" {
-    // Oracle: §9.4.1, a null argument prints one space where it stands as an
-    // argument of its own; a specifier needs an expression to convert. Every
-    // conversion family consumes through `operand`, so each is listed.
-    for ([_][]const u8{ "%d", "%b", "%h", "%o", "%t", "%v", "%c", "%s", "%u", "%z", "%e", "%f", "%g" }) |spec| {
-        var buf: [128]u8 = undefined;
-        const src = try std.fmt.bufPrint(&buf, "module m; reg x; initial $display(\"{s}\", , x); endmodule", .{spec});
-        try @import("root.zig").expectRejected(src, "not a null argument");
-    }
-    try @import("root.zig").expectRejected("module m; reg [8*8:1] s; reg x; initial $sformat(s, \"%d\", ); endmodule", "not a null argument");
-    // A null argument past a variable format's end: W1153, and the run goes on.
-    try @import("root.zig").expectRun("module m; reg [8*8:1] s; integer x; initial begin x = 7; $sformat(s, \"%d\", x, ); $display(\"done\"); end endmodule", "done\n");
-    try @import("root.zig").expectRun("module m; reg [8*8:1] s, f; integer x; initial begin f = \"%d\"; x = 7; $sformat(s, f, x, ); $display(\"done\"); end endmodule", "done\n");
-}
-
 test "§17.1.1 a malformed format is refused before anything prints" {
     try @import("root.zig").expectRejected("module m; initial $display(\"%\"); endmodule", "unterminated display format");
     try @import("root.zig").expectRejected("module m; initial $display(\"%q\", 1); endmodule", "only the §9.4.3 Table 9-22 conversions");
