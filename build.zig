@@ -317,6 +317,37 @@ pub fn build(b: *Build) void {
     test_step.dependOn(&testRun(b, "argv", m.make("tests/argv.zig", &.{}), runner, results_dir).step);
     b.step("test-argv", "Run the degenerate-argv table through the vera CLI only").dependOn(&argv_run.step);
 
+    // The runner templates (src/codegen/exe/text): one runner per variant,
+    // type-checked as its build compiles it (tests/runners.zig).
+    const runners_mod = m.make("tests/runners.zig", &.{
+        .{ .name = "vera", .module = vera },
+        .{ .name = "exe", .module = byName(mods, "exe") },
+        .{ .name = "zigbuild", .module = byName(mods, "zigbuild") },
+    });
+    const runners_exe = b.addExecutable(.{ .name = "vera-runners", .root_module = runners_mod });
+    all_step.dependOn(&runners_exe.step);
+    check.dependOn(&b.addExecutable(.{ .name = "check", .root_module = runners_mod, .use_llvm = false }).step);
+    const runners = b.addRunArtifact(runners_exe);
+    _ = runners.addOutputDirectoryArg("runners");
+    runners.addFileArg2(b.path("lib/contract.zig"), .{ .make_absolute = true });
+    runners.addDirectoryArg2(b.path("tests/conformance/tests/include"), .{ .make_absolute = true });
+    for ([_][2][]const u8{
+        .{ "fixed", "verilog-a/ch04_expressions/multiply.va" },
+        .{ "mixed", "verilog-ams/ch07_mixed_signal/continuous_variable_read_from_digital.va" },
+        .{ "mixed_d2a", "verilog-ams/ch07_mixed_signal/explicit_d2a_reads_post_active.va" },
+        .{ "vpi", "verilog-ams/ch12_vpi_routines/dc_divider.va" },
+    }) |row| {
+        runners.addArg(row[0]);
+        runners.addFileArg2(b.path(b.fmt("tests/conformance/tests/{s}", .{row[1]})), .{ .make_absolute = true });
+    }
+    // The runners import the contract and `sim` trees at their build.
+    for (globFiles(b, "lib", "")) |f| runners.addFileInput(b.path(f));
+    runners.setEnvironmentVariable("VERA_RUNNERS_ZIG", b.graph.zig_exe);
+    runners.setEnvironmentVariable("VERA_RUNNERS_CACHE", b.fmt("{s}/zig-cache", .{checkoutWorkDir(b, "vera-runners")}));
+    runners.expectExitCode(0);
+    test_step.dependOn(&runners.step);
+    b.step("test-runners", "Compile one emitted runner per template variant (tests/runners.zig) only").dependOn(&runners.step);
+
     const canary = b.addRunArtifact(suite_exe);
     canary.addArtifactArg2(exe, .{});
     canary.addArg("canary");

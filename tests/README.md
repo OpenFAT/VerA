@@ -45,6 +45,7 @@ directories hold VerA's own test inputs, and `conformance/` is the suite.
 | `rng_reference.zig`, `rng_reference.c` | The RNG oracle (`rng_kernels` against the IEEE 1364 §17.9.3 C listing) and, as an executable, its domain refusals, one case per run |
 | `printf_reference.zig` | The formatting oracle: `zCReal` against glibc's `snprintf` |
 | `generators.zig` | Generated inputs through every pass (`vera-generators`, `test-generators`, in `test`), one child per row: `wide`, N-wide and N-deep sources on a 1 MiB stack; `escaped`, seeded escaped identifiers against their plain renaming; `files`, E0154 past the 65535-file table |
+| `runners.zig` | The runner templates compiled (`vera-runners`, `test-runners`, in `test`): one emitted runner per variant, type-checked with `-fno-emit-bin` |
 | `argv.zig` | The degenerate-argv table (`vera-argv`, `test-argv`, in `test`): every flag `--help` documents x degenerate values through the `vera` process; a signal, a panic or a silent nonzero exit is BAD |
 | `codegen_probe.zig` | Vectorisation and branchless probes: built as x86_64_v3 assembly and held to their `expect:` lines by `tools/asm_probe.py` (`zig build test-probe`, in `test`) |
 | `host.py` | Host observations: `diagnostic_observations` and `paired_compiler_observations` drive the build's `vera`; the profiles bind a real host through an adapter (below); `selftest` |
