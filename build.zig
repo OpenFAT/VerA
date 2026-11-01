@@ -168,6 +168,9 @@ pub fn build(b: *Build) void {
         });
         test_step.dependOn(&r.step);
     }
+    const probe = codegenProbe(b);
+    test_step.dependOn(&probe.step);
+    b.step("test-probe", "Hold tests/codegen_probe.zig's x86_64_v3 assembly to its `expect:` lines (tools/asm_probe.py)").dependOn(&probe.step);
     // ReleaseSafe: 10^5 exact expansions take minutes in Debug. glibc: the oracle must conform.
     if (target.result.isGnuLibC()) {
         const printf_ref = b.createModule(.{
@@ -640,6 +643,33 @@ const Gen = struct { exe: *Build.Step.Compile, copy: *Build.Step.UpdateSourceFil
 /// vera's binary: a compiler edit leaves every generated device, and every
 /// object built from it, cached. Rebuild them after a codegen change with
 /// `-Dva-cache=false`.
+/// `tests/codegen_probe.zig` as x86_64_v3 ReleaseFast assembly, judged by
+/// `tools/asm_probe.py` against the file's `expect:` lines (after its
+/// selftest: a judge that passes everything proves nothing). The target is
+/// fixed, so every host checks the same instructions.
+fn codegenProbe(b: *Build) *Run {
+    const target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v3 } });
+    const mods = defineModules(b, target, false);
+    const obj = b.addObject(.{ .name = "codegen_probe", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/codegen_probe.zig"),
+        .target = target,
+        .optimize = .fast,
+        .strip = true,
+        .imports = &.{.{ .name = "kernels", .module = byName(mods, "kernels") }},
+    }) });
+    const selftest = b.addSystemCommand(&.{"python3"});
+    selftest.addFileArg(b.path("tools/asm_probe.py"));
+    selftest.addArg("selftest");
+    selftest.expectExitCode(0);
+    const run = b.addSystemCommand(&.{"python3"});
+    run.addFileArg(b.path("tools/asm_probe.py"));
+    run.addFileArg(b.path("tests/codegen_probe.zig"));
+    run.addFileArg(obj.getEmittedAsm());
+    run.expectExitCode(0);
+    run.step.dependOn(&selftest.step);
+    return run;
+}
+
 fn genRun(b: *Build, gen: Gen, src: []const u8) *Run {
     if (!gen.cached) return b.addRunArtifact(gen.exe);
     const run = b.addSystemCommand(&.{b.fmt("./zig-out/gen/{s}", .{gen.exe.out_filename})});
