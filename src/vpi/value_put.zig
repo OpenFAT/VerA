@@ -53,24 +53,35 @@ var live: std.AutoHashMapUnmanaged(usize, *Event) = .empty;
 var put_buf: std.ArrayList(u64) = .empty;
 
 /// Returns `h` as a live scheduled-event handle, or null; never dereferences
-/// a foreign pointer.
+/// a foreign pointer. Asserts that every live handle has its record, and
+/// that handles exist only while a design is installed.
 pub fn asEvent(h: abi.vpiHandle) ?*Event {
+    std.debug.assert(live.count() <= events.items.len);
+    std.debug.assert(live.count() == 0 or session.design != null);
     const p = h orelse return null;
     return live.get(@intFromPtr(p));
 }
 
 /// Invalidates `e`'s handle; a still-scheduled event fires regardless.
+/// Asserts that `e` is a live handle (`asEvent` found it).
 pub fn freeEvent(e: *Event) void {
+    std.debug.assert(live.get(@intFromPtr(e)) == e);
     _ = live.remove(@intFromPtr(e));
+    std.debug.assert(!live.contains(@intFromPtr(e)));
 }
 
 /// Returns whether `e` is still waiting to fire; false with no run attached.
+/// Asserts that `e`'s slot is the run's and that a waiting event is not in
+/// the past.
 pub fn scheduled(e: *const Event) bool {
     const r = run.attached() orelse return false;
-    return r.scheduler.payloadOf(e.handle) != null;
+    std.debug.assert(e.slot < r.values.len);
+    const waiting = r.scheduler.payloadOf(e.handle) != null;
+    std.debug.assert(!waiting or e.time >= run.now());
+    return waiting;
 }
 
-/// Drops every event record and handle.
+/// Drops every event record and handle. Asserts that none is left.
 pub fn reset() void {
     for (events.items) |e| gpa.destroy(e);
     events.clearAndFree(gpa);
@@ -78,20 +89,28 @@ pub fn reset() void {
     value.get_store.clear();
     value.cb_store.clear();
     put_buf.clearAndFree(gpa);
+    std.debug.assert(events.items.len == 0);
+    std.debug.assert(live.count() == 0);
 }
 
 /// IEEE 1364-2005 C.7's reset "Cancels all scheduled simulation events":
 /// every event a put scheduled went with the run the reset replaced, so its
 /// handle reads unscheduled and names none of the new run's
-/// (`run.zig`'s vpiReset).
+/// (`run.zig`'s vpiReset). Asserts that every live handle has its record,
+/// and that no record names a scheduler slot after.
 pub fn dropScheduled() void {
+    std.debug.assert(live.count() <= events.items.len);
     for (events.items) |e| e.handle = .{ .slot = .none, .generation = 0 };
+    std.debug.assert(events.items.len == 0 or events.items[events.items.len - 1].handle.slot == .none);
 }
 
 /// "shall set simulation logic values on an object ... The flags argument
 /// shall be used to direct the routine to use one of the following delay
 /// modes". Returns a vpiSchedEvent handle when vpiReturnEvent is set AND an
 /// event was scheduled; otherwise NULL, which is not in itself an error.
+/// Asserts that a handle `trust.asObj` accepts is a row of the installed
+/// design, that its slot is the run's, and that a scheduled event lies at
+/// or after now.
 pub export fn vpi_put_value(obj: abi.vpiHandle, value_p: ?*Value, time_p: ?*const Time, flags: c_int) abi.vpiHandle {
     if (status.refused("vpi_put_value")) return null;
     const mode = flags & ~user.vpiReturnEvent;
@@ -126,6 +145,7 @@ pub export fn vpi_put_value(obj: abi.vpiHandle, value_p: ?*Value, time_p: ?*cons
         status.fail("BADHANDLE", "vpi_put_value: that handle is not an object", .{});
         return null;
     };
+    std.debug.assert(session.design != null); // asObj answers rows of an installed design only
     // IEEE 1364-2005 §26.6.20 Details b.
     if (o.automatic and (mode == user.vpiInertialDelay or mode == user.vpiTransportDelay or mode == user.vpiPureTransportDelay)) {
         status.fail("AUTOMATIC", "vpi_put_value: `{s}` is an automatic variable, and a put with a delay onto one is illegal", .{o.full});
@@ -233,6 +253,7 @@ pub export fn vpi_put_value(obj: abi.vpiHandle, value_p: ?*Value, time_p: ?*cons
     // ponytail: a driver re-evaluated to the value it already had resolves
     // the net again too, ending the put early.
     const r = run.attached().?;
+    std.debug.assert(at < r.values.len); // a row's slot is one the engine minted
     if ((mode == user.vpiInertialDelay or mode == user.vpiTransportDelay or mode == user.vpiPureTransportDelay) and r.netlist.slot_nets.contains(at)) {
         status.fail("NETPUT", "vpi_put_value: `{s}` is a net, which takes a put with vpiNoDelay or vpiForceFlag only", .{o.full});
         return null;
@@ -289,6 +310,7 @@ pub export fn vpi_put_value(obj: abi.vpiHandle, value_p: ?*Value, time_p: ?*cons
                 if (mode == user.vpiInertialDelay or (mode == user.vpiTransportDelay and e.time > when)) cancel(r, e.handle);
             }
             const h = exec.enqueue(r, .{ .write = .{ .target = at, .value = lit } }, delay, false) catch return engineFail();
+            std.debug.assert(when >= run.now());
             const e = gpa.create(Event) catch return oom();
             e.* = .{ .handle = h, .slot = at, .time = when };
             events.append(gpa, e) catch {
@@ -307,7 +329,11 @@ pub export fn vpi_put_value(obj: abi.vpiHandle, value_p: ?*Value, time_p: ?*cons
 }
 
 /// `v` as `width` bits in `planes` (value words, then unknown words).
+/// Asserts that `planes` is two equal halves holding `width` bits each.
 pub fn toPlanes(v: *const Value, width: u32, planes: []u64) !void {
+    std.debug.assert(planes.len % 2 == 0);
+    std.debug.assert(planes.len != 0);
+    std.debug.assert(@as(u64, planes.len / 2) * 64 >= width);
     @memset(planes, 0);
     const n = planes.len / 2;
     const val = planes[0..n];
@@ -341,6 +367,7 @@ pub fn toPlanes(v: *const Value, width: u32, planes: []u64) !void {
         user.vpiVectorVal => {
             const vec = v.value.vector orelse return badPut("vpiVectorVal with a NULL vector");
             const words = (width + 31) / 32;
+            std.debug.assert(words <= 2 * n); // two vecvals per plane word
             for (0..words) |k| {
                 const a: u64 = @as(u32, @bitCast(vec[k].aval));
                 const b: u64 = @as(u32, @bitCast(vec[k].bval));
@@ -404,18 +431,25 @@ pub fn toPlanes(v: *const Value, width: u32, planes: []u64) !void {
 /// Drop the records of events that fired or were cancelled and whose handle
 /// the application no longer holds.
 fn prune() void {
+    const n0 = events.items.len;
     var i: usize = 0;
-    while (i < events.items.len) {
+    var steps: usize = 0;
+    while (i < events.items.len) : (steps += 1) {
+        std.debug.assert(steps < n0); // each step drops a record or passes one
         const e = events.items[i];
         if (!scheduled(e) and !live.contains(@intFromPtr(e))) {
             gpa.destroy(events.swapRemove(i));
         } else i += 1;
     }
+    std.debug.assert(events.items.len <= n0);
+    std.debug.assert(live.count() <= events.items.len); // a live handle keeps its record
 }
 
 fn cancel(r: *digital.Run, h: sim.scheduler.Handle) void {
+    std.debug.assert(run.attached() == r);
     const row = r.scheduler.payloadOf(h) orelse return;
     _ = r.scheduler.cancel(h) catch return;
+    std.debug.assert(r.scheduler.payloadOf(h) == null);
     r.rows.free.append(r.arena, row) catch {};
 }
 
@@ -426,6 +460,8 @@ fn cancel(r: *digital.Run, h: sim.scheduler.Handle) void {
 /// an instance array has one state per element, and a put delayed by time_p
 /// would need an event of its own: each is refused.
 fn putUdp(o: *const Obj, value_p: ?*const Value, mode: c_int) abi.vpiHandle {
+    std.debug.assert(o.kind == .code);
+    std.debug.assert(o.vtype == user.vpiUdp);
     const r = run.attached() orelse return engineFail();
     const scope = session.design.?.scope(o.owner).engine;
     var found: ?u32 = null;
@@ -465,16 +501,22 @@ fn putUdp(o: *const Obj, value_p: ?*const Value, mode: c_int) abi.vpiHandle {
 }
 
 fn oom() abi.vpiHandle {
+    std.debug.assert(!session.starting); // the routine was refused at startup
+    std.debug.assert(!run.read_only); // and under cbReadOnlySynch
     status.fail("NOMEM", "vpi_put_value: out of memory", .{});
     return null;
 }
 
 fn engineFail() abi.vpiHandle {
+    std.debug.assert(!session.starting); // the routine was refused at startup
+    std.debug.assert(!run.read_only); // and under cbReadOnlySynch
     status.fail("ENGINE", "vpi_put_value: the digital engine refused the write", .{});
     return null;
 }
 
 fn badPut(why: []const u8) error{BadValue} {
+    std.debug.assert(why.len != 0);
+    std.debug.assert(!session.starting); // the routine was refused at startup
     status.fail("BADVALUE", "vpi_put_value: {s}", .{why});
     return error.BadValue;
 }

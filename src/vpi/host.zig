@@ -42,13 +42,22 @@ const External = struct {
     const Point = struct { kind: vpi.analog.Kind, t: f64, dt: f64, freq: f64 };
     const none = [0]f64{};
 
+    // The stubs run only on a library bound to the installed design, after
+    // the startup routines registered its calls (§12.33.2).
     fn zero() callconv(.c) usize {
+        std.debug.assert(vpi.session.design != null);
+        std.debug.assert(!vpi.session.starting);
         return 0;
     }
     fn x() callconv(.c) [*]const f64 {
+        std.debug.assert(vpi.session.design != null);
+        std.debug.assert(!vpi.session.starting);
         return &none;
     }
-    fn ignore(_: ?*anyopaque, _: ?vpi.analog.HostCall, _: ?vpi.analog.HostOut) callconv(.c) void {}
+    fn ignore(_: ?*anyopaque, _: ?vpi.analog.HostCall, _: ?vpi.analog.HostOut) callconv(.c) void {
+        std.debug.assert(vpi.session.design != null);
+        std.debug.assert(!vpi.session.starting);
+    }
     fn lib(real: vpi.analog.Lib) vpi.analog.Lib {
         var l = real;
         l.n_u = zero;
@@ -56,9 +65,14 @@ const External = struct {
         l.n_shares = zero;
         l.x = x;
         l.systf = ignore;
+        // No solution, and the device's own call table.
+        std.debug.assert(l.n_u() == 0);
+        std.debug.assert(l.n_systf == real.n_systf);
         return l;
     }
     fn run(points: []const Point, bindings: []const *vpi.Binding, instances: usize) u8 {
+        std.debug.assert(bindings.len >= 1);
+        std.debug.assert(bindings.len <= 2); // the design's library and one `*! library`
         vpi.callback_fire.startOfSimulation();
         for (points) |p| {
             vpi.analog.setPoint(.{ .kind = p.kind }, p.t, p.dt, p.freq);
@@ -68,6 +82,7 @@ const External = struct {
         }
         vpi.analog.setPoint(null, 0, 0, 0);
         vpi.callback_fire.endOfSimulation();
+        std.debug.assert(vpi.analog.current == null);
         return 0;
     }
 };
@@ -75,6 +90,7 @@ const External = struct {
 // ---- private ----
 
 export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
+    std.debug.assert(vpi.session.design == null); // nothing opens a design before main
     if (builtin.os.tag == .windows) { // os: binary stdio is a Windows-only C runtime mode
         _ = _setmode(1, 0x8000);
         _ = _setmode(2, 0x8000);
@@ -95,6 +111,7 @@ export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
         std.debug.print("vpi_host: {t}\n", .{e});
         return 1;
     };
+    std.debug.assert(vpi.session.design == null); // each host closes what it opened
     return code;
 }
 
@@ -104,6 +121,8 @@ export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
 /// the corpus's `include/` two above it (`tests/<lang>/<chapter>/x.va`), where
 /// the suite keeps `check.vh`.
 fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
+    std.debug.assert(std.mem.endsWith(u8, path, ".va"));
+    std.debug.assert(vpi.session.design == null);
     const io = Io.Threaded.global_single_threaded.io();
     const gpa = std.heap.page_allocator;
     const source = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024 * 1024));
@@ -211,6 +230,8 @@ fn analogHost(path: []const u8, app: ?[]const u8) !u8 {
 /// that reads a digital value, an explicit D2A event, an inserted connect
 /// module, a digital read of an analog variable).
 fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, analyses: []const vpi.analog.Analysis, binding: *vpi.Binding) !u8 {
+    std.debug.assert(analyses.len != 0);
+    std.debug.assert(binding.lib != null); // `analogHost` attached the design's library
     const why: ?[]const u8 = if (mx.inputs.len != 0 or mx.snaps.len != 0)
         "its analog block reads a digital value"
     else if (mx.events.len != 0)
@@ -261,10 +282,13 @@ fn mixedHost(arena: std.mem.Allocator, path: []const u8, mx: vera.tb.Mixed, anal
 /// SPICE's scale suffixes, as the banners write them (`tran 0 5m`). An `ac`
 /// sweep's points are evenly spaced, both ends included.
 fn readAnalyses(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const vpi.analog.Analysis {
+    std.debug.assert(c_path.len != 0);
     const text = try Io.Dir.cwd().readFileAlloc(io, c_path, arena, .limited(1 << 20));
     var out: std.ArrayList(vpi.analog.Analysis) = .empty;
     var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |raw| {
+    var seen: usize = 0;
+    while (lines.next()) |raw| : (seen += 1) {
+        std.debug.assert(seen <= text.len); // a line per newline, and the last
         const line = std.mem.trim(u8, raw, " \t\r");
         if (!std.mem.startsWith(u8, line, "*! analysis")) continue;
         var words = std.mem.tokenizeAny(u8, line["*! analysis".len..], " \t");
@@ -284,15 +308,20 @@ fn readAnalyses(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const v
             try out.append(arena, .{ .kind = .ac, .fstart = fstart, .fstop = fstop, .points = points });
         } else return error.UnsupportedAnalysis;
     }
+    std.debug.assert(out.items.len <= seen);
     return out.items;
 }
 
 /// The first word after `key` on the banner's first line opening with it,
 /// or null when no line does (`*! library <file.va>`, `*! instances <n>`).
 fn bannerWord(arena: std.mem.Allocator, io: Io, c_path: []const u8, key: []const u8) !?[]const u8 {
+    std.debug.assert(c_path.len != 0);
+    std.debug.assert(std.mem.startsWith(u8, key, "*! ")); // a banner key
     const text = try Io.Dir.cwd().readFileAlloc(io, c_path, arena, .limited(1 << 20));
     var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |raw| {
+    var seen: usize = 0;
+    while (lines.next()) |raw| : (seen += 1) {
+        std.debug.assert(seen <= text.len); // a line per newline, and the last
         const line = std.mem.trim(u8, raw, " \t\r");
         if (!std.mem.startsWith(u8, line, key)) continue;
         var words = std.mem.tokenizeAny(u8, line[key.len..], " \t");
@@ -304,10 +333,13 @@ fn bannerWord(arena: std.mem.Allocator, io: Io, c_path: []const u8, key: []const
 /// The banner's `*! external <op | tran | ac> <t> <dt> <freq>` lines: the
 /// points `External.run` stands a calltf on, in order.
 fn readPoints(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const External.Point {
+    std.debug.assert(c_path.len != 0);
     const text = try Io.Dir.cwd().readFileAlloc(io, c_path, arena, .limited(1 << 20));
     var out: std.ArrayList(External.Point) = .empty;
     var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |raw| {
+    var seen: usize = 0;
+    while (lines.next()) |raw| : (seen += 1) {
+        std.debug.assert(seen <= text.len); // a line per newline, and the last
         const line = std.mem.trim(u8, raw, " \t\r");
         if (!std.mem.startsWith(u8, line, "*! external")) continue;
         var words = std.mem.tokenizeAny(u8, line["*! external".len..], " \t");
@@ -316,10 +348,14 @@ fn readPoints(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const Ext
         for (&v) |*x| x.* = try spiceNumber(words.next() orelse return error.BadAnalysis);
         try out.append(arena, .{ .kind = kind, .t = v[0], .dt = v[1], .freq = v[2] });
     }
+    std.debug.assert(out.items.len <= seen);
     return out.items;
 }
 
 fn spiceNumber(w: []const u8) !f64 {
+    // A token from `tokenizeAny`: never empty, never spaced.
+    std.debug.assert(w.len != 0);
+    std.debug.assert(std.mem.findAny(u8, w, " \t") == null);
     const scales = [_]struct { s: []const u8, v: f64 }{
         .{ .s = "meg", .v = 1e6 }, .{ .s = "f", .v = 1e-15 }, .{ .s = "p", .v = 1e-12 },
         .{ .s = "n", .v = 1e-9 },  .{ .s = "u", .v = 1e-6 },  .{ .s = "m", .v = 1e-3 },
@@ -337,6 +373,8 @@ fn spiceNumber(w: []const u8) !f64 {
 /// Built under the APPLICATION's name: several applications run one design
 /// at once under `zig build`, and two compilers writing one directory race.
 fn buildAnalogLib(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, path: []const u8, app_stem: []const u8, source: []const u8, include: []const []const u8, int_systfs: []const []const u8) ![]const u8 {
+    std.debug.assert(app_stem.len != 0); // one work directory per application
+    std.debug.assert(include.len != 0);
     var bag = vera.diag.Bag.init(arena);
     var res = vera.compileSourceOpts(gpa, source, .build, .{
         .file_name = path,
@@ -388,10 +426,15 @@ fn stderrWriter() *Io.Writer {
         var w: ?Io.File.Writer = null;
     };
     if (S.w == null) S.w = Io.File.stderr().writerStreaming(Io.Threaded.global_single_threaded.io(), &S.buf);
+    std.debug.assert(S.w != null);
+    std.debug.assert(S.w.?.interface.buffer.len == S.buf.len); // buffered, flushed by the renderer
     return &S.w.?.interface;
 }
 
 fn bindLib(l: *DynLib) !vpi.analog.Lib {
+    // Bound to the installed design, after §12.33.2's registrations.
+    std.debug.assert(vpi.session.design != null);
+    std.debug.assert(!vpi.session.starting);
     var out: vpi.analog.Lib = undefined;
     const s = @typeInfo(vpi.analog.Lib).@"struct";
     inline for (s.field_names, s.field_types) |name, F| {
@@ -401,6 +444,8 @@ fn bindLib(l: *DynLib) !vpi.analog.Lib {
 }
 
 fn digitalHost(path: []const u8) !u8 {
+    std.debug.assert(!std.mem.endsWith(u8, path, ".va"));
+    std.debug.assert(vpi.session.design == null);
     const io = Io.Threaded.global_single_threaded.io();
     var arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena_state.deinit();
