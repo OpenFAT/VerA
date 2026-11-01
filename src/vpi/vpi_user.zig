@@ -847,20 +847,29 @@ var overrides_n: usize = 0;
 
 // ---- private ----
 
+/// The tests' registration of a time callback due at tick `low`.
 fn registerAt(reason: c_int, low: c_uint) !void {
+    std.debug.assert(callback.isTimeReason(reason));
+    std.debug.assert(reason != cbNextSimTime);
     var t: Time = .{ .type = vpiSimTime, .high = 0, .low = low, .real = 0 };
     const d: CbData = .{ .reason = reason, .cb_rtn = callback.onStart, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };
     if (callback.vpi_register_cb(&d) == null) return error.TestUnexpectedResult;
 }
 
+/// The tests' read of `h` in one of the string formats.
 fn getStr(h: abi.vpiHandle, format: c_int) []const u8 {
+    std.debug.assert(format == vpiBinStrVal or format == vpiOctStrVal or format == vpiDecStrVal or format == vpiHexStrVal or format == vpiStringVal);
     var v: Value = std.mem.zeroes(Value);
     v.format = format;
     value.vpi_get_value(h, &v);
+    std.debug.assert(v.format == format);
     return std.mem.span(v.value.str);
 }
 
+/// The tests' cbForce/cbRelease routine: records each override it hears.
 fn noteOverride(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(overrides_n < overrides.len);
+    std.debug.assert(d.value != null);
     overrides[overrides_n] = .{ d.reason, d.value.?.value.integer, @intFromBool(trust.asObj(d.obj) != null) };
     overrides_n += 1;
     return 0;
