@@ -109,6 +109,9 @@ pub fn acDynSlots(comptime D: type) []const u32 {
 /// `ac_gens` is `[k]AcGen(D)` (whose integer widths range-check row and
 /// col), `acStim` comes with it and has its shape.
 pub fn acGensError(comptime D: type) ?[]const u8 {
+    // A device without stimuli may have no unknowns (a display-only module),
+    // and `AcGen` needs one to index.
+    if (!@hasDecl(D, "ac_gens")) return shape.requireWithError(D, "acStim", "ac_gens");
     if (shape.arrayError(D, "ac_gens", AcGen(D))) |m| return m;
     if (shape.requireWithError(D, "acStim", "ac_gens")) |m| return m;
     if (!@hasDecl(D, "acStim")) return null;
@@ -179,4 +182,13 @@ test "ac_dyn_slots: each rule refuses its own mistake" {
         pub const U = enum(u8) { p, n };
         pub const ac_dyn_slots = [_]u32{1};
     }) != null));
+}
+
+test "acGensError: a device with no unknowns and no stimuli validates" {
+    // Oracle: VAMS §4.6.6 (AC stimulus is optional) and the development
+    // contract, which validated retained_builtin_constant_display.va's device.
+    const D = struct {
+        pub const U = enum(u8) {};
+    };
+    try std.testing.expectEqual(@as(?[]const u8, null), comptime acGensError(D));
 }

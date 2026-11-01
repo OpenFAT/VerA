@@ -171,6 +171,9 @@ pub fn noiseTableAt(t: NoiseTable, f: f64) f64 {
 
 /// `noise_gens` is `[k]NoiseGen(D)`, and `noisePsd` comes with it.
 pub fn noiseGensError(comptime D: type) ?[]const u8 {
+    // A device without generators may have no unknowns (a display-only
+    // module), and `NoiseGen` needs one to index.
+    if (!@hasDecl(D, "noise_gens")) return shape.requireWithError(D, "noisePsd", "noise_gens");
     if (shape.arrayError(D, "noise_gens", NoiseGen(D))) |m| return m;
     return shape.requireWithError(D, "noisePsd", "noise_gens");
 }
@@ -338,4 +341,13 @@ test "sortNoiseTable sorts by frequency; noiseTableAt propagates a NaN frequency
     // NaN is below no knot and above none: outside the precondition, NaN out.
     const t: NoiseTable = .{ .interp = .linear, .points = &pts };
     try testing.expect(std.math.isNan(noiseTableAt(t, std.math.nan(f64))));
+}
+
+test "noiseGensError: a device with no unknowns and no generators validates" {
+    // Oracle: VAMS §4.6.4 (noise is optional) and the development contract,
+    // which validated retained_builtin_constant_display.va's zero-unknown device.
+    const D = struct {
+        pub const U = enum(u8) {};
+    };
+    try std.testing.expectEqual(@as(?[]const u8, null), comptime noiseGensError(D));
 }
