@@ -135,7 +135,12 @@ pub fn main(init: std.process.Init) !u8 {
         try w.print("BAD {s}: `known` names no row of the table\n", .{row.row});
         bad += 1;
     };
-    try w.print("argv: {d} rows over {d} flags, {d} BAD\n", .{ table.items.len, flags.len, bad });
+    // The census on stdout: `zig build` prints a passing step's stderr as noise.
+    var out_buf: [256]u8 = undefined;
+    var stdout = Io.File.stdout().writerStreaming(io, &out_buf);
+    const census = if (bad == 0) &stdout.interface else w;
+    try census.print("argv: {d} rows over {d} flags, {d} BAD\n", .{ table.items.len, flags.len, bad });
+    try census.flush();
     return if (bad == 0) 0 else 1;
 }
 
