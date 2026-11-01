@@ -344,7 +344,8 @@ pub fn message(e: Failure) []const u8 {
 }
 
 /// The source text of the task call whose name starts `text` at `start`,
-/// through its closing parenthesis: `$dumpfile(fname)`.
+/// through its closing parenthesis: `$dumpfile(fname)`. A `)` before any `(`
+/// ends it there.
 pub fn callText(text: []const u8, start: u32) []const u8 {
     var depth: u32 = 0;
     var i: usize = start;
@@ -354,6 +355,7 @@ pub fn callText(text: []const u8, start: u32) []const u8 {
         '\\' => i += @intFromBool(quoted),
         '(' => depth += @intFromBool(!quoted),
         ')' => if (!quoted) {
+            if (depth == 0) return text[start..i];
             depth -= 1;
             if (depth == 0) return text[start .. i + 1];
         },
@@ -762,6 +764,11 @@ test callText {
     // An unterminated call is the rest of the text.
     const s3 = std.mem.findLast(u8, text, "$dumpfile").?;
     try std.testing.expectEqualStrings("$dumpfile", callText(text, @intCast(s3)));
+    // A `)` before any `(` (a comment's, or a `$dumpports;` with no
+    // argument list followed by a closing one) ends the call there; it
+    // underflowed the depth count.
+    try std.testing.expectEqualStrings("$dumpfile /* ", callText("$dumpfile /* ) */ (\"x.vcd\");", 0));
+    try std.testing.expectEqualStrings("$dumpports; end ", callText("$dumpports; end ) (a)", 0));
 }
 
 test preamble {
