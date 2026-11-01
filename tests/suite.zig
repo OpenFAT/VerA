@@ -3249,18 +3249,28 @@ const Golden = struct {
     //!   zig build suite -- golden after         # ... the change ...
     //!   zig build suite -- golden diff          # before vs after; exit 1 on a difference
     //!   zig build suite -- golden diff A B      # two tags, or two snapshot directories
+    //!   zig build suite -- golden before ch05   # only fixture paths holding `ch05`
     //!
     //! A snapshot is `.zig-cache/vera-golden/<tag>/`, per `.va` and `.v` under
-    //! the fixture root (the suite's `tests/`, not its `netlist/`):
+    //! the fixture root (the suite's `tests/`, not its `netlist/`) and under VerA's own
+    //! `tests/rtlil` and `tests/beh_verilog` (as `vera/<dir>/`, `own_dirs`):
     //!
     //!   <path>.txt           `vera --emit-zig` stdout, then a last line `exit=<code>`
     //!   <path>.stderr        its stderr: the message text is held too, and vera
     //!                        writes the device at offset 0, so one file would
     //!                        lose the warnings
+    //!   <path>.verilog.txt   a `.va`: `vera --emit-verilog`, laid out as `.txt`
+    //!   <path>.verilog.stderr
+    //!   <path>.rtlil.txt     a `.v`: `vera --emit-rtlil`, laid out as `.txt`
+    //!   <path>.rtlil.stderr
     //!   <path>.runner.txt    a `.va` with a `//!` line: the testbench runner
     //!                        `tb.writeRunner` gives `--emit-exe` (`runner`)
     //!   <path>.so/...        a `.va`: the tree `--emit-so` writes before `zig`
     //!                        runs, `shim.zig` and the split device (`soTree`)
+    //!   <path>.vpi.so/...    the same tree with `vpi_contribs` on, as the VPI
+    //!                        host builds it: only its files that differ from
+    //!                        `.so/`'s (`vpiContribs`, `vpiShares`), so a path
+    //!                        only the VPI host reaches is snapshotted too
     //!   <path>.program.txt   a `.v`: the executable root `--emit-exe` builds
     //!                        (`digital.program`)
     //!
@@ -3314,7 +3324,7 @@ const Golden = struct {
             const b = args.next() orelse "after";
             return compare(arena, io, try snapDir(arena, store, a), try snapDir(arena, store, b), w);
         }
-        return snapshot(gpa, io, arena, vera_exe, try std.fs.path.join(arena, &.{ store, word }), w);
+        return snapshot(gpa, io, arena, vera_exe, try std.fs.path.join(arena, &.{ store, word }), args.next(), w);
     }
 
     /// A tag names `.zig-cache/vera-golden/<tag>`; anything with a `/` is a path,
@@ -3353,13 +3363,53 @@ const Golden = struct {
             defer arena_state.deinit();
             const arena = arena_state.allocator();
             const io = pool.io;
-            const src = try std.fs.path.join(arena, &.{ options.fixture_root, rel });
+            const src = try sourceOf(arena, rel);
             const base = try std.mem.concat(arena, u8, &.{ pool.out, "/", rel });
             const txt = try std.mem.concat(arena, u8, &.{ base, ".txt" });
             const err = try std.mem.concat(arena, u8, &.{ base, ".stderr" });
             try Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(txt).?);
             const includes: []const []const u8 = &.{ harness.include_dir, std.fs.path.dirname(src).? };
 
+            try pool.emit(arena, src, "--emit-zig", txt, err);
+
+            const source = try readAll(io, arena, src);
+            if (std.mem.endsWith(u8, rel, ".v")) {
+                try pool.emit(arena, src, "--emit-rtlil", try std.mem.concat(arena, u8, &.{ base, ".rtlil.txt" }), try std.mem.concat(arena, u8, &.{ base, ".rtlil.stderr" }));
+                const text = program(arena, io, src, includes, source) catch |e| try arena.print("error={t}\n", .{e});
+                return save(io, arena, try std.mem.concat(arena, u8, &.{ base, ".program.txt" }), text);
+            }
+            try pool.emit(arena, src, "--emit-verilog", try std.mem.concat(arena, u8, &.{ base, ".verilog.txt" }), try std.mem.concat(arena, u8, &.{ base, ".verilog.stderr" }));
+            if (harness.hasDirective(source)) {
+                const text = runner(pool.gpa, arena, src, includes, source) catch |e| try arena.print("error={t}\n", .{e});
+                try save(io, arena, try std.mem.concat(arena, u8, &.{ base, ".runner.txt" }), text);
+            }
+            const so = try std.mem.concat(arena, u8, &.{ base, ".so" });
+            if (soTree(pool.gpa, io, arena, src, includes, source, so, .{})) |_| {
+                for (try fileList(arena, io, so)) |p| {
+                    const path = try std.fs.path.join(arena, &.{ so, p });
+                    try save(io, arena, path, try readAll(io, arena, path));
+                }
+            } else |e| return save(io, arena, try std.mem.concat(arena, u8, &.{ so, ".error.txt" }), try arena.print("error={t}\n", .{e}));
+
+            // The VPI host's tree: written whole, then cut to the files that differ.
+            const vpi = try std.mem.concat(arena, u8, &.{ base, ".vpi.so" });
+            if (soTree(pool.gpa, io, arena, src, includes, source, vpi, .{ .vpi_contribs = true })) |_| {
+                for (try fileList(arena, io, vpi)) |p| {
+                    const path = try std.fs.path.join(arena, &.{ vpi, p });
+                    const plain = readAll(io, arena, try std.fs.path.join(arena, &.{ so, p })) catch "";
+                    const text = try unrooted(arena, try readAll(io, arena, path));
+                    if (std.mem.eql(u8, text, try unrooted(arena, plain)))
+                        try Io.Dir.cwd().deleteFile(io, path)
+                    else
+                        try save(io, arena, path, text);
+                }
+            } else |e| try save(io, arena, try std.mem.concat(arena, u8, &.{ vpi, ".error.txt" }), try arena.print("error={t}\n", .{e}));
+        }
+
+        /// `vera <flag>` on `src`: its stdout then a last line `exit=<code>` to
+        /// `txt`, its stderr to `err`, both `unrooted`.
+        fn emit(pool: *Pool, arena: Allocator, src: []const u8, flag: []const u8, txt: []const u8, err: []const u8) !void {
+            const io = pool.io;
             const code: u32 = code: {
                 const out_file = try Io.Dir.cwd().createFile(io, txt, .{});
                 defer out_file.close(io);
@@ -3367,7 +3417,7 @@ const Golden = struct {
                 defer err_file.close(io);
                 var child = try std.process.spawn(io, .{
                     .argv = &.{
-                        pool.vera,                  "--emit-zig",        "--color=never",
+                        pool.vera,                  flag,                "--color=never",
                         "-I",                       harness.include_dir, "-I",
                         std.fs.path.dirname(src).?, src,
                     },
@@ -3385,23 +3435,6 @@ const Golden = struct {
             };
             try save(io, arena, txt, try arena.print("{s}exit={d}\n", .{ try readAll(io, arena, txt), code }));
             try save(io, arena, err, try readAll(io, arena, err));
-
-            const source = try readAll(io, arena, src);
-            if (std.mem.endsWith(u8, rel, ".v")) {
-                const text = program(arena, io, src, includes, source) catch |e| try arena.print("error={t}\n", .{e});
-                return save(io, arena, try std.mem.concat(arena, u8, &.{ base, ".program.txt" }), text);
-            }
-            if (harness.hasDirective(source)) {
-                const text = runner(pool.gpa, arena, src, includes, source) catch |e| try arena.print("error={t}\n", .{e});
-                try save(io, arena, try std.mem.concat(arena, u8, &.{ base, ".runner.txt" }), text);
-            }
-            const so = try std.mem.concat(arena, u8, &.{ base, ".so" });
-            if (soTree(pool.gpa, io, arena, src, includes, source, so)) |_| {
-                for (try fileList(arena, io, so)) |p| {
-                    const path = try std.fs.path.join(arena, &.{ so, p });
-                    try save(io, arena, path, try readAll(io, arena, path));
-                }
-            } else |e| try save(io, arena, try std.mem.concat(arena, u8, &.{ so, ".error.txt" }), try arena.print("error={t}\n", .{e}));
         }
     };
 
@@ -3457,13 +3490,13 @@ const Golden = struct {
     /// and `u/*.zig`. A split LLVM build's part and chunk shims and the engine
     /// root are written only beside a `zig` child; `zigbuild/shim.zig`'s whole-file
     /// tests pin those.
-    fn soTree(gpa: Allocator, io: Io, arena: Allocator, src: []const u8, includes: []const []const u8, source: []const u8, dir: []const u8) !void {
+    fn soTree(gpa: Allocator, io: Io, arena: Allocator, src: []const u8, includes: []const []const u8, source: []const u8, dir: []const u8, codegen: vera.Codegen) !void {
         var bag: vera.diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
         // `.record` is `vera`'s default display (`args.Cli`), not `Settings`'.
         var result = try vera.analyze(gpa, source, .{ .file_name = src, .include_dirs = includes, .require_std_includes = true, .display = .record }, &bag);
         defer result.deinit(gpa);
-        var device = try result.generate(gpa, .{}, &bag);
+        var device = try result.generate(gpa, codegen, &bag);
         defer device.deinit(gpa);
         if (device.refused) return error.CodegenRefused;
         _ = try zigbuild.writeTree(gpa, io, .{
@@ -3494,29 +3527,51 @@ const Golden = struct {
     }
 
     /// Every `.va` and `.v` under the fixture root but its `netlist/` (ESPice's
-    /// decks), relative to the root.
-    fn fixtureList(arena: Allocator, io: Io) ![]const []const u8 {
-        var dir = try Io.Dir.cwd().openDir(io, options.fixture_root, .{ .iterate = true });
-        defer dir.close(io);
+    /// decks), relative to the root, then `own_dirs`'; those holding `filter`.
+    fn fixtureList(arena: Allocator, io: Io, filter: ?[]const u8) ![]const []const u8 {
         var list: std.ArrayList([]const u8) = .empty;
+        try walkInto(arena, io, &list, options.fixture_root, "", filter);
+        for (own_dirs) |sub| try walkInto(arena, io, &list, try std.fs.path.join(arena, &.{ options.repo_root, "tests", sub }), try std.mem.concat(arena, u8, &.{ own_prefix, sub, "/" }), filter);
+        std.mem.sort([]const u8, list.items, {}, harness.strLess);
+        return list.items;
+    }
+
+    /// VerA's own `--emit-rtlil` and `--emit-verilog` inputs (`tests/rtlil`,
+    /// `tests/beh_verilog`): the designs those backends accept whole, which
+    /// the suite's testbenches mostly are not. Snapshotted as `vera/<dir>/...`.
+    const own_dirs = [_][]const u8{ "rtlil", "beh_verilog" };
+    const own_prefix = "vera/";
+
+    /// The source a snapshot path `rel` (`fixtureList`'s) names.
+    fn sourceOf(arena: Allocator, rel: []const u8) ![]const u8 {
+        if (std.mem.startsWith(u8, rel, own_prefix)) return std.fs.path.join(arena, &.{ options.repo_root, "tests", rel[own_prefix.len..] });
+        return std.fs.path.join(arena, &.{ options.fixture_root, rel });
+    }
+
+    /// Appends `prefix` ++ each `.va` and `.v` path under `root` but its
+    /// `netlist/` whose path holds `filter`.
+    fn walkInto(arena: Allocator, io: Io, list: *std.ArrayList([]const u8), root: []const u8, prefix: []const u8, filter: ?[]const u8) !void {
+        var dir = try Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+        defer dir.close(io);
         var walker = try dir.walk(arena);
         defer walker.deinit();
         while (try walker.next(io)) |e| {
             if (e.kind != .file or std.mem.startsWith(u8, e.path, "netlist" ++ std.fs.path.sep_str)) continue;
             if (!std.mem.endsWith(u8, e.path, ".va") and !std.mem.endsWith(u8, e.path, ".v")) continue;
-            try list.append(arena, try arena.dupe(u8, e.path));
+            const rel = try std.mem.concat(arena, u8, &.{ prefix, e.path });
+            if (filter) |f| if (std.mem.find(u8, rel, f) == null) continue;
+            try list.append(arena, rel);
         }
-        std.mem.sort([]const u8, list.items, {}, harness.strLess);
-        return list.items;
     }
 
-    /// Replaces the snapshot at `out` with a fresh one, one `vera` per CPU.
-    fn snapshot(gpa: Allocator, io: Io, arena: Allocator, vera_exe: []const u8, out: []const u8, w: *Io.Writer) !u8 {
+    /// Replaces the snapshot at `out` with a fresh one, one `vera` per CPU, of
+    /// every fixture whose path holds `filter` (all when null).
+    fn snapshot(gpa: Allocator, io: Io, arena: Allocator, vera_exe: []const u8, out: []const u8, filter: ?[]const u8, w: *Io.Writer) !u8 {
         Io.Dir.cwd().deleteTree(io, out) catch {};
         try Io.Dir.cwd().createDirPath(io, out);
         // Absolute, because each child runs from the repository root.
         const exe = try Io.Dir.cwd().realPathFileAlloc(io, vera_exe, arena);
-        var pool: Pool = .{ .io = io, .gpa = gpa, .vera = exe, .out = out, .rels = try fixtureList(arena, io) };
+        var pool: Pool = .{ .io = io, .gpa = gpa, .vera = exe, .out = out, .rels = try fixtureList(arena, io, filter) };
         // The suite's default, not one per core: 32 concurrent `vera` runs and
         // their device builds exhausted the host's memory (harness.defaultJobs).
         const jobs = harness.defaultJobs();

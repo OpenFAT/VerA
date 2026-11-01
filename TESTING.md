@@ -29,7 +29,7 @@ names the clause behind it.
 | | emitted Verilog / RTLIL wrong | verilator, iverilog, yosys reading it | `zig build test-external` |
 | | nondeterministic output | the same command twice, and from another cwd, byte-identical | `conformance.py determinism` (L11, nightly) |
 | | target-dependent output | native `vera` against `vera.wasm`, byte-identical | `cross.yaml`'s `wasm` job |
-| | unintended change | a reviewed snapshot | `suite -- golden <tag>` / `golden diff` (by hand, before and after) |
+| | unintended change | a reviewed snapshot of every fixture's `--emit-zig`, `--emit-verilog` (`.va`), `--emit-rtlil` (`.v`), runner, program and `--emit-so` tree, and the tree again with `vpi_contribs` on (the files that differ: the path only the VPI host reaches), plus `tests/rtlil` and `tests/beh_verilog` | `suite -- golden <tag> [filter]` / `golden diff` (by hand, before and after) |
 | Digital runtime (`lib/sim`) | wrong transcript | the recorded `.expected.txt`/`.vcd`, and iverilog on ivtest | `suite -- devices`, `suite -- ieee1364 --native`, the conformance suite's manifests |
 | Kernels (`lib/kernels`) | wrong RNG stream | the IEEE 1364 §17.9.3 C listing | `tests/rng_reference.zig` (in `test`) |
 | | wrong `%e/%f/%g` | glibc `snprintf` | `tests/printf_reference.zig` (in `test`) |
