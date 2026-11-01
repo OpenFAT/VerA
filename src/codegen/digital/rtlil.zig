@@ -27,11 +27,11 @@
 //! (system tasks, dropped: synthesis has no simulation output).
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
-const constfold = Front.constfold;
-const Const = constfold.Const;
 const diag = @import("diag");
+const fold = @import("rtlil_fold.zig");
 const digital = @import("sim").digital;
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
@@ -40,14 +40,16 @@ const StmtId = Ast.StmtId;
 const StrId = Ast.StrId;
 
 /// `Refused`: a construct outside the subset, named in `emit`'s `why`.
-/// `DigitalFailed`: the preprocessor or parser refused the source, with the
-/// diagnostics in the bag. Either way nothing is returned.
+/// `DigitalFailed`: the preprocessor or parser refused the source, or the
+/// design is one `vera --run` rejects (E1100), with the diagnostics in the
+/// bag. Either way nothing is returned.
 pub const Error = error{ OutOfMemory, WriteFailed, Refused, DigitalFailed };
 
 /// Preprocesses and parses `source` as `vera --run` does (IEEE 1364, no annex
 /// D prelude, `opts.more` after it) and returns the RTLIL of every module in
-/// it, allocated in `arena`. A source the parser refuses is
-/// `error.DigitalFailed` with the diagnostics in `bag`; a construct outside
+/// it, allocated in `arena`. A source the parser refuses, or an instance
+/// connection to no port of its module, is `error.DigitalFailed` with the
+/// diagnostics in `bag`; a construct outside
 /// the subset is `error.Refused` with `why` set (`line N: ...`), and nothing
 /// is emitted.
 pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *diag.Bag, why: *[]const u8) Error![]const u8 {
@@ -69,7 +71,7 @@ pub fn emit(arena: Allocator, source: []const u8, opts: digital.Options, bag: *d
         error.ParseError => return error.DigitalFailed,
     };
     var out: Writer.Allocating = .init(arena);
-    var e: Emitter = .{ .arena = arena, .file = file, .text = pp.text, .starts = tokens.items(.start), .out = &out.writer, .why = why };
+    var e: Emitter = .{ .arena = arena, .file = file, .text = pp.text, .starts = tokens.items(.start), .out = &out.writer, .why = why, .bag = bag };
     try e.design();
     return out.written();
 }
@@ -83,9 +85,8 @@ const Sym = struct {
     lsb: i64 = 0,
     descending: bool = true,
     signed: bool = false,
+    /// A parameter's value is in `Emitter.params`, unless it is real.
     kind: enum { wire, reg, param },
-    /// A parameter's folded default.
-    value: Const = .{ .int = 0 },
 };
 
 /// One sigspec: its RTLIL spelling, width and §5.5 signedness.
@@ -112,9 +113,12 @@ const Emitter = struct {
     starts: []const u32,
     out: *Writer,
     why: *[]const u8,
+    bag: *diag.Bag,
     /// The module being emitted.
     m: *const Ast.ModuleDecl = undefined,
     syms: std.AutoHashMapUnmanaged(StrId, Sym) = .empty,
+    /// The module's integral parameters' values, at their §12.2 types.
+    values: fold.Params = .empty,
     /// `initial` constants, by reg (the `init` attribute).
     inits: std.AutoHashMapUnmanaged(StrId, Sig) = .empty,
     /// The module's `wire` lines, then its cells, connects and processes:
@@ -135,6 +139,14 @@ const Emitter = struct {
         const what = try self.arena.print(fmt, args);
         self.why.* = try self.arena.print("line {d}: {s}", .{ line, what });
         return error.Refused;
+    }
+
+    /// A design `vera --run` rejects, in its words: E1100 in the bag.
+    fn designError(self: *Self, tok: u32, comptime message: []const u8) Error {
+        assert(tok < self.starts.len);
+        const at = self.starts[tok];
+        self.bag.add(.lower, .E1100, .{ .start = at, .end = at }, message, .{}) catch return error.OutOfMemory;
+        return error.DigitalFailed;
     }
 
     fn str(self: *const Self, name: StrId) []const u8 {
@@ -175,6 +187,7 @@ const Emitter = struct {
     fn module(self: *Self, m: *const Ast.ModuleDecl) Error!void {
         self.m = m;
         self.syms = .empty;
+        self.values = .empty;
         self.inits = .empty;
         self.wires = .init(self.arena);
         self.cells = .init(self.arena);
@@ -211,27 +224,51 @@ const Emitter = struct {
     }
 
     /// `sym` sized by a declared `[msb:lsb]`, folded: its §5.4 width and bounds.
+    /// RTLIL's `offset` and `width` are C `int`s, so a bound past 32 bits
+    /// signed is refused, and so is a range of more than 2^31 - 1 bits.
     fn dim(self: *Self, d: Ast.Dim, tok: u32, sym: *Sym) Error!void {
-        const msb = (try self.foldInt(d.msb)) orelse return self.refuse(tok, "a range that is not constant", .{});
-        const lsb = (try self.foldInt(d.lsb)) orelse return self.refuse(tok, "a range that is not constant", .{});
-        const span = @abs(msb - lsb) + 1;
-        if (span > std.math.maxInt(u32)) return self.refuse(tok, "a range wider than 2^32 bits", .{});
+        const msb = (try self.foldInt(d.msb, tok)) orelse return self.refuse(tok, "a range that is not constant", .{});
+        const lsb = (try self.foldInt(d.lsb, tok)) orelse return self.refuse(tok, "a range that is not constant", .{});
+        if (std.math.cast(i32, msb) == null or std.math.cast(i32, lsb) == null)
+            return self.refuse(tok, "a range whose bounds do not fit RTLIL's 32-bit wire offset (`[{d}:{d}]`)", .{ msb, lsb });
+        const span = @abs(@as(i64, msb) - lsb) + 1;
+        if (span > std.math.maxInt(i32)) return self.refuse(tok, "a range wider than RTLIL's 2^31 - 1 bits (`[{d}:{d}]`)", .{ msb, lsb });
         sym.width = @intCast(span);
         sym.lsb = lsb;
         sym.descending = msb >= lsb;
+        assert(sym.width >= 1);
     }
 
     /// §12.2: every parameter at its default, folded in declaration order so
-    /// a later default may read an earlier one. Width and sign follow A.2.1.1:
-    /// a `[ range ]` sizes it unsigned, anything else is a signed 32-bit integer.
+    /// a later default may read an earlier one. A `[ range ]` is its width,
+    /// unsigned unless `signed`; `integer` is 32 bits signed and `time` 64
+    /// unsigned (§4.10.1); otherwise it takes its value's type, signed when
+    /// declared so. A declared width is the default's context (§5.4.1), as an
+    /// assignment's left side is, and converts a real default (§4.8.2). A
+    /// real parameter has no value here: an expression reading it is refused.
     fn params(self: *Self, m: *const Ast.ModuleDecl) Error!void {
         for (m.params) |*p| {
-            const v = constfold.fold(self.file, p.default, Env{ .e = self }) orelse return self.refuse(p.main_tok, "a parameter default that is not constant: `{s}`", .{self.str(p.name)});
-            var sym: Sym = .{ .width = 32, .signed = true, .kind = .param, .value = v };
+            var sym: Sym = .{ .width = 32, .signed = true, .kind = .param };
+            const real_default = self.file.exprs.tag(p.default) == .real_literal;
+            if (p.ty == .real or (real_default and p.ty == .unspecified and p.packed_range == null)) {
+                try self.syms.put(self.arena, p.name, sym);
+                continue;
+            }
             if (p.packed_range) |r| {
                 try self.dim(r, p.main_tok, &sym);
                 sym.signed = p.is_signed;
+            } else if (p.ty == .integer) {
+                sym.width = if (p.is_time) 64 else 32;
+                sym.signed = !p.is_time;
             }
+            const declared = p.packed_range != null or p.ty == .integer;
+            const v = (try self.foldValue(p.default, if (declared) sym.width else 0, p.main_tok, true)) orelse
+                return self.refuse(p.main_tok, "a parameter default that is not constant: `{s}`", .{self.str(p.name)});
+            if (!declared) {
+                sym.width = v.width;
+                sym.signed = v.signed or p.is_signed;
+            }
+            try self.values.put(self.arena, p.name, try self.convert(v, sym));
             try self.syms.put(self.arena, p.name, sym);
         }
     }
@@ -239,7 +276,10 @@ const Emitter = struct {
     /// Every port, net and variable as a `Sym`, before any is used.
     fn declare(self: *Self, m: *const Ast.ModuleDecl) Error!void {
         for (m.ports) |*p| {
+            // A.1.3: a null port is a header position with no net inside.
+            if (p.name == .none) continue;
             if (p.concat_rest or p.external_name != .none) return self.refuse(p.main_tok, "a port expression (`.name({{...}})`)", .{});
+            if (p.select != null) return self.refuse(p.main_tok, "a port that is a select of its net (`{s}[...]`)", .{self.str(p.name)});
             if (p.kind == .wreal) return self.refuse(p.main_tok, "a wreal port", .{});
             var sym: Sym = .{ .width = 1, .signed = p.is_signed, .kind = .wire };
             const range = p.range orelse p.type_range orelse for (m.vars) |*v| {
@@ -283,10 +323,11 @@ const Emitter = struct {
 
     /// `wire width W [signed] [offset O] [upto] [input|output|inout K] \name`.
     fn wireLines(self: *Self, m: *const Ast.ModuleDecl) Error!void {
-        for (m.ports, 1..) |*p, k| {
+        // A port's number is its header position (§12.1.2), null ones counted.
+        for (m.ports, 1..) |*p, k| if (p.name != .none) {
             const s = self.syms.get(p.name).?;
             try self.wireLine(p.name, s, p.direction, @intCast(k));
-        }
+        };
         for (m.nets) |*n| if (!isPort(m, n.name)) try self.wireLine(n.name, self.syms.get(n.name).?, .unspecified, 0);
         for (m.vars) |*v| if (!isPort(m, v.name)) try self.wireLine(v.name, self.syms.get(v.name).?, .unspecified, 0);
     }
@@ -296,7 +337,9 @@ const Emitter = struct {
         if (self.inits.get(name)) |v| try w.print("  attribute \\init {s}\n", .{v.s});
         try w.print("  wire width {d}", .{s.width});
         if (s.signed) try w.writeAll(" signed");
-        if (s.lsb != 0) try w.print(" offset {d}", .{s.lsb});
+        // Yosys's `offset` is the lower bound either way: [3:10] is `upto offset 3`.
+        const offset = if (s.descending) s.lsb else s.lsb - (s.width - 1);
+        if (offset != 0) try w.print(" offset {d}", .{offset});
         if (!s.descending and s.width > 1) try w.writeAll(" upto");
         switch (dir) {
             .input => try w.print(" input {d}", .{port}),
@@ -316,29 +359,36 @@ const Emitter = struct {
     // Constants
     // -----------------------------------------------------------------------
 
-    /// `constfold`'s environment: a parameter answers its value, width and sign.
-    const Env = struct {
-        e: *Self,
-        fn sym(env: Env, x: ExprId) ?Sym {
-            if (env.e.file.exprs.tag(x) != .ident) return null;
-            return env.e.syms.get(env.e.file.exprs.strOf(x));
-        }
-        pub fn leaf(env: Env, x: ExprId) ?Const {
-            const s = env.sym(x) orelse return null;
-            return if (s.kind == .param) s.value else null;
-        }
-        pub fn signed(env: Env, x: ExprId) ?bool {
-            return (env.sym(x) orelse return null).signed;
-        }
-        pub fn width(env: Env, x: ExprId) ?u32 {
-            return (env.sym(x) orelse return null).width;
-        }
-    };
+    /// `e` folded by IEEE 1364's rules (`rtlil_fold`) in a context `ctx`
+    /// bits wide, or null when it is not constant.
+    /// `real`: `e` is an assignment's right side, which may be a real literal.
+    fn foldValue(self: *Self, e: ExprId, ctx: u32, tok: u32, comptime real: bool) Error!?fold.Literal {
+        assert(e != .none);
+        const folded = if (real) fold.assigned(self.arena, self.file, &self.values, e, ctx) else fold.fold(self.arena, self.file, &self.values, e, ctx);
+        return folded catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.TooWide => self.refuse(tok, "a constant wider than {d} bits", .{fold.max_width}),
+            error.TooDeep => self.refuse(tok, "a constant expression nested deeper than {d} operators", .{fold.max_depth}),
+        };
+    }
 
-    /// `e` as an integer constant, or null when it is not constant.
-    fn foldInt(self: *Self, e: ExprId) Error!?i64 {
-        const c = constfold.fold(self.file, e, Env{ .e = self }) orelse return null;
-        return c.asIntExact();
+    /// `e` as an integer constant, self-determined, or null when it is not
+    /// constant, holds an x or z bit or is outside 64 bits signed.
+    fn foldInt(self: *Self, e: ExprId, tok: u32) Error!?i64 {
+        const v = (try self.foldValue(e, 0, tok, false)) orelse return null;
+        return v.asExactInt();
+    }
+
+    /// `v` truncated or extended (by its own sign, §5.5) to `sym`'s type.
+    fn convert(self: *Self, v: fold.Literal, sym: Sym) Error!fold.Literal {
+        assert(sym.width != 0);
+        var out = v.resize(self.arena, sym.width, if (v.signed) .sign else .zero) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ZeroSize => unreachable, // `sym.width` is asserted nonzero
+        };
+        out.signed = sym.signed;
+        assert(out.width == sym.width);
+        return out;
     }
 
     /// `W'bits` of the two's complement of `v`.
@@ -416,18 +466,26 @@ const Emitter = struct {
                 break :blk .{ .s = "", .w = w };
             },
             .multi_concat => blk: {
-                const n = (try self.foldInt(ex.lhs(e))) orelse return self.refuse(tok, "a replication count that is not constant", .{});
-                break :blk .{ .s = "", .w = @intCast(@as(i64, (try self.shape(ex.rhs(e))).w) * n) };
+                const n = (try self.foldInt(ex.lhs(e), tok)) orelse return self.refuse(tok, "a replication count that is not constant", .{});
+                if (n <= 0) return self.refuse(tok, "a replication count of {d}", .{n});
+                const rw = @as(i128, (try self.shape(ex.rhs(e))).w) * n;
+                if (rw > fold.max_width) return self.refuse(tok, "a replication wider than {d} bits", .{fold.max_width});
+                break :blk .{ .s = "", .w = @intCast(rw) };
             },
             .index => blk: {
                 if (ex.tag(ex.rhs(e)) == .range) {
                     const r = ex.rhs(e);
-                    const hi = (try self.foldInt(ex.lhs(r))) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
-                    const lo = (try self.foldInt(ex.rhs(r))) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
-                    break :blk .{ .s = "", .w = @intCast(@abs(hi - lo) + 1) };
+                    const hi = (try self.foldInt(ex.lhs(r), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
+                    const lo = (try self.foldInt(ex.rhs(r), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
+                    // A select wider than any RTLIL wire is outside its declared range.
+                    const span = @abs(@as(i128, hi) - lo) + 1;
+                    if (span > std.math.maxInt(i32)) return self.refuse(tok, "a select outside the declared range", .{});
+                    break :blk .{ .s = "", .w = @intCast(span) };
                 }
                 if (ex.tag(ex.rhs(e)) == .indexed_range) {
-                    const w = (try self.foldInt(ex.rhs(ex.rhs(e)))) orelse return self.refuse(tok, "an indexed part-select width that is not constant", .{});
+                    const w = (try self.foldInt(ex.rhs(ex.rhs(e)), tok)) orelse return self.refuse(tok, "an indexed part-select width that is not constant", .{});
+                    if (w <= 0) return self.refuse(tok, "an indexed part-select width of {d}", .{w});
+                    if (w > std.math.maxInt(i32)) return self.refuse(tok, "a select outside the declared range", .{});
                     break :blk .{ .s = "", .w = @intCast(w) };
                 }
                 break :blk .{ .s = "", .w = 1 };
@@ -466,8 +524,8 @@ const Emitter = struct {
                 const name = ex.strOf(e);
                 const s = self.syms.get(name).?;
                 if (s.kind == .param) {
-                    const v = s.value.asIntExact() orelse return self.refuse(tok, "a real parameter in an expression", .{});
-                    return self.constSig(v, s.width, s.signed);
+                    const v = self.values.get(name) orelse return self.refuse(tok, "a real parameter in an expression", .{});
+                    return self.logicSig(v);
                 }
                 if (self.proc) |p| if (p.redirect.contains(name)) return p.temps.get(name).?;
                 return .{ .s = try self.id(name), .w = s.width, .signed = s.signed };
@@ -551,7 +609,7 @@ const Emitter = struct {
                 return .{ .s = buf.written(), .w = own.w };
             },
             .multi_concat => {
-                const n = (try self.foldInt(ex.lhs(e))).?;
+                const n = (try self.foldInt(ex.lhs(e), tok)).?;
                 const inner = try self.expr(ex.rhs(e), 0);
                 const one = try self.fit(inner, (try self.shape(ex.rhs(e))).w);
                 var buf: Writer.Allocating = .init(self.arena);
@@ -565,7 +623,7 @@ const Emitter = struct {
                 const n = self.str(ex.strOf(e));
                 const args = ex.args(e);
                 if (std.mem.eql(u8, n, "$clog2")) {
-                    const v = (try self.foldInt(e)) orelse return self.refuse(tok, "`$clog2` of a non-constant", .{});
+                    const v = (try self.foldInt(e, tok)) orelse return self.refuse(tok, "`$clog2` of a non-constant", .{});
                     return self.constSig(v, w, true);
                 }
                 var a = try self.expr(args[0], 0);
@@ -590,21 +648,21 @@ const Emitter = struct {
         const sel = ex.rhs(e);
         switch (ex.tag(sel)) {
             .range => {
-                const hi = (try self.foldInt(ex.lhs(sel))).?;
-                const lo = (try self.foldInt(ex.rhs(sel))).?;
+                const hi = (try self.foldInt(ex.lhs(sel), tok)).?;
+                const lo = (try self.foldInt(ex.rhs(sel), tok)).?;
                 return self.slice(root, s, @max(hi, lo), @min(hi, lo), tok);
             },
             .indexed_range => {
-                const w = (try self.foldInt(ex.rhs(sel))).?;
-                const b = (try self.foldInt(ex.lhs(sel))) orelse return self.refuse(tok, "an indexed part-select with a variable base", .{});
+                const w = (try self.foldInt(ex.rhs(sel), tok)).?;
+                const b = (try self.foldInt(ex.lhs(sel), tok)) orelse return self.refuse(tok, "an indexed part-select with a variable base", .{});
                 const up = ex.extraOf(sel) == 0;
                 // §5.2.1: `+:` runs from the base upward, `-:` downward, in the source's numbering.
-                const lo = if (up) b else b - w + 1;
+                const lo: i128 = if (up) b else @as(i128, b) - w + 1;
                 return self.slice(root, s, lo + w - 1, lo, tok);
             },
             else => {}, // else: a bit select
         }
-        if (try self.foldInt(sel)) |i| return self.slice(root, s, i, i, tok);
+        if (try self.foldInt(sel, tok)) |i| return self.slice(root, s, i, i, tok);
         if (!s.descending) return self.refuse(tok, "a variable bit select of an ascending (`[lo:hi]`) vector", .{});
         var idx = try self.expr(sel, 0);
         if (s.lsb != 0) idx = try self.cell2("$sub", idx, try self.constSig(s.lsb, idx.w, false), false, idx.w, false);
@@ -612,7 +670,8 @@ const Emitter = struct {
     }
 
     /// `root [hi:lo]` in RTLIL positions, bounds in the source's numbering.
-    fn slice(self: *Self, root: Sig, s: Sym, hi: i64, lo: i64, tok: u32) Error!Sig {
+    fn slice(self: *Self, root: Sig, s: Sym, hi: i128, lo: i128, tok: u32) Error!Sig {
+        assert(hi >= lo);
         const p_hi = if (s.descending) hi - s.lsb else s.lsb - lo;
         const p_lo = if (s.descending) lo - s.lsb else s.lsb - hi;
         if (p_lo < 0 or p_hi >= s.width) return self.refuse(tok, "a select outside the declared range", .{});
@@ -713,14 +772,14 @@ const Emitter = struct {
                 if (ex.tag(ex.lhs(e)) != .ident) return self.refuse(tok, "a select of a select", .{});
                 switch (ex.tag(sel)) {
                     .range => {
-                        const hi = (try self.foldInt(ex.lhs(sel))) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
-                        const lo = (try self.foldInt(ex.rhs(sel))) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
+                        const hi = (try self.foldInt(ex.lhs(sel), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
+                        const lo = (try self.foldInt(ex.rhs(sel), tok)) orelse return self.refuse(tok, "a part-select bound that is not constant", .{});
                         return self.slice(root, s, @max(hi, lo), @min(hi, lo), tok);
                     },
                     .indexed_range => return self.refuse(tok, "an indexed part-select as an assignment target", .{}),
                     else => {}, // else: a bit select
                 }
-                const i = (try self.foldInt(sel)) orelse return self.refuse(tok, "a variable bit select as an assignment target", .{});
+                const i = (try self.foldInt(sel, tok)) orelse return self.refuse(tok, "a variable bit select as an assignment target", .{});
                 return self.slice(root, s, i, i, tok);
             },
             else => return self.refuse(tok, "an assignment target that is not a name, a select or a concatenation", .{}), // else: A.8.5 admits nothing else
@@ -784,11 +843,14 @@ const Emitter = struct {
         var child_syms: std.AutoHashMapUnmanaged(StrId, Sym) = .empty;
         if (child) |c| {
             const saved = self.syms;
+            const saved_values = self.values;
             self.syms = .empty;
+            self.values = .empty;
             try self.params(c);
             try self.declare(c);
             child_syms = self.syms;
             self.syms = saved;
+            self.values = saved_values;
         }
         const w = &self.cells.writer;
         try w.print("  cell {s} {s}\n", .{ try self.id(i.module), try self.id(i.name) });
@@ -798,19 +860,22 @@ const Emitter = struct {
                 if (k >= c.params.len) return self.refuse(p.main_tok, "more parameter overrides than `{s}` declares", .{self.str(c.name)});
                 break :blk c.params[k].name;
             };
-            const v = (try self.foldInt(p.value)) orelse return self.refuse(p.main_tok, "a parameter override that is not an integer constant", .{});
+            const v = (try self.foldInt(p.value, p.main_tok)) orelse return self.refuse(p.main_tok, "a parameter override that is not an integer constant", .{});
             try w.print("    parameter {s} {d}\n", .{ try self.id(name), v });
         }
         for (i.ports, 0..) |c, k| {
             if (c.expr == .none) continue;
+            // A design error is the interpreter's own (E1100), not a refusal.
             const port: ?*const Ast.Port = if (child) |ch| blk: {
                 if (c.name != .none) {
                     for (ch.ports) |*p| if (p.connName() == c.name) break :blk p;
-                    return self.refuse(c.main_tok, "`{s}` has no port `{s}`", .{ self.str(ch.name), self.str(c.name) });
+                    return self.designError(c.main_tok, "the instantiated module has no such port");
                 }
-                if (k >= ch.ports.len) return self.refuse(c.main_tok, "more connections than `{s}` has ports", .{self.str(ch.name)});
+                if (k >= ch.ports.len) return self.designError(c.main_tok, "more port connections than the module has ports");
                 break :blk &ch.ports[k];
             } else null;
+            // A.1.3: an expression in a null port's position connects nothing.
+            if (port) |p| if (p.name == .none) continue;
             if (c.name == .none and port == null) return self.refuse(c.main_tok, "an ordered connection to `{s}`, which this source does not declare", .{self.str(i.module)});
             const pname = if (c.name != .none) c.name else port.?.name;
             // The child's port width is the context when the source declares it.
@@ -841,8 +906,8 @@ const Emitter = struct {
             if (self.file.exprs.tag(a.target) != .ident) return self.refuse(tok, "an initial assignment to a select", .{});
             const name = self.file.exprs.strOf(a.target);
             const sym = self.syms.get(name) orelse return self.refuse(tok, "`{s}` is not declared in this module", .{self.str(name)});
-            const v = (try self.foldInt(a.value)) orelse return self.refuse(tok, "an initial value that is not constant", .{});
-            try self.inits.put(self.arena, name, try self.constSig(v, sym.width, false));
+            const v = (try self.foldValue(a.value, sym.width, tok, true)) orelse return self.refuse(tok, "an initial value that is not constant", .{});
+            try self.inits.put(self.arena, name, try self.logicSig(try self.convert(v, sym)));
         }
     }
 
@@ -1036,7 +1101,7 @@ test "constSig: two's complement, MSB first, past 64 bits sign-extended" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var why: []const u8 = "";
-    var e: Emitter = .{ .arena = arena.allocator(), .file = undefined, .text = "", .starts = &.{}, .out = undefined, .why = &why };
+    var e: Emitter = .{ .arena = arena.allocator(), .file = undefined, .text = "", .starts = &.{}, .out = undefined, .why = &why, .bag = undefined };
     try std.testing.expectEqualStrings("4'0101", (try e.constSig(5, 4, false)).s);
     try std.testing.expectEqualStrings("4'1111", (try e.constSig(-1, 4, true)).s);
     try std.testing.expectEqualStrings("1'0", (try e.constSig(2, 1, false)).s);

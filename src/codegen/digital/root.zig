@@ -68,6 +68,7 @@ test {
     _ = @import("processes.zig");
     _ = program_root;
     _ = rtlil;
+    _ = @import("rtlil_fold.zig");
     _ = @import("settle.zig");
     _ = @import("show.zig");
     _ = @import("step_local.zig");
