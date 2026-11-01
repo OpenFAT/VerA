@@ -521,9 +521,13 @@ fn call(cb: *Cb, index: c_int, from: ?*const Obj) c_int {
     }
     var v: Value = std.mem.zeroes(Value);
     if ((cb.reason == user.cbValueChange or override) and cb.value_format != user.vpiSuppressVal) {
-        v.format = cb.value_format;
-        value.read(lhsOf(from) orelse trust.asObj(cb.obj).?, &v, &value.cb_store);
-        data.value = &v;
+        // A callback on every override (obj NULL) of a target the model
+        // holds no object for has no value to give.
+        if (lhsOf(from) orelse trust.asObj(cb.obj)) |target| {
+            v.format = cb.value_format;
+            value.read(target, &v, &value.cb_store);
+            data.value = &v;
+        }
     }
     const depth = callback.depth;
     callback.depth += 1;
