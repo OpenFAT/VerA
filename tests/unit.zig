@@ -8858,6 +8858,18 @@ pub const rtlil_tests = struct {
         const line = braces[std.mem.find(u8, braces, "  connect {").?..];
         try std.testing.expectEqual(@as(usize, n + 1), std.mem.count(u8, line[0..std.mem.findScalar(u8, line, '\n').?], "{"));
     }
+
+    test "escaped names are RTLIL ids of the same name: `\\a ` keeps its backslash, a `.` stays a `.`, `\\$4 ` is `$4` (§3.7.1)" {
+        // Oracle: §3.7.1, the leading `\` and the closing white space are no
+        // part of the name, so `\\a ` is the name `\a`, not `a`. Yosys 0.68's
+        // `read_rtlil; write_verilog` of this text gives back the source's
+        // ports `\\a`, `a`, `\s.gr` and `\$4`. The rewrite wrote `\\a ` as
+        // `\a`, colliding with `a`, and `\s.gr ` as `\s gr`.
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const text = try emit(arena_state.allocator(), "module t(\\\\a , a, \\s.gr , \\$4 , y);\n  input \\\\a , a, \\s.gr , \\$4 ;\n  output y;\n  assign y = \\\\a & ~a & \\s.gr & \\$4 ;\nendmodule\n");
+        try expectHas(text, "  wire width 1 input 1 \\\\a\n  wire width 1 input 2 \\a\n  wire width 1 input 3 \\s.gr\n  wire width 1 input 4 \\$4\n");
+    }
 };
 
 pub const diag_tests = struct {

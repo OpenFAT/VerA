@@ -438,10 +438,9 @@ const escaped = struct {
     };
 
     pub const known: []const table.Known = &.{
-        .{ .row = "dot --emit-rtlil", .why = "a `.` inside an escaped name reaches the RTLIL as a space (`\\s.gr ` is written `\\s gr`), which splits the id in two for yosys" },
         .{ .row = "index_suffix --run", .why = "E0901 on a legal defparam: elab_defparams.segment reads a segment ending in `]` as name[k], so `\\a[5] ` is looked up as `a` indexed 5" },
         .{ .row = "dot --run", .why = "E0901 on a legal defparam whose last segment starts with `$` and holds a `.` (`defparam u.\\$4.n  = 7;`): the name is kept as `\\$4.n` and names nothing (`\\$4 ` and `\\a.n ` work)" },
-        .{ .row = "backslash --emit-rtlil", .why = "`\\\\a ` (the name `\\a`) is written `\\a`, the RTLIL id of the different name `a` (`--run` keeps them apart)" },
+        .{ .row = "backslash --emit-rtlil", .why = "the parser interns `\\$x ` (the name `$x`) and `\\\\$x ` (the name `\\$x`) as one string, `\\$x` (Parser.internTok keeps a `$`-led escaped name's `\\`), so --emit-rtlil writes both as `\\$x`; a seed whose name starts with `\\$` fails. `\\\\a ` is written `\\\\a` since pass 3" },
         .{ .row = "index_only --run", .why = "abort: elab.isScope asserts a name is not empty, and segment() makes `\\[3] ` the name \"\" indexed 3 (an assertion on source text)" },
     };
 

@@ -199,10 +199,23 @@ pub const Emitter = struct {
         return self.file.str(name);
     }
 
-    /// `\name`; an escaped identifier's own backslash is the same one.
+    /// `\name`, RTLIL's public id: `\` and the name's bytes up to white
+    /// space, any of them a `\` or a `.`. The parser interns an escaped
+    /// identifier without its `\` (§3.7.1: `\\a ` is the name `\a`, which
+    /// is not `a`) and with each `.` as a space (`Parser.internTok`), which
+    /// this turns back. An escaped name that starts with `$` is interned
+    /// with its `\` kept (§3.7.3: it names no system task), which is not
+    /// part of the name either.
     pub fn id(self: *Emitter, name: StrId) ![]const u8 {
-        const s = self.str(name);
-        return self.arena.print("\\{s}", .{if (s.len != 0 and s[0] == '\\') s[1..] else s});
+        const full = self.str(name);
+        const s = if (std.mem.startsWith(u8, full, "\\$")) full[1..] else full;
+        assert(s.len != 0);
+        const out = try self.arena.alloc(u8, s.len + 1);
+        out[0] = '\\';
+        @memcpy(out[1..], s);
+        std.mem.replaceScalar(u8, out[1..], ' ', '.');
+        assert(std.mem.findAny(u8, out, " \t\r\n") == null);
+        return out;
     }
 
     /// A name no source identifier can take (`$vera$` and a counter).
