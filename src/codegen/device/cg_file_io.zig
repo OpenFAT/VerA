@@ -40,14 +40,14 @@ pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize
     const keep = Mir.callee.ty(c) == .int;
     if (wrap) try g.b("S.con(", .{});
     if (wrap and from_int) try g.b("@as(f64, @floatFromInt(", .{});
-    if (keep) try g.b("zFKeep(&inst.zf_res__{d}, ", .{site});
+    if (keep) try g.b("zFKeep(&inst.zf__.res__{d}, ", .{site});
     // §9.5.4.1/§9.5.4.2 a read's line is copied when the read runs, so its
     // readers see it however late codegen places them (`zFLatch`).
     const latch = c == .@"$fgets" or c == .@"$fscanf";
     if (latch) {
         try g.b("zFLatch(", .{});
         try emitCtx(g);
-        try g.b("&inst.zf_line__{d}, ", .{site});
+        try g.b("&inst.zf__.line__{d}, ", .{site});
     }
     if (keep or latch) g.cur.uses.inst = true;
     try emitFileCallInner(g, c, args, site);
@@ -238,7 +238,7 @@ fn emitReadLine(g: *Gen, args: []const Mir.Value) Error!void {
         const callee = g.mir.instData(def.inst_result).call.callee;
         if (callee == .@"$fgets" or callee == .@"$fscanf") {
             g.cur.uses.inst = true;
-            try g.b("zFLineAt(inst.zf_line__{d}, ", .{@backingInt(def.inst_result)});
+            try g.b("zFLineAt(inst.zf__.line__{d}, ", .{@backingInt(def.inst_result)});
             try g.renderVal(n, .int);
             return g.b(")", .{});
         }
@@ -250,7 +250,7 @@ fn emitReadLine(g: *Gen, args: []const Mir.Value) Error!void {
 /// (`file_kernels.zFCtx`, `instance.emitFileFields`).
 fn emitCtx(g: *Gen) Error!void {
     g.cur.uses.inst = true;
-    try g.b("zFCtx(&inst.zf__), ", .{});
+    try g.b("zFCtx(&inst.zf__.t), ", .{});
 }
 
 /// The first two operands every synthetic reader carries: count, then fd,

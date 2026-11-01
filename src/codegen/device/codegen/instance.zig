@@ -419,22 +419,27 @@ fn writesSchedule(self: *const Gen, comptime which: @import("ir").op.OpKind) boo
 }
 
 /// Records `Instance` field `fmt` as history `stateCtl` commits and reverts.
-/// §9.5 the instance's descriptor table (`zf__`, `file.zig`'s `fileIo`) and,
-/// per §9.5 call site with an integer result, the result the display unit
-/// latched (`zf_res__<site>`, `file_kernels.zFKeep`) and, for a read, its
-/// line (`zf_line__<site>`, `zFLatch`). Each instance has its own, so two
-/// instances number their descriptors alike and never read each other's.
+/// §9.5 the instance's descriptor table and the results its display unit
+/// latched, in one field, `zf__`: the table (`t`, `file.zig`'s `fileIo`)
+/// and, per §9.5 call site with an integer result, that result
+/// (`res__<site>`, `file_kernels.zFKeep`) and, for a read, its line
+/// (`line__<site>`, `zFLatch`). Each instance has its own, so two instances
+/// number their descriptors alike and never read each other's. One struct,
+/// not top-level fields: the latches are the instance's, not a point's, so
+/// every point of a batch reads the instance the host passed, as `zf__`'s
+/// table is.
 fn emitFileFields(self: *Gen) Error!void {
     const len_before = self.out.items.len;
-    try self.w("    /// §9.5 this instance's descriptor table (`fileIo`, `deinitInstance`).\n    zf__: ZfTable = .{{}},\n", .{});
+    try self.w("    /// §9.5 this instance's descriptor table and latched results (`fileIo`, `deinitInstance`).\n    zf__: struct {{\n        t: ZfTable = .{{}},\n", .{});
     for (0..self.mir.instCount()) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         if (self.mir.instOp(inst) != .call) continue;
         const c = self.mir.instData(inst).call.callee;
         if (!Mir.callee.isFileCall(c) or Mir.callee.ty(c) != .int) continue;
-        try self.w("    zf_res__{d}: i64 = 0,\n", .{ii});
-        if (c == .@"$fgets" or c == .@"$fscanf") try self.w("    zf_line__{d}: []const u8 = \"\",\n", .{ii});
+        try self.w("        res__{d}: i64 = 0,\n", .{ii});
+        if (c == .@"$fgets" or c == .@"$fscanf") try self.w("        line__{d}: []const u8 = \"\",\n", .{ii});
     }
+    try self.w("    }} = .{{}},\n", .{});
     assert(self.out.items.len > len_before);
 }
 

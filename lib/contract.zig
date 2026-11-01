@@ -271,7 +271,7 @@ test "the optional tables' defaults: every lane, no slot, one charge site per ro
     // The table is the instance's: `ctx` is what the device handed out.
     var ai: mocks.MockAll.Instance = .{};
     const f = fileIo(mocks.MockAll, &ai).?;
-    try std.testing.expect(f.ctx == @as(*anyopaque, &ai));
+    try std.testing.expect(f.ctx == @as(*anyopaque, &ai.zf__));
     try std.testing.expectEqual(@as(i64, 0), f.open(f.ctx, "x.txt", "r", false));
     try std.testing.expectEqual(2, comptime nQ(mocks.MockR));
     try std.testing.expectEqual([2]bool{ true, true }, qLte(mocks.MockR));

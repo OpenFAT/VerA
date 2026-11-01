@@ -209,6 +209,9 @@ pub const MockAll = struct {
         cwd: []const u8 = "",
         analysis_name: []const u8 = "",
         systf: ?*const SystfHost = null,
+        // §9.5 the instance's descriptor table (`fileIo`): device-owned rows,
+        // admitted by name though a pointer is no value type.
+        zf__: struct { rows: ?*u8 = null } = .{},
         vera_status__: u32 = 0,
         vera_status_args__: [4]f64 = @splat(0.0),
     };
@@ -277,7 +280,7 @@ pub const MockAll = struct {
     // §9.5.1.2 a table that has nothing open: every operation answers "no".
     pub fn fileIo(inst: *Instance) FileIo {
         return .{
-            .ctx = inst,
+            .ctx = &inst.zf__,
             .open = struct {
                 fn f(_: *anyopaque, _: []const u8, _: []const u8, _: bool) i64 {
                     return 0;

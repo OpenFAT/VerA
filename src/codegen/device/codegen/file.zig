@@ -106,14 +106,14 @@ const plusarg_txt =
 const file_io_txt =
     \\/// §9.5.1.2 `inst`'s descriptor table, for a host's second context to share.
     \\pub fn fileIo(inst: *Instance) contract.FileIo {
-    \\    return .{ .ctx = &inst.zf__, .open = zFOpen, .close = zFClose, .put = zFPut, .getc = zFGetc, .ungetc = zFUngetc, .tell = zFTell, .seek = zFSeek, .eof = zFEof, .err = zFError, .new_analysis = zFNewAnalysis };
+    \\    return .{ .ctx = &inst.zf__.t, .open = zFOpen, .close = zFClose, .put = zFPut, .getc = zFGetc, .ungetc = zFUngetc, .tell = zFTell, .seek = zFSeek, .eof = zFEof, .err = zFError, .new_analysis = zFNewAnalysis };
     \\}
     \\
     \\/// Closes every channel `inst` opened and frees its table: the instance is
     \\/// going away. A host that keeps its instances until the process ends may
     \\/// skip it.
     \\pub fn deinitInstance(inst: *Instance) void {
-    \\    zFFreeAll(&inst.zf__);
+    \\    zFFreeAll(&inst.zf__.t);
     \\}
     \\
     \\
