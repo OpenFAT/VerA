@@ -29,7 +29,8 @@ const ScopeLists = code_tables.ScopeLists;
 /// input field (an edge `(01)` is one field), one for the current state of
 /// a sequential entry, one for the output. An entry's value is its
 /// decompilation, `1 1 : ? : 1`: the fields space-separated, a colon between
-/// columns (§26.6.14 Details a).
+/// columns (§26.6.14 Details a). Asserts that `out` starts empty and that
+/// every definition has its output port (A.5.1).
 pub fn udpDefns(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -38,8 +39,10 @@ pub fn udpDefns(
     attrs: *const ByOwner,
     out: *std.AutoHashMapUnmanaged(Ast.StrId, ObjId),
 ) Error![]const ObjId {
+    std.debug.assert(out.count() == 0);
     const defns = try arena.alloc(ObjId, file.udps.len);
     for (file.udps, defns) |*u, *at| {
+        std.debug.assert(u.ports.len >= 1);
         const ios = try arena.alloc(ObjId, u.ports.len);
         for (u.ports, ios, 0..) |p, *io, k| {
             io.* = objects.next();
@@ -103,5 +106,7 @@ pub fn udpDefns(
         }, .{ .def_name = try arena.dupe(u8, file.str(u.name)) });
         try out.put(gpa, u.name, at.*);
     }
+    // A name defined twice keeps its last definition.
+    std.debug.assert(out.count() <= defns.len);
     return defns;
 }

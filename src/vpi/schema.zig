@@ -115,15 +115,22 @@ pub const ObjId = enum(u32) {
     }
 
     /// Packs an optional row index; null is `none`. Asserts that `v` is not
-    /// `maxInt(u32)`, the value `none` spends.
+    /// `maxInt(u32)`, the value `none` spends, and that it reads back.
     pub fn of(v: ?u32) ObjId {
         const x = v orelse return .none;
-        return at(x);
+        std.debug.assert(x != std.math.maxInt(u32));
+        const id = at(x);
+        std.debug.assert(@backingInt(id) == x);
+        return id;
     }
 
-    /// Unpacks `id`: null for `none`.
+    /// Unpacks `id`: null for `none`. Asserts that null and `none` are the
+    /// same case and a row index is below `none`'s value.
     pub fn get(id: ObjId) ?u32 {
-        return if (id == .none) null else @backingInt(id);
+        const v: ?u32 = if (id == .none) null else @backingInt(id);
+        std.debug.assert((v == null) == (id == .none));
+        std.debug.assert(v == null or v.? < std.math.maxInt(u32));
+        return v;
     }
 
     /// The row index of `id`. Asserts that `id` is not `none`.
@@ -152,9 +159,13 @@ pub const Slot = enum(u32) {
         return s;
     }
 
-    /// Unpacks `s`: null for `none`.
+    /// Unpacks `s`: null for `none`. Asserts that null and `none` are the
+    /// same case and a slot is below `none`'s value.
     pub fn get(s: Slot) ?u32 {
-        return if (s == .none) null else @backingInt(s);
+        const v: ?u32 = if (s == .none) null else @backingInt(s);
+        std.debug.assert((v == null) == (s == .none));
+        std.debug.assert(v == null or v.? < std.math.maxInt(u32));
+        return v;
     }
 };
 
@@ -436,9 +447,14 @@ comptime {
 
 const empty_cold: Cold = .{};
 
-/// `vpi_get(vpiType, o)`.
+/// The most single arrows one row carries: the diagrams draw a handful.
+const edges_max = 16;
+
+/// `vpi_get(vpiType, o)`. Asserts that a `.code` row carries its type and
+/// that every answer is a positive Annex G object type.
 pub fn typeOf(o: *const Obj) c_int {
-    return switch (o.kind) {
+    std.debug.assert(o.kind != .code or o.vtype != 0);
+    const t = switch (o.kind) {
         .module => user.vpiModule,
         .port => user.vpiPort,
         .net => user.vpiNet,
@@ -460,12 +476,15 @@ pub fn typeOf(o: *const Obj) c_int {
         .quantity => user.vpiQuantity,
         .code => o.vtype,
     };
+    std.debug.assert(t > 0);
+    return t;
 }
 
-/// §26.3.2's string form of a type: `vpi_get_str(vpiType, o)`.
+/// §26.3.2's string form of a type: `vpi_get_str(vpiType, o)`. Asserts
+/// that every spelling is a `vpi`-prefixed constant name.
 pub fn typeName(t: c_int) []const u8 {
     if (code_tables.typeName(t)) |n| return n;
-    return switch (t) {
+    const name = switch (t) {
         user.vpiModule => "vpiModule",
         user.vpiPort => "vpiPort",
         user.vpiNet => "vpiNet",
@@ -494,28 +513,40 @@ pub fn typeName(t: c_int) []const u8 {
         // can return has a prong above; this arm is unreachable, not a default.
         else => "vpiUndefined",
     };
+    std.debug.assert(name.len > "vpi".len);
+    std.debug.assert(std.mem.startsWith(u8, name, "vpi"));
+    return name;
 }
 
 /// Where span-currency offset `start` lands through `bag`'s source map (an
 /// `include`d file names itself, a macro expansion its invocation): the
-/// physical line, and the file name, borrowed from `bag`.
+/// physical line, and the file name, borrowed from `bag`. Asserts that the
+/// line is 1-based and not past the file's last.
 pub fn locate(bag: *const @import("vera").diag.Bag, start: u32) Loc {
     const at = bag.locate(.{ .start = start, .end = start }, null);
     const off = bag.toSourceOffset(at.file, at.offset);
     const text = bag.sourceText(at.file);
-    return .{
-        .line = @intCast(1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n")),
-        .file = bag.fileName(at.file),
-    };
+    const line = 1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n");
+    std.debug.assert(line >= 1);
+    std.debug.assert(line <= text.len + 1);
+    return .{ .line = @intCast(line), .file = bag.fileName(at.file) };
 }
 
-/// `x`'s first single arrow `tag`, or `none`.
+/// `x`'s first single arrow `tag`, or `none`. Asserts that `tag` is a
+/// relationship constant and `x` carries no more than `edges_max` arrows.
 pub fn edgeTo(x: *const Obj, tag: c_int) ObjId {
+    std.debug.assert(tag > 0);
+    std.debug.assert(x.edges.len <= edges_max);
     for (x.edges) |e| if (e.tag == tag) return e.to;
     return .none;
 }
 
-/// The cold fields of `o`, a row of the installed design.
+/// The cold fields of `o`, a row of the installed design. Asserts that a
+/// row with cold fields belongs to an installed design that holds them.
 pub fn coldOf(o: *const Obj) *const Cold {
-    return if (o.cold == no_cold) &empty_cold else &session.design.?.cold[o.cold];
+    if (o.cold == no_cold) return &empty_cold;
+    const d = &session.design.?;
+    std.debug.assert(o.cold < d.cold.len);
+    std.debug.assert(d.cold.len <= d.objects.len);
+    return &d.cold[o.cold];
 }

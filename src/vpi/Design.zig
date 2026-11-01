@@ -111,6 +111,7 @@ pub fn idOf(d: *const Design, o: *const Obj) ObjId {
 
 /// Row `id`. Asserts that `id` is a row of `objects` (not `none`).
 pub fn obj(d: *const Design, id: ObjId) *Obj {
+    std.debug.assert(d.objects.len <= objects_max);
     const i = id.index();
     std.debug.assert(i < d.objects.len);
     return &d.objects[i];
@@ -126,13 +127,22 @@ pub fn scope(d: *const Design, id: ObjId) *Scope {
 }
 
 /// Frees the model and every live iterator; all handles become invalid.
+/// Asserts that each table's walk visits no more entries than it holds.
 pub fn deinit(self: *Design) void {
+    const n_partials = self.partials.count();
     var pit = self.partials.valueIterator();
-    while (pit.next()) |p| self.gpa.free(p.*);
+    var freed: u32 = 0;
+    while (pit.next()) |p| : (freed += 1) {
+        std.debug.assert(freed < n_partials);
+        self.gpa.free(p.*);
+    }
     self.partials.deinit(self.gpa);
     self.userdata.deinit(self.gpa);
+    const n_iters = self.iters.count();
     var it = self.iters.valueIterator();
-    while (it.next()) |p| {
+    var destroyed: u32 = 0;
+    while (it.next()) |p| : (destroyed += 1) {
+        std.debug.assert(destroyed < n_iters);
         if (p.*.handles) |hs| self.gpa.free(hs);
         self.gpa.destroy(p.*);
     }

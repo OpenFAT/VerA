@@ -56,28 +56,39 @@ pub const Rows = struct {
     hot: std.ArrayList(Obj) = .empty,
     cold: std.ArrayList(Cold) = .empty,
 
-    /// Frees whatever `freeze` did not take.
+    /// Frees whatever `freeze` did not take. Asserts that the tables hold
+    /// at most one cold row per row and no more rows than a model may.
     pub fn deinit(rows: *Rows) void {
+        std.debug.assert(rows.cold.items.len <= rows.hot.items.len);
+        std.debug.assert(rows.hot.items.len <= Design.objects_max);
         rows.hot.deinit(rows.gpa);
         rows.cold.deinit(rows.gpa);
+        rows.* = undefined;
     }
 
-    /// The id the next appended row receives.
+    /// The id the next appended row receives. Asserts that the table is
+    /// within `Design.objects_max` rows.
     pub fn next(rows: *const Rows) ObjId {
-        return .at(rows.hot.items.len);
+        std.debug.assert(rows.hot.items.len <= Design.objects_max);
+        const id: ObjId = .at(rows.hot.items.len);
+        std.debug.assert(id.index() == rows.hot.items.len);
+        return id;
     }
 
     /// Row `id`, to read or write. Asserts that `id` is a row appended so far.
     /// The pointer is invalidated by the next append.
     pub fn at(rows: *const Rows, id: ObjId) *Obj {
+        std.debug.assert(rows.hot.items.len <= Design.objects_max);
         const i = id.index();
         std.debug.assert(i < rows.hot.items.len);
         return &rows.hot.items[i];
     }
 
     /// Appends row `o`, with no cold fields. Invalidates pointers into `hot`.
-    /// `error.TooManyObjects` past `Design.objects_max` rows.
+    /// `error.TooManyObjects` past `Design.objects_max` rows. Asserts that `o`
+    /// names no cold row.
     pub fn append(rows: *Rows, o: Obj) Error!void {
+        std.debug.assert(o.cold == schema.no_cold);
         if (rows.hot.items.len >= Design.objects_max) return error.TooManyObjects;
         try rows.hot.append(rows.gpa, o);
         std.debug.assert(rows.hot.items.len <= Design.objects_max);
@@ -97,8 +108,10 @@ pub const Rows = struct {
     }
 
     /// Row `id`'s cold fields to write, its `Cold` row added on first use.
-    /// Invalidates earlier results of `coldFor` and `coldOf`.
+    /// Invalidates earlier results of `coldFor` and `coldOf`. Asserts that
+    /// no row has more than one cold row.
     pub fn coldFor(rows: *Rows, id: ObjId) Error!*Cold {
+        std.debug.assert(rows.cold.items.len <= rows.hot.items.len);
         const o = rows.at(id);
         if (o.cold == schema.no_cold) {
             try rows.cold.append(rows.gpa, .{});
@@ -108,10 +121,14 @@ pub const Rows = struct {
         return &rows.cold.items[o.cold];
     }
 
-    /// Row `id`'s cold fields to read: `Cold{}` when it has none.
+    /// Row `id`'s cold fields to read: `Cold{}` when it has none. Asserts
+    /// that a cold index is a cold row's.
     pub fn coldOf(rows: *const Rows, id: ObjId) *const Cold {
+        std.debug.assert(rows.cold.items.len <= rows.hot.items.len);
         const c = rows.at(id).cold;
-        return if (c == schema.no_cold) &empty_cold else &rows.cold.items[c];
+        if (c == schema.no_cold) return &empty_cold;
+        std.debug.assert(c < rows.cold.items.len);
+        return &rows.cold.items[c];
     }
 
     const empty_cold: Cold = .{};
@@ -146,9 +163,15 @@ pub const Building = struct {
     code: ScopeLists = .{},
 
     /// Frees the growable lists, which live in `gpa`; the strings they index
-    /// are the arena's and stay.
+    /// are the arena's and stay. Asserts that the scope instantiates a named
+    /// definition and no list outgrew its capacity.
     pub fn deinit(s: *Building, gpa: std.mem.Allocator) void {
-        inline for (id_lists) |f| @field(s, f).deinit(gpa);
+        std.debug.assert(s.def_name.len != 0);
+        inline for (id_lists) |f| {
+            const list = &@field(s, f);
+            std.debug.assert(list.items.len <= list.capacity);
+            list.deinit(gpa);
+        }
         s.code.deinit(gpa);
     }
 
@@ -165,12 +188,15 @@ pub const Csr = struct {
 
     /// From `(key, row)` pairs, every key below `n_keys`, in two passes,
     /// O(keys + pairs). Caller owns the result and frees it with `deinit`
-    /// and the same `gpa`.
+    /// and the same `gpa`. Asserts that every key is below `n_keys`.
     pub fn init(gpa: std.mem.Allocator, n_keys: usize, pairs: []const [2]u32) error{OutOfMemory}!Csr {
         const first = try gpa.alloc(u32, n_keys + 1);
         errdefer gpa.free(first);
         @memset(first, 0);
-        for (pairs) |p| first[p[0] + 1] += 1;
+        for (pairs) |p| {
+            std.debug.assert(p[0] < n_keys);
+            first[p[0] + 1] += 1;
+        }
         for (1..first.len) |k| first[k] += first[k - 1];
         const rows = try gpa.alloc(u32, pairs.len);
         errdefer gpa.free(rows);
@@ -184,15 +210,23 @@ pub const Csr = struct {
         return .{ .first = first, .rows = rows };
     }
 
-    /// Frees both tables; `gpa` must be the one `init` used.
+    /// Frees both tables; `gpa` must be the one `init` used. Asserts that
+    /// they are the pair `init` built: the last offset ends the rows.
     pub fn deinit(c: *Csr, gpa: std.mem.Allocator) void {
+        std.debug.assert(c.first.len >= 1);
+        std.debug.assert(c.first[c.first.len - 1] == c.rows.len);
         gpa.free(c.first);
         gpa.free(c.rows);
+        c.* = undefined;
     }
 
-    /// Key `key`'s rows; none for a key past the table.
+    /// Key `key`'s rows; none for a key past the table. Asserts that the
+    /// key's offsets are in order and within the rows.
     pub fn of(c: Csr, key: usize) []const u32 {
+        std.debug.assert(c.first.len >= 1);
         if (key >= c.first.len - 1) return &.{};
+        std.debug.assert(c.first[key] <= c.first[key + 1]);
+        std.debug.assert(c.first[key + 1] <= c.rows.len);
         return c.rows[c.first[key]..c.first[key + 1]];
     }
 };
@@ -216,11 +250,15 @@ const decl_rows = [_]Obj{
 /// The model's fixed arrays, from what a builder accumulated. `rows` must
 /// hold the modules first and in scope order — the `Scope` invariant. Takes
 /// `rows`' tables (no copy), leaving it empty; `rows.gpa` must be `d.gpa`.
+/// Asserts that it is, that every scope has its module row, and that the
+/// name index holds no more names than rows.
 pub fn freeze(d: *Design, rows: *Rows, scopes: []const Building) Error!void {
+    std.debug.assert(rows.gpa.ptr == d.gpa.ptr);
     const gpa = d.gpa;
     const arena = d.arena.allocator();
     d.objects = try rows.hot.toOwnedSlice(rows.gpa);
     d.cold = try rows.cold.toOwnedSlice(rows.gpa);
+    std.debug.assert(rows.hot.items.len == 0 and rows.cold.items.len == 0);
     const objects = d.objects;
     d.scopes = try gpa.alloc(Scope, scopes.len);
     for (scopes, d.scopes) |*s, *sc| {
@@ -262,6 +300,7 @@ pub fn freeze(d: *Design, rows: *Rows, scopes: []const Building) Error!void {
         .net => if (!o.implicit or !d.by_name.contains(o.full)) try d.by_name.put(gpa, o.full, .at(i)),
         .module, .port, .reg, .parameter, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array, .word, .var_select, .module_array, .branch => try d.by_name.put(gpa, o.full, .at(i)),
     };
+    std.debug.assert(d.by_name.count() <= d.objects.len);
 }
 
 /// The declarations each scope's attribute pass decorates, keyed by scope:
@@ -270,28 +309,34 @@ pub fn freeze(d: *Design, rows: *Rows, scopes: []const Building) Error!void {
 /// of every object per scope. Exact for a pass that runs scope by scope over
 /// the rows that exist before it, because a scope's pass adds only rows it
 /// owns, `.code` rows and ownerless ones. Caller owns the result
-/// (`Csr.deinit` with the same `gpa`).
+/// (`Csr.deinit` with the same `gpa`). Asserts that every scope's module row
+/// is among `objects`, and that no row is bucketed twice.
 pub fn decls(gpa: std.mem.Allocator, objects: []const Obj, n_scopes: usize) Error!Csr {
+    std.debug.assert(n_scopes <= objects.len);
     var pairs: std.ArrayList([2]u32) = .empty;
     defer pairs.deinit(gpa);
     for (objects, 0..) |o, at| {
         const owner = o.owner.get() orelse continue;
         if (owner < n_scopes and o.kind != .code and o.kind != .module and o.src_tok != 0) try pairs.append(gpa, .{ owner, @intCast(at) });
     }
+    std.debug.assert(pairs.items.len <= objects.len);
     return .init(gpa, n_scopes, pairs.items);
 }
 
 /// §6.7 full name -> object, for resolving the identifiers of the
 /// behavioural objects. Built in object order, so where a port and a net
 /// share a name (a port of the top is declared as a net too) the net wins,
-/// as it does in `by_name`.
+/// as it does in `by_name`. Asserts that `objects` is within a model's
+/// row limit and that no more names than rows are indexed.
 pub fn nameTable(gpa: std.mem.Allocator, objects: []const Obj) Error!std.StringHashMapUnmanaged(ObjId) {
+    std.debug.assert(objects.len <= Design.objects_max);
     var names: std.StringHashMapUnmanaged(ObjId) = .empty;
     errdefer names.deinit(gpa);
     for (objects, 0..) |o, i| switch (o.kind) {
         .constant, .quantity, .node, .discipline, .nature => {},
         .module, .port, .net, .reg, .parameter, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array, .word, .var_select, .module_array, .branch, .code => if (o.full.len != 0) try names.put(gpa, o.full, .at(i)),
     };
+    std.debug.assert(names.count() <= objects.len);
     return names;
 }
 
@@ -299,28 +344,47 @@ pub fn nameTable(gpa: std.mem.Allocator, objects: []const Obj) Error!std.StringH
 /// `local` when `parent` is the empty root path. `vpiFullName` is this applied
 /// once more with the top module's own name on the left, which is the form
 /// §12.21's own example passes (`vpi_handle_by_name("top.mod1", …)`).
+/// Asserts that the join keeps both parts and adds one separator only
+/// between two non-empty ones.
 pub fn joinPath(arena: std.mem.Allocator, parent: []const u8, local: []const u8) Error![]const u8 {
-    if (parent.len == 0) return arena.dupe(u8, local);
-    if (local.len == 0) return arena.dupe(u8, parent);
-    return arena.print("{s}{c}{s}", .{ parent, Elaborate.sep, local });
+    const both = parent.len != 0 and local.len != 0;
+    const out = if (parent.len == 0)
+        try arena.dupe(u8, local)
+    else if (local.len == 0)
+        try arena.dupe(u8, parent)
+    else
+        try arena.print("{s}{c}{s}", .{ parent, Elaborate.sep, local });
+    std.debug.assert(out.len == parent.len + local.len + @intFromBool(both));
+    std.debug.assert(std.mem.endsWith(u8, out, local));
+    return out;
 }
 
 /// The `vpiName` part of a §6.7 path: what follows the last `Elaborate.sep`,
-/// or all of `path`. A slice of `path`, not a copy.
+/// or all of `path`. A slice of `path`, not a copy. Asserts that it is a
+/// suffix of `path` with no separator in it.
 pub fn lastComponent(path: []const u8) []const u8 {
     const at = std.mem.findScalarLast(u8, path, Elaborate.sep) orelse return path;
-    return path[at + 1 ..];
+    const last = path[at + 1 ..];
+    std.debug.assert(last.len < path.len);
+    std.debug.assert(std.mem.findScalar(u8, last, Elaborate.sep) == null);
+    return last;
 }
 
 // ---- private ----
 
+/// `decls` over two scopes, for `checkAllAllocationFailures`.
 fn declsOnce(a: std.mem.Allocator, objects: []const Obj) !void {
+    std.debug.assert(objects.len >= 2);
     var d = try decls(a, objects, 2);
+    std.debug.assert(d.first.len == 3);
     d.deinit(a);
 }
 
+/// `Csr.init` over three keys, for `checkAllAllocationFailures`.
 fn csrOnce(a: std.mem.Allocator, pairs: []const [2]u32) !void {
     var c: Csr = try .init(a, 3, pairs);
+    std.debug.assert(c.first.len == 4);
+    std.debug.assert(c.rows.len == pairs.len);
     c.deinit(a);
 }
 

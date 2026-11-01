@@ -23,8 +23,10 @@ const Prop = schema.Prop;
 
 /// Builds the object for statement `id` and its children; returns its
 /// index, or `none` for `.none` or a statement with no §11.6.21 object.
+/// Asserts that a statement's object exists and remembers `id`.
 pub fn stmt(b: *Builder, id: Ast.StmtId) Error!ObjId {
     const at = try b.stmtObj(id);
+    std.debug.assert(at == ObjId.none or at.index() < b.objects.hot.items.len);
     if (id != .none) try b.attributes(at, .{ .kind = .statement, .tok = b.file.stmtTok(id) }, false);
     if (at != ObjId.none) b.objects.at(at).stmt = id;
     // IEEE 1364-2005 §26.6.3 stmt -> vpiScope: the innermost task,
@@ -35,13 +37,18 @@ pub fn stmt(b: *Builder, id: Ast.StmtId) Error!ObjId {
         const o = b.objects.at(at);
         o.edges = try std.mem.concat(b.arena, Edge, &.{ o.edges, &.{.{ .tag = user.vpiScope, .to = b.inner }} });
     }
+    std.debug.assert(at == ObjId.none or b.objects.at(at).stmt == id);
     return at;
 }
 
+/// The object `stmt` answers for `id`, without its attributes or scope
+/// edge. Asserts that the answer is `none` or a row that exists, and that
+/// building only ever appends rows.
 pub fn stmtObj(b: *Builder, id: Ast.StmtId) Error!ObjId {
     if (id == .none) return ObjId.none;
     const f = b.file;
-    return switch (f.stmt(id)) {
+    const before = b.objects.hot.items.len;
+    const at = try switch (f.stmt(id)) {
         .empty => b.code(user.vpiNullStmt, &.{}, &.{}, &.{}),
         .block => |blk| blk: {
             // The block is made — and named — BEFORE its statements, so
@@ -227,12 +234,17 @@ pub fn stmtObj(b: *Builder, id: Ast.StmtId) Error!ObjId {
         // A jump has no §11.6.21 object.
         .jump => ObjId.none,
     };
+    std.debug.assert(b.objects.hot.items.len >= before);
+    std.debug.assert(at == ObjId.none or at.index() < b.objects.hot.items.len);
+    return at;
 }
 
 /// §11.6.20: a contribution to a branch. The branch is the one the
 /// access names when it names a declared branch; `vpiFlow` is whether the
-/// access is the branch discipline's flow access.
+/// access is the branch discipline's flow access. Asserts that it is built
+/// in an analog scope, and that the row made is the contribution.
 pub fn contrib(b: *Builder, lhs: Ast.ExprId, rhs: Ast.ExprId) Error!ObjId {
+    std.debug.assert(b.analog != null);
     const f = b.file;
     var branch = ObjId.none;
     var flow: c_int = 0;
@@ -247,11 +259,13 @@ pub fn contrib(b: *Builder, lhs: Ast.ExprId, rhs: Ast.ExprId) Error!ObjId {
             }
         };
     }
-    return b.code(user.vpiContrib, &.{
+    const at = try b.code(user.vpiContrib, &.{
         .{ .tag = user.vpiBranch, .to = branch },
         .{ .tag = user.vpiRhs, .to = try b.expr(rhs) },
     }, &.{}, &.{
         .{ .prop = user.vpiFlow, .value = flow },
         .{ .prop = user.vpiDirect, .value = 1 },
     });
+    std.debug.assert(b.objects.at(at).vtype == user.vpiContrib);
+    return at;
 }

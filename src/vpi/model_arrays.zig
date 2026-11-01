@@ -39,7 +39,8 @@ pub const index_text_max = "[-9223372036854775808]".len;
 /// innermost ("the index for the reg", §26.6.7 m). The digital engine stores
 /// element k of that order in `base + k` (`digital.Run.arrays`), which is the
 /// slot given each element here. Returns the array row; invalidates pointers
-/// into `objects`.
+/// into `objects`. Asserts that `[low:high]` is ascending, and that the
+/// array, then a constant and an element per member, are the rows appended.
 pub fn addArray(
     arena: std.mem.Allocator,
     objects: *Rows,
@@ -73,6 +74,7 @@ pub fn addArray(
         var inner: i64 = 0;
         var d = rest.len + 1;
         while (d > 0) {
+            std.debug.assert(d <= rest.len + 1);
             d -= 1;
             const sp: sim.digital.Span = if (d == 0) .{ .low = low, .high = high } else rest[d - 1];
             const n = sp.high - sp.low + 1;
@@ -99,6 +101,7 @@ pub fn addArray(
         });
     }
     std.debug.assert(objects.coldOf(at).members.len == count);
+    std.debug.assert(objects.next().index() == at.index() + 1 + 2 * count);
     return at;
 }
 
@@ -106,9 +109,11 @@ pub fn addArray(
 /// bounds decimal constants, its vpiSize the element count.
 ///
 /// The caller adds one row for each dimension it models. Returns the range
-/// row; invalidates pointers into `objects`.
+/// row; invalidates pointers into `objects`. Asserts that `owner`'s module
+/// row exists and that the two bounds and the range are the rows appended.
 pub fn addRange(arena: std.mem.Allocator, objects: *Rows, owner: u32, left: i64, right: i64) Error!ObjId {
     const l = objects.next().index();
+    std.debug.assert(owner < l);
     try objects.append(.{ .kind = .constant, .owner = .of(owner), .name = "", .full = "", .size = 32, .value = .{ .int = left } });
     try objects.append(.{ .kind = .constant, .owner = .of(owner), .name = "", .full = "", .size = 32, .value = .{ .int = right } });
     const edges = try arena.dupe(Edge, &.{ .{ .tag = user.vpiLeftRange, .to = .at(l) }, .{ .tag = user.vpiRightRange, .to = .at(l + 1) } });
@@ -169,11 +174,14 @@ pub fn addBits(arena: std.mem.Allocator, objects: *Rows, msb: i64, lsb: i64, vty
 /// elaboration names each element `u[k]`, so sibling scopes that share the
 /// identifier before `[` are one array. The array object goes in the parent
 /// scope, and every member module learns its array and its index.
-/// Invalidates pointers into `objects`.
+/// Invalidates pointers into `objects`. Asserts that every scope's module
+/// row exists, and that each array holds every member it counted.
 pub fn addModuleArrays(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects: *Rows, scopes: []Building, top_name: []const u8) Error!void {
+    std.debug.assert(scopes.len <= objects.hot.items.len);
     for (scopes, 0..) |*parent, p| {
         var i: usize = 0;
         while (i < parent.children.items.len) : (i += 1) {
+            std.debug.assert(i < scopes.len); // a scope's children are other scopes
             const first = parent.children.items[i];
             const name = arrayBase(model.lastComponent(scopes[first.index()].path)) orelse continue;
             // Already grouped under an earlier sibling?
@@ -189,6 +197,8 @@ pub fn addModuleArrays(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects
             };
             std.mem.sort(ObjId, members, scopes, struct {
                 fn lt(s: []Building, a: ObjId, b: ObjId) bool {
+                    std.debug.assert(a.index() < s.len);
+                    std.debug.assert(b.index() < s.len);
                     return scopeIndex(s, a) < scopeIndex(s, b);
                 }
             }.lt);
@@ -208,6 +218,7 @@ pub fn addModuleArrays(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects
                 objects.at(m).parent = at;
                 objects.at(m).index = c;
             }
+            std.debug.assert(objects.coldOf(at).members.len == n);
         }
     }
 }
@@ -216,24 +227,38 @@ pub fn addModuleArrays(gpa: std.mem.Allocator, arena: std.mem.Allocator, objects
 
 /// Is child scope `c` an element of the instance array `name`?
 fn sameArray(scopes: []const Building, c: ObjId, name: []const u8) bool {
+    std.debug.assert(c.index() < scopes.len);
+    std.debug.assert(name.len != 0);
     const other = arrayBase(model.lastComponent(scopes[c.index()].path)) orelse return false;
     return std.mem.eql(u8, other, name);
 }
 
+/// The index of member scope `m`'s `u[k]`. Asserts that `m` is a scope and
+/// that its name is an array element's.
 fn scopeIndex(scopes: []Building, m: ObjId) i64 {
-    return arrayIndex(model.lastComponent(scopes[m.index()].path)).?;
+    std.debug.assert(m.index() < scopes.len);
+    const local = model.lastComponent(scopes[m.index()].path);
+    std.debug.assert(arrayBase(local) != null);
+    return arrayIndex(local).?;
 }
 
 /// `u` of `u[3]`, or null when the name is not an array element's.
 fn arrayBase(local: []const u8) ?[]const u8 {
     _ = arrayIndex(local) orelse return null;
-    return local[0..std.mem.findScalarLast(u8, local, '[').?];
+    const base = local[0..std.mem.findScalarLast(u8, local, '[').?];
+    std.debug.assert(base.len < local.len);
+    std.debug.assert(local[base.len] == '[');
+    return base;
 }
 
+/// `k` of `u[k]`, or null when the name does not end in a decimal index.
 fn arrayIndex(local: []const u8) ?i64 {
     const open_at = std.mem.findScalarLast(u8, local, '[') orelse return null;
     if (local[local.len - 1] != ']') return null;
-    return std.fmt.parseInt(i64, local[open_at + 1 .. local.len - 1], 10) catch null;
+    const k = std.fmt.parseInt(i64, local[open_at + 1 .. local.len - 1], 10) catch return null;
+    std.debug.assert(open_at + 1 < local.len - 1); // the digits are not empty
+    std.debug.assert(open_at < local.len);
+    return k;
 }
 
 test "§6.2.2 instance-array names: the base and index of `u[k]`, and nothing else" {
@@ -279,6 +304,8 @@ test "IEEE 1364-2005 §26.6.10 addRange: bounds as written, size the element cou
     defer arena.deinit();
     var rows: Rows = .{ .gpa = std.testing.allocator };
     defer rows.deinit();
+    // The owning scope's module row comes first, as in every model.
+    try rows.append(.{ .kind = .module, .owner = .none, .name = "t", .full = "t" });
     for ([_]struct { i64, i64, c_int }{ .{ 7, 0, 8 }, .{ 0, 7, 8 }, .{ -3, 4, 8 }, .{ 5, 5, 1 } }) |case| {
         const at = try addRange(arena.allocator(), &rows, 0, case[0], case[1]);
         const r = rows.at(at).*;

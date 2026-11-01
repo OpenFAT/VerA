@@ -24,10 +24,14 @@ const Prop = schema.Prop;
 /// Builds or resolves the object for expression `id`; returns its index,
 /// or `none` for `.none` or a form this model does not hold. An object
 /// built here remembers `id`, which §26.6.26 b)'s vpiDecompile spells;
-/// one resolved by name is the declared object, and keeps none.
+/// one resolved by name is the declared object, and keeps none. Asserts
+/// that the answer is `none` or a row that exists, and that no row was lost.
 pub fn expr(b: *Builder, id: Ast.ExprId) Error!ObjId {
+    const before = b.objects.hot.items.len;
     const at = try b.exprObj(id);
+    std.debug.assert(b.objects.hot.items.len >= before);
     if (at == ObjId.none) return at;
+    std.debug.assert(at.index() < b.objects.hot.items.len);
     const o = b.objects.at(at);
     if ((o.kind == .code or o.kind == .constant) and o.full.len == 0 and o.src_expr == .none) {
         o.src_expr = id;
@@ -38,10 +42,14 @@ pub fn expr(b: *Builder, id: Ast.ExprId) Error!ObjId {
     return at;
 }
 
+/// The object `expr` answers for `id`, without its decompile source or
+/// attributes. Asserts that the answer is `none` or a row that exists, and
+/// that building only ever appends rows.
 pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!ObjId {
     if (id == .none) return ObjId.none;
     const ex = &b.file.exprs;
-    return switch (ex.tag(id)) {
+    const before = b.objects.hot.items.len;
+    const at = try switch (ex.tag(id)) {
         .ident => b.lookup(b.file.str(ex.strOf(id))),
         .hier_ident => blk: {
             const parts = ex.nameParts(id);
@@ -141,18 +149,27 @@ pub fn exprObj(b: *Builder, id: Ast.ExprId) Error!ObjId {
         // functions, patterns, infinities. No object.
         .builtin_call, .filter_call, .noise_call, .port_access, .assign_pattern, .pattern_repl, .range, .indexed_range, .pos_inf, .neg_inf, .event_initial_step, .event_final_step, .event_driver_update, .event_function => ObjId.none,
     };
+    std.debug.assert(b.objects.hot.items.len >= before);
+    std.debug.assert(at == ObjId.none or at.index() < b.objects.hot.items.len);
+    return at;
 }
 
 /// `base[i]`, `base[msb:lsb]` and `base[i +: w]`: an array element is the
 /// memory word or variable select the model already holds (§11.6.18); a
 /// bit of a vector is a net bit or reg bit with vpiParent and vpiIndex; a
 /// range is §11.6.19's part select, and an IEEE 1364-2005 §5.2.1
-/// indexed part-select is §26.6.26's, with its base and width.
+/// indexed part-select is §26.6.26's, with its base and width. Asserts
+/// that `id` is an `.index` expression and that the chain of selects under
+/// it ends within the expression table (the tree has no cycle).
 pub fn select(b: *Builder, id: Ast.ExprId) Error!ObjId {
     const ex = &b.file.exprs;
+    std.debug.assert(ex.tag(id) == .index);
     var event_base = id;
     var rank: usize = 0;
-    while (ex.tag(event_base) == .index) : (event_base = ex.lhs(event_base)) rank += 1;
+    while (ex.tag(event_base) == .index) : (event_base = ex.lhs(event_base)) {
+        std.debug.assert(rank < ex.len());
+        rank += 1;
+    }
     if (ex.tag(event_base) == .ident or ex.tag(event_base) == .hier_ident) {
         const array = try b.expr(event_base);
         if (array != ObjId.none and b.objects.at(array).vtype == user.vpiNamedEventArray) {
@@ -223,7 +240,11 @@ pub fn select(b: *Builder, id: Ast.ExprId) Error!ObjId {
 /// Constant source selects denote the declared element, including
 /// negative bounds and parameter expressions. Use the engine's integer
 /// rules; a variable or application function is never evaluated here.
+/// Asserts that `e` is an expression and this builder's engine scope is
+/// one of the run's.
 pub fn eventIndexValue(b: *Builder, e: Ast.ExprId) Error!?i64 {
+    std.debug.assert(e != .none);
     const r = b.run orelse return null;
+    std.debug.assert(b.engine < r.hier.scopes.items.len);
     return r.vpiConstantIndex(b.arena, b.engine, e) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.NotElaborated;
 }

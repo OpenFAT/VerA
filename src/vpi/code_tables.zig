@@ -54,14 +54,25 @@ pub const ScopeLists = struct {
     /// and gen scopes to them for `vpiInternalScope`.
     internal: std.ArrayList(ObjId) = .empty,
 
-    /// Frees the lists (owned by `gpa`); the rows they index stay.
+    /// Frees the lists (owned by `gpa`); the rows they index stay. Asserts
+    /// that no list outgrew its capacity or the row space it indexes.
     pub fn deinit(s: *ScopeLists, gpa: std.mem.Allocator) void {
-        inline for (@typeInfo(ScopeLists).@"struct".field_names) |name| @field(s, name).deinit(gpa);
+        inline for (@typeInfo(ScopeLists).@"struct".field_names) |name| {
+            const list = &@field(s, name);
+            std.debug.assert(list.items.len <= list.capacity);
+            std.debug.assert(list.items.len < std.math.maxInt(u32));
+            list.deinit(gpa);
+        }
+        s.* = undefined;
     }
 
     /// Frozen as tagged rows, the shape `vpi_iterate(tag, module)` reads.
+    /// Asserts that every list but `internal` is frozen, each with as many
+    /// items as it holds.
     pub fn freeze(s: *const ScopeLists, arena: std.mem.Allocator) ![]const List {
-        return arena.dupe(List, &.{
+        // `internal` is not one: `model.freeze` joins it to the instances.
+        const frozen = @typeInfo(ScopeLists).@"struct".field_names.len - 1;
+        const out = try arena.dupe(List, &.{
             .{ .tag = user.vpiContAssign, .items = try arena.dupe(ObjId, s.cont_assigns.items) },
             .{ .tag = user.vpiProcess, .items = try arena.dupe(ObjId, s.processes.items) },
             .{ .tag = user.vpiTask, .items = try arena.dupe(ObjId, s.tasks.items) },
@@ -74,6 +85,9 @@ pub const ScopeLists = struct {
             .{ .tag = user.vpiGenScopeArray, .items = try arena.dupe(ObjId, s.gen_arrays.items) },
             .{ .tag = user.vpiParamAssign, .items = try arena.dupe(ObjId, s.param_assigns.items) },
         });
+        std.debug.assert(out.len == frozen);
+        std.debug.assert(out[0].items.len == s.cont_assigns.items.len);
+        return out;
     }
 };
 
@@ -100,8 +114,9 @@ pub const tchk_kinds = std.StaticStringMap(TchkKind).initComptime(.{
 const TchkKind = struct { type: c_int, data: bool, limits: [2]usize, n_limits: usize, notifier: usize, data_first: bool = false };
 
 /// The `vpi_get_str(vpiType)` spelling of every type this file makes.
+/// Asserts that every spelling is the `vpi`-prefixed constant name.
 pub fn typeName(t: c_int) ?[]const u8 {
-    return switch (t) {
+    const name: ?[]const u8 = switch (t) {
         user.vpiAlways => "vpiAlways",
         user.vpiRange => "vpiRange",
         user.vpiGenScopeArray => "vpiGenScopeArray",
@@ -163,11 +178,16 @@ pub fn typeName(t: c_int) ?[]const u8 {
         user.vpiTchkTerm => "vpiTchkTerm",
         else => null, // else: not a type this file makes; the caller answers
     };
+    const n = name orelse return null;
+    std.debug.assert(n.len > "vpi".len);
+    std.debug.assert(std.mem.startsWith(u8, n, "vpi"));
+    return n;
 }
 
-/// Annex G's vpiPrimType for a §7.8 gate.
+/// Annex G's vpiPrimType for a §7.8 gate. Asserts that it is one of the
+/// twelve gate codes, 1 to 12.
 pub fn gateType(k: Ast.GateKind) c_int {
-    return switch (k) {
+    const t: c_int = switch (k) {
         .g_and => 1,
         .g_nand => 2,
         .g_nor => 3,
@@ -181,6 +201,9 @@ pub fn gateType(k: Ast.GateKind) c_int {
         .g_notif0 => 11,
         .g_notif1 => 12,
     };
+    std.debug.assert(t >= 1);
+    std.debug.assert(t <= 12);
+    return t;
 }
 
 /// §11.6.13/§11.6.14's vpiDefName of `.code` row `o` of the installed
@@ -188,6 +211,7 @@ pub fn gateType(k: Ast.GateKind) c_int {
 /// keyword, read back from its vpiPrimType; a UDP instance's is its
 /// definition's.
 pub fn defName(o: *const Obj) ?[]const u8 {
+    std.debug.assert(o.kind == .code);
     switch (o.vtype) {
         user.vpiUdpDefn => return schema.coldOf(o).def_name,
         user.vpiUdp => return schema.coldOf(session.design.?.obj(schema.edgeTo(o, user.vpiUdpDefn))).def_name,
@@ -203,9 +227,10 @@ pub fn defName(o: *const Obj) ?[]const u8 {
     unreachable;
 }
 
-/// Annex G's vpiPrimType for a §7.1 switch.
+/// Annex G's vpiPrimType for a §7.1 switch. Asserts that it is one of the
+/// twelve switch codes, 13 to 24, past the gates'.
 pub fn switchType(k: Ast.SwitchKind) c_int {
-    return switch (k) {
+    const t: c_int = switch (k) {
         .nmos => 13,
         .pmos => 14,
         .cmos => 15,
@@ -219,27 +244,44 @@ pub fn switchType(k: Ast.SwitchKind) c_int {
         .tranif0 => 23,
         .tranif1 => 24,
     };
+    std.debug.assert(t >= 13);
+    std.debug.assert(t <= 24);
+    return t;
 }
 
 /// Annex G's strength code of a §7.9 strength level: one bit per level,
-/// vpiHiZ 0x01 up to vpiSupplyDrive 0x80.
+/// vpiHiZ 0x01 up to vpiSupplyDrive 0x80. Asserts that the code is one bit
+/// of the low byte.
 pub fn drive(s: Ast.Strength) c_int {
-    return @as(c_int, 1) << @intCast(@backingInt(s));
+    std.debug.assert(@backingInt(s) < 8);
+    const code = @as(c_int, 1) << @intCast(@backingInt(s));
+    std.debug.assert(@popCount(code) == 1);
+    return code;
 }
 
+/// Annex G's vpiDirection of a port or io declaration. Asserts that it is
+/// vpiInput through vpiNoDirection, never vpiMixedIO (a port, not a
+/// declaration, mixes).
 pub fn direction(d: Ast.Direction) c_int {
-    return switch (d) {
+    const v = switch (d) {
         .input => user.vpiInput,
         .output => user.vpiOutput,
         .inout => user.vpiInout,
         .unspecified => user.vpiNoDirection,
     };
+    std.debug.assert(v >= user.vpiInput);
+    std.debug.assert(v <= user.vpiNoDirection and v != user.vpiMixedIO);
+    return v;
 }
 
 /// IEEE 1364-2005 §26.6.4 io decl: direction, size, and whether it is a
 /// scalar, a vector and signed. `size` is vpiUndefined when the range did not
 /// fold, and then scalar and vector are not answered either.
+/// Asserts that `dir` is a direction code and `size` a width or
+/// vpiUndefined.
 pub fn ioProps(arena: std.mem.Allocator, dir: c_int, size: c_int, signed: bool) Error![]const Prop {
+    std.debug.assert(dir >= user.vpiInput and dir <= user.vpiNoDirection);
+    std.debug.assert(size > 0 or size == user.vpiUndefined);
     if (size < 0) return arena.dupe(Prop, &.{ .{ .prop = user.vpiDirection, .value = dir }, .{ .prop = user.vpiSize, .value = size }, .{ .prop = user.vpiSigned, .value = @intFromBool(signed) } });
     return arena.dupe(Prop, &.{
         .{ .prop = user.vpiDirection, .value = dir },
@@ -251,36 +293,51 @@ pub fn ioProps(arena: std.mem.Allocator, dir: c_int, size: c_int, signed: bool) 
 }
 
 /// Annex G's vpiFuncType of a function whose result is `v` (A.2.6
-/// function_range_or_type).
+/// function_range_or_type). Asserts that it is one of Annex G's five
+/// codes, and vpiRealFunc exactly for a real result.
 pub fn funcType(v: Ast.VarDecl) c_int {
-    if (v.ty == .real) return user.vpiRealFunc;
-    return switch (v.storage) {
+    const t = if (v.ty == .real) user.vpiRealFunc else switch (v.storage) {
         .variable => user.vpiIntFunc,
         .time => user.vpiTimeFunc,
         .reg => if (v.is_signed) user.vpiSizedSignedFunc else user.vpiSizedFunc,
     };
+    std.debug.assert(t >= user.vpiIntFunc and t <= user.vpiSizedSignedFunc);
+    std.debug.assert((t == user.vpiRealFunc) == (v.ty == .real));
+    return t;
 }
 
+/// The declared width of `v`, or vpiUndefined when its packed range does
+/// not fold to literals. Asserts that a width is positive, and is 1 for a
+/// declaration with neither a range nor a fixed-width type.
 pub fn packedWidth(file: *const Ast.SourceFile, v: Ast.VarDecl) c_int {
     if (v.storage == .time) return 64;
     if (v.ty == .integer and v.storage != .reg) return 32;
     if (v.ty == .real) return 64;
     const range = v.packed_range orelse return 1;
     if (file.exprs.tag(range.msb) != .int_literal or file.exprs.tag(range.lsb) != .int_literal) return user.vpiUndefined;
-    return @intCast(@abs(file.exprs.intValue(range.msb) - file.exprs.intValue(range.lsb)) + 1);
+    const w = @abs(file.exprs.intValue(range.msb) - file.exprs.intValue(range.lsb)) + 1;
+    std.debug.assert(w >= 1);
+    std.debug.assert(w <= std.math.maxInt(c_int));
+    return @intCast(w);
 }
 
 /// A literal delay, as a real: an integer or a real literal. Null otherwise.
+/// Asserts that a literal's value is a number (never NaN).
 pub fn literal(file: *const Ast.SourceFile, e: Ast.ExprId) ?f64 {
-    return switch (file.exprs.tag(e)) {
+    std.debug.assert(e != .none);
+    const v: f64 = switch (file.exprs.tag(e)) {
         .int_literal => @floatFromInt(file.exprs.intValue(e)),
         .real_literal => file.exprs.realValue(e),
-        else => null, // else: only a literal folds without the elaborator
+        else => return null, // else: only a literal folds without the elaborator
     };
+    std.debug.assert(!std.math.isNan(v));
+    return v;
 }
 
+/// Annex G's vpiOpType of a §5.1 unary operator. Asserts that it is an
+/// operator code of Annex G's 1-to-43 range.
 pub fn unaryOp(op: Ast.UnaryOp) c_int {
-    return switch (op) {
+    const t: c_int = switch (op) {
         .plus => user.vpiPlusOp,
         .minus => user.vpiMinusOp,
         .logical_not => user.vpiNotOp,
@@ -292,10 +349,15 @@ pub fn unaryOp(op: Ast.UnaryOp) c_int {
         .reduce_xor => user.vpiUnaryXorOp,
         .reduce_xnor => user.vpiUnaryXNorOp,
     };
+    std.debug.assert(t >= user.vpiMinusOp);
+    std.debug.assert(t <= user.vpiPowerOp);
+    return t;
 }
 
+/// Annex G's vpiOpType of a §5.1 binary operator. Asserts that it is an
+/// operator code of Annex G's 1-to-43 range, past the unary sign codes.
 pub fn binaryOp(op: Ast.BinaryOp) c_int {
-    return switch (op) {
+    const t: c_int = switch (op) {
         .add => user.vpiAddOp,
         .sub => user.vpiSubOp,
         .mul => user.vpiMultOp,
@@ -321,14 +383,22 @@ pub fn binaryOp(op: Ast.BinaryOp) c_int {
         .ashl => user.vpiArithLShiftOp,
         .ashr => user.vpiArithRShiftOp,
     };
+    std.debug.assert(t > user.vpiPlusOp);
+    std.debug.assert(t <= user.vpiPowerOp);
+    return t;
 }
 
+/// Annex G's vpiPolarity of a §14.2 path polarity. Asserts that it is
+/// vpiPositive, vpiNegative or vpiUnknown, and vpiUnknown for none.
 pub fn polarity(p: Ast.SpecPolarity) c_int {
-    return switch (p) {
+    const v = switch (p) {
         .none => user.vpiUnknown,
         .positive => user.vpiPositive,
         .negative => user.vpiNegative,
     };
+    std.debug.assert(v >= user.vpiPositive and v <= user.vpiUnknown);
+    std.debug.assert((v == user.vpiUnknown) == (p == .none));
+    return v;
 }
 
 test "typeName spells every behavioural type the builders make, as its constant is named" {
