@@ -187,17 +187,7 @@ const wide = struct {
     const stack_bytes = 1 << 20;
 
     /// Rows that fail on a real bug, with the bug. Empty is the goal.
-    pub const known: []const table.Known = &.{
-        .{ .row = "elsif.va --lint", .why = parser_caller },
-        .{ .row = "elsif.va --emit-zig", .why = parser_caller },
-        .{ .row = "elsif.va --emit-so-tree", .why = parser_caller },
-        .{ .row = "elsif.va --emit-verilog", .why = parser_caller },
-        .{ .row = "nest.va --lint", .why = parser_caller },
-        .{ .row = "nest.va --emit-zig", .why = parser_caller },
-        .{ .row = "nest.va --emit-so-tree", .why = parser_caller },
-        .{ .row = "nest.va --emit-verilog", .why = parser_caller },
-    };
-    const parser_caller = "the parser's first segment (parser/stmt.zig:69 parseStmt, generate.zig:113 parseIf) runs on the caller's stack, which deep_stack.zig says nesting is not bounded by; `--elab`/`--run` pass, under runGuarded";
+    pub const known: []const table.Known = &.{};
 
     const Shape = enum { chain, case_arms, sum, elsif, nest };
     const Pass = enum { lint, emit_zig, emit_so_tree, emit_verilog, elab, run, emit_rtlil };

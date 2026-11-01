@@ -27,6 +27,7 @@
 //! row of the table.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -34,9 +35,11 @@ const Allocator = std.mem.Allocator;
 /// Rows that misbehave on a real bug, with the bug. Empty is the goal.
 const known: []const struct { row: []const u8, why: []const u8 } = &.{};
 
-/// Linux's MAX_ARG_STRLEN is 128 KiB per argument, so a 1 MiB value cannot
-/// be passed; this is the longest one that can, less room for a `--name=`.
-const big_len = 128 * 1024 - 1 - 64;
+/// The longest value the OS passes, less room for a `--name=` and the rest of
+/// the line: Linux's MAX_ARG_STRLEN is 128 KiB per argument (so a 1 MiB value
+/// cannot be passed), and Windows holds the whole command line to 32767 UTF-16
+/// units (CreateProcessW), the paths of vera and its input included.
+const big_len = if (builtin.os.tag == .windows) 24 * 1024 else 128 * 1024 - 1 - 64; // os: Windows' command-line limit
 
 /// A row that runs longer than this hangs.
 const timeout_s = 60;

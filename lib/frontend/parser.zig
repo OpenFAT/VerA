@@ -16,7 +16,7 @@
 //! Contents:
 //! - `pub const Error = error`
 //! - `pub const segment_levels = 4096`
-//! - `pub const caller_levels = 512`
+//! - `pub const caller_levels = 32`
 //! - `pub const Parser = struct`: `init`, `Seed`, `initSeeded`, `setLanguage`, `refuseAms`, `refuseDigital`, `digitalItem`, `parseSourceFile`, `discreteGrammar`, `peek`, `peekAt`, `eat`, `tokenText`, `reservedIs`, `eatSymbol`, `expect`, `identLike`, `warnOwnMathFn`, `expectIdent`, `expectIdentOrSys`, `internTok`, `skipAttributes`, `attributesEnd`, `pastAttributes`, `ownedAttributes`, `copyAttributes`, `statementAttributes`, `markAttributes`, `rewindAttributes`, `lteSince`, `keepLte`, `recoverStatement`, `report`, `nest`, `enter`, `leave`, `segmentDue`, `descend`, `walk`, `segment`, `failAt`, `failWith`, `found`
 //! - `pub const TestResult = struct`: `count`, `code`, `msg`
 //! - `pub fn newBag(arena: std.mem.Allocator, src: []const u8) !*diag.Bag`
@@ -40,9 +40,11 @@ pub const Error = error{ OutOfMemory, ParseError };
 /// by the calling thread's stack (`Parser.segment`).
 pub const segment_levels = 4096;
 
-/// Levels the caller's own stack holds before the first segment: half the
-/// 1024 the parser ran on any caller's stack before segments existed.
-pub const caller_levels = 512;
+/// Levels the caller's own stack holds before the first segment. The parser
+/// peaks near 6 KB a level in Debug, so 32 is under 200 KB: an embedder's
+/// 1 MiB thread holds it with room for the caller. 512 overflowed that thread
+/// (a 5000-deep else-if chain, tests/generators.zig `wide`).
+pub const caller_levels = 32;
 
 /// Parser state for one token stream. Every allocation comes from `arena`;
 /// `src`, `tags` and `starts` are borrowed and must outlive the produced

@@ -139,7 +139,8 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Veri
   path to `--spice`/`--protect-keys`/`--digital-pins`, a defparam through an
   escaped name holding `[` or `.` (`\a__g[1]__in1`), a display-only device's
   noise and AC tables, `ac_stim` with four arguments (E0506), a NaN noise-table
-  knot, and a 5000-statement chain or 5000-arm `case` on a 1 MiB thread (#114).
+  knot, and a 5000-statement chain, 5000-arm `case` or 5000-deep else-if or
+  `begin` nest on a 1 MiB thread (#114).
 - **Device codegen is linear on long select chains**: a 5000-arm `case` takes
   2.05 s in Debug, from 68.2 s (#114).
 - **VPI**: the analog library's runner reports the device's `mem_bytes` as
