@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -442,7 +443,6 @@ class ReleaseVersionTests(unittest.TestCase):
     """`--changelog` sets both version literals; `--check` refuses a stale one."""
 
     def test_changelog_sets_both_and_check_reads_them(self):
-        import tempfile
         with tempfile.TemporaryDirectory() as d:
             zon, con = Path(d) / "build.zig.zon", Path(d) / "contract.zig"
             zon.write_text('.{\n    .version = "0.9.0",\n    .minimum_zig_version = "0.17.0",\n}\n')
@@ -738,7 +738,6 @@ def determinism(argv):
     exit, the same device text byte for byte, and the same diagnostics once the
     repo's absolute path is stripped. Prints each difference; exit 1 if any."""
     import concurrent.futures
-    import tempfile
     elsewhere = tempfile.mkdtemp(prefix="vera-determinism-")
     bins = binaries(argv)
     root = str(ROOT).encode() + b"/"
@@ -785,13 +784,17 @@ class FixtureLayoutTests(unittest.TestCase):
     """The path relationships discovery and coverage depend on."""
 
     def test_host_and_vpi_designs_exist(self):
-        # A host's `//! device` is relative to the suite root; a `.c`'s
-        # `//! design` to the `.c`'s own directory.
+        # A host's `//! device` is relative to the suite root, or to the
+        # repository's for a `tests/host/...` device only VerA's host judges
+        # (build.zig `hostTests`); a `.c`'s `//! design` to the `.c`'s own
+        # directory.
         missing = []
         for path in sorted((ROOT / "tests/host").glob("*.zig")) + fixture_files("*.c"):
             key, base = ("design", path.parent) if path.suffix == ".c" else ("device", SUITE)
             for rel in re.findall(rf"(?m)^//! {key} (.+)$", path.read_text()):
-                if not (base / rel.strip()).is_file():
+                rel = rel.strip()
+                at = ROOT if key == "device" and rel.startswith("tests/host/") else base
+                if not (at / rel).is_file():
                     missing.append(f"{path.relative_to(ROOT)}: {rel}")
         self.assertEqual(missing, [])
 
