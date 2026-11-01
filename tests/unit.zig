@@ -21791,11 +21791,17 @@ pub const vpi_tests = struct {
 
     test "§26.6.26 b): a text nested past vpi_get_str's buffer is refused by its length, not by the stack" {
         // Oracle: every decompiled level writes at least one byte of its own, so
-        // `a + a + ... + a` 10^5 operators deep (4 * 10^5 bytes) cannot fit the
+        // `a + a + ... + a` 10^4 operators deep (4 * 10^4 bytes) cannot fit the
         // 4095-byte buffer: vpi_get_str answers null with an error, as for any
         // text past it. The rewrite recursed to the chain's bottom before
         // writing a byte and overflowed the caller's stack.
-        const n = 100_000;
+        // The depth: 10^4 overflows an 8 MiB caller stack under the rewrite's
+        // recursive walks (measured, Debug: each of the three segfaults at 10,000) and
+        // elaborates on the smallest reservation runGuarded takes on a CI
+        // machine (256 MiB, Windows': measured, these designs elaborate there
+        // to 20,000 and not at 50,000), so the result does not depend on the
+        // machine's memory.
+        const n = 10_000;
         var src: std.ArrayList(u8) = .empty;
         defer src.deinit(std.testing.allocator);
         try src.appendSlice(std.testing.allocator, "module t;\n  wire a;\n  wire w;\n  assign w = a");
@@ -21811,12 +21817,18 @@ pub const vpi_tests = struct {
         try std.testing.expect(status.vpi_chk_error(null) != 0);
     }
 
-    test "§26.6.23 vpiLoad finds an assign that reads a net 2 * 10^5 operators deep, on the caller's stack" {
+    test "§26.6.23 vpiLoad finds an assign that reads a net 10^4 operators deep, on the caller's stack" {
         // Oracle: IEEE 1364-2005 §26.6.23, a net's loads are the continuous
         // assignments whose right side reads it: `w = b + b + ... + a` reads `a`
         // once, at the bottom of the chain, and `b` at every level. The rewrite
         // walked the operands recursively and overflowed the caller's stack.
-        const n = 200_000;
+        // The depth: 10^4 overflows an 8 MiB caller stack under the rewrite's
+        // recursive walks (measured, Debug: each of the three segfaults at 10,000) and
+        // elaborates on the smallest reservation runGuarded takes on a CI
+        // machine (256 MiB, Windows': measured, these designs elaborate there
+        // to 20,000 and not at 50,000), so the result does not depend on the
+        // machine's memory.
+        const n = 10_000;
         var src: std.ArrayList(u8) = .empty;
         defer src.deinit(std.testing.allocator);
         try src.appendSlice(std.testing.allocator, "module t;\n  wire a, b;\n  wire w;\n  assign w = a");
@@ -21831,13 +21843,19 @@ pub const vpi_tests = struct {
         try std.testing.expect(iterate.vpi_scan(loads) == null);
     }
 
-    test "§26.6.27: 10^5 nested begin blocks build their model on the reserved stack, one vpiBegin a level" {
+    test "§26.6.27: 10^4 nested begin blocks build their model on the reserved stack, one vpiBegin a level" {
         // Oracle: the source, counted. `initial begin begin ... x = 1; end end`
         // n deep is n vpiBegin objects, each the one statement of its parent
         // (IEEE 1364-2005 §26.6.27 begin ->> vpiStmt), and the assignment at the
         // bottom. The rewrite built the model on the caller's stack, one
         // recursion a level, and overflowed it.
-        const n = 100_000;
+        // The depth: 10^4 overflows an 8 MiB caller stack under the rewrite's
+        // recursive walks (measured, Debug: each of the three segfaults at 10,000) and
+        // elaborates on the smallest reservation runGuarded takes on a CI
+        // machine (256 MiB, Windows': measured, these designs elaborate there
+        // to 20,000 and not at 50,000), so the result does not depend on the
+        // machine's memory.
+        const n = 10_000;
         var src: std.ArrayList(u8) = .empty;
         defer src.deinit(std.testing.allocator);
         try src.appendSlice(std.testing.allocator, "module t;\n  reg x;\n  initial ");
