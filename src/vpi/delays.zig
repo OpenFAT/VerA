@@ -50,11 +50,13 @@ const InterModPath = struct { ports: [2]ObjId, delays: [3]f64 = .{ 0, 0, 0 } };
 var paths: std.ArrayList(*InterModPath) = .empty;
 
 /// Forgets every path's pulse limits and every inter-module path
-/// (`root.close`).
+/// (`session.close`). Asserts that both tables are empty after.
 pub fn reset() void {
     limits.clearAndFree(std.heap.smp_allocator);
     for (paths.items) |m| std.heap.smp_allocator.destroy(m);
     paths.clearAndFree(std.heap.smp_allocator);
+    std.debug.assert(limits.count() == 0);
+    std.debug.assert(paths.items.len == 0);
 }
 
 /// "shall retrieve the delays or pulse limits of an object and place them in
@@ -73,7 +75,9 @@ pub fn reset() void {
 /// Table 12-3's min/typ/max triple is one value three times (no mintypmax
 /// expression reaches this model), and the reject and error limits are the
 /// ones a put gave a path, else the delay itself (IEEE 1364 §14.6.1's
-/// default, an inertial delay).
+/// default, an inertial delay). Asserts that a handle `trust.asObj` accepts
+/// is a row of the installed design, and that a module path's written
+/// delays are one of Table 14-3's counts the parser admits.
 pub export fn vpi_get_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
     if (status.refused("vpi_get_delays")) return;
     if (asPath(obj)) |m| return getPathDelays(m, delay_p);
@@ -81,6 +85,7 @@ pub export fn vpi_get_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
         status.fail("BADHANDLE", "vpi_get_delays: that handle is not an object", .{});
         return;
     };
+    std.debug.assert(session.design != null); // asObj answers rows of an installed design only
     const d = delay_p orelse {
         status.fail("BADDELAY", "vpi_get_delays: delay_p is NULL", .{});
         return;
@@ -130,6 +135,7 @@ pub export fn vpi_get_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
     const lim = if (o.vtype == user.vpiModPath) limits.get(session.design.?.idOf(o)) else null;
     const rejects: []const f64 = if (lim) |l| pathDelays(l.reject, &reject_buf) else values;
     const errs: []const f64 = if (lim) |l| pathDelays(l.err, &err_buf) else values;
+    std.debug.assert(values.len >= @as(usize, @intCast(d.no_of_delays)));
     fill(d, values, rejects, errs, obj);
 }
 
@@ -154,7 +160,9 @@ pub export fn vpi_get_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
 /// is a (delay, reject, error) triple. A path keeps the limits (`limits`).
 /// The engine's gates and continuous assignments run IEEE 1364 §14.6.1's
 /// inertial default, both limits the delay itself, and no other: a put of
-/// other limits onto one is refused rather than dropped.
+/// other limits onto one is refused rather than dropped. Asserts that a
+/// handle `trust.asObj` accepts is a row of the installed design, owned by
+/// one of its scopes.
 pub export fn vpi_put_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
     if (status.refused("vpi_put_delays")) return;
     if (asPath(obj)) |m| return putPathDelays(m, delay_p);
@@ -162,6 +170,7 @@ pub export fn vpi_put_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
         status.fail("BADHANDLE", "vpi_put_delays: that handle is not an object", .{});
         return;
     };
+    std.debug.assert(session.design != null); // asObj answers rows of an installed design only
     const d = delay_p orelse {
         status.fail("BADDELAY", "vpi_put_delays: delay_p is NULL", .{});
         return;
@@ -228,6 +237,7 @@ pub export fn vpi_put_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
     // Drivers are keyed by the ENGINE's instance scope, which a lexical engine
     // scope (a generate iteration, a task frame) can set apart from the
     // model's scope index.
+    std.debug.assert((o.owner.get() orelse 0) < session.design.?.scopes.len); // a statement's owner is a module
     const scope = session.design.?.scopes[o.owner.get() orelse 0].engine;
     var hit = false;
     for (r.netlist.drivers) |*drv| {
@@ -249,15 +259,25 @@ pub export fn vpi_put_delays(obj: abi.vpiHandle, delay_p: ?*Delay) void {
 }
 
 /// `d.da`'s delay `k`, part `p`, under `d`'s own mtm and pulsere flags.
+/// Asserts that `d` was checked first: `da` is set and `k` is one of its
+/// `no_of_delays`. Asserts that `p` is a delay, reject or error part.
 pub fn part(d: *const Delay, k: usize, p: usize) Time {
+    std.debug.assert(d.da != null);
+    std.debug.assert(k < @as(usize, @intCast(d.no_of_delays)));
+    std.debug.assert(p < 3);
     return d.da[element(k, p, if (d.mtm_flag != 0) 3 else 1, if (d.pulsere_flag != 0) 3 else 1)];
 }
 
 /// `h` as an inter-module path this design made, or null; never
-/// dereferences a foreign pointer.
+/// dereferences a foreign pointer. Asserts that paths exist only while a
+/// design is installed, and that the one found joins two ports.
 pub fn asPath(h: abi.vpiHandle) ?*InterModPath {
+    std.debug.assert(paths.items.len == 0 or session.design != null);
     const p = h orelse return null;
-    for (paths.items) |m| if (@intFromPtr(m) == @intFromPtr(p)) return m;
+    for (paths.items) |m| if (@intFromPtr(m) == @intFromPtr(p)) {
+        std.debug.assert(m.ports[0] != m.ports[1]);
+        return m;
+    };
     return null;
 }
 
@@ -268,7 +288,8 @@ pub fn asPath(h: abi.vpiHandle) ?*InterModPath {
 /// same handle (vpi_compare_objects reads identity). Two distinct ports,
 /// `from` driving out (output or inout) and `to` reading in (input or
 /// inout), of one size; whether a net joins them is not asked, as §12.22
-/// does not ask it.
+/// does not ask it. Asserts that a made path is the newest in `paths` and
+/// joins two distinct rows.
 pub fn interModPath(ref1: abi.vpiHandle, ref2: abi.vpiHandle) abi.vpiHandle {
     const who = "vpi_handle_multi(vpiInterModPath)";
     const a = trust.asObj(ref1);
@@ -295,6 +316,7 @@ pub fn interModPath(ref1: abi.vpiHandle, ref2: abi.vpiHandle) abi.vpiHandle {
         status.fail("BADPORT", who ++ ": `{s}` and `{s}` are not of the same size", .{ from.full, to.full });
         return null;
     }
+    std.debug.assert(session.design != null); // asObj answers rows of an installed design only
     const key = [2]ObjId{ session.design.?.idOf(from), session.design.?.idOf(to) };
     for (paths.items) |m| if (std.mem.eql(ObjId, &m.ports, &key)) return @ptrCast(m);
     const gpa = std.heap.smp_allocator;
@@ -308,6 +330,8 @@ pub fn interModPath(ref1: abi.vpiHandle, ref2: abi.vpiHandle) abi.vpiHandle {
         status.fail("NOMEM", who ++ ": out of memory", .{});
         return null;
     };
+    std.debug.assert(paths.items[paths.items.len - 1] == m);
+    std.debug.assert(m.ports[0] != m.ports[1]);
     return @ptrCast(m);
 }
 
@@ -317,6 +341,9 @@ pub fn interModPath(ref1: abi.vpiHandle, ref2: abi.vpiHandle) abi.vpiHandle {
 /// Table 12-5 lays them out, in `d.time_type`; a vpiSimTime counts ticks
 /// of `unit_of`'s module's unit.
 fn fill(d: *Delay, values: []const f64, rejects: []const f64, errs: []const f64, unit_of: abi.vpiHandle) void {
+    std.debug.assert(d.da != null);
+    std.debug.assert(d.no_of_delays >= 1);
+    std.debug.assert(values.len >= @as(usize, @intCast(d.no_of_delays)));
     const mtm: usize = if (d.mtm_flag != 0) 3 else 1;
     const pulse: usize = if (d.pulsere_flag != 0) 3 else 1;
     var at: usize = 0;
@@ -338,6 +365,7 @@ fn fill(d: *Delay, values: []const f64, rejects: []const f64, errs: []const f64,
             at += 1;
         };
     }
+    std.debug.assert(at == @as(usize, @intCast(d.no_of_delays)) * mtm * pulse);
 }
 
 /// IEEE 1364 §14.3.1 Table 14-3: a path's written delays as the twelve
@@ -346,6 +374,7 @@ fn fill(d: *Delay, values: []const f64, rejects: []const f64, errs: []const f64,
 /// add turn-off; six are the first six; the x transitions of a six-value
 /// path are the pessimistic ones, min into x and max out of it.
 fn pathDelays(w: []const f64, out: *[12]f64) []const f64 {
+    std.debug.assert(w.len != 0);
     const t: [6]f64 = switch (w.len) {
         1 => .{ w[0], w[0], w[0], w[0], w[0], w[0] },
         2 => .{ w[0], w[1], w[0], w[0], w[1], w[1] },
@@ -364,18 +393,27 @@ fn pathDelays(w: []const f64, out: *[12]f64) []const f64 {
         out[10] = @max(t[4], t[2]); // x->z
         out[11] = @min(t[3], t[5]); // z->x
     }
+    // Every count's first transition, 0->1, is the rise.
+    std.debug.assert(out[0] == w[0]);
     return out[0..12];
 }
 
 /// Table 12-5's index of delay `k`'s part `p` (0 delay, 1 reject, 2 error),
 /// its typical when `mtm` is 3.
 fn element(k: usize, p: usize, mtm: usize, pulse: usize) usize {
-    return k * mtm * pulse + p * mtm + (if (mtm == 3) @as(usize, 1) else 0);
+    std.debug.assert(mtm == 1 or mtm == 3);
+    std.debug.assert(p < pulse);
+    const at = k * mtm * pulse + p * mtm + (if (mtm == 3) @as(usize, 1) else 0);
+    std.debug.assert(at < (k + 1) * mtm * pulse); // inside delay `k`'s group
+    return at;
 }
 
 /// The two time types §12.11/§12.29 take for an object's delays; false,
 /// with the error recorded, for any other.
 fn timeTypeOk(comptime who: []const u8, d: *const Delay) bool {
+    // Every caller checks the count first, so a refusal names one problem.
+    std.debug.assert(d.no_of_delays >= 1);
+    std.debug.assert(d.no_of_delays <= 12);
     if (d.time_type == user.vpiScaledRealTime or d.time_type == user.vpiSimTime) return true;
     status.fail("BADDELAY", who ++ ": time_type {d} is neither vpiScaledRealTime nor vpiSimTime", .{d.time_type});
     return false;
@@ -384,6 +422,8 @@ fn timeTypeOk(comptime who: []const u8, d: *const Delay) bool {
 /// A path's or a timing check's delays, as the model holds them; false,
 /// with the error recorded, when the put is refused.
 fn putModelDelays(o: *const Obj, d: *const Delay) bool {
+    std.debug.assert(o.kind == .code);
+    std.debug.assert(o.vtype == user.vpiModPath or o.vtype == user.vpiTchk);
     const legal = if (o.vtype == user.vpiModPath) switch (d.no_of_delays) {
         1, 2, 3, 6, 12 => true,
         else => false,
@@ -400,7 +440,7 @@ fn putModelDelays(o: *const Obj, d: *const Delay) bool {
     const design = &session.design.?;
     const out = design.arena.allocator().alloc(f64, n) catch return noMem();
     for (out, 0..) |*v, k| v.* = part(d, k, 0).real;
-    for (out) |v| if (!isDelay(v)) return notDelay(v);
+    for (out) |v| if (!delayOk(v)) return false;
     const idx = design.idOf(o);
     // §12.29: a put with pulsere_flag sets a path's limits; one without
     // leaves them.
@@ -411,12 +451,13 @@ fn putModelDelays(o: *const Obj, d: *const Delay) bool {
         for (0..n) |k| {
             reject[k] = part(d, k, 1).real;
             err[k] = part(d, k, 2).real;
-            if (!isDelay(reject[k])) return notDelay(reject[k]);
-            if (!isDelay(err[k])) return notDelay(err[k]);
+            if (!delayOk(reject[k])) return false;
+            if (!delayOk(err[k])) return false;
         }
         limits.put(std.heap.smp_allocator, idx, .{ .reject = reject, .err = err }) catch return noMem();
     }
     design.obj(idx).delays = out;
+    std.debug.assert(design.obj(idx).delays.len == n);
     return true;
 }
 
@@ -424,6 +465,8 @@ fn putModelDelays(o: *const Obj, d: *const Delay) bool {
 /// the digital engine's (`digital.Run.tchkLimits`). Without a digital run
 /// (the analog model) the model's copy is all there is.
 fn putEngineLimits(obj: abi.vpiHandle, o: *const Obj, d: *const Delay) void {
+    std.debug.assert(o.vtype == user.vpiTchk);
+    std.debug.assert(o.delays.len == @as(usize, @intCast(d.no_of_delays))); // putModelDelays held them
     const r = run.attached() orelse return;
     const n: usize = @intCast(d.no_of_delays);
     var ticks: [2]u64 = undefined;
@@ -434,25 +477,30 @@ fn putEngineLimits(obj: abi.vpiHandle, o: *const Obj, d: *const Delay) void {
         status.fail("NODRIVER", "vpi_put_delays: the engine holds no timing check for that object", .{});
 }
 
-/// Whether `v` is a delay a put may hold: finite and not negative. The
-/// engine's puts get this from `run.ticksOf`; the model's puts never call it.
-fn isDelay(v: f64) bool {
-    return std.math.isFinite(v) and v >= 0;
-}
-
-fn notDelay(v: f64) bool {
+/// Whether `v` is a delay a put may hold: finite and not negative; false,
+/// with the error recorded, otherwise. The engine's puts get this from
+/// `run.ticksOf`; the model's puts never call it.
+fn delayOk(v: f64) bool {
+    std.debug.assert(!session.starting); // a put is refused at startup
+    std.debug.assert(session.design != null);
+    if (std.math.isFinite(v) and v >= 0) return true;
     status.fail("BADDELAY", "vpi_put_delays: {d} is not a delay", .{v});
     return false;
 }
 
 fn noMem() bool {
+    std.debug.assert(!session.starting); // a put is refused at startup
+    std.debug.assert(session.design != null);
     status.fail("NOMEM", "vpi_put_delays: out of memory", .{});
     return false;
 }
 
 /// The port row `i` as a handle, for a time unit or an iteration.
 fn portHandle(i: ObjId) abi.vpiHandle {
-    return @ptrCast(session.design.?.obj(i));
+    std.debug.assert(i != .none);
+    const h: abi.vpiHandle = @ptrCast(session.design.?.obj(i));
+    std.debug.assert(trust.asObj(h).?.kind == .port);
+    return h;
 }
 
 /// §12.11: "For inter-module path objects, the no_of_delays value shall be 2
@@ -460,6 +508,8 @@ fn portHandle(i: ObjId) abi.vpiHandle {
 /// until a put of three writes it. The reject and error limits are the delay
 /// itself (§14.6.1's default): no put keeps others.
 fn getPathDelays(m: *const InterModPath, delay_p: ?*Delay) void {
+    std.debug.assert(m.ports[0] != m.ports[1]);
+    std.debug.assert(session.design != null);
     const d = delay_p orelse {
         status.fail("BADDELAY", "vpi_get_delays: delay_p is NULL", .{});
         return;
@@ -475,6 +525,8 @@ fn getPathDelays(m: *const InterModPath, delay_p: ?*Delay) void {
 /// delay are refused, not dropped. A put needs the digital run, whose
 /// diagnostics get W0251: no simulation applies an interconnect delay.
 fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
+    std.debug.assert(m.ports[0] != m.ports[1]);
+    std.debug.assert(session.design != null);
     const d = delay_p orelse {
         status.fail("BADDELAY", "vpi_put_delays: delay_p is NULL", .{});
         return;
@@ -492,10 +544,7 @@ fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
     var got: [3]f64 = undefined;
     for (got[0..n], 0..) |*v, k| {
         v.* = part(d, k, 0).real;
-        if (!isDelay(v.*)) {
-            _ = notDelay(v.*);
-            return;
-        }
+        if (!delayOk(v.*)) return;
         if (d.pulsere_flag == 0) continue;
         for (1..3) |p| {
             if (part(d, k, p).real == v.*) continue;
@@ -503,6 +552,7 @@ fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
             return;
         }
     }
+    std.debug.assert(n == 2 or n == 3); // pathStruct
     if (n < 3) got[2] = @min(got[0], got[1]);
     m.delays = got;
     const objects = session.design.?.objects;
@@ -521,6 +571,8 @@ fn putPathDelays(m: *InterModPath, delay_p: ?*Delay) void {
 
 /// The checks a get and a put share: §12.11's count and a `da` to use.
 fn pathStruct(comptime who: []const u8, d: *const Delay) bool {
+    std.debug.assert(!session.starting); // the routine was refused at startup
+    std.debug.assert(session.design != null); // paths exist only with a design
     if (d.no_of_delays != 2 and d.no_of_delays != 3) {
         status.fail("BADDELAY", who ++ ": an inter-module path takes 2 or 3 delays, not {d} (§12.11)", .{d.no_of_delays});
         return false;
