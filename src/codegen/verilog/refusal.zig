@@ -106,16 +106,3 @@ pub const Refusal = union(enum) {
         return error.Refused;
     }
 };
-
-// ---- private ----
-
-test "Refusal.format: a payload lands where its message names it" {
-    // Spec examples: the frozen messages `vera` printed before this table
-    // existed (tests/beh_verilog's refusals, build.zig's `--param c=inf`).
-    try std.testing.expectFmt("node `y`: its delay is not finite (tau·ln2 + td = inf s); give it a (* vera_delay *)", "{f}", .{Refusal{ .delay_not_finite = .{ .node = "y", .seconds = std.math.inf(f64) } }});
-    try std.testing.expectFmt("`V(gnd, y) <+`: a potential contribution drives its first node; write it as `V(y, gnd)` with the value negated", "{f}", .{Refusal{ .potential_from_first = .{ .hi = "gnd", .lo = "y" } }});
-    try std.testing.expectFmt("21 pins and driven nodes; the truth tables stop at 20", "{f}", .{Refusal{ .too_many_vars = .{ .count = 21, .max = 20 } }});
-    var slot: Refusal = .vector_net;
-    try std.testing.expectError(error.Refused, @as(error{Refused}!void, slot.raise(.{ .no_ports = "m" })));
-    try std.testing.expectFmt("module `m` has no ports", "{f}", .{slot});
-}

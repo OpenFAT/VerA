@@ -23,6 +23,7 @@ const vera = @import("vera");
 const exe = @import("exe");
 const zigbuild = @import("zigbuild");
 const protect = @import("frontend").protect;
+const deep = @import("frontend").deep_stack;
 const vpi = @import("vpi");
 const sim = @import("sim");
 const Io = std.Io;
@@ -107,10 +108,14 @@ export fn main(argc: c_int, argv: [*]const [*:0]const u8) c_int {
     // §12.26's log file: the application's name with `.log`, in the cwd.
     var log_buf: [256]u8 = undefined;
     const app_name = std.fs.path.basename(std.mem.span(argv[0]));
-    vpi.print.setLogFile(std.mem.print(&log_buf, "{s}.log", .{app_name}) catch "vera.log") catch {};
+    // A name past the buffer falls back to `vera.log`; only the copy can fail.
+    vpi.print.setLogFile(std.mem.print(&log_buf, "{s}.log", .{app_name}) catch "vera.log") catch |e| {
+        std.debug.print("vpi_host: {t}\n", .{e});
+        return 1;
+    };
     const design = std.mem.span(argv[1]);
     const app = if (argc > 2) std.mem.span(argv[2]) else null;
-    const code = (if (std.mem.endsWith(u8, design, ".va")) analogHost(design, app) else digitalHost(design)) catch |e| {
+    const code = (if (std.mem.endsWith(u8, design, ".va")) analogHost(design, app) else deep.runGuarded(0, digitalHost, .{design})) catch |e| {
         std.debug.print("vpi_host: {t}\n", .{e});
         return 1;
     };
@@ -302,6 +307,9 @@ fn readAnalyses(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const v
             const start = try spiceNumber(words.next() orelse return error.BadAnalysis);
             const stop = try spiceNumber(words.next() orelse return error.BadAnalysis);
             const step = if (words.next()) |w| try spiceNumber(w) else 0;
+            // A window forward from 0, and no more steps than a run's grid holds.
+            if (start < 0 or stop <= start or step < 0) return error.BadAnalysis;
+            if (step > 0 and (stop - start) / step > vpi.analog.tran_steps_max) return error.BadAnalysis;
             try out.append(arena, .{ .kind = .tran, .start = start, .stop = stop, .max_step = step });
         } else if (std.mem.eql(u8, kind, "ac")) {
             const fstart = try spiceNumber(words.next() orelse return error.BadAnalysis);
@@ -349,6 +357,9 @@ fn readPoints(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const Ext
         const kind = std.meta.stringToEnum(vpi.analog.Kind, words.next() orelse return error.BadAnalysis) orelse return error.UnsupportedAnalysis;
         var v: [3]f64 = undefined;
         for (&v) |*x| x.* = try spiceNumber(words.next() orelse return error.BadAnalysis);
+        // `analog.setPoint`'s contract: a step is not negative, and only an
+        // AC point has a frequency.
+        if (v[1] < 0 or v[2] < 0 or (v[2] != 0 and kind != .ac)) return error.BadAnalysis;
         try out.append(arena, .{ .kind = kind, .t = v[0], .dt = v[1], .freq = v[2] });
     }
     std.debug.assert(out.items.len <= seen);
@@ -364,10 +375,12 @@ fn spiceNumber(w: []const u8) !f64 {
         .{ .s = "n", .v = 1e-9 },  .{ .s = "u", .v = 1e-6 },  .{ .s = "m", .v = 1e-3 },
         .{ .s = "k", .v = 1e3 },   .{ .s = "g", .v = 1e9 },   .{ .s = "t", .v = 1e12 },
     };
-    for (scales) |sc| if (std.ascii.endsWithIgnoreCase(w, sc.s)) {
-        return (try std.fmt.parseFloat(f64, w[0 .. w.len - sc.s.len])) * sc.v;
-    };
-    return std.fmt.parseFloat(f64, w);
+    const v = for (scales) |sc| {
+        if (std.ascii.endsWithIgnoreCase(w, sc.s)) break (try std.fmt.parseFloat(f64, w[0 .. w.len - sc.s.len])) * sc.v;
+    } else try std.fmt.parseFloat(f64, w);
+    // `nan`, `inf` and an overflowing scale are no time or frequency.
+    if (!std.math.isFinite(v)) return error.BadAnalysis;
+    return v;
 }
 
 /// The design's device and the fixed solver as a shared library
@@ -396,7 +409,11 @@ fn buildAnalogLib(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, path
     const stem = std.fs.path.stem(path);
     const spec = try exe.Spec.parse(arena, source, null);
     var runner: Io.Writer.Allocating = .init(arena);
-    exe.writeVpiLib(&runner.writer, stem, &spec.bench, .{ .validate_contract = true }) catch return error.OutOfMemory;
+    // The facts `vera --emit-exe` renders this device's runner with, so the
+    // two heads agree (the memory-backed arrays' `mem_bytes` included).
+    var facts = try exe.compileFacts(arena, res.lowered, res.mir);
+    facts.validate_contract = true;
+    exe.writeVpiLib(&runner.writer, stem, &spec.bench, facts) catch return error.OutOfMemory;
     const work_root = if (std.c.getenv("VERA_VPI_WORK")) |w| std.mem.span(w) else ".zig-cache/vera-vpi"; // os: the host links libc on every target
     const work = try std.fs.path.join(arena, &.{ work_root, app_stem });
     // The contract this library speaks (`lib/contract.zig` and
@@ -452,6 +469,9 @@ fn bindLib(l: *DynLib) !vpi.analog.Lib {
     return out;
 }
 
+/// A digital design under the application, on the stack `main` reserved
+/// (`deep_stack.runGuarded`): the engine's evaluation, as `vera --run`'s,
+/// recurses on the source's nesting.
 fn digitalHost(path: []const u8) !u8 {
     std.debug.assert(!std.mem.endsWith(u8, path, ".va"));
     std.debug.assert(vpi.session.design == null);

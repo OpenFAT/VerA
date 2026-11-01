@@ -36,6 +36,7 @@ const elab = @import("elab");
 const model_arrays = @import("model_arrays.zig");
 const schema = @import("schema.zig");
 const user = @import("vpi_user.zig");
+const Edge = schema.Edge;
 const Design = @import("Design.zig");
 const code_tables = @import("code_tables.zig");
 const session = @import("session.zig");
@@ -285,6 +286,7 @@ pub fn freeze(d: *Design, rows: *Rows, scopes: []const Building) Error!void {
         inline for (Building.id_lists) |f| @field(sc, f) = try arena.dupe(ObjId, @field(s, f).items);
     }
     std.debug.assert(objects.len >= scopes.len);
+    for (scopes) |*s| for (s.ports.items) |pt| try lowConn(arena, objects, s, pt);
     d.top_modules = try arena.dupe(ObjId, &.{ObjId.at(0)});
     // A constant and a quantity have no name to be found by (§11.6.7 lists
     // none), and a node shares its net's name — the NET is what a name
@@ -371,6 +373,23 @@ pub fn lastComponent(path: []const u8) []const u8 {
 }
 
 // ---- private ----
+
+/// IEEE 1364-2005 §26.6.5 port -> vpiLowConn: the declaration inside the
+/// module that the port's name denotes (§12.3.2, a port_reference is that
+/// identifier), appended to the port's edges after its vpiHighConn. A port
+/// with no such declaration in its scope (an analog child's port, which
+/// flattening merged into the parent's net) keeps none.
+fn lowConn(arena: std.mem.Allocator, objects: []Obj, s: *const Building, pt: ObjId) Error!void {
+    const port = &objects[pt.index()];
+    std.debug.assert(port.kind == .port);
+    // An analog top-level port has a node and no net (`model_branches`).
+    const lists = [_][]const ObjId{ s.nets.items, s.regs.items, s.integers.items, s.reals.items, s.variables.items, s.reg_arrays.items, s.net_arrays.items, s.nodes.items };
+    const low: ObjId = find: for (lists) |list| {
+        for (list) |at| if (std.mem.eql(u8, objects[at.index()].name, port.name)) break :find at;
+    } else return;
+    std.debug.assert(objects[low.index()].kind != .port);
+    port.edges = try std.mem.concat(arena, Edge, &.{ port.edges, &.{.{ .tag = user.vpiLowConn, .to = low }} });
+}
 
 /// `decls` over two scopes, for `checkAllAllocationFailures`.
 fn declsOnce(a: std.mem.Allocator, objects: []const Obj) !void {

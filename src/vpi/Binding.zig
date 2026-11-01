@@ -270,7 +270,12 @@ pub fn call(b: *Binding, inst: usize, k: usize, args: []const f64, partials: []f
     const o = session.design.?.obj(obj);
     const reg = systf.find(o.name, .analog) orelse return 0;
     for (o.lists) |li| if (li.tag == user.vpiArgument) {
-        for (li.items[0..@min(n, li.items.len)], 0..) |a, j| b.arg_values.put(gpa, a, args[j]) catch {};
+        // A calltf reading an argument this could not record would read a
+        // stale value: the call fails instead, as an ambiguous one does.
+        for (li.items[0..@min(n, li.items.len)], 0..) |a, j| b.arg_values.put(gpa, a, args[j]) catch {
+            status.fail("NOMEM", "this analog system function call's arguments could not be recorded", .{});
+            return 0;
+        };
     };
     const f = reg.analog.calltf orelse return 0;
     // This call's outputs start over: an argument calltf does not put

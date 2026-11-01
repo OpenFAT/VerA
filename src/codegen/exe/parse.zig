@@ -182,6 +182,7 @@ fn directive(arena: Allocator, b: *Builder, body: []const u8) ParseError!void {
             // `dt` is the step from the previous time, and `sim.mixed.run`
             // requires the order. A lone NaN has no pair to fail it.
             for (times) |t| if (!std.math.isFinite(t)) return error.BadSyntax;
+            for (times) |t| if (t < 0) return error.BadTime;
             for (times[0 .. times.len - 1], times[1..]) |t0, t1| if (!(t1 > t0)) return error.BadSyntax;
             bench.times_s = times;
         },

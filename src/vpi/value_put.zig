@@ -450,7 +450,9 @@ fn cancel(r: *digital.Run, h: sim.scheduler.Handle) void {
     const row = r.scheduler.payloadOf(h) orelse return;
     _ = r.scheduler.cancel(h) catch return;
     std.debug.assert(r.scheduler.payloadOf(h) == null);
-    r.rows.free.append(r.arena, row) catch {};
+    // The event is cancelled either way; a row the free list cannot take
+    // is not reused, which costs memory, not a value.
+    r.rows.free.append(r.arena, row) catch status.noteError("NOMEM", "vpi_put_value: a cancelled event's row could not be kept for reuse", .{});
 }
 
 /// §12.30 a put onto a UDP instance: "Sequential UDPs shall be set to the

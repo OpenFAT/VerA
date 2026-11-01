@@ -1,8 +1,8 @@
 //! The state `rtlil.emit` carries through one source, and the sigspec and
 //! cell writers every transformation shares: a module's symbol and value
 //! tables, its wire and cell text, the `always` block being emitted, the
-//! fresh-name counter, and the refusal (`why`, uncoded) or design error
-//! (E1100, in the bag) that ends the run. The transformations are
+//! fresh-name counter, and the refusal (E1200 to E1278) or design error
+//! (E1100), in the bag, that ends the run. The transformations are
 //! `rtlil_module.zig` (the design, its declarations and drivers),
 //! `rtlil_expr.zig` (expressions and lvalues), `rtlil_proc.zig` (`initial`
 //! and `always` blocks) and `rtlil_fold.zig` (constants).
@@ -11,9 +11,8 @@
 //!
 //! Contents:
 //! - `pub const Error`
-//! - `pub const Sym`
-//! - `pub const Sig`
 //! - `pub const Proc`
+//! - `pub const Shape`
 //! - `pub const Emitter`
 //! - `pub const design = rtlil_module.design`
 //! - `pub const module = rtlil_module.module`
@@ -37,7 +36,8 @@
 //! - `pub const eventTerms = rtlil_proc.eventTerms`
 //! - `pub const assigned = rtlil_proc.assigned`
 //! - `pub const stmt = rtlil_proc.stmt`
-//! - `pub fn refuse(self: *Emitter, tok: u32, comptime fmt: []const u8, args: anytype) Error`
+//! - `pub fn refuse(self: *Emitter, tok: u32, comptime code: diag.Code, comptime fmt: []const u8, args: anytype) Error`
+//! - `pub fn deeper(self: *Emitter, tok: u32) Error!void`
 //! - `pub fn designError(self: *Emitter, tok: u32, comptime message: []const u8) Error`
 //! - `pub fn str(self: *const Emitter, name: StrId) []const u8`
 //! - `pub fn id(self: *Emitter, name: StrId) ![]const u8`
@@ -59,8 +59,10 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const diag = @import("diag");
+const deep = @import("base").deep_stack;
 const Integer = @import("kernels").Integer;
 const fold = @import("rtlil_fold.zig");
+const rtlil_table = @import("rtlil_table.zig");
 const rtlil_module = @import("rtlil_module.zig");
 const rtlil_expr = @import("rtlil_expr.zig");
 const rtlil_proc = @import("rtlil_proc.zig");
@@ -68,40 +70,30 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const ExprId = Ast.ExprId;
 const StrId = Ast.StrId;
+const Table = rtlil_table.Table;
+const Sym = rtlil_table.Sym;
+const Sig = rtlil_table.Sig;
 
-/// `rtlil.Error`: `Refused` names a construct outside the subset in `why`;
-/// `DigitalFailed` leaves the diagnostics in the bag.
+/// `rtlil.Error`: `Refused`, a construct outside the subset (E1200 to
+/// E1278), and `DigitalFailed`, a design `vera --run` rejects (E1100), each
+/// with its diagnostic in the bag.
 pub const Error = error{ OutOfMemory, WriteFailed, Refused, DigitalFailed };
 
-/// What one name of a module is, for widths, signedness and lvalues.
-pub const Sym = struct {
-    width: u32,
-    /// The declared `[msb:lsb]`: the right bound, and whether msb >= lsb.
-    /// A bit `i` of the source is RTLIL position `i - lsb` when descending
-    /// and `lsb - i` when not (Yosys's `upto`).
-    lsb: i64 = 0,
-    descending: bool = true,
-    signed: bool = false,
-    /// A parameter's value is in `Emitter.values`, unless it is real.
-    kind: enum { wire, reg, param },
-};
-
-/// One sigspec: its RTLIL spelling, width and §5.5 signedness.
-pub const Sig = struct { s: []const u8, w: u32, signed: bool = false };
-
-/// The state of one `always` block's `process`.
+/// The state of one `always` block's `process`. Its temps, and the regs a
+/// blocking assignment has written so far, are the module rows' `temp` and
+/// `redirect_proc` columns under its `index`: a read after a blocking write
+/// takes the temp (§9.2.1), a read before it or after a nonblocking one the
+/// reg (§9.2.2).
 pub const Proc = struct {
     /// The process's own writer; it is appended to the module's cells after.
     w: *Writer,
     index: u32,
-    /// Per assigned reg: the `$<index>\name` temp the sync updates from.
-    temps: std.AutoHashMapUnmanaged(StrId, Sig) = .empty,
-    /// The regs a blocking assignment has written so far: a read after it
-    /// takes the temp (§9.2.1), a read before it or after a nonblocking one
-    /// the reg (§9.2.2).
-    redirect: std.AutoHashMapUnmanaged(StrId, void) = .empty,
     indent: usize = 2,
 };
+
+/// An expression's memoized `shape`: `w` 0 is not yet shaped (every
+/// shaped expression is at least one bit wide).
+pub const Shape = struct { w: u32 = 0, signed: bool = false };
 
 /// One source's emission: the tables of the module being emitted, the text
 /// written so far, and where a refusal goes.
@@ -111,15 +103,17 @@ pub const Emitter = struct {
     text: []const u8,
     starts: []const u32,
     out: *Writer,
-    why: *[]const u8,
     bag: *diag.Bag,
     /// The module being emitted.
     m: *const Ast.ModuleDecl = undefined,
-    syms: std.AutoHashMapUnmanaged(StrId, Sym) = .empty,
-    /// The module's integral parameters' values, at their §12.2 types.
-    values: fold.Params = .empty,
-    /// `initial` constants, by reg (the `init` attribute).
-    inits: std.AutoHashMapUnmanaged(StrId, Sig) = .empty,
+    /// The names `shape`, `expr` and `lvalue` read: `own` while a module is
+    /// emitted, `child` while an instance folds its module's port widths.
+    syms: *Table = undefined,
+    own: Table = undefined,
+    child: Table = undefined,
+    /// Per `ExprId` of the file, its `shape` once computed: an expression
+    /// belongs to one module, so the memo holds across modules.
+    shapes: []Shape = &.{},
     /// The module's `wire` lines, then its cells, connects and processes:
     /// RTLIL declares a wire before a use.
     wires: Writer.Allocating = undefined,
@@ -175,14 +169,22 @@ pub const Emitter = struct {
     /// A statement as a process's `assign` and `switch` lines.
     pub const stmt = rtlil_proc.stmt;
 
-    /// Sets `why` to `line N: <what>` at token `tok` and returns `error.Refused`:
-    /// a construct outside the subset, uncoded like every `--emit-rtlil` refusal.
-    pub fn refuse(self: *Emitter, tok: u32, comptime fmt: []const u8, args: anytype) Error {
+    /// Reports a construct outside the subset at token `tok`, its `code`'s
+    /// title the construct and `fmt` the parts the source names (E1200 to
+    /// E1278), and returns `error.Refused`.
+    pub fn refuse(self: *Emitter, tok: u32, comptime code: diag.Code, comptime fmt: []const u8, args: anytype) Error {
+        comptime assert(@backingInt(code) >= @backingInt(diag.Code.E1200));
+        comptime assert(@backingInt(code) <= @backingInt(diag.Code.E1278));
         const at = if (tok < self.starts.len) self.starts[tok] else 0;
-        const line = 1 + std.mem.count(u8, self.text[0..@min(at, self.text.len)], "\n");
-        const what = try self.arena.print(fmt, args);
-        self.why.* = try self.arena.print("line {d}: {s}", .{ line, what });
+        self.bag.add(.codegen, code, .{ .start = at, .end = at }, fmt, args) catch return error.OutOfMemory;
         return error.Refused;
+    }
+
+    /// Refuses the step at token `tok` when it is within reach of the end
+    /// of the stack `rtlil.emit` reserved (`deep_stack.exhausted`): every
+    /// walk whose depth the source controls calls it before it recurses.
+    pub fn deeper(self: *Emitter, tok: u32) Error!void {
+        if (deep.exhausted()) return self.refuse(tok, .E1277, deep.message, .{deep.mib()});
     }
 
     /// A design `vera --run` rejects, in its words: E1100 in the bag.
@@ -198,10 +200,23 @@ pub const Emitter = struct {
         return self.file.str(name);
     }
 
-    /// `\name`; an escaped identifier's own backslash is the same one.
+    /// `\name`, RTLIL's public id: `\` and the name's bytes up to white
+    /// space, any of them a `\` or a `.`. The parser interns an escaped
+    /// identifier without its `\` (§3.7.1: `\\a ` is the name `\a`, which
+    /// is not `a`) and with each `.` as a space (`Parser.internTok`), which
+    /// this turns back. An escaped name that starts with `$` is interned
+    /// with its `\` kept (§3.7.3: it names no system task), which is not
+    /// part of the name either.
     pub fn id(self: *Emitter, name: StrId) ![]const u8 {
-        const s = self.str(name);
-        return self.arena.print("\\{s}", .{if (s.len != 0 and s[0] == '\\') s[1..] else s});
+        const full = self.str(name);
+        const s = if (std.mem.startsWith(u8, full, "\\$")) full[1..] else full;
+        assert(s.len != 0);
+        const out = try self.arena.alloc(u8, s.len + 1);
+        out[0] = '\\';
+        @memcpy(out[1..], s);
+        std.mem.replaceScalar(u8, out[1..], ' ', '.');
+        assert(std.mem.findAny(u8, out, " \t\r\n") == null);
+        return out;
     }
 
     /// A name no source identifier can take (`$vera$` and a counter).
@@ -223,11 +238,11 @@ pub const Emitter = struct {
     /// `real`: `e` is an assignment's right side, which may be a real literal.
     pub fn foldValue(self: *Emitter, e: ExprId, ctx: u32, tok: u32, comptime real: bool) Error!?fold.Literal {
         assert(e != .none);
-        const folded = if (real) fold.assigned(self.arena, self.file, &self.values, e, ctx) else fold.fold(self.arena, self.file, &self.values, e, ctx);
+        const folded = if (real) fold.assigned(self.arena, self.file, self.syms, e, ctx) else fold.fold(self.arena, self.file, self.syms, e, ctx);
         return folded catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            error.TooWide => self.refuse(tok, "a constant wider than {d} bits", .{fold.max_width}),
-            error.TooDeep => self.refuse(tok, "a constant expression nested deeper than {d} operators", .{fold.max_depth}),
+            error.TooWide => self.refuse(tok, .E1275, "{d} bits", .{fold.max_width}),
+            error.TooDeep => self.refuse(tok, .E1276, "{d} operators", .{fold.max_depth}),
         };
     }
 
@@ -340,15 +355,14 @@ pub const Emitter = struct {
     /// `p`'s current indentation, two spaces a level.
     pub fn indent(self: *Emitter, p: *Proc) Error!void {
         assert(self.proc == p);
-        for (0..p.indent) |_| try p.w.writeAll("  ");
+        try p.w.splatByteAll(' ', 2 * p.indent);
     }
 };
 
 test "constSig: two's complement, MSB first, past 64 bits sign-extended" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var why: []const u8 = "";
-    var e: Emitter = .{ .arena = arena.allocator(), .file = undefined, .text = "", .starts = &.{}, .out = undefined, .why = &why, .bag = undefined };
+    var e: Emitter = .{ .arena = arena.allocator(), .file = undefined, .text = "", .starts = &.{}, .out = undefined, .bag = undefined };
     try std.testing.expectEqualStrings("4'0101", (try e.constSig(5, 4, false)).s);
     try std.testing.expectEqualStrings("4'1111", (try e.constSig(-1, 4, true)).s);
     try std.testing.expectEqualStrings("1'0", (try e.constSig(2, 1, false)).s);

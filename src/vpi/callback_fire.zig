@@ -290,7 +290,13 @@ pub fn fireSlot(slot: u32) void {
         for (schema.coldOf(target).members) |m| {
             const word = d.obj(m);
             if (word.slot.get() != slot) continue;
-            _ = call(cb, @intCast(d.obj(word.index).value.?.int), word);
+            // `s_cb_data.index` is a PLI_INT32; a design's word index is
+            // any 64-bit integer (§4.9).
+            const index = std.math.cast(c_int, d.obj(word.index).value.?.int) orelse {
+                status.noteError("RANGE", "cbValueChange on `{s}`: the changed word's index {d} passes a PLI_INT32; the callback is not called", .{ target.full, d.obj(word.index).value.?.int });
+                continue;
+            };
+            _ = call(cb, index, word);
         }
     }
     std.debug.assert(callback.depth == depth);
@@ -515,9 +521,13 @@ fn call(cb: *Cb, index: c_int, from: ?*const Obj) c_int {
     }
     var v: Value = std.mem.zeroes(Value);
     if ((cb.reason == user.cbValueChange or override) and cb.value_format != user.vpiSuppressVal) {
-        v.format = cb.value_format;
-        value.read(lhsOf(from) orelse trust.asObj(cb.obj).?, &v, &value.cb_store);
-        data.value = &v;
+        // A callback on every override (obj NULL) of a target the model
+        // holds no object for has no value to give.
+        if (lhsOf(from) orelse trust.asObj(cb.obj)) |target| {
+            v.format = cb.value_format;
+            value.read(target, &v, &value.cb_store);
+            data.value = &v;
+        }
     }
     const depth = callback.depth;
     callback.depth += 1;

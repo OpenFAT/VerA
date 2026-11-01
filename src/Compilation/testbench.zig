@@ -15,11 +15,15 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const diag = @import("diag");
 const exe = @import("exe");
+const ir = @import("ir");
 const zigbuild = @import("zigbuild");
 const request = @import("request.zig");
 const Request = request.Request;
 const Outcome = request.Outcome;
 const Result = @import("Result.zig");
+
+/// The most explicit D2A sites a mixed runner watches: `watchEvent`'s u6.
+const d2a_sites_max = 64;
 
 /// Renders the runner and builds it beside `device` under
 /// `req.build.work_dir` (default `.zig-cache/vera-tb`). A runner diagnostic
@@ -50,6 +54,22 @@ pub fn build(
     // Runner diagnostics obey --deny/--forbid before an artifact is built or
     // its simulation starts, as compiler diagnostics do.
     if (bag.failed()) return o.done(1);
+    // `sim.digital.watchEvent` numbers an explicit D2A site in a u6: the
+    // mixed runner holds at most 64 (§8.5, one bit each).
+    if (facts.mixed) |mx| if (mx.events.len > d2a_sites_max) {
+        try bag.add(.codegen, .E0437, .none, "{d} explicit D2A event terms; the mixed-signal runner holds at most {d}", .{ mx.events.len, d2a_sites_max });
+        return o.done(1);
+    };
+    // The mixed runner counts the digital half's ticks from 0 in a u64: a
+    // `//! time` at or past 2^64 ticks of the finest precision has no tick.
+    if (facts.mixed) |mx| if (spec.bench.times_s.len != 0) {
+        const tick = finestPrecision(mx.timescales);
+        const last = spec.bench.times_s[spec.bench.times_s.len - 1];
+        if (!(last / tick < 0x1p64)) {
+            try err.print("error: {s}: `//!` directive: the last time, {e} s, is at or past 2^64 ticks of the design's finest time precision, {e} s\n", .{ in_path, last, tick });
+            return o.done(2);
+        }
+    };
     var aw: Io.Writer.Allocating = .init(arena);
     exe.writeRunner(&aw.writer, arena, std.fs.path.stem(in_path), &spec.bench, facts) catch |e| switch (e) {
         error.TooManyPoints => {
@@ -86,4 +106,18 @@ pub fn build(
         },
     }
     assert(o.status == 0);
+}
+
+// ---- private ----
+
+/// The smallest precision any `timescale gives (IEEE 1364-2005 §19.8), 1 s
+/// (the default) with none: at most the digital half's finest tick, so a
+/// count of these bounds its tick count from above.
+fn finestPrecision(events: []const ir.Lowered.TimescaleEvent) f64 {
+    var p: f64 = 1;
+    for (events) |ev| if (ev.value) |t| {
+        p = @min(p, t.precision);
+    };
+    assert(p > 0);
+    return p;
 }

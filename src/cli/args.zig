@@ -450,6 +450,8 @@ fn takeSwitch(cli: *Cli, gpa: Allocator, s: Switch, arg: []const u8, args: anyty
         .param => {
             const kv = args.next() orelse return try missing(err, "--param", "NAME=VALUE");
             const eq = std.mem.findScalar(u8, kv, '=') orelse return try missing(err, "--param", "NAME=VALUE");
+            // `=1`: no name, which no design declares.
+            if (eq == 0) return try missing(err, "--param", "NAME=VALUE");
             // A string parameter takes the text; a numeric one refuses a NaN
             // once its type is known (the analysis, the digital elaboration).
             const text = kv[eq + 1 ..];
@@ -473,7 +475,7 @@ fn takeSwitch(cli: *Cli, gpa: Allocator, s: Switch, arg: []const u8, args: anyty
         .spice => cli.spice_path = try pathValue(args, err, arg, "a path") orelse return 2,
         .libmap => try cli.libmaps.append(gpa, try pathValue(args, err, arg, "a library map file") orelse return 2),
         .protect_keys => cli.protect_keys = try pathValue(args, err, arg, "a key file") orelse return 2,
-        .library => try cli.search.append(gpa, args.next() orelse return try missing(err, "-L", "a library name")),
+        .library => try cli.search.append(gpa, try pathValue(args, err, arg, "a library name") orelse return 2),
         .include => try cli.include_dirs.append(gpa, try pathValue(args, err, arg, "a directory") orelse return 2),
         .no_std_defs => cli.std_defs = false,
         .json => cli.json = true,
@@ -665,6 +667,8 @@ test "parse: every path-valued flag refuses an empty path; any other is taken as
         .{ "--libmap", "error: --libmap needs a library map file\n" },
         .{ "--protect-keys", "error: --protect-keys needs a key file\n" },
         .{ "-I", "error: -I needs a directory\n" },
+        // The rewrite took `-L ""`; `libmap.declares` asserted a name.
+        .{ "-L", "error: -L needs a library name\n" },
     };
     for (cases) |c| try fixtures.expectRefused(&.{ c[0], "" }, c[1]);
     var l: fixtures.Line = .init();
@@ -894,6 +898,14 @@ test "parse: an empty argument is an input as typed; there is no `--spice=` form
     try std.testing.expectEqual(@as(?u8, null), try l.read(&.{""}));
     try std.testing.expectEqualStrings("", l.cli.paths.items[0]);
     try fixtures.expectRefused(&.{ "--spice=", "m.va" }, "error: unknown option `--spice=`\n");
+}
+
+test "parse: --param refuses an override with no name, not the digital elaboration" {
+    // Oracle: the flag's own `needs` line (`missing`). The rewrite took
+    // `--param =1` as given, and the digital elaboration's `topDeclares`
+    // asserted a non-empty name.
+    try fixtures.expectRefused(&.{ "--param", "=1", "t.v" }, "error: --param needs NAME=VALUE\n");
+    try fixtures.expectRefused(&.{ "--param", "P", "t.v" }, "error: --param needs NAME=VALUE\n");
 }
 
 test "parse: every argument that is not a flag is an input, in order" {

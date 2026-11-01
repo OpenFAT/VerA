@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const sim = @import("sim");
+const deep = @import("frontend").deep_stack;
 const callback = @import("callback.zig");
 const callback_sites = @import("callback_sites.zig");
 const delays = @import("delays.zig");
@@ -65,6 +66,9 @@ pub const Error = error{
     NotElaborated,
     /// The design needs more than `Design.objects_max` object rows.
     TooManyObjects,
+    /// An expression or statement nests deeper than the stack reserved
+    /// for building the model (`deep_stack.runGuarded`) reaches.
+    TooDeep,
 };
 
 /// The product's invocation, as its `main` received it. Kept by pointer: the
@@ -100,7 +104,8 @@ pub fn open(gpa: std.mem.Allocator, res: *const @import("vera").Result) !void {
 /// caller owns it until it hands it to `attach`. Asserts that the model
 /// holds its top module's row and scope.
 pub fn buildDesign(gpa: std.mem.Allocator, res: *const @import("vera").Result) !Design {
-    const d = try model_analog.build(gpa, res);
+    // The builder recurses on the source's nesting (`code_expr`, `code_stmt`).
+    const d = try deep.runGuarded(0, model_analog.build, .{ gpa, res });
     std.debug.assert(d.scopes.len != 0);
     std.debug.assert(d.scopes.len <= d.objects.len);
     return d;
@@ -159,7 +164,7 @@ pub fn runStartupTable(table: ?[*]const ?StartupFn) void {
 pub fn openDigital(gpa: std.mem.Allocator, r: *sim.digital.Run) !void {
     std.debug.assert(!starting);
     if (design != null) close();
-    design = try model_digital.buildDigital(gpa, r);
+    design = try deep.runGuarded(0, model_digital.buildDigital, .{ gpa, r });
     try callback_sites.sizeHooks(r);
     run.attach(r);
     print.share(r);

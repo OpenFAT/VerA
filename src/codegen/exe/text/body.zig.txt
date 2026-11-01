@@ -784,7 +784,12 @@ fn sayPass(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr
     D.say(Dual, x, model, inst, sim_state, &s);
     var text: [65536]u8 = undefined;
     var w: std.Io.Writer = .fixed(&text);
-    contract.formatSay(D, &s, title, &w) catch {};
+    // A record past the buffer prints what fits, then fails by name: a
+    // silently cut record reads as the device's whole output.
+    contract.formatSay(D, &s, title, &w) catch {
+        std.debug.print("{s}\nFAIL {s}: a say record passes {d} bytes\n", .{ w.buffered(), title, text.len });
+        std.process.exit(1);
+    };
     std.debug.print("{s}", .{w.buffered()});
 }
 

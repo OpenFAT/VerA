@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const Ast = @import("frontend").Ast;
+const deep = @import("frontend").deep_stack;
 const code_tables = @import("code_tables.zig");
 const schema = @import("schema.zig");
 const ObjId = schema.ObjId;
@@ -42,10 +43,12 @@ pub fn stmt(b: *Builder, id: Ast.StmtId) Error!ObjId {
 }
 
 /// The object `stmt` answers for `id`, without its attributes or scope
-/// edge. Asserts that the answer is `none` or a row that exists, and that
-/// building only ever appends rows.
+/// edge. Recursive on the statement's nesting: past the stack the model
+/// build reserved (`session`), `error.TooDeep`. Asserts that the answer is
+/// `none` or a row that exists, and that building only ever appends rows.
 pub fn stmtObj(b: *Builder, id: Ast.StmtId) Error!ObjId {
     if (id == .none) return ObjId.none;
+    if (deep.exhausted()) return error.TooDeep;
     const f = b.file;
     const before = b.objects.hot.items.len;
     const at = try switch (f.stmt(id)) {

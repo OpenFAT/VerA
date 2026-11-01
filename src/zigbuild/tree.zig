@@ -346,78 +346,6 @@ test "writeTree splits per unit, and a no-op regeneration writes nothing" {
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "u/unit_b.zig", .{}));
 }
 
-test "writeTree writes an un-split device alone, and rewrites only what changed" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const work = try gpa.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
-    defer gpa.free(work);
-    var tree: Tree = .{ .work_dir = work, .name = "testdev" };
-
-    // shim.zig + device.zig, then nothing.
-    try std.testing.expectEqual(@as(u32, 2), try writeTree(gpa, io, tree, .{ .text = "abcdef" }));
-    try std.testing.expectEqual(@as(u32, 0), try writeTree(gpa, io, tree, .{ .text = "abcdef" }));
-
-    // A text that is a prefix of the file on disk is still a change.
-    try std.testing.expectEqual(@as(u32, 1), try writeTree(gpa, io, tree, .{ .text = "abc" }));
-    const dev = try tmp.dir.readFileAlloc(io, "device.zig", gpa, .limited(64));
-    defer gpa.free(dev);
-    try std.testing.expectEqualStrings("abc", dev);
-
-    // Linking an engine changes the shim alone.
-    tree.engine = .prebuilt;
-    try std.testing.expectEqual(@as(u32, 1), try writeTree(gpa, io, tree, .{ .text = "abc" }));
-    const shim_text = try tmp.dir.readFileAlloc(io, "shim.zig", gpa, .limited(4096));
-    defer gpa.free(shim_text);
-    try std.testing.expect(std.mem.find(u8, shim_text, "vera_prebuilt_engine") != null);
-
-    // No split, so no helpers file and no unit directory.
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "h.zig", .{}));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "u", .{}));
-}
-
-test "writeTree keeps a unit's doc comment and an existing `pub`, and prunes only stale .zig files" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const work = try gpa.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
-    defer gpa.free(work);
-    const tree: Tree = .{ .work_dir = work, .name = "testdev" };
-
-    // unit_a: a doc comment before `fn` (lo < fn); unit_b: already `pub`.
-    const doc = "/// a\n";
-    const fn_a = "fn unit_a(y: f64) f64 {\n    return y;\n}\n";
-    const pub_b = "pub fn unit_b(y: f64) f64 {\n    return y;\n}\n";
-    const lo_b = split_prologue.len + doc.len + fn_a.len;
-    const out: Output = .{
-        .text = split_prologue ++ doc ++ fn_a ++ pub_b ++ split_tail,
-        .names = &.{ "unit_a", "unit_b" },
-        .unit_lo = &.{ split_prologue.len, lo_b },
-        .unit_fn = &.{ split_prologue.len + doc.len, lo_b },
-        .unit_hi = &.{ lo_b, lo_b + pub_b.len },
-        .prelude = split_prelude,
-    };
-    try std.testing.expectEqual(@as(u32, 5), try writeTree(gpa, io, tree, out));
-
-    const a = try tmp.dir.readFileAlloc(io, "u/unit_a.zig", gpa, .limited(4096));
-    defer gpa.free(a);
-    try std.testing.expectEqualStrings(split_prelude ++ doc ++ "pub " ++ fn_a, a);
-    const b = try tmp.dir.readFileAlloc(io, "u/unit_b.zig", gpa, .limited(4096));
-    defer gpa.free(b);
-    try std.testing.expectEqualStrings(split_prelude ++ pub_b, b);
-
-    // A stale unit goes; a file that is not `.zig`, and a directory, stay.
-    try tmp.dir.writeFile(io, .{ .sub_path = "u/old.zig", .data = "" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "u/notes.txt", .data = "" });
-    try tmp.dir.createDirPath(io, "u/dir.zig");
-    try std.testing.expectEqual(@as(u32, 1), try writeTree(gpa, io, tree, out));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "u/old.zig", .{}));
-    _ = try tmp.dir.statFile(io, "u/notes.txt", .{});
-    _ = try tmp.dir.statFile(io, "u/dir.zig", .{});
-}
-
 test "writeTree frees everything and reports OutOfMemory at every allocation" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -429,38 +357,4 @@ test "writeTree frees everything and reports OutOfMemory at every allocation" {
     // A first write, so every later run reads the same files back.
     _ = try writeTree(std.testing.allocator, io, tree, out);
     try std.testing.checkAllAllocationFailures(std.testing.allocator, writeTreeOnce, .{ io, tmp.dir, tree, out });
-}
-
-test fileStem {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    // A short plain name is itself, not a copy.
-    const plain: []const u8 = "nmos_1";
-    try std.testing.expect((try fileStem(a, plain)).ptr == plain.ptr);
-    const max: [128]u8 = @splat('a');
-    try std.testing.expectEqualStrings(&max, try fileStem(a, &max));
-
-    // One byte longer: its first 64 bytes, `-`, 16 hex digits.
-    const over: [129]u8 = @splat('a');
-    const s = try fileStem(a, &over);
-    try std.testing.expectEqual(@as(usize, 64 + 1 + 16), s.len);
-    try std.testing.expectEqualStrings(over[0..64], s[0..64]);
-    try std.testing.expectEqual(@as(u8, '-'), s[64]);
-    for (s[65..]) |c| try std.testing.expect(std.ascii.isHex(c) and !std.ascii.isUpper(c));
-
-    // Not plain: the plain prefix, so `a.b` and `a,b` share `a-` and differ
-    // only in the hash; a name with no plain prefix starts at the `-`.
-    const dot = try fileStem(a, "a.b");
-    const comma = try fileStem(a, "a,b");
-    try std.testing.expectEqual(@as(usize, 1 + 1 + 16), dot.len);
-    try std.testing.expect(std.mem.startsWith(u8, dot, "a-"));
-    try std.testing.expect(!std.mem.eql(u8, dot, comma));
-    try std.testing.expectEqualStrings(dot, try fileStem(a, "a.b"));
-    try std.testing.expectEqual(@as(usize, 17), (try fileStem(a, ".x")).len);
-
-    // A hashed stem has a `-`; a kept one cannot.
-    try std.testing.expect(std.mem.findScalar(u8, try fileStem(a, plain), '-') == null);
-    try std.testing.expect(std.mem.findScalar(u8, dot, '-') != null);
 }

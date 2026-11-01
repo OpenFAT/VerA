@@ -256,6 +256,9 @@ pub fn simulate() digital.Error!void {
         // it ends there as $stop does (VD-070, VD-106).
         if (!go) {
             r.scheduler.finish();
+            // A request the reset's own callbacks made goes unanswered: the
+            // run ends as this one's stop_value said.
+            reset_request = null;
             break;
         }
     }
@@ -924,6 +927,30 @@ test "§12.36/IEEE 1364-2005 C.7: a reset with stop_value 0 ends a batch run at 
     defer h.deinit();
     try resetAt(0);
     try simulate();
+    try std.testing.expectEqualStrings("start s=x\n", h.out.written());
+    try std.testing.expectEqual(@as(u64, 0), now());
+}
+
+test "§12.36/C.7: a vpiReset asked from the last reset's own cbEndOfReset goes unanswered; the run ends" {
+    // Oracle: C.7, stop_value 0 ends the batch run after the reset, so the
+    // request the reset's callback makes has no run to restart. The rewrite
+    // asserted no request was pending after the loop.
+    var h: Harness = undefined;
+    try h.init(restart_source);
+    defer h.deinit();
+    finish_seen = 0;
+    const S = struct {
+        fn resetFromReset(cd: *CbData) callconv(.c) c_int {
+            std.debug.assert(cd.reason == user.cbEndOfReset);
+            if (vpi_sim_control(user.vpiReset, @as(c_int, 0), @as(c_int, 0), @as(c_int, 0)) != 1) finish_seen = 999;
+            return 0;
+        }
+    };
+    const d: CbData = .{ .reason = user.cbEndOfReset, .cb_rtn = S.resetFromReset, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
+    try std.testing.expect(callback.vpi_register_cb(&d) != null);
+    try resetAt(0);
+    try simulate();
+    try std.testing.expect(finish_seen != 999);
     try std.testing.expectEqualStrings("start s=x\n", h.out.written());
     try std.testing.expectEqual(@as(u64, 0), now());
 }

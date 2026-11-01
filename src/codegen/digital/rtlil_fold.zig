@@ -25,16 +25,17 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const Integer = @import("kernels").Integer;
+const rtlil_table = @import("rtlil_table.zig");
 const Allocator = std.mem.Allocator;
 const ExprId = Ast.ExprId;
-const StrId = Ast.StrId;
 
 /// A four-state value of any width, planes in the caller's arena.
 pub const Literal = Integer.Literal;
 
-/// The module's parameters by name, each at its §12.2 type. A name not here
-/// (a net, a variable, a real parameter) is not a constant.
-pub const Params = std.AutoHashMapUnmanaged(StrId, Literal);
+/// The module's names, an integral parameter's row holding its value at its
+/// §12.2 type. Any other name (a net, a variable, a real parameter) is not
+/// a constant.
+pub const Params = rtlil_table.Table;
 
 /// `TooWide`: a value past `max_width` bits. `TooDeep`: operators nested
 /// past `max_depth`. Either way the caller refuses the expression by name.
@@ -70,7 +71,7 @@ const Folder = struct {
             // §3.6: eight bits a character, and "" is one NUL.
             .str_literal => .{ .width = try narrow(8 * @max(1, @as(u64, f.file.str(ex.strOf(e)).len))), .signed = false },
             .ident => blk: {
-                const p = f.params.get(ex.strOf(e)) orelse return null;
+                const p = f.params.value(ex.strOf(e)) orelse return null;
                 break :blk .{ .width = p.width, .signed = p.signed };
             },
             .unary => switch (ex.unOp(e)) {
@@ -96,6 +97,8 @@ const Folder = struct {
                 break :blk common(a, b);
             },
             .concat => blk: {
+                // `{}`: §5.1.14 gives it no width, and `vera --run` refuses it.
+                if (ex.args(e).len == 0) return null;
                 var w: u64 = 0;
                 for (ex.args(e)) |a| {
                     if (unsizedLiteral(f.file, a)) return null;
@@ -137,7 +140,7 @@ const Folder = struct {
             .int_literal => try convert(a, try intLiteral(a, ex.intLiteral(e)), ty),
             .logic_literal => try unsized(a, ex.logicValue(e), ty),
             .str_literal => try convert(a, try stringLiteral(a, f.file.str(ex.strOf(e))), ty),
-            .ident => try convert(a, f.params.get(ex.strOf(e)) orelse return null, ty),
+            .ident => try convert(a, f.params.value(ex.strOf(e)) orelse return null, ty),
             .unary => switch (ex.unOp(e)) {
                 .plus => (try f.eval(ex.lhs(e), ty, depth + 1)) orelse return null,
                 .minus => try ((try f.eval(ex.lhs(e), ty, depth + 1)) orelse return null).negate(a),
@@ -275,6 +278,8 @@ const Folder = struct {
 /// a construct this fold does not cover.
 pub fn fold(arena: Allocator, file: *const Ast.SourceFile, params: *const Params, e: ExprId, ctx: u32) Error!?Literal {
     assert(e != .none);
+    // A declared width past the limit is the source's, not a bug.
+    if (ctx > max_width) return error.TooWide;
     const f: Folder = .{ .arena = arena, .file = file, .params = params };
     const own = (try f.typeAt(e, 0)) orelse return null;
     const ty: Type = .{ .width = @max(own.width, ctx), .signed = own.signed };
@@ -289,6 +294,7 @@ pub fn fold(arena: Allocator, file: *const Ast.SourceFile, params: *const Params
 /// real, and for one outside 64 bits signed.
 pub fn assigned(arena: Allocator, file: *const Ast.SourceFile, params: *const Params, e: ExprId, ctx: u32) Error!?Literal {
     assert(e != .none);
+    if (ctx > max_width) return error.TooWide;
     const r = realOf(file, e) orelse return fold(arena, file, params, e, ctx);
     const n = @round(r);
     // -2^63 is an i64 and 2^63 is not; NaN and the infinities are neither.
@@ -468,9 +474,11 @@ test "fold: §12.2-typed 64-bit parameters keep their top half, where a 32-bit f
     const file = &(try parser.parseSourceFile());
     const ps = file.modules[0].params;
     // `HI` and `NIB` are not declared in the source: the table gives them.
-    var params: Params = .empty;
-    try params.put(a, file.exprs.strOf(file.exprs.lhs(ps[0].default)), try fromInt(a, std.math.maxInt(i64), .{ .width = 64, .signed = true }));
-    try params.put(a, file.exprs.strOf(file.exprs.lhs(ps[1].default)), try fromInt(a, 3, .{ .width = 4, .signed = false }));
+    var params: Params = try .init(a, file.strings.len());
+    const hi = try params.put(a, file.exprs.strOf(file.exprs.lhs(ps[0].default)), .{ .width = 64, .signed = true, .kind = .param });
+    params.rows.items(.value)[hi] = try fromInt(a, std.math.maxInt(i64), .{ .width = 64, .signed = true });
+    const nib = try params.put(a, file.exprs.strOf(file.exprs.lhs(ps[1].default)), .{ .width = 4, .kind = .param });
+    params.rows.items(.value)[nib] = try fromInt(a, 3, .{ .width = 4, .signed = false });
     const x = (try fold(a, file, &params, ps[0].default, 0)).?;
     try std.testing.expectEqual(@as(u32, 64), x.width);
     try std.testing.expectEqual(@as(?i64, 9223372036854775800), x.asInt());

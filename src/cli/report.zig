@@ -5,8 +5,7 @@
 //!
 //! Contents:
 //! - `pub const Style = struct`
-//! - `pub const RenderError`
-//! - `pub fn report(bag: *diag.Bag, w: *Io.Writer, style: Style) RenderError!void`
+//! - `pub fn report(bag: *diag.Bag, w: *Io.Writer, style: Style) diag.RenderError!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -20,13 +19,9 @@ pub const Style = struct {
     color: bool = false,
 };
 
-/// What rendering can fail with: the writer, or the renderer's scratch
-/// memory.
-pub const RenderError = diag.RenderError;
-
 /// Renders `bag` on `w`, as JSON or as text coloured when `style.color`, and
 /// flushes `w`. An empty bag prints nothing. Sorts the bag.
-pub fn report(bag: *diag.Bag, w: *Io.Writer, style: Style) RenderError!void {
+pub fn report(bag: *diag.Bag, w: *Io.Writer, style: Style) diag.RenderError!void {
     if (bag.isEmpty()) return;
     const rows = bag.count();
     if (style.json) {

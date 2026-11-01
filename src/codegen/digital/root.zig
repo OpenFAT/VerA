@@ -73,6 +73,7 @@ test {
     _ = @import("rtlil_fold.zig");
     _ = @import("rtlil_module.zig");
     _ = @import("rtlil_proc.zig");
+    _ = @import("rtlil_table.zig");
     _ = @import("settle.zig");
     _ = @import("show.zig");
     _ = @import("step_local.zig");

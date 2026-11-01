@@ -24,7 +24,7 @@ const globalCache = @import("global_cache.zig").globalCache;
 
 /// Every way `run` fails rather than refuses: the spine's failures, the
 /// report's, and a testbench that could not be spawned.
-pub const Error = vera.CompileError || report.RenderError || std.process.SpawnError || std.process.Child.WaitError;
+pub const Error = vera.CompileError || diag.RenderError || std.process.SpawnError || std.process.Child.WaitError;
 
 /// Compiles `source` (named `cli.paths[0]`) as `cli` asks and returns the
 /// exit status. Every slice it hands out lives in `arena`.
@@ -112,7 +112,7 @@ pub fn run(
 
 /// Reports a failed analysis' diagnostics and returns exit status 1. The
 /// error's name is printed only for an undiagnosed failure.
-fn compileFailed(bag: *diag.Bag, err: *Io.Writer, style: report.Style, e: vera.AnalyzeError) (report.RenderError || Io.Writer.Error)!u8 {
+fn compileFailed(bag: *diag.Bag, err: *Io.Writer, style: report.Style, e: vera.AnalyzeError) (diag.RenderError || Io.Writer.Error)!u8 {
     try report.report(bag, err, style);
     switch (e) {
         error.CompileFailed, error.NoModule => {},

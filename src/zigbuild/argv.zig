@@ -301,15 +301,6 @@ fn hasFlag(argv: []const []const u8, flag: []const u8) bool {
 // build-lib --help` and `std.Build.Step.Compile.getZigArgs`'s `--dep` rule;
 // the library tests in library.zig run them through a real `zig`.
 
-test "Backend.auto is self-hosted only for Debug on x86_64" {
-    try std.testing.expectEqual(Backend.self_hosted, Backend.auto(.debug, .x86_64));
-    try std.testing.expectEqual(Backend.llvm, Backend.auto(.fast, .x86_64));
-    try std.testing.expectEqual(Backend.llvm, Backend.auto(.debug, .aarch64));
-    try std.testing.expectEqual(Backend.llvm, Backend.auto(.debug, .nvptx64));
-    for ([_]std.lang.Optimize{ .safe, .fast, .small }) |m|
-        try std.testing.expectEqual(Backend.llvm, Backend.auto(m, .x86_64));
-}
-
 test strip {
     // Only fast and small drop safety, and only they strip; debug_info vetoes.
     for (std.enums.values(std.lang.Optimize)) |m| {

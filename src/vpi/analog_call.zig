@@ -239,7 +239,12 @@ fn outputOf(st: *const Active, j: usize, routine: []const u8) ?Out {
     // `Binding.call` made this call's record before its calltf ran, as long
     // as the device passes the call site's own arguments.
     const out = st.b.outs.get(.{ .k = st.k, .inst = st.inst }) orelse return null;
-    std.debug.assert(j <= out.n);
+    // A host that calls with fewer arguments than the site has (`External`
+    // passes none) made a shorter record: the application asked past it.
+    if (j > out.n) {
+        status.fail("NOPUT", "{s}: argument {d} of `{s}` was not passed to this call, which has {d}", .{ routine, j, session.design.?.obj(st.obj).name, out.n });
+        return null;
+    }
     return out;
 }
 

@@ -9,7 +9,7 @@
 //!
 //! Contents:
 //! - `pub const points_max: u32`
-//! - `pub const ParseError = Allocator.Error || error{ UnknownDirective, BadNumber, BadSyntax, BadLrmSection, BadUnknownName }`
+//! - `pub const ParseError = Allocator.Error || error{ UnknownDirective, BadNumber, BadSyntax, BadLrmSection, BadUnknownName, BadTime }`
 //! - `pub const RenderError = Allocator.Error || error{ WriteFailed, TooManyPoints }`
 //! - `pub const Diagnostics = struct { line: u32 }`
 //! - `pub const Spec = struct { bench: Bench, harness: Harness }`, `Spec.parse`
@@ -52,6 +52,9 @@ pub const ParseError = Allocator.Error || error{
     /// A `bias`/`sweep`/`wave`/`seed`/`abstol`/`limit` line named something
     /// that is not a solver unknown, such as the branch potential `V(a,c)`.
     BadUnknownName,
+    /// A `//! time` before 0: a transient starts at 0 (§4.5.4's `$abstime`
+    /// is not negative), and the digital half's ticks count up from it.
+    BadTime,
 };
 
 /// Every way a renderer fails. Nothing is written on `TooManyPoints`; on

@@ -344,9 +344,9 @@ fn expectAstGen(src: []const u8) !void {
     return error.TestUnexpectedResult;
 }
 
-// The oracles: Zig's own AstGen for the batch root, command lines derived
-// by hand for `argvHead`, and a real `zig` (its stderr, the files it reads)
-// for `buildExe` and `stage`.
+// The oracles: Zig's own AstGen for the batch root, and command lines
+// derived by hand for `argvHead`. `buildExe` and `stage`, against a real
+// `zig`, are tests/unit.zig's `zigbuild_tests`.
 
 test batchRoot {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -395,50 +395,4 @@ test argvHead {
         try std.testing.expectEqual(c.want.len, argv.len);
         for (c.want, argv) |w, a| try std.testing.expectEqualStrings(w, a);
     }
-}
-
-test "buildExe hands back zig's stderr for a testbench that does not compile" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const work = try gpa.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
-    defer gpa.free(work);
-    try tmp.dir.writeFile(io, .{ .sub_path = "c.zig", .data = "" });
-    const contract = try std.fs.path.join(gpa, &.{ work, "c.zig" });
-    defer gpa.free(contract);
-    const opts: BuildOptions = .{ .work_dir = work, .contract = contract, .name = "broken" };
-
-    // `std.testing.allocator` fails the test if `bin` or the report leaks.
-    const r = try buildExe(gpa, io, "pub const x = 1;\n", "pub fn main() void { _ = @import(\"device\").y; }\n", opts);
-    defer r.deinit(gpa);
-    try std.testing.expect(r == .failed);
-    try std.testing.expect(std.mem.find(u8, r.failed, "no member named 'y'") != null);
-
-    // A compiler that cannot be spawned is an error, and `bin` is freed.
-    var gone = opts;
-    gone.zig_exe = "/nonexistent/zig";
-    try std.testing.expectError(error.FileNotFound, buildExe(gpa, io, "", "", gone));
-}
-
-test stage {
-    const io = std.testing.io;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const work = try arena.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
-
-    const s = try stage(arena, io, "DEVICE", "RUNNER", .{ .work_dir = work, .contract = "c.zig", .name = "res" });
-    try std.testing.expectEqualStrings(try std.fs.path.join(arena, &.{ work, "res.tb.zig" }), s.root);
-    try std.testing.expectEqualStrings(try std.fs.path.join(arena, &.{ work, "res.device.zig" }), s.device);
-    try std.testing.expectEqualStrings("RUNNER", try tmp.dir.readFileAlloc(io, "res.tb.zig", arena, .limited(64)));
-    try std.testing.expectEqualStrings("DEVICE", try tmp.dir.readFileAlloc(io, "res.device.zig", arena, .limited(64)));
-
-    // A second artifact in the same work root keeps its own files: an
-    // escaped module name takes a hashed stem (`tree.fileStem`).
-    const t = try stage(arena, io, "D2", "R2", .{ .work_dir = work, .contract = "c.zig", .name = "res+" });
-    try std.testing.expect(!std.mem.eql(u8, s.root, t.root));
-    try std.testing.expectEqualStrings("RUNNER", try tmp.dir.readFileAlloc(io, "res.tb.zig", arena, .limited(64)));
 }

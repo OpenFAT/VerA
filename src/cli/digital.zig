@@ -305,17 +305,12 @@ fn libraries(j: *Job, paths: []const []const u8, libmaps: []const []const u8, se
 
 /// `vera --emit-rtlil design.v`: the design as Yosys RTLIL (`native.rtlil`),
 /// to `out_path` or stdout. A construct outside the synthesizable subset is
-/// refused by name, with nothing written.
+/// refused by its code (E1200 to E1278), with nothing written.
 fn emitRtlil(j: Job, out_path: ?[]const u8) !u8 {
     assert(j.source.len == 0 or j.opts.file_name.len != 0);
-    var why: []const u8 = "";
-    const text = native.rtlil.emit(j.arena, j.source, j.opts, j.bag, &why) catch |e| switch (e) {
-        error.Refused => {
-            try j.reportBag();
-            try j.err.print("error: {s}: --emit-rtlil: {s}\n", .{ j.opts.file_name, why });
-            return 1;
-        },
-        error.DigitalFailed => {
+    const text = native.rtlil.emit(j.arena, j.source, j.opts, j.bag) catch |e| switch (e) {
+        // The refusal (E1200 to E1278) or the design error (E1100) is in the bag.
+        error.Refused, error.DigitalFailed => {
             try j.reportBag();
             return 1;
         },
@@ -455,7 +450,7 @@ fn emitDevice(j: Job, schedule: native.Schedule, logic: native.Logic, f: DeviceF
 /// `--emit-so`/`--emit-osdi` of a `.v` device: the library over the VerA
 /// tree `--contract` sits in, its path on stdout. Null on success, else the
 /// exit status with the reason on stderr.
-fn buildLibrary(j: Job, dev: @typeInfo(@typeInfo(@TypeOf(native.emitDevice)).@"fn".return_type.?).error_union.payload, f: DeviceFlags) !?u8 {
+fn buildLibrary(j: Job, dev: native.DeviceRoot, f: DeviceFlags) !?u8 {
     assert(f.so);
     assert(f.contract != null);
     const err = j.err;

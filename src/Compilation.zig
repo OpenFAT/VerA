@@ -149,6 +149,26 @@ const fixtures = struct {
     }
 };
 
+// A single-threaded build runs every walk on the caller's stack: there is no reservation to refuse.
+comptime {
+    if (!@import("builtin").single_threaded) _ = threaded;
+}
+
+const threaded = struct {
+    test "a later stage whose stack cannot be reserved is E0241, naming the depth" {
+        const gpa = std.testing.allocator;
+        const src = try fixtures.deepSource(gpa, 10, .{ .open = "begin ", .mid = "r = 1.0;", .close = " end" });
+        defer gpa.free(src);
+        deep_stack.refuse_for_test = true;
+        defer deep_stack.refuse_for_test = false;
+        var bag: diag.Bag = .init(gpa);
+        defer bag.deinit(gpa);
+        try std.testing.expectError(error.CompileFailed, analyze(gpa, src, .{}, &bag));
+        try std.testing.expectEqual(diag.Code.E0241, bag.at(0).code);
+        try std.testing.expect(std.mem.find(u8, bag.at(0).message, "levels deep") != null);
+    }
+};
+
 /// The compile spine: `source` through the analysis, then one step per
 /// target `req` asks for, in the fixed order of the file header. `bag`
 /// receives every diagnostic; it must be fresh from `Bag.init(gpa)`, and the
@@ -545,20 +565,6 @@ test "nesting has no bound: 10,000 levels lint and generate a device" {
             try std.testing.expect(!dev.refused);
         }
     }
-}
-
-test "a later stage whose stack cannot be reserved is E0241, naming the depth" {
-    if (@import("builtin").single_threaded) return error.SkipZigTest;
-    const gpa = std.testing.allocator;
-    const src = try fixtures.deepSource(gpa, 10, .{ .open = "begin ", .mid = "r = 1.0;", .close = " end" });
-    defer gpa.free(src);
-    deep_stack.refuse_for_test = true;
-    defer deep_stack.refuse_for_test = false;
-    var bag: diag.Bag = .init(gpa);
-    defer bag.deinit(gpa);
-    try std.testing.expectError(error.CompileFailed, analyze(gpa, src, .{}, &bag));
-    try std.testing.expectEqual(diag.Code.E0241, bag.at(0).code);
-    try std.testing.expect(std.mem.find(u8, bag.at(0).message, "levels deep") != null);
 }
 
 test "10,000 sequential ifs compile: SSA, the prover and codegen walk them on no native stack per if" {

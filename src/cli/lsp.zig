@@ -124,6 +124,66 @@ const Message = struct {
 
 const parse_opts: std.json.ParseOptions = .{ .ignore_unknown_fields = true };
 
+// A Verilog-AMS document needs the `ams` language: the verilog-only build has no session test to run.
+comptime {
+    if (ams) _ = ams_session;
+}
+
+const ams_session = struct {
+    test "a session: initialize, a missing `;` diagnosed with its fix, the fix as a code action, shutdown" {
+        const gpa = std.testing.allocator;
+        var arena_state: std.heap.ArenaAllocator = .init(gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        // E0207 at `endmodule`, with "insert `;`" after the `1` of line 2:
+        // `  analog /*é*/ x = 1` is 21 bytes (the `é` in the comment is 2), so the
+        // insertion is at character 21 in UTF-8.
+        const src = "module m;\\n  real x;\\n  analog /*é*/ x = 1\\nendmodule\\n";
+        var input: std.ArrayList(u8) = .empty;
+        for ([_][]const u8{
+            \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"general":{"positionEncodings":["utf-8","utf-16"]}}}}
+            ,
+            \\{"jsonrpc":"2.0","method":"initialized","params":{}}
+            ,
+            "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///nonexistent/m.va\",\"languageId\":\"verilogams\",\"version\":1,\"text\":\"" ++ src ++ "\"}}}",
+            \\{"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"file:///nonexistent/m.va"},"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":0}},"context":{"diagnostics":[{"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":9}},"message":"x","data":{"fixes":[{"title":"insert `;`","uri":"file:///nonexistent/m.va","range":{"start":{"line":2,"character":21},"end":{"line":2,"character":21}},"newText":";"}]}}]}}}
+            ,
+            \\{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{}}
+            ,
+            \\{"jsonrpc":"2.0","id":4,"method":"shutdown"}
+            ,
+            \\{"jsonrpc":"2.0","method":"exit"}
+        }) |m| try input.appendSlice(arena, try frame(arena, m));
+
+        var in: Io.Reader = .fixed(input.items);
+        var out: Io.Writer.Allocating = .init(arena);
+        var err: Io.Writer.Allocating = .init(arena);
+        var cli: args.Cli = .{};
+        defer cli.deinit(gpa);
+        try std.testing.expectEqual(@as(u8, 0), try serve(gpa, std.testing.io, &cli, &in, &out.writer, &err.writer));
+        try std.testing.expectEqualStrings("", err.written());
+
+        const got = out.written();
+        const has = struct {
+            fn f(hay: []const u8, needle: []const u8) !void {
+                if (std.mem.find(u8, hay, needle) == null) {
+                    std.debug.print("missing {s}\nin {s}\n", .{ needle, hay });
+                    return error.TestUnexpectedResult;
+                }
+            }
+        }.f;
+        try has(got, "\"positionEncoding\":\"utf-8\"");
+        try has(got, "\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"file:///nonexistent/m.va\"");
+        try has(got, "\"code\":\"E0207\",\"source\":\"vera\",\"message\":\"unexpected token: found `endmodule` (LRM annex A.1.2)\\nexpected `;`\\nhelp: insert `;` after the previous statement\"");
+        // The fix's range, in UTF-8 bytes: after `1` on line 2.
+        try has(got, "\"data\":{\"fixes\":[{\"title\":\"insert `;` after the previous statement\",\"uri\":\"file:///nonexistent/m.va\",\"range\":{\"start\":{\"line\":2,\"character\":21},\"end\":{\"line\":2,\"character\":21}},\"newText\":\";\"}]}");
+        try has(got, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":[{\"title\":\"insert `;`\",\"kind\":\"quickfix\",\"edit\":{\"changes\":{\"file:///nonexistent/m.va\":[{\"range\":{\"start\":{\"line\":2,\"character\":21},\"end\":{\"line\":2,\"character\":21}},\"newText\":\";\"}]}}}]}");
+        try has(got, "{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32601");
+        try has(got, "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":null}");
+    }
+};
+
 /// Runs one session: reads framed messages from `in` until `exit`, answering
 /// on `out`. `cli` holds the command line's flags; `.vera-flags` is parsed
 /// into it at `initialize`, so it must outlive the call; the strings that
@@ -420,60 +480,6 @@ fn vSession(gpa: Allocator, root_uri: []const u8) !void {
     // Opened, changed once (the empty change is no edit), closed once: three
     // publishes, each empty for a `.v` document.
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out.written(), "\"diagnostics\":[]"));
-}
-
-test "a session: initialize, a missing `;` diagnosed with its fix, the fix as a code action, shutdown" {
-    if (!ams) return error.SkipZigTest;
-    const gpa = std.testing.allocator;
-    var arena_state: std.heap.ArenaAllocator = .init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    // E0207 at `endmodule`, with "insert `;`" after the `1` of line 2:
-    // `  analog /*é*/ x = 1` is 21 bytes (the `é` in the comment is 2), so the
-    // insertion is at character 21 in UTF-8.
-    const src = "module m;\\n  real x;\\n  analog /*é*/ x = 1\\nendmodule\\n";
-    var input: std.ArrayList(u8) = .empty;
-    for ([_][]const u8{
-        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"general":{"positionEncodings":["utf-8","utf-16"]}}}}
-        ,
-        \\{"jsonrpc":"2.0","method":"initialized","params":{}}
-        ,
-        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///nonexistent/m.va\",\"languageId\":\"verilogams\",\"version\":1,\"text\":\"" ++ src ++ "\"}}}",
-        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"file:///nonexistent/m.va"},"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":0}},"context":{"diagnostics":[{"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":9}},"message":"x","data":{"fixes":[{"title":"insert `;`","uri":"file:///nonexistent/m.va","range":{"start":{"line":2,"character":21},"end":{"line":2,"character":21}},"newText":";"}]}}]}}}
-        ,
-        \\{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{}}
-        ,
-        \\{"jsonrpc":"2.0","id":4,"method":"shutdown"}
-        ,
-        \\{"jsonrpc":"2.0","method":"exit"}
-    }) |m| try input.appendSlice(arena, try frame(arena, m));
-
-    var in: Io.Reader = .fixed(input.items);
-    var out: Io.Writer.Allocating = .init(arena);
-    var err: Io.Writer.Allocating = .init(arena);
-    var cli: args.Cli = .{};
-    defer cli.deinit(gpa);
-    try std.testing.expectEqual(@as(u8, 0), try serve(gpa, std.testing.io, &cli, &in, &out.writer, &err.writer));
-    try std.testing.expectEqualStrings("", err.written());
-
-    const got = out.written();
-    const has = struct {
-        fn f(hay: []const u8, needle: []const u8) !void {
-            if (std.mem.find(u8, hay, needle) == null) {
-                std.debug.print("missing {s}\nin {s}\n", .{ needle, hay });
-                return error.TestUnexpectedResult;
-            }
-        }
-    }.f;
-    try has(got, "\"positionEncoding\":\"utf-8\"");
-    try has(got, "\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"file:///nonexistent/m.va\"");
-    try has(got, "\"code\":\"E0207\",\"source\":\"vera\",\"message\":\"unexpected token: found `endmodule` (LRM annex A.1.2)\\nexpected `;`\\nhelp: insert `;` after the previous statement\"");
-    // The fix's range, in UTF-8 bytes: after `1` on line 2.
-    try has(got, "\"data\":{\"fixes\":[{\"title\":\"insert `;` after the previous statement\",\"uri\":\"file:///nonexistent/m.va\",\"range\":{\"start\":{\"line\":2,\"character\":21},\"end\":{\"line\":2,\"character\":21}},\"newText\":\";\"}]}");
-    try has(got, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":[{\"title\":\"insert `;`\",\"kind\":\"quickfix\",\"edit\":{\"changes\":{\"file:///nonexistent/m.va\":[{\"range\":{\"start\":{\"line\":2,\"character\":21},\"end\":{\"line\":2,\"character\":21}},\"newText\":\";\"}]}}}]}");
-    try has(got, "{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32601");
-    try has(got, "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":null}");
 }
 
 test "exit without shutdown, and a closed input, are status 1" {

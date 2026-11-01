@@ -402,7 +402,7 @@ typedef struct t_vpi_delay {
 /* IEEE 1364-2005's structural objects over a digital run (§26.6.1-§26.6.12,
  * §26.6.43): a time variable, a net array (->> net), module ->> variables,
  * a vector net or reg ->> its bits (vpiNetBit/vpiRegBit), a port's
- * vpiHighConn, an instance's ->> param assign (vpiLhs, vpiRhs), and an
+ * vpiHighConn and vpiLowConn, an instance's ->> param assign (vpiLhs, vpiRhs), and an
  * iterator's vpiUse. vpiListOp is an instance array's -> expr. */
 #define vpiTimeVar             63
 #define vpiNetArray           114
@@ -410,6 +410,7 @@ typedef struct t_vpi_delay {
 #define vpiVariables          100
 #define vpiBit                 90
 #define vpiHighConn            76
+#define vpiLowConn             80
 #define vpiUse                101
 #define vpiListOp              37
 /* §26.3.3 location (a digital run's declared objects and statements),
@@ -730,7 +731,6 @@ typedef struct t_cb_data {
 #define vpiUdpArray           118
 #define vpiContAssignBit      128   /* no continuous assignment is expanded into bits */
 #define vpiGenVar             135   /* a genvar is no object here */
-#define vpiLowConn             80   /* a port's lower connection is not modelled (vpiHighConn is) */
 #define vpiPortInst            98   /* a net's ports on lower instances are not modelled */
 #define vpiInTerm             120   /* delay terminals: no SDF is read */
 #define vpiInstanceArray      121   /* an instance array is reached as vpiModuleArray */

@@ -190,17 +190,14 @@ const wide = struct {
     pub const known: []const table.Known = &.{
         .{ .row = "chain.va --emit-zig", .why = device_chain },
         .{ .row = "chain.va --emit-so-tree", .why = device_chain },
-        .{ .row = "sum.v --emit-rtlil", .why = "rtlil_expr.zig:53 recurses once per `+` term; overflows even the CLI's 16 MiB main thread (vera --emit-rtlil on a 5000-term sum crashes)" },
         .{ .row = "elsif.va --lint", .why = parser_caller },
         .{ .row = "elsif.va --emit-zig", .why = parser_caller },
         .{ .row = "elsif.va --emit-so-tree", .why = parser_caller },
         .{ .row = "elsif.va --emit-verilog", .why = parser_caller },
-        .{ .row = "elsif.v --emit-rtlil", .why = parser_caller },
         .{ .row = "nest.va --lint", .why = parser_caller },
         .{ .row = "nest.va --emit-zig", .why = parser_caller },
         .{ .row = "nest.va --emit-so-tree", .why = parser_caller },
         .{ .row = "nest.va --emit-verilog", .why = parser_caller },
-        .{ .row = "nest.v --emit-rtlil", .why = parser_caller },
     };
     const device_chain = "device codegen renders a value's operands recursively (render.zig renderVal -> renderInst -> render_op.renderOp), one call per `y = y + c` statement";
     const parser_caller = "the parser's first segment (parser/stmt.zig:69 parseStmt, generate.zig:113 parseIf) runs on the caller's stack, which deep_stack.zig says nesting is not bounded by; `--elab`/`--run` pass, under runGuarded";
@@ -308,9 +305,8 @@ const wide = struct {
                         .elab => _ = try digital.elaborate(arena, source, opts, &bag, &sink.writer),
                         .run => try digital.run(arena, source, opts, &bag, &sink.writer),
                         .emit_rtlil => {
-                            var why: []const u8 = "";
-                            const text = native.rtlil.emit(arena, source, opts, &bag, &why) catch |e| switch (e) {
-                                error.Refused => return arena.print("refused: {s}", .{why}),
+                            const text = native.rtlil.emit(arena, source, opts, &bag) catch |e| switch (e) {
+                                error.Refused => return arena.print("refused: {t} {s}", .{ bag.at(0).code, bag.at(0).message }),
                                 else => |x| return x,
                             };
                             // RTLIL writes a constant in decimal or as 32 binary digits.
@@ -441,11 +437,7 @@ const escaped = struct {
     };
 
     pub const known: []const table.Known = &.{
-        .{ .row = "dot --emit-rtlil", .why = "a `.` inside an escaped name reaches the RTLIL as a space (`\\s.gr ` is written `\\s gr`), which splits the id in two for yosys" },
-        .{ .row = "index_suffix --run", .why = "E0901 on a legal defparam: elab_defparams.segment reads a segment ending in `]` as name[k], so `\\a[5] ` is looked up as `a` indexed 5" },
-        .{ .row = "dot --run", .why = "E0901 on a legal defparam whose last segment starts with `$` and holds a `.` (`defparam u.\\$4.n  = 7;`): the name is kept as `\\$4.n` and names nothing (`\\$4 ` and `\\a.n ` work)" },
-        .{ .row = "backslash --emit-rtlil", .why = "`\\\\a ` (the name `\\a`) is written `\\a`, the RTLIL id of the different name `a` (`--run` keeps them apart)" },
-        .{ .row = "index_only --run", .why = "abort: elab.isScope asserts a name is not empty, and segment() makes `\\[3] ` the name \"\" indexed 3 (an assertion on source text)" },
+        .{ .row = "backslash --emit-rtlil", .why = "the parser interns `\\$x ` (the name `$x`) and `\\\\$x ` (the name `\\$x`) as one string, `\\$x` (Parser.internTok keeps a `$`-led escaped name's `\\`), so --emit-rtlil writes both as `\\$x`; a seed whose name starts with `\\$` fails. `\\\\a ` is written `\\\\a` since pass 3" },
     };
 
     pub fn rows(arena: Allocator, exe: []const u8, dir: []const u8) ![]const table.Row {
@@ -582,8 +574,7 @@ const escaped = struct {
                 for ([_]?[roles][]const u8{ null, ns }, &texts) |which, *text| {
                     const source = try rtlilDesign(arena, which);
                     var bag: vera.diag.Bag = .init(arena);
-                    var why: []const u8 = "";
-                    text.* = native.rtlil.emit(arena, source, opts, &bag, &why) catch |e| return arena.print("{t} {s} on\n{s}", .{ e, why, source });
+                    text.* = native.rtlil.emit(arena, source, opts, &bag) catch |e| return arena.print("{t} {s} on\n{s}", .{ e, try messages(arena, &bag), source });
                 }
                 // Longest first, so a name inside another is not cut out of it.
                 var renamed = texts[1];

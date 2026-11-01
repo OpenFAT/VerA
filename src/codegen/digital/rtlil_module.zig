@@ -26,10 +26,11 @@ const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const fold = @import("rtlil_fold.zig");
 const rtlil_emitter = @import("rtlil_emitter.zig");
+const rtlil_table = @import("rtlil_table.zig");
 const Emitter = rtlil_emitter.Emitter;
 const Error = rtlil_emitter.Error;
-const Sym = rtlil_emitter.Sym;
-const Sig = rtlil_emitter.Sig;
+const Sym = rtlil_table.Sym;
+const Sig = rtlil_table.Sig;
 const Writer = std.Io.Writer;
 const StrId = Ast.StrId;
 
@@ -39,9 +40,13 @@ pub fn design(self: *Emitter) Error!void {
     assert(self.next_id == 0 and self.n_procs == 0);
     assert(self.proc == null);
     const f = self.file;
-    if (f.udps.len != 0) return self.refuse(f.udps[0].main_tok, "a user-defined primitive", .{});
+    if (f.udps.len != 0) return self.refuse(f.udps[0].main_tok, .E1201, "", .{});
     if (f.disciplines.len != 0 or f.natures.len != 0 or f.paramsets.len != 0 or f.connectrules.len != 0)
-        return self.refuse(0, "an analog or mixed-signal description: --emit-rtlil is digital only", .{});
+        return self.refuse(0, .E1200, "", .{});
+    self.own = try .init(self.arena, f.strings.len());
+    self.child = try .init(self.arena, f.strings.len());
+    self.shapes = try self.arena.alloc(rtlil_emitter.Shape, f.exprs.len());
+    @memset(self.shapes, .{});
     try self.out.writeAll("autoidx 1\n");
     for (f.modules) |*m| try self.module(m);
 }
@@ -52,21 +57,20 @@ pub fn module(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
     assert(self.proc == null);
     assert(m.name != .none);
     self.m = m;
-    self.syms = .empty;
-    self.values = .empty;
-    self.inits = .empty;
+    self.syms = &self.own;
+    try self.own.reset(self.arena, names(m));
     self.wires = .init(self.arena);
     self.cells = .init(self.arena);
-    if (m.analog.len != 0) return self.refuse(m.analog[0].main_tok, "an analog block", .{});
-    if (m.is_connect) return self.refuse(m.main_tok, "a connectmodule", .{});
-    if (m.genvars.len != 0) return self.refuse(m.main_tok, "a generate construct", .{});
-    if (m.defparams.len != 0) return self.refuse(m.defparams[0].main_tok, "a defparam", .{});
-    if (m.tasks.len != 0) return self.refuse(m.tasks[0].main_tok, "a task or function", .{});
-    if (m.functions.len != 0) return self.refuse(m.functions[0].main_tok, "a function", .{});
-    if (m.events.len != 0) return self.refuse(m.events[0].main_tok, "a named event", .{});
-    if (m.pulls.len != 0) return self.refuse(m.pulls[0].main_tok, "a pullup or pulldown", .{});
-    if (m.switches.len != 0) return self.refuse(m.switches[0].main_tok, "a switch primitive", .{});
-    if (m.branches.len != 0) return self.refuse(m.branches[0].main_tok, "a branch", .{});
+    if (m.analog.len != 0) return self.refuse(m.analog[0].main_tok, .E1202, "", .{});
+    if (m.is_connect) return self.refuse(m.main_tok, .E1203, "", .{});
+    if (m.genvars.len != 0) return self.refuse(m.main_tok, .E1204, "", .{});
+    if (m.defparams.len != 0) return self.refuse(m.defparams[0].main_tok, .E1205, "", .{});
+    if (m.tasks.len != 0) return self.refuse(m.tasks[0].main_tok, .E1206, "", .{});
+    if (m.functions.len != 0) return self.refuse(m.functions[0].main_tok, .E1207, "", .{});
+    if (m.events.len != 0) return self.refuse(m.events[0].main_tok, .E1208, "", .{});
+    if (m.pulls.len != 0) return self.refuse(m.pulls[0].main_tok, .E1209, "", .{});
+    if (m.switches.len != 0) return self.refuse(m.switches[0].main_tok, .E1210, "", .{});
+    if (m.branches.len != 0) return self.refuse(m.branches[0].main_tok, .E1211, "", .{});
 
     try self.params(m);
     try self.declare(m);
@@ -94,12 +98,12 @@ pub fn module(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
 /// signed is refused, and so is a range of more than 2^31 - 1 bits.
 pub fn dim(self: *Emitter, d: Ast.Dim, tok: u32, sym: *Sym) Error!void {
     assert(d.msb != .none and d.lsb != .none);
-    const msb = (try self.foldInt(d.msb, tok)) orelse return self.refuse(tok, "a range that is not constant", .{});
-    const lsb = (try self.foldInt(d.lsb, tok)) orelse return self.refuse(tok, "a range that is not constant", .{});
+    const msb = (try self.foldInt(d.msb, tok)) orelse return self.refuse(tok, .E1220, "", .{});
+    const lsb = (try self.foldInt(d.lsb, tok)) orelse return self.refuse(tok, .E1220, "", .{});
     if (std.math.cast(i32, msb) == null or std.math.cast(i32, lsb) == null)
-        return self.refuse(tok, "a range whose bounds do not fit RTLIL's 32-bit wire offset (`[{d}:{d}]`)", .{ msb, lsb });
+        return self.refuse(tok, .E1221, "`[{d}:{d}]`", .{ msb, lsb });
     const span = @abs(@as(i64, msb) - lsb) + 1;
-    if (span > std.math.maxInt(i32)) return self.refuse(tok, "a range wider than RTLIL's 2^31 - 1 bits (`[{d}:{d}]`)", .{ msb, lsb });
+    if (span > std.math.maxInt(i32)) return self.refuse(tok, .E1222, "`[{d}:{d}]`", .{ msb, lsb });
     sym.width = @intCast(span);
     sym.lsb = lsb;
     sym.descending = msb >= lsb;
@@ -114,13 +118,15 @@ pub fn dim(self: *Emitter, d: Ast.Dim, tok: u32, sym: *Sym) Error!void {
 /// assignment's left side is, and converts a real default (§4.8.2). A
 /// real parameter has no value here: an expression reading it is refused.
 pub fn params(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
-    assert(self.values.count() == 0);
-    defer assert(self.values.count() <= m.params.len);
+    assert(self.syms.rows.len == 0);
+    defer assert(self.syms.rows.len <= m.params.len);
     for (m.params) |*p| {
         var sym: Sym = .{ .width = 32, .signed = true, .kind = .param };
+        // §4.10: a second declaration of the name, as `vera --run` reports it.
+        if (self.syms.find(p.name) != null) return self.designError(p.main_tok, "duplicate digital variable");
         const real_default = self.file.exprs.tag(p.default) == .real_literal;
         if (p.ty == .real or (real_default and p.ty == .unspecified and p.packed_range == null)) {
-            try self.syms.put(self.arena, p.name, sym);
+            _ = try self.syms.put(self.arena, p.name, sym);
             continue;
         }
         if (p.packed_range) |r| {
@@ -132,26 +138,27 @@ pub fn params(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
         }
         const declared = p.packed_range != null or p.ty == .integer;
         const v = (try self.foldValue(p.default, if (declared) sym.width else 0, p.main_tok, true)) orelse
-            return self.refuse(p.main_tok, "a parameter default that is not constant: `{s}`", .{self.str(p.name)});
+            return self.refuse(p.main_tok, .E1223, "`{s}`", .{self.str(p.name)});
         if (!declared) {
             sym.width = v.width;
             sym.signed = v.signed or p.is_signed;
         }
-        try self.values.put(self.arena, p.name, try self.convert(v, sym));
-        try self.syms.put(self.arena, p.name, sym);
+        const value = try self.convert(v, sym);
+        const r = try self.syms.put(self.arena, p.name, sym);
+        self.syms.rows.items(.value)[r] = value;
     }
 }
 
 /// Every port, net and variable as a `Sym`, before any is used.
 pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
-    assert(self.syms.count() <= m.params.len); // Only the parameters so far.
-    defer assert(self.syms.count() >= m.params.len);
+    assert(self.syms.rows.len <= m.params.len); // Only the parameters so far.
+    defer assert(self.syms.rows.len >= m.params.len);
     for (m.ports) |*p| {
         // A.1.3: a null port is a header position with no net inside.
         if (p.name == .none) continue;
-        if (p.concat_rest or p.external_name != .none) return self.refuse(p.main_tok, "a port expression (`.name({{...}})`)", .{});
-        if (p.select != null) return self.refuse(p.main_tok, "a port that is a select of its net (`{s}[...]`)", .{self.str(p.name)});
-        if (p.kind == .wreal) return self.refuse(p.main_tok, "a wreal port", .{});
+        if (p.concat_rest or p.external_name != .none) return self.refuse(p.main_tok, .E1212, "", .{});
+        if (p.select != null) return self.refuse(p.main_tok, .E1213, "`{s}[...]`", .{self.str(p.name)});
+        if (p.kind == .wreal) return self.refuse(p.main_tok, .E1214, "", .{});
         var sym: Sym = .{ .width = 1, .signed = p.is_signed, .kind = .wire };
         const range = p.range orelse p.type_range orelse for (m.vars) |*v| {
             if (v.name == p.name) break v.packed_range;
@@ -163,32 +170,32 @@ pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
             // A `reg` port keeps its range; `output integer`/`time` are §4.2's widths.
             if (v.storage == .time) sym.width = 64 else if (v.storage == .variable and v.ty == .integer) sym.width = 32;
         };
-        try self.syms.put(self.arena, p.name, sym);
+        _ = try self.syms.put(self.arena, p.name, sym);
     }
     for (m.nets) |*n| {
         if (try self.redeclared(m, n.name, n.main_tok)) continue;
-        if (n.kind == .wreal) return self.refuse(n.main_tok, "a wreal net", .{});
-        if (n.dims.len != 0) return self.refuse(n.main_tok, "a net array", .{});
+        if (n.kind == .wreal) return self.refuse(n.main_tok, .E1215, "", .{});
+        if (n.dims.len != 0) return self.refuse(n.main_tok, .E1216, "", .{});
         var sym: Sym = .{ .width = 1, .signed = n.is_signed, .kind = .wire };
         if (n.range) |r| try self.dim(r, n.main_tok, &sym);
-        try self.syms.put(self.arena, n.name, sym);
+        _ = try self.syms.put(self.arena, n.name, sym);
     }
     for (m.vars) |*v| {
         if (try self.redeclared(m, v.name, v.main_tok)) continue;
-        if (v.dims.len != 0) return self.refuse(v.main_tok, "a memory (`{s}` has unpacked dimensions)", .{self.str(v.name)});
+        if (v.dims.len != 0) return self.refuse(v.main_tok, .E1217, "`{s}` has unpacked dimensions", .{self.str(v.name)});
         var sym: Sym = .{ .width = 1, .signed = v.is_signed, .kind = .reg };
         switch (v.storage) {
             .time => sym.width = 64,
             .reg => {},
             .variable => switch (v.ty) {
-                .real => return self.refuse(v.main_tok, "a real variable", .{}),
-                .string => return self.refuse(v.main_tok, "a string variable", .{}),
+                .real => return self.refuse(v.main_tok, .E1218, "", .{}),
+                .string => return self.refuse(v.main_tok, .E1219, "", .{}),
                 .integer => sym.width = 32,
                 .unspecified => {},
             },
         }
         if (v.packed_range) |r| try self.dim(r, v.main_tok, &sym);
-        try self.syms.put(self.arena, v.name, sym);
+        _ = try self.syms.put(self.arena, v.name, sym);
     }
 }
 
@@ -207,7 +214,7 @@ pub fn redeclared(self: *Emitter, m: *const Ast.ModuleDecl, name: StrId, tok: u3
 /// `wire width W [signed] [offset O] [upto] [input|output|inout K] \name`.
 pub fn wireLines(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
     assert(self.proc == null);
-    assert(self.syms.count() >= m.params.len);
+    assert(self.syms.rows.len >= m.params.len);
     // A port's number is its header position (§12.1.2), null ones counted.
     for (m.ports, 1..) |*p, k| if (p.name != .none) {
         const s = self.syms.get(p.name).?;
@@ -222,7 +229,7 @@ pub fn wireLine(self: *Emitter, name: StrId, s: Sym, dir: Ast.Direction, port: u
     assert(name != .none);
     assert(s.width >= 1 and s.kind != .param);
     const w = &self.wires.writer;
-    if (self.inits.get(name)) |v| try w.print("  attribute \\init {s}\n", .{v.s});
+    if (self.syms.rows.items(.init)[self.syms.find(name).?]) |v| try w.print("  attribute \\init {s}\n", .{v.s});
     try w.print("  wire width {d}", .{s.width});
     if (s.signed) try w.writeAll(" signed");
     // Yosys's `offset` is the lower bound either way: [3:10] is `upto offset 3`.
@@ -253,7 +260,7 @@ pub fn contAssign(self: *Emitter, a: *const Ast.ContAssign) Error!void {
 pub fn gate(self: *Emitter, g: *const Ast.GateInst) Error!void {
     assert(g.out != .none);
     assert(self.proc == null);
-    if (g.range != null) return self.refuse(g.main_tok, "an array of gate instances", .{});
+    if (g.range != null) return self.refuse(g.main_tok, .E1269, "", .{});
     const out = try self.lvalue(g.out, false);
     const ins = try self.arena.alloc(Sig, g.ins.len);
     for (g.ins, ins) |e, *s| s.* = try self.fit(try self.expr(e, 0), 1);
@@ -294,32 +301,28 @@ pub fn gate(self: *Emitter, g: *const Ast.GateInst) Error!void {
 pub fn instance(self: *Emitter, i: *const Ast.Instance) Error!void {
     assert(i.module != .none);
     assert(self.proc == null);
-    if (i.range != null) return self.refuse(i.main_tok, "an array of instances", .{});
+    if (i.range != null) return self.refuse(i.main_tok, .E1270, "", .{});
     const child: ?*const Ast.ModuleDecl = for (self.file.modules) |*c| {
         if (c.name == i.module) break c;
     } else null;
     // The child's port widths fold in the child's own parameters.
-    var child_syms: std.AutoHashMapUnmanaged(StrId, Sym) = .empty;
     if (child) |c| {
-        const saved = self.syms;
-        const saved_values = self.values;
-        self.syms = .empty;
-        self.values = .empty;
+        assert(self.syms == &self.own);
+        defer self.syms = &self.own;
+        self.syms = &self.child;
+        try self.child.reset(self.arena, names(c));
         try self.params(c);
         try self.declare(c);
-        child_syms = self.syms;
-        self.syms = saved;
-        self.values = saved_values;
     }
     const w = &self.cells.writer;
     try w.print("  cell {s} {s}\n", .{ try self.id(i.module), try self.id(i.name) });
     for (i.params, 0..) |p, k| {
         const name: StrId = if (p.name != .none) p.name else blk: {
-            const c = child orelse return self.refuse(p.main_tok, "an ordered parameter override of `{s}`, which this source does not declare", .{self.str(i.module)});
-            if (k >= c.params.len) return self.refuse(p.main_tok, "more parameter overrides than `{s}` declares", .{self.str(c.name)});
+            const c = child orelse return self.refuse(p.main_tok, .E1271, "`{s}`", .{self.str(i.module)});
+            if (k >= c.params.len) return self.refuse(p.main_tok, .E1272, "`{s}`", .{self.str(c.name)});
             break :blk c.params[k].name;
         };
-        const v = (try self.foldInt(p.value, p.main_tok)) orelse return self.refuse(p.main_tok, "a parameter override that is not an integer constant", .{});
+        const v = (try self.foldInt(p.value, p.main_tok)) orelse return self.refuse(p.main_tok, .E1273, "", .{});
         try w.print("    parameter {s} {d}\n", .{ try self.id(name), v });
     }
     for (i.ports, 0..) |c, k| {
@@ -335,10 +338,10 @@ pub fn instance(self: *Emitter, i: *const Ast.Instance) Error!void {
         } else null;
         // A.1.3: an expression in a null port's position connects nothing.
         if (port) |p| if (p.name == .none) continue;
-        if (c.name == .none and port == null) return self.refuse(c.main_tok, "an ordered connection to `{s}`, which this source does not declare", .{self.str(i.module)});
+        if (c.name == .none and port == null) return self.refuse(c.main_tok, .E1274, "`{s}`", .{self.str(i.module)});
         const pname = if (c.name != .none) c.name else port.?.name;
         // The child's port width is the context when the source declares it.
-        const pw: u32 = if (port) |p| child_syms.get(p.name).?.width else 0;
+        const pw: u32 = if (port) |p| self.child.get(p.name).?.width else 0;
         const s = try self.expr(c.expr, pw);
         try w.print("    connect {s} {s}\n", .{ try self.id(pname), (if (pw != 0) try self.fit(s, pw) else s).s });
     }
@@ -346,6 +349,11 @@ pub fn instance(self: *Emitter, i: *const Ast.Instance) Error!void {
 }
 
 // ---- private ----
+
+/// The most names `m` declares: a table row each.
+fn names(m: *const Ast.ModuleDecl) usize {
+    return m.params.len + m.ports.len + m.nets.len + m.vars.len;
+}
 
 fn isPort(m: *const Ast.ModuleDecl, name: StrId) bool {
     for (m.ports) |*p| if (p.name == name) return true;

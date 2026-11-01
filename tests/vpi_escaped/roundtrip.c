@@ -5,7 +5,7 @@
  * obj), NULL)` compares equal to obj (§27.18, §27.6), except that a port
  * net's full name names its vpiPort (as the conformance suite's structure.c
  * and object_traversal.c expect), accepted when that port stands for the net
- * (`portOf`); each object's vpiName
+ * (`portOf`, by its vpiLowConn); each object's vpiName
  * is the identifier escaped.v declares, without its backslash and space
  * (§3.7.1: neither is part of the identifier); and the walk reaches the 32
  * objects escaped.v's header counts by hand. A name that resolves to nothing
@@ -22,15 +22,7 @@
 
 #define OBJECTS 32 /* escaped.v's header */
 
-#define DOT_NAME "a `.` inside an escaped name reads back as a space in vpiName and vpiFullName (`\\m.1 ` is `m 1`)"
 static const char *const known[][2] = {
-    {"vpi_escaped.m(0).u[1].in a", DOT_NAME},
-    {"vpi_escaped.m(0).u[1] v.in a", DOT_NAME},
-    {"vpi_escaped.m 1.u[1].in a", DOT_NAME},
-    {"vpi_escaped.m 1.u[1] v.in a", DOT_NAME},
-    {"vpi_escaped.m(0).u[1] v", DOT_NAME},
-    {"vpi_escaped.m 1", DOT_NAME},
-    {"vpi_escaped.m 1.u[1] v", DOT_NAME},
     {NULL, NULL},
 };
 
@@ -47,24 +39,14 @@ static vpiHandle pair_port[2], pair_net[2];
 static int pairs;
 
 /* Whether `port`, which a net's full name named, stands for `net`: its
- * vpiLowConn (the port diagram's lower connection) is the net, or, where VerA models no
- * vpiLowConn (vpi_user.h), it is a port of the net's own module carrying the
- * net's name. */
+ * vpiLowConn (IEEE 1364-2005 §27.15, the port's inside connection) is the
+ * net. A port with no vpiLowConn stands for nothing here: every port of
+ * escaped.v is a digital port, and VerA gives each one its lower connection. */
 static int portOf(vpiHandle port, vpiHandle net) {
-    char name[256];
-    const char *n;
-    vpiHandle low, pm, nm;
+    vpiHandle low;
     if (vpi_get(vpiType, port) != vpiPort) return 0;
     low = vpi_handle(vpiLowConn, port);
-    if (low != NULL) return vpi_compare_objects(low, net);
-    pm = vpi_handle(vpiModule, port);
-    nm = vpi_handle(vpiModule, net);
-    if (pm == NULL || nm == NULL || !vpi_compare_objects(pm, nm)) return 0;
-    n = vpi_get_str(vpiName, net);
-    if (n == NULL || strlen(n) >= sizeof name) return 0;
-    strcpy(name, n);
-    n = vpi_get_str(vpiName, port);
-    return n != NULL && strcmp(n, name) == 0;
+    return low != NULL && vpi_compare_objects(low, net);
 }
 static int seen[sizeof known / sizeof known[0]];
 

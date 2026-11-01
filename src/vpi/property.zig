@@ -12,6 +12,7 @@
 //! - `pub fn vpi_get_str(prop: c_int, obj: abi.vpiHandle) [*c]u8`
 
 const std = @import("std");
+const elab = @import("elab");
 const Ast = @import("frontend").Ast;
 const abi = @import("abi.zig");
 const analog = @import("analog.zig");
@@ -132,7 +133,10 @@ pub export fn vpi_get(prop: c_int, obj: abi.vpiHandle) c_int {
             // §11.6.4 NOTE 3: scalar and vector are about the object's own
             // width and "shall not indicate anything about what is connected".
             return switch (prop) {
-                user.vpiSize => @intCast(o.size),
+                user.vpiSize => std.math.cast(c_int, o.size) orelse {
+                    status.fail("RANGE", "vpi_get: `{s}` is {d} bits wide, past a PLI_INT32", .{ o.full, o.size });
+                    return user.vpiUndefined;
+                },
                 user.vpiScalar => @intFromBool(o.size == 1),
                 else => @intFromBool(o.size > 1),
             };
@@ -298,7 +302,7 @@ pub export fn vpi_get_str(prop: c_int, obj: abi.vpiHandle) [*c]u8 {
     const s: []const u8 = switch (prop) {
         // §11.6.7 lists no name for a quantity: it is reached from its
         // branch, and named only as `V(b)`/`I(b)` in source.
-        user.vpiName, user.vpiFullName => blk: {
+        user.vpiName, user.vpiFullName => {
             // A behavioural object has the names its diagram lists and no
             // others: a named block both, a call its tf name only, a
             // statement none.
@@ -310,7 +314,7 @@ pub export fn vpi_get_str(prop: c_int, obj: abi.vpiHandle) [*c]u8 {
                 status.fail("NOPROP", "vpi_get_str: a quantity has no name property {d}", .{prop});
                 return null;
             }
-            break :blk if (prop == user.vpiName) o.name else o.full;
+            return if (prop == user.vpiName) spellName(o.name) else spellFull(o.full);
         },
         user.vpiType => schema.typeName(schema.typeOf(o)),
         // §11.6.1 — a module property and only a module's. A net has no
@@ -417,6 +421,47 @@ fn propFail(prop: c_int, o: *const Obj) c_int {
     std.debug.assert(session.design != null);
     status.fail("NOPROP", "vpi_get: a {s} has no property {d}", .{ @tagName(o.kind), prop });
     return user.vpiUndefined;
+}
+
+/// A name as the source declares it: the parser interns an escaped
+/// identifier's `.` as a space (`Parser.internTok`), and §3.7.1's name has
+/// the `.`. No identifier holds a space otherwise.
+fn spellName(s: []const u8) [*c]u8 {
+    const out = copyStr(s);
+    const n = std.mem.len(out);
+    std.debug.assert(n <= s.len);
+    std.mem.replaceScalar(u8, str_buf[0..n], ' ', '.');
+    return out;
+}
+
+/// A full name `vpi_handle_by_name` reads back: each segment whose name holds
+/// a `.`, or starts with `\\`, is written escaped (`\\m.1 `, `\\\\a `,
+/// §3.7.1), so its `.` is no separator and its `\\` is the name's own.
+/// A text past the buffer is cut, as `copyStr` cuts.
+fn spellFull(full: []const u8) [*c]u8 {
+    var w: std.Io.Writer = .fixed(str_buf[0 .. str_buf.len - 1]);
+    writeFull(&w, full) catch |e| switch (e) {
+        error.WriteFailed => {}, // the buffer is full: the name is cut there
+    };
+    str_buf[w.end] = 0;
+    std.debug.assert(w.end < str_buf.len);
+    return @ptrCast(&str_buf);
+}
+
+fn writeFull(w: *std.Io.Writer, full: []const u8) std.Io.Writer.Error!void {
+    var segs = std.mem.splitScalar(u8, full, elab.sep);
+    var k: usize = 0;
+    while (segs.next()) |seg| : (k += 1) {
+        std.debug.assert(k <= full.len); // a segment per separator, and the last
+        if (k != 0) try w.writeByte(elab.sep);
+        if (std.mem.findScalar(u8, seg, ' ') == null and !std.mem.startsWith(u8, seg, "\\")) {
+            try w.writeAll(seg);
+            continue;
+        }
+        try w.writeByte('\\');
+        for (seg) |c| try w.writeByte(if (c == ' ') '.' else c);
+        try w.writeByte(' ');
+    }
 }
 
 fn copyStr(s: []const u8) [*c]u8 {
