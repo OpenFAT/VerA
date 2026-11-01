@@ -588,25 +588,29 @@ test "blockScopes refuses a statement nest past its thread's stack with E0241, n
     // Oracle: deep_stack's contract: a walk on a thread `runGuarded` did not
     // start (this test's; a host's) is given 4 MiB and refused by name past
     // it, never a segfault; while a design is elaborated that refusal is
-    // E0241, "nested deeper than memory allows". `elaborate` walks the nest
-    // on its own reservation; here the same walk runs on the caller's stack.
+    // E0241, "nested deeper than memory allows". The nest is in `deep`,
+    // which only an unselected generate arm instantiates (§12.4.2), so
+    // `elaborate` never walks it and the test does not depend on how large
+    // a stack `runGuarded` gets (a sixteenth of memory, 256 MiB on
+    // Windows); the walk here runs on the caller's stack.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const n = 100_000;
     var src: std.ArrayList(u8) = .empty;
-    try src.appendSlice(a, "module m; initial ");
+    try src.appendSlice(a, "module deep; initial ");
     for (0..n) |_| try src.appendSlice(a, "begin ");
     try src.appendSlice(a, "$display(\"ok\");");
     for (0..n) |_| try src.appendSlice(a, " end");
-    try src.appendSlice(a, " endmodule");
+    try src.appendSlice(a, " endmodule module m; generate if (0) begin : g deep u(); end endgenerate endmodule");
     var bag = diag.Bag.init(a);
     var out = std.Io.Writer.Allocating.init(a);
     var r = try root.elaborate(a, src.items, .{}, &bag, &out.writer);
+    try std.testing.expect(!bag.failed()); // `deep` was never elaborated.
     r.diag_stage = .lower; // As in pass one.
     try std.testing.expectError(error.DigitalFailed, blockScopes(&r, 0, r.file.modules[0].discrete[0].body));
     var messages = std.Io.Writer.Allocating.init(a);
     try diag.render(&bag, &messages.writer, .{});
     try std.testing.expect(std.mem.find(u8, messages.written(), "E0241") != null);
-    try std.testing.expect(std.mem.find(u8, messages.written(), "exhausts the") != null);
+    try std.testing.expect(std.mem.find(u8, messages.written(), "exhausts the 4 MiB stack") != null);
 }
