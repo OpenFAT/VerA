@@ -405,25 +405,3 @@ test "§26.6.26 b): an equal-precedence right operand keeps its parentheses; lit
     }
     try std.testing.expect(iterate.vpi_scan(itr) == null);
 }
-
-test "§26.6.26 b): a text nested past vpi_get_str's buffer is refused by its length, not by the stack" {
-    // Oracle: every decompiled level writes at least one byte of its own, so
-    // `a + a + ... + a` 10^5 operators deep (4 * 10^5 bytes) cannot fit the
-    // 4095-byte buffer: vpi_get_str answers null with an error, as for any
-    // text past it. The rewrite recursed to the chain's bottom before
-    // writing a byte and overflowed the caller's stack.
-    const n = 100_000;
-    var src: std.ArrayList(u8) = .empty;
-    defer src.deinit(std.testing.allocator);
-    try src.appendSlice(std.testing.allocator, "module t;\n  wire a;\n  wire w;\n  assign w = a");
-    for (0..n) |_| try src.appendSlice(std.testing.allocator, " + a");
-    try src.appendSlice(std.testing.allocator, ";\nendmodule\n");
-    var h: Harness = undefined;
-    try h.init(src.items);
-    defer h.deinit();
-    const itr = iterate.vpi_iterate(user.vpiContAssign, handle.vpi_handle_by_name("t", null));
-    const assign = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
-    _ = trust.vpi_free_object(itr);
-    try std.testing.expect(property.vpi_get_str(user.vpiDecompile, handle.vpi_handle(user.vpiRhs, assign)) == null);
-    try std.testing.expect(@import("status.zig").vpi_chk_error(null) != 0);
-}

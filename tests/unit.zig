@@ -7953,6 +7953,42 @@ pub const rtlil_tests = struct {
         try std.testing.expectError(error.Refused, digital.rtlil.emit(arena, src, .{}, &bag, &why));
         try std.testing.expectEqualStrings("line 1: a port that is a select of its net (`a[...]`)", why);
     }
+
+    /// `open` `n` times, then `mid`, then `close` `n` times: a source nested
+    /// `n` levels deep.
+    fn nested(arena: std.mem.Allocator, head: []const u8, open: []const u8, mid: []const u8, close: []const u8, tail: []const u8, n: usize) ![]const u8 {
+        var s: std.ArrayList(u8) = .empty;
+        try s.appendSlice(arena, head);
+        for (0..n) |_| try s.appendSlice(arena, open);
+        try s.appendSlice(arena, mid);
+        for (0..n) |_| try s.appendSlice(arena, close);
+        try s.appendSlice(arena, tail);
+        return s.items;
+    }
+
+    test "10^4 levels of parentheses, else-if arms, begin blocks and lvalue braces emit, counted level for level" {
+        // Oracle: the source, counted. `(a + (a + ... a))` n deep is n
+        // `$add` cells (§5.1, one cell per operator); an else-if chain of n
+        // arms is n `switch` rules plus none for the final else (§9.4); n
+        // `begin`/`end` around one assignment emit what the bare assignment
+        // does (§9.8.1: a sequential block is its statements); and n braces
+        // around `{y, z}` are n + 1 sigspec braces (A.8.5). The rewrite
+        // recursed on the caller's stack and aborted at each.
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const n = 10_000;
+        const chain = try emit(arena, try nested(arena, "module m(input a, output [31:0] y);\n  assign y = ", "(a + ", "a", ")", ";\nendmodule\n", n));
+        try std.testing.expectEqual(@as(usize, n), std.mem.count(u8, chain, "cell $add "));
+        const arms = try emit(arena, try nested(arena, "module m(input c, input a, output reg y);\n  always @(posedge c)\n", "    if (a) y = 1; else\n", "    y = 0;\n", "", "endmodule\n", n));
+        try std.testing.expectEqual(@as(usize, n), std.mem.count(u8, arms, "switch "));
+        const deep = try emit(arena, try nested(arena, "module m(input c, input a, output reg y);\n  always @(posedge c) ", "begin ", "y = a;", " end", "\nendmodule\n", n));
+        const flat = try emit(arena, "module m(input c, input a, output reg y);\n  always @(posedge c) y = a;\nendmodule\n");
+        try std.testing.expectEqualStrings(flat, deep);
+        const braces = try emit(arena, try nested(arena, "module m(input a, output y, output z);\n  assign ", "{", "y, z", "}", " = {a, a};\nendmodule\n", n));
+        const line = braces[std.mem.find(u8, braces, "  connect {").?..];
+        try std.testing.expectEqual(@as(usize, n + 1), std.mem.count(u8, line[0..std.mem.findScalar(u8, line, '\n').?], "{"));
+    }
 };
 
 pub const diag_tests = struct {
@@ -19849,6 +19885,111 @@ pub const vpi_tests = struct {
         dl.no_of_delays = 2;
         delays.vpi_get_delays(imp, &dl);
         try std.testing.expectEqual(@as(f64, 0), da[0].real);
+    }
+
+    test "§26.6.26 b): a text nested past vpi_get_str's buffer is refused by its length, not by the stack" {
+        // Oracle: every decompiled level writes at least one byte of its own, so
+        // `a + a + ... + a` 10^5 operators deep (4 * 10^5 bytes) cannot fit the
+        // 4095-byte buffer: vpi_get_str answers null with an error, as for any
+        // text past it. The rewrite recursed to the chain's bottom before
+        // writing a byte and overflowed the caller's stack.
+        const n = 100_000;
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(std.testing.allocator);
+        try src.appendSlice(std.testing.allocator, "module t;\n  wire a;\n  wire w;\n  assign w = a");
+        for (0..n) |_| try src.appendSlice(std.testing.allocator, " + a");
+        try src.appendSlice(std.testing.allocator, ";\nendmodule\n");
+        var h: run.Harness = undefined;
+        try h.init(src.items);
+        defer h.deinit();
+        const itr = iterate.vpi_iterate(user.vpiContAssign, handle.vpi_handle_by_name("t", null));
+        const assign = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
+        _ = trust.vpi_free_object(itr);
+        try std.testing.expect(property.vpi_get_str(user.vpiDecompile, handle.vpi_handle(user.vpiRhs, assign)) == null);
+        try std.testing.expect(status.vpi_chk_error(null) != 0);
+    }
+
+    test "§26.6.23 vpiLoad finds an assign that reads a net 2 * 10^5 operators deep, on the caller's stack" {
+        // Oracle: IEEE 1364-2005 §26.6.23, a net's loads are the continuous
+        // assignments whose right side reads it: `w = b + b + ... + a` reads `a`
+        // once, at the bottom of the chain, and `b` at every level. The rewrite
+        // walked the operands recursively and overflowed the caller's stack.
+        const n = 200_000;
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(std.testing.allocator);
+        try src.appendSlice(std.testing.allocator, "module t;\n  wire a, b;\n  wire w;\n  assign w = a");
+        for (0..n) |_| try src.appendSlice(std.testing.allocator, " + b");
+        try src.appendSlice(std.testing.allocator, ";\nendmodule\n");
+        var h: run.Harness = undefined;
+        try h.init(src.items);
+        defer h.deinit();
+        const loads = iterate.vpi_iterate(user.vpiLoad, handle.vpi_handle_by_name("t.a", null)) orelse return error.TestUnexpectedResult;
+        const first = iterate.vpi_scan(loads) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(@as(c_int, user.vpiContAssign), property.vpi_get(user.vpiType, first));
+        try std.testing.expect(iterate.vpi_scan(loads) == null);
+    }
+
+    test "§26.6.27: 10^5 nested begin blocks build their model on the reserved stack, one vpiBegin a level" {
+        // Oracle: the source, counted. `initial begin begin ... x = 1; end end`
+        // n deep is n vpiBegin objects, each the one statement of its parent
+        // (IEEE 1364-2005 §26.6.27 begin ->> vpiStmt), and the assignment at the
+        // bottom. The rewrite built the model on the caller's stack, one
+        // recursion a level, and overflowed it.
+        const n = 100_000;
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(std.testing.allocator);
+        try src.appendSlice(std.testing.allocator, "module t;\n  reg x;\n  initial ");
+        for (0..n) |_| try src.appendSlice(std.testing.allocator, "begin ");
+        try src.appendSlice(std.testing.allocator, "x = 1;");
+        for (0..n) |_| try src.appendSlice(std.testing.allocator, " end");
+        try src.appendSlice(std.testing.allocator, "\nendmodule\n");
+        var h: run.Harness = undefined;
+        try h.init(src.items);
+        defer h.deinit();
+        const procs = iterate.vpi_iterate(user.vpiProcess, handle.vpi_handle_by_name("t", null));
+        var s = handle.vpi_handle(user.vpiStmt, iterate.vpi_scan(procs));
+        _ = trust.vpi_free_object(procs);
+        var begins: usize = 0;
+        while (property.vpi_get(user.vpiType, s) == user.vpiBegin) : (begins += 1) {
+            try std.testing.expect(begins < n);
+            const inner = iterate.vpi_iterate(user.vpiStmt, s);
+            s = iterate.vpi_scan(inner);
+            try std.testing.expect(iterate.vpi_scan(inner) == null);
+        }
+        try std.testing.expectEqual(@as(usize, n), begins);
+        try std.testing.expectEqual(@as(c_int, user.vpiAssignment), property.vpi_get(user.vpiType, s));
+    }
+
+    test "§12.31.1: a word whose index passes a PLI_INT32 calls no cbValueChange, and says why" {
+        // Oracle: §12.31.1's index is `s_cb_data.index`, a PLI_INT32, and §4.9
+        // bounds an array by any constant: 2^32 has no PLI_INT32 to report. A
+        // word in range still reports. The rewrite @intCast the index and trapped.
+        var h: run.Harness = undefined;
+        try h.init(
+            \\module t;
+            \\  reg [7:0] m [4294967296:4294967297];
+            \\  reg [7:0] n [0:1];
+            \\  initial begin #1 m[4294967296] = 1; n[1] = 2; end
+            \\endmodule
+        );
+        defer h.deinit();
+        const S = struct {
+            var calls: u32 = 0;
+            fn countChange(cd: *abi.CbData) callconv(.c) c_int {
+                std.debug.assert(cd.reason == user.cbValueChange);
+                calls += 1;
+                return 0;
+            }
+        };
+        S.calls = 0;
+        var v: abi.Value = .{ .format = user.vpiIntVal, .value = .{ .integer = 0 } };
+        for ([_][*:0]const u8{ "t.m", "t.n" }) |name| {
+            const d: abi.CbData = .{ .reason = user.cbValueChange, .cb_rtn = S.countChange, .obj = handle.vpi_handle_by_name(name, null), .time = null, .value = &v, .index = 0, .user_data = null };
+            try std.testing.expect(callback.vpi_register_cb(&d) != null);
+        }
+        try run.simulate();
+        try std.testing.expectEqual(@as(u32, 1), S.calls);
+        try std.testing.expect(status.vpi_chk_error(null) != 0);
     }
 };
 

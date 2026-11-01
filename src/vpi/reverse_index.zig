@@ -359,25 +359,3 @@ fn pushOperands(gpa: std.mem.Allocator, todo: *std.ArrayList(ObjId), x: *const O
         else => {}, // else: no other class is an expression with operands
     }
 }
-
-test "§26.6.23 vpiLoad finds an assign that reads a net 2 * 10^5 operators deep, on the caller's stack" {
-    // Oracle: IEEE 1364-2005 §26.6.23, a net's loads are the continuous
-    // assignments whose right side reads it: `w = b + b + ... + a` reads `a`
-    // once, at the bottom of the chain, and `b` at every level. The rewrite
-    // walked the operands recursively and overflowed the caller's stack.
-    const iterate_ = @import("iterate.zig");
-    const handle = @import("handle.zig");
-    const n = 200_000;
-    var src: std.ArrayList(u8) = .empty;
-    defer src.deinit(std.testing.allocator);
-    try src.appendSlice(std.testing.allocator, "module t;\n  wire a, b;\n  wire w;\n  assign w = a");
-    for (0..n) |_| try src.appendSlice(std.testing.allocator, " + b");
-    try src.appendSlice(std.testing.allocator, ";\nendmodule\n");
-    var h: run.Harness = undefined;
-    try h.init(src.items);
-    defer h.deinit();
-    const loads = iterate_.vpi_iterate(user.vpiLoad, handle.vpi_handle_by_name("t.a", null)) orelse return error.TestUnexpectedResult;
-    const first = iterate_.vpi_scan(loads) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(c_int, user.vpiContAssign), property.vpi_get(user.vpiType, first));
-    try std.testing.expect(iterate_.vpi_scan(loads) == null);
-}

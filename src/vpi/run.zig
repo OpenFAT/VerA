@@ -45,7 +45,6 @@ const va = @import("va.zig");
 const value_put = @import("value_put.zig");
 const user = @import("vpi_user.zig");
 const CbData = abi.CbData;
-const Value = abi.Value;
 const List = va.List;
 const Time = abi.Time;
 
@@ -956,37 +955,6 @@ test "§12.36/C.7: a vpiReset asked from the last reset's own cbEndOfReset goes 
     try std.testing.expectEqual(@as(u64, 0), now());
 }
 
-test "§12.31.1: a word whose index passes a PLI_INT32 calls no cbValueChange, and says why" {
-    // Oracle: §12.31.1's index is `s_cb_data.index`, a PLI_INT32, and §4.9
-    // bounds an array by any constant: 2^32 has no PLI_INT32 to report. A
-    // word in range still reports. The rewrite @intCast the index and trapped.
-    var h: Harness = undefined;
-    try h.init(
-        \\module t;
-        \\  reg [7:0] m [4294967296:4294967297];
-        \\  reg [7:0] n [0:1];
-        \\  initial begin #1 m[4294967296] = 1; n[1] = 2; end
-        \\endmodule
-    );
-    defer h.deinit();
-    finish_seen = 0;
-    const S = struct {
-        fn countChange(cd: *CbData) callconv(.c) c_int {
-            std.debug.assert(cd.reason == user.cbValueChange);
-            finish_seen += 1;
-            return 0;
-        }
-    };
-    var v: Value = .{ .format = user.vpiIntVal, .value = .{ .integer = 0 } };
-    for ([_][*:0]const u8{ "t.m", "t.n" }) |name| {
-        const d: CbData = .{ .reason = user.cbValueChange, .cb_rtn = S.countChange, .obj = handle.vpi_handle_by_name(name, null), .time = null, .value = &v, .index = 0, .user_data = null };
-        try std.testing.expect(callback.vpi_register_cb(&d) != null);
-    }
-    try simulate();
-    try std.testing.expectEqual(@as(u64, 1), finish_seen);
-    try std.testing.expect(status.vpi_chk_error(null) != 0);
-}
-
 test "§12.36: an application that asks vpiReset on every run fails by name after max_resets" {
     var h: Harness = undefined;
     try h.init(restart_source);
@@ -1075,35 +1043,4 @@ test "§12.36 with no run: every operation fails and says why" {
     const queues_now = try timeQueues(std.testing.allocator);
     defer std.testing.allocator.free(queues_now);
     try std.testing.expectEqual(@as(usize, 0), queues_now.len);
-}
-
-test "§26.6.27: 10^5 nested begin blocks build their model on the reserved stack, one vpiBegin a level" {
-    // Oracle: the source, counted. `initial begin begin ... x = 1; end end`
-    // n deep is n vpiBegin objects, each the one statement of its parent
-    // (IEEE 1364-2005 §26.6.27 begin ->> vpiStmt), and the assignment at the
-    // bottom. The rewrite built the model on the caller's stack, one
-    // recursion a level, and overflowed it.
-    const n = 100_000;
-    var src: std.ArrayList(u8) = .empty;
-    defer src.deinit(std.testing.allocator);
-    try src.appendSlice(std.testing.allocator, "module t;\n  reg x;\n  initial ");
-    for (0..n) |_| try src.appendSlice(std.testing.allocator, "begin ");
-    try src.appendSlice(std.testing.allocator, "x = 1;");
-    for (0..n) |_| try src.appendSlice(std.testing.allocator, " end");
-    try src.appendSlice(std.testing.allocator, "\nendmodule\n");
-    var h: Harness = undefined;
-    try h.init(src.items);
-    defer h.deinit();
-    const procs = iterate.vpi_iterate(user.vpiProcess, handle.vpi_handle_by_name("t", null));
-    var s = handle.vpi_handle(user.vpiStmt, iterate.vpi_scan(procs));
-    _ = trust.vpi_free_object(procs);
-    var begins: usize = 0;
-    while (property.vpi_get(user.vpiType, s) == user.vpiBegin) : (begins += 1) {
-        try std.testing.expect(begins < n);
-        const inner = iterate.vpi_iterate(user.vpiStmt, s);
-        s = iterate.vpi_scan(inner);
-        try std.testing.expect(iterate.vpi_scan(inner) == null);
-    }
-    try std.testing.expectEqual(@as(usize, n), begins);
-    try std.testing.expectEqual(@as(c_int, user.vpiAssignment), property.vpi_get(user.vpiType, s));
 }
