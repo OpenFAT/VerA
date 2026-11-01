@@ -168,6 +168,9 @@ pub fn build(b: *Build) void {
         });
         test_step.dependOn(&r.step);
     }
+    const probe = codegenProbe(b);
+    test_step.dependOn(&probe.step);
+    b.step("test-probe", "Hold tests/codegen_probe.zig's x86_64_v3 assembly to its `expect:` lines (tools/asm_probe.py)").dependOn(&probe.step);
     // ReleaseSafe: 10^5 exact expansions take minutes in Debug. glibc: the oracle must conform.
     if (target.result.isGnuLibC()) {
         const printf_ref = b.createModule(.{
@@ -197,10 +200,29 @@ pub fn build(b: *Build) void {
     });
     suite_mod.addOptions("suite_options", o);
     const suite_exe = b.addExecutable(.{ .name = "vera-suite", .root_module = suite_mod });
+    // Generated inputs through every pass (tests/generators.zig).
+    const gen_mod = m.make("tests/generators.zig", &.{
+        .{ .name = "vera", .module = vera },
+        .{ .name = "zigbuild", .module = byName(mods, "zigbuild") },
+        .{ .name = "sim", .module = sim },
+        .{ .name = "digital", .module = byName(mods, "digital") },
+    });
+    const gen_tests = testRun(b, "generators", gen_mod, runner, results_dir);
+    test_step.dependOn(&gen_tests.step);
+    const generators = b.addExecutable(.{ .name = "vera-generators", .root_module = gen_mod });
+    all_step.dependOn(&generators.step);
+    const gen_run = b.addRunArtifact(generators);
+    _ = gen_run.addOutputDirectoryArg("generators");
+    gen_run.expectExitCode(0);
+    test_step.dependOn(&gen_run.step);
+    const gen_step = b.step("test-generators", "Run the generated-input tables and tests (tests/generators.zig) only");
+    gen_step.dependOn(&gen_run.step);
+    gen_step.dependOn(&gen_tests.step);
     all_step.dependOn(&suite_exe.step);
     const suite_run = testRun(b, "suite", suite_mod, runner, results_dir);
     suite_run.has_side_effects = true; // reads tests/conformance at test time
     test_step.dependOn(&suite_run.step);
+    b.step("test-suite", "Run the fixture runner's own tests (tests/suite.zig) only").dependOn(&suite_run.step);
 
     const check = b.step("check", "The pre-commit tier: type-check every root without emitting a binary, and `zig fmt --check` (`--watch -fincremental`: the edit loop)");
     check.dependOn(&fmt.step);
@@ -208,7 +230,7 @@ pub fn build(b: *Build) void {
         check.dependOn(&b.addExecutable(.{ .name = "check", .root_module = r, .use_llvm = false }).step);
     }
     for (mods) |mod| check.dependOn(&b.addTest(.{ .name = "check", .root_module = testRoot(b, mod), .test_runner = runner, .use_llvm = false }).step);
-    for ([_]*Module{ exe.root_module, osdi_mod, all_mod, suite_mod }) |r| {
+    for ([_]*Module{ exe.root_module, osdi_mod, all_mod, suite_mod, gen_mod }) |r| {
         check.dependOn(&b.addTest(.{ .name = "check", .root_module = r, .test_runner = runner, .use_llvm = false }).step);
     }
 
@@ -261,16 +283,39 @@ pub fn build(b: *Build) void {
     paired.has_side_effects = true;
     test_step.dependOn(&paired.step);
 
-    // Conditional host capabilities are explicit skips until bound through
-    // VERA_HOST_PROFILE_ADAPTER. Oracle self-tests never supply these results.
-    for ([_][]const u8{ "report_observations", "indirect_equation_observations", "conditional_observations", "absdelta_rejection_observations", "scheduling_observations", "language_semantics_observations", "compact_modeling_observations", "directive_documentation" }) |name| {
+    // The host profiles need a real host bound through an adapter, which VerA
+    // does not ship: they are `test-host-profiles -Dhost-adapter=EXE`, which
+    // fails without one (unsupported fails, never skips). The documentation
+    // profile needs no host and runs in `test`, beside the oracles' selftest.
+    const host_adapter = b.option([]const u8, "host-adapter", "test-host-profiles: the executable that binds a real host to tests/host.py's profiles");
+    const host_profiles = b.step("test-host-profiles", "Run tests/host.py's host profiles through -Dhost-adapter=EXE");
+    if (host_adapter == null) host_profiles.dependOn(&b.addFail("test-host-profiles: pass -Dhost-adapter=EXE, an adapter binding a real host (tests/README.md)").step);
+    for ([_][]const u8{ "report_observations", "indirect_equation_observations", "conditional_observations", "absdelta_rejection_observations", "scheduling_observations", "language_semantics_observations", "compact_modeling_observations", "directive_documentation", "selftest" }) |name| {
         const profile = b.addSystemCommand(&.{"python3"});
         profile.addFileArg(b.path("tests/host.py"));
         profile.addArg(name);
-        if (results_dir) |dir| profile.addArgs(&.{ "--results", b.fmt("{s}/{s}.tsv", .{ dir, name }) });
+        if (results_dir) |dir| if (!std.mem.eql(u8, name, "selftest")) profile.addArgs(&.{ "--results", b.fmt("{s}/{s}.tsv", .{ dir, name }) });
         profile.has_side_effects = true;
-        test_step.dependOn(&profile.step);
+        if (std.mem.eql(u8, name, "directive_documentation") or std.mem.eql(u8, name, "selftest")) {
+            test_step.dependOn(&profile.step);
+        } else if (host_adapter) |exe_path| {
+            profile.addArgs(&.{ "--adapter", exe_path });
+            host_profiles.dependOn(&profile.step);
+        }
     }
+
+    // The degenerate-argv table: every documented flag x "", "-", "=", a
+    // 128 KiB value, missing, repeated, through this build's vera.
+    const argv_exe = b.addExecutable(.{ .name = "vera-argv", .root_module = m.make("tests/argv.zig", &.{}) });
+    all_step.dependOn(&argv_exe.step);
+    check.dependOn(&b.addExecutable(.{ .name = "check", .root_module = argv_exe.root_module, .use_llvm = false }).step);
+    const argv_run = b.addRunArtifact(argv_exe);
+    argv_run.addArtifactArg2(exe, .{ .make_absolute = true }); // the rows run in the scratch dir
+    _ = argv_run.addOutputDirectoryArg("argv");
+    argv_run.expectExitCode(0);
+    test_step.dependOn(&argv_run.step);
+    test_step.dependOn(&testRun(b, "argv", m.make("tests/argv.zig", &.{}), runner, results_dir).step);
+    b.step("test-argv", "Run the degenerate-argv table through the vera CLI only").dependOn(&argv_run.step);
 
     const canary = b.addRunArtifact(suite_exe);
     canary.addArtifactArg2(exe, .{});
@@ -304,6 +349,46 @@ pub fn build(b: *Build) void {
         const record = recordResults(b, vpi_app, dir, "vpi_acceptance.tsv", rows.items);
         test_step.dependOn(record);
     }
+    // The negative-input table: every exported vpi_* entry point handed each
+    // invalid argument it takes must return its failure value with an error
+    // vpi_chk_error reports. The app prints a row per case and judges itself.
+    const negative = vpiApp(b, target, optimize, vpi_host, "tests/vpi_negative/negative.c");
+    negative.addFileArg2(b.path("tests/vpi_negative/negative.v"), .{ .make_absolute = true });
+    negative.setCwd(b.tmpPath());
+    negative.expectExitCode(0);
+    negative.expectStdOutMatch("vpi-negative=ok\n");
+    test_step.dependOn(&negative.step);
+    b.step("test-vpi-negative", "Run the VPI negative-input table (tests/vpi_negative) only").dependOn(&negative.step);
+    // Escaped identifiers through vpi_handle_by_name: each object's
+    // vpiFullName must name that object again.
+    const escaped = vpiApp(b, target, optimize, vpi_host, "tests/vpi_escaped/roundtrip.c");
+    escaped.addFileArg2(b.path("tests/vpi_escaped/escaped.v"), .{ .make_absolute = true });
+    escaped.setCwd(b.tmpPath());
+    escaped.expectExitCode(0);
+    escaped.expectStdOutMatch("vpi-escaped=ok objects=32 ");
+    test_step.dependOn(&escaped.step);
+    b.step("test-vpi-escaped", "Run the escaped-identifier vpi_handle_by_name round trip (tests/vpi_escaped) only").dependOn(&escaped.step);
+    // The VPI analog library's runner sizes a device's arrays as `vera
+    // --emit-exe`'s does: `tbl`'s 4096 reals are 32768 bytes (the .va's header,
+    // by hand). Read from the library's own runner, which nothing at run time
+    // prints.
+    const mem_app = vpiApp(b, target, optimize, vpi_host, "tests/vpi_mem/memory_array_library.c");
+    mem_app.addFileArg2(b.path("tests/vpi_mem/memory_array_library.va"), .{ .make_absolute = true });
+    mem_app.addFileArg2(b.path("tests/vpi_mem/memory_array_library.c"), .{ .make_absolute = true });
+    mem_app.setCwd(b.tmpPath());
+    mem_app.expectExitCode(0);
+    const mem_bytes = b.addSystemCommand(&.{
+        "sh", "-c",
+        \\f="$1/memory_array_library/memory_array_library.tb.zig"
+        \\grep -F 'const mem_bytes: usize = 32768;' "$f" || { echo "$f does not size tbl as 32768 bytes:" >&2; grep -F mem_bytes "$f" >&2; exit 1; }
+        ,
+        "sh", checkoutWorkDir(b, "vera-vpi"),
+    });
+    mem_bytes.step.dependOn(&mem_app.step);
+    mem_bytes.has_side_effects = true; // reads the library's work tree
+    mem_bytes.expectExitCode(0);
+    test_step.dependOn(&mem_bytes.step);
+    b.step("test-vpi-mem", "Check the VPI analog library's runner sizes a memory-backed array (tests/vpi_mem) only").dependOn(&mem_bytes.step);
     for (vpiRuns(b)) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
         // Each run gets its own cwd: an application writes fixed names there
@@ -616,6 +701,33 @@ const Gen = struct { exe: *Build.Step.Compile, copy: *Build.Step.UpdateSourceFil
 /// vera's binary: a compiler edit leaves every generated device, and every
 /// object built from it, cached. Rebuild them after a codegen change with
 /// `-Dva-cache=false`.
+/// `tests/codegen_probe.zig` as x86_64_v3 ReleaseFast assembly, judged by
+/// `tools/asm_probe.py` against the file's `expect:` lines (after its
+/// selftest: a judge that passes everything proves nothing). The target is
+/// fixed, so every host checks the same instructions.
+fn codegenProbe(b: *Build) *Run {
+    const target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v3 } });
+    const mods = defineModules(b, target, false);
+    const obj = b.addObject(.{ .name = "codegen_probe", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/codegen_probe.zig"),
+        .target = target,
+        .optimize = .fast,
+        .strip = true,
+        .imports = &.{.{ .name = "kernels", .module = byName(mods, "kernels") }},
+    }) });
+    const selftest = b.addSystemCommand(&.{"python3"});
+    selftest.addFileArg(b.path("tools/asm_probe.py"));
+    selftest.addArg("selftest");
+    selftest.expectExitCode(0);
+    const run = b.addSystemCommand(&.{"python3"});
+    run.addFileArg(b.path("tools/asm_probe.py"));
+    run.addFileArg(b.path("tests/codegen_probe.zig"));
+    run.addFileArg(obj.getEmittedAsm());
+    run.expectExitCode(0);
+    run.step.dependOn(&selftest.step);
+    return run;
+}
+
 fn genRun(b: *Build, gen: Gen, src: []const u8) *Run {
     if (!gen.cached) return b.addRunArtifact(gen.exe);
     const run = b.addSystemCommand(&.{b.fmt("./zig-out/gen/{s}", .{gen.exe.out_filename})});

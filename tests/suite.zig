@@ -79,7 +79,7 @@ const Suite = struct {
     ///
     ///   zig build suite                         # the suite, timed
     ///   zig build suite -- ch04                 # only paths matching `ch04`
-    ///   zig build suite -- --strict             # unasserted and xfail FAIL
+    ///   zig build suite -- --strict             # unasserted fixtures FAIL
     ///   zig build suite -- --fixture-root=DIR   # another tree laid out like the suite's tests/
     ///   zig build suite -- --sweep              # the generated size sweep instead
     ///   zig build suite -Doptimize=ReleaseFast  # the timing that ships
@@ -104,6 +104,18 @@ const Suite = struct {
             if (std.mem.eql(u8, a, "canary")) return canary.run(init);
         }
         return benchmark(init, vera_exe, first, &args, true);
+    }
+
+    // The oracle is the log `zig build suite -- ams > log 2>&1` writes: a
+    // positional writer on a redirected stdio file writes from offset 0, under
+    // the build's own summary, and the first FAIL lines of every run were lost.
+    test "every stdout and stderr writer of the runner streams" {
+        const source = @embedFile("suite.zig");
+        for ([_][]const u8{ "stdout", "stderr" }) |stream| {
+            var buf: [32]u8 = undefined;
+            const positional = try std.fmt.bufPrint(&buf, "{s}().{s}(", .{ stream, "writer" });
+            try std.testing.expect(std.mem.find(u8, source, positional) == null);
+        }
     }
 
     /// N per fixture, smaller than `harness/sweep.zig`'s `reps` because every fixture is timed. The min
@@ -141,7 +153,7 @@ const Suite = struct {
             if (std.mem.eql(u8, arg, "--sweep")) do_sweep = true //
             else if (std.mem.startsWith(u8, arg, "-")) {
                 var e_buf: [256]u8 = undefined;
-                var e = Io.File.stderr().writer(io, &e_buf);
+                var e = Io.File.stderr().writerStreaming(io, &e_buf);
                 try e.interface.print("benchmark: unknown flag `{s}`\n", .{arg});
                 try e.interface.flush();
                 return 2;
@@ -152,7 +164,7 @@ const Suite = struct {
         cfg.root = std.fs.path.resolveAlloc(arena, &.{cfg.root}) catch cfg.root;
 
         var out_buf: [1 << 16]u8 = undefined;
-        var stdout = Io.File.stdout().writer(io, &out_buf);
+        var stdout = Io.File.stdout().writerStreaming(io, &out_buf);
         const w = &stdout.interface;
         defer w.flush() catch {};
 
@@ -320,7 +332,8 @@ const Fixtures = struct {
     //! The verdict algebra is frozen behaviour: an `ok=1`
     //! transcript is `met` only through the compiler plug, `//! xfail` (or a
     //! `xfail_list` line) turns `unmet` into XFAIL and `met` into an XPASS FAIL,
-    //! and `--strict` fails unasserted and XFAIL fixtures.
+    //! and `--strict` fails unasserted fixtures. An XFAIL never fails a run:
+    //! the list of them is the checked-in marker list, compared by name.
 
     const std = @import("std");
     const tb = @import("exe");
@@ -538,7 +551,7 @@ const Fixtures = struct {
     /// Prints `why` and the usage line to stderr; returns exit code 2.
     pub fn usage(io: Io, why: []const u8) !u8 {
         var buf: [256]u8 = undefined;
-        var e = Io.File.stderr().writer(io, &buf);
+        var e = Io.File.stderr().writerStreaming(io, &buf);
         try e.interface.print(
             "suite: {s}\nusage: <vera-exe> [devices | ieee1364 | vpi | spice | benchmark args]\n",
             .{why},
@@ -691,7 +704,7 @@ const Fixtures = struct {
         const arena = arena_state.allocator();
 
         var stderr_buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &stderr_buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &stderr_buf);
         const w = &stderr.interface;
 
         const fixtures = try collect(arena, io, cfg.root, &ams_dirs, cfg.filter);
@@ -705,10 +718,12 @@ const Fixtures = struct {
 
         const strict = cfg.strict;
         var counts: Counts = .{};
+        const verdicts = try arena.alloc(Verdict, fixtures.len);
         if (cfg.jobs <= 1) {
             // Sequential: prints as it goes, showing the fixture a run is stuck on.
-            for (fixtures) |f| {
-                counts.add(try judge(gpa, io, arena, compiler, f, strict, w));
+            for (fixtures, verdicts) |f, *v| {
+                v.* = try judge(gpa, io, arena, compiler, f, strict, w);
+                counts.add(v.*);
                 try w.flush();
             }
         } else {
@@ -734,7 +749,8 @@ const Fixtures = struct {
 
             // Emit in SLOT order, i.e. the sorted walk, whatever order the pool
             // finished in. This is the whole reason the workers buffer.
-            for (slots) |s| {
+            for (slots, verdicts) |s, *v| {
+                v.* = s.verdict;
                 counts.add(s.verdict);
                 try w.writeAll(s.output);
                 gpa.free(s.output);
@@ -743,10 +759,28 @@ const Fixtures = struct {
         }
 
         try summarize(compiler, counts, fixtures.len, w);
+        try names(w, "FAIL", fixtures, verdicts, .fail);
+        try names(w, "XFAIL", fixtures, verdicts, .xfail);
         try w.flush();
         if (tally) |t| t.* = counts;
-        return if (counts.failed == 0 and
-            !(strict and (counts.unasserted != 0 or counts.xfail != 0))) 0 else 1;
+        // An XFAIL is a named marker (`xfail_list`), and its XPASS already
+        // failed: the run fails on an unlisted FAIL, never on a listed one.
+        return if (counts.failed == 0 and !(strict and counts.unasserted != 0)) 0 else 1;
+    }
+
+    /// The `verdict` fixtures' names after the summary, one a line, in walk
+    /// (path) order and in `xfail_list`'s key form, so a run's FAIL list is a
+    /// name list that diffs against the last one and pastes into the list.
+    fn names(w: *Io.Writer, label: []const u8, fixtures: []const Fixture, verdicts: []const Verdict, verdict: Verdict) !void {
+        std.debug.assert(fixtures.len == verdicts.len);
+        var any = false;
+        for (fixtures, verdicts) |f, v| {
+            if (v != verdict) continue;
+            if (!any) try w.print("{s} names:\n", .{label});
+            any = true;
+            const suite_root = std.fs.path.dirname(f.root) orelse f.root;
+            try w.print("  {s}\n", .{std.mem.trimStart(u8, f.path[@min(suite_root.len, f.path.len)..], "/")});
+        }
     }
 
     fn summarize(compiler: Compiler, c: Counts, total: usize, w: *Io.Writer) !void {
@@ -774,7 +808,7 @@ const Fixtures = struct {
                 "  `//! xfail` line or its xfail list row (printed with the reason above).\n" ++
                 "  Not a pass — nothing was proved. The day it starts meeting it the run\n" ++
                 "  FAILs with an XPASS, so the marker cannot outlive the limitation and\n" ++
-                "  quietly hide a regression. (`--strict` fails on these.)\n",
+                "  quietly hide a regression.\n",
             .{ c.xfail, compiler.name, compiler.name },
         );
     }
@@ -1946,78 +1980,84 @@ const Analog = struct {
         return text.toOwnedSlice(gpa);
     }
 
-    test "a batch runs each member by argv[0]; one member that does not compile fails the batch" {
-        if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-        const gpa = std.testing.allocator;
-        const io = std.testing.io;
-        var arena_state: std.heap.ArenaAllocator = .init(gpa);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const work = options.work_root ++ "/batch-selftest";
-        // Prints its device's tag and the plusargs it was handed.
-        const runner =
-            \\const std = @import("std");
-            \\const device = @import("device");
-            \\pub fn main(init: std.process.Init.Minimal) void {
-            \\    const argv = init.args.toSlice(std.heap.page_allocator) catch return;
-            \\    std.debug.print("{s}", .{device.tag});
-            \\    for (argv[1..]) |a| std.debug.print(" {s}", .{a});
-            \\    std.debug.print("\n", .{});
-            \\}
-            \\
-        ;
-        const tags = [_][]const u8{ "a", "b", "broken" };
-        var staged: [tags.len]zigbuild.Staged = undefined;
-        var dirs: [tags.len][]const u8 = undefined;
-        for (&staged, &dirs, tags) |*s, *dir, tag| {
-            dir.* = try std.fs.path.join(arena, &.{ work, tag });
-            const device = if (std.mem.eql(u8, tag, "broken")) "pub const tag = 1 +;\n" else try arena.print("pub const tag = \"{s}\";\n", .{tag});
-            s.* = try zigbuild.stage(arena, io, device, runner, .{ .work_dir = dir.*, .contract = options.contract, .name = tag, .zig_exe = options.zig_exe });
-        }
-        const opts: zigbuild.BuildOptions = .{ .work_dir = work ++ "/batch", .contract = options.contract, .name = "batch", .zig_exe = options.zig_exe, .strip = true };
-
-        const built = try zigbuild.buildBatch(gpa, io, staged[0..2], opts);
-        defer built.deinit(gpa);
-        const bin = switch (built) {
-            .ok => |p| p,
-            .failed => |text| {
-                std.debug.print("{s}\n", .{text});
-                return error.TestUnexpectedResult;
-            },
-        };
-        for (0..2) |i| {
-            const link = try linkBatched(gpa, io, arena, dirs[i], .{ .bin = bin, .index = i });
-            defer link.deinit(gpa);
-            const got = try capture(gpa, io, link.ok, dirs[i], 0, &.{ "+x=1", "+y" });
-            defer gpa.free(got);
-            try std.testing.expectEqualStrings(try arena.print("{s} +x=1 +y\n", .{tags[i]}), got);
-        }
-
-        const bad = try zigbuild.buildBatch(gpa, io, &staged, opts);
-        defer bad.deinit(gpa);
-        try std.testing.expect(bad == .failed);
+    // Left out of a Windows build: their oracle is POSIX (`/bin/sh`, and a
+    // child run as `./<name>` from its work directory), and the batch runner
+    // they test is the suite's, which runs on Linux and macOS.
+    comptime {
+        if (@import("builtin").os.tag != .windows) _ = posix;
     }
+    const posix = struct {
+        test "a batch runs each member by argv[0]; one member that does not compile fails the batch" {
+            const gpa = std.testing.allocator;
+            const io = std.testing.io;
+            var arena_state: std.heap.ArenaAllocator = .init(gpa);
+            defer arena_state.deinit();
+            const arena = arena_state.allocator();
+            const work = options.work_root ++ "/batch-selftest";
+            // Prints its device's tag and the plusargs it was handed.
+            const runner =
+                \\const std = @import("std");
+                \\const device = @import("device");
+                \\pub fn main(init: std.process.Init.Minimal) void {
+                \\    const argv = init.args.toSlice(std.heap.page_allocator) catch return;
+                \\    std.debug.print("{s}", .{device.tag});
+                \\    for (argv[1..]) |a| std.debug.print(" {s}", .{a});
+                \\    std.debug.print("\n", .{});
+                \\}
+                \\
+            ;
+            const tags = [_][]const u8{ "a", "b", "broken" };
+            var staged: [tags.len]zigbuild.Staged = undefined;
+            var dirs: [tags.len][]const u8 = undefined;
+            for (&staged, &dirs, tags) |*s, *dir, tag| {
+                dir.* = try std.fs.path.join(arena, &.{ work, tag });
+                const device = if (std.mem.eql(u8, tag, "broken")) "pub const tag = 1 +;\n" else try arena.print("pub const tag = \"{s}\";\n", .{tag});
+                s.* = try zigbuild.stage(arena, io, device, runner, .{ .work_dir = dir.*, .contract = options.contract, .name = tag, .zig_exe = options.zig_exe });
+            }
+            const opts: zigbuild.BuildOptions = .{ .work_dir = work ++ "/batch", .contract = options.contract, .name = "batch", .zig_exe = options.zig_exe, .strip = true };
 
-    test "capture forwards runtime argv without expansion and preserves order" {
-        if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-        // Independent POSIX argv probe, not a generated model: the model's current
-        // plusarg stub cannot distinguish missing runner plumbing from its own bug.
-        // Only this fixed script is interpreted; fixture bytes stay positional
-        // arguments, quoted by the probe and never inserted into its source.
-        const got = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{
-            "-c",      "for arg do printf '%s\\n' \"$arg\" >&2; done", "argv-probe",
-            "+gain=7", "+gain=8",                                      "+gain=7",
-            "+empty=", "+literal=$HOME;*",                             "+literal=$(printf_EXPANDED)",
-        });
-        defer std.testing.allocator.free(got);
-        try std.testing.expectEqualStrings(
-            "+gain=7\n+gain=8\n+gain=7\n+empty=\n+literal=$HOME;*\n+literal=$(printf_EXPANDED)\n",
-            got,
-        );
-        const absent = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{});
-        defer std.testing.allocator.free(absent);
-        try std.testing.expectEqualStrings("", absent);
-    }
+            const built = try zigbuild.buildBatch(gpa, io, staged[0..2], opts);
+            defer built.deinit(gpa);
+            const bin = switch (built) {
+                .ok => |p| p,
+                .failed => |text| {
+                    std.debug.print("{s}\n", .{text});
+                    return error.TestUnexpectedResult;
+                },
+            };
+            for (0..2) |i| {
+                const link = try linkBatched(gpa, io, arena, dirs[i], .{ .bin = bin, .index = i });
+                defer link.deinit(gpa);
+                const got = try capture(gpa, io, link.ok, dirs[i], 0, &.{ "+x=1", "+y" });
+                defer gpa.free(got);
+                try std.testing.expectEqualStrings(try arena.print("{s} +x=1 +y\n", .{tags[i]}), got);
+            }
+
+            const bad = try zigbuild.buildBatch(gpa, io, &staged, opts);
+            defer bad.deinit(gpa);
+            try std.testing.expect(bad == .failed);
+        }
+
+        test "capture forwards runtime argv without expansion and preserves order" {
+            // Independent POSIX argv probe, not a generated model: the model's current
+            // plusarg stub cannot distinguish missing runner plumbing from its own bug.
+            // Only this fixed script is interpreted; fixture bytes stay positional
+            // arguments, quoted by the probe and never inserted into its source.
+            const got = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{
+                "-c",      "for arg do printf '%s\\n' \"$arg\" >&2; done", "argv-probe",
+                "+gain=7", "+gain=8",                                      "+gain=7",
+                "+empty=", "+literal=$HOME;*",                             "+literal=$(printf_EXPANDED)",
+            });
+            defer std.testing.allocator.free(got);
+            try std.testing.expectEqualStrings(
+                "+gain=7\n+gain=8\n+gain=7\n+empty=\n+literal=$HOME;*\n+literal=$(printf_EXPANDED)\n",
+                got,
+            );
+            const absent = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{});
+            defer std.testing.allocator.free(absent);
+            try std.testing.expectEqualStrings("", absent);
+        }
+    };
 
     test "verdicts are counted, and a malformed one is not a pass" {
         try std.testing.expectEqual(Tally{ .total = 0, .failed = 0 }, countVerdicts("no verdicts here"));
@@ -2127,7 +2167,7 @@ const Canary = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2250,7 +2290,7 @@ const CFixtures = struct {
         while (args.next()) |a| filter = a;
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2455,7 +2495,7 @@ const Devices = struct {
         }
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -2962,7 +3002,7 @@ const Fuzz = struct {
         const gpa = init.gpa;
         const io = init.io;
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
         const exe = try Io.Dir.cwd().realPathFileAlloc(io, vera_exe, gpa);
@@ -3215,18 +3255,28 @@ const Golden = struct {
     //!   zig build suite -- golden after         # ... the change ...
     //!   zig build suite -- golden diff          # before vs after; exit 1 on a difference
     //!   zig build suite -- golden diff A B      # two tags, or two snapshot directories
+    //!   zig build suite -- golden before ch05   # only fixture paths holding `ch05`
     //!
     //! A snapshot is `.zig-cache/vera-golden/<tag>/`, per `.va` and `.v` under
-    //! the fixture root (the suite's `tests/`, not its `netlist/`):
+    //! the fixture root (the suite's `tests/`, not its `netlist/`) and under VerA's own
+    //! `tests/rtlil` and `tests/beh_verilog` (as `vera/<dir>/`, `own_dirs`):
     //!
     //!   <path>.txt           `vera --emit-zig` stdout, then a last line `exit=<code>`
     //!   <path>.stderr        its stderr: the message text is held too, and vera
     //!                        writes the device at offset 0, so one file would
     //!                        lose the warnings
+    //!   <path>.verilog.txt   a `.va`: `vera --emit-verilog`, laid out as `.txt`
+    //!   <path>.verilog.stderr
+    //!   <path>.rtlil.txt     a `.v`: `vera --emit-rtlil`, laid out as `.txt`
+    //!   <path>.rtlil.stderr
     //!   <path>.runner.txt    a `.va` with a `//!` line: the testbench runner
     //!                        `tb.writeRunner` gives `--emit-exe` (`runner`)
     //!   <path>.so/...        a `.va`: the tree `--emit-so` writes before `zig`
     //!                        runs, `shim.zig` and the split device (`soTree`)
+    //!   <path>.vpi.so/...    the same tree with `vpi_contribs` on, as the VPI
+    //!                        host builds it: only its files that differ from
+    //!                        `.so/`'s (`vpiContribs`, `vpiShares`), so a path
+    //!                        only the VPI host reaches is snapshotted too
     //!   <path>.program.txt   a `.v`: the executable root `--emit-exe` builds
     //!                        (`digital.program`)
     //!
@@ -3266,7 +3316,7 @@ const Golden = struct {
         const arena = arena_state.allocator();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 
@@ -3280,7 +3330,7 @@ const Golden = struct {
             const b = args.next() orelse "after";
             return compare(arena, io, try snapDir(arena, store, a), try snapDir(arena, store, b), w);
         }
-        return snapshot(gpa, io, arena, vera_exe, try std.fs.path.join(arena, &.{ store, word }), w);
+        return snapshot(gpa, io, arena, vera_exe, try std.fs.path.join(arena, &.{ store, word }), args.next(), w);
     }
 
     /// A tag names `.zig-cache/vera-golden/<tag>`; anything with a `/` is a path,
@@ -3319,13 +3369,53 @@ const Golden = struct {
             defer arena_state.deinit();
             const arena = arena_state.allocator();
             const io = pool.io;
-            const src = try std.fs.path.join(arena, &.{ options.fixture_root, rel });
+            const src = try sourceOf(arena, rel);
             const base = try std.mem.concat(arena, u8, &.{ pool.out, "/", rel });
             const txt = try std.mem.concat(arena, u8, &.{ base, ".txt" });
             const err = try std.mem.concat(arena, u8, &.{ base, ".stderr" });
             try Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(txt).?);
             const includes: []const []const u8 = &.{ harness.include_dir, std.fs.path.dirname(src).? };
 
+            try pool.emit(arena, src, "--emit-zig", txt, err);
+
+            const source = try readAll(io, arena, src);
+            if (std.mem.endsWith(u8, rel, ".v")) {
+                try pool.emit(arena, src, "--emit-rtlil", try std.mem.concat(arena, u8, &.{ base, ".rtlil.txt" }), try std.mem.concat(arena, u8, &.{ base, ".rtlil.stderr" }));
+                const text = program(arena, io, src, includes, source) catch |e| try arena.print("error={t}\n", .{e});
+                return save(io, arena, try std.mem.concat(arena, u8, &.{ base, ".program.txt" }), text);
+            }
+            try pool.emit(arena, src, "--emit-verilog", try std.mem.concat(arena, u8, &.{ base, ".verilog.txt" }), try std.mem.concat(arena, u8, &.{ base, ".verilog.stderr" }));
+            if (harness.hasDirective(source)) {
+                const text = runner(pool.gpa, arena, src, includes, source) catch |e| try arena.print("error={t}\n", .{e});
+                try save(io, arena, try std.mem.concat(arena, u8, &.{ base, ".runner.txt" }), text);
+            }
+            const so = try std.mem.concat(arena, u8, &.{ base, ".so" });
+            if (soTree(pool.gpa, io, arena, src, includes, source, so, .{})) |_| {
+                for (try fileList(arena, io, so)) |p| {
+                    const path = try std.fs.path.join(arena, &.{ so, p });
+                    try save(io, arena, path, try readAll(io, arena, path));
+                }
+            } else |e| return save(io, arena, try std.mem.concat(arena, u8, &.{ so, ".error.txt" }), try arena.print("error={t}\n", .{e}));
+
+            // The VPI host's tree: written whole, then cut to the files that differ.
+            const vpi = try std.mem.concat(arena, u8, &.{ base, ".vpi.so" });
+            if (soTree(pool.gpa, io, arena, src, includes, source, vpi, .{ .vpi_contribs = true })) |_| {
+                for (try fileList(arena, io, vpi)) |p| {
+                    const path = try std.fs.path.join(arena, &.{ vpi, p });
+                    const plain = readAll(io, arena, try std.fs.path.join(arena, &.{ so, p })) catch "";
+                    const text = try unrooted(arena, try readAll(io, arena, path));
+                    if (std.mem.eql(u8, text, try unrooted(arena, plain)))
+                        try Io.Dir.cwd().deleteFile(io, path)
+                    else
+                        try save(io, arena, path, text);
+                }
+            } else |e| try save(io, arena, try std.mem.concat(arena, u8, &.{ vpi, ".error.txt" }), try arena.print("error={t}\n", .{e}));
+        }
+
+        /// `vera <flag>` on `src`: its stdout then a last line `exit=<code>` to
+        /// `txt`, its stderr to `err`, both `unrooted`.
+        fn emit(pool: *Pool, arena: Allocator, src: []const u8, flag: []const u8, txt: []const u8, err: []const u8) !void {
+            const io = pool.io;
             const code: u32 = code: {
                 const out_file = try Io.Dir.cwd().createFile(io, txt, .{});
                 defer out_file.close(io);
@@ -3333,7 +3423,7 @@ const Golden = struct {
                 defer err_file.close(io);
                 var child = try std.process.spawn(io, .{
                     .argv = &.{
-                        pool.vera,                  "--emit-zig",        "--color=never",
+                        pool.vera,                  flag,                "--color=never",
                         "-I",                       harness.include_dir, "-I",
                         std.fs.path.dirname(src).?, src,
                     },
@@ -3351,23 +3441,6 @@ const Golden = struct {
             };
             try save(io, arena, txt, try arena.print("{s}exit={d}\n", .{ try readAll(io, arena, txt), code }));
             try save(io, arena, err, try readAll(io, arena, err));
-
-            const source = try readAll(io, arena, src);
-            if (std.mem.endsWith(u8, rel, ".v")) {
-                const text = program(arena, io, src, includes, source) catch |e| try arena.print("error={t}\n", .{e});
-                return save(io, arena, try std.mem.concat(arena, u8, &.{ base, ".program.txt" }), text);
-            }
-            if (harness.hasDirective(source)) {
-                const text = runner(pool.gpa, arena, src, includes, source) catch |e| try arena.print("error={t}\n", .{e});
-                try save(io, arena, try std.mem.concat(arena, u8, &.{ base, ".runner.txt" }), text);
-            }
-            const so = try std.mem.concat(arena, u8, &.{ base, ".so" });
-            if (soTree(pool.gpa, io, arena, src, includes, source, so)) |_| {
-                for (try fileList(arena, io, so)) |p| {
-                    const path = try std.fs.path.join(arena, &.{ so, p });
-                    try save(io, arena, path, try readAll(io, arena, path));
-                }
-            } else |e| try save(io, arena, try std.mem.concat(arena, u8, &.{ so, ".error.txt" }), try arena.print("error={t}\n", .{e}));
         }
     };
 
@@ -3423,13 +3496,13 @@ const Golden = struct {
     /// and `u/*.zig`. A split LLVM build's part and chunk shims and the engine
     /// root are written only beside a `zig` child; `zigbuild/shim.zig`'s whole-file
     /// tests pin those.
-    fn soTree(gpa: Allocator, io: Io, arena: Allocator, src: []const u8, includes: []const []const u8, source: []const u8, dir: []const u8) !void {
+    fn soTree(gpa: Allocator, io: Io, arena: Allocator, src: []const u8, includes: []const []const u8, source: []const u8, dir: []const u8, codegen: vera.Codegen) !void {
         var bag: vera.diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
         // `.record` is `vera`'s default display (`args.Cli`), not `Settings`'.
         var result = try vera.analyze(gpa, source, .{ .file_name = src, .include_dirs = includes, .require_std_includes = true, .display = .record }, &bag);
         defer result.deinit(gpa);
-        var device = try result.generate(gpa, .{}, &bag);
+        var device = try result.generate(gpa, codegen, &bag);
         defer device.deinit(gpa);
         if (device.refused) return error.CodegenRefused;
         _ = try zigbuild.writeTree(gpa, io, .{
@@ -3460,29 +3533,51 @@ const Golden = struct {
     }
 
     /// Every `.va` and `.v` under the fixture root but its `netlist/` (ESPice's
-    /// decks), relative to the root.
-    fn fixtureList(arena: Allocator, io: Io) ![]const []const u8 {
-        var dir = try Io.Dir.cwd().openDir(io, options.fixture_root, .{ .iterate = true });
-        defer dir.close(io);
+    /// decks), relative to the root, then `own_dirs`'; those holding `filter`.
+    fn fixtureList(arena: Allocator, io: Io, filter: ?[]const u8) ![]const []const u8 {
         var list: std.ArrayList([]const u8) = .empty;
+        try walkInto(arena, io, &list, options.fixture_root, "", filter);
+        for (own_dirs) |sub| try walkInto(arena, io, &list, try std.fs.path.join(arena, &.{ options.repo_root, "tests", sub }), try std.mem.concat(arena, u8, &.{ own_prefix, sub, "/" }), filter);
+        std.mem.sort([]const u8, list.items, {}, harness.strLess);
+        return list.items;
+    }
+
+    /// VerA's own `--emit-rtlil` and `--emit-verilog` inputs (`tests/rtlil`,
+    /// `tests/beh_verilog`): the designs those backends accept whole, which
+    /// the suite's testbenches mostly are not. Snapshotted as `vera/<dir>/...`.
+    const own_dirs = [_][]const u8{ "rtlil", "beh_verilog" };
+    const own_prefix = "vera/";
+
+    /// The source a snapshot path `rel` (`fixtureList`'s) names.
+    fn sourceOf(arena: Allocator, rel: []const u8) ![]const u8 {
+        if (std.mem.startsWith(u8, rel, own_prefix)) return std.fs.path.join(arena, &.{ options.repo_root, "tests", rel[own_prefix.len..] });
+        return std.fs.path.join(arena, &.{ options.fixture_root, rel });
+    }
+
+    /// Appends `prefix` ++ each `.va` and `.v` path under `root` but its
+    /// `netlist/` whose path holds `filter`.
+    fn walkInto(arena: Allocator, io: Io, list: *std.ArrayList([]const u8), root: []const u8, prefix: []const u8, filter: ?[]const u8) !void {
+        var dir = try Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+        defer dir.close(io);
         var walker = try dir.walk(arena);
         defer walker.deinit();
         while (try walker.next(io)) |e| {
             if (e.kind != .file or std.mem.startsWith(u8, e.path, "netlist" ++ std.fs.path.sep_str)) continue;
             if (!std.mem.endsWith(u8, e.path, ".va") and !std.mem.endsWith(u8, e.path, ".v")) continue;
-            try list.append(arena, try arena.dupe(u8, e.path));
+            const rel = try std.mem.concat(arena, u8, &.{ prefix, e.path });
+            if (filter) |f| if (std.mem.find(u8, rel, f) == null) continue;
+            try list.append(arena, rel);
         }
-        std.mem.sort([]const u8, list.items, {}, harness.strLess);
-        return list.items;
     }
 
-    /// Replaces the snapshot at `out` with a fresh one, one `vera` per CPU.
-    fn snapshot(gpa: Allocator, io: Io, arena: Allocator, vera_exe: []const u8, out: []const u8, w: *Io.Writer) !u8 {
+    /// Replaces the snapshot at `out` with a fresh one, one `vera` per CPU, of
+    /// every fixture whose path holds `filter` (all when null).
+    fn snapshot(gpa: Allocator, io: Io, arena: Allocator, vera_exe: []const u8, out: []const u8, filter: ?[]const u8, w: *Io.Writer) !u8 {
         Io.Dir.cwd().deleteTree(io, out) catch {};
         try Io.Dir.cwd().createDirPath(io, out);
         // Absolute, because each child runs from the repository root.
         const exe = try Io.Dir.cwd().realPathFileAlloc(io, vera_exe, arena);
-        var pool: Pool = .{ .io = io, .gpa = gpa, .vera = exe, .out = out, .rels = try fixtureList(arena, io) };
+        var pool: Pool = .{ .io = io, .gpa = gpa, .vera = exe, .out = out, .rels = try fixtureList(arena, io, filter) };
         // The suite's default, not one per core: 32 concurrent `vera` runs and
         // their device builds exhausted the host's memory (harness.defaultJobs).
         const jobs = harness.defaultJobs();
@@ -4380,7 +4475,7 @@ const SpiceDecks = struct {
         defer results.deinit();
 
         var buf: [4096]u8 = undefined;
-        var stderr = Io.File.stderr().writer(io, &buf);
+        var stderr = Io.File.stderr().writerStreaming(io, &buf);
         const w = &stderr.interface;
         defer w.flush() catch {};
 

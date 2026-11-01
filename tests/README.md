@@ -44,11 +44,16 @@ directories hold VerA's own test inputs, and `conformance/` is the suite.
 | `fuzz.zig` | In-process fuzz targets: `zig build fuzz --fuzz` coverage-guided, replayed seeded under `test` |
 | `rng_reference.zig`, `rng_reference.c` | The RNG oracle (`rng_kernels` against the IEEE 1364 §17.9.3 C listing) and, as an executable, its domain refusals, one case per run |
 | `printf_reference.zig` | The formatting oracle: `zCReal` against glibc's `snprintf` |
-| `codegen_probe.zig` | Hand-built vectorisation probes (`zig build-obj … -femit-asm`); nothing in the build runs it |
+| `generators.zig` | Generated inputs through every pass (`vera-generators`, `test-generators`, in `test`), one child per row: `wide`, N-wide and N-deep sources on a 1 MiB stack; `escaped`, seeded escaped identifiers against their plain renaming; `files`, E0154 past the 65535-file table |
+| `argv.zig` | The degenerate-argv table (`vera-argv`, `test-argv`, in `test`): every flag `--help` documents x degenerate values through the `vera` process; a signal, a panic or a silent nonzero exit is BAD |
+| `codegen_probe.zig` | Vectorisation and branchless probes: built as x86_64_v3 assembly and held to their `expect:` lines by `tools/asm_probe.py` (`zig build test-probe`, in `test`) |
 | `host.py` | Host observations: `diagnostic_observations` and `paired_compiler_observations` drive the build's `vera`; the profiles bind a real host through an adapter (below); `selftest` |
 | `host/` | The hosts that drive a device: `*_host.zig`, the `*_gpu.zig` twin, `*_dyn.zig`, `vdev_*.zig`, `vpi_host.zig` (in `test`) |
+| `vpi_escaped/` | `roundtrip.c` over `escaped.v`: every object's `vpiFullName` through `vpi_handle_by_name` and back (`test-vpi-escaped`, in `test`) |
+| `vpi_mem/` | A memory-backed array through the VPI analog library; `test-vpi-mem` reads `mem_bytes` from the library's runner |
 | `canary/` | The wrong-on-purpose fixtures the canary in `test` judges, with their `EXPECT.tsv` |
 | `rtlil/`, `beh_verilog/`, `osdi/` | The `--emit-rtlil`, `--emit-verilog` and `--emit-osdi` inputs |
+| `vpi_negative/` | The VPI negative-input table (`test`, `test-vpi-negative`): a C application handing every exported `vpi_*` entry point each invalid argument it takes, and the design it probes |
 | `suite.xfail` | The fixture runner's known failures: one suite path a line, then `# reason` |
 | `conformance/` | The [VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite), a submodule: the fixtures (below) and its own `conform` harness, tool configs and external suites |
 
@@ -132,9 +137,10 @@ digital cases: they need a host interface VerA does not expose yet. Do not
 invent an option spelling or fail an unspecified choice to make one run.
 
 The executable report/help, equation-tolerance and conditional capability
-assertions use the explicit adapter protocol below. They belong to the
-development gate and record exact named skips until a real host adapter is
-configured. Synthetic oracle regression tests earn no language conformance
+assertions use the explicit adapter protocol below. They run only under
+`zig build test-host-profiles -Dhost-adapter=EXE`, which fails without an
+adapter: VerA ships none, and an assertion that cannot run fails, never
+skips. Synthetic oracle regression tests earn no language conformance
 credit.
 
 Protected ciphertext regressions have public test keys and an explicit
@@ -145,9 +151,11 @@ as XFAIL; it is not evidence of a cryptographic comparison.
 
 ## Host profile adapters
 
-`nix develop -c zig build test` also runs the registered conditional
-assertions (`host.py`'s `PROFILES`). Without a real adapter they record
-**skip**, not pass. Compiling a support model or passing
+`nix develop -c zig build test-host-profiles -Dhost-adapter=EXE` runs the
+registered conditional assertions (`host.py`'s `PROFILES`; `test` runs only
+`directive_documentation`, which needs no host, and `selftest`). Without an
+adapter every assertion **fails**, and so does a scenario the adapter answers
+`unavailable`. Compiling a support model or passing
 its local checks alone supplies no host-observation credit. Testing an oracle
 against synthetic data supplies no language conformance credit.
 
@@ -178,9 +186,10 @@ and return actual observations:
 ```
 
 If the required interface or applicability is absent, return
-`{"schema_version":1,"status":"unavailable","reason":"specific missing capability"}`.
-A nonzero adapter exit, malformed response, timeout, or violated assertion fails
-the test. Do not use `unavailable` to hide an observed wrong result. Adapter
+`{"schema_version":1,"status":"unavailable","reason":"specific missing capability"}`:
+the assertion fails with that reason (unsupported fails, never skips). A
+nonzero adapter exit, malformed response, timeout, or violated assertion fails
+the test too. Do not use `unavailable` to hide an observed wrong result. Adapter
 stderr is available for failure details; stdout is reserved for the response.
 
 The adapter is responsible for binding the exact host under test and exposing
