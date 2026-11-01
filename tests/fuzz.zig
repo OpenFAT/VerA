@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const vera = @import("vera");
+const exe = @import("exe");
 const sim = @import("sim");
 
 const Smith = std.testing.Smith;
@@ -27,17 +28,17 @@ fn checkDiagnostics(bag: *vera.diag.Bag, refused: bool) !void {
     try vera.diag.render(bag, &sink.writer, .{ .explain_hint = false, .summary = false });
 }
 
-/// Compiles `src` to MIR (`.lint`) and holds the result to the oracle.
+/// Analyses `src` to MIR (what `--lint` runs) and holds the result to the oracle.
 fn lint(src: []const u8) !void {
     const gpa = std.testing.allocator;
     var bag: vera.diag.Bag = .init(gpa);
     defer bag.deinit(gpa);
-    var res = vera.compileSourceOpts(gpa, src, .lint, .{ .diags = &bag }) catch |err| switch (err) {
+    var res = vera.analyze(gpa, src, .{}, &bag) catch |err| switch (err) {
         error.CompileFailed => return checkDiagnostics(&bag, true),
         error.NoModule => return,
         else => |e| return e, // anything else is a finding
     };
-    defer res.deinit();
+    defer res.deinit(gpa);
     try checkDiagnostics(&bag, false);
 }
 
@@ -82,7 +83,7 @@ fn tokensOne(_: void, s: *Smith) anyerror!void {
 }
 
 /// `//!` directive lines: the fixture grammar is an input too (`vera
-/// --emit-exe` reads it), so it refuses with `tb.Error` and never panics.
+/// --emit-exe` reads it), so it refuses with `exe.ParseError` and never panics.
 fn directivesOne(_: void, s: *Smith) anyerror!void {
     const words = [_][]const u8{
         "param",  "bias",     "sweep",  "wave",        "psweep",    "temp", "time",      "solve", "analysis", "exit",
@@ -101,9 +102,9 @@ fn directivesOne(_: void, s: *Smith) anyerror!void {
     }
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    _ = vera.tb.parse(arena.allocator(), w.buffered()) catch |err| switch (err) {
+    _ = exe.Spec.parse(arena.allocator(), w.buffered(), null) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => {}, // every other `tb.Error` is a named refusal
+        else => {}, // every other `exe.ParseError` is a named refusal
     };
 }
 

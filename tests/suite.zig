@@ -57,7 +57,7 @@ const Suite = struct {
     //! times from a separate sequential accept/reject pass). `main` is the
     //! suite's entry point and dispatches on the mode word.
     const std = @import("std");
-    const vera = @import("vera");
+    const tb = @import("exe");
     const harness = Fixtures;
     const torture = Analog;
     const size_sweep = SizeSweep;
@@ -215,7 +215,7 @@ const Suite = struct {
             const source = try Io.Dir.cwd().readFileAlloc(io, f.path, pa, .limited(1 << 20));
             // A fixture whose directives do not parse is FAILED by `judge` below,
             // which is where that defect belongs; here it just times as one.
-            const d = vera.tb.parse(pa, source) catch vera.tb.Directives{};
+            const d = tb.Spec.parse(pa, source, null) catch tb.Spec{};
 
             var vera_ns: u64 = std.math.maxInt(u64);
             var vera_out: ?usize = null;
@@ -237,7 +237,7 @@ const Suite = struct {
 
             try w.print("{s}\t{s}\t{d}\t", .{
                 relative(f.path, cfg.root),
-                if (d.reject.len != 0) "refuse" else "compile",
+                if (d.harness.reject.len != 0) "refuse" else "compile",
                 vera_ns,
             });
             try optional(w, vera_out);
@@ -323,7 +323,8 @@ const Fixtures = struct {
     //! and `--strict` fails unasserted and XFAIL fixtures.
 
     const std = @import("std");
-    const vera = @import("vera");
+    const tb = @import("exe");
+    const zigbuild = @import("zigbuild");
     /// `fixture_root` and `repo_root`, from `build.zig`; shared by every runner
     /// so all compilers are judged on the same fixtures.
     const options = @import("suite_options");
@@ -472,7 +473,7 @@ const Fixtures = struct {
             arena: std.mem.Allocator,
             f: Fixture,
             source: []const u8,
-            d: vera.tb.Directives,
+            d: tb.Spec,
             w: *Io.Writer,
         ) anyerror!Result,
         /// Runs once over the whole fixture list before any `check`, on `jobs`
@@ -499,7 +500,7 @@ const Fixtures = struct {
         /// mode, so `--fixture-opt=ReleaseFast` asks only about optimization.
         fixture_opt: std.lang.Optimize = .debug,
         /// `--fixture-backend=llvm|native`; null is `Backend.auto(fixture_opt, <host>)`.
-        fixture_backend: ?vera.orchestrator.Backend = null,
+        fixture_backend: ?zigbuild.Backend = null,
         /// `--no-batch` builds every fixture testbench alone (`Compiler.prepare`
         /// is skipped): the escape hatch, and the baseline a batched run is
         /// compared against.
@@ -839,7 +840,7 @@ const Fixtures = struct {
     ///   3. Files with no directive (VPI support designs such as `design.v`)
     ///      are not fixtures.
     ///
-    /// The whole file is scanned with `tb.parse`'s line rule (see `hasDirective`).
+    /// The whole file is scanned with `tb.Spec.parse`'s line rule (see `hasDirective`).
     fn fixtureExt(arena: std.mem.Allocator, io: Io, dir: Io.Dir, rel: []const u8) ?[]const u8 {
         if (std.mem.endsWith(u8, rel, ".va")) {
             const source = dir.readFileAlloc(io, rel, arena, .limited(1 << 20)) catch return null;
@@ -858,8 +859,8 @@ const Fixtures = struct {
         return if (hasDirective(source)) ".v" else null;
     }
 
-    /// Does this source carry a `//!` directive? `tb.parse`'s own line rule, and it
-    /// must stay that rule: this decides whether a file is collected and `tb.parse`
+    /// Does this source carry a `//!` directive? `tb.Spec.parse`'s own line rule, and it
+    /// must stay that rule: this decides whether a file is collected and `tb.Spec.parse`
     /// decides whether it asserts anything, so a disagreement collects a fixture
     /// that then reports nothing.
     pub fn hasDirective(source: []const u8) bool {
@@ -913,17 +914,17 @@ const Fixtures = struct {
         const source = try Io.Dir.cwd().readFileAlloc(io, f.path, arena, .limited(1 << 20));
 
         // A §18 dump fixture's evidence is the file its run writes, which no
-        // `tb` directive describes; it is judged before `tb.parse` for that reason.
+        // `tb` directive describes; it is judged before `tb.Spec.parse` for that reason.
         if (digital.vcdExpectation(source)) |want| return judgeVcd(arena, io, compiler, f, want, w);
 
         // The `//!` lines are read from the RAW source: the preprocessor deletes
         // comments (§2.4), so after compilation they are gone.
-        var d = vera.tb.parse(arena, source) catch |err| {
+        var d = tb.Spec.parse(arena, source, null) catch |err| {
             try w.print("FAIL {s}: `//!` directive: {t}\n", .{ f.path, err });
             return .fail;
         };
         // VerA's own list stands in for the `//! xfail` line the suite dropped.
-        if (d.xfail == null) d.xfail = try listedXfail(arena, io, f.root, f.path);
+        if (d.harness.xfail == null) d.harness.xfail = try listedXfail(arena, io, f.root, f.path);
 
         const verdict = try decide(gpa, io, arena, compiler, f, source, d, strict, w);
 
@@ -931,9 +932,9 @@ const Fixtures = struct {
         // If the fixture said which clause it pins, say it here — for an xfail too,
         // where the cite IS the requirement being carried unmet.
         switch (verdict) {
-            .fail, .xfail => if (d.lrm.len != 0) {
+            .fail, .xfail => if (d.harness.lrm.len != 0) {
                 try w.print("  LRM", .{});
-                for (d.lrm) |section| try w.print(" §{s}", .{section});
+                for (d.harness.lrm) |section| try w.print(" §{s}", .{section});
                 try w.print("\n", .{});
             },
             .pass, .unasserted => {},
@@ -948,20 +949,20 @@ const Fixtures = struct {
         compiler: Compiler,
         f: Fixture,
         source: []const u8,
-        d: vera.tb.Directives,
+        d: tb.Spec,
         strict: bool,
         w: *Io.Writer,
     ) !Verdict {
         // A perturbed run asks one question of a passing positive fixture: does
         // each check fail when its want is wrong? A refusal has no want, and an
         // xfail does not pass to begin with.
-        if (perturb != null and (d.reject.len != 0 or d.reject_run.len != 0 or d.xfail != null)) return .pass;
-        if (probe_reject_only and (d.reject.len == 0 or d.reject_only or d.xfail != null)) return .pass;
+        if (perturb != null and (d.harness.reject.len != 0 or d.harness.reject_run.len != 0 or d.harness.xfail != null)) return .pass;
+        if (probe_reject_only and (d.harness.reject.len == 0 or d.harness.reject_only or d.harness.xfail != null)) return .pass;
 
         // The other half of a refusal: each named neighbour is a collected
         // positive fixture, so the pair shows a restriction and not a blanket
         // refusal.
-        for (d.neighbours) |n| {
+        for (d.harness.neighbours) |n| {
             const path = try std.fs.path.join(arena, &.{ f.dir(), n });
             const text = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 20)) catch {
                 try w.print("FAIL {s}: `//! neighbour {s}`: no such file\n", .{ f.path, n });
@@ -972,7 +973,7 @@ const Fixtures = struct {
             const refusing = if (std.mem.endsWith(u8, n, ".v"))
                 digital.negative(text)
             else
-                refuses(vera.tb.parse(arena, text) catch |err| {
+                refuses(tb.Spec.parse(arena, text, null) catch |err| {
                     try w.print("FAIL {s}: `//! neighbour {s}`: its directives do not parse: {t}\n", .{ f.path, n, err });
                     return .fail;
                 });
@@ -985,12 +986,12 @@ const Fixtures = struct {
         // A malformed assertion is the fixture's defect in every compiler, and no
         // `//! xfail` excuses it. Checked before compiling; not on a `//! reject`
         // fixture, which never reaches a transcript.
-        const finding = if (d.reject.len != 0) .ok else lint.checkAssertions(source);
+        const finding = if (d.harness.reject.len != 0) .ok else lint.checkAssertions(source);
         switch (finding) {
             .ok => {},
             // A run-time refusal is its own assertion: the run must end in the
             // named error, which may come before any check.
-            .none => if (compiler.runs and strict and d.reject_run.len == 0) {
+            .none => if (compiler.runs and strict and d.harness.reject_run.len == 0) {
                 try w.print(
                     "FAIL {s}: asserts nothing — compiling and running is not an expectation.\n" ++
                         "  Add `CHECK(\"what this proves\", got, want, tol)` from check.vh.\n",
@@ -1027,7 +1028,7 @@ const Fixtures = struct {
         var aw: Io.Writer.Allocating = .init(gpa);
         defer aw.deinit();
         const result = try compiler.check(compiler.ctx, gpa, io, arena, f, source, d, &aw.writer);
-        const xfail = if (compiler.owns_xfail) d.xfail else null;
+        const xfail = if (compiler.owns_xfail) d.harness.xfail else null;
 
         switch (result) {
             .met => {
@@ -1080,8 +1081,8 @@ const Fixtures = struct {
 
     /// Whether `d` is a refusal, by the compiler (`//! reject`) or by the run
     /// (`//! reject-run`): not a legal neighbour.
-    fn refuses(d: vera.tb.Directives) bool {
-        return d.reject.len != 0 or d.reject_run.len != 0;
+    fn refuses(d: tb.Spec) bool {
+        return d.harness.reject.len != 0 or d.harness.reject_run.len != 0;
     }
 
     /// `--probe-reject-only`: judges each `//! reject` fixture as if it were
@@ -1177,6 +1178,8 @@ const Analog = struct {
 
     const std = @import("std");
     const vera = @import("vera");
+    const tb = @import("exe");
+    const zigbuild = @import("zigbuild");
     const harness = Fixtures;
     const digital = Digital;
     const options = @import("suite_options");
@@ -1295,14 +1298,14 @@ const Analog = struct {
             const arena = arena_state.allocator();
             const lo = k * batch_size;
             const fs = pool.fixtures[lo..@min(lo + batch_size, pool.fixtures.len)];
-            var staged: [batch_size]vera.tb.Staged = undefined;
+            var staged: [batch_size]zigbuild.Staged = undefined;
             const c = &pool.chunks[k];
             for (fs, 0..) |f, fi| {
                 const source = Io.Dir.cwd().readFileAlloc(pool.io, f.path, arena, .limited(1 << 20)) catch continue;
                 if (digital.vcdExpectation(source) != null) continue;
-                const d = vera.tb.parse(arena, source) catch continue;
-                if (d.reject.len != 0) continue;
-                var sink: ?vera.tb.Staged = null;
+                const d = tb.Spec.parse(arena, source, null) catch continue;
+                if (d.harness.reject.len != 0) continue;
+                var sink: ?zigbuild.Staged = null;
                 var discard: Io.Writer.Discarding = .init(&.{});
                 _ = runAndCheck(pool.gpa, pool.io, arena, pool.ctx, f, source, d, &discard.writer, &sink) catch continue;
                 staged[c.n] = sink orelse continue;
@@ -1311,7 +1314,7 @@ const Analog = struct {
             }
             if (c.n < 2) return; // one member gains nothing over its own build
             const cfg = pool.ctx.cfg;
-            const built = try vera.tb.buildBatch(pool.gpa, pool.io, staged[0..c.n], .{
+            const built = try zigbuild.buildBatch(pool.gpa, pool.io, staged[0..c.n], .{
                 .work_dir = try arena.print("{s}/torture-batch/{d}", .{ options.work_root, k }),
                 .contract = options.contract,
                 .name = "batch",
@@ -1350,12 +1353,12 @@ const Analog = struct {
         _: std.mem.Allocator,
         f: Fixture,
         source: []const u8,
-        d: vera.tb.Directives,
+        d: tb.Spec,
         w: *Io.Writer,
     ) anyerror!Result {
         var outcome = try compileFixture(gpa, f, source, d);
         defer outcome.deinit(gpa);
-        const must_reject = d.reject.len != 0;
+        const must_reject = d.harness.reject.len != 0;
         if ((outcome == .accepted) == !must_reject) return .met;
         if (must_reject) {
             try w.print("FAIL {s}: the LRM says this must not compile, and vera accepted it.\n", .{f.path});
@@ -1368,7 +1371,7 @@ const Analog = struct {
     /// One accept/reject compilation, the unit the head-to-head times: returns the
     /// emitted device's size, or null when VerA refused. No testbench is built, so
     /// no `zig build-exe` time lands in VerA's number.
-    pub fn compileOnce(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: vera.tb.Directives) !?usize {
+    pub fn compileOnce(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: tb.Spec) !?usize {
         var outcome = try compileFixture(gpa, f, source, d);
         defer outcome.deinit(gpa);
         return switch (outcome) {
@@ -1384,11 +1387,11 @@ const Analog = struct {
         arena: std.mem.Allocator,
         f: Fixture,
         source: []const u8,
-        d: vera.tb.Directives,
+        d: tb.Spec,
         w: *Io.Writer,
     ) anyerror!Result {
         const c: *const Ctx = @ptrCast(@alignCast(ctx));
-        if (d.reject.len != 0) return verifyRejected(gpa, f, source, d, w);
+        if (d.harness.reject.len != 0) return verifyRejected(gpa, f, source, d, w);
         return runAndCheck(gpa, io, arena, c, f, source, d, w, null);
     }
 
@@ -1428,7 +1431,7 @@ const Analog = struct {
         gpa: std.mem.Allocator,
         f: Fixture,
         source: []const u8,
-        d: vera.tb.Directives,
+        d: tb.Spec,
         w: *Io.Writer,
     ) !Result {
         var outcome = try compileFixture(gpa, f, source, d);
@@ -1441,7 +1444,7 @@ const Analog = struct {
             .refused => |b| b,
         };
 
-        for (d.reject) |pattern| {
+        for (d.harness.reject) |pattern| {
             if (!failureContains(bad, pattern)) {
                 try w.print("FAIL {s}: diagnostic substring not found: \"{s}\"\n", .{ f.path, pattern });
                 try w.print("  error: {s}\n", .{bad.error_name});
@@ -1455,7 +1458,7 @@ const Analog = struct {
         if (harness.probe_reject_only) {
             for (0..bad.diags.count()) |i| {
                 if (bad.diags.at(i).severity != .err) continue;
-                for (d.reject) |pattern| {
+                for (d.harness.reject) |pattern| {
                     if (diagSays(&bad.diags, i, pattern)) break;
                 } else {
                     try w.print("ONLY-NO {s}: {t}\n", .{ f.path, bad.diags.at(i).code });
@@ -1465,9 +1468,9 @@ const Analog = struct {
             try w.print("ONLY-OK {s}\n", .{f.path});
             return .met;
         }
-        if (d.reject_only) for (0..bad.diags.count()) |i| {
+        if (d.harness.reject_only) for (0..bad.diags.count()) |i| {
             if (bad.diags.at(i).severity != .err) continue;
-            for (d.reject) |pattern| {
+            for (d.harness.reject) |pattern| {
                 if (diagSays(&bad.diags, i, pattern)) break;
             } else {
                 const e = bad.diags.at(i);
@@ -1483,34 +1486,34 @@ const Analog = struct {
     /// names, matching the vocabulary the fixtures use:
     ///   `DiagnosticsReported`  — compiled, but a stage reported a message.
     ///   `GeneratedCompileError` — codegen deliberately emitted `@compileError`.
-    fn compileFixture(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: vera.tb.Directives) !Outcome {
+    fn compileFixture(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: tb.Spec) !Outcome {
         var diags: vera.diag.Bag = .init(gpa);
-        // `.build` (not `.lint`) so stage 6 runs: some fixtures are rejected by
-        // codegen emitting `@compileError`, which `.lint` would never see.
-        var result = vera.compileSourceOpts(gpa, source, .build, .{
+        // Codegen too (not only the analysis `--lint` runs): some fixtures are
+        // rejected by codegen emitting `@compileError`, which the analysis would
+        // never see.
+        var result = vera.analyze(gpa, source, .{
             .file_name = f.path,
             .include_dirs = &.{ f.dir(), harness.include_dir },
             // The suite's convention: a source includes the annex D files it uses.
             .require_std_includes = true,
-            .diags = &diags,
             // Annex E.2: the fixture's `//! spice` cards, read as a netlist.
-            .spice_netlist = d.spice,
+            .spice_netlist = d.harness.spice,
             .spice_path = f.path,
-            .discipline_resolution = d.discipline_resolution,
-        }) catch |err| {
+            .discipline_resolution = d.harness.discipline_resolution,
+        }, &diags) catch |err| {
             if (err == error.OutOfMemory) {
                 diags.deinit(gpa);
                 return error.OutOfMemory;
             }
             return .{ .refused = .{ .error_name = @errorName(err), .diags = diags } };
         };
-        defer result.deinit();
+        defer result.deinit(gpa);
 
         if (diags.failed()) {
             return .{ .refused = .{ .error_name = "DiagnosticsReported", .diags = diags } };
         }
 
-        const generated = result.generateDevice() catch |err| {
+        var generated = result.generate(gpa, .{}, &diags) catch |err| {
             if (err == error.OutOfMemory) {
                 diags.deinit(gpa);
                 return error.OutOfMemory;
@@ -1518,22 +1521,23 @@ const Analog = struct {
             return .{ .refused = .{ .error_name = @errorName(err), .diags = diags } };
         };
         if (diags.failed()) {
+            generated.deinit(gpa);
             return .{ .refused = .{ .error_name = "DiagnosticsReported", .diags = diags } };
         }
         // The compiler's own flag, not a text search: a kernel may carry
         // `@compileError` in a guard that never fires (`$table_model`'s does).
-        if (result.device_has_compile_error) {
-            // Transfer the GPA-owned text before dropping the compilation.
-            result.device.text = "";
+        if (generated.refused) {
+            // The GPA-owned text moves into the failure, which frees it.
             return .{ .refused = .{
                 .error_name = "GeneratedCompileError",
                 .diags = diags,
-                .generated = generated,
+                .generated = generated.output.text,
             } };
         }
 
+        defer generated.deinit(gpa);
         diags.deinit(gpa);
-        return .{ .accepted = generated.len };
+        return .{ .accepted = generated.output.text.len };
     }
 
     /// Whether the failure matches a `//! reject` pattern: a code, an error name,
@@ -1581,8 +1585,8 @@ const Analog = struct {
 
     /// `//! warn`: every pattern names a warning in `bag`. `//! nowarn`: `bag`
     /// holds no warning. Detail goes to `w` on a miss.
-    fn warningsMet(bag: *vera.diag.Bag, f: Fixture, d: vera.tb.Directives, w: *Io.Writer) !bool {
-        for (d.warn) |pattern| {
+    fn warningsMet(bag: *vera.diag.Bag, f: Fixture, d: tb.Spec, w: *Io.Writer) !bool {
+        for (d.harness.warn) |pattern| {
             for (0..bag.count()) |i| {
                 if (bag.at(i).severity == .warning and diagSays(bag, i, pattern)) break;
             } else {
@@ -1591,7 +1595,7 @@ const Analog = struct {
                 return false;
             }
         }
-        if (d.nowarn and bag.count() != 0) {
+        if (d.harness.nowarn and bag.count() != 0) {
             try w.print("FAIL {s}: `//! nowarn`, and the compile warned:\n", .{f.path});
             vera.diag.render(bag, w, .{ .explain_hint = false, .summary = false }) catch {};
             return false;
@@ -1638,11 +1642,11 @@ const Analog = struct {
         ctx: *const Ctx,
         f: Fixture,
         source: []const u8,
-        d: vera.tb.Directives,
+        d: tb.Spec,
         w: *Io.Writer,
         /// `prepare`'s mode: stage a plain testbench's files here instead of
         /// building and running it (left null for a mixed one).
-        stage_into: ?*?vera.tb.Staged,
+        stage_into: ?*?zigbuild.Staged,
     ) !Result {
         const cfg = ctx.cfg;
         // `--perturb`: check.vh moves every want by a relative δ.
@@ -1656,48 +1660,48 @@ const Analog = struct {
         var diags: vera.diag.Bag = .init(gpa);
         defer diags.deinit(gpa);
         var levels: vera.diag.Levels = .empty;
-        defer levels.deinit(gpa);
-        for (d.warn) |p| {
+        for (d.harness.warn) |p| {
             if (std.mem.eql(u8, p, "W0650")) break;
-        } else try levels.set(gpa, .W0650, .allow);
+        } else try levels.set(.W0650, .allow);
 
-        var opts: vera.Options = .{
+        var opts: vera.Settings = .{
             .file_name = f.path,
             .include_dirs = &.{ f.dir(), harness.include_dir },
             .require_std_includes = true,
-            .diags = &diags,
             .lint = levels,
-            .display = if (d.display_record) .record else .emit,
-            .spice_netlist = d.spice,
+            .display = if (d.harness.display_record) .record else .emit,
+            .spice_netlist = d.harness.spice,
             .spice_path = f.path,
-            .discipline_resolution = d.discipline_resolution,
+            .discipline_resolution = d.harness.discipline_resolution,
         };
-        var result = vera.compileSourceOpts(gpa, compiled_src, .build, opts) catch |err| {
+        var result = vera.analyze(gpa, compiled_src, opts, &diags) catch |err| {
             try w.print("FAIL {s}: did not compile: {t}\n", .{ f.path, err });
             vera.diag.render(&diags, w, .{ .explain_hint = false, .summary = false }) catch {};
             return .unmet;
         };
-        defer result.deinit();
+        defer result.deinit(gpa);
         // §3.4 a `//! param` card value for a shape parameter is a compile-time
         // value: compile again for it, as `vera --emit-exe` does.
-        opts.param_overrides = try vera.tb.shapeOverrides(arena, d, result.lowered);
+        opts.param_overrides = try tb.shapeCards(arena, d.bench.params, result.lowered);
         if (opts.param_overrides.len != 0) {
             diags.deinit(gpa);
             diags = .init(gpa);
-            const again = vera.compileSourceOpts(gpa, compiled_src, .build, opts) catch |err| {
+            const again = vera.analyze(gpa, compiled_src, opts, &diags) catch |err| {
                 try w.print("FAIL {s}: did not compile: {t}\n", .{ f.path, err });
                 vera.diag.render(&diags, w, .{ .explain_hint = false, .summary = false }) catch {};
                 return .unmet;
             };
-            result.deinit();
+            result.deinit(gpa);
             result = again;
         }
 
-        const device = result.generateDevice() catch |err| {
+        var dev = result.generate(gpa, .{}, &diags) catch |err| {
             try w.print("FAIL {s}: codegen failed: {t}\n", .{ f.path, err });
             return .unmet;
         };
-        if (result.device_has_compile_error) {
+        defer dev.deinit(gpa);
+        const device = dev.output.text;
+        if (dev.refused) {
             try w.print("FAIL {s}: codegen refused a construct (generated output is not usable)\n", .{f.path});
             return .unmet;
         }
@@ -1706,22 +1710,24 @@ const Analog = struct {
             try w.print("FAIL {s}: the device declares an `llvm.*` intrinsic; it cannot build under the self-hosted backend\n", .{f.path});
             return .unmet;
         }
-        try vera.tb.warnGridEvents(&diags, result.lowered, result.mir);
+        try tb.warnGridEvents(&diags, result.lowered, result.mir);
         if (!try warningsMet(&diags, f, d, w)) return .unmet;
 
         // VAMS §7: a module with a discrete half gets the mixed-signal runner.
-        var dm = d;
-        dm.mixed = vera.tb.mixedPlan(result.lowered, result.mir);
-        dm.op_states = try vera.tb.opStates(arena, result.lowered);
-        dm.mem_bytes = vera.tb.memBytes(result.lowered);
-        dm.validate_contract = true;
-        dm.certify = harness.certify and d.fd_exempt == null;
+        var facts = try tb.compileFacts(arena, result.lowered, result.mir);
+        facts.validate_contract = true;
+        facts.certify = harness.certify and d.harness.fd_exempt == null;
         // L4b: the prover's claim `finiteCheck` tests. Every contribution unit
         // rated `.optimized` (proof.zig `FloatMode`); a device with none claims nothing.
-        dm.finite_proved = for (result.verdict.unit_modes) |mode| {
+        facts.finite_proved = for (result.verdict.unit_modes) |mode| {
             if (mode != .optimized) break false;
         } else result.verdict.unit_modes.len != 0;
-        const runner = try vera.tb.renderRunner(arena, f.stem(), dm);
+        var runner_text: Io.Writer.Allocating = .init(arena);
+        tb.writeRunner(&runner_text.writer, arena, f.stem(), &d.bench, facts) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+            else => |e| return e,
+        };
+        const runner = runner_text.written();
 
         // One work directory per fixture, keyed on the whole relative path: two
         // fixtures may declare the same module name AND share a file name, and a
@@ -1732,21 +1738,21 @@ const Analog = struct {
             std.fs.path.basename(f.root),
             f.slug,
         });
-        const build_opts: vera.tb.BuildOptions = .{
+        const build_opts: zigbuild.BuildOptions = .{
             .work_dir = work,
             .contract = options.contract,
             .name = result.mir.name,
-            .mixed = dm.mixed != null,
+            .mixed = facts.mixed != null,
             .zig_exe = options.zig_exe,
             .optimize = cfg.fixture_opt,
             .backend = cfg.fixture_backend,
             .strip = true,
         };
         if (stage_into) |s| {
-            if (!build_opts.mixed) s.* = try vera.tb.stageExe(arena, io, device, runner, build_opts);
+            if (!build_opts.mixed) s.* = try zigbuild.stage(arena, io, device, runner, build_opts);
             return .met;
         }
-        const built = (if (ctx.batched.get(f.path)) |b| linkBatched(gpa, io, arena, work, b) else vera.tb.buildExe(gpa, io, device, runner, build_opts)) catch |err| {
+        const built = (if (ctx.batched.get(f.path)) |b| linkBatched(gpa, io, arena, work, b) else zigbuild.buildExe(gpa, io, device, runner, build_opts)) catch |err| {
             try w.print("FAIL {s}: building the testbench: {t}\n", .{ f.path, err });
             return .unmet;
         };
@@ -1764,7 +1770,7 @@ const Analog = struct {
             .ok => |p| p,
         };
 
-        const got = capture(gpa, io, bin, work, d.expected_exit, d.plusargs) catch |err| {
+        const got = capture(gpa, io, bin, work, d.harness.expected_exit, d.harness.plusargs) catch |err| {
             try w.print("FAIL {s}: running the testbench: {t}\n", .{ f.path, err });
             return .unmet;
         };
@@ -1773,7 +1779,7 @@ const Analog = struct {
         // THE ASSERTION, and the only one there is.
         const tally = countVerdicts(got);
         if (harness.perturb != null) return perturbed(f, got, w);
-        if (d.expected_checks) |expected| {
+        if (d.harness.expected_checks) |expected| {
             if (tally.total != expected) {
                 try w.print("FAIL {s}: observed {d} assertion(s), expected exactly {d}\n", .{
                     f.path, tally.total, expected,
@@ -1794,11 +1800,11 @@ const Analog = struct {
 
         // `//! reject-run`: the run refused, by name, and only for the named
         // rules (`reject-only`'s test, on the run's `error[...]` lines).
-        for (d.reject_run) |pattern| if (!digital.errorSays(got, &.{pattern}, .any)) {
+        for (d.harness.reject_run) |pattern| if (!digital.errorSays(got, &.{pattern}, .any)) {
             try w.print("FAIL {s}: `//! reject-run`: no run-time `error[` line holds \"{s}\":\n{s}\n", .{ f.path, pattern, got });
             return .unmet;
         };
-        if (d.reject_run.len != 0 and !digital.errorSays(got, d.reject_run, .every)) {
+        if (d.harness.reject_run.len != 0 and !digital.errorSays(got, d.harness.reject_run, .every)) {
             try w.print("FAIL {s}: `//! reject-run`, and a second run-time error fired:\n{s}\n", .{ f.path, got });
             return .unmet;
         }
@@ -1808,13 +1814,13 @@ const Analog = struct {
         // may say FAIL about itself (the mixed runner's "the digital half did not
         // run"); it is judged by its status and `error[` lines above, so only
         // `capture`'s status line counts against it.
-        if (std.mem.find(u8, got, if (d.reject_run.len != 0) "FAIL: <testbench" else "FAIL") != null) {
+        if (std.mem.find(u8, got, if (d.harness.reject_run.len != 0) "FAIL: <testbench" else "FAIL") != null) {
             try w.print("FAIL {s}: the testbench itself reported a failure:\n{s}\n", .{ f.path, got });
             return .unmet;
         }
 
         // A run-time refusal is its own assertion (`decide` lets it through lint).
-        if (tally.total == 0 and d.reject_run.len == 0) {
+        if (tally.total == 0 and d.harness.reject_run.len == 0) {
             try w.print(
                 "{s}: compiled and ran, but asserted nothing.\n",
                 .{f.path},
@@ -1897,11 +1903,11 @@ const Analog = struct {
     }
 
     /// Stands `<work>/vera-batch-<i>`, a symlink to the batch binary, in for the
-    /// fixture's own testbench (`vera.tb.batch_argv0`). Gpa-owned path.
-    fn linkBatched(gpa: std.mem.Allocator, io: Io, arena: std.mem.Allocator, work: []const u8, b: Batched) !vera.tb.BuildResult {
+    /// fixture's own testbench (`zigbuild.batch_argv0`). Gpa-owned path.
+    fn linkBatched(gpa: std.mem.Allocator, io: Io, arena: std.mem.Allocator, work: []const u8, b: Batched) !zigbuild.BuildResult {
         var dir = try Io.Dir.cwd().openDir(io, work, .{});
         defer dir.close(io);
-        const name = try arena.print(vera.tb.batch_argv0 ++ "{d}", .{b.index});
+        const name = try arena.print(zigbuild.batch_argv0 ++ "{d}", .{b.index});
         dir.deleteFile(io, name) catch |e| switch (e) {
             error.FileNotFound => {},
             else => return e,
@@ -1961,16 +1967,16 @@ const Analog = struct {
             \\
         ;
         const tags = [_][]const u8{ "a", "b", "broken" };
-        var staged: [tags.len]vera.tb.Staged = undefined;
+        var staged: [tags.len]zigbuild.Staged = undefined;
         var dirs: [tags.len][]const u8 = undefined;
         for (&staged, &dirs, tags) |*s, *dir, tag| {
             dir.* = try std.fs.path.join(arena, &.{ work, tag });
             const device = if (std.mem.eql(u8, tag, "broken")) "pub const tag = 1 +;\n" else try arena.print("pub const tag = \"{s}\";\n", .{tag});
-            s.* = try vera.tb.stageExe(arena, io, device, runner, .{ .work_dir = dir.*, .contract = options.contract, .name = tag, .zig_exe = options.zig_exe });
+            s.* = try zigbuild.stage(arena, io, device, runner, .{ .work_dir = dir.*, .contract = options.contract, .name = tag, .zig_exe = options.zig_exe });
         }
-        const opts: vera.tb.BuildOptions = .{ .work_dir = work ++ "/batch", .contract = options.contract, .name = "batch", .zig_exe = options.zig_exe, .strip = true };
+        const opts: zigbuild.BuildOptions = .{ .work_dir = work ++ "/batch", .contract = options.contract, .name = "batch", .zig_exe = options.zig_exe, .strip = true };
 
-        const built = try vera.tb.buildBatch(gpa, io, staged[0..2], opts);
+        const built = try zigbuild.buildBatch(gpa, io, staged[0..2], opts);
         defer built.deinit(gpa);
         const bin = switch (built) {
             .ok => |p| p,
@@ -1987,7 +1993,7 @@ const Analog = struct {
             try std.testing.expectEqualStrings(try arena.print("{s} +x=1 +y\n", .{tags[i]}), got);
         }
 
-        const bad = try vera.tb.buildBatch(gpa, io, &staged, opts);
+        const bad = try zigbuild.buildBatch(gpa, io, &staged, opts);
         defer bad.deinit(gpa);
         try std.testing.expect(bad == .failed);
     }
@@ -2043,14 +2049,14 @@ const Analog = struct {
             .root = suite.fixture_root,
             .slug = "harness_check_count_selftest",
         };
-        const missing = try runAndCheck(gpa, std.testing.io, arena, &.{ .cfg = &.{} }, fixture, source, .{ .expected_checks = 2 }, &report.writer, null);
+        const missing = try runAndCheck(gpa, std.testing.io, arena, &.{ .cfg = &.{} }, fixture, source, .{ .harness = .{ .expected_checks = 2 } }, &report.writer, null);
         try std.testing.expect(missing == .unmet);
         try std.testing.expect(std.mem.find(u8, report.written(), "observed 1 assertion(s), expected exactly 2") != null);
-        const complete = try runAndCheck(gpa, std.testing.io, arena, &.{ .cfg = &.{} }, fixture, source, .{ .expected_checks = 1 }, &report.writer, null);
+        const complete = try runAndCheck(gpa, std.testing.io, arena, &.{ .cfg = &.{} }, fixture, source, .{ .harness = .{ .expected_checks = 1 } }, &report.writer, null);
         try std.testing.expect(complete == .met);
         const duplicated = try runAndCheck(gpa, std.testing.io, arena, &.{ .cfg = &.{} }, fixture, source, .{
-            .expected_checks = 1,
-            .times = &.{ 0.0, 1e-9 },
+            .bench = .{ .times_s = &.{ 0.0, 1e-9 } },
+            .harness = .{ .expected_checks = 1 },
         }, &report.writer, null);
         try std.testing.expect(duplicated == .unmet);
         try std.testing.expect(std.mem.find(u8, report.written(), "observed 2 assertion(s), expected exactly 1") != null);
@@ -2081,7 +2087,7 @@ const Analog = struct {
         const unexpected = try runAndCheck(gpa, std.testing.io, arena, &.{ .cfg = &.{} }, fixture, source, .{}, &report.writer, null);
         try std.testing.expect(unexpected == .unmet);
         try std.testing.expect(std.mem.find(u8, report.written(), "exit 1, expected 0") != null);
-        const expected = try runAndCheck(gpa, std.testing.io, arena, &.{ .cfg = &.{} }, fixture, source, .{ .expected_exit = 1 }, &report.writer, null);
+        const expected = try runAndCheck(gpa, std.testing.io, arena, &.{ .cfg = &.{} }, fixture, source, .{ .harness = .{ .expected_exit = 1 } }, &report.writer, null);
         try std.testing.expect(expected == .met);
     }
 
@@ -2630,7 +2636,7 @@ const Digital = struct {
     //! comparison. `Devices`, `Native`, `Analog` and `Fixtures`
     //! (`collect`, `judge`, `judgeVcd`) read it.
     //!
-    //! None of it is a `tb` directive: `tb.parse` describes the analog harness and
+    //! None of it is a `tb` directive: `tb.Spec.parse` describes the analog harness and
     //! must not take a digital diagnostic as its evidence.
     //!
     //! Clauses: IEEE 1364-2005 §13.2 and §13.7.1 (`--libmap`, `-L`), §18.2 (the
@@ -2641,7 +2647,7 @@ const Digital = struct {
     /// Whether a `.v` is a digital reject case: a `//! reject` or `//! reject-only`
     /// line, the suite's own rule (`harness/conform.c`). A `_rejected` file name
     /// says the same, but the line is what decides. Runner metadata, deliberately
-    /// not a tb directive: tb.parse describes the analog harness and must not
+    /// not a tb directive: tb.Spec.parse describes the analog harness and must not
     /// interpret a digital diagnostic as its evidence.
     pub fn negative(source: []const u8) bool {
         var lines = std.mem.splitScalar(u8, source, '\n');
@@ -2800,7 +2806,7 @@ const Digital = struct {
     pub const VcdExpect = struct { produced: []const u8, golden: []const u8 };
 
     /// Returns the fixture's `//! expect vcd` line, slices into `source`. Null when
-    /// there is none, or it is malformed (then `tb.parse` fails it as unknown).
+    /// there is none, or it is malformed (then `tb.Spec.parse` fails it as unknown).
     pub fn vcdExpectation(source: []const u8) ?VcdExpect {
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |raw| {
@@ -3218,7 +3224,7 @@ const Golden = struct {
     //!                        writes the device at offset 0, so one file would
     //!                        lose the warnings
     //!   <path>.runner.txt    a `.va` with a `//!` line: the testbench runner
-    //!                        `tb.renderRunner` gives `--emit-exe` (`runner`)
+    //!                        `tb.writeRunner` gives `--emit-exe` (`runner`)
     //!   <path>.so/...        a `.va`: the tree `--emit-so` writes before `zig`
     //!                        runs, `shim.zig` and the split device (`soTree`)
     //!   <path>.program.txt   a `.v`: the executable root `--emit-exe` builds
@@ -3241,6 +3247,8 @@ const Golden = struct {
     const options = @import("suite_options");
     const harness = Fixtures;
     const vera = @import("vera");
+    const tb = @import("exe");
+    const zigbuild = @import("zigbuild");
     const digital = @import("sim").digital;
     /// The native emitter (src/codegen/digital/).
     const native = @import("digital");
@@ -3377,58 +3385,57 @@ const Golden = struct {
     /// directives' SPICE text and discipline resolution, the shape cards compiled
     /// in, the contract checks on.
     fn runner(gpa: Allocator, arena: Allocator, src: []const u8, includes: []const []const u8, source: []const u8) ![]const u8 {
-        const d = try vera.tb.parse(arena, source);
+        const d = try tb.Spec.parse(arena, source, null);
         var bag: vera.diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
-        var opts: vera.Options = .{
+        var opts: vera.Settings = .{
             .file_name = src,
             .include_dirs = includes,
             .require_std_includes = true,
-            .diags = &bag,
-            .display = if (d.display_record) .record else .emit,
-            .spice_netlist = d.spice,
+            .display = if (d.harness.display_record) .record else .emit,
+            .spice_netlist = d.harness.spice,
             .spice_path = src,
-            .discipline_resolution = d.discipline_resolution,
+            .discipline_resolution = d.harness.discipline_resolution,
         };
-        var result = try vera.compileSourceOpts(gpa, source, .build, opts);
-        defer result.deinit();
+        var result = try vera.analyze(gpa, source, opts, &bag);
+        defer result.deinit(gpa);
         // §3.4 a shape card is a compile-time value: compile again, as vera does.
-        opts.param_overrides = try vera.tb.shapeOverrides(arena, d, result.lowered);
+        opts.param_overrides = try tb.shapeCards(arena, d.bench.params, result.lowered);
         if (opts.param_overrides.len != 0) {
             bag.deinit(gpa);
             bag = .init(gpa);
-            const again = try vera.compileSourceOpts(gpa, source, .build, opts);
-            result.deinit();
+            const again = try vera.analyze(gpa, source, opts, &bag);
+            result.deinit(gpa);
             result = again;
         }
-        var dm = d;
-        dm.mixed = vera.tb.mixedPlan(result.lowered, result.mir);
-        dm.op_states = try vera.tb.opStates(arena, result.lowered);
-        dm.mem_bytes = vera.tb.memBytes(result.lowered);
-        dm.validate_contract = true;
-        return vera.tb.renderRunner(arena, std.fs.path.stem(src), dm);
+        var facts = try tb.compileFacts(arena, result.lowered, result.mir);
+        facts.validate_contract = true;
+        var text: Io.Writer.Allocating = .init(arena);
+        tb.writeRunner(&text.writer, arena, std.fs.path.stem(src), &d.bench, facts) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+            else => |e| return e,
+        };
+        return text.written();
     }
 
     /// The tree `vera --emit-so` writes for a `.va` device before `zig` runs
-    /// (`orchestrator.writeTree`): `shim.zig`, and the split `device.zig`, `h.zig`
+    /// (`zigbuild.writeTree`): `shim.zig`, and the split `device.zig`, `h.zig`
     /// and `u/*.zig`. A split LLVM build's part and chunk shims and the engine
     /// root are written only beside a `zig` child; `zigbuild/shim.zig`'s whole-file
     /// tests pin those.
     fn soTree(gpa: Allocator, io: Io, arena: Allocator, src: []const u8, includes: []const []const u8, source: []const u8, dir: []const u8) !void {
         var bag: vera.diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
-        // `.record` is `vera`'s default display (`args.Cli`), not `Options`'.
-        var result = try vera.compileSourceOpts(gpa, source, .build, .{ .file_name = src, .include_dirs = includes, .require_std_includes = true, .diags = &bag, .display = .record });
-        defer result.deinit();
-        const device = try result.generateOutput();
-        if (result.device_has_compile_error) return error.CodegenRefused;
-        _ = try vera.orchestrator.writeTree(io, gpa, .{
+        // `.record` is `vera`'s default display (`args.Cli`), not `Settings`'.
+        var result = try vera.analyze(gpa, source, .{ .file_name = src, .include_dirs = includes, .require_std_includes = true, .display = .record }, &bag);
+        defer result.deinit(gpa);
+        var device = try result.generate(gpa, .{}, &bag);
+        defer device.deinit(gpa);
+        if (device.refused) return error.CodegenRefused;
+        _ = try zigbuild.writeTree(gpa, io, .{
             .work_dir = dir,
-            .name = try vera.orchestrator.fileStem(arena, result.mir.name),
-            .optimize = .fast,
-            .backend = .llvm,
-            .modules = &.{},
-        }, device);
+            .name = try zigbuild.fileStem(arena, result.mir.name),
+        }, device.output);
     }
 
     /// The executable root `vera --emit-exe` builds for a `.v` design with default
@@ -4811,6 +4818,8 @@ const SizeSweep = struct {
 
     const std = @import("std");
     const vera = @import("vera");
+    const preprocessor = @import("frontend").preprocessor;
+    const zigbuild = @import("zigbuild");
     const options = @import("suite_options");
 
     const Io = std.Io;
@@ -4818,7 +4827,7 @@ const SizeSweep = struct {
 
     /// `root.zig` does not export `Mir`; the type is reached through the result
     /// that carries it, the seam an embedder already has.
-    const Mir = @typeInfo(@FieldType(vera.CompileResult, "mir")).pointer.child;
+    const Mir = @typeInfo(@FieldType(vera.Result, "mir")).pointer.child;
 
     /// N for the sweep and for the spawn floor; the estimator is the min over it.
     /// Noise on a shared machine only ever adds time, so the min is the closest
@@ -4937,14 +4946,15 @@ const SizeSweep = struct {
         const src = try genSource(gpa, axis, sweep[i]);
         defer gpa.free(src);
 
-        var result = try vera.compileSourceOpts(gpa, src, .lint, .{});
-        defer result.deinit();
-        const device = try result.generateDevice();
+        var result = try vera.analyze(gpa, src, .{}, null);
+        defer result.deinit(gpa);
+        var device = try result.generate(gpa, .{}, null);
+        defer device.deinit(gpa);
 
         const want = expected[@backingInt(axis)][i];
         try std.testing.expectEqual(want.defs, result.mir.defs.len);
         try std.testing.expectEqual(want.insts, result.mir.insts.len);
-        try std.testing.expectEqual(want.device, device.len);
+        try std.testing.expectEqual(want.device, device.output.text.len);
         return .of(result.mir);
     }
 
@@ -4953,13 +4963,15 @@ const SizeSweep = struct {
     // ---------------------------------------------------------------------------
 
     /// What one compilation's MIR costs in bytes, by column. A `MultiArrayList` row
-    /// costs the sum of its field sizes, not `@sizeOf(Row)`. The dedup maps and the
+    /// costs the sum of its field sizes, not `@sizeOf(Row)`. A constant row's bits
+    /// live in `Mir.consts`, so `bytes` counts that pool too. The dedup maps and the
     /// interner are excluded: they are build-time scratch that `deinit` drops.
     const Footprint = struct {
         insts: u64 = 0,
         defs: u64 = 0,
         blocks: u64 = 0,
         extra: u64 = 0,
+        consts: u64 = 0,
 
         // ponytail: ask the SoA container for its row size; this still excludes spare capacity.
         const inst_b: u64 = std.MultiArrayList(Mir.InstRow).capacityInBytes(1);
@@ -4972,12 +4984,13 @@ const SizeSweep = struct {
                 .defs = m.defs.len,
                 .blocks = m.blocks.len,
                 .extra = m.extra.items.len,
+                .consts = m.consts.items.len,
             };
         }
 
         fn bytes(self: Footprint) u64 {
             return self.insts * inst_b + self.defs * def_b +
-                self.blocks * block_b + self.extra * @sizeOf(u32);
+                self.blocks * block_b + self.extra * @sizeOf(u32) + self.consts * @sizeOf(u64);
         }
     };
 
@@ -4994,10 +5007,10 @@ const SizeSweep = struct {
     /// The sweep's phases, each a prefix of the next (there is no seam that resumes
     /// a compilation midway), so a stage's own cost is a subtraction: `lint - pp`
     /// is lex+parse+lower+prove, `codegen - lint` is codegen.
-    ///   pp        `Preprocessor.process`                          text -> text
-    ///   lint      `vera.compileSourceOpts(gpa, src, .lint, .{})`  text -> MIR
-    ///   codegen   `result.generateDevice()`                       MIR -> device.zig
-    ///   rewrite   `orchestrator.writeTree` a second time          device.zig -> 0 bytes
+    ///   pp        `preprocessor.process`                          text -> text
+    ///   lint      `vera.analyze(gpa, src, .{}, null)`             text -> MIR
+    ///   codegen   `result.generate(gpa, .{}, null)`               MIR -> device.zig
+    ///   rewrite   `zigbuild.writeTree` a second time              device.zig -> 0 bytes
     const Phase = enum { pp, lint, codegen, rewrite };
 
     /// `bytes` is what the phase handled: preprocessed text out of `pp`, the same
@@ -5005,56 +5018,62 @@ const SizeSweep = struct {
     /// `rewrite` (asserted 0 by a test, not here).
     const Sample = struct { min_ns: u64, bytes: u64 };
 
+    /// One timed compilation, freed after the clock is read.
+    const Kept = struct {
+        result: vera.Result,
+        device: ?vera.Device = null,
+
+        fn deinit(k: *Kept, gpa: Allocator) void {
+            if (k.device) |*d| d.deinit(gpa);
+            k.result.deinit(gpa);
+        }
+    };
+
     /// Run `phase` over one generated source and return the bytes it handled.
     ///
-    /// `keep` receives the `CompileResult` instead of freeing it, so the clock is
-    /// read before teardown. Precondition: `keep` already has capacity for `reps`,
-    /// so no reallocation lands inside the timed region.
+    /// `keep` receives the `Result` and its device instead of freeing them, so the
+    /// clock is read before teardown. Precondition: `keep` already has capacity for
+    /// `reps`, so no reallocation lands inside the timed region.
     fn runPhase(
         gpa: Allocator,
         io: Io,
         phase: Phase,
         source: []const u8,
         work_dir: []const u8,
-        keep: *std.ArrayList(vera.CompileResult),
+        keep: *std.ArrayList(Kept),
     ) !u64 {
         if (phase == .pp) {
             var arena: std.heap.ArenaAllocator = .init(gpa);
             defer arena.deinit();
             var bag = vera.diag.Bag.init(arena.allocator());
-            const text = (try vera.Preprocessor.process(arena.allocator(), source, .{ .bag = &bag })).text;
+            const text = (try preprocessor.process(arena.allocator(), source, .{ .bag = &bag })).text;
             std.mem.doNotOptimizeAway(text.len);
             return text.len;
         }
 
-        keep.appendAssumeCapacity(try vera.compileSourceOpts(gpa, source, .lint, .{}));
-        const result = &keep.items[keep.items.len - 1];
+        keep.appendAssumeCapacity(.{ .result = try vera.analyze(gpa, source, .{}, null) });
+        const kept = &keep.items[keep.items.len - 1];
 
-        std.mem.doNotOptimizeAway(result.mir);
-        if (phase == .lint) return result.source.len;
+        std.mem.doNotOptimizeAway(kept.result.mir);
+        if (phase == .lint) return kept.result.source.len;
 
-        const device = try result.generateDevice();
-        std.mem.doNotOptimizeAway(device.len);
-        if (phase == .codegen) return device.len;
+        kept.device = try kept.result.generate(gpa, .{}, null);
+        const device = kept.device.?.output;
+        std.mem.doNotOptimizeAway(device.text.len);
+        if (phase == .codegen) return device.text.len;
 
         // Prime the tree, then write it again: the no-op recompile. That it writes
         // 0 bytes is a `test` at the foot of the file; an assert under the clock
         // would time itself.
-        _ = try rewrite(io, gpa, result.device, work_dir);
-        return rewrite(io, gpa, result.device, work_dir);
+        _ = try rewrite(io, gpa, device, work_dir);
+        return rewrite(io, gpa, device, work_dir);
     }
 
-    /// One `orchestrator.writeTree`, returning how many bytes it actually put on
+    /// One `zigbuild.writeTree`, returning how many bytes it actually put on
     /// disk. Shared by the timed phase and by the test that pins the second call to
     /// zero, so the claim and the measurement are the same code path.
-    fn rewrite(io: Io, gpa: Allocator, device: anytype, work_dir: []const u8) !usize {
-        return vera.orchestrator.writeTree(io, gpa, .{
-            .work_dir = work_dir,
-            .name = "bench",
-            .optimize = .debug,
-            .backend = .self_hosted,
-            .modules = &.{},
-        }, device);
+    fn rewrite(io: Io, gpa: Allocator, device: zigbuild.Output, work_dir: []const u8) !usize {
+        return try zigbuild.writeTree(gpa, io, .{ .work_dir = work_dir, .name = "bench" }, device);
     }
 
     fn measure(
@@ -5064,9 +5083,9 @@ const SizeSweep = struct {
         source: []const u8,
         work_dir: []const u8,
     ) !Sample {
-        var kept: std.ArrayList(vera.CompileResult) = .empty;
+        var kept: std.ArrayList(Kept) = .empty;
         defer {
-            for (kept.items) |*r| r.deinit();
+            for (kept.items) |*k| k.deinit(gpa);
             kept.deinit(gpa);
         }
         try kept.ensureTotalCapacity(gpa, reps);
@@ -5115,19 +5134,20 @@ const SizeSweep = struct {
         return 0;
     }
 
-    // orchestrator.zig's claim: writing a tree already on disk touches nothing.
+    // zigbuild's tree.zig claim: writing a tree already on disk touches nothing.
     test "a second writeTree writes no bytes" {
         const gpa = std.testing.allocator;
         const io = std.testing.io;
         const src = try genSource(gpa, .contrib, 1);
         defer gpa.free(src);
-        var result = try vera.compileSourceOpts(gpa, src, .lint, .{});
-        defer result.deinit();
-        _ = try result.generateDevice();
+        var result = try vera.analyze(gpa, src, .{}, null);
+        defer result.deinit(gpa);
+        var device = try result.generate(gpa, .{}, null);
+        defer device.deinit(gpa);
 
         const work = options.work_root ++ "/benchmark/rewrite-selftest";
-        _ = try rewrite(io, gpa, result.device, work);
-        try std.testing.expectEqual(@as(usize, 0), try rewrite(io, gpa, result.device, work));
+        _ = try rewrite(io, gpa, device.output, work);
+        try std.testing.expectEqual(@as(usize, 0), try rewrite(io, gpa, device.output, work));
     }
 
     // Every point of every axis, in `zig build test`, so a size regression in the
