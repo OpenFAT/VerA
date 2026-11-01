@@ -207,14 +207,17 @@ pub fn build(b: *Build) void {
         .{ .name = "sim", .module = sim },
         .{ .name = "digital", .module = byName(mods, "digital") },
     });
-    test_step.dependOn(&testRun(b, "generators", gen_mod, runner, results_dir).step);
+    const gen_tests = testRun(b, "generators", gen_mod, runner, results_dir);
+    test_step.dependOn(&gen_tests.step);
     const generators = b.addExecutable(.{ .name = "vera-generators", .root_module = gen_mod });
     all_step.dependOn(&generators.step);
     const gen_run = b.addRunArtifact(generators);
     _ = gen_run.addOutputDirectoryArg("generators");
     gen_run.expectExitCode(0);
     test_step.dependOn(&gen_run.step);
-    b.step("test-generators", "Run the generated-input tables (tests/generators.zig) through every pass only").dependOn(&gen_run.step);
+    const gen_step = b.step("test-generators", "Run the generated-input tables and tests (tests/generators.zig) only");
+    gen_step.dependOn(&gen_run.step);
+    gen_step.dependOn(&gen_tests.step);
     all_step.dependOn(&suite_exe.step);
     const suite_run = testRun(b, "suite", suite_mod, runner, results_dir);
     suite_run.has_side_effects = true; // reads tests/conformance at test time
