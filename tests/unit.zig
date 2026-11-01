@@ -13082,14 +13082,20 @@ pub const sim_digital_tests = struct {
         // test's) is given 4 MiB and refused by name past it ("nesting here
         // exhausts the ... stack"), never a segfault. `elaborate` runs on its
         // own reservation; `runUntil` evaluates on the caller's stack. An
-        // integer chain (`evalContext`) and a real one (`evalReal`).
+        // integer chain (`evalContext`) and a real one (`evalReal`). Each
+        // length must also elaborate on the smallest reservation
+        // `runGuarded` takes on a CI machine (256 MiB, Windows': measured, a
+        // chain elaborates there up to 30,000 terms and not at 40,000), and
+        // overflow an 8 MiB stack without the check (measured, Debug: the
+        // integer chain by 10,000, the real one by 15,000; 10,000 real terms
+        // fit). The 4 MiB refusal itself comes before 1,000 levels of either.
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const a = arena.allocator();
         for ([_][]const u8{ "reg [7:0] v, x; initial begin v = 1; x = v", "real v, x; initial begin v = 1.0; x = v" }) |head| {
             var src: std.ArrayList(u8) = .empty;
             try src.print(a, "module m; {s}", .{head});
-            for (0..50_000) |_| try src.appendSlice(a, " + v");
+            for (0..20_000) |_| try src.appendSlice(a, " + v");
             try src.appendSlice(a, "; $display(\"done\"); end endmodule");
             var bag = diag.Bag.init(a);
             var out = std.Io.Writer.Allocating.init(a);
