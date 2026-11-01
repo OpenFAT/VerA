@@ -44,11 +44,12 @@ directories hold VerA's own test inputs, and `conformance/` is the suite.
 | `fuzz.zig` | In-process fuzz targets: `zig build fuzz --fuzz` coverage-guided, replayed seeded under `test` |
 | `rng_reference.zig`, `rng_reference.c` | The RNG oracle (`rng_kernels` against the IEEE 1364 §17.9.3 C listing) and, as an executable, its domain refusals, one case per run |
 | `printf_reference.zig` | The formatting oracle: `zCReal` against glibc's `snprintf` |
-| `generators.zig` | Generated inputs through every pass (`vera-generators`, `test-generators`, in `test`): `wide`, N-wide and N-deep sources on a 1 MiB stack, one child per row |
+| `generators.zig` | Generated inputs through every pass (`vera-generators`, `test-generators`, in `test`), one child per row: `wide`, N-wide and N-deep sources on a 1 MiB stack; `escaped`, seeded escaped identifiers against their plain renaming |
 | `argv.zig` | The degenerate-argv table (`vera-argv`, `test-argv`, in `test`): every flag `--help` documents x degenerate values through the `vera` process; a signal, a panic or a silent nonzero exit is BAD |
 | `codegen_probe.zig` | Vectorisation and branchless probes: built as x86_64_v3 assembly and held to their `expect:` lines by `tools/asm_probe.py` (`zig build test-probe`, in `test`) |
 | `host.py` | Host observations: `diagnostic_observations` and `paired_compiler_observations` drive the build's `vera`; the profiles bind a real host through an adapter (below); `selftest` |
 | `host/` | The hosts that drive a device: `*_host.zig`, the `*_gpu.zig` twin, `*_dyn.zig`, `vdev_*.zig`, `vpi_host.zig` (in `test`) |
+| `vpi_escaped/` | `roundtrip.c` over `escaped.v`: every object's `vpiFullName` through `vpi_handle_by_name` and back (`test-vpi-escaped`, in `test`) |
 | `canary/` | The wrong-on-purpose fixtures the canary in `test` judges, with their `EXPECT.tsv` |
 | `rtlil/`, `beh_verilog/`, `osdi/` | The `--emit-rtlil`, `--emit-verilog` and `--emit-osdi` inputs |
 | `vpi_negative/` | The VPI negative-input table (`test`, `test-vpi-negative`): a C application handing every exported `vpi_*` entry point each invalid argument it takes, and the design it probes |

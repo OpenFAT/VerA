@@ -346,6 +346,15 @@ pub fn build(b: *Build) void {
     negative.expectStdOutMatch("vpi-negative=ok\n");
     test_step.dependOn(&negative.step);
     b.step("test-vpi-negative", "Run the VPI negative-input table (tests/vpi_negative) only").dependOn(&negative.step);
+    // Escaped identifiers through vpi_handle_by_name: each object's
+    // vpiFullName must name that object again.
+    const escaped = vpiApp(b, target, optimize, vpi_host, "tests/vpi_escaped/roundtrip.c");
+    escaped.addFileArg2(b.path("tests/vpi_escaped/escaped.v"), .{ .make_absolute = true });
+    escaped.setCwd(b.tmpPath());
+    escaped.expectExitCode(0);
+    escaped.expectStdOutMatch("vpi-escaped=ok objects=32 ");
+    test_step.dependOn(&escaped.step);
+    b.step("test-vpi-escaped", "Run the escaped-identifier vpi_handle_by_name round trip (tests/vpi_escaped) only").dependOn(&escaped.step);
     for (vpiRuns(b)) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
         // Each run gets its own cwd: an application writes fixed names there
