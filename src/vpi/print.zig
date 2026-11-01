@@ -35,6 +35,7 @@ const first_user = 3; // index of channel 4
 
 const channel_count = 31;
 const fd_bit = 1 << 31;
+const fd_mask = fd_bit - 1;
 
 const Channel = struct {
     file: Io.File,
@@ -60,16 +61,23 @@ var fds: FileIo = digital.own_files;
 /// Each open fd's name, by its channel number (§27.24).
 var fd_names: [64]?[:0]u8 = @splat(null);
 
+/// The process's single-threaded I/O, which every channel write goes through.
+const io: Io = Io.Threaded.global_single_threaded.io();
+
 /// Names the product log file channel 3 writes, in the working directory
 /// unless `path` says otherwise. The LRM names no file; a host picks one
-/// (src/vpi/host.zig: the application's name with `.log`).
+/// (src/vpi/host.zig: the application's name with `.log`). Asserts that a
+/// log file is only ever open under a name, and that the new name is in
+/// place with no file created yet.
 pub fn setLogFile(path: []const u8) error{OutOfMemory}!void {
+    std.debug.assert(log_file == null or log_name != null);
     // The copy first: on failure the old name stays named.
     const name = try gpa.dupeSentinel(u8, path, 0);
-    if (log_file) |f| f.close(io());
+    if (log_file) |f| f.close(io);
     log_file = null;
     if (log_name) |n| gpa.free(n);
     log_name = name;
+    std.debug.assert(log_name.?.len == path.len);
 }
 
 /// §12.26 "shall open a file for writing and return a corresponding
@@ -82,7 +90,7 @@ pub export fn vpi_mcd_open(file: [*c]const u8) c_uint {
         return 0;
     }
     const want = std.mem.span(file);
-    return openChannel(want) catch |e| {
+    const cd = openChannel(want) catch |e| {
         switch (e) {
             error.NoChannel => status.fail("NOCHANNEL", "vpi_mcd_open: all 28 user channels are open", .{}),
             error.OutOfMemory => status.fail("NOMEM", "vpi_mcd_open: out of memory", .{}),
@@ -90,10 +98,19 @@ pub export fn vpi_mcd_open(file: [*c]const u8) c_uint {
         }
         return 0;
     };
+    // One user channel: never a predefined one, never the fd bit.
+    std.debug.assert(@popCount(cd) == 1);
+    std.debug.assert(@ctz(cd) >= first_user and @ctz(cd) < channel_count);
+    return cd;
 }
 
+/// The mcd of channel number `i + 1`. Asserts that `i` names a channel, so
+/// the result never carries the fd bit.
 pub fn bit(i: usize) c_uint {
-    return @as(c_uint, 1) << @intCast(i);
+    std.debug.assert(i < channel_count);
+    const cd = @as(c_uint, 1) << @intCast(i);
+    std.debug.assert(cd & fd_bit == 0);
+    return cd;
 }
 
 /// §12.24 "On success this routine returns a zero (0); on error it returns the
@@ -110,9 +127,11 @@ pub export fn vpi_mcd_close(mcd: c_uint) c_uint {
             return mcd;
         }
         _ = hdlClose(mcd);
+        std.debug.assert(fdName(mcd) == null);
         return 0;
     }
     const unclosed = closeChannels(mcd);
+    std.debug.assert(unclosed & ~mcd == 0);
     if (unclosed != 0) status.fail("NOCLOSE", "vpi_mcd_close: channels 0x{x} are predefined or not open", .{unclosed});
     return unclosed;
 }
@@ -131,6 +150,7 @@ pub export fn vpi_mcd_name(cd: c_uint) [*c]u8 {
             return null;
         }
         const i = @ctz(cd);
+        std.debug.assert(@popCount(cd) == 1);
         break :name switch (i) {
             0 => "stdout",
             1 => "stderr",
@@ -147,6 +167,7 @@ pub export fn vpi_mcd_name(cd: c_uint) [*c]u8 {
     const n = @min(s.len, name_buf.len - 1);
     @memcpy(name_buf[0..n], s[0..n]);
     name_buf[n] = 0;
+    std.debug.assert(n < name_buf.len);
     return &name_buf;
 }
 
@@ -154,17 +175,25 @@ pub export fn vpi_mcd_name(cd: c_uint) [*c]u8 {
 /// channels: IEEE 1364-2005 §27.25 "The mcd descriptors returned from
 /// vpi_mcd_open() and from $fopen may be shared between the HDL system tasks
 /// that use mcd descriptors and the VPI routines that use mcd descriptors."
-/// An fd stays in `r`'s table, its name kept for §27.24.
+/// An fd stays in `r`'s table, its name kept for §27.24. Asserts that the
+/// table the fds delegate to is never this one (each entry would call
+/// itself), and that `r` writes through these channels afterwards.
 pub fn share(r: *digital.Run) void {
     if (r.tasks.file_io) |t| if (t.open == hdlOpen) return;
     fds = r.tasks.file_io orelse digital.own_files;
+    std.debug.assert(fds.open != hdlOpen);
     r.tasks.file_io = .{ .open = hdlOpen, .close = hdlClose, .put = hdlPut, .getc = fdGetc, .ungetc = fdUngetc, .tell = fdTell, .seek = fdSeek, .eof = fdEof, .err = fdErr };
+    std.debug.assert(r.tasks.file_io.?.put == hdlPut);
 }
 
 /// IEEE 1364-2005 §27.4: "0 if successful; nonzero if unsuccessful". Every
 /// write here is unbuffered, so there is nothing to flush.
 pub export fn vpi_flush() c_int {
     if (status.refused("vpi_flush")) return 1;
+    // Unbuffered: a log file exists only under a name, and the predefined
+    // channels are never table entries.
+    std.debug.assert(log_file == null or log_name != null);
+    for (channels[0..first_user]) |c| std.debug.assert(c == null);
     return 0;
 }
 
@@ -177,37 +206,38 @@ pub export fn vpi_mcd_flush(mcd: c_uint) c_int {
         status.fail("BADMCD", "vpi_mcd_flush: 0x{x} is a $fopen file descriptor, not an mcd", .{mcd});
         return 1;
     }
+    for (channels[0..first_user]) |c| std.debug.assert(c == null);
     for (first_user..channel_count) |i| {
         if (mcd & bit(i) != 0 and channels[i] == null) {
             status.fail("BADMCD", "vpi_mcd_flush: channel {d} is not open", .{i + 1});
             return 1;
         }
     }
+    std.debug.assert(mcd & fd_bit == 0);
     return 0;
 }
 
 // ---- private ----
 
-fn io() Io {
-    return Io.Threaded.global_single_threaded.io();
-}
-
 /// The channel open onto `name`, or the lowest free one opened onto it.
 fn openChannel(name: []const u8) !c_uint {
+    for (channels[0..first_user]) |c| std.debug.assert(c == null);
     for (channels[first_user..], first_user..) |c, i| {
         if (c) |ch| if (std.mem.eql(u8, ch.name, name)) return bit(i);
     }
     const free = for (channels[first_user..], first_user..) |c, i| {
         if (c == null) break i;
     } else return error.NoChannel;
-    const f = try Io.Dir.cwd().createFile(io(), name, .{});
-    errdefer f.close(io());
+    const f = try Io.Dir.cwd().createFile(io, name, .{});
+    errdefer f.close(io);
     channels[free] = .{ .file = f, .name = try gpa.dupeSentinel(u8, name, 0) };
+    std.debug.assert(free >= first_user);
     return bit(free);
 }
 
 /// Closes every channel `mcd` names; returns the ones it could not.
 fn closeChannels(mcd: c_uint) c_uint {
+    for (channels[0..first_user]) |c| std.debug.assert(c == null);
     var unclosed: c_uint = 0;
     for (0..channel_count) |i| {
         if (mcd & bit(i) == 0) continue;
@@ -219,27 +249,32 @@ fn closeChannels(mcd: c_uint) c_uint {
             unclosed |= bit(i);
             continue;
         };
-        ch.file.close(io());
+        ch.file.close(io);
         gpa.free(ch.name);
         channels[i] = null;
     }
+    std.debug.assert(unclosed & ~mcd == 0);
     return unclosed;
 }
 
-/// An fd's channel number: `d` without `fd_bit`.
-fn fdChannel(d: i64) usize {
-    return @intCast(d & 0x7fff_ffff);
-}
-
+/// The name `$fopen` gave fd `d`, which has the fd bit: its channel number
+/// is `d` without it.
 fn fdName(d: i64) ?[:0]const u8 {
-    const ch = fdChannel(d);
+    std.debug.assert(d & fd_bit != 0);
+    comptime std.debug.assert(fd_names.len < fd_bit);
+    const ch: usize = @intCast(d & fd_mask);
     return if (ch < fd_names.len) fd_names[ch] else null;
 }
 
 fn hdlOpen(path: []const u8, ty: []const u8, mcd: bool) i64 {
-    if (mcd) return openChannel(path) catch 0;
+    std.debug.assert(fds.open != hdlOpen);
+    if (mcd) {
+        const cd = openChannel(path) catch 0;
+        std.debug.assert(cd == 0 or @popCount(cd) == 1);
+        return cd;
+    }
     const d = fds.open(path, ty, false);
-    const ch = fdChannel(d);
+    const ch: usize = @intCast(d & fd_mask);
     if (d != 0 and ch < fd_names.len) {
         if (fd_names[ch]) |old| gpa.free(old);
         fd_names[ch] = gpa.dupeSentinel(u8, path, 0) catch null;
@@ -248,21 +283,24 @@ fn hdlOpen(path: []const u8, ty: []const u8, mcd: bool) i64 {
 }
 
 fn hdlClose(d: i64) i64 {
+    std.debug.assert(fds.close != hdlClose);
     if (d & fd_bit == 0) {
         _ = closeChannels(@truncate(@as(u64, @bitCast(d))));
         return 0;
     }
-    const ch = fdChannel(d);
+    const ch: usize = @intCast(d & fd_mask);
     if (ch < fd_names.len) if (fd_names[ch]) |old| {
         gpa.free(old);
         fd_names[ch] = null;
     };
+    std.debug.assert(fdName(d) == null);
     return fds.close(d);
 }
 
 /// The characters written, or 0 when no channel `d` names took them. The
 /// engine writes bit 0 (its transcript) itself.
 fn hdlPut(d: i64, text: []const u8) i64 {
+    std.debug.assert(fds.put != hdlPut);
     if (d & fd_bit != 0) return fds.put(d, text);
     var took = false;
     for (1..channel_count) |i| {
@@ -271,51 +309,72 @@ fn hdlPut(d: i64, text: []const u8) i64 {
             took = true;
             continue;
         };
-        file.writeStreamingAll(io(), text) catch continue;
+        file.writeStreamingAll(io, text) catch continue;
         took = true;
     }
-    return if (took) @intCast(text.len) else 0;
+    const wrote: i64 = if (took) @intCast(text.len) else 0;
+    std.debug.assert(wrote == 0 or wrote == text.len);
+    return wrote;
 }
 
 // An mcd is write-only: the reads see it as no descriptor at all, which also
 // keeps it off the fd slot the engine's table would read its bits as.
+// The read entries below each assert that the delegated table is not this
+// one: `share` installs these over it, and a self-delegation never returns.
 fn fdOnly(d: i64) i64 {
-    return if (d & fd_bit != 0) d else 0;
+    const fd = if (d & fd_bit != 0) d else 0;
+    std.debug.assert(fd == 0 or fd == d);
+    std.debug.assert(fd & fd_bit != 0 or fd == 0);
+    return fd;
 }
 
 fn fdGetc(d: i64) i64 {
+    std.debug.assert(fds.open != hdlOpen);
+    std.debug.assert(fds.getc != fdGetc);
     return fds.getc(fdOnly(d));
 }
 
 fn fdUngetc(c: i64, d: i64) i64 {
+    std.debug.assert(fds.open != hdlOpen);
+    std.debug.assert(fds.ungetc != fdUngetc);
     return fds.ungetc(c, fdOnly(d));
 }
 
 fn fdTell(d: i64) i64 {
+    std.debug.assert(fds.open != hdlOpen);
+    std.debug.assert(fds.tell != fdTell);
     return fds.tell(fdOnly(d));
 }
 
 fn fdSeek(d: i64, off: i64, op: i64) i64 {
+    std.debug.assert(fds.open != hdlOpen);
+    std.debug.assert(fds.seek != fdSeek);
     return fds.seek(fdOnly(d), off, op);
 }
 
 fn fdEof(d: i64) i64 {
+    std.debug.assert(fds.open != hdlOpen);
+    std.debug.assert(fds.eof != fdEof);
     return fds.eof(fdOnly(d));
 }
 
 fn fdErr(d: i64) i64 {
+    std.debug.assert(fds.open != hdlOpen);
+    std.debug.assert(fds.err == null or fds.err.? != fdErr);
     return if (fds.err) |e| e(fdOnly(d)) else 0;
 }
 
 /// Channel `i`'s file; null for a log the host named none for, which
 /// discards.
 fn channelFile(i: usize) error{NotOpen}!?Io.File {
+    std.debug.assert(i < channel_count);
+    std.debug.assert(log_file == null or log_name != null);
     return switch (i) {
         0 => .stdout(),
         1 => .stderr(),
         2 => {
             const name = log_name orelse return null;
-            if (log_file == null) log_file = Io.Dir.cwd().createFile(io(), name, .{}) catch return error.NotOpen;
+            if (log_file == null) log_file = Io.Dir.cwd().createFile(io, name, .{}) catch return error.NotOpen;
             return log_file;
         },
         else => if (channels[i]) |ch| ch.file else error.NotOpen,
@@ -328,6 +387,9 @@ fn channelFile(i: usize) error{NotOpen}!?Io.File {
 /// vpi_printf, 1 vpi_mcd_printf, 2 vpi_vprintf, 3 vpi_mcd_vprintf, anything
 /// else vpi_control (vpi_sim_control too).
 export fn vera_vpi_refused(which: c_int) c_int {
+    // `varargs.c` passes one of its five numbers, never the application's.
+    std.debug.assert(which >= 0);
+    std.debug.assert(which <= 4);
     return @intFromBool(switch (which) {
         0 => status.refused("vpi_printf"),
         1 => status.refused("vpi_mcd_printf"),
@@ -349,10 +411,15 @@ export fn vera_vpi_refused(which: c_int) c_int {
 /// would change with a bit of the mcd that has nothing to do with the text.
 export fn vera_vpi_emit(mcd: c_uint, format: [*c]const u8, ap: *List) c_int {
     status.clearError();
-    return emit(mcd, format, ap);
+    const n = emit(mcd, format, ap);
+    // EOF exactly when the error status says why.
+    std.debug.assert(n == cformat.EOF or n >= 0);
+    std.debug.assert((n == cformat.EOF) == (status.vpi_chk_error(null) != 0));
+    return n;
 }
 
 fn emit(mcd: c_uint, format: [*c]const u8, ap: *List) c_int {
+    std.debug.assert(status.vpi_chk_error(null) == 0);
     // IEEE 1364-2005 §27.26: the most significant bit marks "a file descriptor
     // instead of an mcd", and vpi_mcd_printf "shall not write to" one.
     if (mcd & fd_bit != 0) {
@@ -376,11 +443,12 @@ fn emit(mcd: c_uint, format: [*c]const u8, ap: *List) c_int {
             status.fail("BADMCD", "vpi_mcd_printf: channel {d} is not open", .{i + 1});
             return cformat.EOF;
         }) orelse continue;
-        file.writeStreamingAll(io(), text) catch {
+        file.writeStreamingAll(io, text) catch {
             status.fail("NOWRITE", "vpi_mcd_printf: write to channel {d} failed", .{i + 1});
             return cformat.EOF;
         };
     }
+    std.debug.assert(status.vpi_chk_error(null) == 0);
     return std.math.cast(c_int, text.len) orelse std.math.maxInt(c_int);
 }
 
@@ -390,7 +458,7 @@ test "§12.24–§12.26: channel numbering, reopen, and the three predefined cha
     // Channel files are created relative to the cwd, so the test names an
     // absolute path inside its own temporary directory.
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir = path_buf[0..try tmp.dir.realPath(io(), &path_buf)];
+    const dir = path_buf[0..try tmp.dir.realPath(io, &path_buf)];
     const a_path = try std.testing.allocator.printSentinel("{s}/a.log", .{dir}, 0);
     defer std.testing.allocator.free(a_path);
 
@@ -413,7 +481,7 @@ test "§12.24–§12.26: channel numbering, reopen, and the three predefined cha
     try std.testing.expectEqual(cformat.EOF, cformat.vpi_mcd_printf(a, "x"));
 
     var got: [16]u8 = undefined;
-    const text = try tmp.dir.readFile(io(), "a.log", &got);
+    const text = try tmp.dir.readFile(io, "a.log", &got);
     try std.testing.expectEqualStrings("alpha\n", text);
 }
 
