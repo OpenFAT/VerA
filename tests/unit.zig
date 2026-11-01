@@ -12134,6 +12134,30 @@ pub const sim_digital_tests = struct {
         try mixed.run(Still, &still, &dig, .{ .times = &.{ 0, 1e-9, 1e-9 }, .tick = 1e-9 });
         try std.testing.expectEqual(@as(u32, 2), still.finished);
     }
+
+    test "§12.2.1 a defparam segment is the escaped name the parser read, whatever `[`, `]`, `.` or `$` it holds" {
+        // Oracle: IEEE 1364-2005 §3.7.1, an escaped identifier is the whole
+        // printable run up to white space, so `\a[5] ` is one name and not
+        // `a` indexed 5, and `\$4.n ` one name, not two segments; §12.2.1,
+        // the defparam sets the parameter that name holds. Each design is its
+        // plain twin with one name escaped, and prints the defparam's 7.
+        const m = "module m; parameter p = 1; initial #1 $display(\"%0d\", p); endmodule ";
+        try expectRun(m ++ "module top; m \\a[5] (); defparam \\a[5] .p = 7; endmodule", "7\n");
+        try expectRun(m ++ "module top; m \\[3] (); defparam \\[3] .p = 7; endmodule", "7\n");
+        try expectRun(m ++ "module top; m \\a]b (); defparam \\a]b .p = 7; endmodule", "7\n");
+        try expectRun(m ++ "module top; m \\x.y[2] (); defparam \\x.y[2] .p = 7; endmodule", "7\n");
+        // A name of the instance array `u` beside an escaped one.
+        try expectRun(m ++ "module top; m u[1:0] (); defparam u[1].p = 7; endmodule", "1\n7\n");
+        // The parameter's own name: `$` first, a `.` inside.
+        try expectRun(
+            \\module m; parameter \$4.n  = 1; initial #1 $display("%0d", \$4.n ); endmodule
+            \\module top; m u (); defparam u.\$4.n  = 7; endmodule
+        , "7\n");
+        try expectRun(
+            \\module m; parameter \a.n  = 1; initial #1 $display("%0d", \a.n ); endmodule
+            \\module top; m \b[0] (); defparam \b[0] .\a.n  = 7; endmodule
+        , "7\n");
+    }
 };
 
 pub const codegen_tests = struct {

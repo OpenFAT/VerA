@@ -46,6 +46,7 @@
 //! - `pub const MonitorKind`
 //! - `pub const D2aSite`
 //! - `pub const PathKey`
+//! - `pub const PathSeg`
 //! - `pub const Sub`
 //! - `pub const SlotMemo`
 //! - `pub const memo_bits`
@@ -202,6 +203,8 @@ pub const D2aSite = run_rows.D2aSite;
 
 /// `run_rows.PathKey`.
 pub const PathKey = run_rows.PathKey;
+/// `run_rows.PathSeg`.
+pub const PathSeg = run_rows.PathSeg;
 
 /// `run_rows.Sub`.
 pub const Sub = run_rows.Sub;

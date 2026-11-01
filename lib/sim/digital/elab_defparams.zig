@@ -53,6 +53,7 @@ const elab_params = @import("elab_params.zig");
 const generate = elab_generate.generate;
 const isScope = elab.isScope;
 const names = elab_params.names;
+const PathSeg = root.PathSeg;
 
 /// IEEE 1364-2005 §12.2.1 registers defparam `d`, declared in `decl`: its
 /// unfolded instance selects folded there, then its first segment resolved
@@ -63,22 +64,11 @@ const names = elab_params.names;
 pub fn bindDefparam(r: *Run, decl: u32, d: Ast.Defparam, children: []const Ast.Instance) Error!void {
     assert(decl < r.hier.scopes.items.len);
     const bound = r.decls.bound_defparams.items.len;
-    var path: []const u8 = r.file.str(d.path);
-    if (d.indices.len != 0) {
-        var out: std.ArrayList(u8) = .empty;
-        var rest = path;
-        for (d.indices) |x| {
-            const at = std.mem.find(u8, rest, "[]").?; // the parser spelled one per index
-            const k = (try r.constant(x, d.main_tok)).asInt() orelse return r.exprFail(x, "§12.2.1: a defparam's instance select is x or z");
-            try out.print(r.arena, "{s}[{d}]", .{ rest[0..at], k });
-            rest = rest[at + 2 ..];
-        }
-        try out.appendSlice(r.arena, rest);
-        path = out.items;
-    }
-    const b = try defparamBase(r, decl, path, children, d.main_tok);
-    try r.decls.defparams.put(r.arena, .{ .scope = b.at, .path = b.rest }, .{ .d = d, .decl = decl });
-    try r.decls.bound_defparams.append(r.arena, .{ .decl = decl, .path = path, .at = b.at, .rest = b.rest, .tok = d.main_tok });
+    const p = try pathSegments(r, d);
+    const b = try defparamBase(r, decl, p.segs, children, d.main_tok);
+    const rest = p.path[p.segs[b.skip].start..];
+    try r.decls.defparams.put(r.arena, .{ .scope = b.at, .path = rest }, .{ .d = d, .decl = decl });
+    try r.decls.bound_defparams.append(r.arena, .{ .decl = decl, .path = p.path, .segs = p.segs, .at = b.at, .skip = b.skip, .tok = d.main_tok });
     assert(r.decls.bound_defparams.items.len == bound + 1);
     assert(b.at < r.hier.scopes.items.len);
 }
@@ -91,8 +81,8 @@ pub fn checkDefparams(r: *Run) Error!void {
     assert(r.hier.roots.len > 0); // The hierarchy is complete.
     for (r.decls.bound_defparams.items) |b| {
         assert(b.decl < r.hier.scopes.items.len);
-        const now = try defparamBase(r, b.decl, b.path, null, b.tok);
-        if (now.at != b.at or !std.mem.eql(u8, now.rest, b.rest))
+        const now = try defparamBase(r, b.decl, b.segs, null, b.tok);
+        if (now.at != b.at or now.skip != b.skip)
             return r.fail(b.tok, "§12.8.2: this defparam's hierarchical name was resolved before the hierarchy was complete and would resolve differently once it is", .{});
         // §12.2.1: "a defparam statement in a hierarchy in or under a
         // generate block instance ... or an array of instances ... shall not
@@ -102,15 +92,16 @@ pub fn checkDefparams(r: *Run) Error!void {
         // scope holds it, E0907 when a named instance has no such parameter.
         // A mixed design's defparam may name a VAMS §7.8.5 inserted connect
         // module, which only the analog elaboration builds.
-        const target = defparamScope(r, b.at, b.rest) orelse if (r.analog.mixed)
+        const rest = b.segs[b.skip..];
+        const target = defparamScope(r, b.at, rest) orelse if (r.analog.mixed)
             continue
         else
             return r.failWith(.E0901, b.tok, "§12.2.1: this defparam's hierarchical name `{s}` names nothing in the design", .{b.path});
-        const leaf = b.rest[if (std.mem.findScalarLast(u8, b.rest, '.')) |d| d + 1 else 0..];
+        const leaf = rest[rest.len - 1].name;
         const slot = if (r.file.strings.find(leaf)) |str| r.hier.names.get(.{ .scope = target, .str = str }) else null;
         // A mixed design leaves the analog block's parameters unbound here.
         if (!r.analog.mixed and (slot == null or !r.decls.params.contains(slot.?))) {
-            if (slot == null and target == b.at and std.mem.findScalar(u8, b.rest, '.') == null)
+            if (slot == null and target == b.at and rest.len == 1)
                 return r.failWith(.E0901, b.tok, "§12.2.1: this defparam's hierarchical name `{s}` names nothing in the design", .{b.path});
             return r.failWith(.E0907, b.tok, "§12.2.1: this defparam names `{s}`, which is no parameter of its module", .{leaf});
         }
@@ -131,20 +122,86 @@ pub fn checkDefparams(r: *Run) Error!void {
 
 // ---- private ----
 
-/// The scope defparam `path` (declared in `decl`) is relative to once its
-/// first segment is resolved, and the rest of it. `children` is pass one's
+/// Defparam `d`'s path, its unfolded selects folded in the current scope,
+/// and its segments as the parser read them: the tokens from `d.main_tok`
+/// give each name's length in `d.path`, so a `[`, `]`, `.` or `$` inside an
+/// escaped name is the name's, never a select or a separator (IEEE 1364-2005
+/// §3.7.1). `parse_hier.parseDottedPath` spells the path: each name as
+/// `internTok` interns it, `[k]` (or `[]`, unfolded) after a selected one,
+/// `.` between.
+fn pathSegments(r: *Run, d: Ast.Defparam) Error!struct { path: []const u8, segs: []const PathSeg } {
+    assert(d.main_tok < r.starts.len);
+    const spelled = r.file.str(d.path);
+    var path: std.ArrayList(u8) = .empty;
+    var segs: std.ArrayList(PathSeg) = .empty;
+    var tok = d.main_tok;
+    var at: usize = 0; // into `spelled`
+    var unfolded: usize = 0; // into `d.indices`
+    while (true) {
+        // A name: an identifier, escaped (`\` dropped, but `\$...` kept
+        // whole, §3.7.3), or a system name (`$root`, `u.$xposition`).
+        const raw = Front.lexer.tokenText(r.text, r.starts[tok]);
+        const len = if (raw[0] == '\\' and raw[1] != '$') raw.len - 1 else raw.len;
+        assert(len >= 1); // The lexer makes no empty name.
+        assert(at + len <= spelled.len); // The parser spelled this token here.
+        const start: u32 = @intCast(path.items.len);
+        try path.appendSlice(r.arena, spelled[at .. at + len]);
+        at += len;
+        tok += 1;
+        var index: ?i64 = null;
+        if (at < spelled.len and spelled[at] == '[') {
+            const close = at + std.mem.findScalar(u8, spelled[at..], ']').?;
+            index = if (close == at + 1) blk: {
+                const x = d.indices[unfolded];
+                unfolded += 1;
+                break :blk (try r.constant(x, d.main_tok)).asInt() orelse return r.exprFail(x, "§12.2.1: a defparam's instance select is x or z");
+            } else std.fmt.parseInt(i64, spelled[at + 1 .. close], 10) catch
+                return r.fail(d.main_tok, "§12.2.1: a defparam's instance select is outside the 64-bit range", .{});
+            try path.print(r.arena, "[{d}]", .{index.?});
+            at = close + 1;
+            // Past the select's tokens: its `]` is the first to close it.
+            var depth: u32 = 0;
+            while (true) : (tok += 1) switch (r.text[r.starts[tok]]) {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if (depth == 0) break;
+                },
+                else => {},
+            };
+            tok += 1;
+        }
+        try segs.append(r.arena, .{ .name = path.items[start .. start + len], .index = index, .start = start });
+        if (at == spelled.len) break;
+        assert(spelled[at] == '.');
+        try path.append(r.arena, '.');
+        at += 1;
+        tok += 1; // the `.`
+    }
+    assert(unfolded == d.indices.len);
+    assert(segs.items.len >= 1);
+    // `name` slices were taken while `path` grew: re-point them at its final bytes.
+    for (segs.items) |*g| g.name = path.items[g.start .. g.start + g.name.len];
+    return .{ .path = path.items, .segs = segs.items };
+}
+
+/// The scope defparam `segs` (declared in `decl`) is relative to once its
+/// first segment is resolved, and how many segments that took (`skip`, 0
+/// when the path is relative to `decl` itself). `children` is pass one's
 /// static view of `decl`'s children; null reads the complete hierarchy.
-fn defparamBase(r: *Run, decl: u32, path: []const u8, children: ?[]const Ast.Instance, tok: u32) Error!struct { at: u32, rest: []const u8 } {
+fn defparamBase(r: *Run, decl: u32, segs: []const PathSeg, children: ?[]const Ast.Instance, tok: u32) Error!struct { at: u32, skip: u1 } {
     assert(tok < r.starts.len);
     assert(decl < r.hier.scopes.items.len);
-    const dot = std.mem.findScalar(u8, path, '.') orelse return .{ .at = decl, .rest = path };
-    const name, const index = segment(path[0..dot]);
+    assert(segs.len >= 1);
+    if (segs.len == 1) return .{ .at = decl, .skip = 0 };
+    const name = segs[0].name;
+    const index = segs[0].index;
     if (children) |list| {
-        for (list) |c| if (c.name != .none and std.mem.eql(u8, r.file.str(c.name), name)) return .{ .at = decl, .rest = path };
-    } else for (r.hier.scopes.items, 0..) |info, s| if (s != decl and info.parent == decl and isScope(r, @intCast(s), name, index)) return .{ .at = decl, .rest = path };
+        for (list) |c| if (c.name != .none and std.mem.eql(u8, r.file.str(c.name), name)) return .{ .at = decl, .skip = 0 };
+    } else for (r.hier.scopes.items, 0..) |info, s| if (s != decl and info.parent == decl and isScope(r, @intCast(s), name, index)) return .{ .at = decl, .skip = 0 };
     var s = decl;
     while (true) {
-        if (isScope(r, s, name, index)) return .{ .at = s, .rest = path[dot + 1 ..] };
+        if (isScope(r, s, name, index)) return .{ .at = s, .skip = 1 };
         const info = r.hier.scopes.items[s];
         // §12.2.1: "a defparam statement in a hierarchy in or under a
         // generate block instance ... or an array of instances ... shall
@@ -154,39 +211,27 @@ fn defparamBase(r: *Run, decl: u32, path: []const u8, children: ?[]const Ast.Ins
         if (isRoot(r, s)) break;
         s = info.parent;
     }
-    for (r.hier.roots) |t| if (isScope(r, t, name, index)) return .{ .at = t, .rest = path[dot + 1 ..] };
-    return .{ .at = decl, .rest = path };
-}
-
-/// A hierarchical name segment `name` or `name[k]`; a `k` that is not a
-/// decimal integer reads as no index. `seg` is source text: an escaped
-/// identifier may hold `[` without ending in `]` (IEEE 1364-2005 §3.7.1,
-/// `\a__g[1]__in1`), and that whole segment is the name.
-fn segment(seg: []const u8) struct { []const u8, ?i64 } {
-    const bracket = std.mem.findScalar(u8, seg, '[') orelse return .{ seg, null };
-    if (seg[seg.len - 1] != ']') return .{ seg, null };
-    assert(bracket < seg.len - 1);
-    return .{ seg[0..bracket], std.fmt.parseInt(i64, seg[bracket + 1 .. seg.len - 1], 10) catch null };
+    for (r.hier.roots) |t| if (isScope(r, t, name, index)) return .{ .at = t, .skip = 1 };
+    return .{ .at = decl, .skip = 0 };
 }
 
 /// The scope defparam path `rest` names below `at` (its last segment, the
 /// parameter, dropped), in the complete hierarchy; null when a segment
 /// names no scope.
-fn defparamScope(r: *const Run, at: u32, rest: []const u8) ?u32 {
+fn defparamScope(r: *const Run, at: u32, rest: []const PathSeg) ?u32 {
     assert(at < r.hier.scopes.items.len);
     assert(rest.len > 0);
     var s = at;
-    var it = std.mem.splitScalar(u8, rest[0 .. std.mem.findScalarLast(u8, rest, '.') orelse return s], '.');
     // ponytail: a scan of every scope per segment; elaboration runs it once
     // per defparam. A (parent, name, index) map if designs grow huge.
-    next: while (it.next()) |seg| {
-        const name, const index = segment(seg);
-        for (r.hier.scopes.items, 0..) |info, c| if (c != s and info.parent == s and isScope(r, @intCast(c), name, index)) {
+    next: for (rest[0 .. rest.len - 1]) |seg| {
+        for (r.hier.scopes.items, 0..) |info, c| if (c != s and info.parent == s and isScope(r, @intCast(c), seg.name, seg.index)) {
             s = @intCast(c);
             continue :next;
         };
         return null;
     }
+    assert(s < r.hier.scopes.items.len);
     return s;
 }
 
@@ -197,14 +242,4 @@ fn within(r: *const Run, s: u32, outer: u32) bool {
     var at = s;
     while (at != outer) : (at = r.hier.scopes.items[at].parent) if (isRoot(r, at)) return false;
     return true;
-}
-
-test "segment: an escaped name holding `[` is one name; `name[k]` splits" {
-    // Oracle: IEEE 1364-2005 §3.7.1 (an escaped identifier is any printable
-    // run) and §12.5 (a hierarchical segment `name[k]` names an array element).
-    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "a__g[1]__in1", null }), segment("a__g[1]__in1"));
-    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "a[12", null }), segment("a[12"));
-    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "u", 3 }), segment("u[3]"));
-    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "u", null }), segment("u[k]"));
-    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "u", null }), segment("u"));
 }
