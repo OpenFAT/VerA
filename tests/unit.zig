@@ -19883,6 +19883,16 @@ pub const exe_tests = struct {
         }
         try testing.expect(tb.validSection("H.2:3"));
     }
+
+    test "a `//! time` before 0 is refused when the directives are read (BadTime)" {
+        // Oracle: a transient starts at 0 (VAMS §4.5.4: `$abstime` is not
+        // negative). The rewrite accepted -1n and the mixed runner failed at
+        // run time. 0 itself is the first legal time.
+        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        try testing.expectError(error.BadTime, tb.Spec.parse(arena_state.allocator(), "//! time -1n, 0, 1n\n", null));
+        _ = try tb.Spec.parse(arena_state.allocator(), "//! time 0, 1n\n", null);
+    }
 };
 
 pub const vpi_tests = struct {
