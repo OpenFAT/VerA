@@ -29,13 +29,14 @@
 //! - `pub fn repeatCount(a: anytype, comptime w: u32, comptime signed: bool) u64`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const State = @import("State.zig");
 const design = @import("design.zig");
 const logic = @import("logic/root.zig");
 const Sense = design.Sense;
 const Error = design.Error;
 const Reach = design.Reach;
-const one_slot = design.one_slot;
+const wide_slot = design.wide_slot;
 const W = logic.W;
 const two = logic.two;
 const quietState = State.quietState;
@@ -51,28 +52,39 @@ pub const View = struct {
     x: [*]u64,
     dirty: [*]u64,
 
-    /// `State.get` through the held pointers.
+    /// `State.get` through the held pointers. Asserts that `off` is a plane
+    /// word and the planes have not moved since `State.view`.
     pub inline fn get(self: View, off: u32) W {
+        assert(off < self.s.v.len);
+        assert(self.v == self.s.v.ptr); // Pair of `State.view`.
         return peek(two, self.v, self.x, off);
     }
 
-    /// `State.getw` through the held pointers.
+    /// `State.getw` through the held pointers. Asserts that the `n` words
+    /// from `off` are plane words.
     pub inline fn getw(self: View, off: u32, comptime n: u32) logic.Wide(n) {
+        comptime assert(n >= 1);
+        assert(off + n <= self.s.v.len);
         return peekw(self.v, self.x, off, n);
     }
 
-    /// `State.set` through the held pointers.
+    /// `State.set` through the held pointers. Asserts that `a`'s words from
+    /// `off` are plane words and the planes have not moved.
     pub inline fn set(self: View, off: u32, a: anytype, m: anytype) void {
+        assert(off + wordsOf(a) <= self.s.v.len);
+        assert(self.x == self.s.x.ptr); // Pair of `State.view`.
         poke(two, self.v, self.x, off, a, m);
     }
 
     /// Clear combinational node `n`'s dirty bit; whether it was set. The
     /// settle event takes every node in topological order, so a node only
-    /// ever dirties one it has not reached yet.
+    /// ever dirties one it has not reached yet. Asserts that `n` is a node.
     pub inline fn take(self: View, n: u32) bool {
+        assert(n / 64 < self.s.dirty.len);
         const bit = @as(u64, 1) << @intCast(n % 64);
         const was = self.dirty[n / 64] & bit != 0;
         self.dirty[n / 64] &= ~bit;
+        assert(self.dirty[n / 64] & bit == 0);
         return was;
     }
 
@@ -81,16 +93,21 @@ pub const View = struct {
     /// stored as is, and the readers in `senses` (`word` counted from `off`)
     /// whose bits moved are marked dirty here, without a branch; `reach` is
     /// woken as `put` wakes it. A node reached in topological order only
-    /// marks later ones.
+    /// marks later ones. Asserts that `slot` is a slot and `a`'s words from
+    /// `off` are plane words.
     pub inline fn putNode(self: View, comptime reach: Reach, slot: u32, off: u32, a: anytype, comptime senses: []const Sense) Error!void {
+        assert(slot < self.s.terms.len);
+        assert(off + wordsOf(a) <= self.s.v.len);
         return self.putNodeAs(two, reach, slot, off, a, senses);
     }
 
     /// `putNode`; `k` as `poke`'s.
     inline fn putNodeAs(self: View, comptime k: bool, comptime reach: Reach, slot: u32, off: u32, a: anytype, comptime senses: []const Sense) Error!void {
+        assert(slot < self.s.terms.len);
         if (self.s.held(slot)) return;
         const s = logic.wide(a);
         const n = s.v.len;
+        assert(off + n <= self.s.v.len);
         const before = logic.low(peek(k, self.v, self.x, off));
         var d: [n]u64 = undefined;
         inline for (0..n) |j| {
@@ -99,6 +116,7 @@ pub const View = struct {
             self.v[off + j] = s.v[j];
             if (!k) self.x[off + j] = s.x[j];
         }
+        inline for (senses) |e| comptime assert(e.word < n); // A reader's word is one of the node's.
         inline for (senses) |e| self.dirty[e.node / 64] |= @as(u64, @intFromBool(d[e.word] & e.mask != 0)) << @intCast(e.node % 64);
         if (@as(u8, @bitCast(reach)) == 0) return;
         var moved: u64 = 0;
@@ -107,20 +125,28 @@ pub const View = struct {
     }
 };
 
-/// `get` of planes `v`, `x`; `k` as `poke`'s.
+/// `get` of planes `v`, `x`; `k` as `poke`'s. Asserts that, read, the two
+/// planes are two (the caller bounds `off`).
 pub inline fn peek(comptime k: bool, v: [*]const u64, x: [*]const u64, off: u32) W {
+    if (!k) assert(v != x);
     return .{ .v = v[off], .x = if (k) 0 else x[off] };
 }
 
-/// `getw` of planes `v`, `x`.
+/// `getw` of planes `v`, `x`. Asserts that the planes are two and `n` is
+/// at least one word (the caller bounds `off`).
 pub inline fn peekw(v: [*]const u64, x: [*]const u64, off: u32, comptime n: u32) logic.Wide(n) {
+    comptime assert(n >= 1);
+    if (!two) assert(v != x);
     return .{ .v = v[off..][0..n].*, .x = if (two) @splat(0) else x[off..][0..n].* };
 }
 
 /// `set` of planes `v`, `x`; `k`: the x plane is zero and stays so, and
-/// is not written.
+/// is not written. Asserts that the planes are two and `m` masks every
+/// word of `a` (the caller bounds `off`).
 pub inline fn poke(comptime k: bool, v: [*]u64, x: [*]u64, off: u32, a: anytype, m: anytype) void {
+    if (!k) assert(v != x);
     if (@TypeOf(a) != W) {
+        assert(a.v.len == m.len);
         for (v[off..][0..a.v.len], a.v, m) |*ov, av, am| ov.* = (ov.* & ~am) | (av & am);
         if (!k) for (x[off..][0..a.v.len], a.x, m) |*ox, ax, am| {
             ox.* = (ox.* & ~am) | (ax & am);
@@ -130,6 +156,7 @@ pub inline fn poke(comptime k: bool, v: [*]u64, x: [*]u64, off: u32, a: anytype,
     const bits: u64 = m;
     v[off] = (v[off] & ~bits) | (a.v & bits);
     if (!k) x[off] = (x[off] & ~bits) | (a.x & bits);
+    assert(v[off] & bits == a.v & bits);
 }
 
 /// The design's plane accessors in one phase of a `--state=auto`
@@ -143,77 +170,114 @@ pub inline fn poke(comptime k: bool, v: [*]u64, x: [*]u64, off: u32, a: anytype,
 /// storing it ends the phase. `s` is a `*State` or a `View`.
 pub fn Phase(comptime k: bool) type {
     return struct {
-        /// `State.get`; the x half is 0 in the 2-state phase.
+        /// `State.get`; the x half is 0 in the 2-state phase. Asserts that
+        /// `off` is a plane word.
         pub inline fn get(s: anytype, off: u32) W {
+            assert(off < planeWords(s));
+            assert(planeWords(s) <= std.math.maxInt(u32)); // Offsets are u32.
             var a = s.get(off);
             if (k) a.x = 0;
             return a;
         }
 
-        /// `State.getw`; the x half is 0 in the 2-state phase.
+        /// `State.getw`; the x half is 0 in the 2-state phase. Asserts that
+        /// the `n` words from `off` are plane words.
         pub inline fn getw(s: anytype, off: u32, comptime n: u32) logic.Wide(n) {
+            comptime assert(n >= 1);
+            assert(off + n <= planeWords(s));
             var a = s.getw(off, n);
             if (k) a.x = @splat(0);
             return a;
         }
 
         /// `State.set`; `error.Rerun` on an x or z in the 2-state phase.
+        /// Asserts that `a`'s words from `off` are plane words.
         pub inline fn set(s: anytype, off: u32, a: anytype, m: anytype) Error!void {
+            assert(off + wordsOf(a) <= planeWords(s));
+            if (@TypeOf(a) != W) assert(a.v.len == m.len); // `m` masks every word.
             if (!k) return s.set(off, a, m);
             try known(a, m);
             poke(true, planeV(s), undefined, off, a, m);
         }
 
         /// `State.put`; `error.Rerun` on an x or z in the 2-state phase.
+        /// Asserts that `slot` is a slot and `a`'s words from `off` are
+        /// plane words.
         pub inline fn put(s: *State, comptime reach: Reach, slot: u32, off: u32, a: anytype, m: anytype) Error!void {
+            assert(slot < s.terms.len);
+            assert(off + wordsOf(a) <= s.v.len);
             if (k) try known(a, m);
             if (@TypeOf(a) != W) return s.store(slot, off, &a.v, &a.x, &m);
             return s.putWordAs(k, reach, slot, off, 0, a, m);
         }
 
-        /// `put` out of line, for code that runs once.
+        /// `put` out of line, for code that runs once. Asserts what `put` does.
         pub noinline fn putCold(s: *State, comptime reach: Reach, slot: u32, off: u32, a: anytype, m: anytype) Error!void {
+            assert(slot < s.terms.len);
+            assert(off + wordsOf(a) <= s.v.len);
             return put(s, reach, slot, off, a, m);
         }
 
-        /// `set` out of line.
+        /// `set` out of line. Asserts what `set` does.
         pub noinline fn setCold(s: *State, off: u32, a: anytype, m: anytype) Error!void {
+            assert(s.v.len == s.x.len);
+            assert(off + wordsOf(a) <= s.v.len);
             return set(s, off, a, m);
         }
 
         /// `State.putWord`; `error.Rerun` on an x or z in the 2-state phase.
+        /// Asserts that `slot` is a slot and word `j` from `off` a plane word.
         pub inline fn putWord(s: *State, comptime reach: Reach, slot: u32, off: u32, j: u32, a: W, m: u64) Error!void {
+            assert(slot < s.terms.len);
+            assert(off + j < s.v.len);
             if (k) try known(a, m);
             return s.putWordAs(k, reach, slot, off, j, a, m);
         }
 
         /// `View.putNode`; `error.Rerun` on an x or z in the 2-state phase.
+        /// Asserts what `View.putNode` does.
         pub inline fn putNode(s: View, comptime reach: Reach, slot: u32, off: u32, a: anytype, comptime senses: []const Sense) Error!void {
+            assert(slot < s.s.terms.len);
+            assert(off + wordsOf(a) <= s.s.v.len);
             if (k) try known(a, @as(@TypeOf(a.x), if (@TypeOf(a) == W) std.math.maxInt(u64) else @splat(std.math.maxInt(u64))));
             return s.putNodeAs(k, reach, slot, off, a, senses);
         }
 
         /// `State.nba`; `error.Rerun` on an x or z in the 2-state phase.
+        /// Asserts that `slot` is a slot and `a`'s words from `off` are
+        /// plane words.
         pub inline fn nba(s: *State, comptime reach: Reach, slot: u32, off: u32, a: anytype, m: anytype) Error!void {
+            assert(slot < s.terms.len);
+            assert(off + wordsOf(a) <= s.v.len);
             if (k) try known(a, m);
             return @call(.always_inline, State.nba, .{ s, reach, slot, off, a, m });
         }
 
         /// `State.nbaAfter`; `error.Rerun` on an x or z in the 2-state phase.
+        /// Asserts that `slot` is a slot and `a`'s words from `off` are
+        /// plane words.
         pub inline fn nbaAfter(s: *State, comptime reach: Reach, after: u64, slot: u32, off: u32, a: anytype, m: anytype) Error!void {
+            assert(slot < s.terms.len);
+            assert(off + wordsOf(a) <= s.v.len);
             if (k) try known(a, m);
             return s.nbaAfter(reach, after, slot, off, a, m);
         }
     };
 }
 
-/// The `v` plane of a `*State` or a `View`, as a many-pointer.
+/// The `v` plane of a `*State` or a `View`, as a many-pointer. Asserts
+/// that a `View`'s is still its `State`'s.
 pub inline fn planeV(s: anytype) [*]u64 {
-    return if (@TypeOf(s) == View) s.v else s.v.ptr;
+    const v = if (@TypeOf(s) == View) s.v else s.v.ptr;
+    assert(planeWords(s) != 0); // Only a store through it asks.
+    assert(v == (if (@TypeOf(s) == View) s.s.v.ptr else s.v.ptr));
+    return v;
 }
 
-/// `error.Rerun` if a bit `m` selects of `a` is x or z.
+/// `error.Rerun` if a bit `m` selects of `a` is x or z. Asserts that `m`
+/// masks every word of `a`.
 pub inline fn known(a: anytype, m: anytype) Error!void {
+    if (@TypeOf(a) != W) assert(a.x.len == m.len);
     var any: u64 = 0;
     if (@TypeOf(a) == W) any = a.x & m else for (a.x, m) |x, b| {
         any |= x & b;
@@ -222,23 +286,38 @@ pub inline fn known(a: anytype, m: anytype) Error!void {
         @branchHint(.cold);
         return error.Rerun;
     }
+    assert(any == 0);
 }
 
 /// §9.6/§9.7.7 a `repeat` count of `w` bits (`exec` `.repeat_start`): x, z
 /// or a signed count below 0 is 0 times, at any width; past 64 bits it
 /// saturates, as 2^64 passes never end.
 pub fn repeatCount(a: anytype, comptime w: u32, comptime signed: bool) u64 {
+    comptime assert(w >= 1);
     const c = logic.wide(a);
+    comptime assert(c.v.len >= logic.words(w)); // The sign bit is a word of `a`.
     for (c.x) |x| if (x != 0) return 0;
     if (signed and (c.v[(w - 1) / 64] >> @intCast((w - 1) % 64)) & 1 != 0) return 0;
     for (c.v[1..]) |v| if (v != 0) return std.math.maxInt(u64);
     return c.v[0];
 }
 
+// ---- private ----
+
+/// The plane words of a `*State` or a `View`.
+inline fn planeWords(s: anytype) usize {
+    return if (@TypeOf(s) == View) s.s.v.len else s.v.len;
+}
+
+/// The plane words value `a` (a `W` or a `logic.Wide`) covers.
+inline fn wordsOf(a: anytype) usize {
+    return if (@TypeOf(a) == W) 1 else a.v.len;
+}
+
 test "the 2-state phase refuses an x or z store only where the mask selects it" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const s = try quietState(arena.allocator(), &one_slot, -9);
+    const s = try quietState(arena.allocator(), &wide_slot, -9);
     const P = Phase(true);
     try P.set(s, 0, W{ .v = 5, .x = 2 }, @as(u64, 0b101));
     try testing.expectEqual(@as(u64, 5), s.v[0]);

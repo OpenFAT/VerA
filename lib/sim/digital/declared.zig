@@ -129,10 +129,13 @@ pub const Decls = struct {
     defparams: std.HashMapUnmanaged(PathKey, struct { d: Ast.Defparam, decl: u32 }, PathKey.Ctx, 80) = .empty,
     /// Each defparam as pass one bound it, for §12.8.2's check against the
     /// complete hierarchy (`checkDefparams`).
-    bound_defparams: std.ArrayList(struct { decl: u32, path: []const u8, at: u32, rest: []const u8, tok: u32 }) = .empty,
+    bound_defparams: std.ArrayList(struct { decl: u32, path: []const u8, segs: []const root.PathSeg, at: u32, skip: u1, tok: u32 }) = .empty,
     /// §12.2 parameter slots: constants an expression may fold, never a
     /// target.
     params: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// §12.4.1 the parameter slots `genvarSlot` minted for a genvar: a loop
+    /// generate whose index name finds any other slot is refused.
+    genvars: std.AutoHashMapUnmanaged(u32, void) = .empty,
     /// IEEE 1364-2005 §4.10.3 the parameters that are specparams, each to
     /// its declaration's token: "declared before it is referenced".
     specparams: std.AutoHashMapUnmanaged(u32, u32) = .empty,

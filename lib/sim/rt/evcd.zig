@@ -24,6 +24,7 @@
 //! - `pub fn close(s: *State, at: u64) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const design = @import("design.zig");
 const State = @import("State.zig");
@@ -84,24 +85,37 @@ const Dump = struct {
 
     /// Returns the number of ports the dump watches.
     pub fn len(d: Dump) usize {
+        // `select` sized `last` to the ports; only a selected file is dumped.
+        assert(d.f.selected);
+        assert(d.f.last.len == d.file.ports.len);
         return d.file.ports.len;
     }
     /// Returns port `n`'s direction.
     pub fn dir(d: Dump, n: usize) Ast.Direction {
+        assert(d.f.selected);
+        assert(n < d.file.ports.len);
         return d.file.ports[n].dir;
     }
     /// Returns port `n`'s width in bits.
     pub fn width(d: Dump, n: usize) u32 {
+        assert(n < d.file.ports.len);
+        assert(d.file.ports[n].width != 0); // A port is a net or variable.
         return d.file.ports[n].width;
     }
     /// Returns port `n`'s last written state text, which the caller overwrites.
     pub fn last(d: Dump, n: usize) *[]u8 {
+        assert(d.f.last.len == d.file.ports.len);
+        assert(n < d.f.last.len);
         return &d.f.last[n];
     }
     /// Bit `bit` of port `n` as its input side and its output side drive it.
     pub fn sides(d: Dump, n: usize, bit: u32) [2]Signal {
         const s = d.s;
+        assert(n < d.file.ports.len);
         const p = d.file.ports[n];
+        assert(bit < p.width);
+        // One side flag per driver row of the net.
+        if (p.net) |k| assert(p.inside.len == s.nets.nets[k].drivers.len);
         var in: Signal = .{};
         var out: Signal = .{};
         if (p.net) |k| {
@@ -114,12 +128,17 @@ const Dump = struct {
     }
     /// Writes `bytes` to the dump's file (`put`).
     pub fn write(d: Dump, bytes: []const u8) Error!void {
+        assert(d.f.selected);
+        assert(d.f.started); // `tick` created the file first.
         return put(d.s, d.f, d.file, bytes);
     }
 };
 
 /// `$dumpports` call `k` runs: its file is written at the end of the step.
+/// Asserts that `k` is a compiled call.
 pub fn select(s: *State, k: u32) Error!void {
+    assert(s.dumps.port_live.len == s.dumps.port_files.len);
+    assert(k < s.dumps.port_live.len);
     if (s.quiet) return;
     // "the execution of all $dumpports tasks shall be at the same
     // simulation time" (§18.3.1).
@@ -130,11 +149,15 @@ pub fn select(s: *State, k: u32) Error!void {
     f.selected = true;
     f.last = try s.gpa.alloc([]u8, s.dumps.port_files[k].ports.len);
     @memset(f.last, &.{});
+    assert(f.last.len == s.dumps.port_files[k].ports.len);
 }
 
 /// `$dumpportsoff`, `on`, `all`, `limit` (`size`) or `flush` of file `k`,
-/// or of every file when `k` is null (`devcd.task`).
+/// or of every file when `k` is null (`devcd.task`). Asserts that `k`,
+/// when given, is a compiled call, and `op` is no `$dumpports`.
 pub fn control(s: *State, op: Op, k: ?u32, size: u64) Error!void {
+    assert(op != .ports);
+    if (k) |want| assert(want < s.dumps.port_live.len);
     if (s.quiet) return;
     for (s.dumps.port_live, s.dumps.port_files, 0..) |*f, file, i| {
         if (k) |want| if (want != i) continue;
@@ -163,8 +186,10 @@ pub fn control(s: *State, op: Op, k: ?u32, size: u64) Error!void {
 /// The end of the step at tick `at`: each new file's header and
 /// `$dumpports` section, and each running file's changes.
 pub fn tick(s: *State, at: u64) Error!void {
+    assert(s.dumps.port_live.len == s.dumps.port_files.len);
     if (s.quiet) return;
     for (s.dumps.port_live, s.dumps.port_files) |*f, file| {
+        if (!f.selected) assert(!f.started); // Only a selected file starts.
         if (!f.selected) continue;
         if (f.started) {
             try changes(s, f, file, at);
@@ -178,15 +203,18 @@ pub fn tick(s: *State, at: u64) Error!void {
         try w.writer.writeAll(file.header);
         try put(s, f, file, w.written());
         try checkpoint(s, f, file, "$dumpports", false, at);
+        assert(f.started);
     }
 }
 
 /// The run is over at tick `at`: the step's changes, then §18.3.6.1's
 /// `$vcdclose`.
 pub fn close(s: *State, at: u64) Error!void {
+    assert(s.dumps.port_live.len == s.dumps.port_files.len);
     if (s.quiet or s.dumps.port_live.len == 0) return;
     try tick(s, at);
     for (s.dumps.port_live, s.dumps.port_files) |*f, file| if (f.started) {
+        assert(f.selected);
         var buf: [64]u8 = undefined;
         try put(s, f, file, std.mem.print(&buf, "$vcdclose #{d} $end\n", .{at}) catch unreachable);
     };
@@ -195,13 +223,19 @@ pub fn close(s: *State, at: u64) Error!void {
 // ---- private ----
 
 fn put(s: *State, f: *Live, file: File, bytes: []const u8) Error!void {
+    assert(f.started);
+    assert(f.file != null); // `tick` opened it before `started`.
     devcd.writeAt(s.io, f, bytes) catch return s.fail("cannot write the dump file `{s}`", .{file.name});
 }
 
 fn checkpoint(s: *State, f: *Live, file: File, keyword: []const u8, as_x: bool, at: u64) Error!void {
+    assert(f.started);
+    assert(std.mem.startsWith(u8, keyword, "$dumpports"));
     return devcd.writeCheckpoint(Dump{ .s = s, .f = f, .file = file, .scratch = s.gpa, .keep = s.gpa }, keyword, as_x, at);
 }
 
 fn changes(s: *State, f: *Live, file: File, at: u64) Error!void {
+    assert(f.started);
+    assert(f.last.len == file.ports.len);
     return devcd.writeChanges(Dump{ .s = s, .f = f, .file = file, .scratch = s.gpa, .keep = s.gpa }, at);
 }

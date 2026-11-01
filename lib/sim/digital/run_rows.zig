@@ -15,6 +15,7 @@
 //! - `pub const Monitor = struct`
 //! - `pub const MonitorKind = enum`
 //! - `pub const D2aSite = struct`
+//! - `pub const PathSeg = struct`
 //! - `pub const PathKey = struct`
 //! - `PathKey.Ctx = struct`
 //! - `PathKey.Ctx.hash(_: Ctx, k: PathKey) u64`
@@ -193,6 +194,12 @@ pub const MonitorKind = enum { cross, above, timer, absdelta };
 
 /// One digital event term of an analog event control (`Run.watchEvent`).
 pub const D2aSite = struct { slot: u32, edge: waiters.Edge, site: u6 };
+
+/// One segment of a defparam path as the parser read it: the name one
+/// identifier token interned (`name`, a slice of the path at byte `start`)
+/// and the instance select after it, if any. An escaped name's `[`, `]`, `.`
+/// or `$` are the name's own (IEEE 1364-2005 §3.7.1).
+pub const PathSeg = struct { name: []const u8, index: ?i64, start: u32 };
 
 /// A defparam path relative to a scope, spelled as `Ast.Defparam.path` is.
 pub const PathKey = struct {

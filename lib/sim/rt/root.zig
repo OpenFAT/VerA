@@ -85,6 +85,7 @@ pub const repeatCount = planes.repeatCount;
 test {
     _ = @import("State.zig");
     _ = @import("design.zig");
+    _ = @import("device.zig");
     _ = @import("records.zig");
     _ = @import("planes.zig");
     _ = @import("main.zig");

@@ -497,6 +497,22 @@ fn short(self: *Run, e: Ast.ExprId, dynamic: bool, comptime msg: []const u8) Err
     return if (dynamic) sformatMismatch(self, e) else self.exprFail(e, msg);
 }
 
+/// The argument after `arg` that a specifier of format `e` consumes, or null
+/// when the format ran out (`short` warned). A null argument (`, ,`) is
+/// §9.4.1's single space only where no specifier consumes it.
+fn operand(self: *Run, args: []const Ast.ExprId, arg: usize, e: Ast.ExprId, dynamic: bool) Error!?usize {
+    assert(arg < args.len);
+    assert(e != .none);
+    const next = arg + 1;
+    if (next == args.len) {
+        try short(self, e, dynamic, "missing display argument");
+        return null;
+    }
+    if (args[next] == .none) return self.exprFail(e, "§17.1.1.2: a format specification's argument is an expression, not a null argument");
+    assert(args[next] != .none);
+    return next;
+}
+
 fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, show: Show, only_first: bool) Error!void {
     const ex = &self.file.exprs;
     var arg: usize = 0;
@@ -505,7 +521,8 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
         if (only_first and arg != 0) {
             // Arguments left over once the format is used up.
             for (args[arg..]) |rest| if (rest != .none) try compile.checkExpr(self, rest);
-            if (allocator != null) try sformatMismatch(self, e);
+            // W1153 points at the first leftover, or the format past a null one.
+            if (allocator != null) try sformatMismatch(self, if (e != .none) e else args[0]);
             return;
         }
         // §9.4.1: "Any null argument produces a single space character in
@@ -580,8 +597,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 // and formats a time, whose operand is in the module's own
                 // time unit.
                 't', 'T' => {
-                    arg += 1;
-                    if (arg == args.len) return short(self, e, dynamic, "missing display argument");
+                    arg = (try operand(self, args, arg, e, dynamic)) orelse return;
                     try compile.checkExpr(self, args[arg]);
                     // A real operand is formatted as it is, not rounded to
                     // a whole unit first (#64).
@@ -616,8 +632,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 },
                 // §17.1.1.5 `%v`: "the strength of scalar nets".
                 'v', 'V' => {
-                    arg += 1;
-                    if (arg == args.len) return short(self, e, dynamic, "missing display argument");
+                    arg = (try operand(self, args, arg, e, dynamic)) orelse return;
                     try compile.checkExpr(self, args[arg]);
                     if (compile.typeOf(self, args[arg]).width != 1) return self.exprFail(args[arg], "§17.1.1.5: %v takes a scalar net reference");
                     const net = if (ex.tag(args[arg]) == .ident) self.netlist.slot_nets.get(try self.slot(args[arg])) else null;
@@ -636,8 +651,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 // §17.1.1.7 `%s` (the operand as 8-bit ASCII codes) and
                 // `%c` (its low eight bits as one character).
                 's', 'S', 'c', 'C' => {
-                    arg += 1;
-                    if (arg == args.len) return short(self, e, dynamic, "missing display argument");
+                    arg = (try operand(self, args, arg, e, dynamic)) orelse return;
                     try compile.checkExpr(self, args[arg]);
                     if (allocator) |a| {
                         const out = self.out;
@@ -653,8 +667,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                 // §17.1.1.2 `%u`/`%z`: the operand's two- or four-value bits
                 // as binary data.
                 'u', 'U', 'z', 'Z' => {
-                    arg += 1;
-                    if (arg == args.len) return short(self, e, dynamic, "missing display argument");
+                    arg = (try operand(self, args, arg, e, dynamic)) orelse return;
                     try compile.checkExpr(self, args[arg]);
                     if (allocator) |a| try unformatted(self.out, try evaluate.eval(self, a, args[arg], 0), format[i] == 'z' or format[i] == 'Z');
                     continue;
@@ -664,8 +677,7 @@ fn walk(self: *Run, args: []const Ast.ExprId, allocator: ?std.mem.Allocator, sho
                     "only the §9.4.3 Table 9-22 conversions (%b, %o, %h, %d, %e, %f, %g, §9.4.7 %r and %%) and %c %s %m %l %t %u %v %z are implemented",
                 ),
             };
-            arg += 1;
-            if (arg == args.len) return short(self, e, dynamic, "missing display argument");
+            arg = (try operand(self, args, arg, e, dynamic)) orelse return;
             if (radix) |r| {
                 try compile.checkExpr(self, args[arg]);
                 if (allocator) |a| {

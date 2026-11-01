@@ -17,6 +17,8 @@ const TyState = @import("root.zig").TyState;
 const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
+/// The AST's `.int_literal` side-table row.
+const IntLiteral = Ast.IntLiteral;
 const exec = @import("exec.zig");
 const evaluate = @import("evaluate.zig");
 const deep = @import("base").deep_stack;
@@ -79,9 +81,6 @@ pub const Typing = struct {
     /// §5.2.1 each part-select's constant `[msb:lsb]`, folded once by `infer`.
     part_selects: std.AutoHashMapUnmanaged(SpecExpr, VecRange) = .empty,
 };
-
-/// The AST's `.int_literal` side-table row.
-const IntLiteral = Ast.IntLiteral;
 
 /// A decimal literal's width: its size, or for an unsized one 32 bits, which
 /// §3.5.1 makes a minimum: a value that does not fit keeps the frontend's 64.

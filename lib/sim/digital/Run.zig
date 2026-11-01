@@ -384,7 +384,7 @@ pub const stage = run_diag.stage;
 /// `run_diag.failWith`: `fail` under a rule's own code, for a refusal the analog side reports
 pub const failWith = run_diag.failWith;
 
-/// `run_diag.deepFail`: A walk ran out of the stack `deep.runGuarded` reserved, at token `tok`
+/// `run_diag.deepFail`: A walk ran out of the stack `deep.runGuarded` reserved, at token `tok`: E0241 while elaborating, E1100 once running
 pub const deepFail = run_diag.deepFail;
 
 /// `run_diag.exprFail`: `fail` at expression `e`'s main token, with a fixed message
