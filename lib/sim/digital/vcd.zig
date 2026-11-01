@@ -106,32 +106,44 @@ pub const Vcd = struct {
     last_time: ?u64 = null,
 
     /// §18.1.1 `$dumpfile`: the name, unless dumping has begun or it is
-    /// null (an x or z bit); `call` is the call as written.
+    /// null (an x or z bit); `call` is the call as written. Asserts that
+    /// `call` is a task call's text (`callText`).
     pub fn setFile(self: *Vcd, gpa: std.mem.Allocator, name: ?[]const u8, call: []const u8) Failure!void {
+        assert(call.len != 0);
+        assert(call[0] == '$'); // `callText` starts at the task's name.
         if (self.started) return;
         self.name = try gpa.dupe(u8, name orelse return);
         self.call = try gpa.dupe(u8, call);
+        assert(self.call.?.len == call.len);
     }
 
     /// §18.1.2 one `$dumpvars` at time `now`: `levels` applies to the scopes
     /// in `targets` ("and not to individual variables"). Dumping starts at
     /// the end of the time unit (§18.1.3), so the engine queues a tick.
     pub fn select(self: *Vcd, gpa: std.mem.Allocator, now: u64, tok: u32, levels: u32, targets: []const Target) Failure!void {
+        // Only `tick` after a `select` starts the dump.
+        if (self.started) assert(self.selected_at != null);
         if (self.selected_at) |t| if (t != now or self.started) return error.DumpvarsTime;
+        assert(!self.started);
         self.selected_at = now;
         self.tok = tok;
         for (targets) |t| switch (t) {
             .scope => |sc| try self.scopes.put(gpa, sc, levels),
             .slot => |sl| try self.slots.put(gpa, sl, {}),
         };
+        assert(self.selected_at.? == now);
     }
 
     /// §18.2.2 named event `slot` was triggered: its code is written as a
     /// marker at the end of the step. The engine asks for the tick.
+    /// Asserts that `slot`'s codes are a named event's.
     pub fn fire(self: *Vcd, cat: *const Catalog, slot: u32) void {
+        // One code per distinct slot, each minted from a catalog variable.
+        assert(self.codes.items.len <= cat.vars.len);
         // ponytail: a scan of the codes per trigger; a slot index when a
         // design dumps many events.
         for (self.codes.items) |*c| if (cat.vars[c.v].slot == slot) {
+            assert(cat.vars[c.v].event); // Only a named event triggers.
             c.fired = true;
         };
     }
@@ -139,6 +151,7 @@ pub const Vcd = struct {
     /// `$dumpoff`, `$dumpon` and `$dumpall` (§18.1.3, §18.1.4); every other
     /// task has nothing to write. `src` as in `tick`.
     pub fn control(self: *Vcd, a: std.mem.Allocator, io: ?std.Io, cat: *const Catalog, src: anytype, now: u64, op: Op) Failure!void {
+        if (self.started) assert(self.file != null); // `header` opened it first.
         switch (op) {
             .off => if (self.started and self.on) {
                 try self.changes(a, io, cat, src, now);
@@ -157,6 +170,8 @@ pub const Vcd = struct {
             // of this writer's own for §18.1.6 to empty.
             .file, .vars, .limit, .flush => {},
         }
+        if (self.started and op == .off) assert(!self.on);
+        if (self.started and op == .on) assert(self.on);
     }
 
     /// The end of a time step with dumped changes, or the first one after
@@ -164,14 +179,18 @@ pub const Vcd = struct {
     /// changes. `src` is the engine: `src.dumpPlanes(v, out)` copies catalog
     /// variable `v`'s value planes into `out`, and `src.dumpSlot(slot)` makes
     /// a change of `slot` queue a tick. Codes are allocated from `gpa`.
+    /// Asserts that a `$dumpvars` selected the dump.
     pub fn tick(self: *Vcd, gpa: std.mem.Allocator, a: std.mem.Allocator, io: ?std.Io, cat: *const Catalog, src: anytype, now: u64) Failure!void {
+        assert(self.selected_at != null);
         self.pending = false;
         if (self.started) return self.changes(a, io, cat, src, now);
         try self.header(gpa, a, io orelse return error.NoFilesystem, cat, src);
         try self.checkpoint(a, io, cat, src, now, "$dumpvars", false);
+        assert(self.started);
     }
 
     fn put(self: *Vcd, io: ?std.Io, bytes: []const u8) Failure!void {
+        assert(self.started); // Every section follows `header`'s open.
         if (self.limited or bytes.len == 0) return;
         const f = self.file orelse return;
         var out = bytes;
@@ -182,9 +201,13 @@ pub const Vcd = struct {
         };
         f.writePositionalAll(io.?, out, self.pos) catch return error.CannotWrite; // `header` opened it with `io`
         self.pos += out.len;
+        // Past the limit only by its own comment, and nothing after it.
+        if (out.ptr != bytes.ptr) assert(self.limited);
     }
 
     fn header(self: *Vcd, gpa: std.mem.Allocator, a: std.mem.Allocator, io: std.Io, cat: *const Catalog, src: anytype) Failure!void {
+        assert(!self.started);
+        assert(self.codes.items.len == 0); // `dumpScope` mints every code here.
         self.file = std.Io.Dir.cwd().createFile(io, self.name, .{}) catch return error.CannotCreate;
         self.started = true;
         var w: std.Io.Writer.Allocating = .init(a);
@@ -203,6 +226,8 @@ pub const Vcd = struct {
     /// selected. `inherited` is the level count a selected ancestor passes
     /// down: null none, 0 every level, n that many more.
     fn dumpScope(self: *Vcd, gpa: std.mem.Allocator, aw: *std.Io.Writer.Allocating, cat: *const Catalog, src: anytype, s: u32, inherited: ?u32) Failure!void {
+        assert(s < cat.scopes.len);
+        assert(cat.var_start[s] <= cat.var_start[s + 1]);
         const w = &aw.writer;
         const info = cat.scopes[s];
         const own = self.scopes.get(s);
@@ -229,6 +254,7 @@ pub const Vcd = struct {
             if (i == 0 or i == s or child.parent != s or !child.child) continue;
             try self.dumpScope(gpa, aw, cat, src, @intCast(i), down);
         }
+        assert(aw.written().len >= body);
         if (aw.written().len == body) {
             aw.shrinkRetainingCapacity(mark);
             return;
@@ -238,20 +264,25 @@ pub const Vcd = struct {
 
     /// `#time`, once per time step however many sections it carries.
     fn time(self: *Vcd, w: *std.Io.Writer, now: u64) Failure!void {
+        if (self.last_time) |t| assert(now >= t); // Time never runs back.
         if (self.last_time == now) return;
         self.last_time = now;
         try w.print("#{d}\n", .{now});
+        assert(self.last_time.? == now);
     }
 
     /// §18.2.3.9-§18.2.3.12: a section holding every dumped variable (as x
     /// for `$dumpoff`), which then counts as dumped.
     fn checkpoint(self: *Vcd, a: std.mem.Allocator, io: ?std.Io, cat: *const Catalog, src: anytype, now: u64, keyword: []const u8, as_x: bool) Failure!void {
+        assert(self.started);
+        assert(keyword[0] == '$'); // A §18.2.3 section keyword.
         var w: std.Io.Writer.Allocating = .init(a);
         try self.time(&w.writer, now);
         try w.writer.print("{s}\n", .{keyword});
         for (self.codes.items, 0..) |c, i| {
             // An event holds no value to checkpoint.
             if (cat.vars[c.v].event) continue;
+            assert(c.last.len == 2 * words(cat.vars[c.v].width)); // Pair of `dumpScope`'s alloc.
             src.dumpPlanes(cat.vars[c.v], c.last);
             try value(&w.writer, cat.vars[c.v], c.last, @intCast(i), as_x);
         }
@@ -261,6 +292,8 @@ pub const Vcd = struct {
 
     /// The variables whose value is not the one last dumped.
     fn changes(self: *Vcd, a: std.mem.Allocator, io: ?std.Io, cat: *const Catalog, src: anytype, now: u64) Failure!void {
+        assert(self.started);
+        assert(self.codes.items.len <= cat.vars.len);
         if (!self.on) return;
         var w: std.Io.Writer.Allocating = .init(a);
         // ponytail: every dumped variable is compared each dumped step; a changed
@@ -278,6 +311,7 @@ pub const Vcd = struct {
                 try w.writer.writeByte('\n');
                 continue;
             }
+            assert(c.last.len == 2 * words(cat.vars[c.v].width)); // Pair of `dumpScope`'s alloc.
             try buf.resize(a, c.last.len);
             src.dumpPlanes(cat.vars[c.v], buf.items);
             if (std.mem.eql(u64, c.last, buf.items)) continue;
@@ -323,30 +357,42 @@ const Code = struct {
 const Values = struct {
     r: *Run,
     /// Copies `v`'s current planes into `out`, which is exactly as long.
+    /// Asserts that `v.slot` is a slot and `out` its planes' length.
     pub fn dumpPlanes(self: Values, v: Var, out: []u64) void {
+        assert(v.slot < self.r.values.len);
+        assert(out.len == self.r.values[v.slot].planes.len);
         @memcpy(out, self.r.values[v.slot].planes);
     }
     /// Marks `slot` dumped, so `store` requests the end-of-step section.
+    /// Asserts that `slot` is a slot.
     pub fn dumpSlot(self: Values, slot: u32) void {
+        assert(slot < self.r.waits.watch.len);
         self.r.waits.watch[slot].insert(.vcd);
+        assert(self.r.waits.watch[slot].contains(.vcd));
     }
 };
 
 /// The text of a `Failure` other than memory and writing, with the file's name.
 pub fn message(e: Failure) []const u8 {
-    return switch (e) {
+    const text = switch (e) {
         error.NoFilesystem => "$dumpvars needs a filesystem to write `{s}`",
         error.CannotCreate => "cannot create the dump file `{s}`",
         error.CannotWrite => "cannot write the dump file `{s}`",
         error.DumpvarsTime => "§18.1.2: every $dumpvars shall execute at the same simulation time",
         error.OutOfMemory, error.WriteFailed => "the dump file `{s}` failed",
     };
+    assert(text.len != 0);
+    // Pair of `failed`, which passes the file's name to every other text.
+    assert((e == error.DumpvarsTime) == (std.mem.find(u8, text, "{s}") == null));
+    return text;
 }
 
 /// The source text of the task call whose name starts `text` at `start`,
 /// through its closing parenthesis: `$dumpfile(fname)`. A `)` before any `(`
-/// ends it there.
+/// ends it there. Asserts that `start` is a system task name's offset.
 pub fn callText(text: []const u8, start: u32) []const u8 {
+    assert(start < text.len);
+    assert(text[start] == '$');
     var depth: u32 = 0;
     var i: usize = start;
     var quoted = false;
@@ -366,8 +412,11 @@ pub fn callText(text: []const u8, start: u32) []const u8 {
 
 /// §18.2.3.1-§18.2.3.8's opening sections, shared with the extended VCD
 /// (§18.4.1): `$date`, `$version` naming the task `call` that made the file,
-/// and `$timescale` of the tick, 10^`finest` s.
+/// and `$timescale` of the tick, 10^`finest` s. Asserts that `finest` is a
+/// `Time.Quantum` (1 fs to 100 s).
 pub fn preamble(w: *std.Io.Writer, io: std.Io, call: []const u8, finest: i32) std.Io.Writer.Error!void {
+    assert(finest >= -15);
+    assert(finest <= 2);
     const t = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, @divFloor(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s))) };
     const yd = t.getEpochDay().calculateYearDay();
     const md = yd.calculateMonthDay();
@@ -381,7 +430,8 @@ pub fn preamble(w: *std.Io.Writer, io: std.Io, call: []const u8, finest: i32) st
     try w.print("$timescale {d}{s} $end\n", .{ std.math.pow(u32, 10, @intCast(finest - 3 * k)), units[@intCast(k + 5)] });
 }
 
-/// Refuses a malformed §18.1 call before the run.
+/// Refuses a malformed §18.1 call before the run. Asserts that `tok` is
+/// one of the run's tokens.
 pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
     assert(tok < r.starts.len);
     for (args) |a| if (a == .none) return r.fail(tok, "the §18.1 dump tasks take no null arguments", .{});
@@ -401,10 +451,14 @@ pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
         },
         .off, .on, .all, .flush => if (args.len != 0) return r.fail(tok, "$dumpoff, $dumpon, $dumpall and $dumpflush take no arguments", .{}),
     }
+    // What the run (`task`) relies on: no null argument, a `$dumplimit` size.
+    for (args) |a| assert(a != .none);
+    if (op == .limit) assert(args.len == 1);
 }
 
 /// §18.1.2 `module_or_variable`: a module instance (the root by its module
-/// name, or a downward path) or a variable, by slot.
+/// name, or a downward path) or a variable, by slot. Asserts that `e` is
+/// present (`check` refused a null argument).
 pub fn target(r: *Run, e: Ast.ExprId) Error!Target {
     assert(e != .none);
     const ex = &r.file.exprs;
@@ -413,6 +467,7 @@ pub fn target(r: *Run, e: Ast.ExprId) Error!Target {
         .hier_ident => ex.nameParts(e),
         else => return r.exprFail(e, "$dumpvars names a module instance or a variable"), // else: A.8.x forms that name no scope or variable
     };
+    assert(parts.len != 0);
     var scope = r.instanceOf(r.scope);
     var first = true;
     for (parts, 0..) |p, i| {
@@ -428,6 +483,7 @@ pub fn target(r: *Run, e: Ast.ExprId) Error!Target {
         } else return r.exprFail(e, "undeclared instance in a hierarchical reference");
         first = false;
     }
+    assert(scope < r.hier.scopes.items.len);
     return .{ .scope = scope };
 }
 
@@ -478,10 +534,13 @@ pub fn catalog(r: *Run, a: std.mem.Allocator, offs: []const u32) Error!Catalog {
         }
     }
     var_start[scopes.len] = @intCast(vars.items.len);
+    assert(var_start.len == scopes.len + 1);
+    assert(var_start[0] == 0 or scopes.len == 0);
     return .{ .scopes = scopes, .var_start = var_start, .vars = vars.items, .finest = r.time.finest };
 }
 
-/// The interpreter's run of one §18.1 task.
+/// The interpreter's run of one §18.1 task, which `check` accepted.
+/// Asserts that `tok` is one of the run's tokens.
 pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
     assert(tok < r.starts.len);
     const v = &r.dumps.vcd;
@@ -503,6 +562,7 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
                 if (e == error.DumpvarsTime) return r.fail(tok, message(error.DumpvarsTime), .{});
                 return failed(r, e);
             };
+            assert(v.selected_at.? == r.scheduler.now);
             try waiters.requestVcd(r);
         },
         .limit => v.limit = std.math.lossyCast(u64, (try evaluate.eval(r, a, args[0], 0)).asInt() orelse 0),
@@ -514,22 +574,32 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
 /// The step's `.vcd_tick` serves the four-state dump, once `$dumpvars`
 /// selected it, and the extended one (`evcd.tick`).
 pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
+    // Only `Vcd.tick` after a `$dumpvars` starts the dump.
+    if (r.dumps.vcd.started) assert(r.dumps.vcd.selected_at != null);
     r.dumps.vcd.pending = false;
     if (r.dumps.vcd.selected_at != null) r.dumps.vcd.tick(r.arena, a, r.io, try catalogOf(r), Values{ .r = r }, r.scheduler.now) catch |e| return failed(r, e);
     try @import("evcd.zig").tick(r, a);
+    assert(!r.dumps.vcd.pending); // Pair of `waiters.requestVcd`'s one tick per step.
 }
 
 // ---- private ----
 
 fn words(w: u32) u32 {
-    return (w + 63) / 64;
+    const n = (w + 63) / 64;
+    assert(n * 64 >= w);
+    assert(n == 0 or (n - 1) * 64 < w);
+    return n;
 }
 
 /// §18.2.1 identifier codes, "composed of the printable characters ... from
 /// ! to ~": code 0 is `!`, and a longer code counts on in base 94.
 fn codeText(w: *std.Io.Writer, code: u32) std.Io.Writer.Error!void {
     var n = code;
-    while (true) {
+    // 94^5 > 2^32: a u32 code is at most five characters.
+    var chars: u32 = 0;
+    while (true) : (chars += 1) {
+        assert(chars < 5);
+        assert(n <= code); // Each character divides the rest down.
         try w.writeByte(@intCast('!' + n % 94));
         if (n < 94) return;
         n = n / 94 - 1;
@@ -540,6 +610,9 @@ fn codeText(w: *std.Io.Writer, code: u32) std.Io.Writer.Error!void {
 /// and code with no space, a vector's `b` digits then one space, a real's
 /// `r` and `%.16g`.
 fn value(w: *std.Io.Writer, v: Var, p: []const u64, code: u32, as_x: bool) std.Io.Writer.Error!void {
+    assert(v.width != 0);
+    assert(p.len == 2 * words(v.width)); // A value plane and an unknown plane.
+    if (v.real) assert(v.width == 64);
     const lit: @import("kernels").Integer.Literal = .{ .width = v.width, .signed = false, .sized = true, .planes = @constCast(p) };
     if (v.real and !as_x) {
         var buf: [64]u8 = undefined;
@@ -575,6 +648,9 @@ fn g16(buf: *[64]u8, r: f64) []const u8 {
     const sci = std.mem.print(&sci_buf, "{e:.15}", .{r}) catch unreachable;
     const e_at = std.mem.findScalar(u8, sci, 'e').?;
     const x = std.fmt.parseInt(i32, sci[e_at + 1 ..], 10) catch unreachable;
+    // A finite f64's decimal exponent, subnormals included.
+    assert(x >= -324);
+    assert(x <= 308);
     if (x < -4 or x >= 16) {
         const mant = strip(sci[0..e_at]);
         return std.mem.print(buf, "{s}e{c}{d:0>2}", .{ mant, @as(u8, if (x < 0) '-' else '+'), @abs(x) }) catch unreachable;
@@ -584,14 +660,21 @@ fn g16(buf: *[64]u8, r: f64) []const u8 {
 
 /// `%g`'s removal of trailing fraction zeros and a trailing point.
 fn strip(s: []const u8) []const u8 {
+    assert(s.len != 0);
     if (std.mem.findScalar(u8, s, '.') == null) return s;
     const t = std.mem.trimEnd(u8, s, "0");
-    return if (t[t.len - 1] == '.') t[0 .. t.len - 1] else t;
+    const out = if (t[t.len - 1] == '.') t[0 .. t.len - 1] else t;
+    assert(out.len != 0); // A digit precedes the point.
+    return out;
 }
 
 /// The top-level module named `name`.
 fn rootNamed(r: *const Run, name: Ast.StrId) ?u32 {
-    for (r.hier.roots) |t| if (r.hier.scopes.items[t].name == name) return t;
+    assert(name != .none);
+    for (r.hier.roots) |t| if (r.hier.scopes.items[t].name == name) {
+        assert(t < r.hier.scopes.items.len);
+        return t;
+    };
     return null;
 }
 
@@ -599,6 +682,8 @@ fn rootNamed(r: *const Run, name: Ast.StrId) ?u32 {
 
 /// §18.2.3.7 `$var var_type size identifier_code reference $end`.
 fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast.StrId, at: u32, off: u32) Error!Var {
+    assert(at < r.values.len);
+    assert(name != .none);
     const kind: []const u8 = if (r.decls.events.contains(at)) "event" else if (r.netlist.slot_nets.get(at)) |n| switch (r.netlist.nets[n].kind) {
         // "a net of net type uwire shall have a variable type of wire"
         .uwire => "wire",
@@ -613,6 +698,7 @@ fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast
     } else "reg";
     const event = r.decls.events.contains(at);
     const width = if (event) 1 else r.values[at].width;
+    assert(width != 0);
     const head = try a.print("$var {s} {d} ", .{ kind, width });
     var tail: std.Io.Writer.Allocating = .init(a);
     try tail.writer.print(" {s}", .{r.file.str(name)});
@@ -623,20 +709,28 @@ fn variable(r: *Run, a: std.mem.Allocator, decls: []const Ast.VarDecl, name: Ast
 
 fn catalogOf(r: *Run) Error!*const Catalog {
     if (r.dumps.catalog == null) r.dumps.catalog = try catalog(r, r.arena, &.{});
-    return &r.dumps.catalog.?;
+    const c = &r.dumps.catalog.?;
+    assert(c.scopes.len == r.hier.scopes.items.len);
+    assert(c.var_start.len == c.scopes.len + 1);
+    return c;
 }
 
 fn failed(r: *Run, e: Failure) Error {
-    return switch (e) {
+    assert(r.dumps.vcd.tok < r.starts.len);
+    const out: Error = switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.DumpvarsTime => r.fail(r.dumps.vcd.tok, message(error.DumpvarsTime), .{}),
         inline else => |f| r.fail(r.dumps.vcd.tok, comptime message(f), .{r.dumps.vcd.name}),
     };
+    assert(out == error.OutOfMemory or out == error.DigitalFailed);
+    return out;
 }
 
 /// Reads back an identifier code `codeText` wrote (least significant
 /// character first): the inverse the codes' uniqueness is checked with.
 fn codeValue(text: []const u8) u32 {
+    assert(text.len != 0);
+    assert(text.len <= 5); // `codeText`'s bound.
     var i = text.len - 1;
     var n: u32 = text[i] - '!';
     while (i != 0) {
@@ -647,6 +741,7 @@ fn codeValue(text: []const u8) u32 {
 }
 
 fn testLiteral(a: std.mem.Allocator, bits: []const u8) !@import("kernels").Integer.Literal {
+    assert(bits.len != 0);
     const v = try @import("net.zig").filled(a, @intCast(bits.len), false, .zero);
     for (bits, 0..) |c, i| @import("net.zig").setBit(v, @intCast(bits.len - 1 - i), switch (c) {
         '0' => .zero,
@@ -654,6 +749,7 @@ fn testLiteral(a: std.mem.Allocator, bits: []const u8) !@import("kernels").Integ
         'x' => .x,
         else => .z,
     });
+    assert(v.width == bits.len);
     return v;
 }
 
