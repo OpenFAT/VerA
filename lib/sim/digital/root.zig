@@ -358,10 +358,12 @@ test {
     _ = elab;
     _ = system;
     _ = @import("vcd.zig");
+    _ = @import("vcd_text.zig");
     _ = @import("evcd.zig");
     _ = @import("driver.zig");
     _ = tchk;
     _ = @import("sdf.zig");
+    _ = @import("sdf_text.zig");
 }
 
 // §9.9 gives initial and always constructs no order; VerA starts them as

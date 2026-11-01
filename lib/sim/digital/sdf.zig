@@ -1,5 +1,5 @@
 //! IEEE 1364-2005 §17.2.10 `$sdf_annotate` and the §16 SDF annotator: the
-//! file read as OVI SDF 3.0 S-expressions (`parse`), then each CELL's
+//! file read as OVI SDF 3.0 S-expressions (`sdf_text.parse`), then each CELL's
 //! constructs mapped onto the instances it names (`annotate`), as §16.2's
 //! tables map them:
 //!
@@ -27,11 +27,6 @@
 //! file was meant to set.
 //!
 //! Contents:
-//! - `pub const Node = struct`
-//! - `Node.head(n: Node) []const u8`
-//! - `pub const ParseError = error`
-//! - `pub fn parse(a: std.mem.Allocator, text: []const u8, line: *u32) ParseError!Node`
-//! - `pub fn rvalue(n: Node, mtm: u2) error{Syntax}!?f64`
 //! - `pub fn annotate(r: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, tok: u32) Error!void`
 
 const std = @import("std");
@@ -50,113 +45,11 @@ const display = @import("display.zig");
 const net_mod = @import("net.zig");
 const tchk = @import("tchk.zig");
 
-// ---- S-expressions ---------------------------------------------------------
-
-/// One node: an atom (a word or a quoted string, its text as written) or a
-/// parenthesized list; `line` is where it starts, 1-based.
-pub const Node = struct {
-    atom: ?[]const u8 = null,
-    string: bool = false,
-    kids: []const Node = &.{},
-    line: u32,
-
-    /// The keyword a list starts with, or "". Asserts that `n` is an atom
-    /// or a list, not both, with a 1-based line.
-    pub fn head(n: Node) []const u8 {
-        // `Parser.node` makes an atom or a list, never both.
-        if (n.atom != null) assert(n.kids.len == 0);
-        assert(n.line >= 1);
-        if (n.kids.len == 0) return "";
-        return n.kids[0].atom orelse "";
-    }
-
-    fn is(n: Node, kw: []const u8) bool {
-        assert(kw.len != 0); // A keyword the annotator names.
-        const match = std.ascii.eqlIgnoreCase(n.head(), kw);
-        if (match) assert(n.kids.len >= 1);
-        return match;
-    }
-};
-
-pub const ParseError = error{ OutOfMemory, Syntax };
-
-const Parser = struct {
-    a: std.mem.Allocator,
-    text: []const u8,
-    at: usize = 0,
-    line: u32 = 1,
-
-    /// Skips white space and `//` and `/* */` comments.
-    fn skip(p: *Parser) void {
-        assert(p.at <= p.text.len);
-        defer assert(p.at <= p.text.len);
-        while (p.at < p.text.len) {
-            const c = p.text[p.at];
-            if (c == '\n') p.line += 1;
-            if (std.ascii.isWhitespace(c)) {
-                p.at += 1;
-            } else if (std.mem.startsWith(u8, p.text[p.at..], "//")) {
-                while (p.at < p.text.len and p.text[p.at] != '\n') p.at += 1;
-            } else if (std.mem.startsWith(u8, p.text[p.at..], "/*")) {
-                p.at += 2;
-                while (p.at < p.text.len and !std.mem.startsWith(u8, p.text[p.at..], "*/")) : (p.at += 1) {
-                    if (p.text[p.at] == '\n') p.line += 1;
-                }
-                p.at = @min(p.at + 2, p.text.len);
-            } else return;
-        }
-    }
-
-    fn node(p: *Parser) ParseError!Node {
-        // `parse` and the list loop below call it only at a byte that `skip`
-        // left: neither white space nor a comment.
-        assert(p.at < p.text.len);
-        assert(!std.ascii.isWhitespace(p.text[p.at]));
-        const line = p.line;
-        const c = p.text[p.at];
-        if (c == '(') {
-            p.at += 1;
-            var kids: std.ArrayList(Node) = .empty;
-            while (true) {
-                p.skip();
-                if (p.at >= p.text.len) return error.Syntax;
-                if (p.text[p.at] == ')') break;
-                try kids.append(p.a, try p.node());
-            }
-            p.at += 1;
-            assert(p.at <= p.text.len);
-            return .{ .kids = kids.items, .line = line };
-        }
-        if (c == ')') return error.Syntax;
-        if (c == '"') {
-            const start = p.at + 1;
-            p.at = start;
-            while (p.at < p.text.len and p.text[p.at] != '"') : (p.at += 1) {
-                if (p.text[p.at] == '\n') p.line += 1;
-            }
-            if (p.at >= p.text.len) return error.Syntax;
-            p.at += 1;
-            assert(p.text[p.at - 1] == '"');
-            return .{ .atom = p.text[start .. p.at - 1], .string = true, .line = line };
-        }
-        // A word: up to white space, a parenthesis or a quote; a backslash
-        // escapes the next character (an SDF identifier's `\[`), kept as
-        // written for `name` to undo.
-        const start = p.at;
-        while (p.at < p.text.len) : (p.at += 1) {
-            const w = p.text[p.at];
-            if (w == '\\') {
-                p.at += 1;
-                continue;
-            }
-            if (std.ascii.isWhitespace(w) or w == '(' or w == ')' or w == '"') break;
-        }
-        // The word holds `c` at least: `c` is none of the bytes that end one.
-        assert(p.at > start);
-        assert(@min(p.at, p.text.len) > start);
-        return .{ .atom = p.text[start..@min(p.at, p.text.len)], .line = line };
-    }
-};
+const sdf_text = @import("sdf_text.zig");
+const Node = sdf_text.Node;
+const parse = sdf_text.parse;
+const rvalue = sdf_text.rvalue;
+const depth_max = sdf_text.depth_max;
 
 /// One `$sdf_annotate` call's settings and where it reports.
 const Ctx = struct {
@@ -207,52 +100,6 @@ const positions = [12][2]Int.Bit{
     .{ .zero, .x },   .{ .x, .one },    .{ .one, .x },  .{ .x, .zero }, .{ .x, .z },   .{ .z, .x },
 };
 
-/// Parses `text` into its one top-level list. `line` is set to where a
-/// syntax error was found.
-pub fn parse(a: std.mem.Allocator, text: []const u8, line: *u32) ParseError!Node {
-    var p: Parser = .{ .a = a, .text = text };
-    p.skip();
-    if (p.at >= text.len or text[p.at] != '(') {
-        line.* = p.line;
-        return error.Syntax;
-    }
-    const n = p.node() catch |e| {
-        line.* = p.line;
-        return e;
-    };
-    // The text started with `(`: one list.
-    assert(n.atom == null);
-    p.skip();
-    if (p.at != text.len) {
-        line.* = p.line;
-        return error.Syntax;
-    }
-    assert(p.at == text.len);
-    return n;
-}
-
-/// §16.6 one rvalue: `()` is null, `(v)` is v, `(min:typ:max)` the member
-/// `mtm` picks (0, 1, 2), any of which may be empty.
-/// Asserts that `mtm` is 0, 1 or 2.
-pub fn rvalue(n: Node, mtm: u2) error{Syntax}!?f64 {
-    assert(mtm <= 2);
-    if (n.atom != null) return error.Syntax;
-    if (n.kids.len == 0) return null;
-    if (n.kids.len != 1 or n.kids[0].atom == null or n.kids[0].string) return error.Syntax;
-    const t = n.kids[0].atom.?;
-    var parts = std.mem.splitScalar(u8, t, ':');
-    var got: [3][]const u8 = undefined;
-    var k: usize = 0;
-    while (parts.next()) |s| : (k += 1) {
-        if (k == 3) return error.Syntax;
-        got[k] = s;
-    }
-    const pick = if (k == 1) got[0] else if (k == 3) got[mtm] else return error.Syntax;
-    assert(k == 1 or k == 3);
-    if (pick.len == 0) return null;
-    return std.fmt.parseFloat(f64, pick) catch error.Syntax;
-}
-
 /// §17.2.10 `$sdf_annotate ( "sdf_file" [, module_instance [, "config_file"
 /// [, "log_file" [, "mtm_spec" [, "scale_factors" [, "scale_type" ]]]]]] )`.
 /// The config file, log file and scale arguments are read and not applied
@@ -286,6 +133,7 @@ pub fn annotate(r: *Run, a: std.mem.Allocator, args: []const Ast.ExprId, tok: u3
     const top = parse(a, text, &line) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Syntax => return r.failWith(.E1102, tok, "{s}:{d}: not an SDF file: unbalanced parentheses or a stray token", .{ name, line }),
+        error.TooDeep => return r.failWith(.E1102, tok, "{s}:{d}: the SDF file nests lists deeper than {d}", .{ name, line, depth_max }),
     };
     if (!top.is("DELAYFILE")) return r.failWith(.E1102, tok, "{s}:{d}: an SDF file is one (DELAYFILE ...)", .{ name, top.line });
     assert(top.kids.len >= 1);
@@ -707,6 +555,28 @@ fn pathPulse(c: *Ctx, s: u32, e: Node) Error!void {
     if (!hit) try c.warn(e.line, "PATHPULSE names no module path of this instance", .{});
 }
 
+/// Test support: runs `source` (beside it, `d.sdf` holding `sdf`) to its
+/// end, and expects its transcript `expected` and, when given, a warning
+/// naming `warning`.
+fn expectAnnotated(source: []const u8, sdf: []const u8, expected: []const u8, warning: ?[]const u8) !void {
+    assert(std.mem.find(u8, source, "$sdf_annotate(\"d.sdf\"") != null);
+    assert(sdf.len != 0);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "d.sdf", .data = sdf });
+    const file_name = try a.print(".zig-cache/tmp/{s}/test.v", .{tmp.sub_path});
+    var bag = diag.Bag.init(a);
+    var output = std.Io.Writer.Allocating.init(a);
+    try root.run(a, source, .{ .io = std.testing.io, .file_name = file_name }, &bag, &output.writer);
+    var messages = std.Io.Writer.Allocating.init(a);
+    try diag.render(&bag, &messages.writer, .{});
+    if (warning) |w| try std.testing.expect(std.mem.find(u8, messages.written(), w) != null);
+    try std.testing.expectEqualStrings(expected, output.written());
+}
+
 test rvalue {
     const one: Node = .{ .kids = &.{.{ .atom = "3.0:7:11", .line = 1 }}, .line = 1 };
     try std.testing.expectEqual(@as(?f64, 3), try rvalue(one, 0));
@@ -734,30 +604,6 @@ test parse {
     try std.testing.expectEqualStrings("&d[0]", parts[0]);
     try std.testing.expectError(error.Syntax, parse(arena.allocator(), "(A (B)", &line));
     try std.testing.expectEqual(@as(u32, 1), line);
-}
-
-// ---- the annotator ---------------------------------------------------------
-
-/// Test support: runs `source` (beside it, `d.sdf` holding `sdf`) to its
-/// end, and expects its transcript `expected` and, when given, a warning
-/// naming `warning`.
-fn expectAnnotated(source: []const u8, sdf: []const u8, expected: []const u8, warning: ?[]const u8) !void {
-    assert(std.mem.find(u8, source, "$sdf_annotate(\"d.sdf\"") != null);
-    assert(sdf.len != 0);
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "d.sdf", .data = sdf });
-    const file_name = try a.print(".zig-cache/tmp/{s}/test.v", .{tmp.sub_path});
-    var bag = diag.Bag.init(a);
-    var output = std.Io.Writer.Allocating.init(a);
-    try root.run(a, source, .{ .io = std.testing.io, .file_name = file_name }, &bag, &output.writer);
-    var messages = std.Io.Writer.Allocating.init(a);
-    try diag.render(&bag, &messages.writer, .{});
-    if (warning) |w| try std.testing.expect(std.mem.find(u8, messages.written(), w) != null);
-    try std.testing.expectEqualStrings(expected, output.written());
 }
 
 test "§16.2 a CELL whose INSTANCE names a list, not a path, is reported, not applied" {
