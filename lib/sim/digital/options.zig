@@ -30,8 +30,6 @@ const display = @import("display.zig");
 /// process does (`waiters.store` now, `exec.enqueue` of a `.write` later), so a
 /// §12.30 put wakes waiters and value-change watchers like any other write.
 const exec = @import("exec.zig");
-/// §17 system tasks.
-const system = @import("system.zig");
 const driver = @import("driver.zig");
 const binding = @import("bind.zig");
 const elab = @import("elab.zig");
@@ -57,8 +55,6 @@ const Show = display.Show;
 const TimeFormat = display.TimeFormat;
 /// One elaborated design and its whole simulation state (`Run.zig`).
 const Run = @import("Run.zig");
-/// The descriptor table a `Run` with no `file_io` opens files through.
-const own_files = system.own;
 const root = @import("root.zig");
 const Error = root.Error;
 const max_events_per_tick = root.max_events_per_tick;

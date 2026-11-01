@@ -433,6 +433,8 @@ pub fn reset(self: *Run) Error!void {
     fresh.checks.hook = self.checks.hook;
     fresh.host.error_hook = self.host.error_hook;
     fresh.tasks.file_io = self.tasks.file_io;
+    // The run's own channels stay open across the reset, as a host's do.
+    fresh.tasks.files = self.tasks.files;
     fresh.analog.probe = self.analog.probe;
     fresh.analog.probe_ctx = self.analog.probe_ctx;
     for (self.waits.watch, fresh.waits.watch) |old, *w| if (old.contains(.vpi)) w.insert(.vpi);

@@ -10,6 +10,7 @@
 //! - `pub const Features = struct`
 //! - `pub const UnitFile = struct`
 //! - `pub fn emitFile(self: *Gen) Error!void`
+//! - `pub fn hasFiles(self: *const Gen) bool`
 //! - `pub fn batchLead(self: *const Gen) bool`
 //! - `pub fn recordUnitFile(self: *Gen, name: []const u8, lo: usize, fn_at: usize) Error!void`
 //! - `pub fn hasStatefulOps(self: *const Gen) bool`
@@ -100,6 +101,24 @@ const plusarg_txt =
     \\
 ;
 
+/// §9.5.1.2 `fileIo` and `deinitInstance` over `Instance.zf__`
+/// (`instance.zig`).
+const file_io_txt =
+    \\/// §9.5.1.2 `inst`'s descriptor table, for a host's second context to share.
+    \\pub fn fileIo(inst: *Instance) contract.FileIo {
+    \\    return .{ .ctx = &inst.zf__, .open = zFOpen, .close = zFClose, .put = zFPut, .getc = zFGetc, .ungetc = zFUngetc, .tell = zFTell, .seek = zFSeek, .eof = zFEof, .err = zFError, .new_analysis = zFNewAnalysis };
+    \\}
+    \\
+    \\/// Closes every channel `inst` opened and frees its table: the instance is
+    \\/// going away. A host that keeps its instances until the process ends may
+    \\/// skip it.
+    \\pub fn deinitInstance(inst: *Instance) void {
+    \\    zFFreeAll(&inst.zf__);
+    \\}
+    \\
+    \\
+;
+
 /// Writes the whole device.zig into `self.out` and builds `self.prelude` and
 /// `self.helpers`. Requires `Gen.prepare` to have run; asserts nothing has
 /// been emitted yet.
@@ -128,9 +147,8 @@ pub fn emitFile(self: *Gen) Error!void {
         // §9.13, set at the call for the same reason: `lowerRandom` runs long
         // before the MIR is sliced into units.
         .rng = self.lowered.uses.contains(.rng),
-        // §9.5 the descriptor table. Only a `display == .emit` artifact has a
-        // host that runs the per-point side-effect phase these kernels need.
-        .files = self.display == .emit and self.lowered.uses.contains(.file_tasks),
+        // §9.5 the descriptor table.
+        .files = hasFiles(self),
         // §3.2.2 set in lowering: a runtime-indexed array is one storage.
         .arrs = self.lowered.mem_arrays.items.len != 0,
         .tp = self.lowered.timepoints.items.len != 0,
@@ -161,9 +179,10 @@ pub fn emitFile(self: *Gen) Error!void {
     if (f.strs) try self.out.appendSlice(self.gpa, kt.display_txt);
     if (f.strs) try gen_prelude.depublish(self.gpa, &self.out, kt.str_txt);
     if (f.files) try gen_prelude.depublish(self.gpa, &self.out, kt.file_txt);
-    // §9.5.1.2 the same table, public for a host's second context to share
-    // (`contract.FileIo`, optional: a host that runs one context ignores it).
-    if (f.files) try self.out.appendSlice(self.gpa, "pub const file_io: contract.FileIo = .{ .open = zFOpen, .close = zFClose, .put = zFPut, .getc = zFGetc, .ungetc = zFUngetc, .tell = zFTell, .seek = zFSeek, .eof = zFEof, .err = zFError, .new_analysis = zFNewAnalysis };\n\n");
+    // §9.5.1.2 an instance's table (`Instance.zf__`), public for a host's
+    // second context to share, and its release (`contract.FileIo`: a host
+    // that runs one context ignores both).
+    if (f.files) try self.out.appendSlice(self.gpa, file_io_txt);
     if (f.tbl) try gen_prelude.depublish(self.gpa, &self.out, kt.table_txt);
     if (f.rng) try gen_prelude.depublish(self.gpa, &self.out, kt.rng_txt);
     if (self.lowered.wide_nodes.items.len != 0) try gen_prelude.depublish(self.gpa, &self.out, kt.wide_txt);
@@ -244,6 +263,13 @@ pub fn emitFile(self: *Gen) Error!void {
     , .{});
     try self.w("comptime {{\n    contract.validate(Self);\n}}\n", .{});
     assert(std.mem.endsWith(u8, self.out.items, "}\n"));
+}
+
+/// Whether the device carries the §9.5 descriptor table: only a
+/// `display == .emit` artifact has a host that runs the per-point
+/// side-effect phase its kernels need.
+pub fn hasFiles(self: *const Gen) bool {
+    return self.display == .emit and self.lowered.uses.contains(.file_tasks);
 }
 
 /// Whether the device declares `batch_lead` (`batchOk` and a lead decision).

@@ -27,6 +27,7 @@ const opdb = @import("op_zig.zig");
 const cg_filters = @import("../cg_filters.zig");
 const cg_strcap = @import("../cg_strcap.zig");
 const Lowered = @import("ir").Lowered;
+const Mir = @import("ir").Mir;
 const Error = codegen.Error;
 const none_u32 = codegen.none_u32;
 const gen_status = @import("status.zig");
@@ -96,6 +97,7 @@ pub fn emitInstance(self: *Gen) Error!void {
             "    systf: ?*const contract.SystfHost = null,\n",
         .{},
     );
+    if (gen_file.hasFiles(self)) try emitFileFields(self);
     // §9.17 the two fields `updateState` resets every accepted point are
     // history only where an operator moves them off the reset value; without
     // one they are the same constant before and after any revert, and their
@@ -417,6 +419,25 @@ fn writesSchedule(self: *const Gen, comptime which: @import("ir").op.OpKind) boo
 }
 
 /// Records `Instance` field `fmt` as history `stateCtl` commits and reverts.
+/// §9.5 the instance's descriptor table (`zf__`, `file.zig`'s `fileIo`) and,
+/// per §9.5 call site with an integer result, the result the display unit
+/// latched (`zf_res__<site>`, `file_kernels.zFKeep`) and, for a read, its
+/// line (`zf_line__<site>`, `zFLatch`). Each instance has its own, so two
+/// instances number their descriptors alike and never read each other's.
+fn emitFileFields(self: *Gen) Error!void {
+    const len_before = self.out.items.len;
+    try self.w("    /// §9.5 this instance's descriptor table (`fileIo`, `deinitInstance`).\n    zf__: ZfTable = .{{}},\n", .{});
+    for (0..self.mir.instCount()) |ii| {
+        const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
+        if (self.mir.instOp(inst) != .call) continue;
+        const c = self.mir.instData(inst).call.callee;
+        if (!Mir.callee.isFileCall(c) or Mir.callee.ty(c) != .int) continue;
+        try self.w("    zf_res__{d}: i64 = 0,\n", .{ii});
+        if (c == .@"$fgets" or c == .@"$fscanf") try self.w("    zf_line__{d}: []const u8 = \"\",\n", .{ii});
+    }
+    assert(self.out.items.len > len_before);
+}
+
 fn keepHist(self: *Gen, comptime fmt: []const u8, args: anytype) Error!void {
     const len_before = self.hist.items.len;
     defer assert(self.hist.items.len <= len_before + 1);

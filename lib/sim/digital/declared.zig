@@ -36,8 +36,6 @@ const display = @import("display.zig");
 /// process does (`waiters.store` now, `exec.enqueue` of a `.write` later), so a
 /// §12.30 put wakes waiters and value-change watchers like any other write.
 const exec = @import("exec.zig");
-/// §17 system tasks.
-const system = @import("system.zig");
 const driver = @import("driver.zig");
 const binding = @import("bind.zig");
 const elab = @import("elab.zig");
@@ -66,8 +64,6 @@ const root = @import("root.zig");
 const Run = root.Run;
 const Error = root.Error;
 const ModuleTime = root.ModuleTime;
-/// The descriptor table a `Run` with no `file_io` opens files through.
-const own_files = system.own;
 
 /// IEEE 1364-2005 §27.31 / VAMS §12.29 vpi_put_delays on the timing check
 /// whose command token is `tok` in instance `scope`: `ticks` are its

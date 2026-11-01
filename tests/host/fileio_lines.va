@@ -1,0 +1,16 @@
+// The device `fileio_threads_host.zig` runs as two instances: each opens its
+// own file once (VAMS §9.5.1 `$fopen` under `@(initial_step)`) and writes one
+// numbered line per accepted point (§9.5.2 `$fdisplay`), its `id` first so a
+// line in the other instance's file names its writer.
+`include "disciplines.vams"
+module fileio_lines(p, n);
+  inout p, n; electrical p, n;
+  parameter integer id = 0;
+  parameter string path = "fileio_lines.txt";
+  integer fd;
+  analog begin
+    @(initial_step) fd = $fopen(path, "w");
+    $fdisplay(fd, "%0d %0d", id, $rtoi($abstime));
+    I(p, n) <+ V(p, n);
+  end
+endmodule

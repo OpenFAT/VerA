@@ -55,8 +55,9 @@ var log_file: ?Io.File = null;
 /// subsequent calls."
 var name_buf: [schema.name_buf_len]u8 = undefined;
 
-/// The table an fd opens in: the engine's own, or the one the run had.
-var fds: FileIo = digital.own_files;
+/// The table an fd opens in: the run's own, or the one the run had. `share`
+/// sets it before it installs the entries below, the only readers.
+var fds: FileIo = undefined;
 
 /// Each open fd's name, by its channel number (§27.24).
 var fd_names: [64]?[:0]u8 = @splat(null);
@@ -126,7 +127,7 @@ pub export fn vpi_mcd_close(mcd: c_uint) c_uint {
             status.fail("NOCLOSE", "vpi_mcd_close: 0x{x} is no file descriptor $fopen opened", .{mcd});
             return mcd;
         }
-        _ = hdlClose(mcd);
+        _ = hdlClose(fds.ctx, mcd);
         std.debug.assert(fdName(mcd) == null);
         return 0;
     }
@@ -180,9 +181,10 @@ pub export fn vpi_mcd_name(cd: c_uint) [*c]u8 {
 /// itself), and that `r` writes through these channels afterwards.
 pub fn share(r: *digital.Run) void {
     if (r.tasks.file_io) |t| if (t.open == hdlOpen) return;
-    fds = r.tasks.file_io orelse digital.own_files;
+    fds = r.tasks.file_io orelse digital.own_files(&r.tasks.files);
     std.debug.assert(fds.open != hdlOpen);
-    r.tasks.file_io = .{ .open = hdlOpen, .close = hdlClose, .put = hdlPut, .getc = fdGetc, .ungetc = fdUngetc, .tell = fdTell, .seek = fdSeek, .eof = fdEof, .err = fdErr };
+    // The entries pass the table's `ctx` on, so it is the delegate's.
+    r.tasks.file_io = .{ .ctx = fds.ctx, .open = hdlOpen, .close = hdlClose, .put = hdlPut, .getc = fdGetc, .ungetc = fdUngetc, .tell = fdTell, .seek = fdSeek, .eof = fdEof, .err = fdErr };
     std.debug.assert(r.tasks.file_io.?.put == hdlPut);
 }
 
@@ -266,14 +268,14 @@ fn fdName(d: i64) ?[:0]const u8 {
     return if (ch < fd_names.len) fd_names[ch] else null;
 }
 
-fn hdlOpen(path: []const u8, ty: []const u8, mcd: bool) i64 {
+fn hdlOpen(ctx: *anyopaque, path: []const u8, ty: []const u8, mcd: bool) i64 {
     std.debug.assert(fds.open != hdlOpen);
     if (mcd) {
         const cd = openChannel(path) catch 0;
         std.debug.assert(cd == 0 or @popCount(cd) == 1);
         return cd;
     }
-    const d = fds.open(path, ty, false);
+    const d = fds.open(ctx, path, ty, false);
     const ch: usize = @intCast(d & fd_mask);
     if (d != 0 and ch < fd_names.len) {
         if (fd_names[ch]) |old| gpa.free(old);
@@ -282,7 +284,7 @@ fn hdlOpen(path: []const u8, ty: []const u8, mcd: bool) i64 {
     return d;
 }
 
-fn hdlClose(d: i64) i64 {
+fn hdlClose(ctx: *anyopaque, d: i64) i64 {
     std.debug.assert(fds.close != hdlClose);
     if (d & fd_bit == 0) {
         _ = closeChannels(@truncate(@as(u64, @bitCast(d))));
@@ -294,14 +296,14 @@ fn hdlClose(d: i64) i64 {
         fd_names[ch] = null;
     };
     std.debug.assert(fdName(d) == null);
-    return fds.close(d);
+    return fds.close(ctx, d);
 }
 
 /// The characters written, or 0 when no channel `d` names took them. The
 /// engine writes bit 0 (its transcript) itself.
-fn hdlPut(d: i64, text: []const u8) i64 {
+fn hdlPut(ctx: *anyopaque, d: i64, text: []const u8) i64 {
     std.debug.assert(fds.put != hdlPut);
-    if (d & fd_bit != 0) return fds.put(d, text);
+    if (d & fd_bit != 0) return fds.put(ctx, d, text);
     var took = false;
     for (1..channel_count) |i| {
         if (d & bit(i) == 0) continue;
@@ -328,40 +330,40 @@ fn fdOnly(d: i64) i64 {
     return fd;
 }
 
-fn fdGetc(d: i64) i64 {
+fn fdGetc(ctx: *anyopaque, d: i64) i64 {
     std.debug.assert(fds.open != hdlOpen);
     std.debug.assert(fds.getc != fdGetc);
-    return fds.getc(fdOnly(d));
+    return fds.getc(ctx, fdOnly(d));
 }
 
-fn fdUngetc(c: i64, d: i64) i64 {
+fn fdUngetc(ctx: *anyopaque, c: i64, d: i64) i64 {
     std.debug.assert(fds.open != hdlOpen);
     std.debug.assert(fds.ungetc != fdUngetc);
-    return fds.ungetc(c, fdOnly(d));
+    return fds.ungetc(ctx, c, fdOnly(d));
 }
 
-fn fdTell(d: i64) i64 {
+fn fdTell(ctx: *anyopaque, d: i64) i64 {
     std.debug.assert(fds.open != hdlOpen);
     std.debug.assert(fds.tell != fdTell);
-    return fds.tell(fdOnly(d));
+    return fds.tell(ctx, fdOnly(d));
 }
 
-fn fdSeek(d: i64, off: i64, op: i64) i64 {
+fn fdSeek(ctx: *anyopaque, d: i64, off: i64, op: i64) i64 {
     std.debug.assert(fds.open != hdlOpen);
     std.debug.assert(fds.seek != fdSeek);
-    return fds.seek(fdOnly(d), off, op);
+    return fds.seek(ctx, fdOnly(d), off, op);
 }
 
-fn fdEof(d: i64) i64 {
+fn fdEof(ctx: *anyopaque, d: i64) i64 {
     std.debug.assert(fds.open != hdlOpen);
     std.debug.assert(fds.eof != fdEof);
-    return fds.eof(fdOnly(d));
+    return fds.eof(ctx, fdOnly(d));
 }
 
-fn fdErr(d: i64) i64 {
+fn fdErr(ctx: *anyopaque, d: i64) i64 {
     std.debug.assert(fds.open != hdlOpen);
     std.debug.assert(fds.err == null or fds.err.? != fdErr);
-    return if (fds.err) |e| e(fdOnly(d)) else 0;
+    return if (fds.err) |e| e(ctx, fdOnly(d)) else 0;
 }
 
 /// Channel `i`'s file; null for a log the host named none for, which

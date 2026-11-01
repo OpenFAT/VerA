@@ -3286,6 +3286,10 @@ pub const kernel_tests = struct {
     const str_format = @import("kernels").str_format;
     const str_store = @import("kernels").str_store;
     const file_k = @import("kernels").file_kernels;
+    /// The table the file kernel tests share, as a device instance's or a
+    /// digital run's (`file_kernels.zFCtx`).
+    var file_table: @import("kernels").file_table.ZfTable = .{};
+    const zc: *anyopaque = &file_table;
 
     /// A one-derivative stand-in for the device's scalar family: the slice of the
     /// interface the filter and table kernels call (`con`/`val`/`add`/`addC`/
@@ -4430,26 +4434,26 @@ pub const kernel_tests = struct {
 
         // Table 9-24 "a": the position starts at the end, and a write goes to the
         // end wherever $fseek left it.
-        const a = file_k.zFOpen(p, "a", false);
+        const a = file_k.zFOpen(zc, p, "a", false);
         try std.testing.expect(a != 0);
-        try std.testing.expectEqual(@as(i64, 3), file_k.zFTell(a));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(a, 0, 0));
-        try std.testing.expectEqual(@as(i64, 1), file_k.zFPut(a, "d"));
-        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(a));
+        try std.testing.expectEqual(@as(i64, 3), file_k.zFTell(zc, a));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, a, 0, 0));
+        try std.testing.expectEqual(@as(i64, 1), file_k.zFPut(zc, a, "d"));
+        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(zc, a));
         // An "a" channel cannot be read: §9.5.4.1 "if an error occurs reading
         // from the file, then code is set to zero", and $ferror says why.
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(a));
-        try std.testing.expectEqual(@as(i64, 9), file_k.zFError(a));
-        _ = file_k.zFClose(a);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(zc, a));
+        try std.testing.expectEqual(@as(i64, 9), file_k.zFError(zc, a));
+        _ = file_k.zFClose(zc, a);
         try std.testing.expectEqualStrings("abcd", try tmp.dir.readFile(io, "a.txt", &rb));
 
         // "r+": one position for both directions.
-        const rw = file_k.zFOpen(p, "r+", false);
-        try std.testing.expectEqual(@as(i64, 1), file_k.zFPut(rw, "X"));
-        try std.testing.expectEqual(@as(i64, 3), file_k.zFGets(rw));
-        try std.testing.expectEqualStrings("bcd", file_k.zFLine(3, rw));
-        try std.testing.expect(file_k.zFEof(rw) != 0);
-        _ = file_k.zFClose(rw);
+        const rw = file_k.zFOpen(zc, p, "r+", false);
+        try std.testing.expectEqual(@as(i64, 1), file_k.zFPut(zc, rw, "X"));
+        try std.testing.expectEqual(@as(i64, 3), file_k.zFGets(zc, rw));
+        try std.testing.expectEqualStrings("bcd", file_k.zFLine(zc, 3, rw));
+        try std.testing.expect(file_k.zFEof(zc, rw) != 0);
+        _ = file_k.zFClose(zc, rw);
         try std.testing.expectEqualStrings("Xbcd", try tmp.dir.readFile(io, "a.txt", &rb));
     }
 
@@ -4458,29 +4462,29 @@ pub const kernel_tests = struct {
         defer tmp.cleanup();
         var pb: [256]u8 = undefined;
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "s.txt", .data = "hello" });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "s.txt"), "r", false);
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "s.txt"), "r", false);
         try std.testing.expect(r != 0);
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 2, 0));
-        try std.testing.expectEqual(@as(i64, 2), file_k.zFTell(r));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 1, 1));
-        try std.testing.expectEqual(@as(i64, 3), file_k.zFTell(r));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, -1, 2));
-        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 2, 0));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFTell(zc, r));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 1, 1));
+        try std.testing.expectEqual(@as(i64, 3), file_k.zFTell(zc, r));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, -1, 2));
+        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(zc, r));
         // "If an error occurs repositioning the file, then code is set to -1":
         // the position stays where it was, and $ferror names the cause.
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(r, -5, 1));
-        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(r));
-        try std.testing.expectEqual(@as(i64, 22), file_k.zFError(r));
-        try std.testing.expectEqual(@as(i64, 'o'), file_k.zFGetc(r));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(zc, r, -5, 1));
+        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(zc, r));
+        try std.testing.expectEqual(@as(i64, 22), file_k.zFError(zc, r));
+        try std.testing.expectEqual(@as(i64, 'o'), file_k.zFGetc(zc, r));
         // Past the end is a position like any other; reading there is EOF, and
         // the next reposition clears it.
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 10, 0));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFGetc(r));
-        try std.testing.expect(file_k.zFEof(r) != 0);
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 0, 0));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFEof(r));
-        try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(r));
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 10, 0));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFGetc(zc, r));
+        try std.testing.expect(file_k.zFEof(zc, r) != 0);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 0, 0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFEof(zc, r));
+        try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(zc, r));
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.5 $fseek: an offset whose sum overflows is refused, not trapped" {
@@ -4488,35 +4492,35 @@ pub const kernel_tests = struct {
         defer tmp.cleanup();
         var pb: [256]u8 = undefined;
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "o.txt", .data = "hello" });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "o.txt"), "r", false);
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 2, 0));
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "o.txt"), "r", false);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 2, 0));
         // 2 + maxInt and 5 + maxInt name no position: code -1, EINVAL, and the
         // position stays.
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(r, std.math.maxInt(i64), 1));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(r, std.math.maxInt(i64), 2));
-        try std.testing.expectEqual(@as(i64, 2), file_k.zFTell(r));
-        try std.testing.expectEqual(@as(i64, 22), file_k.zFError(r));
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(zc, r, std.math.maxInt(i64), 1));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(zc, r, std.math.maxInt(i64), 2));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFTell(zc, r));
+        try std.testing.expectEqual(@as(i64, 22), file_k.zFError(zc, r));
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.1 a descriptor the table does not hold answers each call's failure value" {
         const fd_bit: i64 = 1 << 31;
         const nowhere = fd_bit | 40; // past the thirty channels
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(nowhere));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(fd_bit | 1)); // STDOUT is no table row
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(nowhere, 0, 0));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFGetc(nowhere));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc('a', nowhere));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFEof(nowhere));
-        try std.testing.expectEqualStrings("", file_k.zFLine(5, nowhere));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFClose(nowhere));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, nowhere));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, fd_bit | 1)); // STDOUT is no table row
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(zc, nowhere, 0, 0));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFGetc(zc, nowhere));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc(zc, 'a', nowhere));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFEof(zc, nowhere));
+        try std.testing.expectEqualStrings("", file_k.zFLine(zc, 5, nowhere));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFClose(zc, nowhere));
         // An mcd bit whose channel is closed names nothing either.
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(1 << 20));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, 1 << 20));
         // §9.5.1: a failed open returns 0; a call on that 0 is refused (EBADF).
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFPut(0, "x"));
-        try std.testing.expectEqual(@as(i64, 9), file_k.zFError(0));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(0));
-        try std.testing.expectEqualStrings("", file_k.zFWindow(0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFPut(zc, 0, "x"));
+        try std.testing.expectEqual(@as(i64, 9), file_k.zFError(zc, 0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(zc, 0));
+        try std.testing.expectEqualStrings("", file_k.zFWindow(zc, 0));
         try std.testing.expectEqual(@as(i64, 0), file_k.zFFlush(0));
         // §9.5.7: a description for every errno the table sets, "" for none.
         try std.testing.expectEqualStrings("", file_k.zFErrorStr(0, 0));
@@ -4532,30 +4536,30 @@ pub const kernel_tests = struct {
         defer tmp.cleanup();
         var pb: [256]u8 = undefined;
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "u.txt", .data = "0123456789abcdefghij" });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "u.txt"), "r", false);
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc('x', r)); // position 0
-        for (0..17) |_| _ = file_k.zFGetc(r);
-        for (0..16) |j| try std.testing.expectEqual(@as(i64, 0), file_k.zFUngetc(@as(i64, 'A') + @as(i64, @intCast(j)), r));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc('Z', r)); // a 17th
-        try std.testing.expectEqual(@as(i64, 1), file_k.zFTell(r));
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "u.txt"), "r", false);
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc(zc, 'x', r)); // position 0
+        for (0..17) |_| _ = file_k.zFGetc(zc, r);
+        for (0..16) |j| try std.testing.expectEqual(@as(i64, 0), file_k.zFUngetc(zc, @as(i64, 'A') + @as(i64, @intCast(j)), r));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc(zc, 'Z', r)); // a 17th
+        try std.testing.expectEqual(@as(i64, 1), file_k.zFTell(zc, r));
         // Last pushed, first read; then the file resumes after the bytes covered.
         var k: usize = 16;
         while (k > 0) {
             k -= 1;
-            try std.testing.expectEqual(@as(i64, 'A') + @as(i64, @intCast(k)), file_k.zFGetc(r));
+            try std.testing.expectEqual(@as(i64, 'A') + @as(i64, @intCast(k)), file_k.zFGetc(zc, r));
         }
-        try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(r));
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(zc, r));
+        _ = file_k.zFClose(zc, r);
     }
 
     /// Runs the file kernels over `gpa` from an empty table, and frees what they
     /// own afterwards: `std.testing.allocator` then reports any leak.
     fn fileOver(gpa: std.mem.Allocator) void {
-        file_k.zFFreeAll();
+        file_k.zFFreeAll(zc);
         file_k.zf_gpa = gpa;
     }
     fn fileDone() void {
-        file_k.zFFreeAll();
+        file_k.zFFreeAll(zc);
         file_k.zf_gpa = std.heap.page_allocator;
     }
 
@@ -4570,25 +4574,25 @@ pub const kernel_tests = struct {
         // The mcd shape: bits 1..30, then EMFILE (§9.5.1's 31 with standard output).
         var mcds: [30]i64 = undefined;
         for (&mcds, 1..) |*m, b| {
-            m.* = file_k.zFOpen(p, "r", true);
+            m.* = file_k.zFOpen(zc, p, "r", true);
             try std.testing.expectEqual(@as(i64, 1) << @intCast(b), m.*);
         }
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(p, "r", true));
-        try std.testing.expectEqual(@as(i64, 24), file_k.zFError(0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(zc, p, "r", true));
+        try std.testing.expectEqual(@as(i64, 24), file_k.zFError(zc, 0));
         // The fd shape keeps opening past the thirty, numbered from 3.
         var fds: [100]i64 = undefined;
         for (&fds, 3..) |*fd, c| {
-            fd.* = file_k.zFOpen(p, "r", false);
+            fd.* = file_k.zFOpen(zc, p, "r", false);
             try std.testing.expectEqual((@as(i64, 1) << 31) | @as(i64, @intCast(c)), fd.*);
         }
-        try std.testing.expectEqual(@as(i64, 'e'), file_k.zFGetc(fds[99]));
+        try std.testing.expectEqual(@as(i64, 'e'), file_k.zFGetc(zc, fds[99]));
         // "The $fopen function shall reuse channels that have been closed."
-        _ = file_k.zFClose(fds[7]);
-        try std.testing.expectEqual(fds[7], file_k.zFOpen(p, "r", false));
-        _ = file_k.zFClose(mcds[4]);
-        try std.testing.expectEqual(mcds[4], file_k.zFOpen(p, "r", true));
-        for (fds) |fd| _ = file_k.zFClose(fd);
-        for (mcds) |m| _ = file_k.zFClose(m);
+        _ = file_k.zFClose(zc, fds[7]);
+        try std.testing.expectEqual(fds[7], file_k.zFOpen(zc, p, "r", false));
+        _ = file_k.zFClose(zc, mcds[4]);
+        try std.testing.expectEqual(mcds[4], file_k.zFOpen(zc, p, "r", true));
+        for (fds) |fd| _ = file_k.zFClose(zc, fd);
+        for (mcds) |m| _ = file_k.zFClose(zc, m);
     }
 
     test "§9.5.1 an open that cannot get memory fails: $fopen 0, $ferror 12" {
@@ -4600,8 +4604,8 @@ pub const kernel_tests = struct {
         // No memory at all: not even the table.
         var none = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
         fileOver(none.allocator());
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(p, "r", false));
-        try std.testing.expectEqual(@as(i64, 12), file_k.zFError(0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(zc, p, "r", false));
+        try std.testing.expectEqual(@as(i64, 12), file_k.zFError(zc, 0));
         try std.testing.expectEqualStrings("out of memory", file_k.zFErrorStr(12, 0));
         fileDone();
         // The table, but no row to remember a path opened for writing.
@@ -4609,12 +4613,12 @@ pub const kernel_tests = struct {
         fileOver(one.allocator());
         defer fileDone();
         var wb: [256]u8 = undefined;
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(tmpPath(&wb, &tmp, "w.txt"), "w", true));
-        try std.testing.expectEqual(@as(i64, 12), file_k.zFError(0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(zc, tmpPath(&wb, &tmp, "w.txt"), "w", true));
+        try std.testing.expectEqual(@as(i64, 12), file_k.zFError(zc, 0));
         // A read open on a row the table has needs no memory.
-        const r = file_k.zFOpen(p, "r", true);
+        const r = file_k.zFOpen(zc, p, "r", true);
         try std.testing.expect(r != 0);
-        _ = file_k.zFClose(r);
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.1.1 every distinct path opened for writing is remembered (past 64)" {
@@ -4625,16 +4629,18 @@ pub const kernel_tests = struct {
         var pb: [256]u8 = undefined;
         var nb: [32]u8 = undefined;
         for (0..100) |k| {
-            const w = file_k.zFOpen(tmpPath(&pb, &tmp, try std.mem.print(&nb, "w{d}.txt", .{k})), "w", false);
+            const w = file_k.zFOpen(zc, tmpPath(&pb, &tmp, try std.mem.print(&nb, "w{d}.txt", .{k})), "w", false);
             try std.testing.expect(w != 0);
-            _ = file_k.zFPut(w, "ab");
-            _ = file_k.zFClose(w);
+            _ = file_k.zFPut(zc, w, "ab");
+            _ = file_k.zFClose(zc, w);
         }
         // A later analysis appends to the first path, which a 64-row table forgot.
-        file_k.zFNewAnalysis();
-        const w = file_k.zFOpen(tmpPath(&pb, &tmp, "w0.txt"), "w", false);
-        _ = file_k.zFPut(w, "c");
-        _ = file_k.zFClose(w);
+        file_k.zFNewAnalysis(
+            zc,
+        );
+        const w = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "w0.txt"), "w", false);
+        _ = file_k.zFPut(zc, w, "c");
+        _ = file_k.zFClose(zc, w);
         var rb: [8]u8 = undefined;
         try std.testing.expectEqualStrings("abc", try tmp.dir.readFile(std.testing.io, "w0.txt", &rb));
     }
@@ -4650,14 +4656,14 @@ pub const kernel_tests = struct {
         @memset(long, 'x');
         long[10000] = '\n';
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "l.txt", .data = long });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "l.txt"), "r", false);
-        try std.testing.expectEqual(@as(i64, 10001), file_k.zFGets(r));
-        try std.testing.expectEqualStrings(long, file_k.zFLine(10001, r));
-        try std.testing.expectEqual(@as(i64, 10001), file_k.zFTell(r));
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "l.txt"), "r", false);
+        try std.testing.expectEqual(@as(i64, 10001), file_k.zFGets(zc, r));
+        try std.testing.expectEqualStrings(long, file_k.zFLine(zc, 10001, r));
+        try std.testing.expectEqual(@as(i64, 10001), file_k.zFTell(zc, r));
         // The next read finds the end: nothing transferred, EOF detected.
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(r));
-        try std.testing.expect(file_k.zFEof(r) != 0);
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(zc, r));
+        try std.testing.expect(file_k.zFEof(zc, r) != 0);
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.4.2 $fscanf widens its window until the scan stops inside it" {
@@ -4671,19 +4677,19 @@ pub const kernel_tests = struct {
         @memset(data[0..9000], ' ');
         @memcpy(data[9000..], "42\n");
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "w.txt", .data = &data });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "w.txt"), "r", false);
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "w.txt"), "r", false);
         // cg_display's loop: scan, and again over a wider window while it asks.
         var rounds: usize = 0;
         const n = while (true) : (rounds += 1) {
-            const sc = str_scan.zScan(file_k.zFWindow(r), "%d", 0);
-            if (file_k.zFMore(r, sc.used)) continue;
+            const sc = str_scan.zScan(file_k.zFWindow(zc, r), "%d", 0);
+            if (file_k.zFMore(zc, r, sc.used)) continue;
             try std.testing.expectEqual(@as(i64, 42), sc.i);
-            break file_k.zFTake(r, sc.n, @intCast(sc.used));
+            break file_k.zFTake(zc, r, sc.n, @intCast(sc.used));
         };
         try std.testing.expectEqual(@as(i64, 1), n);
         try std.testing.expect(rounds >= 2);
-        try std.testing.expectEqual(@as(i64, 9002), file_k.zFTell(r));
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, 9002), file_k.zFTell(zc, r));
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.1.1 a write-mode reopen truncates within an analysis and appends across them" {
@@ -4695,15 +4701,17 @@ pub const kernel_tests = struct {
         const p = tmpPath(&pb, &tmp, "w.txt");
         const put = struct {
             fn f(path: []const u8, text: []const u8) void {
-                const w = file_k.zFOpen(path, "w", false);
-                _ = file_k.zFPut(w, text);
-                _ = file_k.zFClose(w);
+                const w = file_k.zFOpen(zc, path, "w", false);
+                _ = file_k.zFPut(zc, w, text);
+                _ = file_k.zFClose(zc, w);
             }
         }.f;
         put(p, "ab");
         put(p, "x"); // the same analysis: C's truncate
         try std.testing.expectEqualStrings("x", try tmp.dir.readFile(io, "w.txt", &rb));
-        file_k.zFNewAnalysis();
+        file_k.zFNewAnalysis(
+            zc,
+        );
         // "Content written from the following analyses shall be appended".
         put(p, "yz");
         try std.testing.expectEqualStrings("xyz", try tmp.dir.readFile(io, "w.txt", &rb));
@@ -4719,23 +4727,45 @@ pub const kernel_tests = struct {
         var pb1: [256]u8 = undefined;
         var pb2: [256]u8 = undefined;
         var rb: [64]u8 = undefined;
-        const m1 = file_k.zFOpen(tmpPath(&pb1, &tmp, "m1.txt"), "w", true);
-        const m2 = file_k.zFOpen(tmpPath(&pb2, &tmp, "m2.txt"), "w", true);
+        const m1 = file_k.zFOpen(zc, tmpPath(&pb1, &tmp, "m1.txt"), "w", true);
+        const m2 = file_k.zFOpen(zc, tmpPath(&pb2, &tmp, "m2.txt"), "w", true);
         try std.testing.expect(m1 != 0 and m2 != 0 and m1 & m2 == 0);
-        try std.testing.expectEqual(@as(i64, 2), file_k.zFPut(m1 | m2, "hi"));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFClose(m1 | m2));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFPut(zc, m1 | m2, "hi"));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFClose(zc, m1 | m2));
         try std.testing.expectEqualStrings("hi", try tmp.dir.readFile(io, "m1.txt", &rb));
         try std.testing.expectEqualStrings("hi", try tmp.dir.readFile(io, "m2.txt", &rb));
         // One $fclose of the OR freed both channels.
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(m1));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(m2));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, m1));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, m2));
     }
 
-    test "§9.5 zFRes/zFKeep: one latched result per call site" {
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFRes(7701).*);
-        try std.testing.expectEqual(@as(i64, 5), file_k.zFKeep(7701, 5));
-        try std.testing.expectEqual(@as(i64, 5), file_k.zFRes(7701).*);
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFRes(7702).*);
+    test "§9.5 zFKeep: a call site's result lands in its own slot" {
+        var slots: [2]i64 = .{ 0, 0 };
+        try std.testing.expectEqual(@as(i64, 5), file_k.zFKeep(&slots[0], 5));
+        try std.testing.expectEqualSlices(i64, &.{ 5, 0 }, &slots);
+    }
+
+    test "§9.5.1 two tables number their descriptors alike and share no channel" {
+        // A device keeps one table per instance: each instance's first fd is
+        // §9.5.1's first free number, 3, however many the other opened.
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var pb: [256]u8 = undefined;
+        var a: @import("kernels").file_table.ZfTable = .{};
+        var b: @import("kernels").file_table.ZfTable = .{};
+        defer file_k.zFFreeAll(&a);
+        defer file_k.zFFreeAll(&b);
+        const fd3: i64 = (1 << 31) | 3;
+        try std.testing.expectEqual(fd3, file_k.zFOpen(&a, tmpPath(&pb, &tmp, "a.txt"), "w", false));
+        try std.testing.expectEqual(fd3 + 1, file_k.zFOpen(&a, tmpPath(&pb, &tmp, "a2.txt"), "w", false));
+        try std.testing.expectEqual(fd3, file_k.zFOpen(&b, tmpPath(&pb, &tmp, "b.txt"), "w", false));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFPut(&a, fd3, "a\n"));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFPut(&b, fd3, "b\n"));
+        // `b` never opened fd 4.
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(&b, fd3 + 1));
+        var rb: [8]u8 = undefined;
+        try std.testing.expectEqualStrings("a\n", try tmp.dir.readFile(std.testing.io, "a.txt", &rb));
+        try std.testing.expectEqualStrings("b\n", try tmp.dir.readFile(std.testing.io, "b.txt", &rb));
     }
 
     test "§9.5.4.2 $fscanf consumes exactly what matched, and only an EOF scan sets $feof" {
@@ -4745,21 +4775,21 @@ pub const kernel_tests = struct {
         defer tmp.cleanup();
         var pb: [256]u8 = undefined;
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.txt", .data = "12 34\n" });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "f.txt"), "r", false);
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "f.txt"), "r", false);
         const Step = struct { n: i64, used: usize, pos: i64 };
         for ([_]Step{
             .{ .n = 1, .used = 2, .pos = 2 }, // "12"; the space is left unread
             .{ .n = 1, .used = 3, .pos = 5 }, // " 34"; the newline is left unread
             .{ .n = -1, .used = 1, .pos = 6 }, // white space to the end: EOF
         }) |want| {
-            const sc = str_scan.zScan(file_k.zFWindow(r), "%d", 0);
+            const sc = str_scan.zScan(file_k.zFWindow(zc, r), "%d", 0);
             try std.testing.expectEqual(want.n, sc.n);
             try std.testing.expectEqual(want.used, sc.used);
-            try std.testing.expectEqual(want.n, file_k.zFTake(r, sc.n, @intCast(sc.used)));
-            try std.testing.expectEqual(want.pos, file_k.zFTell(r));
-            try std.testing.expectEqual(@as(i64, @intFromBool(want.n < 0)), file_k.zFEof(r));
+            try std.testing.expectEqual(want.n, file_k.zFTake(zc, r, sc.n, @intCast(sc.used)));
+            try std.testing.expectEqual(want.pos, file_k.zFTell(zc, r));
+            try std.testing.expectEqual(@as(i64, @intFromBool(want.n < 0)), file_k.zFEof(zc, r));
         }
-        _ = file_k.zFClose(r);
+        _ = file_k.zFClose(zc, r);
     }
 
     // ------------------------------------------------------------ absdelay ring
@@ -12783,16 +12813,16 @@ pub const sim_digital_tests = struct {
         const File = struct {
             var data: []const u8 = "";
             var pos: usize = 0;
-            fn getc(_: i64) i64 {
+            fn getc(_: *anyopaque, _: i64) i64 {
                 if (pos == data.len) return -1;
                 pos += 1;
                 return data[pos - 1];
             }
-            fn none(_: i64) i64 {
+            fn none(_: *anyopaque, _: i64) i64 {
                 return 0;
             }
         };
-        const io: @import("contract").FileIo = .{ .open = undefined, .close = File.none, .put = undefined, .getc = File.getc, .ungetc = undefined, .tell = File.none, .seek = undefined, .eof = File.none };
+        const io: @import("contract").FileIo = .{ .ctx = &File.pos, .open = undefined, .close = File.none, .put = undefined, .getc = File.getc, .ungetc = undefined, .tell = File.none, .seek = undefined, .eof = File.none };
         // 70 bits = 9 bytes, 0xff first: only its low 6 bits survive.
         File.data = "\xff\x01\x02\x03\x04\x05\x06\x07\x08";
         File.pos = 0;
@@ -14839,7 +14869,7 @@ pub const codegen_tests = struct {
         // latch otherwise) and `$strobe`.
         try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, exe, "(if (zFinish == 0 and (pass != .accepted)) "));
         try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, exe, "(if (zFinish == 0 and (pass != .iteration)) "));
-        try std.testing.expect(std.mem.find(u8, exe, " else zFRes(") != null);
+        try std.testing.expect(std.mem.find(u8, exe, " else zInstI(S, inst, \"zf_res__") != null);
         // A device drops every §9.5 call: no passes.
         const dev = try h.gen(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, dev, "displayPass") == null);
@@ -14938,7 +14968,7 @@ pub const codegen_tests = struct {
         // `updateState` see) is that latch, not the device's zero.
         const exe = try h.genDisplay(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, exe, "zFKeep(") != null);
-        try std.testing.expect(std.mem.find(u8, exe, ": i64 = zFRes(") != null);
+        try std.testing.expect(std.mem.find(u8, exe, ": i64 = zInstI(S, inst, \"zf_res__") != null);
     }
 
     test "codegen: §9.4 a display unit that reads an operator input opens the cache" {
@@ -16090,6 +16120,9 @@ pub const codegen_tests = struct {
         // the digits are the ones tests/conformance/tests/verilog-a/ch09_system_tasks/{07,046,049,050,
         // 051,053,054,158,11} hold VerA to.
         const k = @import("kernels").file_kernels;
+        var table: @import("kernels").file_table.ZfTable = .{};
+        defer k.zFFreeAll(&table);
+        const zc: *anyopaque = &table;
         // The kernels resolve a path relative to the process cwd (which is exactly
         // what makes `ch09_047_missing.dat` a claim about a DIRECTORY, and why
         // tests/suite.zig runs each fixture in its own), so the directory is what
@@ -16106,100 +16139,100 @@ pub const codegen_tests = struct {
         // always be set", and "three file descriptors are pre-opened ...
         // 32'h8000_0000, 32'h8000_0001, and 32'h8000_0002", so a fresh channel's
         // small number is greater than 2.
-        const w = k.zFOpen(path, "w", false);
+        const w = k.zFOpen(zc, path, "w", false);
         try std.testing.expect(w & 2147483648 != 0);
         try std.testing.expect(w & 2147483647 > 2);
         // §9.5.2's output side at the byte level: four bytes in, four bytes out.
-        try std.testing.expectEqual(@as(i64, 4), k.zFPut(w, "abc\n"));
-        _ = k.zFClose(w);
+        try std.testing.expectEqual(@as(i64, 4), k.zFPut(zc, w, "abc\n"));
+        _ = k.zFClose(zc, w);
 
-        const r = k.zFOpen(path, "r", false);
+        const r = k.zFOpen(zc, path, "r", false);
         try std.testing.expect(r & 2147483648 != 0);
         // §9.5.5 "$ftell ... the offset from the beginning of the file of the current
         // byte" is 0 before any read.
-        try std.testing.expectEqual(@as(i64, 0), k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFTell(zc, r));
         // §9.5.8 "returns zero otherwise": nothing has been read, so no EOF.
-        try std.testing.expectEqual(@as(i64, 0), k.zFEof(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFEof(zc, r));
         // §9.5.4.1 "until a newline character is read AND TRANSFERRED to str ... the
         // number of characters read is returned in code" is 4, not the 3 a C `fgets`
         // minus its delimiter gives.
-        try std.testing.expectEqual(@as(i64, 4), k.zFGets(r));
-        try std.testing.expectEqualStrings("abc\n", k.zFLine(4, r));
-        try std.testing.expectEqual(@as(i64, 4), k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 4), k.zFGets(zc, r));
+        try std.testing.expectEqualStrings("abc\n", k.zFLine(zc, 4, r));
+        try std.testing.expectEqual(@as(i64, 4), k.zFTell(zc, r));
         // The read that runs off the end is the one §9.5.8 promises a nonzero answer
         // for; the first need not have touched EOF.
-        try std.testing.expectEqual(@as(i64, 0), k.zFGets(r));
-        try std.testing.expect(k.zFEof(r) != 0);
+        try std.testing.expectEqual(@as(i64, 0), k.zFGets(zc, r));
+        try std.testing.expect(k.zFEof(zc, r) != 0);
         // §9.5.5 "$fseek ... 2 sets position to EOF plus offset", and the return is a
         // STATUS: "otherwise, code is set to 0".
-        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(r, 0, 2));
-        try std.testing.expectEqual(@as(i64, 4), k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(zc, r, 0, 2));
+        try std.testing.expectEqual(@as(i64, 4), k.zFTell(zc, r));
         // "$rewind is equivalent to $fseek (fd,0,0)" in status and in effect.
-        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(r, 0, 0));
-        try std.testing.expectEqual(@as(i64, 0), k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(zc, r, 0, 0));
+        try std.testing.expectEqual(@as(i64, 0), k.zFTell(zc, r));
         // §9.5.7 "if the most recent operation did not result in an error, then the
         // value returned shall be zero, and the string variable str shall be empty".
-        try std.testing.expectEqual(@as(i64, 0), k.zFError(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFError(zc, r));
         try std.testing.expectEqualStrings("", k.zFErrorStr(0, r));
-        _ = k.zFClose(r);
+        _ = k.zFClose(zc, r);
 
         // §9.5.1 "if a file cannot be opened (either the file does not exist and the
         // type specified is r ...) a zero is returned for the mcd or fd", and
         // "applications can call $ferror to determine the cause of the most recent
         // error".
-        const bad = k.zFOpen(absent, "r", false);
+        const bad = k.zFOpen(zc, absent, "r", false);
         try std.testing.expectEqual(@as(i64, 0), bad);
-        try std.testing.expect(k.zFError(bad) != 0);
-        try std.testing.expect(k.zFErrorStr(k.zFError(bad), bad).len != 0);
+        try std.testing.expect(k.zFError(zc, bad) != 0);
+        try std.testing.expect(k.zFErrorStr(k.zFError(zc, bad), bad).len != 0);
 
         // §9.5.1's other overload: "the multichannel descriptor mcd is a 32-bit
         // integer in which a SINGLE BIT is set", bit 0 "always refers to the standard
         // output", and bit 31 "shall always be CLEARED".
-        const mcd = k.zFOpen(path, "", true);
+        const mcd = k.zFOpen(zc, path, "", true);
         try std.testing.expect(mcd & 2147483648 == 0);
         try std.testing.expect(mcd != 0 and mcd & (mcd - 1) == 0);
         try std.testing.expect(mcd != 1);
-        _ = k.zFClose(mcd);
+        _ = k.zFClose(zc, mcd);
         // "The $fopen function shall reuse channels that have been closed."
-        try std.testing.expectEqual(mcd, k.zFOpen(path, "", true));
-        _ = k.zFClose(mcd);
+        try std.testing.expectEqual(mcd, k.zFOpen(zc, path, "", true));
+        _ = k.zFClose(zc, mcd);
 
         // IEEE 1364-2005 §17.2.4.1/§17.2.4.2, the digital context's two reads on
         // this same table (VAMS §9.5.1.2): `$ungetc` puts a character back without
         // touching the file, the next `$fgetc` reads it, and `$rewind` drops it.
-        const gw = k.zFOpen(path, "w", false);
-        _ = k.zFPut(gw, "a");
-        _ = k.zFClose(gw);
-        const g = k.zFOpen(path, "r", false);
-        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(g));
-        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc('Z', g));
-        try std.testing.expectEqual(@as(i64, 0), k.zFTell(g));
-        try std.testing.expectEqual(@as(i64, 'Z'), k.zFGetc(g));
-        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc('Z', g));
-        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(g, 0, 0));
-        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(g));
+        const gw = k.zFOpen(zc, path, "w", false);
+        _ = k.zFPut(zc, gw, "a");
+        _ = k.zFClose(zc, gw);
+        const g = k.zFOpen(zc, path, "r", false);
+        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(zc, g));
+        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc(zc, 'Z', g));
+        try std.testing.expectEqual(@as(i64, 0), k.zFTell(zc, g));
+        try std.testing.expectEqual(@as(i64, 'Z'), k.zFGetc(zc, g));
+        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc(zc, 'Z', g));
+        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(zc, g, 0, 0));
+        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(zc, g));
         // §17.2.8: the read that finds no byte is EOF (-1) and sets the indicator.
-        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(g, 0, 2));
-        try std.testing.expectEqual(@as(i64, -1), k.zFGetc(g));
-        try std.testing.expect(k.zFEof(g) != 0);
-        _ = k.zFClose(g);
+        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(zc, g, 0, 2));
+        try std.testing.expectEqual(@as(i64, -1), k.zFGetc(zc, g));
+        try std.testing.expect(k.zFEof(zc, g) != 0);
+        _ = k.zFClose(zc, g);
 
         // VD-084: `$fscanf`'s window and `$fgets` read the pushback first, and
         // the file resumes after the byte it covers.
-        const hw = k.zFOpen(path, "w", false);
-        _ = k.zFPut(hw, "ab\n");
-        _ = k.zFClose(hw);
-        const h = k.zFOpen(path, "r", false);
-        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(h));
-        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc('Z', h));
-        try std.testing.expectEqualStrings("Zb\n", k.zFWindow(h));
-        try std.testing.expectEqual(@as(i64, 1), k.zFTake(h, 1, 1));
-        try std.testing.expectEqualStrings("b\n", k.zFWindow(h));
-        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc('Y', h));
-        try std.testing.expectEqual(@as(i64, 3), k.zFGets(h));
-        try std.testing.expectEqualStrings("Yb\n", k.zFLine(3, h));
-        try std.testing.expectEqual(@as(i64, 3), k.zFTell(h));
-        _ = k.zFClose(h);
+        const hw = k.zFOpen(zc, path, "w", false);
+        _ = k.zFPut(zc, hw, "ab\n");
+        _ = k.zFClose(zc, hw);
+        const h = k.zFOpen(zc, path, "r", false);
+        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(zc, h));
+        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc(zc, 'Z', h));
+        try std.testing.expectEqualStrings("Zb\n", k.zFWindow(zc, h));
+        try std.testing.expectEqual(@as(i64, 1), k.zFTake(zc, h, 1, 1));
+        try std.testing.expectEqualStrings("b\n", k.zFWindow(zc, h));
+        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc(zc, 'Y', h));
+        try std.testing.expectEqual(@as(i64, 3), k.zFGets(zc, h));
+        try std.testing.expectEqualStrings("Yb\n", k.zFLine(zc, 3, h));
+        try std.testing.expectEqual(@as(i64, 3), k.zFTell(zc, h));
+        _ = k.zFClose(zc, h);
     }
 
     test "codegen: §9.21 the emitted table interpolator is the one the fixtures assert" {
@@ -17172,7 +17205,8 @@ pub const codegen_tests = struct {
             "batch_ok",
             "constant",
             "deriv_reads",
-            "file_io",
+            "fileIo",
+            "deinitInstance",
             "jac_f",
             "lane_masks",
             "limit_reads",
