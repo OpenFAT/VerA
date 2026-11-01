@@ -100,7 +100,7 @@ pub fn emitAnalysis(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value)
             try self.b(") ({s}) * @cos({s}) else 0.0)", .{ mag, phase });
             return;
         },
-        else => @compileError("emitAnalysis: `" ++ @tagName(c) ++ "` is not an analysis-dependent call"),
+        else => @compileError("emitAnalysis: `" ++ @tagName(c) ++ "` is not an analysis-dependent call"), // else: `dispatch` routes only this family here
     }
 }
 

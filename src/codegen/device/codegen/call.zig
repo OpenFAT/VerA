@@ -432,7 +432,7 @@ fn emitEnv(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!vo
             try gen_render.renderVal(self, if (args.len > 0) args[0] else .undef, .str);
             return self.b(", {}){s}", .{ c != .@"$test$plusargs", if (str) " orelse \"\")" else " != null))" });
         },
-        else => @compileError("emitEnv: `" ++ @tagName(c) ++ "` is not an environment query"),
+        else => @compileError("emitEnv: `" ++ @tagName(c) ++ "` is not an environment query"), // else: `dispatch` routes only this family here
     }
 }
 
@@ -480,7 +480,7 @@ fn emitState(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!
             else
                 self.b("S.con(inst.tp{d}_s{d})", .{ b, slot });
         },
-        else => @compileError("emitState: `" ++ @tagName(c) ++ "` is not a retained-state read"),
+        else => @compileError("emitState: `" ++ @tagName(c) ++ "` is not a retained-state read"), // else: `dispatch` routes only this family here
     }
 }
 
@@ -541,7 +541,7 @@ fn emitConversion(self: *Gen, inst: Mir.Inst, comptime c: Mir.Callee, name: []co
             try gen_render.renderVal(self, if (args.len > 0) args[0] else .zero, .int);
             return self.b(")))", .{});
         },
-        else => @compileError("emitConversion: `" ++ @tagName(c) ++ "` is not a conversion"),
+        else => @compileError("emitConversion: `" ++ @tagName(c) ++ "` is not a conversion"), // else: `dispatch` routes only this family here
     }
 }
 
@@ -583,7 +583,7 @@ fn emitString(self: *Gen, inst: Mir.Inst, comptime c: Mir.Callee, args: []const 
         .@"$sscanf$int" => return render_sysfunc.emitScan(self, "zScanNulI", args, .int),
         .@"$sscanf$real" => return render_sysfunc.emitScan(self, "zScanNulR", args, .real),
         .@"$sscanf$str" => return render_sysfunc.emitScan(self, "zScanNulS", args, .str),
-        else => @compileError("emitString: `" ++ @tagName(c) ++ "` is not a string function"),
+        else => @compileError("emitString: `" ++ @tagName(c) ++ "` is not a string function"), // else: `dispatch` routes only this family here
     }
 }
 

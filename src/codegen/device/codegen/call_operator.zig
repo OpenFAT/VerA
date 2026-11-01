@@ -245,7 +245,7 @@ pub fn emitPlain(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Er
             try self.b(").ddxAt({d}))", .{lane});
             return;
         },
-        else => @compileError("emitPlain: `" ++ @tagName(c) ++ "` is not a stateless operator"),
+        else => @compileError("emitPlain: `" ++ @tagName(c) ++ "` is not a stateless operator"), // else: `dispatch` routes only this family here
     }
 }
 

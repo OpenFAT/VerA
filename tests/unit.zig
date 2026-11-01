@@ -16890,6 +16890,104 @@ pub const codegen_tests = struct {
         const body = out[at..end];
         if (std.mem.find(u8, body, "c.f") != null) try std.testing.expect(std.mem.find(u8, body, "const c = ") != null);
     }
+
+    test "generate: a held string built by 20000 concatenations generates on a 1 MiB stack" {
+        // Length, not nesting: one statement per concatenation, so no parse depth
+        // sizes the caller's stack. Sizing the held string's row (`cg_strcap`)
+        // walked the chain one call per piece before any site was emitted and
+        // overflowed it (`vera --emit-zig` segfaulted at 20000). Oracle: §3.3
+        // Table 3-3 gives each `{s, sp}` the sum of its operands' lengths, and
+        // `sp` is a parameter a card may set, so every piece counts
+        // `cg_strcap.row` (4096 bytes) and the row the device declares is 20000
+        // of them.
+        const gpa = std.testing.allocator;
+        const pieces = 20000;
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(gpa);
+        try src.appendSlice(gpa, "module m(p);\n  inout p;\n  electrical p;\n  string s;\n  parameter string sp = \"x\";\n  analog begin\n    @(initial_step) begin\n      s = \"\";\n");
+        for (0..pieces) |_| try src.appendSlice(gpa, "      s = {s, sp};\n");
+        try src.appendSlice(gpa, "    end\n    I(p) <+ V(p);\n  end\nendmodule\n");
+        const Run = struct {
+            h: Harness = undefined,
+            lowered: anyerror!void = {},
+            out: anyerror!Output = error.NotRun,
+            fn lower(r: *@This(), text: []const u8) void {
+                r.lowered = Harness.run(std.testing.allocator, text, &r.h);
+            }
+            fn gen(r: *@This()) void {
+                r.out = r.h.genWith(.{ .display = .emit });
+            }
+        };
+        var r: Run = .{};
+        const t0 = try std.Thread.spawn(.{ .stack_size = 256 << 20 }, Run.lower, .{ &r, src.items });
+        t0.join();
+        defer r.h.deinit();
+        try r.lowered;
+        const t1 = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.gen, .{&r});
+        t1.join();
+        const out = try r.out;
+        const want = try gpa.print("ZStrHeldN({d})", .{pieces * 4096});
+        defer gpa.free(want);
+        try std.testing.expect(std.mem.find(u8, out.text, want) != null);
+    }
+
+    test "generate: degenerate legal devices generate, or refuse with a code, never trip an assert" {
+        // The class behind five integration bugs: an assertion on a shape a legal
+        // source can take (a ground terminal, no unknowns, a one-point table, an
+        // empty argument). Oracle: the LRM says each source below is legal, or
+        // names the rule it breaks (the code listed); a Debug build turns any
+        // assert on it into a crash. Every display mode, since each renders its
+        // own units. Name list: each row's first error code, compared exactly.
+        const Case = struct { body: []const u8, err: ?diag.Code = null };
+        const cases = [_]Case{
+            .{ .body = "" }, // no port, no analog block
+            .{ .body = "analog begin end" },
+            .{ .body = "analog $display(\"x\");" }, // no unknowns at all
+            .{ .body = "analog $strobe;" },
+            .{ .body = "electrical a; analog I(p) <+ 0;" }, // an unused internal node
+            .{ .body = "ground g; electrical g; analog I(p, g) <+ V(p, g);" }, // a ground terminal
+            .{ .body = "real a[0:0]; analog begin a[0] = V(p); I(p) <+ a[0]; end" }, // a 1-element array
+            .{ .body = "integer k; real y; analog begin k = V(p); y = 0; case (k) 0: y = 1.0; endcase I(p) <+ y; end" },
+            .{ .body = "integer i; real y; analog begin y = 0; for (i = 0; i < 0; i = i + 1) y = y + V(p); I(p) <+ y; end" },
+            .{ .body = "real x; analog begin @(initial_step) x = 1.0; I(p) <+ x; end" }, // held state only
+            .{ .body = "parameter string s = \"\"; analog begin $display(\"%s\", s); I(p) <+ V(p); end" },
+            .{ .body = "analog I(p) <+ ddt(1.0);" },
+            .{ .body = "analog I(p) <+ V(p) + noise_table({1.0, 2.0});" }, // a one-point table
+            .{ .body = "analog I(p) <+ V(p) + white_noise(0.0);" },
+            .{ .body = "analog I(p) <+ ac_stim();" },
+            // A.8.2 `ac_stim` has three slots.
+            .{ .body = "analog I(p) <+ ac_stim(\"ac\", 1, 0, 5);", .err = .E0506 },
+            // §5.4.2 a branch needs two distinct nets.
+            .{ .body = "analog V(p, p) <+ 0;", .err = .E0315 },
+        };
+        const gpa = std.testing.allocator;
+        for (cases) |cs| for ([_]codegen.Display{ .drop, .record, .emit }) |display| {
+            const src = try gpa.print("`include \"disciplines.vams\"\nmodule m(p);\n  inout p;\n  electrical p;\n  {s}\nendmodule\n", .{cs.body});
+            defer gpa.free(src);
+            var h: Harness = undefined;
+            const lowered = Harness.run(gpa, src, &h);
+            defer h.deinit();
+            // A refusal at lowering lands in the bag.
+            if (lowered) |_| {} else |e| if (e != error.DiagnosticsReported) return e;
+            const a = h.arena_state.allocator();
+            if (!h.bag.failed()) {
+                // As `Compilation.lowerAndProve` runs it.
+                _ = try ifconv.run(a, &h.mir, .pure, null);
+                const v = try proof.prove(a, &h.mir, &h.lowered, .{}, &h.bag);
+                _ = try ifconv.run(a, &h.mir, .speculate, null);
+                if (!h.bag.failed()) _ = try generate(a, a, &h.mir, &h.lowered, v, .{ .display = display, .diags = &h.bag });
+            }
+            var first: ?diag.Code = null;
+            for (0..h.bag.count()) |i| if (h.bag.at(i).severity == .err) {
+                first = h.bag.at(i).code;
+                break;
+            };
+            std.testing.expectEqual(cs.err, first) catch |e| {
+                std.debug.print("case `{s}` (display {t})\n", .{ cs.body, display });
+                return e;
+            };
+        };
+    }
 };
 
 pub const digital_tests = struct {

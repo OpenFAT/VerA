@@ -108,7 +108,7 @@ pub fn emitTask(self: *Gen, inst: Mir.Inst, comptime c: Mir.Callee, name: []cons
             try emitFileCallDropped(self, c, args, @backingInt(inst));
             return self.b(")", .{});
         },
-        else => @compileError("emitTask: `" ++ @tagName(c) ++ "` is not a task"),
+        else => @compileError("emitTask: `" ++ @tagName(c) ++ "` is not a task"), // else: `dispatch` routes only this family here
     }
 }
 
