@@ -92,194 +92,254 @@ const Run = struct {
     }
 };
 
-test "§5.10.3.3 live and static periodic schedules do not accumulate drift" {
-    if (comptime !fixed) return error.SkipZigTest;
-    var r = Run.init(.{ .start = 2e-6, .period = 1e-3 });
-    try std.testing.expectEqual(0.0, r.accept(0, 0));
-    // The historical failure appeared around 19 ms. This host follows the
-    // public schedule through 4 s and observes every event through eval.
-    for (0..4096) |i| {
-        const want = D.nextBreakpoint(&r.model, r.time).?;
-        const got = D.pendingBreakpoint(&r.inst, r.time).?;
-        try std.testing.expectEqual(want, got);
-        try std.testing.expectEqual(@as(f64, @floatFromInt(i + 1)), r.accept(got, 0));
-    }
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!fixed)) _ = case_1;
 }
-
-test "§5.10.3.3 small periods retain a representable future breakpoint" {
-    if (comptime !fixed) return error.SkipZigTest;
-    const epsilon = std.math.floatEps(f64);
-    for ([_]f64{ epsilon, epsilon / 16, 1e-320 }) |period| {
-        var r = Run.init(.{ .start = 1, .period = period });
+const case_1 = struct {
+    test "§5.10.3.3 live and static periodic schedules do not accumulate drift" {
+        var r = Run.init(.{ .start = 2e-6, .period = 1e-3 });
         try std.testing.expectEqual(0.0, r.accept(0, 0));
-        try std.testing.expectEqual(1.0, r.accept(1, 0));
-        for (0..16) |i| {
-            const want = std.math.nextAfter(f64, r.time, std.math.inf(f64));
-            // There is at least one real event between consecutive f64 times.
-            // The next representable time is at/just beyond that event; none
-            // may be returned at or before the host's current time.
-            const future = D.nextBreakpoint(&r.model, r.time);
-            try std.testing.expect(future != null);
-            try std.testing.expectEqual(want, future.?);
-            try std.testing.expectEqual(future, D.pendingBreakpoint(&r.inst, r.time));
-            try std.testing.expectEqual(@as(f64, @floatFromInt(i + 2)), r.accept(future.?, 0));
+        // The historical failure appeared around 19 ms. This host follows the
+        // public schedule through 4 s and observes every event through eval.
+        for (0..4096) |i| {
+            const want = D.nextBreakpoint(&r.model, r.time).?;
+            const got = D.pendingBreakpoint(&r.inst, r.time).?;
+            try std.testing.expectEqual(want, got);
+            try std.testing.expectEqual(@as(f64, @floatFromInt(i + 1)), r.accept(got, 0));
         }
     }
-}
+};
 
-test "§5.10.3.3 a periodic origin before zero keeps its absolute phase" {
-    if (comptime !fixed) return error.SkipZigTest;
-    var r = Run.init(.{ .start = -1, .period = 2 });
-    // Only the -1 second event is past: subsequent multiples are 1 and 3,
-    // rather than the 0,2,4 grid produced by clamping the origin to zero.
-    try std.testing.expectEqual(0.0, r.accept(0, 0));
-    for ([_]f64{ 1, 3 }, 0..) |want, k| {
-        try std.testing.expectEqual(want, D.nextBreakpoint(&r.model, r.time).?);
-        try std.testing.expectEqual(want, D.pendingBreakpoint(&r.inst, r.time).?);
-        try std.testing.expectEqual(@as(f64, @floatFromInt(k + 1)), r.accept(want, 0));
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!fixed)) _ = case_2;
+}
+const case_2 = struct {
+    test "§5.10.3.3 small periods retain a representable future breakpoint" {
+        const epsilon = std.math.floatEps(f64);
+        for ([_]f64{ epsilon, epsilon / 16, 1e-320 }) |period| {
+            var r = Run.init(.{ .start = 1, .period = period });
+            try std.testing.expectEqual(0.0, r.accept(0, 0));
+            try std.testing.expectEqual(1.0, r.accept(1, 0));
+            for (0..16) |i| {
+                const want = std.math.nextAfter(f64, r.time, std.math.inf(f64));
+                // There is at least one real event between consecutive f64 times.
+                // The next representable time is at/just beyond that event; none
+                // may be returned at or before the host's current time.
+                const future = D.nextBreakpoint(&r.model, r.time);
+                try std.testing.expect(future != null);
+                try std.testing.expectEqual(want, future.?);
+                try std.testing.expectEqual(future, D.pendingBreakpoint(&r.inst, r.time));
+                try std.testing.expectEqual(@as(f64, @floatFromInt(i + 2)), r.accept(future.?, 0));
+            }
+        }
     }
-}
+};
 
-test "§5.10.3.3 an exhausted finite-time schedule has no future breakpoint" {
-    if (comptime !fixed) return error.SkipZigTest;
-    const max = std.math.floatMax(f64);
-    for ([_]D.Model{
-        .{ .start = 1, .period = 0 },
-        .{ .start = 1, .period = -1 },
-        .{ .start = 0.75 * max, .period = max },
-    }) |model| {
-        try std.testing.expectEqual(@as(?f64, null), D.nextBreakpoint(&model, model.start));
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!fixed)) _ = case_3;
+}
+const case_3 = struct {
+    test "§5.10.3.3 a periodic origin before zero keeps its absolute phase" {
+        var r = Run.init(.{ .start = -1, .period = 2 });
+        // Only the -1 second event is past: subsequent multiples are 1 and 3,
+        // rather than the 0,2,4 grid produced by clamping the origin to zero.
+        try std.testing.expectEqual(0.0, r.accept(0, 0));
+        for ([_]f64{ 1, 3 }, 0..) |want, k| {
+            try std.testing.expectEqual(want, D.nextBreakpoint(&r.model, r.time).?);
+            try std.testing.expectEqual(want, D.pendingBreakpoint(&r.inst, r.time).?);
+            try std.testing.expectEqual(@as(f64, @floatFromInt(k + 1)), r.accept(want, 0));
+        }
     }
-    const tiny: D.Model = .{ .start = 1, .period = 1e-320 };
-    try std.testing.expectEqual(@as(?f64, null), D.nextBreakpoint(&tiny, max));
-}
+};
 
-test "§5.10.3.3 changed period at a common grid point" {
-    if (comptime fixed or controlled or body_controlled) return error.SkipZigTest;
-    var r = Run.init(.{});
-    const p = r.model.period;
-    try std.testing.expectEqual(1.0, r.accept(0, 0));
-    try std.testing.expectEqual(2.0, r.accept(p, 0));
-    try std.testing.expectEqual(3.0, r.accept(2 * p, 1));
-    const next = D.pendingBreakpoint(&r.inst, r.time).?;
-    try std.testing.expectEqual(4 * p, next);
-    try std.testing.expectEqual(3.0, r.accept(3 * p, 1));
-    try std.testing.expectEqual(4.0, r.accept(next, 1));
-    try std.testing.expectEqual(6 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!fixed)) _ = case_4;
 }
+const case_4 = struct {
+    test "§5.10.3.3 an exhausted finite-time schedule has no future breakpoint" {
+        const max = std.math.floatMax(f64);
+        for ([_]D.Model{
+            .{ .start = 1, .period = 0 },
+            .{ .start = 1, .period = -1 },
+            .{ .start = 0.75 * max, .period = max },
+        }) |model| {
+            try std.testing.expectEqual(@as(?f64, null), D.nextBreakpoint(&model, model.start));
+        }
+        const tiny: D.Model = .{ .start = 1, .period = 1e-320 };
+        try std.testing.expectEqual(@as(?f64, null), D.nextBreakpoint(&tiny, max));
+    }
+};
 
-test "§5.10.3.3 a rejected period change restores the schedule" {
-    if (comptime fixed or controlled or body_controlled) return error.SkipZigTest;
-    var r = Run.init(.{});
-    const p = r.model.period;
-    _ = r.accept(0, 0);
-    _ = r.accept(p, 0);
-    const accepted_inst = r.inst;
-    const accepted_state = r.state;
-    try std.testing.expectEqual(3.0, r.attempt(2 * p, 1));
-    try std.testing.expectEqual(4 * p, D.pendingBreakpoint(&r.inst, 2 * p).?);
-    _ = D.stateCtl(&r.model, &r.inst, &r.state, .revert);
-    try std.testing.expectEqualDeep(accepted_inst, r.inst);
-    try std.testing.expectEqualDeep(accepted_state, r.state);
-    try std.testing.expectEqual(3.0, r.accept(2 * p, 0));
-    try std.testing.expectEqual(3 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(fixed or controlled or body_controlled)) _ = case_5;
 }
+const case_5 = struct {
+    test "§5.10.3.3 changed period at a common grid point" {
+        var r = Run.init(.{});
+        const p = r.model.period;
+        try std.testing.expectEqual(1.0, r.accept(0, 0));
+        try std.testing.expectEqual(2.0, r.accept(p, 0));
+        try std.testing.expectEqual(3.0, r.accept(2 * p, 1));
+        const next = D.pendingBreakpoint(&r.inst, r.time).?;
+        try std.testing.expectEqual(4 * p, next);
+        try std.testing.expectEqual(3.0, r.accept(3 * p, 1));
+        try std.testing.expectEqual(4.0, r.accept(next, 1));
+        try std.testing.expectEqual(6 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+    }
+};
 
-test "§5.10.3.3 between-fire changes replace the absolute grid before delivery" {
-    if (comptime !controlled) return error.SkipZigTest;
-    var r = Run.init(.{});
-    const p = r.model.period;
-    try std.testing.expectEqual(1.0, r.acceptWith(0, .{}));
-    try std.testing.expectEqual(2.0, r.acceptWith(p, .{}));
-    // At 4 ns the latest period becomes 3 ns BEFORE the event test. Four is
-    // not on 0 + k*3, so the obsolete event is canceled; the next is 6 ns.
-    try std.testing.expectEqual(2.0, r.acceptWith(2 * p, .{ .period = 1.5 }));
-    try std.testing.expectEqual(3 * p, D.pendingBreakpoint(&r.inst, r.time).?);
-    try std.testing.expectEqual(3.0, r.acceptWith(3 * p, .{ .period = 1.5 }));
-    // At 7 ns extend to a 5 ns period: latest grid 0,5,10,..., next 10.
-    try std.testing.expectEqual(3.0, r.acceptWith(3.5 * p, .{ .period = 2.5 }));
-    try std.testing.expectEqual(5 * p, D.pendingBreakpoint(&r.inst, r.time).?);
-    // At 8 ns shorten to 2 ns: now IS on the new grid, so it fires now.
-    try std.testing.expectEqual(4.0, r.acceptWith(4 * p, .{}));
-    try std.testing.expectEqual(5 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(fixed or controlled or body_controlled)) _ = case_6;
 }
+const case_6 = struct {
+    test "§5.10.3.3 a rejected period change restores the schedule" {
+        var r = Run.init(.{});
+        const p = r.model.period;
+        _ = r.accept(0, 0);
+        _ = r.accept(p, 0);
+        const accepted_inst = r.inst;
+        const accepted_state = r.state;
+        try std.testing.expectEqual(3.0, r.attempt(2 * p, 1));
+        try std.testing.expectEqual(4 * p, D.pendingBreakpoint(&r.inst, 2 * p).?);
+        _ = D.stateCtl(&r.model, &r.inst, &r.state, .revert);
+        try std.testing.expectEqualDeep(accepted_inst, r.inst);
+        try std.testing.expectEqualDeep(accepted_state, r.state);
+        try std.testing.expectEqual(3.0, r.accept(2 * p, 0));
+        try std.testing.expectEqual(3 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+    }
+};
 
-test "§5.10.3.3 disable and re-enable preserve the running absolute grid" {
-    if (comptime !controlled) return error.SkipZigTest;
-    var r = Run.init(.{});
-    const p = r.model.period;
-    try std.testing.expectEqual(0.0, r.acceptWith(0, .{ .start = 0.5 }));
-    try std.testing.expectEqual(1.0, r.acceptWith(0.5 * p, .{ .start = 0.5 }));
-    try std.testing.expectEqual(1.0, r.acceptWith(1.5 * p, .{ .start = 0.5, .enable = 0 }));
-    try std.testing.expectEqual(1.0, r.acceptWith(2 * p, .{ .start = 0.5 }));
-    const next = D.pendingBreakpoint(&r.inst, r.time).?;
-    try std.testing.expectEqual(0.5 * p + 2 * p, next);
-    try std.testing.expectEqual(2.0, r.acceptWith(next, .{ .start = 0.5 }));
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!controlled)) _ = case_7;
 }
+const case_7 = struct {
+    test "§5.10.3.3 between-fire changes replace the absolute grid before delivery" {
+        var r = Run.init(.{});
+        const p = r.model.period;
+        try std.testing.expectEqual(1.0, r.acceptWith(0, .{}));
+        try std.testing.expectEqual(2.0, r.acceptWith(p, .{}));
+        // At 4 ns the latest period becomes 3 ns BEFORE the event test. Four is
+        // not on 0 + k*3, so the obsolete event is canceled; the next is 6 ns.
+        try std.testing.expectEqual(2.0, r.acceptWith(2 * p, .{ .period = 1.5 }));
+        try std.testing.expectEqual(3 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+        try std.testing.expectEqual(3.0, r.acceptWith(3 * p, .{ .period = 1.5 }));
+        // At 7 ns extend to a 5 ns period: latest grid 0,5,10,..., next 10.
+        try std.testing.expectEqual(3.0, r.acceptWith(3.5 * p, .{ .period = 2.5 }));
+        try std.testing.expectEqual(5 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+        // At 8 ns shorten to 2 ns: now IS on the new grid, so it fires now.
+        try std.testing.expectEqual(4.0, r.acceptWith(4 * p, .{}));
+        try std.testing.expectEqual(5 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+    }
+};
 
-test "§5.10.3.3 solved non-positive periods are one-shots and can be rearmed" {
-    if (comptime !controlled) return error.SkipZigTest;
-    var r = Run.init(.{});
-    const p = r.model.period;
-    try std.testing.expectEqual(0.0, r.acceptWith(0, .{ .start = -1, .period = -1 }));
-    try std.testing.expectEqual(@as(?f64, null), D.pendingBreakpoint(&r.inst, 0));
-    try std.testing.expectEqual(0.0, r.acceptWith(p, .{ .start = 2, .period = 0 }));
-    try std.testing.expectEqual(2 * p, D.pendingBreakpoint(&r.inst, p).?);
-    try std.testing.expectEqual(1.0, r.acceptWith(2 * p, .{ .start = 2, .period = 0 }));
-    try std.testing.expectEqual(@as(?f64, null), D.pendingBreakpoint(&r.inst, 2 * p));
-    // A changed start can be NOW; a spent past start cannot.
-    try std.testing.expectEqual(2.0, r.acceptWith(3 * p, .{ .start = 3, .period = 0 }));
-    try std.testing.expectEqual(2.0, r.acceptWith(4 * p, .{ .start = 2, .period = -1 }));
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!controlled)) _ = case_8;
 }
+const case_8 = struct {
+    test "§5.10.3.3 disable and re-enable preserve the running absolute grid" {
+        var r = Run.init(.{});
+        const p = r.model.period;
+        try std.testing.expectEqual(0.0, r.acceptWith(0, .{ .start = 0.5 }));
+        try std.testing.expectEqual(1.0, r.acceptWith(0.5 * p, .{ .start = 0.5 }));
+        try std.testing.expectEqual(1.0, r.acceptWith(1.5 * p, .{ .start = 0.5, .enable = 0 }));
+        try std.testing.expectEqual(1.0, r.acceptWith(2 * p, .{ .start = 0.5 }));
+        const next = D.pendingBreakpoint(&r.inst, r.time).?;
+        try std.testing.expectEqual(0.5 * p + 2 * p, next);
+        try std.testing.expectEqual(2.0, r.acceptWith(next, .{ .start = 0.5 }));
+    }
+};
 
-test "§5.10.3.3 an event-body change schedules from its final value exactly once" {
-    if (comptime !body_controlled) return error.SkipZigTest;
-    var r = Run.init(.{});
-    const p = r.model.period;
-    try std.testing.expectEqual(1.0, r.accept(0, 0));
-    // Every form (scalar, array, function and precomputed effect) must roll
-    // back its changed dependencies together with the timer's pending event.
-    try std.testing.expectEqual(2.0, r.attempt(p, 0));
-    _ = D.stateCtl(&r.model, &r.inst, &r.state, .revert);
-    try std.testing.expectEqual(p, D.pendingBreakpoint(&r.inst, r.time).?);
-    try std.testing.expectEqual(2.0, r.accept(p, 0));
-    const next = D.pendingBreakpoint(&r.inst, r.time).?;
-    try std.testing.expectEqual(1.5 * p, next);
-    try std.testing.expectEqual(3.0, r.accept(next, 0));
-    try std.testing.expectEqual(3 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!controlled)) _ = case_9;
 }
+const case_9 = struct {
+    test "§5.10.3.3 solved non-positive periods are one-shots and can be rearmed" {
+        var r = Run.init(.{});
+        const p = r.model.period;
+        try std.testing.expectEqual(0.0, r.acceptWith(0, .{ .start = -1, .period = -1 }));
+        try std.testing.expectEqual(@as(?f64, null), D.pendingBreakpoint(&r.inst, 0));
+        try std.testing.expectEqual(0.0, r.acceptWith(p, .{ .start = 2, .period = 0 }));
+        try std.testing.expectEqual(2 * p, D.pendingBreakpoint(&r.inst, p).?);
+        try std.testing.expectEqual(1.0, r.acceptWith(2 * p, .{ .start = 2, .period = 0 }));
+        try std.testing.expectEqual(@as(?f64, null), D.pendingBreakpoint(&r.inst, 2 * p));
+        // A changed start can be NOW; a spent past start cannot.
+        try std.testing.expectEqual(2.0, r.acceptWith(3 * p, .{ .start = 3, .period = 0 }));
+        try std.testing.expectEqual(2.0, r.acceptWith(4 * p, .{ .start = 2, .period = -1 }));
+    }
+};
 
-test "§5.10.3.3 final function dependencies retain host parameter overrides" {
-    if (comptime !@hasField(D.Model, "gain")) return error.SkipZigTest;
-    var r = Run.init(.{ .period = 4e-9, .gain = 2 });
-    // period*gain begins at 8 ns. The second body's rate=1.5 makes the
-    // latest absolute grid 0,12,24 ns, retaining the delivered 8 ns event.
-    try std.testing.expectEqual(1.0, r.accept(0, 0));
-    try std.testing.expectEqual(8e-9, D.pendingBreakpoint(&r.inst, 0).?);
-    try std.testing.expectEqual(2.0, r.accept(8e-9, 0));
-    const next = D.pendingBreakpoint(&r.inst, r.time).?;
-    try std.testing.expectApproxEqAbs(12e-9, next, 1e-23);
-    try std.testing.expectEqual(3.0, r.accept(next, 0));
-    try std.testing.expectApproxEqAbs(24e-9, D.pendingBreakpoint(&r.inst, r.time).?, 1e-23);
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!body_controlled)) _ = case_10;
 }
+const case_10 = struct {
+    test "§5.10.3.3 an event-body change schedules from its final value exactly once" {
+        var r = Run.init(.{});
+        const p = r.model.period;
+        try std.testing.expectEqual(1.0, r.accept(0, 0));
+        // Every form (scalar, array, function and precomputed effect) must roll
+        // back its changed dependencies together with the timer's pending event.
+        try std.testing.expectEqual(2.0, r.attempt(p, 0));
+        _ = D.stateCtl(&r.model, &r.inst, &r.state, .revert);
+        try std.testing.expectEqual(p, D.pendingBreakpoint(&r.inst, r.time).?);
+        try std.testing.expectEqual(2.0, r.accept(p, 0));
+        const next = D.pendingBreakpoint(&r.inst, r.time).?;
+        try std.testing.expectEqual(1.5 * p, next);
+        try std.testing.expectEqual(3.0, r.accept(next, 0));
+        try std.testing.expectEqual(3 * p, D.pendingBreakpoint(&r.inst, r.time).?);
+    }
+};
 
-test "§4.7.2.3/.4 final timer controls do not repeat output or inout effects, including retries" {
-    if (comptime !@hasField(D.U, "calls")) return error.SkipZigTest;
-    var r = Run.init(.{});
-    const p = r.model.period;
-    try std.testing.expectEqual(1.0, r.accept(0, 0));
-    try std.testing.expectEqual(1.0, r.calls);
-    try std.testing.expectEqual(101.0, r.mark);
-    try std.testing.expectEqual(2.0, r.attempt(p, 0));
-    try std.testing.expectEqual(2.0, r.calls);
-    try std.testing.expectEqual(102.0, r.mark);
-    _ = D.stateCtl(&r.model, &r.inst, &r.state, .revert);
-    try std.testing.expectEqual(2.0, r.accept(p, 0));
-    try std.testing.expectEqual(2.0, r.calls);
-    try std.testing.expectEqual(102.0, r.mark);
-    const next = D.pendingBreakpoint(&r.inst, r.time).?;
-    try std.testing.expectEqual(1.5 * p, next);
-    try std.testing.expectEqual(3.0, r.accept(next, 0));
-    try std.testing.expectEqual(3.0, r.calls);
-    try std.testing.expectEqual(103.0, r.mark);
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!@hasField(D.Model, "gain"))) _ = case_11;
 }
+const case_11 = struct {
+    test "§5.10.3.3 final function dependencies retain host parameter overrides" {
+        var r = Run.init(.{ .period = 4e-9, .gain = 2 });
+        // period*gain begins at 8 ns. The second body's rate=1.5 makes the
+        // latest absolute grid 0,12,24 ns, retaining the delivered 8 ns event.
+        try std.testing.expectEqual(1.0, r.accept(0, 0));
+        try std.testing.expectEqual(8e-9, D.pendingBreakpoint(&r.inst, 0).?);
+        try std.testing.expectEqual(2.0, r.accept(8e-9, 0));
+        const next = D.pendingBreakpoint(&r.inst, r.time).?;
+        try std.testing.expectApproxEqAbs(12e-9, next, 1e-23);
+        try std.testing.expectEqual(3.0, r.accept(next, 0));
+        try std.testing.expectApproxEqAbs(24e-9, D.pendingBreakpoint(&r.inst, r.time).?, 1e-23);
+    }
+};
+
+// Compiled only for the variants it applies to: skipped tests fail (tools/zrunner.zig).
+comptime {
+    if (!(!@hasField(D.U, "calls"))) _ = case_12;
+}
+const case_12 = struct {
+    test "§4.7.2.3/.4 final timer controls do not repeat output or inout effects, including retries" {
+        var r = Run.init(.{});
+        const p = r.model.period;
+        try std.testing.expectEqual(1.0, r.accept(0, 0));
+        try std.testing.expectEqual(1.0, r.calls);
+        try std.testing.expectEqual(101.0, r.mark);
+        try std.testing.expectEqual(2.0, r.attempt(p, 0));
+        try std.testing.expectEqual(2.0, r.calls);
+        try std.testing.expectEqual(102.0, r.mark);
+        _ = D.stateCtl(&r.model, &r.inst, &r.state, .revert);
+        try std.testing.expectEqual(2.0, r.accept(p, 0));
+        try std.testing.expectEqual(2.0, r.calls);
+        try std.testing.expectEqual(102.0, r.mark);
+        const next = D.pendingBreakpoint(&r.inst, r.time).?;
+        try std.testing.expectEqual(1.5 * p, next);
+        try std.testing.expectEqual(3.0, r.accept(next, 0));
+        try std.testing.expectEqual(3.0, r.calls);
+        try std.testing.expectEqual(103.0, r.mark);
+    }
+};
