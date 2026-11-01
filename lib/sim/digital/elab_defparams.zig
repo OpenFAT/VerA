@@ -159,11 +159,13 @@ fn defparamBase(r: *Run, decl: u32, path: []const u8, children: ?[]const Ast.Ins
 }
 
 /// A hierarchical name segment `name` or `name[k]`; a `k` that is not a
-/// decimal integer reads as no index.
+/// decimal integer reads as no index. `seg` is source text: an escaped
+/// identifier may hold `[` without ending in `]` (IEEE 1364-2005 §3.7.1,
+/// `\a__g[1]__in1`), and that whole segment is the name.
 fn segment(seg: []const u8) struct { []const u8, ?i64 } {
     const bracket = std.mem.findScalar(u8, seg, '[') orelse return .{ seg, null };
-    assert(bracket < seg.len);
-    assert(seg[seg.len - 1] == ']');
+    if (seg[seg.len - 1] != ']') return .{ seg, null };
+    assert(bracket < seg.len - 1);
     return .{ seg[0..bracket], std.fmt.parseInt(i64, seg[bracket + 1 .. seg.len - 1], 10) catch null };
 }
 
@@ -195,4 +197,14 @@ fn within(r: *const Run, s: u32, outer: u32) bool {
     var at = s;
     while (at != outer) : (at = r.hier.scopes.items[at].parent) if (isRoot(r, at)) return false;
     return true;
+}
+
+test "segment: an escaped name holding `[` is one name; `name[k]` splits" {
+    // Oracle: IEEE 1364-2005 §3.7.1 (an escaped identifier is any printable
+    // run) and §12.5 (a hierarchical segment `name[k]` names an array element).
+    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "a__g[1]__in1", null }), segment("a__g[1]__in1"));
+    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "a[12", null }), segment("a[12"));
+    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "u", 3 }), segment("u[3]"));
+    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "u", null }), segment("u[k]"));
+    try std.testing.expectEqualDeep(@as(struct { []const u8, ?i64 }, .{ "u", null }), segment("u"));
 }
