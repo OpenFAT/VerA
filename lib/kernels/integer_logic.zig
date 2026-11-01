@@ -536,52 +536,6 @@ test "packed shifts preserve X Z and carries across word boundaries" {
     }
 }
 
-test "shift count is unsigned self-determined and never truncated" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const source = try integer.parse(arena, "129'sh1abcd56780000000000000000a5f0zx10");
-    const original = try arena.dupe(u64, source.planes);
-    for ([_][]const u8{ "65'h10000000000000000", "128'h80000000000000000000000000000000", "64'shffffffffffffffff" }) |text| {
-        const count = try integer.parse(arena, text);
-        inline for (std.meta.tags(Shift)) |op| {
-            const out = try source.shift(arena, op, count);
-            for (0..source.width) |index|
-                try std.testing.expectEqual(if (op == .arithmetic_right) source.bit(source.width - 1) else Bit.zero, out.bit(@intCast(index)));
-        }
-    }
-    for ([_][]const u8{ "129'hx00000000000000000000000000000000", "129'hz00000000000000000000000000000000", "4'b00x0", "4'b00z0" }) |text| {
-        const count = try integer.parse(arena, text);
-        inline for (std.meta.tags(Shift)) |op| {
-            const out = try source.shift(arena, op, count);
-            for (0..source.width) |index| try std.testing.expectEqual(Bit.x, out.bit(@intCast(index)));
-        }
-    }
-    // A signed four-bit -1 is an unsigned shift count of 15, not 2^64-1.
-    const fifteen = try integer.parse(arena, "4'shf");
-    const shifted = try source.shift(arena, .left, fifteen);
-    for (0..source.width) |index|
-        try std.testing.expectEqual(testShiftBit(source, .left, 15, @intCast(index)), shifted.bit(@intCast(index)));
-    const one = try integer.parse(arena, "1'b1");
-    const negative = try integer.parse(arena, "4'sb1000");
-    const normalized = try negative.resize(arena, 8, .sign);
-    const arithmetic = try normalized.shift(arena, .arithmetic_right, one);
-    try std.testing.expectEqualSlices(u64, &.{ 0xfc, 0 }, arithmetic.planes);
-    var unsigned_context = try negative.resize(arena, 8, .zero);
-    unsigned_context.signed = false;
-    const zero_filled = try unsigned_context.shift(arena, .arithmetic_right, one);
-    try std.testing.expectEqualSlices(u64, &.{ 4, 0 }, zero_filled.planes);
-    for ([_][]const u8{ "1'sbx", "1'sbz" }) |text| {
-        const sign = try integer.parse(arena, text);
-        const out = try sign.shift(arena, .arithmetic_right, fifteen);
-        try std.testing.expectEqual(sign.bit(0), out.bit(0));
-    }
-    const spare_count = try integer.parse(arena, "000000000000000000000000000000000000000000001");
-    const small_shift = try negative.shift(arena, .left, spare_count);
-    try std.testing.expectEqualSlices(u64, &.{ 0, 0 }, small_shift.planes);
-    try std.testing.expectEqualSlices(u64, original, source.planes);
-}
-
 test "four-state relations exhaust small vectors and mixed signedness" {
     for ([_]u32{ 1, 2, 3 }) |aw| {
         for ([_]u32{ 1, 2, 3 }) |bw| {

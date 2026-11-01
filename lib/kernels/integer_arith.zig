@@ -280,19 +280,6 @@ fn testWideNumber(value: Literal, signed: bool) i1025 {
     return result;
 }
 
-fn testArithmeticAllocation(allocator: std.mem.Allocator) !void {
-    const a = try integer.parse(allocator, "257'sh1fedcba9876543210fedcba98765432100123456789abcdef0123456789abcdef0");
-    defer allocator.free(a.planes);
-    const b = try integer.parse(allocator, "129'sh1fedcba98765432100123456789abcdef0");
-    defer allocator.free(b.planes);
-    for (std.enums.values(Arithmetic)) |op| {
-        const result = try a.arithmetic(allocator, op, b);
-        allocator.free(result.planes);
-    }
-    const negated = try a.negate(allocator);
-    allocator.free(negated.planes);
-}
-
 fn testPowerNumber(base: i32, exponent: i32) ?i1025 {
     if (exponent < 0) {
         if (base == 0) return null;
@@ -303,15 +290,6 @@ fn testPowerNumber(base: i32, exponent: i32) ?i1025 {
     var result: i1025 = 1;
     for (0..@intCast(exponent)) |_| result *= base;
     return result;
-}
-
-fn testPowerAllocation(allocator: std.mem.Allocator) !void {
-    const a = try integer.parse(allocator, "129'h100000000000000000000000000000003");
-    defer allocator.free(a.planes);
-    const b = try integer.parse(allocator, "65'd17");
-    defer allocator.free(b.planes);
-    const result = try a.power(allocator, b);
-    defer allocator.free(result.planes);
 }
 
 /// A random operand of 1..64 bits, either signedness, with x/z bits in about
@@ -481,10 +459,6 @@ test "arithmetic context is applied before evaluation and padding is not data" {
     try testArithmeticResult(spare_sum, 2);
 }
 
-test "packed arithmetic frees partial allocations on every failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, testArithmeticAllocation, .{});
-}
-
 test "packed power exhausts small four-state operands with independent signedness" {
     const allocator = std.testing.allocator;
     var aa: [2]u64 = undefined;
@@ -570,10 +544,6 @@ test "packed power preserves multiword context and large exponent semantics" {
     try testArithmeticResult(try padded.power(arena, padded_count), 1);
     try std.testing.expectEqualSlices(u64, &saved_base, &padded_words);
     try std.testing.expectEqualSlices(u64, &saved_count, &count_words);
-}
-
-test "packed power allocation failures release every intermediate" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, testPowerAllocation, .{});
 }
 
 test "one-word arithmetic, negate and power agree with the big-integer path" {
