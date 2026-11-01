@@ -5,13 +5,20 @@
 //! - `pub const List = opaque {}`
 //! - `pub fn arg(ap: *List, comptime T: type) T`
 
+const std = @import("std");
+
 /// A `va_list *`, opaque: only `varargs.c` knows its layout.
 pub const List = opaque {};
 
 /// `va_arg(*ap, T)`. An unsigned type reads its signed twin, which C11
 /// 7.16.1.1 allows for a value both represent and which passes in the same
 /// place; `intmax_t` is read as `long long`, the same 64 bits on every target.
+///
+/// Asserts, at compile time, that `T` passes in one argument slot and that
+/// `long long` is 64 bits.
 pub fn arg(ap: *List, comptime T: type) T {
+    comptime std.debug.assert(@sizeOf(T) <= 8);
+    comptime std.debug.assert(@bitSizeOf(c_longlong) == 64);
     return switch (T) {
         c_int => vera_va_int(ap),
         c_long => vera_va_long(ap),

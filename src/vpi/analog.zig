@@ -137,40 +137,83 @@ pub const Error = error{ NoLibrary, BackupExhausted, Singular };
 /// whose argument 1 the device reads back.
 pub const OneCall = struct {
     const none = [0]f64{};
-    fn open(_: u8) callconv(.c) void {}
-    fn solve(_: f64, _: f64, _: bool, _: bool) callconv(.c) bool {
+    /// The device's analysis ordinals run 0 (`static`) to 6 (`noise`).
+    const kinds_max = 6;
+    // Each entry point asserts what the binding guarantees a library: it is
+    // called inside `enter`, with arguments the walk and `attach` derived.
+    fn open(kind: u8) callconv(.c) void {
+        std.debug.assert(kind <= kinds_max);
+        std.debug.assert(active != null);
+    }
+    fn solve(t: f64, dt: f64, first: bool, _: bool) callconv(.c) bool {
+        std.debug.assert(dt >= 0);
+        std.debug.assert(!first or dt == 0);
+        std.debug.assert(t == t_now);
         return true;
     }
-    fn accept() callconv(.c) void {}
+    fn accept() callconv(.c) void {
+        std.debug.assert(active != null);
+        std.debug.assert(!active.?.awaiting);
+    }
     fn x() callconv(.c) [*]const f64 {
+        // A binding reads no further than the `n_u` it was told: none.
+        std.debug.assert(bound() != null);
+        std.debug.assert(bound().?.n_x == 0);
         return &none;
     }
     pub fn zero() callconv(.c) usize {
+        std.debug.assert(active != null);
+        std.debug.assert(active.?.lib != null);
         return 0;
     }
     fn one() callconv(.c) usize {
+        std.debug.assert(active != null);
+        std.debug.assert(active.?.lib != null);
         return 1;
     }
-    fn row(_: usize, _: *[4]i32) callconv(.c) void {}
-    fn rows(_: [*]f64) callconv(.c) void {}
-    fn hooks(_: ?*anyopaque, _: ?HostCall, _: ?HostOut) callconv(.c) void {}
-    fn name(_: usize, len: *usize) callconv(.c) [*]const u8 {
+    fn row(k: usize, _: *[4]i32) callconv(.c) void {
+        std.debug.assert(active != null);
+        std.debug.assert(k < active.?.flow_u.len);
+    }
+    fn rows(_: [*]f64) callconv(.c) void {
+        std.debug.assert(active != null);
+        std.debug.assert(!active.?.vals_fresh);
+    }
+    fn hooks(ctx: ?*anyopaque, call: ?HostCall, out: ?HostOut) callconv(.c) void {
+        std.debug.assert(ctx == @as(?*anyopaque, @ptrCast(active)));
+        std.debug.assert(call != null);
+        std.debug.assert(out != null);
+    }
+    fn name(k: usize, len: *usize) callconv(.c) [*]const u8 {
+        std.debug.assert(active != null);
+        std.debug.assert(k < active.?.call_obj.len);
         len.* = 2;
         return "$c";
     }
-    fn tok(_: usize) callconv(.c) u32 {
+    fn tok(k: usize) callconv(.c) u32 {
+        std.debug.assert(active != null);
+        std.debug.assert(k < active.?.call_obj.len);
         return 5;
     }
-    fn readBack(_: usize) callconv(.c) u64 {
+    fn readBack(k: usize) callconv(.c) u64 {
+        std.debug.assert(active != null);
+        std.debug.assert(k < active.?.call_outs.len);
         return 1;
     }
-    fn ac(_: f64, _: [*]f64, _: [*]f64) callconv(.c) bool {
+    fn ac(omega: f64, re: [*]f64, im: [*]f64) callconv(.c) bool {
+        std.debug.assert(active != null);
+        std.debug.assert(@intFromPtr(re) <= @intFromPtr(im));
+        std.debug.assert(!std.math.isNan(omega));
         return false;
     }
-    fn noBreakpoint(_: f64) callconv(.c) f64 {
+    fn noBreakpoint(t: f64) callconv(.c) f64 {
+        std.debug.assert(active != null);
+        std.debug.assert(!std.math.isNan(t));
         return std.math.inf(f64);
     }
-    fn noNode(_: [*]const u8, _: usize) callconv(.c) isize {
+    fn noNode(n: [*]const u8, len: usize) callconv(.c) isize {
+        std.debug.assert(active != null);
+        std.debug.assert(len == 0 or n[0] != 0);
         return -1;
     }
     pub const lib: Lib = .{
@@ -198,11 +241,15 @@ pub const OneCall = struct {
     /// A design holding that call (object 0, full name `full`) and its
     /// argument (object 1): the same name, token and index in every design
     /// it builds, so only the binding tells two apart.
+    /// Asserts that `full` is a name (`calltf` reads its first character).
     pub fn design(full: []const u8) !Design {
+        std.debug.assert(full.len != 0);
         const a = std.testing.allocator;
         const objs = try a.alloc(Obj, 2);
         objs[0] = .{ .kind = .code, .owner = .none, .name = "$c", .full = full, .vtype = user.vpiSysFuncCall, .in_analog = true, .src_tok = 5, .lists = &arg };
         objs[1] = .{ .kind = .code, .owner = .none, .name = "x", .full = "x" };
+        // The call's argument list names the second row.
+        std.debug.assert(objs[0].lists[0].items[0].index() == objs.len - 1);
         return .{ .gpa = a, .arena = .init(a), .objects = objs, .scopes = &.{}, .top_modules = &.{}, .by_name = .empty, .iters = .empty };
     }
 
@@ -212,6 +259,8 @@ pub const OneCall = struct {
     var seen_full: []const u8 = "";
     var seen_objects: [*]Obj = undefined;
     fn calltf(cb: *CbData) callconv(.c) c_int {
+        std.debug.assert(systf.active != null);
+        std.debug.assert(active != null);
         const d = &session.design.?;
         const o = trust.asObj(cb.obj).?;
         seen_full = o.full;
@@ -230,46 +279,65 @@ pub const OneCall = struct {
 /// which precedes an AC or noise analysis"): the device's `ac_stim` is live
 /// in every `.ac` evaluation, and is zero here (§4.6.1); the sweep itself
 /// evaluates as `.ac` (`Lib.ac`).
+/// Asserts that the ordinal is never `ic` or `nodeset`, which the library
+/// derives itself.
 pub fn kindOrdinal(k: Kind) u8 {
-    return switch (k) {
+    const ord: u8 = switch (k) {
         .op => 3,
         .tran => 4,
         .ac => 0,
     };
+    std.debug.assert(ord != 1);
+    std.debug.assert(ord != 2);
+    return ord;
 }
 
-/// The binding the routines answer for now.
+/// The binding the routines answer for now. Asserts that an entered binding
+/// is attached and that the installed one owns no design (`Binding.attach`).
 pub fn bound() ?*Binding {
+    std.debug.assert(active == null or active.?.lib != null);
+    std.debug.assert(installed == null or !installed.?.owns);
     return active orelse installed;
 }
 
 /// Makes `b` the binding the routines answer for and, when it owns a
 /// design, that design the installed one, until `leave(b, <the result>)`.
 /// Entering the binding already entered changes nothing; entries nest LIFO.
+/// Asserts that `b` is attached, and that an owning binding not yet entered
+/// holds its design.
 pub fn enter(b: *Binding) ?*Binding {
+    std.debug.assert(b.lib != null);
     const prev = active;
     if (prev == b) return prev;
+    std.debug.assert(!b.owns or b.design != null);
     if (b.owns) std.mem.swap(?Design, &session.design, &b.design);
     active = b;
+    std.debug.assert(!b.owns or session.design != null);
     return prev;
 }
 
-/// Undoes the `enter(b)` that returned `prev`.
+/// Undoes the `enter(b)` that returned `prev`. Asserts that `b` is the
+/// binding entered last, still attached.
 pub fn leave(b: *Binding, prev: ?*Binding) void {
+    std.debug.assert(b.lib != null);
     if (prev == b) return;
     std.debug.assert(active == b);
     if (b.owns) std.mem.swap(?Design, &session.design, &b.design);
     active = prev;
+    std.debug.assert(!b.owns or b.design != null);
 }
 
 /// §12.36 vpiRejectTransientStep: "cause the current analog simulation time
 /// point to be rejected". The walk backs up as for an acbConvergenceTest
 /// rejection. False when no rejectable solution is open: outside an analysis,
 /// on the first solution (no earlier time to back up to), or once accepted.
+/// Asserts that an open step is one awaiting acceptance.
 pub fn rejectStep() bool {
     const b = bound() orelse return false;
+    std.debug.assert(!b.open_step or b.awaiting);
     if (current == null or !b.open_step) return false;
     b.reject_step = true;
+    std.debug.assert(b.awaiting);
     return true;
 }
 
@@ -277,10 +345,13 @@ pub fn rejectStep() bool {
 /// continue iterating for a (valid) solution". The walk solves the same time
 /// again from the solution it has, with no backup and no acceptance between.
 /// False when no solution is awaiting acceptance.
+/// Asserts that an open step is one awaiting acceptance.
 pub fn failConverge() bool {
     const b = bound() orelse return false;
+    std.debug.assert(!b.open_step or b.awaiting);
     if (current == null or !b.awaiting) return false;
     b.fail_converge = true;
+    std.debug.assert(b.have_solution);
     return true;
 }
 
@@ -293,8 +364,11 @@ pub fn failConverge() bool {
 /// calls it before each `contract.SystfHost.call`, so a calltf reads the
 /// host's point. One point per process, for every binding: §12.7-§12.9 take
 /// no argument. `a.kind` decides which values the routines report (§12.9:
-/// zero time outside a transient); its bounds are §12.18's.
+/// zero time outside a transient); its bounds are §12.18's. Asserts that
+/// the step is not negative and that only an AC analysis has a frequency.
 pub fn setPoint(a: ?Analysis, t: f64, dt: f64, f: f64) void {
+    std.debug.assert(dt >= 0);
+    std.debug.assert(f == 0 or a.?.kind == .ac);
     current = a;
     t_now = t;
     delta = dt;
@@ -303,26 +377,40 @@ pub fn setPoint(a: ?Analysis, t: f64, dt: f64, f: f64) void {
 
 /// The analysis `run` is walking, its default `max_step` filled in; null
 /// outside `run`. §12.18's vpi_get_real reads its bounds.
+/// Asserts `setPoint`'s invariants: no negative step, no frequency outside
+/// an AC analysis.
 pub fn analysis() ?Analysis {
+    std.debug.assert(delta >= 0);
+    std.debug.assert(freq == 0 or current.?.kind == .ac);
     return current;
 }
 
 /// §12.9's value: the attempted solution's time, or the latest accepted.
+/// Asserts `setPoint`'s invariants, as `analysis` does.
 pub fn time() f64 {
+    std.debug.assert(delta >= 0);
+    std.debug.assert(freq == 0 or current.?.kind == .ac);
     return t_now;
 }
 
 /// Where acbElapsedTime counts from: "the current solution".
+/// Asserts that no solution was accepted past the one attempted.
 pub fn acceptedTime() f64 {
+    std.debug.assert(delta >= 0);
     const b = bound() orelse return 0;
-    return if (current != null) b.t_accepted else 0;
+    if (current == null) return 0;
+    std.debug.assert(b.t_accepted <= t_now or sameTime(b.t_accepted, t_now));
+    return b.t_accepted;
 }
 
 /// Two analog instants are one when they differ by rounding only: a forced
 /// point is solved at exactly the requested double, but a grid point is
 /// `start + k·step` and need not be bit-equal to a time an application
 /// computed another way.
+/// Asserts that neither instant is NaN.
 pub fn sameTime(a: f64, b: f64) bool {
+    std.debug.assert(!std.math.isNan(a));
+    std.debug.assert(!std.math.isNan(b));
     return @abs(a - b) <= 1e-12 * @max(1.0, @max(@abs(a), @abs(b))) or @abs(a - b) <= 1e-21;
 }
 

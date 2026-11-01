@@ -45,6 +45,10 @@ var analog_buf: [2][analog_len]u8 = undefined;
 /// sign that is 1 + 2 + 323 + 17; %e and %g are shorter.
 const analog_len = 1 + 2 + 323 + 17 + 1;
 
+/// The widest precision `splitE`'s 64-byte scratch spells: a sign, a digit,
+/// the point, the fraction and `e-324`.
+const splitE_prec_max = 64 - 8;
+
 /// "shall retrieve the simulation value of VPI analog vpiFlow or vpiPotential
 /// (node or branch) quantity objects. The value shall be placed in an
 /// s_vpi_analog_value structure, which has been allocated by the user."
@@ -57,6 +61,7 @@ const analog_len = 1 + 2 + 323 + 17 + 1;
 /// (`quantityValue`).
 pub export fn vpi_get_analog_value(obj: abi.vpiHandle, value_p: ?*AnalogValue) void {
     _ = status.enter("vpi_get_analog_value") orelse return;
+    std.debug.assert(session.design != null);
     const o = status.object("vpi_get_analog_value", obj) orelse return;
     if (o.kind != .quantity) {
         status.fail("NOTQUANTITY", "vpi_get_analog_value: a {s} is not a vpiFlow or vpiPotential quantity", .{@tagName(o.kind)});
@@ -97,6 +102,8 @@ pub export fn vpi_get_analog_value(obj: abi.vpiHandle, value_p: ?*AnalogValue) v
             v.format = chose;
             v.real.str = a;
             v.imaginary.str = b;
+            // vpiStringVal was reset to the form taken.
+            std.debug.assert(v.format == user.vpiExpStrVal or v.format == user.vpiDecStrVal);
         },
         else => status.fail("BADFORMAT", "vpi_get_analog_value: format {d} is not one of Table 12-2's", .{v.format}),
     }
@@ -107,8 +114,11 @@ pub export fn vpi_get_analog_value(obj: abi.vpiHandle, value_p: ?*AnalogValue) v
 /// or the time zero transient solution."
 pub export fn vpi_get_analog_time() f64 {
     if (status.refused("vpi_get_analog_time")) return 0;
+    std.debug.assert(!session.starting);
     if (analog.current) |a| if (a.kind != .tran) return 0;
-    return analog.t_now;
+    // Outside any analysis the time is the last point's, or the reset 0.
+    std.debug.assert(analog.current != null or analog.freq == 0);
+    return analog.time();
 }
 
 /// §12.7 "the elapsed time between the latest converged and accepted
@@ -118,7 +128,10 @@ pub export fn vpi_get_analog_time() f64 {
 /// accepted, so it is the step that reached it.
 pub export fn vpi_get_analog_delta() f64 {
     if (status.refused("vpi_get_analog_delta")) return 0;
+    std.debug.assert(!session.starting);
     if (analog.current) |a| if (a.kind != .tran) return 0;
+    // `setPoint` never takes a negative step.
+    std.debug.assert(analog.delta >= 0);
     return analog.delta;
 }
 
@@ -127,17 +140,28 @@ pub export fn vpi_get_analog_delta() f64 {
 /// only at an AC sweep's small-signal points, not at its operating point.
 pub export fn vpi_get_analog_freq() f64 {
     if (status.refused("vpi_get_analog_freq")) return 0;
+    std.debug.assert(!session.starting);
+    // `setPoint` sets a frequency only in an AC analysis.
+    std.debug.assert(analog.freq == 0 or analog.current.?.kind == .ac);
     return analog.freq;
 }
 
 // ---- private ----
 
+/// Asserts that `holds` admitted `row` for the bound binding.
 fn unknownAt(x: [*]const f64, row: u32) f64 {
+    std.debug.assert(analog.bound() != null);
+    const bi = analog.bound().?;
+    std.debug.assert(row == ground or row < bi.n_x);
     return if (row == ground) 0 else x[row];
 }
 
 /// Whether `bi`'s `Lib.x` holds `row`: ground reads 0 and needs no slot.
 fn holds(bi: *const Binding, row: u32) bool {
+    // No library publishes as many unknowns as the ground sentinel.
+    std.debug.assert(bi.n_x < ground);
+    // `attach` sizes the row values as (resistive, reactive) pairs.
+    std.debug.assert(bi.now_vals.len % 2 == 0);
     return row == ground or row < bi.n_x;
 }
 
@@ -150,12 +174,16 @@ fn holds(bi: *const Binding, row: u32) bool {
 /// instances' unnamed branches share the row, it is this instance's own share
 /// (`vpiShares`, §5.4.1), the same way.
 fn quantityValue(q: *const Obj) ValueError!Value {
+    std.debug.assert(q.kind == .quantity);
     const bi = analog.bound() orelse return error.NoAnalysis;
     const l = bi.lib orelse return error.NoAnalysis;
     const d = &session.design.?;
     const flow_u = bi.flow_u;
     const branch = schema.coldOf(q).branch;
     if (branch == .none) return error.NoAnalysis;
+    std.debug.assert(d.obj(branch).kind == .branch);
+    // `attach` sizes the small-signal solution as n real then n imaginary.
+    std.debug.assert(bi.ac_x.len == 2 * bi.n_x);
     const b = schema.coldOf(d.obj(branch));
     // The library is outside data: every slot read below is checked against
     // what it published, before the solution is.
@@ -176,6 +204,8 @@ fn quantityValue(q: *const Obj) ValueError!Value {
     if (b.contrib_pot) |k| {
         if (flow_u[k] < 0) return error.Unknowable;
         const u: usize = @intCast(flow_u[k]);
+        // Checked against `n_x` before the solution was read.
+        std.debug.assert(u < bi.n_x);
         return .{ .re = sign * x[u], .im = if (ac) sign * xi[u] else 0 };
     }
     if (b.contrib_flow) |row| {
@@ -197,6 +227,7 @@ fn quantityValue(q: *const Obj) ValueError!Value {
 /// printf %e", vpiDecStrVal "decimal char(s)", vpiStringVal "like printf
 /// %g" — reporting which of the other two %g chose in `chose`.
 fn analogString(buf: *[analog_len]u8, x: f64, format: c_int, chose: *c_int) ?[*:0]u8 {
+    const before = chose.*;
     const text = switch (format) {
         user.vpiExpStrVal => printfE(buf, x, 6),
         user.vpiDecStrVal => std.mem.printSentinel(buf, "{d}", .{x}, 0) catch null,
@@ -206,6 +237,9 @@ fn analogString(buf: *[analog_len]u8, x: f64, format: c_int, chose: *c_int) ?[*:
         status.fail("BADFORMAT", "vpi_get_analog_value: {e} does not fit the value buffer", .{x});
         return null;
     };
+    // Only %g reports the form it took.
+    std.debug.assert(chose.* == before or format == user.vpiStringVal);
+    std.debug.assert(text.len < analog_len);
     return @constCast(text.ptr);
 }
 
@@ -213,24 +247,37 @@ fn analogString(buf: *[analog_len]u8, x: f64, format: c_int, chose: *c_int) ?[*:
 /// exponent digits. Zig's `{e}` rounds correctly and spells the exponent
 /// bare (`2.5e-3`), so only the exponent is re-spelled.
 fn printfE(buf: *[analog_len]u8, x: f64, prec: usize) ?[:0]const u8 {
+    std.debug.assert(prec <= splitE_prec_max);
     if (!std.math.isFinite(x)) return nonFinite(buf, x);
     var tmp: [64]u8 = undefined;
     const e = splitE(&tmp, x, prec) orelse return null;
-    return spellE(buf, e.mantissa, e.exp);
+    const text = spellE(buf, e.mantissa, e.exp) orelse return null;
+    std.debug.assert(std.mem.findScalar(u8, text, 'e') != null);
+    return text;
 }
 
 /// Zig's `{e:.<prec>}` of finite `x`, written into `tmp`, split at its `e`.
 fn splitE(tmp: *[64]u8, x: f64, prec: usize) ?struct { mantissa: []const u8, exp: i32 } {
+    std.debug.assert(std.math.isFinite(x));
+    std.debug.assert(prec <= splitE_prec_max);
     const raw = std.mem.print(tmp, "{e:.[1]}", .{ x, prec }) catch return null;
     const at = std.mem.findScalar(u8, raw, 'e') orelse return null;
     const exp = std.fmt.parseInt(i32, raw[at + 1 ..], 10) catch return null;
+    // A finite double's decimal exponent: 5e-324 to 1.8e308.
+    std.debug.assert(exp >= -324);
+    std.debug.assert(exp <= 308);
     return .{ .mantissa = raw[0..at], .exp = exp };
 }
 
 /// C's exponent spelling after `mantissa`: `e`, a sign, at least two digits.
 fn spellE(buf: *[analog_len]u8, mantissa: []const u8, exp: i32) ?[:0]const u8 {
+    std.debug.assert(mantissa.len != 0);
+    std.debug.assert(@abs(exp) <= 324);
     const sign: u8 = if (exp < 0) '-' else '+';
-    return std.mem.printSentinel(buf, "{s}e{c}{d:0>2}", .{ mantissa, sign, @abs(exp) }, 0) catch null;
+    const text = std.mem.printSentinel(buf, "{s}e{c}{d:0>2}", .{ mantissa, sign, @abs(exp) }, 0) catch return null;
+    // `e`, the sign and at least two digits after the mantissa.
+    std.debug.assert(text.len >= mantissa.len + 4);
+    return text;
 }
 
 /// C's `%g` (precision 6): %e when the exponent is below -4 or at least 6,
@@ -253,6 +300,9 @@ fn printfG(buf: *[analog_len]u8, x: f64, chose: *c_int) ?[:0]const u8 {
         return spellE(buf, dropZeros(e.mantissa), e.exp);
     }
     chose.* = user.vpiDecStrVal;
+    // -4 <= exp <= 5 here: 0 to 9 fraction digits.
+    std.debug.assert(e.exp >= -4);
+    std.debug.assert(e.exp <= 5);
     const decimals: usize = @intCast(5 - e.exp);
     const fixed = std.mem.print(&tmp, "{d:.[1]}", .{ x, decimals }) catch return null;
     return std.mem.printSentinel(buf, "{s}", .{dropZeros(fixed)}, 0) catch null;
@@ -260,17 +310,25 @@ fn printfG(buf: *[analog_len]u8, x: f64, chose: *c_int) ?[:0]const u8 {
 
 /// %g's trailing zeros of a fraction, and then a bare point, dropped.
 fn dropZeros(digits: []const u8) []const u8 {
+    std.debug.assert(digits.len != 0);
     if (std.mem.findScalar(u8, digits, '.') == null) return digits;
-    return std.mem.trimEnd(u8, std.mem.trimEnd(u8, digits, "0"), ".");
+    const kept = std.mem.trimEnd(u8, std.mem.trimEnd(u8, digits, "0"), ".");
+    // The digits before the point stay: a %g fraction has one at least.
+    std.debug.assert(kept.len != 0);
+    std.debug.assert(kept[kept.len - 1] != '.');
+    return kept;
 }
 
 // C11 7.21.6.1's spelling of an infinity or a NaN under %e and %g: `[-]inf`,
 // `[-]nan`, the sign from the sign bit. Zig's `{e}` writes the same words but
 // has no exponent for the callers above to re-spell.
 fn nonFinite(buf: *[analog_len]u8, x: f64) ?[:0]const u8 {
+    std.debug.assert(!std.math.isFinite(x));
     const word: []const u8 = if (std.math.isNan(x)) "nan" else "inf";
     const sign: []const u8 = if (std.math.signbit(x)) "-" else "";
-    return std.mem.printSentinel(buf, "{s}{s}", .{ sign, word }, 0) catch null;
+    const text = std.mem.printSentinel(buf, "{s}{s}", .{ sign, word }, 0) catch return null;
+    std.debug.assert(text.len == 3 or text.len == 4);
+    return text;
 }
 
 test "§12.10 Table 12-2: vpiExpStrVal is C's %e, two exponent digits and a sign" {

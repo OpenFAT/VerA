@@ -124,12 +124,16 @@ const Binding = @This();
 const Timer = struct {
     var times: [128]f64 = undefined;
     var n: usize = 0;
-    fn solve(t: f64, _: f64, _: bool, _: bool) callconv(.c) bool {
+    fn solve(t: f64, dt: f64, first: bool, _: bool) callconv(.c) bool {
+        std.debug.assert(dt >= 0);
+        std.debug.assert(!first or dt == 0);
         if (n < times.len) times[n] = t;
         n += 1;
         return true;
     }
     fn breakpoint(t: f64) callconv(.c) f64 {
+        std.debug.assert(analog.active != null);
+        std.debug.assert(!std.math.isNan(t));
         return if (t < 0.37) 0.37 else std.math.inf(f64);
     }
 };
@@ -141,8 +145,8 @@ const Timer = struct {
 /// installed design (`root.design`, which must be open) and makes this
 /// the binding the routines answer for outside any call. An owned
 /// design's compiletf/derivtf run here (`systf.buildCalls`); the
-/// installed one's run at cbEndOfCompile. Precondition: `b` is not
-/// attached (`.{}` or `detach`ed).
+/// installed one's run at cbEndOfCompile. Asserts that `b` is not attached
+/// (`.{}` or `detach`ed), and that the tables it sizes agree.
 pub fn attach(b: *Binding, l: Lib, own: ?Design) error{OutOfMemory}!void {
     std.debug.assert(b.lib == null);
     b.* = .{ .lib = l, .design = own, .owns = own != null };
@@ -158,11 +162,19 @@ pub fn attach(b: *Binding, l: Lib, own: ?Design) error{OutOfMemory}!void {
     b.call_obj = try gpa.alloc(ObjId, n_calls);
     b.call_outs = try gpa.alloc(u64, n_calls);
     const Site = struct { name: []const u8, tok: u32 };
+    // Every site name is a system function's: the model's and, once checked
+    // below, the library's.
     const SiteCtx = struct {
         pub fn hash(_: @This(), s: Site) u64 {
+            std.debug.assert(s.name.len >= 2);
+            std.debug.assert(s.name[0] == '$');
             return std.hash.Wyhash.hash(s.tok, s.name);
         }
         pub fn eql(_: @This(), x: Site, y: Site) bool {
+            std.debug.assert(x.name.len >= 2);
+            std.debug.assert(x.name[0] == '$');
+            std.debug.assert(y.name.len >= 2);
+            std.debug.assert(y.name[0] == '$');
             return x.tok == y.tok and std.mem.eql(u8, x.name, y.name);
         }
     };
@@ -178,7 +190,10 @@ pub fn attach(b: *Binding, l: Lib, own: ?Design) error{OutOfMemory}!void {
     for (b.call_obj, b.call_outs, 0..) |*c, *m, k| {
         var len: usize = 0;
         const name = l.systf_name(k, &len)[0..len];
-        c.* = by_site.get(.{ .name = name, .tok = l.systf_tok(k) }) orelse .none;
+        // The library is outside data: a name no system function has binds
+        // to no call object.
+        const is_systf = name.len >= 2 and name[0] == '$';
+        c.* = if (is_systf) by_site.get(.{ .name = name, .tok = l.systf_tok(k) }) orelse .none else .none;
         m.* = l.systf_outs(k);
     }
     if (b.owns) systf.buildCalls();
@@ -196,18 +211,23 @@ pub fn attach(b: *Binding, l: Lib, own: ?Design) error{OutOfMemory}!void {
         u.* = m[3];
     }
     if (!b.owns) analog.installed = b;
+    std.debug.assert(b.call_obj.len == b.call_outs.len);
+    std.debug.assert(b.ac_x.len == 2 * b.n_x);
+    std.debug.assert(b.now_vals.len == 2 * b.prev_react.len);
 }
 
 /// Unbinds the library and frees everything `attach` and the analyses
 /// built, the design it owns included, and clears the point
-/// (`setPoint`). Safe on a binding never attached. Precondition: none of
-/// its calls or walks is running.
+/// (`setPoint`). Safe on a binding never attached. Asserts that none of
+/// its calls or walks is running, and that it ends unattached.
 pub fn detach(b: *Binding) void {
     std.debug.assert(analog.active != b);
     gpa.free(b.call_obj);
     gpa.free(b.call_outs);
     var it = b.outs.valueIterator();
-    while (it.next()) |o| {
+    var freed: usize = 0;
+    while (it.next()) |o| : (freed += 1) {
+        std.debug.assert(freed < b.outs.count());
         gpa.free(o.buf);
         gpa.free(o.put);
     }
@@ -223,6 +243,8 @@ pub fn detach(b: *Binding) void {
     if (analog.installed == b) analog.installed = null;
     b.* = .{};
     analog.setPoint(null, 0, 0, 0);
+    std.debug.assert(b.lib == null);
+    std.debug.assert(analog.installed != b);
 }
 
 /// `contract.SystfHost.call` for host instance `inst` of the device:
@@ -306,7 +328,9 @@ pub fn output(b: *const Binding, inst: usize, k: usize, j: usize, args: []const 
         partials[j - 1] = 1;
         return args[j - 1];
     }
+    std.debug.assert(o.put.len == n);
     @memcpy(partials, o.part()[(j - 1) * n ..][0..n]);
+    std.debug.assert(o.part().len == n * n);
     return o.val()[j - 1];
 }
 
