@@ -1,38 +1,8 @@
 $ vera --run sample_hold.va
-=== sample_hold ===
---- point 0 ---
-  x[in] = 0.000000e0
-  x[clk] = 0.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
 t = 0  V(clk) = 0  V(in) = 0  held = 0
---- point 1 ---
-  x[in] = 1.000000e-1
-  x[clk] = 0.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 1.000000e-6  dt = 1.000000e-6
 t = 1e-06  V(clk) = 0  V(in) = 0.1  held = 0
---- point 2 ---
-  x[in] = 2.000000e-1
-  x[clk] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 2.000000e-6  dt = 1.000000e-6
 t = 2e-06  V(clk) = 1  V(in) = 0.2  held = 0.2
---- point 3 ---
-  x[in] = 3.000000e-1
-  x[clk] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 3.000000e-6  dt = 1.000000e-6
 t = 3e-06  V(clk) = 1  V(in) = 0.3  held = 0.2
---- point 4 ---
-  x[in] = 4.000000e-1
-  x[clk] = 0.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 4.000000e-6  dt = 1.000000e-6
 t = 4e-06  V(clk) = 0  V(in) = 0.4  held = 0.2
 warning[W0750]: event fires on the testbench's fixed time grid, not at its own time: the testbench inserts no timepoint at it
   --> sample_hold.va:20:5

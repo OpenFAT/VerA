@@ -1,13 +1,9 @@
 $ vera --run flicker.va
-=== flicker ===
 noise count got=2 want=2 ok=1
 noise[0] got=thermal(p,n)#0 want=thermal(p,n)#0 ok=1
 noise[1] got=flicker(p,n)#1 want=flicker(p,n)#1 ok=1
 noise[0].name got=shot want=shot ok=1
 noise[1].name got=flicker want=flicker ok=1
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 0.000000e0
 noise[0].white got=0.0000000000000000000003204352924 want=0.0000000000000000000003204352924 ok=1
 noise[1].flicker got=0.0000000000000000009999999999999999 want=0.000000000000000001 ok=1
 noise[1].ef got=1 want=1 ok=1

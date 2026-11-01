@@ -1,13 +1,9 @@
 $ vera --run table.va
-=== table ===
 noise count got=1 want=1 ok=1
 noise[0] got=table(p,n)#0 want=table(p,n)#0 ok=1
 noise[0].name got=tbl want=tbl ok=1
 noise[0].interp got=linear want=linear ok=1
 noise[0].points got={ { 1, 0.000000000000000001 }, { 1000, 0.000000000000000000001 }, { 1000000, 0.000000000000000000000001 } } want={ { 1, 0.000000000000000001 }, { 1000, 0.000000000000000000001 }, { 1000000, 0.000000000000000000000001 } } ok=1
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 0.000000e0
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(p,n) — compiles with @setFloatMode(.strict)
   --> table.va:14:10
    |

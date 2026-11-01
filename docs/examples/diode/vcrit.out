@@ -1,8 +1,4 @@
 $ vera --run vcrit.va
-=== vcrit ===
---- point 0 ---
-  x[a] = 0.000000e0
-  x[k] = 0.000000e0
 vcrit = 0.705018 V
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(a,k) — compiles with @setFloatMode(.strict)
   --> vcrit.va:15:5

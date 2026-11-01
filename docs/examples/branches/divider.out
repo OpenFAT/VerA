@@ -1,7 +1,2 @@
 $ vera --run divider.va
-=== divider ===
---- point 0 ---
-  x[p] = 4.000000e0
-  x[n] = 0.000000e0
-  x[mid] = 3.000000e0
 V(mid) = 3 V, I(top) = 0.001 A, I(bottom) = 0.001 A

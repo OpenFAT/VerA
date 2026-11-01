@@ -1,9 +1,4 @@
 $ vera --run pnjlim.va
-=== pnjlim ===
---- point 0 ---
-  x[a] = 1.000000e0
-  x[k] = 0.000000e0
-  x[ai] = 1.000000e0
 limit[0].ai got=0.7621226662447 want=0.7621226662447 ok=1
 limit[0].converged got=0 want=0 ok=1
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 1 — I(k,ai) — compiles with @setFloatMode(.strict)

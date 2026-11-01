@@ -1,8 +1,4 @@
 $ vera --run ladder_initial.va
-=== ladder_initial ===
---- point 0 ---
-  x[p] = 5.000000e-1
-  x[n] = 0.000000e0
 count 3: g = 0.00183333 S, I = 0.000916667 A
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(p,n) — compiles with @setFloatMode(.strict)
   --> ladder_initial.va:21:5

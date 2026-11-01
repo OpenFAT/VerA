@@ -1,9 +1,2 @@
 $ vera --run ammeter.va
-=== ammeter ===
---- point 0 ---
-  x[p] = 4.000000e0
-  x[n] = 0.000000e0
-  x[mid1] = 3.000000e0
-  x[mid2] = 3.000000e0
-  x[flowZ28mid1Z2cmid2Z29] = 1.000000e-3
 I(amm) = 0.001 A, V(mid1) = 3 V, V(mid2) = 3 V

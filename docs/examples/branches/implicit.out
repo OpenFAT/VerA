@@ -1,7 +1,2 @@
 $ vera --run implicit.va
-=== implicit ===
---- point 0 ---
-  x[s] = 1.000000e0
-  x[m] = 5.000000e-1
-  x[flowZ28sZ2cmZ29] = 1.250000e-1
 I(b) = 0.125 A, V(m) = 0.5 V

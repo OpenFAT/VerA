@@ -1,39 +1,9 @@
 $ vera --run smooth.va
-=== smooth ===
---- point 0 ---
-  x[in] = 0.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
 t = 0  level = 0  transition = 0
---- point 1 ---
-  x[in] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 1.000000e-9  dt = 1.000000e-9
 t = 1e-09  level = 1  transition = 0
---- point 2 ---
-  x[in] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 2.000000e-9  dt = 1.000000e-9
 t = 2e-09  level = 1  transition = 0.5
---- point 3 ---
-  x[in] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 3.000000e-9  dt = 1.000000e-9
 t = 3e-09  level = 1  transition = 1
---- point 4 ---
-  x[in] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 4.000000e-9  dt = 1.000000e-9
 t = 4e-09  level = 1  transition = 1
---- point 5 ---
-  x[in] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 5.000000e-9  dt = 1.000000e-9
 t = 5e-09  level = 1  transition = 1
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — V(out,gnd) — compiles with @setFloatMode(.strict)
   --> smooth.va:18:5

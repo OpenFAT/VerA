@@ -1,16 +1,6 @@
 $ vera --run diode_hot.va
-=== diode_hot ===
---- point 0 ---
-  x[a] = 5.000000e-1
-  x[k] = 0.000000e0
 $vt = 0.030174 V  V(a,k) = 0.50 V  I = 1.5725e-07 A
---- point 1 ---
-  x[a] = 5.600000e-1
-  x[k] = 0.000000e0
 $vt = 0.030174 V  V(a,k) = 0.56 V  I = 1.1487e-06 A
---- point 2 ---
-  x[a] = 6.200000e-1
-  x[k] = 0.000000e0
 $vt = 0.030174 V  V(a,k) = 0.62 V  I = 8.3904e-06 A
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(a,k) — compiles with @setFloatMode(.strict)
   --> diode_hot.va:18:5

@@ -1,31 +1,7 @@
 $ vera --run dac.va
-=== dac ===
---- point 0 ---
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
 t = 0  q = 0  V(out) = 0
---- point 1 ---
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 2.000000e-9  dt = 2.000000e-9
 t = 2e-09  q = 0  V(out) = 0
---- point 2 ---
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 4.000000e-9  dt = 2.000000e-9
 t = 4e-09  q = 0  V(out) = 0
---- point 3 ---
-  x[out] = 1.800000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 5.000000e-9  dt = 1.000000e-9
 t = 5e-09  q = 1  V(out) = 1.8
---- point 4 ---
-  x[out] = 1.800000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 6.000000e-9  dt = 1.000000e-9
 t = 6e-09  q = 1  V(out) = 1.8
---- point 5 ---
-  x[out] = 1.800000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 8.000000e-9  dt = 2.000000e-9
 t = 8e-09  q = 1  V(out) = 1.8

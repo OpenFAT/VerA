@@ -1,28 +1,8 @@
 $ vera --run ber.va
-=== ber ===
---- point 0 ---
-  x[in] = 0.000000e0
-  x[ref] = 0.000000e0
   next_bp = 1.000000e0
---- point 1 ---
-  x[in] = 1.000000e0
-  x[ref] = 1.000000e0
-  t = 1.000000e0  dt = 1.000000e0
   next_bp = 2.000000e0
---- point 2 ---
-  x[in] = 1.000000e0
-  x[ref] = 0.000000e0
-  t = 2.000000e0  dt = 1.000000e0
   next_bp = 3.000000e0
---- point 3 ---
-  x[in] = 0.000000e0
-  x[ref] = 0.000000e0
-  t = 3.000000e0  dt = 1.000000e0
   next_bp = 4.000000e0
---- point 4 ---
-  x[in] = 1.000000e0
-  x[ref] = 1.000000e0
-  t = 4.000000e0  dt = 1.000000e0
   next_bp = 5.000000e0
 bit error rate = 20.000000% (1 of 5 bits)
 warning[W0750]: event fires on the testbench's fixed time grid, not at its own time: the testbench inserts no timepoint at it

@@ -1,34 +1,9 @@
 $ vera --run retry.va
-=== retry ===
---- point 0 ---
-  x[p] = 0.000000e0
-  x[n] = 0.000000e0
 t = 0  hit = 0  t_hit = 0
---- point 1 ---
-  x[p] = 0.000000e0
-  x[n] = 0.000000e0
-  t = 1.000000e0  dt = 1.000000e0
 t = 1  hit = 0  t_hit = 0
---- point 2 ---
-  x[p] = 0.000000e0
-  x[n] = 0.000000e0
-  t = 2.000000e0  dt = 1.000000e0
 t = 2  hit = 1  t_hit = 2
---- point 2 rejected: retry at 1.5e0 ---
---- point 2 ---
-  x[p] = 0.000000e0
-  x[n] = 0.000000e0
-  t = 1.500000e0  dt = 5.000000e-1
 t = 1.5  hit = 1  t_hit = 1.5
---- point 2 ---
-  x[p] = 0.000000e0
-  x[n] = 0.000000e0
-  t = 2.000000e0  dt = 5.000000e-1
 t = 2  hit = 1  t_hit = 1.5
---- point 3 ---
-  x[p] = 0.000000e0
-  x[n] = 0.000000e0
-  t = 3.000000e0  dt = 1.000000e0
 t = 3  hit = 1  t_hit = 1.5
 warning[W0750]: event fires on the testbench's fixed time grid, not at its own time: the testbench inserts no timepoint at it
   --> retry.va:27:5

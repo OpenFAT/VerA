@@ -1,7 +1,3 @@
 $ vera --run nodiff.va
-=== nodiff ===
---- point 0 ---
-  x[a] = 5.000000e-1
-  x[b] = 0.000000e0
 c = 0.25  ddx(c) = 1  cs = 0.25  ddx(cs) = 0
 dI/dV(a) = 0.25  (without the attribute: 0.75)

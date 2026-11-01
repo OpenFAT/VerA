@@ -1,6 +1,2 @@
 $ vera --run parallel.va
-=== parallel ===
---- point 0 ---
-  x[p] = 2.000000e0
-  x[n] = 0.000000e0
 I(p,n) = 0.0025 A

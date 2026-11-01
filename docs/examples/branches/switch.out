@@ -1,14 +1,3 @@
 $ vera --run switch.va
-=== switch ===
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 1.000000e0
-  x[c] = 1.000000e0
-  x[flowZ28pZ2cnZ29] = 1.000000e-3
 V(c) = 1: V(p) = 1 V, V(n) = 1 V
---- point 1 ---
-  x[p] = 2.000000e0
-  x[n] = 0.000000e0
-  x[c] = 0.000000e0
-  x[flowZ28pZ2cnZ29] = 0.000000e0
 V(c) = 0: V(p) = 2 V, V(n) = 0 V

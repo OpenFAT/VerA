@@ -1,8 +1,4 @@
 $ vera --run --param tc1=0 resistor_tc.va
-=== resistor_tc ===
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 0.000000e0
 T = 350.15 K: rt = 1000 Ohm, I = 0.001 A
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(p,n) — compiles with @setFloatMode(.strict)
   --> resistor_tc.va:22:5

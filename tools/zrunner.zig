@@ -140,7 +140,17 @@ pub fn run(
         report.total_duration,
         report.is_mem_leak,
     );
-    if (report.failed_count != 0 or report.is_mem_leak) std.process.exit(1);
+    if (report.failed_count != 0 or report.is_mem_leak) {
+        // The report above went to stdout, which `zig build` shows only for a
+        // step that writes no failure of its own; name every failure on
+        // stderr too, so a CI log says which test it was.
+        for (report.test_results) |r| switch (r) {
+            .failed => |f| std.debug.print("FAIL {s}.{s}: {s}\n", .{ f.@"test".namespace, f.@"test".name, @errorName(f.err) }),
+            .passed => |p| if (p.is_mem_leak) std.debug.print("LEAK {s}.{s}\n", .{ p.@"test".namespace, p.@"test".name }),
+            .xfailed => |x| if (x.is_mem_leak) std.debug.print("LEAK {s}.{s}\n", .{ x.@"test".namespace, x.@"test".name }),
+        };
+        std.process.exit(1);
+    }
 }
 
 fn runTests(

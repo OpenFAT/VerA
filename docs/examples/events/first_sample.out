@@ -1,31 +1,7 @@
 $ vera --run first_sample.va
-=== first_sample ===
---- point 0 ---
-  x[in] = 5.000000e-2
-  x[clk] = 0.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
 t = 0  held = 0.05
---- point 1 ---
-  x[in] = 1.000000e-1
-  x[clk] = 0.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 1.000000e-6  dt = 1.000000e-6
 t = 1e-06  held = 0.05
---- point 2 ---
-  x[in] = 2.000000e-1
-  x[clk] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 2.000000e-6  dt = 1.000000e-6
 t = 2e-06  held = 0.2
---- point 3 ---
-  x[in] = 3.000000e-1
-  x[clk] = 1.000000e0
-  x[out] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 3.000000e-6  dt = 1.000000e-6
 t = 3e-06  held = 0.2
 warning[W0750]: event fires on the testbench's fixed time grid, not at its own time: the testbench inserts no timepoint at it
   --> first_sample.va:17:5

@@ -1,6 +1,2 @@
 $ vera --run ground.va
-=== ground ===
---- point 0 ---
-  x[a] = 1.500000e0
-  x[gnd] = 0.000000e0
 V(a) = 1.5 V, I(a) = 0.0015 A

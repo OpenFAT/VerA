@@ -1,14 +1,9 @@
 $ vera --run correlated.va
-=== correlated ===
 noise count got=2 want=2 ok=1
 noise[0] got=thermal(a,b)#0 want=thermal(a,b)#0 ok=1
 noise[1] got=thermal(b,c)#0 want=thermal(b,c)#0 ok=1
 noise[0].name got=shared want=shared ok=1
 noise[1].name got=shared want=shared ok=1
---- point 0 ---
-  x[a] = 1.000000e0
-  x[b] = 5.000000e-1
-  x[c] = 0.000000e0
 noise[0].white got=0.000000000000000001 want=0.000000000000000001 ok=1
 noise[0].corr[1] got=1 want=1 ok=1
 noise[1].white got=0.000000000000000004 want=0.000000000000000004 ok=1

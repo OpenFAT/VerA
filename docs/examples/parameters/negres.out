@@ -1,8 +1,4 @@
 $ vera --run --param r=-500 negres.va
-=== negres ===
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 0.000000e0
 r = -500: I(p,n) = -0.002 A
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(p,n) — compiles with @setFloatMode(.strict)
   --> negres.va:12:5
