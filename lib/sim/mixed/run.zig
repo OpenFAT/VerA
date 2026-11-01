@@ -12,6 +12,7 @@
 //! - `pub const max_cuts`
 //! - `pub const default_time_tol`
 //! - `pub const default_expr_tol`
+//! - `pub const Error`
 //! - `Fake.setInputs(f: *Fake, dig: *digital.Run, fired: u64) !void`
 //! - `Fake.snapshot(f: *Fake, dig: *digital.Run) !void`
 //! - `Fake.latch(f: *Fake) !void`
@@ -19,7 +20,6 @@
 //! - `Fake.probe(f: *Fake, t: ?f64, _: []const u8, _: ?[]const u8) !f64`
 //! - `Fake.finish(f: *Fake) !void`
 //! - `Fake.breakpoint(f: *Fake, t: f64) ?f64`
-//! - `pub const Error`
 //! - `pub fn RunError(comptime A: type) type`
 //! - `pub fn run(comptime A: type, a: *A, dig: *digital.Run, opts: Options) RunError(A)!void`
 
@@ -46,24 +46,6 @@ pub const Options = struct {
     tick: f64,
 };
 
-/// What `run` refuses of its own, beside the digital engine's errors:
-/// `BadTimeline`, `Options.times` empty, holding a negative or non-finite
-/// time, running back, or ending past 2^64 ticks (a digital time is a u64
-/// tick count); `BackupExhausted`, a step the host rejected `max_rejects`
-/// times over.
-pub const Error = digital.Error || error{ BadTimeline, BackupExhausted };
-
-/// `run`'s error set over analog side `A`: `Error` and every error `A`'s
-/// methods return (`probe`'s are reported through the digital engine).
-pub fn RunError(comptime A: type) type {
-    var E: type = Error;
-    for (.{ "setInputs", "snapshot", "latch", "solveAt", "finish", "rejected" }) |name| if (@hasDecl(A, name)) {
-        const R = @typeInfo(@TypeOf(@field(A, name))).@"fn".return_type.?;
-        if (@typeInfo(R) == .error_union) E = E || @typeInfo(R).error_union.error_set;
-    };
-    return E;
-}
-
 /// Rejections of one tentative solution `solve` backs up from before it
 /// gives up, as the VPI walk does (`src/vpi/analog.zig`).
 pub const max_rejects = 60;
@@ -81,6 +63,13 @@ pub const default_time_tol = 1e-12;
 
 /// §5.10.3.4 lets the tool choose an absent/zero expression tolerance.
 pub const default_expr_tol = 1e-12;
+
+/// What `run` refuses of its own, beside the digital engine's errors:
+/// `BadTimeline`, `Options.times` empty, holding a negative or non-finite
+/// time, running back, or ending past 2^64 ticks (a digital time is a u64
+/// tick count); `BackupExhausted`, a step the host rejected `max_rejects`
+/// times over.
+pub const Error = digital.Error || error{ BadTimeline, BackupExhausted };
 
 /// Test support: an analog side that reads one digital variable and
 /// records every solve and every finish.
@@ -135,6 +124,17 @@ const Fake = struct {
         return timer.zNextTimer(grid.start, grid.period, t);
     }
 };
+
+/// `run`'s error set over analog side `A`: `Error` and every error `A`'s
+/// methods return (`probe`'s are reported through the digital engine).
+pub fn RunError(comptime A: type) type {
+    var E: type = Error;
+    for (.{ "setInputs", "snapshot", "latch", "solveAt", "finish", "rejected" }) |name| if (@hasDecl(A, name)) {
+        const R = @typeInfo(@TypeOf(@field(A, name))).@"fn".return_type.?;
+        if (@typeInfo(R) == .error_union) E = E || @typeInfo(R).error_union.error_set;
+    };
+    return E;
+}
 
 /// Runs one analysis over `opts.times`.
 ///
@@ -883,7 +883,7 @@ test "run refuses a timeline it cannot walk: empty, negative, NaN, running back,
     // 1e20 s is 1e29 ticks). Equal times are a point solved once.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const bad = [_][]const f64{ &.{}, &.{-1e-9}, &.{ 0, std.math.nan(f64) }, &.{ 2e-9, 1e-9 }, &.{ 0, 3e-9, 2e-9, 4e-9 }, &.{ 0, std.math.inf(f64) }, &.{ 0, 1e20 } };
+    const bad = [_][]const f64{ &.{ 2e-9, 1e-9 }, &.{ 0, 3e-9, 2e-9, 4e-9 }, &.{}, &.{-1e-9}, &.{ 0, std.math.nan(f64) }, &.{ 0, std.math.inf(f64) }, &.{ 0, 1e20 } };
     for (bad) |times| {
         var bag = diag.Bag.init(arena.allocator());
         var out = std.Io.Writer.Allocating.init(arena.allocator());
