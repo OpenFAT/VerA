@@ -35,10 +35,6 @@ const Io = std.Io;
 /// from writing `\r\n`, so its stdout is the bytes a test expects.
 extern "c" fn _setmode(fd: c_int, mode: c_int) c_int; // os: the C runtime's, declared on every target and called only on Windows
 
-/// The most steps a banner's `tran` grid may take: `analog_walk.runMixed`
-/// allocates a time per step.
-const tran_steps_max = 1 << 24;
-
 /// ESPice's shape (VerA #83, #84): a host that solves the circuit itself and
 /// binds VerA only to run the application's calltf. Each `Lib` is a built
 /// library's call table with no solution (`n_u = n_rows = n_shares = 0`), so
@@ -313,7 +309,7 @@ fn readAnalyses(arena: std.mem.Allocator, io: Io, c_path: []const u8) ![]const v
             const step = if (words.next()) |w| try spiceNumber(w) else 0;
             // A window forward from 0, and no more steps than a run's grid holds.
             if (start < 0 or stop <= start or step < 0) return error.BadAnalysis;
-            if (step > 0 and (stop - start) / step > tran_steps_max) return error.BadAnalysis;
+            if (step > 0 and (stop - start) / step > vpi.analog.tran_steps_max) return error.BadAnalysis;
             try out.append(arena, .{ .kind = .tran, .start = start, .stop = stop, .max_step = step });
         } else if (std.mem.eql(u8, kind, "ac")) {
             const fstart = try spiceNumber(words.next() orelse return error.BadAnalysis);

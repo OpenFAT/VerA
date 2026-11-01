@@ -21490,6 +21490,19 @@ pub const vpi_tests = struct {
         try std.testing.expectEqual(@as(u32, 1), S.calls);
         try std.testing.expect(status.vpi_chk_error(null) != 0);
     }
+
+    test "§12.18 runMixed refuses a transient whose grid has no integer step count, before it touches the library" {
+        // Oracle: the window by hand. `tran 0 1 1e-300` is 10^300 steps,
+        // past any usize and past tran_steps_max; `tran 1 1` and `tran 0 nan`
+        // are no forward window. The rewrite's @intFromFloat panicked.
+        var b: root.Binding = .{};
+        for ([_]root.analog.Analysis{
+            .{ .kind = .tran, .start = 0, .stop = 1, .max_step = 1e-300 },
+            .{ .kind = .tran, .start = 1, .stop = 1 },
+            .{ .kind = .tran, .start = 0, .stop = std.math.nan(f64) },
+            .{ .kind = .tran, .start = -1, .stop = 1 },
+        }) |a| try std.testing.expectError(error.BadAnalysis, b.runMixed(a, undefined, 1e-9, &.{}, &.{}));
+    }
 };
 
 pub const exhaustive_tests = struct {

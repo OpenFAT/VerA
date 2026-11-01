@@ -16,6 +16,7 @@
 //! - `pub var delta: f64`
 //! - `pub var freq: f64`
 //! - `pub const Error = error`
+//! - `pub const tran_steps_max`
 //! - `pub const OneCall = struct`
 //! - `pub fn OneCall.zero() callconv(.c) usize`
 //! - `pub const OneCall.lib: Lib`
@@ -129,9 +130,14 @@ pub var freq: f64 = 0;
 
 /// `Binding.run`'s failures: `NoLibrary`, not attached; `BackupExhausted`,
 /// see `run`; `Singular`, an AC point whose small-signal system has no
-/// solution. A solve that does not converge is no error: `attempt` discards
-/// `Lib.solve`'s result.
-pub const Error = error{ NoLibrary, BackupExhausted, Singular };
+/// solution; `BadAnalysis`, a mixed transient whose window is not forward
+/// and finite or whose grid passes `tran_steps_max` steps. A solve that does
+/// not converge is no error: `attempt` discards `Lib.solve`'s result.
+pub const Error = error{ NoLibrary, BackupExhausted, Singular, BadAnalysis };
+
+/// The most steps a mixed transient's §12.18 grid takes: `runMixed`
+/// allocates a time per step.
+pub const tran_steps_max = 1 << 24;
 
 /// A calls-only library (#83's stub) of one call, `$c` at source token 5,
 /// whose argument 1 the device reads back.

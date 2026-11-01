@@ -261,17 +261,25 @@ pub fn run(b: *Binding, a: Analysis) Error!void {
 /// the digital engine has not consumed (§8.4.7). `tick` is the digital
 /// half's tick in seconds; `probe_names` the §7.3.3 probe terminals that
 /// stand for a node pair (`probe_nodes`), a named branch or a
-/// hierarchical net (`Lowered.discrete_probes`).
+/// hierarchical net (`Lowered.discrete_probes`). A window that is not
+/// forward from 0 and finite, or a grid past `analog.tran_steps_max`
+/// steps, is `error.BadAnalysis` before anything runs.
 pub fn runMixed(b: *Binding, a: Analysis, dig: *sim.digital.Run, tick: f64, probe_names: []const []const u8, probe_nodes: []const [2][]const u8) (Error || anyerror)!void {
     std.debug.assert(probe_names.len == probe_nodes.len);
     std.debug.assert(a.kind == .tran);
+    // The grid below converts its step count to an integer: an analysis
+    // handed in by a host, not read from a banner, is checked here too.
+    const span = a.stop - a.start;
+    if (!(span > 0) or !std.math.isFinite(span) or !(a.start >= 0)) return error.BadAnalysis;
+    const max_step = if (a.max_step > 0) a.max_step else span / 50.0;
+    if (!(span / max_step <= analog.tran_steps_max)) return error.BadAnalysis;
     const l = b.lib orelse return error.NoLibrary;
     const prev = analog.enter(b);
     defer analog.leave(b, prev);
     l.open(analog.kindOrdinal(a.kind));
     @memset(b.prev_react, 0);
     var run_a = a;
-    if (run_a.max_step <= 0) run_a.max_step = (a.stop - a.start) / 50.0;
+    run_a.max_step = max_step;
     analog.setPoint(run_a, a.start, 0, 0);
     defer analog.setPoint(null, analog.t_now, analog.delta, 0);
     b.t_accepted = a.start;
