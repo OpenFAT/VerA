@@ -12158,6 +12158,33 @@ pub const sim_digital_tests = struct {
             \\module top; m \b[0] (); defparam \b[0] .\a.n  = 7; endmodule
         , "7\n");
     }
+
+    test "an expression nested past a host thread's stack is refused at run time (E1100), never a crash" {
+        // Oracle: deep_stack's contract: a walk on a thread `runGuarded` did
+        // not start (a contract device's host, a VPI application, this
+        // test's) is given 4 MiB and refused by name past it ("nesting here
+        // exhausts the ... stack"), never a segfault. `elaborate` runs on its
+        // own reservation; `runUntil` evaluates on the caller's stack. An
+        // integer chain (`evalContext`) and a real one (`evalReal`).
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        for ([_][]const u8{ "reg [7:0] v, x; initial begin v = 1; x = v", "real v, x; initial begin v = 1.0; x = v" }) |head| {
+            var src: std.ArrayList(u8) = .empty;
+            try src.print(a, "module m; {s}", .{head});
+            for (0..50_000) |_| try src.appendSlice(a, " + v");
+            try src.appendSlice(a, "; $display(\"done\"); end endmodule");
+            var bag = diag.Bag.init(a);
+            var out = std.Io.Writer.Allocating.init(a);
+            var r = try root.elaborate(a, src.items, .{}, &bag, &out.writer);
+            try std.testing.expectError(error.DigitalFailed, r.runUntil(std.math.maxInt(root.Tick)));
+            var messages = std.Io.Writer.Allocating.init(a);
+            try diag.render(&bag, &messages.writer, .{});
+            try std.testing.expect(std.mem.find(u8, messages.written(), "E1100") != null);
+            try std.testing.expect(std.mem.find(u8, messages.written(), "exhausts the") != null);
+            try std.testing.expectEqualStrings("", out.written());
+        }
+    }
 };
 
 pub const codegen_tests = struct {

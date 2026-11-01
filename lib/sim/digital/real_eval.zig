@@ -22,6 +22,7 @@ const Int = @import("kernels").Integer;
 const compile = @import("compile.zig");
 const driver = @import("driver.zig");
 const Error = @import("root.zig").Error;
+const deep = @import("base").deep_stack;
 const Run = @import("root.zig").Run;
 const expectRun = @import("root.zig").expectRun;
 const Type = compile.Type;
@@ -113,6 +114,7 @@ pub fn intOfReal(a: std.mem.Allocator, r: f64) Error!Int.Literal {
 /// `e`'s value as a real, converting an integral one (§4.8.2).
 pub fn evalReal(self: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!f64 {
     assert(e != .none);
+    if (deep.exhausted()) return self.deepFail(self.file.exprs.mainTok(e));
     const ex = &self.file.exprs;
     if (!compile.typeOf(self, e).real) return realOfInt(try eval(self, a, e, 0));
     return switch (ex.tag(e)) {
