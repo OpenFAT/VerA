@@ -57,7 +57,7 @@ const Suite = struct {
     //! times from a separate sequential accept/reject pass). `main` is the
     //! suite's entry point and dispatches on the mode word.
     const std = @import("std");
-    const exe = @import("exe");
+    const tb = @import("exe");
     const harness = Fixtures;
     const torture = Analog;
     const size_sweep = SizeSweep;
@@ -215,7 +215,7 @@ const Suite = struct {
             const source = try Io.Dir.cwd().readFileAlloc(io, f.path, pa, .limited(1 << 20));
             // A fixture whose directives do not parse is FAILED by `judge` below,
             // which is where that defect belongs; here it just times as one.
-            const d = exe.Spec.parse(pa, source, null) catch exe.Spec{};
+            const d = tb.Spec.parse(pa, source, null) catch tb.Spec{};
 
             var vera_ns: u64 = std.math.maxInt(u64);
             var vera_out: ?usize = null;
@@ -323,7 +323,7 @@ const Fixtures = struct {
     //! and `--strict` fails unasserted and XFAIL fixtures.
 
     const std = @import("std");
-    const exe = @import("exe");
+    const tb = @import("exe");
     const zigbuild = @import("zigbuild");
     /// `fixture_root` and `repo_root`, from `build.zig`; shared by every runner
     /// so all compilers are judged on the same fixtures.
@@ -473,7 +473,7 @@ const Fixtures = struct {
             arena: std.mem.Allocator,
             f: Fixture,
             source: []const u8,
-            d: exe.Spec,
+            d: tb.Spec,
             w: *Io.Writer,
         ) anyerror!Result,
         /// Runs once over the whole fixture list before any `check`, on `jobs`
@@ -840,7 +840,7 @@ const Fixtures = struct {
     ///   3. Files with no directive (VPI support designs such as `design.v`)
     ///      are not fixtures.
     ///
-    /// The whole file is scanned with `exe.Spec.parse`'s line rule (see `hasDirective`).
+    /// The whole file is scanned with `tb.Spec.parse`'s line rule (see `hasDirective`).
     fn fixtureExt(arena: std.mem.Allocator, io: Io, dir: Io.Dir, rel: []const u8) ?[]const u8 {
         if (std.mem.endsWith(u8, rel, ".va")) {
             const source = dir.readFileAlloc(io, rel, arena, .limited(1 << 20)) catch return null;
@@ -859,8 +859,8 @@ const Fixtures = struct {
         return if (hasDirective(source)) ".v" else null;
     }
 
-    /// Does this source carry a `//!` directive? `exe.Spec.parse`'s own line rule, and it
-    /// must stay that rule: this decides whether a file is collected and `exe.Spec.parse`
+    /// Does this source carry a `//!` directive? `tb.Spec.parse`'s own line rule, and it
+    /// must stay that rule: this decides whether a file is collected and `tb.Spec.parse`
     /// decides whether it asserts anything, so a disagreement collects a fixture
     /// that then reports nothing.
     pub fn hasDirective(source: []const u8) bool {
@@ -914,12 +914,12 @@ const Fixtures = struct {
         const source = try Io.Dir.cwd().readFileAlloc(io, f.path, arena, .limited(1 << 20));
 
         // A §18 dump fixture's evidence is the file its run writes, which no
-        // `tb` directive describes; it is judged before `exe.Spec.parse` for that reason.
+        // `tb` directive describes; it is judged before `tb.Spec.parse` for that reason.
         if (digital.vcdExpectation(source)) |want| return judgeVcd(arena, io, compiler, f, want, w);
 
         // The `//!` lines are read from the RAW source: the preprocessor deletes
         // comments (§2.4), so after compilation they are gone.
-        var d = exe.Spec.parse(arena, source, null) catch |err| {
+        var d = tb.Spec.parse(arena, source, null) catch |err| {
             try w.print("FAIL {s}: `//!` directive: {t}\n", .{ f.path, err });
             return .fail;
         };
@@ -949,7 +949,7 @@ const Fixtures = struct {
         compiler: Compiler,
         f: Fixture,
         source: []const u8,
-        d: exe.Spec,
+        d: tb.Spec,
         strict: bool,
         w: *Io.Writer,
     ) !Verdict {
@@ -973,7 +973,7 @@ const Fixtures = struct {
             const refusing = if (std.mem.endsWith(u8, n, ".v"))
                 digital.negative(text)
             else
-                refuses(exe.Spec.parse(arena, text, null) catch |err| {
+                refuses(tb.Spec.parse(arena, text, null) catch |err| {
                     try w.print("FAIL {s}: `//! neighbour {s}`: its directives do not parse: {t}\n", .{ f.path, n, err });
                     return .fail;
                 });
@@ -1081,7 +1081,7 @@ const Fixtures = struct {
 
     /// Whether `d` is a refusal, by the compiler (`//! reject`) or by the run
     /// (`//! reject-run`): not a legal neighbour.
-    fn refuses(d: exe.Spec) bool {
+    fn refuses(d: tb.Spec) bool {
         return d.harness.reject.len != 0 or d.harness.reject_run.len != 0;
     }
 
@@ -1178,7 +1178,7 @@ const Analog = struct {
 
     const std = @import("std");
     const vera = @import("vera");
-    const exe = @import("exe");
+    const tb = @import("exe");
     const zigbuild = @import("zigbuild");
     const harness = Fixtures;
     const digital = Digital;
@@ -1303,7 +1303,7 @@ const Analog = struct {
             for (fs, 0..) |f, fi| {
                 const source = Io.Dir.cwd().readFileAlloc(pool.io, f.path, arena, .limited(1 << 20)) catch continue;
                 if (digital.vcdExpectation(source) != null) continue;
-                const d = exe.Spec.parse(arena, source, null) catch continue;
+                const d = tb.Spec.parse(arena, source, null) catch continue;
                 if (d.harness.reject.len != 0) continue;
                 var sink: ?zigbuild.Staged = null;
                 var discard: Io.Writer.Discarding = .init(&.{});
@@ -1353,7 +1353,7 @@ const Analog = struct {
         _: std.mem.Allocator,
         f: Fixture,
         source: []const u8,
-        d: exe.Spec,
+        d: tb.Spec,
         w: *Io.Writer,
     ) anyerror!Result {
         var outcome = try compileFixture(gpa, f, source, d);
@@ -1371,7 +1371,7 @@ const Analog = struct {
     /// One accept/reject compilation, the unit the head-to-head times: returns the
     /// emitted device's size, or null when VerA refused. No testbench is built, so
     /// no `zig build-exe` time lands in VerA's number.
-    pub fn compileOnce(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: exe.Spec) !?usize {
+    pub fn compileOnce(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: tb.Spec) !?usize {
         var outcome = try compileFixture(gpa, f, source, d);
         defer outcome.deinit(gpa);
         return switch (outcome) {
@@ -1387,7 +1387,7 @@ const Analog = struct {
         arena: std.mem.Allocator,
         f: Fixture,
         source: []const u8,
-        d: exe.Spec,
+        d: tb.Spec,
         w: *Io.Writer,
     ) anyerror!Result {
         const c: *const Ctx = @ptrCast(@alignCast(ctx));
@@ -1431,7 +1431,7 @@ const Analog = struct {
         gpa: std.mem.Allocator,
         f: Fixture,
         source: []const u8,
-        d: exe.Spec,
+        d: tb.Spec,
         w: *Io.Writer,
     ) !Result {
         var outcome = try compileFixture(gpa, f, source, d);
@@ -1486,7 +1486,7 @@ const Analog = struct {
     /// names, matching the vocabulary the fixtures use:
     ///   `DiagnosticsReported`  — compiled, but a stage reported a message.
     ///   `GeneratedCompileError` — codegen deliberately emitted `@compileError`.
-    fn compileFixture(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: exe.Spec) !Outcome {
+    fn compileFixture(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: tb.Spec) !Outcome {
         var diags: vera.diag.Bag = .init(gpa);
         // Codegen too (not only the analysis `--lint` runs): some fixtures are
         // rejected by codegen emitting `@compileError`, which the analysis would
@@ -1585,7 +1585,7 @@ const Analog = struct {
 
     /// `//! warn`: every pattern names a warning in `bag`. `//! nowarn`: `bag`
     /// holds no warning. Detail goes to `w` on a miss.
-    fn warningsMet(bag: *vera.diag.Bag, f: Fixture, d: exe.Spec, w: *Io.Writer) !bool {
+    fn warningsMet(bag: *vera.diag.Bag, f: Fixture, d: tb.Spec, w: *Io.Writer) !bool {
         for (d.harness.warn) |pattern| {
             for (0..bag.count()) |i| {
                 if (bag.at(i).severity == .warning and diagSays(bag, i, pattern)) break;
@@ -1642,7 +1642,7 @@ const Analog = struct {
         ctx: *const Ctx,
         f: Fixture,
         source: []const u8,
-        d: exe.Spec,
+        d: tb.Spec,
         w: *Io.Writer,
         /// `prepare`'s mode: stage a plain testbench's files here instead of
         /// building and running it (left null for a mixed one).
@@ -1682,7 +1682,7 @@ const Analog = struct {
         defer result.deinit(gpa);
         // §3.4 a `//! param` card value for a shape parameter is a compile-time
         // value: compile again for it, as `vera --emit-exe` does.
-        opts.param_overrides = try exe.shapeCards(arena, d.bench.params, result.lowered);
+        opts.param_overrides = try tb.shapeCards(arena, d.bench.params, result.lowered);
         if (opts.param_overrides.len != 0) {
             diags.deinit(gpa);
             diags = .init(gpa);
@@ -1710,11 +1710,11 @@ const Analog = struct {
             try w.print("FAIL {s}: the device declares an `llvm.*` intrinsic; it cannot build under the self-hosted backend\n", .{f.path});
             return .unmet;
         }
-        try exe.warnGridEvents(&diags, result.lowered, result.mir);
+        try tb.warnGridEvents(&diags, result.lowered, result.mir);
         if (!try warningsMet(&diags, f, d, w)) return .unmet;
 
         // VAMS §7: a module with a discrete half gets the mixed-signal runner.
-        var facts = try exe.compileFacts(arena, result.lowered, result.mir);
+        var facts = try tb.compileFacts(arena, result.lowered, result.mir);
         facts.validate_contract = true;
         facts.certify = harness.certify and d.harness.fd_exempt == null;
         // L4b: the prover's claim `finiteCheck` tests. Every contribution unit
@@ -1723,7 +1723,7 @@ const Analog = struct {
             if (mode != .optimized) break false;
         } else result.verdict.unit_modes.len != 0;
         var runner_text: Io.Writer.Allocating = .init(arena);
-        exe.writeRunner(&runner_text.writer, arena, f.stem(), &d.bench, facts) catch |err| switch (err) {
+        tb.writeRunner(&runner_text.writer, arena, f.stem(), &d.bench, facts) catch |err| switch (err) {
             error.WriteFailed => return error.OutOfMemory,
             else => |e| return e,
         };
@@ -2636,7 +2636,7 @@ const Digital = struct {
     //! comparison. `Devices`, `Native`, `Analog` and `Fixtures`
     //! (`collect`, `judge`, `judgeVcd`) read it.
     //!
-    //! None of it is a `tb` directive: `exe.Spec.parse` describes the analog harness and
+    //! None of it is a `tb` directive: `tb.Spec.parse` describes the analog harness and
     //! must not take a digital diagnostic as its evidence.
     //!
     //! Clauses: IEEE 1364-2005 §13.2 and §13.7.1 (`--libmap`, `-L`), §18.2 (the
@@ -2647,7 +2647,7 @@ const Digital = struct {
     /// Whether a `.v` is a digital reject case: a `//! reject` or `//! reject-only`
     /// line, the suite's own rule (`harness/conform.c`). A `_rejected` file name
     /// says the same, but the line is what decides. Runner metadata, deliberately
-    /// not a tb directive: exe.Spec.parse describes the analog harness and must not
+    /// not a tb directive: tb.Spec.parse describes the analog harness and must not
     /// interpret a digital diagnostic as its evidence.
     pub fn negative(source: []const u8) bool {
         var lines = std.mem.splitScalar(u8, source, '\n');
@@ -2806,7 +2806,7 @@ const Digital = struct {
     pub const VcdExpect = struct { produced: []const u8, golden: []const u8 };
 
     /// Returns the fixture's `//! expect vcd` line, slices into `source`. Null when
-    /// there is none, or it is malformed (then `exe.Spec.parse` fails it as unknown).
+    /// there is none, or it is malformed (then `tb.Spec.parse` fails it as unknown).
     pub fn vcdExpectation(source: []const u8) ?VcdExpect {
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |raw| {
@@ -3224,7 +3224,7 @@ const Golden = struct {
     //!                        writes the device at offset 0, so one file would
     //!                        lose the warnings
     //!   <path>.runner.txt    a `.va` with a `//!` line: the testbench runner
-    //!                        `exe.writeRunner` gives `--emit-exe` (`runner`)
+    //!                        `tb.writeRunner` gives `--emit-exe` (`runner`)
     //!   <path>.so/...        a `.va`: the tree `--emit-so` writes before `zig`
     //!                        runs, `shim.zig` and the split device (`soTree`)
     //!   <path>.program.txt   a `.v`: the executable root `--emit-exe` builds
@@ -3247,7 +3247,7 @@ const Golden = struct {
     const options = @import("suite_options");
     const harness = Fixtures;
     const vera = @import("vera");
-    const exe = @import("exe");
+    const tb = @import("exe");
     const zigbuild = @import("zigbuild");
     const digital = @import("sim").digital;
     /// The native emitter (src/codegen/digital/).
@@ -3385,7 +3385,7 @@ const Golden = struct {
     /// directives' SPICE text and discipline resolution, the shape cards compiled
     /// in, the contract checks on.
     fn runner(gpa: Allocator, arena: Allocator, src: []const u8, includes: []const []const u8, source: []const u8) ![]const u8 {
-        const d = try exe.Spec.parse(arena, source, null);
+        const d = try tb.Spec.parse(arena, source, null);
         var bag: vera.diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
         var opts: vera.Settings = .{
@@ -3400,7 +3400,7 @@ const Golden = struct {
         var result = try vera.analyze(gpa, source, opts, &bag);
         defer result.deinit(gpa);
         // §3.4 a shape card is a compile-time value: compile again, as vera does.
-        opts.param_overrides = try exe.shapeCards(arena, d.bench.params, result.lowered);
+        opts.param_overrides = try tb.shapeCards(arena, d.bench.params, result.lowered);
         if (opts.param_overrides.len != 0) {
             bag.deinit(gpa);
             bag = .init(gpa);
@@ -3408,10 +3408,10 @@ const Golden = struct {
             result.deinit(gpa);
             result = again;
         }
-        var facts = try exe.compileFacts(arena, result.lowered, result.mir);
+        var facts = try tb.compileFacts(arena, result.lowered, result.mir);
         facts.validate_contract = true;
         var text: Io.Writer.Allocating = .init(arena);
-        exe.writeRunner(&text.writer, arena, std.fs.path.stem(src), &d.bench, facts) catch |err| switch (err) {
+        tb.writeRunner(&text.writer, arena, std.fs.path.stem(src), &d.bench, facts) catch |err| switch (err) {
             error.WriteFailed => return error.OutOfMemory,
             else => |e| return e,
         };
