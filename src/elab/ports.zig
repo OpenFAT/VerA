@@ -497,6 +497,7 @@ test "§6.5.5 a connection list is all ordered or all named, at most as long as 
         "(.a(p), p)", // an ordered connection in a named list
         "(.zz(p))", // no such port
         "(.a(p), .a(p))", // IEEE 1364 §12.3.6 connected twice
+        "({})", // A.8.1: a concatenation has at least one member
     }) |conns| {
         var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
         defer f.deinit();

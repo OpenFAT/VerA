@@ -16,7 +16,7 @@
 //! Contents:
 //! - `pub const Error = error`
 //! - `pub const segment_levels = 4096`
-//! - `pub const caller_levels = 512`
+//! - `pub const caller_levels = 32`
 //! - `pub const Parser = struct`: `init`, `Seed`, `initSeeded`, `setLanguage`, `refuseAms`, `refuseDigital`, `digitalItem`, `parseSourceFile`, `discreteGrammar`, `peek`, `peekAt`, `eat`, `tokenText`, `reservedIs`, `eatSymbol`, `expect`, `identLike`, `warnOwnMathFn`, `expectIdent`, `expectIdentOrSys`, `internTok`, `skipAttributes`, `attributesEnd`, `pastAttributes`, `ownedAttributes`, `copyAttributes`, `statementAttributes`, `markAttributes`, `rewindAttributes`, `lteSince`, `keepLte`, `recoverStatement`, `report`, `nest`, `enter`, `leave`, `segmentDue`, `descend`, `walk`, `segment`, `failAt`, `failWith`, `found`
 //! - `pub const TestResult = struct`: `count`, `code`, `msg`
 //! - `pub fn newBag(arena: std.mem.Allocator, src: []const u8) !*diag.Bag`
@@ -40,9 +40,11 @@ pub const Error = error{ OutOfMemory, ParseError };
 /// by the calling thread's stack (`Parser.segment`).
 pub const segment_levels = 4096;
 
-/// Levels the caller's own stack holds before the first segment: half the
-/// 1024 the parser ran on any caller's stack before segments existed.
-pub const caller_levels = 512;
+/// Levels the caller's own stack holds before the first segment. The parser
+/// peaks at 5.8 KB a level in Debug (`deep_stack.bytes_per_level`), so 32
+/// is under 200 KB: an embedder's 1 MiB thread holds it with room for the
+/// caller. 512 overflowed that thread (a 5000-deep else-if chain).
+pub const caller_levels = 32;
 
 /// Parser state for one token stream. Every allocation comes from `arena`;
 /// `src`, `tags` and `starts` are borrowed and must outlive the produced
@@ -512,10 +514,14 @@ pub const Parser = struct {
         // the source half of this convention and does not depend on the IR.
         if (self.tags[i] != .escaped_identifier) return self.file.intern(self.arena, self.tokenText(i));
         // IEEE 1364-2005 §3.7.3: a system task or function "shall not be
-        // escaped", so `\$display` keeps its `\` and names no system task.
-        // Its periods map like any other escaped name's (`\$u.p` and port
-        // `p` of instance `\$u` are two names).
-        const text = if (self.tokenText(i)[0] == '$') lexer.tokenText(self.src, self.starts[i]) else self.tokenText(i);
+        // escaped", so `\$display` keeps its `\` and names no system task. A
+        // text that itself starts with `\` keeps its own, so `\\$x ` (the
+        // name `\$x`) stays apart from `\$x ` (the name `$x`): either way the
+        // interned spelling is the token's, and stripping its `\` gives the
+        // text back. Its periods map like any other escaped name's (`\$u.p`
+        // and port `p` of instance `\$u` are two names).
+        const raw = self.tokenText(i);
+        const text = if (raw[0] == '$' or raw[0] == '\\') lexer.tokenText(self.src, self.starts[i]) else raw;
         if (std.mem.findScalar(u8, text, '.') == null)
             return self.file.intern(self.arena, text);
         const buf = try self.arena.dupe(u8, text);

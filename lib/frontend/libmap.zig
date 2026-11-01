@@ -622,6 +622,8 @@ test "§13.5.1 order is declaration order, with `work` last unless a map declare
     const map: Map = .{ .libraries = &.{ .{ .name = "x", .specs = &.{} }, .{ .name = "y", .specs = &.{} } } };
     try testing.expectEqual(@as(?usize, 1), map.declares("y"));
     try testing.expectEqual(@as(?usize, null), map.declares("work"));
+    // `-L ''` reaches here from argv: no library is called that.
+    try testing.expectEqual(@as(?usize, null), map.declares(""));
 }
 
 test "§13.2.2 load reads library and include statements, and a library declared twice holds both" {
@@ -695,6 +697,10 @@ test "§13.2.2 Syntax 13-2: every malformed statement is E0244 naming what it fo
         .{ "include x.map", "an `include` statement ends with `;`" },
         .{ "include x.map y;", "found `y`: an `include` statement ends with `;`" },
         .{ "include missing.map;", "cannot read library map" },
+        // Syntax 13-2 has no empty file_path_spec, in any of its three places.
+        .{ "library lib \"\";", "`\"\"` is an empty file_path_spec" },
+        .{ "library lib a.v -incdir \"\";", "`\"\"` is an empty file_path_spec" },
+        .{ "include \"\";", "`\"\"` is an empty file_path_spec" },
         // A map that includes itself would never end: a named cycle.
         .{ "include bad.map;", "library map `include` cycle:" },
     }) |c| {

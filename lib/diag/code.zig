@@ -453,6 +453,7 @@ pub const Code = enum(u16) {
     E1019,
     E1020,
     E1021,
+    E1022,
     E1100,
     E1101,
     /// IEEE 1364-2005 §17.2.10: an SDF file `$sdf_annotate` cannot read.
@@ -7852,6 +7853,19 @@ const rows: std.enums.EnumFieldStruct(Code, Info, null) = .{
         \\`noise_table`) is one operand per element, so a pattern like
         \\`'{16777216{1.0}}` there passes the count. Split the data, or
         \\compute it with fewer elements.
+        ,
+    },
+    .E1022 = .{
+        .title = "a device has more `$fatal` and `$error` sites than its status code holds",
+        .lrm = "",
+        .explain =
+        \\Not a language rule and not a design limit. A device reports the
+        \\first §9.7.3 `$fatal` or `$error` its evaluation reaches as one
+        \\32-bit status code (`contract.statusCode`): the severity in the top
+        \\byte, the site's number in the low 24 bits. So one module's analog
+        \\blocks hold up to 16777214 such calls, counting each one a loop or
+        \\macro writes out. Fold repeated reports into one call whose
+        \\arguments say which case it is.
         ,
     },
     .E1099 = .{

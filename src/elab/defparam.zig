@@ -463,3 +463,18 @@ test "IEEE 1364-2005 §12.8.1 an upward defparam's value is replaced down a chai
     try std.testing.expectEqual(diag.Code.E0907, f.bag.at(0).code);
     try std.testing.expect(std.mem.find(u8, f.bag.at(0).message, "the cycle `w.y` → `w.x` → `w.y`") != null);
 }
+
+test "IEEE 1364-2005 §12.2.1 a defparam rooted at a top whose escaped name holds periods is a verdict" {
+    // Oracle: §3.7.1, `\$t.` is one name, so `$root.\$t..` is the top's
+    // `\$t.` and then an empty segment: no parameter, reported. Neither the
+    // top's period nor the empty last part may reach a lookup as an assertion.
+    for ([_][]const u8{
+        "module \\$t. (a); inout a; electrical a; parameter real p = 1; defparam $root.\\$t.. = 2; endmodule",
+        "module top(a); inout a; electrical a; parameter real p = 1; defparam \\$root.top. = 2; endmodule",
+    }) |src| {
+        var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try fixture.parse(&f, src);
+        try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
+    }
+}

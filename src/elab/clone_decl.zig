@@ -321,3 +321,34 @@ test "§3.4.4 an array override must have the parameter's size (E0921)" {
     try fixture.parse(&good, try good.arena.allocator().print(src, .{"1.0, 2.0"}));
     _ = try elaborate.elaborate(good.ctx());
 }
+
+test "§3.4.4 an override of a 70-dimension array parameter is sized level by level, with no bound on the count" {
+    // Oracle: §3.4.4's element count at each level, as in the case above; 64
+    // was an assertion's bound on the dimensions, which the source sets.
+    const gpa = std.testing.allocator;
+    const n = 70;
+    for ([_]struct { []const u8, bool }{ .{ "1.0", true }, .{ "1.0, 2.0", false } }) |c| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(gpa);
+        try text.appendSlice(gpa, "module top(p); inout p; electrical p; kid #(.c(");
+        for (0..n) |_| try text.appendSlice(gpa, "'{");
+        try text.appendSlice(gpa, c[0]);
+        try text.appendNTimes(gpa, '}', n);
+        try text.appendSlice(gpa, ")) u(p); endmodule\nmodule kid(a); inout a; electrical a; parameter real c");
+        for (0..n) |_| try text.appendSlice(gpa, "[0:0]");
+        try text.appendSlice(gpa, " = ");
+        for (0..n) |_| try text.appendSlice(gpa, "'{");
+        try text.appendSlice(gpa, "0.0");
+        try text.appendNTimes(gpa, '}', n);
+        try text.appendSlice(gpa, "; endmodule\n");
+        var f: fixture.Fixture = .{ .arena = .init(gpa) };
+        defer f.deinit();
+        try fixture.parse(&f, text.items);
+        if (c[1]) {
+            _ = try elaborate.elaborate(f.ctx());
+        } else {
+            try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
+            try std.testing.expect(fixture.hasCode(&f.bag, .E0921));
+        }
+    }
+}
