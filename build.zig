@@ -283,15 +283,25 @@ pub fn build(b: *Build) void {
     paired.has_side_effects = true;
     test_step.dependOn(&paired.step);
 
-    // Conditional host capabilities are explicit skips until bound through
-    // VERA_HOST_PROFILE_ADAPTER. Oracle self-tests never supply these results.
-    for ([_][]const u8{ "report_observations", "indirect_equation_observations", "conditional_observations", "absdelta_rejection_observations", "scheduling_observations", "language_semantics_observations", "compact_modeling_observations", "directive_documentation" }) |name| {
+    // The host profiles need a real host bound through an adapter, which VerA
+    // does not ship: they are `test-host-profiles -Dhost-adapter=EXE`, which
+    // fails without one (unsupported fails, never skips). The documentation
+    // profile needs no host and runs in `test`, beside the oracles' selftest.
+    const host_adapter = b.option([]const u8, "host-adapter", "test-host-profiles: the executable that binds a real host to tests/host.py's profiles");
+    const host_profiles = b.step("test-host-profiles", "Run tests/host.py's host profiles through -Dhost-adapter=EXE");
+    if (host_adapter == null) host_profiles.dependOn(&b.addFail("test-host-profiles: pass -Dhost-adapter=EXE, an adapter binding a real host (tests/README.md)").step);
+    for ([_][]const u8{ "report_observations", "indirect_equation_observations", "conditional_observations", "absdelta_rejection_observations", "scheduling_observations", "language_semantics_observations", "compact_modeling_observations", "directive_documentation", "selftest" }) |name| {
         const profile = b.addSystemCommand(&.{"python3"});
         profile.addFileArg(b.path("tests/host.py"));
         profile.addArg(name);
-        if (results_dir) |dir| profile.addArgs(&.{ "--results", b.fmt("{s}/{s}.tsv", .{ dir, name }) });
+        if (results_dir) |dir| if (!std.mem.eql(u8, name, "selftest")) profile.addArgs(&.{ "--results", b.fmt("{s}/{s}.tsv", .{ dir, name }) });
         profile.has_side_effects = true;
-        test_step.dependOn(&profile.step);
+        if (std.mem.eql(u8, name, "directive_documentation") or std.mem.eql(u8, name, "selftest")) {
+            test_step.dependOn(&profile.step);
+        } else if (host_adapter) |exe_path| {
+            profile.addArgs(&.{ "--adapter", exe_path });
+            host_profiles.dependOn(&profile.step);
+        }
     }
 
     // The degenerate-argv table: every documented flag x "", "-", "=", a

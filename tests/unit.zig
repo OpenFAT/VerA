@@ -1802,23 +1802,29 @@ pub const parser_tests = struct {
         try std.testing.expectEqual(diag.Code.E0228, r.code(0));
     }
 
-    test "a stack segment that cannot be reserved is E0241, naming the depth" {
-        if (@import("builtin").single_threaded) return error.SkipZigTest;
-        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        var src: std.ArrayList(u8) = .empty;
-        try src.appendSlice(arena, "module m; real r; analog r = ");
-        try src.appendNTimes(arena, '(', parser.caller_levels + 1);
-        try src.appendSlice(arena, "1.0");
-        try src.appendNTimes(arena, ')', parser.caller_levels + 1);
-        try src.appendSlice(arena, "; endmodule");
-        deep_stack.refuse_for_test = true;
-        defer deep_stack.refuse_for_test = false;
-        const r = try parseForTest(arena, src.items);
-        try std.testing.expectEqual(@as(?diag.Code, .E0241), firstError(r));
-        try std.testing.expect(std.mem.find(u8, firstErrorMsg(r), "levels deep") != null);
+    // Left out of a single-threaded build: there no stack segment is
+    // reserved (`deep_stack` runs the walk in place), so nothing can refuse.
+    comptime {
+        if (!@import("builtin").single_threaded) _ = threaded;
     }
+    const threaded = struct {
+        test "a stack segment that cannot be reserved is E0241, naming the depth" {
+            var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena_state.deinit();
+            const arena = arena_state.allocator();
+            var src: std.ArrayList(u8) = .empty;
+            try src.appendSlice(arena, "module m; real r; analog r = ");
+            try src.appendNTimes(arena, '(', parser.caller_levels + 1);
+            try src.appendSlice(arena, "1.0");
+            try src.appendNTimes(arena, ')', parser.caller_levels + 1);
+            try src.appendSlice(arena, "; endmodule");
+            deep_stack.refuse_for_test = true;
+            defer deep_stack.refuse_for_test = false;
+            const r = try parseForTest(arena, src.items);
+            try std.testing.expectEqual(@as(?diag.Code, .E0241), firstError(r));
+            try std.testing.expect(std.mem.find(u8, firstErrorMsg(r), "levels deep") != null);
+        }
+    };
 
     test "§2.9 attribute specs: the last value of a name wins, and a speculative read rewinds exactly" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -11290,38 +11296,43 @@ pub const preprocessor_tests = struct {
         }
     }
 
-    test "IEEE 1364 §19.5: an `include past the u32 text bound is E1013, known from the file's size" {
-        // A sparse file one byte past `max_text_bytes`: its size is read, not
-        // its bytes, so the test allocates nothing large. NTFS would allocate
-        // the 4 GiB, so Windows skips it.
-        if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // os: a test skip; every target builds it
-        const io = testing.io;
-        var tmp = testing.tmpDir(.{});
-        defer tmp.cleanup();
-        {
-            var f = try tmp.dir.createFile(io, "huge.vh", .{});
-            defer f.close(io);
-            try f.setLength(io, preprocessor.max_text_bytes + 1);
-        }
-        try tmp.dir.writeFile(io, .{ .sub_path = "big.vh", .data = "" });
-        const any = try tmp.dir.realPathFileAlloc(io, "big.vh", testing.allocator);
-        defer testing.allocator.free(any);
-        const dirs: []const []const u8 = &.{std.fs.path.dirname(any).?};
-        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-        defer arena_state.deinit();
-        var bag: diag.Bag = .init(arena_state.allocator());
-        try testing.expectError(error.PreprocessFailed, process(arena_state.allocator(), "`include \"huge.vh\"\n", .{ .std_defs = false, .bag = &bag, .include_dirs = dirs }));
-        try testing.expectEqual(diag.Code.E1013, bag.at(0).code);
-        // 17 MiB, past the old 16 MiB `include cap, reads.
-        {
-            var f = try tmp.dir.createFile(io, "big.vh", .{});
-            defer f.close(io);
-            try f.setLength(io, 17 << 20);
-        }
-        var ok_bag: diag.Bag = .init(arena_state.allocator());
-        const out = try process(arena_state.allocator(), "`include \"big.vh\"\n", .{ .std_defs = false, .bag = &ok_bag, .include_dirs = dirs });
-        try testing.expect(out.text.len >= 17 << 20);
+    // Left out of a Windows build: the test makes a sparse file past 4 GiB,
+    // and NTFS would allocate it.
+    comptime {
+        if (@import("builtin").os.tag != .windows) _ = sparse_files;
     }
+    const sparse_files = struct {
+        test "IEEE 1364 §19.5: an `include past the u32 text bound is E1013, known from the file's size" {
+            // A sparse file one byte past `max_text_bytes`: its size is read, not
+            // its bytes, so the test allocates nothing large.
+            const io = testing.io;
+            var tmp = testing.tmpDir(.{});
+            defer tmp.cleanup();
+            {
+                var f = try tmp.dir.createFile(io, "huge.vh", .{});
+                defer f.close(io);
+                try f.setLength(io, preprocessor.max_text_bytes + 1);
+            }
+            try tmp.dir.writeFile(io, .{ .sub_path = "big.vh", .data = "" });
+            const any = try tmp.dir.realPathFileAlloc(io, "big.vh", testing.allocator);
+            defer testing.allocator.free(any);
+            const dirs: []const []const u8 = &.{std.fs.path.dirname(any).?};
+            var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+            defer arena_state.deinit();
+            var bag: diag.Bag = .init(arena_state.allocator());
+            try testing.expectError(error.PreprocessFailed, process(arena_state.allocator(), "`include \"huge.vh\"\n", .{ .std_defs = false, .bag = &bag, .include_dirs = dirs }));
+            try testing.expectEqual(diag.Code.E1013, bag.at(0).code);
+            // 17 MiB, past the old 16 MiB `include cap, reads.
+            {
+                var f = try tmp.dir.createFile(io, "big.vh", .{});
+                defer f.close(io);
+                try f.setLength(io, 17 << 20);
+            }
+            var ok_bag: diag.Bag = .init(arena_state.allocator());
+            const out = try process(arena_state.allocator(), "`include \"big.vh\"\n", .{ .std_defs = false, .bag = &ok_bag, .include_dirs = dirs });
+            try testing.expect(out.text.len >= 17 << 20);
+        }
+    };
 
     test "§10.7: a file included through a macro numbers its own lines and owns its diagnostics" {
         const io = testing.io;

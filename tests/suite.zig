@@ -1980,78 +1980,84 @@ const Analog = struct {
         return text.toOwnedSlice(gpa);
     }
 
-    test "a batch runs each member by argv[0]; one member that does not compile fails the batch" {
-        if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-        const gpa = std.testing.allocator;
-        const io = std.testing.io;
-        var arena_state: std.heap.ArenaAllocator = .init(gpa);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const work = options.work_root ++ "/batch-selftest";
-        // Prints its device's tag and the plusargs it was handed.
-        const runner =
-            \\const std = @import("std");
-            \\const device = @import("device");
-            \\pub fn main(init: std.process.Init.Minimal) void {
-            \\    const argv = init.args.toSlice(std.heap.page_allocator) catch return;
-            \\    std.debug.print("{s}", .{device.tag});
-            \\    for (argv[1..]) |a| std.debug.print(" {s}", .{a});
-            \\    std.debug.print("\n", .{});
-            \\}
-            \\
-        ;
-        const tags = [_][]const u8{ "a", "b", "broken" };
-        var staged: [tags.len]zigbuild.Staged = undefined;
-        var dirs: [tags.len][]const u8 = undefined;
-        for (&staged, &dirs, tags) |*s, *dir, tag| {
-            dir.* = try std.fs.path.join(arena, &.{ work, tag });
-            const device = if (std.mem.eql(u8, tag, "broken")) "pub const tag = 1 +;\n" else try arena.print("pub const tag = \"{s}\";\n", .{tag});
-            s.* = try zigbuild.stage(arena, io, device, runner, .{ .work_dir = dir.*, .contract = options.contract, .name = tag, .zig_exe = options.zig_exe });
-        }
-        const opts: zigbuild.BuildOptions = .{ .work_dir = work ++ "/batch", .contract = options.contract, .name = "batch", .zig_exe = options.zig_exe, .strip = true };
-
-        const built = try zigbuild.buildBatch(gpa, io, staged[0..2], opts);
-        defer built.deinit(gpa);
-        const bin = switch (built) {
-            .ok => |p| p,
-            .failed => |text| {
-                std.debug.print("{s}\n", .{text});
-                return error.TestUnexpectedResult;
-            },
-        };
-        for (0..2) |i| {
-            const link = try linkBatched(gpa, io, arena, dirs[i], .{ .bin = bin, .index = i });
-            defer link.deinit(gpa);
-            const got = try capture(gpa, io, link.ok, dirs[i], 0, &.{ "+x=1", "+y" });
-            defer gpa.free(got);
-            try std.testing.expectEqualStrings(try arena.print("{s} +x=1 +y\n", .{tags[i]}), got);
-        }
-
-        const bad = try zigbuild.buildBatch(gpa, io, &staged, opts);
-        defer bad.deinit(gpa);
-        try std.testing.expect(bad == .failed);
+    // Left out of a Windows build: their oracle is POSIX (`/bin/sh`, and a
+    // child run as `./<name>` from its work directory), and the batch runner
+    // they test is the suite's, which runs on Linux and macOS.
+    comptime {
+        if (@import("builtin").os.tag != .windows) _ = posix;
     }
+    const posix = struct {
+        test "a batch runs each member by argv[0]; one member that does not compile fails the batch" {
+            const gpa = std.testing.allocator;
+            const io = std.testing.io;
+            var arena_state: std.heap.ArenaAllocator = .init(gpa);
+            defer arena_state.deinit();
+            const arena = arena_state.allocator();
+            const work = options.work_root ++ "/batch-selftest";
+            // Prints its device's tag and the plusargs it was handed.
+            const runner =
+                \\const std = @import("std");
+                \\const device = @import("device");
+                \\pub fn main(init: std.process.Init.Minimal) void {
+                \\    const argv = init.args.toSlice(std.heap.page_allocator) catch return;
+                \\    std.debug.print("{s}", .{device.tag});
+                \\    for (argv[1..]) |a| std.debug.print(" {s}", .{a});
+                \\    std.debug.print("\n", .{});
+                \\}
+                \\
+            ;
+            const tags = [_][]const u8{ "a", "b", "broken" };
+            var staged: [tags.len]zigbuild.Staged = undefined;
+            var dirs: [tags.len][]const u8 = undefined;
+            for (&staged, &dirs, tags) |*s, *dir, tag| {
+                dir.* = try std.fs.path.join(arena, &.{ work, tag });
+                const device = if (std.mem.eql(u8, tag, "broken")) "pub const tag = 1 +;\n" else try arena.print("pub const tag = \"{s}\";\n", .{tag});
+                s.* = try zigbuild.stage(arena, io, device, runner, .{ .work_dir = dir.*, .contract = options.contract, .name = tag, .zig_exe = options.zig_exe });
+            }
+            const opts: zigbuild.BuildOptions = .{ .work_dir = work ++ "/batch", .contract = options.contract, .name = "batch", .zig_exe = options.zig_exe, .strip = true };
 
-    test "capture forwards runtime argv without expansion and preserves order" {
-        if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-        // Independent POSIX argv probe, not a generated model: the model's current
-        // plusarg stub cannot distinguish missing runner plumbing from its own bug.
-        // Only this fixed script is interpreted; fixture bytes stay positional
-        // arguments, quoted by the probe and never inserted into its source.
-        const got = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{
-            "-c",      "for arg do printf '%s\\n' \"$arg\" >&2; done", "argv-probe",
-            "+gain=7", "+gain=8",                                      "+gain=7",
-            "+empty=", "+literal=$HOME;*",                             "+literal=$(printf_EXPANDED)",
-        });
-        defer std.testing.allocator.free(got);
-        try std.testing.expectEqualStrings(
-            "+gain=7\n+gain=8\n+gain=7\n+empty=\n+literal=$HOME;*\n+literal=$(printf_EXPANDED)\n",
-            got,
-        );
-        const absent = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{});
-        defer std.testing.allocator.free(absent);
-        try std.testing.expectEqualStrings("", absent);
-    }
+            const built = try zigbuild.buildBatch(gpa, io, staged[0..2], opts);
+            defer built.deinit(gpa);
+            const bin = switch (built) {
+                .ok => |p| p,
+                .failed => |text| {
+                    std.debug.print("{s}\n", .{text});
+                    return error.TestUnexpectedResult;
+                },
+            };
+            for (0..2) |i| {
+                const link = try linkBatched(gpa, io, arena, dirs[i], .{ .bin = bin, .index = i });
+                defer link.deinit(gpa);
+                const got = try capture(gpa, io, link.ok, dirs[i], 0, &.{ "+x=1", "+y" });
+                defer gpa.free(got);
+                try std.testing.expectEqualStrings(try arena.print("{s} +x=1 +y\n", .{tags[i]}), got);
+            }
+
+            const bad = try zigbuild.buildBatch(gpa, io, &staged, opts);
+            defer bad.deinit(gpa);
+            try std.testing.expect(bad == .failed);
+        }
+
+        test "capture forwards runtime argv without expansion and preserves order" {
+            // Independent POSIX argv probe, not a generated model: the model's current
+            // plusarg stub cannot distinguish missing runner plumbing from its own bug.
+            // Only this fixed script is interpreted; fixture bytes stay positional
+            // arguments, quoted by the probe and never inserted into its source.
+            const got = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{
+                "-c",      "for arg do printf '%s\\n' \"$arg\" >&2; done", "argv-probe",
+                "+gain=7", "+gain=8",                                      "+gain=7",
+                "+empty=", "+literal=$HOME;*",                             "+literal=$(printf_EXPANDED)",
+            });
+            defer std.testing.allocator.free(got);
+            try std.testing.expectEqualStrings(
+                "+gain=7\n+gain=8\n+gain=7\n+empty=\n+literal=$HOME;*\n+literal=$(printf_EXPANDED)\n",
+                got,
+            );
+            const absent = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{});
+            defer std.testing.allocator.free(absent);
+            try std.testing.expectEqualStrings("", absent);
+        }
+    };
 
     test "verdicts are counted, and a malformed one is not a pass" {
         try std.testing.expectEqual(Tally{ .total = 0, .failed = 0 }, countVerdicts("no verdicts here"));

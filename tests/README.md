@@ -136,9 +136,10 @@ digital cases: they need a host interface VerA does not expose yet. Do not
 invent an option spelling or fail an unspecified choice to make one run.
 
 The executable report/help, equation-tolerance and conditional capability
-assertions use the explicit adapter protocol below. They belong to the
-development gate and record exact named skips until a real host adapter is
-configured. Synthetic oracle regression tests earn no language conformance
+assertions use the explicit adapter protocol below. They run only under
+`zig build test-host-profiles -Dhost-adapter=EXE`, which fails without an
+adapter: VerA ships none, and an assertion that cannot run fails, never
+skips. Synthetic oracle regression tests earn no language conformance
 credit.
 
 Protected ciphertext regressions have public test keys and an explicit
@@ -149,9 +150,11 @@ as XFAIL; it is not evidence of a cryptographic comparison.
 
 ## Host profile adapters
 
-`nix develop -c zig build test` also runs the registered conditional
-assertions (`host.py`'s `PROFILES`). Without a real adapter they record
-**skip**, not pass. Compiling a support model or passing
+`nix develop -c zig build test-host-profiles -Dhost-adapter=EXE` runs the
+registered conditional assertions (`host.py`'s `PROFILES`; `test` runs only
+`directive_documentation`, which needs no host, and `selftest`). Without an
+adapter every assertion **fails**, and so does a scenario the adapter answers
+`unavailable`. Compiling a support model or passing
 its local checks alone supplies no host-observation credit. Testing an oracle
 against synthetic data supplies no language conformance credit.
 
@@ -182,9 +185,10 @@ and return actual observations:
 ```
 
 If the required interface or applicability is absent, return
-`{"schema_version":1,"status":"unavailable","reason":"specific missing capability"}`.
-A nonzero adapter exit, malformed response, timeout, or violated assertion fails
-the test. Do not use `unavailable` to hide an observed wrong result. Adapter
+`{"schema_version":1,"status":"unavailable","reason":"specific missing capability"}`:
+the assertion fails with that reason (unsupported fails, never skips). A
+nonzero adapter exit, malformed response, timeout, or violated assertion fails
+the test too. Do not use `unavailable` to hide an observed wrong result. Adapter
 stderr is available for failure details; stdout is reserved for the response.
 
 The adapter is responsible for binding the exact host under test and exposing
