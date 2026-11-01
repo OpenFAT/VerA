@@ -1,4 +1,6 @@
 .zig-cache
+# The suite's and the VPI apps' scratch builds (build.zig checkoutWorkDir).
+/.vera-work/
 zig-out/
 # Fetched packages (none today; zig puts any here).
 /zig-pkg/

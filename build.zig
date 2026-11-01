@@ -254,7 +254,7 @@ pub fn build(b: *Build) void {
     // into its own cache (keyed on the model, its includes and the espice
     // binary), kept under this tree's cache rather than ~/.cache/espice.
     spice_run.setEnvironmentVariable("ZIG", b.graph.zig_exe);
-    spice_run.setEnvironmentVariable("ESPICE_CACHE", pathFromRoot(b, ".zig-cache/vera-suite/espice"));
+    spice_run.setEnvironmentVariable("ESPICE_CACHE", b.fmt("{s}/espice", .{checkoutWorkDir(b, "vera-suite")}));
     if (espice_path) |path| {
         spice_run.addArg(b.fmt("--espice={s}", .{path}));
         test_spice.dependOn(&spice_run.step);
@@ -945,12 +945,17 @@ fn defineModules(b: *Build, target: Build.ResolvedTarget, exported: bool) []cons
     return created.items;
 }
 
-/// `.zig-cache/<name>/<checkout>`: worktrees share one symlinked .zig-cache,
-/// and two checkouts building and running in one work dir at once corrupt it
-/// (ETXTBSY: `suite -- ams` failed with FileBusy beside another worktree's).
+/// `.vera-work/<name>/<checkout>` under the build root (git-ignored): the
+/// suite's and the VPI apps' scratch builds. Not under `.zig-cache`, which a
+/// worktree symlinks to the main checkout's, so every worktree's scratch
+/// piled up in one cache (a few filtered runs added about 10 GB). Keyed by the
+/// checkout too, so two checkouts never build and run in one work dir at
+/// once even if `.vera-work` is shared (ETXTBSY: `suite -- ams` failed with
+/// FileBusy beside another worktree's). Nothing collects it: delete it while
+/// no build runs.
 fn checkoutWorkDir(b: *Build, name: []const u8) []u8 {
     const key = std.hash.Wyhash.hash(0, pathFromRoot(b, "."));
-    return pathFromRoot(b, b.fmt(".zig-cache/{s}/{x}", .{ name, key }));
+    return pathFromRoot(b, b.fmt(".vera-work/{s}/{x}", .{ name, key }));
 }
 
 fn pathFromRoot(b: *Build, sub_path: []const u8) []u8 {
