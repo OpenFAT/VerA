@@ -73,7 +73,8 @@ pub const Harness = struct {
     run: digital.Run,
 
     /// Elaborates `source` into `h.run` and installs it as the design. `h`
-    /// must not move afterwards: the model holds `&h.run`.
+    /// must not move afterwards: the model holds `&h.run`. Asserts that
+    /// the run is installed and attached.
     pub fn init(h: *Harness, source: []const u8) !void {
         h.arena = .init(std.testing.allocator);
         errdefer h.arena.deinit();
@@ -81,11 +82,16 @@ pub const Harness = struct {
         h.out = .init(h.arena.allocator());
         h.run = try digital.elaborate(h.arena.allocator(), source, .{}, &h.bag, &h.out.writer);
         try session.openDigital(std.testing.allocator, &h.run);
+        std.debug.assert(session.design != null);
+        std.debug.assert(engine == &h.run);
     }
 
     /// Closes the design (every handle becomes invalid), then frees the run.
+    /// Asserts that `h`'s run is the attached one, and detached after.
     pub fn deinit(h: *Harness) void {
+        std.debug.assert(engine == &h.run);
         session.close();
+        std.debug.assert(engine == null);
         h.arena.deinit();
     }
 };
@@ -143,14 +149,20 @@ var reset_log: [4]u64 = undefined;
 var reset_n: usize = 0;
 
 /// Returns the clock in engine ticks. After the run it holds the time the run
-/// ended at, so a cbEndOfSimulation reads that.
+/// ended at, so a cbEndOfSimulation reads that. Asserts that with no run
+/// attached the clock and the slice state are at rest.
 pub fn now() u64 {
+    std.debug.assert(engine != null or clock == 0);
+    std.debug.assert(engine != null or !started);
     return clock;
 }
 
 /// Binds the engine an `openDigital` model was built over, at its current
 /// time (0: §12.31.4's cbStartOfSimulation is "beginning of time 0").
+/// Asserts that no run is attached and no time queue is left from one.
 pub fn attach(r: *digital.Run) void {
+    std.debug.assert(engine == null);
+    std.debug.assert(queues.count() == 0);
     engine = r;
     clock = r.scheduler.now;
     // §12.31.1 cbForce/cbRelease/cbAssign/cbDeassign/cbDisable on design
@@ -162,21 +174,31 @@ pub fn attach(r: *digital.Run) void {
     r.host.error_hook = callback_fire.onRunError;
 }
 
-/// Unbinds the engine and invalidates every time-queue handle.
+/// Unbinds the engine and invalidates every time-queue handle. Asserts that
+/// every interned queue was live, and none is left.
 pub fn detach() void {
+    const n = queues.count();
+    std.debug.assert(queue_live.count() == n);
     engine = null;
     clock = 0;
     started = false;
     reset_request = null;
     var it = queues.valueIterator();
-    while (it.next()) |q| gpa.destroy(q.*);
+    var k: u32 = 0;
+    while (it.next()) |q| : (k += 1) {
+        std.debug.assert(k < n);
+        gpa.destroy(q.*);
+    }
     queues.clearAndFree(gpa);
     queue_live.clearAndFree(gpa);
+    std.debug.assert(queue_live.count() == 0);
 }
 
 /// The run `attach` installed (`root.openDigital`), until `detach`; null for
-/// the analog model.
+/// the analog model. Asserts that an attached run has its model open.
 pub fn attached() ?*digital.Run {
+    std.debug.assert(engine == null or session.design != null);
+    std.debug.assert(engine != null or clock == 0);
     return engine;
 }
 
@@ -198,13 +220,16 @@ pub fn attached() ?*digital.Run {
 ///
 /// A design that calls a registered system task as a function
 /// (`systf.misuse`, IEEE 1364-2005 §20.3) does not run: DigitalFailed.
+/// Asserts that it is not called from a read-only callback.
 pub fn simulate() digital.Error!void {
+    std.debug.assert(!read_only);
     const r = engine orelse return;
     if (systf.misuse != null) return error.DigitalFailed;
     callback_fire.startOfSimulation();
     started = false;
     var resets: u32 = 0;
     while (true) {
+        std.debug.assert(resets <= max_resets);
         try timeSteps(r);
         // §12.36 vpiReset, "upon return of user VPI function".
         const go = reset_request orelse break;
@@ -234,6 +259,7 @@ pub fn simulate() digital.Error!void {
             break;
         }
     }
+    std.debug.assert(reset_request == null);
     callback_fire.endOfSimulation();
 }
 
@@ -241,7 +267,8 @@ pub fn simulate() digital.Error!void {
 /// vpiScaledRealTime is in the time unit of `obj`'s module — "the indicated
 /// time shall be in the timescale associated with the object" (§12.30) — or,
 /// with no object, in "the simulation time unit" (§12.15), which is a tick.
-/// Null, with the error recorded, when the value is not a time.
+/// Null, with the error recorded, when the value is not a time. Asserts that
+/// an attached run always gives `obj` a scale.
 pub fn ticksOf(t: Time, obj: abi.vpiHandle) ?u64 {
     if (t.type == user.vpiSimTime) return (@as(u64, t.high) << 32) | t.low;
     if (!std.math.isFinite(t.real) or t.real < 0) {
@@ -252,7 +279,10 @@ pub fn ticksOf(t: Time, obj: abi.vpiHandle) ?u64 {
         status.fail("BADTIME", "{d} cannot be represented in engine ticks", .{t.real});
         return null;
     };
+    // `scale` answers whenever a run is attached.
+    std.debug.assert(obj == null or engine == null);
     const ticks = @round(t.real);
+    std.debug.assert(ticks >= 0);
     // A tick count is a u64: 2^64 and past are no tick this run reaches.
     if (ticks >= 18446744073709551616.0) {
         status.fail("BADTIME", "{d} is past the last engine tick", .{t.real});
@@ -263,23 +293,34 @@ pub fn ticksOf(t: Time, obj: abi.vpiHandle) ?u64 {
 
 /// Fill `t` with the current time in the format `t.type` names: §12.15
 /// "using the time scale of the object. If obj is NULL, the simulation time is
-/// retrieved using the simulation time unit."
+/// retrieved using the simulation time unit." Asserts that `t` reads back as
+/// the clock.
 pub fn timeNow(obj: abi.vpiHandle, t: *Time) void {
+    std.debug.assert(engine != null or clock == 0);
     fillTime(clock, obj, t);
+    std.debug.assert(((@as(u64, t.high) << 32) | t.low) == clock);
 }
 
 /// `ticks` in the time unit of `obj`'s module, the inverse of `ticksOf`'s
-/// scaled form; in ticks when no digital run gives it a scale.
+/// scaled form; in ticks when no digital run gives it a scale. Asserts that
+/// the answer is a time: finite and not negative.
 pub fn unitsOf(ticks: u64, obj: abi.vpiHandle) f64 {
-    return if (scale(obj)) |s| s.realAt(ticks) else @floatFromInt(ticks);
+    const units = if (scale(obj)) |s| s.realAt(ticks) else @as(f64, @floatFromInt(ticks));
+    std.debug.assert(std.math.isFinite(units));
+    std.debug.assert(units >= 0);
+    return units;
 }
 
 /// "shall retrieve the current simulation time, using the time scale of the
 /// object. If obj is NULL, the simulation time is retrieved using the
 /// simulation time unit." A §11.6.25 time queue answers ITS time — which is
 /// how an application reads the pending times it iterated.
+///
+/// Asserts that an admitted call starts with the status clear.
 pub export fn vpi_get_time(obj: abi.vpiHandle, time_p: ?*Time) void {
     if (status.refused("vpi_get_time")) return;
+    std.debug.assert(!session.starting);
+    std.debug.assert(status.vpi_chk_error(null) == 0);
     const t = time_p orelse {
         status.fail("BADTIME", "vpi_get_time: time_p is NULL", .{});
         return;
@@ -303,15 +344,21 @@ pub export fn vpi_get_time(obj: abi.vpiHandle, time_p: ?*Time) void {
 }
 
 /// Returns `h` as a live time-queue handle, or null; never dereferences a
-/// foreign pointer.
+/// foreign pointer. Asserts that a live queue is interned for its time,
+/// under its own address.
 pub fn asQueue(h: abi.vpiHandle) ?*Queue {
     const p = h orelse return null;
-    return queue_live.get(@intFromPtr(p));
+    const q = queue_live.get(@intFromPtr(p)) orelse return null;
+    std.debug.assert(@intFromPtr(q) == @intFromPtr(p));
+    std.debug.assert(queues.get(q.time) == q);
+    return q;
 }
 
 /// The first pending time strictly after `after`. A cbNextSimTime has no
 /// due time of its own (§27.33.2); §26.6.39 associates it with this queue.
+/// Asserts that the answer is strictly after `after`.
 pub fn nextTime(after: u64, a: std.mem.Allocator) !?u64 {
+    std.debug.assert(engine != null or after == 0);
     var best = callback_fire.nextDue(after, false);
     if (engine) |r| {
         var pending: std.ArrayList(sim.scheduler.Live) = .empty;
@@ -321,6 +368,7 @@ pub fn nextTime(after: u64, a: std.mem.Allocator) !?u64 {
             if (e.time > after and (best == null or e.time < best.?)) best = e.time;
         }
     }
+    std.debug.assert(best == null or best.? > after);
     return best;
 }
 
@@ -330,6 +378,7 @@ pub fn nextTime(after: u64, a: std.mem.Allocator) !?u64 {
 /// relationship to its time queue, and §12.31.2 has the loop wake at a
 /// callback's time "even if no event is present". cbNextSimTime holds no
 /// time of its own ("the time structure is ignored"). Caller owns the slice.
+/// Asserts that the queues come out in strictly increasing time, each live.
 pub fn timeQueues(a: std.mem.Allocator) ![]abi.vpiHandle {
     var times: std.ArrayList(u64) = .empty;
     defer times.deinit(a);
@@ -347,6 +396,7 @@ pub fn timeQueues(a: std.mem.Allocator) ![]abi.vpiHandle {
     var last: ?u64 = null;
     for (times.items) |t| {
         if (t < clock or (last != null and last.? == t)) continue;
+        std.debug.assert(last == null or t > last.?);
         last = t;
         const entry = try queues.getOrPut(gpa, t);
         if (!entry.found_existing) {
@@ -366,6 +416,8 @@ pub fn timeQueues(a: std.mem.Allocator) ![]abi.vpiHandle {
         }
         out.appendAssumeCapacity(@ptrCast(entry.value_ptr.*));
     }
+    std.debug.assert(queue_live.count() == queues.count());
+    std.debug.assert(out.items.len <= times.items.len);
     return out.toOwnedSlice(a);
 }
 
@@ -377,16 +429,21 @@ extern fn vpi_sim_control(operation: c_int, ...) c_int;
 /// The time queues of one run, from its current time to `$finish`, an empty
 /// queue, a vpiFinish or a vpiReset.
 fn timeSteps(r: *digital.Run) digital.Error!void {
+    std.debug.assert(engine == r);
     // Passes of the loop below at one time. A time callback that registers
     // another at its own time (a cbReadWriteSynch from a cbReadWriteSynch)
     // brings the loop back to `t` with no event the engine's budget counts,
     // so the passes are counted against that budget themselves.
     var passes: u64 = 0;
     var pass_time: ?u64 = null;
-    while (!stopped(r)) {
+    // Bounded by the run's times, each at most `event_budget.max` passes.
+    while (r.scheduler.phase != .stopped) {
+        std.debug.assert(passes <= r.event_budget.max);
         const ev = r.scheduler.peekTime();
         const due = callback_fire.nextDue(clock, true);
         const t = earliest(ev, due) orelse break;
+        // Nothing pending is in the past: the clock only moves forward.
+        std.debug.assert(t >= clock);
         if (pass_time != t) {
             pass_time = t;
             passes = 0;
@@ -410,7 +467,7 @@ fn timeSteps(r: *digital.Run) digital.Error!void {
         callback_fire.fireDue(user.cbAtStartOfSimTime, t);
         started = true;
         callback_fire.fireDue(user.cbAfterDelay, t);
-        if (stopped(r)) break;
+        if (r.scheduler.phase == .stopped) break;
         // VAMS §8.5.1: a read-write callback "shall be treated as inactive
         // events": after the active events at `t`, before its nonblocking
         // updates. A due one asks the engine to stop at `t`'s inactive point
@@ -421,7 +478,7 @@ fn timeSteps(r: *digital.Run) digital.Error!void {
         if (callback_fire.isDue(user.cbReadWriteSynch, t)) r.scheduler.sync_at = t;
         const stop = try runUntil(r, t);
         r.scheduler.sync_at = null;
-        if (stopped(r)) break;
+        if (r.scheduler.phase == .stopped) break;
         if (stop == .vpi_sync or callback_fire.isDue(user.cbReadWriteSynch, t)) {
             callback_fire.fireDue(user.cbReadWriteSynch, t);
             continue;
@@ -435,20 +492,20 @@ fn timeSteps(r: *digital.Run) digital.Error!void {
 /// The engine's events at `t`; a failure fires cbError first (IEEE 1364-2005
 /// §27.33.3 "Simulation run-time error occurred").
 fn runUntil(r: *digital.Run, t: u64) digital.Error!digital.Stop {
+    // `timeSteps` moved the clock to `t` first, outside any read-only synch.
+    std.debug.assert(t == clock);
+    std.debug.assert(!read_only);
     return r.runUntil(t) catch |e| {
         callback_fire.runError(e);
         return e;
     };
 }
 
-fn stopped(r: *digital.Run) bool {
-    return r.scheduler.phase == .stopped;
-}
-
 fn earliest(a: ?u64, b: ?u64) ?u64 {
-    if (a == null) return b;
-    if (b == null) return a;
-    return @min(a.?, b.?);
+    const m = if (a == null) b else if (b == null) a else @min(a.?, b.?);
+    std.debug.assert((m == null) == (a == null and b == null));
+    std.debug.assert(m == null or ((a == null or m.? <= a.?) and (b == null or m.? <= b.?)));
+    return m;
 }
 
 /// The time scale of `obj`'s module (IEEE 1364 §19.8: each definition has
@@ -457,10 +514,14 @@ fn earliest(a: ?u64, b: ?u64) ?u64 {
 fn scale(obj: abi.vpiHandle) ?sim.time.Scale {
     const r = engine orelse return null;
     const o = trust.asObj(obj) orelse return r.time.scale;
+    const d = &session.design.?;
     // `timeOf` takes the ENGINE's scope id, which a lexical engine scope (a
     // generate iteration, a task frame) can set apart from the model's index.
     const sc = if (o.kind == .module) o.scope else o.owner.get() orelse 0;
-    return r.timeOf(session.design.?.scopes[sc].engine).scale;
+    // An owner is a module row, whose index is its scope's (`Design.scope`).
+    std.debug.assert(sc < d.scopes.len);
+    std.debug.assert(d.objects[sc].kind == .module);
+    return r.timeOf(d.scopes[sc].engine).scale;
 }
 
 /// Fills both of `t`'s forms from `ticks`: high/low in ticks, and `real` in
@@ -469,6 +530,8 @@ fn fillTime(ticks: u64, obj: abi.vpiHandle, t: *Time) void {
     t.high = @truncate(ticks >> 32);
     t.low = @truncate(ticks);
     t.real = if (obj != null) unitsOf(ticks, obj) else @floatFromInt(ticks);
+    std.debug.assert(((@as(u64, t.high) << 32) | t.low) == ticks);
+    std.debug.assert(t.real >= 0);
 }
 
 /// §12.36: returns 1 on success, 0 on failure.
@@ -504,6 +567,7 @@ fn fillTime(ticks: u64, obj: abi.vpiHandle, t: *Time) void {
 /// routine under its IEEE 1364-2005 §27.3 name.
 export fn vera_vpi_control(operation: c_int, ap: *List) c_int {
     status.clearError();
+    std.debug.assert(status.vpi_chk_error(null) == 0);
     switch (operation) {
         user.vpiFinish, user.vpiStop => {
             _ = va.arg(ap, c_int); // the diagnostic level, as $finish(n) / $stop(n)
@@ -512,6 +576,7 @@ export fn vera_vpi_control(operation: c_int, ap: *List) c_int {
                 return 0;
             };
             r.scheduler.finish();
+            std.debug.assert(r.scheduler.phase == .stopped);
             return 1;
         },
         user.vpiSetInteractiveScope => {
@@ -551,6 +616,7 @@ export fn vera_vpi_control(operation: c_int, ap: *List) c_int {
             reset_request = stop_value != 0;
             // The engine dispatches nothing more of the run being reset.
             r.scheduler.finish();
+            std.debug.assert(r.scheduler.phase == .stopped);
             return 1;
         },
         else => {
@@ -561,12 +627,16 @@ export fn vera_vpi_control(operation: c_int, ap: *List) c_int {
 }
 
 fn record(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(seen_n < seen.len);
+    std.debug.assert(callback.isTimeReason(d.reason));
     seen[seen_n] = (@as(u64, d.time.?.high) << 32) | d.time.?.low;
     seen_n += 1;
     return 0;
 }
 
 fn register(reason: c_int, low: u32) !void {
+    std.debug.assert(callback.isTimeReason(reason));
+    std.debug.assert(engine != null);
     var t: Time = .{ .type = user.vpiSimTime, .high = 0, .low = low, .real = 0 };
     const d: CbData = .{ .reason = reason, .cb_rtn = record, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };
     if (callback.vpi_register_cb(&d) == null) return error.TestUnexpectedResult;
@@ -575,6 +645,8 @@ fn register(reason: c_int, low: u32) !void {
 fn walk(_: *CbData) callconv(.c) c_int {
     const itr = iterate.vpi_iterate(user.vpiTimeQueue, null);
     while (iterate.vpi_scan(itr)) |q| {
+        std.debug.assert(walked_n < walked.len);
+        std.debug.assert(asQueue(q) != null);
         var t: Time = .{ .type = user.vpiSimTime, .high = 0, .low = 0, .real = 0 };
         vpi_get_time(q, &t);
         walked[walked_n] = t.low;
@@ -584,34 +656,45 @@ fn walk(_: *CbData) callconv(.c) c_int {
 }
 
 fn onRunError(d: *CbData) callconv(.c) c_int {
-    if (d.reason == user.cbError) run_errors += 1;
+    std.debug.assert(d.reason == user.cbError);
+    std.debug.assert(run_errors < max_resets);
+    run_errors += 1;
     return 0;
 }
 
 fn onLoadError(d: *CbData) callconv(.c) c_int {
-    if (d.reason != user.cbError) return 0;
+    std.debug.assert(d.reason == user.cbError);
     run_errors += 1;
     load_error_level = status.vpi_chk_error(null);
+    std.debug.assert(load_error_level == user.vpiError);
     return 0;
 }
 
-fn finishNow(_: *CbData) callconv(.c) c_int {
+fn finishNow(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.cbAtStartOfSimTime);
     finish_seen = now();
     if (vpi_sim_control(user.vpiFinish, @as(c_int, 0)) != 1) finish_seen = 999;
+    std.debug.assert(engine.?.scheduler.phase == .stopped);
     return 0;
 }
 
-fn atEnd(_: *CbData) callconv(.c) c_int {
+fn atEnd(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.cbEndOfSimulation);
+    std.debug.assert(engine != null);
     end_seen = now();
     return 0;
 }
 
-fn resetNow(_: *CbData) callconv(.c) c_int {
+fn resetNow(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.cbAfterDelay);
     if (vpi_sim_control(user.vpiReset, reset_stop, @as(c_int, 0), @as(c_int, 0)) != 1) finish_seen = 999;
+    std.debug.assert(reset_request != null);
     return 0;
 }
 
 fn resetAt(stop: c_int) !void {
+    std.debug.assert(stop == 0 or stop == 1);
+    std.debug.assert(engine != null);
     reset_stop = stop;
     var t: Time = .{ .type = user.vpiSimTime, .high = 0, .low = 5, .real = 0 };
     const d: CbData = .{ .reason = user.cbAfterDelay, .cb_rtn = resetNow, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };
@@ -619,6 +702,8 @@ fn resetAt(stop: c_int) !void {
 }
 
 fn onReset(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.cbStartOfReset or d.reason == user.cbEndOfReset);
+    std.debug.assert(reset_n < max_resets);
     // Start of reset logs the time it was asked at; end of reset, 1000 + the
     // time after it.
     if (reset_n < reset_log.len) reset_log[reset_n] = now() + @as(u64, if (d.reason == user.cbEndOfReset) 1000 else 0);
@@ -626,14 +711,18 @@ fn onReset(d: *CbData) callconv(.c) c_int {
     return 0;
 }
 
-fn resetAgain(_: *CbData) callconv(.c) c_int {
+fn resetAgain(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.cbEndOfReset);
     resetAt(1) catch {
         finish_seen = 999;
     };
+    std.debug.assert(clock == 0);
     return 0;
 }
 
-fn readWriteAgain(_: *CbData) callconv(.c) c_int {
+fn readWriteAgain(fired: *CbData) callconv(.c) c_int {
+    std.debug.assert(fired.reason == user.cbReadWriteSynch);
+    std.debug.assert(!read_only);
     var t: Time = .{ .type = user.vpiSimTime, .high = 0, .low = 0, .real = 0 };
     const d: CbData = .{ .reason = user.cbReadWriteSynch, .cb_rtn = readWriteAgain, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };
     if (callback.vpi_register_cb(&d) == null) finish_seen = 999;
