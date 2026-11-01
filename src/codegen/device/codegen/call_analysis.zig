@@ -1,9 +1,10 @@
-//! A call's dependence on the analysis -> whether it reads state the host
-//! changes with `x` held (`readsHostState`), and the text of the §4.6.1
-//! `analysis(...)` and §4.6.3 `ac_stim(...)` activity tests.
-//! Cites: §4.6.1, §4.6.3, §4.5, §9, §9.14, §9.15.
+//! A call's dependence on the analysis -> its text (`emitAnalysis`), whether
+//! it reads state the host changes with `x` held (`readsHostState`), and the
+//! text of the §4.6.1 `analysis(...)` and §4.6.3 `ac_stim(...)` activity tests.
+//! Cites: §4.5.4, §4.6.1, §4.6.3, §4.6.4, §4.5, §5.2.1, §5.10.2, §9, §9.14, §9.15.
 //!
 //! Contents:
+//! - `pub fn emitAnalysis(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!void`
 //! - `pub fn readsHostState(self: *const Gen, inst: Mir.Inst) bool`
 //! - `pub fn analysisMatch(self: *Gen, args: []const Mir.Value) Error!void`
 //! - `pub fn acStimMatch(self: *Gen, args: []const Mir.Value) Error!void`
@@ -17,9 +18,86 @@ const Mir = @import("ir").Mir;
 const Lower = @import("ir").Lowered;
 const Error = codegen.Error;
 const gen_call = @import("call.zig");
+const operator_ctrl = @import("operator_ctrl.zig");
 
 /// The analysis names `analysis()` recognises (LRM §4.6.1).
 const analysis_names = std.StaticStringMap(void).initComptime(.{ .{"static"}, .{"ic"}, .{"nodeset"}, .{"dc"}, .{"tran"}, .{"ac"}, .{"noise"} });
+
+/// Writes a §4.6 analysis-dependent call: the §5.2.1 `analog initial` and
+/// §5.10.2 event flags, §4.5.4's static-solve test, §4.6.1 `analysis`, a
+/// §4.6.4 noise source (zero in the residual) or §4.6.3 `ac_stim`.
+/// Invalidates slices of `out.items` if additional memory is needed.
+pub fn emitAnalysis(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!void {
+    comptime assert(Mir.callee.opKind(c) == .none);
+    switch (c) {
+        // §5.2.1 the `analog initial` guard. Not `initial_step`: §5.2.1 re-runs
+        // the block per sweep sub-task, while initial_step is the first point
+        // of the whole analysis.
+        .analog_initial => {
+            self.cur.uses.sim = true;
+            try self.b("S.con(if (sim.analog_initial) 1.0 else 0.0)", .{});
+            return;
+        },
+
+        // §4.5.4/§4.5.5 the solve an operator's DC form keys on. `dt`, not
+        // `analysis("static")`: a host opens a transient with its own kind and
+        // dt = 0. A small-signal analysis linearizes at dt = 0 too, and there
+        // the operator is its transfer function, not its DC value.
+        .@"op$static" => {
+            self.cur.uses.sim = true;
+            try self.b("S.con(if (sim.dt == 0.0 and sim.kind != .ac and sim.kind != .noise) 1.0 else 0.0)", .{});
+            return;
+        },
+
+        // §5.10.2 global events.
+        .initial_step, .final_step => {
+            self.cur.uses.sim = true;
+            const flag = if (c == .initial_step) "initial_step" else "final_step";
+            try self.b("S.con(if (sim.{s}", .{flag});
+            if (args.len != 0) {
+                try self.b(" and (", .{});
+                try analysisMatch(self, args);
+                try self.b(")", .{});
+            }
+            try self.b(") 1.0 else 0.0)", .{});
+            return;
+        },
+
+        // §4.6.1 analysis("dc"|"tran"|…).
+        .analysis => {
+            try self.b("S.con(if (", .{});
+            try analysisMatch(self, args);
+            try self.b(") 1.0 else 0.0)", .{});
+            return;
+        },
+
+        // §4.6.4 noise sources contribute zero to the residual. The host
+        // reads them through `noise_gens` and `noisePsd`.
+        .white_noise, .flicker_noise, .noise_table, .noise_table_log => return self.b("S.con(0.0)", .{}),
+
+        // §4.6.3 ac_stim(analysis_name, mag, phase) "returns zero (0) during
+        // large-signal analyses ... as well as on all small-signal analyses
+        // using names which do not match analysis_name". Defaults: "ac", 1.0,
+        // 0.0. Which analysis a name matches is `contract.acStimActive`'s
+        // rule (VD-064, VD-109).
+        //
+        // ponytail: the residual is real, so a matching analysis contributes
+        // mag·cos(phase) and drops the quadrature part. Upgrade path: an
+        // `ac_gens` export carrying (mag, phase) for a complex-solving host.
+        .ac_stim => {
+            // A.8.2 gives both numeric arguments as `analog_expression`, and
+            // Table 4-20 does not list ac_stim, so a solve-computed magnitude
+            // is legal: `ctrlEval`, not `argF64`.
+            const mag = try operator_ctrl.ctrlEval(self, args, 1, "1.0");
+            const phase = try operator_ctrl.ctrlEval(self, args, 2, "0.0");
+            try self.b("S.con(if (", .{});
+            try acStimMatch(self, args);
+            try self.b(") ({s}) * @cos({s}) else 0.0)", .{ mag, phase });
+            return;
+        },
+        else => @compileError("emitAnalysis: `" ++ @tagName(c) ++ "` is not an analysis-dependent call"),
+    }
+}
 
 /// Returns whether this call, as `emitCall` renders it, reads state the host
 /// changes between evaluations with `x` held: `SimState`, operator history,

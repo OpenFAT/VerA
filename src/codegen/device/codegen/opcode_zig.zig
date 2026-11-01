@@ -160,7 +160,7 @@ comptime {
 /// Returns `op`'s row. Every row satisfies the comptime checks above: a
 /// `dev_safe` row has a host spelling and a `libm` row is not `dev_safe`.
 pub fn get(op: Mir.Opcode) Row {
-    const r = table.get(op);
+    const r = table.getPtrConst(op).*;
     if (r.libm) assert(!r.dev_safe);
     if (r.host_f64) |h| assert(h.len >= 2);
     return r;

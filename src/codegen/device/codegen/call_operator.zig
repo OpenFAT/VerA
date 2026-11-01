@@ -1,11 +1,13 @@
-//! A §4.5 stateful analog operator call -> its kernel call text: the operator's
-//! `Instance` fields, its control arguments in the residual's frame
-//! (`operator_ctrl.zig`), the §4.5.7/§4.5.11/§4.5.12 small-signal form, and the
-//! §4.5.8/§4.5.9 default transition times and slew rates.
-//! Cites: §4.5, §4.5.7, §4.5.8, §4.5.9, §4.5.11, §4.5.12, §4.5.14, §10.3.
+//! A §4.5 analog operator call -> its text: a stateless `limexp` or `ddx`
+//! (`emitPlain`), or a stateful operator's kernel call with its `Instance`
+//! fields, its control arguments in the residual's frame
+//! (`operator_ctrl.zig`), the §4.5.7/§4.5.11/§4.5.12 small-signal form, and
+//! the §4.5.8/§4.5.9 default transition times and slew rates.
+//! Cites: §4.5, §4.5.7, §4.5.8, §4.5.9, §4.5.11, §4.5.12, §4.5.13, §4.5.14, §10.3.
 //!
 //! Contents:
 //! - `pub fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKind) Error!void`
+//! - `pub fn emitPlain(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!void`
 //! - `pub fn transitionTimes(self: *Gen, args: []const Mir.Value) Error![2][]const u8`
 //! - `pub fn slewRates(self: *Gen, args: []const Mir.Value) Error![2][]const u8`
 
@@ -29,6 +31,8 @@ const ir_op = @import("ir").op;
 const OpKind = ir_op.OpKind;
 const operator_ctrl = @import("operator_ctrl.zig");
 const gen_call = @import("call.zig");
+const gen_stamps = @import("stamps.zig");
+const render_op = @import("render_op.zig");
 
 /// Writes a §4.5 stateful analog operator call. Each operator is a named
 /// unit, so its `Instance` fields and `updateState`'s read share a stable key.
@@ -207,6 +211,38 @@ pub fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKi
         // §9.17 tasks return no value; read as one, they are zero.
         .bound_step, .discontinuity => try self.b("S.con(0.0)", .{}),
         .none => unreachable,
+    }
+}
+
+/// Writes a stateless §4.5 operator: §4.5.13 `limexp` or §4.5.14 `ddx`.
+/// Invalidates slices of `out.items` if additional memory is needed.
+pub fn emitPlain(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!void {
+    comptime assert(Mir.callee.opKind(c) == .none); // no `Instance` history
+    switch (c) {
+        // §4.5.13 limexp "returns a real value which is the exponential of
+        // its single real argument", and "the simulator can only converge
+        // when the output of limexp() equals the exponential of the input".
+        // `eval` sees one iterate and never the previous one, so the only
+        // limiting it can do that still converges to exp is none: limexp is
+        // `exp`'s own text (docs/specification/Vague_Decisions.md VD-121).
+        .limexp => return render_op.renderOp(self, .exp, if (args.len > 0) args[0] else .f_zero, .f_zero, .real),
+
+        // §4.5.14 ddx(f, V(node)); the unknown index is an int literal. Pins:
+        // `.ddxAt` reads one scalar partial.
+        .ddx => {
+            if (args.len > 0) float_lanes.pinLanes(self, args[0]);
+            const u = if (args.len > 1) self.an.foldConst(args[1], true) else null;
+            // Saturating cast: bad MIR must not panic the compiler.
+            const lane = if (u) |x| std.math.lossyCast(i64, x) else 0;
+            // The value reads a lane, so record it in `ddx_reads`.
+            // An index outside the unknowns marks every lane: a superset.
+            gen_mask.orIn(self.jac.ddx_reads, try gen_stamps.bits(self, &.{if (lane >= 0 and lane < self.names.n_u) @intCast(lane) else none_u32}, &.{}));
+            try self.b("S.con((", .{});
+            try gen_render.renderVal(self, if (args.len > 0) args[0] else .f_zero, .real);
+            try self.b(").ddxAt({d}))", .{lane});
+            return;
+        },
+        else => @compileError("emitPlain: `" ++ @tagName(c) ++ "` is not a stateless operator"),
     }
 }
 
