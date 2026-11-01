@@ -394,9 +394,9 @@ pub const math_txt =
 
 /// `zDomain` for a solver device: an empty guard. §4.3.2: "Input values
 /// outside of the valid range for the operator shall report an error."
-/// `proof.checkDomain` refuses what it can prove from the source
-/// (E0602-E0607, E0609); `math_txt`'s restricted-domain functions call
-/// `zDomain` with that code for the rest. A device has no transcript (it
+/// The prover's domain check (`prove/domain.zig`'s `check`) refuses what it
+/// can prove from the source (E0602-E0607, E0609); `math_txt`'s
+/// restricted-domain functions call `zDomain` with that code for the rest. A device has no transcript (it
 /// also compiles for NVPTX), so only the executable reports; one call site
 /// keeps both artifacts agreeing on which values are out of range.
 /// `zModZero` (§4.2.4 real `%` by zero) traps, as `render.imodFn` does for

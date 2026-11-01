@@ -78,6 +78,7 @@ pub fn emitStatusHelpers(self: *Gen) Error!void {
         \\
         \\
     , .{});
+    assert(std.mem.endsWith(u8, self.out.items, "}\n\n"));
 }
 
 /// The source file and 1-based line of token `tok`, through the diagnostic
@@ -91,10 +92,9 @@ pub fn srcLine(self: *const Gen, tok: u32) struct { file: []const u8, line: u32 
     const at = bag.locate(.{ .start = start, .end = start }, .none);
     const off = bag.toSourceOffset(at.file, at.offset);
     const text = bag.sourceText(at.file);
-    return .{
-        .file = bag.fileName(at.file),
-        .line = @intCast(1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n")),
-    };
+    const line: u32 = @intCast(1 + std.mem.count(u8, text[0..@min(off, text.len)], "\n"));
+    assert(line >= 1);
+    return .{ .file = bag.fileName(at.file), .line = line };
 }
 
 // ---- private ----
@@ -106,5 +106,6 @@ fn statusVal(self: *Gen, v: Mir.Value) Error![]const u8 {
     if (v == .undef) return "0.0";
     if (self.an.foldConst(v, false)) |c| return gen_file.fmtF64(self, c);
     const k = gen_dispatch.coreIdx(self, self.an.rv(v)).?;
+    assert(k < self.core.lo_vals.len);
     return self.arena.print("m.f{d}.val()", .{k});
 }

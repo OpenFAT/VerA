@@ -37,6 +37,7 @@ pub fn emitDelays(self: *Gen) Error!void {
         const maxd = if (args.len > 2) try gen_host.f64Const(self, args[2], 0, false) else null;
         try tds.append(self.arena, if (maxd) |m| try self.arena.print("@min({s}, {s})", .{ td, m }) else td);
     }
+    assert(tds.items.len <= self.names.units.len);
     if (tds.items.len == 0) return;
     try self.w(
         \\/// §4.5.7 transport delays, one per absdelay site. The host lands
@@ -116,6 +117,7 @@ pub fn emitNextBreakpoint(self: *Gen) Error!void {
         const period = try gen_host.f64Const(self, if (args.len > 1) args[1] else .zero, 0, false) orelse return;
         try timers.append(self.arena, .{ .start = start, .period = period, .guard = guard });
     }
+    assert(timers.items.len <= self.names.units.len);
     if (timers.items.len == 0) return;
 
     try self.w(

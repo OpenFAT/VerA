@@ -184,6 +184,9 @@ pub fn build(arena: Allocator, mir: *const Mir, lowered: *const Lowered) Error!A
     try folds_build.build(&an, arena, lowered);
     assert(an.ipdom.len == an.nb + 1);
     assert(an.vty.len == an.nv);
+    assert(an.arr_of.len == an.nv);
+    assert(an.deps.len == @as(usize, an.nv) * an.dep_words);
+    assert(an.folds[1].kind.len == an.nv);
     return an;
 }
 
@@ -199,6 +202,8 @@ pub fn buildStructure(arena: Allocator, mir: *const Mir) Error!Analysis {
     try cfg.build(&an, arena);
     assert(an.alias.len == an.nv);
     assert(an.rpo.len <= an.nb);
+    assert(an.nv == mir.valueCount());
+    assert(an.inst_off.len == an.nb + 1);
     return an;
 }
 
@@ -207,36 +212,51 @@ pub fn buildStructure(arena: Allocator, mir: *const Mir) Error!Analysis {
 /// needs that column and none of `build`'s others.
 pub fn buildLiteralFolds(an: *Analysis, arena: Allocator, lowered: *const Lowered) Error!void {
     assert(an.alias.len == an.nv);
+    assert(an.rpo_num.len == an.nb); // `buildStructure` ran
     an.folds[0] = try folds_build.column(an, arena, lowered, false);
     assert(an.folds[0].kind.len == an.nv);
+    assert(an.folds[0].bits.len == an.nv);
 }
 
 /// Returns the Value `v` aliases to (the snapshot of `Mir.resolveAlias`).
 pub fn rv(an: *const Analysis, v: Mir.Value) Mir.Value {
-    return an.alias[@backingInt(v)];
+    assert(@backingInt(v) < an.alias.len);
+    const r = an.alias[@backingInt(v)];
+    assert(@backingInt(r) < an.alias.len);
+    assert(an.alias[@backingInt(r)] == r); // a root resolves to itself
+    return r;
 }
 
 /// Returns block `b`'s reachable predecessors. Asserts that `b < nb`.
 pub fn predsOf(an: *const Analysis, b: u32) []const u32 {
     assert(b < an.nb);
+    assert(an.pred_off.len == an.nb + 1);
+    assert(an.pred_off[b] <= an.pred_off[b + 1]);
     return an.pred_pool[an.pred_off[b]..an.pred_off[b + 1]];
 }
 
 /// Returns block `b`'s successors in branch order. Asserts that `b < nb`.
 pub fn succsOf(an: *const Analysis, b: u32) []const u32 {
     assert(b < an.nb);
-    return an.succ_pool[an.succ_off[b]..an.succ_off[b + 1]];
+    assert(an.succ_off.len == an.nb + 1);
+    const r = an.succ_pool[an.succ_off[b]..an.succ_off[b + 1]];
+    assert(r.len <= 2); // a branch has two
+    return r;
 }
 
 /// Returns block `b`'s dominator-tree children, in RPO order.
 pub fn domKids(an: *const Analysis, b: u32) []const u32 {
     assert(b < an.nb);
-    return an.kid_pool[an.kid_off[b]..an.kid_off[b + 1]];
+    assert(an.kid_off.len == an.nb + 1);
+    const r = an.kid_pool[an.kid_off[b]..an.kid_off[b + 1]];
+    assert(r.len < an.nb); // a block is not its own child
+    return r;
 }
 
 /// Returns block `b`'s rows as a contiguous window (see `inst_pool`).
 pub inline fn blockInstsFlat(an: *const Analysis, b: u32) []const Mir.Inst {
     assert(b < an.nb);
+    assert(an.inst_off.len == an.nb + 1);
     return an.inst_pool[an.inst_off[b]..an.inst_off[b + 1]];
 }
 
@@ -249,18 +269,24 @@ pub fn dominates(an: *const Analysis, a: u32, x: u32) bool {
     const ia = an.dom_in[a];
     const ix = an.dom_in[x];
     if (ia == none or ix == none) return a == x;
-    return ia <= ix and an.dom_out[x] <= an.dom_out[a];
+    const r = ia <= ix and an.dom_out[x] <= an.dom_out[a];
+    if (a == x) assert(r);
+    if (a == 0) assert(r); // the entry dominates every reachable block
+    return r;
 }
 
 /// Returns whether block `b` is inside some loop's natural body.
 pub fn inLoop(an: *const Analysis, b: u32) bool {
     assert(b < an.nb);
-    return an.loop_of[b] != none;
+    const h = an.loop_of[b];
+    if (h != none) assert(an.is_loop[h]); // `loop_of` names a header
+    return h != none;
 }
 
 /// Returns the integer literal `v` is through its aliases, or null for any
 /// other definition.
 pub fn intConst(an: *const Analysis, v: Mir.Value) ?i64 {
+    assert(@backingInt(v) < an.nv);
     return switch (an.mir.valueDef(an.rv(v))) {
         .int_const => |x| x,
         .undef, .float_const, .str_const, .param_ref, .block_param, .inst_result => null,
@@ -270,6 +296,7 @@ pub fn intConst(an: *const Analysis, v: Mir.Value) ?i64 {
 /// Returns the emitted type of `v`. Asserts that `build` ran.
 pub fn tyOf(an: *const Analysis, v: Mir.Value) VTy {
     assert(an.vty.len == an.nv);
+    assert(@backingInt(v) < an.nv);
     return an.vty[@backingInt(v)];
 }
 
@@ -287,6 +314,7 @@ pub fn tyOfParam(t: Lowered.Type) VTy {
 pub fn arrOf(an: *const Analysis, v: Mir.Value) ?u32 {
     assert(an.arr_of.len == an.nv);
     const a = an.arr_of[@backingInt(an.rv(v))];
+    if (a != none) assert(an.vty[@backingInt(an.rv(v))] != .str); // an array holds numbers
     return if (a == none) null else a;
 }
 
@@ -295,6 +323,7 @@ pub fn arrOf(an: *const Analysis, v: Mir.Value) ?u32 {
 /// Worth knowing because `@setFloatMode(.strict)` forbids folding a multiply
 /// by a literal zero. Asserts that `build` ran; so do `xDep` and `pointDep`.
 pub fn dFree(an: *const Analysis, v: Mir.Value) bool {
+    assert(an.dep_words >= 1);
     return std.mem.allEqual(u64, an.depsIn(an.deps, v), 0);
 }
 
@@ -302,14 +331,18 @@ pub fn dFree(an: *const Analysis, v: Mir.Value) bool {
 /// it; it also holds past a `dstop`, and for a select, join or array read
 /// steered by a varying condition or index (`xdeps`).
 pub fn xDep(an: *const Analysis, v: Mir.Value) bool {
-    return !std.mem.allEqual(u64, an.depsIn(an.xdeps, v), 0);
+    const r = !std.mem.allEqual(u64, an.depsIn(an.xdeps, v), 0);
+    if (!an.dFree(v)) assert(r); // `xdeps` is a superset of `deps`
+    return r;
 }
 
 /// Returns whether `v` can differ between two points of a batch that share
 /// the `Model` row and the `SimState`: `xDep`, or it reads per-instance state
 /// (a held variable, `$mfactor`, a path latch; contract.zig `batch_inst`).
 pub fn pointDep(an: *const Analysis, v: Mir.Value) bool {
-    return !std.mem.allEqual(u64, an.depsIn(an.pdeps, v), 0);
+    const r = !std.mem.allEqual(u64, an.depsIn(an.pdeps, v), 0);
+    if (an.xDep(v)) assert(r); // what varies with a probe varies per point
+    return r;
 }
 
 /// Returns `v` as a §4.2 constant expression read as a real, or null: for
@@ -320,6 +353,7 @@ pub fn pointDep(an: *const Analysis, v: Mir.Value) bool {
 pub fn foldConst(an: *const Analysis, v: Mir.Value, resolve_params: bool) ?f64 {
     const col = &an.folds[@intFromBool(resolve_params)];
     assert(col.kind.len == an.nv);
+    assert(col.bits.len == an.nv);
     const c = col.get(v) orelse return null;
     return c.asReal();
 }
@@ -328,6 +362,7 @@ pub fn foldConst(an: *const Analysis, v: Mir.Value, resolve_params: bool) ?f64 {
 
 fn depsIn(an: *const Analysis, col: []const u64, v: Mir.Value) []const u64 {
     const w = an.dep_words;
+    assert(w >= 1);
     assert(col.len == @as(usize, an.nv) * w);
     return col[@as(usize, @backingInt(an.rv(v))) * w ..][0..w];
 }
@@ -337,12 +372,16 @@ fn unknownDeps(an: *const Analysis, v: Mir.Value) []const u64 {
 }
 
 fn acDynDeps(an: *const Analysis, v: Mir.Value) []const u64 {
+    assert(an.dep_zero.len == an.dep_words);
     if (an.acdyn.len == 0) return an.dep_zero;
     return an.depsIn(an.acdyn, v);
 }
 
 fn wideWidth(an: *const Analysis, v: Mir.Value) u32 {
-    return an.wide_w[@backingInt(v)];
+    assert(an.wide_w.len == an.nv);
+    const w = an.wide_w[@backingInt(v)];
+    if (an.vty[@backingInt(v)] != .wide) assert(w == 0);
+    return w;
 }
 
 test "a chain of joins built outer-first types every phi from the integer at its root" {

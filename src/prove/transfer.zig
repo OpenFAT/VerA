@@ -38,8 +38,10 @@ const int_range: Interval = .{ .lo = -9.223372036854776e18, .hi = 9.223372036854
 /// can never make a unit `.strict`. Relational/logical results are 0/1.
 pub fn integerIv(op: Mir.Opcode) Interval {
     assert(Mir.opIsInteger(op));
-    if (Mir.opcode.get(op).bool01) return .{ .lo = 0, .hi = 1 };
-    return int_range;
+    const r: Interval = if (Mir.opcode.get(op).bool01) .{ .lo = 0, .hi = 1 } else int_range;
+    assert(r.bounded());
+    assert(!r.isEmpty());
+    return r;
 }
 
 /// Returns unary `op` over an operand with interval `a` and finite bit `af`.
@@ -50,6 +52,8 @@ pub fn unaryTransfer(op: Mir.Opcode, a: Interval, af: bool) Abstract {
     const out = unaryRaw(op, a, af);
     if (out.finite) assert(af); // finiteness flows only from a finite operand
     if (nanFree(a)) assert(nanFree(out.iv));
+    if (out.iv.nonzero) assert(a.nonzero); // only `fabs` passes the hole on
+    if (op == .tan) assert(!out.finite);
     return out;
 }
 
@@ -61,6 +65,8 @@ pub fn binaryTransfer(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstrac
     const out = binaryRaw(op, x, y, f);
     if (out.finite) assert(f);
     if (nanFree(x) and nanFree(y)) assert(nanFree(out.iv));
+    assert(!out.iv.nonzero); // no binary rule proves a hole
+    if (op == .fdiv and !y.excludesZero()) assert(!out.finite);
     return out;
 }
 
@@ -84,7 +90,7 @@ pub fn callAbstract(c: Mir.Callee) Abstract {
         .str, .wide => return .{ .iv = .top, .finite = true },
         .real => {},
     }
-    return switch (c) {
+    const r: Abstract = switch (c) {
         // §4.6.1 analysis(), the §5.2.1 `analog initial` flag, the §5.10.2
         // initial_step/final_step events, the §5.10.3 cross/above/timer
         // events and §4.5.4's static-solve test render as 0.0 or 1.0
@@ -103,6 +109,10 @@ pub fn callAbstract(c: Mir.Callee) Abstract {
         // name alone proves no finite value; retain strict floating-point mode.
         else => .{ .iv = .top, .finite = false }, // else: the prover models no other call's range
     };
+    assert(nanFree(r.iv));
+    assert(!r.iv.isEmpty());
+    if (r.finite) assert(r.iv.ge(0)); // every modelled real call is a flag, a scale or a time
+    return r;
 }
 
 /// Returns the hull of `f` at the four corners of the box, closed (openness does not carry
@@ -115,13 +125,18 @@ pub fn combine(x: Interval, y: Interval, f: *const fn (f64, f64) f64) Interval {
     if (@reduce(.Or, c != c)) return .top; // a NaN corner
     const r: Interval = .{ .lo = @reduce(.Min, c), .hi = @reduce(.Max, c) };
     assert(r.lo <= r.hi); // four non-NaN corners
-    assert(!r.lo_open and !r.hi_open);
+    assert(!r.lo_open);
+    assert(!r.hi_open);
+    assert(r.contains(c[0]));
+    assert(r.contains(c[3]));
     return r;
 }
 
 /// `a * b`, the `combine` kernel of `*`.
 pub fn mulOp(a: f64, b: f64) f64 {
-    return a * b;
+    const r = a * b;
+    if (math.isNan(r)) assert(math.isNan(a) or math.isNan(b) or math.isInf(a) or math.isInf(b));
+    return r;
 }
 
 // ---- private ----
@@ -153,6 +168,9 @@ fn unaryRaw(op: Mir.Opcode, a: Interval, af: bool) Abstract {
             .lo_open = a.lo_open and monotoneAt(op, math.nextAfter(f64, a.lo, inf)).? > lo,
             .hi_open = a.hi_open and monotoneAt(op, math.nextAfter(f64, a.hi, -inf)).? < hi,
         };
+        assert(iv.lo <= iv.hi); // both ends checked non-NaN above
+        if (iv.lo_open) assert(a.lo_open);
+        if (iv.hi_open) assert(a.hi_open);
         const overflows = op == .exp or op == .expm1 or op == .sinh;
         return .{ .iv = iv, .finite = af and (!overflows or iv.bounded()) };
     }
@@ -207,6 +225,8 @@ fn binaryRaw(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract {
                 .lo_open = (x.lo_open or y.lo_open) and addLo(inLo(x), inLo(y)) > lo,
                 .hi_open = (x.hi_open or y.hi_open) and addHi(inHi(x), inHi(y)) < hi,
             };
+            if (iv.lo_open) assert(x.lo_open or y.lo_open);
+            if (iv.hi_open) assert(x.hi_open or y.hi_open);
             return .{ .iv = iv, .finite = f };
         },
         .fsub => {
@@ -218,6 +238,8 @@ fn binaryRaw(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract {
                 .lo_open = (x.lo_open or y.hi_open) and addLo(inLo(x), -inHi(y)) > lo,
                 .hi_open = (x.hi_open or y.lo_open) and addHi(inHi(x), -inLo(y)) < hi,
             };
+            if (iv.lo_open) assert(x.lo_open or y.hi_open);
+            if (iv.hi_open) assert(x.hi_open or y.lo_open);
             return .{ .iv = iv, .finite = f };
         },
         .fmul => {
@@ -243,6 +265,7 @@ fn binaryRaw(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract {
             var yd = y;
             if (y.lt(0) and y.hi == 0) yd.hi = -0.0;
             if (y.gt(0) and y.lo == 0) yd.lo = 0.0;
+            assert(yd.excludesZero()); // the signed zero keeps the end open
             const iv = if (y.gt(0) or y.lt(0)) combine(x, yd, divOp) else Interval.top;
             return .{ .iv = iv, .finite = f };
         },
@@ -253,6 +276,7 @@ fn binaryRaw(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract {
                 .{ .lo = if (x.ge(0)) 0 else -m, .hi = if (x.le(0)) 0 else m }
             else
                 .top;
+            if (math.isFinite(m)) assert(iv.bounded());
             return .{ .iv = iv, .finite = f };
         },
         .pow => {
@@ -261,6 +285,7 @@ fn binaryRaw(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract {
         },
         .hypot => {
             const iv: Interval = .{ .lo = 0, .hi = addHi(absIv(x).hi, absIv(y).hi) };
+            assert(!math.isNan(iv.hi));
             return .{ .iv = iv, .finite = f };
         },
         .atan2 => return .{ .iv = .{ .lo = -math.pi, .hi = math.pi }, .finite = f },
@@ -277,7 +302,9 @@ fn binaryRaw(op: Mir.Opcode, x: Interval, y: Interval, f: bool) Abstract {
 }
 
 fn nanFree(i: Interval) bool {
-    return !math.isNan(i.lo) and !math.isNan(i.hi);
+    const r = !math.isNan(i.lo) and !math.isNan(i.hi);
+    if (!r) assert(!i.bounded());
+    return r;
 }
 
 // f(x) for each unary op the device computes as a non-decreasing function,
@@ -315,21 +342,29 @@ fn monotoneAt(op: Mir.Opcode, x: f64) ?f64 {
 
 fn addLo(a: f64, b: f64) f64 {
     const r = a + b;
-    return if (math.isNan(r)) -math.inf(f64) else r;
+    const out = if (math.isNan(r)) -math.inf(f64) else r;
+    assert(!math.isNan(out));
+    return out;
 }
 
 fn addHi(a: f64, b: f64) f64 {
     const r = a + b;
-    return if (math.isNan(r)) math.inf(f64) else r;
+    const out = if (math.isNan(r)) math.inf(f64) else r;
+    assert(!math.isNan(out));
+    return out;
 }
 
 // The least member of `i` as a double: `lo`, or the next double up when `lo`
 // is open. `inHi` is the greatest.
 fn inLo(i: Interval) f64 {
-    return if (i.lo_open) math.nextAfter(f64, i.lo, math.inf(f64)) else i.lo;
+    const r = if (i.lo_open) math.nextAfter(f64, i.lo, math.inf(f64)) else i.lo;
+    assert(!(r < i.lo));
+    return r;
 }
 fn inHi(i: Interval) f64 {
-    return if (i.hi_open) math.nextAfter(f64, i.hi, -math.inf(f64)) else i.hi;
+    const r = if (i.hi_open) math.nextAfter(f64, i.hi, -math.inf(f64)) else i.hi;
+    assert(!(r > i.hi));
+    return r;
 }
 
 fn divOp(a: f64, b: f64) f64 {
@@ -358,6 +393,8 @@ fn powIv(x: Interval, y: Interval) Interval {
     // possibly-fractional exponent means possible NaN); otherwise top.
     const k = y.lo;
     if (!(y.lo == y.hi and math.isFinite(k) and k == @trunc(k))) return .top;
+    assert(math.isFinite(k));
+    assert(!x.ge(0));
     if (k >= 0) {
         // Even k: x^k = |x|^k exactly, monotone in |x|; absIv restores the
         // interior 0 a sign-spanning base reaches. Odd k: monotone on all of R.
@@ -368,6 +405,7 @@ fn powIv(x: Interval, y: Interval) Interval {
         }
         return .{ .lo = powOp(x.lo, k), .hi = powOp(x.hi, k) };
     }
+    assert(k < 0);
     // k < 0: pole at 0. Sound only for a strictly negative base (x.hi < 0; an
     // open-at-0 bound is not enough: IEEE pow(+0, -odd) is +inf while the
     // one-sided limit from below is -inf). x^k is then monotone on the side.
@@ -383,8 +421,14 @@ fn powIv(x: Interval, y: Interval) Interval {
 
 fn absIv(a: Interval) Interval {
     if (a.ge(0)) return a;
-    if (a.le(0)) return .{ .lo = -a.hi, .hi = -a.lo, .lo_open = a.hi_open, .hi_open = a.lo_open };
-    return .{ .lo = 0, .hi = @max(@abs(a.lo), @abs(a.hi)) };
+    if (a.le(0)) {
+        const r: Interval = .{ .lo = -a.hi, .hi = -a.lo, .lo_open = a.hi_open, .hi_open = a.lo_open };
+        assert(r.ge(0));
+        return r;
+    }
+    const r: Interval = .{ .lo = 0, .hi = @max(@abs(a.lo), @abs(a.hi)) };
+    assert(r.ge(0));
+    return r;
 }
 
 // Test support. The oracle is the device: each transfer's interval must hold
@@ -401,6 +445,10 @@ fn admits(i: Interval, y: f64) bool {
     const inf = math.inf(f64);
     const above = y > i.lo or (!i.lo_open and y >= math.nextAfter(f64, i.lo, -inf));
     const below = y < i.hi or (!i.hi_open and y <= math.nextAfter(f64, i.hi, inf));
+    // `contains` plus the slack.
+    if (i.contains(y)) assert(above);
+    if (i.contains(y)) assert(below);
+    if (above and below) assert(!math.isNan(y));
     return above and below;
 }
 
@@ -418,6 +466,8 @@ fn samplePoints(a: Interval, extra: []const f64, buf: []f64) []const f64 {
         buf[n] = x;
         n += 1;
     };
+    assert(n <= buf.len);
+    for (buf[0..n]) |x| assert(a.contains(x));
     return buf[0..n];
 }
 
@@ -431,6 +481,8 @@ fn intervals(ends: []const f64, opens: []const [2]bool, buf: []Interval) []const
             n += 1;
         }
     };
+    assert(n <= buf.len);
+    for (buf[0..n]) |i| assert(!(i.lo > i.hi));
     return buf[0..n];
 }
 

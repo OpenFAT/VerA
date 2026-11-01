@@ -47,6 +47,7 @@ pub fn emitOpVarCore(self: *Gen) Error!void {
     );
     self.opvar_reads_ddx = !std.mem.allEqual(u64, self.jac.ddx_reads, 0);
     gen_mask.orIn(self.jac.ddx_reads, ddx_before);
+    assert(self.opvar_core.name.len != 0);
 }
 
 /// Emits `op_vars`, the names in `decl_meta` order, and `opVars`, their
@@ -58,6 +59,7 @@ pub fn emitOpVarTable(self: *Gen) Error!void {
     assert(self.out.items.len != 0);
     const ovs = self.lowered.op_vars.items;
     if (ovs.len == 0) return;
+    if (self.opvar_core.lo_vals.len != 0) assert(self.opvar_core.name.len != 0);
     try self.w(
         \\/// The operating-point variables: the module-scope variables with a
         \\/// §2.9.2 `desc` or `units` (§3.2.1), in declaration order; `decl_meta`
@@ -98,6 +100,7 @@ pub fn emitOpVarTable(self: *Gen) Error!void {
     try self.w("    return .{{", .{});
     for (ovs, 0..) |ov, k| try self.w("{s}{s}", .{ if (k == 0) " " else ", ", try opVarRef(self, ov.final) });
     try self.w(" }};\n}}\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, " };\n}\n\n"));
 }
 
 // ---- private ----
@@ -110,6 +113,7 @@ fn opVarRef(self: *Gen, final: Mir.Value) Error![]const u8 {
     const k = self.core.lo_idx[@backingInt(v)];
     // `plan_jobs` queued every value that is not `.f_zero`, so the slice has it.
     assert(k != none_u32);
+    assert(k < self.core.lo_vals.len);
     return switch (self.an.vty[@backingInt(v)]) {
         .real => try self.arena.print("m.f{d}.val()", .{k}),
         .int => try self.arena.print("@as(f64, @floatFromInt(m.f{d}))", .{k}),

@@ -65,8 +65,11 @@ pub fn planSay(g: *Gen) Error![]const SaySite {
         }
         // §9.4.1: `$write` is the family member that does NOT end the line.
         if (cg_display.endsLine(c)) try fmt.append(g.arena, '\n');
+        // `sayFormat` writes at least two bytes per recorded value.
+        assert(vals.items.len * 2 <= fmt.items.len);
         try out.append(g.arena, .{ .call = call, .fmt = fmt.items, .tok = d.tok, .vals = vals.items, .debug = c == .@"$debug" });
     }
+    assert(out.items.len <= g.lowered.displays.items.len);
     return out.items;
 }
 
@@ -99,6 +102,7 @@ pub fn planPasses(g: *Gen) Error!void {
         try init.append(g.arena, def.inst_result);
     }
     g.init_calls = init.items;
+    assert(g.init_calls.len <= g.lowered.displays.items.len);
 }
 
 /// Whether a `.record` device records task `c` (`planSay`).
@@ -119,6 +123,8 @@ pub fn emitSay(g: *Gen, inst: Mir.Inst) Error!void {
     const k = for (g.say, 0..) |site, j| {
         if (site.call == call) break j;
     } else return g.b("S.con(0.0)", .{});
+    assert(k < g.say.len);
+    const len_before = g.out.items.len;
     g.cur.uses.out = true;
     try g.b("zd: {{ out.{s}({d}, &.{{", .{ if (g.say[k].debug) "putDebug" else "put", k });
     for (g.say[k].vals, 0..) |v, i| {
@@ -134,6 +140,7 @@ pub fn emitSay(g: *Gen, inst: Mir.Inst) Error!void {
         }
     }
     try g.b(" }}); break :zd S.con(0.0); }}", .{});
+    assert(g.out.items.len > len_before);
 }
 
 // ---- private ----
@@ -203,6 +210,10 @@ fn sayFormat(g: *Gen, args: []const Mir.Value, fmt: *std.ArrayList(u8), vals: *s
             try vals.append(g.arena, a);
         }
     }
+    // Every argument was consumed, each recorded one behind at least two
+    // bytes of format (`%d`, `%g` or the source's conversion).
+    assert(i == args.len);
+    assert(vals.items.len * 2 <= fmt.items.len - fmt_before);
     return true;
 }
 
@@ -211,7 +222,9 @@ fn sayDecimal(g: *Gen, fmt: *std.ArrayList(u8), v: Mir.Value) Error!void {
     const len_before = fmt.items.len;
     defer assert(fmt.items.len >= len_before);
     const cols = cg_format.decimalField(g, v) orelse return fmt.appendSlice(g.arena, "%d");
+    assert(cols <= 20); // `fieldCols`'s bound
     var buf: [8]u8 = undefined;
+    comptime assert(buf.len >= "%20d".len);
     try fmt.appendSlice(g.arena, std.mem.print(&buf, "%{d}d", .{cols}) catch unreachable);
 }
 
@@ -223,6 +236,7 @@ fn appendLiteral(g: *Gen, fmt: *std.ArrayList(u8), text: []const u8) Error!void 
         if (ch == '%') try fmt.append(g.arena, '%');
         try fmt.append(g.arena, ch);
     }
+    assert(fmt.items.len >= len_before + text.len);
 }
 
 test sayRecords {

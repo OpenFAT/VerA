@@ -47,6 +47,7 @@ pub fn emitSystfTable(self: *Gen) Error!void {
         if (d.callee != .@"$systf$out") continue;
         const c = systfOutCall(self, d.args) orelse continue;
         if (c.j > 64) continue;
+        assert(c.j >= 1); // `systfOutCall` refuses position 0
         for (self.systf_names.items, outs) |n, *o| {
             if (n.tok == c.tok and std.mem.eql(u8, n.name, c.name)) o.* |= @as(u64, 1) << @intCast(c.j - 1);
         }
@@ -177,6 +178,7 @@ fn emitHostCall(self: *Gen, first: ?Mir.Value, args: []const Mir.Value, host: []
     try self.b("        var zsp: [{d}]f64 = undefined;\n", .{args.len});
     // `zsr` holds every argument's lanes, the union of theirs.
     const m = try gen_mask.zero(self.arena, self.mw);
+    assert(m.len == self.mw);
     for (args) |a| gen_mask.orIn(m, family.mask(self, a));
     const to = try self.arena.print("zTo(S, 0x{f}, ", .{gen_mask.hex(m, false)});
     try self.b("        var zsr = {s}S.con({s}));\n", .{ to, host });

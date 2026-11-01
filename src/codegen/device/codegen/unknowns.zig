@@ -103,6 +103,7 @@ pub fn emitTopology(self: *Gen) Error!void {
     }
     try self.w("}};\n\n", .{});
     try emitNodesets(self);
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
 }
 
 /// Emits `decl_meta`, §2.9.2's `desc` and `units` on the module's own
@@ -121,6 +122,7 @@ pub fn emitDeclMeta(self: *Gen) Error!void {
         try self.w(" }},\n", .{});
     }
     try self.w("}};\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
 }
 
 /// Emits `instance_params` (`contract`'s optional table): the `Model` fields
@@ -138,6 +140,7 @@ pub fn emitInstanceParams(self: *Gen) Error!void {
         };
     }
     try self.w("}};\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
 }
 
 // ---- private ----
@@ -166,6 +169,7 @@ fn emitNodesets(self: *Gen) Error!void {
         if (v) |x| try self.w("    {s},\n", .{try gen_file.fmtF64(self, x)}) else try self.w("    null,\n", .{});
     }
     try self.w("}};\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
 }
 
 /// Returns the §3.6.1.2 `abstol` of the nature this unknown's quantity

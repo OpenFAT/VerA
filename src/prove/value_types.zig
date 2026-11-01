@@ -43,6 +43,7 @@ pub fn build(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis.
 /// phi takes any operand's (lowering joins only versions of one place). A
 /// fixpoint, since a loop phi reads a store defined after it.
 fn buildArrOf(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis.Error!void {
+    assert(an.alias.len == an.nv);
     an.arr_of = try arena.alloc(u32, an.nv);
     @memset(an.arr_of, none);
     if (lowered.mem_arrays.items.len == 0) return;
@@ -84,6 +85,7 @@ fn buildArrOf(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis
 /// copies one other value's type (a functional graph); a chain settles a link
 /// per sweep, and a cycle is uniform after one sweep.
 fn buildTypes(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis.Error!void {
+    assert(an.arr_of.len == an.nv); // `buildArrOf` ran
     an.vty = try arena.alloc(Analysis.VTy, an.nv);
     for (0..an.nv) |v| {
         if (an.arr_of[v] != none) {
@@ -136,6 +138,7 @@ fn buildTypes(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis
 /// or a timepoint slot's width) or, for a `select` or `phi`, from the operand
 /// `vty` copied.
 fn buildWideWidths(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis.Error!void {
+    assert(an.vty.len == an.nv); // `buildTypes` ran
     an.wide_w = try arena.alloc(u32, an.nv);
     @memset(an.wide_w, 0);
     if (lowered.wide_nodes.items.len == 0) return;
@@ -161,11 +164,14 @@ fn buildWideWidths(an: *Analysis, arena: Allocator, lowered: *const Lowered) Ana
             changed = true;
         }
     }
+    // The pair of `Analysis.wideWidth`: only a `.wide` value has bits.
+    for (an.wide_w, an.vty) |w, t| if (w != 0) assert(t == .wide);
 }
 
 /// The width a `.wide` call states through its literal row arguments, or 0
 /// while an argument is not one.
 fn callWidth(an: *const Analysis, lowered: *const Lowered, d: @FieldType(Mir.InstData, "call")) u32 {
+    assert(Mir.callee.ty(d.callee) == .wide); // asked only for a `.wide` value
     const k: usize = @intCast(intArg(an, d.args, 0) orelse return 0);
     return switch (d.callee) {
         .@"$wide" => lowered.wide_nodes.items[k].width,
@@ -176,5 +182,6 @@ fn callWidth(an: *const Analysis, lowered: *const Lowered, d: @FieldType(Mir.Ins
 }
 
 fn intArg(an: *const Analysis, args: []const Mir.Value, i: usize) ?i64 {
+    if (i < args.len) assert(@backingInt(args[i]) < an.nv);
     return if (i < args.len) an.intConst(args[i]) else null;
 }

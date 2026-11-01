@@ -22,6 +22,8 @@ const none_u32 = codegen.none_u32;
 /// only `buildFree` flags are admitted.
 pub fn emitCollapse(self: *Gen, pairs: []const CollapsePair) Error!void {
     for (pairs) |p| assert(p.flow_u < self.names.n_u);
+    for (pairs) |p| assert(p.victim < self.names.n_u);
+    for (pairs) |p| assert(p.target < p.victim); // `collapsePairs` orders them
     if (pairs.len == 0) return;
     try self.w(
         \\/// Zero-parasitic node collapse (ngspice setup: DIOsetup's
@@ -109,6 +111,7 @@ pub fn emitCollapse(self: *Gen, pairs: []const CollapsePair) Error!void {
 /// runtime `collapse` equals this.
 fn emitCollapseFull(self: *Gen, pairs: []const CollapsePair) Error!void {
     assert(pairs.len != 0);
+    assert(self.names.u_names.len == self.names.n_u);
     try self.w(
         \\/// The MAXIMAL collapse: `collapse` with every §5.6.1.3 retention
         \\/// flag set. Comptime, so a host can size a reduced derivative
@@ -136,6 +139,7 @@ fn emitCollapseFull(self: *Gen, pairs: []const CollapsePair) Error!void {
 /// (`emitSwitchRow`), so its current row is never written.
 fn emitAliases(self: *Gen, pairs: []const CollapsePair) Error!void {
     assert(pairs.len != 0);
+    assert(self.names.u_names.len == self.names.n_u);
     try self.w(
         \\    var out: [n_u]?u8 = @splat(null);
         \\    for (0..n_u) |u| {{

@@ -38,6 +38,7 @@ pub fn wideText(self: *Gen, txt: []const u8) Error![]const u8 {
     };
     var out = txt;
     for (pairs) |pr| out = try std.mem.replaceOwned(u8, self.arena, out, pr[0], pr[1]);
+    assert(out.len != 0);
     return out;
 }
 
@@ -103,6 +104,8 @@ pub fn buildPrelude(self: *Gen, f: gen_file.Features) Error!void {
     if (f.tbl) try publish(self.arena, &hz, kt.table_txt);
     if (f.rng) try publish(self.arena, &hz, kt.rng_txt);
     self.helpers = hz.items;
+    assert(self.prelude.len != 0);
+    assert(self.helpers.len != 0);
 }
 
 /// Copies `src` into `out` with each leading `pub ` dropped, so an embedded
@@ -117,6 +120,7 @@ pub fn depublish(gpa: std.mem.Allocator, out: *std.ArrayList(u8), src: []const u
         first = false;
         try out.appendSlice(gpa, if (std.mem.startsWith(u8, line, "pub ")) line[4..] else line);
     }
+    assert(out.items.len - len_before <= src.len); // only drops text
 }
 
 /// Copies `src` into `out`, making each top-level `fn`/`const` public. The
@@ -133,6 +137,7 @@ pub fn publish(arena: std.mem.Allocator, out: *std.ArrayList(u8), src: []const u
         if (kt.declKeyword(line) != null) try out.appendSlice(arena, "pub ");
         try out.appendSlice(arena, line);
     }
+    assert(out.items.len - len_before >= src.len); // only adds text
 }
 
 // ---- private ----

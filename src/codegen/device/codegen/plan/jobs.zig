@@ -138,15 +138,20 @@ const always = struct {
 pub fn PlanError(comptime Dyn: type) type {
     if (!@hasDecl(Dyn, "isDynamic")) @compileError(@typeName(Dyn) ++ " has no pub fn isDynamic");
     const ret = @typeInfo(@TypeOf(Dyn.isDynamic)).@"fn".return_type.?;
+    comptime assert(@typeInfo(ret) == .error_union);
     return std.mem.Allocator.Error || @typeInfo(ret).error_union.error_set;
 }
 
 /// Returns every core target in queue order (`Job.Kind`); slices are owned by
 /// `self.arena`. `dyn.isDynamic(v)` answers whether a §4.5 control argument
 /// renders only off the core, so a test can pass a stub. Fails on
-/// allocation or with `dyn`'s error (`PlanError`).
+/// allocation or with `dyn`'s error (`PlanError`). Asserts that at most one
+/// of `from.emit_display` and `from.record_display` is set, and that
+/// `from.unit_modes` rates no more units than there are contributions.
 pub fn plan(self: Input, from: From, dyn: anytype) PlanError(@TypeOf(dyn))!Jobs {
     assert(from.names.units.len == from.names.unit_names.len);
+    if (from.emit_display) assert(!from.record_display);
+    assert(from.unit_modes.len <= self.lowered.contributions.items.len);
     var out: Jobs = .{};
     var jobs: std.ArrayList(Job) = .empty;
     for (self.lowered.contributions.items, 0..) |c, i| {
@@ -409,6 +414,17 @@ pub fn plan(self: Input, from: From, dyn: anytype) PlanError(@TypeOf(dyn))!Jobs 
         });
     }
     out.list = jobs.items;
+    // Queue order is `Job.Kind` order, the one interleave being each
+    // contribution's `.react` jobs after its own `.resist` job.
+    for (1..@max(out.list.len, 1)) |k| {
+        const prev = @backingInt(out.list[k - 1].kind);
+        const kind = out.list[k].kind;
+        if (kind != .resist) assert(prev <= @backingInt(kind));
+        if (kind == .resist) assert(prev <= @backingInt(Job.Kind.react));
+    }
+    // The display job, when there is one, is the last and is named.
+    if (out.display_name.len != 0) assert(out.list[out.list.len - 1].kind == .display);
+    if (out.display_name.len == 0) for (out.list) |j| assert(j.kind != .display);
     return out;
 }
 
@@ -425,6 +441,7 @@ fn queueVpi(self: Input, jobs: *std.ArrayList(Job), from: From, v: Mir.Value, ro
         .target = t,
         .mode = unitMode(from.unit_modes, row),
     });
+    assert(jobs.items[jobs.items.len - 1].kind == .vpi);
 }
 
 /// Value -> some instruction reads it, or a job in `queued` returns it. Dead
@@ -461,6 +478,7 @@ fn readSet(self: Input, queued: []const Job) ![]bool {
             .jump, .anew => {},
         }
     }
+    assert(read.len == self.mir.valueCount());
     return read;
 }
 
@@ -468,6 +486,7 @@ fn readSet(self: Input, queued: []const Job) ![]bool {
 /// the prover did not rate.
 fn unitMode(unit_modes: []const proof.FloatMode, i: usize) proof.FloatMode {
     assert(unit_modes.len <= std.math.maxInt(u32));
+    assert(i <= std.math.maxInt(u32)); // a unit index
     // proof.zig rates the CONTRIBUTION units only (proof.unitCount ==
     // lower.contributions.len); an analog-operator unit is not covered, so
     // it takes the safe side.
@@ -481,7 +500,7 @@ fn unitMode(unit_modes: []const proof.FloatMode, i: usize) proof.FloatMode {
 /// so it is not one). Everything else stays a `constant_expression` and is
 /// still E0515 when it is a solve result.
 fn isDynCtrlArg(k: OpKind, ai: usize) bool {
-    return switch (k) {
+    const dyn = switch (k) {
         // td ("dynamic: expr, td"), and maxdelay: the constant one, but §4.5.14
         // samples a dynamic value there "at the start of the analysis", which
         // `updateState` latches off this field (`absdelayMaxdSampled`).
@@ -500,6 +519,9 @@ fn isDynCtrlArg(k: OpKind, ai: usize) bool {
         .cross => ai >= 1 and ai <= 3,
         .none, .transition, .slew, .above, .timer, .bound_step, .discontinuity => false,
     };
+    // Position 0 is the operator's input, a unit of its own, never a control.
+    if (ai == 0) assert(!dyn);
+    return dyn;
 }
 
 test "jobs queue in insert-tolerant order: contributions, operator inputs, held values" {

@@ -113,6 +113,8 @@ pub fn markSelectArms(p: *Prover) Error!void {
 /// written into `buf`. Peels `!` and the §4.2.8 `c != 0` materialisation of
 /// a comparison; keeps a bare `x != 0` as the §4.2.4 nonzero fact.
 pub fn condFacts(p: *const Prover, cond: Mir.Value, taken: bool, buf: *[2]Fact) []const Fact {
+    assert(@backingInt(cond) < p.an.nv);
+    assert(p.civ.len != 0); // `buildClasses` ran: `relationFacts` reads facts
     var c = cond;
     var t = taken;
     // Bound: each hop moves to an operand of a non-phi row, which SSA defines
@@ -157,14 +159,17 @@ pub fn condFacts(p: *const Prover, cond: Mir.Value, taken: bool, buf: *[2]Fact) 
 /// Invalidates `saved` element pointers if additional memory is needed.
 pub fn pushFacts(p: *Prover, facts: []const Fact) Error!void {
     const len_before = p.saved.items.len;
+    assert(p.ctop.len == p.civ.len); // `buildClasses` ran
     for (facts) |f| {
         const c = p.clsOf(f.v);
+        assert(p.ctop[c] == none or p.ctop[c] < p.saved.items.len); // the log names live rows
         p.push_seq += 1;
         try p.saved.append(p.arena, .{ .prev = p.civ[c], .cls = c, .prev_top = p.ctop[c], .seq = p.push_seq });
         p.ctop[c] = @intCast(p.saved.items.len - 1);
         p.civ[c] = p.civ[c].meet(f.iv);
     }
     assert(p.saved.items.len == len_before + facts.len);
+    assert(p.push_seq >= p.saved.items.len); // a row's `seq` is unique
 }
 
 /// Undoes every push after `mark`, newest first. Asserts that `mark` is a
@@ -173,6 +178,8 @@ pub fn popFacts(p: *Prover, mark: usize) void {
     assert(mark <= p.saved.items.len);
     while (p.saved.items.len > mark) {
         const f = p.saved.pop().?;
+        assert(f.cls < p.civ.len);
+        assert(p.ctop[f.cls] == p.saved.items.len); // newest first
         p.civ[f.cls] = f.prev;
         p.ctop[f.cls] = f.prev_top;
     }
@@ -185,7 +192,10 @@ pub fn popFacts(p: *Prover, mark: usize) void {
 pub fn isPredicateValue(mir: *const Mir, v: Mir.Value) bool {
     const def = mir.valueDef(mir.resolveAlias(v));
     if (def != .inst_result) return false;
-    return Mir.opcode.get(mir.instOp(def.inst_result)).predicate;
+    const info = Mir.opcode.get(mir.instOp(def.inst_result));
+    if (info.predicate) assert(info.bool01); // a predicate is 0 or 1
+    if (info.predicate) assert(info.int);
+    return info.predicate;
 }
 
 // ---- private ----
@@ -198,6 +208,7 @@ pub fn isPredicateValue(mir: *const Mir, v: Mir.Value) bool {
 /// taken for an exclusive arm.
 fn countUses(p: *Prover) void {
     assert(p.uses.len == p.an.nv);
+    assert(std.mem.allEqual(u8, p.uses, 0)); // counted once
     const mir = p.mir;
     for (p.lowered.contributions.items) |c| {
         p.uses[p.idxOf(c.resist_val)] +|= 1;
@@ -216,9 +227,11 @@ fn countUses(p: *Prover) void {
 }
 
 fn markArm(p: *Prover, arm: Mir.Value, cond: Mir.Value, taken: bool) Error!void {
+    assert(p.guard.len == p.an.nv);
     var raw: [2]Fact = undefined;
     const facts = condFacts(p, cond, taken, &raw);
     if (facts.len == 0) return;
+    assert(facts.len <= raw.len);
     const start: u32 = @intCast(p.facts.items.len);
     try p.facts.appendSlice(p.arena, facts);
     const ref: Prover.GuardRef = .{ .start = start, .count = @intCast(facts.len) };
@@ -257,6 +270,7 @@ fn isZeroConst(p: *const Prover, v: Mir.Value) bool {
 // if a model needs them.
 fn nanFree(p: *const Prover, v: Mir.Value) bool {
     const rv = p.an.rv(v);
+    assert(p.finite.len == p.an.nv);
     return switch (p.mir.valueDef(rv)) {
         .float_const => |c| !math.isNan(c),
         .int_const, .str_const, .param_ref, .block_param => true,
@@ -299,5 +313,7 @@ fn relationFacts(p: *const Prover, b: @FieldType(Mir.InstData, "binary"), taken:
             buf[1] = .{ .v = hi, .iv = .{ .lo = a_iv.lo, .lo_open = strict or a_iv.lo_open } };
         },
     }
+    if (rel == .lt) assert(buf[0].iv.hi_open); // a strict relation opens both ends
+    if (rel == .lt) assert(buf[1].iv.lo_open);
     return buf[0..2];
 }

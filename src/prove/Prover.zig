@@ -126,11 +126,15 @@ error_count: u8 = 0,
 /// Returns the alias-resolved index of `v` (the ssa.zig contract): one load
 /// through `Analysis`'s snapshot.
 pub fn idxOf(p: *const Prover, v: Mir.Value) u32 {
-    return @backingInt(p.an.rv(v));
+    assert(p.an.alias.len == p.an.nv);
+    const r = @backingInt(p.an.rv(v));
+    assert(r < p.an.nv);
+    return r;
 }
 
 /// Returns `v`'s interval here (`ivAt` of its alias target).
 pub fn ivOf(p: *const Prover, v: Mir.Value) Interval {
+    assert(p.iv.len == p.an.nv); // `seed.seedValues` ran
     return p.ivAt(p.idxOf(v));
 }
 
@@ -142,16 +146,20 @@ pub fn ivOf(p: *const Prover, v: Mir.Value) Interval {
 /// Asserts that the fact environment is built.
 pub fn ivAt(p: *const Prover, i: u32) Interval {
     assert(i < p.def_pos.len);
+    assert(p.civ.len == p.ctop.len);
     const pos = p.def_pos[i];
     const defined = pos == none or
         (pos < p.saved.items.len and p.saved.items[pos].seq == p.def_seq[i]);
+    if (!defined) assert(pos != none); // only a popped fact reverts to the seed
     const own = if (defined) p.iv[i] else p.seed[i];
     return own.meet(p.civ[p.clsOf(i)]);
 }
 
 /// Returns the `civ` row of value `i`: its class, or a row of its own.
 pub fn clsOf(p: *const Prover, i: u32) u32 {
+    assert(i < p.class_of.len);
     const c = p.class_of[i];
+    if (c != none) assert(c < p.n_classes);
     const row = if (c != none) c else p.n_classes + i;
     assert(row < p.civ.len);
     return row;
@@ -159,6 +167,7 @@ pub fn clsOf(p: *const Prover, i: u32) u32 {
 
 /// Returns whether `v` was proven a finite double where it was defined.
 pub fn isFinite(p: *const Prover, v: Mir.Value) bool {
+    assert(p.finite.len == p.an.nv); // `seed.seedValues` ran
     return p.finite[p.idxOf(v)];
 }
 
@@ -195,6 +204,7 @@ pub fn operands(p: *const Prover, inst: Mir.Inst, buf: *[3]Mir.Value) []const Mi
         },
     };
     if (p.mir.instOp(inst) == .phi) assert(ops.len == 0);
+    if (p.mir.instOp(inst) != .call) assert(ops.len <= buf.len);
     return ops;
 }
 
@@ -213,5 +223,6 @@ pub fn literalNumber(p: *const Prover, v: Mir.Value) ?f64 {
         .undef, .str_const, .param_ref, .block_param => null,
     };
     if (p.mir.valueKind(p.an.rv(v)) == .float_const or p.mir.valueKind(p.an.rv(v)) == .int_const) assert(r != null);
+    if (p.mir.valueKind(p.an.rv(v)) == .param_ref) assert(r == null); // a card can override it
     return r;
 }

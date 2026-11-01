@@ -64,7 +64,9 @@ const Column = enum {
     /// The columns that ask whether the value varies, so take what steers it
     /// and not only what enters its derivative.
     fn steered(c: Column) bool {
-        return c == .value or c == .point;
+        const r = c == .value or c == .point;
+        if (c == .deriv) assert(!r); // a derivative is never steered
+        return r;
     }
 };
 
@@ -103,6 +105,9 @@ pub fn build(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis.
     }
     assert(an.deps.len == @as(usize, an.nv) * an.dep_words);
     assert(an.xdeps.len == an.deps.len);
+    assert(an.pdeps.len == an.deps.len);
+    if (an.acdyn.len != 0) assert(an.acdyn.len == an.deps.len);
+    assert(an.dep_zero.len == an.dep_words);
 }
 
 // ---- private ----
@@ -110,6 +115,7 @@ pub fn build(an: *Analysis, arena: Allocator, lowered: *const Lowered) Analysis.
 /// The graph the four columns share: counted, then filled.
 fn buildGraph(an: *const Analysis, arena: Allocator) Analysis.Error!DepGraph {
     const nv = an.nv;
+    assert(an.alias.len == nv);
     var g: DepGraph = .{
         .kind = try arena.alloc(DepGraph.Kind, nv),
         .n_d = try arena.alloc(u32, nv),
@@ -127,6 +133,7 @@ fn buildGraph(an: *const Analysis, arena: Allocator) Analysis.Error!DepGraph {
         const wrote = depRow(an, @intCast(v), &g, g.ops[g.off[v]..g.off[v + 1]]);
         assert(wrote == g.off[v + 1] - g.off[v]);
     }
+    assert(g.ops.len == g.off[nv]);
     return g;
 }
 
@@ -138,10 +145,13 @@ fn depRow(an: *const Analysis, v: u32, g: *DepGraph, out: []u32) u32 {
         alias: []const Mir.Value,
         n: u32 = 0,
         fn put(r: *@This(), x: Mir.Value) void {
+            assert(@backingInt(x) < r.alias.len);
             if (r.out.len != 0) r.out[r.n] = @backingInt(r.alias[@backingInt(x)]);
             r.n += 1;
+            if (r.out.len != 0) assert(r.n <= r.out.len);
         }
     };
+    assert(v < an.nv);
     var r: Row = .{ .out = out, .alias = an.alias };
     g.kind[v] = .plain;
     const val: Mir.Value = @fromBackingInt(v);
@@ -221,6 +231,7 @@ fn depRow(an: *const Analysis, v: u32, g: *DepGraph, out: []u32) u32 {
 
 /// Whether `inst` reads a per-instance value (`pdeps`' seeds).
 fn readsInstance(an: *const Analysis, inst: Mir.Inst) bool {
+    assert(@backingInt(inst) < an.mir.instCount());
     return switch (an.mir.instData(inst)) {
         .call => |c| switch (c.callee) {
             .@"$held_real", .@"$held_int", .@"$held_str", .@"$held_wide", .@"$mfactor" => true,
@@ -242,7 +253,10 @@ fn readsInstance(an: *const Analysis, inst: Mir.Inst) bool {
 fn fixDeps(an: *const Analysis, arena: Allocator, g: DepGraph, which: Column) Analysis.Error![]u64 {
     // One word, the common case, gets a body with the width known: the
     // generic one costs 1.8x there (psp103 `build`: 9.4 ms against 5.3).
-    return if (an.dep_words == 1) fixDepsWide(an, arena, g, which, 1) else fixDepsWide(an, arena, g, which, 0);
+    assert(an.dep_words >= 1);
+    const col = try if (an.dep_words == 1) fixDepsWide(an, arena, g, which, 1) else fixDepsWide(an, arena, g, which, 0);
+    assert(col.len == @as(usize, an.nv) * an.dep_words);
+    return col;
 }
 
 /// `fixDeps` at `words_ct` words a value, or `dep_words` when it is 0.
@@ -297,9 +311,13 @@ fn fixDepsWide(an: *const Analysis, arena: Allocator, g: DepGraph, which: Column
             changed = true;
         }
     }
+    assert(!changed);
+    assert(sweeps >= 1);
     return col;
 }
 
 fn orInto(acc: []u64, x: []const u64) void {
+    assert(acc.len == x.len);
+    assert(acc.len >= 1); // `dep_words` is at least one
     for (acc, x) |*a, b| a.* |= b;
 }

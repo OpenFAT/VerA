@@ -24,8 +24,13 @@ pub const max_inline_depth = 256;
 
 const none_u32 = std.math.maxInt(u32);
 
+/// Counts every read of the slice's values, eager and arm apart, into
+/// `eager_use`/`arm_use`. Asserts that the slice is closed: outside the common
+/// declaration `target` itself is in it.
 pub fn countUses(self: *UnitPlan, target: Mir.Value) void {
     assert(self.eager_use.len == self.arm_use.len);
+    assert(self.eager_use.len == self.an.nv);
+    if (!self.in_common) assert(self.needed.isSet(@backingInt(self.an.rv(target))));
     if (self.in_common) {
         for (self.lo_vals) |v| self.eager_use[@backingInt(v)] += 1;
     } else {
@@ -57,9 +62,11 @@ pub fn countUses(self: *UnitPlan, target: Mir.Value) void {
 /// into arm uses (called when the instruction itself became lazy).
 pub fn addUses(self: *UnitPlan, inst: Mir.Inst, undo: bool) void {
     assert(@backingInt(inst) < self.mir.instCount());
+    assert(self.eager_use.len == self.an.nv);
     const bump = struct {
         fn f(g: *UnitPlan, v: Mir.Value, arm: bool, un: bool) void {
             const i = @backingInt(g.an.rv(v));
+            assert(i < g.an.nv);
             if (!g.needed.isSet(i)) return;
             if (un) {
                 if (arm) return; // already an arm use
@@ -135,6 +142,11 @@ pub fn boundInlineDepth(self: *UnitPlan) void {
             self.inlined.unset(v);
             d = 0;
         }
+        // A value still inlined has a depth; a fused one past the cut kept
+        // its statement, and only an arm-inlined value may run past it.
+        if (self.inlined.isSet(v)) assert(d >= 1);
+        if (!self.inlined.isSet(v)) assert(d == 0);
+        if (self.eager_use[v] != 0) assert(d <= max_inline_depth);
         self.inl_depth[v] = d;
     }
 }
@@ -151,6 +163,7 @@ pub fn boundInlineDepth(self: *UnitPlan) void {
 pub fn fuseSingleUse(self: *UnitPlan) void {
     assert(self.eager_use.len == self.arm_use.len);
     assert(self.an.stmt_off.len == self.an.nb + 1);
+    assert(self.inlined.bit_length == self.an.nv);
     for (0..self.an.nb) |bi| {
         const stmts = self.an.stmt_pool[self.an.stmt_off[bi]..self.an.stmt_off[bi + 1]];
         if (stmts.len < 2) continue;
@@ -204,6 +217,7 @@ pub fn fuseSingleUse(self: *UnitPlan) void {
 /// overridden exponent at that default.
 pub fn foldedExponent(self: *const UnitPlan, d: anytype) bool {
     assert(self.an.nv == self.eager_use.len);
+    assert(@backingInt(d.rhs) < self.an.nv);
     return d.op == .pow and self.an.foldConst(d.rhs, false) != null;
 }
 
@@ -216,6 +230,7 @@ pub fn foldedExponent(self: *const UnitPlan, d: anytype) bool {
 /// positions, counted in `arm_use`.
 fn eagerlyUses(self: *const UnitPlan, inst: Mir.Inst, v: Mir.Value) bool {
     assert(@backingInt(inst) < self.mir.instCount());
+    assert(@backingInt(v) < self.an.nv);
     return switch (self.mir.instData(inst)) {
         .unary => |d| self.an.rv(d.operand) == v,
         .binary => |d| self.an.rv(d.lhs) == v or

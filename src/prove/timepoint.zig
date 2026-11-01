@@ -57,6 +57,8 @@ pub fn varying(in: Input, t: Lowered.TpBlock) Error!?Mir.Value {
         inside[x] = true;
         stack.appendAssumeCapacity(x);
     };
+    assert(inside[miss]);
+    assert(!inside[join] or join == miss); // the walk stops at the join
     const cds = try setup.controlDeps(in);
     const vary = try a.alloc(bool, nv);
     @memset(vary, false);
@@ -110,6 +112,7 @@ fn callTimepoint(in: Input, d: Call) bool {
 }
 
 fn varies(in: Input, vary: []const bool, v0: Mir.Value) bool {
+    assert(vary.len == in.an.nv);
     const v = in.an.rv(v0);
     return switch (in.mir.valueDef(v)) {
         .undef, .float_const, .int_const, .str_const, .param_ref => false,

@@ -49,15 +49,48 @@ comptime {
 
 /// The most bytes string Value `v` can hold. Memoized per Value; a Value met
 /// again while its own capacity is computed (a loop's phi) counts `row`.
+/// Walks the Values `v` is built from depth first on a heap stack, in the
+/// order `compute` reads them, so a string built by a chain of concatenations
+/// as long as the source costs no stack.
 pub fn cap(g: *Gen, v0: Mir.Value) Error!u64 {
     assert(g.an.vty.len == g.an.nv);
     if (g.held_caps == null) try planHeld(g);
+    assert(g.held_caps != null);
     const v = g.an.rv(v0);
     if (g.str_caps.get(v)) |c| return c;
-    try g.str_caps.put(g.arena, v, row);
-    const c = try compute(g, v);
-    try g.str_caps.put(g.arena, v, c);
-    return c;
+    const Frame = struct { v: Mir.Value, open: bool };
+    var stack: std.ArrayList(Frame) = .empty;
+    defer stack.deinit(g.gpa);
+    var reads: std.ArrayList(Mir.Value) = .empty;
+    defer reads.deinit(g.gpa);
+    try stack.append(g.gpa, .{ .v = v, .open = false });
+    // Bounded: a Value opens once (it is memoized as it opens), and only an
+    // opening pushes, so the pops are at most one per open plus its reads.
+    var opened: usize = 0;
+    while (stack.pop()) |f| {
+        if (f.open) {
+            // Every Value `compute` reads below is memoized now.
+            try g.str_caps.put(g.arena, f.v, try compute(g, f.v));
+            continue;
+        }
+        // Done, or open further down: a cycle reads `row`, as it did.
+        if (g.str_caps.contains(f.v)) continue;
+        try g.str_caps.put(g.arena, f.v, row);
+        opened += 1;
+        assert(opened <= g.an.nv);
+        try stack.append(g.gpa, .{ .v = f.v, .open = true });
+        reads.clearRetainingCapacity();
+        try readsOf(g, f.v, &reads);
+        // Last first, so the first read is the next visited.
+        var k = reads.items.len;
+        while (k > 0) {
+            k -= 1;
+            try stack.append(g.gpa, .{ .v = g.an.rv(reads.items[k]), .open = false });
+        }
+    }
+    // `v` was not memoized, so the first pop opened it.
+    assert(opened >= 1);
+    return g.str_caps.get(v).?;
 }
 
 /// The row of a `$sformat` whose format is a string variable
@@ -73,7 +106,9 @@ pub fn rtFormatCap(g: *Gen, args: []const Mir.Value) Error!u64 {
         .real, .int => 512,
         .wide => unreachable, // lowering hands a task no wide value: a whole wide `reg` read is E0222
     };
-    return @max(n, row);
+    const c = @max(n, row);
+    assert(c >= row);
+    return c;
 }
 
 /// The `Instance` type of held string `i`: `ZStrHeld` for the `row`, else
@@ -82,8 +117,9 @@ pub fn emitHeldType(g: *Gen, i: usize) Error!void {
     assert(i < g.lowered.held_vars.items.len);
     assert(g.lowered.held_vars.items[i].ty == .string);
     const c = try heldCap(g, i);
-    if (c == row) return g.w("ZStrHeld", .{});
-    return g.w("ZStrHeldN({d})", .{c});
+    const len_before = g.out.items.len;
+    if (c == row) try g.w("ZStrHeld", .{}) else try g.w("ZStrHeldN({d})", .{c});
+    assert(g.out.items.len >= len_before + "ZStrHeld".len);
 }
 
 /// The call that copies text into held string `i`'s type: `zStrHeld(` or
@@ -92,16 +128,45 @@ pub fn emitHeldCopy(g: *Gen, i: usize) Error!void {
     assert(i < g.lowered.held_vars.items.len);
     assert(g.lowered.held_vars.items[i].ty == .string);
     const c = try heldCap(g, i);
-    if (c == row) return g.w("zStrHeld(", .{});
-    return g.w("zStrHeldN({d}, ", .{c});
+    const len_before = g.out.items.len;
+    if (c == row) try g.w("zStrHeld(", .{}) else try g.w("zStrHeldN({d}, ", .{c});
+    assert(g.out.items.len >= len_before + "zStrHeld(".len);
 }
 
 // ---- private ----
 
-// ponytail: recursive over the string's defining Values; a string built by
-// thousands of chained concatenations recurses that deep. An explicit stack
-// is the upgrade if one measures it.
+/// The Values `compute(v)` asks `cap` about, in its order, so `cap` can size
+/// them first. A `$sformat` operand is left to `compute` itself, which finds
+/// it through the format (`cg_display.siteCap`): that call recurses once per
+/// nested `$sformat`.
+fn readsOf(g: *Gen, v: Mir.Value, out: *std.ArrayList(Mir.Value)) Error!void {
+    assert(out.items.len == 0);
+    const inst = switch (g.mir.valueDef(v)) {
+        .inst_result => |i| i,
+        .str_const, .undef, .float_const, .int_const, .param_ref, .block_param => return,
+    };
+    switch (g.mir.instData(inst)) {
+        .phi => |d| for (0..d.count) |i| try out.append(g.gpa, g.mir.phiPair(inst, @intCast(i)).value),
+        .ternary => |t| try out.appendSlice(g.gpa, &.{ t.then_val, t.else_val }),
+        .call => |c| switch (c.callee) {
+            .@"$sformat$rt" => for (c.args, 0..) |a, i| {
+                if (i == 0 or g.an.tyOf(g.an.rv(a)) == .str) try out.append(g.gpa, a);
+            },
+            .@"$str$cat" => try out.appendSlice(g.gpa, c.args),
+            .@"$str$repeat" => {
+                assert(c.args.len == 2); // `callCap`'s (copies, string)
+                if (g.an.foldConst(c.args[0], false) != null) try out.append(g.gpa, c.args[1]);
+            },
+            .@"$sscanf$str" => if (c.args.len > 0) try out.append(g.gpa, c.args[0]),
+            else => {}, // else: `callCap` reads no other capacity through `cap`
+        },
+        .unary, .binary, .branch, .jump, .anew, .load, .store => {},
+    }
+}
+
 fn compute(g: *Gen, v: Mir.Value) Error!u64 {
+    // `cap` memoizes `row` for `v` before it opens it here.
+    assert(g.str_caps.contains(v));
     const inst = switch (g.mir.valueDef(v)) {
         .str_const => |s| return s.len,
         // A number where a string is read prints its digits (§2.7): a
@@ -130,7 +195,9 @@ fn callCap(g: *Gen, c: Mir.Callee, args: []const Mir.Value) Error!u64 {
             var fmt: std.ArrayList(u8) = .empty;
             var ops: cg_display.Ops = .empty;
             try cg_display.buildArgs(g, args, &fmt, &ops);
-            return cg_display.siteCap(g, fmt.items, ops.items);
+            const n = try cg_display.siteCap(g, fmt.items, ops.items);
+            assert(n >= row);
+            return n;
         },
         .@"$sformat$rt" => return rtFormatCap(g, args),
         .@"$str$cat" => {
@@ -189,6 +256,7 @@ fn planHeld(g: *Gen) Error!void {
         }
         if (!changed) break;
     }
+    assert(round <= held.len + 1);
     for (caps) |c| assert(c >= row);
     g.str_caps.clearRetainingCapacity();
 }

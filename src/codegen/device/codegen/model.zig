@@ -52,6 +52,8 @@ pub fn intFieldType(self: *Gen, p: Lower.ParamInfo) []const u8 {
     const d: f64 = @floatFromInt(defaultInt(self, p) orelse return "i64");
     lo = @min(lo, d);
     hi = @max(hi, d);
+    assert(lo <= d);
+    assert(d <= hi);
     if (lo >= 0) return if (hi <= std.math.maxInt(u8)) "u8" else if (hi <= std.math.maxInt(u16)) "u16" else "i64";
     if (lo >= std.math.minInt(i8) and hi <= std.math.maxInt(i8)) return "i8";
     if (lo >= std.math.minInt(i16) and hi <= std.math.maxInt(i16)) return "i16";
@@ -63,6 +65,7 @@ pub fn intFieldType(self: *Gen, p: Lower.ParamInfo) []const u8 {
 pub fn emitModel(self: *Gen) Error!void {
     assert(self.names.p_names.len == self.lowered.params.items.len);
     assert(self.names.a_names.len == self.lowered.aliases.items.len);
+    const at = self.out.items.len;
     try self.w("/// §3.4 module parameters (spec defaults folded at compile time).\npub const Model = struct {{\n", .{});
     for (self.lowered.params.items, 0..) |p, i| {
         try checkParamDefault(self, p);
@@ -156,6 +159,8 @@ pub fn emitModel(self: *Gen) Error!void {
     // Declarations go after the fields (Zig allows none between them).
     try emitGiven(self);
     try self.w("}};\n\n", .{});
+    assert(self.out.items.len > at);
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
 }
 
 /// Emits `derive`, which recomputes every parameter whose value is not its
@@ -168,6 +173,7 @@ pub fn emitModel(self: *Gen) Error!void {
 /// the spec default, so a host that overrides nothing need not call it.
 pub fn emitDerive(self: *Gen) Error!void {
     assert(self.names.given_bit.len == self.lowered.params.items.len);
+    assert(self.names.a_names.len == self.lowered.aliases.items.len);
     const at = self.out.items.len;
     try self.w(
         \\/// §6.3.4 parameter dependence + §3.4.5 localparam. Call ONCE after
@@ -244,6 +250,8 @@ pub fn emitDerive(self: *Gen) Error!void {
     if (gen_noise.hasCardKnots(self)) try self.w("    model.noise_table_points__ = noiseTablePoints(model);\n", .{});
     if (self.out.items.len == body) return self.out.shrinkRetainingCapacity(at);
     try self.w("}}\n\n", .{});
+    assert(self.out.items.len > body);
+    assert(std.mem.endsWith(u8, self.out.items, "}\n\n"));
 }
 
 /// Returns the §3.4 field initializer: the parameter's value under the
@@ -251,8 +259,10 @@ pub fn emitDerive(self: *Gen) Error!void {
 /// `ParamInfo.folded` (`Lower.constEval` over the AST, which sees through a
 /// §4.2.12 `?:` that MIR has already turned into a CFG diamond) and
 /// `foldConst` over the MIR. Integral defaults prefer the exact AST result.
+/// Asserts that `want` is the parameter's own type (`tyOfParam`).
 pub fn paramDefault(self: *Gen, p: Lower.ParamInfo, want: VTy) Error![]const u8 {
     assert(want != .wide); // `tyOfParam` types no parameter wide.
+    assert(want == Analysis.tyOfParam(p.ty));
     if (want == .int) if (p.folded) |k| {
         // An explicit `integer` (§3.4.1) is 32 bits: an integral default
         // keeps its low 32 bits, a real one saturates at the 32-bit bounds
@@ -319,11 +329,16 @@ fn paramFieldType(self: *Gen, p: Lower.ParamInfo) []const u8 {
 /// it, or null when it is not a constant.
 fn defaultInt(self: *Gen, p: Lower.ParamInfo) ?i64 {
     assert(Analysis.tyOfParam(p.ty) == .int);
-    if (p.folded) |k| return switch (k) {
-        .int => |v| if (p.integer32) @import("kernels").fold.wrap32(v) else v,
-        .real => |v| if (p.integer32) std.math.lossyCast(i32, @round(v)) else std.math.lossyCast(i64, @round(v)),
-        .str => 0,
-    };
+    if (p.folded) |k| {
+        const r: i64 = switch (k) {
+            .int => |v| if (p.integer32) @import("kernels").fold.wrap32(v) else v,
+            .real => |v| if (p.integer32) std.math.lossyCast(i32, @round(v)) else std.math.lossyCast(i64, @round(v)),
+            .str => 0,
+        };
+        if (p.integer32) assert(r >= std.math.minInt(i32));
+        if (p.integer32) assert(r <= std.math.maxInt(i32));
+        return r;
+    }
     const c = self.an.foldConst(p.default, true) orelse return null;
     return std.math.lossyCast(i64, @round(c));
 }
@@ -332,6 +347,7 @@ fn defaultInt(self: *Gen, p: Lower.ParamInfo) ?i64 {
 /// parameter, then one per §3.4.7 alias.
 fn givenCount(self: *const Gen) usize {
     assert(self.names.n_given <= self.lowered.params.items.len);
+    assert(self.names.a_names.len == self.lowered.aliases.items.len);
     return self.names.n_given + self.lowered.aliases.items.len;
 }
 
@@ -365,6 +381,7 @@ fn emitGiven(self: *Gen) Error!void {
         \\    }}
         \\
     , .{});
+    assert(std.mem.endsWith(u8, self.out.items, "    }\n"));
 }
 
 /// Emits `derive`'s §5.6.5 tail: every card-only retention flag into the
@@ -376,6 +393,7 @@ fn deriveFlags(self: *Gen) Error!bool {
     var any = false;
     for (self.topo.cpairs) |p| any = any or p.card;
     if (!any) return false;
+    const at = self.out.items.len;
     try self.w(
         \\    // §5.6.5 the published retention flags (`contract.JacWhen`).
         \\    const xr: [n_u]zOf(S, 0) = @splat(S.con(0.0));
@@ -393,6 +411,8 @@ fn deriveFlags(self: *Gen) Error!bool {
         else
             try self.w("    model.{s} = m.f{d}.val();\n", .{ try switch_row.guardField(self, @intCast(k)), f });
     }
+    assert(any);
+    assert(self.out.items.len > at);
     return true;
 }
 

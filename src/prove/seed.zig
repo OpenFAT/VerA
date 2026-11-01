@@ -78,6 +78,8 @@ pub fn seedValues(p: *Prover) Error!void {
         }
     }
     assert(p.iv.len == n);
+    assert(p.finite.len == n);
+    assert(p.guard.len == n);
     assert(!p.finite[@backingInt(Mir.Value.undef)]);
 }
 

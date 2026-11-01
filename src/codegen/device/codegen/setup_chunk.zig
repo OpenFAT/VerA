@@ -77,9 +77,11 @@ const Idents = struct {
                 // A field follows ONE dot; after `..` the name is a range bound.
                 const field = s > 0 and t[s - 1] == '.' and !(s > 1 and t[s - 2] == '.');
                 if (std.ascii.isDigit(c) or field or (s > 0 and t[s - 1] == '@')) continue;
+                assert(it.i > s);
                 return t[s..it.i];
             } else it.i += 1;
         }
+        assert(it.i >= t.len);
         return null;
     }
 };
@@ -144,6 +146,7 @@ pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
     @memset(sizes, 0);
     for (ps) |*p| {
         p.chunk = @intCast(@min(n - 1, acc * n / total));
+        assert(p.chunk < n);
         acc += bytesOf(p.lines);
         sizes[p.chunk] += bytesOf(p.lines);
         declOf(p);
@@ -270,6 +273,8 @@ pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
         \\
         \\
     );
+    assert(n >= 2);
+    assert(std.mem.endsWith(u8, out.items, "}\n\n"));
     return .{ .text = out.items, .n = n };
 }
 
@@ -290,19 +295,34 @@ fn note(a: Allocator, readers: *std.StringHashMapUnmanaged(u32), several: *std.S
     if (!g.found_existing) {
         g.value_ptr.* = k;
     } else if (g.value_ptr.* != k) try several.put(a, id, {});
+    assert(readers.contains(id));
 }
 
 /// Appends the pieces of statement list `body` (indent 0) under `guards`.
-/// False when a statement cannot be read (unbalanced braces).
+/// False when a statement cannot be read (unbalanced braces). A block or an
+/// `if` arm is a frame of a heap stack, entered where the statement stood, so
+/// a body nested as deep as the source costs no call stack.
 fn pieces(st: *State, body: Lines, guards: Lines) Error!bool {
-    var i: usize = 0;
-    while (i < body.len) {
-        const end = stmtEnd(body, i) orelse return false;
-        const s = body[i..end];
-        i = end;
+    const Frame = struct { body: Lines, i: usize, guards: Lines };
+    var stack: std.ArrayList(Frame) = .empty;
+    try stack.append(st.a, .{ .body = body, .i = 0, .guards = guards });
+    while (stack.items.len != 0) {
+        // A frame is a statement's inside, shorter than the statement, so
+        // the stack is no deeper than `body` is long.
+        assert(stack.items.len <= body.len + 1);
+        const top = &stack.items[stack.items.len - 1];
+        if (top.i == top.body.len) {
+            _ = stack.pop();
+            continue;
+        }
+        assert(top.i < top.body.len);
+        const end = stmtEnd(top.body, top.i) orelse return false;
+        const s = top.body[top.i..end];
+        top.i = end;
+        const g0 = top.guards;
         if (bytesOf(s) > st.small) {
             if (try openBlock(st.a, s)) |inner| {
-                if (!try pieces(st, inner, guards)) return false;
+                try stack.append(st.a, .{ .body = inner, .i = 0, .guards = g0 });
                 continue;
             }
             const arms = try splitIf(st.a, s);
@@ -311,14 +331,17 @@ fn pieces(st: *State, body: Lines, guards: Lines) Error!bool {
                 st.guards += 1;
                 const g = try st.a.print("zg{d}", .{st.guards});
                 const decl = try st.a.print("const {s}: bool = {s};", .{ g, arms_.cond });
-                try st.pieces.append(st.a, .{ .guards = guards, .lines = try st.a.dupe([]const u8, &.{decl}) });
-                if (!try pieces(st, arms_.then, try cat(st.a, guards, g))) return false;
-                if (arms_.@"else".len != 0 and !try pieces(st, arms_.@"else", try cat(st.a, guards, try st.a.print("!{s}", .{g})))) return false;
+                try st.pieces.append(st.a, .{ .guards = g0, .lines = try st.a.dupe([]const u8, &.{decl}) });
+                // The then arm runs first: it goes on top.
+                if (arms_.@"else".len != 0)
+                    try stack.append(st.a, .{ .body = arms_.@"else", .i = 0, .guards = try cat(st.a, g0, try st.a.print("!{s}", .{g})) });
+                try stack.append(st.a, .{ .body = arms_.then, .i = 0, .guards = try cat(st.a, g0, g) });
                 continue;
             }
         }
-        try st.pieces.append(st.a, .{ .guards = guards, .lines = s });
+        try st.pieces.append(st.a, .{ .guards = g0, .lines = s });
     }
+    assert(stack.items.len == 0);
     return true;
 }
 
@@ -327,12 +350,14 @@ fn cat(a: Allocator, xs: Lines, x: []const u8) Error!Lines {
     const r = try a.alloc([]const u8, xs.len + 1);
     @memcpy(r[0..xs.len], xs);
     r[xs.len] = x;
+    assert(r.len == xs.len + 1);
     return r;
 }
 
 fn bytesOf(ls: Lines) usize {
     var n: usize = 0;
     for (ls) |l| n += l.len + 1;
+    assert(n >= ls.len);
     return n;
 }
 
@@ -343,6 +368,7 @@ fn stmtEnd(body: Lines, i: usize) ?usize {
     var d: i64 = 0;
     for (body[i..], i..) |l, j| {
         d += braceDelta(l);
+        assert(j < body.len);
         if (d == 0) return j + 1;
         if (d < 0) return null;
     }
@@ -355,6 +381,7 @@ fn openBlock(a: Allocator, s: Lines) Error!?Lines {
     assert(s.len != 0);
     const first = s[0];
     if (!std.mem.endsWith(u8, first, ": {") or !std.mem.eql(u8, s[s.len - 1], "}")) return null;
+    assert(s.len >= 2); // `first` ends in `: {`, the last line is `}`.
     const label = first[0 .. first.len - 3];
     for (label) |c| if (!isIdent(c)) return null;
     const inner = try dedentAll(a, s[1 .. s.len - 1]);
@@ -375,6 +402,8 @@ fn stripTail(a: Allocator, body: Lines, br: []const u8) Error!?Lines {
         last = i;
         i = stmtEnd(body, i) orelse return null;
     }
+    assert(i == body.len);
+    assert(last < body.len);
     const s = body[last..];
     if (s.len == 1 and std.mem.eql(u8, s[0], br)) return body[0..last];
     const arms = try splitIf(a, s) orelse return body;
@@ -401,6 +430,8 @@ fn splitIf(a: Allocator, s: Lines) Error!?Arms {
     const first = s[0];
     if (!std.mem.startsWith(u8, first, "if (") or !std.mem.endsWith(u8, first, ") {")) return null;
     if (!std.mem.eql(u8, s[s.len - 1], "}")) return null;
+    assert(s.len >= 2); // `first` ends in `) {`, the last line is `}`.
+    assert(first.len >= "if (".len + ") {".len);
     const cond = first[4 .. first.len - 3];
     var d: i64 = 0;
     for (s[1 .. s.len - 1], 1..) |l, i| {
@@ -423,12 +454,14 @@ fn selfContained(a: Allocator, lines: Lines) Error!bool {
         while (e < t.len and isIdent(t[e])) e += 1;
         if (e != 0 and std.mem.startsWith(u8, t[e..], ": ")) try defs.put(a, t[0..e], {});
     }
+    assert(defs.count() <= lines.len);
     for (lines) |l| {
         if (std.mem.find(u8, l, "return;") != null) return false;
         for ([_][]const u8{ "break :", "continue :" }) |kw| {
             var at: usize = 0;
             while (std.mem.findPos(u8, l, at, kw)) |p| {
                 at = p + kw.len;
+                assert(at <= l.len);
                 var e = at;
                 while (e < l.len and isIdent(l[e])) e += 1;
                 if (!defs.contains(l[at..e])) return false;
@@ -450,12 +483,15 @@ fn declOf(p: *Piece) void {
     p.ty = if (l[i] == ':') std.mem.trim(u8, l[i + 1 .. eq], " ") else if (eq == i) "" else return;
     p.name = l[kw.len..i];
     p.head = eq + 3;
+    assert(p.name.len != 0);
+    assert(p.head <= l.len);
 }
 
 fn dedent(l: []const u8, k: usize) []const u8 {
     assert(k <= 4096);
     var i: usize = 0;
     while (i < k and i < l.len and l[i] == ' ') i += 1;
+    assert(i <= l.len);
     return l[i..];
 }
 
@@ -463,11 +499,14 @@ fn dedentAll(a: Allocator, ls: Lines) Error!Lines {
     assert(ls.len < std.math.maxInt(u32));
     const r = try a.alloc([]const u8, ls.len);
     for (r, ls) |*o, l| o.* = dedent(l, 4);
+    assert(r.len == ls.len);
     return r;
 }
 
 fn indent(a: Allocator, l: []const u8) Error![]const u8 {
-    return if (l.len == 0) l else a.print("    {s}", .{l});
+    const r = if (l.len == 0) l else try a.print("    {s}", .{l});
+    assert(r.len == if (l.len == 0) 0 else l.len + 4);
+    return r;
 }
 
 fn isIdent(c: u8) bool {
@@ -485,6 +524,7 @@ fn braceDelta(line: []const u8) i64 {
         '}' => d -= 1,
         else => {}, // else: only braces, literals and comments move the depth
     };
+    assert(@abs(d) <= line.len);
     return d;
 }
 
@@ -513,6 +553,7 @@ fn rename(a: Allocator, out: *std.ArrayList(u8), text: []const u8, moved: *const
         try out.print(a, "z.{s}", .{id});
         done = at + id.len;
     }
+    assert(done <= text.len);
     try out.appendSlice(a, text[done..]);
 }
 
@@ -595,6 +636,93 @@ test "chunk keeps one function for a small, stopping or unrecognised body" {
     // Not `emitSetup`'s shape: no `pub fn setup(`, or not its closing.
     try std.testing.expect(try chunk(a, "fn other() void {}\n", 16) == null);
     try std.testing.expect(try chunk(a, text[0 .. text.len - 2], 16) == null);
+}
+
+test "pieces: the worklist cuts exactly the pieces the recursion it replaced cut" {
+    // Oracle: `T.recursive`, `pieces` as it was before its heap stack,
+    // character for character. Random setup bodies of plain statements,
+    // two-armed `if`s and tail-break blocks nested up to five deep, at piece
+    // sizes from one statement up.
+    const T = struct {
+        fn recursive(st: *State, list: Lines, guards: Lines) Error!bool {
+            var i: usize = 0;
+            while (i < list.len) {
+                const end = stmtEnd(list, i) orelse return false;
+                const s = list[i..end];
+                i = end;
+                if (bytesOf(s) > st.small) {
+                    if (try openBlock(st.a, s)) |inner| {
+                        if (!try recursive(st, inner, guards)) return false;
+                        continue;
+                    }
+                    const arms = try splitIf(st.a, s);
+                    if (arms != null and try selfContained(st.a, arms.?.then) and try selfContained(st.a, arms.?.@"else")) {
+                        const arms_ = arms.?;
+                        st.guards += 1;
+                        const g = try st.a.print("zg{d}", .{st.guards});
+                        const decl = try st.a.print("const {s}: bool = {s};", .{ g, arms_.cond });
+                        try st.pieces.append(st.a, .{ .guards = guards, .lines = try st.a.dupe([]const u8, &.{decl}) });
+                        if (!try recursive(st, arms_.then, try cat(st.a, guards, g))) return false;
+                        if (arms_.@"else".len != 0 and !try recursive(st, arms_.@"else", try cat(st.a, guards, try st.a.print("!{s}", .{g})))) return false;
+                        continue;
+                    }
+                }
+                try st.pieces.append(st.a, .{ .guards = guards, .lines = s });
+            }
+            return true;
+        }
+
+        fn gen(a: Allocator, w: *std.ArrayList([]const u8), r: std.Random, ind: usize, depth: u32, k: *u32) !void {
+            const pad = "                                        "[0..ind];
+            for (0..1 + r.uintLessThan(u32, 4)) |_| {
+                k.* += 1;
+                switch (if (depth == 0) 0 else r.uintLessThan(u32, 4)) {
+                    0, 1 => try w.append(a, try a.print("{s}h0[{d}] = t1.addC({d}.0);", .{ pad, k.* % 2, k.* })),
+                    2 => {
+                        try w.append(a, try a.print("{s}if (t2 != {d}) {{", .{ pad, k.* }));
+                        try gen(a, w, r, ind + 4, depth - 1, k);
+                        try w.append(a, try a.print("{s}}} else {{", .{pad}));
+                        try gen(a, w, r, ind + 4, depth - 1, k);
+                        try w.append(a, try a.print("{s}}}", .{pad}));
+                    },
+                    else => {
+                        const l = k.*;
+                        try w.append(a, try a.print("{s}B{d}: {{", .{ pad, l }));
+                        try gen(a, w, r, ind + 4, depth - 1, k);
+                        try w.append(a, try a.print("{s}    break :B{d};", .{ pad, l }));
+                        try w.append(a, try a.print("{s}}}", .{pad}));
+                    },
+                }
+            }
+        }
+    };
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cut: usize = 0;
+    for (0..1000) |seed| {
+        var prng: std.Random.DefaultPrng = .init(seed);
+        const r = prng.random();
+        var lines: std.ArrayList([]const u8) = .empty;
+        var k: u32 = 0;
+        try T.gen(a, &lines, r, 0, 1 + r.uintLessThan(u32, 5), &k);
+        const small = r.uintLessThan(usize, 200);
+        var want: State = .{ .a = a, .small = small };
+        var got: State = .{ .a = a, .small = small };
+        const ok = try T.recursive(&want, lines.items, &.{});
+        try std.testing.expectEqual(ok, try pieces(&got, lines.items, &.{}));
+        try std.testing.expectEqual(want.guards, got.guards);
+        try std.testing.expectEqual(want.pieces.items.len, got.pieces.items.len);
+        for (want.pieces.items, got.pieces.items) |pw, pg| {
+            try std.testing.expectEqual(pw.guards.len, pg.guards.len);
+            for (pw.guards, pg.guards) |x, y| try std.testing.expectEqualStrings(x, y);
+            try std.testing.expectEqual(pw.lines.len, pg.lines.len);
+            for (pw.lines, pg.lines) |x, y| try std.testing.expectEqualStrings(x, y);
+        }
+        cut += @intFromBool(want.guards != 0);
+    }
+    // The generator reaches the split: most bodies guard an arm.
+    try std.testing.expect(cut > 500);
 }
 
 test braceDelta {
@@ -801,7 +929,8 @@ test "a chunked setup builds one object per chunk into a library that runs" {
         defer r.deinit(gpa);
         const so = switch (r) {
             .failed => |b| {
-                b.renderToStderr(io, .{}, .off) catch {};
+                b.renderToStderr(io, .{}, .off) catch |e|
+                    std.debug.print("the setup-chunk device did not build, and its diagnostics did not render: {t}\n", .{e});
                 return error.UnexpectedBuildFailure;
             },
             .ok => |so_path| so_path,

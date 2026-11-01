@@ -91,8 +91,10 @@ const Coefs = struct {
     /// the analysis"), else `f64Expr`'s text over Model.
     fn text(cx: *Coefs, g: *Gen, e: Mir.Value) Error![]const u8 {
         if (!try gen_host.ctrlIsDynamic(g, e)) return g.f64Expr(e);
+        const n = cx.sampled.items.len;
         try cx.sampled.append(g.arena, e);
-        return g.arena.print("k[{d}]", .{cx.sampled.items.len - 1});
+        assert(cx.sampled.items.len == n + 1);
+        return g.arena.print("k[{d}]", .{n});
     }
 };
 
@@ -116,8 +118,11 @@ pub fn planAll(g: *Gen) Error!void {
         var p = try filterPlan(g, u.inst, g.mir.instData(u.inst).call.args);
         p.fatal = g.cur.fatal;
         g.cur.fatal = saved;
+        // A plan with no refusal has a section to emit.
+        if (p.err == null) assert(p.ns > 0);
         g.filters[i] = p;
     }
+    assert(g.filters.len == g.names.units.len);
 }
 
 /// Returns filter unit `unit`'s plan, replaying the refusal planning raised the
@@ -125,6 +130,7 @@ pub fn planAll(g: *Gen) Error!void {
 /// Asserts that `planAll` ran and `unit` is a `laplace`/`zi` unit.
 pub fn planOf(g: *Gen, unit: usize) FilterPlan {
     assert(unit < g.filters.len);
+    assert(g.filters.len == g.names.units.len);
     const p = g.filters[unit].?;
     if (p.fatal) |m| g.poison(m);
     return p;
@@ -159,6 +165,8 @@ pub fn emitFilterSections(g: *Gen, n: []const u8, p: FilterPlan, z: bool) Error!
             if (s == 1) try g.w(", ", .{});
             try g.w(".{{ ", .{});
             const poly = p.poly(numerator, i);
+            // `deg` is the widest section's degree.
+            assert(poly.len <= p.deg + 1);
             for (0..p.deg + 1) |c| {
                 if (c != 0) try g.w(", ", .{});
                 try g.w("{s}", .{if (c < poly.len) poly[c] else "0.0"});
@@ -168,6 +176,7 @@ pub fn emitFilterSections(g: *Gen, n: []const u8, p: FilterPlan, z: bool) Error!
         try g.w(" }},\n", .{});
     }
     try g.w("    }};\n}}\n\n", .{});
+    assert(g.out.items.len > at_fn);
     return at_fn;
 }
 
@@ -280,7 +289,10 @@ fn readVec(g: *const Gen, args: []const Mir.Value, i: usize) ?Vec {
     if (def != .int_const or def.int_const < 0) return null;
     const n: usize = @intCast(def.int_const);
     if (i + 1 + n > args.len) return null;
-    return .{ .elems = args[i + 1 ..][0..n], .next = i + 1 + n };
+    const v: Vec = .{ .elems = args[i + 1 ..][0..n], .next = i + 1 + n };
+    assert(v.next > i);
+    assert(v.next <= args.len);
+    return v;
 }
 
 /// Appends one side of a filter to `out` as sections. `roots` selects the
@@ -313,7 +325,9 @@ fn filterSide(
         }
         if (is_den and all_zero)
             return "LRM 4.5.11/4.5.12: the denominator coefficients of this filter are identically zero";
+        const before = out.items.len;
         try out.append(g.arena, poly);
+        assert(out.items.len == before + 1);
         return null;
     }
     // §4.5.11.1 "ζ is a vector of M pairs of real numbers … the first
@@ -321,6 +335,7 @@ fn filterSide(
     // the imaginary part."
     if (elems.len % 2 != 0)
         return "LRM 4.5.11/4.5.12: a root vector is a list of (real, imaginary) PAIRS, so its length must be even";
+    assert(elems.len >= 2); // non-empty and even
     // An imaginary part the card sets decides the pairing only at run time.
     // A real part it sets pairs here by its text (`model.a` with `model.a`)
     // and falls back to the run-time pairing when that text cannot.
@@ -371,6 +386,7 @@ fn runtimeRoots(
         for (poly, 0..) |*c, j| c.* = try g.arena.print("zr{d}[{d}][{d}]", .{ k, s, j });
         try out.append(g.arena, poly);
     }
+    assert(lets.items.len == k + 1);
     return null;
 }
 
@@ -381,6 +397,7 @@ fn constRoots(g: *Gen, cx: *Coefs, out: *std.ArrayList(Poly), elems: []const Mir
     assert(elems.len % 2 == 0);
     assert(elems.len > 0);
     const m = elems.len / 2;
+    const out_before = out.items.len;
     const used = try g.arena.alloc(bool, m);
     @memset(used, false);
     for (0..m) |k| {
@@ -420,6 +437,9 @@ fn constRoots(g: *Gen, cx: *Coefs, out: *std.ArrayList(Poly), elems: []const Mir
         const j = conjugateOf(g, elems, used, re, im) orelse
             return "LRM 4.5.11/4.5.12: a complex filter root has no conjugate partner " ++
                 "(\"If a root is complex, its conjugate shall also be present\")";
+        // `k` is taken and `conjugateOf` returns an unused root.
+        assert(j != k);
+        assert(!used[j]);
         used[j] = true;
         // Multiplied out as a real quadratic, never through complex
         // arithmetic and never by expanding the whole product.
@@ -440,6 +460,8 @@ fn constRoots(g: *Gen, cx: *Coefs, out: *std.ArrayList(Poly), elems: []const Mir
             try g.arena.print("1.0 / {s}", .{mag}),
         }));
     }
+    // Root 0 always opens a section.
+    assert(out.items.len > out_before);
     return null;
 }
 

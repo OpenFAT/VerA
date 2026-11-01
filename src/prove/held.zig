@@ -50,6 +50,7 @@ pub fn prune(arena: Allocator, mir: *Mir, lowered: *const Lowered) Error!?[]cons
     const an = try Analysis.build(arena, mir, lowered);
     const in: Input = .{ .arena = arena, .mir = mir, .an = &an, .lowered = lowered };
     const s = try invariance.solve(in, .invariance_only);
+    assert(s.invariant.len == an.nv);
     // At most one merge per instruction: sized once, never grown.
     var merges: std.ArrayList(Mir.Inst) = try .initCapacity(arena, mir.instCount());
     for (an.inst_pool) |inst| switch (mir.instOp(inst)) {
@@ -81,6 +82,7 @@ pub fn prune(arena: Allocator, mir: *Mir, lowered: *const Lowered) Error!?[]cons
         const inst = mir.valueDef(an.rv(h.seed)).inst_result;
         mir.extra.items[mir.insts.items(.b)[@backingInt(inst)] + 1] = @backingInt(row);
     }
+    for (held, keep) |h, k| if (h.why != .unless_invariant) assert(k); // only that reason drops a row
     return keep;
 }
 

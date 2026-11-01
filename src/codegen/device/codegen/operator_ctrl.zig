@@ -46,9 +46,11 @@ pub fn ctrlEval(self: *Gen, args: []const Mir.Value, i: usize, dflt: []const u8)
     // The collapse is intended: a control argument (or §4.6.3's stimulus
     // magnitude) configures the operator and is not part of the Jacobian.
     float_lanes.pinLanes(self, self.an.rv(args[i]));
-    return self.arena.print("({s}).val()", .{
+    const r = try self.arena.print("({s}).val()", .{
         try gen_render.renderToArena(self, args[i], .real),
     });
+    assert(std.mem.endsWith(u8, r, ").val()"));
+    return r;
 }
 
 /// Returns the §4.5.7 effective delay of one `absdelay` site in the caller's
@@ -66,6 +68,7 @@ pub fn absdelayTd(self: *Gen, n: []const u8, args: []const Mir.Value, step: bool
     else
         try ctrlEval(self, args, 1, "0.0");
     if (args.len < 3) return td;
+    assert(args.len == 3);
     // §4.5.7 "If td becomes greater than maxdelay, maxdelay will be used as
     // a substitute for td." Table 4-20 makes maxdelay the constant argument,
     // so it renders over Model where td renders over the core.
@@ -160,6 +163,7 @@ pub fn crossTest(self: *Gen, n: []const u8, args: []const Mir.Value, in: []const
         );
     }
     const dir = if (args.len < 2) "0.0" else if (step) try ctrlStep(self, args, 1, "0.0") else try ctrlEval(self, args, 1, "0.0");
+    assert(dir.len != 0);
     return self.arena.print("zCrossDir({s}, inst.{s}__prev, {s})", .{ dir, n, in });
 }
 

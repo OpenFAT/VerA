@@ -79,6 +79,8 @@ pub fn buildArgs(
             i += 1;
         }
     }
+    // `translateFormat` consumes no more operands than it was handed.
+    assert(i == args.len);
     // `chunkText` splits the text at the operands' starts, so they ascend
     // and lie inside it.
     var at_prev: usize = 0;
@@ -96,7 +98,10 @@ pub fn siteCap(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Error!
     assert(ops.len <= std.math.maxInt(u32));
     var n: u64 = fmt.len;
     for (ops) |p| n +|= try p.textMax(g);
-    return @max(n, strcap.row);
+    assert(n >= fmt.len);
+    const cap = @max(n, strcap.row);
+    assert(cap >= strcap.row);
+    return cap;
 }
 
 /// Call `site`'s formatted-text row: `zSBuf` for the 4096-byte row, else a
@@ -105,8 +110,12 @@ pub fn siteCap(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Error!
 pub fn emitRow(g: *Gen, site: usize, cap: u64) Error!void {
     assert(cap > 0);
     assert(cap >= strcap.row);
-    if (cap == strcap.row or !try fits(g, site, cap)) return g.b("zSBuf({d})", .{site});
-    return g.b("zSRow({d}, 0, {d})", .{ site, cap });
+    const len_before = g.out.items.len;
+    if (cap == strcap.row or !try fits(g, site, cap))
+        try g.b("zSBuf({d})", .{site})
+    else
+        try g.b("zSRow({d}, 0, {d})", .{ site, cap });
+    assert(g.out.items.len > len_before);
 }
 
 /// Emits one §9.4.1 display or §9.7.3 severity task as a labeled block that
@@ -132,7 +141,10 @@ pub fn emitDisplayTask(g: *Gen, c: Mir.Callee, args: []const Mir.Value, inst: Mi
         args[1..]
     else
         args;
+    assert(body.len <= args.len);
     try buildArgs(g, body, &fmt, &ops);
+    // `appendConv` writes a `{…}` per operand.
+    assert(ops.items.len <= fmt.items.len);
     // §9.4.1: `$write` is the family member that does NOT end the line.
     if (endsLine(c)) try fmt.append(g.arena, '\n');
 
@@ -188,6 +200,7 @@ pub fn emitSimCtl(g: *Gen, name: []const u8, args: []const Mir.Value, inst: Mir.
     assert(name.len != 0);
     assert(g.mir.instOp(inst) == .call);
     const level = finishLevel(g, args);
+    const len_before = g.out.items.len;
     try g.b("zd: {{ ", .{});
     // §5.10.2: "final_step will also generate a global event upon the
     // termination of the simulation due to a $finish() simulation control
@@ -202,6 +215,7 @@ pub fn emitSimCtl(g: *Gen, name: []const u8, args: []const Mir.Value, inst: Mir.
         try g.b("std.debug.print(\" ({f})\\n\", .{{}}); ", .{std.zig.fmtString(g.mir.name)});
     }
     try g.b("zFinish = {d}; }} break :zd S.con(0.0); }}", .{kind});
+    assert(g.out.items.len > len_before);
 }
 
 /// Emits §9.5.3 `$swrite`/`$sformat` ("the same as their counterparts ...
@@ -214,6 +228,8 @@ pub fn emitStringFormat(g: *Gen, args: []const Mir.Value, site: usize) Error!voi
     var fmt: std.ArrayList(u8) = .empty;
     var ops: Ops = .empty;
     try buildArgs(g, args, &fmt, &ops);
+    assert(ops.items.len <= fmt.items.len);
+    const len_before = g.out.items.len;
     try g.b("zs: {{ ", .{});
     try emitScratch(g, ops.items, site);
     // An overrun ends the run with E1011 (`zSOver`): §9.5.3 states no
@@ -223,6 +239,7 @@ pub fn emitStringFormat(g: *Gen, args: []const Mir.Value, site: usize) Error!voi
     try g.b("break :zs zStringStore(", .{});
     try emitBufPrint(g, fmt.items, ops.items, site);
     try g.b("); }}", .{});
+    assert(g.out.items.len > len_before);
 }
 
 /// Emits §9.5.3 `$sformat` whose format_string is a string VARIABLE ("whose
@@ -232,6 +249,7 @@ pub fn emitStringFormat(g: *Gen, args: []const Mir.Value, site: usize) Error!voi
 /// what `translateFormat` prints for it.
 pub fn emitStringFormatRt(g: *Gen, args: []const Mir.Value, site: usize) Error!void {
     assert(site < g.mir.instCount());
+    const len_before = g.out.items.len;
     try g.b("zStringStore(zSFormatRt(", .{});
     try emitRow(g, site, try strcap.rtFormatCap(g, args));
     try g.b(", ", .{});
@@ -259,6 +277,7 @@ pub fn emitStringFormatRt(g: *Gen, args: []const Mir.Value, site: usize) Error!v
         }
     }
     try g.b("}}))", .{});
+    assert(g.out.items.len > len_before);
 }
 // ------------------------------------------------------- §9.5 file I/O ----
 //
@@ -269,22 +288,27 @@ pub fn emitStringFormatRt(g: *Gen, args: []const Mir.Value, site: usize) Error!v
 
 /// Returns the §9.7.3 severity prefix of `c`, or null for every other task.
 pub fn severityWord(c: Mir.Callee) ?[]const u8 {
-    return switch (c) {
+    const word: ?[]const u8 = switch (c) {
         .@"$fatal" => "FATAL",
         .@"$error" => "ERROR",
         .@"$warning" => "WARNING",
         .@"$info" => "INFO",
         else => null, // else: §9.7.3 has exactly these four; every other task prints no severity
     };
+    if (word) |w| assert(w.len != 0);
+    return word;
 }
 
 /// §9.4.1: does the task end its line? `$write` and its radix forms are the
 /// members that do not, and §9.5.2's `$fwrite` is named after `$write`.
 pub fn endsLine(c: Mir.Callee) bool {
-    return switch (c) {
+    const ends = switch (c) {
         .@"$write", .@"$writeb", .@"$writeo", .@"$writeh", .@"$fwrite" => false,
         else => true, // else: every other §9.4.1/§9.5.2 printing task is a `$display`-like one
     };
+    // Every §9.7.3 severity task ends its line.
+    if (severityWord(c) != null) assert(ends);
+    return ends;
 }
 
 /// `std.mem.print(row, fmt, .{ops})` into call `site`'s row, as a slice
@@ -306,10 +330,12 @@ pub fn emitBufPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg, s
     var k: usize = 0;
     while (k < ops.len) : (k += fmt_chunk) {
         const end = @min(k + fmt_chunk, ops.len);
+        assert(end > k);
         try g.b("zw.print(\"{f}\", .{{", .{std.zig.fmtString(chunkText(fmt, ops, k, end))});
         try renderPrintArgs(g, ops[k..end], k);
         try g.b("}}) catch zSOver(); ", .{});
     }
+    assert(k >= ops.len);
     try g.b("break :zw{d} zw.buffered(); }}", .{site});
 }
 
@@ -349,6 +375,7 @@ fn emitDebugPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Err
         // One print per chunk, and one for no operands at all.
         assert(k <= ops.len);
         const end = @min(k + fmt_chunk, ops.len);
+        assert(end >= k);
         try g.b("std.debug.print(\"{f}\", .{{", .{std.zig.fmtString(chunkText(fmt, ops, k, end))});
         try renderPrintArgs(g, ops[k..end], k);
         try g.b("}}); ", .{});
@@ -361,21 +388,25 @@ fn emitDebugPrint(g: *Gen, fmt: []const u8, ops: []const cg_format.PrintArg) Err
 fn chunkText(fmt: []const u8, ops: []const cg_format.PrintArg, k: usize, end: usize) []const u8 {
     assert(k <= end);
     assert(end <= ops.len);
-    assert(k <= end);
-    assert(end <= ops.len);
+    // A later chunk starts at an operand the call has.
+    if (k != 0) assert(k < ops.len);
     const from = if (k == 0) 0 else ops[k].at;
     const to = if (end == ops.len) fmt.len else ops[end].at;
     assert(from <= to);
+    assert(to <= fmt.len);
     return fmt[from..to];
 }
 
 /// Operands `ops`, the first of which is the call's operand `first`.
 fn renderPrintArgs(g: *Gen, ops: []const cg_format.PrintArg, first: usize) Error!void {
     assert(ops.len <= std.math.maxInt(u32));
+    const len_before = g.out.items.len;
     for (ops, first..) |p, i| {
         if (i != first) try g.b(", ", .{});
         try cg_format.renderPrintArg(g, p, i);
     }
+    if (ops.len != 0) assert(g.out.items.len > len_before);
+    if (ops.len == 0) assert(g.out.items.len == len_before);
 }
 
 /// §9.7.1's diagnostic argument, folded. Syntax 9-5/9-7 make it the literal
@@ -399,7 +430,9 @@ fn emitWhen(g: *Gen, task: []const u8, inst: Mir.Inst, level: i64) Error!void {
     if (std.mem.findScalar(Mir.Inst, g.init_calls, inst) != null)
         return g.b("std.debug.print(\"{s}: initialization\", .{{}}); ", .{task});
     g.cur.uses.sim = true;
+    const len_before = g.out.items.len;
     try g.b("std.debug.print(\"{s}: \", .{{}}); zWhen(sim.t, {d}); ", .{ task, std.math.clamp(level, 0, 2) });
+    assert(g.out.items.len > len_before + task.len);
 }
 
 /// One analog block body → the printing artifact's text, in `arena`.

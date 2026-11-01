@@ -65,6 +65,7 @@ pub fn appendAliases(out: *std.ArrayList(u8), gpa: Allocator, src: []const u8) A
         while (n < rest.len and (std.ascii.isAlphanumeric(rest[n]) or rest[n] == '_')) n += 1;
         const name = rest[0..n];
         if (name.len < 2 or name[0] != 'z' or !std.ascii.isUpper(name[1])) continue;
+        assert(n <= rest.len);
         try out.print(gpa, "const {0s} = zh.{0s};\n", .{name});
     }
     assert(out.items.len >= len_before);

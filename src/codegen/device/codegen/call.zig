@@ -54,17 +54,18 @@ pub fn heldIdx(self: *const Gen, args: []const Mir.Value) usize {
 }
 
 /// Writes a call: system and environment functions (Clause 9), §4.5
-/// operators, §4.6 functions. One exhaustive switch over `Mir.Callee`, so a
+/// operators, §4.6 functions. One exhaustive switch over `Mir.Callee` routes
+/// each callee to its family's renderer, comptime-known, and each family
+/// renders only the callees routed to it (any other is a compile error), so a
 /// new callee does not compile until it has a rendering.
-/// Asserts that `inst` is a call. Restores `cur.call_tok` on return.
+/// Asserts that `inst` is a call, and that the call wrote text. Restores
+/// `cur.call_tok` on return.
 /// Invalidates slices of `out.items` if additional memory is needed.
 pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
     assert(self.mir.instOp(inst) == .call);
     const d = self.mir.instData(inst).call;
-    const c = d.callee;
-    const name = d.name;
     const args = d.args;
-    const k = Mir.callee.opKind(c);
+    const k = Mir.callee.opKind(d.callee);
     const saved_tok = self.cur.call_tok;
     self.cur.call_tok = self.mir.instTok(inst);
     defer self.cur.call_tok = saved_tok;
@@ -77,6 +78,36 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .none, .idt_hold, .laplace, .zi, .bound_step, .discontinuity => {},
         .idtmod, .absdelay, .transition, .slew, .last_crossing, .cross, .above, .timer => for (args) |arg| float_lanes.pinLanes(self, arg),
     }
+    const at = self.out.items.len;
+    try dispatch(self, inst, d.callee, d.name, args, k);
+    assert(self.out.items.len > at);
+}
+
+/// Reports `code` at the call being rendered (`Gen.call_tok`), marks the
+/// build fatal with the first such message and writes a placeholder
+/// `S.con(0.0)` so emission can continue. The diagnostic is what the user
+/// sees; `fatal` only poisons the unit's generated body.
+pub fn abort(self: *Gen, code: diag.Code, comptime fmt: []const u8, args: anytype) Error!void {
+    const len_before = self.out.items.len;
+    const msg = try self.arena.print(fmt, args);
+    if (self.diags) |bag| try bag.add(.codegen, code, self.lowered.tokenSpan(self.cur.call_tok), "{s}", .{msg});
+    self.poison(msg);
+    try self.b("S.con(0.0)", .{});
+    assert(self.cur.fatal != null);
+    assert(self.out.items.len == len_before + "S.con(0.0)".len);
+}
+
+/// Returns the string literal at `args[i]`, or null.
+pub fn strArg(self: *const Gen, args: []const Mir.Value, i: usize) ?[]const u8 {
+    assert(args.len <= std.math.maxInt(u32));
+    return @import("prove").strArg(self.input(), args, i);
+}
+
+// ---- private ----
+
+/// `emitCall`'s switch: each callee to its family's renderer.
+fn dispatch(self: *Gen, inst: Mir.Inst, c: Mir.Callee, name: []const u8, args: []const Mir.Value, k: @import("ir").op.OpKind) Error!void {
+    assert(k == Mir.callee.opKind(c));
     switch (c) {
         .@"idt$hold",
         .idtmod,
@@ -99,101 +130,19 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$bound_step",
         .@"$discontinuity",
         => return call_operator.emitOperator(self, inst, args, k),
-
-        // §4.5.13 limexp "returns a real value which is the exponential of
-        // its single real argument", and "the simulator can only converge
-        // when the output of limexp() equals the exponential of the input".
-        // `eval` sees one iterate and never the previous one, so the only
-        // limiting it can do that still converges to exp is none: limexp is
-        // `exp`'s own text (docs/specification/Vague_Decisions.md VD-121).
-        .limexp => return render_op.renderOp(self, .exp, if (args.len > 0) args[0] else .f_zero, .f_zero, .real),
-
-        // §4.5.14 ddx(f, V(node)); the unknown index is an int literal. Pins:
-        // `.ddxAt` reads one scalar partial.
-        .ddx => {
-            if (args.len > 0) float_lanes.pinLanes(self, args[0]);
-            const u = if (args.len > 1) self.an.foldConst(args[1], true) else null;
-            // Saturating cast: bad MIR must not panic the compiler.
-            const lane = if (u) |x| std.math.lossyCast(i64, x) else 0;
-            // The value reads a lane, so record it in `ddx_reads`.
-            // An index outside the unknowns marks every lane: a superset.
-            gen_mask.orIn(self.jac.ddx_reads, try gen_stamps.bits(self, &.{if (lane >= 0 and lane < self.names.n_u) @intCast(lane) else none_u32}, &.{}));
-            try self.b("S.con((", .{});
-            try gen_render.renderVal(self, if (args.len > 0) args[0] else .f_zero, .real);
-            try self.b(").ddxAt({d}))", .{lane});
-            return;
-        },
-
-        // §5.2.1 the `analog initial` guard. Not `initial_step`: §5.2.1 re-runs
-        // the block per sweep sub-task, while initial_step is the first point
-        // of the whole analysis.
-        .analog_initial => {
-            self.cur.uses.sim = true;
-            try self.b("S.con(if (sim.analog_initial) 1.0 else 0.0)", .{});
-            return;
-        },
-
-        // §4.5.4/§4.5.5 the solve an operator's DC form keys on. `dt`, not
-        // `analysis("static")`: a host opens a transient with its own kind and
-        // dt = 0. A small-signal analysis linearizes at dt = 0 too, and there
-        // the operator is its transfer function, not its DC value.
-        .@"op$static" => {
-            self.cur.uses.sim = true;
-            try self.b("S.con(if (sim.dt == 0.0 and sim.kind != .ac and sim.kind != .noise) 1.0 else 0.0)", .{});
-            return;
-        },
-
-        // §5.10.2 global events.
-        .initial_step, .final_step => {
-            self.cur.uses.sim = true;
-            const flag = if (c == .initial_step) "initial_step" else "final_step";
-            try self.b("S.con(if (sim.{s}", .{flag});
-            if (args.len != 0) {
-                try self.b(" and (", .{});
-                try call_analysis.analysisMatch(self, args);
-                try self.b(")", .{});
-            }
-            try self.b(") 1.0 else 0.0)", .{});
-            return;
-        },
-
-        // §4.6.1 analysis("dc"|"tran"|…).
-        .analysis => {
-            try self.b("S.con(if (", .{});
-            try call_analysis.analysisMatch(self, args);
-            try self.b(") 1.0 else 0.0)", .{});
-            return;
-        },
-
-        // §4.6.4 noise sources contribute zero to the residual. The host
-        // reads them through `noise_gens` and `noisePsd`.
-        .white_noise, .flicker_noise, .noise_table, .noise_table_log => return self.b("S.con(0.0)", .{}),
-
-        // §4.6.3 ac_stim(analysis_name, mag, phase) "returns zero (0) during
-        // large-signal analyses ... as well as on all small-signal analyses
-        // using names which do not match analysis_name". Defaults: "ac", 1.0,
-        // 0.0. Which analysis a name matches is `contract.acStimActive`'s
-        // rule (VD-064, VD-109).
-        //
-        // ponytail: the residual is real, so a matching analysis contributes
-        // mag·cos(phase) and drops the quadrature part. Upgrade path: an
-        // `ac_gens` export carrying (mag, phase) for a complex-solving host.
-        .ac_stim => {
-            // A.8.2 gives both numeric arguments as `analog_expression`, and
-            // Table 4-20 does not list ac_stim, so a solve-computed magnitude
-            // is legal: `ctrlEval`, not `argF64`.
-            const mag = try operator_ctrl.ctrlEval(self, args, 1, "1.0");
-            const phase = try operator_ctrl.ctrlEval(self, args, 2, "0.0");
-            try self.b("S.con(if (", .{});
-            try call_analysis.acStimMatch(self, args);
-            try self.b(") ({s}) * @cos({s}) else 0.0)", .{ mag, phase });
-            return;
-        },
-
-        // Clause 9 system functions.
-        .@"$display$width" => return gen_render.renderVal(self, args[0], .int),
-        // §9.4/§9.7.3 print only in a printing artifact; void in a device.
-        .@"$display",
+        inline .limexp, .ddx => |t| return call_operator.emitPlain(self, t, args),
+        inline .analog_initial,
+        .@"op$static",
+        .initial_step,
+        .final_step,
+        .analysis,
+        .white_noise,
+        .flicker_noise,
+        .noise_table,
+        .noise_table_log,
+        .ac_stim,
+        => |t| return call_analysis.emitAnalysis(self, t, args),
+        inline .@"$display",
         .@"$displayb",
         .@"$displayo",
         .@"$displayh",
@@ -211,37 +160,11 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$error",
         .@"$warning",
         .@"$info",
-        => return switch (self.display) {
-            .emit => {
-                const gated = try call_gate.gateOpen(self, c, inst);
-                try cg_display.emitDisplayTask(self, c, args, inst);
-                return if (gated) call_gate.gateClose(self) else {};
-            },
-            // A device's `say` records the task (`contract.SaySite`); a task
-            // it does not record, and every other unit, renders it void.
-            .record => if (self.cur.emitting_display) cg_say.emitSay(self, inst) else call_gate.voidTask(self),
-            .drop => call_gate.voidTask(self),
-        },
-        // §9.7.1/§9.7.2 same gate: in a printing artifact the run ends at the
-        // call's position among the prints; in a device the call is dead.
-        .@"$finish", .@"$stop" => {
-            if (self.display != .emit) return call_gate.voidTask(self);
-            const gated = try call_gate.gateOpen(self, c, inst);
-            try cg_display.emitSimCtl(self, name, args, inst);
-            return if (gated) call_gate.gateClose(self) else {};
-        },
-        // §9.4.1 a monitor's registration is a side effect, performed only by
-        // the display unit.
-        .@"$monitor$arm" => {
-            if (!self.cur.emitting_display or self.display != .emit) return call_gate.voidTask(self);
-            const gated = try call_gate.gateOpen(self, c, inst);
-            try cg_file_io.emitMonitorArm(self, args);
-            return if (gated) call_gate.gateClose(self) else {};
-        },
-        .@"$monitoron", .@"$monitoroff" => return call_gate.voidTask(self),
-        // §9.5 the descriptor family runs only in the display unit. Everywhere
-        // else, including every `.drop` build, `emitFileCallDropped` answers
-        // with the call's own type (a descriptor is an i64, §9.5.1).
+        .@"$finish",
+        .@"$stop",
+        .@"$monitor$arm",
+        .@"$monitoron",
+        .@"$monitoroff",
         .@"$fopen",
         .@"$fclose",
         .@"$fflush",
@@ -262,15 +185,127 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$fscanf$int",
         .@"$fscanf$real",
         .@"$fscanf$str",
-        => {
-            if (!self.cur.emitting_display or self.display != .emit) return call_gate.emitFileCallDropped(self, c, args, @backingInt(inst));
-            const gated = try call_gate.gateOpen(self, c, inst);
-            try cg_file_io.emitFileCall(self, c, args, @backingInt(inst));
-            if (!gated) return;
-            try self.b(" else ", .{});
-            try call_gate.emitFileCallDropped(self, c, args, @backingInt(inst));
-            return self.b(")", .{});
+        => |t| return call_gate.emitTask(self, inst, t, name, args),
+        inline .@"$temperature",
+        .@"$vt",
+        .@"$abstime",
+        .@"$realtime",
+        .@"$mfactor",
+        .@"$xposition",
+        .@"$yposition",
+        .@"$angle",
+        .@"$hflip",
+        .@"$vflip",
+        .@"$simparam",
+        .@"$simparam$str",
+        .@"$param_given",
+        .@"$port_connected",
+        .@"$test$plusargs",
+        .@"$value$plusargs",
+        .@"$plusarg$str",
+        => |t| return emitEnv(self, t, args),
+        inline .@"$held_real",
+        .@"$held_int",
+        .@"$held_str",
+        .@"$held_wide",
+        .@"$tp_hit",
+        .@"$tp_int",
+        .@"$tp_real",
+        .@"$tp_wide",
+        => |t| return emitState(self, t, args),
+        inline .@"$display$width",
+        .@"$limit$uf",
+        .@"$limit$old",
+        .@"$limit",
+        .@"$clog2",
+        .@"$rtoi",
+        .@"$itor",
+        .@"$realtobits",
+        .@"$bitstoreal",
+        => |t| return emitConversion(self, inst, t, name, args),
+        inline .@"$sformat",
+        .@"$sformat$rt",
+        .@"$str$cat",
+        .@"$str$repeat",
+        .@"$sscanf",
+        .@"$sscanf$int",
+        .@"$sscanf$real",
+        .@"$sscanf$str",
+        => |t| return emitString(self, inst, t, args),
+        inline .@"$sqrt",
+        .@"$exp",
+        .@"$expm1",
+        .@"$ln",
+        .@"$ln1p",
+        .@"$log",
+        .@"$log10",
+        .@"$floor",
+        .@"$ceil",
+        .@"$sin",
+        .@"$cos",
+        .@"$tan",
+        .@"$asin",
+        .@"$acos",
+        .@"$atan",
+        .@"$sinh",
+        .@"$cosh",
+        .@"$tanh",
+        .@"$asinh",
+        .@"$acosh",
+        .@"$atanh",
+        .@"$pow",
+        .@"$hypot",
+        .@"$atan2",
+        => |t| return emitMath(self, inst, t, name, args),
+        .@"$wide" => return gen_wide.emitWide(self, args, .bits),
+        .@"$wide$int" => return gen_wide.emitWide(self, args, .int),
+        // §9.20 node aliases are resolved and folded by `Lower.bindAlias`, so
+        // codegen never sees one; one that arrives is an unregistered `$name`.
+        .@"$analog_node_alias", .@"$analog_port_alias" => return call_systf.emitUnregistered(self, inst, name, args),
+        .@"$table_model" => return render_sysfunc.emitTable(self, inst, args), // §9.21
+        // Lowered to a running minimum (`lower_event.lowerKernelCtl`), never a call.
+        .@"$vera_reject_step" => unreachable,
+        // §3.2/§5.7 runtime array index (`emitIdx`), typed by the callee.
+        .@"$idx", .@"$idx$int", .@"$idx$str" => return render_sysfunc.emitIdx(self, args, Mir.callee.ty(c)),
+        // §9.13 Table 9-10 as `Lower.lowerRandom` shapes it: the seed, then
+        // the distribution's parameters. A variate is a pure function of the
+        // seed and carries no derivative.
+        .@"$rng$auto",
+        .@"$rng$check",
+        .@"$rng$rand",
+        .@"$rng$rand_next",
+        .@"$rng$i_uniform",
+        .@"$rng$i_uniform_next",
+        .@"$rng$uniform",
+        .@"$rng$uniform_next",
+        .@"$rng$normal",
+        .@"$rng$normal_next",
+        .@"$rng$exponential",
+        .@"$rng$exponential_next",
+        .@"$rng$poisson",
+        .@"$rng$poisson_next",
+        .@"$rng$chi_square",
+        .@"$rng$chi_square_next",
+        .@"$rng$t",
+        .@"$rng$t_next",
+        .@"$rng$erlang",
+        .@"$rng$erlang_next",
+        => return render_sysfunc.emitRng(self, c, args),
+        // §12.22.2 an output argument of the user system task `args[0]` calls.
+        .@"$systf$out" => return call_systf.emitSystfOut(self, args),
+        // A `$name` is an unregistered system function; anything else is a
+        // MIR call no clause defines.
+        .systf => {
+            if (name.len != 0 and name[0] == '$') return call_systf.emitUnregistered(self, inst, name, args);
+            return abort(self, .E1020, "VerA: unhandled call `{s}`", .{name});
         },
+    }
+}
+
+/// Writes a §9.10 environment, §6.3.6/§9.18 hierarchy, §9.15 `$simparam`,
+/// §9.19 or §9.12 plusarg query.
+fn emitEnv(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!void {
+    switch (c) {
         // §9.10 environment.
         .@"$temperature" => {
             self.cur.uses.model = true;
@@ -290,48 +325,6 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             self.cur.uses.sim = true;
             return self.b("S.con(sim.t)", .{});
         },
-        // §5.10 the retained value of an event-assigned variable: the
-        // `Instance` default before the event first fires, then the last
-        // accepted value.
-        .@"$held_real", .@"$held_int" => {
-            self.cur.uses.inst = true;
-            const f = self.names.held_names[heldIdx(self, args)];
-            float_lanes.instLanes(self, c == .@"$held_int");
-            return self.b("{s}(S, inst, \"{s}\")", .{ if (c == .@"$held_int") "zInstI" else "zInst", f });
-        },
-        // §5.10/§3.3 a held string: its `ZStrHeld` field's text, read from
-        // the one instance `inst` is, so an eval-side read is not `batch_ok`.
-        .@"$held_str" => {
-            self.cur.uses.inst = true;
-            float_lanes.instPin(self);
-            return self.b("inst.{s}.get()", .{self.names.held_names[heldIdx(self, args)]});
-        },
-        // IEEE 1364 §5.4 a held wide `reg`: its `ZW(n)` field, read from the
-        // one instance `inst` is, as a held string is.
-        .@"$held_wide" => {
-            self.cur.uses.inst = true;
-            float_lanes.instPin(self);
-            return self.b("inst.{s}", .{self.names.held_names[heldIdx(self, args)]});
-        },
-        .@"$wide" => return gen_wide.emitWide(self, args, .bits),
-        .@"$wide$int" => return gen_wide.emitWide(self, args, .int),
-        // VerA's `vera_timepoint` (§2.9): is statement b's cache current, and
-        // its slot k (`Lower.TpBlock`, the fields `emitInstance` declares).
-        .@"$tp_hit" => {
-            self.cur.uses.inst = true;
-            self.cur.uses.sim = true;
-            const b = litArg(self, args, 0);
-            return self.b("@as(i64, @intFromBool(zTpHit(inst.tp{d}_t, inst.tp{d}_k, sim)))", .{ b, b });
-        },
-        .@"$tp_int", .@"$tp_real", .@"$tp_wide" => {
-            self.cur.uses.inst = true;
-            const b = litArg(self, args, 0);
-            const slot = litArg(self, args, 1);
-            return if (c != .@"$tp_real")
-                self.b("inst.tp{d}_s{d}", .{ b, slot })
-            else
-                self.b("S.con(inst.tp{d}_s{d})", .{ b, slot });
-        },
         .@"$mfactor" => { // §6.3.6
             self.cur.uses.inst = true;
             float_lanes.instLanes(self, false);
@@ -340,8 +333,7 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         // §9.18 Table 9-29 hierarchical system parameters. The device is the
         // top level, so the "Top-Level Value" column is exact. ($mfactor is
         // the exception: the host scales the stamp, so it is an Instance field.)
-        .@"$xposition", .@"$yposition" => return self.b("S.con(0.0)", .{}), // 0.0 m
-        .@"$angle" => return self.b("S.con(0.0)", .{}), // 0 degrees
+        .@"$xposition", .@"$yposition", .@"$angle" => return self.b("S.con(0.0)", .{}), // 0.0 m, 0 degrees
         .@"$hflip", .@"$vflip" => return self.b("S.con(1.0)", .{}), // +1
         // §9.15 $simparam(name [, fallback]): the known value first, the
         // fallback only "if param_name is not known". The known set is
@@ -429,9 +421,6 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             }
             return self.b("@as(i64, 1)", .{});
         },
-        // §9.20 node aliases are resolved and folded by `Lower.bindAlias`, so
-        // codegen never sees one; one that arrives is an unregistered `$name`.
-        .@"$analog_node_alias", .@"$analog_port_alias" => return call_systf.emitUnregistered(self, inst, name, args),
         // §9.12 / IEEE 1364 §17.10: a search of the host-written
         // `inst.plusargs`, in supplied order. `$plusarg$str` is the matched
         // plusarg that `$sscanf$<ty>` converts.
@@ -443,6 +432,62 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             try gen_render.renderVal(self, if (args.len > 0) args[0] else .undef, .str);
             return self.b(", {}){s}", .{ c != .@"$test$plusargs", if (str) " orelse \"\")" else " != null))" });
         },
+        else => @compileError("emitEnv: `" ++ @tagName(c) ++ "` is not an environment query"), // else: `dispatch` routes only this family here
+    }
+}
+
+/// Writes a read of retained state: a §5.10 held value or a `vera_timepoint`
+/// (§2.9) cache slot.
+fn emitState(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!void {
+    switch (c) {
+        // §5.10 the retained value of an event-assigned variable: the
+        // `Instance` default before the event first fires, then the last
+        // accepted value.
+        .@"$held_real", .@"$held_int" => {
+            self.cur.uses.inst = true;
+            const f = self.names.held_names[heldIdx(self, args)];
+            float_lanes.instLanes(self, c == .@"$held_int");
+            return self.b("{s}(S, inst, \"{s}\")", .{ if (c == .@"$held_int") "zInstI" else "zInst", f });
+        },
+        // §5.10/§3.3 a held string: its `ZStrHeld` field's text, read from
+        // the one instance `inst` is, so an eval-side read is not `batch_ok`.
+        .@"$held_str" => {
+            self.cur.uses.inst = true;
+            float_lanes.instPin(self);
+            return self.b("inst.{s}.get()", .{self.names.held_names[heldIdx(self, args)]});
+        },
+        // IEEE 1364 §5.4 a held wide `reg`: its `ZW(n)` field, read from the
+        // one instance `inst` is, as a held string is.
+        .@"$held_wide" => {
+            self.cur.uses.inst = true;
+            float_lanes.instPin(self);
+            return self.b("inst.{s}", .{self.names.held_names[heldIdx(self, args)]});
+        },
+        // VerA's `vera_timepoint` (§2.9): is statement b's cache current, and
+        // its slot k (`Lower.TpBlock`, the fields `emitInstance` declares).
+        .@"$tp_hit" => {
+            self.cur.uses.inst = true;
+            self.cur.uses.sim = true;
+            const b = litArg(self, args, 0);
+            return self.b("@as(i64, @intFromBool(zTpHit(inst.tp{d}_t, inst.tp{d}_k, sim)))", .{ b, b });
+        },
+        .@"$tp_int", .@"$tp_real", .@"$tp_wide" => {
+            self.cur.uses.inst = true;
+            const b = litArg(self, args, 0);
+            const slot = litArg(self, args, 1);
+            return if (c != .@"$tp_real")
+                self.b("inst.tp{d}_s{d}", .{ b, slot })
+            else
+                self.b("S.con(inst.tp{d}_s{d})", .{ b, slot });
+        },
+        else => @compileError("emitState: `" ++ @tagName(c) ++ "` is not a retained-state read"), // else: `dispatch` routes only this family here
+    }
+}
+
+/// Writes a §9.11 conversion, a §9.17 limiter's value or `$clog2`.
+fn emitConversion(self: *Gen, inst: Mir.Inst, comptime c: Mir.Callee, name: []const u8, args: []const Mir.Value) Error!void {
+    switch (c) {
+        .@"$display$width" => return gen_render.renderVal(self, args[0], .int),
         // §9.22/§9.23 driver access is refused at lowering (E0818), so it
         // never reaches codegen.
         // §9.17.3 user-function `$limit`: lowering inlined the function and
@@ -496,6 +541,13 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             try gen_render.renderVal(self, if (args.len > 0) args[0] else .zero, .int);
             return self.b(")))", .{});
         },
+        else => @compileError("emitConversion: `" ++ @tagName(c) ++ "` is not a conversion"), // else: `dispatch` routes only this family here
+    }
+}
+
+/// Writes a §3.3/§9.5.3 string built at run time or a §9.5.4.2 `$sscanf`.
+fn emitString(self: *Gen, inst: Mir.Inst, comptime c: Mir.Callee, args: []const Mir.Value) Error!void {
+    switch (c) {
         // §9.5.3 `$swrite`/`$sformat` as the synthetic `$sformat(format,
         // args...)`: lowering made it the right-hand side of an assignment to
         // the destination. The text goes into this call site's scratch row.
@@ -522,35 +574,6 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
             try gen_render.renderVal(self, args[1], .str);
             return self.b(")", .{});
         },
-        .@"$table_model" => return render_sysfunc.emitTable(self, inst, args), // §9.21
-        // Lowered to a running minimum (`lower_event.lowerKernelCtl`), never a call.
-        .@"$vera_reject_step" => unreachable,
-        // §3.2/§5.7 runtime array index (`emitIdx`), typed by the callee.
-        .@"$idx", .@"$idx$int", .@"$idx$str" => return render_sysfunc.emitIdx(self, args, Mir.callee.ty(c)),
-        // §9.13 Table 9-10 as `Lower.lowerRandom` shapes it: the seed, then
-        // the distribution's parameters. A variate is a pure function of the
-        // seed and carries no derivative.
-        .@"$rng$auto",
-        .@"$rng$check",
-        .@"$rng$rand",
-        .@"$rng$rand_next",
-        .@"$rng$i_uniform",
-        .@"$rng$i_uniform_next",
-        .@"$rng$uniform",
-        .@"$rng$uniform_next",
-        .@"$rng$normal",
-        .@"$rng$normal_next",
-        .@"$rng$exponential",
-        .@"$rng$exponential_next",
-        .@"$rng$poisson",
-        .@"$rng$poisson_next",
-        .@"$rng$chi_square",
-        .@"$rng$chi_square_next",
-        .@"$rng$t",
-        .@"$rng$t_next",
-        .@"$rng$erlang",
-        .@"$rng$erlang_next",
-        => return render_sysfunc.emitRng(self, c, args),
         // §9.5.4.2 `$sscanf`: the count and three item flavours, each a pure
         // function of the two strings. `Lower.lowerScan` guards each
         // destination write with count > index.
@@ -560,99 +583,47 @@ pub fn emitCall(self: *Gen, inst: Mir.Inst) Error!void {
         .@"$sscanf$int" => return render_sysfunc.emitScan(self, "zScanNulI", args, .int),
         .@"$sscanf$real" => return render_sysfunc.emitScan(self, "zScanNulR", args, .real),
         .@"$sscanf$str" => return render_sysfunc.emitScan(self, "zScanNulS", args, .str),
-        // IEEE 1364 §17.11 math functions are their bare spellings, resolved at
-        // comptime. A wrong arity is an unregistered `$name`.
-        inline .@"$sqrt",
-        .@"$exp",
-        .@"$expm1",
-        .@"$ln",
-        .@"$ln1p",
-        .@"$log",
-        .@"$log10",
-        .@"$floor",
-        .@"$ceil",
-        .@"$sin",
-        .@"$cos",
-        .@"$tan",
-        .@"$asin",
-        .@"$acos",
-        .@"$atan",
-        .@"$sinh",
-        .@"$cosh",
-        .@"$tanh",
-        .@"$asinh",
-        .@"$acosh",
-        .@"$atanh",
-        .@"$pow",
-        .@"$hypot",
-        .@"$atan2",
-        => |t| {
-            // LRM Table 4-14/4-15 opcodes; `$log` is base 10, as lowering's `log`.
-            const op: Mir.Opcode = comptime switch (t) {
-                .@"$sqrt" => .sqrt,
-                .@"$exp" => .exp,
-                .@"$expm1" => .expm1,
-                .@"$ln" => .ln,
-                .@"$ln1p" => .ln1p,
-                .@"$log", .@"$log10" => .log10,
-                .@"$floor" => .floor,
-                .@"$ceil" => .ceil,
-                .@"$sin" => .sin,
-                .@"$cos" => .cos,
-                .@"$tan" => .tan,
-                .@"$asin" => .asin,
-                .@"$acos" => .acos,
-                .@"$atan" => .atan,
-                .@"$sinh" => .sinh,
-                .@"$cosh" => .cosh,
-                .@"$tanh" => .tanh,
-                .@"$asinh" => .asinh,
-                .@"$acosh" => .acosh,
-                .@"$atanh" => .atanh,
-                .@"$pow" => .pow,
-                .@"$hypot" => .hypot,
-                .@"$atan2" => .atan2,
-                else => unreachable, // else: `t` is one of this prong's callees, each mapped above
-            };
-            if (Mir.opClass(op) == .unary and args.len >= 1) return render_op.renderOp(self, op, args[0], .f_zero, .real);
-            if (Mir.opClass(op) == .binary and args.len >= 2) return render_op.renderOp(self, op, args[0], args[1], .real);
-            return call_systf.emitUnregistered(self, inst, name, args);
-        },
-        // §12.22.2 an output argument of the user system task `args[0]` calls.
-        .@"$systf$out" => return call_systf.emitSystfOut(self, args),
-        // A `$name` is an unregistered system function; anything else is a
-        // MIR call no clause defines.
-        .systf => {
-            if (name.len != 0 and name[0] == '$') return call_systf.emitUnregistered(self, inst, name, args);
-            return abort(self, .E1020, "VerA: unhandled call `{s}`", .{name});
-        },
+        else => @compileError("emitString: `" ++ @tagName(c) ++ "` is not a string function"), // else: `dispatch` routes only this family here
     }
 }
 
-/// Reports `code` at the call being rendered (`Gen.call_tok`), marks the
-/// build fatal with the first such message and writes a placeholder
-/// `S.con(0.0)` so emission can continue. The diagnostic is what the user
-/// sees; `fatal` only poisons the unit's generated body.
-pub fn abort(self: *Gen, code: diag.Code, comptime fmt: []const u8, args: anytype) Error!void {
-    const len_before = self.out.items.len;
-    const msg = try self.arena.print(fmt, args);
-    if (self.diags) |bag| try bag.add(.codegen, code, self.lowered.tokenSpan(self.cur.call_tok), "{s}", .{msg});
-    self.poison(msg);
-    try self.b("S.con(0.0)", .{});
-    assert(self.cur.fatal != null);
-    assert(self.out.items.len == len_before + "S.con(0.0)".len);
+/// Writes an IEEE 1364 §17.11 math function as its opcode's spelling.
+fn emitMath(self: *Gen, inst: Mir.Inst, comptime c: Mir.Callee, name: []const u8, args: []const Mir.Value) Error!void {
+    // LRM Table 4-14/4-15 opcodes; `$log` is base 10, as lowering's `log`.
+    const op: Mir.Opcode = comptime switch (c) {
+        .@"$sqrt" => .sqrt,
+        .@"$exp" => .exp,
+        .@"$expm1" => .expm1,
+        .@"$ln" => .ln,
+        .@"$ln1p" => .ln1p,
+        .@"$log", .@"$log10" => .log10,
+        .@"$floor" => .floor,
+        .@"$ceil" => .ceil,
+        .@"$sin" => .sin,
+        .@"$cos" => .cos,
+        .@"$tan" => .tan,
+        .@"$asin" => .asin,
+        .@"$acos" => .acos,
+        .@"$atan" => .atan,
+        .@"$sinh" => .sinh,
+        .@"$cosh" => .cosh,
+        .@"$tanh" => .tanh,
+        .@"$asinh" => .asinh,
+        .@"$acosh" => .acosh,
+        .@"$atanh" => .atanh,
+        .@"$pow" => .pow,
+        .@"$hypot" => .hypot,
+        .@"$atan2" => .atan2,
+        else => unreachable, // else: `emitCall` routes only these callees here
+    };
+    if (Mir.opClass(op) == .unary and args.len >= 1) return render_op.renderOp(self, op, args[0], .f_zero, .real);
+    if (Mir.opClass(op) == .binary and args.len >= 2) return render_op.renderOp(self, op, args[0], args[1], .real);
+    return call_systf.emitUnregistered(self, inst, name, args);
 }
-
-/// Returns the string literal at `args[i]`, or null.
-pub fn strArg(self: *const Gen, args: []const Mir.Value, i: usize) ?[]const u8 {
-    assert(args.len <= std.math.maxInt(u32));
-    return @import("prove").strArg(self.input(), args, i);
-}
-
-// ---- private ----
 
 /// The literal index at argument `i` of a lowering-minted call (`$tp_*`).
 fn litArg(self: *const Gen, args: []const Mir.Value, i: usize) u32 {
+    assert(i <= 1); // `$tp_*` carries a block and a slot
     const c = self.an.foldConst(if (i < args.len) args[i] else .zero, false) orelse return 0;
     return @intFromFloat(c);
 }

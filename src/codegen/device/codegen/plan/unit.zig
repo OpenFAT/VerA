@@ -180,15 +180,22 @@ pub fn init(
     self.blk_phi = try .initEmpty(arena, an.nb);
     self.dead_branch = try .initEmpty(arena, an.nb);
     if (display == .emit) try self.markFileDeps();
+    assert(self.needed.bit_length == an.nv);
+    assert(self.dead_branch.bit_length == an.nb);
+    // `file_dep` exists only for the printing artifact; empty otherwise.
+    if (display == .emit) assert(self.file_dep.bit_length == an.nv);
+    if (display != .emit) assert(self.file_dep.bit_length == 0);
     return self;
 }
 
 /// Whether `v` renders as its literal: a lane-free real computed by a pure
 /// op from literals alone (`foldConst` that looks through no parameter).
 /// Such a value is a leaf, read nothing, and has no slot: `render.renderInst`
-/// writes `S.con(<literal>)` at each read.
+/// writes `S.con(<literal>)` at each read. Asserts that `v` is a value of
+/// the analysed module.
 pub fn literal(self: *const UnitPlan, v: Mir.Value) bool {
     const i = @backingInt(v);
+    assert(i < self.an.nv);
     if (i < Mir.Value.first_dynamic or self.an.vty[i] != .real or !self.an.dFree(v)) return false;
     const def = self.mir.valueDef(v);
     if (def != .inst_result) return false;
@@ -201,21 +208,25 @@ pub fn literal(self: *const UnitPlan, v: Mir.Value) bool {
 
 /// Is this Value a setup root here? Unlike `cached` it is true inside the
 /// common declaration too: `setup` writes the field before any solve, so
-/// every body may read it.
+/// every body may read it. Asserts that `su_idx` is wired while `su_on`.
 pub inline fn isRoot(self: *const UnitPlan, v: Mir.Value) bool {
     if (!self.su_on) return false;
+    assert(self.su_idx.len == self.an.nv);
     return self.su_idx[@backingInt(v)] != none_u32;
 }
 
 /// Is this Value read out of the common declaration's cache HERE? False inside
 /// the common declaration itself, where it is computed, and false for a value
-/// defined inside a loop this unit re-runs.
+/// defined inside a loop this unit re-runs. Asserts that `lo_idx` is wired
+/// when asked outside the common declaration.
 pub inline fn cached(self: *const UnitPlan, v: Mir.Value) bool {
     // Builtin literals need no core dependency (`analyze` skips their slots).
     // A held first-call flag can publish `.one`, but another unit still
     // renders that literal directly instead of referencing an absent `c`.
     if (@backingInt(v) < Mir.Value.first_dynamic) return false;
-    if (self.in_common or self.lo_idx[@backingInt(v)] == none_u32) return false;
+    if (self.in_common) return false;
+    assert(self.lo_idx.len == self.an.nv);
+    if (self.lo_idx[@backingInt(v)] == none_u32) return false;
     if (self.display_unit and self.file_dep.bit_length != 0 and self.file_dep.isSet(@backingInt(v))) return false;
     if (self.display_unit and self.arr_lanes.len != 0) {
         const id = self.an.arr_of[@backingInt(v)];
@@ -225,6 +236,7 @@ pub inline fn cached(self: *const UnitPlan, v: Mir.Value) bool {
     // out of the cache (see `analyze`).
     const blk = self.an.def_block[@backingInt(v)];
     if (blk != none_u32) {
+        assert(blk < self.an.nb);
         const l = self.an.loop_of[blk];
         if (l != none_u32 and self.loop_recompute.isSet(l)) return false;
     }
@@ -261,11 +273,14 @@ pub fn analyze(self: *UnitPlan, target: Mir.Value, in_common: bool) Error!void {
     }
 }
 
-/// The block this unit computes `v` in.
+/// The block this unit computes `v` in, or `none_u32` for a value no block
+/// defines. Asserts that `su_home` is wired while `setup_mode`.
 pub fn homeBlock(self: *const UnitPlan, v: usize) u32 {
     assert(v < self.an.nv);
-    if (self.setup_mode and self.su_home[v] != none_u32) return self.su_home[v];
-    return self.an.def_block[v];
+    if (self.setup_mode) assert(self.su_home.len == self.an.nv);
+    const b = if (self.setup_mode and self.su_home[v] != none_u32) self.su_home[v] else self.an.def_block[v];
+    if (b != none_u32) assert(b < self.an.nb);
+    return b;
 }
 
 /// The §9.4 mode as the unit being analyzed sees it: a task's operands are a
@@ -276,7 +291,9 @@ pub inline fn dispHere(self: *const UnitPlan) Display {
 
 /// A branch the unit being planned actually tests: every one, except while
 /// planning `setup`, which takes a per-eval branch `then` untested.
+/// Asserts that `sinv` is wired while `setup_mode`.
 pub inline fn tested(self: *const UnitPlan, cond: Mir.Value) bool {
+    if (self.setup_mode) assert(self.sinv.len == self.an.nv);
     return !self.setup_mode or self.sinv[@backingInt(cond)];
 }
 
@@ -285,6 +302,7 @@ pub inline fn tested(self: *const UnitPlan, cond: Mir.Value) bool {
 /// Fill `file_dep`. A fixpoint because a loop phi reads a value defined after
 /// it; marking only ever adds, so it converges.
 fn markFileDeps(self: *UnitPlan) Error!void {
+    assert(self.display == .emit);
     self.file_dep = try .initEmpty(self.arena, self.an.nv);
     // Bound: every round but the last sets at least one of the `nv` flags,
     // so the loop runs at most `nv + 1` rounds.
@@ -321,9 +339,11 @@ fn markFileDeps(self: *UnitPlan) Error!void {
             }
         }
     }
+    assert(self.file_dep.bit_length == self.an.nv);
 }
 
 inline fn fileDep(self: *const UnitPlan, v: Mir.Value) bool {
+    assert(self.file_dep.bit_length == self.an.nv);
     return self.file_dep.isSet(@backingInt(self.an.rv(v)));
 }
 
@@ -337,6 +357,7 @@ inline fn fileDep(self: *const UnitPlan, v: Mir.Value) bool {
 /// loop, and every other unit keeps reading the core. Not hoisting loop values
 /// at all is also sound, but measured 2-5x larger output on models with loops.
 fn markRecomputedLoops(self: *UnitPlan) bool {
+    assert(self.loop_recompute.bit_length == self.an.nb);
     if (self.in_common) return false;
     var grew = false;
     for (self.live.items) |lv| {
@@ -346,6 +367,7 @@ fn markRecomputedLoops(self: *UnitPlan) bool {
         if (blk == none_u32) continue;
         const l = self.an.loop_of[blk];
         if (l == none_u32 or self.loop_recompute.isSet(l)) continue;
+        assert(l < self.an.nb); // a loop is named by its header block
         self.loop_recompute.set(l);
         grew = true;
     }
@@ -363,6 +385,7 @@ fn analyzeUnitOnce(self: *UnitPlan, target: Mir.Value) Error!void {
     @memset(self.slot, none_u32);
     self.live.clearRetainingCapacity();
     self.n_slots = 0;
+    assert(self.slot.len == self.an.nv);
 
     var work: std.ArrayList(Mir.Value) = .empty;
     defer work.deinit(self.arena);
@@ -410,6 +433,8 @@ fn analyzeUnitOnce(self: *UnitPlan, target: Mir.Value) Error!void {
     // Ascending value order, so the two sweeps below see exactly the order a
     // full 0..nv scan would. Values are unique ⇒ unstable sort is fine.
     std.mem.sortUnstable(Mir.Value, self.live.items, {}, ltValue);
+    for (1..@max(self.live.items.len, 1)) |j| assert(@backingInt(self.live.items[j - 1]) < @backingInt(self.live.items[j]));
+    if (!self.in_common) assert(self.needed.isSet(@backingInt(self.an.rv(target))));
 
     // Use counting: a `select` arm (§4.2.12) is a LAZY position.
     plan_inline.countUses(self, target);
@@ -422,6 +447,12 @@ fn analyzeUnitOnce(self: *UnitPlan, target: Mir.Value) Error!void {
         const v = @backingInt(self.live.items[k]);
         if (v < Mir.Value.first_dynamic) break; // sentinels sort first
         if (self.eager_use[v] != 0 or self.arm_use[v] == 0) continue;
+        // A leaf (`countUses`'s: a core field, a setup root, a literal)
+        // renders as its name or number at every read and counted none of
+        // its operands: inlining it would hide its cache read from
+        // `uses_cache` and take uses its operands never got.
+        const lv: Mir.Value = @fromBackingInt(@intCast(v));
+        if (self.cached(lv) or self.isRoot(lv) or self.literal(lv)) continue;
         // Read at more than one arm position: a slot, computed once where it
         // is defined, rather than re-rendering its whole slice at every arm.
         // Eager is sound here: prove's `guards.markSelectArms` guards only a slice owned
@@ -511,9 +542,11 @@ fn analyzeUnitOnce(self: *UnitPlan, target: Mir.Value) Error!void {
                 if (ai != 0 and self.cached(self.an.rv(a))) self.uses_cache = true;
             }
         }
+        assert(self.slot[v] == none_u32); // `live` holds each value once
         self.slot[v] = self.n_slots;
         self.n_slots += 1;
     }
+    assert(self.n_slots <= self.live.items.len);
 }
 
 fn mark(self: *UnitPlan, work: *std.ArrayList(Mir.Value), v0: Mir.Value) Error!void {
@@ -522,6 +555,7 @@ fn mark(self: *UnitPlan, work: *std.ArrayList(Mir.Value), v0: Mir.Value) Error!v
     if (self.needed.isSet(@backingInt(v))) return;
     self.needed.set(@backingInt(v));
     try self.live.append(self.arena, v);
+    assert(self.live.items.len <= self.an.nv); // `needed` admits each value once
     // A value read from the core's cache or from a setup root's Instance
     // field is a leaf here: its operands were computed there, and pulling
     // them in is the duplication the hoist removes.
@@ -530,6 +564,7 @@ fn mark(self: *UnitPlan, work: *std.ArrayList(Mir.Value), v0: Mir.Value) Error!v
 }
 
 fn markOperands(self: *UnitPlan, work: *std.ArrayList(Mir.Value), inst: Mir.Inst) Error!void {
+    assert(@backingInt(inst) < self.mir.instCount());
     switch (self.mir.instData(inst)) {
         .unary => |d| try self.mark(work, d.operand),
         .binary => |d| {
@@ -560,9 +595,12 @@ fn markOperands(self: *UnitPlan, work: *std.ArrayList(Mir.Value), inst: Mir.Inst
             try self.mark(work, d.value);
         },
     }
+    assert(work.items.len <= self.an.nv); // `needed` queues each value once
 }
 
 fn closeSlice(self: *UnitPlan, work: *std.ArrayList(Mir.Value)) Error!void {
+    // `mark` queues a value only after adding it to `live`.
+    assert(work.items.len <= self.live.items.len);
     while (work.pop()) |v| {
         const def = self.mir.valueDef(v);
         if (def != .inst_result) continue;
@@ -582,6 +620,7 @@ fn emptyCorePlan(f: *Fixture, an: *const Analysis, display: Display) !UnitPlan {
     @memset(lo_idx, none_u32);
     var p = try UnitPlan.init(a, &f.mir, an, display);
     p.lo_idx = lo_idx;
+    assert(p.lo_idx.len == an.nv);
     return p;
 }
 
@@ -633,6 +672,39 @@ test "§4.2.12 a value read only in one select arm is inlined there; its conditi
     // Only the target is a statement.
     try std.testing.expectEqual(@as(u32, 1), p.n_slots);
     try std.testing.expectEqual(@as(u32, 0), p.slot[@backingInt(s)]);
+}
+
+test "§4.2.12 a core-carried value read in one select arm is a cache read, not an inlined row" {
+    // The arm-inlining sweep marks a value read at exactly one lazy position
+    // `inlined`. A value the core carries (`cached`) renders as `c.fN`
+    // wherever it is read and counts none of its operands (`countUses` stops
+    // at it, a leaf), so the sweep must leave it alone: marked inlined, the
+    // slot sweep skips it before it sets `uses_cache`, and the body reads
+    // `c.f0` with no `const c = core(...)` above it, and moving its operands'
+    // uses to arm positions takes away `V(a)`'s eager use by the condition.
+    // Oracle: renderValueRef reads a cached value from the core's result,
+    // which exists only when `uses_cache` is set; the condition `V(a) > 0`
+    // runs eagerly, so `V(a)` keeps an eager use.
+    var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+    try f.init(&.{"a"});
+    defer f.deinit();
+    const a = f.alloc();
+    const va = try f.probe(0);
+    const sq = try f.mir.emit(a, .entry, .fmul, &.{ va, va });
+    const c = try f.mir.emit(a, .entry, .fgt, &.{ va, .f_zero });
+    const s = try f.mir.emit(a, .entry, .select, &.{ c, sq, .f_one });
+    const an = try f.analysis();
+    var p = try emptyCorePlan(&f, &an, .drop);
+    const lo_idx = try a.alloc(u32, an.nv);
+    @memset(lo_idx, none_u32);
+    lo_idx[@backingInt(sq)] = 0;
+    p.lo_idx = lo_idx;
+    p.lo_vals = &.{sq};
+    try p.analyze(s, false);
+    try std.testing.expect(p.cached(sq));
+    try std.testing.expect(!p.inlined.isSet(@backingInt(sq)));
+    try std.testing.expect(p.uses_cache);
+    try std.testing.expect(p.eager_use[@backingInt(va)] >= 1);
 }
 
 test "the core keeps every live-out as a field: none is inlined, each gets a slot" {

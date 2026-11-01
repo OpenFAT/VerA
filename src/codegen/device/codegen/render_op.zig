@@ -42,6 +42,36 @@ const idiv_fn = "(struct { fn zd_f(zd_a: i64, zd_b: i64) i64 { " ++
     // instead of trapping; the caller truncates to §3.2's 32 bits.
     "return if (zd_b == 0) 0 else @truncate(@divTrunc(@as(i65, zd_a), zd_b)); } }.zd_f)";
 
+/// One `+ - *` row of a chain as `renderArith` writes it: the operand it
+/// renders first (the chain continues there), and what it writes after.
+const Arith = struct {
+    op: Mir.Opcode,
+    form: Form,
+    /// The operand written after the first.
+    other: Mir.Value,
+    /// `.per_point`: the per-point operand is `b2`.
+    pb: bool = false,
+
+    /// §4.2.4 real arithmetic. With one operand derivative-free, `scale` and
+    /// `addC` skip the zero-lane multiply and add that `.strict` will not
+    /// fold. Each rewrite is value-preserving under IEEE 754 (`a - k` is
+    /// `a + (-k)`). `fdiv` keeps `div`: `a * (1/k)` is not `a / k`.
+    const Form = enum {
+        /// A derivative-free operand that still differs per point (a
+        /// `ddx`-stripped probe): `zMulP`/`zAddP`/`zSubP`, `scale`/`addC` of
+        /// its value in a one-point family, the same arithmetic kept per
+        /// point in a batch.
+        per_point,
+        /// `(a).addC(k)`, `(a).scale(k)`.
+        const_rhs,
+        /// `(b).addC(k)`; `k - b` negates first, so the constant still
+        /// arrives through `addC` and the derivative costs one negation.
+        const_lhs,
+        /// `(a).add(b)`.
+        method,
+    };
+};
+
 /// §4.2.4 permits a varying divisor but requires an error when it is zero.
 /// Executables report E0601; solver devices trap without importing host I/O
 /// onto GPU targets. -1 divides every integer exactly, including minInt(i64),
@@ -50,10 +80,13 @@ const idiv_fn = "(struct { fn zd_f(zd_a: i64, zd_b: i64) i64 { " ++
 pub fn imodFn(self: *const Gen) []const u8 {
     const head = "(struct { fn zm_f(zm_a: i64, zm_b: i64) i64 { if (zm_b == 0) { ";
     const tail = " } return if (zm_b == -1) 0 else @rem(zm_a, zm_b); } }.zm_f)";
-    return if (self.display == .emit)
+    const r = if (self.display == .emit)
         head ++ "std.debug.print(\"error[E0601]: LRM 4.2.4: integer modulus divisor is zero\\n\", .{}); std.process.exit(1);" ++ tail
     else
         head ++ "@trap();" ++ tail;
+    assert(std.mem.startsWith(u8, r, head));
+    assert(std.mem.endsWith(u8, r, tail));
+    return r;
 }
 
 /// Writes one opcode over its operands. Also serves the `$`-prefixed math
@@ -64,6 +97,7 @@ pub fn imodFn(self: *const Gen) []const u8 {
 pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty: VTy) Error!void {
     assert(Mir.opClass(op) == .unary or Mir.opClass(op) == .binary);
     assert(res_ty == .real or res_ty == .int or res_ty == .str or res_ty == .wide);
+    const at = self.out.items.len;
     // §3.3.1 string relations: lowering types both operands `.string` and
     // picks the integer comparison opcodes for them.
     if (self.an.tyOf(self.an.rv(a)) == .str or self.an.tyOf(self.an.rv(b2)) == .str) {
@@ -82,6 +116,7 @@ pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty:
             try self.b(", ", .{});
             try gen_render.renderVal(self, b2, .str);
             try self.b(") {s}))", .{r});
+            assert(std.mem.endsWith(u8, self.out.items, "))"));
             return;
         }
     }
@@ -90,50 +125,9 @@ pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty:
         // and `addC` skip the zero-lane multiply and add that `.strict` will
         // not fold. Each rewrite is value-preserving under IEEE 754 (`a - k`
         // is `a + (-k)`). `fdiv` keeps `div`: `a * (1/k)` is not `a / k`.
-        .fadd, .fsub, .fmul => {
-            // A derivative-free operand that still differs per point (a
-            // `ddx`-stripped probe) goes through `zMulP`/`zAddP`/`zSubP`:
-            // `scale`/`addC` of its value in a one-point family, the same
-            // arithmetic kept per point in a batch.
-            const pa = perPoint(self, a);
-            const pb = perPoint(self, b2);
-            if (pb or (pa and !self.an.dFree(b2))) {
-                const k, const o = if (pb) .{ b2, a } else .{ a, b2 };
-                try self.b("{s}(S, (", .{switch (op) {
-                    .fmul => "zMulP",
-                    .fsub => if (pb) "zSubP" else "zAddP",
-                    else => "zAddP", // else: the prong is `.fadd, .fsub, .fmul`
-                }});
-                try gen_render.renderVal(self, o, .real);
-                try self.b("){s}, ", .{if (op == .fsub and !pb) ".neg()" else ""});
-                try gen_render.renderVal(self, k, .real);
-                return self.b(")", .{});
-            }
-            if (self.an.dFree(b2)) {
-                try self.b("(", .{});
-                try gen_render.renderVal(self, a, .real);
-                try self.b(").{s}(", .{if (op == .fmul) "scale" else "addC"});
-                if (op == .fsub) try writeNegConst(self, b2) else try writeConst(self, b2);
-                return self.b(")", .{});
-            }
-            if (self.an.dFree(a)) {
-                try self.b("(", .{});
-                try gen_render.renderVal(self, b2, .real);
-                // k - b: negate first, so the constant still arrives through
-                // `addC` and the derivative costs one negation.
-                try self.b("){s}.{s}(", .{
-                    if (op == .fsub) ".neg()" else "",
-                    if (op == .fmul) "scale" else "addC",
-                });
-                try writeConst(self, a);
-                return self.b(")", .{});
-            }
-            try method2(self, a, switch (op) {
-                .fadd => "add",
-                .fsub => "sub",
-                else => "mul", // else: the prong is `.fadd, .fsub, .fmul`
-            }, b2);
-        },
+        // A chain of them (`y = y + c` statement after statement, fused by
+        // the planner) renders as a loop, not one frame per row.
+        .fadd, .fsub, .fmul => try renderArith(self, op, a, b2),
         // §4.3.1/§4.3.2 math: one `S` method or kernel per opcode
         // (`opcode_zig`'s `s` column; `.custom` here is a compile error).
         // expm1/log1p are primitives, not compositions of exp/log, because
@@ -345,6 +339,7 @@ pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty:
         // §3.2.2 array ops are rendered by `renderLoad`/`emitArrayStmt`.
         .phi, .select, .call, .branch, .jump, .anew, .fload, .iload, .store => unreachable,
     }
+    assert(self.out.items.len > at);
 }
 
 /// Writes a two-operand kernel call at the union of the operands' masks.
@@ -359,6 +354,7 @@ pub fn helper2(self: *Gen, name: []const u8, a: Mir.Value, b2: Mir.Value) Error!
     try kernelArg(self, b2, m);
     assert(m.len == self.mw);
     try kernelClose(self);
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes one real kernel operand, widened to the kernel's mask.
@@ -375,10 +371,82 @@ pub fn kernelArg(self: *Gen, v: Mir.Value, m: []const u64) Error!void {
 
 // ---- private ----
 
+/// Writes `a op b2` for a real `+ - *`. The operand written first may be the
+/// next row of a fused chain (`render.spineNext`): its opening is written
+/// next, and the closings follow innermost first, so a chain as long as the
+/// source writes on a bounded stack. Writes exactly what one call per row
+/// wrote.
+/// Invalidates slices of `out.items` if additional memory is needed.
+fn renderArith(self: *Gen, op0: Mir.Opcode, a0: Mir.Value, b0: Mir.Value) Error!void {
+    var levels: std.ArrayList(Arith) = .empty;
+    defer levels.deinit(self.gpa);
+    var row: gen_render.Spine = .{ .op = op0, .a = a0, .b = b0 };
+    // Each level is a distinct inline row of the chain.
+    for (0..self.mir.instCount() + 1) |_| {
+        const lvl = try arithOpen(self, row);
+        try levels.append(self.gpa, lvl.close);
+        row = try gen_render.spineNext(self, lvl.first, .real) orelse break;
+    } else unreachable; // a chain visits each row once
+    assert(levels.items.len >= 1);
+    while (levels.pop()) |lvl| try arithClose(self, lvl);
+}
+
+/// Writes the opening of one chain row and returns the operand to write
+/// first and the row's closing.
+fn arithOpen(self: *Gen, r: gen_render.Spine) Error!struct { first: Mir.Value, close: Arith } {
+    assert(r.op == .fadd or r.op == .fsub or r.op == .fmul);
+    const pa = perPoint(self, r.a);
+    const pb = perPoint(self, r.b);
+    if (pb or (pa and !self.an.dFree(r.b))) {
+        const k, const o = if (pb) .{ r.b, r.a } else .{ r.a, r.b };
+        try self.b("{s}(S, (", .{switch (r.op) {
+            .fmul => "zMulP",
+            .fsub => if (pb) "zSubP" else "zAddP",
+            else => "zAddP", // else: the op is `.fadd, .fsub, .fmul`
+        }});
+        return .{ .first = o, .close = .{ .op = r.op, .form = .per_point, .other = k, .pb = pb } };
+    }
+    try self.b("(", .{});
+    if (self.an.dFree(r.b)) return .{ .first = r.a, .close = .{ .op = r.op, .form = .const_rhs, .other = r.b } };
+    if (self.an.dFree(r.a)) return .{ .first = r.b, .close = .{ .op = r.op, .form = .const_lhs, .other = r.a } };
+    return .{ .first = r.a, .close = .{ .op = r.op, .form = .method, .other = r.b } };
+}
+
+/// Writes what follows a chain row's first operand.
+fn arithClose(self: *Gen, l: Arith) Error!void {
+    const at = self.out.items.len;
+    switch (l.form) {
+        .per_point => {
+            try self.b("){s}, ", .{if (l.op == .fsub and !l.pb) ".neg()" else ""});
+            try gen_render.renderVal(self, l.other, .real);
+        },
+        .const_rhs => {
+            try self.b(").{s}(", .{if (l.op == .fmul) "scale" else "addC"});
+            if (l.op == .fsub) try writeNegConst(self, l.other) else try writeConst(self, l.other);
+        },
+        .const_lhs => {
+            try self.b("){s}.{s}(", .{ if (l.op == .fsub) ".neg()" else "", if (l.op == .fmul) "scale" else "addC" });
+            try writeConst(self, l.other);
+        },
+        .method => {
+            try self.b(").{s}(", .{switch (l.op) {
+                .fadd => "add",
+                .fsub => "sub",
+                else => "mul", // else: the op is `.fadd, .fsub, .fmul`
+            }});
+            try gen_render.renderVal(self, l.other, .real);
+        },
+    }
+    try self.b(")", .{});
+    assert(self.out.items.len > at);
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
+}
+
 /// Whether real `v` is derivative-free yet x-dependent: a `.val()` of it
 /// would be one point's value (see `renderOp`'s `.fadd, .fsub, .fmul`).
 fn perPoint(self: *Gen, v: Mir.Value) bool {
     assert(self.an.vty.len == self.an.nv);
+    assert(@backingInt(v) < self.an.nv);
     return self.an.dFree(v) and float_lanes.perPoint(self, v) and self.an.tyOf(self.an.rv(v)) == .real;
 }
 
@@ -396,6 +464,7 @@ fn writeConst(self: *Gen, v: Mir.Value) Error!void {
     try self.b("(", .{});
     try gen_render.renderVal(self, v, .real);
     try self.b(").val()", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ").val()"));
 }
 
 /// Writes `writeConst` negated, for `a - k` as `a.addC(-k)`. A literal
@@ -409,6 +478,7 @@ fn writeNegConst(self: *Gen, v: Mir.Value) Error!void {
     try self.b("-(", .{});
     try writeConst(self, v);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 fn method1(self: *Gen, a: Mir.Value, name: []const u8) Error!void {
@@ -416,6 +486,7 @@ fn method1(self: *Gen, a: Mir.Value, name: []const u8) Error!void {
     try self.b("(", .{});
     try gen_render.renderVal(self, a, .real);
     try self.b(").{s}()", .{name});
+    assert(std.mem.endsWith(u8, self.out.items, "()"));
 }
 
 fn method2(self: *Gen, a: Mir.Value, name: []const u8, b2: Mir.Value) Error!void {
@@ -425,6 +496,7 @@ fn method2(self: *Gen, a: Mir.Value, name: []const u8, b2: Mir.Value) Error!void
     try self.b(").{s}(", .{name});
     try gen_render.renderVal(self, b2, .real);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 /// `name(S, a)` with `S` as written: `zAbs` takes the family itself.
@@ -433,6 +505,7 @@ fn helperS(self: *Gen, name: []const u8, a: Mir.Value) Error!void {
     try self.b("{s}(S, ", .{name});
     try gen_render.renderVal(self, a, .real);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 /// Writes a one-operand kernel call at the operand's mask.
@@ -442,6 +515,7 @@ fn helper1(self: *Gen, name: []const u8, a: Mir.Value) Error!void {
     try kernelOpen(self, name, m);
     try kernelArg(self, a, m);
     try kernelClose(self);
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes `zLu(S, m, name(zL(S, m), `: kernels take one scalar, which a
@@ -451,12 +525,14 @@ fn kernelOpen(self: *Gen, name: []const u8, m: []const u64) Error!void {
     assert(m.len == self.mw);
     const h = gen_mask.hex(m, false);
     try self.b("zLu(S, 0x{f}, {s}(zL(S, 0x{f}), ", .{ h, name, h });
+    assert(std.mem.endsWith(u8, self.out.items, "), "));
 }
 
 /// Writes the two parens `kernelOpen` left open.
 fn kernelClose(self: *Gen) Error!void {
     assert(self.out.items.len != 0);
     try self.b("))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes `(a) opx (b2)` over integers, unwrapped: only for the bitwise ops
@@ -468,6 +544,7 @@ fn intBin(self: *Gen, a: Mir.Value, opx: []const u8, b2: Mir.Value) Error!void {
     try self.b(") {s} (", .{opx});
     try gen_render.renderVal(self, b2, .int);
     try self.b("))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes `intBin` truncated to §3.2's 32-bit width (`fold.wrap32`). `opx`
@@ -478,6 +555,7 @@ fn intBin32(self: *Gen, a: Mir.Value, opx: []const u8, b2: Mir.Value) Error!void
     try self.b("@as(i64, @as(i32, @truncate(", .{});
     try intBin(self, a, opx, b2);
     try self.b(")))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")))))"));
 }
 
 /// Writes `name(a)` over an integer operand.
@@ -486,6 +564,7 @@ fn intCall1(self: *Gen, name: []const u8, a: Mir.Value) Error!void {
     try self.b("{s}(", .{name});
     try gen_render.renderVal(self, a, .int);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 // ponytail: integer callees infer their type; add a typed variant only for a caller.
@@ -496,6 +575,7 @@ fn intCall2(self: *Gen, name: []const u8, a: Mir.Value, b2: Mir.Value) Error!voi
     try self.b(", ", .{});
     try gen_render.renderVal(self, b2, .int);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 /// `op`'s tag names are the device kernel `zCmp`'s operator names.
@@ -508,6 +588,7 @@ fn cmpReal(self: *Gen, a: Mir.Value, op: std.math.CompareOperator, b2: Mir.Value
     try self.b(", ", .{});
     try gen_render.renderVal(self, b2, .real);
     try self.b(")))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")))"));
 }
 
 fn cmpInt(self: *Gen, a: Mir.Value, opx: []const u8, b2: Mir.Value) Error!void {
@@ -517,4 +598,5 @@ fn cmpInt(self: *Gen, a: Mir.Value, opx: []const u8, b2: Mir.Value) Error!void {
     try self.b(") {s} (", .{opx});
     try gen_render.renderVal(self, b2, .int);
     try self.b(")))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")))"));
 }

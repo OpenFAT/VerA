@@ -57,6 +57,7 @@ const Resume = union(enum) {
 /// core returns its whole cache, and `setup` stores its roots.
 pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void {
     if (self.su.mode) return gen_setup.emitStores(self, depth, "");
+    const at = self.out.items.len;
     try self.ind(depth);
     if (!self.cur.emitting_common) {
         try self.b("return ", .{});
@@ -81,6 +82,7 @@ pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void {
     }
     try self.ind(depth);
     try self.b("}};\n", .{});
+    assert(self.out.items.len > at);
 }
 
 /// Writes block `bi`'s statements. `decl` is the straight-line path, which
@@ -88,6 +90,7 @@ pub fn emitReturn(self: *Gen, depth: u32, target: Mir.Value) Error!void {
 /// the unit.
 pub fn emitBlockInsts(self: *Gen, bi: u32, depth: u32, comptime decl: bool) Error!void {
     assert(bi < self.an.term.len);
+    assert(bi + 1 < self.an.stmt_off.len);
     assert(self.an.stmt_off[bi] <= self.an.stmt_off[bi + 1]);
     const stmts = self.an.stmt_pool[self.an.stmt_off[bi]..self.an.stmt_off[bi + 1]];
     // `setup` runs no `vera_timepoint` statement: it reads the time.
@@ -98,6 +101,7 @@ pub fn emitBlockInsts(self: *Gen, bi: u32, depth: u32, comptime decl: bool) Erro
         try emitStmt(self, inst, depth, decl);
     }
     if (self.su.mode) for (self.sinv.movedTo(bi)) |v| {
+        assert(!self.su.spec);
         self.su.spec = true;
         defer self.su.spec = false;
         try emitStmt(self, self.mir.valueDef(v).inst_result, depth, decl);
@@ -113,6 +117,7 @@ pub fn emitBlockInsts(self: *Gen, bi: u32, depth: u32, comptime decl: bool) Erro
 /// level costs a stack row instead of a few native frames. The text is the
 /// recursion's, byte for byte (`emitStep`'s pieces are its bodies in order).
 pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void {
+    assert(bi < self.an.term.len);
     var stack: std.ArrayList(Resume) = .empty;
     defer stack.deinit(self.gpa);
     var next: ?Step = .{ .tree = .{ .bi = bi, .depth = depth } };
@@ -121,7 +126,10 @@ pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void {
             next = try emitStep(self, s, &stack, target);
             continue;
         }
-        const r = stack.pop() orelse return;
+        const r = stack.pop() orelse {
+            assert(stack.items.len == 0);
+            return;
+        };
         next = try emitResume(self, r, &stack);
     }
 }
@@ -129,6 +137,7 @@ pub fn emitTree(self: *Gen, bi: u32, depth: u32, target: Mir.Value) Error!void {
 /// Writes `cond` as a Zig bool (`!= 0` on its scalar value) and pins lanes
 /// if it depends on x.
 pub fn renderCond(self: *Gen, cond: Mir.Value) Error!void {
+    const at = self.out.items.len;
     const v = self.an.rv(cond);
     if (self.an.tyOf(v) == .int) {
         float_lanes.pinLanes(self, cond);
@@ -140,12 +149,14 @@ pub fn renderCond(self: *Gen, cond: Mir.Value) Error!void {
         try gen_render.renderVal(self, v, .real);
         try self.b(", S.con(0.0))", .{});
     }
+    assert(self.out.items.len > at);
 }
 
 // ---- private ----
 
 fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!void {
     const i = @backingInt(self.an.i_res[@backingInt(inst)]);
+    assert(i < self.an.arr_of.len);
     if (!self.cur.plan.needed.isSet(i)) return;
     // §3.2.2 an `anew`/`store` is a statement on its storage, not a slot.
     if (self.an.arr_of[i] != none_u32) {
@@ -159,6 +170,7 @@ fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!v
     // `or` short-circuits, so the straight-line path (`decl`, which runs
     // without a probe) never touches `place`.
     const at_def = decl or self.cur.probe.place.items[self.cur.plan.slot[i]].at_def;
+    const at = self.out.items.len;
     try self.ind(depth);
     var m: ?[]const u64 = null;
     if (at_def) {
@@ -176,6 +188,7 @@ fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!v
     try gen_render.renderInst(self, inst);
     if (m != null) try self.b(")", .{});
     try self.b(";\n", .{});
+    assert(self.out.items.len > at);
 }
 
 /// Writes `s` up to its first nested piece, pushing what follows that piece
@@ -183,6 +196,7 @@ fn emitStmt(self: *Gen, inst: Mir.Inst, depth: u32, comptime decl: bool) Error!v
 fn emitStep(self: *Gen, s: Step, stack: *std.ArrayList(Resume), target: Mir.Value) Error!?Step {
     switch (s) {
         .tree => |t| {
+            assert(t.bi < self.an.is_loop.len);
             if (!self.an.is_loop[t.bi]) return .{ .code = .{ .bi = t.bi, .depth = t.depth } };
             // `setup` ends at a loop with a per-eval branch: nothing it can reach
             // is placeable, and forcing its tests `then` could spin forever. The
@@ -197,6 +211,7 @@ fn emitStep(self: *Gen, s: Step, stack: *std.ArrayList(Resume), target: Mir.Valu
             try self.b("L{d}: while (true) {{\n", .{t.bi});
             try gen_unit_body.scopeOpen(self);
             try stack.append(self.gpa, .{ .loop_end = .{ .depth = t.depth, .was_dead = was_dead } });
+            assert(stack.items.len > 0);
             return .{ .code = .{ .bi = t.bi, .depth = t.depth + 1 } };
         },
         .code => |c| return emitCode(self, c.bi, c.depth, stack, target),
@@ -225,6 +240,7 @@ fn emitResume(self: *Gen, r: Resume, stack: *std.ArrayList(Resume)) Error!?Step 
             return null;
         },
         .else_arm => |e| {
+            if (e.init_at) |at| assert(at <= self.out.items.len);
             if (e.init_at) |at| try self.cur.init_arms.append(self.arena, .{ at, self.out.items.len });
             gen_unit_body.scopeClose(self, self.out.items.len);
             try self.ind(e.depth);
@@ -336,6 +352,7 @@ fn emitCode(self: *Gen, bi0: u32, depth0: u32, stack: *std.ArrayList(Resume), ta
 /// merge nor a loop header. Null otherwise. If-conversion leaves a chain of
 /// such jumps, one per converted `if`.
 fn inlineSuccessor(self: *const Gen, bi: u32) ?u32 {
+    assert(bi < self.an.term.len);
     const t = self.an.term[bi];
     if (t == .none) return null;
     const to: u32 = switch (self.mir.instData(t)) {
@@ -343,7 +360,10 @@ fn inlineSuccessor(self: *const Gen, bi: u32) ?u32 {
         .branch => |d| if (self.cur.plan.dead_branch.isSet(bi)) @backingInt(d.then_block) else return null,
         .unary, .binary, .ternary, .phi, .call, .anew, .load, .store => unreachable,
     };
+    assert(to < self.an.term.len);
     if (self.an.is_loop[to] or self.an.is_merge[to]) return null;
+    // A self-jump makes `bi` a loop header, refused above.
+    assert(to != bi);
     return to;
 }
 
@@ -352,6 +372,7 @@ fn inlineSuccessor(self: *const Gen, bi: u32) ?u32 {
 /// control fall into `k`'s code instead of past it.
 fn isFallThrough(self: *const Gen, at: usize, depth: u32, k: u32) bool {
     assert(at <= self.out.items.len);
+    assert(k < self.an.term.len);
     const body = self.out.items[at..];
     if (body.len == 0) return true;
     var buf: [64]u8 = undefined;
@@ -364,6 +385,7 @@ fn isFallThrough(self: *const Gen, at: usize, depth: u32, k: u32) bool {
 /// Writes block `bi`'s terminator up to its first edge: the unit's return,
 /// or the edge of a jump, or `if (cond) {` with the `else` arm pushed.
 fn emitTerm(self: *Gen, bi: u32, depth: u32, stack: *std.ArrayList(Resume), target: Mir.Value) Error!?Step {
+    assert(bi < self.an.term.len);
     const t = self.an.term[bi];
     if (t == .none) {
         // The block lowering ended in: the contribution accumulators are
@@ -396,6 +418,7 @@ fn emitTerm(self: *Gen, bi: u32, depth: u32, stack: *std.ArrayList(Resume), targ
             try gen_unit_body.scopeOpen(self);
             const init_at: ?usize = if (!self.su.mode and initialStep(self, d.cond)) self.out.items.len else null;
             try stack.append(self.gpa, .{ .else_arm = .{ .from = bi, .to = @backingInt(d.else_block), .depth = depth, .else_dead = else_dead, .init_at = init_at } });
+            assert(stack.items.len > 0);
             return .{ .edge = .{ .from = bi, .to = @backingInt(d.then_block), .depth = depth + 1 } };
         },
         // `an.term` is the block's branch or jump, found by opcode.
@@ -483,6 +506,7 @@ fn emitPhiCopies(self: *Gen, from: u32, to: u32, depth: u32) Error!void {
 /// inline tree `renderVal` would print and stops at materialized values.
 /// Answers yes past the depth cap, which keeps the temporaries.
 fn readsPhiOf(self: *Gen, v0: Mir.Value, to: u32, depth: u32) bool {
+    assert(to < self.an.term.len);
     if (depth > 64) return true;
     const v = self.an.rv(v0);
     const def = self.mir.valueDef(v);
@@ -507,5 +531,6 @@ fn readsPhiOf(self: *Gen, v0: Mir.Value, to: u32, depth: u32) bool {
 /// local slot.
 fn slotted(self: *const Gen, inst: Mir.Inst) bool {
     const i = @backingInt(self.an.i_res[@backingInt(inst)]);
+    assert(i < self.an.vty.len);
     return self.cur.plan.needed.isSet(i) and self.cur.plan.slot[i] != none_u32;
 }

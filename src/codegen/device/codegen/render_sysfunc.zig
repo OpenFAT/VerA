@@ -43,6 +43,7 @@ pub fn emitScan(self: *Gen, fn_name: []const u8, args: []const Mir.Value, want: 
     }
     try self.b(")", .{});
     if (want == .real) try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 /// Writes one §9.13 probabilistic draw. `$rng$auto` reads the seedless
@@ -98,6 +99,7 @@ pub fn emitRng(self: *Gen, c: Mir.Callee, args: []const Mir.Value) Error!void {
         fn_name.appendAssumeCapacity(if (up) std.ascii.toUpper(ch) else ch);
         up = false;
     }
+    assert(fn_name.items.len > "zRng".len);
     try self.b("S.con({s}(", .{fn_name.items});
     try gen_render.renderVal(self, if (args.len > 0) args[0] else .zero, .int);
     for (args[@min(1, args.len)..]) |a| {
@@ -106,6 +108,7 @@ pub fn emitRng(self: *Gen, c: Mir.Callee, args: []const Mir.Value) Error!void {
         try self.b(".val()", .{});
     }
     try self.b("))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes a §9.21 `$table_model` call in the shape
@@ -131,6 +134,7 @@ pub fn emitTable(self: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!void
     // the call.
     if (nd == 0 or ncol == 0 or args.len != head + np * ncol)
         return gen_call.abort(self, .E1020, "malformed `$table_model` call reached codegen", .{});
+    assert(head <= args.len);
     // The lookup runs at the union of its points' masks.
     const m = try gen_mask.zero(self.arena, self.mw);
     for (args[7..head]) |v| gen_mask.orIn(m, family.mask(self, v));
@@ -162,6 +166,7 @@ pub fn emitTable(self: *Gen, inst: Mir.Inst, args: []const Mir.Value) Error!void
     }
     try self.b("}}))", .{});
     if (site != 0) try self.b("; }}", .{});
+    assert(std.mem.endsWith(u8, self.out.items, if (site != 0) "})); }" else "}))"));
 }
 
 /// Writes a §3.2/§5.7 runtime array index in the shape
@@ -199,6 +204,7 @@ pub fn emitIdx(self: *Gen, args: []const Mir.Value, want: VTy) Error!void {
     // reserves "shall report an error" for named cases).
     if (widen) return self.b(" else => zTo(S, 0x{f}, {s}) }}", .{ gen_mask.hex(m, false), gen_unit_body.zeroOf(want) });
     try self.b(" else => {s} }}", .{gen_unit_body.zeroOf(want)});
+    assert(std.mem.endsWith(u8, self.out.items, " }"));
 }
 
 /// Returns the non-negative integer literal lowering put at `args[i]`, or

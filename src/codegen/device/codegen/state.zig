@@ -56,12 +56,15 @@ pub fn secStep(self: *Gen, n: []const u8, p: cg_filters.FilterPlan, dt: []const 
     assert(n.len != 0);
     assert(dt.len != 0);
     if (p.sampled.len == 0) return self.arena.print("{s}__sec(model)", .{n});
+    const at = self.out.items.len;
     try self.w("        if (!({s} > 0.0)) inst.{s}__k = .{{ ", .{ dt, n });
     for (p.sampled, 0..) |v, j| {
         if (j != 0) try self.w(", ", .{});
         try self.w("{s}", .{try operator_ctrl.ctrlStep(self, &.{v}, 0, "0.0")});
     }
     try self.w(" }};\n", .{});
+    assert(self.out.items.len > at);
+    assert(std.mem.endsWith(u8, self.out.items, " };\n"));
     return self.arena.print("{s}__sec(model, inst.{s}__k)", .{ n, n });
 }
 
@@ -71,6 +74,8 @@ pub fn secStep(self: *Gen, n: []const u8, p: cg_filters.FilterPlan, dt: []const 
 /// tiles with the other unit declarations.
 pub fn emitCore(self: *Gen) Error!void {
     assert(self.state_core.name.len == 0);
+    assert(self.core.prev_lo.len == self.core.prev_vals.len);
+    assert(self.core.acc_lo.len == self.core.acc_vals.len);
     if (!(try scanAccept(self)).uses_core) return;
     const keep = try self.arena.alloc(bool, self.core.lo_vals.len);
     @memset(keep, false);
@@ -99,6 +104,7 @@ pub fn emitCore(self: *Gen) Error!void {
         \\/// reads: the accepted point's operator inputs, latches and held values.
         \\
     );
+    assert(self.state_core.name.len != 0);
 }
 
 /// §5.10 the copy-on-write held arrays (`render.cow`) the `updateState` slice
@@ -130,6 +136,7 @@ pub fn inPlaceArrays(self: *Gen) Error![]const bool {
         if (!gen_timepoint.tpInPlace(self, self.lowered.timepoints.items[tp.block].slots[tp.slot])) flags[d.array] = false;
     }
     if (std.mem.findScalar(bool, flags, true) == null) return &.{};
+    assert(flags.len == self.lowered.mem_arrays.items.len);
     return flags;
 }
 
@@ -137,6 +144,7 @@ pub fn inPlaceArrays(self: *Gen) Error![]const bool {
 /// limiter values `advanceIteration` stores once per Newton iterate.
 pub fn emitIterCore(self: *Gen) Error!void {
     assert(self.iter_core.name.len == 0);
+    assert(self.core.lo_idx.len == 0 or self.core.lo_idx.len == self.an.nv);
     const keep = try self.arena.alloc(bool, self.core.lo_vals.len);
     @memset(keep, false);
     var any = false;
@@ -150,6 +158,7 @@ pub fn emitIterCore(self: *Gen) Error!void {
         \\/// that reads.
         \\
     );
+    assert(self.iter_core.name.len != 0);
 }
 
 /// Writes `State`, `initState`, `updateState`, `state_class`, `stateCtl`,
@@ -158,6 +167,8 @@ pub fn emitIterCore(self: *Gen) Error!void {
 /// accepted copies, which `eval` never reads.
 pub fn emitStateMachine(self: *Gen) Error!void {
     assert(self.core.held_idx.len == self.lowered.held_vars.items.len);
+    assert(self.names.held_names.len == self.lowered.held_vars.items.len);
+    const start = self.out.items.len;
     const acc = try scanAccept(self);
     const uses_core = acc.uses_core;
     try self.w(
@@ -287,6 +298,8 @@ pub fn emitStateMachine(self: *Gen) Error!void {
     try gen_state_ctl.emitStateCtl(self, acc.reads_t_prev);
     try emitAdvanceIteration(self);
     try gen_accept.emitAcceptQ(self, acc);
+    assert(self.out.items.len > start);
+    assert(self.core.name.ptr == full.name.ptr);
 }
 
 // ---- private ----
@@ -307,6 +320,8 @@ fn scanAccept(self: *Gen) Error!Accept {
     a.uses_core = a.uses_core or gen_instance.pathLatches(self);
     a.uses_core = a.uses_core or rejectStepIdx(self) != null;
     a.reads_t_prev = a.reads_t_prev or a.uses_dt;
+    if (a.uses_dt) assert(a.reads_t_prev);
+    if (!a.reads_t_prev) assert(!a.uses_dt);
     return a;
 }
 
@@ -314,7 +329,9 @@ fn scanAccept(self: *Gen) Error!Accept {
 fn rejectStepIdx(self: *const Gen) ?u32 {
     assert(self.core.lo_idx.len == 0 or self.core.lo_idx.len == self.an.nv);
     if (self.lowered.reject_step == .undef) return null;
-    return gen_dispatch.coreIdx(self, self.an.rv(self.lowered.reject_step));
+    const k = gen_dispatch.coreIdx(self, self.an.rv(self.lowered.reject_step)) orelse return null;
+    assert(k < self.core.lo_vals.len);
+    return k;
 }
 
 /// Returns whether `text` reads a field of the core result `m` (`m.f<k>`).
@@ -325,8 +342,10 @@ fn readsM(text: []const u8) bool {
     while (std.mem.findPos(u8, text, at, "m.f")) |i| : (at = i + 1) {
         assert(iterations < text.len);
         iterations += 1;
+        assert(i + "m.f".len <= text.len);
         if (i == 0 or !(std.ascii.isAlphanumeric(text[i - 1]) or text[i - 1] == '_')) return true;
     }
+    assert(iterations <= text.len);
     return false;
 }
 
@@ -337,9 +356,11 @@ fn emitStateClass(self: *Gen) Error!void {
     assert(self.out.items.len != 0);
     const latch_only = gen_instance.pathLatches(self) and !gen_file.hasStatefulOps(self) and
         self.lowered.rng_auto_seeds.items.len == 0;
+    const at = self.out.items.len;
     try self.w("/// What `updateState` carries across accepted points (`contract.StateClass`).\npub const state_class: contract.StateClass = .{s};\n\n", .{
         if (latch_only) "path_latch" else "history",
     });
+    assert(self.out.items.len > at);
 }
 
 /// Writes `advanceIteration` (the host calls it after each Newton iterate,
@@ -367,6 +388,7 @@ fn emitAdvanceIteration(self: *Gen) Error!void {
             try self.w("    inst.limiter_previous[{d}] = 0.0;\n", .{k});
     }
     try self.w("}}\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "}\n\n"));
 }
 
 test readsM {

@@ -27,6 +27,7 @@ const gen_instance = @import("instance.zig");
 pub fn emitStateTwins(self: *Gen, t_prev: bool) Error!void {
     assert(self.core.prev_lo.len == self.core.prev_vals.len);
     assert(self.core.acc_lo.len == self.core.acc_vals.len);
+    assert(self.names.units.len == self.names.unit_names.len);
     for (0..self.core.prev_lo.len) |k| try self.w("    wb__{d}: f64 = 0.0, // path_prev staged\n", .{k});
     for (0..self.core.acc_lo.len) |k| try self.w("    wq__{d}: f64 = 0.0, // path_acc staged\n", .{k});
     if (t_prev) try self.w("    t_prev__acc: f64 = 0.0,\n", .{});
@@ -52,6 +53,7 @@ pub fn emitStateTwins(self: *Gen, t_prev: bool) Error!void {
 /// contract.StateCtlOp, which the host converts by ordinal.
 pub fn emitStateCtl(self: *Gen, t_prev: bool) Error!void {
     assert(self.names.held_names.len == self.lowered.held_vars.items.len);
+    assert(self.names.units.len == self.names.unit_names.len);
     const fsm = fsmStateCtl(self);
     try self.w(
         \\/// §4.5 the step decision after `updateState` (`contract.StateCtlOp`):
@@ -156,10 +158,12 @@ pub fn emitStateCtl(self: *Gen, t_prev: bool) Error!void {
         \\
         \\
     , .{});
+    assert(self.out.items.len > body);
     // A device whose only accepted-step work is constant (the §9.17 resets)
     // or `$vera_reject_step` has nothing to commit.
     gen_unit.patchUnless(self, at_state, body, "state");
     gen_unit.patchUnless(self, at_inst, body, "inst");
+    assert(std.mem.endsWith(u8, self.out.items, "    return false;\n}\n\n"));
 }
 
 // ---- private ----
@@ -188,12 +192,14 @@ fn fsmStateCtl(self: *const Gen) bool {
 fn dirtyArray(self: *const Gen, h: Lowered.HeldVar) ?u32 {
     assert(h.name.len != 0);
     if (h.array == none_u32 or !gen_instance.dirtyTracked(self, h.array)) return null;
+    assert(h.array < self.lowered.mem_arrays.items.len);
     return h.array;
 }
 
 /// Returns the module's `Lowered.held_vars` row named `name`, if any.
 fn heldNamed(self: *const Gen, name: []const u8) ?Lowered.HeldVar {
     assert(name.len != 0);
+    assert(self.names.held_names.len == self.lowered.held_vars.items.len);
     for (self.names.held_names, self.lowered.held_vars.items) |n, h| {
         if (std.mem.eql(u8, n, name)) return h;
     }
@@ -203,5 +209,6 @@ fn heldNamed(self: *const Gen, name: []const u8) ?Lowered.HeldVar {
 /// Returns the element type of held array row `h`'s `Instance` field.
 fn elemTy(self: *const Gen, h: Lowered.HeldVar) []const u8 {
     assert(h.array != none_u32);
+    assert(h.array < self.lowered.mem_arrays.items.len);
     return if (self.lowered.mem_arrays.items[h.array].ty == .integer) "i64" else "f64";
 }

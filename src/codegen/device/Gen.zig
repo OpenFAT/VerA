@@ -153,6 +153,10 @@ files: std.MultiArrayList(gen_file.UnitFile) = .empty,
 /// where the conditionally-emitted helper blocks are already decided.
 prelude: []const u8 = "",
 helpers: []const u8 = "",
+/// The renderer's nesting (`render.renderInst`, one level per inline row):
+/// past `render.caller_levels` on the caller's stack, each next
+/// `render.segment_levels` run on a fresh stack.
+render_seg: @import("frontend").deep_stack.Segments = .{},
 /// `cg_strcap`'s memo: the capacity of each string Value asked about.
 str_caps: std.AutoHashMapUnmanaged(Mir.Value, u64) = .empty,
 /// `cg_strcap.heldCap` per `Lowered.held_vars` row, solved on first use.
@@ -396,6 +400,8 @@ pub fn indWidth(n: u32) u32 {
     // `@min` narrows to the comptime bound's width; widen before scaling.
     const width = @as(u32, @min(n, max_indent)) * 4;
     assert(width <= max_indent * 4);
+    assert(width % 4 == 0);
+    if (n <= max_indent) assert(width == n * 4);
     return width;
 }
 
@@ -404,6 +410,7 @@ pub fn indWidth(n: u32) u32 {
 pub fn arrMask(self: *const Gen, id: usize) []u64 {
     assert(id < self.arr_s.len);
     assert(self.arr_mask.len == self.arr_s.len * self.mw);
+    assert(self.mw >= 1);
     return self.arr_mask[id * self.mw ..][0..self.mw];
 }
 

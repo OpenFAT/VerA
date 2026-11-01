@@ -133,6 +133,8 @@ pub fn alloc(self: *Gen) Error!void {
     assert(self.jac.deriv_reads.len == 0);
     self.jac.deriv_reads = try gen_mask.zero(self.arena, self.mw);
     self.jac.ddx_reads = try gen_mask.zero(self.arena, self.mw);
+    assert(self.jac.deriv_reads.len == self.mw);
+    assert(self.jac.ddx_reads.len == self.mw);
 }
 
 /// Emits `eval`, and `q`/`evalQ`/the charge-site tables when any charge site
@@ -150,6 +152,8 @@ pub fn emitDispatchers(self: *Gen) Error!void {
         l.* = try self.arena.alloc(plan_jac.LinRow, n);
         @memset(l.*, .empty);
     }
+    assert(self.jac.rows[1].len == self.mw);
+    assert(self.jac.lin[1].len == n);
     if (tables(self) or self.acdyn.len != 0) self.jac.dpat = try gen_mask.zero(self.arena, n * self.mw);
 
     try emitEval(self);
@@ -165,6 +169,7 @@ pub fn emitDispatchers(self: *Gen) Error!void {
     try jac_tables.emitAcDyn(self, any_q);
     try emitDisplay(self);
     if (self.vpi_contribs) try emitVpiContribs(self);
+    assert(self.jac.on);
 }
 
 /// Returns whether any charge site gets a slot, that is, whether `q` is emitted.
@@ -179,6 +184,7 @@ pub fn coreIdx(self: *const Gen, v: Mir.Value) ?u32 {
     assert(self.core.lo_idx.len == self.an.nv);
     if (v == .f_zero) return null;
     const k = self.core.lo_idx[@backingInt(v)];
+    if (k != none_u32) assert(k < self.core.lo_vals.len);
     return if (k == none_u32) null else k;
 }
 
@@ -196,6 +202,7 @@ pub fn tables(self: *const Gen) bool {
 /// out-of-line copy, so a coherent batch costs one inlined body.
 pub fn writeLead(self: *Gen, call: []const u8, ret: []const u8) Error!void {
     assert(call.len != 0);
+    assert(ret.len != 0);
     if (!gen_file.batchLead(self)) return;
     try self.w(
         \\    if (comptime zLeads(S)) {{
@@ -219,6 +226,7 @@ pub fn writeLead(self: *Gen, call: []const u8, ret: []const u8) Error!void {
 /// Then `vpiShares` and `vpi_share_row` when instances share a row.
 fn emitVpiContribs(self: *Gen) Error!void {
     assert(self.vpi_contribs);
+    assert(self.jac.on);
     const cs = self.lowered.contributions.items;
     try self.w("/// Clause 12 (`Options.vpi_contribs`): the §5.6 contribution rows.\n", .{});
     try self.w("pub const vpi_contrib_access = [_]u8{{", .{});
@@ -245,6 +253,7 @@ fn emitVpiContribs(self: *Gen) Error!void {
 /// read out of `core` (0.0 for a value the core does not return).
 fn emitVpiValues(self: *Gen, name: []const u8, items: anytype) Error!void {
     assert(name.len != 0);
+    assert(self.core.lo_idx.len == self.an.nv);
     try self.w("pub fn {s}(comptime S: type, x: *const [n_u]S.V, model: *const Model, inst: InstancePtr, sim: contract.SimState) [{d}][2]f64 {{\n", .{ name, items.len });
     const uses_core = for (items) |c| {
         if (coreIdx(self, self.an.rv(c.resist_val)) != null or coreIdx(self, self.an.rv(c.react_val)) != null) break true;
@@ -281,6 +290,7 @@ fn nodeCol(n: u32) i64 {
 /// discarded.
 fn emitDisplay(self: *Gen) Error!void {
     assert(self.display != .drop or self.jobs.display_name.len == 0);
+    if (self.display != .record) assert(self.say.len == 0);
     if (self.jobs.display_name.len == 0) return;
     if (self.display == .record) {
         try self.w(
@@ -354,6 +364,7 @@ fn emitEval(self: *Gen) Error!void {
     const at_mut = self.out.items.len;
     try self.w("var   res: contract.Rows(Self, S) = zRowsZero(S);\n", .{});
     const stamps = try gen_stamps.emitStamps(self, false);
+    assert(self.cur.core_hoisted);
     self.cur.core_hoisted = false;
     // `uses.x` also counts a row that reads `x` only through the core, so ask
     // the text: every direct read is `x[@intFromEnum(U.<name>)]`.
@@ -421,6 +432,7 @@ fn tp8(self: *const Gen) []const u8 {
 /// is a reactive half.
 fn emitFused(self: *Gen) Error!void {
     assert(self.qs.sites.len != 0);
+    assert(self.jac.on);
     try self.w(
         \\/// §5.6 + §5.6.1.2 both residuals from ONE core evaluation.
         \\/// Equivalent to `.{{ .res = eval(...), .q = q(...) }}`, at half the cost.
