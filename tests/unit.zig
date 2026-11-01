@@ -4161,7 +4161,7 @@ pub const kernel_tests = struct {
         const nan = std.math.nan(f64);
         const inf = std.math.inf(f64);
         const neg_zero = -@as(f64, 0.0);
-        // Flags, in `cg_display.Spec`'s order: 1 '-', 2 '+', 4 ' ', 8 '0'.
+        // Flags, in `cg_format.Spec`'s order: 1 '-', 2 '+', 4 ' ', 8 '0'.
         const rows = .{
             .{ nan, 'f', @as(u8, 0), @as(usize, 0), @as(i64, -1), "nan" },
             .{ nan, 'F', 0, 0, -1, "NAN" },
@@ -12504,7 +12504,7 @@ pub const codegen_tests = struct {
         try std.testing.expect(o.names.len != 0);
         try std.testing.expect(std.mem.find(u8, o.text, "var h0: [") != null);
         for (o.unit_lo, o.unit_fn, o.unit_hi) |lo, fn_at, hi| {
-            // `orchestrator.writeTree`'s unit file.
+            // `zigbuild.writeTree`'s unit file.
             const file = try std.mem.concatWithSentinel(gpa, u8, &.{ o.prelude, o.text[lo..fn_at], "pub ", o.text[fn_at..hi] }, 0);
             defer gpa.free(file);
             var tree = try std.zig.Ast.parse(gpa, file, .{ .mode = .zig });
@@ -15462,7 +15462,7 @@ pub const codegen_tests = struct {
     }
 
     test "codegen: §3.2 a held slot only a card-varying write could need is dropped" {
-        // `pruneHeld`: under a parameter the write runs on every evaluation or on
+        // `held.prune`: under a parameter the write runs on every evaluation or on
         // none, so the held value is never seen; under a probe it is.
         const cases = [_]struct { cond: []const u8, held: usize }{
             .{ .cond = "g > 0", .held = 0 },
@@ -16144,7 +16144,7 @@ pub const codegen_tests = struct {
     /// AstGen; the unit ranges tile in order, each holding the declaration it
     /// names with `unit_fn` at its keyword. For a solver device (`.drop`,
     /// `.record`: the artifacts a split build compiles) every `u/<key>.zig` the
-    /// orchestrator would write, and `h.zig`, pass AstGen too.
+    /// zigbuild would write, and `h.zig`, pass AstGen too.
     fn expectSoundDevice(src: []const u8, display: codegen.Display) !void {
         const gpa = std.testing.allocator;
         var h: Harness = undefined;
@@ -16179,7 +16179,7 @@ pub const codegen_tests = struct {
             defer gpa.free(decl);
             try std.testing.expect(std.mem.startsWith(u8, o.text[fn_at..], decl));
             if (display == .emit) continue;
-            // `orchestrator.writeTree`'s unit file.
+            // `zigbuild.writeTree`'s unit file.
             const file = try std.mem.concat(gpa, u8, &.{ o.prelude, o.text[lo..fn_at], "pub ", o.text[fn_at..hi] });
             defer gpa.free(file);
             try expectAstGen(file);
