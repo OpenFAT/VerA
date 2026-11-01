@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Contract: a printing device keeps one §9.5 descriptor table per
+  instance.** `contract.FileIo` gains `ctx`, which every function takes
+  first; a device declares `fileIo(inst)` in place of `file_io`, and
+  `deinitInstance(inst)` closes the instance's files; `contract.fileIo(D,
+  inst)` reads it. Two instances share no descriptor, latched `$fopen`
+  result or formatting row, so two instances on two threads each write
+  their own file (`tests/host/fileio_threads_host.zig`: 10000 lines each,
+  byte-exact to a single-threaded run). A digital run owns its own table
+  too. A host that never touches the table changes nothing.
 - **`-D NAME[=TEXT]` reaches a `.v` design** under `--run`, `--elab`,
   `--emit-rtlil`, `--emit-exe` (the interpreted executable keeps them) and
   the contract device; it was refused.
