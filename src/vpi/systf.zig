@@ -119,35 +119,56 @@ var live: std.AutoHashMapUnmanaged(usize, *Systf) = .empty;
 var sizetf_calls: u32 = 0;
 
 /// The registration of `name` in `domain`, if one was made: §11.6.16 NOTE 3's
-/// "corresponding systf object" of a call to a user-defined name.
+/// "corresponding systf object" of a call to a user-defined name. Asserts
+/// that the registry's two tables agree.
 pub fn find(name: []const u8, domain: Domain) ?*Systf {
-    for (regs.items) |s| if (s.domain == domain and std.mem.eql(u8, s.name, name)) return s;
+    std.debug.assert(regs.items.len == live.count());
+    for (regs.items) |s| if (s.domain == domain and std.mem.eql(u8, s.name, name)) {
+        // `checkName` admitted it: `$` and at least one more character.
+        std.debug.assert(s.name.len >= 2);
+        std.debug.assert(s.name[0] == '$');
+        return s;
+    };
     return null;
 }
 
 /// `find` for call object `o`, in its own domain. The running call's
 /// registration is `active_reg`, so a query on its own handle skips the scan.
+/// Asserts that `o` is a system task or function call, and that a running
+/// call has its registration and an open design.
 pub fn regOf(o: *const Obj) ?*Systf {
-    if (active) |at| if (session.design.?.obj(at) == o) return active_reg.?;
-    return find(o.name, if (o.in_analog) .analog else .digital);
+    std.debug.assert(o.vtype == user.vpiSysTaskCall or o.vtype == user.vpiSysFuncCall);
+    std.debug.assert((active == null) == (active_reg == null));
+    const domain: Domain = if (o.in_analog) .analog else .digital;
+    if (active) |at| if (session.design.?.obj(at) == o) {
+        std.debug.assert(active_reg.?.domain == domain);
+        return active_reg.?;
+    };
+    return find(o.name, domain);
 }
 
 /// The analog system functions registered with sysfunctype vpiIntFunc: the
 /// names a device is compiled to call as integers (§12.32.1,
 /// `vera.Options.int_systfs`). The slice is `a`'s; the names are this file's
-/// until `reset`.
+/// until `reset`. Asserts that the registry's two tables agree.
 pub fn intAnalogNames(a: std.mem.Allocator) error{OutOfMemory}![]const []const u8 {
+    std.debug.assert(regs.items.len == live.count());
     var out: std.ArrayList([]const u8) = .empty;
     errdefer out.deinit(a);
     for (regs.items) |s| if (s.domain == .analog and s.analog.type == user.vpiAnalogSysFunc and s.analog.sysfunctype == user.vpiIntFunc)
         try out.append(a, s.name);
+    std.debug.assert(out.items.len <= regs.items.len);
     return out.toOwnedSlice(a);
 }
 
-/// What the digital registration of `name` is, if one was made.
+/// What the digital registration of `name` is, if one was made. Asserts
+/// that a function's width is at least one bit.
 pub fn kindOf(name: []const u8) ?digital.UserKind {
     const s = find(name, .digital) orelse return null;
+    std.debug.assert(s.domain == .digital);
     if (s.digital.type == user.vpiSysTask) return .task;
+    // `vpi_register_systf` admitted only a task or a function.
+    std.debug.assert(s.digital.type == user.vpiSysFunc);
     return .{
         .func = switch (s.digital.sysfunctype) {
             user.vpiIntFunc => .{ .width = 32, .signed = true },
@@ -162,8 +183,11 @@ pub fn kindOf(name: []const u8) ?digital.UserKind {
 /// Returns `h` as a registration, or null unless it is a live one; never
 /// dereferences a foreign pointer.
 pub fn asSystf(h: abi.vpiHandle) ?*Systf {
+    std.debug.assert(regs.items.len == live.count());
     const p = h orelse return null;
-    return live.get(@intFromPtr(p));
+    const s = live.get(@intFromPtr(p)) orelse return null;
+    std.debug.assert(@intFromPtr(s) == @intFromPtr(p));
+    return s;
 }
 
 /// Runs the build-time callbacks: for each call site of a registered name, in
@@ -172,8 +196,12 @@ pub fn asSystf(h: abi.vpiHandle) ?*Systf {
 /// engine did not already ask for its width (`width`). A host calls this
 /// once, after the startup routines and before cbEndOfCompile. calltf is not
 /// called here; `analog.zig` runs it per evaluation, the digital engine per
-/// execution (`hook`).
+/// execution (`hook`). Asserts that no call is running when it starts, and
+/// leaves none running.
 pub fn buildCalls() void {
+    std.debug.assert(active == null);
+    std.debug.assert(active_reg == null);
+    defer std.debug.assert(active == null and active_reg == null);
     const d = &(session.design orelse return);
     for (d.objects, 0..) |o, i| {
         if (o.kind != .code or (o.vtype != user.vpiSysTaskCall and o.vtype != user.vpiSysFuncCall)) continue;
@@ -209,9 +237,14 @@ pub fn buildCalls() void {
 }
 
 /// The partials derivtf declared for `call` in the installed design.
+/// Asserts that `call` is an object, not `none`.
 pub fn partialsOf(call: ObjId) []const Pair {
+    std.debug.assert(call != .none);
     const d = &(session.design orelse return &.{});
-    return d.partials.get(call) orelse &.{};
+    const pairs = d.partials.get(call) orelse return &.{};
+    // `declarePartials` copied a non-negative `c_int` count.
+    std.debug.assert(pairs.len <= std.math.maxInt(c_int));
+    return pairs;
 }
 
 /// Frees every registration; handles become invalid. The declared partials
@@ -229,20 +262,28 @@ pub fn reset() void {
     }
     regs.clearAndFree(gpa);
     live.clearAndFree(gpa);
+    std.debug.assert(regs.items.len == 0);
+    std.debug.assert(live.count() == 0);
 }
 
 /// Every registration's handle, in registration order, for
 /// `vpi_iterate(vpiUserSystf, NULL)`. Caller owns the slice and frees it with
-/// `a`.
+/// `a`. Asserts that the registry's two tables agree.
 pub fn all(a: std.mem.Allocator) ![]abi.vpiHandle {
+    std.debug.assert(regs.items.len == live.count());
     const out = try a.alloc(abi.vpiHandle, regs.items.len);
     for (regs.items, out) |s, *h| h.* = @ptrCast(s);
+    std.debug.assert(out.len == live.count());
     return out;
 }
 
 /// Registers `s`; null, with the error recorded, when out of memory, and
-/// `s.name` is then still the caller's.
+/// `s.name` is then still the caller's. Asserts that `s.name` passed
+/// `checkName`: a `$` name not yet registered in `s.domain`.
 pub fn add(s: Systf) abi.vpiHandle {
+    std.debug.assert(s.name.len >= 2 and s.name[0] == '$');
+    std.debug.assert(find(s.name, s.domain) == null);
+    defer std.debug.assert(regs.items.len == live.count());
     const p = gpa.create(Systf) catch return oom();
     p.* = s;
     regs.append(gpa, p) catch {
@@ -281,6 +322,8 @@ pub export fn vpi_register_systf(systf_data_p: ?*const SystfData) abi.vpiHandle 
     reg.tfname = copy.ptr;
     const h = add(.{ .domain = .digital, .digital = reg, .name = copy });
     if (h == null) gpa.free(copy);
+    std.debug.assert(h == null or asSystf(h).?.domain == .digital);
+    std.debug.assert(h != null or status.vpi_chk_error(null) == user.vpiError);
     return h;
 }
 
@@ -306,6 +349,8 @@ pub export fn vpi_register_analog_systf(systf_data_p: ?*const AnalogSystfData) a
     reg.tfname = copy.ptr;
     const h = add(.{ .domain = .analog, .analog = reg, .name = copy });
     if (h == null) gpa.free(copy);
+    std.debug.assert(h == null or asSystf(h).?.domain == .analog);
+    std.debug.assert(h != null or status.vpi_chk_error(null) == user.vpiError);
     return h;
 }
 
@@ -325,7 +370,10 @@ pub export fn vpi_get_systf_info(obj: abi.vpiHandle, systf_data_p: ?*SystfData) 
         status.fail("DOMAIN", "vpi_get_systf_info: `{s}` is an analog registration; vpi_get_analog_systf_info reads it", .{s.name});
         return;
     }
+    std.debug.assert(!session.starting);
     out.* = s.digital;
+    // The name handed out is the registration's own copy (`vpi_register_systf`).
+    std.debug.assert(out.tfname == s.name.ptr);
 }
 
 /// §12.13, the analog twin of §12.14.
@@ -343,7 +391,10 @@ pub export fn vpi_get_analog_systf_info(obj: abi.vpiHandle, systf_data_p: ?*Anal
         status.fail("DOMAIN", "vpi_get_analog_systf_info: `{s}` is a digital registration; vpi_get_systf_info reads it", .{s.name});
         return;
     }
+    std.debug.assert(!session.starting);
     out.* = s.analog;
+    // The name handed out is the registration's own copy.
+    std.debug.assert(out.tfname == s.name.ptr);
 }
 
 /// IEEE 1364-2005 §27.31: "The routine will return a value of 1 on success or
@@ -353,10 +404,12 @@ pub export fn vpi_put_userdata(obj: abi.vpiHandle, data: ?*anyopaque) c_int {
     if (status.refused("vpi_put_userdata")) return 0;
     const i = callIndex("vpi_put_userdata", obj) orelse return 0;
     const d = &session.design.?;
+    std.debug.assert(d.obj(i).kind == .code);
     d.userdata.put(d.gpa, .{ .call = i, .inst = active_inst }, data) catch {
         status.fail("NOMEM", "vpi_put_userdata: out of memory", .{});
         return 0;
     };
+    std.debug.assert(d.userdata.contains(.{ .call = i, .inst = active_inst }));
     return 1;
 }
 
@@ -366,7 +419,10 @@ pub export fn vpi_put_userdata(obj: abi.vpiHandle, data: ?*anyopaque) c_int {
 pub export fn vpi_get_userdata(obj: abi.vpiHandle) ?*anyopaque {
     if (status.refused("vpi_get_userdata")) return null;
     const i = callIndex("vpi_get_userdata", obj) orelse return null;
-    return session.design.?.userdata.get(.{ .call = i, .inst = active_inst }) orelse null;
+    const d = &session.design.?;
+    std.debug.assert(!session.starting);
+    std.debug.assert(d.obj(i).kind == .code);
+    return d.userdata.get(.{ .call = i, .inst = active_inst }) orelse null;
 }
 
 /// §12.22 / §12.22.1. `vpiDerivative` names the partial of `ref1` — the
@@ -378,12 +434,21 @@ pub export fn vpi_get_userdata(obj: abi.vpiHandle) ?*anyopaque {
 /// else is refused.
 pub export fn vpi_handle_multi(obj_type: c_int, ref1: abi.vpiHandle, ref2: abi.vpiHandle, ...) callconv(.c) abi.vpiHandle {
     if (status.refused("vpi_handle_multi")) return null;
+    std.debug.assert(!session.starting);
     switch (obj_type) {
-        user.vpiDerivative => return analog_call.derivative(ref1, ref2),
+        user.vpiDerivative => {
+            const h = analog_call.derivative(ref1, ref2);
+            std.debug.assert(h == null or analog_call.asDeriv(h) != null);
+            return h;
+        },
         // §11.6.15's inter-module path joins two PORTS. Its handle exists
         // before any delay does: vpi_put_delays() on it is how an
         // interconnect delay is written (IEEE 1364-2005 §26.6.16).
-        user.vpiInterModPath => return delays.interModPath(ref1, ref2),
+        user.vpiInterModPath => {
+            const h = delays.interModPath(ref1, ref2);
+            std.debug.assert(h == null or delays.asPath(h) != null);
+            return h;
+        },
         else => status.fail("NOTRAVERSE", "vpi_handle_multi: {d} is not a many-to-one relationship", .{obj_type}),
     }
     return null;
@@ -397,9 +462,12 @@ pub export fn vpi_handle_multi(obj_type: c_int, ref1: abi.vpiHandle, ref2: abi.v
 /// user-defined system function shall return 32 bits". Only vpiSizedFunc and
 /// vpiSizedSignedFunc have one (§27.34.1).
 fn width(s: *Systf) u32 {
+    std.debug.assert(s.domain == .digital);
+    std.debug.assert(s.digital.type == user.vpiSysFunc);
     if (s.size) |w| return w;
     const w: u32 = if (s.digital.sizetf) |f| @intCast(@max(f(s.digital.user_data), 1)) else 32;
     s.size = w;
+    std.debug.assert(w >= 1);
     return w;
 }
 
@@ -409,7 +477,9 @@ fn callDigital(_: *digital.Run, scope: u32, tok: u32, returned: ?Int.Literal) di
         if (o.kind != .code or o.in_analog or (o.vtype != user.vpiSysTaskCall and o.vtype != user.vpiSysFuncCall)) continue;
         sites.put(gpa, .{ d.scope(o.owner).engine, o.src_tok }, .at(i)) catch return error.OutOfMemory;
     };
+    std.debug.assert(sites.count() <= d.objects.len);
     const at = sites.get(.{ scope, tok }) orelse return;
+    std.debug.assert(!d.obj(at).in_analog);
     const s = find(d.obj(at).name, .digital) orelse return;
     const f = s.digital.calltf orelse return;
     const outer = .{ active, active_reg, result };
@@ -420,19 +490,32 @@ fn callDigital(_: *digital.Run, scope: u32, tok: u32, returned: ?Int.Literal) di
     active_reg = s;
     result = returned;
     _ = f(s.digital.user_data);
+    // A nested call restores what it found, so this call is still the active one.
+    std.debug.assert(active == at);
 }
 
+/// Copies the partials an application's derivtf returned for `call`. A
+/// positive count with a NULL array is the application's error, refused
+/// rather than read.
 fn declarePartials(call: ObjId, p: *const Partials) void {
+    std.debug.assert(call != .none);
     const d = &(session.design orelse return);
     const n: usize = @intCast(@max(p.count, 0));
+    if (n != 0 and (p.derivative_of == null or p.derivative_wrt == null)) {
+        status.fail("BADPARTIALS", "derivtf: {d} partials declared with a NULL derivative_of or derivative_wrt array", .{n});
+        return;
+    }
     const pairs = d.gpa.alloc(Pair, n) catch return;
     for (pairs, 0..) |*q, k| q.* = .{ .of = p.derivative_of[k], .wrt = p.derivative_wrt[k] };
     const g = d.partials.getOrPut(d.gpa, call) catch return d.gpa.free(pairs);
     if (g.found_existing) d.gpa.free(g.value_ptr.*);
     g.value_ptr.* = pairs;
+    std.debug.assert(d.partials.get(call).?.len == n);
 }
 
 fn checkName(who: []const u8, tfname: [*c]const u8, domain: Domain) ?[]const u8 {
+    std.debug.assert(who.len != 0);
+    std.debug.assert(regs.items.len == live.count());
     if (tfname == null) {
         status.fail("BADNAME", "{s}: tfname is NULL", .{who});
         return null;
@@ -452,7 +535,9 @@ fn checkName(who: []const u8, tfname: [*c]const u8, domain: Domain) ?[]const u8 
 }
 
 fn oom() abi.vpiHandle {
+    std.debug.assert(regs.items.len == live.count());
     status.fail("NOMEM", "systf registration: out of memory", .{});
+    std.debug.assert(status.vpi_chk_error(null) == user.vpiError);
     return null;
 }
 
@@ -471,14 +556,24 @@ fn callIndex(comptime who: []const u8, obj: abi.vpiHandle) ?ObjId {
         status.fail("NOTCALL", who ++ ": `{s}` is not a system task or function call", .{o.name});
         return null;
     }
-    return d.idOf(o);
+    const i = d.idOf(o);
+    std.debug.assert(i != .none);
+    std.debug.assert(d.obj(i) == o);
+    return i;
 }
 
+/// The tests' digital calltf: a registration needs one. Asserts that it runs
+/// only as a registered call, never outside one.
 fn dCall(_: [*c]u8) callconv(.c) c_int {
+    std.debug.assert(active != null);
+    std.debug.assert(active_reg.?.domain == .digital);
     return 0;
 }
 
-fn aCall(_: *CbData) callconv(.c) c_int {
+/// The tests' analog calltf; `dCall`'s analog twin.
+fn aCall(cb: *CbData) callconv(.c) c_int {
+    std.debug.assert(active != null);
+    std.debug.assert(cb.obj != null);
     return 0;
 }
 
@@ -495,25 +590,36 @@ fn registerIntAnalogs() !void {
         .{ user.vpiAnalogSysFunc, user.vpiIntFunc },
         .{ user.vpiAnalogSysFunc, user.vpiIntFunc },
     };
+    const before = regs.items.len;
+    comptime std.debug.assert(names.len == kinds.len);
     for (&names, kinds) |*n, k| {
         const d: AnalogSystfData = .{ .type = k[0], .sysfunctype = k[1], .tfname = n, .calltf = aCall, .compiletf = null, .sizetf = null, .derivtf = null, .user_data = null };
         if (vpi_register_analog_systf(&d) == null) return error.TestUnexpectedResult;
     }
+    std.debug.assert(regs.items.len == before + names.len);
 }
 
 fn intNamesOnce(a: std.mem.Allocator) !void {
+    std.debug.assert(regs.items.len != 0);
     const names = try intAnalogNames(a);
-    a.free(names);
+    defer a.free(names);
+    std.debug.assert(names.len < regs.items.len);
 }
 
+/// The tests' sizetf, answering 0 bits. Asserts IEEE 1364-2005 §26.1.1's
+/// "Each sizetf routine shall be called at most once".
 fn sizetfZero(_: [*c]u8) callconv(.c) c_int {
+    std.debug.assert(sizetf_calls == 0);
     sizetf_calls += 1;
+    std.debug.assert(sizetf_calls == 1);
     return 0;
 }
 
 /// A design of `objects` alone, for the tests that need one installed;
 /// `root.close` frees it (and `objects`, from `std.testing.allocator`).
 fn testDesign(objects: []Obj) Design {
+    std.debug.assert(session.design == null);
+    std.debug.assert(objects.len < Design.objects_max);
     const a = std.testing.allocator;
     return .{ .gpa = a, .arena = .init(a), .objects = objects };
 }
