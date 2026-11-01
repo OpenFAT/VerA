@@ -51,7 +51,11 @@ pub const Bits = struct {
     unk: []const u64,
     signed: bool,
 
+    /// Bit `i`, LSB first. Asserts that both planes are as long and that
+    /// `i` is a bit of them.
     pub fn bit(b: Bits, i: u32) Int.Bit {
+        std.debug.assert(b.val.len == b.unk.len);
+        std.debug.assert(i / 64 < b.val.len);
         const w = i / 64;
         const o: u6 = @truncate(i);
         const v: u2 = @intCast((b.val[w] >> o) & 1);
@@ -59,20 +63,29 @@ pub const Bits = struct {
         return @fromBackingInt(@intCast(v | (u << 1)));
     }
 
+    /// Whether no bit is x or z. Asserts that both planes are as long and
+    /// hold `width` bits.
     pub fn known(b: Bits) bool {
+        std.debug.assert(b.val.len == b.unk.len);
+        std.debug.assert(b.width <= b.val.len * 64);
         return std.mem.allEqual(u64, b.unk, 0);
     }
 
     /// The low 64 bits with x and z read as 0 — Table 12-4's vpiIntVal rule
     /// "Any bits x or z in the value of the object are mapped to a 0" —
-    /// sign-extended from the object's width when it is signed.
+    /// sign-extended from the object's width when it is signed. Asserts
+    /// that the planes hold a word each.
     pub fn low64(b: Bits) u64 {
+        std.debug.assert(b.val.len != 0);
+        std.debug.assert(b.unk.len == b.val.len);
         var x = b.val[0] & ~b.unk[0];
         if (b.width < 64) {
             x &= value_text.lowMask(b.width);
             if (b.signed and b.width > 0 and (x >> @intCast(b.width - 1)) & 1 == 1)
                 x |= ~value_text.lowMask(b.width);
         }
+        // An unsigned value narrower than 64 bits reads no bit above it.
+        std.debug.assert(b.width >= 64 or b.signed or x & ~value_text.lowMask(b.width) == 0);
         return x;
     }
 };
@@ -90,6 +103,8 @@ pub const Store = struct {
     pub fn clear(st: *Store) void {
         st.str.clearAndFree(gpa);
         st.vec.clearAndFree(gpa);
+        std.debug.assert(st.str.capacity == 0);
+        std.debug.assert(st.vec.capacity == 0);
     }
 };
 
@@ -113,8 +128,12 @@ const Source = union(enum) {
 var const_word: [2]u64 = undefined;
 
 /// Fills `v` from `o` in the format `v.format` names, into `st`'s storage.
-/// Errors are recorded (`vpi_chk_error`) and leave `v` as it was.
+/// Errors are recorded (`vpi_chk_error`) and leave `v` as it was. Asserts
+/// that `o` is a row of the installed design and `st` one of this file's
+/// two stores.
 pub fn read(o: *const Obj, v: *Value, st: *Store) void {
+    std.debug.assert(st == &get_store or st == &cb_store);
+    std.debug.assert(session.design.?.idOf(o).index() < session.design.?.objects.len);
     // §26.6.14/§27.14: a table entry's vector is ASCII symbols, not the
     // ordinary aval/bval representation of a string's packed bits.
     if (o.kind == .code and o.vtype == user.vpiTableEntry and v.format == user.vpiVectorVal) {
@@ -139,7 +158,7 @@ pub fn read(o: *const Obj, v: *Value, st: *Store) void {
                 return;
             };
             break :blk switch (result) {
-                .bits => |lit| literalSource(lit),
+                .bits => |lit| Source{ .bits = bitsOf(lit) },
                 .real => |f| Source{ .real = f },
             };
         };
@@ -160,7 +179,8 @@ pub fn read(o: *const Obj, v: *Value, st: *Store) void {
 }
 
 /// §12.16. The object must carry a value; the string, vector and time
-/// storage belongs to this routine until its next call.
+/// storage belongs to this routine until its next call. Asserts that an
+/// object handle `trust.asObj` accepts is a row of the installed design.
 pub export fn vpi_get_value(obj: abi.vpiHandle, value_p: ?*Value) void {
     if (status.refused("vpi_get_value")) return;
     const v = value_p orelse {
@@ -177,6 +197,7 @@ pub export fn vpi_get_value(obj: abi.vpiHandle, value_p: ?*Value) void {
         status.fail("BADHANDLE", "vpi_get_value: that handle is not an object with a value", .{});
         return;
     };
+    std.debug.assert(session.design != null); // asObj answers rows of an installed design only
     // IEEE 1364-2005 §26.6.13: a prim term's value is its terminal's.
     if (o.kind == .code and o.vtype == user.vpiPrimTerm) {
         const e = schema.edgeTo(o, user.vpiExpr);
@@ -185,44 +206,59 @@ pub export fn vpi_get_value(obj: abi.vpiHandle, value_p: ?*Value) void {
             return;
         }
         o = session.design.?.obj(e);
+        std.debug.assert(o.kind != .code or o.vtype != user.vpiPrimTerm); // a terminal's expression is no terminal
     }
     read(o, v, &get_store);
 }
 
 /// Watch `o`'s slot for changes; the engine calls `onChange` for it from now
-/// on. Cheap to repeat.
+/// on. Cheap to repeat. Asserts that `o` is a row of the installed design
+/// and that every slot it or its elements name is one of the engine's.
 pub fn watch(o: *const Obj) void {
+    const d = &session.design.?;
+    std.debug.assert(d.idOf(o).index() < d.objects.len);
     const r = run.attached() orelse return;
     r.host.change = onChange;
-    if (o.slot.get()) |at| r.waits.watch[at].insert(.vpi);
+    if (o.slot.get()) |at| {
+        std.debug.assert(at < r.waits.watch.len);
+        r.waits.watch[at].insert(.vpi);
+    }
     // An array: every element (§12.31.1 "if the obj is a memory word or a
     // variable array, ... the index field shall contain the index").
-    const d = &(session.design orelse return);
-    for (schema.coldOf(o).members) |m| if (d.obj(m).slot.get()) |at| r.waits.watch[at].insert(.vpi);
+    for (schema.coldOf(o).members) |m| if (d.obj(m).slot.get()) |at| {
+        std.debug.assert(at < r.waits.watch.len);
+        r.waits.watch[at].insert(.vpi);
+    };
+    std.debug.assert(r.host.change == onChange);
 }
 
 // ---- private ----
 
 fn activeCall(o: *const Obj) bool {
+    std.debug.assert(session.design != null);
+    std.debug.assert(systf.active == null or systf.active.?.index() < session.design.?.objects.len);
     return o.kind == .code and o.vtype == user.vpiSysFuncCall and
         systf.active != null and session.design.?.obj(systf.active.?) == o;
 }
 
 fn source(o: *const Obj) ?Source {
-    if (schema.coldOf(o).constant_bits) |lit| return literalSource(lit);
+    std.debug.assert(session.design != null);
+    std.debug.assert(o.kind != .code or o.vtype != user.vpiNamedEvent); // `read` refused it
+    if (schema.coldOf(o).constant_bits) |lit| return .{ .bits = bitsOf(lit) };
     // §26.6.19(b): the active system function's own handle reads its
     // current return value, without recursively invoking its calltf.
     if (activeCall(o)) if (systf.result) |lit| {
         if (systf.active_reg.?.digital.sysfunctype == user.vpiRealFunc) return .{ .real = @bitCast(lit.values()[0]) };
-        return literalSource(lit);
+        return .{ .bits = bitsOf(lit) };
     };
     if (o.kind == .code and o.vtype == user.vpiContAssign) return driven(o);
     if (o.slot.get()) |at| {
         const r = run.attached() orelse return null;
+        std.debug.assert(at < r.values.len); // a row's slot is one the engine minted
         const lit = r.values[at];
         // The engine holds a real as its IEEE 754 bits in the value plane.
         if (r.decls.reals.contains(at)) return .{ .real = @bitCast(lit.planes[0]) };
-        return literalSource(lit);
+        return .{ .bits = bitsOf(lit) };
     }
     if (o.value) |c| return switch (c) {
         .int => |i| .{ .bits = constBits(i) },
@@ -232,12 +268,10 @@ fn source(o: *const Obj) ?Source {
     return null;
 }
 
-fn literalSource(lit: Int.Literal) Source {
-    return .{ .bits = bitsOf(lit) };
-}
-
 /// `lit`'s planes, borrowed.
 fn bitsOf(lit: Int.Literal) Bits {
+    std.debug.assert(lit.width != 0);
+    std.debug.assert(lit.values().len * 64 >= lit.width);
     return .{ .width = lit.width, .val = lit.values(), .unk = lit.unknowns(), .signed = lit.signed };
 }
 
@@ -245,6 +279,8 @@ fn bitsOf(lit: Int.Literal) Bits {
 /// drives now. Null when no run holds it, or when its left-hand side is a
 /// concatenation, whose drivers each hold a part.
 fn driven(o: *const Obj) ?Source {
+    std.debug.assert(o.kind == .code);
+    std.debug.assert(o.vtype == user.vpiContAssign);
     const r = run.attached() orelse return null;
     const scope = session.design.?.scope(o.owner).engine;
     var found: ?usize = null;
@@ -253,13 +289,16 @@ fn driven(o: *const Obj) ?Source {
         found = k;
     };
     const lit = r.netlist.drivers[found orelse return null].current;
-    return literalSource(lit);
+    return .{ .bits = bitsOf(lit) };
 }
 
 /// A folded integer constant as 32 signed bits: §3.4.1's `integer` parameter.
 fn constBits(i: i64) Bits {
     const_word = .{ @bitCast(i), 0 };
-    return .{ .width = 32, .val = const_word[0..1], .unk = const_word[1..2], .signed = true };
+    const b: Bits = .{ .width = 32, .val = const_word[0..1], .unk = const_word[1..2], .signed = true };
+    std.debug.assert(b.known()); // a folded integer has no x or z bit
+    std.debug.assert(@as(i32, @truncate(@as(i64, @bitCast(b.low64())))) == @as(i32, @truncate(i)));
+    return b;
 }
 
 /// IEEE 1364-2005 §27.14: four two-byte ASCII symbols per vecval, first in
@@ -267,15 +306,20 @@ fn constBits(i: i64) Bits {
 /// single-character symbol has a zero second byte; an edge (01) stores 01.
 /// `text` is the validated, canonical table decompilation code.zig built.
 fn tableVector(text: []const u8, v: *Value, st: *Store) !void {
+    std.debug.assert(text.len != 0);
+    std.debug.assert(text[0] != ' '); // canonical: a symbol first
+    std.debug.assert(text[0] != ':');
     st.vec.clearRetainingCapacity();
     var i: usize = 0;
     var n: usize = 0;
     while (i < text.len) {
+        std.debug.assert(n <= i); // one symbol per character at most
         const c = text[i];
         if (c == ' ' or c == '\t' or c == ':') {
             i += 1;
             continue;
         }
+        std.debug.assert(c != '(' or i + 3 < text.len); // `(01)`, as decompiled
         const symbol: u32 = if (c == '(') (@as(u32, text[i + 1]) << 8) | text[i + 2] else @as(u32, c) << 8;
         i += if (c == '(') @as(usize, 4) else 1;
         if (n % 4 == 0) try st.vec.append(gpa, .{ .aval = 0, .bval = 0 });
@@ -285,6 +329,7 @@ fn tableVector(text: []const u8, v: *Value, st: *Store) !void {
         word.* = @bitCast(@as(u32, @bitCast(word.*)) | (symbol << shift));
         n += 1;
     }
+    std.debug.assert(st.vec.items.len == (n + 3) / 4);
     v.value.vector = st.vec.items.ptr;
 }
 
@@ -295,6 +340,7 @@ fn tableVector(text: []const u8, v: *Value, st: *Store) !void {
 /// ponytail: a net's strength is refused; the engine keeps a net's per-bit
 /// strength (`Net.signal`) only on the paths that fold several drivers.
 fn strength(o: *const Obj, v: *Value) void {
+    std.debug.assert(v.format == user.vpiStrengthVal);
     const out = v.value.strength orelse {
         status.fail("BADVALUE", "vpi_get_value: vpiStrengthVal with a NULL strength array", .{});
         return;
@@ -305,21 +351,28 @@ fn strength(o: *const Obj, v: *Value) void {
         status.fail("BADFORMAT", "vpi_get_value: vpiStrengthVal is answered for a reg or integer variable only", .{});
         return;
     }
+    std.debug.assert(at < r.?.values.len); // a row's slot is one the engine minted
     const b = bitsOf(r.?.values[at]);
     const bits: [*]StrengthVal = @ptrCast(out);
     for (0..b.width) |i| bits[i] = .{ .logic = scalar(b.bit(@intCast(i))), .s0 = user.vpiStrongDrive, .s1 = user.vpiStrongDrive };
 }
 
 fn scalar(b: Int.Bit) c_int {
-    return switch (b) {
+    const s = switch (b) {
         .zero => user.vpi0,
         .one => user.vpi1,
         .z => user.vpiZ,
         .x => user.vpiX,
     };
+    // A Table 12-4 vpiScalarVal code; vpiH and vpiL are no engine bit.
+    std.debug.assert(s >= user.vpi0);
+    std.debug.assert(s <= user.vpiX);
+    return s;
 }
 
 fn formatInto(src: Source, v: *Value, st: *Store) !void {
+    std.debug.assert(v.format != user.vpiObjTypeVal); // `read` resolved it
+    std.debug.assert(v.format != user.vpiStrengthVal); // `read` answered it
     switch (v.format) {
         user.vpiSuppressVal => {},
         user.vpiBinStrVal, user.vpiOctStrVal, user.vpiHexStrVal, user.vpiDecStrVal, user.vpiStringVal => {
@@ -379,6 +432,7 @@ fn formatInto(src: Source, v: *Value, st: *Store) !void {
                 }
                 st.vec.appendAssumeCapacity(.{ .aval = @bitCast(a), .bval = @bitCast(u) });
             }
+            std.debug.assert(st.vec.items.len == n);
             v.value.vector = st.vec.items.ptr;
         },
         user.vpiTimeVal => {
@@ -395,10 +449,14 @@ fn formatInto(src: Source, v: *Value, st: *Store) !void {
 }
 
 fn badFormat(format: c_int, what: []const u8) error{}!void {
+    std.debug.assert(format != user.vpiObjTypeVal);
+    std.debug.assert(what.len != 0);
     status.fail("BADFORMAT", "value format {d} is not answered for a {s} value", .{ format, what });
 }
 
-fn onChange(_: *digital.Run, slot: u32) void {
+fn onChange(r: *digital.Run, slot: u32) void {
+    std.debug.assert(run.attached() == r);
+    std.debug.assert(slot < r.values.len);
     callback_fire.fireSlot(slot);
 }
 
@@ -411,14 +469,19 @@ fn radixOracle(out: *std.ArrayList(u8), b: Bits, format: c_int) !void {
         user.vpiHexStrVal => 4,
         else => 8,
     };
+    std.debug.assert(b.val.len == b.unk.len);
     var k = (b.width + g - 1) / g;
+    const digits = k;
+    const len0 = out.items.len;
     while (k > 0) {
+        std.debug.assert(k <= digits);
         k -= 1;
         var xs: u32 = 0;
         var zs: u32 = 0;
         var d: u8 = 0;
         var i = @min(k * g + g, b.width);
         while (i > k * g) {
+            std.debug.assert(i <= b.width);
             i -= 1;
             const bit = b.bit(i);
             d = (d << 1) | @intFromBool(bit == .one);
@@ -430,6 +493,7 @@ fn radixOracle(out: *std.ArrayList(u8), b: Bits, format: c_int) !void {
             if (d != 0) try out.append(gpa, d);
         } else try out.append(gpa, if (xs == n) 'x' else if (zs == n) 'z' else if (xs != 0) 'X' else if (zs != 0) 'Z' else "0123456789abcdef"[d]);
     }
+    std.debug.assert(out.items.len - len0 <= digits);
 }
 
 test "Table 12-4: an octal or hex group that is all x/z prints x/z, a partly unknown one X/Z" {
