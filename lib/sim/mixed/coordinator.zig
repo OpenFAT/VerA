@@ -305,7 +305,7 @@ pub fn State(comptime A: type) type {
             };
         }
 
-        /// `digital.Run.probe`: §7.3.6.3 V(n1, n2) for a digital read, at the
+        /// `digital.Run.analog.probe`: §7.3.6.3 V(n1, n2) for a digital read, at the
         /// promoted digital time. `ctx` is the `*Self` `run` installed.
         pub fn probeHook(ctx: *anyopaque, n1: []const u8, n2: ?[]const u8) digital.Error!f64 {
             // SAFETY: `run` sets `probe_ctx` to its own `*Self` with this hook.

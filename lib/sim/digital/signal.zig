@@ -47,7 +47,7 @@ pub const Signal = struct {
     lo: i8 = 0,
     hi: i8 = 0,
 
-    // Budget: one per net bit (`Run.signals`).
+    // Budget: one per net bit (`Run.netlist.signals`).
     comptime {
         std.debug.assert(@sizeOf(Signal) == 2);
     }

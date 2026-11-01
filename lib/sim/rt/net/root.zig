@@ -38,13 +38,13 @@ const module_paths = @import("module_paths.zig");
 pub const drive_base = layout.drive_base;
 /// `net_base + k`: net k's delayed transition lands (`drive_base`).
 pub const net_base = layout.net_base;
-/// One net `resolution.resolve` folds: `Run.nets[k]` with its word offset.
+/// One net `resolution.resolve` folds: `Run.netlist.nets[k]` with its word offset.
 pub const Net = layout.Net;
 /// `dnet.Path` resolved: its source's slot and first word, and its
 pub const Path = layout.Path;
 /// §14.2.4.1 a state-dependent path's condition, true when its least
 pub const PathCond = layout.PathCond;
-/// One driver of a `Net`, `Run.drivers[i]` without its expression.
+/// One driver of a `Net`, `Run.netlist.drivers[i]` without its expression.
 pub const Driver = layout.Driver;
 /// What computes a driver's value.
 pub const Source = layout.Source;

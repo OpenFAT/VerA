@@ -187,8 +187,8 @@ pub const Bridge = struct { src: u32, src_lo: u32, dst_lo: u32, width: u32, ext:
 /// or a pass-switch terminal has is its `NetCold` row. Most nets have none,
 /// and an unpacked net array is one `Net` per element (§4.9.1), so the split
 /// is what keeps a large array's footprint at this row's 48 bytes an element
-/// instead of 184. Its drivers are a run of `Run.net_drivers`
-/// (`Run.netDrivers`) and its per-bit signals a run of `Run.signals`, so the
+/// instead of 184. Its drivers are a run of `Run.netlist.driver_ids`
+/// (`Run.netDrivers`) and its per-bit signals a run of `Run.netlist.signals`, so the
 /// row holds no slice but `resolved`'s.
 pub const Net = struct {
     kind: Ast.NetKind,
@@ -197,7 +197,7 @@ pub const Net = struct {
     /// The declaring token, for a verdict reached after elaboration (§7.9's
     /// `uwire` driver count).
     tok: u32 = 0,
-    /// This net's row in `Run.net_cold`, or `no_cold` when every field there
+    /// This net's row in `Run.netlist.cold`, or `no_cold` when every field there
     /// would be its default.
     cold: u32 = no_cold,
     /// A.2.1.3 `charge_strength`, the level the stored charge of a `trireg` in
@@ -210,7 +210,7 @@ pub const Net = struct {
     capacitive: bool = false,
     /// A MOS switch's data terminal or a `%v` (§17.1.1.5) reads this net's `signal`.
     strength_read: bool = false,
-    /// The first of this net's entries in `Run.signals`, one per declared bit
+    /// The first of this net's entries in `Run.netlist.signals`, one per declared bit
     /// (a wreal promoted to 64 bits keeps its declared count; it never
     /// folds). Per bit, the §7.10 signal the last resolution found, whose
     /// strength a MOS switch reading this net passes on (§7.12). Kept current
@@ -283,7 +283,7 @@ pub const Path = struct {
 /// indexed by `Int.Bit`'s backing integer. The diagonal is never read.
 pub const PathTable = [4][4]u64;
 
-/// The last transition of a module path source (`Run.path_changed`): when,
+/// The last transition of a module path source (`Run.netlist.path_changed`): when,
 /// and its low 64 bits before and after, values then unknowns.
 pub const PathEdge = struct { time: u64, before: [2]u64, after: [2]u64 };
 
@@ -377,7 +377,7 @@ pub const Driver = struct {
     s1: Ast.Strength = .strong,
     /// A.6.1 `[ delay3 ]`.
     delay: Delay = .{},
-    /// This driver's row in `Run.transitions`, made the first time a delay
+    /// This driver's row in `Run.netlist.transitions`, made the first time a delay
     /// holds its value back (`Run.driverTransition`), or `no_transition`:
     /// most drivers never have one, so the 40-byte `Inertial` is out of line.
     transition: u32 = no_transition,

@@ -93,7 +93,7 @@ pub const Options = struct {
     /// A PLI application's system tasks and functions, which the design's
     /// `$name` calls reach before any built-in of that name.
     systf: ?UserSystf = null,
-    /// Record where each statement starts (`Run.stmt_sites`), for a host's
+    /// Record where each statement starts (`Run.host.stmt_sites`), for a host's
     /// statement callbacks (IEEE 1364-2005 §27.33.1.1).
     stmt_sites: bool = false,
     /// `vera --param NAME=VALUE`: a top-level module's parameter set as an
@@ -124,7 +124,7 @@ pub const StmtHook = struct {
 /// completed: a §9.3 `assign`, `deassign`, `force` or `release` (cbAssign,
 /// cbDeassign, cbForce, cbRelease: "after ... has been executed") or a §10.3
 /// `disable` (cbDisable). `pc` is the statement's last instruction, a key of
-/// `Run.done_sites`. An `assign`/`force` reports once its process has written
+/// `Run.host.done_sites`. An `assign`/`force` reports once its process has written
 /// the target, so the value the host reads is the one it put there; one
 /// undone or replaced before its process ran reports then (`exec.doneFlush`).
 pub const DoneHook = *const fn (r: *Run, pc: u32) Error!void;

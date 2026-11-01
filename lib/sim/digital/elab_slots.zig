@@ -12,7 +12,7 @@
 //! - `pub fn mintNet(r: *Run, e: *Elab, kind: Ast.NetKind, width: u32, signed: bool, name: Ast.StrId, tok: u32) Error!u32`
 //! Pass one of elaboration: the parsed design and its root definitions ->
 //! the slot space, the nets and the driver rows (`Elab`), the scope tree
-//! (`Run.scope_info`) and every name bound in it, before any expression is
+//! (`Run.hier.scopes`) and every name bound in it, before any expression is
 //! compiled. §6.2.2's walk of the instance tree is parent-first, so a port
 //! connection always resolves against a parent that is fully declared.
 //! `elaborate` (root.zig) runs it, then compiles what it built.

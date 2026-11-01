@@ -11,8 +11,8 @@
 //! - `V.stmt(v: *@This(), st: Ast.StmtId) Error!void`
 //! - `pub fn unsizedConcatOperand(self: *Run, e: Ast.ExprId) bool`
 //! AST -> bytecode: one process body or driver expression, in its instance
-//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
-//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
+//! scope, -> `Instruction` rows in `Run.program.code`, each expression's type in
+//! `Run.typing.types`, and the static slot lists drivers and `@*` wait on; or E1100
 //! before any process has run.
 //! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
 //! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to

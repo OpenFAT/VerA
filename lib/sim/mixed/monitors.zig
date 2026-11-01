@@ -27,7 +27,7 @@ const run = @import("run.zig");
 const default_time_tol = run.default_time_tol;
 const default_expr_tol = run.default_expr_tol;
 
-/// One monitored analog event (`digital.Run.monitors`): what its kind needs,
+/// One monitored analog event (`digital.Run.analog.monitors`): what its kind needs,
 /// and its value on the last final solution (`v0`, unused by a timer).
 pub const Mon = struct {
     v0: f64 = 0,

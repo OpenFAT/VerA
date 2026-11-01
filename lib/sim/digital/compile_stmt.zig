@@ -1,4 +1,4 @@
-//! A statement in its scope in, the `Instruction` rows that run it out (`Run.code`).
+//! A statement in its scope in, the `Instruction` rows that run it out (`Run.program.code`).
 //! Cites: IEEE 1364-2005 §9.2 to §9.9, §8.5.3.3/§8.5.3.4 intra-assignment timing, §17.
 //!
 //! Contents:
@@ -7,8 +7,8 @@
 //! - `pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void`
 //! - `pub fn watcher(self: *Run, step: Instruction, watched: []const u32) Error!u32`
 //! AST -> bytecode: one process body or driver expression, in its instance
-//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
-//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
+//! scope, -> `Instruction` rows in `Run.program.code`, each expression's type in
+//! `Run.typing.types`, and the static slot lists drivers and `@*` wait on; or E1100
 //! before any process has run.
 //! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
 //! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to
@@ -71,7 +71,7 @@ pub fn position(self: *Run) u32 {
 }
 
 /// Appends one instruction in the executing scope and returns its pc.
-/// Fails at 2^32 - 1 instructions. Invalidates pointers into `Run.code`.
+/// Fails at 2^32 - 1 instructions. Invalidates pointers into `Run.program.code`.
 pub fn append(self: *Run, instruction: Instruction) Error!u32 {
     if (self.program.code.items.len == std.math.maxInt(u32)) return self.fail(0, "too many digital instructions", .{});
     const at = position(self);
@@ -83,7 +83,7 @@ pub fn append(self: *Run, instruction: Instruction) Error!u32 {
 }
 
 /// Appends statement `id`'s bytecode, compiled in the executing scope, at
-/// the end of `Run.code`. `depth` is the statement nesting so far, bounded
+/// the end of `Run.program.code`. `depth` is the statement nesting so far, bounded
 /// by the stack `deep.runGuarded` reserved. Every expression is type-checked here,
 /// so nothing a process runs can fail to type at run time.
 pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
@@ -127,7 +127,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             }
         },
         // A.6.5 `disable_statement`. The range is patched in once every
-        // process exists (`Run.disables`).
+        // process exists (`Run.program.disables`).
         .disable => |s| {
             const first = position(self);
             const at = try append(self, .{ .disable_block = .{ .start = 0, .end = 0 } });
@@ -468,7 +468,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
                     try checkExpr(self, s.args[0]);
                 },
                 // §17.2.6 `$fflush ( mcd )`, `( fd )` or `( )`.
-                // `tasks` names no application's task; `Run.systf` did above.
+                // `tasks` names no application's task; `Run.host.systf` did above.
                 .user => unreachable,
                 .fflush => {
                     if (s.args.len > 1) return self.fail(tok, "$fflush takes at most one descriptor", .{});
@@ -509,7 +509,7 @@ pub fn watcher(self: *Run, step: Instruction, watched: []const u32) Error!u32 {
 // ---- private ----
 
 /// Records that statement `id` is reached at the next instruction
-/// (`Run.stmt_sites`).
+/// (`Run.host.stmt_sites`).
 fn site(self: *Run, id: Ast.StmtId) Error!void {
     assert(id != .none);
     const sites = &(self.host.stmt_sites orelse return);
@@ -518,7 +518,7 @@ fn site(self: *Run, id: Ast.StmtId) Error!void {
 }
 
 /// Records statement `id`, compiled from `first` to the last instruction so
-/// far, for `Run.done_hook` (`Run.done_sites`).
+/// far, for `Run.host.done_hook` (`Run.host.done_sites`).
 fn doneSite(self: *Run, id: Ast.StmtId, first: u32) Error!void {
     assert(id != .none);
     if (self.host.stmt_sites == null) return;
@@ -526,7 +526,7 @@ fn doneSite(self: *Run, id: Ast.StmtId, first: u32) Error!void {
     try self.host.done_sites.put(self.arena, position(self) - 1, .{ .scope = self.instanceOf(self.scope), .stmt = id, .pc = first });
 }
 
-/// A new `Run.repeats` counter, for one `repeat` loop or §9.7.7 repeat
+/// A new `Run.rows.repeats` counter, for one `repeat` loop or §9.7.7 repeat
 /// event control. Fails at 2^32 - 1 counters.
 fn repeatCounter(self: *Run, tok: u32) Error!u32 {
     assert(tok < self.starts.len);

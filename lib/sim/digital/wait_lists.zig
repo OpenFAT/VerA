@@ -22,8 +22,8 @@
 //! - `pub fn eventReference(self: *Run, e: Ast.ExprId) Error!?u32`
 //! - `pub fn selectTerm(self: *Run, e: Ast.ExprId) Error!?SelectTerm`
 //! AST -> bytecode: one process body or driver expression, in its instance
-//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
-//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
+//! scope, -> `Instruction` rows in `Run.program.code`, each expression's type in
+//! `Run.typing.types`, and the static slot lists drivers and `@*` wait on; or E1100
 //! before any process has run.
 //! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
 //! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to
@@ -104,7 +104,7 @@ pub fn probeName(self: *const Run, a: std.mem.Allocator, e: Ast.ExprId) Error![]
 /// `probes` instead of being refused. A probe reads the analog solution,
 /// which no slot holds, so nothing here can wake on it; only `$monitor` has
 /// another trigger (its probes are compared at every time step and analog
-/// solution, `Run.monitor_probes`). Elsewhere (a continuous assignment,
+/// solution, `Run.monitoring.probes`). Elsewhere (a continuous assignment,
 /// `@*`) a probe would be read once and never again, so it is refused by
 /// name rather than silently frozen.
 pub fn sensitivityProbes(self: *Run, e: Ast.ExprId, out: *std.ArrayList(u32), probes: ?*std.ArrayList(Ast.ExprId)) Error!void {

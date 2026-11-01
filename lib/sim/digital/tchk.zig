@@ -245,7 +245,7 @@ pub fn notifier(r: *Run, e: Ast.ExprId) Error!?u32 {
     return at;
 }
 
-/// Files every check under the slots its events watch. After `Run.watch`
+/// Files every check under the slots its events watch. After `Run.waits.watch`
 /// exists, so once per run.
 pub fn arm(r: *Run) Error!void {
     assert(r.checks.rows.items.len < std.math.maxInt(u32) / 2); // `i * 2 + k` codes fit.

@@ -1,6 +1,6 @@
 //! Pass one of elaboration: the parsed design and its root definitions ->
 //! the slot space, the nets and the driver rows (`Elab`), the scope tree
-//! (`Run.scope_info`) and every name bound in it, before any expression is
+//! (`Run.hier.scopes`) and every name bound in it, before any expression is
 //! compiled. §6.2.2's walk of the instance tree is parent-first, so a port
 //! connection always resolves against a parent that is fully declared.
 //! `elaborate` (root.zig) runs it, then compiles what it built.
@@ -42,7 +42,7 @@
 //! - `pub fn newScope(r: *Run, tok: u32) Error!u32`
 //! Pass one of elaboration: the parsed design and its root definitions ->
 //! the slot space, the nets and the driver rows (`Elab`), the scope tree
-//! (`Run.scope_info`) and every name bound in it, before any expression is
+//! (`Run.hier.scopes`) and every name bound in it, before any expression is
 //! compiled. §6.2.2's walk of the instance tree is parent-first, so a port
 //! connection always resolves against a parent that is fully declared.
 //! `elaborate` (root.zig) runs it, then compiles what it built.
@@ -191,10 +191,10 @@ pub const Sinks = struct { operands: []const Sink, tok: u32 };
 pub const Elab = struct {
     values: std.ArrayList(Int.Literal) = .empty,
     nets: std.ArrayList(Net) = .empty,
-    /// The cold rows `Net.cold` indexes; `Run.net_cold` once elaborated.
+    /// The cold rows `Net.cold` indexes; `Run.netlist.cold` once elaborated.
     net_cold: std.ArrayList(NetCold) = .empty,
     /// Every net's per-bit signals, `Net.signal` the first of each;
-    /// `Run.signals` once elaborated.
+    /// `Run.netlist.signals` once elaborated.
     signals: std.ArrayList(Signal) = .empty,
     wires: std.ArrayList(Wire) = .empty,
     /// One row per elaborated instance: the definition and its name scope.

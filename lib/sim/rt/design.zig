@@ -80,14 +80,14 @@ pub const Design = struct {
     x: []const u64,
     /// `Run.values.len`.
     slots: u32,
-    /// `Run.fan_start`/`Run.fan`: the continuous drivers reading each slot.
+    /// `Run.waits.fan_start`/`Run.waits.fan`: the continuous drivers reading each slot.
     fan_start: []const u32,
     fan: []const u32,
-    /// `Run.code.len`: the pc space `armed` covers.
+    /// `Run.program.code.len`: the pc space `armed` covers.
     code_len: u32,
-    /// `Run.repeats.len`: one counter per lexical `repeat` (§9.6).
+    /// `Run.rows.repeats.len`: one counter per lexical `repeat` (§9.6).
     repeats: u32,
-    /// `Run.pending`'s time-0 queue, as the pcs each process starts at.
+    /// `Run.rows.pending`'s time-0 queue, as the pcs each process starts at.
     order: []const u32,
     /// Static schedule: per slot, the bits each combinational node reads
     /// (`comb[comb_start[slot]..comb_start[slot + 1]]`, ascending by word),
@@ -101,9 +101,9 @@ pub const Design = struct {
     watch_start: []const u32 = &.{},
     watchers: []const Watcher = &.{},
     triggered: u32 = 0,
-    /// `Run.joins.len`: one counter per §9.8.2 `fork`.
+    /// `Run.rows.joins.len`: one counter per §9.8.2 `fork`.
     joins: u32 = 0,
-    /// `Run.subs.len`: the tasks and functions (§10).
+    /// `Run.routines.rows.len`: the tasks and functions (§10).
     subs: u32 = 0,
     /// What a `$dumpvars` (§18) can select; null when the design has none.
     vcd: ?*const vcd.Catalog = null,

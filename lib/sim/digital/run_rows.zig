@@ -129,7 +129,7 @@ pub const VecRange = struct {
 /// is never compared: a string, an empty argument or a clock query, the
 /// clause's "with the exception of $time, $stime or $realtime". An
 /// `$fmonitor` keeps its own watched `slots` and `hit`; `$monitor`'s are
-/// `Run.monitor_slots` and `Run.monitor_slot_hit`.
+/// `Run.monitoring.slots` and `Run.monitoring.slot_hit`.
 pub const Standing = struct {
     args: []const Ast.ExprId,
     show: Show,
@@ -145,7 +145,7 @@ pub const Standing = struct {
 };
 
 /// Who is told when a slot's value changes: one member of a slot's
-/// `Run.watch` set each.
+/// `Run.waits.watch` set each.
 pub const Watcher = enum {
     /// IEEE 1364-2005 §17.1.3: the standing `$monitor` or an `$fmonitor`
     /// reads the slot.
@@ -154,7 +154,7 @@ pub const Watcher = enum {
     /// change posts a region-3b macro-process event (`Run.watchAnalog`).
     analog,
     /// VAMS §12.31.1's cbValueChange: an application watches the slot, and a
-    /// change calls `Run.vpi_change`.
+    /// change calls `Run.host.change`.
     vpi,
     /// IEEE 1364-2005 §18's value change dump: the slot is dumped, so a
     /// change asks for the end-of-step section (`vcd.zig`).
@@ -172,7 +172,7 @@ pub const Watcher = enum {
     /// (`tchk.changed`).
     tchk,
     /// IEEE 1364-2005 §14.3.3: the slot is a module path's source, whose last
-    /// transition picks the path delay (`Run.path_changed`).
+    /// transition picks the path delay (`Run.netlist.path_changed`).
     path,
 };
 
@@ -238,7 +238,7 @@ pub const Sub = struct {
     ranges: std.ArrayList(struct { start: u32, end: u32 }) = .empty,
 };
 
-/// One `Run.slot_memo` entry; `scope` maxInt(u32) is empty.
+/// One `Run.decls.slot_memo` entry; `scope` maxInt(u32) is empty.
 pub const SlotMemo = struct {
     scope: u32 = std.math.maxInt(u32),
     e: Ast.ExprId = .none,
@@ -250,7 +250,7 @@ pub const SlotMemo = struct {
     }
 };
 
-/// log2 of `Run.slot_memo`'s length: 4096 entries, 48 KiB.
+/// log2 of `Run.decls.slot_memo`'s length: 4096 entries, 48 KiB.
 pub const memo_bits = 12;
 
 /// A module's §19.8 time scale, and its unit as a power of ten of a second.
@@ -266,7 +266,7 @@ pub const Overrides = struct {
     parts: std.ArrayList(PartForce) = .empty,
 };
 
-/// A half-open range of `Run.code` pcs, `[start, end)`: one process body.
+/// A half-open range of `Run.program.code` pcs, `[start, end)`: one process body.
 /// Empty for a VPI force, which no process maintains (`waiters.forceValue`).
 pub const PcRange = struct { start: u32, end: u32 };
 
@@ -274,7 +274,7 @@ pub const PcRange = struct { start: u32, end: u32 };
 /// a function, and the contiguous slot range an automatic activation saves.
 pub const Frame = struct { scope: u32, ports: []const u32, result: u32, first: u32, count: u32 };
 
-/// `Run.net_of`: the net a slot is, as one `u32` a slot up to the last net's
+/// `Run.netlist.slot_nets`: the net a slot is, as one `u32` a slot up to the last net's
 /// slot (`none` for a variable's). Dense rather than a hash map: one net per
 /// element of an unpacked net array makes nets the common slot, and a map
 /// row costs twice an entry here plus the rehash garbage, for a lookup that

@@ -180,7 +180,7 @@ pub const Task = union(enum) {
     dump: @import("vcd.zig").Op,
     /// §18.3 the extended value change dump tasks.
     ports: @import("evcd.zig").Op,
-    /// IEEE 1364-2005 §20.3 a PLI application's task (`Run.systf`).
+    /// IEEE 1364-2005 §20.3 a PLI application's task (`Run.host.systf`).
     user,
 };
 

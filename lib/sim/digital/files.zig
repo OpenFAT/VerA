@@ -23,7 +23,7 @@
 //! - `pub fn channels(t: ?contract.FileIo, io: ?std.Io, out: *std.Io.Writer, d: i64, bytes: []const u8) std.Io.Writer.Error!bool`
 //! IEEE 1364-2005 §17 system tasks that keep state of their own: a task's
 //! argument expressions and the `Run` in; values written to its output
-//! arguments (and, for queues, `Run.queues`) out.
+//! arguments (and, for queues, `Run.tasks.queues`) out.
 //! Clauses: §17.2 file input and output, §17.2.3 string output, §17.5
 //! programmable logic arrays, §17.6 stochastic queues, §17.9 distributions.
 const std = @import("std");
@@ -351,7 +351,7 @@ pub fn channels(t: ?contract.FileIo, io: ?std.Io, out: *std.Io.Writer, d: i64, b
 // ---- private ----
 
 /// VAMS §9.5.1.2: one descriptor table per simulation, the host's
-/// (`Run.file_io`: a mixed simulation's device table), else this engine's
+/// (`Run.tasks.file_io`: a mixed simulation's device table), else this engine's
 /// own, which only an engine given filesystem access (`Options.io`) opens
 /// files through.
 fn table(self: *Run) ?contract.FileIo {

@@ -16,7 +16,7 @@
 //! - `pub fn sink(r: *Run, e: *Elab, arg: Ast.ExprId, tok: u32, comptime who: SinkOf) Error!Sink`
 //! Pass one of elaboration: the parsed design and its root definitions ->
 //! the slot space, the nets and the driver rows (`Elab`), the scope tree
-//! (`Run.scope_info`) and every name bound in it, before any expression is
+//! (`Run.hier.scopes`) and every name bound in it, before any expression is
 //! compiled. §6.2.2's walk of the instance tree is parent-first, so a port
 //! connection always resolves against a parent that is fully declared.
 //! `elaborate` (root.zig) runs it, then compiles what it built.
@@ -158,7 +158,7 @@ pub fn portByName(m: *const Ast.ModuleDecl, name: Ast.StrId) ?usize {
     return null;
 }
 
-/// Records `slot`'s declared `[msb:lsb]` (`Run.vec_ranges`).
+/// Records `slot`'s declared `[msb:lsb]` (`Run.typing.vec_ranges`).
 pub fn putRange(r: *Run, slot: u32, range: Ast.Dim, tok: u32) Error!void {
     assert(tok < r.starts.len);
     assert(range.msb != .none);

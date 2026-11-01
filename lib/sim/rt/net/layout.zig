@@ -58,7 +58,7 @@ pub const decay_base: u32 = @import("../records.zig").show_base | 3 << 28;
 /// The words per plane of a `w`-bit value (`logic.words`).
 pub const words = logic.words;
 
-/// One net `resolution.resolve` folds: `Run.nets[k]` with its word offset.
+/// One net `resolution.resolve` folds: `Run.netlist.nets[k]` with its word offset.
 pub const Net = struct {
     kind: Ast.NetKind,
     slot: u32,
@@ -91,7 +91,7 @@ pub const Path = struct {
 /// significant bit is not 0.
 pub const PathCond = fn (*State) Error!bool;
 
-/// One driver of a `Net`, `Run.drivers[i]` without its expression.
+/// One driver of a `Net`, `Run.netlist.drivers[i]` without its expression.
 pub const Driver = struct {
     net: u32,
     s0: Ast.Strength = .strong,

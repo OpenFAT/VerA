@@ -55,7 +55,7 @@ pub const Catalog = struct {
     /// Scope s's variables: `vars[var_start[s]..var_start[s + 1]]`.
     var_start: []const u32,
     vars: []const Var,
-    /// `Run.finest`: ticks are this power of ten of a second.
+    /// `Run.time.finest`: ticks are this power of ten of a second.
     finest: i32,
 };
 

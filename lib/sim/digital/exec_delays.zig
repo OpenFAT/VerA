@@ -49,7 +49,7 @@ const release = waiters.release;
 /// `waiters.forceValue`: a VPI force of a constant.
 const forceValue = waiters.forceValue;
 
-/// A driver's `delay3` that reads a variable (`Run.driver_delays`), its
+/// A driver's `delay3` that reads a variable (`Run.netlist.driver_delays`), its
 /// values now, defaulted as `Run.declaredDelay3` defaults a constant one.
 pub fn variableDelay(self: *Run, scratch: std.mem.Allocator, d: Ast.Delay3, tok: u32) Error!Delay {
     assert(tok < self.starts.len);

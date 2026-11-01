@@ -1,6 +1,6 @@
 //! IEEE 1364-2005 §17 system tasks that keep state of their own: a task's
 //! argument expressions and the `Run` in; values written to its output
-//! arguments (and, for queues, `Run.queues`) out.
+//! arguments (and, for queues, `Run.tasks.queues`) out.
 //! Queues live in queues.zig, files in files.zig and scanning in scan.zig;
 //! this file re-exports their names, which rt/ and the emitter read here.
 //! Cites: §17.2 file input and output, §17.2.3 string output, §17.5
@@ -232,7 +232,7 @@ pub fn dist(f: Dist, seed: i32, a: i32, b: i32) ?Draw {
 
 /// §17.9 one call of `$random` or a `$dist_*` function. A seed argument is
 /// read and written back (§17.9.1, §17.9.2: "an inout argument"); a
-/// seedless `$random` advances `Run.random_seed`.
+/// seedless `$random` advances `Run.tasks.random_seed`.
 pub fn random(self: *Run, a: std.mem.Allocator, f: Dist, args: []const Ast.ExprId, tok: u32) Error!i32 {
     assert(tok < self.starts.len);
     if (args.len == 0) {

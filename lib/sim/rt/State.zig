@@ -269,7 +269,7 @@ mon_on: bool = true,
 mon_pending: bool = false,
 /// §17.6 the stochastic queues, by `q_id`.
 queues: system.Queues = .empty,
-/// `Run.random_seed`.
+/// `Run.tasks.random_seed`.
 random_seed: i32 = 0,
 /// §9.3 per slot (empty when the design has no `assign` or `force`):
 /// the pc ranges of the procedural continuous assignments holding it.

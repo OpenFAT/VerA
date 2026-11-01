@@ -86,13 +86,13 @@ pub const Instruction = union(enum(u5)) {
     /// Continue at this pc.
     jump: u32,
     /// §9.5 the first arm whose label matches `statement`'s scrutinee, both in
-    /// `ty`, continues at `Run.case_targets[targets + arm]`; no match continues
+    /// `ty`, continues at `Run.program.case_targets[targets + arm]`; no match continues
     /// at `fallback` (the `default` arm, or past the statement).
     case_select: struct { statement: Ast.StmtId, targets: u32, fallback: u32, ty: Type },
     /// A count of x, z or below 0 runs nothing, at any width; past 64 bits
     /// it saturates (`exec`, `rt.repeatCount`).
     repeat_start: struct { count: Ast.ExprId, counter: u32, end: u32 },
-    /// The end of a `repeat` body: one count spent from `Run.repeats[counter]`;
+    /// The end of a `repeat` body: one count spent from `Run.rows.repeats[counter]`;
     /// while some remain, the body runs again from `body`.
     repeat_next: struct { counter: u32, body: u32 },
     /// §5.10.1 suspend until one watched variable takes a matching edge.

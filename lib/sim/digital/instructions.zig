@@ -232,7 +232,7 @@ pub fn overrideOn(self: *Run, o: @FieldType(Instruction, "override_on"), pc: u32
 }
 
 /// `.override_eval`: the holding process writes its value, past the hold
-/// it owns (`Run.overriding`).
+/// it owns (`Run.assigns.active`).
 pub fn overrideEval(self: *Run, scratch: std.mem.Allocator, o: @FieldType(Instruction, "override_eval"), pc: u32) Error!void {
     const held = o.bits.some();
     const slice = o.slice.some();

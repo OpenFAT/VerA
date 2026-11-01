@@ -14,7 +14,7 @@
 //! - `pub fn queueIsFull(queues: *const Queues, id: ?i64) struct { status: i64, full: i64 }`
 //! IEEE 1364-2005 §17 system tasks that keep state of their own: a task's
 //! argument expressions and the `Run` in; values written to its output
-//! arguments (and, for queues, `Run.queues`) out.
+//! arguments (and, for queues, `Run.tasks.queues`) out.
 //! Clauses: §17.2 file input and output, §17.2.3 string output, §17.5
 //! programmable logic arrays, §17.6 stochastic queues, §17.9 distributions.
 const std = @import("std");

@@ -1,6 +1,6 @@
 //! The write path and its waiters: a value arriving at a slot -> stored,
 //! and the continuous drivers, event controls and watchers it wakes
-//! (`Run.susps`, `Run.terms`, `Run.fan`, `Run.watch`). The one path the
+//! (`Run.waits.susps`, `Run.waits.terms`, `Run.waits.fan`, `Run.waits.watch`). The one path the
 //! active and NBA regions, a net's resolution and a VPI put all take.
 //! Clauses: IEEE 1364-2005 §5.10.1 edges, §5.10.4 named events, §6.1 static
 //! fan-out, §9.3 procedural continuous assignments, §9.7.1-§9.7.3 event
@@ -90,18 +90,18 @@ pub const Susp = struct {
     gen: u32,
     alive: bool,
 
-    // Budget: one row per suspended process, recycled (`Run.free_susps`).
+    // Budget: one row per suspended process, recycled (`Run.waits.free_susps`).
     comptime {
         std.debug.assert(@sizeOf(Susp) == 16);
     }
 };
 
 /// One term of a suspension's event expression, filed under the slot it
-/// watches (`Run.terms`). Live while `gen` is its suspension's.
+/// watches (`Run.waits.terms`). Live while `gen` is its suspension's.
 pub const Term = struct {
     susp: u32,
     gen: u32,
-    /// Its row of `Run.term_exts` (`watchExt`), or `no_ext` for a term that
+    /// Its row of `Run.waits.term_exts` (`watchExt`), or `no_ext` for a term that
     /// watches its whole slot with no event select.
     ext: u32 = no_ext,
     edge: Edge,
@@ -117,7 +117,7 @@ pub const Term = struct {
 /// `Term.ext` of a plain term.
 pub const no_ext = std.math.maxInt(u32);
 
-/// The out-of-line part of a `Term` (`Run.term_exts`): an event select or a
+/// The out-of-line part of a `Term` (`Run.waits.term_exts`): an event select or a
 /// bit select, never both.
 pub const TermExt = struct {
     /// §9.7.3: an event array index selects which occurrence wakes this
@@ -126,7 +126,7 @@ pub const TermExt = struct {
     event_select: Ast.ExprId = .none,
     scope: u32 = 0,
     /// §9.7.2 an expression term over automatic variables
-    /// (`Run.auto_terms`): evaluated in `scope` and the waiter's own
+    /// (`Run.routines.auto_terms`): evaluated in `scope` and the waiter's own
     /// activation, its bits `[0, width)` compared as a select's are.
     expr: Ast.ExprId = .none,
     /// §9.7.2 a constant select term (`compile.selectTerm`): bits
@@ -409,15 +409,15 @@ pub fn wake(self: *Run, target: u32, before: Int.Bit, after: Int.Bit) Error!void
 }
 
 /// The terms filed under `slot`, or null when nothing has ever waited on it.
-/// A slot below `Run.terms.len` keeps its list at a stable address; one
-/// above it (`driver.key`, a monitor's slot) is in `Run.far_terms`, whose
+/// A slot below `Run.waits.terms.len` keeps its list at a stable address; one
+/// above it (`driver.key`, a monitor's slot) is in `Run.waits.far_terms`, whose
 /// rows a later `watch` of another far slot may move.
 pub fn termsOf(self: *Run, slot: u32) ?*std.ArrayList(Term) {
     return if (slot < self.waits.terms.len) self.waits.terms[slot] else self.waits.far_terms.getPtr(slot);
 }
 
 /// Suspend the executing process at `pc` (§9.7). Its terms are filed with
-/// `watch` under the id returned. Invalidates pointers into `Run.susps`
+/// `watch` under the id returned. Invalidates pointers into `Run.waits.susps`
 /// when no row is free for reuse.
 pub fn park(self: *Run, pc: u32) Error!u32 {
     const id = self.waits.free_susps.pop() orelse blk: {
@@ -434,7 +434,7 @@ pub fn park(self: *Run, pc: u32) Error!u32 {
 }
 
 /// File one term of suspension `id` under `slot`. A slot's first wait
-/// beyond `Run.terms` adds a `Run.far_terms` row, which invalidates
+/// beyond `Run.waits.terms` adds a `Run.waits.far_terms` row, which invalidates
 /// pointers to the other far lists (`termsOf`).
 pub fn watch(self: *Run, id: u32, slot: u32, edge: Edge) Error!void {
     return fileTerm(self, id, slot, edge, no_ext);

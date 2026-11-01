@@ -134,7 +134,7 @@ pub fn netRuns(
 
 /// Whether every value of `d` is a constant expression. A.2.2.3's
 /// `delay_value` and the `mintypmax_expression` in `delay3`'s parentheses may
-/// read a variable too (`Run.driver_delays`).
+/// read a variable too (`Run.netlist.driver_delays`).
 pub fn constantDelay(r: *Run, d: Ast.Delay3) Error!bool {
     // Every value is checked, not only those before the first variable one:
     // `exec.variableDelay` types each of them at run time.
@@ -272,7 +272,7 @@ pub fn processes(r: *Run, blocks: []const Ast.DiscreteBlock) Error!void {
 /// Whether `body`, an always construct's, starts with an event control on
 /// levels only (`@(a or b[0])`, `@*`): no posedge or negedge, no named event.
 /// §9.9 gives initial and always constructs no order; VerA starts these
-/// first at time 0, ahead of every driver and process (`Run.early`), so
+/// first at time 0, ahead of every driver and process (`Run.program.early`), so
 /// they see the time-0 changes the others make, as iverilog does (ivtest
 /// pr1026, pr1956211, pr2986528).
 fn levelControlled(r: *Run, body: Ast.StmtId) Error!bool {

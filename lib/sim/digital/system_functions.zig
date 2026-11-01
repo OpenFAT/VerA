@@ -11,8 +11,8 @@
 //! - `pub const vams_digital_unrun`
 //! - `pub const sys_fns`
 //! AST -> bytecode: one process body or driver expression, in its instance
-//! scope, -> `Instruction` rows in `Run.code`, each expression's type in
-//! `Run.types`, and the static slot lists drivers and `@*` wait on; or E1100
+//! scope, -> `Instruction` rows in `Run.program.code`, each expression's type in
+//! `Run.typing.types`, and the static slot lists drivers and `@*` wait on; or E1100
 //! before any process has run.
 //! Clauses: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.2.1/§5.2.2, §5.5.1
 //! Table 5-22, §5.10.4, §6.1, §8.5.3.3/§8.5.3.4, §9.3, §9.5, §9.6, §9.7.1 to
@@ -45,7 +45,7 @@ pub const tasks = display.tasks;
 /// §9.14 Table 9-11's integral system functions, the two of IEEE 1364 §17.7
 /// that read the clock, and §4.2.1.4's `$signed`/`$unsigned` casts: every
 /// system function an integral expression may call. `infer` resolves each
-/// call once into `Run.sys_calls`; separate from `tasks` because these are
+/// call once into `Run.typing.sys_calls`; separate from `tasks` because these are
 /// expressions.
 pub const SysFn = enum {
     /// §17.7.1, 64 bits: "the time unit of the module that invoked it".
@@ -134,7 +134,7 @@ pub const SysFn = enum {
     dist_chi_square,
     dist_t,
     dist_erlang,
-    /// IEEE 1364-2005 §20.3 a PLI application's function (`Run.systf`).
+    /// IEEE 1364-2005 §20.3 a PLI application's function (`Run.host.systf`).
     user,
 
     /// Is a call a constant expression when its arguments are? A replication

@@ -97,7 +97,7 @@ pub const variableDelay = exec_delays.variableDelay;
 pub const Pending = union(enum) {
     /// Run the process continuing at this pc, outside any §10.2.3 activation.
     run_process: u32,
-    /// A resumption inside a §10.2.3 task activation (`Run.acts`): `pc`
+    /// A resumption inside a §10.2.3 task activation (`Run.calls.acts`): `pc`
     /// runs with activation `ctx`'s storage resident.
     @"resume": struct { pc: u32, ctx: u32 },
     /// §9.2.2 a nonblocking update landing: `value` into slot `target`, or
@@ -143,7 +143,7 @@ pub const Pending = union(enum) {
 };
 
 /// One payload row. Rows are recycled: a row is live exactly while the
-/// scheduler holds its `handle` pending, and goes back on `Run.free_rows` when
+/// scheduler holds its `handle` pending, and goes back on `Run.rows.free` when
 /// it dispatches or is cancelled, so the table is as large as the most events
 /// ever queued at once, not as the run is long. `buf` is the row's own
 /// storage for a `.write` value, kept across reuse and grown only when a wider
@@ -325,7 +325,7 @@ pub fn execute(self: *Run, scratch: *Scratch, start: u32) Error!void {
 }
 
 /// Reports the `assign`/`force` whose override process starts at `start` to
-/// `Run.done_hook`, once: when the process first writes the target, or when
+/// `Run.host.done_hook`, once: when the process first writes the target, or when
 /// the override is undone or replaced before it ran.
 pub fn doneFlush(self: *Run, start: u32) Error!void {
     const h = self.host.done_hook orelse return;
@@ -436,7 +436,7 @@ fn caseMatches(kind: Ast.CaseKind, value: Int.Literal, label: Int.Literal) bool 
 
 /// One pass back to the top of a loop (a backward jump, a `repeat`'s next
 /// iteration): an untimed loop never returns to the scheduler, so each pass
-/// counts against the time step's event budget (`Run.budget`), and
+/// counts against the time step's event budget (`Run.event_budget.max`), and
 /// `initial forever x = 1;` is refused by name instead of hanging at one
 /// tick (docs/specification/Vague_Decisions.md §7). `rt.State.loopIteration` is
 /// the native executable's.
@@ -446,7 +446,7 @@ fn loopIteration(self: *Run) Error!void {
         return self.fail(0, "more than {d} loop iterations and events at time {d}: a loop with no delay keeps simulation time from advancing", .{ self.event_budget.max, self.scheduler.now });
 }
 
-/// `execute`, which with `hooked` calls `Run.stmt_hook` before each
+/// `execute`, which with `hooked` calls `Run.host.stmt_hook` before each
 /// instruction a statement starts at.
 fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool) Error!void {
     var pc = start;

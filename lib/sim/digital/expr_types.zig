@@ -1,4 +1,4 @@
-//! An expression in its scope in, its §5.4/§5.5 self-determined width and signedness out (`Run.types`), checked once before any process runs.
+//! An expression in its scope in, its §5.4/§5.5 self-determined width and signedness out (`Run.typing.types`), checked once before any process runs.
 //! Cites: IEEE 1364-2005 §4.8.1, §5.1.1, §5.1.14, §5.4, §5.5.1 Table 5-22, §5.5.2, A.8.
 //!
 //! Contents:
@@ -61,9 +61,9 @@ pub const Typing = struct {
     term_slots: std.AutoHashMapUnmanaged(struct { scope: u32, e: Ast.ExprId }, u32) = .empty,
     /// Natural types (§5.5.1), indexed by AST ExprId. An ExprId is shared by
     /// every instance of its module, and IEEE 1364-2005 §12.2 gives each
-    /// instance its own parameter values, so the truth is `spec_types`, keyed
+    /// instance its own parameter values, so the truth is `by_scope`, keyed
     /// by `specOf`. `types` is the dense copy for a row every specialization
-    /// typed alike (`ty_state` `.one`); `.many` rows are read from the map.
+    /// typed alike (`state` `.one`); `.many` rows are read from the map.
     types: []Type = &.{},
     state: []TyState = &.{},
     by_scope: std.AutoHashMapUnmanaged(SpecExpr, Type) = .empty,
@@ -126,7 +126,7 @@ pub fn typeOf(self: *Run, e: Ast.ExprId) Type {
 }
 
 /// Types `e` and every operand under it in the executing scope (§5.5.1),
-/// recording each in `Run.types`/`spec_types`, or fails with E1100 on a
+/// recording each in `Run.typing.types`/`by_scope`, or fails with E1100 on a
 /// form digital execution does not implement. Must run before `typeOf` or
 /// any evaluation of `e`.
 pub fn checkExpr(self: *Run, e: Ast.ExprId) Error!void {
@@ -422,7 +422,7 @@ pub fn infer(self: *Run, e: Ast.ExprId) Error!Type {
             else
                 try enabledTask(self, self.scope, ex.strOf(e), ex.mainTok(e), false)) orelse return self.exprFail(e, "undeclared function");
             // A call site records an index relative to its own instance's
-            // subroutines (`Run.sub_base`).
+            // subroutines (`Run.routines.base`).
             // ponytail: a function of another instance is refused; an
             // absolute index in `call_subs` is the upgrade.
             if (self.instanceOf(self.routines.rows.items[idx].inst) != inst) return self.exprFail(e, "§12.5: a hierarchical call of a function in another module instance is not implemented by digital execution");
