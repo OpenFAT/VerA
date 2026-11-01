@@ -22,6 +22,7 @@ const model_branches = @import("model_branches.zig");
 const schema = @import("schema.zig");
 const ObjId = schema.ObjId;
 const user = @import("vpi_user.zig");
+const Edge = schema.Edge;
 const Builder = @import("Builder.zig");
 const Design = @import("Design.zig");
 const attribute = @import("attribute.zig");
@@ -332,6 +333,10 @@ fn addAnalogCode(
                     const pt = if (conn.name == .none) (if (k < scopes[child.index()].ports.items.len) scopes[child.index()].ports.items[k] else continue) else for (scopes[child.index()].ports.items) |p| {
                         if (std.mem.eql(u8, objects.at(p).name, b.file.str(conn.name))) break p;
                     } else continue;
+                    // IEEE 1364-2005 §26.6.5 port -> vpiHighConn: the
+                    // instance's connected expression, read in this scope.
+                    const high = try b.expr(conn.expr);
+                    objects.at(pt).edges = try std.mem.concat(arena, Edge, &.{ objects.at(pt).edges, &.{.{ .tag = user.vpiHighConn, .to = high }} });
                     try b.attributes(pt, .{ .kind = .declaration, .tok = conn.main_tok }, false);
                 }
             }

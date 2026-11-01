@@ -107,6 +107,7 @@
 //! - `pub const vpiForInitStmt: c_int`
 //! - `pub const vpiLhs: c_int`
 //! - `pub const vpiHighConn: c_int`
+//! - `pub const vpiLowConn: c_int`
 //! - `pub const vpiLeftRange: c_int`
 //! - `pub const vpiRhs: c_int`
 //! - `pub const vpiArgument: c_int`
@@ -493,6 +494,7 @@ pub const vpiForIncStmt: c_int = 74;
 pub const vpiForInitStmt: c_int = 75;
 pub const vpiLhs: c_int = 77;
 pub const vpiHighConn: c_int = 76;
+pub const vpiLowConn: c_int = 80;
 pub const vpiLeftRange: c_int = 79;
 pub const vpiRhs: c_int = 82;
 pub const vpiArgument: c_int = 89;

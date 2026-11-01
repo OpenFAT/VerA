@@ -110,7 +110,6 @@ pub fn unansweredType(t: c_int) ?Unanswered {
         10 => .{ .name = "vpiDefParam", .why = "the model keeps no defparam: elaboration applied it" },
         45 => .{ .name = "vpiPortBit", .why = no_bits },
         54 => .{ .name = "vpiSpecParam", .why = "the model keeps no specparam object" },
-        80 => .{ .name = "vpiLowConn", .why = "the model holds a port's upper connection (vpiHighConn), not its lower one" },
         98 => .{ .name = "vpiPortInst", .why = "the model does not record the ports of lower instances a net connects to" },
         106 => .{ .name = "vpiBitSelect", .why = "the model types a bit-select as a vpiNetBit or vpiRegBit" },
         108 => .{ .name = "vpiDelayTerm", .why = no_sdf },

@@ -21376,8 +21376,8 @@ pub const vpi_tests = struct {
         try std.testing.expect(std.mem.find(u8, lastMessage(), "vpiCellInstance") != null);
         try std.testing.expect(vpi_get_str(15, m) == null);
         try std.testing.expect(std.mem.find(u8, lastMessage(), "vpiDefFile") != null);
-        try std.testing.expect(vpi_handle(80, a) == null);
-        try std.testing.expect(std.mem.find(u8, lastMessage(), "vpiLowConn") != null);
+        try std.testing.expect(vpi_handle(98, a) == null);
+        try std.testing.expect(std.mem.find(u8, lastMessage(), "vpiPortInst") != null);
         try std.testing.expect(vpi_iterate(127, m) == null);
         try std.testing.expect(std.mem.find(u8, lastMessage(), "vpiTaskFunc") != null);
         const save: abi.CbData = .{ .reason = 15, .cb_rtn = noCb, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
@@ -21753,6 +21753,57 @@ pub const vpi_tests = struct {
             .{ .kind = .tran, .start = 0, .stop = std.math.nan(f64) },
             .{ .kind = .tran, .start = -1, .stop = 1 },
         }) |a| try std.testing.expectError(error.BadAnalysis, b.runMixed(a, undefined, 1e-9, &.{}, &.{}));
+    }
+
+    /// The `vpiFullName` of `obj`'s `rel` (vpiLowConn, vpiHighConn), or "".
+    fn connName(rel: c_int, obj: ?*anyopaque) []const u8 {
+        const h = handle.vpi_handle(rel, @ptrCast(obj)) orelse return "";
+        return std.mem.span(property.vpi_get_str(user.vpiFullName, h));
+    }
+
+    test "§26.6.5 a digital port's vpiLowConn is its module's net of that name, its vpiHighConn the parent's connected net" {
+        // Oracle: IEEE 1364-2005 §26.6.5 (port -> vpiLowConn the expression
+        // inside the module, vpiHighConn the instance's connected one) and
+        // the source: `leaf u(.a(bus), .y(s))` connects leaf's `a` to
+        // top's `bus` and `y` to `s`, names that differ, so a name match
+        // gives the wrong answer. The rewrite refused vpiLowConn.
+        var h: run.Harness = undefined;
+        try h.init(
+            \\module leaf(a, y); input [3:0] a; output y; assign y = a[0]; endmodule
+            \\module top; wire [3:0] bus; wire s; leaf u(.a(bus), .y(s)); endmodule
+        );
+        defer h.deinit();
+        const itr = iterate.vpi_iterate(user.vpiPort, handle.vpi_handle_by_name("top.u", null)) orelse return error.TestUnexpectedResult;
+        const a = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
+        const y = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(iterate.vpi_scan(itr) == null);
+        try std.testing.expectEqualStrings("top.u.a", connName(user.vpiLowConn, a));
+        try std.testing.expectEqual(@as(c_int, user.vpiNet), property.vpi_get(user.vpiType, handle.vpi_handle(user.vpiLowConn, a)));
+        try std.testing.expectEqualStrings("top.bus", connName(user.vpiHighConn, a));
+        try std.testing.expectEqualStrings("top.u.y", connName(user.vpiLowConn, y));
+        try std.testing.expectEqualStrings("top.s", connName(user.vpiHighConn, y));
+    }
+
+    test "§26.6.5 an analog port's vpiHighConn is the parent's connected net, and a top port's vpiLowConn its node" {
+        // Oracle: the source, as above: `sub u(p, n)` connects sub's `a` to
+        // top's `p` and `b` to `n`. A top-level port has no instance, so no
+        // vpiHighConn; its vpiLowConn is its node (VAMS §11.6.4 port ->
+        // nodes: a top port's node has no net).
+        var res = try openSource(nested_src);
+        defer res.deinit(std.testing.allocator);
+        defer close();
+        const itr = iterate.vpi_iterate(user.vpiPort, handle.vpi_handle_by_name("top.u", null)) orelse return error.TestUnexpectedResult;
+        const a = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
+        const b = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
+        _ = trust.vpi_free_object(itr);
+        try std.testing.expectEqualStrings("top.p", connName(user.vpiHighConn, a));
+        try std.testing.expectEqualStrings("top.n", connName(user.vpiHighConn, b));
+        const tops = iterate.vpi_iterate(user.vpiPort, handle.vpi_handle_by_name("top", null)) orelse return error.TestUnexpectedResult;
+        const p = iterate.vpi_scan(tops) orelse return error.TestUnexpectedResult;
+        _ = trust.vpi_free_object(tops);
+        try std.testing.expectEqualStrings("top.p", connName(user.vpiLowConn, p));
+        try std.testing.expectEqual(@as(c_int, user.vpiNode), property.vpi_get(user.vpiType, handle.vpi_handle(user.vpiLowConn, p)));
+        try std.testing.expect(handle.vpi_handle(user.vpiHighConn, p) == null);
     }
 };
 
