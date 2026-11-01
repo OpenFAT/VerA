@@ -20,6 +20,7 @@
 //! - `pub const dim = rtlil_module.dim`
 //! - `pub const params = rtlil_module.params`
 //! - `pub const declare = rtlil_module.declare`
+//! - `pub const redeclared = rtlil_module.redeclared`
 //! - `pub const wireLines = rtlil_module.wireLines`
 //! - `pub const wireLine = rtlil_module.wireLine`
 //! - `pub const contAssign = rtlil_module.contAssign`
@@ -139,6 +140,8 @@ pub const Emitter = struct {
     pub const params = rtlil_module.params;
     /// Every port, net and variable of a module as a `Sym`.
     pub const declare = rtlil_module.declare;
+    /// Whether a net or variable redeclares a port (merged) or anything else (E1100).
+    pub const redeclared = rtlil_module.redeclared;
     /// A module's `wire` lines, ports first by header position.
     pub const wireLines = rtlil_module.wireLines;
     /// One `wire` line: width, sign, offset, `upto` and port number.

@@ -7873,7 +7873,7 @@ pub const rtlil_tests = struct {
         try expectHas(text, "  cell \\leaf \\by_name\n    connect \\a \\i\n    connect \\y \\p\n  end\n");
     }
 
-    test "a connection to no port of the module is E1100 in vera --run's words (§12.1.2, §12.3.6)" {
+    test "a connection to no port, or a second declaration of a name, is E1100 in vera --run's words (§12.1.2, §12.3.6, §4.10)" {
         // Oracle: `vera --run` of the same designs (sim.digital's elab.zig),
         // and tests/conformance's null_port_extra_connection_rejected.v
         // (`//! reject E1100`). Development panicked on the first.
@@ -7883,6 +7883,10 @@ pub const rtlil_tests = struct {
         for ([_][2][]const u8{
             .{ "module leaf(a, , , y); input a; output y; assign y = a; endmodule\nmodule top; wire y; leaf u(1'b1, , , y, 1'b0); endmodule\n", "more port connections than the module has ports" },
             .{ "module leaf(input a, output y); assign y = a; endmodule\nmodule top; wire y; leaf u(.a(1'b1), .q(y)); endmodule\n", "the instantiated module has no such port" },
+            // §4.10, tests/conformance's parameter_redeclares_net_rejected.v.
+            // Development emitted `wire width 32 signed \w`, the parameter.
+            .{ "module m;\n  wire w;\n  parameter w = 1;\nendmodule\n", "duplicate digital variable" },
+            .{ "module m;\n  wire w;\n  reg w;\nendmodule\n", "duplicate digital variable" },
         }) |c| {
             var bag: diag.Bag = .init(arena);
             var why: []const u8 = "";

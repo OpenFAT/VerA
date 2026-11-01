@@ -14,6 +14,7 @@
 //! - `pub fn dim(self: *Emitter, d: Ast.Dim, tok: u32, sym: *Sym) Error!void`
 //! - `pub fn params(self: *Emitter, m: *const Ast.ModuleDecl) Error!void`
 //! - `pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void`
+//! - `pub fn redeclared(self: *Emitter, m: *const Ast.ModuleDecl, name: StrId, tok: u32) Error!bool`
 //! - `pub fn wireLines(self: *Emitter, m: *const Ast.ModuleDecl) Error!void`
 //! - `pub fn wireLine(self: *Emitter, name: StrId, s: Sym, dir: Ast.Direction, port: u32) Error!void`
 //! - `pub fn contAssign(self: *Emitter, a: *const Ast.ContAssign) Error!void`
@@ -165,7 +166,7 @@ pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
         try self.syms.put(self.arena, p.name, sym);
     }
     for (m.nets) |*n| {
-        if (self.syms.contains(n.name)) continue;
+        if (try self.redeclared(m, n.name, n.main_tok)) continue;
         if (n.kind == .wreal) return self.refuse(n.main_tok, "a wreal net", .{});
         if (n.dims.len != 0) return self.refuse(n.main_tok, "a net array", .{});
         var sym: Sym = .{ .width = 1, .signed = n.is_signed, .kind = .wire };
@@ -173,7 +174,7 @@ pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
         try self.syms.put(self.arena, n.name, sym);
     }
     for (m.vars) |*v| {
-        if (self.syms.contains(v.name)) continue;
+        if (try self.redeclared(m, v.name, v.main_tok)) continue;
         if (v.dims.len != 0) return self.refuse(v.main_tok, "a memory (`{s}` has unpacked dimensions)", .{self.str(v.name)});
         var sym: Sym = .{ .width = 1, .signed = v.is_signed, .kind = .reg };
         switch (v.storage) {
@@ -189,6 +190,18 @@ pub fn declare(self: *Emitter, m: *const Ast.ModuleDecl) Error!void {
         if (v.packed_range) |r| try self.dim(r, v.main_tok, &sym);
         try self.syms.put(self.arena, v.name, sym);
     }
+}
+
+/// Whether `name`, about to be declared as a net or variable, already is
+/// one: a header port's declaration is the port (§12.3.3), true; any other
+/// second declaration (§4.10: "illegal to redeclare a name already declared
+/// by a net, parameter, or variable declaration") is E1100, as `vera --run`
+/// reports it.
+pub fn redeclared(self: *Emitter, m: *const Ast.ModuleDecl, name: StrId, tok: u32) Error!bool {
+    assert(name != .none);
+    const had = self.syms.get(name) orelse return false;
+    if (had.kind != .param and isPort(m, name)) return true;
+    return self.designError(tok, "duplicate digital variable");
 }
 
 /// `wire width W [signed] [offset O] [upto] [input|output|inout K] \name`.
