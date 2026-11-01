@@ -447,6 +447,12 @@ fn analyzeUnitOnce(self: *UnitPlan, target: Mir.Value) Error!void {
         const v = @backingInt(self.live.items[k]);
         if (v < Mir.Value.first_dynamic) break; // sentinels sort first
         if (self.eager_use[v] != 0 or self.arm_use[v] == 0) continue;
+        // A leaf (`countUses`'s: a core field, a setup root, a literal)
+        // renders as its name or number at every read and counted none of
+        // its operands: inlining it would hide its cache read from
+        // `uses_cache` and take uses its operands never got.
+        const lv: Mir.Value = @fromBackingInt(@intCast(v));
+        if (self.cached(lv) or self.isRoot(lv) or self.literal(lv)) continue;
         // Read at more than one arm position: a slot, computed once where it
         // is defined, rather than re-rendering its whole slice at every arm.
         // Eager is sound here: prove's `guards.markSelectArms` guards only a slice owned
@@ -666,6 +672,39 @@ test "§4.2.12 a value read only in one select arm is inlined there; its conditi
     // Only the target is a statement.
     try std.testing.expectEqual(@as(u32, 1), p.n_slots);
     try std.testing.expectEqual(@as(u32, 0), p.slot[@backingInt(s)]);
+}
+
+test "§4.2.12 a core-carried value read in one select arm is a cache read, not an inlined row" {
+    // The arm-inlining sweep marks a value read at exactly one lazy position
+    // `inlined`. A value the core carries (`cached`) renders as `c.fN`
+    // wherever it is read and counts none of its operands (`countUses` stops
+    // at it, a leaf), so the sweep must leave it alone: marked inlined, the
+    // slot sweep skips it before it sets `uses_cache`, and the body reads
+    // `c.f0` with no `const c = core(...)` above it, and moving its operands'
+    // uses to arm positions takes away `V(a)`'s eager use by the condition.
+    // Oracle: renderValueRef reads a cached value from the core's result,
+    // which exists only when `uses_cache` is set; the condition `V(a) > 0`
+    // runs eagerly, so `V(a)` keeps an eager use.
+    var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+    try f.init(&.{"a"});
+    defer f.deinit();
+    const a = f.alloc();
+    const va = try f.probe(0);
+    const sq = try f.mir.emit(a, .entry, .fmul, &.{ va, va });
+    const c = try f.mir.emit(a, .entry, .fgt, &.{ va, .f_zero });
+    const s = try f.mir.emit(a, .entry, .select, &.{ c, sq, .f_one });
+    const an = try f.analysis();
+    var p = try emptyCorePlan(&f, &an, .drop);
+    const lo_idx = try a.alloc(u32, an.nv);
+    @memset(lo_idx, none_u32);
+    lo_idx[@backingInt(sq)] = 0;
+    p.lo_idx = lo_idx;
+    p.lo_vals = &.{sq};
+    try p.analyze(s, false);
+    try std.testing.expect(p.cached(sq));
+    try std.testing.expect(!p.inlined.isSet(@backingInt(sq)));
+    try std.testing.expect(p.uses_cache);
+    try std.testing.expect(p.eager_use[@backingInt(va)] >= 1);
 }
 
 test "the core keeps every live-out as a field: none is inlined, each gets a slot" {
