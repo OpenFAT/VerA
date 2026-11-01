@@ -50,6 +50,7 @@ directories hold VerA's own test inputs, and `conformance/` is the suite.
 | `host/` | The hosts that drive a device: `*_host.zig`, the `*_gpu.zig` twin, `*_dyn.zig`, `vdev_*.zig`, `vpi_host.zig` (in `test`) |
 | `canary/` | The wrong-on-purpose fixtures the canary in `test` judges, with their `EXPECT.tsv` |
 | `rtlil/`, `beh_verilog/`, `osdi/` | The `--emit-rtlil`, `--emit-verilog` and `--emit-osdi` inputs |
+| `vpi_negative/` | The VPI negative-input table (`test`, `test-vpi-negative`): a C application handing every exported `vpi_*` entry point each invalid argument it takes, and the design it probes |
 | `suite.xfail` | The fixture runner's known failures: one suite path a line, then `# reason` |
 | `conformance/` | The [VAMS Conformance Suite](https://github.com/OpenFAT/VAMS-Conformance-Suite), a submodule: the fixtures (below) and its own `conform` harness, tool configs and external suites |
 

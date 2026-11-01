@@ -318,6 +318,16 @@ pub fn build(b: *Build) void {
         const record = recordResults(b, vpi_app, dir, "vpi_acceptance.tsv", rows.items);
         test_step.dependOn(record);
     }
+    // The negative-input table: every exported vpi_* entry point handed each
+    // invalid argument it takes must return its failure value with an error
+    // vpi_chk_error reports. The app prints a row per case and judges itself.
+    const negative = vpiApp(b, target, optimize, vpi_host, "tests/vpi_negative/negative.c");
+    negative.addFileArg2(b.path("tests/vpi_negative/negative.v"), .{ .make_absolute = true });
+    negative.setCwd(b.tmpPath());
+    negative.expectExitCode(0);
+    negative.expectStdOutMatch("vpi-negative=ok\n");
+    test_step.dependOn(&negative.step);
+    b.step("test-vpi-negative", "Run the VPI negative-input table (tests/vpi_negative) only").dependOn(&negative.step);
     for (vpiRuns(b)) |f| {
         const r = vpiApp(b, target, optimize, vpi_host, f.c);
         // Each run gets its own cwd: an application writes fixed names there
