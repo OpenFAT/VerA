@@ -73,6 +73,10 @@ var inv_argc: c_int = 0;
 
 var inv_argv: [*c][*c]u8 = null;
 
+/// The most entries `runStartupTable` reads before it stops looking for the
+/// 0 terminator.
+const startup_routines_max = 1 << 16;
+
 /// Builds the object model over one elaborated design and installs it,
 /// closing any previous one.
 ///
@@ -80,21 +84,30 @@ var inv_argv: [*c][*c]u8 = null;
 /// elaborated top (`Elaborate.Design.top`), `res.file` its AST and
 /// `res.lowered.hier_names` its §6.7 path table. Everything read out of it is
 /// copied, so the caller may free the `CompileResult` the moment this returns.
+/// Asserts that no startup routine is running and, on success, that the
+/// model is installed.
 pub fn open(gpa: std.mem.Allocator, res: *const @import("vera").CompileResult) !void {
+    std.debug.assert(!starting);
     if (design != null) close();
     design = try buildDesign(gpa, res);
+    std.debug.assert(design.?.objects.len != 0);
 }
 
 /// The object model `open` installs, built and returned instead: the design
 /// of a second device library, which `analog_run.Binding.attach` takes and
 /// makes the installed one while that library's calls run (VerA #84). The
-/// caller owns it until it hands it to `attach`.
+/// caller owns it until it hands it to `attach`. Asserts that the model
+/// holds its top module's row and scope.
 pub fn buildDesign(gpa: std.mem.Allocator, res: *const @import("vera").CompileResult) !Design {
-    return model_analog.build(gpa, res);
+    const d = try model_analog.build(gpa, res);
+    std.debug.assert(d.scopes.len != 0);
+    std.debug.assert(d.scopes.len <= d.objects.len);
+    return d;
 }
 
 /// Frees the installed model and resets every sibling registry (run,
 /// callbacks, values, systfs) and the error status. Invalidates every handle.
+/// Asserts that afterwards no model, run or error status is left.
 pub fn close() void {
     if (design) |*d| d.deinit();
     design = null;
@@ -104,6 +117,8 @@ pub fn close() void {
     systf.reset();
     delays.reset();
     status.clearError();
+    std.debug.assert(run.attached() == null);
+    std.debug.assert(status.vpi_chk_error(null) == 0);
 }
 
 /// Calls each entry of the application's `vlog_startup_routines` once, in
@@ -112,34 +127,51 @@ pub fn close() void {
 /// A binary that calls this must link a `vlog_startup_routines` (a strong
 /// reference; §12.33.2 makes the array and the application one link unit).
 /// The `@extern` is inside this body, so a binary that never calls it needs
-/// none. Tests use `runStartupTable`.
+/// none. Tests use `runStartupTable`. Asserts that it is not called from a
+/// startup routine.
 pub fn runStartupRoutines() void {
+    std.debug.assert(!starting);
     runStartupTable(@extern(?[*]const ?StartupFn, .{ .name = "vlog_startup_routines" }));
+    std.debug.assert(!starting);
 }
 
 /// The loop of `runStartupRoutines` over a given table. A null table is a
-/// no-op: an application that registers nothing at startup is legal.
+/// no-op: an application that registers nothing at startup is legal. A table
+/// is read up to its terminator or `startup_routines_max` entries. Asserts
+/// that it is not called from a startup routine.
 pub fn runStartupTable(table: ?[*]const ?StartupFn) void {
+    std.debug.assert(!starting);
     const entries = table orelse return;
     starting = true;
-    defer starting = false;
-    var i: usize = 0;
-    while (entries[i]) |f| : (i += 1) f();
+    for (0..startup_routines_max) |i| {
+        const f = entries[i] orelse break;
+        f();
+    }
+    starting = false;
+    std.debug.assert(!starting);
 }
 
 /// Builds the object model over an elaborated digital run and installs it.
 /// The run must outlive the model: object values are read from `run.values`.
+/// Asserts that no startup routine is running and, on success, that the
+/// model is installed with `r` attached.
 pub fn openDigital(gpa: std.mem.Allocator, r: *sim.digital.Run) !void {
+    std.debug.assert(!starting);
     if (design != null) close();
     design = try model_digital.buildDigital(gpa, r);
     try callback.sizeHooks(r);
     run.attach(r);
     print.share(r);
+    std.debug.assert(design.?.objects.len != 0);
+    std.debug.assert(run.attached() == r);
 }
 
 /// A host calls this once, from its `main`, before the startup routines run.
-/// A host that never does reports an invocation of no options.
+/// A host that never does reports an invocation of no options. Asserts the C
+/// runtime's `main` contract: `argc` is not negative and `argv` holds it.
 pub fn setInvocation(argc: c_int, argv: [*c][*c]u8) void {
+    std.debug.assert(argc >= 0);
+    std.debug.assert(argc == 0 or argv != null);
     inv_argc = argc;
     inv_argv = argv;
 }
@@ -149,12 +181,17 @@ pub fn setInvocation(argc: c_int, argv: [*c][*c]u8) void {
 /// values (argv), Product and version strings ... The routine shall return
 /// TRUE on success and FALSE on failure." The one failure an application can
 /// cause is having no structure to fill.
+///
+/// Asserts that `setInvocation`'s contract still holds.
 pub export fn vpi_get_vlog_info(vlog_info_p: ?*VlogInfo) c_int {
     if (status.refused("vpi_get_vlog_info")) return 0;
     const out = vlog_info_p orelse {
         status.fail("BADINFO", "vpi_get_vlog_info: vlog_info_p is NULL", .{});
         return 0;
     };
+    // `setInvocation`'s contract, kept since.
+    std.debug.assert(inv_argc >= 0);
+    std.debug.assert(inv_argc == 0 or inv_argv != null);
     out.* = .{
         .argc = inv_argc,
         .argv = inv_argv,

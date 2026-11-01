@@ -20,6 +20,7 @@ const delays = @import("delays.zig");
 const reverse_index = @import("reverse_index.zig");
 const run = @import("run.zig");
 const schema = @import("schema.zig");
+const session = @import("session.zig");
 const status = @import("status.zig");
 const systf = @import("systf.zig");
 const trust = @import("trust.zig");
@@ -36,27 +37,39 @@ const ObjId = schema.ObjId;
 /// is NULL with no error, `vpi_iterate(vpiPort, some_reg)` is NULL with one. An
 /// application that does not check errors sees the documented empty loop either
 /// way; one that does can tell a fact about the design from a limit of VerA's.
+///
+/// Asserts that a non-NULL answer is a fresh live iterator and no error.
 pub export fn vpi_iterate(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
     const h = iterate(obj_type, ref);
-    if (trust.asIter(h)) |it| {
+    std.debug.assert(h == null or status.vpi_chk_error(null) == 0);
+    if (h != null) {
+        const it = trust.asIter(h).?;
+        std.debug.assert(it.at == 0);
         it.use = ref;
         it.ty = obj_type;
     }
     return h;
 }
 
+/// Records vpi_iterate's out-of-memory error; returns its NULL. Asserts
+/// that a design is open, as every iterator is built over one.
 pub fn oomIter() abi.vpiHandle {
+    std.debug.assert(session.design != null);
     status.fail("NOMEM", "vpi_iterate: out of memory", .{});
+    std.debug.assert(status.vpi_chk_error(null) == user.vpiError);
     return null;
 }
 
 /// `newHandleIter` over `out`'s handles, which it takes: `out` is left
-/// empty, or freed when the slice cannot be made.
+/// empty, or freed when the slice cannot be made. Asserts that `d` is the
+/// installed design.
 pub fn ownedIter(d: *Design, out: *std.ArrayList(abi.vpiHandle)) abi.vpiHandle {
+    std.debug.assert(d == &session.design.?);
     const handles = out.toOwnedSlice(d.gpa) catch {
         out.deinit(d.gpa);
         return oomIter();
     };
+    std.debug.assert(out.items.len == 0);
     return newHandleIter(d, handles);
 }
 
@@ -66,6 +79,8 @@ pub fn ownedIter(d: *Design, out: *std.ArrayList(abi.vpiHandle)) abi.vpiHandle {
 ///
 /// So exhaustion frees the iterator, and scanning it again is an invalid-handle
 /// error rather than a use-after-free.
+///
+/// Asserts that the cursor never passes its end.
 pub export fn vpi_scan(itr: abi.vpiHandle) abi.vpiHandle {
     const d = status.enter("vpi_scan") orelse return null;
     const it = trust.asIter(itr) orelse {
@@ -73,6 +88,8 @@ pub export fn vpi_scan(itr: abi.vpiHandle) abi.vpiHandle {
         return null;
     };
     if (it.handles) |hs| {
+        // The cursor never passes the end: reaching it frees the iterator.
+        std.debug.assert(it.at <= hs.len);
         if (it.at >= hs.len) {
             destroyIter(d, it);
             return null;
@@ -80,19 +97,25 @@ pub export fn vpi_scan(itr: abi.vpiHandle) abi.vpiHandle {
         it.at += 1;
         return hs[it.at - 1];
     }
+    std.debug.assert(it.at <= it.items.len);
     if (it.at >= it.items.len) {
         destroyIter(d, it);
         return null;
     }
     const idx = it.items[it.at];
     it.at += 1;
+    std.debug.assert(idx.index() < d.objects.len);
     return trust.handleOf(d.obj(idx));
 }
 
 /// Frees `it` and the handles it owns, and removes it from `d.iters` first,
-/// so its handle is invalid (`asIter` null) before the memory is.
+/// so its handle is invalid (`asIter` null) before the memory is. Asserts
+/// that `it` is one of `d`'s live iterators.
 pub fn destroyIter(d: *Design, it: *Iter) void {
-    _ = d.iters.remove(@intFromPtr(it));
+    const key = @intFromPtr(it);
+    const removed = d.iters.remove(key);
+    std.debug.assert(removed);
+    std.debug.assert(!d.iters.contains(key));
     if (it.handles) |hs| d.gpa.free(hs);
     d.gpa.destroy(it);
 }
@@ -101,6 +124,7 @@ pub fn destroyIter(d: *Design, it: *Iter) void {
 
 fn iterate(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
     const d = status.enter("vpi_iterate") orelse return null;
+    std.debug.assert(d == &session.design.?);
     if (status.unansweredType(obj_type)) |u| {
         status.failUnanswered("vpi_iterate", u);
         return null;
@@ -143,6 +167,7 @@ fn iterate(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
         return null;
     }
     const o = status.object("vpi_iterate", ref) orelse return null;
+    std.debug.assert(d.idOf(o).index() < d.objects.len);
     if (obj_type == user.vpiAttribute and attribute.supports(o))
         return if (schema.coldOf(o).attributes.len == 0) null else newIter(d, schema.coldOf(o).attributes);
     if (obj_type == user.vpiUse) return reverse_index.uses(d, o);
@@ -188,7 +213,9 @@ fn iterate(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
         status.fail("NOTRAVERSE", "vpi_iterate: a {s} is the reference object of no one-to-many relationship {d}", .{ @tagName(o.kind), obj_type });
         return null;
     }
-    const s = &d.scopes[o.scope];
+    // A module row's scope is the one its row index names (`Design.scope`).
+    const s = d.scope(d.idOf(o));
+    std.debug.assert(s == &d.scopes[o.scope]);
     for (s.lists) |l| if (l.tag == obj_type) return if (l.items.len == 0) null else newIter(d, l.items);
     const items: []const ObjId = switch (obj_type) {
         user.vpiModule => s.children,
@@ -220,21 +247,26 @@ fn iterate(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
 /// An iterator over `handles`, which it takes ownership of; NULL, with no
 /// error, for none (§12.23).
 fn newHandleIter(d: *Design, handles: []abi.vpiHandle) abi.vpiHandle {
+    std.debug.assert(d == &session.design.?);
     if (handles.len == 0) {
         d.gpa.free(handles);
         return null;
     }
     const h = newIter(d, &.{});
     if (trust.asIter(h)) |it| it.handles = handles else d.gpa.free(handles);
+    std.debug.assert(h == null or trust.asIter(h).?.handles.?.len == handles.len);
     return h;
 }
 
+/// An iterator over `items`, live in `d.iters` under its own address.
 fn newIter(d: *Design, items: []const ObjId) abi.vpiHandle {
+    std.debug.assert(d == &session.design.?);
     const it = d.gpa.create(Iter) catch return oomIter();
     it.* = .{ .items = items };
     d.iters.put(d.gpa, @intFromPtr(it), it) catch {
         d.gpa.destroy(it);
         return oomIter();
     };
+    std.debug.assert(d.iters.get(@intFromPtr(it)) == it);
     return @ptrCast(it);
 }
