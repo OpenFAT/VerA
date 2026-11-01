@@ -87,6 +87,7 @@ test {
     _ = @import("attribute.zig");
     _ = @import("Builder.zig");
     _ = @import("callback_fire.zig");
+    _ = @import("callback_sites.zig");
     _ = @import("cformat.zig");
     _ = @import("code_expr.zig");
     _ = @import("code_module.zig");

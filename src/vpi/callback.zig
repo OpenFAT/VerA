@@ -6,6 +6,7 @@
 //! pointers are never read until membership proves them ours. Removal deletes
 //! the key first (§12.34: the handle "is no longer valid"); the `Cb` survives
 //! until a sweep at dispatch depth zero, so a callback may remove itself.
+//! A cbStmt's sites and the engine's statement hook are callback_sites.zig's.
 //! Cites: VAMS-2023 §12.6, §12.31, §12.34; IEEE 1364-2005 §26.2.4, §26.6.39,
 //! §27.8, §27.29, §27.33.
 //!
@@ -26,18 +27,16 @@
 //! - `pub fn vpi_remove_cb(cb_obj: abi.vpiHandle) c_int`
 //! - `pub fn vpi_get_cb_info(obj: abi.vpiHandle, cb_data_p: ?*CbData) void`
 //! - `pub fn sweep() void`
-//! - `pub fn sizeHooks(r: *const digital.Run) error`
 //! - `pub fn retire(cb: *Cb) void`
 //! - `pub fn onCompile(d: *CbData) callconv(.c) c_int`
 //! - `pub fn onStart(_: *CbData) callconv(.c) c_int`
 
 const std = @import("std");
-const digital = @import("sim").digital;
-const sim = @import("sim");
 const gpa = std.heap.smp_allocator;
 const abi = @import("abi.zig");
 const analog = @import("analog.zig");
 const callback_fire = @import("callback_fire.zig");
+const callback_sites = @import("callback_sites.zig");
 const run = @import("run.zig");
 const schema = @import("schema.zig");
 const session = @import("session.zig");
@@ -102,9 +101,6 @@ var live: std.AutoHashMapUnmanaged(usize, *Cb) = .empty;
 const no_save = "VerA has no save or restart (IEEE 1364-2005 C.8)";
 const no_interactive = "a VerA run has no interactive mode (§12.36: vpiStop ends the run)";
 
-/// The pcs a live cbStmt fires at, which the engine checks (`StmtHook`).
-var hooked: std.bit_set.Dynamic = .{};
-
 var order: [8]u8 = undefined;
 var order_len: usize = 0;
 var self_handle: abi.vpiHandle = null;
@@ -118,41 +114,59 @@ var pli_calls: u32 = 0;
 var swept: [4]u8 = undefined;
 var swept_n: usize = 0;
 
-/// Whether `r` is one of the §12.31.3 analog reasons.
+/// Whether `r` is one of the §12.31.3 analog reasons. Asserts that they are
+/// one range of numbers, none a time reason.
 pub fn isAnalogReason(r: c_int) bool {
-    return r >= user.acbInitialStep and r <= user.acbAcceptedPoint;
+    comptime std.debug.assert(user.acbInitialStep < user.acbAcceptedPoint);
+    const yes = r >= user.acbInitialStep and r <= user.acbAcceptedPoint;
+    std.debug.assert(!yes or !isTimeReason(r));
+    return yes;
 }
 
 /// Returns `h` as a live callback, or null; never dereferences a foreign
-/// pointer.
+/// pointer. Asserts that a live callback is keyed by its own address and
+/// is not dead.
 pub fn asCb(h: abi.vpiHandle) ?*Cb {
     const p = h orelse return null;
-    return live.get(@intFromPtr(p));
+    const cb = live.get(@intFromPtr(p)) orelse return null;
+    std.debug.assert(@intFromPtr(cb) == @intFromPtr(p));
+    std.debug.assert(!cb.dead);
+    return cb;
 }
 
 /// Frees every callback and invalidates every handle. `root.close()` calls
-/// it: callbacks belong to the session a design was opened for.
+/// it: callbacks belong to the session a design was opened for. Asserts
+/// that no registration or handle is left.
 pub fn reset() void {
+    // The handles go first: `destroy` frees only a callback no handle names.
+    live.clearAndFree(gpa);
     for (cbs.items) |cb| destroy(cb);
     cbs.clearAndFree(gpa);
-    live.clearAndFree(gpa);
     depth = 0;
-    hooked.deinit(gpa);
-    hooked = .{};
+    callback_sites.resetHooks();
+    std.debug.assert(cbs.items.len == 0);
+    std.debug.assert(live.count() == 0);
 }
 
+/// Whether `r` is one of the §12.31.2 time reasons. Asserts that none is a
+/// startup or an analog reason.
 pub fn isTimeReason(r: c_int) bool {
-    return switch (r) {
+    const yes = switch (r) {
         user.cbAtStartOfSimTime, user.cbReadWriteSynch, user.cbReadOnlySynch, user.cbNextSimTime, user.cbAfterDelay => true,
         else => false,
     };
+    std.debug.assert(!yes or !startupReason(r));
+    std.debug.assert(!yes or r < user.acbInitialStep or r > user.acbAcceptedPoint);
+    return yes;
 }
 
 /// IEEE 1364-2005 §26.6.39: callbacks on an object, a time queue, or NULL
 /// for callbacks unrelated to either. Snapshot only live registrations;
 /// the caller owns the returned slice, whose handles retain their ordinary
 /// callback lifetime (§27.35). No iteration order is promised by the LRM.
+/// Asserts that a design is open and that every handle is live.
 pub fn all(a: std.mem.Allocator, ref: abi.vpiHandle) ![]abi.vpiHandle {
+    std.debug.assert(session.design != null);
     const queue = run.asQueue(ref);
     const next = if (queue != null) try run.nextTime(run.now(), a) else null;
     // At most one handle per registration.
@@ -177,13 +191,18 @@ pub fn all(a: std.mem.Allocator, ref: abi.vpiHandle) ![]abi.vpiHandle {
             }
             break :blk false;
         } else queue == null and cb.reference == ref;
-        if (matches) out.appendAssumeCapacity(@ptrCast(cb));
+        if (matches) {
+            std.debug.assert(asCb(@ptrCast(cb)) == cb);
+            out.appendAssumeCapacity(@ptrCast(cb));
+        }
     }
     return out.toOwnedSlice(a);
 }
 
 /// §12.31. Returns the callback handle, or NULL plus vpiError for a request
 /// that cannot be kept.
+///
+/// Asserts that a kept registration is live and last in order.
 pub export fn vpi_register_cb(cb_data_p: ?*const CbData) abi.vpiHandle {
     status.clearError();
     const d = cb_data_p orelse {
@@ -250,7 +269,7 @@ pub export fn vpi_register_cb(cb_data_p: ?*const CbData) abi.vpiHandle {
                 status.fail("NOTSUPPORTED", "vpi_register_cb: cbDisable is delivered for a named begin or fork in obj", .{});
                 return null;
             }
-            cb.sites = stmtSites(d.obj) orelse return null;
+            cb.sites = callback_sites.sites(d.obj) orelse return null;
             cb.reference = d.obj;
         },
         // §12.31.1 "After value change on an expression or terminal". The
@@ -277,7 +296,7 @@ pub export fn vpi_register_cb(cb_data_p: ?*const CbData) abi.vpiHandle {
         // §27.33.1.3 a module: "every statement that can have a callback
         // placed on it".
         user.cbStmt => {
-            cb.sites = stmtSites(d.obj) orelse return null;
+            cb.sites = callback_sites.sites(d.obj) orelse return null;
             cb.reference = d.obj;
         },
         user.cbAtStartOfSimTime, user.cbReadWriteSynch, user.cbReadOnlySynch, user.cbAfterDelay, user.cbNextSimTime => {
@@ -356,7 +375,9 @@ pub export fn vpi_register_cb(cb_data_p: ?*const CbData) abi.vpiHandle {
         destroy(p);
         return oom();
     };
-    if (cb.reason == user.cbStmt) rehook();
+    if (cb.reason == user.cbStmt) callback_sites.rehook();
+    std.debug.assert(asCb(@ptrCast(p)) == p);
+    std.debug.assert(cbs.items[cbs.items.len - 1] == p);
     return @ptrCast(p);
 }
 
@@ -365,26 +386,36 @@ pub export fn vpi_register_cb(cb_data_p: ?*const CbData) abi.vpiHandle {
 /// cbEndOfRestart" (cbStartOfSave or cbEndOfSave), and fails with 0
 /// otherwise. VerA has no save or restart (Annex C.8), so those callbacks
 /// never run and every call fails.
+///
+/// Asserts that every call records its error.
 pub export fn vpi_get_data(id: c_int, data_loc: ?[*]u8, num_bytes: c_int) c_int {
     if (status.refused("vpi_get_data")) return 0;
+    std.debug.assert(!session.starting);
     _ = .{ id, data_loc, num_bytes };
     status.fail("NOSAVE", "vpi_get_data: only a cbStartOfRestart or cbEndOfRestart callback reads saved data, and VerA has no restart", .{});
+    std.debug.assert(status.vpi_chk_error(null) == user.vpiError);
     return 0;
 }
 
-/// See `vpi_get_data`.
+/// See `vpi_get_data`. Asserts that every call records its error.
 pub export fn vpi_put_data(id: c_int, data_loc: ?[*]u8, num_bytes: c_int) c_int {
     if (status.refused("vpi_put_data")) return 0;
+    std.debug.assert(!session.starting);
     _ = .{ id, data_loc, num_bytes };
     status.fail("NOSAVE", "vpi_put_data: only a cbStartOfSave or cbEndOfSave callback saves data, and VerA has no save", .{});
+    std.debug.assert(status.vpi_chk_error(null) == user.vpiError);
     return 0;
 }
 
 /// §12.34 "shall return a 1 (TRUE) if successful, and a 0 (FALSE) on a
 /// failure. After vpi_remove_cb() is called with a handle to the callback, the
 /// handle is no longer valid."
+///
+/// Asserts that every live callback is registered, and the removed one is
+/// live no more.
 pub export fn vpi_remove_cb(cb_obj: abi.vpiHandle) c_int {
     if (status.refused("vpi_remove_cb")) return 0;
+    std.debug.assert(live.count() <= cbs.items.len);
     const cb = asCb(cb_obj) orelse {
         status.fail("BADHANDLE", "vpi_remove_cb: {s} is not a live callback handle", .{trust.describe(cb_obj)});
         return 0;
@@ -392,8 +423,9 @@ pub export fn vpi_remove_cb(cb_obj: abi.vpiHandle) c_int {
     _ = live.remove(@intFromPtr(cb));
     cb.dead = true;
     // Allocates nothing (`sizeHooks`), so a routine C calls cannot fail here.
-    if (cb.reason == user.cbStmt) rehook();
+    if (cb.reason == user.cbStmt) callback_sites.rehook();
     sweep();
+    std.debug.assert(asCb(cb_obj) == null);
     return 1;
 }
 
@@ -401,12 +433,16 @@ pub export fn vpi_remove_cb(cb_obj: abi.vpiHandle) c_int {
 /// s_cb_data structure. The memory for this structure shall be allocated by
 /// the user." The `time` and `value` sub-structures are the user's too when
 /// they point anywhere: they are written, never replaced.
+///
+/// Asserts that an admitted call reads a registration that is not dead.
 pub export fn vpi_get_cb_info(obj: abi.vpiHandle, cb_data_p: ?*CbData) void {
     if (status.refused("vpi_get_cb_info")) return;
+    std.debug.assert(!session.starting);
     const cb = asCb(obj) orelse {
         status.fail("BADHANDLE", "vpi_get_cb_info: {s} is not a live callback handle", .{trust.describe(obj)});
         return;
     };
+    std.debug.assert(!cb.dead);
     const out = cb_data_p orelse {
         status.fail("BADCB", "vpi_get_cb_info: cb_data_p is NULL", .{});
         return;
@@ -424,8 +460,10 @@ pub export fn vpi_get_cb_info(obj: abi.vpiHandle, cb_data_p: ?*CbData) void {
 }
 
 /// Frees the dead registrations, keeping the live ones in order: one pass,
-/// where removing each in place was quadratic in the registry.
+/// where removing each in place was quadratic in the registry. Asserts that
+/// every live callback is registered, and survives.
 pub fn sweep() void {
+    std.debug.assert(live.count() <= cbs.items.len);
     if (depth != 0) return;
     var kept: usize = 0;
     for (cbs.items) |cb| {
@@ -437,34 +475,40 @@ pub fn sweep() void {
         kept += 1;
     }
     cbs.shrinkRetainingCapacity(kept);
+    std.debug.assert(live.count() <= kept);
 }
 
-/// Sizes `hooked` to `r`'s program, before `r` is attached
-/// (`root.openDigital`), so `rehook` never allocates: `vpi_remove_cb` has
-/// no failure to report but a bad handle (§12.34).
-pub fn sizeHooks(r: *const digital.Run) error{OutOfMemory}!void {
-    try hooked.resize(gpa, r.program.code.items.len, false);
-}
-
+/// Ends `cb`'s registration: its handle is invalid at once, its row freed at
+/// the next sweep. Asserts that `cb` is live.
 pub fn retire(cb: *Cb) void {
+    std.debug.assert(!cb.dead);
+    std.debug.assert(live.get(@intFromPtr(cb)) == cb);
     _ = live.remove(@intFromPtr(cb));
     cb.dead = true;
 }
 
+/// Test routine: notes `C`. Asserts that it fires for cbEndOfCompile.
 pub fn onCompile(d: *CbData) callconv(.c) c_int {
     std.debug.assert(d.reason == user.cbEndOfCompile);
+    std.debug.assert(order_len < order.len);
     note('C');
     return 0;
 }
 
-pub fn onStart(_: *CbData) callconv(.c) c_int {
+/// Test routine: notes `S`, for any reason. Asserts that it fires for one.
+pub fn onStart(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason > 0);
+    std.debug.assert(order_len < order.len);
     note('S');
     return 0;
 }
 
 // ---- private ----
 
+/// Frees `cb`, which no handle names any more.
 fn destroy(cb: *Cb) void {
+    std.debug.assert(!live.contains(@intFromPtr(cb)));
+    std.debug.assert(cb.sites.len == 0 or cb.reason == user.cbStmt or cb.reason == user.cbDisable);
     gpa.free(cb.sites);
     gpa.destroy(cb);
 }
@@ -473,7 +517,7 @@ fn destroy(cb: *Cb) void {
 /// for (vpi_user.h's "Annex G names VerA does not answer"), refused by name
 /// at any time, the startup phase included.
 fn unansweredReason(r: c_int) ?Unanswered {
-    return switch (r) {
+    const u: ?Unanswered = switch (r) {
         15 => .{ .name = "cbStartOfSave", .why = no_save },
         16 => .{ .name = "cbEndOfSave", .why = no_save },
         17 => .{ .name = "cbStartOfRestart", .why = no_save },
@@ -484,143 +528,107 @@ fn unansweredReason(r: c_int) ?Unanswered {
         29 => .{ .name = "cbSignal", .why = "a VerA run traps no signal" },
         else => null, // else: every other number is delivered, or is no Annex G reason and gets NOREASON
     };
+    if (u) |x| {
+        std.debug.assert(std.mem.startsWith(u8, x.name, "cb"));
+        std.debug.assert(x.why.len != 0);
+    }
+    return u;
 }
 
 /// IEEE 1364-2005 §26.2.4: at startup "vpi_register_cb() routine can only be
 /// called for the following reasons": these five, and cbUnresolvedSystf,
 /// which VerA refuses at any time (no such callback is ever delivered).
 fn startupReason(r: c_int) bool {
-    return switch (r) {
+    const yes = switch (r) {
         user.cbEndOfCompile, user.cbStartOfSimulation, user.cbEndOfSimulation, user.cbError, user.cbPLIError => true,
         else => false,
     };
+    std.debug.assert(!yes or r > 0);
+    std.debug.assert(!yes or unansweredReason(r) == null);
+    return yes;
 }
 
+/// The failed registration's error; it has undone its effects by now.
 fn oom() abi.vpiHandle {
+    std.debug.assert(live.count() <= cbs.items.len);
     status.fail("NOMEM", "vpi_register_cb: out of memory", .{});
+    std.debug.assert(status.vpi_chk_error(null) == user.vpiError);
     return null;
-}
-
-/// `obj`'s sites: a statement's own, or every statement's of a module
-/// instance. Null, with the error recorded, for anything else.
-fn stmtSites(obj: abi.vpiHandle) ?[]const Site {
-    const o = trust.asObj(obj) orelse {
-        status.fail("BADHANDLE", "vpi_register_cb: cbStmt needs a statement or module handle in obj", .{});
-        return null;
-    };
-    const one = o.stmt != .none and o.vtype != user.vpiNullStmt;
-    if (!one and o.kind != .module) {
-        status.fail("NOTSTMT", "vpi_register_cb: `{s}` is neither a statement Table 27-6 lists nor a module", .{o.full});
-        return null;
-    }
-    const r = run.attached() orelse {
-        status.fail("NOENGINE", "vpi_register_cb: no digital run executes statements", .{});
-        return null;
-    };
-    const engine_sites = r.host.stmt_sites orelse {
-        status.fail("NOSITES", "vpi_register_cb: this run records no statement sites", .{});
-        return null;
-    };
-    const d = &session.design.?;
-    const scope = if (one) o.owner.get().? else o.scope;
-    // The statement objects this registration covers, by AST statement.
-    var covered: std.AutoHashMapUnmanaged(@import("frontend").Ast.StmtId, ObjId) = .empty;
-    defer covered.deinit(gpa);
-    if (one) {
-        covered.put(gpa, o.stmt, d.idOf(o)) catch return oomSites();
-    } else for (d.objects, 0..) |s, i| {
-        if (s.kind != .code or s.owner.get() != scope or s.stmt == .none or s.vtype == user.vpiNullStmt) continue;
-        covered.put(gpa, s.stmt, .at(i)) catch return oomSites();
-    }
-    var out: std.ArrayList(Site) = .empty;
-    const eng = d.scopes[scope].engine;
-    for (engine_sites.items) |st| {
-        if (st.scope != eng) continue;
-        const at = covered.get(st.stmt) orelse continue;
-        out.append(gpa, .{ .pc = st.pc, .obj = at }) catch {
-            out.deinit(gpa);
-            return oomSites();
-        };
-    }
-    return out.toOwnedSlice(gpa) catch {
-        out.deinit(gpa);
-        return oomSites();
-    };
-}
-
-fn oomSites() ?[]const Site {
-    status.fail("NOMEM", "vpi_register_cb: out of memory", .{});
-    return null;
-}
-
-/// Rebuilds `hooked` from the live cbStmt callbacks, and installs the hook
-/// on the engine while any is live. Asserts that `sizeHooks` sized it to the
-/// attached program, whose length a reset keeps (it elaborates the same
-/// source again).
-fn rehook() void {
-    const r = run.attached() orelse return;
-    std.debug.assert(hooked.bit_length == r.program.code.items.len);
-    hooked.unsetAll();
-    for (cbs.items) |cb| {
-        if (cb.dead or cb.reason != user.cbStmt) continue;
-        for (cb.sites) |st| hooked.set(st.pc);
-    }
-    r.host.stmt_hook = if (hooked.findFirstSet() != null) .{ .at = &hooked, .fire = callback_fire.fireStmt } else null;
 }
 
 fn note(c: u8) void {
+    std.debug.assert(order_len < order.len);
+    std.debug.assert(c != 0);
     order[order_len] = c;
     order_len += 1;
 }
 
 fn onEnd(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.cbEndOfSimulation);
+    std.debug.assert(order_len < order.len);
     note(if (d.user_data != null) d.user_data[0] else 'E');
     return 0;
 }
 
 fn removeSelf(_: *CbData) callconv(.c) c_int {
     note('R');
-    std.debug.assert(vpi_remove_cb(self_handle) == 1);
+    const removed = vpi_remove_cb(self_handle);
+    std.debug.assert(removed == 1);
+    std.debug.assert(asCb(self_handle) == null);
     return 0;
 }
 
-fn onTimed(_: *CbData) callconv(.c) c_int {
+fn onTimed(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.acbAbsTime);
+    std.debug.assert(timed_calls < std.math.maxInt(u32));
     timed_calls += 1;
     return 0;
 }
 
 fn verdict(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.index >= 0);
+    std.debug.assert(d.index < verdicts.len);
     verdict_calls += 1;
     return verdicts[@intCast(d.index)];
 }
 
 fn chain(_: *CbData) callconv(.c) c_int {
     chain_calls += 1;
+    std.debug.assert(chain_calls <= 3); // the first, then both on the second dispatch
     if (chain_calls == 1) {
         const again: CbData = .{ .reason = user.cbEndOfCompile, .cb_rtn = chain, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
-        std.debug.assert(vpi_register_cb(&again) != null);
+        const h = vpi_register_cb(&again);
+        std.debug.assert(h != null);
     }
     return 0;
 }
 
 fn killer(_: *CbData) callconv(.c) c_int {
-    std.debug.assert(vpi_remove_cb(victim) == 1);
+    const removed = vpi_remove_cb(victim);
+    std.debug.assert(removed == 1);
+    std.debug.assert(asCb(victim) == null);
     return 0;
 }
 
-fn victimRoutine(_: *CbData) callconv(.c) c_int {
+fn victimRoutine(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.cbStartOfSimulation);
+    std.debug.assert(victim_calls < std.math.maxInt(u32));
     victim_calls += 1;
     return 0;
 }
 
-fn onPli(_: *CbData) callconv(.c) c_int {
+fn onPli(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(d.reason == user.cbPLIError);
     pli_calls += 1;
     // A routine failing inside cbPLIError fires no second cbPLIError.
     _ = vpi_remove_cb(null);
+    std.debug.assert(status.vpi_chk_error(null) == user.vpiError);
     return 0;
 }
 
 fn noteTag(d: *CbData) callconv(.c) c_int {
+    std.debug.assert(swept_n < swept.len);
+    std.debug.assert(d.user_data != null);
     swept[swept_n] = d.user_data[0];
     swept_n += 1;
     return 0;

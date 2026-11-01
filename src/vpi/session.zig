@@ -26,6 +26,7 @@
 const std = @import("std");
 const sim = @import("sim");
 const callback = @import("callback.zig");
+const callback_sites = @import("callback_sites.zig");
 const delays = @import("delays.zig");
 const model_analog = @import("model_analog.zig");
 const model_digital = @import("model_digital.zig");
@@ -159,7 +160,7 @@ pub fn openDigital(gpa: std.mem.Allocator, r: *sim.digital.Run) !void {
     std.debug.assert(!starting);
     if (design != null) close();
     design = try model_digital.buildDigital(gpa, r);
-    try callback.sizeHooks(r);
+    try callback_sites.sizeHooks(r);
     run.attach(r);
     print.share(r);
     std.debug.assert(design.?.objects.len != 0);
