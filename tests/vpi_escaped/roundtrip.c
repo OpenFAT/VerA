@@ -47,7 +47,7 @@ static vpiHandle pair_port[2], pair_net[2];
 static int pairs;
 
 /* Whether `port`, which a net's full name named, stands for `net`: its
- * vpiLowConn is the net (§12.? port diagram), or, where VerA models no
+ * vpiLowConn (the port diagram's lower connection) is the net, or, where VerA models no
  * vpiLowConn (vpi_user.h), it is a port of the net's own module carrying the
  * net's name. */
 static int portOf(vpiHandle port, vpiHandle net) {
