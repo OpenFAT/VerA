@@ -130,6 +130,7 @@ pub fn State(comptime A: type) type {
         pub fn nowTime(s: *const Self) f64 {
             if (s.dc) return s.target;
             assert(s.opts.tick > 0);
+            assert(s.target <= s.final);
             const k = s.dig.scheduler.now;
             if (s.acc) |ta| if (tickAtOrBefore(ta, s.opts.tick) >= k) return ta;
             return s.timeOf(k, s.target, tickAtOrBefore(s.target, s.opts.tick));
@@ -158,6 +159,8 @@ pub fn State(comptime A: type) type {
 
         /// The solution at `t`: a new time finishes the tentative one first.
         pub fn accept(s: *Self, t: f64) Error!void {
+            assert(!s.mon_eval); // A monitor evaluation only reads.
+            if (s.prev) |p| assert(t >= p);
             return s.solveCarrying(t, true);
         }
 
@@ -175,6 +178,7 @@ pub fn State(comptime A: type) type {
             s.pending = 0;
             try s.solve(t);
             assert(s.pending == 0);
+            assert(s.acc != null);
         }
 
         /// VAMS §7.3.6.4: `finish` wrote the analog variables a digital
@@ -187,6 +191,7 @@ pub fn State(comptime A: type) type {
         /// A2D writes queued. Asserts that it does not nest.
         pub fn settleA2d(s: *Self, horizon: Tick) Error!void {
             assert(!s.settling);
+            assert(s.acc != null); // The point being settled is finished.
             s.settling = true;
             defer s.settling = false;
             while (true) switch (try s.dig.runUntil(horizon)) {
@@ -211,6 +216,7 @@ pub fn State(comptime A: type) type {
         /// Region 1b: the pending explicit D2A terms evaluated, and this
         /// event's terms made pending (`digital.Run.d2a_fired`).
         pub fn explicitD2a(s: *Self) Error!void {
+            assert(!s.mon_eval);
             if (s.pending != 0 and !s.settling) {
                 try s.solveCarrying(s.nowTime(), false);
                 try s.a.latch();
@@ -301,6 +307,7 @@ pub fn State(comptime A: type) type {
         /// D2A they cause. Asserts that a tentative solution exists.
         pub fn runDigital(s: *Self, horizon: Tick) Error!void {
             assert(s.acc != null);
+            assert(!s.mon_eval);
             while (true) switch (try s.dig.runUntil(horizon)) {
                 .idle => {
                     const t = @as(f64, @floatFromInt(s.dig.scheduler.now)) * s.opts.tick;
@@ -324,6 +331,7 @@ pub fn State(comptime A: type) type {
             // SAFETY: `run` sets `probe_ctx` to its own `*Self` with this hook.
             const s: *Self = @ptrCast(@alignCast(ctx));
             assert(s.dig.analog.probe_ctx == ctx);
+            assert(s.dig.analog.probe != null);
             // §7.3.6.3 "the analog value calculated for the time corresponding
             // to a real promotion of the digital time".
             const t: ?f64 = if (s.mon_eval) s.mon_time else if (s.acc == null) null else @as(f64, @floatFromInt(s.dig.scheduler.now)) * s.opts.tick;
