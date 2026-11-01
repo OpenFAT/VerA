@@ -110,14 +110,17 @@ pub fn NoiseGen(comptime D: type) type {
 
 /// Sorts `pts` by frequency in place (§4.6.4.3 "the simulator shall internally
 /// sort the pairs into ascending frequency"). For the knots `noiseTablePoints`
-/// returns; `noise_tables` already arrives sorted.
+/// returns, which a card computes, so any may be NaN: those sort last, where
+/// `noiseTableAt` answers NaN between them. `noise_tables` arrives sorted.
 pub fn sortNoiseTable(pts: [][2]f64) void {
     std.mem.sort([2]f64, pts, {}, struct {
+        // A total order: `<` with NaN above every number.
         fn lt(_: void, a: [2]f64, b: [2]f64) bool {
-            return a[0] < b[0];
+            return a[0] < b[0] or (!std.math.isNan(a[0]) and std.math.isNan(b[0]));
         }
     }.lt);
     if (pts.len > 1) assert(!(pts[pts.len - 1][0] < pts[0][0]));
+    if (pts.len > 1) assert(!std.math.isNan(pts[0][0]) or std.math.isNan(pts[pts.len - 1][0]));
 }
 
 /// Returns table `k` of `D` (`noise_gens[i].table == k`) as card `model` sets
@@ -146,19 +149,24 @@ pub fn noiseTable(comptime D: type, model: *const D.Model, k: usize) NoiseTable 
 
 /// Returns the §4.6.4.3/.4 tabulated PSD at `f`. Outside the table it clamps
 /// to the end power, as both clauses require; a one-point table is constant;
-/// a NaN `f` gives NaN. Asserts that `t` has a point; the rest of
-/// `NoiseTable`'s invariants are `validate`'s to check.
+/// a NaN `f` gives NaN, and so does a segment ending in a NaN knot (a card's
+/// knots sort NaN last, `sortNoiseTable`). Asserts that `t` has a point; the
+/// rest of the declared tables' invariants are `validate`'s to check.
 pub fn noiseTableAt(t: NoiseTable, f: f64) f64 {
     const p = t.points;
     assert(p.len >= 1);
-    if (f <= p[0][0]) return p[0][1];
+    if (std.math.isNan(f)) return f;
+    if (f <= p[0][0] or p.len == 1) return p[0][1];
     const top = p[p.len - 1];
     if (f >= top[0]) return top[1];
     // ponytail: linear scan. A noise table is a handful of points (the LRM's
     // own example is seven); a binary search is worth it at hundreds.
-    // p[0] < f < top, or f is NaN, so the scan stops at or before the top.
+    // The scan stops at the first knot above `f` or at the top; a NaN knot
+    // is above no frequency, so it stops there too.
     var i: usize = 1;
-    while (p[i][0] <= f) : (i += 1) assert(i < p.len - 1);
+    while (i < p.len - 1 and p[i][0] <= f) i += 1;
+    assert(i >= 1);
+    assert(i < p.len);
     const a = p[i - 1];
     const b = p[i];
     return switch (t.interp) {
@@ -350,4 +358,34 @@ test "noiseGensError: a device with no unknowns and no generators validates" {
         pub const U = enum(u8) {};
     };
     try std.testing.expectEqual(@as(?[]const u8, null), comptime noiseGensError(D));
+}
+
+test "§4.6.4.3 a card's NaN knot or a host's NaN frequency gives NaN, never a crash" {
+    // Input, not a contract: a card knot is whatever the card computes
+    // (`sqrt` of a negative parameter is NaN, no range forbids it) and `f` is
+    // whatever the host asks. Oracle: §4.6.4.3 defines no PSD for a NaN, so
+    // the answer is NaN (IEEE 754 §6.2 propagation); the defined clamps and
+    // segments a NaN knot does not touch keep their values, as the clause's
+    // own arithmetic gives them.
+    const nan = std.math.nan(f64);
+    // [5, NaN, 3]: the comparison sort leaves a NaN mid-table, with 3 after 5.
+    var knots = [_][2]f64{ .{ 5, 1.0 }, .{ nan, 2.0 }, .{ 3, 3.0 } };
+    sortNoiseTable(&knots);
+    try testing.expectEqual(@as(f64, 3), knots[0][0]);
+    try testing.expectEqual(@as(f64, 5), knots[1][0]);
+    try testing.expect(std.math.isNan(knots[2][0]));
+    const t: NoiseTable = .{ .interp = .linear, .points = &knots };
+    try testing.expectEqual(@as(f64, 3.0), noiseTableAt(t, 1)); // below the lowest knot
+    try testing.expectApproxEqAbs(@as(f64, 2.0), noiseTableAt(t, 4), 1e-15); // (3,3) -> (5,1)
+    try testing.expect(std.math.isNan(noiseTableAt(t, 6))); // the segment into the NaN knot
+    try testing.expect(std.math.isNan(noiseTableAt(t, nan)));
+    // A one-point table is constant on every frequency the host can name,
+    // and NaN on the one it cannot.
+    const one: NoiseTable = .{ .interp = .log, .points = &.{.{ 5, 3.0 }} };
+    try testing.expectEqual(@as(f64, 3.0), noiseTableAt(one, 1e9));
+    try testing.expect(std.math.isNan(noiseTableAt(one, nan)));
+    // Every knot NaN: nothing is defined.
+    var all = [_][2]f64{ .{ nan, 1.0 }, .{ nan, 2.0 } };
+    sortNoiseTable(&all);
+    try testing.expect(std.math.isNan(noiseTableAt(.{ .interp = .linear, .points = &all }, 1)));
 }

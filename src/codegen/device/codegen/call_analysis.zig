@@ -85,6 +85,9 @@ pub fn emitAnalysis(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value)
         // mag·cos(phase) and drops the quadrature part. Upgrade path: an
         // `ac_gens` export carrying (mag, phase) for a complex-solving host.
         .ac_stim => {
+            // A.8.2 `ac_stim ( [ "name" [ , mag [ , phase ] ] ] )`: a fourth
+            // argument has no slot. Lowering does not count them.
+            if (args.len > 3) return gen_call.abort(self, .E0506, "`ac_stim()` takes at most 3 argument(s), got {d} (A.8.2)", .{args.len});
             // A.8.2 gives both numeric arguments as `analog_expression`, and
             // Table 4-20 does not list ac_stim, so a solve-computed magnitude
             // is legal: `ctrlEval`, not `argF64`.
