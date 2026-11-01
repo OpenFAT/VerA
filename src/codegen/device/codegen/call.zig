@@ -107,6 +107,7 @@ pub fn strArg(self: *const Gen, args: []const Mir.Value, i: usize) ?[]const u8 {
 
 /// `emitCall`'s switch: each callee to its family's renderer.
 fn dispatch(self: *Gen, inst: Mir.Inst, c: Mir.Callee, name: []const u8, args: []const Mir.Value, k: @import("ir").op.OpKind) Error!void {
+    assert(k == Mir.callee.opKind(c));
     switch (c) {
         .@"idt$hold",
         .idtmod,
@@ -332,8 +333,7 @@ fn emitEnv(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Error!vo
         // §9.18 Table 9-29 hierarchical system parameters. The device is the
         // top level, so the "Top-Level Value" column is exact. ($mfactor is
         // the exception: the host scales the stamp, so it is an Instance field.)
-        .@"$xposition", .@"$yposition" => return self.b("S.con(0.0)", .{}), // 0.0 m
-        .@"$angle" => return self.b("S.con(0.0)", .{}), // 0 degrees
+        .@"$xposition", .@"$yposition", .@"$angle" => return self.b("S.con(0.0)", .{}), // 0.0 m, 0 degrees
         .@"$hflip", .@"$vflip" => return self.b("S.con(1.0)", .{}), // +1
         // §9.15 $simparam(name [, fallback]): the known value first, the
         // fallback only "if param_name is not known". The known set is
@@ -623,6 +623,7 @@ fn emitMath(self: *Gen, inst: Mir.Inst, comptime c: Mir.Callee, name: []const u8
 
 /// The literal index at argument `i` of a lowering-minted call (`$tp_*`).
 fn litArg(self: *const Gen, args: []const Mir.Value, i: usize) u32 {
+    assert(i <= 1); // `$tp_*` carries a block and a slot
     const c = self.an.foldConst(if (i < args.len) args[i] else .zero, false) orelse return 0;
     return @intFromFloat(c);
 }

@@ -93,6 +93,8 @@ pub fn emitAnalysis(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value)
             // is legal: `ctrlEval`, not `argF64`.
             const mag = try operator_ctrl.ctrlEval(self, args, 1, "1.0");
             const phase = try operator_ctrl.ctrlEval(self, args, 2, "0.0");
+            assert(mag.len != 0);
+            assert(phase.len != 0);
             try self.b("S.con(if (", .{});
             try acStimMatch(self, args);
             try self.b(") ({s}) * @cos({s}) else 0.0)", .{ mag, phase });
@@ -352,6 +354,8 @@ pub fn acStimMatch(self: *Gen, args: []const Mir.Value) Error!void {
     self.cur.uses.inst = true;
     self.cur.uses.model = true;
     float_lanes.instPin(self);
+    const at = self.out.items.len;
     try self.b("((sim.kind == .ac or sim.kind == .noise) and std.mem.eql(u8, " ++
         "contract.hostString(model.analysis_name_idx__, inst.analysis_name), \"{f}\"))", .{std.zig.fmtString(name)});
+    assert(self.out.items.len > at + name.len);
 }

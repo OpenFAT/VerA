@@ -149,6 +149,7 @@ pub fn gateOpen(self: *Gen, c: Mir.Callee, inst: Mir.Inst) Error!bool {
     const every = c == .@"$debug" or c == .@"$fdebug" or c == .@"$fatal";
     const init = std.mem.findScalar(Mir.Inst, self.init_calls, inst) != null and (every or Mir.callee.isFileCall(c));
     if (init) self.cur.uses.sim = true;
+    if (init) assert(every or Mir.callee.isFileCall(c));
     // §9.7.1/§9.7.2: a `$finish`/`$stop` that already ran means the run ends
     // at the enclosing wrapper (`zFinishPass`); no later task of this pass
     // may print, the way an immediate exit would have stopped them.
@@ -158,6 +159,7 @@ pub fn gateOpen(self: *Gen, c: Mir.Callee, inst: Mir.Inst) Error!bool {
         "pass != .accepted"
     else
         "pass != .iteration"});
+    assert(self.cur.uses.pass);
     return true;
 }
 
@@ -166,9 +168,11 @@ pub fn gateOpen(self: *Gen, c: Mir.Callee, inst: Mir.Inst) Error!bool {
 pub fn gateClose(self: *Gen) Error!void {
     assert(self.passes);
     assert(self.cur.uses.pass);
+    const at = self.out.items.len;
     try self.b(" else ", .{});
     try voidTask(self);
-    return self.b(")", .{});
+    try self.b(")", .{});
+    assert(self.out.items.len == at + " else S.con(0.0))".len);
 }
 
 /// Writes a §9.5 call outside the display unit (every §9.5 call in a
@@ -177,6 +181,7 @@ pub fn gateClose(self: *Gen) Error!void {
 /// Asserts that `c` is a §9.5 callee.
 pub fn emitFileCallDropped(self: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) Error!void {
     assert(Mir.callee.isFileCall(c));
+    assert(site < self.mir.instCount());
     _ = args; // `UnitPlan.dispHere` did not mark them: there is nothing here to read them
     // In a printing artifact the display unit performed the call and latched
     // its integer result, so read it back.

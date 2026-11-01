@@ -192,6 +192,7 @@ pub fn emitFile(self: *Gen) Error!void {
     try self.w("/// What `eval`, `q` and `evalQ` read of `SimState` (`contract.SimReads`).\n" ++
         "pub const sim_reads: contract.SimReads = .{{ .t = {}, .dt = {}, .iteration = {} }};\n\n", .{ self.sim_reads.t, self.sim_reads.dt, self.sim_reads.iteration });
     try gen_dispatch.emitDispatchers(self);
+    assert(self.jac.on);
     try gen_noise.emitNoiseTable(self);
     try gen_noise.emitAcTable(self);
     try gen_opvars.emitOpVarTable(self);
@@ -242,11 +243,14 @@ pub fn emitFile(self: *Gen) Error!void {
         \\
     , .{});
     try self.w("comptime {{\n    contract.validate(Self);\n}}\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "}\n"));
 }
 
 /// Whether the device declares `batch_lead` (`batchOk` and a lead decision).
 pub fn batchLead(self: *const Gen) bool {
-    return batchOk(self) and self.float.lead;
+    const lead = batchOk(self) and self.float.lead;
+    if (lead) assert(!self.float.pinned);
+    return lead;
 }
 
 /// Records the unit declaration `name` spanning `lo` to the current end of
@@ -288,6 +292,7 @@ pub fn hasStatefulOps(self: *const Gen) bool {
 pub fn usesOp(self: *const Gen, k: OpKind) bool {
     assert(k != .none);
     for (self.names.units) |u| {
+        if (u.op == k) assert(u.role == .analog_op); // only an operator unit has a kind
         if (u.role == .analog_op and u.op == k) return true;
     }
     return false;
@@ -314,6 +319,8 @@ pub fn fmtF64(self: *Gen, x: f64) Error![]const u8 {
         try self.arena.dupe(u8, s)
     else
         try self.arena.print("{s}.0", .{s});
+    assert(gop.value_ptr.len > s.len or has_point);
+    assert(std.mem.findAny(u8, gop.value_ptr.*, ".eE") != null);
     return gop.value_ptr.*;
 }
 
@@ -329,7 +336,9 @@ fn batchOk(self: *const Gen) bool {
 fn usesQuad(self: *const Gen) bool {
     assert(self.names.units.len == self.names.unit_names.len);
     for (self.names.units) |u| {
-        if (u.role == .analog_op and self.mir.instData(u.inst).call.callee == .@"absdelay$quad") return true;
+        if (u.role != .analog_op) continue;
+        assert(u.op != .none); // `enumerateUnits` names an operator unit by its kind
+        if (self.mir.instData(u.inst).call.callee == .@"absdelay$quad") return true;
     }
     return false;
 }

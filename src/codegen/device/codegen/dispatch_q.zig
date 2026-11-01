@@ -39,7 +39,9 @@ pub fn writeSites(self: *Gen) Error!void {
 /// stamps it, and its columns are the union of those sites' dependences.
 pub fn qPattern(self: *Gen) void {
     assert(self.qs.sites.len != 0);
+    assert(self.jac.rows[1].len == self.mw); // `emitDispatchers` allocated it
     for (self.qs.stamps) |st| {
+        assert(st.slot < self.qs.sites.len);
         const k = self.qs.sites[st.slot];
         const site = self.lowered.charge_sites.items[k].final;
         assert(st.row < self.names.n_u);
@@ -55,6 +57,7 @@ pub fn qPattern(self: *Gen) void {
 pub fn emitQ(self: *Gen) Error!void {
     assert(self.qs.sites.len != 0);
     assert(self.core.name.len != 0);
+    assert(self.jac.on);
     try self.w(
         \\/// §5.6.1.2 the charges, one per `ddt` site (`n_q`, `q_stamps`, `q_lte`);
         \\/// the host differentiates each and stamps it into its rows.
@@ -86,6 +89,7 @@ pub fn emitQ(self: *Gen) Error!void {
 /// Emits `n_q`, `q_stamps`, `q_lte` and `q_site_pattern` (`contract.QSites`).
 pub fn emitQSites(self: *Gen) Error!void {
     assert(self.qs.sites.len != 0);
+    assert(self.names.u_names.len == self.names.n_u);
     try self.w(
         \\/// §5.6.1.2 how many charge sites `q` returns.
         \\pub const n_q: usize = {d};
@@ -122,5 +126,6 @@ fn siteField(self: *const Gen, j: usize) u32 {
     const k = self.qs.sites[j];
     const field = self.core.lo_idx[@backingInt(self.an.rv(self.lowered.charge_sites.items[k].final))];
     assert(field != none_u32); // A site with a slot moves in time, so the core returns it.
+    assert(field < self.core.lo_vals.len);
     return field;
 }

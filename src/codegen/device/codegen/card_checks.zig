@@ -54,7 +54,9 @@ pub fn emitShapeCheck(self: *Gen) Error!void {
             try self.w("    if (model.{s} != {s}) return \"{f}\";\n", .{ self.names.p_names[i], try gen_model.paramDefault(self, p, ty), std.zig.fmtString(p.name) });
     }
     if (self.out.items.len == body) return self.out.shrinkRetainingCapacity(at);
+    assert(body > at);
     try self.w("    return null;\n}}\n\n", .{});
+    assert(self.out.items.len > body);
 }
 
 /// Emits `checkCard`, which names the first §9.18 hierarchical system
@@ -81,6 +83,7 @@ pub fn emitCardCheck(self: *Gen) Error!void {
         };
         try body.print(self.arena, "    {{\n        const v: f64 = {s};\n        if ({s}) return \"{f}\";\n    }}\n", .{ v, out, std.zig.fmtString(c.name) });
     }
+    assert(body.items.len != 0);
     try self.w(
         \\/// §9.18 Table 9-29: the first hierarchical system parameter the card
         \\/// (after `derive`) puts outside its allowed values, or null.
@@ -133,6 +136,7 @@ pub fn emitRangeCheck(self: *Gen) Error!void {
             });
         }
         if (!from_known) inside.clearRetainingCapacity();
+        if (!from_known) assert(inside.items.len == 0);
         if (inside.items.len == 0 and excluded.items.len == 0) continue;
         try body.print(self.arena, "    {{\n        const v: f64 = {s}model.{s}{s};\n        if (", .{
             if (ty == .int) "@floatFromInt(" else "", self.names.p_names[i], if (ty == .int) ")" else "",
@@ -142,6 +146,7 @@ pub fn emitRangeCheck(self: *Gen) Error!void {
         try body.print(self.arena, "{s}) return \"{f}\";\n    }}\n", .{ excluded.items, std.zig.fmtString(p.name) });
     }
     if (body.items.len == 0) return;
+    const at = self.out.items.len;
     try self.w(
         \\/// §3.4.2 the declared `from`/`exclude` ranges: the first parameter the
         \\/// card (after `derive`) puts outside its range, or null.
@@ -149,4 +154,5 @@ pub fn emitRangeCheck(self: *Gen) Error!void {
         \\
     , .{});
     try self.w("{s}    return null;\n}}\n\n", .{body.items});
+    assert(self.out.items.len > at + body.items.len);
 }

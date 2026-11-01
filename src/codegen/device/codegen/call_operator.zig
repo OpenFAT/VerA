@@ -44,6 +44,7 @@ pub fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKi
     self.cur.ctrl_tok = self.mir.instTok(inst); // E0515's fallback span
     const unit = gen_unit.unitOfInst(self, inst);
     if (unit == none_u32) return self.b("S.con(0.0)", .{});
+    assert(unit < self.names.unit_names.len);
     const n = self.names.unit_names[unit];
     assert(n.len != 0);
     // Render the input only when the kernel reads it, or `uses.x` would keep
@@ -212,6 +213,7 @@ pub fn emitOperator(self: *Gen, inst: Mir.Inst, args: []const Mir.Value, k: OpKi
         .bound_step, .discontinuity => try self.b("S.con(0.0)", .{}),
         .none => unreachable,
     }
+    assert(self.out.items.len > at);
 }
 
 /// Writes a stateless §4.5 operator: §4.5.13 `limexp` or §4.5.14 `ddx`.
@@ -234,6 +236,7 @@ pub fn emitPlain(self: *Gen, comptime c: Mir.Callee, args: []const Mir.Value) Er
             const u = if (args.len > 1) self.an.foldConst(args[1], true) else null;
             // Saturating cast: bad MIR must not panic the compiler.
             const lane = if (u) |x| std.math.lossyCast(i64, x) else 0;
+            assert(self.jac.ddx_reads.len == self.mw); // `dispatch.alloc` ran
             // The value reads a lane, so record it in `ddx_reads`.
             // An index outside the unknowns marks every lane: a superset.
             gen_mask.orIn(self.jac.ddx_reads, try gen_stamps.bits(self, &.{if (lane >= 0 and lane < self.names.n_u) @intCast(lane) else none_u32}, &.{}));
@@ -275,6 +278,7 @@ pub fn transitionTimes(self: *Gen, args: []const Mir.Value) Error![2][]const u8 
 pub fn slewRates(self: *Gen, args: []const Mir.Value) Error![2][]const u8 {
     assert(args.len <= 3);
     const pos = try gen_host.argF64(self, args, 1, "1e300");
+    assert(pos.len != 0);
     return .{ pos, try gen_host.argF64(self, args, 2, pos) };
 }
 
@@ -286,6 +290,7 @@ pub fn slewRates(self: *Gen, args: []const Mir.Value) Error![2][]const u8 {
 fn absdelayTdAc(self: *Gen, args: []const Mir.Value) Error![]const u8 {
     assert(args.len <= 3);
     const td = try operator_ctrl.ctrlEval(self, args, 1, "0.0");
+    assert(td.len != 0);
     if (args.len < 3) return td;
     return self.arena.print("@min({s}, {s})", .{ td, try operator_ctrl.ctrlEval(self, args, 2, "0.0") });
 }
@@ -326,6 +331,7 @@ fn opOpen(self: *Gen, m: []const u64) Error!void {
 }
 
 fn opClose(self: *Gen) Error!void {
+    assert(self.out.items.len >= "zLu(S, 0x".len); // `opOpen` wrote first
     try self.b(")", .{});
 }
 
