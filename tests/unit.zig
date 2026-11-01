@@ -7778,6 +7778,8 @@ pub const rtlil_tests = struct {
     const diag = @import("diag");
 
     const counter = @embedFile("rtlil/counter.v");
+    const null_ports = @embedFile("rtlil/null_ports.v");
+    const fold_1364 = @embedFile("rtlil/fold_1364.v");
 
     fn emit(arena: std.mem.Allocator, src: []const u8) ![]const u8 {
         var bag: diag.Bag = .init(arena);
@@ -7857,6 +7859,91 @@ pub const rtlil_tests = struct {
             try std.testing.expectError(error.Refused, digital.rtlil.emit(arena, c[0], .{}, &bag, &why));
             try std.testing.expectEqualStrings(c[1], why);
         }
+    }
+
+    test "null ports keep their header positions with no wire, and connect nothing (A.1.3, §12.1.2)" {
+        // Oracle: the positions by hand from `leaf(a, , , y)`: `a` is port 1,
+        // `y` port 4; the `1'b0` in position 3 reaches no wire. Development
+        // panicked on the null name (interner `id != .none`).
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const text = try emit(arena_state.allocator(), null_ports);
+        try expectHas(text, "module \\leaf\n  wire width 1 input 1 \\a\n  wire width 1 output 4 \\y\n  connect \\y \\a\nend\n");
+        try expectHas(text, "  cell \\leaf \\by_order\n    connect \\a \\i\n    connect \\y \\o\n  end\n");
+        try expectHas(text, "  cell \\leaf \\by_name\n    connect \\a \\i\n    connect \\y \\p\n  end\n");
+    }
+
+    test "a connection to no port, or a second declaration of a name, is E1100 in vera --run's words (§12.1.2, §12.3.6, §4.10)" {
+        // Oracle: `vera --run` of the same designs (sim.digital's elab.zig),
+        // and tests/conformance's null_port_extra_connection_rejected.v
+        // (`//! reject E1100`). Development panicked on the first.
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        for ([_][2][]const u8{
+            .{ "module leaf(a, , , y); input a; output y; assign y = a; endmodule\nmodule top; wire y; leaf u(1'b1, , , y, 1'b0); endmodule\n", "more port connections than the module has ports" },
+            .{ "module leaf(input a, output y); assign y = a; endmodule\nmodule top; wire y; leaf u(.a(1'b1), .q(y)); endmodule\n", "the instantiated module has no such port" },
+            // §4.10, tests/conformance's parameter_redeclares_net_rejected.v.
+            // Development emitted `wire width 32 signed \w`, the parameter.
+            .{ "module m;\n  wire w;\n  parameter w = 1;\nendmodule\n", "duplicate digital variable" },
+            .{ "module m;\n  wire w;\n  reg w;\nendmodule\n", "duplicate digital variable" },
+        }) |c| {
+            var bag: diag.Bag = .init(arena);
+            var why: []const u8 = "";
+            try std.testing.expectError(error.DigitalFailed, digital.rtlil.emit(arena, c[0], .{}, &bag, &why));
+            try std.testing.expectEqual(@as(usize, 1), bag.count());
+            try std.testing.expectEqual(diag.Code.E1100, bag.at(0).code);
+            try std.testing.expectEqualStrings(c[1], bag.at(0).message);
+        }
+    }
+
+    test "ranges and parameters fold by IEEE 1364's widths, not a 32-bit integer's (§5.4.1, §12.2)" {
+        // Oracle: the hand derivation in tests/rtlil/fold_1364.v, which Yosys
+        // 0.68's own `read_verilog` agrees with. Development emitted `w`, `u`
+        // and `s` 2 bits wide and `big_o` from a 32-bit `WIDE`.
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const text = try emit(arena_state.allocator(), fold_1364);
+        for ([_][]const u8{
+            "  wire width 4 \\w\n",
+            "  wire width 16 \\u\n",
+            "  wire width 7 offset 1 \\s\n",
+            "  wire width 8 offset -2 upto \\asc\n",
+            "  wire width 8 offset -3 \\desc\n",
+            "  connect \\big_o 64'0000000000000000000000000000000100000000000000000000000000000100\n",
+        }) |needle| try expectHas(text, needle);
+    }
+
+    test "a range whose bounds do not fit RTLIL's 32-bit offset is refused by its folded bounds" {
+        // Oracle: §5.4.1 by hand. `HI - 7` is 64 bits signed: 2^63 - 8;
+        // `LO + 7` is -2^63 + 7. Development overflowed in `dim`.
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var bag: diag.Bag = .init(arena);
+        var why: []const u8 = "";
+        for ([_][2][]const u8{
+            .{ "module m;\n  localparam signed [63:0] HI = 64'sh7fffffffffffffff;\n  reg [HI:HI-7] v;\nendmodule\n", "line 3: a range whose bounds do not fit RTLIL's 32-bit wire offset (`[9223372036854775807:9223372036854775800]`)" },
+            .{ "module m;\n  localparam signed [63:0] LO = 64'sh8000000000000000;\n  reg [LO+7:LO] v;\nendmodule\n", "line 3: a range whose bounds do not fit RTLIL's 32-bit wire offset (`[-9223372036854775801:-9223372036854775808]`)" },
+            .{ "module m;\n  wire [2147483647:-2147483648] v;\nendmodule\n", "line 2: a range wider than RTLIL's 2^31 - 1 bits (`[2147483647:-2147483648]`)" },
+        }) |c| {
+            try std.testing.expectError(error.Refused, digital.rtlil.emit(arena, c[0], .{}, &bag, &why));
+            try std.testing.expectEqualStrings(c[1], why);
+        }
+    }
+
+    test "a header port that selects part of its net is refused, not emitted at the net's width (A.1.3)" {
+        // Oracle: A.1.3's `port_reference ::= port_identifier [ [
+        // constant_range_expression ] ]`: `a[0]` is a one-bit port. Development
+        // emitted `wire width 2 input 1 \a`, the whole net.
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var bag: diag.Bag = .init(arena);
+        var why: []const u8 = "";
+        const src = "module m(a[0], y);\n  input [1:0] a;\n  output y;\n  assign y = a[0];\nendmodule\n";
+        try std.testing.expectError(error.Refused, digital.rtlil.emit(arena, src, .{}, &bag, &why));
+        try std.testing.expectEqualStrings("line 1: a port that is a select of its net (`a[...]`)", why);
     }
 };
 
@@ -16777,23 +16864,22 @@ pub const digital_tests = struct {
     const diag = @import("diag");
     const Front = @import("frontend");
     const digital = @import("digital");
-    const emit = digital.emit;
 
     /// `source` elaborated, its transcript discarded, and emitted as
     /// `vera --emit-exe` would under `schedule` and `logic`. In `arena`.
-    fn emitted(arena: std.mem.Allocator, source: []const u8, schedule: emit.Schedule, logic: emit.Logic) !emit.Program {
+    fn emitted(arena: std.mem.Allocator, source: []const u8, schedule: digital.Schedule, logic: digital.Logic) !digital.Program {
         return emittedAs(arena, source, "<digital>", schedule, logic);
     }
 
-    fn emittedAs(arena: std.mem.Allocator, source: []const u8, file_name: []const u8, schedule: emit.Schedule, logic: emit.Logic) !emit.Program {
+    fn emittedAs(arena: std.mem.Allocator, source: []const u8, file_name: []const u8, schedule: digital.Schedule, logic: digital.Logic) !digital.Program {
         var bag = diag.Bag.init(arena);
         var sink: std.Io.Writer.Discarding = .init(&.{});
         var r = try sim.digital.elaborate(arena, source, .{}, &bag, &sink.writer);
-        return emit.program(arena, &r, .{ .source = source, .file_name = file_name, .include_dirs = &.{}, .language = Front.token.default_keyword_set }, schedule, logic);
+        return digital.program(arena, &r, .{ .source = source, .file_name = file_name, .include_dirs = &.{}, .language = Front.token.default_keyword_set }, schedule, logic);
     }
 
     /// The native `.auto` root of `source`; fails when it falls back.
-    fn native(arena: std.mem.Allocator, source: []const u8, schedule: emit.Schedule) ![]const u8 {
+    fn native(arena: std.mem.Allocator, source: []const u8, schedule: digital.Schedule) ![]const u8 {
         const p = try emitted(arena, source, schedule, .auto);
         try testing.expectEqual(@as(?[]const u8, null), p.fallback);
         return p.text;
@@ -16813,12 +16899,12 @@ pub const digital_tests = struct {
         }
     }
 
-    /// `source`'s top module through `emit.device`: its root, or why not.
-    fn device(arena: std.mem.Allocator, source: []const u8) !emit.Device {
+    /// `source`'s top module through `digital.device`: its root, or why not.
+    fn device(arena: std.mem.Allocator, source: []const u8) !digital.Device {
         var bag = diag.Bag.init(arena);
         var sink: std.Io.Writer.Discarding = .init(&.{});
         var r = try sim.digital.elaborate(arena, source, .{}, &bag, &sink.writer);
-        return emit.device(arena, &r, "<digital>", .static);
+        return digital.device(arena, &r, "<digital>", .static);
     }
 
     test "program: a native design gets an rt main, no interpreter" {
@@ -16855,7 +16941,7 @@ pub const digital_tests = struct {
         var bag = diag.Bag.init(a);
         var sink: std.Io.Writer.Discarding = .init(&.{});
         var r = try sim.digital.elaborate(a, source, .{ .defines = &.{"R=1.0"} }, &bag, &sink.writer);
-        const p = try emit.program(a, &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .defines = &.{"R=1.0"}, .language = Front.token.default_keyword_set }, .static, .auto);
+        const p = try digital.program(a, &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .defines = &.{"R=1.0"}, .language = Front.token.default_keyword_set }, .static, .auto);
         try testing.expectEqualStrings("a real value", p.fallback.?);
         try has(p.text, ".defines = &.{ \"R=1.0\", }");
     }
@@ -17070,7 +17156,7 @@ pub const digital_tests = struct {
         var r = try sim.digital.elaborate(el.allocator(), source, .{}, &bag, &sink.writer);
         var each: EachAlloc = .{ .parent = gpa };
         defer each.deinit();
-        const p = try emit.program(each.allocator(), &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .language = Front.token.default_keyword_set }, .static, .auto);
+        const p = try digital.program(each.allocator(), &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .language = Front.token.default_keyword_set }, .static, .auto);
         try testing.expectEqual(@as(?[]const u8, null), p.fallback);
     }
 
