@@ -63,6 +63,7 @@ pub fn emitSwitchRow(self: *Gen, i: usize, c: Lower.Contribution, flag: Mir.Valu
     assert(i < self.lowered.contributions.items.len);
     assert(c.access == .potential);
     const u = self.names.branch_u[i];
+    assert(u < self.names.n_u); // a selected branch always carries its flow unknown
     const partner = plan_topo.switchFlowOf(self.input(), i);
     const split = collapsible(self, i);
     const guard = guardOf(self, i);
@@ -135,6 +136,7 @@ pub fn emitSwitchRow(self: *Gen, i: usize, c: Lower.Contribution, flag: Mir.Valu
         try gen_stamps.stamp(self, 3, c.lo, .sub, "flow", deps, null);
         try self.ind(2);
         try self.b("}}\n", .{});
+        assert(std.mem.endsWith(u8, self.out.items, "}\n"));
     }
 }
 
@@ -143,13 +145,16 @@ pub fn emitSwitchRow(self: *Gen, i: usize, c: Lower.Contribution, flag: Mir.Valu
 pub fn collapsible(self: *const Gen, i: usize) bool {
     assert(i < self.names.branch_u.len);
     const u = self.names.branch_u[i];
-    return u != none_u32 and self.topo.collapsible(u);
+    if (u == none_u32) return false;
+    assert(u < self.names.n_u);
+    return self.topo.collapsible(u);
 }
 
 /// Returns `<flow unknown>__retained`: the `Model` field `derive` publishes
 /// pair `k`'s retention flag in, and the name a guarded `jac_const` entry cites.
 pub fn guardField(self: *const Gen, k: u32) Error![]const u8 {
     assert(k < self.topo.cpairs.len);
+    assert(self.topo.cpairs[k].flow_u < self.names.u_names.len);
     return self.arena.print("{s}__retained", .{self.names.u_names[self.topo.cpairs[k].flow_u]});
 }
 
@@ -161,6 +166,7 @@ fn guardOf(self: *const Gen, i: usize) ?u32 {
     assert(i < self.names.branch_u.len);
     const u = self.names.branch_u[i];
     if (u == none_u32) return null;
+    assert(u < self.names.n_u);
     for (self.topo.cpairs, 0..) |p, k| if (p.flow_u == u) return if (p.card) @intCast(k) else null;
     return null;
 }
@@ -172,6 +178,7 @@ fn guardTerm(self: *Gen, row: u32, col: u32, g: f64, k: u32) Error!void {
     assert(!std.math.isNan(g));
     if (row == Lower.ground or col == Lower.ground) return;
     try self.jac.guarded.append(self.arena, .{ .row = row, .col = col, .g = g, .c = 0, .when = k });
+    assert(self.jac.guarded.items.len != 0);
 }
 
 /// The value the branch row would have PINNED I_b to, for the arm where
@@ -244,6 +251,7 @@ fn coreRef(self: *Gen, v: Mir.Value) Error!void {
     if (v == .f_zero) return self.b("S.con(0.0)", .{});
     const k = self.core.lo_idx[@backingInt(v)];
     assert(k != none_u32); // `plan_jobs` queued every non-zero switch value.
+    assert(k < self.core.lo_vals.len);
     try self.b("m.f{d}", .{k});
 }
 
@@ -254,6 +262,7 @@ fn switchRowDeps(self: *const Gen, i: usize, c: Lower.Contribution, react: bool)
     assert(i < self.names.branch_u.len);
     const own = family.mask(self, if (react) c.react_val else c.resist_val);
     const j = plan_topo.switchFlowOf(self.input(), i) orelse return gen_stamps.bits(self, &.{self.names.branch_u[i]}, &.{own});
+    assert(j < self.lowered.contributions.items.len);
     const f = self.lowered.contributions.items[j];
     return gen_stamps.bits(self, &.{self.names.branch_u[i]}, &.{ own, family.mask(self, if (react) f.react_val else f.resist_val) });
 }

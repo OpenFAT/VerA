@@ -67,6 +67,7 @@ pub fn emitInstance(self: *Gen) Error!void {
     assert(self.hist.items.len == 0);
     assert(self.held_in_place.len == 0);
     self.held_in_place = try gen_state.inPlaceArrays(self);
+    if (self.held_in_place.len != 0) assert(self.held_in_place.len == self.lowered.mem_arrays.items.len);
     try self.w(
         \\/// Per-instance state. The host owns every field above the operator
         \\/// block: `mfactor` (§6.3.6); the temperature is `Model.temperature__`.
@@ -326,6 +327,7 @@ pub fn emitInstance(self: *Gen) Error!void {
     // empty `State`.
     if (self.hist.items.len == 0 and !pathLatches(self) and self.lowered.limit_slots.items.len == 0)
         try self.hist.appendSlice(self.arena, &.{ "bound_step", "discontinuity_order" });
+    if (self.hist.items.len == 0) assert(pathLatches(self) or self.lowered.limit_slots.items.len != 0);
     try gen_timepoint.emitTpFields(self);
     if (gen_status.hasStatus(self)) try self.w(
         \\    /// §9.7.3 the first `$fatal`/`$error` reported, `contract.statusSite`'s
@@ -348,6 +350,7 @@ pub fn emitInstance(self: *Gen) Error!void {
 /// held array tracked, `git show 6e59b3d4^:docs/measurements/device-runtime-2026-10-01.md`).
 pub fn dirtyTracked(self: *const Gen, id: u32) bool {
     assert(id < self.lowered.mem_arrays.items.len);
+    if (self.held_in_place.len != 0) assert(self.held_in_place.len == self.lowered.mem_arrays.items.len);
     return self.held_in_place.len != 0 and self.held_in_place[id] and
         self.lowered.mem_arrays.items[id].len >= dirty_min_len;
 }
@@ -358,6 +361,7 @@ pub fn dirtyTracked(self: *const Gen, id: u32) bool {
 /// updateState staging and commit advance.
 pub fn pathLatches(self: *const Gen) bool {
     assert(self.core.prev_lo.len == self.core.prev_vals.len);
+    assert(self.core.acc_lo.len == self.core.acc_vals.len);
     return self.core.acc_lo.len != 0 or self.core.prev_lo.len != 0;
 }
 
@@ -384,7 +388,10 @@ pub fn histLen(self: *const Gen, i: usize) usize {
     const want = md / hist_min_step + 2.0;
     if (!(want > @as(f64, @floatFromInt(hist_len)))) return hist_len;
     if (!(want < @as(f64, @floatFromInt(hist_max)))) return hist_max;
-    return @intFromFloat(@ceil(want));
+    const n: usize = @intFromFloat(@ceil(want));
+    assert(n > hist_len);
+    assert(n <= hist_max);
+    return n;
 }
 
 // ---- private ----
@@ -414,6 +421,7 @@ fn keepHist(self: *Gen, comptime fmt: []const u8, args: anytype) Error!void {
     const len_before = self.hist.items.len;
     defer assert(self.hist.items.len <= len_before + 1);
     try self.hist.append(self.arena, try self.arena.print(fmt, args));
+    assert(self.hist.items.len == len_before + 1);
 }
 
 /// Emits a §3.2.2/§5.10 held array's `Instance` field: plain values,
@@ -422,6 +430,7 @@ fn keepHist(self: *Gen, comptime fmt: []const u8, args: anytype) Error!void {
 fn emitHeldArrayField(self: *Gen, h: Lowered.HeldVar, name: []const u8, comment: []const u8) Error!void {
     assert(h.array != none_u32);
     assert(name.len != 0);
+    assert(h.array < self.lowered.mem_arrays.items.len);
     const m = self.lowered.mem_arrays.items[h.array];
     const ty: []const u8 = if (m.ty == .integer) "i64" else "f64";
     var all_zero = true;
@@ -438,4 +447,5 @@ fn emitHeldArrayField(self: *Gen, h: Lowered.HeldVar, name: []const u8, comment:
         if (m.ty == .integer) try self.w("{d}", .{std.math.lossyCast(i64, @round(v))}) else try self.w("{s}", .{try gen_file.fmtF64(self, v)});
     }
     try self.w(" }}, {s}\n", .{comment});
+    assert(std.mem.endsWith(u8, self.out.items, "\n"));
 }

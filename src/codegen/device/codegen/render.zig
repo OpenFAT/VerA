@@ -151,6 +151,7 @@ pub fn renderValueRef(self: *Gen, v: Mir.Value) Error!void {
         .int_const => |x| try self.b("@as(i64, {d})", .{x}),
         .str_const => |s| try self.b("\"{f}\"", .{std.zig.fmtString(s)}),
         .param_ref => |p| {
+            assert(p < self.names.p_names.len);
             self.cur.uses.model = true;
             switch (Analysis.tyOfParam(self.lowered.params.items[p].ty)) {
                 .real => try self.b("S.con(model.{s})", .{self.names.p_names[p]}),
@@ -264,6 +265,7 @@ pub fn foldHidesSlot(self: *Gen, v0: Mir.Value, depth: u32) bool {
 fn maskCmp(self: *Gen, cond: Mir.Value) ?Mir.Inst {
     assert(self.an.vty.len == self.an.nv);
     const v = self.an.rv(cond);
+    assert(@backingInt(v) < self.an.nv);
     if (materialized(self, v)) return null;
     const def = self.mir.valueDef(v);
     if (def != .inst_result) return null;
@@ -331,6 +333,7 @@ fn renderSelEager(self: *Gen, a: Mir.Value, b2: Mir.Value, c: Mir.Value, res: Mi
     try self.b(", ", .{});
     try renderVal(self, if (swap_arms) b2 else c, .real);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 fn selForm(self: *Gen, s: Sel) SelForm {
@@ -378,6 +381,7 @@ fn renderSelLazy(self: *Gen, first: Sel) Error!void {
     // Innermost first: a real level closes its `zTo` and its `if`.
     const close = if (want == .real) "))" else ")";
     for (0..nested + 1) |_| try self.b("{s}", .{close});
+    assert(std.mem.endsWith(u8, self.out.items, close));
 }
 
 /// Writes `renderVal(v0, want)` unless that would write `v0` as a lazy
@@ -386,6 +390,7 @@ fn renderSelLazy(self: *Gen, first: Sel) Error!void {
 /// `renderValueRef`'s and `renderInst`'s, in their order, each taken once, so
 /// the bytes are the recursion's.
 fn chainNext(self: *Gen, v0: Mir.Value, want: VTy) Error!?Sel {
+    assert(self.an.vty.len == self.an.nv);
     const v = self.an.rv(v0);
     const subst_hit = if (self.cur.subst) |su| su.v == v else false;
     const def = self.mir.valueDef(v);
@@ -437,10 +442,12 @@ fn writeDerivFree(self: *Gen, res: Mir.Value) Error!bool {
     assert(@backingInt(res) < self.an.nv);
     if (self.cur.plan.literal(res)) {
         try self.b("S.con({s})", .{try gen_file.fmtF64(self, self.an.foldConst(res, false).?)});
+        assert(std.mem.endsWith(u8, self.out.items, ")"));
         return true;
     }
     const s = try gen_host.f64Const(self, res, 0, true) orelse return false;
     try self.b("S.con({s})", .{s});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
     return true;
 }
 
@@ -449,12 +456,15 @@ fn writeDerivFree(self: *Gen, res: Mir.Value) Error!bool {
 /// ln(1), ln1p(0), sqrt(1), asin(0), atanh(0), acosh(2), x/1, tan(0),
 /// pow(1, y).
 fn safeArg(dom: Mir.opcode.Domain) f64 {
-    return switch (dom) {
+    const r: f64 = switch (dom) {
         .positive, .non_negative, .nonzero_divisor, .pow_sign => 1.0,
         .gt_neg_one, .unit_closed, .unit_open, .tan_poles => 0.0,
         .ge_one => 2.0,
         .all => unreachable, // `ifconv` guards only a domain-restricted row
     };
+    assert(std.math.isFinite(r));
+    assert(r >= 0.0);
+    return r;
 }
 
 /// Writes the guard chain from `lit` as one `bool`: each literal's condition,
@@ -475,6 +485,8 @@ fn renderGuard(self: *Gen, lit0: u32) Error!void {
         try self.b(")", .{});
         lit = l.next;
     }
+    assert(!first);
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 /// Writes `s.v` behind its guard: the operand while the guard holds, else

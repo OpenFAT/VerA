@@ -77,9 +77,11 @@ const Idents = struct {
                 // A field follows ONE dot; after `..` the name is a range bound.
                 const field = s > 0 and t[s - 1] == '.' and !(s > 1 and t[s - 2] == '.');
                 if (std.ascii.isDigit(c) or field or (s > 0 and t[s - 1] == '@')) continue;
+                assert(it.i > s);
                 return t[s..it.i];
             } else it.i += 1;
         }
+        assert(it.i >= t.len);
         return null;
     }
 };
@@ -144,6 +146,7 @@ pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
     @memset(sizes, 0);
     for (ps) |*p| {
         p.chunk = @intCast(@min(n - 1, acc * n / total));
+        assert(p.chunk < n);
         acc += bytesOf(p.lines);
         sizes[p.chunk] += bytesOf(p.lines);
         declOf(p);
@@ -270,6 +273,8 @@ pub fn chunk(a: Allocator, text: []const u8, target: usize) Error!?Chunked {
         \\
         \\
     );
+    assert(n >= 2);
+    assert(std.mem.endsWith(u8, out.items, "}\n\n"));
     return .{ .text = out.items, .n = n };
 }
 
@@ -290,6 +295,7 @@ fn note(a: Allocator, readers: *std.StringHashMapUnmanaged(u32), several: *std.S
     if (!g.found_existing) {
         g.value_ptr.* = k;
     } else if (g.value_ptr.* != k) try several.put(a, id, {});
+    assert(readers.contains(id));
 }
 
 /// Appends the pieces of statement list `body` (indent 0) under `guards`.
@@ -335,6 +341,7 @@ fn pieces(st: *State, body: Lines, guards: Lines) Error!bool {
         }
         try st.pieces.append(st.a, .{ .guards = g0, .lines = s });
     }
+    assert(stack.items.len == 0);
     return true;
 }
 
@@ -343,12 +350,14 @@ fn cat(a: Allocator, xs: Lines, x: []const u8) Error!Lines {
     const r = try a.alloc([]const u8, xs.len + 1);
     @memcpy(r[0..xs.len], xs);
     r[xs.len] = x;
+    assert(r.len == xs.len + 1);
     return r;
 }
 
 fn bytesOf(ls: Lines) usize {
     var n: usize = 0;
     for (ls) |l| n += l.len + 1;
+    assert(n >= ls.len);
     return n;
 }
 
@@ -359,6 +368,7 @@ fn stmtEnd(body: Lines, i: usize) ?usize {
     var d: i64 = 0;
     for (body[i..], i..) |l, j| {
         d += braceDelta(l);
+        assert(j < body.len);
         if (d == 0) return j + 1;
         if (d < 0) return null;
     }
@@ -371,6 +381,7 @@ fn openBlock(a: Allocator, s: Lines) Error!?Lines {
     assert(s.len != 0);
     const first = s[0];
     if (!std.mem.endsWith(u8, first, ": {") or !std.mem.eql(u8, s[s.len - 1], "}")) return null;
+    assert(s.len >= 2); // `first` ends in `: {`, the last line is `}`.
     const label = first[0 .. first.len - 3];
     for (label) |c| if (!isIdent(c)) return null;
     const inner = try dedentAll(a, s[1 .. s.len - 1]);
@@ -391,6 +402,8 @@ fn stripTail(a: Allocator, body: Lines, br: []const u8) Error!?Lines {
         last = i;
         i = stmtEnd(body, i) orelse return null;
     }
+    assert(i == body.len);
+    assert(last < body.len);
     const s = body[last..];
     if (s.len == 1 and std.mem.eql(u8, s[0], br)) return body[0..last];
     const arms = try splitIf(a, s) orelse return body;
@@ -417,6 +430,8 @@ fn splitIf(a: Allocator, s: Lines) Error!?Arms {
     const first = s[0];
     if (!std.mem.startsWith(u8, first, "if (") or !std.mem.endsWith(u8, first, ") {")) return null;
     if (!std.mem.eql(u8, s[s.len - 1], "}")) return null;
+    assert(s.len >= 2); // `first` ends in `) {`, the last line is `}`.
+    assert(first.len >= "if (".len + ") {".len);
     const cond = first[4 .. first.len - 3];
     var d: i64 = 0;
     for (s[1 .. s.len - 1], 1..) |l, i| {
@@ -439,12 +454,14 @@ fn selfContained(a: Allocator, lines: Lines) Error!bool {
         while (e < t.len and isIdent(t[e])) e += 1;
         if (e != 0 and std.mem.startsWith(u8, t[e..], ": ")) try defs.put(a, t[0..e], {});
     }
+    assert(defs.count() <= lines.len);
     for (lines) |l| {
         if (std.mem.find(u8, l, "return;") != null) return false;
         for ([_][]const u8{ "break :", "continue :" }) |kw| {
             var at: usize = 0;
             while (std.mem.findPos(u8, l, at, kw)) |p| {
                 at = p + kw.len;
+                assert(at <= l.len);
                 var e = at;
                 while (e < l.len and isIdent(l[e])) e += 1;
                 if (!defs.contains(l[at..e])) return false;
@@ -466,12 +483,15 @@ fn declOf(p: *Piece) void {
     p.ty = if (l[i] == ':') std.mem.trim(u8, l[i + 1 .. eq], " ") else if (eq == i) "" else return;
     p.name = l[kw.len..i];
     p.head = eq + 3;
+    assert(p.name.len != 0);
+    assert(p.head <= l.len);
 }
 
 fn dedent(l: []const u8, k: usize) []const u8 {
     assert(k <= 4096);
     var i: usize = 0;
     while (i < k and i < l.len and l[i] == ' ') i += 1;
+    assert(i <= l.len);
     return l[i..];
 }
 
@@ -479,11 +499,14 @@ fn dedentAll(a: Allocator, ls: Lines) Error!Lines {
     assert(ls.len < std.math.maxInt(u32));
     const r = try a.alloc([]const u8, ls.len);
     for (r, ls) |*o, l| o.* = dedent(l, 4);
+    assert(r.len == ls.len);
     return r;
 }
 
 fn indent(a: Allocator, l: []const u8) Error![]const u8 {
-    return if (l.len == 0) l else a.print("    {s}", .{l});
+    const r = if (l.len == 0) l else try a.print("    {s}", .{l});
+    assert(r.len == if (l.len == 0) 0 else l.len + 4);
+    return r;
 }
 
 fn isIdent(c: u8) bool {
@@ -501,6 +524,7 @@ fn braceDelta(line: []const u8) i64 {
         '}' => d -= 1,
         else => {}, // else: only braces, literals and comments move the depth
     };
+    assert(@abs(d) <= line.len);
     return d;
 }
 
@@ -529,6 +553,7 @@ fn rename(a: Allocator, out: *std.ArrayList(u8), text: []const u8, moved: *const
         try out.print(a, "z.{s}", .{id});
         done = at + id.len;
     }
+    assert(done <= text.len);
     try out.appendSlice(a, text[done..]);
 }
 

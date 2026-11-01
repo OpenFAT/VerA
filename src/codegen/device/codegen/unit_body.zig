@@ -130,6 +130,7 @@ pub fn writeSlotRef(self: *Gen, i: usize) Error!void {
     assert(self.cur.plan.slot[i] != none_u32);
     if (slotArr(self, i)) |arr| {
         const k = slotNum(self, i);
+        if (self.an.vty[i] == .real) assert(k < self.cur.hoist.grp.items.len);
         if (self.an.vty[i] == .real) return self.b("h{d}[{d}]", .{ self.cur.hoist.grp.items[k], self.cur.hoist.pos.items[k] });
         return self.b("{s}[{d}]", .{ arr, k });
     }
@@ -142,6 +143,7 @@ pub fn slotMask(self: *Gen, i: usize) ?[]const u64 {
     assert(i < self.an.nv);
     if (self.an.vty[i] != .real) return null;
     if (slotArr(self, i) == null) return null;
+    assert(slotNum(self, i) < self.cur.hoist.mask.items.len);
     return self.cur.hoist.mask.items[slotNum(self, i)];
 }
 
@@ -152,6 +154,7 @@ pub fn slotRefStr(self: *Gen, i: usize) Error![]const u8 {
     assert(self.cur.plan.slot[i] != none_u32);
     if (slotArr(self, i)) |arr| {
         const k = slotNum(self, i);
+        if (self.an.vty[i] == .real) assert(k < self.cur.hoist.grp.items.len);
         if (self.an.vty[i] == .real) return self.arena.print("h{d}[{d}]", .{ self.cur.hoist.grp.items[k], self.cur.hoist.pos.items[k] });
         return self.arena.print("{s}[{d}]", .{ arr, k });
     }
@@ -176,6 +179,7 @@ pub fn scopeOpen(self: *Gen) Error!void {
     if (!self.cur.probe.active) return;
     try self.cur.probe.sc_end.append(self.arena, 0);
     try self.cur.probe.sc_open.append(self.arena, @intCast(self.cur.probe.sc_end.items.len - 1));
+    assert(self.cur.probe.sc_open.items.len <= self.cur.probe.sc_end.items.len);
 }
 
 /// Records that the innermost open scope ends at `at`, which is not always
@@ -186,6 +190,7 @@ pub fn scopeClose(self: *Gen, at: usize) void {
     if (!self.cur.probe.active) return;
     assert(self.cur.probe.sc_open.items.len != 0);
     self.cur.probe.sc_end.items[self.cur.probe.sc_open.pop().?] = @intCast(at);
+    assert(self.cur.probe.sc_open.items.len < self.cur.probe.sc_end.items.len);
 }
 
 /// Records the definition of `slot` at the current offset while `probe.active`.
@@ -195,18 +200,22 @@ pub fn scopeClose(self: *Gen, at: usize) void {
 pub fn probeDef(self: *Gen, slot: u32, movable: bool) void {
     assert(slot < self.cur.plan.n_slots);
     if (!self.cur.probe.active) return;
+    assert(slot < self.cur.probe.place.items.len);
     const p = &self.cur.probe.place.items[slot];
     if (p.defs == 0) p.scope = self.cur.probe.sc_open.last().?;
     p.defs +|= 1;
     if (p.defs > 1 or !movable) p.pinned = true;
+    assert(p.defs != 0);
 }
 
 /// Records a read of `slot` at the current offset while `probe.active`.
 pub fn probeUse(self: *Gen, slot: u32) void {
     assert(slot < self.cur.plan.n_slots);
     if (!self.cur.probe.active) return;
+    assert(slot < self.cur.probe.place.items.len);
     const p = &self.cur.probe.place.items[slot];
     p.uses +|= 1;
+    assert(p.uses != 0);
     // Read before written in the text: a loop-carried value, or a slot the
     // emitter never assigns at all (which is the `undefined`/zero seed the
     // hoist exists to provide).
@@ -225,6 +234,7 @@ pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
     // unit's slots. Both paths below can emit before the real assignment.
     self.cur.hoist.idx.clearRetainingCapacity();
     try self.cur.hoist.idx.appendNTimes(self.arena, none_u32, self.cur.plan.n_slots);
+    assert(self.cur.hoist.idx.items.len == self.cur.plan.n_slots);
 
     // One call at the top of the body, so the shared core is evaluated
     // exactly once per unit.
@@ -293,6 +303,7 @@ pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
         n_hoist[ty] += 1;
     }
     try hoistMasks(self, n_hoist[@backingInt(VTy.real)]);
+    assert(self.cur.hoist.mask.items.len == n_hoist[@backingInt(VTy.real)]);
     for ([_]VTy{ .real, .int, .str }) |ty| {
         const n = n_hoist[@backingInt(ty)];
         if (n == 0) continue;
@@ -331,6 +342,7 @@ pub fn emitUnitBody(self: *Gen, target: Mir.Value) Error!void {
 /// Returns the zero value `i`'s slot starts at (`zeroOf`).
 fn slotZero(self: *Gen, i: usize) Error![]const u8 {
     assert(i < self.an.nv);
+    assert(self.an.vty.len == self.an.nv);
     if (self.an.vty[i] == .wide) return self.arena.print("zwZero({d})", .{self.an.wide_w[i]});
     return zeroOf(self.an.vty[i]);
 }
@@ -349,6 +361,7 @@ fn hoistArray(t: VTy) []const u8 {
 // `slotArr`/`slotNum` are the one place that knows whether a slot is its own
 // `tN` or a hoist-array element, so declaration and use cannot drift apart.
 fn slotArr(self: *Gen, i: usize) ?[]const u8 {
+    assert(i < self.an.nv);
     assert(self.cur.plan.slot[i] != none_u32);
     const s = self.cur.plan.slot[i];
     if (s < self.cur.hoist.idx.items.len and self.cur.hoist.idx.items[s] != none_u32) return hoistArray(self.an.vty[i]);
@@ -356,6 +369,7 @@ fn slotArr(self: *Gen, i: usize) ?[]const u8 {
 }
 
 fn slotNum(self: *Gen, i: usize) u32 {
+    assert(i < self.an.nv);
     assert(self.cur.plan.slot[i] != none_u32);
     const s = self.cur.plan.slot[i];
     if (s < self.cur.hoist.idx.items.len and self.cur.hoist.idx.items[s] != none_u32) return self.cur.hoist.idx.items[s];
@@ -364,6 +378,7 @@ fn slotNum(self: *Gen, i: usize) u32 {
 
 /// Every real hoist element's mask: the union over the values that share it.
 fn hoistMasks(self: *Gen, n: u32) Error!void {
+    assert(n <= self.cur.plan.n_slots);
     self.cur.hoist.mask.clearRetainingCapacity();
     try self.cur.hoist.mask.ensureTotalCapacityPrecise(self.arena, n);
     for (0..n) |_| self.cur.hoist.mask.appendAssumeCapacity(try gen_mask.zero(self.arena, self.mw));
@@ -400,6 +415,8 @@ fn hoistMasks(self: *Gen, n: u32) Error!void {
         self.cur.hoist.pos.appendAssumeCapacity(self.cur.hoist.glen.items[g]);
         self.cur.hoist.glen.items[g] += 1;
     }
+    assert(self.cur.hoist.grp.items.len == n);
+    assert(self.cur.hoist.pos.items.len == n);
 }
 
 /// Emits the body once as a dry run to learn, per slot, where its assignment
@@ -422,8 +439,10 @@ fn probeBody(self: *Gen, target: Mir.Value) Error!void {
     try gen_setup.emitRoot(self, target);
     scopeClose(self, self.out.items.len);
     self.cur.probe.active = false;
+    assert(self.cur.probe.sc_open.items.len == 0);
     self.su.lines = std.mem.count(u8, self.out.items[at..], "\n");
     self.out.shrinkRetainingCapacity(at);
+    assert(self.out.items.len == at);
 
     for (self.cur.probe.place.items) |*p| {
         // `uses == 0` keeps its `var`: a slot that is written and never read
@@ -453,6 +472,7 @@ fn declareArrays(self: *Gen) Error!void {
         if (def == .inst_result and self.mir.instOp(def.inst_result) == .store) stored[id] = true;
     }
     for (seen, stored, 0..) |s, st, id| {
+        if (!s) assert(!st); // a store is a use
         if (!s) continue;
         const len = self.lowered.mem_arrays.items[id].len;
         const ty = try render_array.arrElemTy(self, @intCast(id));

@@ -35,10 +35,13 @@ const gen_instance = @import("instance.zig");
 pub fn tpInPlace(self: *const Gen, sl: Lowered.TpSlot) bool {
     assert(self.arr_s.len == self.lowered.mem_arrays.items.len);
     if (sl.array == none_u32 or !render_array.cow(self, sl.array)) return false;
+    assert(sl.array < self.lowered.mem_arrays.items.len);
     // The slot's field exists only when the full core carries the final
     // version (`emitTpFields`); a slice's `plan.lo_idx` is its own.
     const v = self.an.rv(sl.final);
-    return v != .f_zero and self.tp_lo_idx[@backingInt(v)] != none_u32;
+    if (v == .f_zero) return false;
+    assert(@backingInt(v) < self.tp_lo_idx.len);
+    return self.tp_lo_idx[@backingInt(v)] != none_u32;
 }
 
 /// Whether some `vera_timepoint` slot is stored in place (`tpInPlace`).
@@ -77,7 +80,10 @@ pub fn tpBlocks(self: *Gen) Error![]const u32 {
                 stack.appendAssumeCapacity(y);
             }
         }
+        assert(stack.items.len == 0);
+        assert(of[miss] == b);
     }
+    assert(of.len == self.an.nb);
     return of;
 }
 
@@ -90,6 +96,7 @@ pub fn tpSlotAt(self: *const Gen, bi: u32, id: u32) ?struct { b: u32, k: u32 } {
     if (self.tp_of_block.len == 0) return null;
     const b = self.tp_of_block[bi];
     if (b == none_u32) return null;
+    assert(b < self.lowered.timepoints.items.len);
     for (self.lowered.timepoints.items[b].slots, 0..) |sl, k| {
         if (sl.array == id and tpInPlace(self, sl)) return .{ .b = b, .k = @intCast(k) };
     }
@@ -104,6 +111,7 @@ pub fn tpSlotAt(self: *const Gen, bi: u32, id: u32) ?struct { b: u32, k: u32 } {
 /// array in its field, the field takes that role instead (`zTpHeld`).
 pub fn emitTpFills(self: *Gen, bi: u32, depth: u32) Error!void {
     assert(bi < self.an.nb);
+    assert(self.tp_of_block.len == 0 or self.tp_of_block.len == self.an.nb);
     if (self.tp_of_block.len == 0) return;
     for (self.lowered.timepoints.items, 0..) |t, b| {
         if (@backingInt(t.join) != bi) continue;
@@ -114,12 +122,14 @@ pub fn emitTpFills(self: *Gen, bi: u32, depth: u32) Error!void {
             // (which `p<id>` holds there) is computed too.
             if (!hitEmitted(self, @intCast(b), @intCast(k))) continue;
             const m = self.lowered.mem_arrays.items[sl.array];
+            assert(m.held != none_u32); // `tpInPlace` holds only a held array.
             const ty = if (m.ty == .integer) "i64" else "f64";
             self.cur.uses.inst = true;
             try self.ind(depth);
             // `updateState`'s slice stores the array in its field
             // (`render.inPlace`): a hit's cached version is copied there.
             if (render_array.inPlace(self, sl.array)) {
+                assert(m.held < self.names.held_names.len);
                 const f = self.names.held_names[m.held];
                 if (gen_instance.dirtyTracked(self, sl.array))
                     try self.b("zTpHeld({s}, {d}, &inst.{s}, &p{d}, &inst.{s}__dirty);\n", .{ ty, m.len, f, sl.array, f })
@@ -138,6 +148,7 @@ pub fn emitTpFills(self: *Gen, bi: u32, depth: u32) Error!void {
 /// them rather than restoring them (`zTpDrop`).
 pub fn emitTpFields(self: *Gen) Error!void {
     assert(self.out.items.len != 0);
+    const at = self.out.items.len;
     for (self.lowered.timepoints.items, 0..) |t, b| {
         try self.w("    /// vera_timepoint {d}: the timepoint its cache holds, NaN when dropped.\n", .{b});
         try self.w("    tp{d}_t: f64 = " ++ kt.nan_lit ++ ",\n    tp{d}_k: u8 = 0,\n", .{ b, b });
@@ -155,6 +166,8 @@ pub fn emitTpFields(self: *Gen) Error!void {
             }
         }
     }
+    if (self.lowered.timepoints.items.len != 0) assert(self.out.items.len > at);
+    if (self.lowered.timepoints.items.len == 0) assert(self.out.items.len == at);
 }
 
 /// VerA's `vera_timepoint` (§2.9): `zTpDrop`, which every entry point that
@@ -184,6 +197,7 @@ pub fn emitTpHelpers(self: *Gen) Error!void {
         try self.w("        inst.tp{d}_t = sim.t;\n        inst.tp{d}_k = zTpKey(sim);\n    }}\n", .{ b, b });
     }
     try self.w("}}\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "}\n\n"));
 }
 
 // ---- private ----
@@ -192,6 +206,7 @@ pub fn emitTpHelpers(self: *Gen) Error!void {
 /// `k` of statement `b` (the hit arm's `p<id> = &inst.tp<b>_s<k>`).
 fn hitEmitted(self: *const Gen, b: u32, k: u32) bool {
     assert(b < self.lowered.timepoints.items.len);
+    assert(k < self.lowered.timepoints.items[b].slots.len);
     for (self.an.i_op, 0..) |op, ii| {
         if (op != .anew) continue;
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));

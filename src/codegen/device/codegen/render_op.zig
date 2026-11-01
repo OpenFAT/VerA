@@ -50,10 +50,13 @@ const idiv_fn = "(struct { fn zd_f(zd_a: i64, zd_b: i64) i64 { " ++
 pub fn imodFn(self: *const Gen) []const u8 {
     const head = "(struct { fn zm_f(zm_a: i64, zm_b: i64) i64 { if (zm_b == 0) { ";
     const tail = " } return if (zm_b == -1) 0 else @rem(zm_a, zm_b); } }.zm_f)";
-    return if (self.display == .emit)
+    const r = if (self.display == .emit)
         head ++ "std.debug.print(\"error[E0601]: LRM 4.2.4: integer modulus divisor is zero\\n\", .{}); std.process.exit(1);" ++ tail
     else
         head ++ "@trap();" ++ tail;
+    assert(std.mem.startsWith(u8, r, head));
+    assert(std.mem.endsWith(u8, r, tail));
+    return r;
 }
 
 /// Writes one opcode over its operands. Also serves the `$`-prefixed math
@@ -64,6 +67,7 @@ pub fn imodFn(self: *const Gen) []const u8 {
 pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty: VTy) Error!void {
     assert(Mir.opClass(op) == .unary or Mir.opClass(op) == .binary);
     assert(res_ty == .real or res_ty == .int or res_ty == .str or res_ty == .wide);
+    const at = self.out.items.len;
     // §3.3.1 string relations: lowering types both operands `.string` and
     // picks the integer comparison opcodes for them.
     if (self.an.tyOf(self.an.rv(a)) == .str or self.an.tyOf(self.an.rv(b2)) == .str) {
@@ -82,6 +86,7 @@ pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty:
             try self.b(", ", .{});
             try gen_render.renderVal(self, b2, .str);
             try self.b(") {s}))", .{r});
+            assert(std.mem.endsWith(u8, self.out.items, "))"));
             return;
         }
     }
@@ -345,6 +350,7 @@ pub fn renderOp(self: *Gen, op: Mir.Opcode, a: Mir.Value, b2: Mir.Value, res_ty:
         // §3.2.2 array ops are rendered by `renderLoad`/`emitArrayStmt`.
         .phi, .select, .call, .branch, .jump, .anew, .fload, .iload, .store => unreachable,
     }
+    assert(self.out.items.len > at);
 }
 
 /// Writes a two-operand kernel call at the union of the operands' masks.
@@ -359,6 +365,7 @@ pub fn helper2(self: *Gen, name: []const u8, a: Mir.Value, b2: Mir.Value) Error!
     try kernelArg(self, b2, m);
     assert(m.len == self.mw);
     try kernelClose(self);
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes one real kernel operand, widened to the kernel's mask.
@@ -379,6 +386,7 @@ pub fn kernelArg(self: *Gen, v: Mir.Value, m: []const u64) Error!void {
 /// would be one point's value (see `renderOp`'s `.fadd, .fsub, .fmul`).
 fn perPoint(self: *Gen, v: Mir.Value) bool {
     assert(self.an.vty.len == self.an.nv);
+    assert(@backingInt(v) < self.an.nv);
     return self.an.dFree(v) and float_lanes.perPoint(self, v) and self.an.tyOf(self.an.rv(v)) == .real;
 }
 
@@ -396,6 +404,7 @@ fn writeConst(self: *Gen, v: Mir.Value) Error!void {
     try self.b("(", .{});
     try gen_render.renderVal(self, v, .real);
     try self.b(").val()", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ").val()"));
 }
 
 /// Writes `writeConst` negated, for `a - k` as `a.addC(-k)`. A literal
@@ -409,6 +418,7 @@ fn writeNegConst(self: *Gen, v: Mir.Value) Error!void {
     try self.b("-(", .{});
     try writeConst(self, v);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 fn method1(self: *Gen, a: Mir.Value, name: []const u8) Error!void {
@@ -416,6 +426,7 @@ fn method1(self: *Gen, a: Mir.Value, name: []const u8) Error!void {
     try self.b("(", .{});
     try gen_render.renderVal(self, a, .real);
     try self.b(").{s}()", .{name});
+    assert(std.mem.endsWith(u8, self.out.items, "()"));
 }
 
 fn method2(self: *Gen, a: Mir.Value, name: []const u8, b2: Mir.Value) Error!void {
@@ -425,6 +436,7 @@ fn method2(self: *Gen, a: Mir.Value, name: []const u8, b2: Mir.Value) Error!void
     try self.b(").{s}(", .{name});
     try gen_render.renderVal(self, b2, .real);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 /// `name(S, a)` with `S` as written: `zAbs` takes the family itself.
@@ -433,6 +445,7 @@ fn helperS(self: *Gen, name: []const u8, a: Mir.Value) Error!void {
     try self.b("{s}(S, ", .{name});
     try gen_render.renderVal(self, a, .real);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 /// Writes a one-operand kernel call at the operand's mask.
@@ -442,6 +455,7 @@ fn helper1(self: *Gen, name: []const u8, a: Mir.Value) Error!void {
     try kernelOpen(self, name, m);
     try kernelArg(self, a, m);
     try kernelClose(self);
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes `zLu(S, m, name(zL(S, m), `: kernels take one scalar, which a
@@ -451,12 +465,14 @@ fn kernelOpen(self: *Gen, name: []const u8, m: []const u64) Error!void {
     assert(m.len == self.mw);
     const h = gen_mask.hex(m, false);
     try self.b("zLu(S, 0x{f}, {s}(zL(S, 0x{f}), ", .{ h, name, h });
+    assert(std.mem.endsWith(u8, self.out.items, "), "));
 }
 
 /// Writes the two parens `kernelOpen` left open.
 fn kernelClose(self: *Gen) Error!void {
     assert(self.out.items.len != 0);
     try self.b("))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes `(a) opx (b2)` over integers, unwrapped: only for the bitwise ops
@@ -468,6 +484,7 @@ fn intBin(self: *Gen, a: Mir.Value, opx: []const u8, b2: Mir.Value) Error!void {
     try self.b(") {s} (", .{opx});
     try gen_render.renderVal(self, b2, .int);
     try self.b("))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "))"));
 }
 
 /// Writes `intBin` truncated to §3.2's 32-bit width (`fold.wrap32`). `opx`
@@ -478,6 +495,7 @@ fn intBin32(self: *Gen, a: Mir.Value, opx: []const u8, b2: Mir.Value) Error!void
     try self.b("@as(i64, @as(i32, @truncate(", .{});
     try intBin(self, a, opx, b2);
     try self.b(")))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")))))"));
 }
 
 /// Writes `name(a)` over an integer operand.
@@ -486,6 +504,7 @@ fn intCall1(self: *Gen, name: []const u8, a: Mir.Value) Error!void {
     try self.b("{s}(", .{name});
     try gen_render.renderVal(self, a, .int);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 // ponytail: integer callees infer their type; add a typed variant only for a caller.
@@ -496,6 +515,7 @@ fn intCall2(self: *Gen, name: []const u8, a: Mir.Value, b2: Mir.Value) Error!voi
     try self.b(", ", .{});
     try gen_render.renderVal(self, b2, .int);
     try self.b(")", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")"));
 }
 
 /// `op`'s tag names are the device kernel `zCmp`'s operator names.
@@ -508,6 +528,7 @@ fn cmpReal(self: *Gen, a: Mir.Value, op: std.math.CompareOperator, b2: Mir.Value
     try self.b(", ", .{});
     try gen_render.renderVal(self, b2, .real);
     try self.b(")))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")))"));
 }
 
 fn cmpInt(self: *Gen, a: Mir.Value, opx: []const u8, b2: Mir.Value) Error!void {
@@ -517,4 +538,5 @@ fn cmpInt(self: *Gen, a: Mir.Value, opx: []const u8, b2: Mir.Value) Error!void {
     try self.b(") {s} (", .{opx});
     try gen_render.renderVal(self, b2, .int);
     try self.b(")))", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ")))"));
 }

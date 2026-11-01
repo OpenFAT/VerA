@@ -35,6 +35,7 @@ pub fn emitDerivReads(self: *Gen, limit_writes: []const u64) Error!void {
     assert(limit_writes.len == self.mw);
     assert(self.jac.lin[0].len == self.jac.lin[1].len);
     const jc = try plan_jac.plan(self.arena, self.names.n_u, self.jac.deriv_reads, self.jac.ddx_reads, limit_writes, .{ self.jac.lin[0], self.jac.lin[1] }, self.jac.guarded.items);
+    assert(jc.mask.len == self.mw);
     var tb: [16]u8 = undefined;
     const ty = gen_mask.typeName(&tb, self.names.n_u);
     try self.w(
@@ -60,6 +61,7 @@ pub fn emitDerivReads(self: *Gen, limit_writes: []const u64) Error!void {
         try self.w(" }},\n", .{});
     }
     try self.w("}};\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
     try family.emitLaneMasks(self, jc.mask);
 }
 
@@ -87,6 +89,7 @@ pub fn emitPattern(self: *Gen, any_q: bool) Error!void {
         try emitPatternRows(self, "q_pattern", self.jac.pat[1]);
     }
     try emitWrittenRows(self, "q_rows", "q", self.jac.rows[1]);
+    assert(std.mem.endsWith(u8, self.out.items, ";\n\n"));
 }
 
 /// Emits `ac_dyn_slots` and `acDyn` (`contract.acDynSlots`) when a
@@ -149,6 +152,7 @@ pub fn emitAcDyn(self: *Gen, any_q: bool) Error!void {
         \\
         \\
     , .{});
+    assert(std.mem.endsWith(u8, self.out.items, "}\n\n"));
 }
 
 // ---- private ----
@@ -172,6 +176,7 @@ fn emitWrittenRows(self: *Gen, name: []const u8, half: []const u8, mask: []const
         \\
         \\
     , .{ half, name, gen_mask.typeName(&tb, self.names.n_u), gen_mask.hex(mask, true) });
+    assert(std.mem.endsWith(u8, self.out.items, ";\n\n"));
 }
 
 fn emitPatternRows(self: *Gen, name: []const u8, rows: []const u64) Error!void {
@@ -181,4 +186,5 @@ fn emitPatternRows(self: *Gen, name: []const u8, rows: []const u64) Error!void {
     try self.w("pub const {s} = [n_u]{s}{{\n", .{ name, gen_mask.typeName(&tb, self.names.n_u) });
     for (0..self.names.n_u) |i| try self.w("    0x{f}, // {s}\n", .{ gen_mask.hex(gen_stamps.rowOf(self, rows, @intCast(i)), true), self.names.u_names[i] });
     try self.w("}};\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
 }

@@ -85,6 +85,7 @@ pub fn probeInstance(self: *Gen) Error![]const u8 {
     assert(self.out.items.len != 0);
     if (self.lowered.table_samples.items.len == 0) return "inst";
     try self.w("    var table_probe = inst.*;\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "table_probe = inst.*;\n"));
     return "&table_probe";
 }
 
@@ -159,14 +160,18 @@ pub fn planSetup(self: *Gen) Error!void {
     self.su.int = n[1];
     self.cur.plan.su_idx = self.su.idx;
     self.cur.plan.su_on = vals.items.len != 0;
+    assert(self.su.real + self.su.int <= self.su.vals.len);
+    assert(self.su.idx.len == nv);
 }
 
 /// Returns the text reading root `v`'s `Setup` field, as an f64 (`as_f64`)
-/// or in its own type. Arena-owned.
+/// or in its own type. Arena-owned. Asserts that `v` is a root.
 pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
     assert(@backingInt(v) < self.an.nv);
     const i = @backingInt(v);
     const k = self.su.idx[i];
+    assert(k != none_u32);
+    assert(k < self.su.vals.len);
     self.cur.uses.model = true;
     if (rootGroup(self, v) == 2) {
         if (as_f64) return self.arena.print("@as(f64, @floatFromInt(@intFromBool(model.su.b.isSet({d}))))", .{k});
@@ -183,6 +188,7 @@ pub fn rootRef(self: *Gen, v: Mir.Value, as_f64: bool) Error![]const u8 {
 pub fn emitSetupDecl(self: *Gen) Error!void {
     assert(self.out.items.len != 0);
     if (self.su.vals.len == 0) return;
+    assert(self.su.real + self.su.int <= self.su.vals.len);
     const n_flag = self.su.vals.len - self.su.real - self.su.int;
     try self.w(
         \\/// Solve-invariant values: functions of `Model` (its card and
@@ -197,6 +203,7 @@ pub fn emitSetupDecl(self: *Gen) Error!void {
     if (self.su.int != 0) try self.w("    /// One per invariant integer; `eval` reads `model.su.i[k]`.\n    i: [{d}]i64 = @splat(0),\n", .{self.su.int});
     if (n_flag != 0) try self.w("    /// One bit per invariant §4.2.5/§4.2.8 condition `eval` branches on.\n    b: std.StaticBitSet({d}) = .empty,\n", .{n_flag});
     try self.w("}};\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
 }
 
 /// Emits `pub fn setup`: the invariant slice, through the same plan and
@@ -261,6 +268,7 @@ pub fn emitSetup(self: *Gen) Error!void {
     const at_body = self.out.items.len;
     try gen_unit_body.emitUnitBody(self, .undef);
     try self.w("}}\n\n", .{});
+    assert(self.out.items.len > at_body);
     // A body of integer roots alone never names `S`, and an unused local is
     // a Zig error: then the scalar is discarded instead.
     var at_stop = at_body;
@@ -297,6 +305,7 @@ pub fn emitSetup(self: *Gen) Error!void {
     self.out.shrinkRetainingCapacity(at_doc);
     try self.out.appendSlice(self.gpa, c.text);
     self.su.chunks = c.n;
+    assert(self.su.chunks >= 2);
 }
 
 /// Emits `emitReturn` inside `setup`: stores every root from wherever the
@@ -337,6 +346,7 @@ pub fn emitStores(self: *Gen, depth: u32, stop: []const u8) Error!void {
     try self.b("if (std.debug.runtime_safety and contract.validating) model.su_ok = true;\n", .{});
     try self.ind(depth);
     try self.b("{s}return;\n", .{stop});
+    assert(std.mem.endsWith(u8, self.out.items, "return;\n"));
 }
 
 /// Returns whether merging the exits would shrink `setup`, judged after a
@@ -344,7 +354,10 @@ pub fn emitStores(self: *Gen, depth: u32, stop: []const u8) Error!void {
 /// gains four spaces.
 pub fn mergePays(self: *const Gen) bool {
     const su = self.su;
-    return su.mode and su.exits > 1 and su.store_bytes - su.store_bytes / su.exits > 4 * su.lines;
+    const pays = su.mode and su.exits > 1 and su.store_bytes - su.store_bytes / su.exits > 4 * su.lines;
+    if (pays) assert(su.exits > 1);
+    if (!su.mode) assert(!pays);
+    return pays;
 }
 
 /// Emits the unit body's root tree. Under `merge`, `setup`'s exits leave one
@@ -353,6 +366,7 @@ pub fn mergePays(self: *const Gen) bool {
 /// outside its block (`probeBody`), so every exit stores the same bits.
 pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void {
     assert(self.cur.plan.slot.len == self.an.nv);
+    if (self.su.merge) assert(self.su.mode);
     if (!self.su.merge) return gen_cfg.emitTree(self, 0, 1, target);
     try self.ind(1);
     try self.b("zs_done: {{\n", .{});
@@ -372,6 +386,7 @@ pub fn emitRoot(self: *Gen, target: Mir.Value) Error!void {
 fn rootGroup(self: *const Gen, v: Mir.Value) u2 {
     assert(@backingInt(v) < self.an.nv);
     const i = @backingInt(v);
+    assert(i < self.an.vty.len);
     if (self.an.vty[i] == .real) return 0;
     const def = self.mir.valueDef(v);
     return if (def == .inst_result and Mir.opcode.get(self.mir.instOp(def.inst_result)).bool01) 2 else 1;
@@ -441,7 +456,9 @@ fn valueNumbers(self: *Gen) Error![]Mir.Value {
         if (!gop.found_existing) {
             gop.value_ptr.* = v;
         } else if (placedOver(self, gop.value_ptr.*, v)) same[i] = gop.value_ptr.*;
+        assert(@backingInt(gop.value_ptr.*) <= i); // first seen, so never later
     }
+    assert(same.len == nv);
     return same;
 }
 
@@ -458,7 +475,9 @@ fn placeOf(self: *const Gen, v: Mir.Value) u32 {
     if (h != none_u32) return h;
     const b = self.an.def_block[@backingInt(v)];
     // A leaf (a parameter) has no block: `setup` has it from the entry.
-    return if (b == none_u32) 0 else b;
+    if (b == none_u32) return 0;
+    assert(b < self.an.nb);
+    return b;
 }
 
 /// Emits `pub fn setupInstance` when an instance caches what a card, a
@@ -478,6 +497,7 @@ fn emitSetupInstance(self: *Gen) Error!void {
         \\
         \\
     , .{ if (tp) "    zTpDrop(inst);\n" else "", if (gen_status.hasStatus(self)) gen_status.status_drop else "" });
+    assert(std.mem.endsWith(u8, self.out.items, "}\n\n"));
 }
 
 /// Emits the §9.15 `$simparam`s `setup` reads, so a host knows which writes
@@ -502,6 +522,7 @@ fn emitSimparams(self: *Gen) Error!void {
     , .{});
     for (names.items, 0..) |n, k| try self.w("{s}\"{f}\"", .{ if (k == 0) " " else ", ", std.zig.fmtString(n) });
     try self.w("{s}}};\n\n", .{if (names.items.len == 0) "" else " "});
+    assert(std.mem.endsWith(u8, self.out.items, "};\n\n"));
 }
 
 /// Returns whether emitted text uses the identifier `S`.

@@ -289,6 +289,8 @@ pub fn emitStamps(self: *Gen, react: bool) Error!u32 {
         try rowEnd(self);
     }
 
+    assert(self.jac.cur_dyn.len == 0);
+    assert(stamps <= self.lowered.contributions.items.len + self.topo.free_flows.len + self.lowered.port_probes.items.len);
     return stamps;
 }
 
@@ -310,6 +312,7 @@ pub fn stamp(self: *Gen, depth: u32, node: u32, sign: StampSign, val: []const u8
     try rowSet(self, node);
     try self.b("res[@intFromEnum(U.{s})].{s}({s})", .{ self.names.u_names[node], @tagName(sign), val });
     try rowEnd(self);
+    assert(std.mem.endsWith(u8, self.out.items, ");\n"));
 }
 
 /// `res[@intFromEnum(U.<u>)] = zRow(S, .<u>, `: row `u` is typed by its
@@ -318,11 +321,13 @@ pub fn stamp(self: *Gen, depth: u32, node: u32, sign: StampSign, val: []const u8
 pub fn rowSet(self: *Gen, u: u32) Error!void {
     assert(u < self.names.n_u);
     try self.b("res[@intFromEnum(U.{0s})] = zRow(S, .{0s}, ", .{self.names.u_names[u]});
+    assert(std.mem.endsWith(u8, self.out.items, ", "));
 }
 
 pub fn rowEnd(self: *Gen) Error!void {
     assert(self.out.items.len != 0);
     try self.b(");\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, ");\n"));
 }
 
 /// Records that row `node` of the half being emitted (`jac.react`) gained a
@@ -340,6 +345,7 @@ pub fn patRow(self: *Gen, node: u32, deps: []const u64) void {
         d.* |= c & b;
     };
     gen_mask.set(self.jac.rows[@intFromBool(self.jac.react)], node);
+    assert(gen_mask.has(self.jac.rows[@intFromBool(self.jac.react)], node));
 }
 
 /// Row `r` of a per-row mask table (`jac.pat`, `jac.dpat`): `Gen.mw` words.
@@ -363,6 +369,7 @@ pub fn bits(self: *const Gen, us: []const u32, deps: []const []const u64) Error!
         gen_mask.set(m, u);
     }
     for (deps) |d| gen_mask.orIn(m, d);
+    assert(m.len == self.mw);
     return m;
 }
 
@@ -370,6 +377,7 @@ pub fn nodeVoltage(self: *Gen, node: u32) Error!void {
     assert(node == Lower.ground or node < self.names.n_u);
     if (node == Lower.ground) return self.b("S.con(0.0)", .{});
     try self.b("x[@intFromEnum(U.{s})]", .{self.names.u_names[node]});
+    assert(std.mem.endsWith(u8, self.out.items, ")]"));
 }
 
 // ---- private ----
@@ -390,6 +398,7 @@ fn contribDyn(self: *const Gen, i: usize, c: Lower.Contribution, react: bool) Er
     if (self.acdyn.len == 0) return &.{};
     const own = family.acDyn(self, if (react) c.react_val else c.resist_val);
     const j = plan_topo.switchFlowOf(self.input(), i) orelse return own;
+    assert(j < self.lowered.contributions.items.len);
     const f = self.lowered.contributions.items[j];
     return bits(self, &.{}, &.{ own, family.acDyn(self, if (react) f.react_val else f.resist_val) });
 }

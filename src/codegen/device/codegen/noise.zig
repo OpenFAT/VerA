@@ -51,9 +51,11 @@ pub fn emitNoiseTable(self: *Gen) Error!void {
         // message instead of a table missing a generator.
         try self.w("/// §4.6.4 refused by codegen; see the diagnostic.\n", .{});
         try self.w("pub const noise_gens = @compileError(\"{s}\");\n\n", .{msg});
+        assert(std.mem.endsWith(u8, self.out.items, "\");\n\n"));
         return;
     }
     if (self.noise.rows.len == 0) return;
+    assert(self.names.u_names.len == self.names.n_u);
     // `plan/noise.zig`'s `plan` gives a table row its `tabs` index and no other row one.
     for (self.noise.rows) |nr| switch (nr.kind) {
         .table, .table_log => assert(nr.table.? < self.noise.tabs.len),
@@ -156,6 +158,7 @@ pub fn emitNoiseTable(self: *Gen) Error!void {
         }
     }
     try self.w("    }};\n}}\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "    };\n}\n\n"));
 }
 
 /// Emits `<core>__noise`, the core's slice computing only the PSD arguments
@@ -184,6 +187,7 @@ pub fn emitNoiseCore(self: *Gen) Error!void {
     );
     self.noise_reads_ddx = !std.mem.allEqual(u64, self.jac.ddx_reads, 0);
     gen_mask.orIn(self.jac.ddx_reads, ddx_before);
+    assert(self.noise_core.name.len != 0);
 }
 
 /// Returns whether the device emits `noiseTablePoints`: a §4.6.4.3/.4 table
@@ -193,7 +197,10 @@ pub fn emitNoiseCore(self: *Gen) Error!void {
 pub fn hasCardKnots(self: *const Gen) bool {
     assert(self.noise.refusals.items.len == 0 or self.any_fatal);
     if (self.noise.fatal != null or self.noise.rows.len == 0) return false;
-    for (self.noise.tab_vals) |mvs| if (mvs.len != 0) return true;
+    for (self.noise.tab_vals) |mvs| if (mvs.len != 0) {
+        assert(self.noise.tabs.len != 0); // a parametric table is a table
+        return true;
+    };
     return false;
 }
 
@@ -284,8 +291,10 @@ pub fn emitAcTable(self: *Gen) Error!void {
         try self.w("    const m = core(S, zVals(S, &x), model, {s}, sim{s});\n", .{ try gen_setup.probeInstance(self), self.heldArg(true) });
     }
     try self.w("    return .{{\n", .{});
+    assert(vals.len == self.noise.ac_rows.len);
     for (vals) |v| try self.w("        .{{ .mag = {s}, .phase = {s} }},\n", .{ v[0], v[1] });
     try self.w("    }};\n}}\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "    };\n}\n\n"));
 }
 
 // ---- private ----
@@ -342,7 +351,9 @@ fn emitNoiseTablePoints(self: *Gen) Error!void {
         try self.w("    contract.sortNoiseTable(pts[{d}..{d}]);\n", .{ at, at + pts.len });
         at += pts.len;
     }
+    assert(at == total);
     try self.w("    return pts;\n}}\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "return pts;\n}\n\n"));
 }
 
 /// Returns one §4.6.3 magnitude, phase or §4.6.4.6 coefficient in `acStim`'s
@@ -351,8 +362,10 @@ fn emitNoiseTablePoints(self: *Gen) Error!void {
 /// defect that `refuseAc` reports instead of exporting a wrong number.
 fn acRef(self: *Gen, v: Mir.Value, uses_core: *bool) Error!?[]const u8 {
     if (try gen_host.f64Const(self, v, 0, false)) |s| return s;
+    assert(@backingInt(v) < self.core.lo_idx.len);
     const k = self.core.lo_idx[@backingInt(v)];
     if (k == none_u32) return null;
+    assert(k < self.core.lo_vals.len);
     uses_core.* = true;
     return try self.arena.print("m.f{d}.val()", .{k});
 }
@@ -366,6 +379,7 @@ fn refuseAc(self: *Gen) Error!void {
     try self.w("/// §4.6.3 refused by codegen; see the diagnostic.\n", .{});
     try self.w("pub const ac_gens = @compileError(\"LRM 4.6.3: an ac_stim magnitude or " ++
         "phase must be a constant or parameter expression\");\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "\");\n\n"));
 }
 
 /// Returns `Lowered.NoiseKind` as a `contract.NoiseGen.kind` name. §4.6.4.3
@@ -387,9 +401,11 @@ fn contractNoiseKind(k: Lowered.NoiseKind) []const u8 {
 fn psdRef(self: *Gen, v: Mir.Value, is_exp: bool) Error![]const u8 {
     if (v == .f_zero) return "0";
     if (is_exp) if (plan_noise.psdConst(self.mir, v)) |c| return try self.arena.print("{d}", .{c});
+    assert(@backingInt(v) < self.core.lo_idx.len);
     const k = self.core.lo_idx[@backingInt(v)];
     // A live-out the planner dropped cannot happen (`buildJobs` queued it),
     // but a zero is the one answer that cannot invent noise.
     if (k == none_u32) return "0";
+    assert(k < self.core.lo_vals.len);
     return try self.arena.print("m.f{d}.val()", .{k});
 }

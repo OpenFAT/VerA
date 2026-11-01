@@ -116,6 +116,7 @@ pub fn scanSimReads(self: *const Gen, start: usize) SimReads {
         if (i == text.len or text[i] != '.') return .{ .t = true, .dt = true, .iteration = true };
         var e = i + 1;
         while (e < text.len and ident(text[e])) e += 1;
+        assert(e <= text.len);
         const field = text[i + 1 .. e];
         const guarded = for (self.cur.init_arms.items) |a| {
             if (a[0] <= k and k < a[1]) break true;
@@ -177,6 +178,7 @@ pub fn emitUnits(self: *Gen) Error!void {
         const at = try emitUnit(self, self.jobs.display_name, job.target, job.mode, plan_jobs.display_comment);
         try gen_file.recordUnitFile(self, self.jobs.display_name, lo, at);
     }
+    assert(!self.cur.emitting_display);
 }
 
 /// Emits declaration `name`, the core's slice returning only `vals` (`idx`
@@ -198,6 +200,7 @@ pub fn emitSlice(self: *Gen, name: []const u8, vals: []Mir.Value, idx: []u32, do
     const n_masks = self.fam_masks.items.len;
     defer self.fam_masks.shrinkRetainingCapacity(n_masks);
     try emitCoreDecl(self, name, doc);
+    assert(self.fam_masks.items.len >= n_masks);
 }
 
 /// Emits `<core>__<suffix>`, the slice returning the core fields `keep`
@@ -254,7 +257,9 @@ pub fn opInputIdx(self: *const Gen, i: u32) u32 {
     assert(self.names.units[i].role == .analog_op);
     const args = self.names.opArgs(self.mir, i);
     if (args.len == 0) return none_u32;
-    return self.core.lo_idx[@backingInt(self.an.rv(args[0]))];
+    const k = self.core.lo_idx[@backingInt(self.an.rv(args[0]))];
+    if (k != none_u32) assert(k < self.core.lo_vals.len);
+    return k;
 }
 
 /// Overwrites a reserved parameter-name slot with `_`, space-padded to the
@@ -263,6 +268,7 @@ pub fn patchParam(self: *Gen, at: usize, comptime width: usize) void {
     assert(at + width <= self.out.items.len);
     assert(width > 0);
     self.out.items[at..][0..width].* = ("_" ++ @as([width - 1]u8, @splat(' '))).*;
+    assert(self.out.items[at] == '_');
 }
 
 /// Calls `patchParam` on the slot at `at` unless the body text from `from`
@@ -299,6 +305,7 @@ fn remapAll(self: *Gen, fields: []const u32, remap: []const u32) Error![]u32 {
     assert(remap.len == self.core.lo_vals.len);
     const out = try self.arena.alloc(u32, fields.len);
     for (out, fields) |*o, k| o.* = if (k == none_u32) none_u32 else remap[k];
+    assert(out.len == fields.len);
     return out;
 }
 
@@ -360,6 +367,7 @@ fn emitCoreDecl(self: *Gen, name: []const u8, doc: []const u8) Error!void {
     // A slice of integers and plain arrays alone never names `S`.
     if (!try namesIdent(self, slots.x, "S")) patchParam(self, slots.x - "S: type, ".len, "S".len);
     try self.w("}}\n\n", .{});
+    assert(std.mem.endsWith(u8, self.out.items, "}\n\n"));
     try gen_file.recordUnitFile(self, name, lo, at_fn);
 }
 
@@ -391,6 +399,8 @@ fn emitUnit(self: *Gen, name: []const u8, target: Mir.Value, mode: proof.FloatMo
     try tableReset(self, body_start);
     try closeSig(self, slots, body_start);
     try self.w("}}\n\n", .{});
+    assert(at_fn < self.out.items.len);
+    assert(std.mem.endsWith(u8, self.out.items, "}\n\n"));
     return at_fn;
 }
 
