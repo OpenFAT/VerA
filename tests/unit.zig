@@ -22420,3 +22420,21 @@ pub const vpi_negative_tests = struct {
         try std.testing.expect(errorCode() != null);
     }
 };
+
+/// `contract`'s public functions, as a host calls them; a test of a
+/// contract file's private declarations stays beside that file.
+pub const contract_tests = struct {
+    const std = @import("std");
+    const contract = @import("contract");
+    const testing = std.testing;
+
+    test "sortNoiseTable sorts by frequency; noiseTableAt propagates a NaN frequency" {
+        // §4.6.4.3: "the simulator shall internally sort the pairs".
+        var pts = [_][2]f64{ .{ 3, 1 }, .{ 1, 2 }, .{ 2, 3 } };
+        contract.sortNoiseTable(&pts);
+        try testing.expectEqualSlices([2]f64, &.{ .{ 1, 2 }, .{ 2, 3 }, .{ 3, 1 } }, &pts);
+        // NaN is below no knot and above none: outside the precondition, NaN out.
+        const t: contract.NoiseTable = .{ .interp = .linear, .points = &pts };
+        try testing.expect(std.math.isNan(contract.noiseTableAt(t, std.math.nan(f64))));
+    }
+};
