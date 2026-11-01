@@ -23,11 +23,10 @@
 //! bit-identical. The ngspice control flow survives only as the oracles in
 //! `tests/unit.zig`, which hold these to it bit for bit.
 //!
-//! Probe (0.18.0-dev.349, ReleaseFast, `-mcpu=x86_64_v3`; an `export fn`
-//! per public name, built with `zig build-obj --dep kernels -Mroot=probe.zig
-//! --dep contract -Mkernels=lib/kernels/root.zig -Mcontract=lib/contract.zig
-//! -femit-asm`): `zFetlimClamp`, `zLimvdsClamp` and `zPnjlimClamp` hold 0
-//! conditional jumps (66, 27 and 85 instructions, the last with its three
+//! Probe: `zig build test-probe` holds `zFetlimClamp`, `zLimvdsClamp` and
+//! `zPnjlimClamp` to 0 conditional jumps (`tests/codegen_probe.zig`'s
+//! `expect:` lines, ReleaseFast, x86_64_v3, `tools/asm_probe.py`). Measured
+//! on 0.18.0-dev.349: 66, 27 and 85 instructions (the last with its three
 //! `log` calls), and each public name compiles to its compares and one tail
 //! jump to its ladder: the `sel` barrier keeps the ladders branchless and
 //! the Debug-only `zl_verify` check leaves nothing in a release build.
