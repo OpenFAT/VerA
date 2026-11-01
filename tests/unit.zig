@@ -94,9 +94,11 @@ pub const contract_names = struct {
 
     test "every `contract.<name>` the backend emits is a decl contract.zig has" {
         const gpa = std.testing.allocator;
-        var res = try vera.compileSource(gpa, wide_device, .build);
-        defer res.deinit();
-        const src = try res.generateDevice();
+        var res = try vera.analyze(gpa, wide_device, .{}, null);
+        defer res.deinit(gpa);
+        var dev = try res.generate(gpa, .{}, null);
+        defer dev.deinit(gpa);
+        const src = dev.output.text;
 
         var missing: usize = 0;
         var i: usize = 0;
@@ -146,6 +148,7 @@ pub const parser_tests = struct {
     const frontend = @import("frontend");
     const parser = frontend.Parser;
     const token = frontend.token;
+    const keyword = frontend.keyword;
     const lexer = frontend.lexer;
     const Ast = frontend.Ast;
     const diag = @import("diag");
@@ -379,7 +382,7 @@ pub const parser_tests = struct {
         const arena = arena_state.allocator();
 
         const Case = struct {
-            fn parse(a: std.mem.Allocator, src: []const u8, set: token.KeywordSet) !TestResult {
+            fn parse(a: std.mem.Allocator, src: []const u8, set: keyword.KeywordSet) !TestResult {
                 var list = try lexer.tokenize(a, src, null);
                 const bag = try newBag(a, src);
                 var p = Parser.init(a, src, list.items(.tag), list.items(.start), bag);
@@ -1286,7 +1289,7 @@ pub const parser_tests = struct {
         // list_of_branch_identifiers wants a name.
         const named = try parseForTest(arena, "module m(p); inout p; electrical p; branch (p) 7; endmodule");
         try std.testing.expectEqual(diag.Code.E0208, named.code(0));
-        try std.testing.expectEqual(@as(u32, 0), named.bag.at(0).n_notes);
+        try std.testing.expectEqual(@as(u8, 0), named.bag.at(0).note_count);
     }
 
     test "§2.7 a string may not span lines, however it is continued" {
@@ -1296,7 +1299,7 @@ pub const parser_tests = struct {
 
         // The IEEE 1800 §5.9 continuation bsim4va's $strobe uses, and a plain
         // runaway. Both are E0138; only the first earns the SystemVerilog note.
-        const cases = [_]struct { src: []const u8, notes: u32 }{
+        const cases = [_]struct { src: []const u8, notes: u8 }{
             .{ .src = "module m; analog $strobe(\"a\\\nb\"); endmodule", .notes = 2 },
             .{ .src = "module m; analog $strobe(\"a\nb\"); endmodule", .notes = 1 },
         };
@@ -1308,7 +1311,7 @@ pub const parser_tests = struct {
                 "this literal is still open at the end of the line",
                 res.bag.at(0).point,
             );
-            try std.testing.expectEqual(c.notes, res.bag.at(0).n_notes);
+            try std.testing.expectEqual(c.notes, res.bag.at(0).note_count);
         }
     }
 
@@ -1709,7 +1712,7 @@ pub const parser_tests = struct {
         try std.testing.expectEqual(@as(u32, 0), p.pos);
         try std.testing.expect(p.failed);
         try std.testing.expectEqual(diag.Code.E0207, bag.at(0).code);
-        try std.testing.expectEqual(@as(u32, 1), bag.at(0).n_notes); // the `;` insertion
+        try std.testing.expectEqual(@as(u8, 1), bag.at(0).note_count); // the `;` insertion
 
         try std.testing.expectEqual(@as(u32, 0), try p.expect(.kw_module));
         try std.testing.expectEqual(@as(u32, 1), p.pos);
@@ -1718,7 +1721,7 @@ pub const parser_tests = struct {
         try std.testing.expectError(error.ParseError, p.expect(.kw_end));
         try std.testing.expectEqual(@as(u32, 1), p.pos);
         try std.testing.expectEqual(diag.Code.E0207, bag.at(1).code);
-        try std.testing.expectEqual(@as(u32, 0), bag.at(1).n_notes);
+        try std.testing.expectEqual(@as(u8, 0), bag.at(1).note_count);
     }
 
     /// Parses `prefix ++ open*n ++ middle ++ close*n ++ suffix` and returns the
@@ -5130,7 +5133,7 @@ pub const proof_tests = struct {
     //! on std.testing.allocator. LRM §3.2.1, §3.4.2, §4.2.4, §4.2.12, §4.3.1, §4.3.2, §5.6.1.3, §5.8.
 
     const std = @import("std");
-    const proof = @import("prove").next.proof;
+    const proof = @import("prove").proof;
     const Ast = @import("frontend").Ast;
     const Mir = @import("ir").Mir;
     const Lower = @import("analog").Lower;
@@ -5142,9 +5145,11 @@ pub const proof_tests = struct {
     const unitCount = proof.unitCount;
 
     /// The frontend preprocessor the harness runs.
-    const Preprocessor = @import("frontend").Preprocessor;
+    const preprocessor = @import("frontend").preprocessor;
+    /// The annex E prelude's module count, which `preprocessor.process` prepends.
+    const annex_e = @import("frontend").annex_e;
     /// The frontend lexer the harness runs.
-    const Lexer = @import("frontend").Lexer;
+    const lexer = @import("frontend").lexer;
     /// The frontend parser the harness runs.
     const Parser = @import("frontend").Parser;
 
@@ -5166,15 +5171,15 @@ pub const proof_tests = struct {
             };
             const arena = out.arena_state.allocator();
             out.bag = diag.Bag.init(arena);
-            const text = (try Preprocessor.process(arena, src, .{ .bag = &out.bag })).text;
-            const toks = try Lexer.Lexer.tokenize(arena, text);
+            const text = (try preprocessor.process(arena, src, .{ .bag = &out.bag })).text;
+            const toks = try lexer.tokenize(arena, text, null);
             var p = Parser.Parser.init(arena, text, toks.items(.tag), toks.items(.start), &out.bag);
             const parse = try arena.create(Ast.SourceFile);
             parse.* = try p.parseSourceFile();
-            // The annex E prelude came with `Preprocessor.process` (std_defs is on by
+            // The annex E prelude came with `preprocessor.process` (std_defs is on by
             // default), so its modules are the leading entries of `file.modules`.
             // Elaboration writes the overlay, never the parse.
-            out.file = parse.overlay(.{ .builtin_modules = Preprocessor.spice_module_count });
+            out.file = parse.overlay(.{ .builtin_modules = annex_e.spice_module_count });
             out.lowered = (try Lower.lower(arena, &out.mir, &out.file, text, toks.items(.start), &out.bag, .{})).lowered;
         }
 
@@ -5294,7 +5299,7 @@ pub const proof_tests = struct {
         , &h);
         defer h.deinit();
 
-        try h.bag.levels.set(h.arena_state.allocator(), .W0650, .allow);
+        try h.bag.levels.set(.W0650, .allow);
         const v = try h.prove(std.testing.allocator, .{});
         defer v.deinit(std.testing.allocator);
 
@@ -6013,7 +6018,7 @@ pub const proof_tests = struct {
             \\endmodule
         , &h);
         defer h.deinit();
-        try h.bag.levels.set(h.arena_state.allocator(), .W0653, .allow);
+        try h.bag.levels.set(.W0653, .allow);
         const v = try h.prove(std.testing.allocator, .{});
         defer v.deinit(std.testing.allocator);
         try std.testing.expect(v.ok());
@@ -6544,7 +6549,7 @@ pub const ssa_tests = struct {
 
             const conc = try gpa.alloc(Mir.Value, places.len);
             defer gpa.free(conc);
-            const phi_val = try gpa.alloc(Mir.Value, mir.defs.len + Mir.Value.first_dynamic);
+            const phi_val = try gpa.alloc(Mir.Value, mir.valueCount());
             defer gpa.free(phi_val);
             for (0..3) |_| {
                 @memset(conc, .undef);
@@ -6572,9 +6577,9 @@ pub const prove_oom_tests = struct {
     const Lowered = @import("ir").Lowered;
     const diag = @import("diag");
     const Analysis = @import("prove").Analysis;
-    const ifconv = @import("prove").next.ifconv;
-    const proof = @import("prove").next.proof;
-    const setup = @import("prove").next.setup;
+    const ifconv = @import("prove").ifconv;
+    const proof = @import("prove").proof;
+    const setup = @import("prove").setup;
     const timepoint = @import("prove").timepoint;
     const held = @import("prove").held;
     const Input = @import("prove").Input;
@@ -7032,7 +7037,7 @@ pub const lower_tests = struct {
             } else {
                 try std.testing.expectError(error.DiagnosticsReported, h.low.lowerFile());
                 var found = false;
-                for (0..h.bag.records.items.len) |i| if (h.bag.at(i).code == .E0926) {
+                for (0..h.bag.count()) |i| if (h.bag.at(i).code == .E0926) {
                     try std.testing.expect(std.mem.find(u8, h.bag.at(i).message, "`u`") != null);
                     found = true;
                 };
@@ -7537,7 +7542,7 @@ pub const lower_tests = struct {
 
         // The LRM's own example: `{ "hello", " ", "world" }` == `"hello world"`.
         var found = false;
-        for (h.mir.strings.strings.items) |s| {
+        for (h.mir.strings.texts.items) |s| {
             if (std.mem.eql(u8, s, "hello world")) found = true;
         }
         try std.testing.expect(found);
@@ -9683,8 +9688,8 @@ pub const preprocessor_tests = struct {
         try testing.expectEqual(code, e.code);
         try testing.expect(bag.failed());
         // A preprocess span is file-local: it must index the file it names.
-        try testing.expect(e.file != null);
-        try testing.expect(e.span.end <= bag.fileText(e.file.?).len);
+        try testing.expect(e.file != .none);
+        try testing.expect(e.span.end <= bag.fileText(e.file).len);
         // The title carries the condition; the message may not repeat it.
         try testing.expect(std.mem.find(u8, e.message, "LRM") == null);
     }
@@ -10726,9 +10731,9 @@ pub const preprocessor_tests = struct {
             const seeded = try sp.parseSourceFile();
 
             // --- the interner: same strings, at the same ids, and the same map ---
-            try testing.expectEqual(long.strings.strings.items.len, seeded.strings.strings.items.len);
+            try testing.expectEqual(long.strings.texts.items.len, seeded.strings.texts.items.len);
             try testing.expectEqual(long.strings.map.size, seeded.strings.map.size);
-            for (long.strings.strings.items, seeded.strings.strings.items, 0..) |x, y, i| {
+            for (long.strings.texts.items, seeded.strings.texts.items, 0..) |x, y, i| {
                 try testing.expectEqualStrings(x, y);
                 // The id is the claim, not just the membership: everything below the
                 // parser addresses a name by its `StrId`.
@@ -11610,12 +11615,10 @@ pub const preprocessor_tests = struct {
     const std_includes = "`include \"disciplines.vams\"\n`include \"constants.vams\"\n";
 
     /// Whether a `.lint` of `src` fails with a `code` diagnostic.
-    fn lintReports(src: []const u8, opts: vera.Options, code: diag.Code) !bool {
+    fn lintReports(src: []const u8, opts: vera.Settings, code: diag.Code) !bool {
         var bag: diag.Bag = .init(testing.allocator);
         defer bag.deinit(testing.allocator);
-        var o = opts;
-        o.diags = &bag;
-        try testing.expectError(error.CompileFailed, vera.compileSourceOpts(testing.allocator, src, .lint, o));
+        try testing.expectError(error.CompileFailed, vera.analyze(testing.allocator, src, opts, &bag));
         for (0..bag.count()) |i| if (bag.at(i).code == code) return true;
         return false;
     }
@@ -11626,23 +11629,23 @@ pub const preprocessor_tests = struct {
         // ignored, with the prelude (the include is then guarded empty) or
         // without it (the include splices the header itself).
         for ([_]vera.Sim{ .verilog_ams, .verilog_a }) |sim| for ([_]bool{ true, false }) |std_defs| {
-            var res = try vera.compileSourceOpts(gpa, std_includes ++ std_model, .lint, .{ .require_std_includes = true, .sim = sim, .std_defs = std_defs });
-            res.deinit();
+            var res = try vera.analyze(gpa, std_includes ++ std_model, .{ .require_std_includes = true, .sim = sim, .std_defs = std_defs }, null);
+            res.deinit(gpa);
         };
-        var pi = try vera.compileSourceOpts(gpa, std_includes ++ pi_model, .lint, .{ .require_std_includes = true });
-        pi.deinit();
+        var pi = try vera.analyze(gpa, std_includes ++ pi_model, .{ .require_std_includes = true }, null);
+        pi.deinit(gpa);
     }
 
     test "require_std_includes: annex D without its include is E0371 or E0115, and is not without the option" {
         // A D.1 discipline without disciplines.vams.
         try testing.expect(try lintReports(std_model, .{ .require_std_includes = true }, .E0371));
-        var res = try vera.compileSourceOpts(testing.allocator, std_model, .lint, .{});
-        res.deinit();
+        var res = try vera.analyze(testing.allocator, std_model, .{}, null);
+        res.deinit(testing.allocator);
         // A D.2 macro without constants.vams.
         const pi = "`include \"disciplines.vams\"\n" ++ pi_model;
         try testing.expect(try lintReports(pi, .{ .require_std_includes = true }, .E0115));
-        var res2 = try vera.compileSourceOpts(testing.allocator, pi, .lint, .{});
-        res2.deinit();
+        var res2 = try vera.analyze(testing.allocator, pi, .{}, null);
+        res2.deinit(testing.allocator);
     }
 
     test "require_std_includes: annex D's own guards read as undefined until the file is included" {
@@ -11650,8 +11653,8 @@ pub const preprocessor_tests = struct {
         // check.vh): the prelude's `DISCIPLINES_VAMS` must not hide the include.
         const guarded = "`ifndef DISCIPLINES_VAMS\n`include \"disciplines.vams\"\n`endif\n" ++
             "`ifndef CONSTANTS_VAMS\n`include \"constants.vams\"\n`endif\n";
-        var res = try vera.compileSourceOpts(testing.allocator, guarded ++ pi_model, .lint, .{ .require_std_includes = true });
-        res.deinit();
+        var res = try vera.analyze(testing.allocator, guarded ++ pi_model, .{ .require_std_includes = true }, null);
+        res.deinit(testing.allocator);
         // A source that declares its own base natures defines the guard first,
         // and the header then leaves annex D's out (no E0335 on access `V`).
         const own = "`define DISCIPLINES_VAMS 1\n" ++ guarded ++
@@ -11661,11 +11664,11 @@ pub const preprocessor_tests = struct {
             \\module m(p); inout p; own_e p; analog I(p) <+ V(p); endmodule
             \\
         ;
-        var res2 = try vera.compileSourceOpts(testing.allocator, own, .lint, .{ .require_std_includes = true });
-        res2.deinit();
+        var res2 = try vera.analyze(testing.allocator, own, .{ .require_std_includes = true }, null);
+        res2.deinit(testing.allocator);
         // Without the option the guards are the prelude's, as before.
-        var res3 = try vera.compileSourceOpts(testing.allocator, guarded ++ std_model, .lint, .{});
-        res3.deinit();
+        var res3 = try vera.analyze(testing.allocator, guarded ++ std_model, .{}, null);
+        res3.deinit(testing.allocator);
     }
 
     test "--sim=verilogA: a user's discrete discipline is E0250 where a net uses it (annex C.4)" {
@@ -11950,12 +11953,11 @@ pub const codegen_tests = struct {
     //! LRM §3.4, §4.5, §4.6, §5.4.3, §5.6, §9.4, §9.5, §9.13, §9.17.3, §9.21.
 
     const std = @import("std");
-    const codegen = @import("device").codegen;
+    /// The device backend (`src/codegen/device/`).
+    const codegen = @import("device");
     const gen_kernel_text = codegen.kernel_text;
     const Harness = codegen.Harness;
     const Ast = @import("frontend").Ast;
-    const Preprocessor = @import("frontend").Preprocessor;
-    const Lexer = @import("frontend").Lexer;
     const Parser = @import("frontend").Parser;
     const ifconv = @import("prove").ifconv;
     const Mir = @import("ir").Mir;
@@ -12034,12 +12036,11 @@ pub const codegen_tests = struct {
         try Harness.run(std.testing.allocator, resistor_va, &h);
         defer h.deinit();
 
-        const v = try proof.proveOpts(std.testing.allocator, &h.mir, &h.lowered, .{}, &h.bag);
+        const v = try proof.prove(std.testing.allocator, &h.mir, &h.lowered, .{}, &h.bag);
         defer v.deinit(std.testing.allocator);
-        var fatal = false;
         const a = h.arena_state.allocator();
-        const off = (try generate(a, a, &h.mir, &h.lowered, v, &fatal, .{})).text;
-        const on = (try generate(a, a, &h.mir, &h.lowered, v, &fatal, .{ .jac_f32 = true })).text;
+        const off = (try generate(a, a, &h.mir, &h.lowered, v, .{})).output.text;
+        const on = (try generate(a, a, &h.mir, &h.lowered, v, .{ .jac_f32 = true })).output.text;
 
         try std.testing.expect(std.mem.find(u8, off, "jac_f32") == null);
         const decl = "pub const jac_f32 = true;\n\n";
@@ -12053,7 +12054,7 @@ pub const codegen_tests = struct {
         // `--jac-f32-host` is the stronger request and emits the permission too:
         // a host width without the permission is the one combination
         // `lib/contract.zig` rejects, so codegen must never produce it.
-        const host = (try generate(a, a, &h.mir, &h.lowered, v, &fatal, .{ .jac_f32_host = true })).text;
+        const host = (try generate(a, a, &h.mir, &h.lowered, v, .{ .jac_f32_host = true })).output.text;
         try std.testing.expect(std.mem.find(u8, host, decl) != null);
         try std.testing.expect(std.mem.find(u8, host, "pub const jac_f32_host = true;") != null);
     }
@@ -12075,11 +12076,10 @@ pub const codegen_tests = struct {
         var h: Harness = undefined;
         try Harness.run(std.testing.allocator, src, &h);
         defer h.deinit();
-        const v = try proof.proveOpts(std.testing.allocator, &h.mir, &h.lowered, .{}, &h.bag);
+        const v = try proof.prove(std.testing.allocator, &h.mir, &h.lowered, .{}, &h.bag);
         defer v.deinit(std.testing.allocator);
-        var fatal = false;
         const a = h.arena_state.allocator();
-        const on = (try generate(a, a, &h.mir, &h.lowered, v, &fatal, .{})).text;
+        const on = (try generate(a, a, &h.mir, &h.lowered, v, .{})).output.text;
         for ([_][]const u8{
             "fn d__common__core(comptime S: type, x: anytype, ",
             "    f0: zOf(S, 0x7),\n",
@@ -12468,7 +12468,7 @@ pub const codegen_tests = struct {
         try gen_kernel_text.appendAliases(&file, gpa, gen_kernel_text.file_txt);
         try std.testing.expect(has(u8, str.items, "const zScan = zh.zScan;\n") != null);
         try std.testing.expect(has(u8, file.items, "const zFOpen = zh.zFOpen;\n") != null);
-        // str_kernels.zig's `pub const ZScan` and `const zstd`, file_kernels.zig's
+        // str_scan.zig's `pub const ZScan` and `const zstd`, file_kernels.zig's
         // `fn zfIo` and `const zf_max`: public in h.zig, never named by an emitted
         // body, so aliasing them would be legal, unreferenced, and pure noise.
         try std.testing.expect(has(u8, str.items, "ZScan") == null);
@@ -12749,7 +12749,7 @@ pub const codegen_tests = struct {
         defer h.deinit();
         // root.zig runs this between lower and prove; the harness does the same.
         // The MIR is arena-owned, so the pass must append with the same arena.
-        const n = try ifconv.run(h.arena_state.allocator(), &h.mir);
+        const n = try ifconv.run(h.arena_state.allocator(), &h.mir, .pure, null);
         try std.testing.expect(n >= 1);
         const src = try h.gen(std.testing.allocator);
         // exp(unbounded V) forfeits finiteness, so the unit is .strict, the
@@ -12780,7 +12780,7 @@ pub const codegen_tests = struct {
             \\endmodule
         , &h);
         defer h.deinit();
-        try std.testing.expect(try ifconv.run(h.arena_state.allocator(), &h.mir) >= 1);
+        try std.testing.expect(try ifconv.run(h.arena_state.allocator(), &h.mir, .pure, null) >= 1);
         const src = try h.gen(std.testing.allocator);
         const unit = src[std.mem.find(u8, src, "fn sh__").?..];
         const body = unit[0..std.mem.find(u8, unit, "\n}\n").?];
@@ -12798,7 +12798,7 @@ pub const codegen_tests = struct {
             \\endmodule
         , &h);
         defer h.deinit();
-        _ = try ifconv.run(h.arena_state.allocator(), &h.mir);
+        _ = try ifconv.run(h.arena_state.allocator(), &h.mir, .pure, null);
         const src = try h.gen(std.testing.allocator);
         // What this protects is §4.2.12 laziness, not a spelling: `ln` runs only
         // on the path `V > vmin` selects. The guard may come out as a lazy
@@ -12843,7 +12843,7 @@ pub const codegen_tests = struct {
         // The guard's evidence only survives conversion on exclusively-owned
         // slices; a shared `ln` result must refuse, or the model silently drops
         // to `.strict` (and an integer `/` in the same shape turns REJECTED).
-        const n = try ifconv.run(h.arena_state.allocator(), &h.mir);
+        const n = try ifconv.run(h.arena_state.allocator(), &h.mir, .pure, null);
         try std.testing.expectEqual(@as(u32, 0), n);
         // Still compiles and proves through the CFG dominance path.
         const src = try h.gen(std.testing.allocator);
@@ -12873,8 +12873,8 @@ pub const codegen_tests = struct {
             \\endmodule
         , &h);
         defer h.deinit();
-        _ = try ifconv.run(h.arena_state.allocator(), &h.mir);
-        try std.testing.expectEqual(@as(u32, 1), try ifconv.runMode(h.arena_state.allocator(), &h.mir, .speculate, null));
+        _ = try ifconv.run(h.arena_state.allocator(), &h.mir, .pure, null);
+        try std.testing.expectEqual(@as(u32, 1), try ifconv.run(h.arena_state.allocator(), &h.mir, .speculate, null));
         const src = try h.gen(std.testing.allocator);
         const unit = src[std.mem.find(u8, src, "fn ml__").?..];
         const body = unit[0..std.mem.find(u8, unit, "\n}\n").?];
@@ -13639,7 +13639,7 @@ pub const codegen_tests = struct {
         const exe = try h.genDisplay(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, exe, "pub fn display(") != null);
         // `%g` is a §9.4.3 Table 9-23 REAL conversion, so it composes its own
-        // field through `str_kernels.zCReal` and arrives as `{s}`; `%5d` is the
+        // field through `str_real.zCReal` and arrives as `{s}`; `%5d` is the
         // documented zPadInt detour and `%s` is Zig's own verb.
         try std.testing.expect(std.mem.find(u8, exe, "g={s} n={s:>5} s={s}\\n") != null);
         try std.testing.expect(std.mem.find(u8, exe, "zCReal(&zb0, (S.con(model.g)).val(), 'g', 0, 0, -1)") != null);
@@ -14157,7 +14157,7 @@ pub const codegen_tests = struct {
             \\endmodule
         , &h);
         defer h.deinit();
-        try std.testing.expect(try ifconv.run(h.arena_state.allocator(), &h.mir) >= 1);
+        try std.testing.expect(try ifconv.run(h.arena_state.allocator(), &h.mir, .pure, null) >= 1);
         const src = try h.gen(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, src, "pub fn collapse(") != null);
         try std.testing.expect(std.mem.find(
@@ -14266,15 +14266,14 @@ pub const codegen_tests = struct {
                 \\endmodule
             , &h);
             defer h.deinit();
-            const v = try proof.proveOpts(std.testing.allocator, &h.mir, &h.lowered, .{}, &h.bag);
+            const v = try proof.prove(std.testing.allocator, &h.mir, &h.lowered, .{}, &h.bag);
             defer v.deinit(std.testing.allocator);
             try std.testing.expect(!h.bag.failed());
             const a = h.arena_state.allocator();
-            var fatal = false;
-            _ = try generate(a, a, &h.mir, &h.lowered, v, &fatal, .{
+            const d = try generate(a, a, &h.mir, &h.lowered, v, .{
                 .diags = if (with_diags) &h.bag else null,
             });
-            try std.testing.expect(fatal);
+            try std.testing.expect(d.compile_error);
             try std.testing.expectEqual(with_diags, h.bag.failed());
         }
     }
@@ -14894,7 +14893,8 @@ pub const codegen_tests = struct {
         //
         // Every row below is a sentence of §9.5.4.2, and the numbers are the ones
         // tests/conformance/tests/verilog-a/ch09_system_tasks/{048,162,09,06} hold VerA to.
-        const k = @import("kernels").str_kernels;
+        const k = @import("kernels").str_scan;
+        const store = @import("kernels").str_store;
         // "the number of successfully matched and assigned input items is returned"
         try std.testing.expectEqual(@as(i64, 1), k.zScanN("42", "%d"));
         try std.testing.expectEqual(@as(i64, 42), k.zScanI("42", "%d", 0));
@@ -14914,12 +14914,12 @@ pub const codegen_tests = struct {
         try std.testing.expectEqual(@as(f64, 5.5), k.zScanR("abc 5.5", "%s %f", 1));
         // Literal text in the control string must match, and %e reads back what
         // §9.4.3's `%10.4e` wrote (string_formatting.va's round trip).
-        const txt = try std.mem.print(k.zSBuf(0), "value={e:>10.4}", .{0.5});
+        const txt = try std.mem.print(store.zSBuf(0), "value={e:>10.4}", .{0.5});
         try std.testing.expectEqual(@as(f64, 0.5), k.zScanR(txt, "value=%e", 0));
         try std.testing.expectEqual(@as(i64, 0), k.zScanN(txt, "other=%e"));
         // Two call sites, two scratch rows: §9.5.3 gives each writer its own string
         // variable, so one must not overwrite the other's bytes.
-        const hex = try std.mem.print(k.zSBuf(1), "{x}", .{@as(i64, 4096)});
+        const hex = try std.mem.print(store.zSBuf(1), "{x}", .{@as(i64, 4096)});
         try std.testing.expectEqual(@as(i64, 1000), k.zScanI(hex, "%d", 0));
         try std.testing.expectEqualStrings("value= 5.0000e-1", txt);
     }
@@ -15486,7 +15486,7 @@ pub const codegen_tests = struct {
             try Harness.run(std.testing.allocator, src, &h);
             defer h.deinit();
             try std.testing.expectEqual(1, h.lowered.held_vars.items.len);
-            if (try @import("prove").setup.pruneHeld(h.arena_state.allocator(), &h.mir, &h.lowered)) |keep| Lower.dropHeld(&h.lowered, keep);
+            if (try @import("prove").held.prune(h.arena_state.allocator(), &h.mir, &h.lowered)) |keep| Lower.dropHeld(&h.lowered, keep);
             try std.testing.expectEqual(c.held, h.lowered.held_vars.items.len);
             _ = try h.gen(std.testing.allocator); // and the device still generates
         }
@@ -15507,7 +15507,7 @@ pub const codegen_tests = struct {
         , &h);
         defer h.deinit();
         try std.testing.expectEqual(Lower.HeldVar.Why.retained, h.lowered.held_vars.items[0].why);
-        _ = try ifconv.run(h.arena_state.allocator(), &h.mir);
+        _ = try ifconv.run(h.arena_state.allocator(), &h.mir, .pure, null);
         const s = try h.gen(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, s, "model.su.r[0] = ") != null);
         try std.testing.expect(std.mem.find(u8, s, "if (inst.is_analog_initial)") == null);
@@ -16915,7 +16915,7 @@ pub const digital_tests = struct {
         var bag = diag.Bag.init(arena);
         var sink: std.Io.Writer.Discarding = .init(&.{});
         var r = try sim.digital.elaborate(arena, source, .{}, &bag, &sink.writer);
-        return digital.program(arena, &r, .{ .source = source, .file_name = file_name, .include_dirs = &.{}, .language = Front.token.default_keyword_set }, schedule, logic);
+        return digital.program(arena, &r, .{ .source = source, .file_name = file_name, .include_dirs = &.{}, .language = Front.keyword.default_keyword_set }, schedule, logic);
     }
 
     /// The native `.auto` root of `source`; fails when it falls back.
@@ -16981,7 +16981,7 @@ pub const digital_tests = struct {
         var bag = diag.Bag.init(a);
         var sink: std.Io.Writer.Discarding = .init(&.{});
         var r = try sim.digital.elaborate(a, source, .{ .defines = &.{"R=1.0"} }, &bag, &sink.writer);
-        const p = try digital.program(a, &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .defines = &.{"R=1.0"}, .language = Front.token.default_keyword_set }, .static, .auto);
+        const p = try digital.program(a, &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .defines = &.{"R=1.0"}, .language = Front.keyword.default_keyword_set }, .static, .auto);
         try testing.expectEqualStrings("a real value", p.fallback.?);
         try has(p.text, ".defines = &.{ \"R=1.0\", }");
     }
@@ -17138,15 +17138,15 @@ pub const digital_tests = struct {
         const a = arena.allocator();
         var bag = diag.Bag.init(a);
         _ = try digital.emitDevice(a, "module m(input x, output y); assign y = x; endmodule", .{}, .static, &bag);
-        try testing.expectEqual(@as(usize, 1), bag.records.items.len);
-        try testing.expectEqual(diag.Code.W1155, bag.records.items[0].code);
+        try testing.expectEqual(@as(usize, 1), bag.count());
+        try testing.expectEqual(diag.Code.W1155, bag.at(0).code);
         var timed = diag.Bag.init(a);
         const d = try digital.emitDevice(a, "`timescale 1ns/1ps\nmodule n(input x, output y); assign y = x; endmodule", .{}, .static, &timed);
         try testing.expectEqualStrings("n", d.name);
-        try testing.expectEqual(@as(usize, 0), timed.records.items.len);
+        try testing.expectEqual(@as(usize, 0), timed.count());
         var refused = diag.Bag.init(a);
         try testing.expectError(error.DigitalFailed, digital.emitDevice(a, "module m(inout w); endmodule", .{}, .static, &refused));
-        try testing.expectEqual(diag.Code.E1103, refused.records.items[0].code);
+        try testing.expectEqual(diag.Code.E1103, refused.at(0).code);
     }
 
     /// An arena that takes every allocation from `parent` one by one, so a
@@ -17196,7 +17196,7 @@ pub const digital_tests = struct {
         var r = try sim.digital.elaborate(el.allocator(), source, .{}, &bag, &sink.writer);
         var each: EachAlloc = .{ .parent = gpa };
         defer each.deinit();
-        const p = try digital.program(each.allocator(), &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .language = Front.token.default_keyword_set }, .static, .auto);
+        const p = try digital.program(each.allocator(), &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .language = Front.keyword.default_keyword_set }, .static, .auto);
         try testing.expectEqual(@as(?[]const u8, null), p.fallback);
     }
 
@@ -17589,7 +17589,7 @@ pub const exe_tests = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        // Bit equality with the same spelling in the model (`Lexer.scaleExp`):
+        // Bit equality with the same spelling in the model (`token_value.scaleExp`):
         // `200 * 1e-6` is a different double from `200e-6`.
         // In increasing order, as a time grid must be.
         const d = try parse(arena, "//! time 0, 1n, 200u, 2.5m, 1K\n");
@@ -18352,7 +18352,7 @@ pub const exe_tests = struct {
 
 pub const vpi_tests = struct {
     //! The model's and the routines' unit tests: a design compiled with
-    //! `vera.compileSource` (or the digital `run.Harness`), opened, and its rows
+    //! `vera.analyze` (or the digital `run.Harness`), opened, and its rows
     //! and failure paths checked. The ABI, the header's constants and C object
     //! lifetimes are `zig build test-vpi` (tests/conformance/tests/verilog-ams/ch11_vpi/vpi_app.c against
     //! src/vpi/vpi_user.h); the last test here checks every Zig copy of a header
@@ -18360,7 +18360,7 @@ pub const vpi_tests = struct {
 
     const std = @import("std");
     const Ast = @import("frontend").Ast;
-    const Elaborate = @import("vera").Elaborate;
+    const elab = @import("elab");
     const root = @import("vpi");
     const callback = root.callback;
     const code_tables = root.code_tables;
@@ -18477,16 +18477,16 @@ pub const vpi_tests = struct {
         \\endmodule
     ;
 
-    fn openSource(src: []const u8) !vera.CompileResult {
-        var res = try vera.compileSource(std.testing.allocator, src, .lint);
-        errdefer res.deinit();
+    fn openSource(src: []const u8) !vera.Result {
+        var res = try vera.analyze(std.testing.allocator, src, .{}, null);
+        errdefer res.deinit(std.testing.allocator);
         try open(std.testing.allocator, &res);
         return res;
     }
 
     test "the scope tree is the instance tree, with definition names" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const d = &session.design.?;
@@ -18502,7 +18502,7 @@ pub const vpi_tests = struct {
 
     test "each scope holds the declarations of its own level" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const d = &session.design.?;
@@ -18522,7 +18522,7 @@ pub const vpi_tests = struct {
 
     test "vpi_iterate walks a level and vpi_scan frees the iterator at the end" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const top = vpi_handle_by_name("top", null);
@@ -18541,7 +18541,7 @@ pub const vpi_tests = struct {
 
     test "an abandoned iterator is freed by vpi_free_object" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const top = vpi_handle_by_name("top", null);
@@ -18554,7 +18554,7 @@ pub const vpi_tests = struct {
 
     test "§12.23: an empty handle set is NULL with no error; an iterator has its type, its iterated type and nothing else" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         // No callback is registered and no systf: NULL, and no error (§12.23).
@@ -18573,7 +18573,7 @@ pub const vpi_tests = struct {
 
     test "the §6.7 upward scope search, and absolute names" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const leaf = vpi_handle_by_name("top.u.v", null);
@@ -18596,7 +18596,7 @@ pub const vpi_tests = struct {
 
     test "an invalid handle is an error, not a crash" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         // A pointer into the object array but off an element boundary, and one past
@@ -18618,7 +18618,7 @@ pub const vpi_tests = struct {
 
     test "unsupported property requests report vpiError and vpiUndefined" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const top = vpi_handle_by_name("top", null);
@@ -18644,7 +18644,7 @@ pub const vpi_tests = struct {
             \\  analog I(b) <+ V(b);
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const top = vpi_handle_by_name("br", null);
@@ -18686,7 +18686,7 @@ pub const vpi_tests = struct {
             \\  res r2(.p(a), .n(gnd));
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
         // One unnamed branch per instance, each in ITS scope, though all three
         // span the same pair (a, gnd).
@@ -18725,7 +18725,7 @@ pub const vpi_tests = struct {
             \\  analog I(drv.br) <+ 1m;
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
         // The parent's `<+` lands on the child's own branch: one row, `shared`,
         // and all of it is that branch's flow, so there is no share to look up.
@@ -18742,7 +18742,7 @@ pub const vpi_tests = struct {
             \\  analog I(b) <+ g * V(b);
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const top = vpi_handle_by_name("ct", null);
@@ -18771,7 +18771,7 @@ pub const vpi_tests = struct {
             \\  analog I(p) <+ w*V(p);
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const top = vpi_handle_by_name("only", null);
@@ -18788,7 +18788,7 @@ pub const vpi_tests = struct {
 
     test "port, reg and parameter properties come from the declaration" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const p = vpi_handle_by_name("top.p", null);
@@ -18817,7 +18817,7 @@ pub const vpi_tests = struct {
             \\  analog I(p) <+ V(p);
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const bus = vpi_handle_by_name("vec.bus", null);
@@ -18827,7 +18827,7 @@ pub const vpi_tests = struct {
 
     test "vpi_handle_by_index reports the unsupported class rather than guessing" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const state = vpi_handle_by_name("top.state", null);
@@ -18842,12 +18842,12 @@ pub const vpi_tests = struct {
     }
 
     test "handles survive the compilation they were built from" {
-        // `Design` copies every string it reports, so freeing the CompileResult
+        // `Design` copies every string it reports, so freeing the Result
         // leaves the handles valid.
         var res = try openSource(nested_src);
         defer close();
         const leaf = vpi_handle_by_name("top.u.v", null);
-        res.deinit();
+        res.deinit(std.testing.allocator);
         try std.testing.expectEqualStrings("leaf", std.mem.span(vpi_get_str(vpiDefName, leaf)));
         try std.testing.expectEqualStrings("top.u.v.deep", std.mem.span(
             vpi_get_str(vpiFullName, vpi_handle_by_name("deep", leaf)),
@@ -18908,7 +18908,7 @@ pub const vpi_tests = struct {
             \\  analog I(a,b) <+ V(a,b);
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         try std.testing.expectEqual(@as(usize, 3), session.design.?.scopes.len);
@@ -18964,7 +18964,7 @@ pub const vpi_tests = struct {
             \\  analog I(a,b) <+ sign*V(a,b);
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         try std.testing.expectEqualStrings("leaf", (try scopeAt("c")).def_name);
@@ -18980,13 +18980,13 @@ pub const vpi_tests = struct {
         // It is NOT a rule about `vpi_handle_by_name`: §12.21 searches "using the
         // scope search rules defined by the Verilog-AMS HDL", and §2.7 makes those
         // case-sensitive. So `TOP.Q` still finds nothing.
-        var res = try vera.compileSourceOpts(std.testing.allocator,
+        var res = try vera.analyze(std.testing.allocator,
             \\module top(c, b, e);
             \\  inout c, b, e; electrical c, b, e;
             \\  VeRtNpN q(c, b, e);
             \\endmodule
-        , .lint, .{ .spice_netlist = ".MODEL VERTNPN NPN BF=80 IS=1E-18\n" });
-        defer res.deinit();
+        , .{ .spice_netlist = ".MODEL VERTNPN NPN BF=80 IS=1E-18\n" }, null);
+        defer res.deinit(std.testing.allocator);
         try open(std.testing.allocator, &res);
         defer close();
 
@@ -19000,7 +19000,7 @@ pub const vpi_tests = struct {
     }
 
     test "the scopes are elaboration's units, one for one" {
-        // One owner per fact: `Elaborate.Design.units` is the instance tree the
+        // One owner per fact: `elab.Design.units` is the instance tree the
         // flatten built. Every unit is a scope with its path and module, in the
         // same depth-first source order, and there is no other scope.
         var res = try openSource(
@@ -19023,15 +19023,15 @@ pub const vpi_tests = struct {
             \\  analog I(x,y) <+ V(x,y);
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const units = res.unit_paths;
         try std.testing.expectEqual(@as(usize, 7), units.len);
         try std.testing.expectEqual(units.len, session.design.?.scopes.len);
-        for (units, session.design.?.scopes) |u, s| {
-            try std.testing.expectEqualStrings(u.module, s.def_name);
-            try std.testing.expectEqualStrings(std.mem.trimEnd(u8, u.path, &.{Elaborate.sep}), s.path);
+        for (units.items(.module), units.items(.path), session.design.?.scopes) |module, path, s| {
+            try std.testing.expectEqualStrings(res.file.str(module), s.def_name);
+            try std.testing.expectEqualStrings(std.mem.trimEnd(u8, path, &.{elab.sep}), s.path);
         }
     }
 
@@ -19048,7 +19048,7 @@ pub const vpi_tests = struct {
             \\  analog I(a,b) <+ V(a,b);
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
 
         const top = vpi_handle_by_name("top", null);
@@ -19196,7 +19196,7 @@ pub const vpi_tests = struct {
             \\  end
             \\endmodule
         );
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
         const arr = vpi_handle_by_name("ra.samples", null);
         try std.testing.expectEqual(vpiRealVar, vpi_get(vpiType, arr));
@@ -19413,7 +19413,7 @@ pub const vpi_tests = struct {
 
     test "a pointer one row below the object array is no handle" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
         const base = @intFromPtr(session.design.?.objects.ptr);
         try std.testing.expect(asObj(@ptrFromInt(base - @sizeOf(Obj))) == null);
@@ -19424,7 +19424,7 @@ pub const vpi_tests = struct {
 
     test "§12.19-§12.21, IEEE 1364-2005 §27.18 and §26.6.43: the lookup routines' refusals" {
         var res = try openSource(nested_src);
-        defer res.deinit();
+        defer res.deinit(std.testing.allocator);
         defer close();
         const top = vpi_handle_by_name("top", null);
         // §12.21: a NULL name; a name absent from the design and from a scope.
@@ -19892,7 +19892,7 @@ pub const exhaustive_tests = struct {
         .{ .name = "op.OpKind", .fields = @typeInfo(op.OpKind).@"enum".field_names },
         // After OpKind: its `ddt`/`cross` overlap OpKind, which keeps those switches.
         .{ .name = "Mir.Callee", .fields = @typeInfo(Mir.Callee).@"enum".field_names },
-        .{ .name = "Preprocessor.Directive", .fields = @typeInfo(@import("frontend").Preprocessor.Directive).@"enum".field_names },
+        .{ .name = "pp_directive.Directive", .fields = @typeInfo(@import("frontend").pp_directive.Directive).@"enum".field_names },
         .{ .name = "token.Tag", .fields = @typeInfo(@import("frontend").token.Tag).@"enum".field_names },
     };
 
@@ -20069,8 +20069,8 @@ pub const exhaustive_tests = struct {
 
 pub const oom_tests = struct {
     //! L10 fault injection: `checkAllAllocationFailures` over
-    //! `compileSourceOpts`, `.lint` on one small positive fixture per chapter and
-    //! annex directory, `.build` through codegen on two. Each test fails the n-th
+    //! `vera.analyze`, `.lint` on one small positive fixture per chapter and
+    //! annex directory, `.build` through `Result.generate` on two. Each test fails the n-th
     //! allocation for every n the clean compile makes, over an allocator that
     //! never grows a block in place (`no_grow`), so the count is the same every
     //! run. `BigArena` takes its small blocks from the gpa in chunks, so a
@@ -20089,19 +20089,22 @@ pub const oom_tests = struct {
     /// built-in annex D files.
     const include_dirs: []const []const u8 = &.{@import("repo_options").repo_root ++ "/tests/conformance/tests/include"};
 
-    fn compileOne(gpa: std.mem.Allocator, src: []const u8, target: vera.Target) !void {
+    /// How far a compile goes: the analysis (`--lint`), or through codegen too.
+    const Target = enum { lint, build };
+
+    fn compileOne(gpa: std.mem.Allocator, src: []const u8, target: Target) !void {
         var bag: vera.diag.Bag = .init(gpa);
         defer bag.deinit(gpa);
-        var res = try vera.compileSourceOpts(gpa, src, target, .{
+        var res = try vera.analyze(gpa, src, .{
             .include_dirs = include_dirs,
-            .diags = &bag,
             // `.emit` is the fixture testbench's mode, so `.build` reaches display codegen too.
             .display = if (target == .build) .emit else .drop,
-        });
-        defer res.deinit();
+        }, &bag);
+        defer res.deinit(gpa);
         if (target == .build) {
-            _ = try res.generateDevice();
-            if (res.device_has_compile_error) return error.CodegenRefused;
+            var dev = try res.generate(gpa, .{}, &bag);
+            defer dev.deinit(gpa);
+            if (dev.refused) return error.CodegenRefused;
         }
     }
 
@@ -20134,7 +20137,7 @@ pub const oom_tests = struct {
         }.f,
     } };
 
-    fn oom(comptime path: []const u8, target: vera.Target) !void {
+    fn oom(comptime path: []const u8, target: Target) !void {
         const src = @embedFile("conformance/tests/" ++ path);
         // The sweep assumes every clean compile makes the same allocations; say
         // so by count when one does not, rather than as std's bare
