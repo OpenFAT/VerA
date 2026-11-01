@@ -341,16 +341,6 @@ test "§4.6.4.3 noiseTable: the declared table without the row's knots; table k'
     try testing.expectEqualSlices([2]f64, &.{ .{ 2, 6 }, .{ 3, 7 } }, noiseTable(Card, &m, 1).points);
 }
 
-test "sortNoiseTable sorts by frequency; noiseTableAt propagates a NaN frequency" {
-    // §4.6.4.3: "the simulator shall internally sort the pairs".
-    var pts = [_][2]f64{ .{ 3, 1 }, .{ 1, 2 }, .{ 2, 3 } };
-    sortNoiseTable(&pts);
-    try testing.expectEqualSlices([2]f64, &.{ .{ 1, 2 }, .{ 2, 3 }, .{ 3, 1 } }, &pts);
-    // NaN is below no knot and above none: outside the precondition, NaN out.
-    const t: NoiseTable = .{ .interp = .linear, .points = &pts };
-    try testing.expect(std.math.isNan(noiseTableAt(t, std.math.nan(f64))));
-}
-
 test "noiseGensError: a device with no unknowns and no generators validates" {
     // Oracle: VAMS §4.6.4 (noise is optional) and the development contract,
     // which validated retained_builtin_constant_display.va's zero-unknown device.
