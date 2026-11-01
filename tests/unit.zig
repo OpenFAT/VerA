@@ -5134,6 +5134,494 @@ pub const kernel_tests = struct {
     }
 };
 
+pub const integer_tests = struct {
+    //! `kernels.Integer`, the four-state literal reference, through its public
+    //! face: §2.6.1 literal text in (`parse`, `radixOf`), `Literal`'s accessors
+    //! (`asInt`, `asExactInt`, `asIndex`), shape operations (`resize`,
+    //! `concatenate`, `replicate`) and IEEE 1364-2005 §5 operators out. The
+    //! oracles: §2.6.1's and §5.1's rules worked by hand per literal; std.fmt
+    //! printing the number `parse` must read back; a per-bit shift reference
+    //! (`testShiftBit`); `std.testing.checkAllAllocationFailures` for every
+    //! release path. Tests that build operands from the private word layer
+    //! (`integer_words.zig`, `integer_fixture.zig`) or call a private path
+    //! (`arithmeticIn`, `decimalWords`) stay beside lib/kernels/integer*.zig,
+    //! with `ref4.zig` as the per-bit judge.
+
+    const std = @import("std");
+    const integer = @import("kernels").Integer;
+    const Literal = integer.Literal;
+    const Bit = integer.Bit;
+    const Shift = integer.Shift;
+    const Arithmetic = integer.Arithmetic;
+    const parse = integer.parse;
+    const radixOf = integer.radixOf;
+
+    fn testConcatAllocation(allocator: std.mem.Allocator) !void {
+        const a = try parse(allocator, "65'b10xz");
+        defer allocator.free(a.planes);
+        const b = try parse(allocator, "129'shfedcba98765432100123456789abcdef0");
+        defer allocator.free(b.planes);
+        const joined = try Literal.concatenate(allocator, &.{ a, b, a });
+        defer allocator.free(joined.planes);
+        const repeated = try joined.replicate(allocator, 3);
+        defer allocator.free(repeated.planes);
+    }
+
+    fn testOneAllocation(allocator: std.mem.Allocator) !void {
+        const a = try parse(allocator, "70'sh2f_0123_4567_89ab_cdef");
+        defer allocator.free(a.planes);
+        const count = try parse(allocator, "7'd3");
+        defer allocator.free(count.planes);
+        const inverted = try a.bitwiseNot(allocator);
+        defer allocator.free(inverted.planes);
+        const xor = try a.bitwise(allocator, .xor_bits, count);
+        defer allocator.free(xor.planes);
+        const wide = try a.resize(allocator, 130, .sign);
+        defer allocator.free(wide.planes);
+        const shifted = try a.shift(allocator, .arithmetic_right, count);
+        defer allocator.free(shifted.planes);
+        const merged = try count.conditional(allocator, a, count);
+        defer allocator.free(merged.planes);
+    }
+
+    fn testArithmeticAllocation(allocator: std.mem.Allocator) !void {
+        const a = try integer.parse(allocator, "257'sh1fedcba9876543210fedcba98765432100123456789abcdef0123456789abcdef0");
+        defer allocator.free(a.planes);
+        const b = try integer.parse(allocator, "129'sh1fedcba98765432100123456789abcdef0");
+        defer allocator.free(b.planes);
+        for (std.enums.values(Arithmetic)) |op| {
+            const result = try a.arithmetic(allocator, op, b);
+            allocator.free(result.planes);
+        }
+        const negated = try a.negate(allocator);
+        allocator.free(negated.planes);
+    }
+
+    fn testPowerAllocation(allocator: std.mem.Allocator) !void {
+        const a = try integer.parse(allocator, "129'h100000000000000000000000000000003");
+        defer allocator.free(a.planes);
+        const b = try integer.parse(allocator, "65'd17");
+        defer allocator.free(b.planes);
+        const result = try a.power(allocator, b);
+        defer allocator.free(result.planes);
+    }
+
+    fn testShiftBit(value: Literal, op: Shift, count: u64, index: u32) Bit {
+        return switch (op) {
+            .left, .arithmetic_left => if (count <= index) value.bit(index - @as(u32, @intCast(count))) else .zero,
+            .right, .arithmetic_right => if (count < value.width - index)
+                value.bit(index + @as(u32, @intCast(count)))
+            else if (op == .arithmetic_right and value.signed)
+                value.bit(value.width - 1)
+            else
+                .zero,
+        };
+    }
+
+    test "concatenation widths fail before allocating or truncating" {
+        const allocator = std.testing.allocator;
+        const wide: Literal = .{ .width = std.math.maxInt(u32), .signed = false, .sized = true, .planes = &.{} };
+        const one: Literal = .{ .width = 1, .signed = false, .sized = true, .planes = &.{} };
+        try std.testing.expectError(error.Overflow, Literal.concatenate(allocator, &.{ wide, one }));
+        try std.testing.expectError(error.Overflow, wide.replicate(allocator, 2));
+        try std.testing.expectError(error.ZeroSize, Literal.concatenate(allocator, &.{}));
+        try std.testing.expectError(error.ZeroSize, one.replicate(allocator, 0));
+    }
+
+    test "concatenation allocation failures release input and result storage" {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, testConcatAllocation, .{});
+    }
+
+    test "asExactInt: a wide two-state literal is an integer only when an i64 holds its value" {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        try std.testing.expectEqual(@as(?i64, 1), (try parse(a, "128'h1")).asExactInt());
+        try std.testing.expectEqual(@as(?i64, -2), (try parse(a, "100'shF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFE")).asExactInt());
+        try std.testing.expectEqual(@as(?i64, null), (try parse(a, "128'h1_0000_0000_0000_0000")).asExactInt());
+        try std.testing.expectEqual(@as(?i64, null), (try parse(a, "128'h8000_0000_0000_0000")).asExactInt());
+        try std.testing.expectEqual(@as(?i64, null), (try parse(a, "128'hx")).asExactInt());
+    }
+
+    test "asInt hands a 64-bit unsigned value back as its bit pattern, and asExactInt is asInt up to 64 bits" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        const top = try parse(a, "64'h8000_0000_0000_0000");
+        try std.testing.expectEqual(@as(?i64, std.math.minInt(i64)), top.asInt());
+        try std.testing.expectEqual(@as(?i64, std.math.minInt(i64)), top.asExactInt());
+        try std.testing.expectEqual(@as(?i64, -1), (try parse(a, "64'hFFFF_FFFF_FFFF_FFFF")).asInt());
+        // Below 64 bits only a signed value is sign-extended.
+        try std.testing.expectEqual(@as(?i64, 255), (try parse(a, "8'hff")).asInt());
+        try std.testing.expectEqual(@as(?i64, -1), (try parse(a, "8'shff")).asInt());
+        try std.testing.expectEqual(@as(?i64, -1), (try parse(a, "1'sb1")).asInt());
+        try std.testing.expectEqual(@as(?i64, null), (try parse(a, "65'h1")).asInt());
+        // 65 bits: a signed -1 repeats bit 63 into bit 64; 2^64 has no i64.
+        try std.testing.expectEqual(@as(?i64, -1), (try parse(a, "65'sh1_FFFF_FFFF_FFFF_FFFF")).asExactInt());
+        try std.testing.expectEqual(@as(?i64, null), (try parse(a, "65'h1_0000_0000_0000_0000")).asExactInt());
+        try std.testing.expectEqual(@as(?i64, 5), (try parse(a, "65'h5")).asExactInt());
+        // A signed 65-bit value whose bit 64 disagrees with bit 63 is out of range.
+        try std.testing.expectEqual(@as(?i64, null), (try parse(a, "65'sh0_8000_0000_0000_0000")).asExactInt());
+    }
+
+    test "asIndex keeps values past i64 and saturates past i128 by sign" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        try std.testing.expectEqual(@as(?i128, -1), (try parse(a, "3'sb111")).asIndex());
+        try std.testing.expectEqual(@as(?i128, 7), (try parse(a, "3'b111")).asIndex());
+        try std.testing.expectEqual(@as(?i128, null), (try parse(a, "3'b1x1")).asIndex());
+        try std.testing.expectEqual(@as(?i128, null), (try parse(a, "3'b1z1")).asIndex());
+        // 2^64 has no i64 and is kept.
+        try std.testing.expectEqual(@as(?i128, 1 << 64), (try parse(a, "80'h1_0000_0000_0000_0000")).asIndex());
+        // 128 ones: unsigned 2^128-1 is past i128 and saturates high; signed it is -1.
+        try std.testing.expectEqual(@as(?i128, std.math.maxInt(i128)), (try parse(a, "128'hFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF")).asIndex());
+        try std.testing.expectEqual(@as(?i128, -1), (try parse(a, "128'shFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF")).asIndex());
+        // -2^128 (a 129-bit signed minimum) is below i128 and saturates low.
+        try std.testing.expectEqual(@as(?i128, std.math.minInt(i128)), (try parse(a, "129'sh1_0000_0000_0000_0000_0000_0000_0000_0000")).asIndex());
+        // Wider than 128 bits with zero (or, negative, all-ones) high words fits;
+        // a set bit at 128 does not.
+        try std.testing.expectEqual(@as(?i128, 5), (try parse(a, "200'h5")).asIndex());
+        try std.testing.expectEqual(@as(?i128, -5), (try (try parse(a, "8'shfb")).resize(a, 200, .sign)).asIndex());
+        try std.testing.expectEqual(@as(?i128, std.math.maxInt(i128)), (try parse(a, "200'h1_0000_0000_0000_0000_0000_0000_0000_0000")).asIndex());
+    }
+
+    test "asIndex/asExactInt read only the declared words of an unsized decimal" {
+        // 2^129 - 1 is 129 one bits, a signed -1. Leading zeros make `parse`
+        // reserve a fourth word past the value's three; its zeros are not data.
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        for ([_][]const u8{ "680564733841876926926749214863536422911", "00000000000000000000680564733841876926926749214863536422911" }) |text| {
+            const v = try parse(a, text);
+            try std.testing.expectEqual(@as(u32, 129), v.width);
+            try std.testing.expectEqual(@as(?i128, -1), v.asIndex());
+            try std.testing.expectEqual(@as(?i64, -1), v.asExactInt());
+        }
+    }
+
+    test "an allocation failure in a one-allocation operation leaks nothing" {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, testOneAllocation, .{});
+    }
+
+    test "packed arithmetic frees partial allocations on every failure" {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, testArithmeticAllocation, .{});
+    }
+
+    test "packed power allocation failures release every intermediate" {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, testPowerAllocation, .{});
+    }
+
+    test "shift count is unsigned self-determined and never truncated" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const source = try integer.parse(arena, "129'sh1abcd56780000000000000000a5f0zx10");
+        const original = try arena.dupe(u64, source.planes);
+        for ([_][]const u8{ "65'h10000000000000000", "128'h80000000000000000000000000000000", "64'shffffffffffffffff" }) |text| {
+            const count = try integer.parse(arena, text);
+            inline for (std.meta.tags(Shift)) |op| {
+                const out = try source.shift(arena, op, count);
+                for (0..source.width) |index|
+                    try std.testing.expectEqual(if (op == .arithmetic_right) source.bit(source.width - 1) else Bit.zero, out.bit(@intCast(index)));
+            }
+        }
+        for ([_][]const u8{ "129'hx00000000000000000000000000000000", "129'hz00000000000000000000000000000000", "4'b00x0", "4'b00z0" }) |text| {
+            const count = try integer.parse(arena, text);
+            inline for (std.meta.tags(Shift)) |op| {
+                const out = try source.shift(arena, op, count);
+                for (0..source.width) |index| try std.testing.expectEqual(Bit.x, out.bit(@intCast(index)));
+            }
+        }
+        // A signed four-bit -1 is an unsigned shift count of 15, not 2^64-1.
+        const fifteen = try integer.parse(arena, "4'shf");
+        const shifted = try source.shift(arena, .left, fifteen);
+        for (0..source.width) |index|
+            try std.testing.expectEqual(testShiftBit(source, .left, 15, @intCast(index)), shifted.bit(@intCast(index)));
+        const one = try integer.parse(arena, "1'b1");
+        const negative = try integer.parse(arena, "4'sb1000");
+        const normalized = try negative.resize(arena, 8, .sign);
+        const arithmetic = try normalized.shift(arena, .arithmetic_right, one);
+        try std.testing.expectEqualSlices(u64, &.{ 0xfc, 0 }, arithmetic.planes);
+        var unsigned_context = try negative.resize(arena, 8, .zero);
+        unsigned_context.signed = false;
+        const zero_filled = try unsigned_context.shift(arena, .arithmetic_right, one);
+        try std.testing.expectEqualSlices(u64, &.{ 4, 0 }, zero_filled.planes);
+        for ([_][]const u8{ "1'sbx", "1'sbz" }) |text| {
+            const sign = try integer.parse(arena, text);
+            const out = try sign.shift(arena, .arithmetic_right, fifteen);
+            try std.testing.expectEqual(sign.bit(0), out.bit(0));
+        }
+        const spare_count = try integer.parse(arena, "000000000000000000000000000000000000000000001");
+        const small_shift = try negative.shift(arena, .left, spare_count);
+        try std.testing.expectEqualSlices(u64, &.{ 0, 0 }, small_shift.planes);
+        try std.testing.expectEqualSlices(u64, original, source.planes);
+    }
+
+    test "§2.6.1 radixOf reads the base format, and 10 without one" {
+        try std.testing.expectEqual(@as(u8, 10), radixOf("9"));
+        try std.testing.expectEqual(@as(u8, 10), radixOf("4'd9"));
+        try std.testing.expectEqual(@as(u8, 2), radixOf("4'sB1x0z"));
+        try std.testing.expectEqual(@as(u8, 8), radixOf("'o17"));
+        try std.testing.expectEqual(@as(u8, 16), radixOf("8 'hFF"));
+    }
+
+    test "four-state based literals preserve width, sign, extension and truncation" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const cases = [_]struct { source: []const u8, width: u32, value: u64, unknown: u64, signed: bool = false }{
+            .{ .source = "3'b01x", .width = 3, .value = 3, .unknown = 1 },
+            .{ .source = "12'hX", .width = 12, .value = 0xfff, .unknown = 0xfff },
+            .{ .source = "12'hz3", .width = 12, .value = 3, .unknown = 0xff0 },
+            .{ .source = "12'h0Z3", .width = 12, .value = 3, .unknown = 0xf0 },
+            .{ .source = "8'o?7", .width = 8, .value = 7, .unknown = 0xf8 },
+            .{ .source = "8 'sD ?__", .width = 8, .value = 0, .unknown = 255, .signed = true },
+            .{ .source = "8'dX", .width = 8, .value = 255, .unknown = 255 },
+            .{ .source = "4'hx1", .width = 4, .value = 1, .unknown = 0 },
+            .{ .source = "4'shf", .width = 4, .value = 15, .unknown = 0, .signed = true },
+            .{ .source = "8'shf", .width = 8, .value = 15, .unknown = 0, .signed = true },
+            .{ .source = "'hX", .width = 64, .value = std.math.maxInt(u64), .unknown = std.math.maxInt(u64) },
+            .{ .source = "123", .width = 64, .value = 123, .unknown = 0, .signed = true },
+            .{ .source = "8'h123456789abcdef0123456789abcdEF", .width = 8, .value = 239, .unknown = 0 },
+            .{ .source = "8'd18446744073709551617", .width = 8, .value = 1, .unknown = 0 },
+        };
+        for (cases) |case| {
+            const literal = try parse(arena, case.source);
+            try std.testing.expectEqual(case.width, literal.width);
+            try std.testing.expectEqual(case.value, literal.values()[0]);
+            try std.testing.expectEqual(case.unknown, literal.unknowns()[0]);
+            try std.testing.expectEqual(case.signed, literal.signed);
+        }
+        try std.testing.expectEqual(@as(?i64, -1), (try parse(arena, "4'shf")).asInt());
+        try std.testing.expectEqual(@as(?i64, 15), (try parse(arena, "8'shf")).asInt());
+        try std.testing.expectEqual(@as(?i64, null), (try parse(arena, "4'hx")).asInt());
+    }
+
+    test "wide literals cross limbs without silently reducing their declared size" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const wide = try parse(arena, "85'hz3");
+        try std.testing.expectEqual(@as(u32, 85), wide.width);
+        try std.testing.expectEqual(@as(u64, 3), wide.values()[0]);
+        try std.testing.expectEqual(@as(u64, 0), wide.values()[1]);
+        try std.testing.expectEqual(@as(u64, 0xfffffffffffffff0), wide.unknowns()[0]);
+        try std.testing.expectEqual(@as(u64, 0x1fffff), wide.unknowns()[1]);
+        const carry = try parse(arena, "128'd18446744073709551617");
+        try std.testing.expectEqualSlices(u64, &.{ 1, 1 }, carry.values());
+        const unsized = try parse(arena, "'h10000000000000000");
+        try std.testing.expectEqual(@as(u32, 65), unsized.width);
+        try std.testing.expect(!unsized.sized);
+        try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, unsized.values());
+        const minimum = try parse(arena, "65536'bx");
+        try std.testing.expectEqual(@as(usize, 1024), minimum.values().len);
+        for (minimum.values(), minimum.unknowns()) |value, unknown| {
+            try std.testing.expectEqual(std.math.maxInt(u64), value);
+            try std.testing.expectEqual(value, unknown);
+        }
+        try std.testing.expectError(error.DigitOutOfRange, parse(arena, "8'd1x"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(arena, "8'dxx"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(arena, "8'b_1"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(arena, "8'b2"));
+        try std.testing.expectError(error.ZeroSize, parse(arena, "0'h1"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(arena, "08'hff"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(arena, "0_8'hff"));
+        try std.testing.expectError(error.Overflow, parse(arena, "4294967296'h1"));
+        try std.testing.expectEqual(@as(u32, 16777217), (try parse(arena, "16777217'h1")).width);
+    }
+
+    test "parse decodes every base, as the lexer spells the token (§2.6.1)" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        const val = struct {
+            fn f(al: std.mem.Allocator, text: []const u8) !i64 {
+                return (try parse(al, text)).asInt().?;
+            }
+        }.f;
+        try std.testing.expectEqual(@as(i64, 27195), try val(a, "27_195"));
+        try std.testing.expectEqual(@as(i64, 0x35), try val(a, "16'b0011_0101"));
+        try std.testing.expectEqual(@as(i64, 0o7460), try val(a, "12'o7460"));
+        try std.testing.expectEqual(@as(i64, 0x12abf001), try val(a, "32'h12ab_f001"));
+        try std.testing.expectEqual(@as(i64, 0xaf), try val(a, "8'HAf"));
+        // §2.6.1: the size is optional; an unsized based constant is legal.
+        try std.testing.expectEqual(@as(i64, 0x837ff), try val(a, "'h837ff"));
+        try std.testing.expect(!(try parse(a, "'h837ff")).sized);
+        // §2.6.1: a number wider than its size is truncated from the left.
+        try std.testing.expectEqual(@as(i64, 0xf), try val(a, "4'h1f"));
+        try std.testing.expectEqual(@as(i64, 255), try val(a, "8'hFFFF"));
+        // §2.6.1 `s`: truncate to the size first, then read as two's complement.
+        try std.testing.expectEqual(@as(i64, -1), try val(a, "4'shf"));
+        try std.testing.expectEqual(@as(i64, -8), try val(a, "4'sb1000"));
+        try std.testing.expectEqual(@as(i64, 7), try val(a, "4'sd7"));
+        try std.testing.expectEqual(@as(i64, -1), try val(a, "8'SHff"));
+        try std.testing.expect((try parse(a, "4'shf")).signed);
+        // §4.2.13 needs the declared width to reject unsized constants in a concat.
+        try std.testing.expectEqual(@as(u32, 4), (try parse(a, "4'shf")).width);
+        try std.testing.expect((try parse(a, "4'b01xz")).hasUnknown());
+        try std.testing.expectError(error.MissingDigits, parse(a, "4'h"));
+        try std.testing.expectError(error.MissingBase, parse(a, "4'"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(a, "4'b012"));
+        // §2.6.1: "the unsigned number token shall immediately follow the base
+        // format, optionally preceded by white space"; four of the clause's five
+        // examples are written that way.
+        try std.testing.expectEqual(@as(i64, 0xaf), try val(a, "8'h Af"));
+        try std.testing.expectEqual(@as(i64, 3), try val(a, "5 'D 3"));
+        try std.testing.expectEqual(@as(i64, 0x12abf001), try val(a, "32 'h 12ab_f001"));
+        // §10.4 macro substitution can leave white space at both joins (lexer.zig
+        // keeps `8 'h A5` one token for that reason).
+        try std.testing.expectEqual(@as(i64, 0xa5), try val(a, "8 'h A5"));
+        // Syntax 2-2 `size ::= non_zero_unsigned_number`: an explicit 0 is not the
+        // unsized form, it is no form at all.
+        try std.testing.expectError(error.ZeroSize, parse(a, "0'b1"));
+        try std.testing.expectError(error.ZeroSize, parse(a, "0_0'h1"));
+    }
+
+    test "§2.6.1 an unsized literal's width: the 64-bit floor, then its value's bits" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        const max = try parse(a, "9223372036854775807");
+        try std.testing.expectEqual(@as(u32, 64), max.width);
+        try std.testing.expectEqual(@as(?i64, std.math.maxInt(i64)), max.asInt());
+        try std.testing.expect(max.signed and !max.sized);
+        // 2^64 needs 65 bits.
+        const wide = try parse(a, "18446744073709551616");
+        try std.testing.expectEqual(@as(u32, 65), wide.width);
+        try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, wide.values()[0..2]);
+        // A based unsized literal is unsigned unless it says `s`.
+        const based = try parse(a, "'h8000_0000_0000_0000");
+        try std.testing.expectEqual(@as(u32, 64), based.width);
+        try std.testing.expect(!based.signed);
+        try std.testing.expectEqual(@as(?i64, std.math.minInt(i64)), based.asInt());
+        try std.testing.expect((try parse(a, "'sh1")).signed);
+        try std.testing.expectEqual(@as(u32, 64), (try parse(a, "0")).width);
+    }
+
+    test "parse agrees with std.fmt on random sized hex and unsized decimal numbers" {
+        // Oracle: std.fmt prints the number and a u128 holds the expected bits.
+        // The sized value is truncated from the left (§2.6.1); the decimal one
+        // is as wide as its value, never under 64.
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var prng = std.Random.DefaultPrng.init(0x2611_2005);
+        const random = prng.random();
+        var buf: [96]u8 = undefined;
+        for (0..2000) |_| {
+            _ = arena_state.reset(.retain_capacity);
+            const x = random.int(u128) >> random.int(u7);
+            const w = random.intRangeAtMost(u32, 1, 128);
+            const lit = try parse(arena, try std.mem.print(&buf, "{d}'h{x}", .{ w, x }));
+            const want = if (w == 128) x else x & ((@as(u128, 1) << @intCast(w)) - 1);
+            const v = lit.values();
+            try std.testing.expectEqual(w, lit.width);
+            try std.testing.expectEqual(want, @as(u128, v[0]) | (if (v.len > 1) @as(u128, v[1]) << 64 else 0));
+            try std.testing.expect(!lit.hasUnknown() and lit.sized and !lit.signed);
+
+            const dec = try parse(arena, try std.mem.print(&buf, "{d}", .{x}));
+            const bits: u32 = 128 - @clz(x);
+            const dv = dec.values();
+            try std.testing.expectEqual(@max(@as(u32, 64), bits), dec.width);
+            try std.testing.expectEqual(x, @as(u128, dv[0]) | (if (dv.len > 1) @as(u128, dv[1]) << 64 else 0));
+            try std.testing.expect(dec.signed and !dec.sized);
+        }
+    }
+
+    test "E1019 is only the u32 width: literals past the old 2^24-bit cap parse, in linear time" {
+        const gpa = std.testing.allocator;
+        // `'h1` and 4194304 zeros need 4194304 * 4 + 1 bits, one past the old
+        // 2^24 cap: bit 2^24 set, every other bit clear.
+        const known = try gpa.alloc(u8, 3 + 4194304);
+        defer gpa.free(known);
+        @memcpy(known[0..3], "'h1");
+        @memset(known[3..], '0');
+        const k = try parse(gpa, known);
+        defer gpa.free(k.planes);
+        try std.testing.expectEqual(@as(u32, (1 << 24) + 1), k.width);
+        try std.testing.expectEqual(@as(u64, 1), k.values()[(1 << 24) / 64]);
+        for (k.values()[0 .. (1 << 24) / 64]) |w| try std.testing.expectEqual(@as(u64, 0), w);
+        // X digits fill `count * 4` bits: 4194305 of them, all x.
+        const unknown = try gpa.alloc(u8, 2 + 4194305);
+        defer gpa.free(unknown);
+        @memcpy(unknown[0..2], "'h");
+        @memset(unknown[2..], 'x');
+        const u = try parse(gpa, unknown);
+        defer gpa.free(u.planes);
+        try std.testing.expectEqual(@as(u32, 4194305 * 4), u.width);
+        const uw = u.unknowns();
+        for (uw[0 .. uw.len - 1]) |w| try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), w);
+        try std.testing.expectEqual(@as(u64, 0xf), uw[uw.len - 1]);
+        // A sized literal past the old cap, and the u32 bound itself.
+        const sized = try parse(gpa, "16777217'h1_0");
+        defer gpa.free(sized.planes);
+        try std.testing.expectEqual(@as(u32, 16777217), sized.width);
+        try std.testing.expectEqual(@as(u64, 0x10), sized.values()[0]);
+        try std.testing.expectError(error.Overflow, parse(gpa, "4294967296'h0"));
+        // Leading zeros need no bits.
+        const zeros = try parse(gpa, "'h000000000000000000001");
+        defer gpa.free(zeros.planes);
+        try std.testing.expectEqual(@as(u32, 64), zeros.width);
+    }
+
+    test "power-of-two radices place digits across word boundaries and truncate from the left" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        // Octal groups straddle bit 63/64: 23 digits of 7 is 69 ones.
+        const o = try parse(arena, "69'o77777777777777777777777");
+        try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), o.values()[0]);
+        try std.testing.expectEqual(@as(u64, 0x1f), o.values()[1]);
+        // Sized narrower than the digits: the high digits are dropped.
+        const t = try parse(arena, "4'hAB");
+        try std.testing.expectEqual(@as(u64, 0xB), t.values()[0]);
+        // A z digit in octal straddling the boundary: unknown, value 0.
+        const z = try parse(arena, "66'oz000000000000000000000");
+        try std.testing.expectEqual(@as(u64, 1) << 63, z.unknowns()[0]);
+        try std.testing.expectEqual(@as(u64, 0b11), z.unknowns()[1]);
+        try std.testing.expectEqual(@as(u64, 0), z.values()[1]);
+    }
+
+    test "parse: a leading x or z fills the size, digits and sizes take `_`, and malformed text names its rule" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        const Case = struct { []const u8, u32, u64, u64 };
+        // §2.6.1: a number whose leftmost digit is x or z is extended with that
+        // digit; a known leftmost digit zero-extends.
+        for ([_]Case{
+            .{ "16'hz1", 16, 0x0001, 0xfff0 },
+            .{ "16'hx1", 16, 0xfff1, 0xfff0 },
+            .{ "16'h1x", 16, 0x001f, 0x000f },
+            .{ "16'h?", 16, 0x0000, 0xffff },
+            .{ "1_6'h1", 16, 0x0001, 0x0000 },
+            .{ "8'dx_", 8, 0x00ff, 0x00ff },
+            .{ "8'dz", 8, 0x0000, 0x00ff },
+            .{ "8'b1_0_1", 8, 0x0005, 0x0000 },
+            .{ " 8 'h f", 8, 0x000f, 0x0000 },
+        }) |c| {
+            const lit = try parse(a, c[0]);
+            try std.testing.expectEqual(c[1], lit.width);
+            try std.testing.expectEqual(c[2], lit.values()[0]);
+            try std.testing.expectEqual(c[3], lit.unknowns()[0]);
+        }
+        try std.testing.expectError(error.DigitOutOfRange, parse(a, "8'h_1"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(a, "x"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(a, "1 6'h1"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(a, "8'o8"));
+        try std.testing.expectError(error.DigitOutOfRange, parse(a, "8'hg"));
+        try std.testing.expectError(error.MissingBase, parse(a, "4'q1"));
+        try std.testing.expectError(error.MissingBase, parse(a, "'"));
+        try std.testing.expectError(error.MissingBase, parse(a, "8's"));
+        try std.testing.expectError(error.MissingDigits, parse(a, "8'h "));
+        try std.testing.expectError(error.MissingDigits, parse(a, ""));
+        try std.testing.expectEqual(@as(u8, 10), radixOf("4'sD1"));
+        try std.testing.expectEqual(@as(u8, 2), radixOf("'B1"));
+        try std.testing.expectEqual(@as(u8, 10), radixOf("8'"));
+    }
+};
+
 pub const proof_tests = struct {
     //! Prover self-checks: Verilog-A source in, float-mode verdict and domain diagnostics out,
     //! on std.testing.allocator. LRM §3.2.1, §3.4.2, §4.2.4, §4.2.12, §4.3.1, §4.3.2, §5.6.1.3, §5.8.
@@ -6630,6 +7118,381 @@ pub const prove_oom_tests = struct {
 
     test "prove passes: every allocation failure is reported, none leaks" {
         try std.testing.checkAllAllocationFailures(std.testing.allocator, passes, .{});
+    }
+};
+
+pub const zigbuild_tests = struct {
+    //! `zigbuild` through its root as other modules see it: `Backend.auto`,
+    //! testbench staging and builds (`stage`, `buildExe`), library and engine
+    //! builds (`buildLibrary`, `buildEngine`, `Options.artifact_cache`) and the
+    //! device tree (`writeTree`, `fileStem`). The oracles: the backend rule
+    //! written out by hand; a real `zig` child (its stderr, the files it reads
+    //! and writes, the engine object's cache path, a cache hit's copied bytes);
+    //! the files read back off disk. Tests of the files' private declarations
+    //! (argv builders, shims, the server protocol, the cache key) stay beside
+    //! them in src/zigbuild/.
+
+    const std = @import("std");
+    const zigbuild = @import("zigbuild");
+    const Io = std.Io;
+    const Allocator = std.mem.Allocator;
+    const Backend = zigbuild.Backend;
+    const Module = zigbuild.Module;
+    const Options = zigbuild.Options;
+    const Output = zigbuild.Output;
+    const Artifact = zigbuild.Artifact;
+    const buildLibrary = zigbuild.buildLibrary;
+    const buildEngine = zigbuild.buildEngine;
+    const BuildOptions = zigbuild.BuildOptions;
+    const buildExe = zigbuild.buildExe;
+    const stage = zigbuild.stage;
+    const Tree = zigbuild.Tree;
+    const writeTree = zigbuild.writeTree;
+    const fileStem = zigbuild.fileStem;
+
+    /// A `dyn` stand-in whose only obligation is the `exportDevice` the shim calls.
+    const plain_dyn =
+        \\pub fn exportDevice(comptime D: type, comptime name: []const u8) void {
+        \\    _ = name;
+        \\    @export(&D.eval, .{ .name = "arp_eval" });
+        \\}
+        \\
+    ;
+
+    /// The path of a successful build, or the test fails with its report.
+    fn expectOk(io: Io, r: Artifact) ![]u8 {
+        return switch (r) {
+            .failed => |b| {
+                b.renderToStderr(io, .{}, .off) catch |e| std.debug.print("rendering the report failed: {t}\n", .{e});
+                return error.UnexpectedBuildFailure;
+            },
+            .ok => |path| path,
+        };
+    }
+
+    /// Writes `contract.zig` (`contract_text`) and `dyn.zig` (`dyn_text`) under
+    /// `sub` of `tmp` and returns their modules, roots allocated in `arena`.
+    fn standIns(arena: Allocator, tmp: std.testing.TmpDir, sub: []const u8, contract_text: []const u8, dyn_text: []const u8) ![2]Module {
+        const io = std.testing.io;
+        const dir = try std.fs.path.join(arena, &.{ ".zig-cache", "tmp", &tmp.sub_path, sub });
+        try Io.Dir.cwd().createDirPath(io, dir);
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(arena, &.{ dir, "contract.zig" }), .data = contract_text });
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fs.path.join(arena, &.{ dir, "dyn.zig" }), .data = dyn_text });
+        return .{
+            .{ .name = "contract", .root = try std.fs.path.join(arena, &.{ dir, "contract.zig" }) },
+            .{ .name = "dyn", .root = try std.fs.path.join(arena, &.{ dir, "dyn.zig" }) },
+        };
+    }
+
+    // A copy of src/zigbuild/tree.zig's `split_prologue`, `split_tail` and
+    // `split_prelude`, which its `splitOutput` still reads: the pieces a
+    // hand-tiled device is cut from.
+    const split_prologue =
+        \\const contract = @import("contract");
+        \\pub const k2: f64 = 2.0;
+        \\
+    ;
+    const split_tail =
+        \\pub fn eval(x: f64) callconv(.c) f64 {
+        \\    return unit_a(x) + unit_b(x);
+        \\}
+        \\
+    ;
+    const split_prelude = "const dev = @import(\"../device.zig\");\nconst k2 = dev.k2;\n";
+
+    test "Backend.auto is self-hosted only for Debug on x86_64" {
+        try std.testing.expectEqual(Backend.self_hosted, Backend.auto(.debug, .x86_64));
+        try std.testing.expectEqual(Backend.llvm, Backend.auto(.fast, .x86_64));
+        try std.testing.expectEqual(Backend.llvm, Backend.auto(.debug, .aarch64));
+        try std.testing.expectEqual(Backend.llvm, Backend.auto(.debug, .nvptx64));
+        for ([_]std.lang.Optimize{ .safe, .fast, .small }) |m|
+            try std.testing.expectEqual(Backend.llvm, Backend.auto(m, .x86_64));
+    }
+
+    test "buildExe hands back zig's stderr for a testbench that does not compile" {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const work = try gpa.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
+        defer gpa.free(work);
+        try tmp.dir.writeFile(io, .{ .sub_path = "c.zig", .data = "" });
+        const contract = try std.fs.path.join(gpa, &.{ work, "c.zig" });
+        defer gpa.free(contract);
+        const opts: BuildOptions = .{ .work_dir = work, .contract = contract, .name = "broken" };
+
+        // `std.testing.allocator` fails the test if `bin` or the report leaks.
+        const r = try buildExe(gpa, io, "pub const x = 1;\n", "pub fn main() void { _ = @import(\"device\").y; }\n", opts);
+        defer r.deinit(gpa);
+        try std.testing.expect(r == .failed);
+        try std.testing.expect(std.mem.find(u8, r.failed, "no member named 'y'") != null);
+
+        // A compiler that cannot be spawned is an error, and `bin` is freed.
+        var gone = opts;
+        gone.zig_exe = "/nonexistent/zig";
+        try std.testing.expectError(error.FileNotFound, buildExe(gpa, io, "", "", gone));
+    }
+
+    test stage {
+        const io = std.testing.io;
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const work = try arena.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
+
+        const s = try stage(arena, io, "DEVICE", "RUNNER", .{ .work_dir = work, .contract = "c.zig", .name = "res" });
+        try std.testing.expectEqualStrings(try std.fs.path.join(arena, &.{ work, "res.tb.zig" }), s.root);
+        try std.testing.expectEqualStrings(try std.fs.path.join(arena, &.{ work, "res.device.zig" }), s.device);
+        try std.testing.expectEqualStrings("RUNNER", try tmp.dir.readFileAlloc(io, "res.tb.zig", arena, .limited(64)));
+        try std.testing.expectEqualStrings("DEVICE", try tmp.dir.readFileAlloc(io, "res.device.zig", arena, .limited(64)));
+
+        // A second artifact in the same work root keeps its own files: an
+        // escaped module name takes a hashed stem (`tree.fileStem`).
+        const t = try stage(arena, io, "D2", "R2", .{ .work_dir = work, .contract = "c.zig", .name = "res+" });
+        try std.testing.expect(!std.mem.eql(u8, s.root, t.root));
+        try std.testing.expectEqualStrings("RUNNER", try tmp.dir.readFileAlloc(io, "res.tb.zig", arena, .limited(64)));
+    }
+
+    test "buildEngine reuses its object only while every key component is unchanged" {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const work = try gpa.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
+        defer gpa.free(work);
+        const cache = try std.fs.path.join(gpa, &.{ work, "engine-cache" });
+        defer gpa.free(cache);
+
+        // A stand-in `sim` whose engine reads a constant from a second file.
+        try tmp.dir.writeFile(io, .{ .sub_path = "sim.zig", .data =
+            \\pub const rt = struct {
+            \\    pub const engine = struct {
+            \\        pub fn exportAll() void {
+            \\            @export(&k, .{ .name = "vera_rt_test_k" });
+            \\        }
+            \\        fn k() callconv(.c) u32 {
+            \\            return @import("k.zig").k;
+            \\        }
+            \\    };
+            \\};
+            \\
+        });
+        try tmp.dir.writeFile(io, .{ .sub_path = "k.zig", .data = "pub const k: u32 = 1;\n" });
+        const mods = [_]Module{
+            .{ .name = "dyn", .root = "never-read.zig" },
+            .{ .name = "sim", .root = try std.fs.path.join(gpa, &.{ work, "sim.zig" }) },
+        };
+        defer gpa.free(mods[1].root);
+        var o: Options = .{ .work_dir = work, .name = "unused", .optimize = .debug, .backend = .self_hosted, .modules = &mods };
+
+        const Build = struct {
+            fn path(o_: Options, cache_: []const u8) ![]u8 {
+                var r = try buildEngine(gpa, io, o_, cache_);
+                errdefer r.deinit(gpa);
+                return try expectOk(io, r);
+            }
+        };
+        const first = try Build.path(o, cache);
+        defer gpa.free(first);
+
+        // Unchanged: the same object.
+        const again = try Build.path(o, cache);
+        defer gpa.free(again);
+        try std.testing.expectEqualStrings(first, again);
+
+        // A changed source file, a changed optimize mode, a changed backend:
+        // each a different object.
+        try tmp.dir.writeFile(io, .{ .sub_path = "k.zig", .data = "pub const k: u32 = 2;\n" });
+        const edited = try Build.path(o, cache);
+        defer gpa.free(edited);
+        try std.testing.expect(!std.mem.eql(u8, first, edited));
+
+        o.optimize = .small;
+        o.backend = .llvm;
+        const small = try Build.path(o, cache);
+        defer gpa.free(small);
+        try std.testing.expect(!std.mem.eql(u8, edited, small));
+
+        // ... and the change undone finds the first object again.
+        o.optimize = .debug;
+        o.backend = .self_hosted;
+        try tmp.dir.writeFile(io, .{ .sub_path = "k.zig", .data = "pub const k: u32 = 1;\n" });
+        const back = try Build.path(o, cache);
+        defer gpa.free(back);
+        try std.testing.expectEqualStrings(first, back);
+    }
+
+    test "a split build that fails returns one report and leaks the others' none" {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const work = try arena.allocator().print(".zig-cache/tmp/{s}/w", .{tmp.sub_path});
+        // Every part reaches `eval`, so every piece fails and two reports are
+        // dropped (`std.testing.allocator` sees a leak if one is not freed).
+        const mods = try standIns(arena.allocator(), tmp, "mods", "pub const k: f64 = 2.0;\n",
+            \\pub fn exportDevice(comptime D: type, comptime name: []const u8) void {
+            \\    _ = name;
+            \\    @export(&D.eval, .{ .name = "arp_eval" });
+            \\}
+            \\pub fn exportDevicePart(comptime D: type, comptime name: []const u8, comptime part: @TypeOf(.setup)) void {
+            \\    _ = .{ name, part };
+            \\    @export(&D.eval, .{ .name = "arp_eval" });
+            \\}
+            \\
+        );
+        const o: Options = .{ .work_dir = work, .name = "faildev", .optimize = .fast, .backend = .llvm, .modules = &mods, .split = .parts };
+        const dev = "pub fn eval() callconv(.c) void { @compileError(\"boom\"); }\n";
+        var r = try buildLibrary(gpa, io, o, .{ .text = dev }, 1);
+        defer r.deinit(gpa);
+        try std.testing.expect(r == .failed);
+        try std.testing.expect(r.failed.errorMessageCount() > 0);
+    }
+
+    test "artifact_cache: a second work directory reuses the first's library, and a changed device misses" {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const base = try arena.allocator().print(".zig-cache/tmp/{s}", .{tmp.sub_path});
+        const mods = try standIns(arena.allocator(), tmp, "mods", "pub const k: f64 = 2.0;\n", plain_dyn);
+        const cache = try std.fs.path.join(arena.allocator(), &.{ base, "cache" });
+        const dev = "pub fn eval(x: f64) callconv(.c) f64 { return x * @import(\"contract\").k; }\n";
+
+        // The first build fills the cache; its entry is then replaced by a
+        // marker, which a hit publishes and a miss cannot.
+        const marker = "not a library";
+        var got: [3]bool = undefined;
+        for ([_][]const u8{ "w1", "w2", "w3" }, 0..) |w, i| {
+            const wd = try std.fs.path.join(arena.allocator(), &.{ base, w });
+            const o: Options = .{ .work_dir = wd, .name = "cachedev", .optimize = .debug, .backend = .self_hosted, .modules = &mods, .artifact_cache = cache };
+            var r = try buildLibrary(gpa, io, o, .{ .text = if (i == 2) dev ++ "pub const z = 1;\n" else dev }, 1);
+            defer r.deinit(gpa);
+            const bytes = try Io.Dir.cwd().readFileAlloc(io, try expectOk(io, r), gpa, .unlimited);
+            defer gpa.free(bytes);
+            got[i] = std.mem.eql(u8, bytes, marker);
+            if (i == 0) {
+                var cdir = try Io.Dir.cwd().openDir(io, cache, .{ .iterate = true });
+                defer cdir.close(io);
+                var it = cdir.iterate();
+                var n: usize = 0;
+                while (try it.next(io)) |e| : (n += 1) try cdir.writeFile(io, .{ .sub_path = e.name, .data = marker });
+                try std.testing.expectEqual(@as(usize, 1), n);
+            }
+        }
+        try std.testing.expectEqualSlices(bool, &.{ false, true, false }, &got);
+    }
+
+    test "writeTree writes an un-split device alone, and rewrites only what changed" {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const work = try gpa.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
+        defer gpa.free(work);
+        var tree: Tree = .{ .work_dir = work, .name = "testdev" };
+
+        // shim.zig + device.zig, then nothing.
+        try std.testing.expectEqual(@as(u32, 2), try writeTree(gpa, io, tree, .{ .text = "abcdef" }));
+        try std.testing.expectEqual(@as(u32, 0), try writeTree(gpa, io, tree, .{ .text = "abcdef" }));
+
+        // A text that is a prefix of the file on disk is still a change.
+        try std.testing.expectEqual(@as(u32, 1), try writeTree(gpa, io, tree, .{ .text = "abc" }));
+        const dev = try tmp.dir.readFileAlloc(io, "device.zig", gpa, .limited(64));
+        defer gpa.free(dev);
+        try std.testing.expectEqualStrings("abc", dev);
+
+        // Linking an engine changes the shim alone.
+        tree.engine = .prebuilt;
+        try std.testing.expectEqual(@as(u32, 1), try writeTree(gpa, io, tree, .{ .text = "abc" }));
+        const shim_text = try tmp.dir.readFileAlloc(io, "shim.zig", gpa, .limited(4096));
+        defer gpa.free(shim_text);
+        try std.testing.expect(std.mem.find(u8, shim_text, "vera_prebuilt_engine") != null);
+
+        // No split, so no helpers file and no unit directory.
+        try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "h.zig", .{}));
+        try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "u", .{}));
+    }
+
+    test "writeTree keeps a unit's doc comment and an existing `pub`, and prunes only stale .zig files" {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const work = try gpa.print(".zig-cache/tmp/{s}", .{tmp.sub_path});
+        defer gpa.free(work);
+        const tree: Tree = .{ .work_dir = work, .name = "testdev" };
+
+        // unit_a: a doc comment before `fn` (lo < fn); unit_b: already `pub`.
+        const doc = "/// a\n";
+        const fn_a = "fn unit_a(y: f64) f64 {\n    return y;\n}\n";
+        const pub_b = "pub fn unit_b(y: f64) f64 {\n    return y;\n}\n";
+        const lo_b = split_prologue.len + doc.len + fn_a.len;
+        const out: Output = .{
+            .text = split_prologue ++ doc ++ fn_a ++ pub_b ++ split_tail,
+            .names = &.{ "unit_a", "unit_b" },
+            .unit_lo = &.{ split_prologue.len, lo_b },
+            .unit_fn = &.{ split_prologue.len + doc.len, lo_b },
+            .unit_hi = &.{ lo_b, lo_b + pub_b.len },
+            .prelude = split_prelude,
+        };
+        try std.testing.expectEqual(@as(u32, 5), try writeTree(gpa, io, tree, out));
+
+        const a = try tmp.dir.readFileAlloc(io, "u/unit_a.zig", gpa, .limited(4096));
+        defer gpa.free(a);
+        try std.testing.expectEqualStrings(split_prelude ++ doc ++ "pub " ++ fn_a, a);
+        const b = try tmp.dir.readFileAlloc(io, "u/unit_b.zig", gpa, .limited(4096));
+        defer gpa.free(b);
+        try std.testing.expectEqualStrings(split_prelude ++ pub_b, b);
+
+        // A stale unit goes; a file that is not `.zig`, and a directory, stay.
+        try tmp.dir.writeFile(io, .{ .sub_path = "u/old.zig", .data = "" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "u/notes.txt", .data = "" });
+        try tmp.dir.createDirPath(io, "u/dir.zig");
+        try std.testing.expectEqual(@as(u32, 1), try writeTree(gpa, io, tree, out));
+        try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "u/old.zig", .{}));
+        _ = try tmp.dir.statFile(io, "u/notes.txt", .{});
+        _ = try tmp.dir.statFile(io, "u/dir.zig", .{});
+    }
+
+    test fileStem {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        // A short plain name is itself, not a copy.
+        const plain: []const u8 = "nmos_1";
+        try std.testing.expect((try fileStem(a, plain)).ptr == plain.ptr);
+        const max: [128]u8 = @splat('a');
+        try std.testing.expectEqualStrings(&max, try fileStem(a, &max));
+
+        // One byte longer: its first 64 bytes, `-`, 16 hex digits.
+        const over: [129]u8 = @splat('a');
+        const s = try fileStem(a, &over);
+        try std.testing.expectEqual(@as(usize, 64 + 1 + 16), s.len);
+        try std.testing.expectEqualStrings(over[0..64], s[0..64]);
+        try std.testing.expectEqual(@as(u8, '-'), s[64]);
+        for (s[65..]) |c| try std.testing.expect(std.ascii.isHex(c) and !std.ascii.isUpper(c));
+
+        // Not plain: the plain prefix, so `a.b` and `a,b` share `a-` and differ
+        // only in the hash; a name with no plain prefix starts at the `-`.
+        const dot = try fileStem(a, "a.b");
+        const comma = try fileStem(a, "a,b");
+        try std.testing.expectEqual(@as(usize, 1 + 1 + 16), dot.len);
+        try std.testing.expect(std.mem.startsWith(u8, dot, "a-"));
+        try std.testing.expect(!std.mem.eql(u8, dot, comma));
+        try std.testing.expectEqualStrings(dot, try fileStem(a, "a.b"));
+        try std.testing.expectEqual(@as(usize, 17), (try fileStem(a, ".x")).len);
+
+        // A hashed stem has a `-`; a kept one cannot.
+        try std.testing.expect(std.mem.findScalar(u8, try fileStem(a, plain), '-') == null);
+        try std.testing.expect(std.mem.findScalar(u8, dot, '-') != null);
     }
 };
 
@@ -16900,6 +17763,619 @@ pub const codegen_tests = struct {
         const end = std.mem.findPos(u8, out, at, "\n}\n").?;
         const body = out[at..end];
         if (std.mem.find(u8, body, "c.f") != null) try std.testing.expect(std.mem.find(u8, body, "const c = ") != null);
+    }
+};
+
+pub const verilog_tests = struct {
+    //! `verilog.emit` (`--emit-verilog`) over hand-built MIR models
+    //! (`prove.Fixture`), and `verilog.Refusal`'s frozen messages. The oracles:
+    //! `settle.zig`'s closed forms worked by hand (F = -S(0)·VDD/(S(VDD)-S(0)),
+    //! tau = ΔQ/ΔS, delay = tau·ln2 + td) and a reviewed whole-module golden;
+    //! metamorphic pairs (the buffer plus a row that cannot change it emits the
+    //! buffer's text); the refusal messages `vera` printed before the refusal
+    //! table existed (spec examples); `checkAllAllocationFailures` for the
+    //! scratch tables. Yosys's and a simulator's reading of the text is
+    //! `zig build test-external` (tests/beh_verilog).
+
+    const std = @import("std");
+    const verilog = @import("verilog");
+    const Allocator = std.mem.Allocator;
+    const Mir = @import("ir").Mir;
+    const Lowered = @import("ir").Lowered;
+    const Const = Lowered.Const;
+    const Fixture = @import("prove").Fixture;
+    const Refusal = verilog.Refusal;
+    const Options = verilog.Options;
+    const vars_max = verilog.vars_max;
+    const emit = verilog.emit;
+
+    /// Pins `a`, `y`, `vdd`, `vss`, in that order, all ports.
+    const four = [_][]const u8{ "a", "y", "vdd", "vss" };
+    const logic: Options = .{ .digital = &.{ "a", "y" }, .source = "buf.va" };
+
+    // Test support. // Each model is a hand-built MIR (`Fixture`), so the test states the residual
+    // it hands `emit`. The expected values follow from `settle.zig`'s formulas:
+    // F = -S(0)·VDD/(S(VDD)-S(0)), tau = ΔQ/ΔS, delay = tau·ln2 + td.
+
+    /// Appends the unconditional direct contribution `I(hi, lo) <+ resist +
+    /// ddt(react)`.
+    fn addFlow(f: *Fixture, hi: u32, lo: u32, resist: Mir.Value, react: Mir.Value) !void {
+        try f.lowered.contributions.append(f.alloc(), .{ .access = .flow, .hi = hi, .lo = lo, .resist_val = resist, .react_val = react, .wrote_val = .f_one });
+    }
+
+    /// Builds `four` with `I(y, vss) <+ V(y) - V(a)`: y settles at V(a).
+    fn buffer(f: *Fixture) !void {
+        try f.init(&four);
+        f.lowered.num_ports = 4;
+        const r = try f.mir.emit(f.alloc(), .entry, .fsub, &.{ try f.probe(1), try f.probe(0) });
+        try addFlow(f, 1, 3, r, .f_zero);
+    }
+
+    /// Runs `emit`, printing the refusal if there is one.
+    fn emitOk(f: *Fixture, o: Options) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(f.alloc());
+        var why: Refusal = undefined;
+        emit(std.testing.allocator, &f.mir, &f.lowered, o, &out.writer, &why) catch |e| {
+            if (e == error.Refused) std.debug.print("refused: {f}\n", .{why});
+            return e;
+        };
+        return out.written();
+    }
+
+    /// Fails unless `emit` refuses with a reason holding `part`, having written
+    /// nothing.
+    fn expectRefused(f: *Fixture, o: Options, part: []const u8) !void {
+        var out: std.Io.Writer.Allocating = .init(f.alloc());
+        var why: Refusal = undefined;
+        try std.testing.expectError(error.Refused, emit(std.testing.allocator, &f.mir, &f.lowered, o, &out.writer, &why));
+        try std.testing.expectEqual(0, out.written().len);
+        const text = try f.alloc().print("{f}", .{why});
+        if (std.mem.find(u8, text, part) == null) {
+            std.debug.print("refused: {s}\nexpected: {s}\n", .{ text, part });
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    fn emitUnderFailure(gpa: Allocator, rc: bool) !void {
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&.{ "a", "y", "vdd", "vss", "n" });
+        f.lowered.num_ports = 4;
+        const m = f.alloc();
+        // y follows n, n follows a; with `rc`, n is an RC so its delay is non-zero.
+        try addFlow(&f, 1, 3, try f.mir.emit(m, .entry, .fsub, &.{ try f.probe(1), try f.probe(4) }), .f_zero);
+        const q = if (rc) try f.mir.emit(m, .entry, .fmul, &.{ try f.mir.addFloatConst(m, 1e-12), try f.probe(4) }) else .f_zero;
+        try addFlow(&f, 4, 3, try f.mir.emit(m, .entry, .fsub, &.{ try f.probe(4), try f.probe(0) }), q);
+        // The text goes to an allocator that never fails: only the scratch
+        // tables are under test, and a failing `out` is `WriteFailed`.
+        var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer out.deinit();
+        try emit(gpa, &f.mir, &f.lowered, logic, &out.writer, null);
+    }
+
+    test "Refusal.format: a payload lands where its message names it" {
+        // Spec examples: the frozen messages `vera` printed before this table
+        // existed (tests/beh_verilog's refusals, build.zig's `--param c=inf`).
+        try std.testing.expectFmt("node `y`: its delay is not finite (tau·ln2 + td = inf s); give it a (* vera_delay *)", "{f}", .{Refusal{ .delay_not_finite = .{ .node = "y", .seconds = std.math.inf(f64) } }});
+        try std.testing.expectFmt("`V(gnd, y) <+`: a potential contribution drives its first node; write it as `V(y, gnd)` with the value negated", "{f}", .{Refusal{ .potential_from_first = .{ .hi = "gnd", .lo = "y" } }});
+        try std.testing.expectFmt("21 pins and driven nodes; the truth tables stop at 20", "{f}", .{Refusal{ .too_many_vars = .{ .count = 21, .max = 20 } }});
+        var slot: Refusal = .vector_net;
+        try std.testing.expectError(error.Refused, @as(error{Refused}!void, slot.raise(.{ .no_ports = "m" })));
+        try std.testing.expectFmt("module `m` has no ports", "{f}", .{slot});
+    }
+
+    test "emit: a buffer is a one-input truth table with no delay" {
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try buffer(&f);
+        // S(V(y)) = V(y) - V(a), so F = V(a): y copies a. No charge and no
+        // transition, so both delays are 0.
+        try std.testing.expectEqualStrings(
+            \\// GENERATED BY VerA --emit-verilog from buf.va - DO NOT EDIT.
+            \\// Behavioural model of `mymod` for digital simulation: a driven net is high
+            \\// above VDD/2 = 0.9 V; its switching delay is the model's own RC (tau*ln2) plus
+            \\// any transition()/absdelay() td, or its (* vera_delay *). Analog pins are
+            \\// undriven and read as their logic level.
+            \\`timescale 1ns/1ps
+            \\module mymod (
+            \\      a
+            \\    , y
+            \\    , vdd
+            \\    , vss
+            \\);
+            \\    input  wire a; // digital
+            \\    output wire y; // digital
+            \\    inout  wire vdd; // power
+            \\    inout  wire vss; // ground
+            \\
+            \\    // y
+            \\    parameter real vera_rise_y = 0.000000; // ns
+            \\    parameter real vera_fall_y = 0.000000; // ns
+            \\    reg vera_t_y;
+            \\    always @* begin
+            \\        case ({a})
+            \\            1'b0: vera_t_y = 1'b0;
+            \\            1'b1: vera_t_y = 1'b1;
+            \\            default: vera_t_y = 1'bx;
+            \\        endcase
+            \\    end
+            \\    assign #(vera_rise_y, vera_fall_y) y = vera_t_y;
+            \\endmodule
+            \\
+        , try emitOk(&f, logic));
+    }
+
+    test "emit: an RC's delay is tau·ln2, a transition's is its td" {
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&four);
+        f.lowered.num_ports = 4;
+        const a = f.alloc();
+        // I(y) <+ (V(y) - V(a))/1k + ddt(1p·V(y)): tau = R·C = 1 ns, so the 50 %
+        // crossing is ln2 ns = 0.693147 ns on both edges.
+        const vy = try f.probe(1);
+        const diff = try f.mir.emit(a, .entry, .fsub, &.{ vy, try f.probe(0) });
+        const i_r = try f.mir.emit(a, .entry, .fdiv, &.{ diff, try f.mir.addFloatConst(a, 1000) });
+        const q = try f.mir.emit(a, .entry, .fmul, &.{ try f.mir.addFloatConst(a, 1e-12), vy });
+        try addFlow(&f, 1, 3, i_r, q);
+        const rc = try emitOk(&f, logic);
+        try std.testing.expect(std.mem.find(u8, rc, "parameter real vera_rise_y = 0.693147; // ns\n") != null);
+        try std.testing.expect(std.mem.find(u8, rc, "parameter real vera_fall_y = 0.693147; // ns\n") != null);
+
+        // I(y) <+ V(y) - transition(V(a), 2n): no charge, td = 2 ns.
+        var g: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer g.deinit();
+        try g.init(&four);
+        g.lowered.num_ports = 4;
+        const b = g.alloc();
+        const tr = try g.call("transition", &.{ try g.probe(0), try g.mir.addFloatConst(b, 2e-9) });
+        try addFlow(&g, 1, 3, try g.mir.emit(b, .entry, .fsub, &.{ try g.probe(1), tr }), .f_zero);
+        const td = try emitOk(&g, logic);
+        try std.testing.expect(std.mem.find(u8, td, "parameter real vera_rise_y = 2.000000; // ns\n") != null);
+        try std.testing.expect(std.mem.find(u8, td, "parameter real vera_fall_y = 2.000000; // ns\n") != null);
+    }
+
+    test "emit: a non-finite charge or td is refused by node, not printed (#47)" {
+        // The RC above with C = inf: Q(V(y) = 0) = inf·0 = NaN, so tau is NaN.
+        // Before #47 `@max` dropped the NaN delay and printed 0 ns.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&four);
+        f.lowered.num_ports = 4;
+        const a = f.alloc();
+        const vy = try f.probe(1);
+        const diff = try f.mir.emit(a, .entry, .fsub, &.{ vy, try f.probe(0) });
+        const i_r = try f.mir.emit(a, .entry, .fdiv, &.{ diff, try f.mir.addFloatConst(a, 1000) });
+        const q = try f.mir.emit(a, .entry, .fmul, &.{ try f.mir.addFloatConst(a, std.math.inf(f64)), vy });
+        try addFlow(&f, 1, 3, i_r, q);
+        try expectRefused(&f, logic, "node `y`: its delay is not finite");
+
+        // `transition(V(a), td)` with td = inf (printed `inf` before #47) and
+        // td = NaN (dropped to 0 before #47).
+        for ([_]f64{ std.math.inf(f64), std.math.nan(f64) }) |td| {
+            var g: Fixture = .{ .arena = .init(std.testing.allocator) };
+            defer g.deinit();
+            try g.init(&four);
+            g.lowered.num_ports = 4;
+            const b = g.alloc();
+            const tr = try g.call("transition", &.{ try g.probe(0), try g.mir.addFloatConst(b, td) });
+            try addFlow(&g, 1, 3, try g.mir.emit(b, .entry, .fsub, &.{ try g.probe(1), tr }), .f_zero);
+            try expectRefused(&g, logic, "node `y`: its delay is not finite");
+        }
+        // The legal neighbours are the finite RC and td of the test above.
+    }
+
+    test "emit: a node settling at exactly VDD/2 is x, and a constant needs no table" {
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&four);
+        f.lowered.num_ports = 4;
+        // I(y) <+ V(y) - 0.9: F = 0.9 = VDD/2 whatever a is.
+        const r = try f.mir.emit(f.alloc(), .entry, .fsub, &.{ try f.probe(1), try f.mir.addFloatConst(f.alloc(), 0.9) });
+        try addFlow(&f, 1, 3, r, .f_zero);
+        const text = try emitOk(&f, logic);
+        try std.testing.expect(std.mem.find(u8, text, "    wire vera_t_y = 1'bx;\n") != null);
+        try std.testing.expect(std.mem.find(u8, text, "case") == null);
+    }
+
+    test "emit: --power-pins puts every supply under USE_POWER_PINS, before and after the signals" {
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&.{ "vdd", "a", "y", "vss" });
+        f.lowered.num_ports = 4;
+        const r = try f.mir.emit(f.alloc(), .entry, .fsub, &.{ try f.probe(2), try f.probe(1) });
+        try addFlow(&f, 2, 3, r, .f_zero);
+        var o = logic;
+        o.power_pins = true;
+        const text = try emitOk(&f, o);
+        // A leading supply carries its own comma inside the `ifdef`; a trailing
+        // one, its leading comma.
+        const port_text =
+            \\module mymod (
+            \\`ifdef USE_POWER_PINS
+            \\    vdd,
+            \\`endif
+            \\      a
+            \\    , y
+            \\`ifdef USE_POWER_PINS
+            \\    , vss
+            \\`endif
+            \\);
+            \\`ifdef USE_POWER_PINS
+            \\    inout  wire vdd; // power
+            \\`endif
+            \\    input  wire a; // digital
+            \\    output wire y; // digital
+            \\`ifdef USE_POWER_PINS
+            \\    inout  wire vss; // ground
+            \\`endif
+            \\
+        ;
+        try std.testing.expect(std.mem.find(u8, text, port_text) != null);
+    }
+
+    test "emit: an internal net is declared only when a digital output reads it" {
+        const five = [_][]const u8{ "a", "y", "vdd", "vss", "n" };
+        // Live: y follows n, n follows a.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&five);
+        f.lowered.num_ports = 4;
+        const a = f.alloc();
+        try addFlow(&f, 1, 3, try f.mir.emit(a, .entry, .fsub, &.{ try f.probe(1), try f.probe(4) }), .f_zero);
+        try addFlow(&f, 4, 3, try f.mir.emit(a, .entry, .fsub, &.{ try f.probe(4), try f.probe(0) }), .f_zero);
+        const live = try emitOk(&f, logic);
+        try std.testing.expect(std.mem.find(u8, live, "    wire vera_n_n; // n\n") != null);
+        try std.testing.expect(std.mem.find(u8, live, "        case ({vera_n_n})\n") != null);
+        try std.testing.expect(std.mem.find(u8, live, "    assign #(vera_rise_n, vera_fall_n) vera_n_n = vera_t_n;\n") != null);
+
+        // Dead: y follows a, and nothing reads n.
+        var g: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer g.deinit();
+        try g.init(&five);
+        g.lowered.num_ports = 4;
+        const b = g.alloc();
+        try addFlow(&g, 1, 3, try g.mir.emit(b, .entry, .fsub, &.{ try g.probe(1), try g.probe(0) }), .f_zero);
+        try addFlow(&g, 4, 3, try g.mir.emit(b, .entry, .fsub, &.{ try g.probe(4), try g.probe(0) }), .f_zero);
+        const dead = try emitOk(&g, logic);
+        try std.testing.expect(std.mem.find(u8, dead, "vera_n_n") == null);
+        try std.testing.expect(std.mem.find(u8, dead, "// n\n") == null);
+    }
+
+    test "emit refuses what it cannot abstract, naming it" {
+        const gpa = std.testing.allocator;
+        {
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&.{"y"});
+            try expectRefused(&f, .{}, "has no ports");
+        }
+        {
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try buffer(&f);
+            try f.lowered.held_vars.append(f.alloc(), .{ .name = "q", .ty = .real, .init = .f_zero, .seed = .f_zero });
+            try expectRefused(&f, logic, "`q` holds state");
+        }
+        {
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try buffer(&f);
+            try f.lowered.vectors.put(f.alloc(), "bus", .{ .msb = 1, .lsb = 0 });
+            try expectRefused(&f, logic, "vector nets");
+        }
+        {
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try buffer(&f);
+            try expectRefused(&f, .{ .digital = &.{"nope"} }, "`nope` is not a port");
+        }
+        {
+            // §5.6.7 indirect assignment.
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try buffer(&f);
+            f.lowered.contributions.items[0].kind = .indirect;
+            try expectRefused(&f, logic, "indirect");
+        }
+        {
+            // V(y, a) <+ 0: referred to a signal, not a rail.
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&four);
+            f.lowered.num_ports = 4;
+            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 1, .lo = 0, .wrote_val = .f_one });
+            try expectRefused(&f, logic, "must be referred to a supply or ground");
+        }
+        {
+            // V(vdd, y) <+ 0.2 drives y (V(y) = VDD - 0.2), but from its second
+            // node: refused rather than silently left undriven.
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&four);
+            f.lowered.num_ports = 4;
+            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 2, .lo = 1, .resist_val = try f.mir.addFloatConst(f.alloc(), 0.2), .wrote_val = .f_one });
+            try expectRefused(&f, logic, "drives its first node");
+        }
+        {
+            // Every assignment enumerated: 21 undriven ports are 2^21 runs.
+            const many = comptime blk: {
+                var n: [vars_max + 1][]const u8 = undefined;
+                for (&n, 0..) |*s, i| s.* = std.fmt.comptimePrint("p{d}", .{i});
+                break :blk n;
+            };
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&many);
+            f.lowered.num_ports = many.len;
+            try expectRefused(&f, .{}, "21 pins and driven nodes; the truth tables stop at 20");
+        }
+        {
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&.{ "vdd", "vss" });
+            f.lowered.num_ports = 2;
+            try expectRefused(&f, .{ .power_pins = true }, "every port is a supply");
+        }
+        {
+            // I(y) <+ V(a): y's current does not move with V(y).
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&four);
+            f.lowered.num_ports = 4;
+            try addFlow(&f, 1, 3, try f.probe(0), .f_zero);
+            try expectRefused(&f, logic, "settles nowhere");
+        }
+        {
+            // `$abstime` moves with time: no one value per assignment.
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&four);
+            f.lowered.num_ports = 4;
+            const t = try f.call("$abstime", &.{});
+            try addFlow(&f, 1, 3, try f.mir.emit(f.alloc(), .entry, .fsub, &.{ try f.probe(1), t }), .f_zero);
+            try expectRefused(&f, logic, "`$abstime` has no static value");
+        }
+        {
+            // An internal net nothing drives has no potential to read.
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&.{ "a", "y", "vdd", "vss", "n" });
+            f.lowered.num_ports = 4;
+            try addFlow(&f, 1, 3, try f.mir.emit(f.alloc(), .entry, .fsub, &.{ try f.probe(1), try f.probe(4) }), .f_zero);
+            try expectRefused(&f, logic, "`n` is read but is neither a pin nor a driven net");
+        }
+    }
+
+    test "emit: a potential row §5.6.1.3 discards on every path leaves the flow in charge" {
+        // Metamorphic: the buffer plus a `V(y, vss)` row whose retention folded
+        // to 0 (its accumulators to 0 with it) is the buffer.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try buffer(&f);
+        const want = try emitOk(&f, logic);
+
+        var g: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer g.deinit();
+        try g.init(&four);
+        g.lowered.num_ports = 4;
+        try g.lowered.contributions.append(g.alloc(), .{ .access = .potential, .hi = 1, .lo = 3, .wrote_val = .f_zero });
+        try addFlow(&g, 1, 3, try g.mir.emit(g.alloc(), .entry, .fsub, &.{ try g.probe(1), try g.probe(0) }), .f_zero);
+        try std.testing.expectEqualStrings(want, try emitOk(&g, logic));
+    }
+
+    test "emit: a §5.6.5 switch branch follows whichever quantity this assignment retains" {
+        // if (V(a) > 0.9) V(y) <+ 1.8; else I(y) <+ V(y);
+        // a = 1: the potential holds y at 1.8; a = 0: the flow I = V(y) settles
+        // it at 0. Either way y copies a with no delay: the buffer's text.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try buffer(&f);
+        const want = try emitOk(&f, logic);
+
+        var g: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer g.deinit();
+        try g.init(&four);
+        g.lowered.num_ports = 4;
+        const b = g.alloc();
+        const on = try g.mir.emit(b, .entry, .fgt, &.{ try g.probe(0), try g.mir.addFloatConst(b, 0.9) });
+        try g.lowered.contributions.append(b, .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try g.mir.addFloatConst(b, 1.8), .wrote_val = on });
+        try addFlow(&g, 1, 3, try g.probe(1), .f_zero);
+        try std.testing.expectEqualStrings(want, try emitOk(&g, logic));
+    }
+
+    test "emit: phis read the edge taken all at once" {
+        // p, q = 0, 1; for (i = 0; i < 1; i++) p, q = q, p;  then I(y) <+ V(y) - 1.8·q.
+        // One swap leaves q = 0, so y settles at 0. Reading q's operand after p
+        // was overwritten would give q = 1 and y = 1.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&four);
+        f.lowered.num_ports = 4;
+        const a = f.alloc();
+        const m = &f.mir;
+        const header = try m.addBlock(a);
+        const body = try m.addBlock(a);
+        const exit = try m.addBlock(a);
+        _ = try m.emitJump(a, .entry, header);
+        const p = try m.emitPhi(a, header, &.{});
+        const p_inst = m.blockLast(header);
+        const q = try m.emitPhi(a, header, &.{});
+        const q_inst = m.blockLast(header);
+        const i = try m.emitPhi(a, header, &.{});
+        const i_inst = m.blockLast(header);
+        const go = try m.emit(a, header, .flt, &.{ i, .f_one });
+        _ = try m.emitBranch(a, header, go, body, exit);
+        const i_next = try m.emit(a, body, .fadd, &.{ i, .f_one });
+        _ = try m.emitJump(a, body, header);
+        try m.setPhiPairs(a, p_inst, &.{ .{ .block = .entry, .value = .f_zero }, .{ .block = body, .value = q } });
+        try m.setPhiPairs(a, q_inst, &.{ .{ .block = .entry, .value = .f_one }, .{ .block = body, .value = p } });
+        try m.setPhiPairs(a, i_inst, &.{ .{ .block = .entry, .value = .f_zero }, .{ .block = body, .value = i_next } });
+        const scaled = try m.emit(a, exit, .fmul, &.{ try m.addFloatConst(a, 1.8), q });
+        try addFlow(&f, 1, 3, try m.emit(a, exit, .fsub, &.{ try f.probe(1), scaled }), .f_zero);
+
+        try std.testing.expect(std.mem.find(u8, try emitOk(&f, logic), "    wire vera_t_y = 1'b0;\n") != null);
+    }
+
+    test "emit: a row placed after its block's terminator still runs, before it" {
+        // `Mir` allows rows after a branch (`lower_var.hiddenHeldInt`); codegen
+        // runs them before the terminator, and so must the interpreter.
+        // x = 1 + 1 sits after entry's jump; I(y) <+ V(y) - 0.9·x settles at 1.8.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&four);
+        f.lowered.num_ports = 4;
+        const a = f.alloc();
+        const m = &f.mir;
+        const next = try m.addBlock(a);
+        _ = try m.emitJump(a, .entry, next);
+        const x = try m.emit(a, .entry, .fadd, &.{ .f_one, .f_one });
+        const scaled = try m.emit(a, next, .fmul, &.{ try m.addFloatConst(a, 0.9), x });
+        try addFlow(&f, 1, 3, try m.emit(a, next, .fsub, &.{ try f.probe(1), scaled }), .f_zero);
+
+        try std.testing.expect(std.mem.find(u8, try emitOk(&f, logic), "    wire vera_t_y = 1'b1;\n") != null);
+    }
+
+    test "emit refuses a vera_pin or vera_delay whose value is not one" {
+        // Only the attribute's value is judged here; `attrs.va` in
+        // test-external runs the accepted ones by name.
+        const bad = [_]struct { name: []const u8, value: ?Const, says: []const u8 }{
+            .{ .name = "vera_pin", .value = null, .says = "vera_pin takes" },
+            .{ .name = "vera_pin", .value = .{ .real = 1 }, .says = "vera_pin takes" },
+            .{ .name = "vera_delay", .value = null, .says = "vera_delay takes" },
+            .{ .name = "vera_delay", .value = .{ .str = "1n" }, .says = "vera_delay takes" },
+            .{ .name = "vera_delay", .value = .{ .real = -1e-9 }, .says = "vera_delay takes" },
+            .{ .name = "vera_delay", .value = .{ .real = std.math.nan(f64) }, .says = "vera_delay takes" },
+            // Finite in seconds, infinite in the ns `node` prints.
+            .{ .name = "vera_delay", .value = .{ .real = 1e300 }, .says = "vera_delay takes" },
+        };
+        for (bad) |b| {
+            var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+            defer f.deinit();
+            try buffer(&f);
+            const attrs = [_]Lowered.DeclAttr{.{ .tok = 0, .name = b.name, .value = b.value }};
+            f.lowered.decl_attrs = &attrs;
+            try expectRefused(&f, logic, b.says);
+        }
+        // The neighbours that pass: a zero delay, and an attribute VerA ignores.
+        for ([_]Lowered.DeclAttr{ .{ .tok = 0, .name = "vera_delay", .value = .{ .int = 0 } }, .{ .tok = 0, .name = "other", .value = null } }) |ok| {
+            var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+            defer f.deinit();
+            try buffer(&f);
+            f.lowered.decl_attrs = &.{ok};
+            _ = try emitOk(&f, logic);
+        }
+    }
+
+    test "emit: a driven analog port stays an undriven inout, its bit an internal net" {
+        // `a` analog; y digital follows it, and I(a) <+ V(a) - V(vdd) drives a high.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try f.init(&four);
+        f.lowered.num_ports = 4;
+        const m = f.alloc();
+        try addFlow(&f, 0, 3, try f.mir.emit(m, .entry, .fsub, &.{ try f.probe(0), try f.probe(2) }), .f_zero);
+        try addFlow(&f, 1, 3, try f.mir.emit(m, .entry, .fsub, &.{ try f.probe(1), try f.probe(0) }), .f_zero);
+        const text = try emitOk(&f, .{ .digital = &.{"y"} });
+        for ([_][]const u8{
+            "    inout  wire a; // analog, undriven\n",
+            "    wire vera_n_a; // a\n",
+            "    wire vera_t_a = 1'b1;\n",
+            "        case ({vera_n_a})\n",
+            "    assign #(vera_rise_a, vera_fall_a) vera_n_a = vera_t_a;\n",
+        }) |want| try std.testing.expect(std.mem.find(u8, text, want) != null);
+    }
+
+    test "emit: a supply contribution against a supply is the supply itself" {
+        // Metamorphic: the buffer plus V(vdd, vss) <+ 1.8 is the buffer.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try buffer(&f);
+        const want = try emitOk(&f, logic);
+        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 2, .lo = 3, .resist_val = try f.mir.addFloatConst(f.alloc(), 1.8), .wrote_val = .f_one });
+        try std.testing.expectEqualStrings(want, try emitOk(&f, logic));
+    }
+
+    test "emit: the static callees fold to the values the header gives them" {
+        // I(y) <+ V(y) - k·V(a) with k a callee that is 1 here: the buffer's text.
+        var f: Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try buffer(&f);
+        const want = try emitOk(&f, logic);
+        for ([_][]const u8{ "$mfactor", "limexp", "slew" }) |name| {
+            var g: Fixture = .{ .arena = .init(std.testing.allocator) };
+            defer g.deinit();
+            try g.init(&four);
+            g.lowered.num_ports = 4;
+            const b = g.alloc();
+            // limexp(0) = 1, slew(1) = 1.
+            const arg: []const Mir.Value = if (std.mem.eql(u8, name, "limexp")) &.{.f_zero} else if (std.mem.eql(u8, name, "slew")) &.{.f_one} else &.{};
+            const k = try g.call(name, arg);
+            const scaled = try g.mir.emit(b, .entry, .fmul, &.{ k, try g.probe(0) });
+            try addFlow(&g, 1, 3, try g.mir.emit(b, .entry, .fsub, &.{ try g.probe(1), scaled }), .f_zero);
+            try std.testing.expectEqualStrings(want, try emitOk(&g, logic));
+        }
+        // Over a 2 ns transition: absdelay's td adds like transition's, a
+        // negative td adds 0 (not -1 ns), and no td argument adds nothing.
+        for ([_]struct { name: []const u8, td: ?f64, ns: []const u8 }{
+            .{ .name = "absdelay", .td = 2e-9, .ns = "4.000000" },
+            .{ .name = "transition", .td = -1e-9, .ns = "2.000000" },
+            .{ .name = "transition", .td = null, .ns = "2.000000" },
+        }) |c| {
+            var g: Fixture = .{ .arena = .init(std.testing.allocator) };
+            defer g.deinit();
+            try g.init(&four);
+            g.lowered.num_ports = 4;
+            const b = g.alloc();
+            const x = try g.call("transition", &.{ try g.probe(0), try g.mir.addFloatConst(b, 2e-9) });
+            const tr = if (c.td) |td| try g.call(c.name, &.{ x, try g.mir.addFloatConst(b, td) }) else try g.call(c.name, &.{x});
+            try addFlow(&g, 1, 3, try g.mir.emit(b, .entry, .fsub, &.{ try g.probe(1), tr }), .f_zero);
+            const text = try emitOk(&g, logic);
+            const line = try std.fmt.allocPrint(b, "parameter real vera_rise_y = {s}; // ns\n", .{c.ns});
+            try std.testing.expect(std.mem.find(u8, text, line) != null);
+        }
+    }
+
+    test "emit refuses a node whose law or value it cannot pin down" {
+        const gpa = std.testing.allocator;
+        {
+            // if (V(y) > 0.9) V(y) <+ 1.8; else I(y) <+ V(y): which law holds
+            // depends on y itself, so there is no one secant.
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&four);
+            f.lowered.num_ports = 4;
+            const b = f.alloc();
+            const on = try f.mir.emit(b, .entry, .fgt, &.{ try f.probe(1), try f.mir.addFloatConst(b, 0.9) });
+            try f.lowered.contributions.append(b, .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try f.mir.addFloatConst(b, 1.8), .wrote_val = on });
+            try addFlow(&f, 1, 3, try f.probe(1), .f_zero);
+            try expectRefused(&f, logic, "depends on its own value");
+        }
+        {
+            // V(y, vss) <+ inf.
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&four);
+            f.lowered.num_ports = 4;
+            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try f.mir.addFloatConst(f.alloc(), std.math.inf(f64)), .wrote_val = .f_one });
+            try expectRefused(&f, logic, "its settled potential is not finite");
+        }
+        {
+            // A phi in the entry block has no edge to read.
+            var f: Fixture = .{ .arena = .init(gpa) };
+            defer f.deinit();
+            try f.init(&four);
+            f.lowered.num_ports = 4;
+            const p = try f.mir.emitPhi(f.alloc(), .entry, &.{});
+            try addFlow(&f, 1, 3, try f.mir.emit(f.alloc(), .entry, .fsub, &.{ try f.probe(1), p }), .f_zero);
+            try expectRefused(&f, logic, "a phi with no operand for the edge taken");
+        }
+        // The 2^20-step bound on a block that never finishes is not run here:
+        // reaching it takes 4 s in Debug.
+    }
+
+    test "emit: an allocation failure anywhere is OutOfMemory, never a refusal or a crash" {
+        for ([_]bool{ false, true }) |rc| try std.testing.checkAllAllocationFailures(std.testing.allocator, emitUnderFailure, .{rc});
     }
 };
 
