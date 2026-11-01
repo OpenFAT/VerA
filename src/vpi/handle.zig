@@ -35,6 +35,8 @@ const ObjId = schema.ObjId;
 /// instance, and the top module has none — NULL, and NOT an error: "no such
 /// object" is this routine's ordinary answer at the root of the hierarchy.
 /// An explicit vpiScope edge takes precedence for a lexical containing scope.
+/// Asserts the model's own invariants on what it answers: the active call is
+/// a code row, an owner is a module, an element's index is a constant.
 pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
     // §11.6.16 NOTE 1: the call whose compiletf/sizetf/derivtf is running
     // (systf.buildCalls). Outside one the answer is "no such object", which
@@ -42,7 +44,11 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
     if (obj_type == user.vpiSysTfCall and ref == null) {
         if (status.refused("vpi_handle")) return null;
         const at = systf.active orelse return null;
-        return trust.handleOf(session.design.?.obj(at));
+        // A call runs only inside an installed model's `buildCalls` or run.
+        std.debug.assert(session.design != null);
+        const call = session.design.?.obj(at);
+        std.debug.assert(call.kind == .code);
+        return trust.handleOf(call);
     }
     const d = status.enter("vpi_handle") orelse return null;
     if (status.unansweredType(obj_type)) |u| {
@@ -78,6 +84,7 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
         return null;
     }
     const o = status.object("vpi_handle", ref) orelse return null;
+    std.debug.assert(d.idOf(o).index() < d.objects.len);
     // §11.6.2/§11.6.5–§11.6.7's single arrows. Each edge is answered only
     // from the classes whose diagram draws it; from any other class it is
     // NOTRAVERSE, like every relationship a diagram does not draw.
@@ -114,6 +121,8 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
             }
             const owner = o.owner;
             if (owner == .none) return null;
+            // `owner` is a scope index, and scope `i`'s module is row `i`.
+            std.debug.assert(d.obj(owner).kind == .module);
             return trust.handleOf(d.obj(owner));
         },
         // §11.6.11: a word or variable select's array. A module in an
@@ -123,6 +132,7 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
             if (obj_type == user.vpiModuleArray and o.kind != .module) return noEdge(obj_type, o);
             const p = o.parent;
             if (p == .none) return null;
+            std.debug.assert(obj_type != user.vpiModuleArray or d.obj(p).kind == .module_array);
             return trust.handleOf(d.obj(p));
         },
         // The index expression of an element. A module that is not in an
@@ -134,6 +144,7 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
             }
             const c = o.index;
             if (c == .none) return null;
+            std.debug.assert(d.obj(c).kind == .constant);
             return trust.handleOf(d.obj(c));
         },
         else => {
@@ -153,7 +164,8 @@ pub export fn vpi_handle(obj_type: c_int, ref: abi.vpiHandle) abi.vpiHandle {
 /// the `scope != NULL` arm. With a NULL scope the name is absolute and matched
 /// against `vpiFullName` — the property §12.21 says the routine "can be applied
 /// to all objects with". A digital run searches `scope` alone instead
-/// (`Design.search_up`).
+/// (`Design.search_up`). Asserts that the upward search climbs at most the
+/// scope tree, and that `by_name` answers the object whose full name it is.
 pub export fn vpi_handle_by_name(name: [*c]const u8, scope: abi.vpiHandle) abi.vpiHandle {
     const d = status.enter("vpi_handle_by_name") orelse return null;
     if (name == null) {
@@ -167,10 +179,17 @@ pub export fn vpi_handle_by_name(name: [*c]const u8, scope: abi.vpiHandle) abi.v
         // non-module object is the one it is declared in, and the scope of a
         // module is itself.
         var at: ObjId = if (from.kind == .module) .at(from.scope) else from.owner;
+        // Bound: each step climbs to a parent scope.
+        var hops: usize = 0;
         while (at != .none) : (at = if (d.search_up) d.scope(at).parent else .none) {
+            std.debug.assert(hops < d.scopes.len);
+            hops += 1;
             var buf: [schema.name_buf_len]u8 = undefined;
             const full = std.mem.print(&buf, "{s}{c}{s}", .{ d.obj(at).full, Elaborate.sep, want }) catch continue;
-            if (d.by_name.get(full)) |i| return trust.handleOf(d.obj(i));
+            if (d.by_name.get(full)) |i| {
+                std.debug.assert(std.mem.eql(u8, d.obj(i).full, full));
+                return trust.handleOf(d.obj(i));
+            }
         }
         if (!d.search_up) {
             status.fail("NONAME", "vpi_handle_by_name: `{s}` names no object in that scope", .{want});
@@ -183,7 +202,10 @@ pub export fn vpi_handle_by_name(name: [*c]const u8, scope: abi.vpiHandle) abi.v
         status.fail("NONAME", "vpi_handle_by_name: `{s}` names no object from that scope", .{want});
         return null;
     }
-    if (d.by_name.get(want)) |i| return trust.handleOf(d.obj(i));
+    if (d.by_name.get(want)) |i| {
+        std.debug.assert(std.mem.eql(u8, d.obj(i).full, want));
+        return trust.handleOf(d.obj(i));
+    }
     status.fail("NONAME", "vpi_handle_by_name: `{s}` names no object in the design", .{want});
     return null;
 }
@@ -200,9 +222,11 @@ pub export fn vpi_handle_by_name(name: [*c]const u8, scope: abi.vpiHandle) abi.v
 ///
 /// ponytail: port bits and the analog model's reg bits have no bit objects,
 /// so indexing one of those vectors is still §12.2's error indication.
+/// Asserts that every element's and bit's vpiIndex is a constant row.
 pub export fn vpi_handle_by_index(obj: abi.vpiHandle, index: c_int) abi.vpiHandle {
     const d = status.enter("vpi_handle_by_index") orelse return null;
     const o = status.object("vpi_handle_by_index", obj) orelse return null;
+    std.debug.assert(d.idOf(o).index() < d.objects.len);
     // §12.32.3's and §12.22.2's own listings: on a system task or function
     // call, index 0 is "the returned value" — the function call itself, which
     // is what §12.30 puts a return value on — and 1..n are its arguments.
@@ -222,6 +246,7 @@ pub export fn vpi_handle_by_index(obj: abi.vpiHandle, index: c_int) abi.vpiHandl
         for (schema.coldOf(o).members) |m| {
             const c = d.obj(m).index;
             if (c == .none) continue;
+            std.debug.assert(d.obj(c).kind == .constant);
             if (d.obj(c).value.?.int == index) return trust.handleOf(d.obj(m));
         }
         status.fail("NOINDEX", "vpi_handle_by_index: `{s}` has no element {d}", .{ o.full, index });
@@ -230,6 +255,7 @@ pub export fn vpi_handle_by_index(obj: abi.vpiHandle, index: c_int) abi.vpiHandl
     if (o.kind != .code) for (o.lists) |l| if (l.tag == user.vpiBit) {
         for (l.items) |bit| {
             const ix = schema.edgeTo(d.obj(bit), user.vpiIndex);
+            std.debug.assert(ix == ObjId.none or d.obj(ix).kind == .constant);
             if (ix != ObjId.none and d.obj(ix).value.?.int == index) return trust.handleOf(d.obj(bit));
         }
         status.fail("NOINDEX", "vpi_handle_by_index: `{s}` has no bit {d}", .{ o.full, index });
@@ -249,7 +275,9 @@ pub export fn vpi_handle_by_index(obj: abi.vpiHandle, index: c_int) abi.vpiHandl
 ///
 /// Named event arrays accept one index per dimension. Other array classes
 /// still route only a single index through vpi_handle_by_index; their
-/// multidimensional selection remains a VerA limit.
+/// multidimensional selection remains a VerA limit. Asserts that each event
+/// of an array carries one index per dimension, so no more than the
+/// application's `num_index` entries are read.
 pub export fn vpi_handle_by_multi_index(obj: abi.vpiHandle, num_index: c_int, index_array: ?[*]const c_int) abi.vpiHandle {
     const d = status.enter("vpi_handle_by_multi_index") orelse return null;
     const o = status.object("vpi_handle_by_multi_index", obj) orelse return null;
@@ -261,6 +289,8 @@ pub export fn vpi_handle_by_multi_index(obj: abi.vpiHandle, num_index: c_int, in
         if (num_index > 0 and num_index == schema.coldOf(o).range.len) for (schema.coldOf(o).members) |m| {
             for (d.obj(m).lists) |l| {
                 if (l.tag != user.vpiIndex) continue;
+                std.debug.assert(l.items.len == schema.coldOf(o).range.len);
+                std.debug.assert(l.items.len == @as(usize, @intCast(num_index)));
                 const matches = for (l.items, 0..) |ix, k| {
                     if (d.obj(ix).value.?.int != idx[l.items.len - 1 - k]) break false;
                 } else true;
@@ -283,7 +313,8 @@ pub export fn vpi_handle_by_multi_index(obj: abi.vpiHandle, num_index: c_int, in
 /// draws no such edge (the caller goes on to the other relationships), else
 /// the target — itself `none` for "no such object".
 fn analogEdge(o: *const Obj, obj_type: c_int) ?ObjId {
-    return switch (o.kind) {
+    std.debug.assert(session.design != null);
+    const edge: ?ObjId = switch (o.kind) {
         .net => switch (obj_type) {
             user.vpiNode => schema.coldOf(o).node,
             user.vpiDiscipline => schema.coldOf(o).disc,
@@ -321,9 +352,19 @@ fn analogEdge(o: *const Obj, obj_type: c_int) ?ObjId {
         },
         .module, .reg, .parameter, .integer, .real_var, .time_var, .reg_array, .var_array, .net_array, .word, .var_select, .module_array, .constant, .code => null,
     };
+    // An analog edge leads to an analog class.
+    if (edge) |e| if (e != .none) {
+        const k = session.design.?.obj(e).kind;
+        std.debug.assert(k == .node or k == .discipline or k == .nature or k == .quantity or k == .branch);
+    };
+    return edge;
 }
 
+/// The NOTRAVERSE failure of a `vpi_handle` relationship `o`'s class does
+/// not draw: one of the owner, parent and index edges it answers itself.
 fn noEdge(obj_type: c_int, o: *const Obj) abi.vpiHandle {
+    std.debug.assert(obj_type == user.vpiScope or obj_type == user.vpiModule or obj_type == user.vpiParent or obj_type == user.vpiModuleArray or obj_type == user.vpiIndex);
     status.fail("NOTRAVERSE", "vpi_handle: a {s} has no relationship {d}", .{ @tagName(o.kind), obj_type });
+    std.debug.assert(status.vpi_chk_error(null) == user.vpiError);
     return null;
 }

@@ -26,9 +26,16 @@ const unary_prec: u8 = 12;
 /// original expression within the HDL. Parentheses shall be added only to
 /// preserve precedence. Each operand and operator shall be separated by a
 /// single space character." A literal is spelled in its own base, and an
-/// x/z or wide one in binary.
+/// x/z or wide one in binary. `w` keeps what it is given (`Writer.fixed`).
+/// Asserts that `id` is `.none` or a row of `f`, and that the text only
+/// grows `w`.
+///
+/// Recursive on the expression's depth, which the parser bounds.
 pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Error!void {
+    std.debug.assert(id == .none or @backingInt(id) < f.exprs.len());
     if (id == .none) return;
+    const before = w.end;
+    defer std.debug.assert(w.end >= before);
     const ex = &f.exprs;
     switch (ex.tag(id)) {
         .ident => try w.writeAll(f.str(ex.strOf(id))),
@@ -54,6 +61,7 @@ pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Er
             try w.print("{d}{s}b", .{ lit.width, if (lit.signed) "'s" else "'" });
             var k = lit.width;
             while (k > 0) {
+                std.debug.assert(k <= lit.width);
                 k -= 1;
                 const v = (lit.values()[k / 64] >> @intCast(k % 64)) & 1;
                 const u = (lit.unknowns()[k / 64] >> @intCast(k % 64)) & 1;
@@ -182,26 +190,36 @@ pub fn decompile(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId) Writer.Er
 }
 
 /// §26.6.19 g): a system or user task call, "a functionally equivalent
-/// system task/function call to what was in the original HDL".
+/// system task/function call to what was in the original HDL". Asserts
+/// that `id` is a task-call statement of `f` and that its name is written.
 pub fn decompileCall(w: *Writer, f: *const Ast.SourceFile, id: Ast.StmtId) Writer.Error!void {
+    std.debug.assert(id != .none);
+    std.debug.assert(f.stmt(id) == .sys_task);
+    const before = w.end;
     const s = f.stmt(id).sys_task;
     try w.writeAll(f.str(s.name));
     if (s.args.len != 0) try list(w, f, "(", s.args, ")");
+    std.debug.assert(w.end > before);
 }
 
 // ---- private ----
 
 fn list(w: *Writer, f: *const Ast.SourceFile, open: []const u8, items: []const Ast.ExprId, close: []const u8) Writer.Error!void {
+    std.debug.assert(open.len != 0);
+    std.debug.assert(close.len != 0);
+    const before = w.end;
     try w.writeAll(open);
     for (items, 0..) |e, k| {
         if (k != 0) try w.writeAll(", ");
         try decompile(w, f, e);
     }
     try w.writeAll(close);
+    std.debug.assert(w.end - before >= open.len + close.len);
 }
 
+/// Table 5-4's binary ranks: above the conditional's 0, below a unary's.
 fn binaryPrec(op: Ast.BinaryOp) u8 {
-    return switch (op) {
+    const p: u8 = switch (op) {
         .pow => 11,
         .mul, .div, .mod => 10,
         .add, .sub => 9,
@@ -214,23 +232,32 @@ fn binaryPrec(op: Ast.BinaryOp) u8 {
         .logical_and => 2,
         .logical_or => 1,
     };
+    std.debug.assert(p >= 1);
+    std.debug.assert(p < unary_prec);
+    return p;
 }
 
 /// The precedence `id` binds at as an operand: its operator's, or above
 /// every operator for a primary.
 fn precOf(ex: *const Ast.ExprStore, id: Ast.ExprId) u8 {
-    return switch (ex.tag(id)) {
+    // An operator's operand always exists.
+    std.debug.assert(id != .none);
+    const p: u8 = switch (ex.tag(id)) {
         .unary => unary_prec,
         .binary => binaryPrec(ex.binOp(id)),
         .ternary => 0,
         // A primary: a literal, a name, a call, a select, a concatenation.
         .int_literal, .logic_literal, .real_literal, .str_literal, .pos_inf, .neg_inf, .ident, .hier_ident, .call, .builtin_call, .sys_call, .filter_call, .noise_call, .branch_access, .port_access, .concat, .multi_concat, .assign_pattern, .pattern_repl, .index, .range, .indexed_range, .event_or, .event_posedge, .event_negedge, .event_initial_step, .event_final_step, .event_function, .event_driver_update => unary_prec + 1,
     };
+    std.debug.assert(p <= unary_prec + 1);
+    return p;
 }
 
 /// An operand of an operator of precedence `parent`, parenthesized when it
 /// binds looser, or as loose on the right of a left-associative operator.
 fn operand(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId, parent: u8, right: bool) Writer.Error!void {
+    std.debug.assert(id != .none);
+    std.debug.assert(parent <= unary_prec + 1);
     const p = precOf(&f.exprs, id);
     const wrap = p < parent or (right and p == parent);
     if (wrap) try w.writeByte('(');
@@ -239,7 +266,7 @@ fn operand(w: *Writer, f: *const Ast.SourceFile, id: Ast.ExprId, parent: u8, rig
 }
 
 fn unarySpelling(op: Ast.UnaryOp) []const u8 {
-    return switch (op) {
+    const s: []const u8 = switch (op) {
         .plus => "+",
         .minus => "-",
         .logical_not => "!",
@@ -251,10 +278,13 @@ fn unarySpelling(op: Ast.UnaryOp) []const u8 {
         .reduce_xor => "^",
         .reduce_xnor => "~^",
     };
+    std.debug.assert(s.len >= 1);
+    std.debug.assert(s.len <= 2);
+    return s;
 }
 
 fn binarySpelling(op: Ast.BinaryOp) []const u8 {
-    return switch (op) {
+    const s: []const u8 = switch (op) {
         .add => "+",
         .sub => "-",
         .mul => "*",
@@ -280,6 +310,9 @@ fn binarySpelling(op: Ast.BinaryOp) []const u8 {
         .ashl => "<<<",
         .ashr => ">>>",
     };
+    std.debug.assert(s.len >= 1);
+    std.debug.assert(s.len <= 3);
+    return s;
 }
 
 test "§26.6.26 b) vpiDecompile adds parentheses only where precedence needs them" {
