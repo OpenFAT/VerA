@@ -131,7 +131,7 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Veri
 - **`--emit-rtlil` refusals are coded** (E1200-E1278, one per construct, at
   its line), and four fixtures that panicked emit RTLIL or a refusal: null
   ports, a connection to no port (E1100), a range past RTLIL's 32-bit offset,
-  and a port-header select, which was emitted full width (#113, #INT).
+  and a port-header select, which was emitted full width (#113, #114).
   Constants fold by IEEE 1364-2005 rules (`HI-7` was folded to -8), an
   ascending range's offset is its lower bound, and an escaped name keeps its
   `.` and `\`.
@@ -139,32 +139,32 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Veri
   path to `--spice`/`--protect-keys`/`--digital-pins`, a defparam through an
   escaped name holding `[` or `.` (`\a__g[1]__in1`), a display-only device's
   noise and AC tables, `ac_stim` with four arguments (E0506), a NaN noise-table
-  knot, and a 5000-statement chain or 5000-arm `case` on a 1 MiB thread (#INT).
+  knot, and a 5000-statement chain or 5000-arm `case` on a 1 MiB thread (#114).
 - **Device codegen is linear on long select chains**: a 5000-arm `case` takes
-  2.05 s in Debug, from 68.2 s (#INT).
+  2.05 s in Debug, from 68.2 s (#114).
 - **VPI**: the analog library's runner reports the device's `mem_bytes` as
   `--emit-exe` does (it said 0); ports answer `vpiLowConn` and `vpiHighConn`;
   `vpiName` keeps a `.` inside an escaped name; a derivtf with NULL partials
   (BADPARTIALS), a callback with no context (NOCTX), a non-`$` call name and a
-  zero-length transient window are refused (#INT).
+  zero-length transient window are refused (#114).
 - **E0154**: more than 65535 source files through an include tree is a coded
   error, not a crash; a design nested past the reserved stack while
-  elaborating is E0241 (#INT).
+  elaborating is E0241 (#114).
 - **`--emit-exe`** refuses a negative `//! time`, a time at or past 2^64
   ticks, more than 64 explicit D2A event ports (E0437, which the emitted Zig
-  failed to compile) and `//! checks N` past 2^32-1 (#108, #INT).
+  failed to compile) and `//! checks N` past 2^32-1 (#108, #114).
 - **A cached `--emit-osdi` or `--emit-so` rebuilds when a file of its module
   changes**: the artifact key hashed only the root file (#100).
 - **The suite compares names, never counts**: `suite -- ams` printed its first
   FAIL lines under zig build's summary, where they were lost; it now prints
   its FAIL and XFAIL names after the summary and holds them to
   `tests/suite.xfail`. A skipped test fails, and the suite's work directories
-  moved out of the shared `.zig-cache` to `.vera-work/` (#101, #INT).
+  moved out of the shared `.zig-cache` to `.vera-work/` (#101, #114).
 - **New oracles under `zig build test`**: a degenerate-argv table, wide-input
   and escaped-identifier generators through every pass, a VPI negative-input
   table, an `--emit-so` golden with VPI contributions, `--emit-verilog` and
   `--emit-rtlil` goldens, a compile of every runner template and an assembly
-  probe of the branchless limit kernels (#INT).
+  probe of the branchless limit kernels (#114).
 - **Twelve conformance fixtures are expected failures** (`tools/vera.xfail`):
   they still expect what this release's own changes above revise (an analog
   assignment to a `reg` is E0316, an instance port's flow is read exactly, a
