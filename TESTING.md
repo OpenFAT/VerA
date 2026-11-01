@@ -34,6 +34,7 @@ names the clause behind it.
 | Kernels (`lib/kernels`) | wrong RNG stream | the IEEE 1364 §17.9.3 C listing | `tests/rng_reference.zig` (in `test`) |
 | | wrong `%e/%f/%g` | glibc `snprintf` | `tests/printf_reference.zig` (in `test`) |
 | VPI (`src/vpi`) | ABI or behaviour drift | the C applications' expected stdout and exit | `tests/conformance/tests/**/*.c` (`test`; `suite -- vpi` compiles only) |
+| | an unchecked C-application argument: a crash, or a quiet wrong answer, on a NULL, forged or wrong-type handle, a NULL value pointer, a bad format, type, property, flag or reason, an out-of-range index | IEEE 1364-2005 §27.4 `vpi_chk_error` reports an error and the routine returns its documented failure value (NULL, 0, `vpiUndefined`, EOF, the failed mcd); each row in its own child, so a crash names its row; known rows are `known[]` in the app, an XPASS fails | `tests/vpi_negative/negative.c` (`test`, `test-vpi-negative`) |
 | Downstream (ESPice) | a VerA change breaks a consumer | ESPice's decks and their oracle records | `spice.yaml` imports a pinned ESPice release and runs `zig build test-spice -Despice=PATH` (disabled until a release exists; not in the merge gate: VerA's build does not depend on ESPice); `pages.yaml` compiles ESPice's models |
 | Every module | an allocation failure swallowed or leaked | `checkAllAllocationFailures` | `tests/unit.zig`'s `oom_tests` |
 | Base (`lib/base`) | an interned id renumbered or lost | a linear-scan model of first-seen order, over a seeded op sequence through an overlay | `lib/base/interner.zig` (`test-base`) |
