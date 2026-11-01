@@ -18174,7 +18174,13 @@ pub const vpi_tests = struct {
     const Elaborate = @import("vera").Elaborate;
     const root = @import("vpi");
     const callback = root.callback;
-    const code = root.code;
+    const code_tables = root.code_tables;
+    const user = root.user;
+    const abi = root.abi;
+    const session = root.session;
+    const status = root.status;
+    const trust = root.trust;
+    const schema = root.schema;
     const delays = root.delays;
     const handle = root.handle;
     const iterate = root.iterate;
@@ -18183,74 +18189,74 @@ pub const vpi_tests = struct {
     const systf = root.systf;
     const value = root.value;
 
-    const ErrorInfo = root.ErrorInfo;
-    const Obj = root.Obj;
-    const Scope = root.Scope;
-    const StartupFn = root.StartupFn;
-    const asObj = root.asObj;
-    const close = root.close;
-    const open = root.open;
-    const runStartupTable = root.runStartupTable;
-    const vpiArray = root.vpiArray;
-    const vpiBranch = root.vpiBranch;
-    const vpiCell = root.vpiCell;
-    const vpiConfig = root.vpiConfig;
-    const vpiConstType = root.vpiConstType;
-    const vpiConstant = root.vpiConstant;
-    const vpiDefName = root.vpiDefName;
-    const vpiDirection = root.vpiDirection;
-    const vpiDiscipline = root.vpiDiscipline;
-    const vpiError = root.vpiError;
-    const vpiFlow = root.vpiFlow;
-    const vpiFullName = root.vpiFullName;
-    const vpiHandle = root.vpiHandle;
-    const vpiIndex = root.vpiIndex;
-    const vpiInout = root.vpiInout;
-    const vpiIntConst = root.vpiIntConst;
-    const vpiIntegerVar = root.vpiIntegerVar;
-    const vpiIsMemory = root.vpiIsMemory;
-    const vpiIterator = root.vpiIterator;
-    const vpiLibrary = root.vpiLibrary;
-    const vpiLocalParam = root.vpiLocalParam;
-    const vpiMemory = root.vpiMemory;
-    const vpiMemoryWord = root.vpiMemoryWord;
-    const vpiModule = root.vpiModule;
-    const vpiModuleArray = root.vpiModuleArray;
-    const vpiName = root.vpiName;
-    const vpiNature = root.vpiNature;
-    const vpiNegNode = root.vpiNegNode;
-    const vpiNet = root.vpiNet;
-    const vpiNode = root.vpiNode;
-    const vpiPLI = root.vpiPLI;
-    const vpiParameter = root.vpiParameter;
-    const vpiParent = root.vpiParent;
-    const vpiPort = root.vpiPort;
-    const vpiPortIndex = root.vpiPortIndex;
-    const vpiPosNode = root.vpiPosNode;
-    const vpiPotential = root.vpiPotential;
-    const vpiQuantity = root.vpiQuantity;
-    const vpiRealConst = root.vpiRealConst;
-    const vpiRealVar = root.vpiRealVar;
-    const vpiReg = root.vpiReg;
-    const vpiRegArray = root.vpiRegArray;
-    const vpiScalar = root.vpiScalar;
-    const vpiScope = root.vpiScope;
-    const vpiSize = root.vpiSize;
-    const vpiTopModule = root.vpiTopModule;
-    const vpiType = root.vpiType;
-    const vpiUndefined = root.vpiUndefined;
-    const vpiVarSelect = root.vpiVarSelect;
-    const vpiVector = root.vpiVector;
-    const vpi_chk_error = root.vpi_chk_error;
-    const vpi_compare_objects = root.vpi_compare_objects;
-    const vpi_free_object = root.vpi_free_object;
+    const ErrorInfo = abi.ErrorInfo;
+    const Obj = schema.Obj;
+    const Scope = schema.Scope;
+    const StartupFn = abi.StartupFn;
+    const asObj = trust.asObj;
+    const close = session.close;
+    const open = session.open;
+    const runStartupTable = session.runStartupTable;
+    const vpiArray = user.vpiArray;
+    const vpiBranch = user.vpiBranch;
+    const vpiCell = user.vpiCell;
+    const vpiConfig = user.vpiConfig;
+    const vpiConstType = user.vpiConstType;
+    const vpiConstant = user.vpiConstant;
+    const vpiDefName = user.vpiDefName;
+    const vpiDirection = user.vpiDirection;
+    const vpiDiscipline = user.vpiDiscipline;
+    const vpiError = user.vpiError;
+    const vpiFlow = user.vpiFlow;
+    const vpiFullName = user.vpiFullName;
+    const vpiHandle = abi.vpiHandle;
+    const vpiIndex = user.vpiIndex;
+    const vpiInout = user.vpiInout;
+    const vpiIntConst = user.vpiIntConst;
+    const vpiIntegerVar = user.vpiIntegerVar;
+    const vpiIsMemory = user.vpiIsMemory;
+    const vpiIterator = user.vpiIterator;
+    const vpiLibrary = user.vpiLibrary;
+    const vpiLocalParam = user.vpiLocalParam;
+    const vpiMemory = user.vpiMemory;
+    const vpiMemoryWord = user.vpiMemoryWord;
+    const vpiModule = user.vpiModule;
+    const vpiModuleArray = user.vpiModuleArray;
+    const vpiName = user.vpiName;
+    const vpiNature = user.vpiNature;
+    const vpiNegNode = user.vpiNegNode;
+    const vpiNet = user.vpiNet;
+    const vpiNode = user.vpiNode;
+    const vpiPLI = user.vpiPLI;
+    const vpiParameter = user.vpiParameter;
+    const vpiParent = user.vpiParent;
+    const vpiPort = user.vpiPort;
+    const vpiPortIndex = user.vpiPortIndex;
+    const vpiPosNode = user.vpiPosNode;
+    const vpiPotential = user.vpiPotential;
+    const vpiQuantity = user.vpiQuantity;
+    const vpiRealConst = user.vpiRealConst;
+    const vpiRealVar = user.vpiRealVar;
+    const vpiReg = user.vpiReg;
+    const vpiRegArray = user.vpiRegArray;
+    const vpiScalar = user.vpiScalar;
+    const vpiScope = user.vpiScope;
+    const vpiSize = user.vpiSize;
+    const vpiTopModule = user.vpiTopModule;
+    const vpiType = user.vpiType;
+    const vpiUndefined = user.vpiUndefined;
+    const vpiVarSelect = user.vpiVarSelect;
+    const vpiVector = user.vpiVector;
+    const vpi_chk_error = status.vpi_chk_error;
+    const vpi_compare_objects = trust.vpi_compare_objects;
+    const vpi_free_object = trust.vpi_free_object;
     const vpi_get = property.vpi_get;
     const vpi_get_str = property.vpi_get_str;
     const vpi_handle = handle.vpi_handle;
     const vpi_handle_by_index = handle.vpi_handle_by_index;
     const vpi_handle_by_name = handle.vpi_handle_by_name;
     const vpi_iterate = iterate.vpi_iterate;
-    const vpi_release_handle = root.vpi_release_handle;
+    const vpi_release_handle = trust.vpi_release_handle;
     const vpi_scan = iterate.vpi_scan;
 
     const vera = @import("vera");
@@ -18294,7 +18300,7 @@ pub const vpi_tests = struct {
         defer res.deinit();
         defer close();
 
-        const d = &root.design.?;
+        const d = &session.design.?;
         try std.testing.expectEqual(@as(usize, 3), d.scopes.len);
         try std.testing.expectEqualStrings("top", d.objects[0].full);
         try std.testing.expectEqualStrings("top.u", d.objects[1].full);
@@ -18310,19 +18316,19 @@ pub const vpi_tests = struct {
         defer res.deinit();
         defer close();
 
-        const d = &root.design.?;
+        const d = &session.design.?;
         // §11.6.4: ports come from the definition, so a child instance has them
         // even though the flatten collapsed them into the parent's nets.
         try std.testing.expectEqual(@as(usize, 2), d.scopes[0].ports.len);
         try std.testing.expectEqual(@as(usize, 2), d.scopes[1].ports.len);
-        try std.testing.expectEqualStrings("top.u.v.x", d.objects[d.scopes[2].ports[0]].full);
+        try std.testing.expectEqualStrings("top.u.v.x", d.obj(d.scopes[2].ports[0]).*.full);
         // §11.6.8/§11.6.9/§11.6.12: one each per level, bucketed by §6.7 path.
-        try std.testing.expectEqualStrings("top.mid", d.objects[d.scopes[0].nets[0]].full);
-        try std.testing.expectEqualStrings("top.u.inner", d.objects[d.scopes[1].nets[0]].full);
-        try std.testing.expectEqualStrings("top.u.v.deep", d.objects[d.scopes[2].nets[0]].full);
-        try std.testing.expectEqualStrings("top.state", d.objects[d.scopes[0].regs[0]].full);
-        try std.testing.expectEqualStrings("top.u.flag", d.objects[d.scopes[1].regs[0]].full);
-        try std.testing.expectEqualStrings("top.u.v.r", d.objects[d.scopes[2].params[0]].full);
+        try std.testing.expectEqualStrings("top.mid", d.obj(d.scopes[0].nets[0]).*.full);
+        try std.testing.expectEqualStrings("top.u.inner", d.obj(d.scopes[1].nets[0]).*.full);
+        try std.testing.expectEqualStrings("top.u.v.deep", d.obj(d.scopes[2].nets[0]).*.full);
+        try std.testing.expectEqualStrings("top.state", d.obj(d.scopes[0].regs[0]).*.full);
+        try std.testing.expectEqualStrings("top.u.flag", d.obj(d.scopes[1].regs[0]).*.full);
+        try std.testing.expectEqualStrings("top.u.v.r", d.obj(d.scopes[2].params[0]).*.full);
     }
 
     test "vpi_iterate walks a level and vpi_scan frees the iterator at the end" {
@@ -18352,9 +18358,9 @@ pub const vpi_tests = struct {
         const top = vpi_handle_by_name("top", null);
         const itr = vpi_iterate(vpiParameter, top);
         _ = vpi_scan(itr);
-        try std.testing.expectEqual(@as(usize, 1), root.design.?.iters.count());
+        try std.testing.expectEqual(@as(usize, 1), session.design.?.iters.count());
         try std.testing.expectEqual(@as(c_int, 1), vpi_free_object(itr));
-        try std.testing.expectEqual(@as(usize, 0), root.design.?.iters.count());
+        try std.testing.expectEqual(@as(usize, 0), session.design.?.iters.count());
     }
 
     test "§12.23: an empty handle set is NULL with no error; an iterator has its type, its iterated type and nothing else" {
@@ -18363,17 +18369,17 @@ pub const vpi_tests = struct {
         defer close();
 
         // No callback is registered and no systf: NULL, and no error (§12.23).
-        try std.testing.expect(vpi_iterate(callback.vpiCallback, null) == null);
+        try std.testing.expect(vpi_iterate(user.vpiCallback, null) == null);
         try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
         const itr = vpi_iterate(vpiNet, vpi_handle_by_name("top", null));
         defer _ = vpi_free_object(itr);
         try std.testing.expectEqual(vpiIterator, vpi_get(vpiType, itr));
-        try std.testing.expectEqual(vpiNet, vpi_get(root.vpiIteratorType, itr));
-        try std.testing.expectEqual(@as(c_int, 0), vpi_get(root.vpiProtected, itr));
+        try std.testing.expectEqual(vpiNet, vpi_get(user.vpiIteratorType, itr));
+        try std.testing.expectEqual(@as(c_int, 0), vpi_get(user.vpiProtected, itr));
         try std.testing.expectEqual(vpiUndefined, vpi_get(vpiSize, itr));
         try std.testing.expectEqual(vpiError, vpi_chk_error(null));
         // A property of no object, scheduled-event or iterator alike.
-        try std.testing.expectEqual(vpiUndefined, vpi_get(value.vpiScheduled, itr));
+        try std.testing.expectEqual(vpiUndefined, vpi_get(user.vpiScheduled, itr));
     }
 
     test "the §6.7 upward scope search, and absolute names" {
@@ -18406,11 +18412,11 @@ pub const vpi_tests = struct {
 
         // A pointer into the object array but off an element boundary, and one past
         // its end: the two shapes a stale or corrupted handle takes.
-        const base = @intFromPtr(root.design.?.objects.ptr);
+        const base = @intFromPtr(session.design.?.objects.ptr);
         const misaligned: vpiHandle = @ptrFromInt(base + 1);
         try std.testing.expectEqual(vpiUndefined, vpi_get(vpiType, misaligned));
         try std.testing.expectEqual(vpiError, vpi_chk_error(null));
-        const past: vpiHandle = @ptrFromInt(base + root.design.?.objects.len * @sizeOf(Obj));
+        const past: vpiHandle = @ptrFromInt(base + session.design.?.objects.len * @sizeOf(Obj));
         try std.testing.expect(vpi_get_str(vpiName, past) == null);
         try std.testing.expect(vpi_iterate(vpiNet, past) == null);
         try std.testing.expect(vpi_handle(vpiScope, past) == null);
@@ -18500,18 +18506,18 @@ pub const vpi_tests = struct {
             try std.testing.expect(it != null);
             const b = vpi_scan(it).?;
             try std.testing.expect(vpi_scan(it) == null);
-            const o = root.coldOf(asObj(b).?);
-            try std.testing.expect(o.pos != null);
-            try std.testing.expect(o.neg == null); // gnd is §1.3.1.1's reference
+            const o = schema.coldOf(asObj(b).?);
+            try std.testing.expect(o.pos != .none);
+            try std.testing.expect(o.neg == .none); // gnd is §1.3.1.1's reference
             try std.testing.expectEqual(vpiQuantity, vpi_get(vpiType, vpi_handle(vpiFlow, b)));
         }
-        const v1 = root.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.v1"), null))).?).?);
+        const v1 = schema.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.v1"), null))).?).?);
         try std.testing.expect(v1.contrib_pot != null and v1.contrib_flow == null);
         // r1 and r2 are two devices in parallel: lowering sums their `<+` into
         // one row, and each branch's flow is its own instance's share of it
         // (`Lowered.contrib_shares`), not the total.
-        const r1 = root.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.r1"), null))).?).?);
-        const r2 = root.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.r2"), null))).?).?);
+        const r1 = schema.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.r1"), null))).?).?);
+        const r2 = schema.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.r2"), null))).?).?);
         try std.testing.expect(r1.contrib_flow != null and !r1.flow_unknowable);
         try std.testing.expectEqual(r1.contrib_flow, r2.contrib_flow);
         try std.testing.expect(r1.contrib_share != null and r2.contrib_share != null);
@@ -18534,7 +18540,7 @@ pub const vpi_tests = struct {
         defer close();
         // The parent's `<+` lands on the child's own branch: one row, `shared`,
         // and all of it is that branch's flow, so there is no share to look up.
-        const br = root.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.drv"), null))).?).?);
+        const br = schema.coldOf(asObj(vpi_scan(vpi_iterate(vpiBranch, vpi_handle_by_name(@constCast("top.drv"), null))).?).?);
         try std.testing.expect(br.contrib_flow != null and br.contrib_share == null and !br.flow_unknowable);
     }
 
@@ -18551,20 +18557,20 @@ pub const vpi_tests = struct {
         defer close();
 
         const top = vpi_handle_by_name("ct", null);
-        const procs = vpi_iterate(code.vpiProcess, top);
+        const procs = vpi_iterate(user.vpiProcess, top);
         const proc = vpi_scan(procs);
         try std.testing.expect(vpi_scan(procs) == null);
-        try std.testing.expectEqual(code.vpiAnalog, vpi_get(vpiType, proc));
-        const c = vpi_handle(code.vpiStmt, proc);
-        try std.testing.expectEqual(code.vpiContrib, vpi_get(vpiType, c));
+        try std.testing.expectEqual(user.vpiAnalog, vpi_get(vpiType, proc));
+        const c = vpi_handle(user.vpiStmt, proc);
+        try std.testing.expectEqual(user.vpiContrib, vpi_get(vpiType, c));
         try std.testing.expectEqual(@as(c_int, 1), vpi_get(vpiFlow, c));
         try std.testing.expectEqual(@as(c_int, 1), vpi_compare_objects(vpi_handle(vpiBranch, c), vpi_handle_by_name("ct.b", null)));
-        const rhs = vpi_handle(code.vpiRhs, c);
-        try std.testing.expectEqual(code.vpiMultOp, vpi_get(code.vpiOpType, rhs));
+        const rhs = vpi_handle(user.vpiRhs, c);
+        try std.testing.expectEqual(user.vpiMultOp, vpi_get(user.vpiOpType, rhs));
         // §11.6.18: the operand `g` is the parameter object itself.
-        const ops = vpi_iterate(code.vpiOperand, rhs);
+        const ops = vpi_iterate(user.vpiOperand, rhs);
         try std.testing.expectEqual(@as(c_int, 1), vpi_compare_objects(vpi_scan(ops), vpi_handle_by_name("ct.g", null)));
-        try std.testing.expectEqual(code.vpiAccessFunc, vpi_get(vpiType, vpi_scan(ops)));
+        try std.testing.expectEqual(user.vpiAccessFunc, vpi_get(vpiType, vpi_scan(ops)));
         try std.testing.expect(vpi_scan(ops) == null);
     }
 
@@ -18693,7 +18699,7 @@ pub const vpi_tests = struct {
 
     /// The `Scope` whose §6.7 path is `path`, or a test failure.
     fn scopeAt(path: []const u8) !*const Scope {
-        for (root.design.?.scopes) |*s| if (std.mem.eql(u8, s.path, path)) return s;
+        for (session.design.?.scopes) |*s| if (std.mem.eql(u8, s.path, path)) return s;
         std.debug.print("no scope at `{s}`\n", .{path});
         return error.TestExpectedEqual;
     }
@@ -18716,7 +18722,7 @@ pub const vpi_tests = struct {
         defer res.deinit();
         defer close();
 
-        try std.testing.expectEqual(@as(usize, 3), root.design.?.scopes.len);
+        try std.testing.expectEqual(@as(usize, 3), session.design.?.scopes.len);
         try std.testing.expectEqualStrings("sub", (try scopeAt("u[0]")).def_name);
         try std.testing.expectEqualStrings("sub", (try scopeAt("u[1]")).def_name);
         const net = vpi_handle_by_name("top.u[1].inner", null);
@@ -18833,8 +18839,8 @@ pub const vpi_tests = struct {
 
         const units = res.unit_paths;
         try std.testing.expectEqual(@as(usize, 7), units.len);
-        try std.testing.expectEqual(units.len, root.design.?.scopes.len);
-        for (units, root.design.?.scopes) |u, s| {
+        try std.testing.expectEqual(units.len, session.design.?.scopes.len);
+        for (units, session.design.?.scopes) |u, s| {
             try std.testing.expectEqualStrings(u.module, s.def_name);
             try std.testing.expectEqualStrings(std.mem.trimEnd(u8, u.path, &.{Elaborate.sep}), s.path);
         }
@@ -18870,8 +18876,8 @@ pub const vpi_tests = struct {
         while (vpi_scan(itr)) |m| {
             try std.testing.expectEqual(@as(c_int, 1), vpi_get(vpiArray, m));
             try std.testing.expectEqual(@as(c_int, 1), vpi_compare_objects(vpi_handle(vpiModuleArray, m), u));
-            var v: callback.Value = std.mem.zeroes(callback.Value);
-            v.format = value.vpiIntVal;
+            var v: abi.Value = std.mem.zeroes(abi.Value);
+            v.format = user.vpiIntVal;
             const index = vpi_handle(vpiIndex, m);
             try std.testing.expectEqual(vpiConstant, vpi_get(vpiType, index));
             value.vpi_get_value(index, &v);
@@ -18910,8 +18916,8 @@ pub const vpi_tests = struct {
         try std.testing.expectEqual(@as(c_int, 8), vpi_get(vpiSize, w2));
         try std.testing.expectEqual(@as(c_int, 1), vpi_compare_objects(vpi_handle(vpiParent, w2), mem));
         try std.testing.expectEqualStrings("m.mem[2]", std.mem.span(vpi_get_str(vpiFullName, w2)));
-        var v: callback.Value = std.mem.zeroes(callback.Value);
-        v.format = value.vpiIntVal;
+        var v: abi.Value = std.mem.zeroes(abi.Value);
+        v.format = user.vpiIntVal;
         value.vpi_get_value(w2, &v);
         try std.testing.expectEqual(@as(c_int, 0x7e), v.value.integer);
         // Every word, by the legacy tag.
@@ -18954,8 +18960,8 @@ pub const vpi_tests = struct {
         defer h.deinit();
         try run.simulate();
 
-        var v: callback.Value = std.mem.zeroes(callback.Value);
-        v.format = value.vpiIntVal;
+        var v: abi.Value = std.mem.zeroes(abi.Value);
+        v.format = user.vpiIntVal;
         for ([_]struct { []const u8, c_int }{ .{ "top.c.r", 0x11 }, .{ "top.g[0].u.r", 1 }, .{ "top.g[1].u.r", 2 } }) |want| {
             const name = try std.testing.allocator.dupeSentinel(u8, want[0], 0);
             defer std.testing.allocator.free(name);
@@ -19038,16 +19044,16 @@ pub const vpi_tests = struct {
         const Want = struct { name: []const u8, implicit: bool = false, drivers: []const c_int, loads: []const c_int };
         // Each set as its members' types, in object order.
         for ([_]Want{
-            .{ .name = "w", .drivers = &.{code.vpiContAssign}, .loads = &.{code.vpiPrimTerm} },
-            .{ .name = "i", .implicit = true, .drivers = &.{vpiPort}, .loads = &.{code.vpiContAssign} },
-            .{ .name = "o", .implicit = true, .drivers = &.{code.vpiPrimTerm}, .loads = &.{vpiPort} },
-            .{ .name = "r", .drivers = &.{}, .loads = &.{code.vpiContAssign} },
+            .{ .name = "w", .drivers = &.{user.vpiContAssign}, .loads = &.{user.vpiPrimTerm} },
+            .{ .name = "i", .implicit = true, .drivers = &.{vpiPort}, .loads = &.{user.vpiContAssign} },
+            .{ .name = "o", .implicit = true, .drivers = &.{user.vpiPrimTerm}, .loads = &.{vpiPort} },
+            .{ .name = "r", .drivers = &.{}, .loads = &.{user.vpiContAssign} },
         }) |want| {
             const obj = for (nets[0..n]) |x| {
                 if (std.mem.eql(u8, std.mem.span(vpi_get_str(vpiName, x)), want.name)) break x;
             } else vpi_handle_by_name("m.r", null);
-            if (vpi_get(vpiType, obj) == vpiNet) try std.testing.expectEqual(@as(c_int, @intFromBool(want.implicit)), vpi_get(code.vpiImplicitDecl, obj));
-            for ([_]c_int{ code.vpiDriver, code.vpiLoad }, [_][]const c_int{ want.drivers, want.loads }) |tag, types| {
+            if (vpi_get(vpiType, obj) == vpiNet) try std.testing.expectEqual(@as(c_int, @intFromBool(want.implicit)), vpi_get(user.vpiImplicitDecl, obj));
+            for ([_]c_int{ user.vpiDriver, user.vpiLoad }, [_][]const c_int{ want.drivers, want.loads }) |tag, types| {
                 var got: [4]c_int = undefined;
                 var k: usize = 0;
                 const it = vpi_iterate(tag, obj);
@@ -19081,19 +19087,19 @@ pub const vpi_tests = struct {
         const top = vpi_handle_by_name("m", null);
         var prims: [3]vpiHandle = undefined;
         var n: usize = 0;
-        const itr = vpi_iterate(code.vpiPrimitive, top);
+        const itr = vpi_iterate(user.vpiPrimitive, top);
         while (vpi_scan(itr)) |x| : (n += 1) prims[n] = x;
         try std.testing.expectEqual(@as(usize, 3), n);
         // Gates, then pull sources, then switches.
         try std.testing.expectEqualStrings("g1", std.mem.span(vpi_get_str(vpiName, prims[0])));
-        try std.testing.expectEqual(@as(c_int, 0x40), vpi_get(code.vpiStrength0, prims[0]));
-        try std.testing.expectEqual(@as(c_int, 0x20), vpi_get(code.vpiStrength1, prims[0]));
-        try std.testing.expectEqual(code.vpiGate, vpi_get(vpiType, prims[1]));
-        try std.testing.expectEqual(code.vpiPullupPrim, vpi_get(code.vpiPrimType, prims[1]));
+        try std.testing.expectEqual(@as(c_int, 0x40), vpi_get(user.vpiStrength0, prims[0]));
+        try std.testing.expectEqual(@as(c_int, 0x20), vpi_get(user.vpiStrength1, prims[0]));
+        try std.testing.expectEqual(user.vpiGate, vpi_get(vpiType, prims[1]));
+        try std.testing.expectEqual(user.vpiPullupPrim, vpi_get(user.vpiPrimType, prims[1]));
         try std.testing.expectEqual(@as(c_int, 0), vpi_get(vpiSize, prims[1]));
-        try std.testing.expectEqual(@as(c_int, 0x20), vpi_get(code.vpiStrength1, prims[1]));
-        try std.testing.expectEqual(code.vpiSwitch, vpi_get(vpiType, prims[2]));
-        try std.testing.expectEqual(@as(c_int, 13), vpi_get(code.vpiPrimType, prims[2]));
+        try std.testing.expectEqual(@as(c_int, 0x20), vpi_get(user.vpiStrength1, prims[1]));
+        try std.testing.expectEqual(user.vpiSwitch, vpi_get(vpiType, prims[2]));
+        try std.testing.expectEqual(@as(c_int, 13), vpi_get(user.vpiPrimType, prims[2]));
         try std.testing.expectEqual(@as(c_int, 2), vpi_get(vpiSize, prims[2]));
 
         const count = struct {
@@ -19109,9 +19115,9 @@ pub const vpi_tests = struct {
         const w = vpi_handle_by_name("m.w", null);
         // The pullup's and the switch's output terms; the buf in u reads w
         // through the collapsed port, a load of w but not a local one.
-        try std.testing.expectEqual(@as(usize, 2), count(code.vpiLocalDriver, w));
-        try std.testing.expectEqual(@as(usize, 0), count(code.vpiLocalLoad, w));
-        try std.testing.expectEqual(@as(usize, 1), count(code.vpiLoad, w));
+        try std.testing.expectEqual(@as(usize, 2), count(user.vpiLocalDriver, w));
+        try std.testing.expectEqual(@as(usize, 0), count(user.vpiLocalLoad, w));
+        try std.testing.expectEqual(@as(usize, 1), count(user.vpiLoad, w));
         var ux: vpiHandle = null;
         const nets = vpi_iterate(vpiNet, vpi_handle_by_name("m.u", null));
         while (vpi_scan(nets)) |x| if (std.mem.eql(u8, std.mem.span(vpi_get_str(vpiName, x)), "x")) {
@@ -19119,25 +19125,31 @@ pub const vpi_tests = struct {
         };
         // Details l: an input port drives its net locally; across the port the
         // pullup and the switch drive it too.
-        try std.testing.expectEqual(@as(usize, 1), count(code.vpiLocalDriver, ux));
-        try std.testing.expectEqual(@as(usize, 3), count(code.vpiDriver, ux));
+        try std.testing.expectEqual(@as(usize, 1), count(user.vpiLocalDriver, ux));
+        try std.testing.expectEqual(@as(usize, 3), count(user.vpiDriver, ux));
     }
 
     // ---- root.zig's own pieces --------------------------------------------------
 
-    test "OptU32 packs null as none and round-trips every other value" {
-        try std.testing.expectEqual(root.OptU32.none, root.OptU32.of(null));
-        try std.testing.expectEqual(@as(?u32, null), root.OptU32.none.get());
-        for ([_]u32{ 0, 1, 0x7fff_ffff, std.math.maxInt(u32) - 1 }) |v| try std.testing.expectEqual(@as(?u32, v), root.OptU32.of(v).get());
+    test "ObjId and Slot pack null as none and round-trip every other value" {
+        try std.testing.expectEqual(schema.ObjId.none, schema.ObjId.of(null));
+        try std.testing.expectEqual(@as(?u32, null), schema.ObjId.none.get());
+        try std.testing.expectEqual(schema.Slot.none, schema.Slot.of(null));
+        try std.testing.expectEqual(@as(?u32, null), schema.Slot.none.get());
+        for ([_]u32{ 0, 1, 0x7fff_ffff, std.math.maxInt(u32) - 1 }) |v| {
+            try std.testing.expectEqual(@as(?u32, v), schema.ObjId.of(v).get());
+            try std.testing.expectEqual(v, schema.ObjId.at(v).index());
+            try std.testing.expectEqual(@as(?u32, v), schema.Slot.of(v).get());
+        }
     }
 
     test "every declared class has a vpiType with a spelling" {
-        for (std.enums.values(root.Kind)) |k| {
+        for (std.enums.values(schema.Kind)) |k| {
             if (k == .code) continue;
             // A variable array's type follows its element type.
             for ([_]Ast.Type{ .integer, .real }) |ty| {
                 const o: Obj = .{ .kind = k, .owner = .none, .name = "", .full = "", .ty = ty };
-                try std.testing.expect(!std.mem.eql(u8, "vpiUndefined", root.typeName(root.typeOf(&o))));
+                try std.testing.expect(!std.mem.eql(u8, "vpiUndefined", schema.typeName(schema.typeOf(&o))));
             }
         }
     }
@@ -19145,7 +19157,7 @@ pub const vpi_tests = struct {
     test "§12.2: a message past the 512-byte buffer is cut short and still terminated" {
         close();
         const long: [600]u8 = @splat('m');
-        root.fail("LONG", "{s}", .{&long});
+        status.fail("LONG", "{s}", .{&long});
         var info: ErrorInfo = undefined;
         try std.testing.expectEqual(vpiError, vpi_chk_error(&info));
         const message = std.mem.span(info.message);
@@ -19165,20 +19177,20 @@ pub const vpi_tests = struct {
     var probe_timed: vpiHandle = null;
     var probe_compile: vpiHandle = null;
 
-    fn noteNothing(_: *callback.CbData) callconv(.c) c_int {
+    fn noteNothing(_: *abi.CbData) callconv(.c) c_int {
         return 0;
     }
 
     fn probeStartup() callconv(.c) void {
-        probe_starting = root.starting;
+        probe_starting = session.starting;
         probe_get = vpi_get(vpiType, null);
         var info: ErrorInfo = undefined;
         _ = vpi_chk_error(&info);
         probe_refused = info.code != null and std.mem.eql(u8, std.mem.span(info.code), "STARTUP");
-        var t: callback.Time = .{ .type = callback.vpiSimTime, .high = 0, .low = 1, .real = 0 };
-        const timed: callback.CbData = .{ .reason = callback.cbAfterDelay, .cb_rtn = noteNothing, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };
+        var t: abi.Time = .{ .type = user.vpiSimTime, .high = 0, .low = 1, .real = 0 };
+        const timed: abi.CbData = .{ .reason = user.cbAfterDelay, .cb_rtn = noteNothing, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };
         probe_timed = callback.vpi_register_cb(&timed);
-        const compiled: callback.CbData = .{ .reason = callback.cbEndOfCompile, .cb_rtn = noteNothing, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
+        const compiled: abi.CbData = .{ .reason = user.cbEndOfCompile, .cb_rtn = noteNothing, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
         probe_compile = callback.vpi_register_cb(&compiled);
     }
 
@@ -19188,7 +19200,7 @@ pub const vpi_tests = struct {
         const table = [_]?StartupFn{ &probeStartup, null };
         runStartupTable(&table);
         try std.testing.expect(probe_starting);
-        try std.testing.expect(!root.starting);
+        try std.testing.expect(!session.starting);
         try std.testing.expectEqual(vpiUndefined, probe_get);
         try std.testing.expect(probe_refused);
         // A time callback waits for the run; an end-of-compile one is legal now.
@@ -19199,14 +19211,14 @@ pub const vpi_tests = struct {
     test "§12.17 vpi_get_vlog_info: the host's invocation and the product" {
         var argv0 = "vera".*;
         var argv = [_][*c]u8{&argv0};
-        root.setInvocation(1, &argv);
-        defer root.setInvocation(0, null);
-        var info: root.VlogInfo = undefined;
-        try std.testing.expectEqual(@as(c_int, 1), root.vpi_get_vlog_info(&info));
+        session.setInvocation(1, &argv);
+        defer session.setInvocation(0, null);
+        var info: abi.VlogInfo = undefined;
+        try std.testing.expectEqual(@as(c_int, 1), session.vpi_get_vlog_info(&info));
         try std.testing.expectEqual(@as(c_int, 1), info.argc);
         try std.testing.expectEqualStrings("vera", std.mem.span(info.argv[0]));
         try std.testing.expectEqualStrings("VerA", std.mem.span(info.product));
-        try std.testing.expectEqual(@as(c_int, 0), root.vpi_get_vlog_info(null));
+        try std.testing.expectEqual(@as(c_int, 0), session.vpi_get_vlog_info(null));
         try std.testing.expectEqual(vpiError, vpi_chk_error(null));
     }
 
@@ -19214,11 +19226,11 @@ pub const vpi_tests = struct {
         var res = try openSource(nested_src);
         defer res.deinit();
         defer close();
-        const base = @intFromPtr(root.design.?.objects.ptr);
+        const base = @intFromPtr(session.design.?.objects.ptr);
         try std.testing.expect(asObj(@ptrFromInt(base - @sizeOf(Obj))) == null);
-        try std.testing.expect(root.issued(@ptrFromInt(base - @sizeOf(Obj))) == null);
+        try std.testing.expect(trust.issued(@ptrFromInt(base - @sizeOf(Obj))) == null);
         const first = asObj(@ptrFromInt(base)) orelse return error.TestUnexpectedResult;
-        try std.testing.expect(first == &root.design.?.objects[0]);
+        try std.testing.expect(first == &session.design.?.objects[0]);
     }
 
     test "§12.19-§12.21, IEEE 1364-2005 §27.18 and §26.6.43: the lookup routines' refusals" {
@@ -19242,7 +19254,7 @@ pub const vpi_tests = struct {
         // §26.6.43: an iterator's one edge is vpiUse, the reference it was made
         // from; any other is no relationship.
         const itr = vpi_iterate(vpiNet, top);
-        try std.testing.expectEqual(@as(c_int, 1), vpi_compare_objects(vpi_handle(root.vpiUse, itr), top));
+        try std.testing.expectEqual(@as(c_int, 1), vpi_compare_objects(vpi_handle(user.vpiUse, itr), top));
         try std.testing.expect(vpi_handle(vpiScope, itr) == null);
         try std.testing.expectEqual(vpiError, vpi_chk_error(null));
         try std.testing.expectEqual(@as(c_int, 1), vpi_free_object(itr));
@@ -19260,11 +19272,11 @@ pub const vpi_tests = struct {
             \\endmodule
         );
         defer h.deinit();
-        const procs = vpi_iterate(code.vpiProcess, vpi_handle_by_name("f", null));
+        const procs = vpi_iterate(user.vpiProcess, vpi_handle_by_name("f", null));
         const init = vpi_scan(procs);
         _ = vpi_free_object(procs);
-        const loop = vpi_handle(code.vpiStmt, init);
-        try std.testing.expectEqual(code.vpiForever, vpi_get(vpiType, loop));
+        const loop = vpi_handle(user.vpiStmt, init);
+        try std.testing.expectEqual(user.vpiForever, vpi_get(vpiType, loop));
         try std.testing.expectEqualStrings("vpiForever", std.mem.span(vpi_get_str(vpiType, loop)));
     }
 
@@ -19279,11 +19291,11 @@ pub const vpi_tests = struct {
             \\endmodule
         );
         defer h.deinit();
-        const assigns = vpi_iterate(code.vpiContAssign, vpi_handle_by_name("d", null));
+        const assigns = vpi_iterate(user.vpiContAssign, vpi_handle_by_name("d", null));
         const ca = vpi_scan(assigns) orelse return error.TestUnexpectedResult;
         _ = vpi_free_object(assigns);
-        var da: [3]callback.Time = undefined;
-        var dl: delays.Delay = .{ .da = &da, .no_of_delays = 3, .time_type = callback.vpiScaledRealTime, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
+        var da: [3]abi.Time = undefined;
+        var dl: abi.Delay = .{ .da = &da, .no_of_delays = 3, .time_type = user.vpiScaledRealTime, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
         delays.vpi_get_delays(ca, &dl);
         try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
         // Rise and fall as written; turn-off is IEEE 1364 §7.14's min(rise, fall).
@@ -19311,17 +19323,17 @@ pub const vpi_tests = struct {
         );
         defer h.deinit();
         const g = vpi_handle_by_name("top.b[0].u.g", null) orelse return error.TestUnexpectedResult;
-        var da = [2]callback.Time{
-            .{ .type = callback.vpiSimTime, .high = 0, .low = 3, .real = 0 },
-            .{ .type = callback.vpiSimTime, .high = 0, .low = 4, .real = 0 },
+        var da = [2]abi.Time{
+            .{ .type = user.vpiSimTime, .high = 0, .low = 3, .real = 0 },
+            .{ .type = user.vpiSimTime, .high = 0, .low = 4, .real = 0 },
         };
-        var dl: delays.Delay = .{ .da = &da, .no_of_delays = 2, .time_type = callback.vpiSimTime, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
+        var dl: abi.Delay = .{ .da = &da, .no_of_delays = 2, .time_type = user.vpiSimTime, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
         delays.vpi_put_delays(g, &dl);
         try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
         // The one driver the gate became: rise 3, fall 4, turn-off min(3, 4).
         const tok = (asObj(g) orelse return error.TestUnexpectedResult).src_tok;
         var hits: usize = 0;
-        for (h.run.drivers) |drv| {
+        for (h.run.netlist.drivers) |drv| {
             if (drv.tok != tok) continue;
             hits += 1;
             try std.testing.expect(drv.delay.present);
@@ -19351,7 +19363,7 @@ pub const vpi_tests = struct {
         );
         defer h.deinit();
         const a = vpi_handle_by_name("top.b[0].u.a", null) orelse return error.TestUnexpectedResult;
-        const two: callback.Time = .{ .type = callback.vpiScaledRealTime, .high = 0, .low = 0, .real = 2 };
+        const two: abi.Time = .{ .type = user.vpiScaledRealTime, .high = 0, .low = 0, .real = 2 };
         try std.testing.expectEqual(@as(?u64, 2000), run.ticksOf(two, a));
     }
 
@@ -19393,17 +19405,17 @@ pub const vpi_tests = struct {
         try std.testing.expect(std.mem.find(u8, lastMessage(), "vpiLowConn") != null);
         try std.testing.expect(vpi_iterate(127, m) == null);
         try std.testing.expect(std.mem.find(u8, lastMessage(), "vpiTaskFunc") != null);
-        const save: callback.CbData = .{ .reason = 15, .cb_rtn = noCb, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
+        const save: abi.CbData = .{ .reason = 15, .cb_rtn = noCb, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
         try std.testing.expect(callback.vpi_register_cb(&save) == null);
         try std.testing.expect(std.mem.find(u8, lastMessage(), "cbStartOfSave") != null);
         // The legal neighbours on the same objects answer, with no error.
         try std.testing.expectEqual(@as(c_int, 1), vpi_get(vpiTopModule, m));
         try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
-        try std.testing.expect(vpi_iterate(code.vpiTask, m) == null);
+        try std.testing.expect(vpi_iterate(user.vpiTask, m) == null);
         try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
     }
 
-    fn noCb(_: *callback.CbData) callconv(.c) c_int {
+    fn noCb(_: *abi.CbData) callconv(.c) c_int {
         return 0;
     }
 
@@ -19426,7 +19438,7 @@ pub const vpi_tests = struct {
         const a2 = portNamed(vpi_handle_by_name("top.u2", null), "a") orelse return error.TestUnexpectedResult;
         const w2 = portNamed(vpi_handle_by_name("top.u2", null), "w") orelse return error.TestUnexpectedResult;
         const multi = systf.vpi_handle_multi;
-        const imp = systf.vpiInterModPath;
+        const imp = user.vpiInterModPath;
 
         const p = multi(imp, y1, a2) orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
@@ -19442,14 +19454,14 @@ pub const vpi_tests = struct {
         try std.testing.expectEqual(vpiError, vpi_chk_error(null));
 
         // No put yet: no delay. Then two, turn-off §7.14's min(rise, fall).
-        var da: [9]callback.Time = undefined;
-        var dl: delays.Delay = .{ .da = &da, .no_of_delays = 3, .time_type = callback.vpiScaledRealTime, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
+        var da: [9]abi.Time = undefined;
+        var dl: abi.Delay = .{ .da = &da, .no_of_delays = 3, .time_type = user.vpiScaledRealTime, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
         delays.vpi_get_delays(p, &dl);
         try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
         for (da[0..3]) |t| try std.testing.expectEqual(@as(f64, 0), t.real);
         const before = h.bag.count();
-        da[0] = .{ .type = callback.vpiScaledRealTime, .high = 0, .low = 0, .real = 4 };
-        da[1] = .{ .type = callback.vpiScaledRealTime, .high = 0, .low = 0, .real = 2 };
+        da[0] = .{ .type = user.vpiScaledRealTime, .high = 0, .low = 0, .real = 4 };
+        da[1] = .{ .type = user.vpiScaledRealTime, .high = 0, .low = 0, .real = 2 };
         dl.no_of_delays = 2;
         delays.vpi_put_delays(p, &dl);
         try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
@@ -19460,13 +19472,13 @@ pub const vpi_tests = struct {
         try std.testing.expectEqual(before + 1, h.bag.count());
         try std.testing.expectEqual(vera.diag.Code.W0251, h.bag.at(before).code);
         // Read in ticks: 4 ns is 4 ticks of the 1 ns precision.
-        dl.time_type = callback.vpiSimTime;
+        dl.time_type = user.vpiSimTime;
         delays.vpi_get_delays(p, &dl);
         try std.testing.expectEqual(@as(c_uint, 4), da[0].low);
         // Pulse limits other than the delay are refused, not dropped.
-        dl.time_type = callback.vpiScaledRealTime;
+        dl.time_type = user.vpiScaledRealTime;
         dl.pulsere_flag = 1;
-        for (&da, 0..) |*t, k| t.* = .{ .type = callback.vpiScaledRealTime, .high = 0, .low = 0, .real = @floatFromInt(k) };
+        for (&da, 0..) |*t, k| t.* = .{ .type = user.vpiScaledRealTime, .high = 0, .low = 0, .real = @floatFromInt(k) };
         delays.vpi_put_delays(p, &dl);
         try std.testing.expectEqual(vpiError, vpi_chk_error(null));
 
@@ -19521,7 +19533,7 @@ pub const vpi_tests = struct {
         try std.testing.expectEqual(@as(?c_int, 50), macros.get("vpiNegedge"));
         try std.testing.expectEqual(macros.get("vpiNegedge").?, macros.get("vpiEdge10").? | macros.get("vpiEdge1x").? | macros.get("vpiEdgex0").?);
 
-        // Every `pub` c_int the routines spell as a header name (Zig 0.17
+        // Every `pub` c_int vpi_user.zig spells as a header name (Zig 0.17
         // reflection sees `pub` decls only). A `vpi*`/`cb*` name the header does
         // not define is an error too: VerA's own numbers in that namespace
         // (`vpiQuantity`, `vpiExpStrVal`) are in the header. The `acb*` analog
@@ -19529,7 +19541,7 @@ pub const vpi_tests = struct {
         // defines them, outside this module's directory.
         @setEvalBranchQuota(100_000);
         var checked: usize = 0;
-        inline for (.{ root, code, callback, value, systf, run, property }) |file| {
+        inline for (.{user}) |file| {
             inline for (comptime std.meta.declarations(file)) |name| {
                 if (comptime !isHeaderSpelling(name)) continue;
                 if (comptime @TypeOf(@field(file, name)) != c_int) continue;
@@ -19545,9 +19557,11 @@ pub const vpi_tests = struct {
                 }
             }
         }
-        // 2026-10-17: 345 (the seven files' 351 top-level `pub` c_int decls less
-        // the six `acb*`). A floor, so a reflection that finds nothing cannot pass.
-        try std.testing.expect(checked >= 345);
+        // 2026-10-31: 334, every `pub` c_int of vpi_user.zig less the six
+        // `acb*` (before it, seven files spelled 12 of these twice, so the
+        // floor of 345 counted those twice and left out the private
+        // vpiExpStrVal). A floor, so a reflection that finds nothing cannot pass.
+        try std.testing.expect(checked >= 334);
     }
 
     // ---------------------------------------------------------------------------
@@ -19555,35 +19569,35 @@ pub const vpi_tests = struct {
     // digital designs run through `run.Harness`.
     // ---------------------------------------------------------------------------
 
-    const Time = callback.Time;
+    const Time = abi.Time;
 
     fn scaled(v: f64) Time {
-        return .{ .type = callback.vpiScaledRealTime, .high = 0, .low = 0, .real = v };
+        return .{ .type = user.vpiScaledRealTime, .high = 0, .low = 0, .real = v };
     }
 
     fn ticks(n: u32) Time {
-        return .{ .type = callback.vpiSimTime, .high = 0, .low = n, .real = 0 };
+        return .{ .type = user.vpiSimTime, .high = 0, .low = n, .real = 0 };
     }
 
-    fn delayOf(da: []Time, n: c_int, time_type: c_int) delays.Delay {
+    fn delayOf(da: []Time, n: c_int, time_type: c_int) abi.Delay {
         return .{ .da = da.ptr, .no_of_delays = n, .time_type = time_type, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
     }
 
     test "§12.2: a message past Figure 12-1's buffer is truncated and still NUL-terminated" {
-        root.close();
+        session.close();
         const long: [600]u8 = @splat('x');
-        root.fail("LONG", "{s}", .{&long});
-        var info: root.ErrorInfo = undefined;
-        try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(&info));
+        status.fail("LONG", "{s}", .{&long});
+        var info: abi.ErrorInfo = undefined;
+        try std.testing.expectEqual(user.vpiError, status.vpi_chk_error(&info));
         try std.testing.expectEqual(@as(usize, 511), std.mem.span(info.message).len);
         try std.testing.expectEqualStrings("LONG", std.mem.span(info.code));
         // vpi_chk_error leaves the status; the next routine clears it.
-        try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(null));
-        try std.testing.expectEqual(@as(c_int, 0), root.vpi_compare_objects(null, null));
-        try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(&info));
+        try std.testing.expectEqual(user.vpiError, status.vpi_chk_error(null));
+        try std.testing.expectEqual(@as(c_int, 0), trust.vpi_compare_objects(null, null));
+        try std.testing.expectEqual(user.vpiError, status.vpi_chk_error(&info));
         try std.testing.expectEqualStrings("BADHANDLE", std.mem.span(info.code));
-        root.clearError();
-        try std.testing.expectEqual(@as(c_int, 0), root.vpi_chk_error(&info));
+        status.clearError();
+        try std.testing.expectEqual(@as(c_int, 0), status.vpi_chk_error(&info));
         try std.testing.expect(info.message == null and info.code == null);
     }
 
@@ -19597,19 +19611,19 @@ pub const vpi_tests = struct {
         const g = handle.vpi_handle_by_name("top.g", null) orelse return error.TestUnexpectedResult;
         // 2000 and 3000 ticks of the 1 ns precision: 2 and 3 us.
         var da = [3]Time{ ticks(2000), ticks(3000), ticks(0) };
-        var dl = delayOf(&da, 2, callback.vpiSimTime);
+        var dl = delayOf(&da, 2, user.vpiSimTime);
         delays.vpi_put_delays(g, &dl);
-        try std.testing.expectEqual(@as(c_int, 0), root.vpi_chk_error(null));
-        dl = delayOf(&da, 3, callback.vpiScaledRealTime);
+        try std.testing.expectEqual(@as(c_int, 0), status.vpi_chk_error(null));
+        dl = delayOf(&da, 3, user.vpiScaledRealTime);
         delays.vpi_get_delays(g, &dl);
-        try std.testing.expectEqual(@as(c_int, 0), root.vpi_chk_error(null));
+        try std.testing.expectEqual(@as(c_int, 0), status.vpi_chk_error(null));
         for (da, [_]f64{ 2, 3, 2 }) |t, want| try std.testing.expectEqual(want, t.real);
     }
 
     /// The `n`th object (from 0) `vpi_iterate(tag, scope)` yields.
-    fn nth(tag: c_int, scope: root.vpiHandle, n: usize) ?*anyopaque {
+    fn nth(tag: c_int, scope: abi.vpiHandle, n: usize) ?*anyopaque {
         const itr = iterate.vpi_iterate(tag, scope);
-        defer _ = root.vpi_free_object(itr);
+        defer _ = trust.vpi_free_object(itr);
         for (0..n) |_| _ = iterate.vpi_scan(itr);
         return iterate.vpi_scan(itr);
     }
@@ -19626,21 +19640,21 @@ pub const vpi_tests = struct {
         defer h.deinit();
         const first_cell = handle.vpi_handle_by_name("top.first_cell", null);
         const second_cell = handle.vpi_handle_by_name("top.second_cell", null);
-        const path = nth(code.vpiModPath, first_cell, 0) orelse return error.TestUnexpectedResult;
+        const path = nth(user.vpiModPath, first_cell, 0) orelse return error.TestUnexpectedResult;
         // first_cell's output `y` into second_cell's input `a`.
-        const imp = systf.vpi_handle_multi(systf.vpiInterModPath, nth(root.vpiPort, first_cell, 1), nth(root.vpiPort, second_cell, 0)) orelse return error.TestUnexpectedResult;
+        const imp = systf.vpi_handle_multi(user.vpiInterModPath, nth(user.vpiPort, first_cell, 1), nth(user.vpiPort, second_cell, 0)) orelse return error.TestUnexpectedResult;
         var da: [3]Time = undefined;
         for ([_]f64{ std.math.nan(f64), std.math.inf(f64), -1 }) |bad| {
             // A module path: one delay. An inter-module path: two.
             da = .{ scaled(bad), scaled(bad), scaled(bad) };
-            var dl = delayOf(&da, 1, callback.vpiScaledRealTime);
+            var dl = delayOf(&da, 1, user.vpiScaledRealTime);
             delays.vpi_put_delays(path, &dl);
-            try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(null));
+            try std.testing.expectEqual(user.vpiError, status.vpi_chk_error(null));
             dl.no_of_delays = 2;
             delays.vpi_put_delays(imp, &dl);
-            try std.testing.expectEqual(root.vpiError, root.vpi_chk_error(null));
+            try std.testing.expectEqual(user.vpiError, status.vpi_chk_error(null));
         }
-        var dl = delayOf(&da, 1, callback.vpiScaledRealTime);
+        var dl = delayOf(&da, 1, user.vpiScaledRealTime);
         delays.vpi_get_delays(path, &dl);
         try std.testing.expectEqual(@as(f64, 5), da[0].real);
         dl.no_of_delays = 2;
