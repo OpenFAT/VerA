@@ -1,7 +1,8 @@
 //! The prover's falsification oracle: random MIR programs in (parameters with
-//! §3.4.2 ranges, §4.4 probes, nested `if` diamonds over the math functions),
-//! concrete evaluations at sampled points out, with the device's own math
-//! (`contract.gm`). It shares none of the prover's reasoning: no interval, no
+//! §3.4.2 ranges, §4.4 probes, nested `if` diamonds over the math functions,
+//! §4.2.12 selects, §9.10/§4.5.13 calls, §3.2.2 arrays and §5.8.3 counted
+//! loops), concrete evaluations at sampled points out, with the device's own
+//! math (`contract.gm`). It shares none of the prover's reasoning: no interval, no
 //! guard fact, no congruence class. A verdict it falsifies is a prover bug:
 //!   - a unit rated `.optimized` must compute only finite doubles on every
 //!     executed row of its slice, operands included (`@setFloatMode
@@ -12,9 +13,13 @@
 //! contract): a parameter within its range, a probe within the bound. Rule 3
 //! on `proof.FloatMode` is an axiom, not a proof: `+ - * /` (and `hypot`) on
 //! finite operands are taken not to overflow, so a sample where one does is
-//! outside the contract and is dropped whole (`overflows`).
+//! outside the contract and is dropped whole (`overflows`). A select's arm
+//! that the generator made for it alone runs only when the select takes it,
+//! as the device renders it (§4.2.12, lazy); every other row runs where it
+//! stands. A host's `$temperature` is positive and `$abstime` non-negative.
 //!
-//! LRM clauses this file's code cites: §3.4.2, §4.3.1, §4.3.2, §4.4.
+//! LRM clauses this file's code cites: §3.2.2, §3.4.2, §4.2.12, §4.3.1,
+//! §4.3.2, §4.4, §4.5.13, §5.8.3, §9.10.
 //!
 //! Contents: none public; test support and tests only.
 
@@ -29,12 +34,20 @@ const gm = @import("contract").gm;
 const proof = @import("proof.zig");
 
 /// The rows a program may hold; every one has a device spelling below.
+/// The domain-restricted rows a guarded arm applies to its guard's operand
+/// (`if (x > c) ln(x)`), the shape a guard fact exists to prove.
+const guarded_ops = [_]Mir.Opcode{ .ln, .log10, .sqrt, .acosh, .ln1p, .asin, .atanh };
 const unary_ops = [_]Mir.Opcode{ .exp, .ln, .sqrt, .sin, .cos, .tanh, .atan, .asin, .acos, .atanh, .acosh, .fneg, .fabs, .ln1p, .floor, .log10, .sinh };
 const binary_ops = [_]Mir.Opcode{ .fadd, .fsub, .fmul, .fdiv, .pow, .fmin, .fmax, .hypot, .atan2 };
 /// The §3.4.2 range shapes a parameter may carry.
-const Shape = enum { none, positive_open, one_to_ten, unit_closed, negative, nonzero, unit_open };
+const Shape = enum { none, positive_open, one_to_ten, unit_closed, negative, nonzero, unit_open, non_negative };
 /// Most values one program defines; the evaluator's table is sized from it.
-const values_max = 128;
+const values_max = 160;
+/// Elements of each generated §3.2.2 array, and most arrays per program.
+const array_len = 4;
+const arrays_max = 4;
+/// Most iterations of a generated loop.
+const trips_max = 3;
 /// Rows a program's straight-line runs and arms hold.
 const rows_max = 24;
 const samples_per_program = 48;
@@ -50,16 +63,31 @@ const Program = struct {
     /// Values a later row may read, in definition order. An arm's values
     /// leave it when the arm ends, so every read is dominated by its row.
     pool: std.ArrayList(Mir.Value) = .empty,
-    /// Per phi, the condition of the branch whose arms it joins (§5.8).
+    /// Per phi, the condition of the branch whose arms it joins (§5.8), or
+    /// of the loop whose header it is.
     phi_cond: [values_max]Mir.Value = @splat(.undef),
+    /// Per row, whether it is a select arm made for that select alone, which
+    /// runs only when the select takes it.
+    lazy: [values_max]bool = @splat(false),
     out: Mir.Value = .undef,
 };
 
-/// What one evaluation saw: the value of every row it executed.
+/// What one evaluation saw: the value of every row it executed, every array
+/// version's elements, and per row over all its executions (a loop body runs
+/// several times): how many, how many inside its domain, whether one saw a
+/// non-finite operand or result, and whether a rule-3 row overflowed.
 const Run = struct {
     vals: [values_max]f64 = @splat(math.nan(f64)),
     ran: [values_max]bool = @splat(false),
+    arrays: [values_max][array_len]f64 = undefined,
+    runs: [values_max]u32 = @splat(0),
+    inside: [values_max]u32 = @splat(0),
+    nonfinite: [values_max]bool = @splat(false),
+    overflow: bool = false,
 };
+
+/// One sample: the parameters, probes and host state a run reads.
+const Point = struct { params: [3]f64, probes: [2]f64, temperature: f64, abstime: f64 };
 
 // ---- private ----
 
@@ -78,6 +106,7 @@ fn build(a: Allocator, r: std.Random, prog: *Program) !void {
             .negative => &.{.{ .kind = .from, .lo = -10, .hi = -1 }},
             .nonzero => &.{.{ .kind = .exclude, .lo = 0, .hi = 0 }},
             .unit_open => &.{.{ .kind = .from, .lo = -1, .hi = 1, .lo_inclusive = false, .hi_inclusive = false }},
+            .non_negative => &.{.{ .kind = .from, .lo = 0, .hi = 10 }},
         };
         try prog.lowered.params.append(a, .{ .name = "p", .ty = .real, .default = .f_one, .ranges = ranges });
         try prog.pool.append(a, try m.addParamRef(a, @intCast(i)));
@@ -85,47 +114,136 @@ fn build(a: Allocator, r: std.Random, prog: *Program) !void {
     for (0..2) |u| try prog.pool.append(a, try m.addBlockParam(a, @intCast(u)));
     for ([_]f64{ 0.0, 1.0, -1.0, 0.5, 2.0 }) |c| try prog.pool.append(a, try m.addFloatConst(a, c));
     var cur: Mir.Block = .entry;
-    prog.out = try body(a, r, prog, &cur, 0);
+    prog.out = try body(a, r, prog, &cur, 0, null);
     try prog.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .resist_val = prog.out });
     assert(m.valueCount() <= values_max);
 }
 
 /// Emits a run of rows into `cur.*`, maybe a diamond, and returns the last
 /// value; `cur.*` is the block the run ends in.
-fn body(a: Allocator, r: std.Random, prog: *Program, cur: *Mir.Block, depth: u32) !Mir.Value {
+/// `guard`, when set, is the operand the enclosing branch compared, on the
+/// arm where it is at or above what it was compared to: half the time the
+/// run opens with a guarded row on it.
+fn body(a: Allocator, r: std.Random, prog: *Program, cur: *Mir.Block, depth: u32, guard: ?Mir.Value) !Mir.Value {
     const m = &prog.mir;
     var last = pick(r, prog);
+    if (guard) |x| if (r.boolean()) {
+        last = try m.emit(a, cur.*, guarded_ops[r.uintLessThan(usize, guarded_ops.len)], &.{x});
+        try prog.pool.append(a, last);
+    };
     for (0..1 + r.uintLessThan(u32, 3)) |_| {
         if (prog.pool.items.len + 8 > rows_max + 10 or m.valueCount() + 16 > values_max) break;
         if (depth < 2 and r.uintLessThan(u32, 3) == 0) {
             // `if (x REL c) v = <arm> else v = <arm>`, joined by a phi.
             const x = pick(r, prog);
-            const c = pick(r, prog);
-            const cond = try m.emit(a, cur.*, if (r.boolean()) .fgt else .flt, &.{ x, c });
+            // Half the time against zero: the `if (x > 0)` guard idiom.
+            const c: Mir.Value = if (r.boolean()) .f_zero else pick(r, prog);
+            const gt = r.boolean();
+            const cond = try m.emit(a, cur.*, if (gt) .fgt else .flt, &.{ x, c });
             const t = try m.addBlock(a);
             const e = try m.addBlock(a);
             const j = try m.addBlock(a);
             _ = try m.emitBranch(a, cur.*, cond, t, e);
             const scope = prog.pool.items.len;
             var tb = t;
-            const tv = try body(a, r, prog, &tb, depth + 1);
+            // The guarded row goes where `x` is at or above `c`.
+            const tv = try body(a, r, prog, &tb, depth + 1, if (gt) x else null);
             _ = try m.emitJump(a, tb, j);
             prog.pool.shrinkRetainingCapacity(scope);
             var eb = e;
-            const ev = try body(a, r, prog, &eb, depth + 1);
+            const ev = try body(a, r, prog, &eb, depth + 1, if (gt) null else x);
             _ = try m.emitJump(a, eb, j);
             prog.pool.shrinkRetainingCapacity(scope);
             last = try m.emitPhi(a, j, &.{ .{ .block = tb, .value = tv }, .{ .block = eb, .value = ev } });
             prog.phi_cond[@backingInt(last)] = cond;
             cur.* = j;
-        } else if (r.boolean()) {
-            last = try m.emit(a, cur.*, unary_ops[r.uintLessThan(usize, unary_ops.len)], &.{pick(r, prog)});
-        } else {
-            last = try m.emit(a, cur.*, binary_ops[r.uintLessThan(usize, binary_ops.len)], &.{ pick(r, prog), pick(r, prog) });
+        } else if (depth < 2 and r.uintLessThan(u32, 8) == 0) {
+            last = try loop(a, r, prog, cur);
+        } else switch (r.uintLessThan(u32, 8)) {
+            0 => last = try select(a, r, prog, cur.*),
+            1 => last = try call(a, r, prog, cur.*),
+            2 => last = try array(a, r, prog, cur.*),
+            3, 4 => last = try m.emit(a, cur.*, unary_ops[r.uintLessThan(usize, unary_ops.len)], &.{pick(r, prog)}),
+            else => last = try m.emit(a, cur.*, binary_ops[r.uintLessThan(usize, binary_ops.len)], &.{ pick(r, prog), pick(r, prog) }),
         }
         try prog.pool.append(a, last);
     }
     return last;
+}
+
+/// `x REL c ? <arm> : <arm>`. An arm is a pool value or a row made for this
+/// select alone (`Program.lazy`), often a guarded row on `x`.
+fn select(a: Allocator, r: std.Random, prog: *Program, b: Mir.Block) !Mir.Value {
+    const m = &prog.mir;
+    const x = pick(r, prog);
+    const c: Mir.Value = if (r.boolean()) .f_zero else pick(r, prog);
+    const gt = r.boolean();
+    const cond = try m.emit(a, b, if (gt) .fgt else .flt, &.{ x, c });
+    var arms: [2]Mir.Value = undefined;
+    for (&arms, [_]bool{ gt, !gt }) |*arm, at_or_above| arm.* = if (r.uintLessThan(u32, 3) == 0) pick(r, prog) else blk: {
+        // A guarded row only where `x` is at or above `c`.
+        const v = if (at_or_above and r.boolean())
+            try m.emit(a, b, guarded_ops[r.uintLessThan(usize, guarded_ops.len)], &.{x})
+        else if (r.boolean())
+            try m.emit(a, b, unary_ops[r.uintLessThan(usize, unary_ops.len)], &.{pick(r, prog)})
+        else
+            try m.emit(a, b, binary_ops[r.uintLessThan(usize, binary_ops.len)], &.{ pick(r, prog), pick(r, prog) });
+        prog.lazy[@backingInt(v)] = true;
+        break :blk v;
+    };
+    return m.emit(a, b, .select, &.{ cond, arms[0], arms[1] });
+}
+
+/// A call whose range the LRM fixes: §9.10 `$temperature`, `$abstime`,
+/// `$vt` with and without its argument, §4.5.13 `limexp`.
+fn call(a: Allocator, r: std.Random, prog: *Program, b: Mir.Block) !Mir.Value {
+    const m = &prog.mir;
+    const names = [_][]const u8{ "$temperature", "$abstime", "$vt", "$vt", "limexp" };
+    const k = r.uintLessThan(usize, names.len);
+    const args: []const Mir.Value = if (k >= 3) &.{pick(r, prog)} else &.{};
+    return m.emitCall(a, b, try m.internString(a, names[k]), args);
+}
+
+/// A fresh §3.2.2 array, one or two stores at literal indices (one may fall
+/// outside it), and a load of the last version.
+fn array(a: Allocator, r: std.Random, prog: *Program, b: Mir.Block) !Mir.Value {
+    const m = &prog.mir;
+    if (prog.lowered.mem_arrays.items.len == arrays_max) return pick(r, prog);
+    try prog.lowered.mem_arrays.append(a, .{ .name = "arr", .len = array_len, .ty = .real });
+    var ver = try m.emitAnew(a, b, @intCast(prog.lowered.mem_arrays.items.len - 1));
+    for (0..1 + r.uintLessThan(u32, 2)) |_| {
+        const at = try m.addIntConst(a, r.uintLessThan(u32, array_len + 1));
+        ver = try m.emit(a, b, .store, &.{ ver, at, pick(r, prog) });
+    }
+    return m.emit(a, b, .fload, &.{ ver, try m.addIntConst(a, r.uintLessThan(u32, array_len + 1)) });
+}
+
+/// `for (i = 0; i < n; i = i + 1) acc = acc OP x;` with `n` a literal up to
+/// `trips_max`: a header of two phis, a body, the back edge. `cur.*` ends at
+/// the exit block, where `acc` is the result.
+fn loop(a: Allocator, r: std.Random, prog: *Program, cur: *Mir.Block) !Mir.Value {
+    const m = &prog.mir;
+    const h = try m.addBlock(a);
+    const body_b = try m.addBlock(a);
+    const exit = try m.addBlock(a);
+    const init = pick(r, prog);
+    const x = pick(r, prog);
+    _ = try m.emitJump(a, cur.*, h);
+    // The latch values are made in the body; the phis name them once they exist.
+    const i = try m.emitPhi(a, h, &.{.{ .block = cur.*, .value = .zero }});
+    const acc = try m.emitPhi(a, h, &.{.{ .block = cur.*, .value = init }});
+    const trips = try m.addIntConst(a, r.uintLessThan(u32, trips_max + 1));
+    const cond = try m.emit(a, h, .ilt, &.{ i, trips });
+    _ = try m.emitBranch(a, h, cond, body_b, exit);
+    const next = try m.emit(a, body_b, binary_ops[r.uintLessThan(usize, binary_ops.len)], &.{ acc, x });
+    const i_next = try m.emit(a, body_b, .iadd, &.{ i, .one });
+    _ = try m.emitJump(a, body_b, h);
+    try m.setPhiPairs(a, m.valueDef(i).inst_result, &.{ .{ .block = cur.*, .value = .zero }, .{ .block = body_b, .value = i_next } });
+    try m.setPhiPairs(a, m.valueDef(acc).inst_result, &.{ .{ .block = cur.*, .value = init }, .{ .block = body_b, .value = next } });
+    prog.phi_cond[@backingInt(i)] = cond;
+    prog.phi_cond[@backingInt(acc)] = cond;
+    cur.* = exit;
+    return acc;
 }
 
 fn pick(r: std.Random, prog: *const Program) Mir.Value {
@@ -143,8 +261,21 @@ fn sampleParam(r: std.Random, sh: Shape) f64 {
         .negative => &.{ -10, -5, -1.5, -1 },
         .nonzero => &.{ -1e300, -1, -5e-324, 5e-324, 1, 1e300 },
         .unit_open => &.{ math.nextAfter(f64, -1.0, 0.0), -0.5, 0, 0.5, math.nextAfter(f64, 1.0, 0.0) },
+        .non_negative => &.{ 0, 5e-324, 0.5, 1, 10 },
     };
     return pts[r.uintLessThan(usize, pts.len)];
+}
+
+fn samplePoint(r: std.Random, prog: *const Program) Point {
+    var pt: Point = undefined;
+    for (&pt.params, prog.shapes) |*p, sh| p.* = sampleParam(r, sh);
+    pt.probes = .{ sampleProbe(r, prog.bound), sampleProbe(r, prog.bound) };
+    // The host contract: a positive absolute temperature, a non-negative time.
+    const temps = [_]f64{ 5e-324, 1e-3, 300.15, 1e6, 1e300 };
+    const times = [_]f64{ 0, 5e-324, 1e-9, 1, 1e300 };
+    pt.temperature = temps[r.uintLessThan(usize, temps.len)];
+    pt.abstime = times[r.uintLessThan(usize, times.len)];
+    return pt;
 }
 
 fn sampleProbe(r: std.Random, bound: ?f64) f64 {
@@ -183,6 +314,9 @@ fn device(op: Mir.Opcode, x: f64, y: f64) f64 {
         .atan2 => gm.atan2(x, y),
         .flt => if (x < y) 1 else 0,
         .fgt => if (x > y) 1 else 0,
+        // The loop counter: small integers, exact in f64.
+        .ilt => if (x < y) 1 else 0,
+        .iadd => x + y,
         else => unreachable, // else: the generator emits only the rows above
     };
 }
@@ -204,48 +338,124 @@ fn inDomain(op: Mir.Opcode, x: f64, y: f64) bool {
 }
 
 /// Runs the program at one point and records every executed row.
-fn evaluate(prog: *const Program, params: [3]f64, probes: [2]f64, run: *Run) void {
+fn evaluate(prog: *const Program, pt: Point, run: *Run) void {
     const m = &prog.mir;
     var prev: Mir.Block = .entry;
     var cur: Mir.Block = .entry;
-    // Bound: the programs are acyclic, so a walk visits each block once.
-    for (0..m.blockCount() + 1) |_| {
+    // Bound: the programs' only cycles are counted loops, each block of one
+    // entered at most `trips_max + 1` times per entry of its own.
+    for (0..m.blockCount() * (trips_max + 2) * (trips_max + 2)) |_| {
         var next: ?Mir.Block = null;
+        // Phis first, as a parallel copy from the edge taken.
         var it = m.blockInsts(cur);
+        var copies: [values_max]struct { u32, f64 } = undefined;
+        var n_copies: usize = 0;
+        while (it.next()) |inst| if (m.instOp(inst) == .phi) {
+            const d = m.instData(inst).phi;
+            for (0..d.count) |k| {
+                const pp = m.phiPair(inst, @intCast(k));
+                if (pp.block != prev) continue;
+                copies[n_copies] = .{ @backingInt(m.instResult(inst)), value(m, pt, run, pp.value) };
+                n_copies += 1;
+            }
+        };
+        for (copies[0..n_copies]) |c| {
+            run.vals[c[0]] = c[1];
+            run.ran[c[0]] = true;
+        }
+        it = m.blockInsts(cur);
         while (it.next()) |inst| {
             const res = @backingInt(m.instResult(inst));
+            if (prog.lazy[res]) continue; // runs if its select takes it
             switch (m.instData(inst)) {
-                .phi => |d| for (0..d.count) |k| {
-                    const pp = m.phiPair(inst, @intCast(k));
-                    if (pp.block != prev) continue;
-                    run.vals[res] = value(m, params, probes, run, pp.value);
-                    run.ran[res] = true;
-                },
-                .unary => |u| {
-                    run.vals[res] = device(u.op, value(m, params, probes, run, u.operand), 0);
-                    run.ran[res] = true;
-                },
-                .binary => |b| {
-                    run.vals[res] = device(b.op, value(m, params, probes, run, b.lhs), value(m, params, probes, run, b.rhs));
-                    run.ran[res] = true;
-                },
-                .branch => |br| next = if (value(m, params, probes, run, br.cond) != 0) br.then_block else br.else_block,
+                .phi => {},
+                .branch => |br| next = if (value(m, pt, run, br.cond) != 0) br.then_block else br.else_block,
                 .jump => |j| next = j.target,
-                .ternary, .call, .anew, .load, .store => unreachable, // not generated
+                .ternary => |t| {
+                    const arm = if (value(m, pt, run, t.cond) != 0) t.then_val else t.else_val;
+                    if (prog.lazy[@backingInt(arm)]) exec(prog, pt, run, m.valueDef(arm).inst_result);
+                    run.vals[res] = value(m, pt, run, arm);
+                    run.ran[res] = true;
+                },
+                .unary, .binary, .call, .anew, .load, .store => exec(prog, pt, run, inst),
             }
         }
         prev = cur;
         cur = next orelse return;
     }
-    unreachable; // an acyclic program ends within its block count
+    unreachable; // a counted loop ends within its trips
 }
 
-fn value(m: *const Mir, params: [3]f64, probes: [2]f64, run: *const Run, v: Mir.Value) f64 {
+/// Runs one value row, recording its result.
+fn exec(prog: *const Program, pt: Point, run: *Run, inst: Mir.Inst) void {
+    const m = &prog.mir;
+    const res = @backingInt(m.instResult(inst));
+    switch (m.instData(inst)) {
+        .unary => |u| {
+            const x = value(m, pt, run, u.operand);
+            run.vals[res] = device(u.op, x, 0);
+            record(run, res, u.op, x, 0);
+        },
+        .binary => |b| {
+            const x = value(m, pt, run, b.lhs);
+            const y = value(m, pt, run, b.rhs);
+            run.vals[res] = device(b.op, x, y);
+            record(run, res, b.op, x, y);
+            // Rule 3: `+ - * /` and `hypot` of finite operands (a nonzero
+            // divisor) are taken not to overflow; a sample where one does is
+            // outside the contract. A zero divisor is the prover's to see.
+            const rule3 = switch (b.op) {
+                .fadd, .fsub, .fmul, .fdiv, .hypot => true,
+                else => false, // else: every other row is the prover's to bound
+            };
+            if (rule3 and math.isFinite(x) and math.isFinite(y) and !(b.op == .fdiv and y == 0) and math.isInf(run.vals[res]))
+                run.overflow = true;
+        },
+        .call => |c| run.vals[res] = switch (c.callee) {
+            .@"$temperature" => pt.temperature,
+            .@"$abstime" => pt.abstime,
+            // §9.10 kT/q; with an argument, at that temperature.
+            .@"$vt" => (if (c.args.len == 0) pt.temperature else value(m, pt, run, c.args[0])) * 8.617333262145179e-5,
+            .limexp => gm.exp(value(m, pt, run, c.args[0])), // VD-121: exp's own text
+            else => unreachable, // else: the generator calls only these
+        },
+        // §3.2: a fresh local array is all zero.
+        .anew => run.arrays[res] = @splat(0),
+        .store => |st| {
+            run.arrays[res] = run.arrays[@backingInt(st.arr)];
+            const at = value(m, pt, run, st.index);
+            if (at >= 0 and at < array_len) run.arrays[res][@intFromFloat(at)] = value(m, pt, run, st.value);
+        },
+        // §3.2.2 an index outside the array reads zero.
+        .load => |l| {
+            const at = value(m, pt, run, l.index);
+            run.vals[res] = if (at >= 0 and at < array_len) run.arrays[@backingInt(l.arr)][@intFromFloat(at)] else 0;
+        },
+        .ternary, .phi, .branch, .jump => unreachable, // `evaluate` runs these itself
+    }
+    if (m.instOp(inst) == .call) {
+        const c = m.instData(inst).call;
+        record(run, res, .fneg, if (c.args.len != 0) value(m, pt, run, c.args[0]) else 0, 0);
+        run.nonfinite[res] = run.nonfinite[res] or !math.isFinite(run.vals[res]);
+    }
+    run.ran[res] = true;
+}
+
+/// Counts one execution of row `res` (`op` at `x`, `y`, its result already
+/// in `vals`).
+fn record(run: *Run, res: u32, op: Mir.Opcode, x: f64, y: f64) void {
+    run.runs[res] += 1;
+    run.inside[res] += @intFromBool(inDomain(op, x, y));
+    const finite = math.isFinite(run.vals[res]) and math.isFinite(x) and math.isFinite(y);
+    run.nonfinite[res] = run.nonfinite[res] or !finite;
+}
+
+fn value(m: *const Mir, pt: Point, run: *const Run, v: Mir.Value) f64 {
     return switch (m.valueDef(v)) {
         .float_const => |c| c,
         .int_const => |c| @floatFromInt(c),
-        .param_ref => |p| params[p],
-        .block_param => |u| probes[u],
+        .param_ref => |p| pt.params[p],
+        .block_param => |u| pt.probes[u],
         .inst_result => blk: {
             assert(run.ran[@backingInt(v)]); // SSA: defined before its use
             break :blk run.vals[@backingInt(v)];
@@ -259,7 +469,7 @@ fn value(m: *const Mir, params: [3]f64, probes: [2]f64, run: *const Run, v: Mir.
 fn slice(prog: *const Program, root: Mir.Value, in: *[values_max]bool) void {
     const m = &prog.mir;
     @memset(in, false);
-    var stack: [values_max * 4]Mir.Value = undefined;
+    var stack: [values_max * 8]Mir.Value = undefined;
     var n: usize = 1;
     stack[0] = root;
     while (n > 0) {
@@ -279,6 +489,23 @@ fn slice(prog: *const Program, root: Mir.Value, in: *[values_max]bool) void {
                 stack[n..][0..2].* = .{ b.lhs, b.rhs };
                 n += 2;
             },
+            .ternary => |t| {
+                stack[n..][0..3].* = .{ t.cond, t.then_val, t.else_val };
+                n += 3;
+            },
+            .call => |c| for (c.args) |arg| {
+                stack[n] = arg;
+                n += 1;
+            },
+            .load => |l| {
+                stack[n..][0..2].* = .{ l.arr, l.index };
+                n += 2;
+            },
+            .store => |st| {
+                stack[n..][0..3].* = .{ st.arr, st.index, st.value };
+                n += 3;
+            },
+            .anew => {},
             .phi => |d| {
                 for (0..d.count) |k| {
                     stack[n] = m.phiPair(def.inst_result, @intCast(k)).value;
@@ -287,7 +514,7 @@ fn slice(prog: *const Program, root: Mir.Value, in: *[values_max]bool) void {
                 stack[n] = prog.phi_cond[i];
                 n += 1;
             },
-            else => unreachable, // else: the generator emits no other value row
+            .branch, .jump => unreachable, // a terminator defines no Value
         }
     }
 }
@@ -305,40 +532,28 @@ fn checkProgram(gpa: Allocator, r: std.Random, round: usize) !void {
     var in_slice: [values_max]bool = undefined;
     slice(&prog, prog.out, &in_slice);
     // Per domain row: executions, and executions inside the domain.
-    var runs: [values_max]u32 = @splat(0);
-    var inside: [values_max]u32 = @splat(0);
     var domain_row: [values_max]bool = @splat(false);
     for (0..prog.mir.instCount()) |k| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(k));
         domain_row[@backingInt(prog.mir.instResult(inst))] = Mir.opcode.get(prog.mir.instOp(inst)).domain != .all;
     }
     domain_row[0] = false; // terminators define no Value
+    var runs: [values_max]u32 = @splat(0);
+    var inside: [values_max]u32 = @splat(0);
     for (0..samples_per_program) |_| {
-        var params: [3]f64 = undefined;
-        for (&params, prog.shapes) |*p, sh| p.* = sampleParam(r, sh);
-        const probes: [2]f64 = .{ sampleProbe(r, prog.bound), sampleProbe(r, prog.bound) };
+        const pt = samplePoint(r, &prog);
         var run: Run = .{};
-        evaluate(&prog, params, probes, &run);
-        if (overflows(&prog, params, probes, &run)) continue;
-        for (0..prog.mir.instCount()) |k| {
-            const inst: Mir.Inst = @fromBackingInt(@intCast(k));
-            const res = @backingInt(prog.mir.instResult(inst));
-            if (res == 0 or !run.ran[res]) continue;
-            const d = prog.mir.instData(inst);
-            const x, const y = switch (d) {
-                .unary => |u| .{ value(&prog.mir, params, probes, &run, u.operand), 0.0 },
-                .binary => |b| .{ value(&prog.mir, params, probes, &run, b.lhs), value(&prog.mir, params, probes, &run, b.rhs) },
-                else => continue, // else: a phi computes nothing of its own
-            };
-            const op = prog.mir.instOp(inst);
-            runs[res] += 1;
-            inside[res] += @intFromBool(inDomain(op, x, y));
-            if (v.unit_modes[0] != .optimized or !in_slice[res]) continue;
-            const finite = math.isFinite(run.vals[res]) and math.isFinite(x) and math.isFinite(y);
-            if (!finite) {
-                std.debug.print("falsify round {d}: `{s}` at ({d}, {d}) = {d} in an .optimized unit; params {any} probes {any} bound {?d}\n", .{ round, @tagName(op), x, y, run.vals[res], params, probes, prog.bound });
-                return error.TestOptimizedUnitNotFinite;
-            }
+        evaluate(&prog, pt, &run);
+        if (run.overflow) continue;
+        for (0..values_max) |res| {
+            if (run.runs[res] == 0) continue;
+            runs[res] += run.runs[res];
+            inside[res] += run.inside[res];
+            if (v.unit_modes[0] != .optimized or !in_slice[res] or !run.nonfinite[res]) continue;
+            const op = prog.mir.instOp(prog.mir.valueDef(@fromBackingInt(@intCast(res))).inst_result);
+            std.debug.print("falsify round {d}: `{s}` (%{d}) saw a non-finite value in an .optimized unit; point {any} bound {?d}\n", .{ round, @tagName(op), res, pt, prog.bound });
+            dump(&prog, &runs, &inside, &bag);
+            return error.TestOptimizedUnitNotFinite;
         }
     }
     if (v.ok()) return;
@@ -389,33 +604,10 @@ fn dump(prog: *const Program, runs: []const u32, inside: []const u32, bag: *cons
     for (0..bag.count()) |i| std.debug.print("  diag {s}: {s}\n", .{ @tagName(bag.at(i).code), bag.at(i).message });
 }
 
-/// Whether a rule-3 row overflowed at this sample: finite operands (a
-/// nonzero divisor), an infinite result. A zero divisor is not an overflow:
-/// the prover must see it coming (`Interval.excludesZero`).
-fn overflows(prog: *const Program, params: [3]f64, probes: [2]f64, run: *const Run) bool {
-    const m = &prog.mir;
-    for (0..m.instCount()) |k| {
-        const inst: Mir.Inst = @fromBackingInt(@intCast(k));
-        const res = @backingInt(m.instResult(inst));
-        if (res == 0 or !run.ran[res]) continue;
-        const b = switch (m.instData(inst)) {
-            .binary => |b| b,
-            else => continue, // else: only a binary row is a rule-3 row
-        };
-        switch (b.op) {
-            .fadd, .fsub, .fmul, .fdiv, .hypot => {},
-            else => continue, // else: every other row is the prover's to bound
-        }
-        const x = value(m, params, probes, run, b.lhs);
-        const y = value(m, params, probes, run, b.rhs);
-        if (!math.isFinite(x) or !math.isFinite(y)) continue;
-        if (b.op == .fdiv and y == 0) continue;
-        if (math.isInf(run.vals[res])) return true;
-    }
-    return false;
-}
-
 test "falsify: no sampled point breaks an .optimized verdict or a domain refusal" {
+    // Red on each prover bug of the class it guards, injected and reverted:
+    // `fdiv` ignoring a zero divisor, `exp` ignoring overflow, `ln` proven on
+    // `x >= 0`, and a false-edge `<` guard that keeps its strictness.
     var prng = std.Random.DefaultPrng.init(0xfa15_1f1e);
     for (0..programs) |round| try checkProgram(std.testing.allocator, prng.random(), round);
 }
