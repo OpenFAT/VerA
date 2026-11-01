@@ -249,10 +249,10 @@ test "generate: a held string built by 20000 concatenations generates on a 1 MiB
     // Length, not nesting: one statement per concatenation, so no parse depth
     // sizes the caller's stack. Sizing the held string's row (`cg_strcap`)
     // walked the chain one call per piece before any site was emitted and
-    // overflowed it (8 MiB at 20000 pieces). Oracle: §3.3 Table 3-3 gives
-    // each `{s, sp}` the sum of its operands' lengths, and `sp` is a
-    // parameter a card may set, so every piece counts `cg_strcap.row` and the
-    // row the device declares is 20000 of them.
+    // overflowed it (`vera --emit-zig` segfaulted at 20000). Oracle: §3.3
+    // Table 3-3 gives each `{s, sp}` the sum of its operands' lengths, and
+    // `sp` is a parameter a card may set, so every piece counts
+    // `cg_strcap.row` and the row the device declares is 20000 of them.
     const gpa = std.testing.allocator;
     const pieces = 20000;
     var src: std.ArrayList(u8) = .empty;
