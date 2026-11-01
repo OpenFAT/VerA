@@ -19,20 +19,16 @@
 
 #define OBJECTS 32 /* escaped.v's header */
 
-#define PORT_NET "vpi_handle_by_name of a port net's vpiFullName returns its vpiPort (type 44), which has the same full name; also on plain names"
-#define DOT_NAME "a `.` inside an escaped name reads back as a space in vpiName and vpiFullName (`\\m.1 ` is `m 1`)"
+#define PORT_NET "vpi_handle_by_name of a port net's vpiFullName returns its vpiPort (type 44), which has the same full name; also on plain names. Open: tests/conformance structure.c and object_traversal.c expect the port by that name (vpiType vpiPort, vpiDirection), so the fix waits on which the suite holds"
 static const char *const known[][2] = {
-    {"vpi_escaped.m(0).u[1].in a", PORT_NET},
+    {"vpi_escaped.m(0).u[1].\\in.a ", PORT_NET},
     {"vpi_escaped.m(0).u[1].out(b)", PORT_NET},
-    {"vpi_escaped.m(0).u[1] v.in a", PORT_NET},
-    {"vpi_escaped.m(0).u[1] v.out(b)", PORT_NET},
-    {"vpi_escaped.m 1.u[1].in a", PORT_NET},
-    {"vpi_escaped.m 1.u[1].out(b)", PORT_NET},
-    {"vpi_escaped.m 1.u[1] v.in a", PORT_NET},
-    {"vpi_escaped.m 1.u[1] v.out(b)", PORT_NET},
-    {"vpi_escaped.m(0).u[1] v", DOT_NAME},
-    {"vpi_escaped.m 1", DOT_NAME},
-    {"vpi_escaped.m 1.u[1] v", DOT_NAME},
+    {"vpi_escaped.m(0).\\u[1].v .\\in.a ", PORT_NET},
+    {"vpi_escaped.m(0).\\u[1].v .out(b)", PORT_NET},
+    {"vpi_escaped.\\m.1 .u[1].\\in.a ", PORT_NET},
+    {"vpi_escaped.\\m.1 .u[1].out(b)", PORT_NET},
+    {"vpi_escaped.\\m.1 .\\u[1].v .\\in.a ", PORT_NET},
+    {"vpi_escaped.\\m.1 .\\u[1].v .out(b)", PORT_NET},
     {NULL, NULL},
 };
 

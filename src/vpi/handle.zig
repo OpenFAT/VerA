@@ -172,7 +172,11 @@ pub export fn vpi_handle_by_name(name: [*c]const u8, scope: abi.vpiHandle) abi.v
         status.fail("BADNAME", "vpi_handle_by_name: the name is NULL", .{});
         return null;
     }
-    const want = std.mem.span(name);
+    var key_buf: [schema.name_buf_len]u8 = undefined;
+    const want = modelName(&key_buf, std.mem.span(name)) orelse {
+        status.fail("BADNAME", "vpi_handle_by_name: `{s}` is no hierarchical name (an escaped segment ends at white space, and the text holds at most {d} bytes)", .{ std.mem.span(name), key_buf.len });
+        return null;
+    };
     if (scope) |s| {
         const from = status.object("vpi_handle_by_name", s) orelse return null;
         // §6.7's upward search. `scope` need not be a module: the scope of a
@@ -308,6 +312,44 @@ pub export fn vpi_handle_by_multi_index(obj: abi.vpiHandle, num_index: c_int, in
 }
 
 // ---- private ----
+
+/// `text`, a §12.5 hierarchical name, in the model's spelling: an escaped
+/// segment (`\\m.1 `, §3.7.1) loses its `\\` and white space and keeps
+/// its `.` as the space the parser interned it with (`Parser.internTok`),
+/// so its `.` is no separator. Null when an escaped segment is not ended by
+/// white space and a separator or the end, or the result passes `buf`.
+fn modelName(buf: []u8, text: []const u8) ?[]const u8 {
+    if (std.mem.findScalar(u8, text, '\\') == null) return text;
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        std.debug.assert(n <= i); // every byte out is one in
+        if (text[i] != '\\') {
+            const end = std.mem.findScalarPos(u8, text, i, elab.sep) orelse text.len;
+            if (n + (end - i) > buf.len) return null;
+            @memcpy(buf[n..][0 .. end - i], text[i..end]);
+            n += end - i;
+            i = end;
+        } else {
+            const end = std.mem.findAnyPos(u8, text, i, " \t\n\r") orelse return null;
+            if (end == i + 1) return null; // `\\` and white space: no name
+            for (text[i + 1 .. end]) |c| {
+                if (n == buf.len) return null;
+                buf[n] = if (c == '.') ' ' else c;
+                n += 1;
+            }
+            i = end + 1;
+            if (i < text.len and text[i] != elab.sep) return null;
+        }
+        if (i < text.len) {
+            if (n == buf.len) return null;
+            buf[n] = elab.sep;
+            n += 1;
+            i += 1;
+        }
+    }
+    return buf[0..n];
+}
 
 /// The analog one-to-one edge `obj_type` from `o`: null when `o`'s class
 /// draws no such edge (the caller goes on to the other relationships), else
