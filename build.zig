@@ -200,6 +200,21 @@ pub fn build(b: *Build) void {
     });
     suite_mod.addOptions("suite_options", o);
     const suite_exe = b.addExecutable(.{ .name = "vera-suite", .root_module = suite_mod });
+    // Generated inputs through every pass (tests/generators.zig).
+    const gen_mod = m.make("tests/generators.zig", &.{
+        .{ .name = "vera", .module = vera },
+        .{ .name = "zigbuild", .module = byName(mods, "zigbuild") },
+        .{ .name = "sim", .module = sim },
+        .{ .name = "digital", .module = byName(mods, "digital") },
+    });
+    test_step.dependOn(&testRun(b, "generators", gen_mod, runner, results_dir).step);
+    const generators = b.addExecutable(.{ .name = "vera-generators", .root_module = gen_mod });
+    all_step.dependOn(&generators.step);
+    const gen_run = b.addRunArtifact(generators);
+    _ = gen_run.addOutputDirectoryArg("generators");
+    gen_run.expectExitCode(0);
+    test_step.dependOn(&gen_run.step);
+    b.step("test-generators", "Run the generated-input tables (tests/generators.zig) through every pass only").dependOn(&gen_run.step);
     all_step.dependOn(&suite_exe.step);
     const suite_run = testRun(b, "suite", suite_mod, runner, results_dir);
     suite_run.has_side_effects = true; // reads tests/conformance at test time
@@ -212,7 +227,7 @@ pub fn build(b: *Build) void {
         check.dependOn(&b.addExecutable(.{ .name = "check", .root_module = r, .use_llvm = false }).step);
     }
     for (mods) |mod| check.dependOn(&b.addTest(.{ .name = "check", .root_module = testRoot(b, mod), .test_runner = runner, .use_llvm = false }).step);
-    for ([_]*Module{ exe.root_module, osdi_mod, all_mod, suite_mod }) |r| {
+    for ([_]*Module{ exe.root_module, osdi_mod, all_mod, suite_mod, gen_mod }) |r| {
         check.dependOn(&b.addTest(.{ .name = "check", .root_module = r, .test_runner = runner, .use_llvm = false }).step);
     }
 
