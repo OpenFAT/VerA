@@ -191,7 +191,7 @@ pub const Code = enum(u16) {
     W0259,
 
     // ---------------------------------------------------------------- class 3
-    // Declarations, types, disciplines — lower.zig.
+    // Declarations, types, disciplines — src/analog/.
     E0301,
     E0302,
     E0303,
@@ -272,7 +272,7 @@ pub const Code = enum(u16) {
     E0378,
 
     // ---------------------------------------------------------------- class 4
-    // Behavioral semantics: statements and contributions — lower.zig.
+    // Behavioral semantics: statements and contributions — src/analog/.
     E0401,
     E0402,
     E0403,
@@ -316,7 +316,7 @@ pub const Code = enum(u16) {
     E0477,
 
     // ---------------------------------------------------------------- class 5
-    // Analog operators and math functions — lower.zig.
+    // Analog operators and math functions — src/analog/.
     E0501,
     E0502,
     E0503,
@@ -378,7 +378,7 @@ pub const Code = enum(u16) {
     W0653,
 
     // ---------------------------------------------------------------- class 7
-    // Events and timing — lower.zig.
+    // Events and timing — src/analog/.
     E0701,
     E0702,
     E0703,
@@ -392,7 +392,7 @@ pub const Code = enum(u16) {
     W0750,
 
     // ---------------------------------------------------------------- class 8
-    // System tasks and functions — lower.zig.
+    // System tasks and functions — src/analog/.
     E0801,
     E0802,
     E0803,
@@ -416,7 +416,7 @@ pub const Code = enum(u16) {
     W0852,
 
     // ---------------------------------------------------------------- class 9
-    // Hierarchy and elaboration — lower.zig, elaborate.zig.
+    // Hierarchy and elaboration — src/analog/, src/elab/.
     E0901,
     E0902,
     E0903,
@@ -4120,7 +4120,7 @@ const rows: std.enums.EnumFieldStruct(Code, Info, null) = .{
         \\removal is the Verilog-A SUBSET's rule, and VerA compiles
         \\Verilog-AMS, where §7.3.2 lists "the case, casex, and casez
         \\statements" among the analog context's four-state features. They
-        \\lower now (`lower_expr.caseMatch`). The number is not reused.
+        \\lower now (`expr_case.caseMatch`). The number is not reused.
     ),
     .E0417 = .{
         .title = "genvar loop bound is not a constant expression",

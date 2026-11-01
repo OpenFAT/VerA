@@ -71,7 +71,7 @@ events: Events = .{},
 /// `Output.annex_d_included`, set by pp/include.zig's `builtin`.
 annex_d_included: bool = false,
 /// An `include named constants.vams (constants.h) / disciplines.vams
-/// (discipline.h), set by `directive.include`; `Output.disciplines_included`.
+/// (discipline.h), set by pp/include.zig's `handleInclude`; `Output.disciplines_included`.
 constants_included: bool = false,
 disciplines_included: bool = false,
 /// Running text VerA ships (the prelude, a synthesized netlist), which
