@@ -68,7 +68,11 @@ test {
     _ = @import("processes.zig");
     _ = program_root;
     _ = rtlil;
+    _ = @import("rtlil_emitter.zig");
+    _ = @import("rtlil_expr.zig");
     _ = @import("rtlil_fold.zig");
+    _ = @import("rtlil_module.zig");
+    _ = @import("rtlil_proc.zig");
     _ = @import("settle.zig");
     _ = @import("show.zig");
     _ = @import("step_local.zig");
