@@ -12,7 +12,7 @@
       "sha256": "56d06b5b93066146352f52deaa17a56b42e62cf0fdcba5a189a135eea4c23e03",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.0/tools/contract.zig"
     },
-    "date": "2026-10-18",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "1759e80911af9a072f53c15bc02fe70cf8f5dfa467535c8ded7e3c9bbafaf008",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.10.0/vera-v0.10.0-x86_64-macos.tar.gz"
@@ -36,7 +36,7 @@
       "sha256": "4c639280e5ce489c3ed5d5f9b622ba3e1f5aadbd1bd68d9bfa57e9ebe5ff643b",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.1/tools/contract.zig"
     },
-    "date": "2026-10-18",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "241ec5736153d705f61a12c333f607a659c380f6410ced505fe65fd3952f7b3d",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.10.1/vera-v0.10.1-x86_64-macos.tar.gz"
@@ -60,7 +60,7 @@
       "sha256": "b1f94306ed21a8757680e4ca2e855373cbe512ab0db1c0fee6e1760d18b3b65d",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.2/tools/contract.zig"
     },
-    "date": "2026-10-18",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "0f9dba0bba65f8589f4a00b47ff38b98c77ca287fa26f9d5ee676ce489389748",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.10.2/vera-v0.10.2-x86_64-macos.tar.gz"
@@ -84,7 +84,7 @@
       "sha256": "2700315c2291e2a64b0e75d0ca916bfa62c130471b42a39a8b4392f46114abad",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.3/tools/contract.zig"
     },
-    "date": "2026-10-19",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "553cad118b727ea56cdfceb738ca7d0c3e2d9ccff947f3f54b80a4b348d3816f",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.10.3/vera-v0.10.3-x86_64-macos.tar.gz"
@@ -108,7 +108,7 @@
       "sha256": "d21dfe604a382a015c6cea56f878c7f0ef46c8e6be0c945661381118b2fc27d9",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.10.4/tools/contract.zig"
     },
-    "date": "2026-10-19",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "de1a875978f25cca7d170f741ac45fa0070a011906cd4369b24240e4d9a7d268",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.10.4/vera-v0.10.4-x86_64-macos.tar.gz"
@@ -132,7 +132,7 @@
       "sha256": "d137f1b73fdc15f6fe542cf46ac9cba3dea3ddb959afb5ad4610f54d91d619cc",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.11.2/tools/contract.zig"
     },
-    "date": "2026-10-20",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "ad372a25486b8d698338d7b2556d4b2d00c325fa33b223bbe2b9abf1af2ecf25",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.11.2/vera-v0.11.2-x86_64-macos.tar.gz"
@@ -156,7 +156,7 @@
       "sha256": "cf00b2fb8c4189f5405556711c646fa2ceba6be1db338d5e2753b6d203d21744",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.11.3/tools/contract.zig"
     },
-    "date": "2026-10-20",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "a54027ffa39aadb3d1c8774b401ddedd9af2c4c32b673f279881bf3ec83db336",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.11.3/vera-v0.11.3-x86_64-macos.tar.gz"
@@ -180,7 +180,7 @@
       "sha256": "22ce3fbdbf9b4096604d9d59f448a50f54b7ce3270d8e0dd2259421a4bc3817b",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.11.4/tools/contract.zig"
     },
-    "date": "2026-10-20",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "6835fdc753c9deca9df511cddff4b0cae8016a99a0d290e4715408ff1d619880",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.11.4/vera-v0.11.4-x86_64-macos.tar.gz"
@@ -204,7 +204,7 @@
       "sha256": "3a2c570f22423e54ae632fd864e94e3294666ecd5aab0aadd1f45e46bc771e4e",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.11.5/tools/contract.zig"
     },
-    "date": "2026-10-20",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "5db06719849a4c09f9633a7c494712a9f0e1154757ba72dc236eb97d8c7540ce",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.11.5/vera-v0.11.5-x86_64-macos.tar.gz"
@@ -228,7 +228,7 @@
       "sha256": "1d18890c63ef343e419bb12f0481a95ffb09e971f3472e134742145b5d349c9a",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.12.1/lib/contract.zig"
     },
-    "date": "2026-10-22",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "9afa1c6c0ba993e0feaa521ac980bd0f5ffb93db3eac0cf4d6a4541e0707d6d0",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.12.1/vera-v0.12.1-x86_64-macos.tar.gz"
@@ -252,7 +252,7 @@
       "sha256": "6f16d9cf73d552e38c4c4eba416137a22543e591c2b28e773c93f2853fc00e2f",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.15.0/lib/contract.zig"
     },
-    "date": "2026-10-25",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "da4d4b699870b79ece981080602107510f6b43124c8daf34c020dbe064af2574",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.15.0/vera-v0.15.0-x86_64-macos.tar.gz"
@@ -276,7 +276,7 @@
       "sha256": "aca21dfdd3cb54cfedfe8e57b3ea29a0c53855aa7e7be07016845111f72c5b67",
       "url": "https://raw.githubusercontent.com/OpenFAT/VerA/v0.20.0/lib/contract.zig"
     },
-    "date": "2026-10-25",
+    "date": "2026-10-29",
     "x86_64-darwin": {
       "sha256": "804247cf0f7ec78e653d1c2c008d49a26dd23d29dbaa35d7c7153498e88a16ae",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.20.0/vera-v0.20.0-x86_64-macos.tar.gz"
@@ -284,6 +284,56 @@
     "x86_64-linux": {
       "sha256": "f709067065c127148fb4b83e0de9b68390991f2ebdaedb23363293b378ae3c40",
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.20.0/vera-v0.20.0-x86_64-linux-gnu.tar.gz"
+    },
+    "zig": "0.18.0-dev.349+d924f83bf"
+  },
+  "0.21.0": {
+    "aarch64-darwin": {
+      "sha256": "8a692ff19310c66ff2992826e84a5f18611067fc60ef78a9a4d130a44e604491",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.21.0/vera-v0.21.0-aarch64-macos.tar.gz"
+    },
+    "aarch64-linux": {
+      "sha256": "6dd82246b80ffbdb0023b07ad51cd68c91b28b23fee1a8c4746d29a34598d97b",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.21.0/vera-v0.21.0-aarch64-linux-gnu.tar.gz"
+    },
+    "contract": {
+      "archive": true,
+      "sha256": "e08cf51df4c410340d77d525a04d912d91a71b4241b8f9af8f9475eda4acf9e9",
+      "url": "https://github.com/OpenFAT/VerA/archive/refs/tags/v0.21.0.tar.gz"
+    },
+    "date": "2026-11-02",
+    "x86_64-darwin": {
+      "sha256": "7518d41e7abe0c2d77f60944c6efc02ed57403c1132a231fe9cb55fc18828ea2",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.21.0/vera-v0.21.0-x86_64-macos.tar.gz"
+    },
+    "x86_64-linux": {
+      "sha256": "ec2f5f7d206b4c8c7c2f7b3da12547acf1308d379f702cc2896b71a68df9d6c2",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.21.0/vera-v0.21.0-x86_64-linux-gnu.tar.gz"
+    },
+    "zig": "0.18.0-dev.349+d924f83bf"
+  },
+  "0.22.0": {
+    "aarch64-darwin": {
+      "sha256": "9c1ea8adda24699bd5872a3da18fdeeb24aebc5a8df3e6e761418b320948c713",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.22.0/vera-v0.22.0-aarch64-macos.tar.gz"
+    },
+    "aarch64-linux": {
+      "sha256": "acec0e313409de927e06edda76a82bb7c0a59ada166e4986c7244c9b6a95b9e5",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.22.0/vera-v0.22.0-aarch64-linux-gnu.tar.gz"
+    },
+    "contract": {
+      "archive": true,
+      "sha256": "42aaabba371bde79b35cc1730a3705968b1895e57c402ed0b7141afad8cd6371",
+      "url": "https://github.com/OpenFAT/VerA/archive/refs/tags/v0.22.0.tar.gz"
+    },
+    "date": "2026-11-02",
+    "x86_64-darwin": {
+      "sha256": "a378fb544e930e0625b6dab5163f98218b5cc98539c6e8490f7ccec59477ed3f",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.22.0/vera-v0.22.0-x86_64-macos.tar.gz"
+    },
+    "x86_64-linux": {
+      "sha256": "0ee3afb65b535c843a568d7adfe6addb202a1f7fd6c2e321d2f08db1b6dd7d2d",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.22.0/vera-v0.22.0-x86_64-linux-gnu.tar.gz"
     },
     "zig": "0.18.0-dev.349+d924f83bf"
   }
