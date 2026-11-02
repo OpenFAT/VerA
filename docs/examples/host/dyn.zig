@@ -1,6 +1,11 @@
 //! A `--dyn` module: `vera --emit-so` compiles it with the generated device
 //! and calls `exportDevice(D, name)` once, at compile time. Whatever it
 //! exports is the shared library's interface; here, one C-ABI function.
+//!
+//! Contents:
+//! - `pub const vera_validate_contract`
+//! - `pub const calls_setup`
+
 const std = @import("std");
 const contract = @import("contract");
 
@@ -15,6 +20,8 @@ pub fn exportDevice(comptime D: type, comptime name: []const u8) void {
     contract.validateHost(@This(), D);
     @export(&Export(D).residual, .{ .name = "device_residual" });
 }
+
+// ---- private ----
 
 fn Export(comptime D: type) type {
     return struct {

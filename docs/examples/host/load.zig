@@ -1,5 +1,8 @@
 //! Loads the library `vera --emit-so` built and calls the one symbol its
 //! `--dyn` module exported, at the operating point minimal-host.md solved.
+//!
+//! Contents:
+//! - `pub fn main() !void`
 const std = @import("std");
 
 pub fn main() !void {

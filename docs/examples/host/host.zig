@@ -5,6 +5,11 @@
 //!
 //! The device's unknowns are U = { a, k, ai }: its two ports, then its
 //! internal node. The host grounds k and solves for a and ai.
+//!
+//! Contents:
+//! - `pub const vera_validate_contract`
+//! - `pub const calls_setup`
+//! - `pub fn main() void`
 const std = @import("std");
 const contract = @import("contract");
 const D = @import("device");
