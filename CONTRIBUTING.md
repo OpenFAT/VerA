@@ -29,11 +29,14 @@ runs `zig` on the code it emits.
 
 ## A release
 
-1. On a branch: `nix develop .#external -c python3 tools/conformance.py --changelog vX.Y.Z`
-   bumps `build.zig.zon` and `contract.vera_version` together, measures the
-   VAMS Conformance Suite and dates the `## Unreleased` section. Re-bless the
-   one doc transcript that prints the version (`tools/doctest.py --update`).
-2. A pull request with that commit; merge it once its required checks pass.
+1. Run the `release-prep` workflow with `vX.Y.Z`
+   (`gh workflow run release-prep.yaml -f version=vX.Y.Z`). It runs
+   `tools/conformance.py --changelog vX.Y.Z`, which bumps `build.zig.zon` and
+   `contract.vera_version` together, measures the VAMS Conformance Suite and
+   dates the `## Unreleased` section, re-blesses the doc transcript that prints
+   the version (`tools/doctest.py --update`), and opens `release: vX.Y.Z`.
+2. That pull request is a bot's: approve its workflow runs, then the pull
+   request, as in step 4. It auto-merges when its checks pass.
 3. Tag `vX.Y.Z` on the merge commit and push the tag. `publish.yaml` re-checks
    the CHANGELOG score, builds every target, publishes the assets and opens
    `nix: sources.json for vX.Y.Z` as `github-actions[bot]`.
