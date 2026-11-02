@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`--emit-rtlil` writes a deep else-if chain in linear space**: a process
+  line is indented at most 32 levels, so 10,000 arms are 3.9 MB of RTLIL
+  where they were 977 MB, and emitting them takes under 60 MB of memory
+  where it took 4.4 GB. A process nested 15 `if`s deep or less is
+  byte-identical.
 - **A deep connect-module chain with `connectrules` elaborates in linear
   time** (§7.8.4, Annex F.2.1): `segment.up` climbs the chain once, not once
   per level above it, so a 1500-level chain takes 0.26 s where it took
