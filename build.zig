@@ -471,7 +471,9 @@ pub fn build(b: *Build) void {
     if (language != .ams) return;
     for (hostTests(b)) |h| {
         const gen = genRun(b, va_gen, h.va);
-        gen.addArgs(&.{ "--emit-zig", "-I" });
+        gen.addArg("--emit-zig");
+        if (h.emit) gen.addArg("--display=emit");
+        gen.addArg("-I"); // its directory is the next argument
         gen.addDirectoryArg2(b.path("tests/conformance/tests/include"), .{});
         gen.addFileArg(b.path(h.va));
         gen.addArg("-o");
@@ -798,17 +800,19 @@ fn addIncludes(b: *Build, run: *Run, src: []const u8) void {
 
 /// Every `tests/host/*_host.zig`, once per `//! device <path>` line: a path
 /// under `tests/conformance`, or `tests/host/...` for a device only VerA's
-/// host judges (the suite holds only tests any tool can be judged on).
-const HostTest = struct { host: []const u8, va: []const u8 };
+/// host judges (the suite holds only tests any tool can be judged on). A
+/// `//! display emit` line builds the devices `--display=emit`.
+const HostTest = struct { host: []const u8, va: []const u8, emit: bool };
 
 fn hostTests(b: *Build) []const HostTest {
     var found: std.ArrayList(HostTest) = .empty;
     for (globFiles(b, "tests/host", "_host.zig")) |host| {
+        const emit = std.mem.find(u8, configText(b, host), "\n//! display emit\n") != null;
         var lines = std.mem.splitScalar(u8, configText(b, host), '\n');
         while (lines.next()) |raw| {
             const va = std.mem.cutPrefix(u8, std.mem.trimEnd(u8, raw, "\r"), "//! device ") orelse continue;
             const path = if (std.mem.startsWith(u8, va, "tests/host/")) va else b.fmt("tests/conformance/{s}", .{va});
-            found.append(b.allocator, .{ .host = host, .va = path }) catch @panic("OOM");
+            found.append(b.allocator, .{ .host = host, .va = path, .emit = emit }) catch @panic("OOM");
         }
     }
     return found.items;

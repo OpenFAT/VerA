@@ -132,7 +132,8 @@ const processOrder = elab_steps.processOrder;
 const processes = elab_steps.processes;
 const topDeclares = elab_steps.topDeclares;
 
-/// The descriptor table a `Run` with no `file_io` opens files through.
+/// A run's own descriptor table (`Run.tasks.files`) as the `contract.FileIo`
+/// a run with no `file_io` opens files through (`files.own`).
 pub const own_files = system.own;
 
 /// `options.Options`.

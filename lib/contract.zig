@@ -87,7 +87,7 @@ const validate_file = @import("contract/validate.zig");
 /// An additive optional declaration stays optional for a host that checks
 /// it with `@hasDecl`. Replaces the integer `abi_version` (last 6) and the
 /// device's `contract_abi`, 2026-10-18.
-pub const vera_version = "0.21.0";
+pub const vera_version = "0.22.0";
 
 // A mutable global, against the house rule, because it is ABI: generated
 // devices read it through `hostString` from every entry point, and a
@@ -266,8 +266,13 @@ test "the optional tables' defaults: every lane, no slot, one charge site per ro
     try std.testing.expectEqual(~@as(u64, 0), limitReads(mocks.MockR));
     try std.testing.expectEqual(~@as(u64, 0), limitWrites(mocks.MockR));
     try std.testing.expectEqual(~@as(u64, 0), ddxReads(mocks.MockR));
-    try std.testing.expect(fileIo(mocks.MockR) == null);
-    try std.testing.expect(fileIo(mocks.MockAll) != null);
+    var ri: mocks.MockR.Instance = .{};
+    try std.testing.expect(fileIo(mocks.MockR, &ri) == null);
+    // The table is the instance's: `ctx` is what the device handed out.
+    var ai: mocks.MockAll.Instance = .{};
+    const f = fileIo(mocks.MockAll, &ai).?;
+    try std.testing.expect(f.ctx == @as(*anyopaque, &ai.zf__));
+    try std.testing.expectEqual(@as(i64, 0), f.open(f.ctx, "x.txt", "r", false));
     try std.testing.expectEqual(2, comptime nQ(mocks.MockR));
     try std.testing.expectEqual([2]bool{ true, true }, qLte(mocks.MockR));
     const lm = laneMasks(mocks.MockR);

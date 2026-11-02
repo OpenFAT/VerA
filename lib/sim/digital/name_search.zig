@@ -41,8 +41,6 @@ const display = @import("display.zig");
 /// process does (`waiters.store` now, `exec.enqueue` of a `.write` later), so a
 /// §12.30 put wakes waiters and value-change watchers like any other write.
 const exec = @import("exec.zig");
-/// §17 system tasks.
-const system = @import("system.zig");
 const driver = @import("driver.zig");
 const binding = @import("bind.zig");
 const elab = @import("elab.zig");
@@ -74,8 +72,6 @@ const Error = root.Error;
 const Array = root.Array;
 const VecRange = root.VecRange;
 const memo_bits = root.memo_bits;
-/// The descriptor table a `Run` with no `file_io` opens files through.
-const own_files = system.own;
 
 /// A design's elaborated hierarchy: the scope tree (row 0 the first root),
 /// every name bound in each scope, the instances, primitives and named

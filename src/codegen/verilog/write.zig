@@ -58,8 +58,14 @@ const Name = struct {
             if (plain) return w.print("{s}{s}", .{ p, n.text });
             return w.print("\\{s}{s} ", .{ p, n.text });
         }
-        if (plain and n.text.len != 0 and !std.ascii.isDigit(n.text[0]) and n.text[0] != '$') return w.writeAll(n.text);
-        try w.print("\\{s} ", .{n.text});
+        // An unprefixed text is a source name in the parser's spelling
+        // (`Parser.internTok`): a `$`- or `\\`-led escaped name keeps its `\\`,
+        // and an escaped name's `.` is a space. Written as the name itself.
+        const name = if (n.text.len != 0 and n.text[0] == '\\') n.text[1..] else n.text;
+        if (name.len == n.text.len and plain and name.len != 0 and !std.ascii.isDigit(name[0]) and name[0] != '$') return w.writeAll(name);
+        try w.writeByte('\\');
+        for (name) |c| try w.writeByte(if (c == ' ') '.' else c);
+        try w.writeByte(' ');
     }
 };
 
@@ -89,9 +95,9 @@ pub fn write(w: *Writer, plan: *const Plan) Writer.Error!void {
         \\// any transition()/absdelay() td, or its (* vera_delay *). Analog pins are
         \\// undriven and read as their logic level.
         \\`timescale 1ns/1ps
-        \\module {s} (
+        \\module {f} (
         \\
-    , .{ plan.module, plan.vdd / 2, plan.module });
+    , .{ plan.module, plan.vdd / 2, ident(plan.module) });
 
     // The port list: a leading supply carries its own comma, every later
     // port a leading one, so either side of an `ifdef` closes cleanly.
@@ -224,6 +230,11 @@ test Name {
     try std.testing.expectFmt("\\1a ", "{f}", .{ident("1a")});
     try std.testing.expectFmt("\\$a ", "{f}", .{ident("$a")});
     try std.testing.expectFmt("\\a.b ", "{f}", .{ident("a.b")});
+    // The parser's spelling of `\\\\a ` (the name `\\a`), `\\$q ` (`$q`) and
+    // `\\m.1 ` (`m.1`) is written as that name (§3.7.1).
+    try std.testing.expectFmt("\\\\a ", "{f}", .{ident("\\\\a")});
+    try std.testing.expectFmt("\\$q ", "{f}", .{ident("\\$q")});
+    try std.testing.expectFmt("\\m.1 ", "{f}", .{ident("m 1")});
     // A prefixed name keeps a simple text as it is ...
     try std.testing.expectFmt("vera_n_a_b", "{f}", .{Name{ .prefix = "vera_n_", .text = "a_b" }});
     // ... and two texts never meet in one name: `a.b` is not `a_b`.

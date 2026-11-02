@@ -26,8 +26,6 @@ const display = @import("display.zig");
 /// process does (`waiters.store` now, `exec.enqueue` of a `.write` later), so a
 /// §12.30 put wakes waiters and value-change watchers like any other write.
 const exec = @import("exec.zig");
-/// §17 system tasks.
-const system = @import("system.zig");
 const driver = @import("driver.zig");
 const binding = @import("bind.zig");
 const elab = @import("elab.zig");
@@ -56,9 +54,6 @@ const TimeFormat = display.TimeFormat;
 const root = @import("root.zig");
 const Run = root.Run;
 const Error = root.Error;
-
-/// The descriptor table a `Run` with no `file_io` opens files through.
-const own_files = system.own;
 
 /// Adds an E1100 diagnostic at token `tok` (clamped to the last token)
 /// and returns `error.DigitalFailed` for the caller to propagate.

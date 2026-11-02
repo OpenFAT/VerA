@@ -184,9 +184,13 @@ pub fn emitFileCallDropped(self: *Gen, c: Mir.Callee, args: []const Mir.Value, s
     assert(site < self.mir.instCount());
     _ = args; // `UnitPlan.dispHere` did not mark them: there is nothing here to read them
     // In a printing artifact the display unit performed the call and latched
-    // its integer result, so read it back.
-    if (self.display == .emit and Mir.callee.ty(c) == .int)
-        return self.b("zFRes({d}).*", .{site});
+    // its integer result in the instance, so read it back.
+    if (self.display == .emit and Mir.callee.ty(c) == .int) {
+        self.cur.uses.inst = true;
+        // The instance the host passed, not a lane's: one point's display
+        // unit wrote it, as the old file-scope latch was one for every lane.
+        return self.b("inst.zf__.res__{d}", .{site});
+    }
     // Zero is the LRM's answer: §9.5.1 `$fopen` failure, §9.5.4.1 read
     // error, §9.5.8 no EOF, §9.5.7 no error.
     try self.b("{s}", .{switch (Mir.callee.ty(c)) {

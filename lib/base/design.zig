@@ -2,7 +2,7 @@
 //! inserted connect module, a §3.4 `--param` override, the §7.4.4
 //! discipline-resolution mode, and a §9.18 Table 9-29 system parameter with
 //! its spelling ↔ kind mapping, initial value and domain. Elaboration
-//! (`Elaborate`, `hier_param`) aliases them, and `Lowered` carries them
+//! (`elab.design`, `hier_param`) aliases them, and `Lowered` carries them
 //! without importing elaboration.
 //!
 //! Cites: VAMS-2023 §3.4, §6.3.6, §7.4.4, §7.8.4, §9.18 (Table 9-29), F.2.2.

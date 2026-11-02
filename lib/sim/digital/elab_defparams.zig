@@ -124,34 +124,35 @@ pub fn checkDefparams(r: *Run) Error!void {
 
 /// Defparam `d`'s path, its unfolded selects folded in the current scope,
 /// and its segments as the parser read them: the tokens from `d.main_tok`
-/// give each name's length in `d.path`, so a `[`, `]`, `.` or `$` inside an
-/// escaped name is the name's, never a select or a separator (IEEE 1364-2005
-/// §3.7.1). `parse_hier.parseDottedPath` spells the path: each name as
-/// `internTok` interns it, `[k]` (or `[]`, unfolded) after a selected one,
-/// `.` between.
+/// give each name, so a `[`, `]`, `.` or `$` inside an escaped name is the
+/// name's, never a select or a separator (IEEE 1364-2005 §3.7.1).
+/// `parse_hier.parseDottedPath` spells the path: each name as `internTok`
+/// interns it, `[k]` (or `[]`, unfolded) after a selected one, `.` between.
+/// The spelling is the frontend's, so each name is matched against it
+/// (`spelledName`) rather than assumed; a path that matches no reading of
+/// its tokens is refused, never asserted on.
 fn pathSegments(r: *Run, d: Ast.Defparam) Error!struct { path: []const u8, segs: []const PathSeg } {
     assert(d.main_tok < r.starts.len);
     const spelled = r.file.str(d.path);
+    const unread = "§12.2.1: this defparam's path cannot be read segment by segment from its tokens";
     var path: std.ArrayList(u8) = .empty;
     var segs: std.ArrayList(PathSeg) = .empty;
     var tok = d.main_tok;
     var at: usize = 0; // into `spelled`
     var unfolded: usize = 0; // into `d.indices`
-    while (true) {
-        // A name: an identifier, escaped (`\` dropped, but `\$...` kept
-        // whole, §3.7.3), or a system name (`$root`, `u.$xposition`).
-        const raw = Front.lexer.tokenText(r.text, r.starts[tok]);
-        const len = if (raw[0] == '\\' and raw[1] != '$') raw.len - 1 else raw.len;
-        assert(len >= 1); // The lexer makes no empty name.
-        assert(at + len <= spelled.len); // The parser spelled this token here.
+    while (at < spelled.len) {
+        if (tok >= r.starts.len) return r.fail(d.main_tok, unread, .{});
+        const len = spelledName(spelled[at..], Front.lexer.tokenText(r.text, r.starts[tok])) orelse return r.fail(d.main_tok, unread, .{});
+        assert(len >= 1);
         const start: u32 = @intCast(path.items.len);
         try path.appendSlice(r.arena, spelled[at .. at + len]);
         at += len;
         tok += 1;
         var index: ?i64 = null;
         if (at < spelled.len and spelled[at] == '[') {
-            const close = at + std.mem.findScalar(u8, spelled[at..], ']').?;
+            const close = at + (std.mem.findScalar(u8, spelled[at..], ']') orelse return r.fail(d.main_tok, unread, .{}));
             index = if (close == at + 1) blk: {
+                if (unfolded == d.indices.len) return r.fail(d.main_tok, unread, .{});
                 const x = d.indices[unfolded];
                 unfolded += 1;
                 break :blk (try r.constant(x, d.main_tok)).asInt() orelse return r.exprFail(x, "§12.2.1: a defparam's instance select is x or z");
@@ -160,29 +161,52 @@ fn pathSegments(r: *Run, d: Ast.Defparam) Error!struct { path: []const u8, segs:
             try path.print(r.arena, "[{d}]", .{index.?});
             at = close + 1;
             // Past the select's tokens: its `]` is the first to close it.
+            if (tok >= r.starts.len or r.text[r.starts[tok]] != '[') return r.fail(d.main_tok, unread, .{});
             var depth: u32 = 0;
-            while (true) : (tok += 1) switch (r.text[r.starts[tok]]) {
+            while (tok < r.starts.len) : (tok += 1) switch (r.text[r.starts[tok]]) {
                 '[' => depth += 1,
                 ']' => {
                     depth -= 1;
                     if (depth == 0) break;
                 },
                 else => {},
-            };
+            } else return r.fail(d.main_tok, unread, .{});
             tok += 1;
         }
         try segs.append(r.arena, .{ .name = path.items[start .. start + len], .index = index, .start = start });
         if (at == spelled.len) break;
-        assert(spelled[at] == '.');
+        if (spelled[at] != '.') return r.fail(d.main_tok, unread, .{});
         try path.append(r.arena, '.');
         at += 1;
         tok += 1; // the `.`
     }
-    assert(unfolded == d.indices.len);
-    assert(segs.items.len >= 1);
+    if (segs.items.len == 0 or unfolded != d.indices.len) return r.fail(d.main_tok, unread, .{});
+    assert(at == spelled.len);
     // `name` slices were taken while `path` grew: re-point them at its final bytes.
     for (segs.items) |*g| g.name = path.items[g.start .. g.start + g.name.len];
     return .{ .path = path.items, .segs = segs.items };
+}
+
+/// The length of the name that identifier token `raw` (its source text)
+/// interned to, read where `rest` (the spelled path from here) holds it, or
+/// null when no reading fits. An escaped token interns as its text without
+/// the `\`, or (a `$`-led or `\`-led text, §3.7.3) as the whole token; a
+/// `.` inside either is interned as a space. A reading fits when the path
+/// holds it and goes on with a select, a separator or its end.
+fn spelledName(rest: []const u8, raw: []const u8) ?usize {
+    assert(raw.len >= 1); // The lexer makes no empty token.
+    const escaped = raw[0] == '\\' and raw.len >= 2;
+    const whole_first = escaped and (raw[1] == '$' or raw[1] == '\\');
+    const readings: [2][]const u8 = if (!escaped) .{ raw, raw } else if (whole_first) .{ raw, raw[1..] } else .{ raw[1..], raw };
+    for (readings) |name| {
+        if (name.len == 0 or name.len > rest.len) continue;
+        const fits = for (name, rest[0..name.len]) |n, c| {
+            if (c != n and !(n == '.' and c == ' ')) break false;
+        } else true;
+        if (!fits) continue;
+        if (name.len == rest.len or rest[name.len] == '.' or rest[name.len] == '[') return name.len;
+    }
+    return null;
 }
 
 /// The scope defparam `segs` (declared in `decl`) is relative to once its

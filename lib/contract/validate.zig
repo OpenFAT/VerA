@@ -74,7 +74,9 @@ const AllowedPubDecl = enum {
     // §9.4.1/§9.5.9 the same phase by `SayPass`, for `$debug`/`$fdebug`,
     // which show output at every iteration.
     displayPass,
-    file_io,
+    // §9.5.1.2 one instance's descriptor table, and its release.
+    fileIo,
+    deinitInstance,
     attempt,
     u_kinds,
     u_abstol,

@@ -58,6 +58,13 @@ pub fn lowerNoise(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         try self.err(ex.mainTok(e), .E0505, "`{s}()` (A.8.2 gives the small-signal functions no empty slot)", .{name});
         return poison;
     };
+    // A.8.2 and Syntax 4-4 fix each one's longest list: `ac_stim` three,
+    // `flicker_noise` three, `white_noise` and the tables two.
+    const most: usize = if (std.mem.eql(u8, name, "ac_stim") or std.mem.eql(u8, name, "flicker_noise")) 3 else 2;
+    if (ex.args(e).len > most) {
+        try self.err(ex.mainTok(e), .E0506, "`{s}()` takes at most {d}, and this call passes {d}", .{ name, most, ex.args(e).len });
+        return poison;
+    }
     // A.8.2 `ac_stim ( [ " analysis_identifier " [ , analog_expression ...`:
     // the quotation marks are in the production, so the analysis name is a
     // string literal.

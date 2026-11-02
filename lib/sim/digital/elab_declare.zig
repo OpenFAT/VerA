@@ -450,7 +450,7 @@ pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
     };
     var inner = scope;
     switch (r.file.stmt(s)) {
-        .block => |b| if (b.name != .none and !r.hier.block_scopes.contains(.{ .scope = scope, .stmt = s }) and declares(r.file, s)) {
+        .block => |b| if (b.name != .none and !r.hier.block_scopes.contains(.{ .scope = scope, .stmt = s }) and try declares(r, s)) {
             inner = try blockScope(r, scope, s);
         },
         else => {}, // else: only a block is a scope
@@ -564,23 +564,37 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
     try r.hier.bound_at.put(r.arena, .{ .scope = scope, .str = ex.strOf(x) }, 0);
 }
 
-/// Does statement `s` hold a named block with declarations of its own?
-fn declares(file: *const Ast.SourceFile, s: Ast.StmtId) bool {
+/// Does statement `s` hold a block with declarations of its own? A worklist,
+/// not a recursion: the walk is as deep as the source nests, and it runs in
+/// pass one before any walk that checks `deep.exhausted`.
+// ponytail: `blockScopes` asks again at each named block that declares
+// nothing, so a nest of n such blocks costs O(n^2); one bottom-up pass
+// marking the declaring blocks if that nest ever matters.
+fn declares(r: *Run, s: Ast.StmtId) Error!bool {
     assert(s != .none);
-    assert(file.stmt(s) == .block); // `blockScopes` asks of a named block only.
-    const W = struct {
-        f: *const Ast.SourceFile,
-        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) error{Found}!void {}
-        pub fn stmt(w: @This(), c: Ast.StmtId) error{Found}!void {
-            if (c == .none) return;
-            switch (w.f.stmt(c)) {
-                .block => |b| if (b.vars.len != 0 or b.params.len != 0 or b.events.len != 0) return error.Found,
-                else => {}, // else: only a block declares
-            }
-            try w.f.stmtEdges(c, w);
+    assert(r.file.stmt(s) == .block); // `blockScopes` asks of a named block only.
+    const Push = struct {
+        a: std.mem.Allocator,
+        work: *std.ArrayList(Ast.StmtId),
+        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) Error!void {}
+        pub fn stmt(p: @This(), c: Ast.StmtId) Error!void {
+            if (c != .none) try p.work.append(p.a, c);
         }
     };
-    (W{ .f = file }).stmt(s) catch return true;
+    var work: std.ArrayList(Ast.StmtId) = .empty;
+    defer work.deinit(r.arena);
+    try work.append(r.arena, s);
+    var seen: usize = 0;
+    while (work.pop()) |c| : (seen += 1) {
+        // A statement tree: each statement is pushed once, by its parent.
+        assert(seen < std.math.maxInt(u32));
+        switch (r.file.stmt(c)) {
+            .block => |b| if (b.vars.len != 0 or b.params.len != 0 or b.events.len != 0) return true,
+            else => {}, // else: only a block declares
+        }
+        try r.file.stmtEdges(c, Push{ .a = r.arena, .work = &work });
+    }
+    assert(work.items.len == 0);
     return false;
 }
 
@@ -613,4 +627,39 @@ test "blockScopes refuses a statement nest past its thread's stack with E0241, n
     try diag.render(&bag, &messages.writer, .{});
     try std.testing.expect(std.mem.find(u8, messages.written(), "E0241") != null);
     try std.testing.expect(std.mem.find(u8, messages.written(), "exhausts the 4 MiB stack") != null);
+}
+
+test "a named block over a nest past the stack is a coded refusal, never a crash; a declaration at its bottom is still found" {
+    // Oracle: deep_stack's contract, as above (a named refusal past the
+    // reservation, never a crash), and IEEE 1364-2005 §12.5: a named block
+    // that declares something, here 10^5 blocks down, makes a scope of the
+    // hierarchy; one that declares nothing needs none. `declares` walks the
+    // whole nest under a named block before `blockScopes` recurses, so it
+    // must not use the stack either. `deep`, in an unselected generate arm,
+    // is never elaborated (as above); both walks run on the caller's stack.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const n = 100_000;
+    for ([_][]const u8{ "", ": b integer i; " }) |bottom| {
+        var src: std.ArrayList(u8) = .empty;
+        try src.appendSlice(a, "module deep; initial begin : top ");
+        for (0..n) |_| try src.appendSlice(a, "begin ");
+        try src.print(a, "begin {s}end", .{bottom});
+        for (0..n) |_| try src.appendSlice(a, " end");
+        try src.appendSlice(a, " end endmodule module m; generate if (0) begin : g deep u(); end endgenerate endmodule");
+        var bag = diag.Bag.init(a);
+        var out = std.Io.Writer.Allocating.init(a);
+        var r = try root.elaborate(a, src.items, .{}, &bag, &out.writer);
+        try std.testing.expect(!bag.failed()); // `deep` was never elaborated.
+        const top = r.file.modules[0].discrete[0].body;
+        try std.testing.expectEqual(bottom.len != 0, try declares(&r, top));
+        if (bottom.len != 0) continue; // A scope needs pass one's storage, which `elaborate` closed.
+        r.diag_stage = .lower; // As in pass one.
+        try std.testing.expectError(error.DigitalFailed, blockScopes(&r, 0, top));
+        var messages = std.Io.Writer.Allocating.init(a);
+        try diag.render(&bag, &messages.writer, .{});
+        try std.testing.expect(std.mem.find(u8, messages.written(), "E0241") != null);
+        try std.testing.expect(std.mem.find(u8, messages.written(), "exhausts the 4 MiB stack") != null);
+    }
 }

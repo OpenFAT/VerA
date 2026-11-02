@@ -84,7 +84,8 @@ pub fn residualError(comptime D: type) ?[]const u8 {
 /// returning void (§9.7 `$finish`/`$stop`/`$fatal` inside it exit the
 /// process, because both clauses tie the task to the accepted point, which
 /// is when a host calls it); `displayPass` comes with it (§9.4.1/§9.5.9);
-/// `file_io` is a `FileIo`; `say_sites` and `say` come together; and
+/// `fileIo` (an instance's `FileIo`) and `deinitInstance` come together;
+/// `say_sites` and `say` come together; and
 /// `status_sites` comes with its two `Instance` fields.
 pub fn displayError(comptime D: type) ?[]const u8 {
     const name = @typeName(D);
@@ -95,8 +96,12 @@ pub fn displayError(comptime D: type) ?[]const u8 {
         if (!@hasDecl(D, "display")) return name ++ ": displayPass comes with display";
         if (shape.genericError(D, "displayPass", 6, "fn (comptime S: type, *const [n_u]S.V, *const Model, InstancePtr, SimState, comptime SayPass) void")) |m| return m;
     }
-    if (@hasDecl(D, "file_io") and @TypeOf(D.file_io) != host_callbacks.FileIo)
-        return name ++ ".file_io must be a contract.FileIo";
+    if (@hasDecl(D, "fileIo") != @hasDecl(D, "deinitInstance"))
+        return name ++ ": fileIo and deinitInstance come together";
+    if (@hasDecl(D, "fileIo") and @TypeOf(D.fileIo) != fn (*D.Instance) host_callbacks.FileIo)
+        return name ++ ".fileIo must be `fn (*Instance) contract.FileIo`";
+    if (@hasDecl(D, "deinitInstance") and @TypeOf(D.deinitInstance) != fn (*D.Instance) void)
+        return name ++ ".deinitInstance must be `fn (*Instance) void`";
     // §9.4 the output channel: the site table and the entry point that
     // records into a host's `Say`, one without the other being of no use.
     if (@hasDecl(D, "say_sites") != @hasDecl(D, "say"))

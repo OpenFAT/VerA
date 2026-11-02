@@ -724,6 +724,12 @@ pub fn call(self: *Lower, name: []const u8, args: []const Mir.Value) Oom!Mir.Val
     // an `Instance.systf` binding (`Uses.systf`).
     assert(name.len != 0);
     assert(self.blockValid(self.cur));
+    // Each element of an array or pattern argument is one operand, and a
+    // replication (`'{16777216{1.0}}`) can pass the row's count field.
+    if (args.len > Mir.call_args_max) {
+        try self.err(self.mir.cur_tok, .E1021, "`{s}` has {d} operands, and a call holds at most {d}", .{ name, args.len, Mir.call_args_max });
+        return .undef;
+    }
     if (Mir.Callee.fromName(name) == .systf) self.out.uses.insert(.systf);
     const callee = try self.mir.internString(self.arena, name);
     const v = try self.mir.emitCall(self.arena, self.cur, callee, args);

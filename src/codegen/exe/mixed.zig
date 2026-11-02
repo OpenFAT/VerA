@@ -203,7 +203,7 @@ fn mainOf(w: *Writer, bench: *const Bench, facts: Facts, count: u32) RenderError
         try parts.sweepPoint(w, bench, count, n);
         // §9.5.1.1, as in the fixed-grid runner: every point here is an analysis.
         if (n != 0)
-            try w.writeAll("        if (comptime contract.fileIo(D)) |f| if (f.new_analysis) |g| g();\n");
+            try w.writeAll("        if (contract.fileIo(D, &inst)) |f| if (f.new_analysis) |g| g(f.ctx);\n");
         try parts.swept(w, bench, count, n);
         try parts.pointUnknowns(w, bench, facts, .init(bench, count, n), mdl, true);
         try w.print("        runMixed(&{s}, &inst, &x, &forced, &state, &n);\n    }}\n", .{mdl});

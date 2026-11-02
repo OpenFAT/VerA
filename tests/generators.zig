@@ -423,9 +423,7 @@ const escaped = struct {
         backslash,
     };
 
-    pub const known: []const table.Known = &.{
-        .{ .row = "backslash --emit-rtlil", .why = "the parser interns `\\$x ` (the name `$x`) and `\\\\$x ` (the name `\\$x`) as one string, `\\$x` (Parser.internTok keeps a `$`-led escaped name's `\\`), so --emit-rtlil writes both as `\\$x`; a seed whose name starts with `\\$` fails. `\\\\a ` is written `\\\\a` since pass 3" },
-    };
+    pub const known: []const table.Known = &.{};
 
     pub fn rows(arena: Allocator, exe: []const u8, dir: []const u8) ![]const table.Row {
         var out: std.ArrayList(table.Row) = .empty;

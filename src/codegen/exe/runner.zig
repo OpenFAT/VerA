@@ -71,7 +71,7 @@ pub fn writeRunner(w: *Writer, scratch: Allocator, title: []const u8, bench: *co
         // §9.5.1.1 a block after the first is a following analysis of the same
         // process, so a file it reopens "w" keeps earlier output.
         if (per_block and n != 0)
-            try w.writeAll("        if (comptime contract.fileIo(D)) |f| if (f.new_analysis) |g| g();\n");
+            try w.writeAll("        if (contract.fileIo(D, &inst)) |f| if (f.new_analysis) |g| g(f.ctx);\n");
         if (bench.psweeps.len != 0) {
             try parts.swept(w, bench, count, n);
             // §6.3.4: setup also derives from the swept card.

@@ -24,7 +24,7 @@
 //!   `u_nodeset`, `decl_meta`, `op_vars`, `opVars`, `instance_params`,
 //!   `mc_param`, `constant`, `noise_gens`, `noise_tables`, `noiseTablePoints`,
 //!   `noisePsd`, `ac_gens`, `acStim`, `ac_dyn_slots`, `acDyn`, `systf_calls`,
-//!   `file_io`, `jac_pattern`, `q_pattern`, `jac_rows`, `q_rows`,
+//!   `fileIo`, `deinitInstance`, `jac_pattern`, `q_pattern`, `jac_rows`, `q_rows`,
 //!   `deriv_reads`, `ddx_reads`, `jac_const`, `n_q`, `q_stamps`, `q_lte`,
 //!   `q_site_pattern`, `status_sites`, `say_sites`, `say`, `derive`,
 //!   `checkShape`, `checkCard`, `checkRange`, `precompute`, `nextBreakpoint`,
@@ -209,6 +209,9 @@ pub const MockAll = struct {
         cwd: []const u8 = "",
         analysis_name: []const u8 = "",
         systf: ?*const SystfHost = null,
+        // §9.5 the instance's descriptor table (`fileIo`): device-owned rows,
+        // admitted by name though a pointer is no value type.
+        zf__: struct { rows: ?*u8 = null } = .{},
         vera_status__: u32 = 0,
         vera_status_args__: [4]f64 = @splat(0.0),
     };
@@ -275,33 +278,37 @@ pub const MockAll = struct {
     pub const ac_gens = [_]AcGen(Self){.{ .row = 0, .col = 1, .name = "ac" }};
     pub const systf_calls = [_]Systf{.{ .name = "$sampnhold" }};
     // §9.5.1.2 a table that has nothing open: every operation answers "no".
-    pub const file_io: FileIo = .{
-        .open = struct {
-            fn f(_: []const u8, _: []const u8, _: bool) i64 {
-                return 0;
-            }
-        }.f,
-        .close = noFile,
-        .put = struct {
-            fn f(_: i64, _: []const u8) i64 {
-                return 0;
-            }
-        }.f,
-        .getc = noFile,
-        .ungetc = struct {
-            fn f(_: i64, _: i64) i64 {
-                return -1;
-            }
-        }.f,
-        .tell = noFile,
-        .seek = struct {
-            fn f(_: i64, _: i64, _: i64) i64 {
-                return -1;
-            }
-        }.f,
-        .eof = noFile,
-    };
-    fn noFile(_: i64) i64 {
+    pub fn fileIo(inst: *Instance) FileIo {
+        return .{
+            .ctx = &inst.zf__,
+            .open = struct {
+                fn f(_: *anyopaque, _: []const u8, _: []const u8, _: bool) i64 {
+                    return 0;
+                }
+            }.f,
+            .close = noFile,
+            .put = struct {
+                fn f(_: *anyopaque, _: i64, _: []const u8) i64 {
+                    return 0;
+                }
+            }.f,
+            .getc = noFile,
+            .ungetc = struct {
+                fn f(_: *anyopaque, _: i64, _: i64) i64 {
+                    return -1;
+                }
+            }.f,
+            .tell = noFile,
+            .seek = struct {
+                fn f(_: *anyopaque, _: i64, _: i64, _: i64) i64 {
+                    return -1;
+                }
+            }.f,
+            .eof = noFile,
+        };
+    }
+    pub fn deinitInstance(_: *Instance) void {}
+    fn noFile(_: *anyopaque, _: i64) i64 {
         return -1;
     }
     // All-ones is what a host assumes for an omitted mask, so it cannot be

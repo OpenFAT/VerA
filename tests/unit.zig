@@ -792,6 +792,17 @@ pub const parser_tests = struct {
         }
     }
 
+    test "A.5.1 a UDP's port list is an output and at least one input, in both header arms" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        try expectFirstErrors(arena_state.allocator(), &.{
+            .{ .src = "primitive u(q); output q; table 0 : 1; endtable endprimitive", .code = .E0207 },
+            .{ .src = "primitive u(output q); table 0 : 1; endtable endprimitive", .code = .E0207 },
+            .{ .src = "primitive u(q, a); output q; input a; table 0 : 1; endtable endprimitive", .code = null },
+            .{ .src = "primitive u(output q, input a); table 0 : 1; endtable endprimitive", .code = null },
+        }, true);
+    }
+
     test "A.5.1 a udp_declaration survives the parse, both header arms" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
@@ -1673,6 +1684,46 @@ pub const parser_tests = struct {
         try std.testing.expectEqualStrings("\\$display", q.file.str(try q.internTok(0)));
     }
 
+    test "internTok keeps every two escaped names apart, and no interned name holds a period (§2.8.1; IEEE 1364-2005 §3.7.1, §3.7.3)" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        // Oracle: §3.7.1's identity, `identity` below. A period would read as
+        // a hierarchy separator after this point (`elab.sep`).
+        const names = [_][]const u8{
+            "ab",     "$ab",     "\\ab",    "\\$ab", "\\\\ab", "\\\\$ab", "\\\\\\$ab", "\\a.b",
+            "\\$a.b", "\\\\a.b", "\\$a.b.", "\\.ab", "\\ab.",  "\\$",     "\\\\",      "\\1ab",
+            "a_b",    "\\a_b",
+        };
+        const src = try std.mem.join(arena, " ", &names);
+        const list = try lexer.tokenize(arena, src, null);
+        var p = Parser.init(arena, src, list.items(.tag), list.items(.start), try newBag(arena, src));
+        try std.testing.expectEqual(names.len + 1, list.len); // one token each, then `.eof`
+        var ids: [names.len]Ast.StrId = undefined;
+        for (&ids, 0..) |*id, i| {
+            id.* = try p.internTok(@intCast(i));
+            try std.testing.expect(std.mem.findScalar(u8, p.file.str(id.*), '.') == null);
+        }
+        for (names, ids, 0..) |a, ia, i| for (names[i + 1 ..], ids[i + 1 ..]) |b, ib| {
+            if (std.mem.eql(u8, identity(a), identity(b)) != (ia == ib)) {
+                std.debug.print("`{s}` and `{s}` intern as `{s}` and `{s}`\n", .{ a, b, p.file.str(ia), p.file.str(ib) });
+                return error.TestUnexpectedResult;
+            }
+        };
+    }
+
+    /// §3.7.1: an escaped name is the text after its `\`, the same identifier
+    /// as a simple one of that spelling and no other; §3.7.3: `\$x` is not
+    /// the system name `$x`. So a name's identity is that simple spelling, or
+    /// else the escaped spelling itself.
+    fn identity(name: []const u8) []const u8 {
+        if (name[0] != '\\') return name;
+        const text = name[1..];
+        if (!std.ascii.isAlphabetic(text[0]) and text[0] != '_') return name;
+        for (text) |c| if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '$') return name;
+        return text;
+    }
+
     test "tokenText's identifier fast path agrees with the lexer's re-scan on every token" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
@@ -1746,28 +1797,48 @@ pub const parser_tests = struct {
     test "nesting has no parser bound: each construct at the old 1024 cap and far past it" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const m = "module m(p); inout p; electrical p; real r; integer k; analog begin ";
-        const e = " end endmodule";
         // 1025 was one past E0241's old cap; 100,000 crosses many stack segments
         // (`segment_levels`), so the run also checks `frames` unwinds across them.
-        for ([_]usize{ 1025, 100_000 }) |n| {
-            const deep: u32 = @intCast(n);
-            try std.testing.expect(try parseNested(arena, m ++ "r = ", "(", "1.0", ")", ";" ++ e, n) >= deep);
-            // A.8.3: a unary operand is a primary, so a deep unary chain is
-            // parenthesized (`- -x` is E0209).
-            try std.testing.expect(try parseNested(arena, m ++ "r = ", "-(", "1.0", ")", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? 1 : ", "0", "", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? ", "1", " : 0", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "r = 1.0", " + 1.0", "", "", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m, "begin ", "r = 1;", " end", e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m, "if (V(p) > 1) r = 1; else ", "r = 0;", "", e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "k = ", "{", "1'b1", "}", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, "module m; generate ", "if (1) begin ", "", "end ", "endgenerate endmodule", n) >= deep);
-            // Left-assoc chains a loop builds: each link is one level of the tree.
-            try std.testing.expect(try parseNested(arena, m ++ "r = x", "[0]", "", "", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "@(cross(V(p))", " or cross(V(p))", ") r = 1;", "", e, n) >= deep);
-        }
+        for ([_]usize{ 1025, 100_000 }) |n| try parseEveryNesting(arena_state.allocator(), n);
+    }
+
+    test "nesting 5000 deep parses on a 1 MiB thread: the caller's stack is not what bounds it" {
+        // Oracle: the guard page. An embedder's thread may have 1 MiB, and
+        // `deep_stack` says nesting is bounded by memory, not by that stack.
+        if (@import("builtin").single_threaded) return error.SkipZigTest;
+        const Run = struct {
+            fn on(out: *anyerror!void) void {
+                var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena_state.deinit();
+                out.* = parseEveryNesting(arena_state.allocator(), 5000);
+            }
+        };
+        var result: anyerror!void = {};
+        const t = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.on, .{&result});
+        t.join();
+        try result;
+    }
+
+    /// Parses each nesting construct `n` deep, failing on a diagnostic or on
+    /// a `deepest` short of `n`.
+    fn parseEveryNesting(arena: std.mem.Allocator, n: usize) !void {
+        const m = "module m(p); inout p; electrical p; real r; integer k; analog begin ";
+        const e = " end endmodule";
+        const deep: u32 = @intCast(n);
+        try std.testing.expect(try parseNested(arena, m ++ "r = ", "(", "1.0", ")", ";" ++ e, n) >= deep);
+        // A.8.3: a unary operand is a primary, so a deep unary chain is
+        // parenthesized (`- -x` is E0209).
+        try std.testing.expect(try parseNested(arena, m ++ "r = ", "-(", "1.0", ")", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? 1 : ", "0", "", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? ", "1", " : 0", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "r = 1.0", " + 1.0", "", "", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m, "begin ", "r = 1;", " end", e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m, "if (V(p) > 1) r = 1; else ", "r = 0;", "", e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "k = ", "{", "1'b1", "}", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, "module m; generate ", "if (1) begin ", "", "end ", "endgenerate endmodule", n) >= deep);
+        // Left-assoc chains a loop builds: each link is one level of the tree.
+        try std.testing.expect(try parseNested(arena, m ++ "r = x", "[0]", "", "", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "@(cross(V(p))", " or cross(V(p))", ") r = 1;", "", e, n) >= deep);
     }
 
     test "a defparam path's index folds on a stack sized for its depth (A.9.3)" {
@@ -3286,6 +3357,10 @@ pub const kernel_tests = struct {
     const str_format = @import("kernels").str_format;
     const str_store = @import("kernels").str_store;
     const file_k = @import("kernels").file_kernels;
+    /// The table the file kernel tests share, as a device instance's or a
+    /// digital run's (`file_kernels.zFCtx`).
+    var file_table: @import("kernels").file_table.ZfTable = .{};
+    const zc: *anyopaque = &file_table;
 
     /// A one-derivative stand-in for the device's scalar family: the slice of the
     /// interface the filter and table kernels call (`con`/`val`/`add`/`addC`/
@@ -4430,26 +4505,26 @@ pub const kernel_tests = struct {
 
         // Table 9-24 "a": the position starts at the end, and a write goes to the
         // end wherever $fseek left it.
-        const a = file_k.zFOpen(p, "a", false);
+        const a = file_k.zFOpen(zc, p, "a", false);
         try std.testing.expect(a != 0);
-        try std.testing.expectEqual(@as(i64, 3), file_k.zFTell(a));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(a, 0, 0));
-        try std.testing.expectEqual(@as(i64, 1), file_k.zFPut(a, "d"));
-        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(a));
+        try std.testing.expectEqual(@as(i64, 3), file_k.zFTell(zc, a));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, a, 0, 0));
+        try std.testing.expectEqual(@as(i64, 1), file_k.zFPut(zc, a, "d"));
+        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(zc, a));
         // An "a" channel cannot be read: §9.5.4.1 "if an error occurs reading
         // from the file, then code is set to zero", and $ferror says why.
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(a));
-        try std.testing.expectEqual(@as(i64, 9), file_k.zFError(a));
-        _ = file_k.zFClose(a);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(zc, a));
+        try std.testing.expectEqual(@as(i64, 9), file_k.zFError(zc, a));
+        _ = file_k.zFClose(zc, a);
         try std.testing.expectEqualStrings("abcd", try tmp.dir.readFile(io, "a.txt", &rb));
 
         // "r+": one position for both directions.
-        const rw = file_k.zFOpen(p, "r+", false);
-        try std.testing.expectEqual(@as(i64, 1), file_k.zFPut(rw, "X"));
-        try std.testing.expectEqual(@as(i64, 3), file_k.zFGets(rw));
-        try std.testing.expectEqualStrings("bcd", file_k.zFLine(3, rw));
-        try std.testing.expect(file_k.zFEof(rw) != 0);
-        _ = file_k.zFClose(rw);
+        const rw = file_k.zFOpen(zc, p, "r+", false);
+        try std.testing.expectEqual(@as(i64, 1), file_k.zFPut(zc, rw, "X"));
+        try std.testing.expectEqual(@as(i64, 3), file_k.zFGets(zc, rw));
+        try std.testing.expectEqualStrings("bcd", file_k.zFLine(zc, 3, rw));
+        try std.testing.expect(file_k.zFEof(zc, rw) != 0);
+        _ = file_k.zFClose(zc, rw);
         try std.testing.expectEqualStrings("Xbcd", try tmp.dir.readFile(io, "a.txt", &rb));
     }
 
@@ -4458,29 +4533,29 @@ pub const kernel_tests = struct {
         defer tmp.cleanup();
         var pb: [256]u8 = undefined;
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "s.txt", .data = "hello" });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "s.txt"), "r", false);
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "s.txt"), "r", false);
         try std.testing.expect(r != 0);
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 2, 0));
-        try std.testing.expectEqual(@as(i64, 2), file_k.zFTell(r));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 1, 1));
-        try std.testing.expectEqual(@as(i64, 3), file_k.zFTell(r));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, -1, 2));
-        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 2, 0));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFTell(zc, r));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 1, 1));
+        try std.testing.expectEqual(@as(i64, 3), file_k.zFTell(zc, r));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, -1, 2));
+        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(zc, r));
         // "If an error occurs repositioning the file, then code is set to -1":
         // the position stays where it was, and $ferror names the cause.
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(r, -5, 1));
-        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(r));
-        try std.testing.expectEqual(@as(i64, 22), file_k.zFError(r));
-        try std.testing.expectEqual(@as(i64, 'o'), file_k.zFGetc(r));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(zc, r, -5, 1));
+        try std.testing.expectEqual(@as(i64, 4), file_k.zFTell(zc, r));
+        try std.testing.expectEqual(@as(i64, 22), file_k.zFError(zc, r));
+        try std.testing.expectEqual(@as(i64, 'o'), file_k.zFGetc(zc, r));
         // Past the end is a position like any other; reading there is EOF, and
         // the next reposition clears it.
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 10, 0));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFGetc(r));
-        try std.testing.expect(file_k.zFEof(r) != 0);
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 0, 0));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFEof(r));
-        try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(r));
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 10, 0));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFGetc(zc, r));
+        try std.testing.expect(file_k.zFEof(zc, r) != 0);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 0, 0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFEof(zc, r));
+        try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(zc, r));
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.5 $fseek: an offset whose sum overflows is refused, not trapped" {
@@ -4488,35 +4563,35 @@ pub const kernel_tests = struct {
         defer tmp.cleanup();
         var pb: [256]u8 = undefined;
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "o.txt", .data = "hello" });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "o.txt"), "r", false);
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(r, 2, 0));
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "o.txt"), "r", false);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFSeek(zc, r, 2, 0));
         // 2 + maxInt and 5 + maxInt name no position: code -1, EINVAL, and the
         // position stays.
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(r, std.math.maxInt(i64), 1));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(r, std.math.maxInt(i64), 2));
-        try std.testing.expectEqual(@as(i64, 2), file_k.zFTell(r));
-        try std.testing.expectEqual(@as(i64, 22), file_k.zFError(r));
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(zc, r, std.math.maxInt(i64), 1));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(zc, r, std.math.maxInt(i64), 2));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFTell(zc, r));
+        try std.testing.expectEqual(@as(i64, 22), file_k.zFError(zc, r));
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.1 a descriptor the table does not hold answers each call's failure value" {
         const fd_bit: i64 = 1 << 31;
         const nowhere = fd_bit | 40; // past the thirty channels
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(nowhere));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(fd_bit | 1)); // STDOUT is no table row
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(nowhere, 0, 0));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFGetc(nowhere));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc('a', nowhere));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFEof(nowhere));
-        try std.testing.expectEqualStrings("", file_k.zFLine(5, nowhere));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFClose(nowhere));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, nowhere));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, fd_bit | 1)); // STDOUT is no table row
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFSeek(zc, nowhere, 0, 0));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFGetc(zc, nowhere));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc(zc, 'a', nowhere));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFEof(zc, nowhere));
+        try std.testing.expectEqualStrings("", file_k.zFLine(zc, 5, nowhere));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFClose(zc, nowhere));
         // An mcd bit whose channel is closed names nothing either.
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(1 << 20));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, 1 << 20));
         // §9.5.1: a failed open returns 0; a call on that 0 is refused (EBADF).
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFPut(0, "x"));
-        try std.testing.expectEqual(@as(i64, 9), file_k.zFError(0));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(0));
-        try std.testing.expectEqualStrings("", file_k.zFWindow(0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFPut(zc, 0, "x"));
+        try std.testing.expectEqual(@as(i64, 9), file_k.zFError(zc, 0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(zc, 0));
+        try std.testing.expectEqualStrings("", file_k.zFWindow(zc, 0));
         try std.testing.expectEqual(@as(i64, 0), file_k.zFFlush(0));
         // §9.5.7: a description for every errno the table sets, "" for none.
         try std.testing.expectEqualStrings("", file_k.zFErrorStr(0, 0));
@@ -4532,30 +4607,30 @@ pub const kernel_tests = struct {
         defer tmp.cleanup();
         var pb: [256]u8 = undefined;
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "u.txt", .data = "0123456789abcdefghij" });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "u.txt"), "r", false);
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc('x', r)); // position 0
-        for (0..17) |_| _ = file_k.zFGetc(r);
-        for (0..16) |j| try std.testing.expectEqual(@as(i64, 0), file_k.zFUngetc(@as(i64, 'A') + @as(i64, @intCast(j)), r));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc('Z', r)); // a 17th
-        try std.testing.expectEqual(@as(i64, 1), file_k.zFTell(r));
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "u.txt"), "r", false);
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc(zc, 'x', r)); // position 0
+        for (0..17) |_| _ = file_k.zFGetc(zc, r);
+        for (0..16) |j| try std.testing.expectEqual(@as(i64, 0), file_k.zFUngetc(zc, @as(i64, 'A') + @as(i64, @intCast(j)), r));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFUngetc(zc, 'Z', r)); // a 17th
+        try std.testing.expectEqual(@as(i64, 1), file_k.zFTell(zc, r));
         // Last pushed, first read; then the file resumes after the bytes covered.
         var k: usize = 16;
         while (k > 0) {
             k -= 1;
-            try std.testing.expectEqual(@as(i64, 'A') + @as(i64, @intCast(k)), file_k.zFGetc(r));
+            try std.testing.expectEqual(@as(i64, 'A') + @as(i64, @intCast(k)), file_k.zFGetc(zc, r));
         }
-        try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(r));
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(zc, r));
+        _ = file_k.zFClose(zc, r);
     }
 
     /// Runs the file kernels over `gpa` from an empty table, and frees what they
     /// own afterwards: `std.testing.allocator` then reports any leak.
     fn fileOver(gpa: std.mem.Allocator) void {
-        file_k.zFFreeAll();
+        file_k.zFFreeAll(zc);
         file_k.zf_gpa = gpa;
     }
     fn fileDone() void {
-        file_k.zFFreeAll();
+        file_k.zFFreeAll(zc);
         file_k.zf_gpa = std.heap.page_allocator;
     }
 
@@ -4570,25 +4645,25 @@ pub const kernel_tests = struct {
         // The mcd shape: bits 1..30, then EMFILE (§9.5.1's 31 with standard output).
         var mcds: [30]i64 = undefined;
         for (&mcds, 1..) |*m, b| {
-            m.* = file_k.zFOpen(p, "r", true);
+            m.* = file_k.zFOpen(zc, p, "r", true);
             try std.testing.expectEqual(@as(i64, 1) << @intCast(b), m.*);
         }
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(p, "r", true));
-        try std.testing.expectEqual(@as(i64, 24), file_k.zFError(0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(zc, p, "r", true));
+        try std.testing.expectEqual(@as(i64, 24), file_k.zFError(zc, 0));
         // The fd shape keeps opening past the thirty, numbered from 3.
         var fds: [100]i64 = undefined;
         for (&fds, 3..) |*fd, c| {
-            fd.* = file_k.zFOpen(p, "r", false);
+            fd.* = file_k.zFOpen(zc, p, "r", false);
             try std.testing.expectEqual((@as(i64, 1) << 31) | @as(i64, @intCast(c)), fd.*);
         }
-        try std.testing.expectEqual(@as(i64, 'e'), file_k.zFGetc(fds[99]));
+        try std.testing.expectEqual(@as(i64, 'e'), file_k.zFGetc(zc, fds[99]));
         // "The $fopen function shall reuse channels that have been closed."
-        _ = file_k.zFClose(fds[7]);
-        try std.testing.expectEqual(fds[7], file_k.zFOpen(p, "r", false));
-        _ = file_k.zFClose(mcds[4]);
-        try std.testing.expectEqual(mcds[4], file_k.zFOpen(p, "r", true));
-        for (fds) |fd| _ = file_k.zFClose(fd);
-        for (mcds) |m| _ = file_k.zFClose(m);
+        _ = file_k.zFClose(zc, fds[7]);
+        try std.testing.expectEqual(fds[7], file_k.zFOpen(zc, p, "r", false));
+        _ = file_k.zFClose(zc, mcds[4]);
+        try std.testing.expectEqual(mcds[4], file_k.zFOpen(zc, p, "r", true));
+        for (fds) |fd| _ = file_k.zFClose(zc, fd);
+        for (mcds) |m| _ = file_k.zFClose(zc, m);
     }
 
     test "§9.5.1 an open that cannot get memory fails: $fopen 0, $ferror 12" {
@@ -4600,8 +4675,8 @@ pub const kernel_tests = struct {
         // No memory at all: not even the table.
         var none = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
         fileOver(none.allocator());
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(p, "r", false));
-        try std.testing.expectEqual(@as(i64, 12), file_k.zFError(0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(zc, p, "r", false));
+        try std.testing.expectEqual(@as(i64, 12), file_k.zFError(zc, 0));
         try std.testing.expectEqualStrings("out of memory", file_k.zFErrorStr(12, 0));
         fileDone();
         // The table, but no row to remember a path opened for writing.
@@ -4609,12 +4684,12 @@ pub const kernel_tests = struct {
         fileOver(one.allocator());
         defer fileDone();
         var wb: [256]u8 = undefined;
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(tmpPath(&wb, &tmp, "w.txt"), "w", true));
-        try std.testing.expectEqual(@as(i64, 12), file_k.zFError(0));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFOpen(zc, tmpPath(&wb, &tmp, "w.txt"), "w", true));
+        try std.testing.expectEqual(@as(i64, 12), file_k.zFError(zc, 0));
         // A read open on a row the table has needs no memory.
-        const r = file_k.zFOpen(p, "r", true);
+        const r = file_k.zFOpen(zc, p, "r", true);
         try std.testing.expect(r != 0);
-        _ = file_k.zFClose(r);
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.1.1 every distinct path opened for writing is remembered (past 64)" {
@@ -4625,16 +4700,18 @@ pub const kernel_tests = struct {
         var pb: [256]u8 = undefined;
         var nb: [32]u8 = undefined;
         for (0..100) |k| {
-            const w = file_k.zFOpen(tmpPath(&pb, &tmp, try std.mem.print(&nb, "w{d}.txt", .{k})), "w", false);
+            const w = file_k.zFOpen(zc, tmpPath(&pb, &tmp, try std.mem.print(&nb, "w{d}.txt", .{k})), "w", false);
             try std.testing.expect(w != 0);
-            _ = file_k.zFPut(w, "ab");
-            _ = file_k.zFClose(w);
+            _ = file_k.zFPut(zc, w, "ab");
+            _ = file_k.zFClose(zc, w);
         }
         // A later analysis appends to the first path, which a 64-row table forgot.
-        file_k.zFNewAnalysis();
-        const w = file_k.zFOpen(tmpPath(&pb, &tmp, "w0.txt"), "w", false);
-        _ = file_k.zFPut(w, "c");
-        _ = file_k.zFClose(w);
+        file_k.zFNewAnalysis(
+            zc,
+        );
+        const w = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "w0.txt"), "w", false);
+        _ = file_k.zFPut(zc, w, "c");
+        _ = file_k.zFClose(zc, w);
         var rb: [8]u8 = undefined;
         try std.testing.expectEqualStrings("abc", try tmp.dir.readFile(std.testing.io, "w0.txt", &rb));
     }
@@ -4650,14 +4727,14 @@ pub const kernel_tests = struct {
         @memset(long, 'x');
         long[10000] = '\n';
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "l.txt", .data = long });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "l.txt"), "r", false);
-        try std.testing.expectEqual(@as(i64, 10001), file_k.zFGets(r));
-        try std.testing.expectEqualStrings(long, file_k.zFLine(10001, r));
-        try std.testing.expectEqual(@as(i64, 10001), file_k.zFTell(r));
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "l.txt"), "r", false);
+        try std.testing.expectEqual(@as(i64, 10001), file_k.zFGets(zc, r));
+        try std.testing.expectEqualStrings(long, file_k.zFLine(zc, 10001, r));
+        try std.testing.expectEqual(@as(i64, 10001), file_k.zFTell(zc, r));
         // The next read finds the end: nothing transferred, EOF detected.
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(r));
-        try std.testing.expect(file_k.zFEof(r) != 0);
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFGets(zc, r));
+        try std.testing.expect(file_k.zFEof(zc, r) != 0);
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.4.2 $fscanf widens its window until the scan stops inside it" {
@@ -4671,19 +4748,19 @@ pub const kernel_tests = struct {
         @memset(data[0..9000], ' ');
         @memcpy(data[9000..], "42\n");
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "w.txt", .data = &data });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "w.txt"), "r", false);
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "w.txt"), "r", false);
         // cg_display's loop: scan, and again over a wider window while it asks.
         var rounds: usize = 0;
         const n = while (true) : (rounds += 1) {
-            const sc = str_scan.zScan(file_k.zFWindow(r), "%d", 0);
-            if (file_k.zFMore(r, sc.used)) continue;
+            const sc = str_scan.zScan(file_k.zFWindow(zc, r), "%d", 0);
+            if (file_k.zFMore(zc, r, sc.used)) continue;
             try std.testing.expectEqual(@as(i64, 42), sc.i);
-            break file_k.zFTake(r, sc.n, @intCast(sc.used));
+            break file_k.zFTake(zc, r, sc.n, @intCast(sc.used));
         };
         try std.testing.expectEqual(@as(i64, 1), n);
         try std.testing.expect(rounds >= 2);
-        try std.testing.expectEqual(@as(i64, 9002), file_k.zFTell(r));
-        _ = file_k.zFClose(r);
+        try std.testing.expectEqual(@as(i64, 9002), file_k.zFTell(zc, r));
+        _ = file_k.zFClose(zc, r);
     }
 
     test "§9.5.1.1 a write-mode reopen truncates within an analysis and appends across them" {
@@ -4695,15 +4772,17 @@ pub const kernel_tests = struct {
         const p = tmpPath(&pb, &tmp, "w.txt");
         const put = struct {
             fn f(path: []const u8, text: []const u8) void {
-                const w = file_k.zFOpen(path, "w", false);
-                _ = file_k.zFPut(w, text);
-                _ = file_k.zFClose(w);
+                const w = file_k.zFOpen(zc, path, "w", false);
+                _ = file_k.zFPut(zc, w, text);
+                _ = file_k.zFClose(zc, w);
             }
         }.f;
         put(p, "ab");
         put(p, "x"); // the same analysis: C's truncate
         try std.testing.expectEqualStrings("x", try tmp.dir.readFile(io, "w.txt", &rb));
-        file_k.zFNewAnalysis();
+        file_k.zFNewAnalysis(
+            zc,
+        );
         // "Content written from the following analyses shall be appended".
         put(p, "yz");
         try std.testing.expectEqualStrings("xyz", try tmp.dir.readFile(io, "w.txt", &rb));
@@ -4719,23 +4798,45 @@ pub const kernel_tests = struct {
         var pb1: [256]u8 = undefined;
         var pb2: [256]u8 = undefined;
         var rb: [64]u8 = undefined;
-        const m1 = file_k.zFOpen(tmpPath(&pb1, &tmp, "m1.txt"), "w", true);
-        const m2 = file_k.zFOpen(tmpPath(&pb2, &tmp, "m2.txt"), "w", true);
+        const m1 = file_k.zFOpen(zc, tmpPath(&pb1, &tmp, "m1.txt"), "w", true);
+        const m2 = file_k.zFOpen(zc, tmpPath(&pb2, &tmp, "m2.txt"), "w", true);
         try std.testing.expect(m1 != 0 and m2 != 0 and m1 & m2 == 0);
-        try std.testing.expectEqual(@as(i64, 2), file_k.zFPut(m1 | m2, "hi"));
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFClose(m1 | m2));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFPut(zc, m1 | m2, "hi"));
+        try std.testing.expectEqual(@as(i64, 0), file_k.zFClose(zc, m1 | m2));
         try std.testing.expectEqualStrings("hi", try tmp.dir.readFile(io, "m1.txt", &rb));
         try std.testing.expectEqualStrings("hi", try tmp.dir.readFile(io, "m2.txt", &rb));
         // One $fclose of the OR freed both channels.
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(m1));
-        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(m2));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, m1));
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(zc, m2));
     }
 
-    test "§9.5 zFRes/zFKeep: one latched result per call site" {
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFRes(7701).*);
-        try std.testing.expectEqual(@as(i64, 5), file_k.zFKeep(7701, 5));
-        try std.testing.expectEqual(@as(i64, 5), file_k.zFRes(7701).*);
-        try std.testing.expectEqual(@as(i64, 0), file_k.zFRes(7702).*);
+    test "§9.5 zFKeep: a call site's result lands in its own slot" {
+        var slots: [2]i64 = .{ 0, 0 };
+        try std.testing.expectEqual(@as(i64, 5), file_k.zFKeep(&slots[0], 5));
+        try std.testing.expectEqualSlices(i64, &.{ 5, 0 }, &slots);
+    }
+
+    test "§9.5.1 two tables number their descriptors alike and share no channel" {
+        // A device keeps one table per instance: each instance's first fd is
+        // §9.5.1's first free number, 3, however many the other opened.
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var pb: [256]u8 = undefined;
+        var a: @import("kernels").file_table.ZfTable = .{};
+        var b: @import("kernels").file_table.ZfTable = .{};
+        defer file_k.zFFreeAll(&a);
+        defer file_k.zFFreeAll(&b);
+        const fd3: i64 = (1 << 31) | 3;
+        try std.testing.expectEqual(fd3, file_k.zFOpen(&a, tmpPath(&pb, &tmp, "a.txt"), "w", false));
+        try std.testing.expectEqual(fd3 + 1, file_k.zFOpen(&a, tmpPath(&pb, &tmp, "a2.txt"), "w", false));
+        try std.testing.expectEqual(fd3, file_k.zFOpen(&b, tmpPath(&pb, &tmp, "b.txt"), "w", false));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFPut(&a, fd3, "a\n"));
+        try std.testing.expectEqual(@as(i64, 2), file_k.zFPut(&b, fd3, "b\n"));
+        // `b` never opened fd 4.
+        try std.testing.expectEqual(@as(i64, -1), file_k.zFTell(&b, fd3 + 1));
+        var rb: [8]u8 = undefined;
+        try std.testing.expectEqualStrings("a\n", try tmp.dir.readFile(std.testing.io, "a.txt", &rb));
+        try std.testing.expectEqualStrings("b\n", try tmp.dir.readFile(std.testing.io, "b.txt", &rb));
     }
 
     test "§9.5.4.2 $fscanf consumes exactly what matched, and only an EOF scan sets $feof" {
@@ -4745,21 +4846,21 @@ pub const kernel_tests = struct {
         defer tmp.cleanup();
         var pb: [256]u8 = undefined;
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.txt", .data = "12 34\n" });
-        const r = file_k.zFOpen(tmpPath(&pb, &tmp, "f.txt"), "r", false);
+        const r = file_k.zFOpen(zc, tmpPath(&pb, &tmp, "f.txt"), "r", false);
         const Step = struct { n: i64, used: usize, pos: i64 };
         for ([_]Step{
             .{ .n = 1, .used = 2, .pos = 2 }, // "12"; the space is left unread
             .{ .n = 1, .used = 3, .pos = 5 }, // " 34"; the newline is left unread
             .{ .n = -1, .used = 1, .pos = 6 }, // white space to the end: EOF
         }) |want| {
-            const sc = str_scan.zScan(file_k.zFWindow(r), "%d", 0);
+            const sc = str_scan.zScan(file_k.zFWindow(zc, r), "%d", 0);
             try std.testing.expectEqual(want.n, sc.n);
             try std.testing.expectEqual(want.used, sc.used);
-            try std.testing.expectEqual(want.n, file_k.zFTake(r, sc.n, @intCast(sc.used)));
-            try std.testing.expectEqual(want.pos, file_k.zFTell(r));
-            try std.testing.expectEqual(@as(i64, @intFromBool(want.n < 0)), file_k.zFEof(r));
+            try std.testing.expectEqual(want.n, file_k.zFTake(zc, r, sc.n, @intCast(sc.used)));
+            try std.testing.expectEqual(want.pos, file_k.zFTell(zc, r));
+            try std.testing.expectEqual(@as(i64, @intFromBool(want.n < 0)), file_k.zFEof(zc, r));
         }
-        _ = file_k.zFClose(r);
+        _ = file_k.zFClose(zc, r);
     }
 
     // ------------------------------------------------------------ absdelay ring
@@ -8643,6 +8744,129 @@ pub const lower_tests = struct {
             \\endmodule
         , .E0511);
     }
+
+    /// Lowers `body` inside `expectBodies`' module and returns the first error's
+    /// code, or null when it lowered clean.
+    fn bodyVerdict(body: []const u8) !?diag.Code {
+        const gpa = std.testing.allocator;
+        const src = try gpa.print(
+            \\module m(p, q);
+            \\  inout p, q; electrical p, q;
+            \\  real x;
+            \\{s}
+            \\endmodule
+        , .{body});
+        defer gpa.free(src);
+        var h: Lower.Harness = undefined;
+        try h.init(gpa, src);
+        defer h.deinit();
+        if (try h.lower() != null) return null;
+        for (0..h.bag.count()) |i| if (h.bag.at(i).severity == .err) return h.bag.at(i).code;
+        return error.TestUnexpectedResult; // `lower` failed with no error reported
+    }
+
+    test "A.8.2 an analog operator's omitted argument is a verdict, and one past its longest list an error" {
+        // Oracle: Syntax 4-3 and 4-4 fix each operator's longest list, so one
+        // argument more is an error, and the longest list itself lowers clean.
+        // An omitted slot is its clause's to judge (§4.5.14 defaults some), so
+        // any verdict passes there, but a verdict: the slot is source text.
+        const longest = [_][]const u8{
+            "ddt(V(p), 1u)",                                  "ddx(V(p), V(q))",
+            "idt(V(p), 0.0, 0, 1u)",                          "idtmod(V(p), 0.0, 1.0, 0.0, 1u)",
+            "absdelay(V(p), 1n, 2n)",                         "transition(x, 0, 1n, 1n, 1p)",
+            "slew(V(p), 1e9, -1e9)",                          "laplace_nd(V(p), '{1.0}, '{1.0, 1.0}, 1u)",
+            "zi_nd(V(p), '{1.0}, '{1.0}, 1n, 1p, 0)",         "limexp(V(p))",
+            "white_noise(1e-20, \"th\")",                     "flicker_noise(1e-20, 1.0, \"fl\")",
+            "noise_table('{1.0, 1e-20, 2.0, 1e-20}, \"nt\")", "ac_stim(\"ac\", 1.0, 0.0)",
+        };
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        for (longest) |call| {
+            const open = std.mem.findScalar(u8, call, '(').?;
+            const args = call[open + 1 .. call.len - 1];
+            try expectBodyCode(try arena.print("analog I(p) <+ {s};", .{call}), null);
+            try std.testing.expect(try bodyVerdict(try arena.print("analog I(p) <+ {s}, 1.0);", .{call[0 .. call.len - 1]})) != null);
+            // Each slot in turn left empty, its commas kept.
+            var depth: u32 = 0;
+            var start: usize = 0;
+            for (args, 0..) |c, i| {
+                switch (c) {
+                    '(', '{' => depth += 1,
+                    ')', '}' => depth -= 1,
+                    else => {},
+                }
+                if (i + 1 != args.len and (c != ',' or depth != 0)) continue;
+                const end = if (c == ',') i else args.len;
+                _ = try bodyVerdict(try arena.print("analog I(p) <+ {s}({s}{s});", .{ call[0..open], args[0..start], args[end..] }));
+                start = i + 1;
+            }
+        }
+        // §5.6.7.2's indirect form reads its operator's first slot for a probe.
+        for ([_][]const u8{ "ddt(, 1u)", "idt(, 0.0)", "idtmod(, 0.0, 1.0)" }) |op|
+            _ = try bodyVerdict(try arena.print("analog V(p) : {s} == V(q);", .{op}));
+        // The clauses that do judge an omitted slot.
+        try expectBodyCode("analog I(p) <+ ddt(V(p), );", .E0505);
+        try expectBodyCode("analog I(p) <+ ddx(V(p), );", .E0504);
+        try expectBodyCode("analog I(p) <+ $simprobe(, \"g\");", .E0894);
+    }
+
+    fn expectBodyCode(body: []const u8, want: ?diag.Code) !void {
+        const got = try bodyVerdict(body);
+        if (got != want) std.debug.print("`{s}`: got {?t}, want {?t}\n", .{ body, got, want });
+        try std.testing.expectEqual(want, got);
+    }
+
+    test "§3.12 a named branch whose two ends are one node lowers: a short, not a V(n, n)" {
+        // Oracle: §4.4's "they shall not evaluate to the same signal" constrains
+        // the two net expressions of an access, and `I(br)` has one; §3.12
+        // puts no rule on a branch's terminals being the same net.
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        for ([_][]const u8{
+            "analog begin I(br) <+ V(q); I(q) <+ I(br); end",
+            "analog I(br) <+ V(q);",
+            "analog I(q) <+ I(br);",
+            "analog begin I(br) <+ ddt(V(q) * 1p); I(q) <+ I(br); end",
+            "analog V(br) <+ 0.0;",
+        }) |b| try expectBodyCode(try arena_state.allocator().print("branch (p, p) br;\n{s}", .{b}), null);
+    }
+
+    test "§4.4 one net named twice in an access is E0315; two ports a parent shorts are two nets" {
+        // Oracle: §4.4's "they shall not evaluate to the same signal", read on
+        // the module as written. A module is legal or not by its own text, so
+        // an instance connecting two ports to one net (`res r1(a, a)`, a SPICE
+        // `R1 a a`) cannot make it illegal; Table 4-16's `I(n1, n1)` can.
+        const res = "module res(p, n); inout p, n; electrical p, n; {s} endmodule\nmodule top(a); inout a; electrical a; res r1(a, a); endmodule\n";
+        for ([_]Lower.Case{
+            .{ .src = "analog I(p, n) <+ V(p, n) / 1k;", .code = null },
+            .{ .src = "branch (p, n) b; analog I(b) <+ V(b) / 1k;", .code = null },
+            .{ .src = "analog I(p, p) <+ V(p, n) / 1k;", .code = .E0315 },
+        }) |c| {
+            const src = try std.testing.allocator.print(res, .{c.src});
+            defer std.testing.allocator.free(src);
+            try Lower.expectVerdict(src, c.code);
+        }
+        // §1.3.1.1 collapses every ground net onto one node: two of them are
+        // two signals.
+        try expectBodyCode("ground g1, g2; analog I(p) <+ V(g1, g2);", null);
+    }
+
+    test "IEEE 1364-2005 §4.11 a genvar shares the module name space with parameters, variables and nets (E0362)" {
+        for ([_]Lower.Case{
+            .{ .src = "genvar i; real i; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar i; parameter real i = 1.0; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar i; electrical i; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar k; real i; analog I(p) <+ V(p);", .code = null },
+        }) |c| try expectBodyCode(c.src, c.code);
+    }
+
+    test "a call with more operands than its 24-bit count holds is E1021, and one with fewer lowers" {
+        // Oracle: `Mir.call_args_max`, the row's count field; a pattern
+        // argument is one operand per element (A.8.1 replication included).
+        try expectBodyCode("analog I(p) <+ laplace_nd(V(p), '{16777216{1.0}}, '{1.0});", .E1021);
+        try expectBodyCode("analog I(p) <+ laplace_nd(V(p), '{4{1.0}}, '{1.0});", null);
+    }
 };
 
 pub const rtlil_tests = struct {
@@ -10924,6 +11148,15 @@ pub const preprocessor_tests = struct {
             const out = try process(arena_state.allocator(), ok_src, .{ .std_defs = false, .bag = &ok_bag, .text_limit = 1 << 20 });
             try testing.expectEqual(@as(usize, 1 << 17), std.mem.countScalar(u8, out.text, 'x'));
         }
+        // The bound is on the whole text, whichever files make it: the annex D
+        // prelude alone passes 64 bytes, though a one-line source is under it.
+        {
+            var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+            defer arena_state.deinit();
+            var bag: diag.Bag = .init(arena_state.allocator());
+            try testing.expectError(error.PreprocessFailed, process(arena_state.allocator(), "module m; endmodule\n", .{ .bag = &bag, .text_limit = 64 }));
+            try testing.expectEqual(diag.Code.E0150, bag.at(0).code);
+        }
     }
 
     test "macro nesting has no depth bound: 100,000 nested uses and a 100,000-macro chain" {
@@ -11133,6 +11366,29 @@ pub const preprocessor_tests = struct {
         var bag: diag.Bag = .init(arena);
         const d = (try process(arena, src, .{ .std_defs = false, .bag = &bag })).directives;
         return .{ .nettypes = d.nettypes, .cells = d.cells, .drives = d.drives };
+    }
+
+    test "§10.1 a region directive written as a macro actual opens its region where the expansion lands" {
+        // Oracle: the same directive written in place of the call. IEEE 1364
+        // §19.3.1 substitutes an actual literally, so both spellings give one
+        // text and one set of region lists.
+        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const head = "`define ID(x) x\nmodule a; endmodule\n";
+        const tail = "\nmodule b; endmodule\n";
+        for ([_][]const u8{
+            "`timescale 1ns/1ps",       "`default_discipline electrical", "`default_transition 1n",
+            "`default_nettype none",    "`celldefine",                    "`endcelldefine",
+            "`unconnected_drive pull1", "`nounconnected_drive",           "`resetall",
+        }) |d| {
+            var bag: diag.Bag = .init(arena);
+            const direct = try process(arena, try std.mem.concat(arena, u8, &.{ head, d, tail }), .{ .std_defs = false, .bag = &bag });
+            const actual = try process(arena, try std.mem.concat(arena, u8, &.{ head, "`ID(", d, ")", tail }), .{ .std_defs = false, .bag = &bag });
+            try testing.expectEqual(@as(usize, 0), bag.count());
+            try testing.expectEqualStrings(direct.text, actual.text);
+            try testing.expectEqualDeep(direct.directives, actual.directives);
+        }
     }
 
     test "IEEE 1364 §19.2 `default_nettype publishes a region per directive" {
@@ -12783,16 +13039,16 @@ pub const sim_digital_tests = struct {
         const File = struct {
             var data: []const u8 = "";
             var pos: usize = 0;
-            fn getc(_: i64) i64 {
+            fn getc(_: *anyopaque, _: i64) i64 {
                 if (pos == data.len) return -1;
                 pos += 1;
                 return data[pos - 1];
             }
-            fn none(_: i64) i64 {
+            fn none(_: *anyopaque, _: i64) i64 {
                 return 0;
             }
         };
-        const io: @import("contract").FileIo = .{ .open = undefined, .close = File.none, .put = undefined, .getc = File.getc, .ungetc = undefined, .tell = File.none, .seek = undefined, .eof = File.none };
+        const io: @import("contract").FileIo = .{ .ctx = &File.pos, .open = undefined, .close = File.none, .put = undefined, .getc = File.getc, .ungetc = undefined, .tell = File.none, .seek = undefined, .eof = File.none };
         // 70 bits = 9 bytes, 0xff first: only its low 6 bits survive.
         File.data = "\xff\x01\x02\x03\x04\x05\x06\x07\x08";
         File.pos = 0;
@@ -12909,9 +13165,13 @@ pub const sim_digital_tests = struct {
 
     test "A.5.1 a UDP with no input port is refused, declared or instantiated" {
         // Oracle: A.5.1's udp_port_list, `output_port_identifier ,
-        // input_port_identifier { , input_port_identifier }`.
-        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; wire w; p g(w); endmodule", "at least one input port");
-        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; endmodule", "at least one input port");
+        // input_port_identifier { , input_port_identifier }`, in both header
+        // forms. The parser refuses it (E0207) before elaboration, so no
+        // one-port UDP reaches `checkUdp`, which asserts it.
+        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; wire w; p g(w); endmodule", "error[E0207]");
+        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; endmodule", "error[E0207]");
+        try root.expectRejected("primitive p(output q); table endtable endprimitive module t; endmodule", "error[E0207]");
+        try root.expectRejected("primitive p(output reg q = 0); table endtable endprimitive module t; endmodule", "error[E0207]");
     }
 
     test "§12.4.1 a loop generate's genvar declared again as a variable, net or parameter is refused" {
@@ -13073,6 +13333,24 @@ pub const sim_digital_tests = struct {
         try expectRun(
             \\module m; parameter \a.n  = 1; initial #1 $display("%0d", \a.n ); endmodule
             \\module top; m \b[0] (); defparam \b[0] .\a.n  = 7; endmodule
+        , "7\n");
+    }
+
+    test "§12.2.1 a defparam through a name that itself starts with `\\` names it, beside the `$`-led one" {
+        // Oracle: IEEE 1364-2005 §3.7.1, `\\$x ` is the name `\$x` and
+        // `\$x ` the different name `$x`; `\\a ` is `\a`, not `a`. A defparam
+        // through each sets the parameter of the instance that name holds,
+        // and the twin beside it keeps its own (each instance prints its `p`,
+        // in source order): whatever the frontend interns, the path's
+        // segments must be the names the tokens are.
+        const m = "module m; parameter p = 1; initial #1 $display(\"%0d\", p); endmodule ";
+        try expectRun(m ++ "module top; m \\\\$x (); m \\$x (); defparam \\\\$x .p = 7; endmodule", "7\n1\n");
+        try expectRun(m ++ "module top; m \\\\a (); m a (); defparam \\\\a .p = 7; endmodule", "7\n1\n");
+        try expectRun(m ++ "module top; m \\\\a (); m a (); defparam a.p = 7; endmodule", "1\n7\n");
+        // The parameter's own name holds the `\\`.
+        try expectRun(
+            \\module m; parameter \\$q  = 1; initial #1 $display("%0d", \\$q ); endmodule
+            \\module top; m u (); defparam u.\\$q  = 7; endmodule
         , "7\n");
     }
 
@@ -14384,21 +14662,44 @@ pub const codegen_tests = struct {
         try std.testing.expect(std.mem.find(u8, src, "((sim.kind == .ac or sim.kind == .noise) and std.mem.eql(u8, contract.hostString(model.analysis_name_idx__, inst.analysis_name), \"xf\"))") != null);
     }
 
+    test "Harness.run: a source lowering refuses frees what it lowered, and keeps the refusal's code" {
+        // Oracle: std.testing.allocator's leak check. A caller that `try`s
+        // `run` never reaches its `defer deinit`, so a refused source must
+        // leave nothing allocated; `deinit` after it must still be safe (no
+        // double free), and the refusal's code survives for the caller.
+        // §4.4 Table 4-16: `I(p, p)` is an error (E0315).
+        const src =
+            \\module m(p);
+            \\  inout p;
+            \\  electrical p;
+            \\  analog I(p, p) <+ V(p);
+            \\endmodule
+        ;
+        var h: Harness = undefined;
+        try std.testing.expectError(error.DiagnosticsReported, Harness.run(std.testing.allocator, src, &h));
+        try std.testing.expectEqual(@as(?@import("diag").Code, .E0315), h.first_error);
+        var h2: Harness = undefined;
+        try std.testing.expectError(error.DiagnosticsReported, Harness.run(std.testing.allocator, src, &h2));
+        h2.deinit();
+    }
+
     test "codegen: §4.6.4 a generator VerA cannot export refuses the device" {
         // Both halves of the same rule: a `noise_gens` row that cannot be written
         // must take the DECL with it. Silently dropping the row would tell a host
         // the model declares no such noise, which is a PSD it can never ask for;
         // and `@compileError` is how codegen refuses (see `f64Expr`/E0515).
         const cases = [_][]const u8{
-            // §1.3.1.1 a ground-ground branch has no row and no column (E0520).
+            // §1.3.1.1 a ground-ground branch has no row and no column (E0520):
+            // two `ground` nets, one node. Not `I(g, g)`, which §4.4 Table
+            // 4-16 makes an error of its own however `ground` is exempted.
             \\module ngnd(p);
             \\  inout p;
             \\  electrical p;
-            \\  ground g;
-            \\  electrical g;
+            \\  ground g1, g2;
+            \\  electrical g1, g2;
             \\  analog begin
             \\    I(p) <+ V(p) * 1e-3;
-            \\    I(g, g) <+ white_noise(1e-20);
+            \\    I(g1, g2) <+ white_noise(1e-20);
             \\  end
             \\endmodule
             ,
@@ -14845,7 +15146,7 @@ pub const codegen_tests = struct {
         // latch otherwise) and `$strobe`.
         try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, exe, "(if (zFinish == 0 and (pass != .accepted)) "));
         try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, exe, "(if (zFinish == 0 and (pass != .iteration)) "));
-        try std.testing.expect(std.mem.find(u8, exe, " else zFRes(") != null);
+        try std.testing.expect(std.mem.find(u8, exe, " else inst.zf__.res__") != null);
         // A device drops every §9.5 call: no passes.
         const dev = try h.gen(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, dev, "displayPass") == null);
@@ -14944,7 +15245,7 @@ pub const codegen_tests = struct {
         // `updateState` see) is that latch, not the device's zero.
         const exe = try h.genDisplay(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, exe, "zFKeep(") != null);
-        try std.testing.expect(std.mem.find(u8, exe, ": i64 = zFRes(") != null);
+        try std.testing.expect(std.mem.find(u8, exe, ": i64 = inst.zf__.res__") != null);
     }
 
     test "codegen: §9.4 a display unit that reads an operator input opens the cache" {
@@ -16096,6 +16397,9 @@ pub const codegen_tests = struct {
         // the digits are the ones tests/conformance/tests/verilog-a/ch09_system_tasks/{07,046,049,050,
         // 051,053,054,158,11} hold VerA to.
         const k = @import("kernels").file_kernels;
+        var table: @import("kernels").file_table.ZfTable = .{};
+        defer k.zFFreeAll(&table);
+        const zc: *anyopaque = &table;
         // The kernels resolve a path relative to the process cwd (which is exactly
         // what makes `ch09_047_missing.dat` a claim about a DIRECTORY, and why
         // tests/suite.zig runs each fixture in its own), so the directory is what
@@ -16112,100 +16416,100 @@ pub const codegen_tests = struct {
         // always be set", and "three file descriptors are pre-opened ...
         // 32'h8000_0000, 32'h8000_0001, and 32'h8000_0002", so a fresh channel's
         // small number is greater than 2.
-        const w = k.zFOpen(path, "w", false);
+        const w = k.zFOpen(zc, path, "w", false);
         try std.testing.expect(w & 2147483648 != 0);
         try std.testing.expect(w & 2147483647 > 2);
         // §9.5.2's output side at the byte level: four bytes in, four bytes out.
-        try std.testing.expectEqual(@as(i64, 4), k.zFPut(w, "abc\n"));
-        _ = k.zFClose(w);
+        try std.testing.expectEqual(@as(i64, 4), k.zFPut(zc, w, "abc\n"));
+        _ = k.zFClose(zc, w);
 
-        const r = k.zFOpen(path, "r", false);
+        const r = k.zFOpen(zc, path, "r", false);
         try std.testing.expect(r & 2147483648 != 0);
         // §9.5.5 "$ftell ... the offset from the beginning of the file of the current
         // byte" is 0 before any read.
-        try std.testing.expectEqual(@as(i64, 0), k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFTell(zc, r));
         // §9.5.8 "returns zero otherwise": nothing has been read, so no EOF.
-        try std.testing.expectEqual(@as(i64, 0), k.zFEof(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFEof(zc, r));
         // §9.5.4.1 "until a newline character is read AND TRANSFERRED to str ... the
         // number of characters read is returned in code" is 4, not the 3 a C `fgets`
         // minus its delimiter gives.
-        try std.testing.expectEqual(@as(i64, 4), k.zFGets(r));
-        try std.testing.expectEqualStrings("abc\n", k.zFLine(4, r));
-        try std.testing.expectEqual(@as(i64, 4), k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 4), k.zFGets(zc, r));
+        try std.testing.expectEqualStrings("abc\n", k.zFLine(zc, 4, r));
+        try std.testing.expectEqual(@as(i64, 4), k.zFTell(zc, r));
         // The read that runs off the end is the one §9.5.8 promises a nonzero answer
         // for; the first need not have touched EOF.
-        try std.testing.expectEqual(@as(i64, 0), k.zFGets(r));
-        try std.testing.expect(k.zFEof(r) != 0);
+        try std.testing.expectEqual(@as(i64, 0), k.zFGets(zc, r));
+        try std.testing.expect(k.zFEof(zc, r) != 0);
         // §9.5.5 "$fseek ... 2 sets position to EOF plus offset", and the return is a
         // STATUS: "otherwise, code is set to 0".
-        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(r, 0, 2));
-        try std.testing.expectEqual(@as(i64, 4), k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(zc, r, 0, 2));
+        try std.testing.expectEqual(@as(i64, 4), k.zFTell(zc, r));
         // "$rewind is equivalent to $fseek (fd,0,0)" in status and in effect.
-        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(r, 0, 0));
-        try std.testing.expectEqual(@as(i64, 0), k.zFTell(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(zc, r, 0, 0));
+        try std.testing.expectEqual(@as(i64, 0), k.zFTell(zc, r));
         // §9.5.7 "if the most recent operation did not result in an error, then the
         // value returned shall be zero, and the string variable str shall be empty".
-        try std.testing.expectEqual(@as(i64, 0), k.zFError(r));
+        try std.testing.expectEqual(@as(i64, 0), k.zFError(zc, r));
         try std.testing.expectEqualStrings("", k.zFErrorStr(0, r));
-        _ = k.zFClose(r);
+        _ = k.zFClose(zc, r);
 
         // §9.5.1 "if a file cannot be opened (either the file does not exist and the
         // type specified is r ...) a zero is returned for the mcd or fd", and
         // "applications can call $ferror to determine the cause of the most recent
         // error".
-        const bad = k.zFOpen(absent, "r", false);
+        const bad = k.zFOpen(zc, absent, "r", false);
         try std.testing.expectEqual(@as(i64, 0), bad);
-        try std.testing.expect(k.zFError(bad) != 0);
-        try std.testing.expect(k.zFErrorStr(k.zFError(bad), bad).len != 0);
+        try std.testing.expect(k.zFError(zc, bad) != 0);
+        try std.testing.expect(k.zFErrorStr(k.zFError(zc, bad), bad).len != 0);
 
         // §9.5.1's other overload: "the multichannel descriptor mcd is a 32-bit
         // integer in which a SINGLE BIT is set", bit 0 "always refers to the standard
         // output", and bit 31 "shall always be CLEARED".
-        const mcd = k.zFOpen(path, "", true);
+        const mcd = k.zFOpen(zc, path, "", true);
         try std.testing.expect(mcd & 2147483648 == 0);
         try std.testing.expect(mcd != 0 and mcd & (mcd - 1) == 0);
         try std.testing.expect(mcd != 1);
-        _ = k.zFClose(mcd);
+        _ = k.zFClose(zc, mcd);
         // "The $fopen function shall reuse channels that have been closed."
-        try std.testing.expectEqual(mcd, k.zFOpen(path, "", true));
-        _ = k.zFClose(mcd);
+        try std.testing.expectEqual(mcd, k.zFOpen(zc, path, "", true));
+        _ = k.zFClose(zc, mcd);
 
         // IEEE 1364-2005 §17.2.4.1/§17.2.4.2, the digital context's two reads on
         // this same table (VAMS §9.5.1.2): `$ungetc` puts a character back without
         // touching the file, the next `$fgetc` reads it, and `$rewind` drops it.
-        const gw = k.zFOpen(path, "w", false);
-        _ = k.zFPut(gw, "a");
-        _ = k.zFClose(gw);
-        const g = k.zFOpen(path, "r", false);
-        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(g));
-        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc('Z', g));
-        try std.testing.expectEqual(@as(i64, 0), k.zFTell(g));
-        try std.testing.expectEqual(@as(i64, 'Z'), k.zFGetc(g));
-        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc('Z', g));
-        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(g, 0, 0));
-        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(g));
+        const gw = k.zFOpen(zc, path, "w", false);
+        _ = k.zFPut(zc, gw, "a");
+        _ = k.zFClose(zc, gw);
+        const g = k.zFOpen(zc, path, "r", false);
+        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(zc, g));
+        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc(zc, 'Z', g));
+        try std.testing.expectEqual(@as(i64, 0), k.zFTell(zc, g));
+        try std.testing.expectEqual(@as(i64, 'Z'), k.zFGetc(zc, g));
+        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc(zc, 'Z', g));
+        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(zc, g, 0, 0));
+        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(zc, g));
         // §17.2.8: the read that finds no byte is EOF (-1) and sets the indicator.
-        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(g, 0, 2));
-        try std.testing.expectEqual(@as(i64, -1), k.zFGetc(g));
-        try std.testing.expect(k.zFEof(g) != 0);
-        _ = k.zFClose(g);
+        try std.testing.expectEqual(@as(i64, 0), k.zFSeek(zc, g, 0, 2));
+        try std.testing.expectEqual(@as(i64, -1), k.zFGetc(zc, g));
+        try std.testing.expect(k.zFEof(zc, g) != 0);
+        _ = k.zFClose(zc, g);
 
         // VD-084: `$fscanf`'s window and `$fgets` read the pushback first, and
         // the file resumes after the byte it covers.
-        const hw = k.zFOpen(path, "w", false);
-        _ = k.zFPut(hw, "ab\n");
-        _ = k.zFClose(hw);
-        const h = k.zFOpen(path, "r", false);
-        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(h));
-        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc('Z', h));
-        try std.testing.expectEqualStrings("Zb\n", k.zFWindow(h));
-        try std.testing.expectEqual(@as(i64, 1), k.zFTake(h, 1, 1));
-        try std.testing.expectEqualStrings("b\n", k.zFWindow(h));
-        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc('Y', h));
-        try std.testing.expectEqual(@as(i64, 3), k.zFGets(h));
-        try std.testing.expectEqualStrings("Yb\n", k.zFLine(3, h));
-        try std.testing.expectEqual(@as(i64, 3), k.zFTell(h));
-        _ = k.zFClose(h);
+        const hw = k.zFOpen(zc, path, "w", false);
+        _ = k.zFPut(zc, hw, "ab\n");
+        _ = k.zFClose(zc, hw);
+        const h = k.zFOpen(zc, path, "r", false);
+        try std.testing.expectEqual(@as(i64, 'a'), k.zFGetc(zc, h));
+        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc(zc, 'Z', h));
+        try std.testing.expectEqualStrings("Zb\n", k.zFWindow(zc, h));
+        try std.testing.expectEqual(@as(i64, 1), k.zFTake(zc, h, 1, 1));
+        try std.testing.expectEqualStrings("b\n", k.zFWindow(zc, h));
+        try std.testing.expectEqual(@as(i64, 0), k.zFUngetc(zc, 'Y', h));
+        try std.testing.expectEqual(@as(i64, 3), k.zFGets(zc, h));
+        try std.testing.expectEqualStrings("Yb\n", k.zFLine(zc, 3, h));
+        try std.testing.expectEqual(@as(i64, 3), k.zFTell(zc, h));
+        _ = k.zFClose(zc, h);
     }
 
     test "codegen: §9.21 the emitted table interpolator is the one the fixtures assert" {
@@ -17178,7 +17482,8 @@ pub const codegen_tests = struct {
             "batch_ok",
             "constant",
             "deriv_reads",
-            "file_io",
+            "fileIo",
+            "deinitInstance",
             "jac_f",
             "lane_masks",
             "limit_reads",
@@ -18184,17 +18489,18 @@ pub const codegen_tests = struct {
             var h: Harness = undefined;
             const lowered = Harness.run(gpa, src, &h);
             defer h.deinit();
-            // A refusal at lowering lands in the bag.
+            // A refusal at lowering leaves its code in `first_error`.
             if (lowered) |_| {} else |e| if (e != error.DiagnosticsReported) return e;
             const a = h.arena_state.allocator();
-            if (!h.bag.failed()) {
+            const ran = if (lowered) |_| true else |_| false;
+            if (ran and !h.bag.failed()) {
                 // As `Compilation.lowerAndProve` runs it.
                 _ = try ifconv.run(a, &h.mir, .pure, null);
                 const v = try proof.prove(a, &h.mir, &h.lowered, .{}, &h.bag);
                 _ = try ifconv.run(a, &h.mir, .speculate, null);
                 if (!h.bag.failed()) _ = try generate(a, a, &h.mir, &h.lowered, v, .{ .display = display, .diags = &h.bag });
             }
-            var first: ?diag.Code = null;
+            var first: ?diag.Code = h.first_error;
             for (0..h.bag.count()) |i| if (h.bag.at(i).severity == .err) {
                 first = h.bag.at(i).code;
                 break;
@@ -21974,6 +22280,32 @@ pub const vpi_tests = struct {
         try std.testing.expectEqualStrings("top.p", connName(user.vpiLowConn, p));
         try std.testing.expectEqual(@as(c_int, user.vpiNode), property.vpi_get(user.vpiType, handle.vpi_handle(user.vpiLowConn, p)));
         try std.testing.expect(handle.vpi_handle(user.vpiHighConn, p) == null);
+    }
+
+    test "§3.7.1 vpiName is an escaped identifier's name, and vpiFullName reads back by name: `\\a`, `$q`, `m.1`" {
+        // Oracle: IEEE 1364-2005 §3.7.1, neither the leading `\` nor the
+        // closing white space is part of the name: `\\a ` is `\a`, `\$q ` is
+        // `$q`, `\m.1 ` is `m.1`. The parser interns the first two with a `\`
+        // of their own (front's interning, 0.22), which vpiName showed.
+        var h: run.Harness = undefined;
+        try h.init("module t;\n  wire \\\\a , \\$q , \\m.1 ;\nendmodule\n");
+        defer h.deinit();
+        const itr = iterate.vpi_iterate(user.vpiNet, handle.vpi_handle_by_name("t", null)) orelse return error.TestUnexpectedResult;
+        var names: [3][]const u8 = .{ "", "", "" };
+        defer for (names) |n| std.testing.allocator.free(n);
+        for (&names) |*name| {
+            const net = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
+            name.* = try std.testing.allocator.dupe(u8, std.mem.span(property.vpi_get_str(user.vpiName, net)));
+            const full = try std.testing.allocator.dupeSentinel(u8, std.mem.span(property.vpi_get_str(user.vpiFullName, net)), 0);
+            defer std.testing.allocator.free(full);
+            const back = handle.vpi_handle_by_name(full.ptr, null);
+            try std.testing.expect(back != null);
+            try std.testing.expect(trust.vpi_compare_objects(back, net) != 0);
+        }
+        try std.testing.expect(iterate.vpi_scan(itr) == null);
+        try std.testing.expectEqualStrings("\\a", names[0]);
+        try std.testing.expectEqualStrings("$q", names[1]);
+        try std.testing.expectEqualStrings("m.1", names[2]);
     }
 };
 

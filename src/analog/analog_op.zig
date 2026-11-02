@@ -131,7 +131,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     if (std.mem.eql(u8, name, "ddx")) {
         if (args.len != 2) return lower_math.arityError(self, e, name, 2);
         const f = try self.toReal(try lower_expr.lowerExpr(self, args[0]));
-        if (ex.tag(args[1]) != .branch_access) {
+        if (args[1] == .none or ex.tag(args[1]) != .branch_access) {
             try self.err(self.file.exprs.mainTok(e), .E0504, "", .{});
             return poison;
         }
@@ -289,6 +289,11 @@ pub fn interpQuad(self: *Lower, a: Ast.LteAttr) Oom!bool {
 /// held in a variable that only literals and parameters reach still passes.
 pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value {
     assert(e == .none or self.exprValid(e));
+    // §4.5.15: no null argument (`ddt(x, )`), whichever spine reaches here.
+    if (e == .none) {
+        try self.err(self.mir.cur_tok, .E0505, "`{s}()`", .{name});
+        return null;
+    }
     if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
     // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
     const tv = try lower_expr.lowerExpr(self, e);
@@ -531,7 +536,8 @@ fn abstolSlot(name: []const u8) ?usize {
 /// The abstol a bare `nature_identifier` or `net.potential.abstol` in a tolerance
 /// slot stands for, or null. A variable or parameter with the same name wins (§2.8).
 fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
-    assert(e == .none or self.exprValid(e));
+    assert(e != .none); // `lowerAbstolArg` refuses an omitted slot
+    assert(self.exprValid(e));
     const ex = &self.file.exprs;
     // §5.5.3's other spelling of the same value, `n1.potential.abstol`. Its last
     // sentence makes the two interchangeable in this slot.

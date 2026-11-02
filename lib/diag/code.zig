@@ -191,7 +191,7 @@ pub const Code = enum(u16) {
     W0259,
 
     // ---------------------------------------------------------------- class 3
-    // Declarations, types, disciplines — lower.zig.
+    // Declarations, types, disciplines — src/analog/.
     E0301,
     E0302,
     E0303,
@@ -272,7 +272,7 @@ pub const Code = enum(u16) {
     E0378,
 
     // ---------------------------------------------------------------- class 4
-    // Behavioral semantics: statements and contributions — lower.zig.
+    // Behavioral semantics: statements and contributions — src/analog/.
     E0401,
     E0402,
     E0403,
@@ -316,7 +316,7 @@ pub const Code = enum(u16) {
     E0477,
 
     // ---------------------------------------------------------------- class 5
-    // Analog operators and math functions — lower.zig.
+    // Analog operators and math functions — src/analog/.
     E0501,
     E0502,
     E0503,
@@ -378,7 +378,7 @@ pub const Code = enum(u16) {
     W0653,
 
     // ---------------------------------------------------------------- class 7
-    // Events and timing — lower.zig.
+    // Events and timing — src/analog/.
     E0701,
     E0702,
     E0703,
@@ -392,7 +392,7 @@ pub const Code = enum(u16) {
     W0750,
 
     // ---------------------------------------------------------------- class 8
-    // System tasks and functions — lower.zig.
+    // System tasks and functions — src/analog/.
     E0801,
     E0802,
     E0803,
@@ -416,7 +416,7 @@ pub const Code = enum(u16) {
     W0852,
 
     // ---------------------------------------------------------------- class 9
-    // Hierarchy and elaboration — lower.zig, elaborate.zig.
+    // Hierarchy and elaboration — src/analog/, src/elab/.
     E0901,
     E0902,
     E0903,
@@ -452,6 +452,8 @@ pub const Code = enum(u16) {
     E1018,
     E1019,
     E1020,
+    E1021,
+    E1022,
     E1100,
     E1101,
     /// IEEE 1364-2005 §17.2.10: an SDF file `$sdf_annotate` cannot read.
@@ -4118,7 +4120,7 @@ const rows: std.enums.EnumFieldStruct(Code, Info, null) = .{
         \\removal is the Verilog-A SUBSET's rule, and VerA compiles
         \\Verilog-AMS, where §7.3.2 lists "the case, casex, and casez
         \\statements" among the analog context's four-state features. They
-        \\lower now (`lower_expr.caseMatch`). The number is not reused.
+        \\lower now (`expr_case.caseMatch`). The number is not reused.
     ),
     .E0417 = .{
         .title = "genvar loop bound is not a constant expression",
@@ -6601,7 +6603,7 @@ const rows: std.enums.EnumFieldStruct(Code, Info, null) = .{
         \\This is NOT "hierarchy is unsupported" any more — that was E0204,
         \\retired. §6.2.2 instantiation elaborates and `elab/elaborate.zig`
         \\flattens the tree, and because a flattened entity's name IS its
-        \\hierarchical path (`Elaborate.sep`), resolving a §6.7 reference is
+        \\hierarchical path (`elab.sep`), resolving a §6.7 reference is
         \\the ordinary lookup under the joined name. So this fires when the
         \\path is simply wrong: a misspelled instance name, an instance that
         \\was never declared, or a name that exists in a sibling rather than
@@ -7838,6 +7840,32 @@ const rows: std.enums.EnumFieldStruct(Code, Info, null) = .{
         \\with a placeholder 0 in that place.
         \\
         \\Report it with the source that produced it.
+        ,
+    },
+    .E1021 = .{
+        .title = "a call has more operands than its 24-bit count holds",
+        .lrm = "",
+        .explain =
+        \\Not a language rule and not a design limit. VerA's IR stores a
+        \\call's operand count in 24 bits, so one call takes up to 16777215
+        \\operands. An array or assignment pattern passed to a call
+        \\(`laplace_nd`'s coefficients, `$table_model`'s data, a
+        \\`noise_table`) is one operand per element, so a pattern like
+        \\`'{16777216{1.0}}` there passes the count. Split the data, or
+        \\compute it with fewer elements.
+        ,
+    },
+    .E1022 = .{
+        .title = "a device has more `$fatal` and `$error` sites than its status code holds",
+        .lrm = "",
+        .explain =
+        \\Not a language rule and not a design limit. A device reports the
+        \\first §9.7.3 `$fatal` or `$error` its evaluation reaches as one
+        \\32-bit status code (`contract.statusCode`): the severity in the top
+        \\byte, the site's number in the low 24 bits. So one module's analog
+        \\blocks hold up to 16777214 such calls, counting each one a loop or
+        \\macro writes out. Fold repeated reports into one call whose
+        \\arguments say which case it is.
         ,
     },
     .E1099 = .{

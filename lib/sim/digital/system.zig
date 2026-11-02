@@ -183,7 +183,7 @@ pub const pla_tasks = blk: {
 
 /// What a run's §17 system tasks keep between calls: the §17.6 queues by
 /// `q_id`, §17.9.1's seedless `$random` stream, and the host's file I/O
-/// (null: the run opens files itself, `files.own`).
+/// (null: the run opens files itself, in `files`).
 pub const TaskState = struct {
     /// §17.6 the stochastic queues, by `q_id`.
     queues: std.AutoHashMapUnmanaged(i64, Queue) = .empty,
@@ -191,10 +191,14 @@ pub const TaskState = struct {
     /// listing starts from 0, which its `uniform` reads as 259341593.
     random_seed: i32 = 0,
     /// VAMS §9.5.1.2 the host's descriptor table, when the simulation shares
-    /// one between this engine and an analog device (the mixed runner
-    /// installs the device's `file_io`); null, this engine's own
-    /// (`system.table`).
+    /// one between this engine and an analog device instance (the mixed
+    /// runner installs the instance's `fileIo`); null, the run's own
+    /// (`files`).
     file_io: ?@import("contract").FileIo = null,
+    /// The run's own descriptor table, which every §17.2 task of a run
+    /// without `file_io` opens, reads and writes (`files.own`). Its memory
+    /// and channels live until the process ends: a run has no teardown.
+    files: @import("kernels").file_table.ZfTable = .{},
 };
 
 /// §17.9.3's `rtl_dist_*` over the listing's 32-bit `long` seed; `a` and `b`

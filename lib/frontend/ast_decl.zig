@@ -511,7 +511,7 @@ pub const ParamOverride = struct {
 /// defparam_assignment `hierarchical_parameter_identifier = constant_expression`).
 ///
 /// `path` is the whole dotted left-hand side interned as one string, joined by
-/// `Elaborate.sep` ('.'), so it equals the flat name elaboration gives the
+/// `elab.sep` ('.'), so it equals the flat name elaboration gives the
 /// target parameter. `value` is over parameters "declared in the same module as
 /// the defparam statement" (§6.3.1), so it is cloned in the declaring module's
 /// namespace.

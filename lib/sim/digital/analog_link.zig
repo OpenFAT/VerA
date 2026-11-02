@@ -35,8 +35,6 @@ const display = @import("display.zig");
 /// process does (`waiters.store` now, `exec.enqueue` of a `.write` later), so a
 /// §12.30 put wakes waiters and value-change watchers like any other write.
 const exec = @import("exec.zig");
-/// §17 system tasks.
-const system = @import("system.zig");
 const driver = @import("driver.zig");
 const binding = @import("bind.zig");
 const elab = @import("elab.zig");
@@ -68,8 +66,6 @@ const D2aSite = root.D2aSite;
 const Run = root.Run;
 const Error = root.Error;
 const MonitorKind = root.MonitorKind;
-/// The descriptor table a `Run` with no `file_io` opens files through.
-const own_files = system.own;
 
 /// A digital run beside an analog solver (VAMS §7.3.6, §8): the monitored
 /// analog events and probes, the D2A/A2D bookkeeping, and the host's

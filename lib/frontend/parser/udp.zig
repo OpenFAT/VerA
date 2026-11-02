@@ -91,9 +91,15 @@ pub fn parseUdpDecl(self: *Parser) Error!Ast.UdpDecl {
         }
         if (!self.eat(.comma)) break;
     }
+    // A.5.1 `udp_port_list ::= output_port_identifier , input_port_identifier
+    // { , input_port_identifier }`, and the declaration arm alike: an output
+    // and at least one input.
+    if (ports.items.len < 2)
+        return self.failAt(self.pos, .E0207, "found {s}: a UDP's port list is its output and at least one input", .{self.found(self.pos)});
     _ = try self.expect(.rparen);
     _ = try self.expect(.semicolon);
     const port_ids = ports.items;
+    assert(port_ids.len >= 2);
     // A.5.2's separate declarations, the first arm's. A.5.1 requires one or
     // more, but the second arm has none, so the count is not checked.
     while (true) {

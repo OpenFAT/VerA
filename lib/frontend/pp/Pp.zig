@@ -68,10 +68,10 @@ out: std.ArrayList(u8) = .empty,
 /// by `out_start` and `SourceMap.resolve` can binary-search it.
 segs: std.ArrayList(diag.Segment) = .empty,
 events: Events = .{},
-/// `Output.annex_d_included`, set by `directive.builtin`.
+/// `Output.annex_d_included`, set by pp/include.zig's `builtin`.
 annex_d_included: bool = false,
 /// An `include named constants.vams (constants.h) / disciplines.vams
-/// (discipline.h), set by `directive.include`; `Output.disciplines_included`.
+/// (discipline.h), set by pp/include.zig's `handleInclude`; `Output.disciplines_included`.
 constants_included: bool = false,
 disciplines_included: bool = false,
 /// Running text VerA ships (the prelude, a synthesized netlist), which
@@ -238,8 +238,11 @@ pub fn emitting(pp: *const Pp) bool {
 }
 
 /// Appends an event to `list` at the current output length, which is where
-/// the directive's own collapsed text ends and its region begins.
+/// the directive's own collapsed text ends and its region begins. Asserts
+/// that `out` is the output, not a macro actual's buffer (`directive` passes
+/// a region directive in an actual through).
 pub fn mark(pp: *Pp, list: anytype, value: anytype) Allocator.Error!void {
+    assert(!pp.in_actual);
     const at: u32 = @intCast(pp.out.items.len);
     // Text-stream order: an event never lands before the one already there.
     if (list.items.len != 0) assert(list.items[list.items.len - 1].at <= at);
@@ -426,6 +429,10 @@ pub fn runFile(pp: *Pp, raw: []const u8, file: []const u8, existing: diag.FileId
 
     const id = if (existing != .none) existing else try pp.addFile(file, raw);
     pp.cur_file_id = id;
+    // Each file is in bounds alone; several given together (argv, `.hdl`
+    // cards) can still pass the bound on offsets between them.
+    if (pp.out.items.len + raw.len > pp.opts.text_limit)
+        return pp.fail(.{ .start = 0, .end = 0 }, .E0150, "past {d} bytes", .{pp.opts.text_limit});
 
     // Registered raw first so a stripComments failure resolves, then
     // repointed: every later offset indexes the stripped text.

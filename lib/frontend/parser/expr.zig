@@ -206,7 +206,7 @@ pub fn parsePrimary(self: *Parser) Error!Ast.ExprId {
                 // hierarchically." A dotted name with an argument list becomes
                 // `.call` under the joined name, which is the flat name
                 // elaboration gives the child's function because
-                // `Elaborate.sep` is the same `.`. This join and
+                // `elab.sep` is the same `.`. This join and
                 // `Lower.flatName` must change together.
                 if (self.peek() == .lparen) return parseCall(self, .call, tok, try joinName(self, parts.items), task_enable);
                 const off = try self.file.exprs.addStrList(self.arena, parts.items);
@@ -302,7 +302,7 @@ pub fn parsePrimary(self: *Parser) Error!Ast.ExprId {
 }
 
 /// The flat name `a.b.c` of a §6.7 hierarchical name's parts, interned: the
-/// name elaboration gives the entity (`Elaborate.sep` is the same `.`), so
+/// name elaboration gives the entity (`elab.sep` is the same `.`), so
 /// `Lower.flatName` and this join must change together. `parts` must be
 /// nonempty (a name has at least one part).
 pub fn joinName(self: *Parser, parts: []const Ast.StrId) Error!Ast.StrId {

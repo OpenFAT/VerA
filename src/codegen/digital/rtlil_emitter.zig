@@ -202,14 +202,13 @@ pub const Emitter = struct {
 
     /// `\name`, RTLIL's public id: `\` and the name's bytes up to white
     /// space, any of them a `\` or a `.`. The parser interns an escaped
-    /// identifier without its `\` (§3.7.1: `\\a ` is the name `\a`, which
-    /// is not `a`) and with each `.` as a space (`Parser.internTok`), which
-    /// this turns back. An escaped name that starts with `$` is interned
-    /// with its `\` kept (§3.7.3: it names no system task), which is not
-    /// part of the name either.
+    /// identifier without its `\`, unless its name starts with `$` or `\`
+    /// (§3.7.3, and so `\\a `, the name `\a`, stays apart from `\a `),
+    /// and with each `.` as a space (`Parser.internTok`): the name is the
+    /// text after a leading `\`, its spaces turned back to periods.
     pub fn id(self: *Emitter, name: StrId) ![]const u8 {
         const full = self.str(name);
-        const s = if (std.mem.startsWith(u8, full, "\\$")) full[1..] else full;
+        const s = if (full.len != 0 and full[0] == '\\') full[1..] else full;
         assert(s.len != 0);
         const out = try self.arena.alloc(u8, s.len + 1);
         out[0] = '\\';
