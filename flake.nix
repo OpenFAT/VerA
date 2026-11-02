@@ -50,6 +50,7 @@
           src = lib.fileset.toSource {
             root = ./.;
             fileset = lib.fileset.unions [
+              ./build
               ./build.zig
               ./build.zig.zon
               ./lib

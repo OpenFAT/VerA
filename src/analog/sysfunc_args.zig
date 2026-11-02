@@ -109,7 +109,7 @@ pub fn checkDescriptor(self: *Lower, name: []const u8, i: usize, arg: Ast.ExprId
 /// string of one of the forms in Table 9-24". Only a literal can be judged.
 pub fn checkFopenType(self: *Lower, args: []const Ast.ExprId) Oom!bool {
     if (args.len != 2 or args[1] == .none) return false;
-    const s = constStrArg(self, args[1]) orelse return false;
+    const s = (try constStrArg(self, args[1])) orelse return false;
     assert(args[1] != .none);
     if (fopen_types.has(s)) return false;
     try self.err(self.file.exprs.mainTok(args[1]), .E0889, "`\"{s}\"`", .{s});
@@ -117,11 +117,11 @@ pub fn checkFopenType(self: *Lower, args: []const Ast.ExprId) Oom!bool {
 }
 
 /// Returns the constant string an argument folds to, or null for any other expression.
-pub fn constStrArg(self: *Lower, e: Ast.ExprId) ?[]const u8 {
+pub fn constStrArg(self: *Lower, e: Ast.ExprId) std.mem.Allocator.Error!?[]const u8 {
     assert(e == .none or self.exprValid(e));
     assert(self.file.exprs.len() != 0);
     if (e == .none) return null;
-    const c = lower_constfold.constEval(self, e) orelse return null;
+    const c = (try lower_constfold.constEval(self, e)) orelse return null;
     return switch (c) {
         .str => |s| s,
         else => null,

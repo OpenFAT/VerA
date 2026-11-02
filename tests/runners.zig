@@ -20,6 +20,9 @@
 //! per-checkout directory build.zig names, so runs reuse it instead of
 //! piling up in the shared one), then leaves an empty X for the caller: the
 //! argv checked is exactly the one a build uses.
+//!
+//! Contents:
+//! - `pub fn main(init: std.process.Init) !u8`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -69,6 +72,8 @@ pub fn main(init: std.process.Init) !u8 {
     try census.flush();
     return if (bad == 0) 0 else 1;
 }
+
+// ---- private ----
 
 /// Renders `fixture`'s runner, checks it is the `kind` variant, and builds
 /// it with `zig` = `self`. Null when it compiled, else why not.

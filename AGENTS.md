@@ -200,8 +200,8 @@ ships, `tests/` the tests, `tools/` the scripts.
   `share/vera/contract.zig` and `share/vera/contract/`), `osdi_dyn.zig` and
   `osdi_dyn/` (the OSDI 0.4 dyn), `sim/` (the
   runtime of `--emit-exe` executables and `.v` devices) and the modules the
-  runtime imports: `base/`, `diag/`, `frontend/`, `kernels/`. `build.zig`
-  embeds the whole of `lib/` into `vera` (`simSources`), which writes it out
+  runtime imports: `base/`, `diag/`, `frontend/`, `kernels/`. The build
+  embeds the whole of `lib/` into `vera` (`build/common.zig`'s `simSources`), which writes it out
   beside a build (`src/main.zig`'s `simTree`); `src/zigbuild/exe.zig`'s
   `runtime_modules` names the module roots inside it.
 - `src/`: `main.zig` and `cli/` (the driver), `Compilation.zig` (the `vera`
@@ -242,5 +242,9 @@ ships, `tests/` the tests, `tools/` the scripts.
   (the OSDI decks in ngspice), `update-sources.py`, `asm_probe.py` (the
   `codegen_probe.zig` assembly against its `expect:` lines)), `vera.xfail` and
   `zrunner.zig`.
+- `build.zig` and `build/`: the build's spine (the options, the modules,
+  `vera`) and its phases, one file each (`unit.zig`, `runs.zig`, `vpi.zig`,
+  `devices.zig`, `external.zig`), over `common.zig`'s `module_specs`,
+  `Graph` and helpers.
 - A module imports `lib/` freely and `src/` never imports a module above it in
-  `build.zig`'s `module_specs`; `lib/` imports nothing from `src/`.
+  `build/common.zig`'s `module_specs`; `lib/` imports nothing from `src/`.

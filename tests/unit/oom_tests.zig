@@ -22,22 +22,6 @@ const include_dirs: []const []const u8 = &.{@import("repo_options").repo_root ++
 /// How far a compile goes: the analysis (`--lint`), or through codegen too.
 const Target = enum { lint, build };
 
-fn compileOne(gpa: std.mem.Allocator, src: []const u8, target: Target) !void {
-    var bag: vera.diag.Bag = .init(gpa);
-    defer bag.deinit(gpa);
-    var res = try vera.analyze(gpa, src, .{
-        .include_dirs = include_dirs,
-        // `.emit` is the fixture testbench's mode, so `.build` reaches display codegen too.
-        .display = if (target == .build) .emit else .drop,
-    }, &bag);
-    defer res.deinit(gpa);
-    if (target == .build) {
-        var dev = try res.generate(gpa, .{}, &bag);
-        defer dev.deinit(gpa);
-        if (dev.refused) return error.CodegenRefused;
-    }
-}
-
 /// `std.testing.allocator` with every in-place growth refused. An arena grows
 /// its block in place when the pages after it happen to be free (the backing
 /// allocator's `rawResize`; on Linux an `mremap` without MAYMOVE), so whether
@@ -66,6 +50,24 @@ const no_grow: std.mem.Allocator = .{ .ptr = undefined, .vtable = &.{
         }
     }.f,
 } };
+
+// ---- private ----
+
+fn compileOne(gpa: std.mem.Allocator, src: []const u8, target: Target) !void {
+    var bag: vera.diag.Bag = .init(gpa);
+    defer bag.deinit(gpa);
+    var res = try vera.analyze(gpa, src, .{
+        .include_dirs = include_dirs,
+        // `.emit` is the fixture testbench's mode, so `.build` reaches display codegen too.
+        .display = if (target == .build) .emit else .drop,
+    }, &bag);
+    defer res.deinit(gpa);
+    if (target == .build) {
+        var dev = try res.generate(gpa, .{}, &bag);
+        defer dev.deinit(gpa);
+        if (dev.refused) return error.CodegenRefused;
+    }
+}
 
 fn oom(comptime path: []const u8, target: Target) !void {
     const src = @embedFile("../conformance/tests/" ++ path);

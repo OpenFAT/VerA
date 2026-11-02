@@ -45,7 +45,7 @@ pub fn checkPortDiscipline(self: *Flatten, module: *const Ast.ModuleDecl, inst: 
             constfold.Const{ .int = 1 }
         else
             // Not constant: lowering's E0357 (§2.9) owns that answer.
-            constfold.fold(self.ctx.file, a.value, fold.ParamEnv{ .self = self, .local = true }) orelse continue;
+            (try constfold.fold(self.ctx.arena, self.ctx.file, a.value, fold.ParamEnv{ .self = self, .local = true })) orelse continue;
         const want = switch (c) {
             .str => |sv| sv,
             else => {
@@ -68,7 +68,7 @@ pub fn checkPortDiscipline(self: *Flatten, module: *const Ast.ModuleDecl, inst: 
 /// it is attached"; E.3.2.1's `motor1` example overrides the instance's per
 /// port). Null when neither carries a valid one; `checkPortDiscipline`
 /// reports an invalid one.
-pub fn portDisciplineAttr(self: *Flatten, module: *const Ast.ModuleDecl, inst: *const Ast.Instance, conn: Ast.PortConn) ?Ast.StrId {
+pub fn portDisciplineAttr(self: *Flatten, module: *const Ast.ModuleDecl, inst: *const Ast.Instance, conn: Ast.PortConn) std.mem.Allocator.Error!?Ast.StrId {
     assert(inst.module != .none);
     var on_inst: ?Ast.StrId = null;
     for (module.attrs) |a| {
@@ -76,7 +76,7 @@ pub fn portDisciplineAttr(self: *Flatten, module: *const Ast.ModuleDecl, inst: *
         const t = decoratedTok(self, a.main_tok);
         if (!decorates(self, t, inst)) continue;
         if (a.value == .none) continue;
-        const c = constfold.fold(self.ctx.file, a.value, fold.ParamEnv{ .self = self, .local = true }) orelse continue;
+        const c = (try constfold.fold(self.ctx.arena, self.ctx.file, a.value, fold.ParamEnv{ .self = self, .local = true })) orelse continue;
         if (c != .str) continue;
         const name = self.ctx.file.strings.find(c.str) orelse continue;
         const d = discipline.declOf(self.ctx.file, name) orelse continue;

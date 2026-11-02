@@ -62,7 +62,7 @@ pub fn checkFormatPairing(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0);
     const at, const fmt = for (args, 0..) |a, i| {
         if (try lower_sysfunc_args.outputLiteral(self, a)) |text| break .{ i, text };
-        if (lower_constfold.constEval(self, a)) |c| switch (c) {
+        if (try lower_constfold.constEval(self, a)) |c| switch (c) {
             .str => |s| break .{ i, s },
             else => {},
         };
@@ -100,7 +100,7 @@ pub fn prepareFormatArgs(self: *Lower, tok: u32, live: []const Ast.ExprId, tys: 
         // Use the actual lowered bytes, including direct literal NUL escapes,
         // so validation and emission inspect the same format.
         const lowered = self.mir.valueDef(vals[at]);
-        const fmt_or: ?[]const u8 = if (lowered == .str_const) lowered.str_const else if (lower_constfold.constEval(self, live[at])) |c| switch (c) {
+        const fmt_or: ?[]const u8 = if (lowered == .str_const) lowered.str_const else if (try lower_constfold.constEval(self, live[at])) |c| switch (c) {
             .str => |str| str,
             else => null,
         } else null;

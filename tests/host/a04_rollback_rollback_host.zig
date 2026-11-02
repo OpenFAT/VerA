@@ -64,6 +64,8 @@ const n_u = @typeInfo(D.U).@"enum".field_names.len;
 /// The reference family with no lanes: nothing here asks for a Jacobian.
 const S = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
 
+// ---- private ----
+
 /// The slew output, read from row `p` and divided back out by the 1e-3 scale
 /// the .va applies.
 fn read(model: *const D.Model, inst: *D.Instance, x: [n_u]f64, sim: contract.SimState) f64 {

@@ -171,7 +171,7 @@ pub fn markDiscreteExprs(file: *const Ast.SourceFile, marks: []bool) void {
         pub fn stmt(w: @This(), s: Ast.StmtId) error{}!void {
             if (s == .none) return;
             switch (w.file.stmt(s)) {
-                .case_stmt => |c| for (c.arms) |arm| for (arm.labels) |l| w.lit(l),
+                .case_stmt => |c| for (c.arms) |arm| for (w.file.caseLabels(arm)) |l| w.lit(l),
                 .for_stmt => |f| if (w.genvarAssign(f.init)) |init| {
                     w.lits(init);
                     // The iteration of a genvar loop: whichever name it

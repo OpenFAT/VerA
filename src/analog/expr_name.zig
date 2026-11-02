@@ -43,7 +43,7 @@ pub fn lowerHierIdent(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // §5.5.3 Syntax 5-4 first: a nature attribute reference is a
     // CONSTANT this module can resolve, unlike a §6.8 hierarchical name,
     // which needs an instance tree (E0901).
-    if (lower_analog_op.natureAttrRef(self, e)) |r| switch (r) {
+    if (try lower_analog_op.natureAttrRef(self, e)) |r| switch (r) {
         .value => |c| return switch (c) {
             .real, .int => .{ .v = try self.mir.addFloatConst(self.arena, c.asReal()), .ty = .real },
             .str => .{ .v = try self.mir.addStrConst(self.arena, c.str), .ty = .string },

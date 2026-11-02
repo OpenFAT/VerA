@@ -146,7 +146,7 @@ fn tryUnrollFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
         }
     }
     const init_v = assignValueOf(self, init_s).?;
-    const start = lower_constfold.shapeEval(self, init_v) orelse {
+    const start = (try lower_constfold.shapeEval(self, init_v)) orelse {
         if (unknownLiteral(self, init_v)) |lit|
             try self.err(self.file.exprs.mainTok(lit), .E0486, "the initialization sets the genvar `{s}`", .{gv})
         else
@@ -162,12 +162,12 @@ fn tryUnrollFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
         step: Ast.ExprId,
         pub fn holds(sc: @This(), v: Const) Oom!?bool {
             try sc.self.consts.put(sc.self.arena, sc.gv, v);
-            const c = lower_constfold.shapeEval(sc.self, sc.cond) orelse return null;
+            const c = (try lower_constfold.shapeEval(sc.self, sc.cond)) orelse return null;
             return c.isTrue();
         }
         pub fn next(sc: @This(), v: Const) Oom!?Const {
             try sc.self.consts.put(sc.self.arena, sc.gv, v);
-            return lower_constfold.shapeEval(sc.self, sc.step);
+            return try lower_constfold.shapeEval(sc.self, sc.step);
         }
         pub fn same(a: Const, b: Const) bool {
             return switch (a) {
@@ -197,7 +197,7 @@ fn tryUnrollFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
     defer self.analog_for_base = saved_base;
 
     while (true) {
-        const c = lower_constfold.shapeEval(self, cond) orelse {
+        const c = (try lower_constfold.shapeEval(self, cond)) orelse {
             try self.err(self.file.exprs.mainTok(cond), .E0418, "", .{});
             break;
         };
@@ -207,7 +207,7 @@ fn tryUnrollFor(self: *Lower, init_s: Ast.StmtId, cond: Ast.ExprId, step: Ast.St
             self.gen_iter = if (self.consts.get(gv)) |v| v.asInt() else null;
         try lower_stmt.lowerStmt(self, body);
         const step_v = assignValueOf(self, step) orelse .none;
-        const next = lower_constfold.shapeEval(self, step_v) orelse {
+        const next = (try lower_constfold.shapeEval(self, step_v)) orelse {
             if (unknownLiteral(self, step_v)) |lit|
                 try self.err(self.file.exprs.mainTok(lit), .E0486, "the iteration sets the genvar `{s}`", .{gv})
             else

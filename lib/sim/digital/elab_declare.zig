@@ -457,7 +457,10 @@ pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
 }
 
 /// Block `s`'s scope under `scope`, its parameters, events and variables
-/// declared there. Pass two calls it for an automatic activation's copy.
+/// declared there. Pass one calls it for every named block (`blockScopes`);
+/// `compileStmt` for a block pass one gave no scope under `scope`: one inside
+/// a frame pass two made for a timed automatic task (`frame`), or in a
+/// constant function compiled before pass one reached it (`earlyFrame`).
 pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
     assert(scope < r.hier.scopes.items.len);
     const b = r.file.stmt(s).block;

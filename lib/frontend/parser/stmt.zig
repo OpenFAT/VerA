@@ -112,7 +112,7 @@ pub fn parseCase(self: *Parser, kind: Ast.CaseKind, gen: ?*parse_module.Body) Er
             }
             _ = try self.expect(.colon);
         }
-        const labels = try self.arena.dupe(Ast.ExprId, self.scratch_exprs.items[mark..]);
+        const labels = try self.file.addCaseLabels(self.arena, self.scratch_exprs.items[mark..]);
         const body = if (gen) |b| try parse_generate.parseGenerateBlock(self, b) else try parseStmt(self);
         try arms.append(self.arena, .{ .labels = labels, .body = body });
     }
@@ -493,9 +493,9 @@ fn parseExprOrContributeStmt(self: *Parser) Error!Ast.StmtId {
         const ex = &self.file.exprs;
         if (ex.tag(lhs) == .ident or ex.tag(lhs) == .call or ex.tag(lhs) == .hier_ident) {
             self.pos += 1;
-            // A copy: `ex.args` points into the expression pool, which the
-            // rest of the file grows and moves.
-            const args: []const Ast.ExprId = if (ex.tag(lhs) == .call) try self.arena.dupe(Ast.ExprId, ex.args(lhs)) else &.{};
+            // `addStmt` copies `ex.args` before anything grows the
+            // expression pool it points into.
+            const args: []const Ast.ExprId = if (ex.tag(lhs) == .call) ex.args(lhs) else &.{};
             // A.9.3 `hierarchical_task_identifier`, `c.t;`: the flat name.
             const name = if (ex.tag(lhs) == .hier_ident) try parse_expr.joinName(self, ex.nameParts(lhs)) else ex.strOf(lhs);
             return self.file.addStmt(self.arena, .{ .sys_task = .{ .name = name, .args = args } }, tok);

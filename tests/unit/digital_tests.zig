@@ -3,12 +3,52 @@
 //! The oracle is the clause each test names; that the text runs as
 //! `vera --run` does is the corpus's job (`zig build suite -- ieee1364 --native`).
 //! Clauses: IEEE 1364-2005 §5.2.1, §7.3, §9.7.1, §9.7.5, §10.3, §11.4.2, §15.
+
 const std = @import("std");
 const testing = std.testing;
 const sim = @import("sim");
 const diag = @import("diag");
 const Front = @import("frontend");
 const digital = @import("digital");
+
+/// An arena that takes every allocation from `parent` one by one, so a
+/// `FailingAllocator` parent fails each of the emitter's allocations in
+/// turn (`std.heap.ArenaAllocator` would fail only its few chunk grows).
+const EachAlloc = struct {
+    parent: std.mem.Allocator,
+    live: std.ArrayList([]u8) = .empty,
+
+    fn allocator(self: *EachAlloc) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = std.mem.Allocator.noResize, .remap = std.mem.Allocator.noRemap, .free = free } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, al: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *EachAlloc = @ptrCast(@alignCast(ctx));
+        self.live.ensureUnusedCapacity(testing.allocator, 1) catch return null;
+        // Every row is taken and freed 16-aligned, which covers each request.
+        std.debug.assert(al.compare(.lte, .@"16"));
+        const p = self.parent.rawAlloc(len, .@"16", ra) orelse return null;
+        self.live.appendAssumeCapacity(p[0..len]);
+        return p;
+    }
+
+    fn free(ctx: *anyopaque, buf: []u8, _: std.mem.Alignment, ra: usize) void {
+        const self: *EachAlloc = @ptrCast(@alignCast(ctx));
+        for (self.live.items, 0..) |b, i| if (b.ptr == buf.ptr) {
+            self.parent.rawFree(b, .@"16", ra);
+            _ = self.live.swapRemove(i);
+            return;
+        };
+        unreachable; // a free of what this allocator never gave
+    }
+
+    fn deinit(self: *EachAlloc) void {
+        for (self.live.items) |b| self.parent.rawFree(b, .@"16", @returnAddress());
+        self.live.deinit(testing.allocator);
+    }
+};
+
+// ---- private ----
 
 /// `source` elaborated, its transcript discarded, and emitted as
 /// `vera --emit-exe` would under `schedule` and `logic`. In `arena`.
@@ -50,6 +90,20 @@ fn device(arena: std.mem.Allocator, source: []const u8) !digital.Device {
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var r = try sim.digital.elaborate(arena, source, .{}, &bag, &sink.writer);
     return digital.device(arena, &r, "<digital>", .static);
+}
+
+/// `program` of one design, each emitter allocation from `gpa`;
+/// elaboration has an arena of its own.
+fn programUnder(gpa: std.mem.Allocator, source: []const u8) !void {
+    var el = std.heap.ArenaAllocator.init(testing.allocator);
+    defer el.deinit();
+    var bag = diag.Bag.init(el.allocator());
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var r = try sim.digital.elaborate(el.allocator(), source, .{}, &bag, &sink.writer);
+    var each: EachAlloc = .{ .parent = gpa };
+    defer each.deinit();
+    const p = try digital.program(each.allocator(), &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .language = Front.keyword.default_keyword_set }, .static, .auto);
+    try testing.expectEqual(@as(?[]const u8, null), p.fallback);
 }
 
 test "program: a native design gets an rt main, no interpreter" {
@@ -252,57 +306,6 @@ test "emitDevice: no `timescale is W1155; a refusal is E1103 and DigitalFailed" 
     var refused = diag.Bag.init(a);
     try testing.expectError(error.DigitalFailed, digital.emitDevice(a, "module m(inout w); endmodule", .{}, .static, &refused));
     try testing.expectEqual(diag.Code.E1103, refused.at(0).code);
-}
-
-/// An arena that takes every allocation from `parent` one by one, so a
-/// `FailingAllocator` parent fails each of the emitter's allocations in
-/// turn (`std.heap.ArenaAllocator` would fail only its few chunk grows).
-const EachAlloc = struct {
-    parent: std.mem.Allocator,
-    live: std.ArrayList([]u8) = .empty,
-
-    fn allocator(self: *EachAlloc) std.mem.Allocator {
-        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = std.mem.Allocator.noResize, .remap = std.mem.Allocator.noRemap, .free = free } };
-    }
-
-    fn alloc(ctx: *anyopaque, len: usize, al: std.mem.Alignment, ra: usize) ?[*]u8 {
-        const self: *EachAlloc = @ptrCast(@alignCast(ctx));
-        self.live.ensureUnusedCapacity(testing.allocator, 1) catch return null;
-        // Every row is taken and freed 16-aligned, which covers each request.
-        std.debug.assert(al.compare(.lte, .@"16"));
-        const p = self.parent.rawAlloc(len, .@"16", ra) orelse return null;
-        self.live.appendAssumeCapacity(p[0..len]);
-        return p;
-    }
-
-    fn free(ctx: *anyopaque, buf: []u8, _: std.mem.Alignment, ra: usize) void {
-        const self: *EachAlloc = @ptrCast(@alignCast(ctx));
-        for (self.live.items, 0..) |b, i| if (b.ptr == buf.ptr) {
-            self.parent.rawFree(b, .@"16", ra);
-            _ = self.live.swapRemove(i);
-            return;
-        };
-        unreachable; // a free of what this allocator never gave
-    }
-
-    fn deinit(self: *EachAlloc) void {
-        for (self.live.items) |b| self.parent.rawFree(b, .@"16", @returnAddress());
-        self.live.deinit(testing.allocator);
-    }
-};
-
-/// `program` of one design, each emitter allocation from `gpa`;
-/// elaboration has an arena of its own.
-fn programUnder(gpa: std.mem.Allocator, source: []const u8) !void {
-    var el = std.heap.ArenaAllocator.init(testing.allocator);
-    defer el.deinit();
-    var bag = diag.Bag.init(el.allocator());
-    var sink: std.Io.Writer.Discarding = .init(&.{});
-    var r = try sim.digital.elaborate(el.allocator(), source, .{}, &bag, &sink.writer);
-    var each: EachAlloc = .{ .parent = gpa };
-    defer each.deinit();
-    const p = try digital.program(each.allocator(), &r, .{ .source = source, .file_name = "<digital>", .include_dirs = &.{}, .language = Front.keyword.default_keyword_set }, .static, .auto);
-    try testing.expectEqual(@as(?[]const u8, null), p.fallback);
 }
 
 test "program: every allocation failure is OutOfMemory, never a fallback" {

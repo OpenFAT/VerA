@@ -10,6 +10,8 @@ const counter = @embedFile("../rtlil/counter.v");
 const null_ports = @embedFile("../rtlil/null_ports.v");
 const fold_1364 = @embedFile("../rtlil/fold_1364.v");
 
+// ---- private ----
+
 fn emit(arena: std.mem.Allocator, src: []const u8) ![]const u8 {
     var bag: diag.Bag = .init(arena);
     return digital.rtlil.emit(arena, src, .{}, &bag) catch |e| {
@@ -37,6 +39,18 @@ fn expectHas(text: []const u8, needle: []const u8) !void {
         std.debug.print("missing `{s}` in:\n{s}\n", .{ needle, text });
         return error.TestExpectedEqual;
     }
+}
+
+/// `open` `n` times, then `mid`, then `close` `n` times: a source nested
+/// `n` levels deep.
+fn nested(arena: std.mem.Allocator, head: []const u8, open: []const u8, mid: []const u8, close: []const u8, tail: []const u8, n: usize) ![]const u8 {
+    var s: std.ArrayList(u8) = .empty;
+    try s.appendSlice(arena, head);
+    for (0..n) |_| try s.appendSlice(arena, open);
+    try s.appendSlice(arena, mid);
+    for (0..n) |_| try s.appendSlice(arena, close);
+    try s.appendSlice(arena, tail);
+    return s.items;
 }
 
 test "vera -D reaches --emit-rtlil: `ifdef picks the inverter (1364 §19.4)" {
@@ -168,18 +182,6 @@ test "a header port that selects part of its net is refused, not emitted at the 
     // constant_range_expression ] ]`: `a[0]` is a one-bit port. Development
     // emitted `wire width 2 input 1 \a`, the whole net.
     try expectRefused("module m(a[0], y);\n  input [1:0] a;\n  output y;\n  assign y = a[0];\nendmodule\n", error.Refused, .E1213, "`a[...]`", "a[0], y");
-}
-
-/// `open` `n` times, then `mid`, then `close` `n` times: a source nested
-/// `n` levels deep.
-fn nested(arena: std.mem.Allocator, head: []const u8, open: []const u8, mid: []const u8, close: []const u8, tail: []const u8, n: usize) ![]const u8 {
-    var s: std.ArrayList(u8) = .empty;
-    try s.appendSlice(arena, head);
-    for (0..n) |_| try s.appendSlice(arena, open);
-    try s.appendSlice(arena, mid);
-    for (0..n) |_| try s.appendSlice(arena, close);
-    try s.appendSlice(arena, tail);
-    return s.items;
 }
 
 test "10^4 levels of parentheses, else-if arms, begin blocks and lvalue braces emit, counted level for level" {

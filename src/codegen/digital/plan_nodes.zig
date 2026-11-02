@@ -238,7 +238,7 @@ fn bodyBits(em: *Emitter, p: plan.Proc) Error!?Bits {
             .case_select => |c| {
                 const case = r.file.stmt(c.statement).case_stmt;
                 try readBits(em, case.scrutinee, &out);
-                for (case.arms) |arm| for (arm.labels) |lb| try readBits(em, lb, &out);
+                for (case.arms) |arm| for (r.file.caseLabels(arm)) |lb| try readBits(em, lb, &out);
             },
             .repeat_start => |x| try readBits(em, x.count, &out),
             .jump, .repeat_next, .restart, .wait_event, .wait_slots => {},

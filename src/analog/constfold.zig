@@ -15,16 +15,16 @@
 //! Contents:
 //! - private `Env` (`leaf`, `signed`, `width`)
 //! - private `ClogEnv` (`leaf`, `width`, `signed`)
-//! - `pub fn constEval(self: *const Lower, e: Ast.ExprId) ?Const`
-//! - `pub fn shapeEval(self: *Lower, e: Ast.ExprId) ?Const`
-//! - `pub fn foldExpr(self: *const Lower, e: Ast.ExprId, params: bool) ?Const`
-//! - `pub fn packedWidth(self: *const Lower, range: Ast.Dim) ?u32`
-//! - `pub fn clog2Width(self: *const Lower, e: Ast.ExprId) ?u32`
-//! - `pub fn clog2Signed(self: *const Lower, e: Ast.ExprId) ?bool`
+//! - `pub fn constEval(self: *const Lower, e: Ast.ExprId) constfold.Error!?Const`
+//! - `pub fn shapeEval(self: *Lower, e: Ast.ExprId) constfold.Error!?Const`
+//! - `pub fn foldExpr(self: *const Lower, e: Ast.ExprId, params: bool) constfold.Error!?Const`
+//! - `pub fn packedWidth(self: *const Lower, range: Ast.Dim) constfold.Error!?u32`
+//! - `pub fn clog2Width(self: *const Lower, e: Ast.ExprId) constfold.Error!?u32`
+//! - `pub fn clog2Signed(self: *const Lower, e: Ast.ExprId) constfold.Error!?bool`
 //! - `pub fn hostSizedParam(self: *const Lower, name: []const u8) ?usize`
-//! - `pub fn clog2Plan(self: *const Lower, e: Ast.ExprId, parent: ?constfold.IntContext) ?constfold.IntPlan`
-//! - `pub fn clog2WideCarrier(self: *const Lower, e: Ast.ExprId, depth: u32) bool`
-//! - `pub fn unsignedCompare(self: *const Lower, e: Ast.ExprId) ?constfold.UnsignedCompare`
+//! - `pub fn clog2Plan(self: *const Lower, e: Ast.ExprId, parent: ?constfold.IntContext) constfold.Error!?constfold.IntPlan`
+//! - `pub fn clog2WideCarrier(self: *const Lower, e: Ast.ExprId, depth: u32) constfold.Error!bool`
+//! - `pub fn unsignedCompare(self: *const Lower, e: Ast.ExprId) constfold.Error!?constfold.UnsignedCompare`
 //! - private `WidthEnv` (`width`, `signed`)
 
 const std = @import("std");
@@ -51,7 +51,7 @@ const Env = struct {
     shape: ?*Lower = null,
 
     /// Returns the constant an identifier or conversion call names, or null.
-    pub fn leaf(env: Env, e: Ast.ExprId) ?Const {
+    pub fn leaf(env: Env, e: Ast.ExprId) constfold.Error!?Const {
         const self = env.self;
         const ex = &self.file.exprs;
         if (ex.tag(e) == .sys_call) return conversion(env, e);
@@ -74,14 +74,14 @@ const Env = struct {
     /// "by truncating", `$itor` "integers to real values".
     // ponytail: $rtoi/$itor and $clog2 only. $realtobits/$bitstoreal need a 64-bit
     // pattern `Const.int` would carry signed; add them when a default uses one.
-    fn conversion(env: Env, e: Ast.ExprId) ?Const {
+    fn conversion(env: Env, e: Ast.ExprId) constfold.Error!?Const {
         const self = env.self;
         const ex = &self.file.exprs;
         const name = self.file.str(ex.strOf(e));
         const args = ex.args(e);
         if (args.len != 1) return null;
         const is_clog2 = std.mem.eql(u8, name, "$clog2");
-        const a = (if (is_clog2) constfold.foldSized(self.file, args[0], ClogEnv{ .base = env }) else constfold.fold(self.file, args[0], env)) orelse return null;
+        const a = (try if (is_clog2) constfold.foldSized(self.arena, self.file, args[0], ClogEnv{ .base = env }) else constfold.fold(self.arena, self.file, args[0], env)) orelse return null;
         if (a == .str) return null;
         if (std.mem.eql(u8, name, "$rtoi")) {
             // §3.2's 32-bit integer; anything outside it (or NaN) stays a
@@ -95,8 +95,8 @@ const Env = struct {
         // at its source width, not at the i64 carrier's width.
         if (is_clog2) {
             if (a != .int) return null;
-            const bits = clog2Width(self, args[0]) orelse return null;
-            if (bits > 64 and !clog2WideCarrier(self, args[0], 0)) return null;
+            const bits = (try clog2Width(self, args[0])) orelse return null;
+            if (bits > 64 and !try clog2WideCarrier(self, args[0], 0)) return null;
             return .{ .int = constfold.clog2(a.int, bits) };
         }
         return null;
@@ -106,7 +106,7 @@ const Env = struct {
         return integerSourceSigned(env.self, e, 0);
     }
     /// Returns name `e`'s bit length, or null when nothing states it.
-    pub fn width(env: Env, e: Ast.ExprId) ?u32 {
+    pub fn width(env: Env, e: Ast.ExprId) constfold.Error!?u32 {
         return nameWidthFor(env.self, e, 0, false);
     }
 };
@@ -114,22 +114,22 @@ const Env = struct {
 /// `Env` with `$clog2`'s width and signedness rules (`constfold.intPlan`'s env).
 const ClogEnv = struct {
     base: Env,
-    pub fn leaf(env: ClogEnv, e: Ast.ExprId) ?Const {
+    pub fn leaf(env: ClogEnv, e: Ast.ExprId) constfold.Error!?Const {
         return env.base.leaf(e);
     }
-    pub fn width(env: ClogEnv, e: Ast.ExprId) ?u32 {
+    pub fn width(env: ClogEnv, e: Ast.ExprId) constfold.Error!?u32 {
         return nameWidthFor(env.base.self, e, 0, true);
     }
-    pub fn signed(env: ClogEnv, e: Ast.ExprId) ?bool {
+    pub fn signed(env: ClogEnv, e: Ast.ExprId) constfold.Error!?bool {
         return clog2Signed(env.base.self, e);
     }
 };
 
 /// Folds an elaboration-time constant: literals, genvars (LRM §3.5) and parameters
 /// (LRM §3.4, §6.6.1). Returns null when the expression is not constant.
-pub fn constEval(self: *const Lower, e: Ast.ExprId) ?Const {
+pub fn constEval(self: *const Lower, e: Ast.ExprId) constfold.Error!?Const {
     assert(e == .none or self.exprValid(e));
-    const c = foldExpr(self, e, true);
+    const c = try foldExpr(self, e, true);
     if (e == .none) assert(c == null);
     return c;
 }
@@ -138,9 +138,9 @@ pub fn constEval(self: *const Lower, e: Ast.ExprId) ?Const {
 /// scheme's bounds. Marks every parameter it reads `ParamInfo.shape`, because the
 /// device cannot follow a model card there; codegen's `checkShape` refuses a card
 /// that moves one (LRM §3.4).
-pub fn shapeEval(self: *Lower, e: Ast.ExprId) ?Const {
+pub fn shapeEval(self: *Lower, e: Ast.ExprId) constfold.Error!?Const {
     assert(e == .none or self.exprValid(e));
-    const c = constfold.fold(self.file, e, Env{ .self = self, .params = true, .shape = self });
+    const c = try constfold.fold(self.arena, self.file, e, Env{ .self = self, .params = true, .shape = self });
     if (e == .none) assert(c == null);
     return c;
 }
@@ -148,18 +148,18 @@ pub fn shapeEval(self: *Lower, e: Ast.ExprId) ?Const {
 /// Folds `e` to a constant, or returns null. With `params = false` parameters do not
 /// fold: a procedural `if (p > 0)` stays a runtime branch because the model card can
 /// override `p` (LRM §3.4, §6.6.2).
-pub fn foldExpr(self: *const Lower, e: Ast.ExprId, params: bool) ?Const {
+pub fn foldExpr(self: *const Lower, e: Ast.ExprId, params: bool) constfold.Error!?Const {
     assert(e == .none or self.exprValid(e));
-    const c = constfold.fold(self.file, e, Env{ .self = self, .params = params });
+    const c = try constfold.fold(self.arena, self.file, e, Env{ .self = self, .params = params });
     if (e == .none) assert(c == null);
     return c;
 }
 
 /// A packed declaration's inclusive bit count, before arithmetic erases it.
 /// Resolve in declaration scope so a later local cannot shadow either bound.
-pub fn packedWidth(self: *const Lower, range: Ast.Dim) ?u32 {
-    const left = (constEval(self, range.msb) orelse return null).asIntExact() orelse return null;
-    const right = (constEval(self, range.lsb) orelse return null).asIntExact() orelse return null;
+pub fn packedWidth(self: *const Lower, range: Ast.Dim) constfold.Error!?u32 {
+    const left = ((try constEval(self, range.msb)) orelse return null).asIntExact() orelse return null;
+    const right = ((try constEval(self, range.lsb)) orelse return null).asIntExact() orelse return null;
     const width = std.math.cast(u32, @abs(@as(i128, left) - right) + 1) orelse return null;
     assert(width >= 1);
     if (left == right) assert(width == 1);
@@ -167,18 +167,18 @@ pub fn packedWidth(self: *const Lower, range: Ast.Dim) ?u32 {
 }
 
 /// `$clog2`'s IEEE self-determined source width, before integer MIR erases it.
-pub fn clog2Width(self: *const Lower, e: Ast.ExprId) ?u32 {
+pub fn clog2Width(self: *const Lower, e: Ast.ExprId) constfold.Error!?u32 {
     assert(e == .none or self.exprValid(e));
-    const w = constfold.clog2Width(self.file, e, WidthEnv(true){ .self = self, .depth = 0 }) orelse return null;
+    const w = (try constfold.clog2Width(self.arena, self.file, e, WidthEnv(true){ .self = self, .depth = 0 })) orelse return null;
     assert(w != 0); // every IEEE operand holds at least one bit
     return w;
 }
 
 /// `$clog2`'s IEEE self-determined source signedness, the companion of
 /// `clog2Width`; null when nothing in scope states it.
-pub fn clog2Signed(self: *const Lower, e: Ast.ExprId) ?bool {
+pub fn clog2Signed(self: *const Lower, e: Ast.ExprId) constfold.Error!?bool {
     assert(e == .none or self.exprValid(e));
-    return constfold.clog2Signed(self.file, e, WidthEnv(true){ .self = self, .depth = 0 });
+    return constfold.clog2Signed(self.arena, self.file, e, WidthEnv(true){ .self = self, .depth = 0 });
 }
 
 /// The `params` row of `name` when a host card value can set it and IEEE
@@ -203,15 +203,15 @@ pub fn hostSizedParam(self: *const Lower, name: []const u8) ?usize {
 /// The width-and-sign plan `analog/expr.zig` lowers a `$clog2` operand by, under
 /// `parent`'s context. Folds no parameter (`params = false`): a model card may
 /// override one. Null when the operand's integer sizing is unknown.
-pub fn clog2Plan(self: *const Lower, e: Ast.ExprId, parent: ?constfold.IntContext) ?constfold.IntPlan {
+pub fn clog2Plan(self: *const Lower, e: Ast.ExprId, parent: ?constfold.IntContext) constfold.Error!?constfold.IntPlan {
     assert(e == .none or self.exprValid(e));
-    return constfold.intPlan(self.file, e, ClogEnv{ .base = .{ .self = self, .params = false } }, parent);
+    return constfold.intPlan(self.arena, self.file, e, ClogEnv{ .base = .{ .self = self, .params = false } }, parent);
 }
 
 /// Above 64 bits, an i64 sign bit describes the source high bits only when
 /// `asExactInt` proved their extension. Parameter aliases preserve that proof
 /// at the same width; a wider declaration or arithmetic needs actual planes.
-pub fn clog2WideCarrier(self: *const Lower, e: Ast.ExprId, depth: u32) bool {
+pub fn clog2WideCarrier(self: *const Lower, e: Ast.ExprId, depth: u32) constfold.Error!bool {
     assert(e == .none or self.exprValid(e));
     assert(depth <= name_depth_max + 1);
     if (depth > name_depth_max) return false;
@@ -234,10 +234,10 @@ pub fn clog2WideCarrier(self: *const Lower, e: Ast.ExprId, depth: u32) bool {
 /// `constfold.unsignedCompare` for comparison `e`: how `cmp`'s signed opcodes
 /// order its operands as §4.2.9's unsigned comparison, or null when both are
 /// signed.
-pub fn unsignedCompare(self: *const Lower, e: Ast.ExprId) ?constfold.UnsignedCompare {
+pub fn unsignedCompare(self: *const Lower, e: Ast.ExprId) constfold.Error!?constfold.UnsignedCompare {
     assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
-    return constfold.unsignedCompare(self.file, ex.lhs(e), ex.rhs(e), Env{ .self = self, .params = false });
+    return constfold.unsignedCompare(self.arena, self.file, ex.lhs(e), ex.rhs(e), Env{ .self = self, .params = false });
 }
 
 // ---- private ----
@@ -249,7 +249,7 @@ pub fn unsignedCompare(self: *const Lower, e: Ast.ExprId) ?constfold.UnsignedCom
 /// `$clog2` (`self_determined`) additionally reads an inferred parameter's
 /// final elaborated HDL default, or, under `clog2_host`, a card value's
 /// unsized width (VD-089).
-fn nameWidthFor(self: *const Lower, e: Ast.ExprId, depth: u32, comptime self_determined: bool) ?u32 {
+fn nameWidthFor(self: *const Lower, e: Ast.ExprId, depth: u32, comptime self_determined: bool) constfold.Error!?u32 {
     assert(e == .none or self.exprValid(e));
     assert(depth <= name_depth_max + 1); // each level returns null past the cap
     if (depth > name_depth_max) return null;
@@ -263,7 +263,7 @@ fn nameWidthFor(self: *const Lower, e: Ast.ExprId, depth: u32, comptime self_det
     for (self.func_params) |p| {
         if (!self.file.strings.eql(p.name, name)) continue;
         if (self_determined) if (p.packed_range) |range| return packedWidth(self, range);
-        return if (p.ty == .integer) 32 else if (p.ty == .unspecified) (if (self_determined) constfold.clog2Width(self.file, p.default, deeper) else constfold.operandWidth(self.file, p.default, deeper)) else null;
+        return if (p.ty == .integer) 32 else if (p.ty == .unspecified) (try if (self_determined) constfold.clog2Width(self.arena, self.file, p.default, deeper) else constfold.operandWidth(self.arena, self.file, p.default, deeper)) else null;
     }
     const pi = self.param_index.get(name) orelse return null;
     const p = self.out.params.items[pi];
@@ -273,7 +273,7 @@ fn nameWidthFor(self: *const Lower, e: Ast.ExprId, depth: u32, comptime self_det
     if (self_determined) return p.source_width;
     if (!p.is_local) return null;
     const decl = paramDecl(self, p.name) orelse return null;
-    return constfold.operandWidth(self.file, decl.default, deeper);
+    return constfold.operandWidth(self.arena, self.file, decl.default, deeper);
 }
 
 /// The module's own declaration of parameter `name`, or null.
@@ -289,16 +289,16 @@ fn WidthEnv(comptime self_determined: bool) type {
     return struct {
         self: *const Lower,
         depth: u32,
-        pub fn width(env: @This(), e: Ast.ExprId) ?u32 {
+        pub fn width(env: @This(), e: Ast.ExprId) constfold.Error!?u32 {
             return nameWidthFor(env.self, e, env.depth, self_determined);
         }
-        pub fn signed(env: @This(), e: Ast.ExprId) ?bool {
+        pub fn signed(env: @This(), e: Ast.ExprId) constfold.Error!?bool {
             return nameSignedForClog2(env.self, e, env.depth);
         }
     };
 }
 
-fn nameSignedForClog2(self: *const Lower, e: Ast.ExprId, depth: u32) ?bool {
+fn nameSignedForClog2(self: *const Lower, e: Ast.ExprId, depth: u32) constfold.Error!?bool {
     assert(e == .none or self.exprValid(e));
     assert(depth <= name_depth_max + 1);
     if (depth > name_depth_max) return null;
@@ -309,7 +309,7 @@ fn nameSignedForClog2(self: *const Lower, e: Ast.ExprId, depth: u32) ?bool {
         if (!self.file.strings.eql(p.name, name)) continue;
         if (p.ty == .integer) return true;
         if (p.packed_range != null or p.is_signed) return p.is_signed;
-        return constfold.clog2Signed(self.file, p.default, WidthEnv(true){ .self = self, .depth = depth + 1 });
+        return constfold.clog2Signed(self.arena, self.file, p.default, WidthEnv(true){ .self = self, .depth = depth + 1 });
     }
     const pi = self.param_index.get(name) orelse return null;
     const p = self.out.params.items[pi];
@@ -317,12 +317,12 @@ fn nameSignedForClog2(self: *const Lower, e: Ast.ExprId, depth: u32) ?bool {
     return if (p.ty != .integer) null else if (p.integer32) true else p.source_signed;
 }
 
-fn wideParamCarrier(self: *const Lower, p: Ast.ParamDecl, depth: u32) bool {
+fn wideParamCarrier(self: *const Lower, p: Ast.ParamDecl, depth: u32) constfold.Error!bool {
     assert(depth <= name_depth_max + 1);
     assert(p.default == .none or self.exprValid(p.default));
     if (p.packed_range) |range| {
-        const width = packedWidth(self, range) orelse return false;
-        if (width != (clog2Width(self, p.default) orelse return false)) return false;
+        const width = (try packedWidth(self, range)) orelse return false;
+        if (width != ((try clog2Width(self, p.default)) orelse return false)) return false;
     }
     return clog2WideCarrier(self, p.default, depth);
 }
@@ -443,7 +443,7 @@ test "constEval: the conversion functions fold as IEEE 1364-2005 §17.8 and §17
         try h.init(std.testing.allocator, src);
         defer h.deinit();
         const m = &h.file.modules[h.file.builtin_modules];
-        expectConst(c.want, constEval(&h.low, m.params[0].default)) catch |e| {
+        expectConst(c.want, try constEval(&h.low, m.params[0].default)) catch |e| {
             std.debug.print("{s}\n", .{c.expr});
             return e;
         };
@@ -547,7 +547,7 @@ test "integerSourceSigned: an untyped local parameter carries its default's sign
     for (0..ex.len()) |n| {
         const e: Ast.ExprId = @fromBackingInt(@intCast(n));
         if (ex.tag(e) != .binary or ex.binOp(e) != .lt) continue;
-        if (unsignedCompare(&h.low, e) != null) unsigned += 1 else signed += 1;
+        if ((try unsignedCompare(&h.low, e)) != null) unsigned += 1 else signed += 1;
     }
     try std.testing.expectEqual(1, unsigned);
     try std.testing.expect(signed >= 1);

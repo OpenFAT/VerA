@@ -233,7 +233,7 @@ fn isRuntimeElem(self: *Lower, target: Ast.ExprId) Oom!bool {
     // §5.7 a `reg` is refused whole (E0316, `resolveLvalue`), its selects unread.
     if (lower_lvalue.isReg(self, self.file.str(chain.name))) return false;
     for (chain.subs) |s| {
-        if (lower_constfold.foldExpr(self, s, false) != null) continue;
+        if ((try lower_constfold.foldExpr(self, s, false)) != null) continue;
         return self.arrays.contains(self.file.str(chain.name));
     }
     return false;

@@ -82,11 +82,11 @@ pub fn dimsBounds(self: *Lower, dims: []const Ast.Dim, tok: u32, name: []const u
     }
     const out = try self.arena.alloc(Bounds, dims.len);
     for (dims, out) |d, *b| {
-        const a = lower_constfold.shapeEval(self, d.msb) orelse {
+        const a = (try lower_constfold.shapeEval(self, d.msb)) orelse {
             try self.err(tok, .E0308, "in the bounds of `{s}`", .{name});
             return null;
         };
-        const c = lower_constfold.shapeEval(self, d.lsb) orelse {
+        const c = (try lower_constfold.shapeEval(self, d.lsb)) orelse {
             try self.err(tok, .E0308, "in the bounds of `{s}`", .{name});
             return null;
         };
@@ -193,10 +193,10 @@ pub fn elemKey(self: *Lower, buf: *[elem_key_len]u8, name: []const u8, idx: []co
 /// Returns the width of packed range `range` (`constfold.packedWidth`), or
 /// null when it does not fold. Marks every parameter either bound reads a
 /// shape (`shapeEval`) first: a model card cannot resize a packed range.
-pub fn packedShapeWidth(self: *Lower, range: Ast.Dim) ?u32 {
-    _ = lower_constfold.shapeEval(self, range.msb);
-    _ = lower_constfold.shapeEval(self, range.lsb);
-    return lower_constfold.packedWidth(self, range);
+pub fn packedShapeWidth(self: *Lower, range: Ast.Dim) std.mem.Allocator.Error!?u32 {
+    _ = try lower_constfold.shapeEval(self, range.msb);
+    _ = try lower_constfold.shapeEval(self, range.lsb);
+    return try lower_constfold.packedWidth(self, range);
 }
 
 /// §3.4.8/§3.3's nested assignment pattern, flattened to one expression per
@@ -237,7 +237,7 @@ pub fn patternElems(self: *Lower, e: Ast.ExprId) Oom![]const Ast.ExprId {
     if (elems.len != 1 or ex.tag(elems[0]) != .pattern_repl) return elems;
     const count = ex.lhs(elems[0]);
     const group = ex.args(ex.rhs(elems[0]));
-    const c = lower_constfold.shapeEval(self, count);
+    const c = try lower_constfold.shapeEval(self, count);
     const n = if (c) |v| switch (v) {
         .int => |i| i,
         else => null,

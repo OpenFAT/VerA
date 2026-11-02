@@ -121,7 +121,7 @@ pub fn resolveLvalue(self: *Lower, e: Ast.ExprId) Oom!?Lvalue {
             var idx: [lower_shape.max_stack_dims]i64 = undefined;
             const at = try lower_shape.subscriptBuf(self, &idx, chain.subs.len);
             for (chain.subs, at) |s, *o| {
-                const c = lower_constfold.constEval(self, s) orelse {
+                const c = (try lower_constfold.constEval(self, s)) orelse {
                     try self.err(self.file.exprs.mainTok(e), .E0311, "indexing `{s}`", .{name});
                     return null;
                 };

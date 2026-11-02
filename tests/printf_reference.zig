@@ -36,20 +36,6 @@ const inf = std.math.inf(f64);
 /// 16 '#' (`str_real.zc_*`); `prec` -1 for none.
 const Spec = struct { conv: u8, flags: u8 = 0, width: usize = 0, prec: i64 = -1 };
 
-fn cFormat(buf: []u8, s: Spec) ![:0]u8 {
-    var fl: [5]u8 = undefined;
-    var nf: usize = 0;
-    for ("-+ 0#", 0..) |c, i| if (s.flags & (@as(u8, 1) << @intCast(i)) != 0) {
-        fl[nf] = c;
-        nf += 1;
-    };
-    var wb: [24]u8 = undefined;
-    const w = if (s.width > 0) try std.mem.print(&wb, "{d}", .{s.width}) else "";
-    var pb: [24]u8 = undefined;
-    const p = if (s.prec >= 0) try std.mem.print(&pb, ".{d}", .{s.prec}) else "";
-    return std.mem.printSentinel(buf, "%{s}{s}{s}{c}", .{ fl[0..nf], w, p, s.conv }, 0);
-}
-
 /// Mismatches seen by one test; the first few are printed.
 const Tally = struct {
     bad: usize = 0,
@@ -92,6 +78,22 @@ const Tally = struct {
     }
 };
 
+// ---- private ----
+
+fn cFormat(buf: []u8, s: Spec) ![:0]u8 {
+    var fl: [5]u8 = undefined;
+    var nf: usize = 0;
+    for ("-+ 0#", 0..) |c, i| if (s.flags & (@as(u8, 1) << @intCast(i)) != 0) {
+        fl[nf] = c;
+        nf += 1;
+    };
+    var wb: [24]u8 = undefined;
+    const w = if (s.width > 0) try std.mem.print(&wb, "{d}", .{s.width}) else "";
+    var pb: [24]u8 = undefined;
+    const p = if (s.prec >= 0) try std.mem.print(&pb, ".{d}", .{s.prec}) else "";
+    return std.mem.printSentinel(buf, "%{s}{s}{s}{c}", .{ fl[0..nf], w, p, s.conv }, 0);
+}
+
 /// Every spec a special value meets: six letters, all 32 flag sets ('#'
 /// included, #41), no width and a width of 13 (wider than most fields,
 /// narrower than the long ones), and (but for %g) eleven precisions.
@@ -99,6 +101,26 @@ fn everySpec(t: *Tally, v: f64) !void {
     for ("eEfFgG") |conv| for (0..32) |flags| for ([_]usize{ 0, 13 }) |width| {
         const precs: []const i64 = if (conv | 0x20 == 'g') &.{-1} else &.{ -1, 0, 1, 2, 3, 6, 10, 16, 17, 20, 40 };
         for (precs) |prec| try t.see(v, .{ .conv = conv, .flags = @intCast(flags), .width = width, .prec = prec });
+    };
+}
+
+/// A random finite double: mostly ordinary magnitudes, some decimal-short
+/// (m·10^k, whose expansions sit near decimal ties), some dyadic (m/2^j,
+/// exact ties), and a tenth anywhere in the format.
+fn randomDouble(r: std.Random, sb: []u8) !f64 {
+    const sign: f64 = if (r.boolean()) -1 else 1;
+    return switch (r.uintLessThan(u8, 20)) {
+        0, 1 => blk: {
+            var b = r.int(u64) & 0x7fffffffffffffff;
+            if (b >= 0x7ff0000000000000) b -= 0x0010000000000000;
+            break :blk sign * @as(f64, @bitCast(b));
+        },
+        2, 3, 4, 5, 6 => blk: {
+            const s = try std.mem.print(sb, "{d}e{d}", .{ r.intRangeAtMost(u32, 1, 9999999), r.intRangeAtMost(i32, -30, 30) });
+            break :blk sign * try std.fmt.parseFloat(f64, s);
+        },
+        7 => sign * @as(f64, @floatFromInt(r.intRangeAtMost(u32, 1, 1 << 20))) / @as(f64, @floatFromInt(@as(u32, 1) << r.intRangeAtMost(u5, 1, 12))),
+        else => sign * std.math.ldexp(1 + r.float(f64), r.intRangeAtMost(i32, -70, 70)),
     };
 }
 
@@ -152,26 +174,6 @@ test "§17.1.1.3 zCReal = snprintf: the values that round across a power of ten,
         }
     }
     try t.done("power-of-ten boundaries");
-}
-
-/// A random finite double: mostly ordinary magnitudes, some decimal-short
-/// (m·10^k, whose expansions sit near decimal ties), some dyadic (m/2^j,
-/// exact ties), and a tenth anywhere in the format.
-fn randomDouble(r: std.Random, sb: []u8) !f64 {
-    const sign: f64 = if (r.boolean()) -1 else 1;
-    return switch (r.uintLessThan(u8, 20)) {
-        0, 1 => blk: {
-            var b = r.int(u64) & 0x7fffffffffffffff;
-            if (b >= 0x7ff0000000000000) b -= 0x0010000000000000;
-            break :blk sign * @as(f64, @bitCast(b));
-        },
-        2, 3, 4, 5, 6 => blk: {
-            const s = try std.mem.print(sb, "{d}e{d}", .{ r.intRangeAtMost(u32, 1, 9999999), r.intRangeAtMost(i32, -30, 30) });
-            break :blk sign * try std.fmt.parseFloat(f64, s);
-        },
-        7 => sign * @as(f64, @floatFromInt(r.intRangeAtMost(u32, 1, 1 << 20))) / @as(f64, @floatFromInt(@as(u32, 1) << r.intRangeAtMost(u5, 1, 12))),
-        else => sign * std.math.ldexp(1 + r.float(f64), r.intRangeAtMost(i32, -70, 70)),
-    };
 }
 
 test "§17.1.1.3 zCReal = snprintf on 10^5 seeded random doubles" {

@@ -2,6 +2,7 @@
 //! the timing table (one row per fixture, walk order, so two runs diff;
 //! times from a separate sequential accept/reject pass). `main` is the
 //! suite's entry point and dispatches on the mode word.
+
 const Fixtures = @import("Fixtures.zig");
 const Analog = @import("Analog.zig");
 const Canary = @import("Canary.zig");
@@ -12,6 +13,16 @@ const SpiceDecks = @import("SpiceDecks.zig");
 const SizeSweep = @import("SizeSweep.zig");
 const std = @import("std");
 const tb = @import("exe");
+const Io = std.Io;
+
+const Allocator = std.mem.Allocator;
+const Args = std.process.Args.Iterator;
+
+/// `harness/sweep.zig`'s `mode` and `elapsed`: the optimize mode on every
+/// report row, and the monotonic timer both reports read.
+const mode = size_sweep.mode;
+const elapsed = size_sweep.elapsed;
+
 const harness = Fixtures;
 const torture = Analog;
 const size_sweep = SizeSweep;
@@ -21,10 +32,12 @@ const spice_decks = SpiceDecks;
 const golden = Golden;
 const canary = Canary;
 
-const Io = std.Io;
-
-const Allocator = std.mem.Allocator;
-const Args = std.process.Args.Iterator;
+/// N per fixture, smaller than `harness/sweep.zig`'s `reps` because every fixture is timed. The min
+/// is still the estimator; the report's distribution is over fixtures, the
+/// variation that is about the compiler. One outside ReleaseFast: those
+/// numbers are not the shipping ones (the report says so), and the CI gate
+/// runs Debug, where four more passes over every fixture time nothing.
+const fixture_reps = if (@import("builtin").mode == .fast) 5 else 1;
 
 /// Entry point. argv[1] is the `vera` executable (`run.addArtifactArg2`), which
 /// `devices` spawns. Then either a
@@ -60,43 +73,7 @@ pub fn main(init: std.process.Init) !u8 {
     return benchmark(init, vera_exe, first, &args, true);
 }
 
-// The oracle is the log `zig build suite -- ams > log 2>&1` writes: a
-// positional writer on a redirected stdio file writes from offset 0, under
-// the build's own summary, and the first FAIL lines of every run were lost.
-// Every file of the runner is read; the root's imports must all be listed.
-test "every stdout and stderr writer of the runner streams" {
-    const files = [_][]const u8{ "../suite.zig", "Suite.zig", "Fixtures.zig", "Analog.zig", "Canary.zig", "CFixtures.zig", "Child.zig", "Devices.zig", "Digital.zig", "Fuzz.zig", "Golden.zig", "Lint.zig", "Native.zig", "SpiceDecks.zig", "SizeSweep.zig" };
-    const root = @embedFile("../suite.zig");
-    const import = "@import(\"suite/";
-    var at: usize = 0;
-    while (std.mem.findPos(u8, root, at, import)) |i| {
-        const name = root[i + import.len .. std.mem.findScalarPos(u8, root, i, ')').? - 1];
-        try std.testing.expect(for (files) |f| {
-            if (std.mem.eql(u8, f, name)) break true;
-        } else false);
-        at = i + import.len;
-    }
-    inline for (files) |file| {
-        const source = @embedFile(file);
-        for ([_][]const u8{ "stdout", "stderr" }) |stream| {
-            var buf: [32]u8 = undefined;
-            const positional = try std.fmt.bufPrint(&buf, "{s}().{s}(", .{ stream, "writer" });
-            try std.testing.expect(std.mem.find(u8, source, positional) == null);
-        }
-    }
-}
-
-/// N per fixture, smaller than `harness/sweep.zig`'s `reps` because every fixture is timed. The min
-/// is still the estimator; the report's distribution is over fixtures, the
-/// variation that is about the compiler. One outside ReleaseFast: those
-/// numbers are not the shipping ones (the report says so), and the CI gate
-/// runs Debug, where four more passes over every fixture time nothing.
-const fixture_reps = if (@import("builtin").mode == .fast) 5 else 1;
-
-/// `harness/sweep.zig`'s `mode` and `elapsed`: the optimize mode on every
-/// report row, and the monotonic timer both reports read.
-const mode = size_sweep.mode;
-const elapsed = size_sweep.elapsed;
+// ---- private ----
 
 // ---------------------------------------------------------------------------
 // The step
@@ -281,4 +258,30 @@ fn stats(w: *Io.Writer, arena: Allocator, scope: []const u8, name: []const u8, s
 
 fn pct(sorted: []const u64, p: usize) u64 {
     return sorted[@min(sorted.len * p / 100, sorted.len - 1)];
+}
+
+// The oracle is the log `zig build suite -- ams > log 2>&1` writes: a
+// positional writer on a redirected stdio file writes from offset 0, under
+// the build's own summary, and the first FAIL lines of every run were lost.
+// Every file of the runner is read; the root's imports must all be listed.
+test "every stdout and stderr writer of the runner streams" {
+    const files = [_][]const u8{ "../suite.zig", "Suite.zig", "Fixtures.zig", "Analog.zig", "Canary.zig", "CFixtures.zig", "Child.zig", "Devices.zig", "Digital.zig", "Fuzz.zig", "Golden.zig", "Lint.zig", "Native.zig", "SpiceDecks.zig", "SizeSweep.zig" };
+    const root = @embedFile("../suite.zig");
+    const import = "@import(\"suite/";
+    var at: usize = 0;
+    while (std.mem.findPos(u8, root, at, import)) |i| {
+        const name = root[i + import.len .. std.mem.findScalarPos(u8, root, i, ')').? - 1];
+        try std.testing.expect(for (files) |f| {
+            if (std.mem.eql(u8, f, name)) break true;
+        } else false);
+        at = i + import.len;
+    }
+    inline for (files) |file| {
+        const source = @embedFile(file);
+        for ([_][]const u8{ "stdout", "stderr" }) |stream| {
+            var buf: [32]u8 = undefined;
+            const positional = try std.fmt.bufPrint(&buf, "{s}().{s}(", .{ stream, "writer" });
+            try std.testing.expect(std.mem.find(u8, source, positional) == null);
+        }
+    }
 }

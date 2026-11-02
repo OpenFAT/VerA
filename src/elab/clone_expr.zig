@@ -306,7 +306,7 @@ fn genBlockRef(self: *Flatten, e: Ast.ExprId, u: *const Flatten.Unit, b: Ast.Seq
     self.unit = u.*;
     defer self.unit = saved;
     for (conds) |c| {
-        const v = fold.constValue(self, c.cond, true, null);
+        const v = try fold.constValue(self, c.cond, true, null);
         if (v != null and v.?.isTrue() != c.negate) continue;
         try self.err(self.ctx.file.exprs.mainTok(e), .E0901, "`{s}` is a generate block its scheme does not select (§6.6.2)", .{self.ctx.file.str(parts[0])});
         return .keep;
@@ -318,7 +318,7 @@ fn genBlockRef(self: *Flatten, e: Ast.ExprId, u: *const Flatten.Unit, b: Ast.Seq
     } else return flat_head;
     for (b.params) |q| if (readsName(self.ctx.file, p.default, q.name)) return flat_head;
     if (p.ty == .integer) {
-        const v = fold.constValue(self, p.default, true, null) orelse return flat_head;
+        const v = (try fold.constValue(self, p.default, true, null)) orelse return flat_head;
         if (v != .int) return flat_head;
     }
     return .{ .value = try cloneExpr(self, p.default) };

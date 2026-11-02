@@ -9,6 +9,8 @@ const D = @import("device");
 const n_u = @typeInfo(D.U).@"enum".field_names.len;
 const S = contract.RefFamily(f64, &.{ 0, 1 }, .{});
 
+// ---- private ----
+
 export fn say_ops_kernel(x: *const [n_u]f64, m: *const D.Model, inst: contract.InstancePtr(D), buf: *[64]f64, len: *usize) callconv(.kernel) void {
     var out: contract.Say = .{ .buf = buf };
     D.say(S, x, m, inst, .{ .t = 1e-9, .dt = 1e-9, .kind = .tran }, &out);

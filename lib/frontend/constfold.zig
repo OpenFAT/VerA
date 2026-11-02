@@ -1,10 +1,12 @@
 //! The §4.2 constant_expression folder: an expression AST in, a `Const` out,
-//! or null when the expression is not constant. Pure: no allocation and no
-//! symbol table; identifiers and `>>>`'s signedness come from the caller's
-//! `env`. This file walks the tree and sizes its operands (§4.2.9; IEEE
-//! §5.1.11's reductions); each operator's and §4.3 function's value is
-//! `kernels.fold`'s, re-exported here. §9.14 / IEEE §§5.4–5.5 size the
-//! self-determined `$clog2` operand.
+//! or null when the expression is not constant. Pure: no symbol table;
+//! identifiers and `>>>`'s signedness come from the caller's `env`. This file
+//! walks the tree, on a heap stack of the operators it has entered, so an
+//! expression nests as deep as memory allows on any thread; IEEE §5.1.11's
+//! reductions are here, and `constfold_size.zig` sizes the operands (§4.2.9;
+//! IEEE §§5.4–5.5, the self-determined `$clog2` operand of §9.14). Each
+//! operator's and §4.3 function's value is `kernels.fold`'s, re-exported
+//! here.
 //! §3.4/A.2.4 and §6.3 share the syntactic check for reads of simulation state.
 //!
 //! Contents:
@@ -15,19 +17,20 @@
 //! - `pub const MathFn = fold_k.MathFn`
 //! - `pub const math = fold_k.math`
 //! - `pub const clog2 = fold_k.clog2`
+//! - `pub const UnsignedCompare = size.UnsignedCompare`
+//! - `pub const IntContext = size.IntContext`
+//! - `pub const IntPlan = size.IntPlan`
+//! - `pub const unsignedCompare = size.unsignedCompare`
+//! - `pub const operandWidth = size.operandWidth`
+//! - `pub const clog2Width = size.clog2Width`
+//! - `pub const clog2Signed = size.clog2Signed`
+//! - `pub const intPlan = size.intPlan`
+//! - `pub const Error = size.Error`
 //! - `pub fn parameterValue(ty: Ast.Type, value: Const) Const`
 //! - `pub fn parameterCardValue(ty: Ast.Type, declared: ?Const, value: f64) Const`
-//! - `pub fn firstStateRead(file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl) ?[]const u8`
-//! - `pub fn fold(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const`
-//! - `pub fn foldSized(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const`
-//! - `pub const UnsignedCompare = struct`: `Side`, `extend`
-//! - `pub fn unsignedCompare(file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) ?UnsignedCompare`
-//! - `pub fn operandWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32`
-//! - `pub fn clog2Width(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32`
-//! - `pub fn clog2Signed(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?bool`
-//! - `pub const IntContext = struct`: `normalize`
-//! - `pub const IntPlan = struct`: `resize`
-//! - `pub fn intPlan(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) ?IntPlan`
+//! - `pub fn firstStateRead(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl) std.mem.Allocator.Error!?[]const u8`
+//! - `pub fn fold(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const`
+//! - `pub fn foldSized(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const`
 //! - `pub const literal_env: LiteralEnv = .`
 //! - the `env` interface `fold` reads, which the private `LiteralEnv` and
 //!   `TestEnv` implement: `leaf`, `signed`, `width`
@@ -36,6 +39,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("ast.zig");
 const fold_k = @import("kernels").fold;
+const size = @import("constfold_size.zig");
+const Pending = size.Pending;
+const literalWidth = size.literalWidth;
 const testing = std.testing;
 
 /// The value folds, in `kernels.fold`: re-exported for the callers that
@@ -54,75 +60,23 @@ pub const math = fold_k.math;
 
 pub const clog2 = fold_k.clog2;
 
-/// §4.2.9 on the i64 carrier: "When one or both operands are unsigned, the
-/// expression shall be interpreted as a comparison between unsigned values. If
-/// the operands are of unequal bit lengths, the smaller operand shall be
-/// zero-extended to the size of the larger operand." Each operand is extended
-/// from its OWN width: `a` at -1 against `40'hFF_FFFF_FFFF` is
-/// 40'h00_FFFF_FFFF. Both signed, the carrier already holds the sign-extended
-/// values and the signed compare stands.
-pub const UnsignedCompare = struct {
-    /// Each operand's own-width mask; null at 64 bits or wider, or an unknown
-    /// width, where the carrier's value is taken as it stands.
-    mask: [2]?i64,
-    /// An operand is 64 bits or wider: order the pair as u64 by flipping bit 63
-    /// of both before the signed compare.
-    flip: bool,
+pub const UnsignedCompare = size.UnsignedCompare;
 
-    /// The comparison's operand; its backing integer indexes `mask`.
-    pub const Side = enum { lhs, rhs };
+pub const IntContext = size.IntContext;
 
-    /// Returns operand `side`'s value as the i64 the signed compare orders as
-    /// §4.2.9's unsigned comparison.
-    pub fn extend(u: UnsignedCompare, side: Side, v: i64) i64 {
-        // A mask is an own-width mask below 64 bits: positive, low bits set.
-        if (u.mask[@backingInt(side)]) |m| assert(m > 0);
-        const z = if (u.mask[@backingInt(side)]) |m| v & m else v;
-        return if (u.flip) z ^ std.math.minInt(i64) else z;
-    }
-};
+pub const IntPlan = size.IntPlan;
 
-/// One IEEE §5.5.2 type/size context, over the existing i64 carrier.
-pub const IntContext = struct {
-    /// Bits; 64 or more leaves the carrier as it is.
-    width: u32,
-    signed: bool,
+pub const unsignedCompare = size.unsignedCompare;
 
-    /// Returns `value` cut to `width` bits and re-extended by `signed`.
-    /// `width` is at least 1: every context comes from an operand width.
-    pub fn normalize(c: IntContext, value: i64) i64 {
-        assert(c.width >= 1);
-        if (c.width >= 64) return value;
-        const mask = (@as(u64, 1) << @intCast(c.width)) - 1;
-        var bits = @as(u64, @bitCast(value)) & mask;
-        if (c.signed and bits & (@as(u64, 1) << @intCast(c.width - 1)) != 0) bits |= ~mask;
-        // Unsigned below 64 bits is never negative on the carrier.
-        if (!c.signed) assert(@as(i64, @bitCast(bits)) >= 0);
-        return @bitCast(bits);
-    }
-};
+pub const operandWidth = size.operandWidth;
 
-/// Shared by folding and lowering: where context propagates, where it stops,
-/// and how the result enters its parent. No changes to ordinary analog ops.
-pub const IntPlan = struct {
-    /// The context the node's value enters its parent in.
-    result: IntContext,
-    /// The width the node computes at, before `resize` converts it.
-    from_width: u32,
-    /// The context each operand is folded in (`lhs`, `rhs`, the `?:` else
-    /// arm); null where the operand is self-determined.
-    operands: [3]?IntContext = .{ null, null, null },
-    /// False when the result is wider than the i64 carrier can compute.
-    supported: bool = true,
+pub const clog2Width = size.clog2Width;
 
-    /// Returns `value`, computed at `from_width`, converted to `result`.
-    pub fn resize(p: IntPlan, value: i64) i64 {
-        assert(p.from_width >= 1);
-        assert(p.result.width >= 1);
-        const source: IntContext = .{ .width = p.from_width, .signed = p.result.signed };
-        return p.result.normalize(source.normalize(value));
-    }
-};
+pub const clog2Signed = size.clog2Signed;
+
+pub const intPlan = size.intPlan;
+
+pub const Error = size.Error;
 
 /// The `env` that knows nothing: `fold(file, e, literal_env)` folds literals
 /// and the operators over them, and declines an identifier and `>>>`.
@@ -176,6 +130,26 @@ const TestEnv = struct {
 
 const TestExpr = struct { file: Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl };
 
+/// One operator `foldContext` has entered, waiting on its operands.
+const Frame = struct {
+    e: Ast.ExprId,
+    /// Its IEEE §5.5 plan when `sized` (`intPlan`).
+    plan: ?IntPlan,
+    /// Folded under `foldSized`'s rules; a §4.3 call's arguments are not.
+    sized: bool,
+    /// How many operands have come back, in `vals`.
+    done: u8 = 0,
+    /// The operands' values; a `?:` keeps its condition and the arm taken.
+    vals: [MathFn.arity_max]Const = undefined,
+};
+
+/// A row `foldContext` folds next, and how.
+const Operand = struct { e: Ast.ExprId, sized: bool, parent: ?IntContext };
+
+/// Frames a fold keeps on the native stack before it takes pages: deeper
+/// than nearly every constant expression.
+const frames_in_place = 16;
+
 /// §3.4.1 applies the declared parameter type before another expression reads
 /// its value. Shared by elaboration's paramset selection and lowering, so the
 /// selected member sees the same real/integer conversion as the emitted model.
@@ -212,32 +186,42 @@ pub fn parameterCardValue(ty: Ast.Type, declared: ?Const, value: f64) Const {
 /// TAG; a `sys_call` is one by NAME (`simStateName`), because most `$` names
 /// that could appear here — `$param_given`, `$mfactor`, `$simprobe` — resolve
 /// before the solve and are left to the ordinary paths. Every other tag is
-/// searched through its `children`, first in source order.
-pub fn firstStateRead(file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl) ?[]const u8 {
-    if (e == .none) return null;
-    assert(@backingInt(e) < file.exprs.len());
+/// searched through its `children`, first in source order. The rows still
+/// to search sit on a stack from `gpa`, freed before return, so the depth of
+/// `e` costs heap, not native stack.
+pub fn firstStateRead(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl) std.mem.Allocator.Error!?[]const u8 {
+    assert(e == .none or @backingInt(e) < file.exprs.len());
     const ex = &file.exprs;
-    const tag = ex.tag(e);
-    switch (tag) {
-        // §4.4 access functions, §4.5 analog operators, §4.6 small-signal
-        // sources, §5.10 event functions: operating-point reads by construction.
-        .branch_access, .port_access, .filter_call, .noise_call, .event_function => return file.str(ex.strOf(e)),
-        .sys_call => {
-            const n = file.str(ex.strOf(e));
-            if (simStateName(n)) return n;
-        },
-        // §3.4 "constant numbers and previously defined parameters": a module
-        // variable is neither, and holds nothing until the analog block runs.
-        .ident => for (vars) |v| {
-            if (v.name == ex.strOf(e)) return file.str(v.name);
-        },
-        else => {}, // else: a state read only through its children
+    var pending: std.ArrayList(Ast.ExprId) = .empty;
+    defer pending.deinit(gpa);
+    try pending.append(gpa, e);
+    while (pending.pop()) |n| {
+        if (n == .none) continue;
+        switch (ex.tag(n)) {
+            // §4.4 access functions, §4.5 analog operators, §4.6 small-signal
+            // sources, §5.10 event functions: operating-point reads by construction.
+            .branch_access, .port_access, .filter_call, .noise_call, .event_function => return file.str(ex.strOf(n)),
+            .sys_call => {
+                const name = file.str(ex.strOf(n));
+                if (simStateName(name)) return name;
+            },
+            // §3.4 "constant numbers and previously defined parameters": a module
+            // variable is neither, and holds nothing until the analog block runs.
+            .ident => for (vars) |v| {
+                if (v.name == ex.strOf(n)) return file.str(v.name);
+            },
+            else => {}, // else: a state read only through its children
+        }
+        // Pushed last first, so the first child is searched first.
+        var buf: [3]Ast.ExprId = undefined;
+        const kids = ex.children(n, &buf);
+        try pending.ensureUnusedCapacity(gpa, kids.len);
+        var k = kids.len;
+        while (k > 0) {
+            k -= 1;
+            pending.appendAssumeCapacity(kids[k]);
+        }
     }
-    var buf: [3]Ast.ExprId = undefined;
-    for (ex.children(e, &buf)) |c| if (firstStateRead(file, c, vars)) |w| {
-        assert(w.len > 0);
-        return w;
-    };
     return null;
 }
 
@@ -246,153 +230,24 @@ pub fn firstStateRead(file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const 
 /// operators, a lazy `?:`, and §4.3's math functions. `&&` and `||` fold both
 /// operands here (`foldSized` short-circuits), so `0 && 1/0` declines.
 ///
-/// `env` answers what the structure cannot, as three methods:
+/// `env` answers what the structure cannot, as three methods, each of
+/// which may also fail with `Error`:
 ///   leaf(e) ?Const     any tag this walk does not fold itself (an identifier)
 ///   signed(e) ?bool    an operand's signedness (`>>>`, §4.2.9 comparisons)
 ///   width(e) ?u32      a name's bit length (§4.2.9 comparisons)
 /// `literal_env` answers none of them: a fold over literals only.
-/// Recurses once per expression level, so the caller runs it on a stack
-/// sized for the parse's nesting (`Parser.deepest`, through `deep_stack.run`
-/// as `Parser.walk` does). Asserts that `e` is `.none` or a row of `file`.
-pub fn fold(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const {
+/// The operators it has entered wait on a stack from `gpa`, freed before
+/// return. Asserts that `e` is `.none` or a row of `file`.
+pub fn fold(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const {
     assert(e == .none or @backingInt(e) < file.exprs.len());
-    return foldContext(file, e, env, false, null);
+    return foldContext(gpa, file, e, env, false, null);
 }
 
 /// IEEE §§5.4–5.5: a system-function operand is self-determined, but its
 /// type and size propagate into its context-dependent subexpressions.
-pub fn foldSized(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const {
+pub fn foldSized(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const {
     assert(e == .none or @backingInt(e) < file.exprs.len());
-    return foldContext(file, e, env, true, null);
-}
-
-/// The §4.2.9 extension of comparison `l` vs `r` under `env` (`fold`'s), or
-/// null when neither operand is known unsigned.
-pub fn unsignedCompare(file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) ?UnsignedCompare {
-    assert(l != .none);
-    assert(r != .none);
-    if ((env.signed(l) orelse true) and (env.signed(r) orelse true)) return null;
-    const w = [2]?u32{ operandWidth(file, l, env), operandWidth(file, r, env) };
-    var u: UnsignedCompare = .{ .mask = undefined, .flip = false };
-    for (w, &u.mask) |wi, *m| {
-        const n = wi orelse {
-            m.* = null;
-            continue;
-        };
-        u.flip = u.flip or n >= 64;
-        m.* = if (n >= 64) null else (@as(i64, 1) << @intCast(n)) - 1;
-    }
-    // A flip comes from a 64-bit operand, whose mask is the carrier's own.
-    if (u.flip) assert(u.mask[0] == null or u.mask[1] == null);
-    return u;
-}
-
-/// The bit length §4.2.9 extends an operand from: a §2.6.1 literal's size and
-/// a name's (`env.width`) as written; any other integer expression is §3.2's
-/// 32 bits, since the analog operators compute at that width, or the carrier's
-/// wider value where a sign, a complement, a bitwise operator or `?:` passes a
-/// wide operand through. Null when unknown.
-pub fn operandWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32 {
-    assert(e != .none);
-    const w = expressionWidth(file, e, env, false);
-    // Not self-determined: an operator result is at least §3.2's 32 bits.
-    if (w) |x| if (file.exprs.tag(e) == .binary) assert(x >= 32);
-    return w;
-}
-
-/// IEEE 1364-2005 §5.4.1 / §17.11.1: `$clog2`'s self-determined operand
-/// keeps the size of a sized unary or arithmetic expression; no assignment
-/// context widens it to the analog integer carrier's 32 bits.
-pub fn clog2Width(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32 {
-    assert(e != .none);
-    assert(@backingInt(e) < file.exprs.len());
-    return expressionWidth(file, e, env, true);
-}
-
-/// IEEE §5.5.1 signedness before the unsigned `$clog2` boundary. Names are
-/// the environment's; a function call keeps its own argument contexts.
-pub fn clog2Signed(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?bool {
-    assert(e != .none);
-    const ex = &file.exprs;
-    assert(@backingInt(e) < ex.len());
-    return switch (ex.tag(e)) {
-        .int_literal => ex.intLiteral(e).signed,
-        .logic_literal => ex.logicValue(e).signed,
-        .ident => env.signed(e),
-        .unary => switch (ex.unOp(e)) {
-            .plus, .minus, .bit_not => clog2Signed(file, ex.lhs(e), env),
-            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => false,
-        },
-        .binary => switch (ex.binOp(e)) {
-            .shl, .shr, .ashl, .ashr, .pow => clog2Signed(file, ex.lhs(e), env),
-            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => clog2OperandsSigned(file, ex.lhs(e), ex.rhs(e), env),
-            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => false,
-        },
-        .ternary => clog2OperandsSigned(file, ex.rhs(e), ex.ternaryElse(e), env),
-        .sys_call => !std.mem.eql(u8, file.str(ex.strOf(e)), "$realtobits"),
-        .call, .index => true, // analog function/array integral results are §3.2 integers
-        else => null, // else: not an integral expression in the analog context
-    };
-}
-
-/// Returns how `e` is sized inside `parent` (null: `e` is self-determined).
-/// IEEE Table 5-22 and §5.5.2: logical operands, a shift/power's RHS, and a
-/// conditional's condition are self-determined. Comparisons share a context
-/// between their operands, independent of their one-bit result. Null when
-/// `env` cannot give a width or signedness the plan needs.
-pub fn intPlan(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) ?IntPlan {
-    const ex = &file.exprs;
-    const own: IntContext = .{ .width = clog2Width(file, e, env) orelse return null, .signed = clog2Signed(file, e, env) orelse return null };
-    const result: IntContext = if (parent) |p| .{ .width = @max(p.width, own.width), .signed = p.signed } else own;
-    var plan: IntPlan = .{ .result = result, .from_width = own.width };
-    assert(plan.result.width >= own.width);
-    switch (ex.tag(e)) {
-        .unary => switch (ex.unOp(e)) {
-            .plus, .minus, .bit_not => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.supported = result.width <= (if (ex.unOp(e) == .minus) @as(u32, 32) else 64);
-            },
-            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => {},
-        },
-        .binary => switch (ex.binOp(e)) {
-            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.operands[1] = result;
-                const bitwise = switch (ex.binOp(e)) {
-                    .bit_and, .bit_or, .bit_xor, .bit_xnor => true,
-                    else => false, // else: the enclosing prong's five arithmetic operations wrap at 32
-                };
-                plan.supported = result.width <= (if (bitwise) @as(u32, 64) else 32);
-            },
-            .pow, .shl, .shr, .ashl, .ashr => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.supported = result.width <= 32;
-            },
-            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => {
-                const comparison: IntContext = .{
-                    .width = @max(clog2Width(file, ex.lhs(e), env) orelse return null, clog2Width(file, ex.rhs(e), env) orelse return null),
-                    .signed = clog2OperandsSigned(file, ex.lhs(e), ex.rhs(e), env) orelse return null,
-                };
-                plan.operands[0] = comparison;
-                plan.operands[1] = comparison;
-                plan.supported = comparison.width <= 64;
-            },
-            .logical_and, .logical_or => {},
-        },
-        .ternary => {
-            plan.from_width = result.width;
-            plan.operands[1] = result;
-            plan.operands[2] = result;
-            plan.supported = result.width <= 64;
-        },
-        else => {}, // else: a primary keeps its own width until converted to its parent
-    }
-    // A self-determined result carries no context of its own into operands.
-    if (plan.operands[0]) |c| assert(c.width >= 1);
-    return plan;
+    return foldContext(gpa, file, e, env, true, null);
 }
 
 // ---- private ----
@@ -415,120 +270,155 @@ fn simStateName(n: []const u8) bool {
     return std.mem.startsWith(u8, n, "$dist_") or std.mem.startsWith(u8, n, "$rdist_");
 }
 
-fn foldContext(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, comptime sized: bool, parent: ?IntContext) ?Const {
-    if (e == .none) return null;
+fn foldContext(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sized: bool, parent: ?IntContext) Error!?Const {
     if (!sized) assert(parent == null);
     const ex = &file.exprs;
-    const plan: ?IntPlan = if (sized) intPlan(file, e, env, parent) else null;
-    if (plan) |p| if (!p.supported) return null;
-    const contexts = if (plan) |p| p.operands else [_]?IntContext{ null, null, null };
-    var value: Const = switch (ex.tag(e)) {
+    var in_place: [frames_in_place]Frame = undefined;
+    var frames: Pending(Frame) = .init(&in_place, gpa);
+    defer frames.deinit();
+    // The row folded next: the root, then each operand an operator asks for.
+    var at: Operand = .{ .e = e, .sized = sized, .parent = parent };
+    descend: while (true) {
+        // Every frame is a distinct ancestor of `at`, in an acyclic store.
+        assert(frames.items().len < ex.len());
+        if (at.e == .none) return null;
+        const plan: ?IntPlan = if (at.sized) try intPlan(gpa, file, at.e, env, at.parent) else null;
+        if (plan) |p| if (!p.supported) return null;
+        const first: ?Operand = switch (ex.tag(at.e)) {
+            .unary, .binary, .ternary => .{ .e = ex.lhs(at.e), .sized = at.sized, .parent = if (plan) |p| p.operands[0] else null },
+            // §4.3 Table 4-14/4-15 math in a constant expression: each
+            // argument is folded on its own, unsized.
+            .builtin_call => blk: {
+                const f = MathFn.fromName(file.str(ex.strOf(at.e))) orelse return null;
+                const args = ex.args(at.e);
+                if (args.len != f.arity()) return null;
+                break :blk .{ .e = args[0], .sized = false, .parent = null };
+            },
+            else => null, // else: a leaf, folded whole below
+        };
+        if (first) |o| {
+            try frames.push(.{ .e = at.e, .plan = plan, .sized = at.sized });
+            at = o;
+            continue :descend;
+        }
+        var value = resized(plan, (try leafValue(file, at.e, env)) orelse return null);
+        // Hand `value` up until an operator asks for another operand.
+        while (frames.items().len > 0) {
+            const f = &frames.items()[frames.items().len - 1];
+            assert(f.done < f.vals.len);
+            f.vals[f.done] = value;
+            f.done += 1;
+            if (nextOperand(file, f.*)) |o| {
+                at = o;
+                continue :descend;
+            }
+            value = resized(f.plan, (try apply(gpa, file, env, f.*)) orelse return null);
+            _ = frames.pop();
+        }
+        return value;
+    }
+}
+
+/// A leaf's value: a literal's, or `env.leaf`'s for every other tag.
+fn leafValue(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const {
+    const ex = &file.exprs;
+    return switch (ex.tag(e)) {
         .int_literal => .{ .int = ex.intValue(e) },
         .logic_literal => .{ .int = ex.logicValue(e).asExactInt() orelse return null },
         .real_literal => .{ .real = ex.realValue(e) },
         .str_literal => .{ .str = file.str(ex.strOf(e)) },
         .pos_inf => .{ .real = std.math.inf(f64) },
         .neg_inf => .{ .real = -std.math.inf(f64) },
-        .unary => blk: {
-            const a = foldContext(file, ex.lhs(e), env, sized, contexts[0]) orelse return null;
-            const op = ex.unOp(e);
-            break :blk (switch (op) {
-                .plus, .minus, .logical_not, .bit_not => unary(op, a),
-                .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => reduction(ex, op, ex.lhs(e), a),
-            }) orelse return null;
+        else => env.leaf(e), // else: every other tag names something only the caller can resolve
+    };
+}
+
+/// `value` converted into its node's context when the node has a plan.
+fn resized(plan: ?IntPlan, value: Const) Const {
+    var v = value;
+    if (v == .int) if (plan) |p| {
+        v.int = p.resize(v.int);
+    };
+    return v;
+}
+
+/// The operand frame `f` folds next, or null once it has all it reads:
+/// `&&`/`||` stop after a deciding left operand when sized, and `?:` folds
+/// only the arm its condition takes (§4.2.12).
+fn nextOperand(file: *const Ast.SourceFile, f: Frame) ?Operand {
+    const ex = &file.exprs;
+    assert(f.done >= 1);
+    const ctx = if (f.plan) |p| p.operands else [_]?IntContext{ null, null, null };
+    switch (ex.tag(f.e)) {
+        .unary => return null,
+        .binary => {
+            if (f.done == 2) return null;
+            const op = ex.binOp(f.e);
+            const a = f.vals[0];
+            if (f.sized and ((op == .logical_and and !a.isTrue()) or (op == .logical_or and a.isTrue()))) return null;
+            return .{ .e = ex.rhs(f.e), .sized = f.sized, .parent = ctx[1] };
         },
-        .binary => blk: {
-            var a = foldContext(file, ex.lhs(e), env, sized, contexts[0]) orelse return null;
-            const op = ex.binOp(e);
-            if (sized and ((op == .logical_and and !a.isTrue()) or (op == .logical_or and a.isTrue())))
-                break :blk .{ .int = @intFromBool(a.isTrue()) };
-            var b = foldContext(file, ex.rhs(e), env, sized, contexts[1]) orelse return null;
+        .ternary => {
+            if (f.done == 2) return null;
+            const taken = f.vals[0].isTrue();
+            return .{ .e = if (taken) ex.rhs(f.e) else ex.ternaryElse(f.e), .sized = f.sized, .parent = ctx[if (taken) 1 else 2] };
+        },
+        .builtin_call => {
+            const args = ex.args(f.e);
+            return if (f.done < args.len) .{ .e = args[f.done], .sized = false, .parent = null } else null;
+        },
+        // Only the four tags above push a frame.
+        .int_literal, .logic_literal, .real_literal, .str_literal, .pos_inf, .neg_inf, .ident, .hier_ident, .call, .sys_call, .filter_call, .noise_call, .branch_access, .port_access, .concat, .multi_concat, .assign_pattern, .pattern_repl, .index, .range, .indexed_range, .event_or, .event_posedge, .event_negedge, .event_initial_step, .event_final_step, .event_function, .event_driver_update => unreachable,
+    }
+}
+
+/// Frame `f`'s value from its folded operands, before its own `resize`.
+fn apply(gpa: std.mem.Allocator, file: *const Ast.SourceFile, env: anytype, f: Frame) Error!?Const {
+    const ex = &file.exprs;
+    assert(f.done >= 1);
+    const ctx = if (f.plan) |p| p.operands else [_]?IntContext{ null, null, null };
+    switch (ex.tag(f.e)) {
+        .unary => {
+            const op = ex.unOp(f.e);
+            return switch (op) {
+                .plus, .minus, .logical_not, .bit_not => unary(op, f.vals[0]),
+                .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => reduction(ex, op, ex.lhs(f.e), f.vals[0]),
+            };
+        },
+        .binary => {
+            var a = f.vals[0];
+            // A sized `&&`/`||` its left operand decided.
+            if (f.done == 1) return .{ .int = @intFromBool(a.isTrue()) };
+            var b = f.vals[1];
+            const op = ex.binOp(f.e);
             const compare = op == .eq or op == .neq or op == .case_eq or op == .case_neq or op == .lt or op == .le or op == .gt or op == .ge;
-            if (sized and a == .int and b == .int) {
-                if (op == .shr) if (contexts[0]) |c| {
+            if (f.sized and a == .int and b == .int) {
+                if (op == .shr) if (ctx[0]) |c| {
                     a.int = (IntContext{ .width = c.width, .signed = false }).normalize(a.int);
                 };
-                if (compare) if (contexts[0]) |c| if (!c.signed and c.width == 64) {
+                if (compare) if (ctx[0]) |c| if (!c.signed and c.width == 64) {
                     a.int ^= std.math.minInt(i64);
                     b.int ^= std.math.minInt(i64);
                 };
-            } else if (compare and a == .int and b == .int) if (unsignedCompare(file, ex.lhs(e), ex.rhs(e), env)) |u| {
+            } else if (compare and a == .int and b == .int) if (try unsignedCompare(gpa, file, ex.lhs(f.e), ex.rhs(f.e), env)) |u| {
                 a.int = u.extend(.lhs, a.int);
                 b.int = u.extend(.rhs, b.int);
             };
-            const shift_signed = if (op != .ashr) null else if (sized and contexts[0] != null) contexts[0].?.signed else env.signed(ex.lhs(e));
-            break :blk binary(op, a, b, shift_signed) orelse return null;
+            const shift_signed = if (op != .ashr) null else if (f.sized and ctx[0] != null) ctx[0].?.signed else try size.envSigned(env, ex.lhs(f.e));
+            return binary(op, a, b, shift_signed);
         },
-        .ternary => blk: {
-            const c = foldContext(file, ex.lhs(e), env, sized, contexts[0]) orelse return null;
-            break :blk foldContext(file, if (c.isTrue()) ex.rhs(e) else ex.ternaryElse(e), env, sized, contexts[if (c.isTrue()) 1 else 2]) orelse return null;
+        .ternary => {
+            assert(f.done == 2);
+            return f.vals[1];
         },
-        // §4.3 Table 4-14/4-15 math in a constant expression.
-        .builtin_call => blk: {
-            const f = MathFn.fromName(file.str(ex.strOf(e))) orelse return null;
-            const args = ex.args(e);
-            if (args.len != f.arity()) return null;
-            var vals: [MathFn.arity_max]Const = undefined;
-            for (args, 0..) |a, i| vals[i] = fold(file, a, env) orelse return null;
-            break :blk math(f, vals[0..args.len]) orelse return null;
+        .builtin_call => {
+            const m = MathFn.fromName(file.str(ex.strOf(f.e))).?;
+            assert(f.done == m.arity());
+            return math(m, f.vals[0..f.done]);
         },
-        else => env.leaf(e) orelse return null, // else: every other tag names something only the caller can resolve
-    };
-    if (value == .int) if (plan) |p| {
-        value.int = p.resize(value.int);
-    };
-    if (!sized) assert(plan == null);
-    return value;
-}
-
-fn expressionWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, comptime self_determined: bool) ?u32 {
-    assert(e != .none);
-    const ex = &file.exprs;
-    return switch (ex.tag(e)) {
-        .int_literal => literalWidth(ex, e),
-        .logic_literal => ex.logicValue(e).width,
-        .ident => env.width(e),
-        // `unary`'s `wrapFrom`: a sign or complement keeps a wide literal's width.
-        .unary => switch (ex.unOp(e)) {
-            .plus, .minus, .bit_not => widthFloor(expressionWidth(file, ex.lhs(e), env, self_determined) orelse return null, self_determined),
-            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => if (self_determined) 1 else 32,
-        },
-        .binary => switch (ex.binOp(e)) {
-            .bit_and, .bit_or, .bit_xor, .bit_xnor => widthFloor(@max(expressionWidth(file, ex.lhs(e), env, self_determined) orelse return null, expressionWidth(file, ex.rhs(e), env, self_determined) orelse return null), self_determined),
-            .add, .sub, .mul, .div, .mod => if (self_determined) @max(expressionWidth(file, ex.lhs(e), env, true) orelse return null, expressionWidth(file, ex.rhs(e), env, true) orelse return null) else 32,
-            .pow, .shl, .shr, .ashl, .ashr => if (self_determined) expressionWidth(file, ex.lhs(e), env, true) else 32,
-            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => if (self_determined) 1 else 32,
-        },
-        .ternary => widthFloor(@max(expressionWidth(file, ex.rhs(e), env, self_determined) orelse return null, expressionWidth(file, ex.ternaryElse(e), env, self_determined) orelse return null), self_determined),
-        // §9.11 `$realtobits` returns the double's 64-bit pattern.
-        .sys_call => if (std.mem.eql(u8, file.str(ex.strOf(e)), "$realtobits")) 64 else 32,
-        else => 32, // else: every other integer-valued form is §3.2's 32-bit integer
-    };
-}
-
-// A §2.6.1 integer literal's width: its size, or, unsized, "at least 32"
-// bits: §3.2's 32 when they hold the value, the carrier's 64 when they do
-// not. `expressionWidth` and `reduction` must agree on it.
-fn literalWidth(ex: *const Ast.ExprStore, e: Ast.ExprId) u32 {
-    assert(ex.tag(e) == .int_literal);
-    const w = ex.intLiteral(e).width;
-    if (w != 0) return w;
-    const v = ex.intValue(e);
-    return if (std.math.cast(u32, v) != null or std.math.cast(i32, v) != null) 32 else 64;
-}
-
-fn widthFloor(w: u32, comptime self_determined: bool) u32 {
-    const out = if (self_determined) w else @max(w, 32);
-    assert(out >= w);
-    return out;
-}
-
-fn clog2OperandsSigned(file: *const Ast.SourceFile, a: Ast.ExprId, b: Ast.ExprId, env: anytype) ?bool {
-    assert(a != .none);
-    assert(b != .none);
-    const sa = clog2Signed(file, a, env) orelse return null;
-    const sb = clog2Signed(file, b, env) orelse return null;
-    return sa and sb;
+        // Only the four tags above push a frame.
+        .int_literal, .logic_literal, .real_literal, .str_literal, .pos_inf, .neg_inf, .ident, .hier_ident, .call, .sys_call, .filter_call, .noise_call, .branch_access, .port_access, .concat, .multi_concat, .assign_pattern, .pattern_repl, .index, .range, .indexed_range, .event_or, .event_posedge, .event_negedge, .event_initial_step, .event_final_step, .event_function, .event_driver_update => unreachable,
+    }
 }
 
 // ponytail: literal operands only. A parameter's width is 32 unless A.2.1.1's
@@ -587,7 +477,16 @@ fn testParse(arena: std.mem.Allocator, decls: []const u8, src: []const u8) !Test
 fn testFold(arena: std.mem.Allocator, src: []const u8, comptime sized: bool) !?Const {
     const t = try testParse(arena, "", src);
     const env: TestEnv = .{ .file = &t.file };
-    return if (sized) foldSized(&t.file, t.e, env) else fold(&t.file, t.e, env);
+    return if (sized) try foldSized(testing.allocator, &t.file, t.e, env) else try fold(testing.allocator, &t.file, t.e, env);
+}
+
+/// `open` `n` times, `leaf`, then `close` `n` times.
+fn nested(arena: std.mem.Allocator, open: []const u8, leaf: []const u8, close: []const u8, n: usize) ![]const u8 {
+    var src: std.ArrayList(u8) = .empty;
+    for (0..n) |_| try src.appendSlice(arena, open);
+    try src.appendSlice(arena, leaf);
+    for (0..n) |_| try src.appendSlice(arena, close);
+    return src.items;
 }
 
 test "§3.4.1 parameterValue converts to the declared type; a host card does not impose `integer`'s wrap" {
@@ -670,9 +569,9 @@ test "fold over parsed constant expressions: literals, operators, a lazy ?:, §4
     try expectInt(8, try testFold(a, "-4'sb1000", false));
     // `literal_env` folds literals and declines a name.
     const t = try testParse(a, "", "a + 1");
-    try testing.expect(fold(&t.file, t.e, literal_env) == null);
+    try testing.expect(try fold(testing.allocator, &t.file, t.e, literal_env) == null);
     const lit = try testParse(a, "", "2 * 3");
-    try expectInt(6, fold(&lit.file, lit.e, literal_env));
+    try expectInt(6, try fold(testing.allocator, &lit.file, lit.e, literal_env));
 }
 
 test "IEEE 1364-2005 §5.1.11 reductions fold over a literal at its size, or an unsized one's width" {
@@ -768,8 +667,8 @@ test "operandWidth, clog2Width and clog2Signed size an expression as §2.6.1 and
     }) |c| {
         const t = try testParse(a, "", c[0]);
         const env: TestEnv = .{ .file = &t.file };
-        try testing.expectEqual(c[1], operandWidth(&t.file, t.e, env));
-        try testing.expectEqual(c[2], clog2Width(&t.file, t.e, env));
+        try testing.expectEqual(c[1], try operandWidth(testing.allocator, &t.file, t.e, env));
+        try testing.expectEqual(c[2], try clog2Width(testing.allocator, &t.file, t.e, env));
     }
     const S = struct { []const u8, ?bool };
     for ([_]S{
@@ -785,7 +684,7 @@ test "operandWidth, clog2Width and clog2Signed size an expression as §2.6.1 and
         .{ "1.5", null },
     }) |c| {
         const t = try testParse(a, "", c[0]);
-        try testing.expectEqual(c[1], clog2Signed(&t.file, t.e, TestEnv{ .file = &t.file }));
+        try testing.expectEqual(c[1], try clog2Signed(testing.allocator, &t.file, t.e, TestEnv{ .file = &t.file }));
     }
 }
 
@@ -807,7 +706,93 @@ test "§3.4 firstStateRead names the first simulation-state or variable read of 
         .{ "2 * 3", null },
     }) |c| {
         const t = try testParse(a, "real x;", c[0]);
-        const got = firstStateRead(&t.file, t.e, t.vars);
+        const got = try firstStateRead(testing.allocator, &t.file, t.e, t.vars);
         if (c[1]) |want| try testing.expectEqualStrings(want, got.?) else try testing.expect(got == null);
     }
+}
+
+test "every walk holds 100,000 levels on a 1 MiB thread: depth costs heap, not native stack" {
+    // Oracle: the guard page, and each chain's value worked out by hand. An
+    // embedder's thread may have 1 MiB; a walk that recursed once per level
+    // overflowed it long before 100,000.
+    if (@import("builtin").single_threaded) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const n = 100_000;
+    // `40'd1 | 1 | ... | 1` nests on the left, the others on the right.
+    const ors = try testParse(a, "", try nested(a, "", "40'd1", " | 1", n));
+    const negs = try testParse(a, "", try nested(a, "-(", "1", ")", n));
+    const elses = try testParse(a, "", try nested(a, "0 ? 0 : ", "7", "", n));
+    const thens = try testParse(a, "", try nested(a, "1 ? ", "5", " : 0", n));
+    const calls = try testParse(a, "", try nested(a, "abs(", "-3", ")", n));
+    const sums = try testParse(a, "", try nested(a, "1 + (", "1", ")", n));
+    const state = try testParse(a, "", try nested(a, "", "$abstime", " + 1", n));
+    // `foldSized` plans each operator over its whole operand (`intPlan`), so
+    // its chain is shorter: still far past 1 MiB of recursion.
+    const sized = try testParse(a, "", try nested(a, "", "4'b1", " + 4'b1", 5000));
+    const Run = struct {
+        fn on(t: []const TestExpr, out: *anyerror!void) void {
+            out.* = walks(t);
+        }
+        fn walks(t: []const TestExpr) !void {
+            const ors_env: TestEnv = .{ .file = &t[0].file };
+            try expectInt(1, try fold(testing.allocator, &t[0].file, t[0].e, ors_env));
+            try testing.expectEqual(@as(?u32, 40), try operandWidth(testing.allocator, &t[0].file, t[0].e, ors_env));
+            try testing.expectEqual(@as(?u32, 40), try clog2Width(testing.allocator, &t[0].file, t[0].e, ors_env));
+            try testing.expectEqual(@as(?bool, false), try clog2Signed(testing.allocator, &t[0].file, t[0].e, ors_env));
+            try testing.expectEqual(@as(?[]const u8, null), try firstStateRead(testing.allocator, &t[0].file, t[0].e, &.{}));
+            // An even count of negations.
+            try expectInt(1, try fold(testing.allocator, &t[1].file, t[1].e, literal_env));
+            try testing.expectEqual(@as(?bool, true), try clog2Signed(testing.allocator, &t[1].file, t[1].e, TestEnv{ .file = &t[1].file }));
+            try expectInt(7, try fold(testing.allocator, &t[2].file, t[2].e, literal_env));
+            try testing.expectEqual(@as(?u32, 32), try clog2Width(testing.allocator, &t[2].file, t[2].e, TestEnv{ .file = &t[2].file }));
+            try expectInt(5, try fold(testing.allocator, &t[3].file, t[3].e, literal_env));
+            try expectInt(3, try fold(testing.allocator, &t[4].file, t[4].e, literal_env));
+            try expectInt(n + 1, try fold(testing.allocator, &t[5].file, t[5].e, literal_env));
+            try testing.expectEqualStrings("$abstime", (try firstStateRead(testing.allocator, &t[6].file, t[6].e, &.{})).?);
+            // 5001 four-bit ones: 5001 mod 16 at four bits, 5001 on the carrier.
+            try expectInt(9, try foldSized(testing.allocator, &t[7].file, t[7].e, TestEnv{ .file = &t[7].file }));
+            try expectInt(5001, try fold(testing.allocator, &t[7].file, t[7].e, literal_env));
+        }
+    };
+    var result: anyerror!void = {};
+    const thread = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.on, .{ &[_]TestExpr{ ors, negs, elses, thens, calls, sums, state, sized }, &result });
+    thread.join();
+    try result;
+}
+
+test "every walk out of memory is error.OutOfMemory, never the null of an unknown answer" {
+    // Oracle: the allocator's own failure. A null here would read as "not
+    // constant" or "unknown" and change the caller's verdict with no error.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // 1,000 levels spill every walk's in-place stack (`Pending`), so each
+    // takes at least two allocations from the failing allocator.
+    const chain = try nested(a, "", "40'd1", " | 1", 1000);
+    // `(<chain>) < u`: an unsigned operand, so `unsignedCompare` sizes the chain.
+    const cmp = try testParse(a, "", try std.mem.concat(a, u8, &.{ "(", chain, ") < u" }));
+    const Walk = enum { fold, fold_sized, operand_width, clog2_width, clog2_signed, int_plan, unsigned_compare, first_state_read };
+    for (std.enums.values(Walk)) |walk| for ([_]usize{ 0, 1 }) |fail_index| {
+        var failing: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        const gpa = failing.allocator();
+        const f = &cmp.file;
+        const e = f.exprs.lhs(cmp.e);
+        const env: TestEnv = .{ .file = f };
+        const held = switch (walk) {
+            .fold => testing.expectError(error.OutOfMemory, fold(gpa, f, e, env)),
+            .fold_sized => testing.expectError(error.OutOfMemory, foldSized(gpa, f, e, env)),
+            .operand_width => testing.expectError(error.OutOfMemory, operandWidth(gpa, f, e, env)),
+            .clog2_width => testing.expectError(error.OutOfMemory, clog2Width(gpa, f, e, env)),
+            .clog2_signed => testing.expectError(error.OutOfMemory, clog2Signed(gpa, f, e, env)),
+            .int_plan => testing.expectError(error.OutOfMemory, intPlan(gpa, f, e, env, null)),
+            .unsigned_compare => testing.expectError(error.OutOfMemory, unsignedCompare(gpa, f, e, f.exprs.rhs(cmp.e), env)),
+            .first_state_read => testing.expectError(error.OutOfMemory, firstStateRead(gpa, f, e, &.{})),
+        };
+        held catch |err| {
+            std.debug.print("{t} at fail_index {d}: not error.OutOfMemory\n", .{ walk, fail_index });
+            return err;
+        };
+    };
 }

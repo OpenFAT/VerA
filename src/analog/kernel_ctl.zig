@@ -41,7 +41,7 @@ pub fn lowerKernelCtl(self: *Lower, tok: u32, name: []const u8, args: []const As
         // would silently repair a model that violates it, so a provably
         // negative constant is a diagnostic and anything else is taken as
         // written.
-        if (lower_constfold.constEval(self, args[0])) |c| {
+        if (try lower_constfold.constEval(self, args[0])) |c| {
             if (c.asReal() < 0.0) {
                 try self.err(self.file.exprs.mainTok(args[0]), .E0803, "got {d}", .{c.asReal()});
                 return true;
@@ -86,7 +86,7 @@ pub fn lowerKernelCtl(self: *Lower, tok: u32, name: []const u8, args: []const As
         }
         var degree: i64 = 0;
         if (real_args.len == 1) {
-            const c = lower_constfold.constEval(self, real_args[0]) orelse {
+            const c = (try lower_constfold.constEval(self, real_args[0])) orelse {
                 try self.err(self.file.exprs.mainTok(real_args[0]), .E0805, "", .{});
                 return true;
             };

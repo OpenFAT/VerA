@@ -128,7 +128,7 @@ const Slot = enum(u8) {
 /// warning, every other code an error), so a code cannot change severity
 /// without changing name.
 pub fn severityOf(c: Code) Severity {
-    const name = c.name();
+    const name = @tagName(c);
     assert(name.len == 5);
     assert(name[0] == 'E' or name[0] == 'W');
     return if (name[0] == 'W') .warning else .err;

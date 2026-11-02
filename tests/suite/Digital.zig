@@ -10,8 +10,25 @@
 //!
 //! Clauses: IEEE 1364-2005 §13.2 and §13.7.1 (`--libmap`, `-L`), §18.2 (the
 //! VCD format's free white space and its writer-owned sections).
+//!
+//! Contents:
+//! - `pub const VcdExpect = struct`
+//! - `pub fn negative(source: []const u8) bool`
+//! - `pub fn runnerArgs(arena: std.mem.Allocator, source: []const u8, dir: []const u8) ![]const []const u8`
+//! - `pub fn caseSelected(has_golden: bool, source: []const u8) bool`
+//! - `pub fn rejectionMatches(source: []const u8, exit_code: u8, stderr: []const u8) bool`
+//! - `pub fn errorSays(stderr: []const u8, patterns: []const []const u8, mode: enum { any, every }) bool`
+//! - `pub fn xfailReason(source: []const u8) ?[]const u8`
+//! - `pub fn warningsMatch(source: []const u8, stderr: []const u8) bool`
+//! - `pub fn vcdExpectation(source: []const u8) ?VcdExpect`
+//! - `pub fn vcdTokens(arena: std.mem.Allocator, text: []const u8) ![]const []const u8`
 
 const std = @import("std");
+
+/// `//! expect vcd <produced> == <golden>`: `vera --run` of the `.v` writes
+/// `<produced>` (relative to the run's working directory), which must equal
+/// `<golden>` (relative to the fixture) once both are normalised (`vcdTokens`).
+pub const VcdExpect = struct { produced: []const u8, golden: []const u8 };
 
 /// Whether a `.v` is a digital reject case: a `//! reject` or `//! reject-only`
 /// line, the suite's own rule (`harness/conform.c`). A `_rejected` file name
@@ -168,11 +185,6 @@ pub fn warningsMatch(source: []const u8, stderr: []const u8) bool {
     }
     return true;
 }
-
-/// `//! expect vcd <produced> == <golden>`: `vera --run` of the `.v` writes
-/// `<produced>` (relative to the run's working directory), which must equal
-/// `<golden>` (relative to the fixture) once both are normalised (`vcdTokens`).
-pub const VcdExpect = struct { produced: []const u8, golden: []const u8 };
 
 /// Returns the fixture's `//! expect vcd` line, slices into `source`. Null when
 /// there is none, or it is malformed (then `tb.Spec.parse` fails it as unknown).

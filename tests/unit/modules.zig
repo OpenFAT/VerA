@@ -1,3 +1,25 @@
+//! Every module of `build.zig`'s `module_specs`, `pub` so `tests/unit.zig`'s
+//! `refAllDecls` reaches each one. Clauses: none (build wiring).
+//!
+//! Contents:
+//! - `pub const contract`
+//! - `pub const base`
+//! - `pub const diag`
+//! - `pub const frontend`
+//! - `pub const elab`
+//! - `pub const kernels`
+//! - `pub const ir`
+//! - `pub const analog`
+//! - `pub const prove`
+//! - `pub const zigbuild`
+//! - `pub const device`
+//! - `pub const verilog`
+//! - `pub const exe`
+//! - `pub const sim`
+//! - `pub const digital`
+//! - `pub const vera`
+//! - `pub const vpi`
+
 pub const contract = @import("contract");
 pub const base = @import("base");
 pub const diag = @import("diag");

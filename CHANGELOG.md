@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A deep connect-module chain with `connectrules` elaborates in linear
+  time** (§7.8.4, Annex F.2.1): `segment.up` climbs the chain once, not once
+  per level above it, so a 1500-level chain takes 0.26 s where it took
+  19.5 s and 2.7 GB.
+- **Constant folding no longer recurses**: a 100,000-level expression folds
+  on a 1 MiB stack, and a fold that runs out of memory fails with out of
+  memory instead of treating the expression as not constant.
+- **`diag.Code` has no `name()` method** (the `vera` Zig module's API): use
+  `@tagName(code)`. The code catalogue moved to `lib/diag/codes/`, one file
+  per class, and `Code` is built from one ordered list of names, so every
+  code keeps its tag and its number; diagnostics and `--explain` text are
+  byte-identical.
 - **No expected conformance failures again**: the twelve fixtures v0.21.0
   listed in `tools/vera.xfail` now expect what the LRM says
   (OpenFAT/VAMS-Conformance-Suite#2). An instance's own port flow and a

@@ -224,7 +224,7 @@ fn refuseLimitCall(self: *Lower, e: Ast.ExprId) Oom!bool {
         return true;
     }
     if (args.len >= 2) {
-        if (lower_constfold.constEval(self, args[1])) |c| switch (c) {
+        if (try lower_constfold.constEval(self, args[1])) |c| switch (c) {
             .str => |s| {
                 const need: usize = if (std.mem.eql(u8, s, "pnjlim"))
                     4
@@ -255,7 +255,7 @@ fn simparamStr(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
     assert(self.file.strings.eql(ex.strOf(e), "$simparam$str"));
     if (self.cur_unit < self.design.units.len or self.module != null) {
         const a = ex.args(e);
-        if (a.len >= 1) if (lower_sysfunc_args.constStrArg(self, a[0])) |nm| {
+        if (a.len >= 1) if (try lower_sysfunc_args.constStrArg(self, a[0])) |nm| {
             // A design with no instances has no unit table: its one unit is the
             // top module, at the root.
             const u: struct { module: []const u8, path: []const u8 } = if (self.cur_unit < self.design.units.len)
@@ -290,7 +290,7 @@ fn simparamStr(self: *Lower, e: Ast.ExprId) Oom!?TypedValue {
     }
     {
         const a = ex.args(e);
-        const nm = if (a.len >= 1) lower_sysfunc_args.constStrArg(self, a[0]) else null;
+        const nm = if (a.len >= 1) (try lower_sysfunc_args.constStrArg(self, a[0])) else null;
         if (nm == null or std.mem.eql(u8, nm.?, "cwd") or std.mem.eql(u8, nm.?, "analysis_name"))
             self.out.uses.insert(.host_strings);
         // "$simparam$str is similar to $simparam", and an unknown name with
@@ -319,7 +319,7 @@ fn refuseSimparam(self: *Lower, e: Ast.ExprId) Oom!bool {
     assert(self.file.strings.eql(self.file.exprs.strOf(e), "$simparam"));
     const args = self.file.exprs.args(e);
     if (args.len == 1) {
-        if (lower_constfold.constEval(self, args[0])) |c| switch (c) {
+        if (try lower_constfold.constEval(self, args[0])) |c| switch (c) {
             .str => |s| if (simparam.valueIn(self.opts.directives.timescale(), s) == null and !simparam.isRuntime(s)) {
                 var b = self.errWith(self.file.exprs.mainTok(e), .E0811);
                 b.msg("`\"{s}\"`", .{s});
@@ -333,7 +333,7 @@ fn refuseSimparam(self: *Lower, e: Ast.ExprId) Oom!bool {
     // The Newton-iterate counter costs an `Instance` field plus an
     // `updateState`/`stateCtl` pair, so it is emitted only for a model that
     // reads `iteration`.
-    if (args.len >= 1) if (lower_sysfunc_args.constStrArg(self, args[0])) |s| {
+    if (args.len >= 1) if (try lower_sysfunc_args.constStrArg(self, args[0])) |s| {
         if (std.mem.eql(u8, s, "iteration")) self.out.uses.insert(.newton_iter);
         for (simparam.host_params) |h| if (std.mem.eql(u8, h.name, s)) self.out.uses.insert(h.use);
     };

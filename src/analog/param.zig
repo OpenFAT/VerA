@@ -146,8 +146,8 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     // dispatch, so an array's ranges are judged once and not once per element.
     for (decl.ranges) |r| {
         if (r.strings != null or r.hi == .none) continue; // string set / single value
-        const lo = lower_constfold.constEval(self, r.lo) orelse continue;
-        const hi = lower_constfold.constEval(self, r.hi) orelse continue;
+        const lo = (try lower_constfold.constEval(self, r.lo)) orelse continue;
+        const hi = (try lower_constfold.constEval(self, r.hi)) orelse continue;
         if (lo == .str or hi == .str) continue;
         if (lo.asReal() < hi.asReal()) continue;
         try self.err(decl.main_tok, .E0347, "`{s}` {s} bounds {d} and {d} are not in increasing order", .{
@@ -163,7 +163,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     // point or the simulation state, which has no value a model card could
     // carry (`parameter real bad = $abstime;` would read 0.0). Reported and
     // then lowered anyway, like E0347.
-    if (constfold.firstStateRead(self.file, decl.default, if (self.module) |m| m.vars else &.{})) |what| {
+    if (try constfold.firstStateRead(self.arena, self.file, decl.default, if (self.module) |m| m.vars else &.{})) |what| {
         try self.err(decl.main_tok, .E0363, "`{s}` reads `{s}`", .{ name, what });
     }
     if (oomrInDefault(self, decl.default)) |h|
@@ -172,7 +172,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     // §3.4.4 array parameters are scalarized into `name[i]` entries.
     if (decl.dims.len != 0) return lowerParamArray(self, decl, name);
 
-    const declared = if (lower_constfold.constEval(self, decl.default)) |c| parameterConst(decl.ty, c) else null;
+    const declared = if (try lower_constfold.constEval(self, decl.default)) |c| parameterConst(decl.ty, c) else null;
     // §3.4 "parameters can be modified at compilation time to have values
     // which are different from those specified in the declaration assignment":
     // a `--param` replaces the declaration value before anything reads it. In
@@ -237,17 +237,17 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     const row = &self.out.params.items[self.out.params.items.len - 1];
     row.integer32 = decl.ty == .integer;
     row.source_width = if (decl.packed_range) |range|
-        lower_shape.packedShapeWidth(self, range)
+        try lower_shape.packedShapeWidth(self, range)
     else if (decl.ty == .integer)
         32
     else
-        lower_constfold.clog2Width(self, decl.default);
+        try lower_constfold.clog2Width(self, decl.default);
     row.source_signed = if (decl.ty == .integer)
         true
     else if (decl.packed_range != null or decl.is_signed)
         decl.is_signed
     else
-        lower_constfold.clog2Signed(self, decl.default);
+        try lower_constfold.clog2Signed(self, decl.default);
 }
 
 /// §3.4.7/§9.18 permits aliases of all six system parameters. The first
@@ -324,7 +324,7 @@ pub fn checkAttributes(self: *Lower, attrs: []const Ast.NatureAttr) Oom!void {
         // — a name on its own is complete, so there is nothing to judge.
         if (a.value == .none) continue;
         const name = self.file.str(a.name);
-        const c = lower_constfold.constEval(self, a.value) orelse {
+        const c = (try lower_constfold.constEval(self, a.value)) orelse {
             var b = self.errWith(a.main_tok, .E0357);
             b.msg("`{s}`", .{name});
             b.note("§2.9 Syntax 2-4: `attr_spec ::= attr_name [ = constant_expression ]`", .{});
@@ -399,7 +399,7 @@ pub fn collectDeclMeta(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
     // `type = "instance"`: the parameter an instance line may set (OpenVAF's
     // convention, `instance_params`). A tool convention, not §2.9.2's.
     for (module.params) |p| if (last.get(p.main_tok)) |l| {
-        const ty = metaString(self, l.type) orelse continue;
+        const ty = (try metaString(self, l.type)) orelse continue;
         if (std.mem.eql(u8, ty, "instance")) try self.out.instance_params.append(self.arena, self.file.str(p.name));
     };
     for (module.params) |p| try metaRow(self, &last, .parameter, p.name, &.{p.main_tok});
@@ -485,9 +485,9 @@ fn checkParamRange(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8, f
     var in_from = false;
     for (decl.ranges) |r| {
         if (r.strings != null) continue;
-        const lo = rangeBound(self, r.lo) orelse continue;
+        const lo = (try rangeBound(self, r.lo)) orelse continue;
         // A.2.5 `exclude constant_expression` — a single value, so hi is absent.
-        const hi = if (r.hi == .none) lo else rangeBound(self, r.hi) orelse continue;
+        const hi = if (r.hi == .none) lo else (try rangeBound(self, r.hi)) orelse continue;
         const above_lo = if (r.lo_inclusive) v >= lo else v > lo;
         const below_hi = if (r.hi_inclusive) v <= hi else v < hi;
         switch (r.kind) {
@@ -508,14 +508,14 @@ fn checkParamRange(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8, f
 
 /// One end of a §3.4.2 value_range. A.2.5 lets it be `inf` / `-inf`, which is
 /// not a constant_expression and so cannot go through `constEval`.
-fn rangeBound(self: *Lower, e: Ast.ExprId) ?f64 {
+fn rangeBound(self: *Lower, e: Ast.ExprId) std.mem.Allocator.Error!?f64 {
     assert(e == .none or self.exprValid(e));
     if (e == .none) return null;
     return switch (self.file.exprs.tag(e)) {
         .pos_inf => std.math.inf(f64),
         .neg_inf => -std.math.inf(f64),
         else => blk: { // else: every other bound is a constant_expression, `constEval`'s to judge
-            const c = lower_constfold.constEval(self, e) orelse break :blk null;
+            const c = (try lower_constfold.constEval(self, e)) orelse break :blk null;
             break :blk if (c == .str) null else c.asReal();
         },
     };
@@ -564,14 +564,14 @@ fn paramRanges(self: *Lower, ranges: []const Ast.ValueRange) Oom![]const Lower.L
     const out = try self.arena.alloc(Lower.Lowered.Range, ranges.len);
     for (ranges, out) |r, *o| {
         const strings = r.strings != null;
-        const lo = if (strings) null else foldBound(self, r.lo);
+        const lo = if (strings) null else try foldBound(self, r.lo);
         o.* = .{
             .kind = switch (r.kind) {
                 .from => .from,
                 .exclude => .exclude,
             },
             .lo = lo,
-            .hi = if (strings) null else if (r.hi == .none) lo else foldBound(self, r.hi),
+            .hi = if (strings) null else if (r.hi == .none) lo else try foldBound(self, r.hi),
             .lo_inclusive = r.lo_inclusive,
             .hi_inclusive = r.hi_inclusive,
             .strings = strings,
@@ -581,9 +581,9 @@ fn paramRanges(self: *Lower, ranges: []const Ast.ValueRange) Oom![]const Lower.L
 }
 
 /// One `paramRanges` bound: the literal-only fold of `e`, or null.
-fn foldBound(self: *const Lower, e: Ast.ExprId) ?f64 {
+fn foldBound(self: *const Lower, e: Ast.ExprId) std.mem.Allocator.Error!?f64 {
     assert(e == .none or self.exprValid(e));
-    const c = constfold.fold(self.file, e, constfold.literal_env) orelse return null;
+    const c = (try constfold.fold(self.arena, self.file, e, constfold.literal_env)) orelse return null;
     if (c == .str) return null;
     // A NaN bound (`0.0/0.0`) bounds nothing; as an interval end it would
     // fail every comparison and read as evidence to `@min`/`@max`.
@@ -597,7 +597,7 @@ fn parameterDefault(self: *Lower, e: Ast.ExprId, ty: Ast.Type) Oom!Mir.Value {
     assert(e == .none or self.exprValid(e));
     assert(self.blockValid(self.cur));
     if (e == .none) return lower_var.zeroOf(astTy(ty));
-    if (lower_constfold.foldExpr(self, e, false)) |raw| {
+    if (try lower_constfold.foldExpr(self, e, false)) |raw| {
         return switch (parameterConst(ty, raw)) {
             .int => |n| self.mir.addIntConst(self.arena, n),
             .real => |n| self.mir.addFloatConst(self.arena, n),
@@ -656,7 +656,7 @@ fn lowerParamArray(self: *Lower, decl: *const Ast.ParamDecl, name: []const u8) O
         const folded: ?Const = if (elem == .none)
             (if (astTy(ty) == .real) Const{ .real = 0 } else Const{ .int = 0 })
         else
-            lower_constfold.constEval(self, elem);
+            try lower_constfold.constEval(self, elem);
         try addParam(self, try lower_shape.elemName(self, name, idx), ty, default, if (folded) |c| parameterConst(ty, c) else null, ranges, decl.is_local, decl.main_tok);
     }
 }
@@ -682,17 +682,17 @@ fn metaRow(
         if (l.desc) |s| laterSpec(&specs.desc, s);
         if (l.units) |s| laterSpec(&specs.units, s);
     };
-    const desc = metaString(self, specs.desc);
-    const units = if (kind == .net) null else metaString(self, specs.units);
+    const desc = try metaString(self, specs.desc);
+    const units = if (kind == .net) null else try metaString(self, specs.units);
     if (desc == null and units == null) return;
     try self.out.decl_meta.append(self.arena, .{ .kind = kind, .name = name, .desc = desc, .units = units });
 }
 
 /// The folded string of `spec`, or null when absent or not a string.
-fn metaString(self: *Lower, spec: ?Ast.NatureAttr) ?[]const u8 {
+fn metaString(self: *Lower, spec: ?Ast.NatureAttr) std.mem.Allocator.Error!?[]const u8 {
     const s = spec orelse return null;
     if (s.value == .none) return null; // §2.9's implicit 1, E0358
-    return switch (lower_constfold.constEval(self, s.value) orelse return null) {
+    return switch ((try lower_constfold.constEval(self, s.value)) orelse return null) {
         .str => |v| v,
         else => null, // else: E0358 already refused a value that is not a string
     };

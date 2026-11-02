@@ -16,6 +16,8 @@ const n_u = @typeInfo(D.U).@"enum".field_names.len;
 const S = contract.RefFamily(f64, &.{ 0, 1 }, .{});
 const S0 = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
 
+// ---- private ----
+
 fn x(v: f64) [n_u]f64 {
     var out: [n_u]f64 = @splat(0.0);
     out[@backingInt(D.U.p)] = v;

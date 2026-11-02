@@ -89,7 +89,7 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
                     self.file.str(d.name), self.file.str(bound), @tagName(half), self.file.str(bound),
                 });
             if (bound != .none) {
-                const n = natureOf(self, bound);
+                const n = try natureOf(self, bound);
                 if (n.abstol) |a| @field(info, @tagName(half) ++ "_abstol") = a;
                 if (n.access) |acc| {
                     @field(info, @tagName(half) ++ "_access") = acc;
@@ -118,7 +118,7 @@ pub fn collectDisciplines(self: *Lower) Oom!void {
                     @tagName(o.which), self.file.str(o.attr.name), self.file.str(d.name), self.file.str(bound), self.file.str(o.attr.name),
                 });
             if (!std.mem.eql(u8, self.file.str(o.attr.name), "abstol")) continue;
-            const v = lower_constfold.constEval(self, o.attr.value) orelse continue;
+            const v = (try lower_constfold.constEval(self, o.attr.value)) orelse continue;
             switch (o.which) {
                 .potential => info.potential_abstol = v.asReal(),
                 .flow => info.flow_abstol = v.asReal(),
@@ -290,7 +290,7 @@ pub fn checkNatureTable(self: *Lower) Oom!void {
             });
             break;
         }
-        if (lower_constfold.constEval(self, a.value) == null)
+        if ((try lower_constfold.constEval(self, a.value)) == null)
             try self.err(a.main_tok, .E0340, "`{s}` of discipline `{s}` is not a constant expression", .{
                 self.file.str(a.name), self.file.str(d.name),
             });
@@ -299,11 +299,11 @@ pub fn checkNatureTable(self: *Lower) Oom!void {
 
 /// Returns a nature's `abstol`, `access` and `units`, walking a derived nature's
 /// parents for what it does not override (LRM §3.6.1.1, §3.6.1.2).
-pub fn natureOf(self: *Lower, name: Ast.StrId) NatureAttrs {
+pub fn natureOf(self: *Lower, name: Ast.StrId) std.mem.Allocator.Error!NatureAttrs {
     var out: NatureAttrs = .{};
     // ponytail: share the AST's 16-hop walk; extend it there if deeper inheritance is needed.
     if (self.file.natureAttrExpr(name, "abstol")) |v| {
-        if (lower_constfold.constEval(self, v)) |c| out.abstol = c.asReal();
+        if (try lower_constfold.constEval(self, v)) |c| out.abstol = c.asReal();
     }
     if (self.file.natureAttrExpr(name, "access")) |v| {
         if (self.file.exprs.tag(v) == .ident) out.access = self.file.str(self.file.exprs.strOf(v));
@@ -375,7 +375,7 @@ fn checkNatureAttrValue(self: *Lower, n: *const Ast.NatureDecl, a: Ast.NatureAtt
     }
     // §3.6.1.3 everything else, abstol included, "shall be constant". A nature is
     // declared outside every module (§3.13.1), so no runtime name could resolve.
-    if (lower_constfold.constEval(self, a.value) == null)
+    if ((try lower_constfold.constEval(self, a.value)) == null)
         try self.err(a.main_tok, .E0340, "`{s}` of `{s}` is not a constant expression", .{
             an, self.file.str(n.name),
         });

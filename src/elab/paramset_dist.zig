@@ -69,7 +69,7 @@ pub fn rewriteParamsetDist(self: *Flatten, e: Ast.ExprId) design.Error!?Ast.Expr
         const seed = constIntLit(x, eff[0]) orelse break :fold;
         var p = [2]f64{ 0, 0 };
         for (eff[1..], 0..) |arg, i| {
-            p[i] = override.constReal(self, arg) orelse break :fold;
+            p[i] = (try override.constReal(self, arg)) orelse break :fold;
             if (d.positive & (@as(u8, 1) << @intCast(i)) != 0 and !(p[i] > 0)) {
                 try self.err(x.mainTok(arg), .E0816, "`{s}`'s `{s}` shall be greater than zero, got {d}", .{ name, dist.paramName(d, i), p[i] });
                 bad = true;

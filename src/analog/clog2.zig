@@ -33,8 +33,8 @@ pub fn lowerClog2(self: *Lower, tok: u32, arg: Ast.ExprId) Oom!TypedValue {
         if (tv.v != .undef or arg == .none) try self.err(tok, .E0892, "got {s}", .{@tagName(tv.ty)});
         return poison;
     }
-    const width = lower_constfold.clog2Width(self, arg) orelse 64;
-    if (width > 64 and !lower_constfold.clog2WideCarrier(self, arg, 0)) {
+    const width = (try lower_constfold.clog2Width(self, arg)) orelse 64;
+    if (width > 64 and !try lower_constfold.clog2WideCarrier(self, arg, 0)) {
         try self.err(tok, .E0893, "the {d}-bit operand has no exact wide carrier", .{width});
         return poison;
     }

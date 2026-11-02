@@ -146,8 +146,8 @@ pub fn stmtObj(b: *Builder, id: Ast.StmtId) Error!ObjId {
             for (s.arms, items) |arm, *item| {
                 // §11.6.23 NOTE 2: the default item has no expression, so
                 // its vpiExpr set is empty and vpi_iterate is NULL.
-                const labels = try b.arena.alloc(ObjId, arm.labels.len);
-                for (arm.labels, labels) |l, *label| label.* = try b.expr(l);
+                const labels = try b.arena.alloc(ObjId, b.file.caseLabels(arm).len);
+                for (b.file.caseLabels(arm), labels) |l, *label| label.* = try b.expr(l);
                 item.* = try b.code(user.vpiCaseItem, &.{.{ .tag = user.vpiStmt, .to = try b.stmt(arm.body) }}, &.{.{ .tag = user.vpiExpr, .items = try b.many(labels) }}, &.{});
             }
             break :blk b.code(user.vpiCase, &.{.{ .tag = user.vpiCondition, .to = cond }}, &.{.{ .tag = user.vpiCaseItem, .items = items }}, &.{.{ .prop = user.vpiCaseType, .value = switch (s.kind) {

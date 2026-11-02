@@ -216,7 +216,7 @@ fn constPrefix(self: *Lower, at_e: Ast.ExprId, s: ArraySlice, out: []i64) Oom!?b
     assert(out.len == s.subs.len);
     assert(s.subs.len <= s.info.dims.len);
     for (s.subs, out) |e, *o| {
-        const c = lower_constfold.foldExpr(self, e, false) orelse return null;
+        const c = (try lower_constfold.foldExpr(self, e, false)) orelse return null;
         // As `resolveLvalue`: a subscript with no §4.2.1.1 integer names no row.
         o.* = c.asIntExact() orelse {
             try self.err(self.file.exprs.mainTok(e), .E0310, "subscript {e} of `{s}` has no integer value, so it lies outside every dimension", .{ c.asReal(), s.name });

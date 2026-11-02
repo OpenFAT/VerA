@@ -46,7 +46,6 @@
 const Fixtures = @import("Fixtures.zig");
 const std = @import("std");
 const options = @import("suite_options");
-const harness = Fixtures;
 const vera = @import("vera");
 const tb = @import("exe");
 const zigbuild = @import("zigbuild");
@@ -58,38 +57,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Args = std.process.Args.Iterator;
 
-/// Dispatches `before`/`after`/any tag to `snapshot`, `diff` to `compare`.
-pub fn run(init: std.process.Init, vera_exe: []const u8, args: *Args) !u8 {
-    const gpa = init.gpa;
-    const io = init.io;
-    var arena_state: std.heap.ArenaAllocator = .init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var buf: [4096]u8 = undefined;
-    var stderr = Io.File.stderr().writerStreaming(io, &buf);
-    const w = &stderr.interface;
-    defer w.flush() catch {};
-
-    const store = try std.fs.path.join(arena, &.{ options.repo_root, ".zig-cache", "vera-golden" });
-    const word = args.next() orelse {
-        try w.writeAll("usage: zig build suite -- golden <tag> | diff [<a> <b>]\n");
-        return 2;
-    };
-    if (std.mem.eql(u8, word, "diff")) {
-        const a = args.next() orelse "before";
-        const b = args.next() orelse "after";
-        return compare(arena, io, try snapDir(arena, store, a), try snapDir(arena, store, b), w);
-    }
-    return snapshot(gpa, io, arena, vera_exe, try std.fs.path.join(arena, &.{ store, word }), args.next(), w);
-}
-
-/// A tag names `.zig-cache/vera-golden/<tag>`; anything with a `/` is a path,
-/// so a snapshot from another checkout can be compared.
-fn snapDir(arena: Allocator, store: []const u8, arg: []const u8) ![]const u8 {
-    if (std.mem.findScalar(u8, arg, '/') != null) return arg;
-    return std.fs.path.join(arena, &.{ store, arg });
-}
+const harness = Fixtures;
 
 /// The work list and its cursor: one fixture per take, any number of hands.
 const Pool = struct {
@@ -195,6 +163,55 @@ const Pool = struct {
     }
 };
 
+/// VerA's own `--emit-rtlil` and `--emit-verilog` inputs (`tests/rtlil`,
+/// `tests/beh_verilog`): the designs those backends accept whole, which
+/// the suite's testbenches mostly are not. Snapshotted as `vera/<dir>/...`.
+const own_dirs = [_][]const u8{ "rtlil", "beh_verilog" };
+const own_prefix = "vera/";
+
+/// The fixture roots a snapshot holds, each as it follows the checkout's root:
+/// the suite's, then `own_dirs`'.
+const roots = [_][]const u8{"/tests/conformance/tests"} ++ own: {
+    var keys: [own_dirs.len][]const u8 = undefined;
+    for (&keys, own_dirs) |*key, sub| key.* = "/tests/" ++ sub;
+    break :own keys;
+};
+
+/// Dispatches `before`/`after`/any tag to `snapshot`, `diff` to `compare`.
+pub fn run(init: std.process.Init, vera_exe: []const u8, args: *Args) !u8 {
+    const gpa = init.gpa;
+    const io = init.io;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var buf: [4096]u8 = undefined;
+    var stderr = Io.File.stderr().writerStreaming(io, &buf);
+    const w = &stderr.interface;
+    defer w.flush() catch {};
+
+    const store = try std.fs.path.join(arena, &.{ options.repo_root, ".zig-cache", "vera-golden" });
+    const word = args.next() orelse {
+        try w.writeAll("usage: zig build suite -- golden <tag> | diff [<a> <b>]\n");
+        return 2;
+    };
+    if (std.mem.eql(u8, word, "diff")) {
+        const a = args.next() orelse "before";
+        const b = args.next() orelse "after";
+        return compare(arena, io, try snapDir(arena, store, a), try snapDir(arena, store, b), w);
+    }
+    return snapshot(gpa, io, arena, vera_exe, try std.fs.path.join(arena, &.{ store, word }), args.next(), w);
+}
+
+// ---- private ----
+
+/// A tag names `.zig-cache/vera-golden/<tag>`; anything with a `/` is a path,
+/// so a snapshot from another checkout can be compared.
+fn snapDir(arena: Allocator, store: []const u8, arg: []const u8) ![]const u8 {
+    if (std.mem.findScalar(u8, arg, '/') != null) return arg;
+    return std.fs.path.join(arena, &.{ store, arg });
+}
+
 fn readAll(io: Io, arena: Allocator, path: []const u8) ![]u8 {
     return Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
 }
@@ -292,12 +309,6 @@ fn fixtureList(arena: Allocator, io: Io, filter: ?[]const u8) ![]const []const u
     std.mem.sort([]const u8, list.items, {}, harness.strLess);
     return list.items;
 }
-
-/// VerA's own `--emit-rtlil` and `--emit-verilog` inputs (`tests/rtlil`,
-/// `tests/beh_verilog`): the designs those backends accept whole, which
-/// the suite's testbenches mostly are not. Snapshotted as `vera/<dir>/...`.
-const own_dirs = [_][]const u8{ "rtlil", "beh_verilog" };
-const own_prefix = "vera/";
 
 /// The source a snapshot path `rel` (`fixtureList`'s) names.
 fn sourceOf(arena: Allocator, rel: []const u8) ![]const u8 {
@@ -401,14 +412,6 @@ fn compare(arena: Allocator, io: Io, a: []const u8, b: []const u8, w: *Io.Writer
     try w.print("{d} of {d} files differ\n", .{ differ, @max(left.len, right.len) });
     return 1;
 }
-
-/// The fixture roots a snapshot holds, each as it follows the checkout's root:
-/// the suite's, then `own_dirs`'.
-const roots = [_][]const u8{"/tests/conformance/tests"} ++ own: {
-    var keys: [own_dirs.len][]const u8 = undefined;
-    for (&keys, own_dirs) |*key, sub| key.* = "/tests/" ++ sub;
-    break :own keys;
-};
 
 /// `text` with each absolute path's checkout cut out, back to the fixture
 /// root it lies under (`roots`, so `tests/conformance/tests/...` or

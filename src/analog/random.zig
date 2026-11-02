@@ -156,7 +156,7 @@ pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.E
         // Keep static signature/type checks above, and defer numeric checks
         // unless both execution and the argument value are known here.
         if (!eager) continue;
-        const c = lower_constfold.foldExpr(self, a, false) orelse continue;
+        const c = (try lower_constfold.foldExpr(self, a, false)) orelse continue;
         if (c == .str) continue;
         if (d.positive & (@as(u8, 1) << @intCast(i)) != 0 and !(c.asReal() > 0))
             try self.err(self.file.exprs.mainTok(a), .E0816, "`{s}`'s `{s}` shall be greater than zero, got {d}", .{
@@ -167,8 +167,8 @@ pub fn lowerRandom(self: *Lower, tok: u32, name: []const u8, args: []const Ast.E
             try self.err(self.file.exprs.mainTok(a), .E0816, "`{s}`'s fractional or out-of-range `{s}` is unsupported; the reference count domain is 1..2147483647", .{ name, dist.paramName(d, i) });
     }
     if (eager and d.ordered and d.ty == .real and vals.items.len == 3) {
-        const lo = lower_constfold.foldExpr(self, given.items[1], false);
-        const hi = lower_constfold.foldExpr(self, given.items[2], false);
+        const lo = try lower_constfold.foldExpr(self, given.items[1], false);
+        const hi = try lower_constfold.foldExpr(self, given.items[2], false);
         if (lo != null and hi != null and lo.? != .str and hi.? != .str and
             !(lo.?.asReal() < hi.?.asReal()))
         {

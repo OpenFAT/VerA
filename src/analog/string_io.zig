@@ -57,7 +57,7 @@ pub fn lowerStringWrite(self: *Lower, tok: u32, name: []const u8, args: []const 
     // time; anything else is formatted at run time (`$sformat$rt`).
     if (std.mem.eql(u8, name, "$sformat") and args.len > 1 and args[1] != .none and
         try lower_sysfunc_args.outputLiteral(self, args[1]) == null and
-        (if (lower_constfold.constEval(self, args[1])) |cv| cv != .str else true))
+        (if (try lower_constfold.constEval(self, args[1])) |cv| cv != .str else true))
     {
         const f = try lower_expr.lowerExpr(self, args[1]);
         if (f.ty != .string) {
@@ -120,7 +120,7 @@ pub fn lowerScan(self: *Lower, tok: u32, args: []const Ast.ExprId) Oom!Mir.Value
     // Only a literal format can be checked, and only a literal one is worth
     // checking: a conversion code the scanner does not implement would consume
     // nothing and still be counted, so the model would read a plausible number.
-    if (lower_constfold.constEval(self, args[1])) |c| switch (c) {
+    if (try lower_constfold.constEval(self, args[1])) |c| switch (c) {
         .str => |s| if (try checkScanFormat(self, tok, s)) return self.mir.addIntConst(self.arena, 0),
         else => {},
     };
@@ -237,7 +237,7 @@ pub fn lowerFileRead(self: *Lower, tok: u32, name: []const u8, args: []const Ast
         }
         // Only a literal format can be checked — `lowerScan`'s reasoning, and
         // its diagnostic, apply verbatim to the file source of the same scan.
-        if (lower_constfold.constEval(self, args[1])) |c| switch (c) {
+        if (try lower_constfold.constEval(self, args[1])) |c| switch (c) {
             .str => |s| if (try checkScanFormat(self, tok, s)) break :blk null,
             else => {},
         };

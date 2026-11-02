@@ -14,6 +14,42 @@
 //! point the first one's current.
 //! device tests/host/fmonitor_lines.va
 //! display emit
+//!
+//! Contents:
+//! - `pub const Batch.V`
+//! - `pub const Batch.Of`
+//! - `pub const Batch.con`
+//! - `pub const Batch.probe`
+//! - `pub const Batch.sel`
+//! - `pub const Batch.B`
+//! - `pub const Batch.Inner`
+//! - `pub fn Batch.leadBegin() void`
+//! - `pub fn Batch.leadNext() bool`
+//! - `pub fn Batch.leadMerge(out: anytype, new: @TypeOf(out.*)) void`
+//! - `pub const Core.V`
+//! - `pub const Core.Lane`
+//! - `pub const Core.lane_count`
+//! - `pub fn Core.laneOf(a: B, comptime w: usize) S.Of(0)`
+//! - `pub fn Core.fromLanes(comptime _: contract.Mask(D), ls: [W]S.Of(0)) B`
+//! - `pub fn Core.decide(comptime op: std.math.CompareOperator, a: B, b: B) bool`
+//! - `pub fn Core.decideI(a: B) i64`
+//! - `pub fn Core.strip(a: B) B`
+//! - `pub fn Core.instLane(comptime T: type, comptime w: usize) *const T`
+//! - `pub fn Core.Of(comptime _: contract.Mask(D)) type`
+//! - `pub fn Core.con(c: f64) B`
+//! - `pub fn Core.probe(comptime _: usize, v: VF) B`
+//! - `pub fn Core.sel(c: B, a: B, b: B) B`
+//! - `pub const Core.B = struct`
+//! - `pub fn Core.B.to(a: B, comptime _: contract.Mask(D)) B`
+//! - `pub fn Core.B.val(a: B) f64`
+//! - `pub fn Core.B.leadKeep(a: *B, n: B, keep: @Vector(W, bool)) void`
+//! - `pub fn Core.B.ddxAt(_: B, comptime _: usize) f64`
+//! - `pub fn Core.B.add(a: B, b: B) B`
+//! - `pub fn Core.B.sub(a: B, b: B) B`
+//! - `pub fn Core.B.neg(a: B) B`
+//! - `pub fn Core.B.mul(a: B, b: B) B`
+//! - `pub fn Core.B.scale(a: B, c: f64) B`
+//! - `pub fn Core.B.addC(a: B, c: f64) B`
 
 const std = @import("std");
 const contract = @import("contract");

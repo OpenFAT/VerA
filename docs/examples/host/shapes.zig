@@ -2,8 +2,19 @@
 //! pinned: each test fails when the contract renames a declaration a page
 //! names, or changes the fields, tags or defaults a page shows.
 //! tools/doctest.py runs it through shapes.out on every push.
+//!
+//! Contents:
+//! - `pub const Dev.U = enum`
+
 const std = @import("std");
 const contract = @import("contract");
+
+/// A stand-in device: the table types are generic over `D.U`.
+const Dev = struct {
+    pub const U = enum(u8) { a, b };
+};
+
+// ---- private ----
 
 fn expectStrings(want: []const []const u8, got: []const []const u8) !void {
     try std.testing.expectEqual(want.len, got.len);
@@ -17,11 +28,6 @@ fn expectNames(comptime T: type, want: []const []const u8) !void {
     for (got, &names) |g, *n| n.* = g;
     try expectStrings(want, &names);
 }
-
-/// A stand-in device: the table types are generic over `D.U`.
-const Dev = struct {
-    pub const U = enum(u8) { a, b };
-};
 
 test "every contract declaration the pages name exists" {
     inline for (.{

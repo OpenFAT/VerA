@@ -1,3 +1,7 @@
+//! `contract`'s public functions, as a host calls them; a test of a contract
+//! file's private declarations stays beside that file. Clauses: VAMS-2023
+//! §4.6.4.3 (noise tables) and each test's own.
+
 const std = @import("std");
 const contract = @import("contract");
 const testing = std.testing;

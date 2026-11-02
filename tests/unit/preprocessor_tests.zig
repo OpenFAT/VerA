@@ -3,6 +3,9 @@
 //! comment-stripping and line-contract properties, the allocation-failure
 //! sweep and the prelude snapshot equivalence tests.
 //! LRM §2.2, §2.4, §2.6.2, §2.7, §2.8, §9.15, §10; IEEE 1364 §13.4.1, §19.
+//!
+//! Contents:
+//! - `pub const testing`
 
 const std = @import("std");
 const frontend = @import("frontend");
@@ -34,6 +37,63 @@ const vera = @import("vera");
 // ---------------------------------------------------------------------------
 
 pub const testing = std.testing;
+
+const sparse_files = struct {
+    test "IEEE 1364 §19.5: an `include past the u32 text bound is E1013, known from the file's size" {
+        // A sparse file one byte past `max_text_bytes`: its size is read, not
+        // its bytes, so the test allocates nothing large.
+        const io = testing.io;
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        {
+            var f = try tmp.dir.createFile(io, "huge.vh", .{});
+            defer f.close(io);
+            try f.setLength(io, preprocessor.max_text_bytes + 1);
+        }
+        try tmp.dir.writeFile(io, .{ .sub_path = "big.vh", .data = "" });
+        const any = try tmp.dir.realPathFileAlloc(io, "big.vh", testing.allocator);
+        defer testing.allocator.free(any);
+        const dirs: []const []const u8 = &.{std.fs.path.dirname(any).?};
+        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        var bag: diag.Bag = .init(arena_state.allocator());
+        try testing.expectError(error.PreprocessFailed, process(arena_state.allocator(), "`include \"huge.vh\"\n", .{ .std_defs = false, .bag = &bag, .include_dirs = dirs }));
+        try testing.expectEqual(diag.Code.E1013, bag.at(0).code);
+        // 17 MiB, past the old 16 MiB `include cap, reads.
+        {
+            var f = try tmp.dir.createFile(io, "big.vh", .{});
+            defer f.close(io);
+            try f.setLength(io, 17 << 20);
+        }
+        var ok_bag: diag.Bag = .init(arena_state.allocator());
+        const out = try process(arena_state.allocator(), "`include \"big.vh\"\n", .{ .std_defs = false, .bag = &ok_bag, .include_dirs = dirs });
+        try testing.expect(out.text.len >= 17 << 20);
+    }
+};
+
+// `require_std_includes`, the conformance suite's convention and `vera`'s:
+// the prelude is still prepended, but a source reaches annex D only by
+// including it.
+const std_model =
+    \\module res(p, n);
+    \\  inout p, n;
+    \\  electrical p, n;
+    \\  parameter real r = 1000.0 from (0.0:inf);
+    \\  analog I(p, n) <+ V(p, n) / r;
+    \\endmodule
+;
+/// `std_model` reading annex D.2's `M_PI.
+const pi_model =
+    \\module res(p, n);
+    \\  inout p, n;
+    \\  electrical p, n;
+    \\  parameter real r = 1000.0 * `M_PI from (0.0:inf);
+    \\  analog I(p, n) <+ V(p, n) / r;
+    \\endmodule
+;
+const std_includes = "`include \"disciplines.vams\"\n`include \"constants.vams\"\n";
+
+// ---- private ----
 
 /// Preprocess without the std-def prelude, on an arena backed by the testing
 /// allocator; the result is duped so the arena can be torn down (leak-checked).
@@ -86,6 +146,96 @@ fn expectFail(src: []const u8, code: diag.Code) !void {
     try testing.expect(e.span.end <= bag.fileText(e.file).len);
     // The title carries the condition; the message may not repeat it.
     try testing.expect(std.mem.find(u8, e.message, "LRM") == null);
+}
+
+/// Preprocess `src` and hand back the three region lists, which is the whole of
+/// what these directives contribute to a compilation.
+fn regionsOf(arena: Allocator, src: []const u8) !struct {
+    nettypes: []const NetTypeRegion,
+    cells: []const CellRegion,
+    drives: []const DriveRegion,
+} {
+    var bag: diag.Bag = .init(arena);
+    const d = (try process(arena, src, .{ .std_defs = false, .bag = &bag })).directives;
+    return .{ .nettypes = d.nettypes, .cells = d.cells, .drives = d.drives };
+}
+
+/// Expects `a` and `b` to be structurally equal, by reflection so a new AST
+/// field is compared without a test edit. `[]u8` compares by content: the
+/// snapshot's names and a fresh parse's borrow different copies of the text.
+fn expectDeepEqual(comptime T: type, a: T, b: T) !void {
+    switch (@typeInfo(T)) {
+        .pointer => |p| {
+            if (p.size == .one) return expectDeepEqual(p.child, a.*, b.*);
+            comptime std.debug.assert(p.size == .slice);
+            if (p.child == u8) return testing.expectEqualStrings(a, b);
+            try testing.expectEqual(a.len, b.len);
+            for (a, b) |x, y| try expectDeepEqual(p.child, x, y);
+        },
+        .@"struct" => |s| inline for (s.field_names, s.field_types) |name, F| {
+            try expectDeepEqual(F, @field(a, name), @field(b, name));
+        },
+        .@"union" => |u| {
+            const Tag = u.tag_type.?;
+            try testing.expectEqual(@as(Tag, a), @as(Tag, b));
+            inline for (u.field_names, u.field_types) |name, F| {
+                if (@as(Tag, a) == @field(Tag, name))
+                    try expectDeepEqual(F, @field(a, name), @field(b, name));
+            }
+        },
+        .optional => |o| {
+            try testing.expectEqual(a == null, b == null);
+            if (a) |x| try expectDeepEqual(o.child, x, b.?);
+        },
+        else => try testing.expectEqual(a, b),
+    }
+}
+
+/// Expects the source map's segments in `out_start` order, which
+/// `SourceMap.resolve`'s binary search requires.
+fn expectSortedMap(bag: *const diag.Bag) !void {
+    const segs = bag.map.segs;
+    for (segs[0..segs.len -| 1], segs[@min(1, segs.len)..]) |a, b| {
+        try testing.expect(a.out_start <= b.out_start);
+    }
+}
+
+/// Expects every published event list in text-stream order and inside `text`.
+fn expectSortedEvents(d: directive_events.Directives, text: []const u8) !void {
+    inline for (@typeInfo(directive_events.Directives).@"struct".field_names) |name| {
+        const list = @field(d, name);
+        for (list, 0..) |e, k| {
+            try testing.expect(e.at <= text.len);
+            if (k > 0) try testing.expect(list[k - 1].at <= e.at);
+        }
+    }
+}
+
+/// The `timescale in force at the end of `src`, preprocessed without the prelude.
+fn timescaleOf(src: []const u8) !?Timescale {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    var bag: diag.Bag = .init(arena_state.allocator());
+    return (try process(arena_state.allocator(), src, .{ .std_defs = false, .bag = &bag })).directives.timescale();
+}
+
+/// Whether a `.lint` of `src` fails with a `code` diagnostic.
+fn lintReports(src: []const u8, opts: vera.Settings, code: diag.Code) !bool {
+    var bag: diag.Bag = .init(testing.allocator);
+    defer bag.deinit(testing.allocator);
+    try testing.expectError(error.CompileFailed, vera.analyze(testing.allocator, src, opts, &bag));
+    for (0..bag.count()) |i| if (bag.at(i).code == code) return true;
+    return false;
+}
+
+/// Preprocesses `src` with every allocation on `gpa`, for
+/// `checkAllAllocationFailures`.
+fn preprocessAll(gpa: Allocator, src: []const u8) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var bag: diag.Bag = .init(arena);
+    _ = try process(arena, src, .{ .std_defs = false, .bag = &bag });
 }
 
 test "findStop agrees with the scalar loop it replaced, at every tail boundary" {
@@ -614,18 +764,6 @@ test "directives that contribute no text, and rejected ones" {
 // shared rule; `Region.inForce` is the shared reader.
 // ---------------------------------------------------------------------------
 
-/// Preprocess `src` and hand back the three region lists, which is the whole of
-/// what these directives contribute to a compilation.
-fn regionsOf(arena: Allocator, src: []const u8) !struct {
-    nettypes: []const NetTypeRegion,
-    cells: []const CellRegion,
-    drives: []const DriveRegion,
-} {
-    var bag: diag.Bag = .init(arena);
-    const d = (try process(arena, src, .{ .std_defs = false, .bag = &bag })).directives;
-    return .{ .nettypes = d.nettypes, .cells = d.cells, .drives = d.drives };
-}
-
 test "§10.1 a region directive written as a macro actual opens its region where the expansion lands" {
     // Oracle: the same directive written in place of the call. IEEE 1364
     // §19.3.1 substitutes an actual literally, so both spellings give one
@@ -1076,37 +1214,6 @@ test "`--no-std-defs` gets no seed, and lexes the same either way" {
     try testing.expectEqualSlices(u32, long.items(.start), seeded.items(.start));
 }
 
-/// Expects `a` and `b` to be structurally equal, by reflection so a new AST
-/// field is compared without a test edit. `[]u8` compares by content: the
-/// snapshot's names and a fresh parse's borrow different copies of the text.
-fn expectDeepEqual(comptime T: type, a: T, b: T) !void {
-    switch (@typeInfo(T)) {
-        .pointer => |p| {
-            if (p.size == .one) return expectDeepEqual(p.child, a.*, b.*);
-            comptime std.debug.assert(p.size == .slice);
-            if (p.child == u8) return testing.expectEqualStrings(a, b);
-            try testing.expectEqual(a.len, b.len);
-            for (a, b) |x, y| try expectDeepEqual(p.child, x, y);
-        },
-        .@"struct" => |s| inline for (s.field_names, s.field_types) |name, F| {
-            try expectDeepEqual(F, @field(a, name), @field(b, name));
-        },
-        .@"union" => |u| {
-            const Tag = u.tag_type.?;
-            try testing.expectEqual(@as(Tag, a), @as(Tag, b));
-            inline for (u.field_names, u.field_types) |name, F| {
-                if (@as(Tag, a) == @field(Tag, name))
-                    try expectDeepEqual(F, @field(a, name), @field(b, name));
-            }
-        },
-        .optional => |o| {
-            try testing.expectEqual(a == null, b == null);
-            if (a) |x| try expectDeepEqual(o.child, x, b.?);
-        },
-        else => try testing.expectEqual(a, b),
-    }
-}
-
 // The AST snapshot's correctness condition. The determinism test cannot grade
 // it, since both of its runs take the cached path. So this parses the whole
 // text from token 0 with no seed and compares against the seeded parse in
@@ -1372,34 +1479,6 @@ test "§2.9 attribute owners survive a seeded parse and later attribute lists" {
 // The generators are seeded `DefaultPrng` loops, so `zig build test` runs
 // them in full and a failure replays.
 // ---------------------------------------------------------------------------
-
-/// Expects the source map's segments in `out_start` order, which
-/// `SourceMap.resolve`'s binary search requires.
-fn expectSortedMap(bag: *const diag.Bag) !void {
-    const segs = bag.map.segs;
-    for (segs[0..segs.len -| 1], segs[@min(1, segs.len)..]) |a, b| {
-        try testing.expect(a.out_start <= b.out_start);
-    }
-}
-
-/// Expects every published event list in text-stream order and inside `text`.
-fn expectSortedEvents(d: directive_events.Directives, text: []const u8) !void {
-    inline for (@typeInfo(directive_events.Directives).@"struct".field_names) |name| {
-        const list = @field(d, name);
-        for (list, 0..) |e, k| {
-            try testing.expect(e.at <= text.len);
-            if (k > 0) try testing.expect(list[k - 1].at <= e.at);
-        }
-    }
-}
-
-/// The `timescale in force at the end of `src`, preprocessed without the prelude.
-fn timescaleOf(src: []const u8) !?Timescale {
-    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena_state.deinit();
-    var bag: diag.Bag = .init(arena_state.allocator());
-    return (try process(arena_state.allocator(), src, .{ .std_defs = false, .bag = &bag })).directives.timescale();
-}
 
 test "§2.4 comment corners: end of file, `/*/`, and markers inside opaque tokens" {
     // A `//` comment may end the file.
@@ -1721,38 +1800,6 @@ test "IEEE 1364 §19.5: include nesting is unbounded; only a repeating cycle is 
 comptime {
     if (@import("builtin").os.tag != .windows) _ = sparse_files;
 }
-const sparse_files = struct {
-    test "IEEE 1364 §19.5: an `include past the u32 text bound is E1013, known from the file's size" {
-        // A sparse file one byte past `max_text_bytes`: its size is read, not
-        // its bytes, so the test allocates nothing large.
-        const io = testing.io;
-        var tmp = testing.tmpDir(.{});
-        defer tmp.cleanup();
-        {
-            var f = try tmp.dir.createFile(io, "huge.vh", .{});
-            defer f.close(io);
-            try f.setLength(io, preprocessor.max_text_bytes + 1);
-        }
-        try tmp.dir.writeFile(io, .{ .sub_path = "big.vh", .data = "" });
-        const any = try tmp.dir.realPathFileAlloc(io, "big.vh", testing.allocator);
-        defer testing.allocator.free(any);
-        const dirs: []const []const u8 = &.{std.fs.path.dirname(any).?};
-        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-        defer arena_state.deinit();
-        var bag: diag.Bag = .init(arena_state.allocator());
-        try testing.expectError(error.PreprocessFailed, process(arena_state.allocator(), "`include \"huge.vh\"\n", .{ .std_defs = false, .bag = &bag, .include_dirs = dirs }));
-        try testing.expectEqual(diag.Code.E1013, bag.at(0).code);
-        // 17 MiB, past the old 16 MiB `include cap, reads.
-        {
-            var f = try tmp.dir.createFile(io, "big.vh", .{});
-            defer f.close(io);
-            try f.setLength(io, 17 << 20);
-        }
-        var ok_bag: diag.Bag = .init(arena_state.allocator());
-        const out = try process(arena_state.allocator(), "`include \"big.vh\"\n", .{ .std_defs = false, .bag = &ok_bag, .include_dirs = dirs });
-        try testing.expect(out.text.len >= 17 << 20);
-    }
-};
 
 test "§10.7: a file included through a macro numbers its own lines and owns its diagnostics" {
     const io = testing.io;
@@ -2023,37 +2070,6 @@ test "E0115 suggests the nearest defined macro, backtick restored" {
     try testing.expectEqualStrings("`GAN", src[fix.span.start..fix.span.end]);
 }
 
-// `require_std_includes`, the conformance suite's convention and `vera`'s:
-// the prelude is still prepended, but a source reaches annex D only by
-// including it.
-const std_model =
-    \\module res(p, n);
-    \\  inout p, n;
-    \\  electrical p, n;
-    \\  parameter real r = 1000.0 from (0.0:inf);
-    \\  analog I(p, n) <+ V(p, n) / r;
-    \\endmodule
-;
-/// `std_model` reading annex D.2's `M_PI.
-const pi_model =
-    \\module res(p, n);
-    \\  inout p, n;
-    \\  electrical p, n;
-    \\  parameter real r = 1000.0 * `M_PI from (0.0:inf);
-    \\  analog I(p, n) <+ V(p, n) / r;
-    \\endmodule
-;
-const std_includes = "`include \"disciplines.vams\"\n`include \"constants.vams\"\n";
-
-/// Whether a `.lint` of `src` fails with a `code` diagnostic.
-fn lintReports(src: []const u8, opts: vera.Settings, code: diag.Code) !bool {
-    var bag: diag.Bag = .init(testing.allocator);
-    defer bag.deinit(testing.allocator);
-    try testing.expectError(error.CompileFailed, vera.analyze(testing.allocator, src, opts, &bag));
-    for (0..bag.count()) |i| if (bag.at(i).code == code) return true;
-    return false;
-}
-
 test "require_std_includes: annex D reaches a source that includes it, under --sim=verilogA too" {
     const gpa = testing.allocator;
     // Annex C.17: disciplines.vams's discrete `logic` and `ddiscrete` are
@@ -2111,16 +2127,6 @@ test "--sim=verilogA: a user's discrete discipline is E0250 where a net uses it 
         \\
     ;
     try testing.expect(try lintReports(src, .{ .require_std_includes = true, .sim = .verilog_a }, .E0250));
-}
-
-/// Preprocesses `src` with every allocation on `gpa`, for
-/// `checkAllAllocationFailures`.
-fn preprocessAll(gpa: Allocator, src: []const u8) !void {
-    var arena_state: std.heap.ArenaAllocator = .init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var bag: diag.Bag = .init(arena);
-    _ = try process(arena, src, .{ .std_defs = false, .bag = &bag });
 }
 
 test "process reports every allocation failure as OutOfMemory and leaks nothing" {

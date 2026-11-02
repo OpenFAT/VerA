@@ -228,7 +228,7 @@ fn enterLevel(self: *Flatten, source_module: *const Ast.ModuleDecl, path: []cons
             const conn = ports.connectionFor(inst, p, i) orelse continue;
             const n = lookup.netRefName(self, conn.expr) orelse continue;
             var q = p;
-            q.discipline = primitive.portDisciplineAttr(self, module, inst, conn) orelse continue;
+            q.discipline = (try primitive.portDisciplineAttr(self, module, inst, conn)) orelse continue;
             const child_path = try self.ctx.arena.print("{s}{s}{c}", .{ path, self.ctx.file.str(inst.name), sep });
             try resolve.resolveDiscipline(self, child_path, q, self.unit.rename.get(n) orelse n, conn.main_tok);
         }
@@ -291,7 +291,7 @@ fn nextChild(self: *Flatten, lv: *Level, stack: []const Ast.StrId) design.Error!
         // Both arms of an if-generate are inlined under their gates; the
         // tree holds only an instance its scheme brings into existence
         // (one whose gate does not fold is left out, as unknown).
-        if (self.dry and fold.gateHolds(self, lv.gate)) {
+        if (self.dry and try fold.gateHolds(self, lv.gate)) {
             const kids = try self.tree.kids.getOrPut(self.ctx.arena, path);
             if (!kids.found_existing) kids.value_ptr.* = .empty;
             try kids.value_ptr.append(self.ctx.arena, .{ .inst = inst, .module = child, .path = child_path });
@@ -351,11 +351,11 @@ fn startInstance(self: *Flatten, lv: *Level) design.Error!bool {
     lv.hi = 0;
     lv.is_array = false;
     if (inst.range) |r| {
-        const msb = fold.constInt(self, r.msb) orelse {
+        const msb = (try fold.constInt(self, r.msb)) orelse {
             try self.err(inst.main_tok, .E0909, "`{s}`", .{self.ctx.file.str(inst.name)});
             return false;
         };
-        const lsb = fold.constInt(self, r.lsb) orelse {
+        const lsb = (try fold.constInt(self, r.lsb)) orelse {
             try self.err(inst.main_tok, .E0909, "`{s}`", .{self.ctx.file.str(inst.name)});
             return false;
         };
@@ -408,8 +408,8 @@ fn expandInstanceArrays(self: *Flatten, insts: []const Ast.Instance) design.Erro
             try out.append(self.ctx.arena, inst);
             continue;
         };
-        const msb = fold.constInt(self, range.msb);
-        const lsb = fold.constInt(self, range.lsb);
+        const msb = try fold.constInt(self, range.msb);
+        const lsb = try fold.constInt(self, range.lsb);
         if (msb == null or lsb == null) {
             try self.err(inst.main_tok, .E0909, "`{s}`", .{self.ctx.file.str(inst.name)});
             continue;

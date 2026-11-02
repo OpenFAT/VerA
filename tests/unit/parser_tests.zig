@@ -12,6 +12,10 @@
 //! §7.8.3, §9.18, §9.22, §10.6; IEEE 1364-2005 §3.7.3, §4.3.2, §4.4, §4.10.1,
 //! §6.1.4, §7.14, §8.1.4, §8.8, §9.3, §12.3.3, §12.5, §13.3.1, §14.1, §14.2,
 //! §14.3, §15.1, §15.3.4.
+//!
+//! Contents:
+//! - `pub fn Edges.expr(v: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) !void`
+//! - `pub fn Edges.stmt(v: @This(), s: Ast.StmtId) !void`
 
 const std = @import("std");
 const frontend = @import("frontend");
@@ -26,6 +30,335 @@ const deep_stack = @import("base").deep_stack;
 const TestResult = parser.TestResult;
 const newBag = parser.newBag;
 const parseForTest = parser.parseForTest;
+
+/// One source and the first error it must raise; null means it must parse.
+const Expect = struct { src: []const u8, code: ?diag.Code };
+
+const threaded = struct {
+    test "a stack segment that cannot be reserved is E0241, naming the depth" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var src: std.ArrayList(u8) = .empty;
+        try src.appendSlice(arena, "module m; real r; analog r = ");
+        try src.appendNTimes(arena, '(', parser.caller_levels + 1);
+        try src.appendSlice(arena, "1.0");
+        try src.appendNTimes(arena, ')', parser.caller_levels + 1);
+        try src.appendSlice(arena, "; endmodule");
+        deep_stack.refuse_for_test = true;
+        defer deep_stack.refuse_for_test = false;
+        const r = try parseForTest(arena, src.items);
+        try std.testing.expectEqual(@as(?diag.Code, .E0241), firstError(r));
+        try std.testing.expect(std.mem.find(u8, firstErrorMsg(r), "levels deep") != null);
+    }
+};
+
+/// Sources that each reach many productions. They need not stay legal once
+/// mutated: the property holds for every input.
+const mutation_corpus = [_][]const u8{
+    \\module res(p, n); inout p, n; electrical p, n;
+    \\  parameter real r = 1k from (0:inf) exclude 0;
+    \\  real g; branch (p, n) br;
+    \\  analog begin : b
+    \\    g = 1.0 / r;
+    \\    if (V(br) > 0.0) g = g * 2; else g = g / 2;
+    \\    @(cross(V(p, n), +1)) g = {2{1'b1}};
+    \\    I(p, n) <+ g * V(p, n) + ddt(V(p, n)) - $temperature;
+    \\  end
+    \\endmodule
+    ,
+    \\module d(input clk, output reg [3:0] q);
+    \\  wire w; reg [7:0] a = 8'hff;
+    \\  assign #(1, 2) w = q[0];
+    \\  task t(input [3:0] x); a = x; endtask
+    \\  function [3:0] f(input [3:0] v); f = v + 1; endfunction
+    \\  initial begin q = 0; #5 t(q); wait (w) q <= repeat (2) @(posedge clk) f(q); end
+    \\  always @(posedge clk) case (q) 0, 1: q <= 2; default: q <= 0; endcase
+    \\endmodule
+    ,
+    \\nature Volt; units = "V"; access = Pot; abstol = 1e-6; endnature
+    \\discipline el; potential Volt; potential.abstol = 1e-9; domain continuous; enddiscipline
+    \\module mo(p); inout p; el p; parameter real r = 1; real gm; analog Pot(p) <+ r; endmodule
+    \\paramset ps mo; parameter real rr = 2; (* desc = "o" *) real o; .r = rr; o = .gm; endparamset
+    \\connectrules cr; connect a2d split #(.tt(1)) input el, output logic; connect el, x resolveto el; endconnectrules
+    ,
+    \\primitive dff (output reg q, input clk, input d);
+    \\  initial q = 1'b0;
+    \\  table (01) 0 : ? : 0; (01) 1 : ? : 1; (0x) ? : ? : -; endtable
+    \\endprimitive
+    \\module g(o, a, b); output o; input a, b; wire n;
+    \\  and #(1, 2) g1(o, a, b); not (strong0, weak1) (n, a); pullup (w);
+    \\  tran (a, b); dff u1(o, a, b);
+    \\endmodule
+    ,
+    \\module s(input a, input b, input clk, output y, output q); reg notif;
+    \\  specparam d = 1;
+    \\  specify
+    \\    (a => y) = (1, 2); (a, b *> q) = d;
+    \\    if (a) (b => y) = 1; ifnone (b => q) = 2;
+    \\    (posedge clk => (q +: a)) = 1;
+    \\    $setup(a, posedge clk &&& b, 1, notif); $width(negedge clk, 2);
+    \\  endspecify
+    \\endmodule
+    ,
+    \\config c; design work.top; default liblist work; endconfig
+    \\module top #(parameter integer n = 2) (p); inout p; electrical p;
+    \\  genvar i;
+    \\  generate for (i = 0; i < n; i = i + 1) begin : blk end endgenerate
+    \\  if (n > 1) begin : big localparam k = 1; end else if (n) begin end
+    \\  case (n) 1: begin end default: ; endcase
+    \\  child #(.a(1)) u[1:0] (.x(p), .y());
+    \\  defparam u[0].a = 3;
+    \\  analog function real h; input x; real x; h = x; endfunction
+    \\  analog I(p) <+ h(V(p));
+    \\endmodule
+    ,
+};
+
+/// Tokens a mutation inserts: delimiters and keywords that open or close
+/// the productions above, so a mutant reaches recovery paths.
+const mutation_vocab = [_][]const u8{ "(", ")", "[", "]", "{", "}", ";", ",", ":", "=", "<+", "(*", "*)", "begin", "end", "module", "endmodule", "if", "else", "case", "endcase", "for", "generate", "endgenerate", "analog", "initial", "@", "#", "1", "1.5", "\"s\"", "x", "V", "$root", ".", "'{", "specify", "endspecify", "table", "endtable", "primitive", "endprimitive", "->", "?", "<=", "posedge", "function", "endfunction" };
+
+// ---- private ----
+
+/// The first error-severity diagnostic of `r`, or null when it has none.
+/// Warnings (W0251, W0252, W0253) do not count: they leave the file accepted.
+fn firstError(r: TestResult) ?diag.Code {
+    for (0..r.count()) |i| if (r.bag.at(i).severity == .err) return r.code(i);
+    return null;
+}
+
+/// The message of the first error-severity diagnostic of `r`, or "".
+fn firstErrorMsg(r: TestResult) []const u8 {
+    for (0..r.count()) |i| if (r.bag.at(i).severity == .err) return r.msg(i);
+    return "";
+}
+
+/// Lexes and parses `src` the way `vera --run` does (`Parser.digital`).
+fn parseDigitalForTest(arena: std.mem.Allocator, src: []const u8) !TestResult {
+    const list = try lexer.tokenize(arena, src, null);
+    const bag = try newBag(arena, src);
+    var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
+    p.digital = true;
+    const file = p.parseSourceFile() catch |e| switch (e) {
+        error.ParseError => p.file,
+        else => return e,
+    };
+    return .{ .file = file, .bag = bag };
+}
+
+/// Parses each case (analog, or digital when `digital`) and checks its first
+/// error, printing the source of the case that disagrees.
+fn expectFirstErrors(arena: std.mem.Allocator, cases: []const Expect, digital: bool) !void {
+    for (cases) |c| {
+        const r = if (digital) try parseDigitalForTest(arena, c.src) else try parseForTest(arena, c.src);
+        std.testing.expectEqual(c.code, firstError(r)) catch |e| {
+            std.debug.print("source: {s}\nfirst message: {s}\n", .{ c.src, firstErrorMsg(r) });
+            return e;
+        };
+    }
+}
+
+/// The right-hand side of module 0's first analog block, which the caller
+/// wrote as one assignment or contribution.
+fn analogRhs(r: TestResult) !Ast.ExprId {
+    return switch (r.file.stmt(r.file.modules[0].analog[0].body)) {
+        .assign => |a| a.value,
+        .contribute => |c| c.rhs,
+        else => error.WrongTag, // else: the caller wrote one assignment or contribution; any other statement fails the test
+    };
+}
+
+/// §3.7.1: an escaped name is the text after its `\`, the same identifier
+/// as a simple one of that spelling and no other; §3.7.3: `\$x` is not
+/// the system name `$x`. So a name's identity is that simple spelling, or
+/// else the escaped spelling itself.
+fn identity(name: []const u8) []const u8 {
+    if (name[0] != '\\') return name;
+    const text = name[1..];
+    if (!std.ascii.isAlphabetic(text[0]) and text[0] != '_') return name;
+    for (text) |c| if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '$') return name;
+    return text;
+}
+
+/// Parses `prefix ++ open*n ++ middle ++ close*n ++ suffix` and returns the
+/// parser's `deepest`, failing the test on any diagnostic.
+fn parseNested(arena: std.mem.Allocator, prefix: []const u8, open: []const u8, middle: []const u8, close: []const u8, suffix: []const u8, n: usize) !u32 {
+    var src: std.ArrayList(u8) = .empty;
+    try src.appendSlice(arena, prefix);
+    for (0..n) |_| try src.appendSlice(arena, open);
+    try src.appendSlice(arena, middle);
+    for (0..n) |_| try src.appendSlice(arena, close);
+    try src.appendSlice(arena, suffix);
+    const list = try lexer.tokenize(arena, src.items, null);
+    const bag = try newBag(arena, src.items);
+    var p = Parser.init(arena, src.items, list.items(.tag), list.items(.start), bag);
+    _ = try p.parseSourceFile();
+    try std.testing.expectEqual(@as(usize, 0), bag.count());
+    try std.testing.expectEqual(@as(u32, 0), p.depth);
+    try std.testing.expectEqual(@as(u32, 0), p.seg.frames);
+    return p.deepest;
+}
+
+/// Parses each nesting construct `n` deep, failing on a diagnostic or on
+/// a `deepest` short of `n`.
+fn parseEveryNesting(arena: std.mem.Allocator, n: usize) !void {
+    const m = "module m(p); inout p; electrical p; real r; integer k; analog begin ";
+    const e = " end endmodule";
+    const deep: u32 = @intCast(n);
+    try std.testing.expect(try parseNested(arena, m ++ "r = ", "(", "1.0", ")", ";" ++ e, n) >= deep);
+    // A.8.3: a unary operand is a primary, so a deep unary chain is
+    // parenthesized (`- -x` is E0209).
+    try std.testing.expect(try parseNested(arena, m ++ "r = ", "-(", "1.0", ")", ";" ++ e, n) >= deep);
+    try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? 1 : ", "0", "", ";" ++ e, n) >= deep);
+    try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? ", "1", " : 0", ";" ++ e, n) >= deep);
+    try std.testing.expect(try parseNested(arena, m ++ "r = 1.0", " + 1.0", "", "", ";" ++ e, n) >= deep);
+    try std.testing.expect(try parseNested(arena, m, "begin ", "r = 1;", " end", e, n) >= deep);
+    try std.testing.expect(try parseNested(arena, m, "if (V(p) > 1) r = 1; else ", "r = 0;", "", e, n) >= deep);
+    try std.testing.expect(try parseNested(arena, m ++ "k = ", "{", "1'b1", "}", ";" ++ e, n) >= deep);
+    try std.testing.expect(try parseNested(arena, "module m; generate ", "if (1) begin ", "", "end ", "endgenerate endmodule", n) >= deep);
+    // Left-assoc chains a loop builds: each link is one level of the tree.
+    try std.testing.expect(try parseNested(arena, m ++ "r = x", "[0]", "", "", ";" ++ e, n) >= deep);
+    try std.testing.expect(try parseNested(arena, m ++ "@(cross(V(p))", " or cross(V(p))", ") r = 1;", "", e, n) >= deep);
+}
+
+/// `src` with one token edited: deleted, duplicated, swapped with the next,
+/// or preceded by a `mutation_vocab` token. A token's span runs to the next
+/// token's start, so the white space and comments after it travel with it.
+fn mutateOnce(arena: std.mem.Allocator, src: []const u8, rand: std.Random) ![]const u8 {
+    const list = try lexer.tokenize(arena, src, null);
+    const starts = list.items(.start);
+    const n = starts.len - 1; // the tokens before the final `.eof`
+    if (n < 2) return src;
+    const i = rand.uintLessThan(usize, n - 1);
+    const a = src[starts[i]..starts[i + 1]];
+    const b = src[starts[i + 1]..starts[i + 2]];
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, src[0..starts[i]]);
+    switch (rand.uintLessThan(u8, 4)) {
+        0 => {}, // delete token i
+        1 => { // duplicate token i
+            try out.appendSlice(arena, a);
+            try out.append(arena, ' ');
+            try out.appendSlice(arena, a);
+        },
+        2 => { // swap token i with token i + 1
+            try out.appendSlice(arena, b);
+            try out.append(arena, ' ');
+            try out.appendSlice(arena, a);
+            try out.append(arena, ' ');
+            try out.appendSlice(arena, src[starts[i + 2]..]);
+            return out.items;
+        },
+        else => { // insert a vocabulary token before token i
+            try out.appendSlice(arena, mutation_vocab[rand.uintLessThan(usize, mutation_vocab.len)]);
+            try out.append(arena, ' ');
+            try out.appendSlice(arena, a);
+        },
+    }
+    try out.appendSlice(arena, src[starts[i + 1]..]);
+    return out.items;
+}
+
+/// Parses `src` and checks the contract every input must meet: no crash
+/// (the test runs in a safety-checked build), the result is `ParseError`
+/// exactly when `Parser.failed` is set and exactly when the bag holds an
+/// error, and every save/restore flag and scratch stack is back at rest.
+fn checkParserContract(arena: std.mem.Allocator, src: []const u8, digital: bool) !void {
+    const list = try lexer.tokenize(arena, src, null);
+    const bag = try newBag(arena, src);
+    var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
+    p.digital = digital;
+    const refused = if (p.parseSourceFile()) |_| false else |e| switch (e) {
+        error.ParseError => true,
+        error.OutOfMemory => return e,
+    };
+    errdefer std.debug.print("mutant ({s} parse):\n{s}\n", .{ if (digital) "digital" else "analog", src });
+    var errors: usize = 0;
+    for (0..bag.count()) |i| {
+        if (bag.at(i).severity == .err) errors += 1;
+    }
+    try std.testing.expectEqual(refused, p.failed);
+    try std.testing.expectEqual(refused, errors != 0);
+    try std.testing.expectEqual(@as(u16, 0), p.depth);
+    try std.testing.expectEqual(@as(u32, 0), p.attr_depth);
+    try std.testing.expectEqual(@as(u32, 0), p.gen_depth);
+    try std.testing.expectEqual(@as(u32, 0), p.gen_construct_depth);
+    try std.testing.expectEqual(@as(u32, 0), p.item_tok);
+    try std.testing.expect(!p.in_discrete and !p.in_digital_delay and !p.analog_expr);
+    try std.testing.expect(!p.in_analog_fn and !p.in_paramset and !p.in_connect_module);
+    try std.testing.expect(!p.analog_event_block and !p.task_enable_head);
+    try std.testing.expectEqual(@as(usize, 0), p.scratch_exprs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), p.scratch_stmts.items.len);
+    try checkAstShape(&p.file, @intCast(list.len));
+    // Determinism: the same tokens give the same rows and ids.
+    const again = try lexer.tokenize(arena, src, null);
+    var q = Parser.init(arena, src, again.items(.tag), again.items(.start), try newBag(arena, src));
+    q.digital = digital;
+    _ = q.parseSourceFile() catch |e| if (e == error.OutOfMemory) return e;
+    try std.testing.expectEqual(p.file.exprs.len(), q.file.exprs.len());
+    try std.testing.expectEqual(p.file.stmts.items.len, q.file.stmts.items.len);
+    inline for (.{ .tag, .main_tok, .lhs, .rhs, .extra, .str }) |col|
+        try std.testing.expectEqualSlices(@FieldType(Ast.Node, @tagName(col)), p.file.exprs.nodes.items(col), q.file.exprs.nodes.items(col));
+    try std.testing.expectEqualSlices(u32, p.file.stmt_toks.items, q.file.stmt_toks.items);
+}
+
+/// The AST invariants every later walk relies on, partial parses included:
+/// every handle a row holds is `.none` or names an EARLIER row of its table
+/// (children are built before their parent, so every walk ends), every list
+/// offset and side-table index is in bounds, and every token index is a
+/// token of the stream (`n_tokens` of them).
+fn checkAstShape(file: *const Ast.SourceFile, n_tokens: u32) !void {
+    const ex = &file.exprs;
+    var buf: [3]Ast.ExprId = undefined;
+    for (0..ex.len()) |i| {
+        const id: Ast.ExprId = @fromBackingInt(@intCast(i));
+        try std.testing.expect(ex.mainTok(id) < n_tokens);
+        // `children` indexes `pool` itself, so an offset out of range trips
+        // a safety check here.
+        for (ex.children(id, &buf)) |c| if (c != .none) try std.testing.expect(@backingInt(c) < i);
+        switch (ex.tag(id)) {
+            .int_literal => _ = ex.intLiteral(id),
+            .logic_literal => _ = ex.logicValue(id),
+            .real_literal => _ = ex.realValue(id),
+            .hier_ident, .event_initial_step, .event_final_step => for (ex.nameParts(id)) |s| {
+                _ = file.str(s);
+            },
+            else => {}, // else: every other tag's ids were checked through `children`
+        }
+        if (ex.strOf(id) != .none) _ = file.str(ex.strOf(id));
+    }
+    const Edges = struct {
+        file: *const Ast.SourceFile,
+        parent: u32,
+        pub fn expr(v: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) !void {
+            if (e != .none) try std.testing.expect(@backingInt(e) < v.file.exprs.len());
+        }
+        pub fn stmt(v: @This(), s: Ast.StmtId) !void {
+            if (s != .none) try std.testing.expect(@backingInt(s) < v.parent);
+        }
+    };
+    for (0..file.stmts.items.len) |i| {
+        const id: Ast.StmtId = @fromBackingInt(@intCast(i));
+        try std.testing.expect(file.stmtTok(id) < n_tokens);
+        try file.stmtEdges(id, Edges{ .file = file, .parent = @intCast(i) });
+    }
+    for (file.modules) |m| {
+        for (m.analog) |a| try std.testing.expect(@backingInt(a.body) < file.stmts.items.len);
+        for (m.params) |p| try std.testing.expect(@backingInt(p.default) < ex.len());
+    }
+}
+
+/// Lexes and parses `src` with every allocation on `gpa`, the parser's arena
+/// included, so each one is a point `checkAllAllocationFailures` can fail.
+fn parseAllOn(gpa: std.mem.Allocator, src: []const u8, digital: bool) !void {
+    const list = try lexer.tokenize(gpa, src, null);
+    const bag = try newBag(gpa, src);
+    var p = Parser.init(gpa, src, list.items(.tag), list.items(.start), bag);
+    p.digital = digital;
+    // A parse error is a result, not a failure: only OOM may escape.
+    _ = p.parseSourceFile() catch |e| if (e == error.OutOfMemory) return e;
+}
 
 test "§2.6.2 scaled literals are refused in every digital delay production before folding" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1466,57 +1799,6 @@ test "an attribute instance before an item list's closer prefixes nothing: E0207
 // legal neighbour beside it shows the refusal is not a blanket one.
 // ---------------------------------------------------------------------------
 
-/// The first error-severity diagnostic of `r`, or null when it has none.
-/// Warnings (W0251, W0252, W0253) do not count: they leave the file accepted.
-fn firstError(r: TestResult) ?diag.Code {
-    for (0..r.count()) |i| if (r.bag.at(i).severity == .err) return r.code(i);
-    return null;
-}
-
-/// The message of the first error-severity diagnostic of `r`, or "".
-fn firstErrorMsg(r: TestResult) []const u8 {
-    for (0..r.count()) |i| if (r.bag.at(i).severity == .err) return r.msg(i);
-    return "";
-}
-
-/// Lexes and parses `src` the way `vera --run` does (`Parser.digital`).
-fn parseDigitalForTest(arena: std.mem.Allocator, src: []const u8) !TestResult {
-    const list = try lexer.tokenize(arena, src, null);
-    const bag = try newBag(arena, src);
-    var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
-    p.digital = true;
-    const file = p.parseSourceFile() catch |e| switch (e) {
-        error.ParseError => p.file,
-        else => return e,
-    };
-    return .{ .file = file, .bag = bag };
-}
-
-/// One source and the first error it must raise; null means it must parse.
-const Expect = struct { src: []const u8, code: ?diag.Code };
-
-/// Parses each case (analog, or digital when `digital`) and checks its first
-/// error, printing the source of the case that disagrees.
-fn expectFirstErrors(arena: std.mem.Allocator, cases: []const Expect, digital: bool) !void {
-    for (cases) |c| {
-        const r = if (digital) try parseDigitalForTest(arena, c.src) else try parseForTest(arena, c.src);
-        std.testing.expectEqual(c.code, firstError(r)) catch |e| {
-            std.debug.print("source: {s}\nfirst message: {s}\n", .{ c.src, firstErrorMsg(r) });
-            return e;
-        };
-    }
-}
-
-/// The right-hand side of module 0's first analog block, which the caller
-/// wrote as one assignment or contribution.
-fn analogRhs(r: TestResult) !Ast.ExprId {
-    return switch (r.file.stmt(r.file.modules[0].analog[0].body)) {
-        .assign => |a| a.value,
-        .contribute => |c| c.rhs,
-        else => error.WrongTag, // else: the caller wrote one assignment or contribution; any other statement fails the test
-    };
-}
-
 test "Parser token access: tokenText strips `\\`, reservedIs and eatSymbol read spellings, peekAt clamps (§2.8.1, A.7)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1581,18 +1863,6 @@ test "internTok keeps every two escaped names apart, and no interned name holds 
     };
 }
 
-/// §3.7.1: an escaped name is the text after its `\`, the same identifier
-/// as a simple one of that spelling and no other; §3.7.3: `\$x` is not
-/// the system name `$x`. So a name's identity is that simple spelling, or
-/// else the escaped spelling itself.
-fn identity(name: []const u8) []const u8 {
-    if (name[0] != '\\') return name;
-    const text = name[1..];
-    if (!std.ascii.isAlphabetic(text[0]) and text[0] != '_') return name;
-    for (text) |c| if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '$') return name;
-    return text;
-}
-
 test "tokenText's identifier fast path agrees with the lexer's re-scan on every token" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1644,25 +1914,6 @@ test "Parser.expect: E0207 leaves the cursor, and only a terminator earns an ins
     try std.testing.expectEqual(@as(u8, 0), bag.at(1).note_count);
 }
 
-/// Parses `prefix ++ open*n ++ middle ++ close*n ++ suffix` and returns the
-/// parser's `deepest`, failing the test on any diagnostic.
-fn parseNested(arena: std.mem.Allocator, prefix: []const u8, open: []const u8, middle: []const u8, close: []const u8, suffix: []const u8, n: usize) !u32 {
-    var src: std.ArrayList(u8) = .empty;
-    try src.appendSlice(arena, prefix);
-    for (0..n) |_| try src.appendSlice(arena, open);
-    try src.appendSlice(arena, middle);
-    for (0..n) |_| try src.appendSlice(arena, close);
-    try src.appendSlice(arena, suffix);
-    const list = try lexer.tokenize(arena, src.items, null);
-    const bag = try newBag(arena, src.items);
-    var p = Parser.init(arena, src.items, list.items(.tag), list.items(.start), bag);
-    _ = try p.parseSourceFile();
-    try std.testing.expectEqual(@as(usize, 0), bag.count());
-    try std.testing.expectEqual(@as(u32, 0), p.depth);
-    try std.testing.expectEqual(@as(u32, 0), p.seg.frames);
-    return p.deepest;
-}
-
 test "nesting has no parser bound: each construct at the old 1024 cap and far past it" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1686,28 +1937,6 @@ test "nesting 5000 deep parses on a 1 MiB thread: the caller's stack is not what
     const t = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.on, .{&result});
     t.join();
     try result;
-}
-
-/// Parses each nesting construct `n` deep, failing on a diagnostic or on
-/// a `deepest` short of `n`.
-fn parseEveryNesting(arena: std.mem.Allocator, n: usize) !void {
-    const m = "module m(p); inout p; electrical p; real r; integer k; analog begin ";
-    const e = " end endmodule";
-    const deep: u32 = @intCast(n);
-    try std.testing.expect(try parseNested(arena, m ++ "r = ", "(", "1.0", ")", ";" ++ e, n) >= deep);
-    // A.8.3: a unary operand is a primary, so a deep unary chain is
-    // parenthesized (`- -x` is E0209).
-    try std.testing.expect(try parseNested(arena, m ++ "r = ", "-(", "1.0", ")", ";" ++ e, n) >= deep);
-    try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? 1 : ", "0", "", ";" ++ e, n) >= deep);
-    try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? ", "1", " : 0", ";" ++ e, n) >= deep);
-    try std.testing.expect(try parseNested(arena, m ++ "r = 1.0", " + 1.0", "", "", ";" ++ e, n) >= deep);
-    try std.testing.expect(try parseNested(arena, m, "begin ", "r = 1;", " end", e, n) >= deep);
-    try std.testing.expect(try parseNested(arena, m, "if (V(p) > 1) r = 1; else ", "r = 0;", "", e, n) >= deep);
-    try std.testing.expect(try parseNested(arena, m ++ "k = ", "{", "1'b1", "}", ";" ++ e, n) >= deep);
-    try std.testing.expect(try parseNested(arena, "module m; generate ", "if (1) begin ", "", "end ", "endgenerate endmodule", n) >= deep);
-    // Left-assoc chains a loop builds: each link is one level of the tree.
-    try std.testing.expect(try parseNested(arena, m ++ "r = x", "[0]", "", "", ";" ++ e, n) >= deep);
-    try std.testing.expect(try parseNested(arena, m ++ "@(cross(V(p))", " or cross(V(p))", ") r = 1;", "", e, n) >= deep);
 }
 
 test "a defparam path's index folds on a stack sized for its depth (A.9.3)" {
@@ -1747,24 +1976,6 @@ test "§6.6 generate regions nested 10^5 deep are E0228, not a stack overflow" {
 comptime {
     if (!@import("builtin").single_threaded) _ = threaded;
 }
-const threaded = struct {
-    test "a stack segment that cannot be reserved is E0241, naming the depth" {
-        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        var src: std.ArrayList(u8) = .empty;
-        try src.appendSlice(arena, "module m; real r; analog r = ");
-        try src.appendNTimes(arena, '(', parser.caller_levels + 1);
-        try src.appendSlice(arena, "1.0");
-        try src.appendNTimes(arena, ')', parser.caller_levels + 1);
-        try src.appendSlice(arena, "; endmodule");
-        deep_stack.refuse_for_test = true;
-        defer deep_stack.refuse_for_test = false;
-        const r = try parseForTest(arena, src.items);
-        try std.testing.expectEqual(@as(?diag.Code, .E0241), firstError(r));
-        try std.testing.expect(std.mem.find(u8, firstErrorMsg(r), "levels deep") != null);
-    }
-};
 
 test "§2.9 attribute specs: the last value of a name wins, and a speculative read rewinds exactly" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2877,199 +3088,6 @@ test "§14.2.5 path widths from 64-bit literal ranges: computed exactly, never t
 // Property: the parser's contract over seeded token-level mutations.
 // ---------------------------------------------------------------------------
 
-/// Sources that each reach many productions. They need not stay legal once
-/// mutated: the property holds for every input.
-const mutation_corpus = [_][]const u8{
-    \\module res(p, n); inout p, n; electrical p, n;
-    \\  parameter real r = 1k from (0:inf) exclude 0;
-    \\  real g; branch (p, n) br;
-    \\  analog begin : b
-    \\    g = 1.0 / r;
-    \\    if (V(br) > 0.0) g = g * 2; else g = g / 2;
-    \\    @(cross(V(p, n), +1)) g = {2{1'b1}};
-    \\    I(p, n) <+ g * V(p, n) + ddt(V(p, n)) - $temperature;
-    \\  end
-    \\endmodule
-    ,
-    \\module d(input clk, output reg [3:0] q);
-    \\  wire w; reg [7:0] a = 8'hff;
-    \\  assign #(1, 2) w = q[0];
-    \\  task t(input [3:0] x); a = x; endtask
-    \\  function [3:0] f(input [3:0] v); f = v + 1; endfunction
-    \\  initial begin q = 0; #5 t(q); wait (w) q <= repeat (2) @(posedge clk) f(q); end
-    \\  always @(posedge clk) case (q) 0, 1: q <= 2; default: q <= 0; endcase
-    \\endmodule
-    ,
-    \\nature Volt; units = "V"; access = Pot; abstol = 1e-6; endnature
-    \\discipline el; potential Volt; potential.abstol = 1e-9; domain continuous; enddiscipline
-    \\module mo(p); inout p; el p; parameter real r = 1; real gm; analog Pot(p) <+ r; endmodule
-    \\paramset ps mo; parameter real rr = 2; (* desc = "o" *) real o; .r = rr; o = .gm; endparamset
-    \\connectrules cr; connect a2d split #(.tt(1)) input el, output logic; connect el, x resolveto el; endconnectrules
-    ,
-    \\primitive dff (output reg q, input clk, input d);
-    \\  initial q = 1'b0;
-    \\  table (01) 0 : ? : 0; (01) 1 : ? : 1; (0x) ? : ? : -; endtable
-    \\endprimitive
-    \\module g(o, a, b); output o; input a, b; wire n;
-    \\  and #(1, 2) g1(o, a, b); not (strong0, weak1) (n, a); pullup (w);
-    \\  tran (a, b); dff u1(o, a, b);
-    \\endmodule
-    ,
-    \\module s(input a, input b, input clk, output y, output q); reg notif;
-    \\  specparam d = 1;
-    \\  specify
-    \\    (a => y) = (1, 2); (a, b *> q) = d;
-    \\    if (a) (b => y) = 1; ifnone (b => q) = 2;
-    \\    (posedge clk => (q +: a)) = 1;
-    \\    $setup(a, posedge clk &&& b, 1, notif); $width(negedge clk, 2);
-    \\  endspecify
-    \\endmodule
-    ,
-    \\config c; design work.top; default liblist work; endconfig
-    \\module top #(parameter integer n = 2) (p); inout p; electrical p;
-    \\  genvar i;
-    \\  generate for (i = 0; i < n; i = i + 1) begin : blk end endgenerate
-    \\  if (n > 1) begin : big localparam k = 1; end else if (n) begin end
-    \\  case (n) 1: begin end default: ; endcase
-    \\  child #(.a(1)) u[1:0] (.x(p), .y());
-    \\  defparam u[0].a = 3;
-    \\  analog function real h; input x; real x; h = x; endfunction
-    \\  analog I(p) <+ h(V(p));
-    \\endmodule
-    ,
-};
-
-/// Tokens a mutation inserts: delimiters and keywords that open or close
-/// the productions above, so a mutant reaches recovery paths.
-const mutation_vocab = [_][]const u8{ "(", ")", "[", "]", "{", "}", ";", ",", ":", "=", "<+", "(*", "*)", "begin", "end", "module", "endmodule", "if", "else", "case", "endcase", "for", "generate", "endgenerate", "analog", "initial", "@", "#", "1", "1.5", "\"s\"", "x", "V", "$root", ".", "'{", "specify", "endspecify", "table", "endtable", "primitive", "endprimitive", "->", "?", "<=", "posedge", "function", "endfunction" };
-
-/// `src` with one token edited: deleted, duplicated, swapped with the next,
-/// or preceded by a `mutation_vocab` token. A token's span runs to the next
-/// token's start, so the white space and comments after it travel with it.
-fn mutateOnce(arena: std.mem.Allocator, src: []const u8, rand: std.Random) ![]const u8 {
-    const list = try lexer.tokenize(arena, src, null);
-    const starts = list.items(.start);
-    const n = starts.len - 1; // the tokens before the final `.eof`
-    if (n < 2) return src;
-    const i = rand.uintLessThan(usize, n - 1);
-    const a = src[starts[i]..starts[i + 1]];
-    const b = src[starts[i + 1]..starts[i + 2]];
-    var out: std.ArrayList(u8) = .empty;
-    try out.appendSlice(arena, src[0..starts[i]]);
-    switch (rand.uintLessThan(u8, 4)) {
-        0 => {}, // delete token i
-        1 => { // duplicate token i
-            try out.appendSlice(arena, a);
-            try out.append(arena, ' ');
-            try out.appendSlice(arena, a);
-        },
-        2 => { // swap token i with token i + 1
-            try out.appendSlice(arena, b);
-            try out.append(arena, ' ');
-            try out.appendSlice(arena, a);
-            try out.append(arena, ' ');
-            try out.appendSlice(arena, src[starts[i + 2]..]);
-            return out.items;
-        },
-        else => { // insert a vocabulary token before token i
-            try out.appendSlice(arena, mutation_vocab[rand.uintLessThan(usize, mutation_vocab.len)]);
-            try out.append(arena, ' ');
-            try out.appendSlice(arena, a);
-        },
-    }
-    try out.appendSlice(arena, src[starts[i + 1]..]);
-    return out.items;
-}
-
-/// Parses `src` and checks the contract every input must meet: no crash
-/// (the test runs in a safety-checked build), the result is `ParseError`
-/// exactly when `Parser.failed` is set and exactly when the bag holds an
-/// error, and every save/restore flag and scratch stack is back at rest.
-fn checkParserContract(arena: std.mem.Allocator, src: []const u8, digital: bool) !void {
-    const list = try lexer.tokenize(arena, src, null);
-    const bag = try newBag(arena, src);
-    var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
-    p.digital = digital;
-    const refused = if (p.parseSourceFile()) |_| false else |e| switch (e) {
-        error.ParseError => true,
-        error.OutOfMemory => return e,
-    };
-    errdefer std.debug.print("mutant ({s} parse):\n{s}\n", .{ if (digital) "digital" else "analog", src });
-    var errors: usize = 0;
-    for (0..bag.count()) |i| {
-        if (bag.at(i).severity == .err) errors += 1;
-    }
-    try std.testing.expectEqual(refused, p.failed);
-    try std.testing.expectEqual(refused, errors != 0);
-    try std.testing.expectEqual(@as(u16, 0), p.depth);
-    try std.testing.expectEqual(@as(u32, 0), p.attr_depth);
-    try std.testing.expectEqual(@as(u32, 0), p.gen_depth);
-    try std.testing.expectEqual(@as(u32, 0), p.gen_construct_depth);
-    try std.testing.expectEqual(@as(u32, 0), p.item_tok);
-    try std.testing.expect(!p.in_discrete and !p.in_digital_delay and !p.analog_expr);
-    try std.testing.expect(!p.in_analog_fn and !p.in_paramset and !p.in_connect_module);
-    try std.testing.expect(!p.analog_event_block and !p.task_enable_head);
-    try std.testing.expectEqual(@as(usize, 0), p.scratch_exprs.items.len);
-    try std.testing.expectEqual(@as(usize, 0), p.scratch_stmts.items.len);
-    try checkAstShape(&p.file, @intCast(list.len));
-    // Determinism: the same tokens give the same rows and ids.
-    const again = try lexer.tokenize(arena, src, null);
-    var q = Parser.init(arena, src, again.items(.tag), again.items(.start), try newBag(arena, src));
-    q.digital = digital;
-    _ = q.parseSourceFile() catch |e| if (e == error.OutOfMemory) return e;
-    try std.testing.expectEqual(p.file.exprs.len(), q.file.exprs.len());
-    try std.testing.expectEqual(p.file.stmts.items.len, q.file.stmts.items.len);
-    inline for (.{ .tag, .main_tok, .lhs, .rhs, .extra, .str }) |col|
-        try std.testing.expectEqualSlices(@FieldType(Ast.Node, @tagName(col)), p.file.exprs.nodes.items(col), q.file.exprs.nodes.items(col));
-    try std.testing.expectEqualSlices(u32, p.file.stmt_toks.items, q.file.stmt_toks.items);
-}
-
-/// The AST invariants every later walk relies on, partial parses included:
-/// every handle a row holds is `.none` or names an EARLIER row of its table
-/// (children are built before their parent, so every walk ends), every list
-/// offset and side-table index is in bounds, and every token index is a
-/// token of the stream (`n_tokens` of them).
-fn checkAstShape(file: *const Ast.SourceFile, n_tokens: u32) !void {
-    const ex = &file.exprs;
-    var buf: [3]Ast.ExprId = undefined;
-    for (0..ex.len()) |i| {
-        const id: Ast.ExprId = @fromBackingInt(@intCast(i));
-        try std.testing.expect(ex.mainTok(id) < n_tokens);
-        // `children` indexes `pool` itself, so an offset out of range trips
-        // a safety check here.
-        for (ex.children(id, &buf)) |c| if (c != .none) try std.testing.expect(@backingInt(c) < i);
-        switch (ex.tag(id)) {
-            .int_literal => _ = ex.intLiteral(id),
-            .logic_literal => _ = ex.logicValue(id),
-            .real_literal => _ = ex.realValue(id),
-            .hier_ident, .event_initial_step, .event_final_step => for (ex.nameParts(id)) |s| {
-                _ = file.str(s);
-            },
-            else => {}, // else: every other tag's ids were checked through `children`
-        }
-        if (ex.strOf(id) != .none) _ = file.str(ex.strOf(id));
-    }
-    const Edges = struct {
-        file: *const Ast.SourceFile,
-        parent: u32,
-        pub fn expr(v: @This(), e: Ast.ExprId, _: Ast.SourceFile.Edge) !void {
-            if (e != .none) try std.testing.expect(@backingInt(e) < v.file.exprs.len());
-        }
-        pub fn stmt(v: @This(), s: Ast.StmtId) !void {
-            if (s != .none) try std.testing.expect(@backingInt(s) < v.parent);
-        }
-    };
-    for (0..file.stmts.items.len) |i| {
-        const id: Ast.StmtId = @fromBackingInt(@intCast(i));
-        try std.testing.expect(file.stmtTok(id) < n_tokens);
-        try file.stmtEdges(id, Edges{ .file = file, .parent = @intCast(i) });
-    }
-    for (file.modules) |m| {
-        for (m.analog) |a| try std.testing.expect(@backingInt(a.body) < file.stmts.items.len);
-        for (m.params) |p| try std.testing.expect(@backingInt(p.default) < ex.len());
-    }
-}
-
 test "every token-level mutation of the corpus parses without a crash and refuses exactly when it reports" {
     // Oracle: the parser's own contract (`checkParserContract`), not a
     // second parser. The corpus itself is checked first, unmutated.
@@ -3094,17 +3112,6 @@ test "every token-level mutation of the corpus parses without a crash and refuse
             try checkParserContract(arena, src, true);
         }
     }
-}
-
-/// Lexes and parses `src` with every allocation on `gpa`, the parser's arena
-/// included, so each one is a point `checkAllAllocationFailures` can fail.
-fn parseAllOn(gpa: std.mem.Allocator, src: []const u8, digital: bool) !void {
-    const list = try lexer.tokenize(gpa, src, null);
-    const bag = try newBag(gpa, src);
-    var p = Parser.init(gpa, src, list.items(.tag), list.items(.start), bag);
-    p.digital = digital;
-    // A parse error is a result, not a failure: only OOM may escape.
-    _ = p.parseSourceFile() catch |e| if (e == error.OutOfMemory) return e;
 }
 
 test "an allocation failure anywhere in a parse surfaces as OutOfMemory, never swallowed" {

@@ -84,13 +84,21 @@ const Prim = struct { term: Ast.PrimTerm, flat: usize };
 /// continuous and one discrete port (every §7.6 example). Supply-sensitive
 /// bridges with a third port (§7.8.6) are the upgrade.
 pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src: []const Ast.Instance, gates: []const Ast.ExprId) design.Error![]const Ast.Instance {
-    // Per level: without the first walk's list (`Flatten.tree_ooc`), an
+    // Per level only without the first walk (`Flatten.tree`): then an
     // out-of-context declaration below is collected only when its module is
-    // walked (`resolve.collectOoc`), so an answer cached for the level above
-    // may predate it.
+    // walked (`ooc.collectOoc`) and a paramset child is selected only at the
+    // level being planned (`segment.kidsOf`), so an answer cached for the
+    // level above may predate them. The first walk's tree and declarations
+    // are the same at every level, so with them each segment is climbed
+    // once, not once per level above it (§7.8.4's deep-chain test).
+    // ponytail: without `connectrules` a chain is still re-climbed per level,
+    // quadratic in its depth; the upgrade is a memo keyed by what the level
+    // changed (new out-of-context declarations, paramsets below).
     assert(src.len == module.instances.len + gates.len); // `enterLevel`'s, consumed here
-    self.seg.up.clearRetainingCapacity();
-    self.seg.index.clearRetainingCapacity();
+    if (self.tree.kids.count() == 0) {
+        self.seg.up.clearRetainingCapacity();
+        self.seg.index.clearRetainingCapacity();
+    }
     var n_ins: usize = 0;
     for (self.ctx.file.connectrules) |cr| n_ins += cr.insertions.len;
     var rules: std.ArrayList(connect_rule.Rule) = try .initCapacity(self.ctx.arena, n_ins);
@@ -104,7 +112,7 @@ pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src
     const file = self.ctx.file;
     var hits: std.ArrayList(Hit) = .empty;
     for (src, 0..) |inst, ii| {
-        if (ii >= module.instances.len and !fold.gateHolds(self, gates[ii - module.instances.len])) continue;
+        if (ii >= module.instances.len and !try fold.gateHolds(self, gates[ii - module.instances.len])) continue;
         const child_path = try self.ctx.arena.print("{s}{s}{c}", .{ path, file.str(inst.name), sep });
         const child = try moduleOf(self, &inst, child_path) orelse continue;
         if (child.is_connect) continue;
@@ -191,8 +199,8 @@ pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src
         // names a module array's).
         var lo: i64, var hi: i64 = .{ 0, 0 };
         if (pt.range) |rg| {
-            const msb = fold.constInt(self, rg.msb);
-            const lsb = fold.constInt(self, rg.lsb);
+            const msb = try fold.constInt(self, rg.msb);
+            const lsb = try fold.constInt(self, rg.lsb);
             if (msb == null or lsb == null) {
                 try self.err(pt.main_tok, .E0909, "`{s}`", .{pt.inst});
                 continue;

@@ -9,6 +9,8 @@ const D = @import("device");
 const n_u = @typeInfo(D.U).@"enum".field_names.len;
 const S = contract.RefFamily(f64, &.{ 0, 1 }, .{});
 
+// ---- private ----
+
 fn run(x: *const [n_u]f64, m: *const D.Model, inst: *D.Instance, st: *D.State, out: *[n_u]f64) void {
     const sim: contract.SimState = .{ .t = 1e-9, .dt = 1e-9, .kind = .tran };
     const r = D.evalQ(S, x, m, inst, sim);

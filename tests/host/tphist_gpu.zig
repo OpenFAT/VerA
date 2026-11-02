@@ -10,6 +10,8 @@ const D = @import("device");
 const n_u = @typeInfo(D.U).@"enum".field_names.len;
 const S = contract.RefFamily(f64, &.{ 0, 1 }, .{});
 
+// ---- private ----
+
 /// A plain export, not `callconv(.kernel)`: the NVPTX backend refuses the
 /// LLVM alias a kernel export makes, and the assembly is what is checked.
 export fn tphist_ops_kernel(x: *const [n_u]f64, m: *const D.Model, inst: *D.Instance, st: *D.State, out: *[n_u]f64) void {

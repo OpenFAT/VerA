@@ -227,7 +227,7 @@ pub fn lowerBinary(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized:
             };
             // §4.2.9's unsigned comparison: each operand zero-extended from
             // its own width. See `constfold.UnsignedCompare`.
-            if (a.ty == .integer and b.ty == .integer) if (lower_constfold.unsignedCompare(self, e)) |u| {
+            if (a.ty == .integer and b.ty == .integer) if (try lower_constfold.unsignedCompare(self, e)) |u| {
                 const az: TypedValue = .{ .v = try extendUnsigned(self, a.v, u.mask[0], u.flip), .ty = .integer };
                 const bz: TypedValue = .{ .v = try extendUnsigned(self, b.v, u.mask[1], u.flip), .ty = .integer };
                 return .{ .v = try cmp(self, op_cmp, az, bz), .ty = .integer };

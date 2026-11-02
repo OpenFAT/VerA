@@ -75,6 +75,23 @@ const Harness = struct {
     }
 };
 
+/// The two-terminal module most cases below wrap their body in.
+const head = "module m(p, n);\n  inout p, n;\n  electrical p, n;\n";
+const tail = "\nendmodule\n";
+
+// ---- private ----
+
+/// Lowers and proves `src`, leaving the harness in `h` for the caller's checks.
+/// The caller frees both: `h.deinit()` and the verdict's `deinit`.
+fn proveSrc(h: *Harness, src: []const u8, opts: Options) !Verdict {
+    Harness.run(std.testing.allocator, src, h) catch |e| {
+        h.deinit();
+        return e;
+    };
+    errdefer h.deinit();
+    return h.prove(std.testing.allocator, opts);
+}
+
 test "W0650: a .strict unit warns, names the culprit, and still compiles" {
     var h: Harness = undefined;
     try Harness.run(std.testing.allocator,
@@ -921,21 +938,6 @@ test "proof: a provably-zero divisor is still E0601, for `/` and real `%` alike"
 }
 
 // ------------------------------------------------------- corner cases --
-
-/// The two-terminal module most cases below wrap their body in.
-const head = "module m(p, n);\n  inout p, n;\n  electrical p, n;\n";
-const tail = "\nendmodule\n";
-
-/// Lowers and proves `src`, leaving the harness in `h` for the caller's checks.
-/// The caller frees both: `h.deinit()` and the verdict's `deinit`.
-fn proveSrc(h: *Harness, src: []const u8, opts: Options) !Verdict {
-    Harness.run(std.testing.allocator, src, h) catch |e| {
-        h.deinit();
-        return e;
-    };
-    errdefer h.deinit();
-    return h.prove(std.testing.allocator, opts);
-}
 
 test "§3.4.2: an `exclude` clips an end only when it covers that end's own bracket" {
     // [0:10] minus (0:5) is {0} ∪ [5:10]: the open bracket leaves 0 in, so

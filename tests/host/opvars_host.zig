@@ -22,6 +22,8 @@ const Dual = contract.RefFamily(f64, &lanes, .{});
 /// No lanes: a `ddx` reads 0.
 const Val = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
 
+// ---- private ----
+
 fn at(va: f64) [n_u]f64 {
     var x: [n_u]f64 = @splat(0.0);
     x[@backingInt(D.U.a)] = va;

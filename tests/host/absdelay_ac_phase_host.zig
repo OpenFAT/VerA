@@ -31,6 +31,8 @@ const in = @backingInt(D.U.in);
 const a = @backingInt(D.U.a);
 const d = @backingInt(D.U.d);
 
+// ---- private ----
+
 fn slot(r: usize, c: usize) usize {
     for (D.ac_dyn_slots, 0..) |s, k| if (s == r * n_u + c) return k;
     unreachable;

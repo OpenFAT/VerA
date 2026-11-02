@@ -340,7 +340,7 @@ fn checkZeroTransitionZFilter(self: *Lower, rhs: Ast.ExprId) Oom!void {
     // zi_*(expr, numerator, denominator, T [, τ [, t0]]) — A.8.2.
     const args = ex.args(rhs);
     if (args.len < 5 or args[4] == .none) return;
-    const tau = lower_constfold.constEval(self, args[4]) orelse return;
+    const tau = (try lower_constfold.constEval(self, args[4])) orelse return;
     if (tau.asReal() != 0.0) return;
     var b = self.errWith(self.file.exprs.mainTok(rhs), .E0518);
     b.msg("a Z-filter with zero (0) transition time shall not be directly assigned to a branch", .{});

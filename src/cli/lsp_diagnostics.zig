@@ -272,7 +272,7 @@ pub fn diagnostics(arena: Allocator, bag: *diag.Bag, uri: []const u8, utf16: boo
                 .err => 1,
                 .warning => 2,
             },
-            .code = e.code.name(),
+            .code = @tagName(e.code),
             .message = msg.written(),
             .relatedInformation = related,
             .data = .{ .fixes = fixes.items },

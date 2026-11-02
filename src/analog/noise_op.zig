@@ -104,7 +104,7 @@ pub fn lowerNoise(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         null;
     if (label_at) |li| if (ex.args(e).len > li and ex.args(e)[li] != .none) {
         const a = ex.args(e)[li];
-        const c = lower_constfold.constEval(self, a);
+        const c = try lower_constfold.constEval(self, a);
         if (c == null or c.? != .str) {
             try self.err(ex.mainTok(a), .E0573, "`{s}()` argument {d} is its label", .{ name, li + 1 });
             return poison;
@@ -135,7 +135,7 @@ pub fn lowerNoise(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         // the indicated file will contain the frequency / power pairs. The
         // file name argument shall be constant". So the pairs are compile-time
         // data and land in the same slot the vector form fills.
-        if (table_input and ai == 0) if (lower_constfold.constEval(self, a)) |c| if (c == .str) {
+        if (table_input and ai == 0) if (try lower_constfold.constEval(self, a)) |c| if (c == .str) {
             if (try lower_table_model.readNoiseTableFile(self, e, c.str)) |pairs| {
                 try vals.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(pairs.len)));
                 for (pairs) |x| try vals.append(self.arena, try self.mir.addFloatConst(self.arena, x));

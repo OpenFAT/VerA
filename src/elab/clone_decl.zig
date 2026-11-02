@@ -238,13 +238,13 @@ fn patternMismatch(self: *Flatten, e: Ast.ExprId, dims: []const Ast.Dim) design.
         assert(f.d <= dims.len);
         if (f.d == dims.len) continue;
         if (f.e == .none or (ex.tag(f.e) != .assign_pattern and ex.tag(f.e) != .concat)) continue;
-        const msb = fold.constIntFlat(self, dims[f.d].msb) orelse continue;
-        const lsb = fold.constIntFlat(self, dims[f.d].lsb) orelse continue;
+        const msb = (try fold.constIntFlat(self, dims[f.d].msb)) orelse continue;
+        const lsb = (try fold.constIntFlat(self, dims[f.d].lsb)) orelse continue;
         var elems = ex.args(f.e);
         var reps: i64 = 1;
         // A.8.1's `'{N{...}}` with a non-literal count: see `Ast.Tag.pattern_repl`.
         if (elems.len == 1 and ex.tag(elems[0]) == .pattern_repl) {
-            reps = fold.constIntFlat(self, ex.lhs(elems[0])) orelse continue;
+            reps = (try fold.constIntFlat(self, ex.lhs(elems[0]))) orelse continue;
             elems = ex.args(ex.rhs(elems[0]));
         }
         const got = @as(i128, reps) * elems.len;

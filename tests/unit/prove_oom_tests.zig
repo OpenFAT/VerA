@@ -14,6 +14,8 @@ const timepoint = @import("prove").timepoint;
 const held = @import("prove").held;
 const Input = @import("prove").Input;
 
+// ---- private ----
+
 /// A diamond on a probe with a `sqrt` arm and a `$held_real` slot, through
 /// every pass in `src/Compilation.zig`'s order.
 fn passes(gpa: std.mem.Allocator) !void {

@@ -3,12 +3,82 @@
 //! boundaries, a run's arena under repeated timing-check conditions, and
 //! allocation failure through the system tasks. No LRM clause of its own:
 //! each test cites the clause it checks.
+//!
+//! Contents:
+//! - `pub fn Still.setInputs(_: *Still, _: *root.Run, _: u64) !void`
+//! - `pub fn Still.snapshot(_: *Still, _: *root.Run) !void`
+//! - `pub fn Still.latch(_: *Still) !void`
+//! - `pub fn Still.solveAt(s: *Still, _: f64, _: f64, _: bool, _: bool) !void`
+//! - `pub fn Still.probe(_: *Still, _: ?f64, _: []const u8, _: ?[]const u8) !f64`
+//! - `pub fn Still.finish(s: *Still) !void`
+
 const std = @import("std");
 const diag = @import("diag");
 const root = @import("sim").digital;
 const system = root.system;
 const filled = root.for_emitter.net.filled;
 const expectRun = root.expectRun;
+const mixed = @import("sim").mixed;
+
+/// `sim.mixed.run`'s analog side at its smallest: a solver whose node never
+/// moves, counting its solves and finished points.
+const Still = struct {
+    solves: u32 = 0,
+    finished: u32 = 0,
+    pub fn setInputs(_: *Still, _: *root.Run, _: u64) !void {}
+    pub fn snapshot(_: *Still, _: *root.Run) !void {}
+    pub fn latch(_: *Still) !void {}
+    pub fn solveAt(s: *Still, _: f64, _: f64, _: bool, _: bool) !void {
+        s.solves += 1;
+    }
+    pub fn probe(_: *Still, _: ?f64, _: []const u8, _: ?[]const u8) !f64 {
+        return 0;
+    }
+    pub fn finish(s: *Still) !void {
+        s.finished += 1;
+    }
+};
+
+// ---- private ----
+
+fn runSystemTasks(gpa: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var bag = diag.Bag.init(arena.allocator());
+    var output = std.Io.Writer.Allocating.init(arena.allocator());
+    try root.run(arena.allocator(),
+        \\module m; reg [8*10:1] s; integer n, a, st, j, i; real r;
+        \\initial begin
+        \\  $sformat(s, "%0d-%h", 12, 8'hab); n = $sscanf("7 2.5", "%d %f", a, r);
+        \\  $q_initialize(1, 1, 2, st); $q_add(1, 3, 4, st); $q_remove(1, j, i, st);
+        \\  $display("%s %0d %0d %g %0d %0d %0d", s, n, a, r, st, j, i);
+        \\end endmodule
+    , .{}, &bag, &output.writer);
+    // s is 10 characters: %s shows its five leading zero bytes as spaces (VD-129).
+    try std.testing.expectEqualStrings("     12-ab 2 7 2.5 0 3 4\n", output.written());
+}
+
+/// Test support: runs `source` (beside it, `d.sdf` holding `sdf`) to its
+/// end, and expects its transcript `expected` and, when given, a warning
+/// naming `warning`.
+fn expectAnnotated(source: []const u8, sdf: []const u8, expected: []const u8, warning: ?[]const u8) !void {
+    std.debug.assert(std.mem.find(u8, source, "$sdf_annotate(\"d.sdf\"") != null);
+    std.debug.assert(sdf.len != 0);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "d.sdf", .data = sdf });
+    const file_name = try a.print(".zig-cache/tmp/{s}/test.v", .{tmp.sub_path});
+    var bag = diag.Bag.init(a);
+    var output = std.Io.Writer.Allocating.init(a);
+    try root.run(a, source, .{ .io = std.testing.io, .file_name = file_name }, &bag, &output.writer);
+    var messages = std.Io.Writer.Allocating.init(a);
+    try diag.render(&bag, &messages.writer, .{});
+    if (warning) |w| try std.testing.expect(std.mem.find(u8, messages.written(), w) != null);
+    try std.testing.expectEqualStrings(expected, output.written());
+}
 
 test "vera -D defines a .v design's macros: a bare NAME is 1, NAME=TEXT is TEXT (1364 §19.3.1, §19.4)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -138,23 +208,6 @@ test "§5.2.1 an indexed part-select descending from a base below the vector" {
     , "10xx\n00000001\n");
 }
 
-fn runSystemTasks(gpa: std.mem.Allocator) !void {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    var bag = diag.Bag.init(arena.allocator());
-    var output = std.Io.Writer.Allocating.init(arena.allocator());
-    try root.run(arena.allocator(),
-        \\module m; reg [8*10:1] s; integer n, a, st, j, i; real r;
-        \\initial begin
-        \\  $sformat(s, "%0d-%h", 12, 8'hab); n = $sscanf("7 2.5", "%d %f", a, r);
-        \\  $q_initialize(1, 1, 2, st); $q_add(1, 3, 4, st); $q_remove(1, j, i, st);
-        \\  $display("%s %0d %0d %g %0d %0d %0d", s, n, a, r, st, j, i);
-        \\end endmodule
-    , .{}, &bag, &output.writer);
-    // s is 10 characters: %s shows its five leading zero bytes as spaces (VD-129).
-    try std.testing.expectEqualStrings("     12-ab 2 7 2.5 0 3 4\n", output.written());
-}
-
 test "allocation failure anywhere in $sformat, $sscanf, the queues and $display cleans up" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, runSystemTasks, .{});
 }
@@ -169,49 +222,6 @@ test "§12.7 one expression read from two instances resolves per scope through t
 }
 
 // ---- pass 3: input the rewrite asserted on, refused instead ----
-
-const mixed = @import("sim").mixed;
-
-/// `sim.mixed.run`'s analog side at its smallest: a solver whose node never
-/// moves, counting its solves and finished points.
-const Still = struct {
-    solves: u32 = 0,
-    finished: u32 = 0,
-    pub fn setInputs(_: *Still, _: *root.Run, _: u64) !void {}
-    pub fn snapshot(_: *Still, _: *root.Run) !void {}
-    pub fn latch(_: *Still) !void {}
-    pub fn solveAt(s: *Still, _: f64, _: f64, _: bool, _: bool) !void {
-        s.solves += 1;
-    }
-    pub fn probe(_: *Still, _: ?f64, _: []const u8, _: ?[]const u8) !f64 {
-        return 0;
-    }
-    pub fn finish(s: *Still) !void {
-        s.finished += 1;
-    }
-};
-
-/// Test support: runs `source` (beside it, `d.sdf` holding `sdf`) to its
-/// end, and expects its transcript `expected` and, when given, a warning
-/// naming `warning`.
-fn expectAnnotated(source: []const u8, sdf: []const u8, expected: []const u8, warning: ?[]const u8) !void {
-    std.debug.assert(std.mem.find(u8, source, "$sdf_annotate(\"d.sdf\"") != null);
-    std.debug.assert(sdf.len != 0);
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "d.sdf", .data = sdf });
-    const file_name = try a.print(".zig-cache/tmp/{s}/test.v", .{tmp.sub_path});
-    var bag = diag.Bag.init(a);
-    var output = std.Io.Writer.Allocating.init(a);
-    try root.run(a, source, .{ .io = std.testing.io, .file_name = file_name }, &bag, &output.writer);
-    var messages = std.Io.Writer.Allocating.init(a);
-    try diag.render(&bag, &messages.writer, .{});
-    if (warning) |w| try std.testing.expect(std.mem.find(u8, messages.written(), w) != null);
-    try std.testing.expectEqualStrings(expected, output.written());
-}
 
 test "A.5.1 a UDP with no input port is refused, declared or instantiated" {
     // Oracle: A.5.1's udp_port_list, `output_port_identifier ,
