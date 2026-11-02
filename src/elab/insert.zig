@@ -84,20 +84,21 @@ const Prim = struct { term: Ast.PrimTerm, flat: usize };
 /// continuous and one discrete port (every §7.6 example). Supply-sensitive
 /// bridges with a third port (§7.8.6) are the upgrade.
 pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src: []const Ast.Instance, gates: []const Ast.ExprId) design.Error![]const Ast.Instance {
-    // Per level only without the first walk (`Flatten.tree`): then an
-    // out-of-context declaration below is collected only when its module is
-    // walked (`ooc.collectOoc`) and a paramset child is selected only at the
-    // level being planned (`segment.kidsOf`), so an answer cached for the
-    // level above may predate them. The first walk's tree and declarations
-    // are the same at every level, so with them each segment is climbed
-    // once, not once per level above it (§7.8.4's deep-chain test).
-    // ponytail: without `connectrules` a chain is still re-climbed per level,
-    // quadratic in its depth; the upgrade is a memo keyed by what the level
-    // changed (new out-of-context declarations, paramsets below).
+    // Without the first walk (`Flatten.tree`) an out-of-context declaration
+    // below is collected only when its module is walked (`ooc.collectOoc`),
+    // and a paramset child or an array element is a child only at the level
+    // that walks it (`segment.kidsOf`), so an answer cached for the level
+    // above may predate them: cleared when a declaration arrived or the
+    // climb read such a child (`segment.State`). Otherwise, and always with
+    // the first walk's tree, every input of an answer is the same at every
+    // level, so each segment is climbed once, not once per level above it
+    // (§7.8.4's deep-chain tests).
     assert(src.len == module.instances.len + gates.len); // `enterLevel`'s, consumed here
-    if (self.tree.kids.count() == 0) {
+    if (self.tree.kids.count() == 0 and (self.seg.level_bound or self.seg.oocs_seen != self.oocs.decls.count())) {
         self.seg.up.clearRetainingCapacity();
         self.seg.index.clearRetainingCapacity();
+        self.seg.level_bound = false;
+        self.seg.oocs_seen = self.oocs.decls.count();
     }
     var n_ins: usize = 0;
     for (self.ctx.file.connectrules) |cr| n_ins += cr.insertions.len;
