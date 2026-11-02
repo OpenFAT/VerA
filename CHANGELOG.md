@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Without `connectrules`, a mixed port is found where Annex F.2.1 puts it
+  when the net below it reaches a paramset instance, an instance array or a
+  generate instance** (F.2.1 step 1, §6.4.2, §6.6): such a design is now
+  walked once first, as one with `connectrules` already was, so these
+  children count as child segments at any depth. The E0927 then names the
+  port joining the two domains, not a port further down
+  (OpenFAT/VAMS-Conformance-Suite#5).
+- **A `$clog2` operand folds in time linear in its depth** (IEEE
+  §§5.4–5.5): `foldSized` sizes each row once, bottom-up, instead of
+  re-walking every operator's whole operand, so a 100,000-level sized chain
+  folds in 0.65 s in Debug, where the old fold ran 17 minutes without
+  finishing.
+- **A non-constant `$clog2` operand lowers in time linear in its depth**
+  (§9.14; IEEE §5.5): lowering sizes the operand once instead of planning
+  every operator over its whole operand, so a 10,000-operator operand lowers
+  in 0.24 s in Debug where it took 65 s.
+- **A deep port chain without `connectrules` also climbs once** (§7.8.4,
+  Annex F.2.1): `segment.up` keeps its answers from level to level unless a
+  level adds an out-of-context declaration or the climb read a paramset
+  instance, an instance array or a cycle, so a 1200-level chain elaborates
+  in 0.11 s where it took 7.1 s and 2.9 GB.
 - **A deep connect-module chain with `connectrules` elaborates in linear
   time** (§7.8.4, Annex F.2.1): `segment.up` climbs the chain once, not once
   per level above it, so a 1500-level chain takes 0.26 s where it took

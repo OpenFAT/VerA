@@ -8,6 +8,7 @@
 //! - `pub const Stmt = union(enum)`: `JumpKind`
 //! - `pub const BlockId = enum(u32)`
 //! - `pub const ExprList = enum(u32)`
+//! - `pub const StmtList = enum(u32)`
 //! - `pub const ArmRange = struct`
 //! - `pub const StmtRow = row:`
 //! - `pub const ProcContinuous = enum(u8)`
@@ -15,6 +16,7 @@
 //! - `pub const CaseArm = struct`
 //! - `pub const GenItems = struct`
 //! - `pub const SeqBlock = struct`
+//! - `pub const BlockRow = row:`
 //! - `pub const Edge = enum`
 //! - `pub fn stmtEdges(self: *const SourceFile, id: StmtId, v: anytype) !void`
 //! - `pub fn stmtWrites(self: *const SourceFile, funcs: []const FuncDecl, id: StmtId, gpa: std.mem.Allocator, out: *std.ArrayList(ExprId)) !void`: `expr`, `stmt`
@@ -57,9 +59,10 @@ pub const Timing = enum {
 
 /// Statement node (LRM §5), the value `SourceFile.stmt` returns. The pool
 /// stores each one as a `StmtRow`, with a `.block`'s `SeqBlock` kept in
-/// `SourceFile.blocks`, a case's arms in `SourceFile.arms` and a system
-/// task's arguments in `SourceFile.stmt_lists`; build one and hand it to
-/// `SourceFile.addStmt`, which copies both slices.
+/// `SourceFile.blocks` (a `BlockRow`, its body in `SourceFile.stmt_lists`),
+/// a case's arms in `SourceFile.arms` and a system task's arguments in
+/// `SourceFile.stmt_lists`; build one and hand it to `SourceFile.addStmt`,
+/// which copies the body, the arms and the arguments.
 pub const Stmt = union(enum) {
     /// A.6.4 `analog_statement_or_null ::= ... | ;`
     empty,
@@ -161,16 +164,20 @@ pub const BlockId = enum(u32) { _ };
 /// base's, as `StmtId`s do.
 pub const ExprList = enum(u32) { _ };
 
+/// Handle of a `StmtId` list in `SourceFile.stmt_lists`: a block's body.
+/// Numbered as `ExprList`s are, in the same pool.
+pub const StmtList = enum(u32) { _ };
+
 /// `len` consecutive `SourceFile.arms` rows from `start`, numbered on from an
 /// overlay's base's.
 pub const ArmRange = struct { start: u32, len: u32 };
 
 /// The stored form of a `Stmt`: the same arms, except that `.block` holds a
 /// `BlockId` into `SourceFile.blocks`, `.case_stmt` an `ArmRange` and
-/// `.sys_task` an `ExprList`. A `SeqBlock` is 104 bytes and every other arm
-/// at most 20 once its slices are handles, so a row is 24 bytes where it
-/// was 112 with blocks inline and 32 with slices (8,239 rows on psp103,
-/// 1,806 of them blocks).
+/// `.sys_task` an `ExprList`. A block's `BlockRow` is 88 bytes and every
+/// other arm at most 20 once its slices are handles, so a row is 24 bytes
+/// where it was 112 with blocks inline and 32 with slices (8,239 rows on
+/// psp103, 1,806 of them blocks).
 pub const StmtRow = row: {
     const u = @typeInfo(Stmt).@"union";
     var types = u.field_types[0..u.field_types.len].*;
@@ -180,15 +187,29 @@ pub const StmtRow = row: {
     break :row @Union(.auto, u.tag_type.?, u.field_names, &types, u.field_attrs);
 };
 
+/// The stored form of a `SeqBlock`: the same fields, except that `body` is
+/// a `StmtList` into `SourceFile.stmt_lists` (16 B of slice in 4 B).
+pub const BlockRow = row: {
+    const s = @typeInfo(SeqBlock).@"struct";
+    const body = std.meta.fieldIndex(SeqBlock, "body").?;
+    var types = s.field_types[0..s.field_types.len].*;
+    var attrs = s.field_attrs[0..s.field_attrs.len].*;
+    types[body] = StmtList;
+    attrs[body].default_value_ptr = null;
+    break :row @Struct(.auto, null, s.field_names, &types, &attrs);
+};
+
 // Budget: the widest arm, `.assign`'s four ids and four one-byte fields
-// (20 B), plus the tag; no row holds a slice or a pointer. `SeqBlock`, the
-// arm kept out of the row, is the 104 B `StmtRow`'s doc names.
+// (20 B), plus the tag; no row holds a slice or a pointer. `BlockRow`, the
+// arm kept out of the row, is the 88 B `StmtRow`'s doc names: `SeqBlock`'s
+// 104 less its body's slice.
 comptime {
     assert(@sizeOf(@FieldType(Stmt, "assign")) <= 20);
     assert(@sizeOf(CaseRow) <= 16);
     assert(@sizeOf(TaskRow) == 8);
     assert(@sizeOf(StmtRow) <= 24);
     assert(@sizeOf(SeqBlock) <= 104);
+    assert(@sizeOf(BlockRow) <= 88);
 }
 
 /// IEEE 1364-2005 §9.3 A.6.2 `procedural_continuous_assignments`.

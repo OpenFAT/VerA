@@ -22,7 +22,7 @@
 //! - `pub fn clog2Width(self: *const Lower, e: Ast.ExprId) constfold.Error!?u32`
 //! - `pub fn clog2Signed(self: *const Lower, e: Ast.ExprId) constfold.Error!?bool`
 //! - `pub fn hostSizedParam(self: *const Lower, name: []const u8) ?usize`
-//! - `pub fn clog2Plan(self: *const Lower, e: Ast.ExprId, parent: ?constfold.IntContext) constfold.Error!?constfold.IntPlan`
+//! - `pub fn clog2Plan(self: *const Lower, e: Ast.ExprId, sizes: *constfold.Sizes, parent: ?constfold.IntContext) constfold.Error!?constfold.IntPlan`
 //! - `pub fn clog2WideCarrier(self: *const Lower, e: Ast.ExprId, depth: u32) constfold.Error!bool`
 //! - `pub fn unsignedCompare(self: *const Lower, e: Ast.ExprId) constfold.Error!?constfold.UnsignedCompare`
 //! - private `WidthEnv` (`width`, `signed`)
@@ -111,7 +111,7 @@ const Env = struct {
     }
 };
 
-/// `Env` with `$clog2`'s width and signedness rules (`constfold.intPlan`'s env).
+/// `Env` with `$clog2`'s width and signedness rules (`clog2Plan`'s `constfold.measure`).
 const ClogEnv = struct {
     base: Env,
     pub fn leaf(env: ClogEnv, e: Ast.ExprId) constfold.Error!?Const {
@@ -202,10 +202,15 @@ pub fn hostSizedParam(self: *const Lower, name: []const u8) ?usize {
 
 /// The width-and-sign plan `analog/expr.zig` lowers a `$clog2` operand by, under
 /// `parent`'s context. Folds no parameter (`params = false`): a model card may
-/// override one. Null when the operand's integer sizing is unknown.
-pub fn clog2Plan(self: *const Lower, e: Ast.ExprId, parent: ?constfold.IntContext) constfold.Error!?constfold.IntPlan {
-    assert(e == .none or self.exprValid(e));
-    return constfold.intPlan(self.arena, self.file, e, ClogEnv{ .base = .{ .self = self, .params = false } }, parent);
+/// override one. Null when the operand's integer sizing is unknown. Read from
+/// `sizes`, which the first call measures for `e` and every row below it
+/// (`constfold.measure`), so an operand is sized once, not once per operator;
+/// `sizes` holds one operand's answers, in one scope and `clog2_host`.
+pub fn clog2Plan(self: *const Lower, e: Ast.ExprId, sizes: *constfold.Sizes, parent: ?constfold.IntContext) constfold.Error!?constfold.IntPlan {
+    assert(e != .none);
+    assert(self.exprValid(e));
+    if (!sizes.contains(e)) try constfold.measure(self.arena, self.file, e, ClogEnv{ .base = .{ .self = self, .params = false } }, sizes);
+    return constfold.measuredPlan(self.file, e, sizes, parent);
 }
 
 /// Above 64 bits, an i64 sign bit describes the source high bits only when

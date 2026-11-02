@@ -475,6 +475,10 @@ func_params: []const Ast.ParamDecl = &.{},
 /// (docs/specification/Vague_Decisions.md VD-089): each `hostSizedParam` then reads as a
 /// signed integer of this many bits instead of its declaration's width.
 clog2_host: u8 = 0,
+/// The sizes of the `$clog2` operand `lower_expr.lowerClog2Arg` is lowering,
+/// filled by `lower_constfold.clog2Plan`; null outside one. Its answers hold
+/// for that operand's scope and `clog2_host` only.
+clog2_sizes: ?*@import("frontend").constfold.Sizes = null,
 /// §4.7.1 recursion guard — names on the inline stack.
 inlining: std.ArrayList([]const u8) = .empty,
 /// Non-null inside an `analog initial` block (§5.2.1) or an analog function

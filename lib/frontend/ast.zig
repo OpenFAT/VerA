@@ -87,11 +87,13 @@
 //! - `pub const Stmt = stmt_file.Stmt`
 //! - `pub const StmtRow = stmt_file.StmtRow`
 //! - `pub const ExprList = stmt_file.ExprList`
+//! - `pub const StmtList = stmt_file.StmtList`
 //! - `pub const ProcContinuous = stmt_file.ProcContinuous`
 //! - `pub const CaseKind = stmt_file.CaseKind`
 //! - `pub const CaseArm = stmt_file.CaseArm`
 //! - `pub const GenItems = stmt_file.GenItems`
 //! - `pub const SeqBlock = stmt_file.SeqBlock`
+//! - `pub const BlockRow = stmt_file.BlockRow`
 //! - `pub const SourceFile = struct`: `HierIndex`, `hierIndices`, `stmtLte`, `exprLte`, `userModules`, `tablePrimitives`, `netlistModules`, `empty`, `Compilation`, `overlay`, `deinit`, `seedFrom`, `addStmt`, `addCaseLabels`, `stmt`, `caseLabels`, `stmtTok`, `seqBlockMut`, `seqBlocks`, `next`, `Edge`, `stmtEdges`, `stmtWrites`, `lvalueBase`, `str`, `intern`, `natureAttrExpr`
 
 const std = @import("std");
@@ -258,6 +260,8 @@ pub const StmtRow = stmt_file.StmtRow;
 
 pub const ExprList = stmt_file.ExprList;
 
+pub const StmtList = stmt_file.StmtList;
+
 pub const ProcContinuous = stmt_file.ProcContinuous;
 
 pub const CaseKind = stmt_file.CaseKind;
@@ -267,6 +271,8 @@ pub const CaseArm = stmt_file.CaseArm;
 pub const GenItems = stmt_file.GenItems;
 
 pub const SeqBlock = stmt_file.SeqBlock;
+
+pub const BlockRow = stmt_file.BlockRow;
 
 /// Root of one parsed file (LRM §1 source_text, annex A). Arena-owned; the
 /// decl slices are never freed by `deinit`.
@@ -287,15 +293,15 @@ pub const SourceFile = struct {
     /// §5 statement pool: this file's own rows, after the base's. A StmtId
     /// minus the base's count indexes it. Read through `stmt`.
     stmts: std.ArrayList(StmtRow) = .empty,
-    /// The `SeqBlock` of every `.block` row, in statement order; a row's
-    /// `BlockId`, minus the base's count, indexes it.
-    blocks: std.ArrayList(SeqBlock) = .empty,
+    /// The `SeqBlock` of every `.block` row, as a `BlockRow`, in statement
+    /// order; a row's `BlockId`, minus the base's count, indexes it.
+    blocks: std.ArrayList(BlockRow) = .empty,
     /// The arms of every `.case_stmt` row, in statement order; a row's
     /// `ArmRange` start, minus the base's count, indexes it.
     arms: std.ArrayList(CaseArm) = .empty,
-    /// Every `ExprList` (case labels, system-task arguments), each stored as
-    /// `[len, e0, e1, ...]`; a list's handle, minus the base's word count,
-    /// is the offset of its `len` word.
+    /// Every `ExprList` (case labels, system-task arguments) and `StmtList`
+    /// (block bodies), each stored as `[len, e0, e1, ...]`; a list's handle,
+    /// minus the base's word count, is the offset of its `len` word.
     stmt_lists: std.ArrayList(u32) = .empty,
     /// Token index per statement, parallel to `stmts`, kept apart so `Stmt`
     /// stays a pure union.
@@ -538,8 +544,9 @@ pub const SourceFile = struct {
     }
 
     /// Appends a statement and its token; both columns stay in lockstep. A
-    /// `.block`'s `SeqBlock` goes to `blocks`, a case's arms to `arms` and a
-    /// system task's arguments to `stmt_lists`, copied from `s`'s slices.
+    /// `.block`'s `SeqBlock` goes to `blocks` and its body to `stmt_lists`,
+    /// a case's arms to `arms` and a system task's arguments to
+    /// `stmt_lists`, copied from `s`'s slices.
     /// On OOM nothing is appended. Invalidates `seqBlockMut` pointers,
     /// `seqBlocks` iterators and the slices `stmt` and `caseLabels` return.
     /// Asserts the pool holds fewer than `maxInt(u32)` statements.
@@ -549,14 +556,22 @@ pub const SourceFile = struct {
         try self.stmts.ensureUnusedCapacity(gpa, 1);
         try self.stmt_toks.ensureUnusedCapacity(gpa, 1);
         switch (s) {
-            .block => try self.blocks.ensureUnusedCapacity(gpa, 1),
+            .block => |b| {
+                // Copied once the pool may have moved: never a slice of it.
+                assert(!self.inPool(@ptrCast(b.body)));
+                try self.blocks.ensureUnusedCapacity(gpa, 1);
+                try self.stmt_lists.ensureUnusedCapacity(gpa, b.body.len + 1);
+            },
             .case_stmt => |c| try self.arms.ensureUnusedCapacity(gpa, c.arms.len),
-            .sys_task => |t| try self.stmt_lists.ensureUnusedCapacity(gpa, t.args.len + 1),
+            .sys_task => |t| {
+                assert(!self.inPool(@ptrCast(t.args)));
+                try self.stmt_lists.ensureUnusedCapacity(gpa, t.args.len + 1);
+            },
             else => {}, // else: every other arm is the row alone
         }
         self.stmts.appendAssumeCapacity(switch (s) {
             .block => |b| blk: {
-                self.blocks.appendAssumeCapacity(b);
+                self.blocks.appendAssumeCapacity(blockRow(b, @fromBackingInt(self.appendList(@ptrCast(b.body)))));
                 break :blk .{ .block = @fromBackingInt(self.baseLen(.blocks) + @as(u32, @intCast(self.blocks.items.len - 1))) };
             },
             .case_stmt => |c| blk: {
@@ -564,7 +579,7 @@ pub const SourceFile = struct {
                 self.arms.appendSliceAssumeCapacity(c.arms);
                 break :blk .{ .case_stmt = .{ .kind = c.kind, .scrutinee = c.scrutinee, .arms = .{ .start = start, .len = @intCast(c.arms.len) }, .is_generate = c.is_generate } };
             },
-            .sys_task => |t| .{ .sys_task = .{ .name = t.name, .args = self.appendList(t.args) } },
+            .sys_task => |t| .{ .sys_task = .{ .name = t.name, .args = @fromBackingInt(self.appendList(@ptrCast(t.args))) } },
             inline else => |payload, tag| @unionInit(StmtRow, @tagName(tag), payload), // else: every other arm is stored as it is
         });
         self.stmt_toks.appendAssumeCapacity(main_tok);
@@ -578,22 +593,22 @@ pub const SourceFile = struct {
     /// slices `stmt` and `caseLabels` return.
     pub fn addCaseLabels(self: *SourceFile, gpa: std.mem.Allocator, labels: []const ExprId) std.mem.Allocator.Error!ExprList {
         try self.stmt_lists.ensureUnusedCapacity(gpa, labels.len + 1);
-        const list = self.appendList(labels);
+        const list: ExprList = @fromBackingInt(self.appendList(@ptrCast(labels)));
         assert(self.exprList(list).len == labels.len);
         return list;
     }
 
     /// Returns statement `id` by value, since the pool may grow during parsing.
-    /// A case's `arms` and a system task's `args` are slices of this file's
-    /// pool: the next `addStmt` or `addCaseLabels` on it invalidates them
-    /// (a base's never move while an overlay lives).
+    /// A block's `body`, a case's `arms` and a system task's `args` are slices
+    /// of this file's pool: the next `addStmt` or `addCaseLabels` on it
+    /// invalidates them (a base's never move while an overlay lives).
     pub fn stmt(self: *const SourceFile, id: StmtId) Stmt {
         assert(id != .none);
         const o = self.baseLen(.stmts);
         if (@backingInt(id) < o) return self.base.?.stmt(id);
         assert(@backingInt(id) - o < self.stmts.items.len);
         return switch (self.stmts.items[@backingInt(id) - o]) {
-            .block => |b| .{ .block = self.blocks.items[@backingInt(b) - self.baseLen(.blocks)] },
+            .block => |b| .{ .block = self.seqBlock(self.blocks.items[@backingInt(b) - self.baseLen(.blocks)]) },
             .case_stmt => |c| .{ .case_stmt = .{ .kind = c.kind, .scrutinee = c.scrutinee, .arms = self.armSlice(c.arms), .is_generate = c.is_generate } },
             .sys_task => |t| .{ .sys_task = .{ .name = t.name, .args = self.exprList(t.args) } },
             inline else => |payload, tag| @unionInit(Stmt, @tagName(tag), payload), // else: every other arm is stored as it is
@@ -619,7 +634,7 @@ pub const SourceFile = struct {
     /// parser names a generate block after the fact, §6.6.3). Asserts `id`
     /// is a `.block` and this file is a parse. Invalidated by the next
     /// `addStmt`.
-    pub fn seqBlockMut(self: *SourceFile, id: StmtId) *SeqBlock {
+    pub fn seqBlockMut(self: *SourceFile, id: StmtId) *BlockRow {
         assert(self.base == null);
         assert(self.stmts.items[@backingInt(id)] == .block);
         return &self.blocks.items[@backingInt(self.stmts.items[@backingInt(id)].block)];
@@ -629,19 +644,19 @@ pub const SourceFile = struct {
     /// statement order (an overlay's base's first), for a pass that wants
     /// every block's declarations.
     pub fn seqBlocks(self: *const SourceFile) SeqBlockIterator {
-        const first: []const SeqBlock = if (self.base) |b| b.blocks.items else &.{};
+        const first: []const BlockRow = if (self.base) |b| b.blocks.items else &.{};
         return .{ .first = first, .then = self.blocks.items };
     }
 
     /// See `seqBlocks`. Valid until the next `addStmt`.
     const SeqBlockIterator = struct {
         /// The base's blocks, then this file's own.
-        first: []const SeqBlock,
-        then: []const SeqBlock,
+        first: []const BlockRow,
+        then: []const BlockRow,
         i: u32 = 0,
 
         /// Returns the next block, or null after the last.
-        pub fn next(it: *SeqBlockIterator) ?*const SeqBlock {
+        pub fn next(it: *SeqBlockIterator) ?*const BlockRow {
             assert(it.i <= it.first.len + it.then.len);
             if (it.i == it.first.len + it.then.len) return null;
             defer it.i += 1;
@@ -672,26 +687,51 @@ pub const SourceFile = struct {
     pub const natureAttrExpr = design_file.natureAttrExpr;
 
     /// Appends `items` to `stmt_lists` as one list, whose capacity the
-    /// caller reserved, and returns its handle.
-    fn appendList(self: *SourceFile, items: []const ExprId) ExprList {
+    /// caller reserved, and returns its handle's number.
+    fn appendList(self: *SourceFile, items: []const u32) u32 {
         const at = self.baseLen(.stmt_lists) + @as(u32, @intCast(self.stmt_lists.items.len));
         assert(self.stmt_lists.unusedCapacitySlice().len >= items.len + 1);
         self.stmt_lists.appendAssumeCapacity(@intCast(items.len));
-        self.stmt_lists.appendSliceAssumeCapacity(@ptrCast(items));
+        self.stmt_lists.appendSliceAssumeCapacity(items);
         assert(self.stmt_lists.items.len + self.baseLen(.stmt_lists) == at + 1 + items.len);
-        return @fromBackingInt(at);
+        return at;
     }
 
-    /// Returns list `list` (an `appendList` handle), the base's or this
+    /// Whether `items` lies in this file's own `stmt_lists` buffer.
+    fn inPool(self: *const SourceFile, items: []const u32) bool {
+        const pool = self.stmt_lists.allocatedSlice();
+        if (items.len == 0 or pool.len == 0) return false;
+        const p = @intFromPtr(items.ptr);
+        return p >= @intFromPtr(pool.ptr) and p < @intFromPtr(pool.ptr + pool.len);
+    }
+
+    /// Returns the list `appendList` numbered `at`, the base's or this
     /// file's own.
-    fn exprList(self: *const SourceFile, list: ExprList) []const ExprId {
+    fn listAt(self: *const SourceFile, at: u32) []const u32 {
         const o = self.baseLen(.stmt_lists);
-        const pool = if (@backingInt(list) < o) self.base.?.stmt_lists.items else self.stmt_lists.items;
-        const at = if (@backingInt(list) < o) @backingInt(list) else @backingInt(list) - o;
-        assert(at < pool.len);
-        const n = pool[at];
-        assert(at + 1 + n <= pool.len);
-        return @ptrCast(pool[at + 1 ..][0..n]);
+        const pool = if (at < o) self.base.?.stmt_lists.items else self.stmt_lists.items;
+        const i = if (at < o) at else at - o;
+        assert(i < pool.len);
+        const n = pool[i];
+        assert(i + 1 + n <= pool.len);
+        return pool[i + 1 ..][0..n];
+    }
+
+    /// Returns list `list`: case labels or system-task arguments.
+    fn exprList(self: *const SourceFile, list: ExprList) []const ExprId {
+        return @ptrCast(self.listAt(@backingInt(list)));
+    }
+
+    /// Returns stored block `row` as the `SeqBlock` `stmt` hands out, its
+    /// body a slice of the pool that holds it.
+    fn seqBlock(self: *const SourceFile, row: BlockRow) SeqBlock {
+        var b: SeqBlock = undefined;
+        inline for (@typeInfo(SeqBlock).@"struct".field_names) |name| {
+            if (comptime std.mem.eql(u8, name, "body")) continue;
+            @field(b, name) = @field(row, name);
+        }
+        b.body = @ptrCast(self.listAt(@backingInt(row.body)));
+        return b;
     }
 
     /// Returns the arms `range` names, the base's or this file's own; a
@@ -706,6 +746,17 @@ pub const SourceFile = struct {
 };
 
 // ---- private ----
+
+/// `b` as `blocks` stores it, its body the list `body`.
+fn blockRow(b: SeqBlock, body: StmtList) BlockRow {
+    var row: BlockRow = undefined;
+    inline for (@typeInfo(SeqBlock).@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "body")) continue;
+        @field(row, name) = @field(b, name);
+    }
+    row.body = body;
+    return row;
+}
 
 fn addStmtsOom(gpa: std.mem.Allocator) !void {
     var f: SourceFile = .empty;
@@ -734,9 +785,10 @@ fn addStmtsOom(gpa: std.mem.Allocator) !void {
         };
     }
     try testing.expectEqual(@as(usize, 5), f.blocks.items.len);
-    // Five cases of two arms; 20 two-label lists of 3 words, five 3-argument tasks of 4.
+    // Five cases of two arms; 20 two-label lists of 3 words, five
+    // 3-argument tasks of 4, five empty block bodies of 1.
     try testing.expectEqual(@as(usize, 10), f.arms.items.len);
-    try testing.expectEqual(@as(usize, 20 * 3 + 5 * 4), f.stmt_lists.items.len);
+    try testing.expectEqual(@as(usize, 20 * 3 + 5 * 4 + 5 * 1), f.stmt_lists.items.len);
 }
 
 /// The appends the overlay test makes: `n` = 0 the parse's half, 1 the
