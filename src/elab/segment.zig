@@ -32,12 +32,13 @@ const discipline = @import("discipline_rules.zig");
 const sep = design.sep;
 const fixture = @import("fixture.zig");
 
-/// `Flatten.seg`: `up`'s memos for the level `insert.plan` is planning
-/// (cleared per level), and `down`'s answers, which outlive the level.
+/// `Flatten.seg`: `up`'s memos, kept for the whole walk when the first walk
+/// recorded `Flatten.tree` and cleared per level by `insert.plan` without it,
+/// and `down`'s answers, which outlive the level.
 pub const State = struct {
     /// `up`'s answers, keyed by instance path and local net name.
     up: std.StringHashMapUnmanaged(Seg) = .empty,
-    /// `indexOf`'s answers for the same level, keyed by instance path.
+    /// `indexOf`'s answers, kept and cleared with `up`, keyed by instance path.
     index: std.StringHashMapUnmanaged(UnitIndex) = .empty,
     /// The modules `up` is below right now, outermost first: a source
     /// instance list that instantiates one of them again is a cycle the walk
@@ -207,7 +208,7 @@ pub fn down(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net
 
 // ---- private ----
 
-/// `up`'s memo for segment `path ++ net`, if this level has answered it.
+/// `up`'s memo for segment `path ++ net`, if it has been answered.
 fn memo(self: *Flatten, path: []const u8, net: Ast.StrId) ?Seg {
     assert(net != .none);
     return self.seg.up.getAdapted(flat_name.PathKey{ .path = path, .local = self.ctx.file.str(net) }, flat_name.PathKey.Context{});
@@ -307,9 +308,9 @@ fn ofDiscipline(file: *const Ast.SourceFile, d: Ast.StrId, declared: bool) Seg {
 /// The declared disciplines and child ports of the unit at `path` (an
 /// instance of `module`): children in instance order, ports in declaration
 /// order, connect modules skipped (they bridge, so are no segment). Built
-/// once per path and level (`Flatten.seg_index`), so `compute` looks its net
-/// up instead of scanning the module's declarations and every child per net,
-/// which was quadratic in a level's net and instance counts.
+/// once per path while `up` keeps its memo (`State.index`), so `enter` looks
+/// its net up instead of scanning the module's declarations and every child
+/// per net, which was quadratic in a level's net and instance counts.
 fn indexOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, depth: u32) design.Error!*const UnitIndex {
     if (path.len != 0) assert(path[path.len - 1] == sep);
     const gop = try self.seg.index.getOrPut(self.ctx.arena, path);
@@ -402,7 +403,7 @@ fn declaredIn(module: *const Ast.ModuleDecl, net: Ast.StrId) ?Ast.StrId {
 
 /// `up` for `module`'s `s`. Every module of `cases_src` sits at path "",
 /// the key `up` memoizes under, so the memo is cleared first, as
-/// `insert.plan` clears it per level.
+/// `insert.plan` clears it per level without `Flatten.tree`.
 fn upOf(fl: *Flatten, f: *fixture.Fixture, module: []const u8) design.Error!Seg {
     fl.seg.up.clearRetainingCapacity();
     fl.seg.index.clearRetainingCapacity();
@@ -516,6 +517,45 @@ test indexOf {
     try std.testing.expectEqual(@as(usize, n), fl.out.inserts.items.len);
     try std.testing.expectEqual(@as(u32, 1), fl.seg.index.count());
     try std.testing.expectEqual(@as(usize, 0), f.bag.count());
+}
+
+test "§7.8.4 a mixed port above a chain of undeclared ports climbs the chain once, not once per level" {
+    // Oracle: §7.8.4 and Annex F.2.1 step 4 on the chain as written. `ca a`
+    // at the top meets the `dd` port `depth` undeclared levels below, so the
+    // one mixed port is the top's `u`, bridged by `a2d`, and no level below
+    // it is mixed. Re-climbing the chain from every level was quadratic in
+    // its depth (cubic in path bytes hashed): 19.5 s and 2.7 GB in Debug at
+    // this depth, against 0.26 s and 0.18 GB climbing once.
+    const depth = 1_500;
+    const bound_ms = 5_000;
+    const gpa = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendSlice(gpa,
+        \\discipline ca; domain continuous; enddiscipline
+        \\discipline dd; domain discrete; enddiscipline
+        \\connectmodule a2d(el, cm); input el; output cm; ca el; dd cm; endmodule
+        \\connectrules r; connect a2d; endconnectrules
+        \\module top; ca a; c0 u(a); endmodule
+        \\
+    );
+    for (0..depth) |i| try text.print(gpa, "module c{d}(p); input p; c{d} u(p); endmodule\n", .{ i, i + 1 });
+    try text.print(gpa, "module c{d}(p); input p; dd p; endmodule\n", .{depth});
+    var f: fixture.Fixture = .{ .arena = .init(gpa) };
+    defer f.deinit();
+    try fixture.parse(&f, text.items);
+    const io = std.testing.io;
+    const start: std.Io.Timestamp = .now(io, .awake);
+    const d = try @import("elaborate.zig").elaborate(f.ctx());
+    const ms = start.durationTo(.now(io, .awake)).toMilliseconds();
+    try std.testing.expectEqual(@as(usize, 0), f.bag.count());
+    try std.testing.expectEqual(@as(usize, 1), d.inserts.len);
+    try std.testing.expectEqualStrings("", d.inserts[0].path);
+    try std.testing.expectEqualStrings("u", d.inserts[0].inst);
+    try std.testing.expectEqualStrings("a2d", d.inserts[0].module);
+    // The top, the chain's `depth + 1` levels and the bridge.
+    try std.testing.expectEqual(depth + 3, d.units.len);
+    try std.testing.expect(ms < bound_ms);
 }
 
 // Exact Annex F.2.2 pass-boundary observations: the bottom-up and top-down
