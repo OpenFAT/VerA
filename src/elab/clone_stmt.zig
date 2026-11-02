@@ -44,8 +44,10 @@ pub fn cloneStmt(self: *Flatten, id: Ast.StmtId) design.Error!Ast.StmtId {
             // hidden above, so `cloneEvent` keeps each name and clones dims.
             const events = try self.ctx.arena.alloc(Ast.EventDecl, b.events.len);
             for (b.events, events) |e, *o| o.* = try clone_decl.cloneEvent(self, e);
+            // Each child is read again: cloning one appends to the pool that
+            // may hold `b.body` (`Ast.SourceFile.stmt`).
             const body = try self.ctx.arena.alloc(Ast.StmtId, b.body.len);
-            for (b.body, body) |src, *o| o.* = try cloneStmt(self, src);
+            for (body, 0..) |*o, i| o.* = try cloneStmt(self, file.stmt(id).block.body[i]);
             clone_decl.unhide(self, hidden.items);
             break :blk .{
                 .block = .{

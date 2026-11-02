@@ -24,7 +24,9 @@
 //! - `pub const operandWidth = size.operandWidth`
 //! - `pub const clog2Width = size.clog2Width`
 //! - `pub const clog2Signed = size.clog2Signed`
-//! - `pub const intPlan = size.intPlan`
+//! - `pub const Sizes = size.Sizes`
+//! - `pub const measure = size.measure`
+//! - `pub const measuredPlan = size.measuredPlan`
 //! - `pub const Error = size.Error`
 //! - `pub fn parameterValue(ty: Ast.Type, value: Const) Const`
 //! - `pub fn parameterCardValue(ty: Ast.Type, declared: ?Const, value: f64) Const`
@@ -74,7 +76,11 @@ pub const clog2Width = size.clog2Width;
 
 pub const clog2Signed = size.clog2Signed;
 
-pub const intPlan = size.intPlan;
+pub const Sizes = size.Sizes;
+
+pub const measure = size.measure;
+
+pub const measuredPlan = size.measuredPlan;
 
 pub const Error = size.Error;
 
@@ -133,7 +139,7 @@ const TestExpr = struct { file: Ast.SourceFile, e: Ast.ExprId, vars: []const Ast
 /// One operator `foldContext` has entered, waiting on its operands.
 const Frame = struct {
     e: Ast.ExprId,
-    /// Its IEEE §5.5 plan when `sized` (`intPlan`).
+    /// Its IEEE §5.5 plan when `sized` (`measuredPlan`).
     plan: ?IntPlan,
     /// Folded under `foldSized`'s rules; a §4.3 call's arguments are not.
     sized: bool,
@@ -276,13 +282,17 @@ fn foldContext(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprI
     var in_place: [frames_in_place]Frame = undefined;
     var frames: Pending(Frame) = .init(&in_place, gpa);
     defer frames.deinit();
+    // Every row a sized fold plans, sized once up front (`size.measure`).
+    var sizes: Sizes = .empty;
+    defer sizes.deinit(gpa);
+    if (sized and e != .none) try measure(gpa, file, e, env, &sizes);
     // The row folded next: the root, then each operand an operator asks for.
     var at: Operand = .{ .e = e, .sized = sized, .parent = parent };
     descend: while (true) {
         // Every frame is a distinct ancestor of `at`, in an acyclic store.
         assert(frames.items().len < ex.len());
         if (at.e == .none) return null;
-        const plan: ?IntPlan = if (at.sized) try intPlan(gpa, file, at.e, env, at.parent) else null;
+        const plan: ?IntPlan = if (at.sized) measuredPlan(file, at.e, &sizes, at.parent) else null;
         if (plan) |p| if (!p.supported) return null;
         const first: ?Operand = switch (ex.tag(at.e)) {
             .unary, .binary, .ternary => .{ .e = ex.lhs(at.e), .sized = at.sized, .parent = if (plan) |p| p.operands[0] else null },
@@ -688,6 +698,39 @@ test "operandWidth, clog2Width and clog2Signed size an expression as §2.6.1 and
     }
 }
 
+test "measure sizes every row it reaches as clog2Width and clog2Signed do" {
+    // Oracle: the two walks, which take the widest and the AND over the
+    // leaves a size passes through, where `measure` builds each row's from
+    // its operands'. Every row of each expression, operands under a
+    // comparison, a condition and an unknown name included.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    for ([_][]const u8{
+        "(4'sb1 + 8'b1) << (u ? 3 : 40'h1)",
+        "-(~u) ** 2 + (a > 4'b1 ? 1 : 64'h1)",
+        "!u || &4'b1 && $realtobits(1.0) == 5000000000",
+        "1 ? 1.5 : zz + 4'sb1 ^ 12'sd3",
+        "abs(a) - $random % a[1]",
+        // Each operator reads the operands its rule names, which differ here.
+        "u ? 40'h1 : 4'sb1",
+        "4'sb1 << 40'h1 ** u",
+        "~(6'sd1) * 3'sb1 & -u",
+    }) |src| {
+        const t = try testParse(a, "", src);
+        const env: TestEnv = .{ .file = &t.file };
+        var sizes: Sizes = .empty;
+        defer sizes.deinit(testing.allocator);
+        try measure(testing.allocator, &t.file, t.e, env, &sizes);
+        var it = sizes.iterator();
+        while (it.next()) |kv| {
+            try testing.expectEqual(try clog2Width(testing.allocator, &t.file, kv.key_ptr.*, env), kv.value_ptr.width);
+            try testing.expectEqual(try clog2Signed(testing.allocator, &t.file, kv.key_ptr.*, env), kv.value_ptr.signed);
+        }
+        try testing.expect(sizes.count() >= 4);
+    }
+}
+
 test "§3.4 firstStateRead names the first simulation-state or variable read of a default" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -711,15 +754,18 @@ test "§3.4 firstStateRead names the first simulation-state or variable read of 
     }
 }
 
-test "every walk holds 100,000 levels on a 1 MiB thread: depth costs heap, not native stack" {
+test "every walk holds 20,000 levels on a 1 MiB thread: depth costs heap, not native stack" {
     // Oracle: the guard page, and each chain's value worked out by hand. An
     // embedder's thread may have 1 MiB; a walk that recursed once per level
-    // overflowed it long before 100,000.
+    // would need frames under 53 bytes to hold 20,000 levels in it. The
+    // parses that build the chains cost the parser's Debug stack, about 6 KB
+    // a level, so n stays no larger than that proof needs.
     if (@import("builtin").single_threaded) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const n = 100_000;
+    const n = 20_000;
+    const sized_bound_ms = 10_000;
     // `40'd1 | 1 | ... | 1` nests on the left, the others on the right.
     const ors = try testParse(a, "", try nested(a, "", "40'd1", " | 1", n));
     const negs = try testParse(a, "", try nested(a, "-(", "1", ")", n));
@@ -728,9 +774,7 @@ test "every walk holds 100,000 levels on a 1 MiB thread: depth costs heap, not n
     const calls = try testParse(a, "", try nested(a, "abs(", "-3", ")", n));
     const sums = try testParse(a, "", try nested(a, "1 + (", "1", ")", n));
     const state = try testParse(a, "", try nested(a, "", "$abstime", " + 1", n));
-    // `foldSized` plans each operator over its whole operand (`intPlan`), so
-    // its chain is shorter: still far past 1 MiB of recursion.
-    const sized = try testParse(a, "", try nested(a, "", "4'b1", " + 4'b1", 5000));
+    const sized = try testParse(a, "", try nested(a, "", "4'b1", " + 4'b1", n));
     const Run = struct {
         fn on(t: []const TestExpr, out: *anyerror!void) void {
             out.* = walks(t);
@@ -751,9 +795,15 @@ test "every walk holds 100,000 levels on a 1 MiB thread: depth costs heap, not n
             try expectInt(3, try fold(testing.allocator, &t[4].file, t[4].e, literal_env));
             try expectInt(n + 1, try fold(testing.allocator, &t[5].file, t[5].e, literal_env));
             try testing.expectEqualStrings("$abstime", (try firstStateRead(testing.allocator, &t[6].file, t[6].e, &.{})).?);
-            // 5001 four-bit ones: 5001 mod 16 at four bits, 5001 on the carrier.
-            try expectInt(9, try foldSized(testing.allocator, &t[7].file, t[7].e, TestEnv{ .file = &t[7].file }));
-            try expectInt(5001, try fold(testing.allocator, &t[7].file, t[7].e, literal_env));
+            // 20,001 four-bit ones: 20,001 mod 16 at four bits, 20,001 on
+            // the carrier. Sized in one pass over the rows: planning each
+            // operator over its whole operand was quadratic in the depth.
+            const io = testing.io;
+            const start: std.Io.Timestamp = .now(io, .awake);
+            try expectInt(1, try foldSized(testing.allocator, &t[7].file, t[7].e, TestEnv{ .file = &t[7].file }));
+            const ms = start.durationTo(.now(io, .awake)).toMilliseconds();
+            try expectInt(n + 1, try fold(testing.allocator, &t[7].file, t[7].e, literal_env));
+            try testing.expect(ms < sized_bound_ms);
         }
     };
     var result: anyerror!void = {};
@@ -773,7 +823,7 @@ test "every walk out of memory is error.OutOfMemory, never the null of an unknow
     const chain = try nested(a, "", "40'd1", " | 1", 1000);
     // `(<chain>) < u`: an unsigned operand, so `unsignedCompare` sizes the chain.
     const cmp = try testParse(a, "", try std.mem.concat(a, u8, &.{ "(", chain, ") < u" }));
-    const Walk = enum { fold, fold_sized, operand_width, clog2_width, clog2_signed, int_plan, unsigned_compare, first_state_read };
+    const Walk = enum { fold, fold_sized, operand_width, clog2_width, clog2_signed, measure, unsigned_compare, first_state_read };
     for (std.enums.values(Walk)) |walk| for ([_]usize{ 0, 1 }) |fail_index| {
         var failing: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
         const gpa = failing.allocator();
@@ -786,7 +836,11 @@ test "every walk out of memory is error.OutOfMemory, never the null of an unknow
             .operand_width => testing.expectError(error.OutOfMemory, operandWidth(gpa, f, e, env)),
             .clog2_width => testing.expectError(error.OutOfMemory, clog2Width(gpa, f, e, env)),
             .clog2_signed => testing.expectError(error.OutOfMemory, clog2Signed(gpa, f, e, env)),
-            .int_plan => testing.expectError(error.OutOfMemory, intPlan(gpa, f, e, env, null)),
+            .measure => blk: {
+                var sizes: Sizes = .empty;
+                defer sizes.deinit(gpa);
+                break :blk testing.expectError(error.OutOfMemory, measure(gpa, f, e, env, &sizes));
+            },
             .unsigned_compare => testing.expectError(error.OutOfMemory, unsignedCompare(gpa, f, e, f.exprs.rhs(cmp.e), env)),
             .first_state_read => testing.expectError(error.OutOfMemory, firstStateRead(gpa, f, e, &.{})),
         };

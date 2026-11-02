@@ -9,12 +9,15 @@
 //! - `pub const UnsignedCompare = struct`: `Side`, `extend`
 //! - `pub const IntContext = struct`: `normalize`
 //! - `pub const IntPlan = struct`: `resize`
+//! - `pub const Size = struct`
+//! - `pub const Sizes = std.AutoHashMapUnmanaged(Ast.ExprId, Size)`
 //! - `pub const Error = std.mem.Allocator.Error`
 //! - `pub fn unsignedCompare(gpa: std.mem.Allocator, file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) Error!?UnsignedCompare`
 //! - `pub fn operandWidth(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?u32`
 //! - `pub fn clog2Width(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?u32`
 //! - `pub fn clog2Signed(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?bool`
-//! - `pub fn intPlan(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) Error!?IntPlan`
+//! - `pub fn measure(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sizes: *Sizes) Error!void`
+//! - `pub fn measuredPlan(file: *const Ast.SourceFile, e: Ast.ExprId, sizes: *const Sizes, parent: ?IntContext) ?IntPlan`
 //! - `pub fn literalWidth(ex: *const Ast.ExprStore, e: Ast.ExprId) u32`
 //! - `pub fn Pending(comptime T: type) type`: `init`, `deinit`, `push`, `pushBoth`, `pop`, `items`
 //! - `pub fn envSigned(env: anytype, e: Ast.ExprId) Error!?bool`
@@ -97,8 +100,23 @@ pub const IntPlan = struct {
     }
 };
 
+/// One row's self-determined size, as `measuredPlan` reads it: `clog2Width`'s
+/// width and `clog2Signed`'s signedness, each null where that walk's is.
+pub const Size = struct { width: ?u32, signed: ?bool };
+
+/// The `Size` of every row `measure` reached, keyed by row.
+pub const Sizes = std.AutoHashMapUnmanaged(Ast.ExprId, Size);
+
+// One hash-map value per row: a width and a signedness, both optional.
+comptime {
+    assert(@sizeOf(Size) <= 12);
+}
+
 /// Rows a width or signedness walk keeps on the native stack.
 const rows_in_place = 64;
+
+/// One row of `measure`'s post-order: `open` once its operands are pushed.
+const Visit = struct { e: Ast.ExprId, open: bool };
 
 /// The §4.2.9 extension of comparison `l` vs `r` under `env` (`fold`'s), or
 /// null when neither operand is known unsigned.
@@ -192,14 +210,47 @@ pub fn clog2Signed(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.E
     return signed;
 }
 
+/// Records in `sizes` the `Size` of `e` and of every row its operators
+/// reach (each operand of a `.unary`, `.binary` or `.ternary`), each from
+/// its operands' once they are in. Sizing a whole tree is so one pass over
+/// its rows, where `clog2Width` and `clog2Signed` per row re-walk every
+/// operand below it, quadratic in the depth. Agrees with those two walks
+/// on every row; a row already in `sizes` is kept.
+pub fn measure(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sizes: *Sizes) Error!void {
+    assert(e != .none);
+    const ex = &file.exprs;
+    assert(@backingInt(e) < ex.len());
+    var in_place: [rows_in_place]Visit = undefined;
+    var pending: Pending(Visit) = .init(&in_place, gpa);
+    defer pending.deinit();
+    try pending.push(.{ .e = e, .open = false });
+    while (pending.pop()) |v| {
+        // A row shared by two parents is pushed twice and sized once.
+        if (sizes.contains(v.e)) continue;
+        var buf: [3]Ast.ExprId = undefined;
+        const ops = operands(ex, v.e, &buf);
+        if (!v.open and ops.len != 0) {
+            try pending.push(.{ .e = v.e, .open = true });
+            for (ops) |o| if (o != .none) try pending.push(.{ .e = o, .open = false });
+            continue;
+        }
+        try sizes.putNoClobber(gpa, v.e, try sizeOf(file, v.e, env, sizes));
+        assert(sizes.count() <= ex.len());
+    }
+    assert(sizes.contains(e));
+}
+
 /// Returns how `e` is sized inside `parent` (null: `e` is self-determined).
 /// IEEE Table 5-22 and §5.5.2: logical operands, a shift/power's RHS, and a
 /// conditional's condition are self-determined. Comparisons share a context
-/// between their operands, independent of their one-bit result. Null when
-/// `env` cannot give a width or signedness the plan needs.
-pub fn intPlan(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) Error!?IntPlan {
+/// between their operands, independent of their one-bit result. Read from
+/// the sizes `measure` recorded, which reached `e`; null when they lack a
+/// width or signedness the plan needs.
+pub fn measuredPlan(file: *const Ast.SourceFile, e: Ast.ExprId, sizes: *const Sizes, parent: ?IntContext) ?IntPlan {
     const ex = &file.exprs;
-    const own: IntContext = .{ .width = (try clog2Width(gpa, file, e, env)) orelse return null, .signed = (try clog2Signed(gpa, file, e, env)) orelse return null };
+    assert(@backingInt(e) < ex.len());
+    const s = sizes.get(e).?;
+    const own: IntContext = .{ .width = s.width orelse return null, .signed = s.signed orelse return null };
     const result: IntContext = if (parent) |p| .{ .width = @max(p.width, own.width), .signed = p.signed } else own;
     var plan: IntPlan = .{ .result = result, .from_width = own.width };
     assert(plan.result.width >= own.width);
@@ -229,13 +280,15 @@ pub fn intPlan(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprI
                 plan.supported = result.width <= 32;
             },
             .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => {
-                const comparison: IntContext = .{
-                    .width = @max((try clog2Width(gpa, file, ex.lhs(e), env)) orelse return null, (try clog2Width(gpa, file, ex.rhs(e), env)) orelse return null),
-                    .signed = (try clog2OperandsSigned(gpa, file, ex.lhs(e), ex.rhs(e), env)) orelse return null,
+                const l = sizeAt(sizes, ex.lhs(e));
+                const r = sizeAt(sizes, ex.rhs(e));
+                const c: IntContext = .{
+                    .width = @max(l.width orelse return null, r.width orelse return null),
+                    .signed = (l.signed orelse return null) and (r.signed orelse return null),
                 };
-                plan.operands[0] = comparison;
-                plan.operands[1] = comparison;
-                plan.supported = comparison.width <= 64;
+                plan.operands[0] = c;
+                plan.operands[1] = c;
+                plan.supported = c.width <= 64;
             },
             .logical_and, .logical_or => {},
         },
@@ -360,18 +413,66 @@ fn expressionWidth(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.E
     return widest;
 }
 
+/// The operands `measure` sizes before `e`: a `.unary`'s, `.binary`'s or
+/// `.ternary`'s, the condition included; none for any other row.
+fn operands(ex: *const Ast.ExprStore, e: Ast.ExprId, buf: *[3]Ast.ExprId) []const Ast.ExprId {
+    const n: usize = switch (ex.tag(e)) {
+        .unary => 1,
+        .binary => 2,
+        .ternary => 3,
+        else => 0, // else: a primary or a call, sized whole by `sizeOf`
+    };
+    buf.* = .{ ex.lhs(e), ex.rhs(e), if (n == 3) ex.ternaryElse(e) else .none };
+    return buf[0..n];
+}
+
+/// Row `n`'s `Size` from its operands' in `sizes`: the rules of
+/// `expressionWidth` (self-determined) and `clog2Signed`, one row at a time.
+fn sizeOf(file: *const Ast.SourceFile, n: Ast.ExprId, env: anytype, sizes: *const Sizes) Error!Size {
+    const ex = &file.exprs;
+    assert(!sizes.contains(n)); // each row is sized once
+    return switch (ex.tag(n)) {
+        .int_literal => .{ .width = literalWidth(ex, n), .signed = ex.intLiteral(n).signed },
+        .logic_literal => .{ .width = ex.logicValue(n).width, .signed = ex.logicValue(n).signed },
+        .ident => .{ .width = try envWidth(env, n), .signed = try envSigned(env, n) },
+        .unary => switch (ex.unOp(n)) {
+            .plus, .minus, .bit_not => sizeAt(sizes, ex.lhs(n)),
+            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => .{ .width = 1, .signed = false },
+        },
+        .binary => switch (ex.binOp(n)) {
+            .shl, .shr, .ashl, .ashr, .pow => sizeAt(sizes, ex.lhs(n)),
+            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => wider(sizeAt(sizes, ex.lhs(n)), sizeAt(sizes, ex.rhs(n))),
+            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => .{ .width = 1, .signed = false },
+        },
+        .ternary => wider(sizeAt(sizes, ex.rhs(n)), sizeAt(sizes, ex.ternaryElse(n))),
+        // §9.11 `$realtobits` returns the double's 64-bit pattern, unsigned.
+        .sys_call => if (std.mem.eql(u8, file.str(ex.strOf(n)), "$realtobits")) .{ .width = 64, .signed = false } else .{ .width = 32, .signed = true },
+        .call, .index => .{ .width = 32, .signed = true }, // analog function/array integral results are §3.2 integers
+        else => .{ .width = 32, .signed = null }, // else: §3.2's 32 bits, but no integral expression in the analog context
+    };
+}
+
+/// The size `measure` recorded for operand `e`; a missing operand has none.
+fn sizeAt(sizes: *const Sizes, e: Ast.ExprId) Size {
+    if (e == .none) return .{ .width = null, .signed = null };
+    return sizes.get(e).?;
+}
+
+/// Two operands that share a context: the wider width, signed only when
+/// both are; either one unknown leaves that half unknown.
+fn wider(a: Size, b: Size) Size {
+    const out: Size = .{
+        .width = if (a.width != null and b.width != null) @max(a.width.?, b.width.?) else null,
+        .signed = if (a.signed != null and b.signed != null) a.signed.? and b.signed.? else null,
+    };
+    if (out.width) |w| assert(w >= a.width.?);
+    return out;
+}
+
 fn widthFloor(w: u32, comptime self_determined: bool) u32 {
     const out = if (self_determined) w else @max(w, 32);
     assert(out >= w);
     return out;
-}
-
-fn clog2OperandsSigned(gpa: std.mem.Allocator, file: *const Ast.SourceFile, a: Ast.ExprId, b: Ast.ExprId, env: anytype) Error!?bool {
-    assert(a != .none);
-    assert(b != .none);
-    const sa = (try clog2Signed(gpa, file, a, env)) orelse return null;
-    const sb = (try clog2Signed(gpa, file, b, env)) orelse return null;
-    return sa and sb;
 }
 
 /// `env.width(e)`, from an `env` whose methods may or may not fail.

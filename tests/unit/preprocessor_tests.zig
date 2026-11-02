@@ -567,12 +567,13 @@ test "§10.4 a nested invocation in an actual argument is not recursion" {
     }
 }
 
-test "macro nesting has no depth bound: 100,000 nested uses and a 100,000-macro chain" {
+test "macro nesting has no depth bound: 10,000 nested uses and a 20,000-macro chain" {
     // `M(x)` is `(x)`, so n nested uses expand to n parentheses around 1 and
     // need n live expansions, argument pre-expansion included. 129 was one
     // past the old 128-level cap (E0119); 10,000 crosses many stack segments
     // (`preprocessor.segment_levels`). Each level copies the text inside it,
-    // so the text built is quadratic: 10,000 levels is 50 MB of it.
+    // so the bytes copied are quadratic, but each copy is freed once
+    // substituted (the test below bounds the memory).
     for ([_]usize{ 129, 10_000 }) |n| {
         var src: std.ArrayList(u8) = .empty;
         defer src.deinit(testing.allocator);
@@ -589,9 +590,10 @@ test "macro nesting has no depth bound: 100,000 nested uses and a 100,000-macro 
         try expectPp(want.items, src.items);
     }
     // A chain: M<k> expands to M<k-1>, so the body rescan nests n deep with
-    // n distinct names on the cycle guard.
+    // n distinct names on the cycle guard: 19 segments, and at 8.5 KB of
+    // Debug stack a level, 170 MB.
     {
-        const n = 100_000;
+        const n = 20_000;
         var src: std.ArrayList(u8) = .empty;
         defer src.deinit(testing.allocator);
         try src.appendSlice(testing.allocator, "`define M0 end\n");
@@ -603,6 +605,36 @@ test "macro nesting has no depth bound: 100,000 nested uses and a 100,000-macro 
     }
     // A cycle is still E0118, at any depth.
     try expectFail("`define A `B\n`define B `A\n`A\n", .E0118);
+}
+
+test "10,000 nested macro uses preprocess in 16 MiB of working memory: each level's copies are freed" {
+    // Oracle: the scratch bound. `M(x)` is `(x)`, so level k's expanded
+    // actual and its substituted body are about 2(n - k) bytes each: kept,
+    // every level's copies are 2n^2 bytes, 200 MB at 10,000 levels (the run
+    // peaked at 347 MiB); freed, the run needs under 4 MiB of scratch. Time
+    // stays quadratic, as in the C preprocessor: each level's `macroArgs`
+    // reads its whole actual (4.7 s here in Debug, before and after).
+    const n = 10_000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(testing.allocator);
+    var want: std.ArrayList(u8) = .empty;
+    defer want.deinit(testing.allocator);
+    try src.appendSlice(testing.allocator, "`define M(x) (x)\n");
+    try want.append(testing.allocator, '\n');
+    for (0..n) |_| try src.appendSlice(testing.allocator, "`M(");
+    try want.appendNTimes(testing.allocator, '(', n);
+    try src.append(testing.allocator, '1');
+    try want.append(testing.allocator, '1');
+    try src.appendNTimes(testing.allocator, ')', n);
+    try want.appendNTimes(testing.allocator, ')', n);
+    const bound = try testing.allocator.alloc(u8, 16 << 20);
+    defer testing.allocator.free(bound);
+    var fixed: std.heap.FixedBufferAllocator = .init(bound);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    var bag: diag.Bag = .init(arena_state.allocator());
+    const out = try process(arena_state.allocator(), src.items, .{ .std_defs = false, .bag = &bag, .scratch = fixed.allocator() });
+    try testing.expectEqualStrings(want.items, out.text);
 }
 
 test "escaped identifiers reach `undef, the conditionals and `default_discipline" {

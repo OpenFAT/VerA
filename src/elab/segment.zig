@@ -33,8 +33,8 @@ const sep = design.sep;
 const fixture = @import("fixture.zig");
 
 /// `Flatten.seg`: `up`'s memos, kept for the whole walk when the first walk
-/// recorded `Flatten.tree` and cleared per level by `insert.plan` without it,
-/// and `down`'s answers, which outlive the level.
+/// recorded `Flatten.tree`, and without it until a level could change an
+/// answer (`insert.plan`), and `down`'s answers, which outlive the level.
 pub const State = struct {
     /// `up`'s answers, keyed by instance path and local net name.
     up: std.StringHashMapUnmanaged(Seg) = .empty,
@@ -48,6 +48,12 @@ pub const State = struct {
     /// was planned (`down`), the same keys: the upper connection of the ports
     /// one level further down.
     down: std.StringHashMapUnmanaged(Seg) = .empty,
+    /// Without `Flatten.tree`, an answer `up` memoized was cut short by a
+    /// module already on the climb, which another level climbs differently.
+    level_bound: bool = false,
+    /// `Flatten.oocs.decls`' count when `up`'s memo was last cleared: a
+    /// declaration collected since may override an answer in it.
+    oocs_seen: u32 = 0,
 };
 
 /// One segment's answer. `domain == .unspecified` is F.2.2 step 4's
@@ -132,10 +138,11 @@ const cases_src =
 /// holds, every element of an instance array, a §6.4 paramset instance as
 /// the module it selected, at any depth, with every out-of-context
 /// declaration (`resolve.oocDisciplineBelow`). Without that walk (no
-/// `connectrules`, so nothing to plan) the source instance list is read, a
-/// paramset instance only where `insert.plan` is planning (`depth == 0`). A
-/// port this pass could not decide is judged after the walk
-/// (`insert.checkUnbridged`, E0929).
+/// `connectrules`, and no paramset, instance array or generate instance in
+/// the design: `elaborate`) the source instance list is the elaborated one,
+/// and an answer a cut cycle shortened is marked `State.level_bound` for
+/// `insert.plan` to drop. A port this pass could not decide is judged after
+/// the walk (`insert.checkUnbridged`, E0929).
 pub fn up(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: Ast.StrId, depth: u32) design.Error!Seg {
     if (memo(self, path, net)) |s| return s;
     const a = self.ctx.arena;
@@ -240,8 +247,10 @@ fn enter(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: A
     // §3.6.2.4: "If the net is referenced in behavioral code, then it shall
     // be treated as having no discipline with a domain binding of discrete."
     const behavioral = digitalUse(file, module, net);
-    if (std.mem.findScalar(Ast.StrId, self.seg.on.items, module.name) != null)
+    if (std.mem.findScalar(Ast.StrId, self.seg.on.items, module.name) != null) {
+        self.seg.level_bound = true;
         return .{ .done = .{ .domain = if (behavioral) .discrete else .unspecified, .behavioral = behavioral } };
+    }
     try self.seg.on.append(self.ctx.arena, module.name);
     var f: Frame = .{ .module = module, .path = path, .net = net, .depth = depth, .behavioral = behavioral, .ports = &.{}, .kids = &.{} };
     if (index) |ix| {
@@ -341,8 +350,9 @@ fn indexOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, dept
 
 /// The children of the unit at `path` (an instance of `module`): the ones
 /// the walk that inserts nothing elaborated below `path` (`Flatten.tree`),
-/// else (no `connectrules`) the source instance list, a paramset instance
-/// resolved only at `depth == 0`, where `insert.plan` is planning.
+/// else the source instance list: all of it without the tree (`up`), and
+/// for a path the tree lacks, a paramset instance resolved only at
+/// `depth == 0`, where `insert.plan` is planning.
 fn kidsOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, depth: u32) design.Error![]const walk.TreeKid {
     if (path.len != 0) assert(path[path.len - 1] == sep);
     if (self.tree.kids.get(path)) |kids| return kids.items;
@@ -403,7 +413,7 @@ fn declaredIn(module: *const Ast.ModuleDecl, net: Ast.StrId) ?Ast.StrId {
 
 /// `up` for `module`'s `s`. Every module of `cases_src` sits at path "",
 /// the key `up` memoizes under, so the memo is cleared first, as
-/// `insert.plan` clears it per level without `Flatten.tree`.
+/// `insert.plan` clears it when a level could change an answer.
 fn upOf(fl: *Flatten, f: *fixture.Fixture, module: []const u8) design.Error!Seg {
     fl.seg.up.clearRetainingCapacity();
     fl.seg.index.clearRetainingCapacity();
@@ -415,6 +425,27 @@ fn downOf(fl: *Flatten, f: *fixture.Fixture, module: []const u8, parent: Seg) de
     fl.seg.up.clearRetainingCapacity();
     fl.seg.index.clearRetainingCapacity();
     return down(fl, fixture.moduleNamed(&f.file, module).?, "", fixture.id(&f.file, "s").?, parent);
+}
+
+/// `top`'s `ca a` on port `p` of a chain of `depth + 1` modules, each
+/// passing `p` on undeclared, the last declaring it `dd`; with `rules`, the
+/// one `connectrules` that bridges them (`a2d`).
+fn deepChain(gpa: std.mem.Allocator, text: *std.ArrayList(u8), depth: usize, rules: bool) !void {
+    assert(text.items.len == 0);
+    try text.appendSlice(gpa,
+        \\discipline ca; domain continuous; enddiscipline
+        \\discipline dd; domain discrete; enddiscipline
+        \\
+    );
+    if (rules) try text.appendSlice(gpa,
+        \\connectmodule a2d(el, cm); input el; output cm; ca el; dd cm; endmodule
+        \\connectrules r; connect a2d; endconnectrules
+        \\
+    );
+    try text.appendSlice(gpa, "module top; ca a; c0 u(a); endmodule\n");
+    for (0..depth) |i| try text.print(gpa, "module c{d}(p); input p; c{d} u(p); endmodule\n", .{ i, i + 1 });
+    try text.print(gpa, "module c{d}(p); input p; dd p; endmodule\n", .{depth});
+    assert(text.items.len > depth);
 }
 
 test up {
@@ -531,16 +562,7 @@ test "§7.8.4 a mixed port above a chain of undeclared ports climbs the chain on
     const gpa = std.testing.allocator;
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(gpa);
-    try text.appendSlice(gpa,
-        \\discipline ca; domain continuous; enddiscipline
-        \\discipline dd; domain discrete; enddiscipline
-        \\connectmodule a2d(el, cm); input el; output cm; ca el; dd cm; endmodule
-        \\connectrules r; connect a2d; endconnectrules
-        \\module top; ca a; c0 u(a); endmodule
-        \\
-    );
-    for (0..depth) |i| try text.print(gpa, "module c{d}(p); input p; c{d} u(p); endmodule\n", .{ i, i + 1 });
-    try text.print(gpa, "module c{d}(p); input p; dd p; endmodule\n", .{depth});
+    try deepChain(gpa, &text, depth, true);
     var f: fixture.Fixture = .{ .arena = .init(gpa) };
     defer f.deinit();
     try fixture.parse(&f, text.items);
@@ -556,6 +578,91 @@ test "§7.8.4 a mixed port above a chain of undeclared ports climbs the chain on
     // The top, the chain's `depth + 1` levels and the bridge.
     try std.testing.expectEqual(depth + 3, d.units.len);
     try std.testing.expect(ms < bound_ms);
+}
+
+test "§7.8.4 without connectrules a mixed port above a chain of undeclared ports climbs the chain once" {
+    // Oracle: §7.8.4 "the port shall match one (and only one) connect
+    // statement" on the chain as written, with no statement: F.2.1 step 4
+    // makes every port below the top discrete, so the one mixed port is the
+    // top's `u`, E0927, and nothing else. Without the first walk's tree the
+    // memo was cleared per level, so each level re-climbed the chain below
+    // it: 7.1 s and 2.9 GB in Debug at this depth, against 0.11 s climbing
+    // once.
+    const depth = 1_200;
+    const bound_ms = 1_500;
+    const gpa = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try deepChain(gpa, &text, depth, false);
+    var f: fixture.Fixture = .{ .arena = .init(gpa) };
+    defer f.deinit();
+    try fixture.parse(&f, text.items);
+    const io = std.testing.io;
+    const start: std.Io.Timestamp = .now(io, .awake);
+    try std.testing.expectError(error.DiagnosticsReported, @import("elaborate.zig").elaborate(f.ctx()));
+    const ms = start.durationTo(.now(io, .awake)).toMilliseconds();
+    try std.testing.expectEqual(@as(usize, 1), f.bag.count());
+    try std.testing.expect(f.bag.at(0).code == .E0927);
+    try std.testing.expect(ms < bound_ms);
+}
+
+test "Annex F.2.1 step 3 an out-of-context declaration walked after a climb still decides the segment" {
+    // Oracle: Annex F.2.1 step 3, "apply all out-of-context node and signal
+    // declarations", then §7.8.4. `mid` declares its child's undeclared
+    // port `dd` out of context, so that port is digital under `top`'s `ca`
+    // net, and no connect statement bridges it: E0927. `top`'s climb
+    // answers the port before `mid` is walked and its declaration
+    // collected, so that answer must not be kept for `mid`'s level.
+    var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
+    defer f.deinit();
+    try fixture.parse(&f,
+        \\discipline ca; domain continuous; enddiscipline
+        \\discipline dd; domain discrete; enddiscipline
+        \\module top; ca a; mid u(a); endmodule
+        \\module mid(p); input p; leaf v(p); dd v.p; endmodule
+        \\module leaf(p); input p; endmodule
+        \\
+    );
+    try std.testing.expectError(error.DiagnosticsReported, @import("elaborate.zig").elaborate(f.ctx()));
+    try std.testing.expectEqual(@as(usize, 1), f.bag.count());
+    try std.testing.expect(f.bag.at(0).code == .E0927);
+}
+
+test "Annex F.2.1 an elaborated child's port is a child segment at any depth, without connectrules" {
+    // Oracle: Annex F.2.1 by hand. Step 1 elaborates the design: it picks
+    // `ps` for `x` and makes `x` an instance of `leaf` (§6.4.2, §6.4), expands
+    // the array to `x[1]` and `x[0]` (IEEE 1364-2005 §12.1.2), or brings
+    // `g.x` into existence (§6.6). Step 2 makes each `leaf` port `dd`, and
+    // step 4 then makes `u.w.p` and `u.p` digital with `dd`. The one port
+    // joining domains is `top`'s `u` (`ca a` above, `dd` below), and with no
+    // connect statement it is E0927 there (§7.8.4), as it is when `wrap`
+    // instantiates `leaf` directly.
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{
+        "ps x(p);",
+        "leaf x[1:0](p);",
+        "generate if (1) begin : g leaf x(p); end endgenerate",
+    }) |child| {
+        const text = try gpa.print(
+            \\discipline ca; domain continuous; enddiscipline
+            \\discipline dd; domain discrete; enddiscipline
+            \\module top; ca a; mid u(a); endmodule
+            \\module mid(p); input p; wrap w(p); endmodule
+            \\module wrap(p); input p; {s} endmodule
+            \\paramset ps leaf; parameter real l = 1.0; .k = l; endparamset
+            \\module leaf(p); input p; dd p; parameter real k = 1.0; endmodule
+            \\
+        , .{child});
+        defer gpa.free(text);
+        var f: fixture.Fixture = .{ .arena = .init(gpa) };
+        defer f.deinit();
+        try fixture.parse(&f, text);
+        try std.testing.expectError(error.DiagnosticsReported, @import("elaborate.zig").elaborate(f.ctx()));
+        try std.testing.expectEqual(@as(usize, 1), f.bag.count());
+        try std.testing.expect(f.bag.at(0).code == .E0927);
+        // The caret is on `top`'s connection `a` of `u`, not on a level below.
+        try std.testing.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, text, "u(a)").? + 2)), f.bag.at(0).span.start);
+    }
 }
 
 // Exact Annex F.2.2 pass-boundary observations: the bottom-up and top-down

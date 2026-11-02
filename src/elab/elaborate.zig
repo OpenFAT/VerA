@@ -98,9 +98,13 @@ pub fn elaborate(ctx: design.Ctx) design.Error!design.Design {
     // each signal", and a level is planned before its children are walked.
     // So a design that can insert connect modules is walked twice: once
     // inserting none, recording what it elaborated (`Flatten.tree`), then
-    // for real. The first walk's diagnostics are the second's, so they go to
-    // a scratch bag. It sees the same collected defparams as the real walk.
-    if (ctx.file.connectrules.len != 0) {
+    // for real. So is one whose elaborated children differ from the source
+    // instance lists: Annex F.2.1 step 1 elaborates the design before step 4
+    // examines a signal, and a paramset, an array or a generate instance is
+    // a child only as the walk elaborates it (`segment.up`). The first walk's
+    // diagnostics are the second's, so they go to a scratch bag. It sees the
+    // same collected defparams as the real walk.
+    if (ctx.file.connectrules.len != 0 or elaboratedChildren(ctx.file, gen_instances)) {
         var dry_scratch: diag.Bag = .init(ctx.arena);
         var dry_ctx = ctx;
         dry_ctx.bag = &dry_scratch;
@@ -114,6 +118,19 @@ pub fn elaborate(ctx: design.Ctx) design.Error!design.Design {
 }
 
 // ---- private ----
+
+/// Whether a module's children, as the walk elaborates them, can differ from
+/// its source instance list: a paramset to select (§6.4.2), an instance array
+/// to expand (IEEE 1364-2005 §7.1.5, §12.1.2), or a generate instance (§6.6).
+fn elaboratedChildren(file: *const Ast.SourceFile, gen_instances: []const []const Ast.Instance) bool {
+    assert(gen_instances.len == file.modules.len);
+    if (file.paramsets.len != 0) return true;
+    for (file.modules, gen_instances) |m, gen| {
+        if (gen.len != 0) return true;
+        for (m.instances) |inst| if (inst.range != null) return true;
+    }
+    return false;
+}
 
 /// Which module is the device (§6.2.2): the first user module, in source
 /// order, that nothing instantiates. A child may be declared before its
