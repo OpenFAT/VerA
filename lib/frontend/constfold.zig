@@ -711,15 +711,17 @@ test "§3.4 firstStateRead names the first simulation-state or variable read of 
     }
 }
 
-test "every walk holds 100,000 levels on a 1 MiB thread: depth costs heap, not native stack" {
+test "every walk holds 20,000 levels on a 1 MiB thread: depth costs heap, not native stack" {
     // Oracle: the guard page, and each chain's value worked out by hand. An
     // embedder's thread may have 1 MiB; a walk that recursed once per level
-    // overflowed it long before 100,000.
+    // would need frames under 53 bytes to hold 20,000 levels in it. The
+    // parses that build the chains cost the parser's Debug stack, about 6 KB
+    // a level, so n stays no larger than that proof needs.
     if (@import("builtin").single_threaded) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const n = 100_000;
+    const n = 20_000;
     // `40'd1 | 1 | ... | 1` nests on the left, the others on the right.
     const ors = try testParse(a, "", try nested(a, "", "40'd1", " | 1", n));
     const negs = try testParse(a, "", try nested(a, "-(", "1", ")", n));

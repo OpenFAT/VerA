@@ -575,11 +575,13 @@ test "blockScopes refuses a statement nest past its thread's stack with E0241, n
     // which only an unselected generate arm instantiates (§12.4.2), so
     // `elaborate` never walks it and the test does not depend on how large
     // a stack `runGuarded` gets (a sixteenth of memory, 256 MiB on
-    // Windows); the walk here runs on the caller's stack.
+    // Windows); the walk here runs on the caller's stack. Parsing the nest
+    // costs about 7 KB of Debug stack a level, so n is no larger than the
+    // 4 MiB needs.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const n = 100_000;
+    const n = 20_000;
     var src: std.ArrayList(u8) = .empty;
     try src.appendSlice(a, "module deep; initial ");
     for (0..n) |_| try src.appendSlice(a, "begin ");

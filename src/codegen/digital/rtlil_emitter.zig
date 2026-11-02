@@ -351,12 +351,21 @@ pub const Emitter = struct {
         return y;
     }
 
-    /// `p`'s current indentation, two spaces a level.
+    /// `p`'s current indentation, two spaces a level, up to `max_indent`.
     pub fn indent(self: *Emitter, p: *Proc) Error!void {
         assert(self.proc == p);
-        try p.w.splatByteAll(' ', 2 * p.indent);
+        // `@min` against a comptime bound narrows its type: widen before doubling.
+        const levels: usize = @min(p.indent, max_indent);
+        try p.w.splatByteAll(' ', 2 * levels);
     }
 };
+
+/// The deepest indentation `indent` writes, in levels. RTLIL reads white
+/// space only as a separator, and indenting without bound made an n-arm
+/// else-if chain n^2 bytes (10^4 arms: 977 MB); a line deeper than this
+/// starts at this column. Deeper than any process a person writes, so the
+/// text of one is what `write_rtlil` prints.
+const max_indent = 32;
 
 test "constSig: two's complement, MSB first, past 64 bits sign-extended" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

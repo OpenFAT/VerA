@@ -567,12 +567,13 @@ test "§10.4 a nested invocation in an actual argument is not recursion" {
     }
 }
 
-test "macro nesting has no depth bound: 100,000 nested uses and a 100,000-macro chain" {
+test "macro nesting has no depth bound: 10,000 nested uses and a 20,000-macro chain" {
     // `M(x)` is `(x)`, so n nested uses expand to n parentheses around 1 and
     // need n live expansions, argument pre-expansion included. 129 was one
     // past the old 128-level cap (E0119); 10,000 crosses many stack segments
     // (`preprocessor.segment_levels`). Each level copies the text inside it,
-    // so the text built is quadratic: 10,000 levels is 50 MB of it.
+    // so the text built is quadratic: 10,000 levels is 50 MB of it, and the
+    // scratch arena keeps every copy until `process` returns (320 MB peak).
     for ([_]usize{ 129, 10_000 }) |n| {
         var src: std.ArrayList(u8) = .empty;
         defer src.deinit(testing.allocator);
@@ -589,9 +590,10 @@ test "macro nesting has no depth bound: 100,000 nested uses and a 100,000-macro 
         try expectPp(want.items, src.items);
     }
     // A chain: M<k> expands to M<k-1>, so the body rescan nests n deep with
-    // n distinct names on the cycle guard.
+    // n distinct names on the cycle guard: 19 segments, and at 8.5 KB of
+    // Debug stack a level, 170 MB.
     {
-        const n = 100_000;
+        const n = 20_000;
         var src: std.ArrayList(u8) = .empty;
         defer src.deinit(testing.allocator);
         try src.appendSlice(testing.allocator, "`define M0 end\n");

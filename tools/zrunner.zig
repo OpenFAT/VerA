@@ -3,7 +3,9 @@
 //! `CLICOLOR_FORCE` for colour when the build captures the output.
 //!
 //! Every test runs on a fresh `std.testing.allocator` and `std.testing.io`,
-//! as the stock 0.17 runner sets them up. Clauses: none (tooling).
+//! as the stock 0.17 runner sets them up, and fails when it raises the
+//! process's peak resident set by more than `rss_budget`. Clauses: none
+//! (tooling).
 //!
 //! Contents:
 //! - `pub const vera_validate_contract`
@@ -58,6 +60,17 @@ pub const TestResult = union(enum) {
 /// have yet: it must fail, and passing is an XPASS
 /// failure, so the marker cannot outlive the gap. A leak is never excused.
 const xfail_prefix = "xfail(";
+
+/// The most a test may raise the process's peak resident set (`peakRss`),
+/// so `zig build test`'s parallel artifacts cannot together exhaust a
+/// machine: a test past it fails, `RSS <namespace>.<name>: N MiB > budget`.
+/// The peak is a high-water mark, so a test is charged only what it adds
+/// above every test before it. Measured per test on x86_64-linux, Debug
+/// (2026-11-02): the largest peak is 497 MiB, `shape`'s 2^20 + 1024-cell
+/// array (about 450 bytes of lowering state a cell), then 376 and 346 MiB
+/// (the preprocessor's and parser's depth tests); the rest are under 270
+/// MiB. The budget leaves the largest a 1.3x margin.
+const rss_budget: usize = 640 << 20;
 
 /// Seeded inputs `fuzz` adds to each fuzz test's corpus in a plain run.
 const fuzz_runs = 256;
@@ -114,11 +127,15 @@ const Test = struct {
         std.testing.environ = environ;
         std.testing.log_level = .warn;
 
+        const peak_before = peakRss();
         const start = std.Io.Clock.Timestamp.now(io, .awake);
         // Try to run the test:
-        const result = self.test_fn.func();
+        const tested = self.test_fn.func();
         const end = std.Io.Clock.Timestamp.now(io, .awake);
         const duration = start.durationTo(end).raw;
+        // Over the budget fails whatever the test returned, an xfail included.
+        const growth = (peakRss() orelse 0) -| (peak_before orelse 0);
+        const result = if (growth > rss_budget) error.RssBudget else tested;
 
         // Cleanup
         std.testing.io_instance.deinit();
@@ -143,6 +160,18 @@ const Test = struct {
                 .err = error.SkipZigTest,
                 .stack_trace = "  SKIP: unsupported fails, never skips. Make it pass, name the gap `xfail(...)`, or leave the\n  test out of the targets it cannot run on (a comptime reference), with the reason.\n",
             } },
+            error.RssBudget => {
+                const line = try std.fmt.allocPrint(arena.allocator(), "RSS {s}.{s}: {d} MiB > {d} MiB\n", .{ self.namespace, self.name, growth >> 20, rss_budget >> 20 });
+                // On stderr now: `zig build` shows a failing step's stderr, not its report.
+                std.debug.print("{s}", .{line});
+                test_result = .{ .failed = .{
+                    .@"test" = self,
+                    .duration = duration,
+                    .is_mem_leak = is_mem_leak,
+                    .err = error.RssBudget,
+                    .stack_trace = try std.mem.concat(arena.allocator(), u8, &.{ "  ", line }),
+                } };
+            },
             else => if (xfail) {
                 test_result = .{ .xfailed = .{ .@"test" = self, .is_mem_leak = is_mem_leak } };
             } else {
@@ -167,6 +196,7 @@ const Test = struct {
             },
         }
         // An `xfail(...)` test never passes, and only one reports as xfailed.
+        if (growth > rss_budget) assert(test_result == .failed);
         if (xfail) assert(test_result != .passed);
         if (!xfail) assert(test_result != .xfailed);
         return test_result;
@@ -448,6 +478,25 @@ pub fn run(
 
 // ---- private ----
 
+/// The process's peak resident set so far, in bytes, which never falls; null
+/// where the runner cannot read it.
+fn peakRss() ?usize {
+    switch (builtin.os.tag) {
+        .linux => return @as(usize, @intCast(std.posix.getrusage(std.posix.rusage.SELF).maxrss)) * 1024,
+        // Darwin counts bytes, not KiB.
+        .macos => return @intCast(std.posix.getrusage(std.posix.rusage.SELF).maxrss),
+        .windows => {
+            const windows = std.os.windows;
+            var vmc: windows.PROCESS.VM_COUNTERS = undefined;
+            return switch (windows.ntdll.NtQueryInformationProcess(windows.current_process, .VmCounters, &vmc, @sizeOf(windows.PROCESS.VM_COUNTERS), null)) {
+                .SUCCESS => vmc.PeakWorkingSetSize,
+                else => null,
+            };
+        },
+        else => return null,
+    }
+}
+
 fn fuzzOne(
     context: anytype,
     comptime testOne: fn (@TypeOf(context), *std.testing.Smith) anyerror!void,
@@ -566,4 +615,18 @@ test "fuzz: the corpus, then the empty input, then fuzz_runs seeded inputs no lo
     try std.testing.expectEqual(@as(usize, 1 + 1 + fuzz_runs), seen.n);
     try std.testing.expectEqual([2]usize{ 3, 0 }, seen.first);
     try std.testing.expect(seen.longest <= fuzz_max_len);
+}
+
+test "peakRss: holding 256 MiB resident puts the peak past 192 MiB, and the peak never falls" {
+    // Oracle: the bytes written, less a quarter for the kernel's lagging
+    // per-CPU counters. Not a difference from the peak before: an earlier
+    // test's peak may sit far above this test's resident set.
+    const before = peakRss().?;
+    const buf = try std.heap.page_allocator.alloc(u8, 256 << 20);
+    defer std.heap.page_allocator.free(buf);
+    @memset(buf, 0xa5);
+    std.mem.doNotOptimizeAway(buf.ptr);
+    const after = peakRss().?;
+    try std.testing.expect(after >= 192 << 20);
+    try std.testing.expect(after >= before);
 }

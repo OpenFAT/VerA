@@ -200,6 +200,9 @@ test "10^4 levels of parentheses, else-if arms, begin blocks and lvalue braces e
     try std.testing.expectEqual(@as(usize, n), std.mem.count(u8, chain, "cell $add "));
     const arms = try emit(arena, try nested(arena, "module m(input c, input a, output reg y);\n  always @(posedge c)\n", "    if (a) y = 1; else\n", "    y = 0;\n", "", "endmodule\n", n));
     try std.testing.expectEqual(@as(usize, n), std.mem.count(u8, arms, "switch "));
+    // An arm is five lines of bounded length, so the text is linear in n.
+    // Development indented each arm two levels past its parent: 977 MB here.
+    try std.testing.expect(arms.len < 512 * n);
     const deep = try emit(arena, try nested(arena, "module m(input c, input a, output reg y);\n  always @(posedge c) ", "begin ", "y = a;", " end", "\nendmodule\n", n));
     const flat = try emit(arena, "module m(input c, input a, output reg y);\n  always @(posedge c) y = a;\nendmodule\n");
     try std.testing.expectEqualStrings(flat, deep);
