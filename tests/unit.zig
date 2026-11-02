@@ -13165,10 +13165,13 @@ pub const sim_digital_tests = struct {
 
     test "A.5.1 a UDP with no input port is refused, declared or instantiated" {
         // Oracle: A.5.1's udp_port_list, `output_port_identifier ,
-        // input_port_identifier { , input_port_identifier }`. The parser
-        // refuses it (E0207) before `checkUdp` would; either names the rule.
-        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; wire w; p g(w); endmodule", "at least one input");
-        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; endmodule", "at least one input");
+        // input_port_identifier { , input_port_identifier }`, in both header
+        // forms. The parser refuses it (E0207) before elaboration, so no
+        // one-port UDP reaches `checkUdp`, which asserts it.
+        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; wire w; p g(w); endmodule", "error[E0207]");
+        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; endmodule", "error[E0207]");
+        try root.expectRejected("primitive p(output q); table endtable endprimitive module t; endmodule", "error[E0207]");
+        try root.expectRejected("primitive p(output reg q = 0); table endtable endprimitive module t; endmodule", "error[E0207]");
     }
 
     test "§12.4.1 a loop generate's genvar declared again as a variable, net or parameter is refused" {
