@@ -4409,22 +4409,22 @@ pub const kernel_tests = struct {
     }
 
     test "§9.4.1 zMonitor: nothing before the invocation, then one report per change" {
-        const site = 4242;
-        try std.testing.expect(str_store.zMonitor(site, &[_]u64{ 1, 2 }, "t") == null);
-        try std.testing.expectEqual(@as(f64, 0.0), str_store.zMonitorArm(site));
+        var site: str_store.ZMon = .{};
+        try std.testing.expect(str_store.zMonitor(&site, &[_]u64{ 1, 2 }, "t") == null);
+        try std.testing.expectEqual(@as(f64, 0.0), str_store.zMonitorArm(&site));
         // The first accepted step has no "last accepted step" to equal.
-        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &[_]u64{ 1, 2 }, "t").?);
-        try std.testing.expect(str_store.zMonitor(site, &[_]u64{ 1, 2 }, "t") == null);
-        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &[_]u64{ 1, 3 }, "t").?);
-        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &[_]u64{1}, "t").?);
-        try std.testing.expect(str_store.zMonitor(site, &[_]u64{1}, "t") == null);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(&site, &[_]u64{ 1, 2 }, "t").?);
+        try std.testing.expect(str_store.zMonitor(&site, &[_]u64{ 1, 2 }, "t") == null);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(&site, &[_]u64{ 1, 3 }, "t").?);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(&site, &[_]u64{1}, "t").?);
+        try std.testing.expect(str_store.zMonitor(&site, &[_]u64{1}, "t") == null);
         // The latch is as wide as the site watches: past 64 values it still
         // compares, and reports only the change.
         var many: [65]u64 = @splat(0);
-        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &many, "t").?);
-        try std.testing.expect(str_store.zMonitor(site, &many, "t") == null);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(&site, &many, "t").?);
+        try std.testing.expect(str_store.zMonitor(&site, &many, "t") == null);
         many[64] = 1;
-        try std.testing.expectEqualStrings("t", str_store.zMonitor(site, &many, "t").?);
+        try std.testing.expectEqualStrings("t", str_store.zMonitor(&site, &many, "t").?);
     }
 
     test "§9.5.3 zSBuf/zSRow: one row per call site and slot, of the size asked" {
@@ -15146,7 +15146,7 @@ pub const codegen_tests = struct {
         // latch otherwise) and `$strobe`.
         try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, exe, "(if (zFinish == 0 and (pass != .accepted)) "));
         try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, exe, "(if (zFinish == 0 and (pass != .iteration)) "));
-        try std.testing.expect(std.mem.find(u8, exe, " else inst.zf__.res__") != null);
+        try std.testing.expect(std.mem.find(u8, exe, " else zInstI(S, inst, \"zf_res__") != null);
         // A device drops every §9.5 call: no passes.
         const dev = try h.gen(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, dev, "displayPass") == null);
@@ -15245,7 +15245,7 @@ pub const codegen_tests = struct {
         // `updateState` see) is that latch, not the device's zero.
         const exe = try h.genDisplay(std.testing.allocator);
         try std.testing.expect(std.mem.find(u8, exe, "zFKeep(") != null);
-        try std.testing.expect(std.mem.find(u8, exe, ": i64 = inst.zf__.res__") != null);
+        try std.testing.expect(std.mem.find(u8, exe, ": i64 = zInstI(S, inst, \"zf_res__") != null);
     }
 
     test "codegen: §9.4 a display unit that reads an operator input opens the cache" {

@@ -11,10 +11,9 @@
 //! distinct array, which keeps two `$sformat` calls in one module from
 //! writing over each other (§9.5.3 has each name its own string variable).
 //! The rows are thread-local on a CPU, so two threads evaluating the same
-//! call site on different instances each format into their own row.
-//! ponytail: the `$monitor` latches stay file scope, one per site for every
-//! instance and thread; per-instance latches are the upgrade the day a host
-//! runs two instances of a model that monitors.
+//! call site on different instances each format into their own row. A
+//! `$monitor` latch is state of the instance (`ZMon`, `Instance.zm__`), so
+//! two instances of one model each compare against their own last report.
 //!
 //! Contents:
 //! - `pub const ZStrHeld = ZStrHeldN(4096)`
@@ -28,12 +27,30 @@
 //! - `pub fn zStrCat(buf: anytype, parts: []const []const u8) []const u8`
 //! - `pub fn zStrRepeat(buf: anytype, count: i64, s: []const u8) []const u8`
 //! - `pub fn zSOver() noreturn`
-//! - `pub fn zMonitor(comptime site: usize, vals: anytype, text: []const u8) ?[]const u8`
-//! - `pub fn zMonitorArm(comptime site: usize) f64`
+//! - `pub const ZMon = struct { armed: bool, seen: bool, h: u64 }`
+//! - `pub fn zMonitor(m: *const ZMon, vals: []const u64, text: []const u8) ?[]const u8`
+//! - `pub fn zMonitorArm(m: *const ZMon) f64`
 
 const zstd = @import("std");
 
 // ---- device text ----
+
+/// One §9.4.1 `$monitor`/`$fmonitor` site's latch in one instance
+/// (`Instance.zm__`, one per `Lower.armMonitor` key): whether the statement
+/// ran (`armed`), whether a step was reported (`seen`), and the hash of the
+/// values it reported (`h`). A plain value, so a host copies it with the
+/// instance.
+// ponytail: one Wyhash of the watched values, not the values: a change is
+// missed with probability 2^-64, as a string operand's own hash already is.
+// Keep the values the day a site's operand count reaches the instance field.
+pub const ZMon = struct {
+    armed: bool = false,
+    seen: bool = false,
+    h: u64 = 0,
+};
+
+/// The held string of the 4096-byte row.
+pub const ZStrHeld = ZStrHeldN(4096);
 
 /// Whether the scratch rows are thread-local: on every CPU target, not on a
 /// GPU, which has no thread-local storage (one GPU thread formats nothing).
@@ -41,9 +58,6 @@ const zs_tls = switch (@import("builtin").target.cpu.arch) {
     .nvptx64, .amdgcn => false,
     else => true,
 };
-
-/// The held string of the 4096-byte row.
-pub const ZStrHeld = ZStrHeldN(4096);
 
 /// Returns the type of a held string variable's own bytes, an `Instance`
 /// field (§5.10/§3.3, #19), `len` bytes: the longest text the model can put
@@ -194,49 +208,37 @@ pub fn zSOver() noreturn {
     zstd.process.exit(1);
 }
 
-/// Returns `text` when site `site`'s watched values differ from those it
-/// last reported, else null (§9.4.1): "for each accepted step, if the
-/// variable or an expression in the argument list changes value compared
-/// with the last accepted step ... the entire argument list is displayed",
-/// once however many changed (§9.5.2 carries it to `$fmonitor`). The emitter
-/// hands one u64 per watched argument (a real's or integer's bits, a
-/// string's hash) with the exempt `$abstime`/`$realtime` operands left out:
-/// a rendered-line comparison could not honour that exemption. The first
-/// accepted step reports, and nothing reports before the statement ran
-/// (`zMonitorArm`). `site` is `Lower.armMonitor`'s key.
-pub fn zMonitor(comptime site: usize, vals: anytype, text: []const u8) ?[]const u8 {
-    const Last = zsMonitorLatch(site);
-    if (!Last.armed) return null;
-    const V = zsMonitorVals(site, vals.len);
-    if (V.seen and zstd.mem.eql(u64, &V.v, vals)) return null;
-    V.v = vals.*;
-    V.seen = true;
-    zstd.debug.assert(zstd.mem.eql(u64, &V.v, vals));
+/// Returns `text` when latch `m`'s watched values differ from those it last
+/// reported, else null (§9.4.1): "for each accepted step, if the variable or
+/// an expression in the argument list changes value compared with the last
+/// accepted step ... the entire argument list is displayed", once however
+/// many changed (§9.5.2 carries it to `$fmonitor`). The emitter hands one u64
+/// per watched argument (a real's or integer's bits, a string's hash) with
+/// the exempt `$abstime`/`$realtime` operands left out: a rendered-line
+/// comparison could not honour that exemption. The first accepted step
+/// reports, and nothing reports before the statement ran (`zMonitorArm`).
+/// `m` is the site's latch in the instance the display unit runs for,
+/// written through the `*const Instance` the contract hands `display`, as
+/// `file_kernels.zFCtx` writes the table: only the display phase writes it,
+/// one call per instance at a time.
+pub fn zMonitor(m: *const ZMon, vals: []const u64, text: []const u8) ?[]const u8 {
+    const l: *ZMon = @constCast(m);
+    if (!l.armed) return null;
+    const h = zstd.hash.Wyhash.hash(0, zstd.mem.sliceAsBytes(vals));
+    if (l.seen and l.h == h) return null;
+    l.h = h;
+    l.seen = true;
+    zstd.debug.assert(l.seen);
     return text;
 }
 
-/// §9.4.1 "sets up a mechanism": the statement ran, so site `site` reports
-/// at the end of this accepted step and every one after it. Returns 0: the
-/// call is a void task riding the display chain.
-pub fn zMonitorArm(comptime site: usize) f64 {
-    zsMonitorLatch(site).armed = true;
+/// §9.4.1 "sets up a mechanism": the statement ran, so latch `m` reports at
+/// the end of this accepted step and every one after it. Returns 0: the call
+/// is a void task riding the display chain. Writes through `*const` as
+/// `zMonitor` does.
+pub fn zMonitorArm(m: *const ZMon) f64 {
+    const l: *ZMon = @constCast(m);
+    l.armed = true;
+    zstd.debug.assert(m.armed);
     return 0.0;
-}
-
-// ---- private ----
-
-fn zsMonitorLatch(comptime site: usize) type {
-    return struct {
-        const n = site;
-        var armed: bool = false;
-    };
-}
-
-/// The values site `site` last reported, `len` of them.
-fn zsMonitorVals(comptime site: usize, comptime len: usize) type {
-    return struct {
-        const n = site;
-        var v: [len]u64 = undefined;
-        var seen: bool = false;
-    };
 }

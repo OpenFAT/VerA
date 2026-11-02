@@ -164,7 +164,9 @@ pub fn emitDisplayTask(g: *Gen, c: Mir.Callee, args: []const Mir.Value, inst: Mi
         // only when a watched argument VALUE differs from the step this site
         // last reported (`monitorValues`). An overrun is `emitStringFormat`'s
         // E1011.
-        try g.b("if (zMonitor({d}, ", .{cg_file_io.monitorKey(g, args)});
+        try g.b("if (zMonitor(", .{});
+        try cg_file_io.emitMonitorLatch(g, args);
+        try g.b(", ", .{});
         try cg_file_io.monitorValues(g, ops.items);
         try g.b(", ", .{});
         try emitBufPrint(g, fmt.items, ops.items, site);
@@ -590,32 +592,39 @@ test "§9.4.1 $monitor reports a step only when the record changed" {
     const s = try emitBody(a, "$strobe(\"v=%0d\", 1);");
     try std.testing.expect(has(s, "zd: { std.debug.print("));
     const m = try emitBody(a, "$monitor(\"v=%0d\", 1);");
-    try std.testing.expect(has(m, "S.con(zMonitorArm(0))")); // the invocation
-    try std.testing.expect(has(m, "zd: { if (zMonitor(0, "));
+    try std.testing.expect(has(m, "S.con(zMonitorArm(&inst.zm__[0]))")); // the invocation
+    try std.testing.expect(has(m, "zd: { if (zMonitor(&inst.zm__[0], "));
     try std.testing.expect(has(m, ") |zt| std.debug.print(\"{s}\", .{zt});"));
+    try std.testing.expect(has(m, "zm__: [1]ZMon = @splat(.{}),")); // the instance's own latch
     // §9.5.2 "$fmonitor ... works just like its counterpart": the record is
     // composed, then written only if it changed.
     const f = try emitBody(a, "$fmonitor(1, \"v=%0d\", 1);");
-    try std.testing.expect(has(f, "break :zf if (zMonitor(0, "));
+    try std.testing.expect(has(f, "break :zf if (zMonitor(&inst.zm__[0], "));
     try std.testing.expect(has(f, ") |zm| zFPut("));
 
     // The latch itself, at the boundary the emitted code uses it at.
     const k = @import("kernels").str_store;
+    var l1: k.ZMon = .{};
+    var l2: k.ZMon = .{};
     // "When a $monitor task is invoked ... the simulator sets up a mechanism":
     // before the statement has run there is no mechanism and nothing reports.
-    try std.testing.expect(k.zMonitor(9001, &[_]u64{1}, "a\n") == null);
-    _ = k.zMonitorArm(9001);
-    _ = k.zMonitorArm(9002);
-    try std.testing.expectEqualStrings("a\n", k.zMonitor(9001, &[_]u64{1}, "a\n").?); // first step: no predecessor
-    try std.testing.expect(k.zMonitor(9001, &[_]u64{1}, "a\n") == null); // unchanged
+    try std.testing.expect(k.zMonitor(&l1, &.{1}, "a\n") == null);
+    _ = k.zMonitorArm(&l1);
+    _ = k.zMonitorArm(&l2);
+    try std.testing.expectEqualStrings("a\n", k.zMonitor(&l1, &.{1}, "a\n").?); // first step: no predecessor
+    try std.testing.expect(k.zMonitor(&l1, &.{1}, "a\n") == null); // unchanged
     // The watched VALUES decide, not the text: a line that differs only in an
     // exempt `$abstime` (never in `vals`) is not a change.
-    try std.testing.expect(k.zMonitor(9001, &[_]u64{1}, "t=2 a\n") == null);
-    try std.testing.expectEqualStrings("b\n", k.zMonitor(9001, &[_]u64{2}, "b\n").?);
-    try std.testing.expect(k.zMonitor(9001, &[_]u64{2}, "b\n") == null);
-    // A DISTINCT site is a distinct latch: two monitors must not mask each
-    // other, exactly as two `$sformat` sites must not share a row.
-    try std.testing.expectEqualStrings("b\n", k.zMonitor(9002, &[_]u64{2}, "b\n").?);
+    try std.testing.expect(k.zMonitor(&l1, &.{1}, "t=2 a\n") == null);
+    try std.testing.expectEqualStrings("b\n", k.zMonitor(&l1, &.{2}, "b\n").?);
+    try std.testing.expect(k.zMonitor(&l1, &.{2}, "b\n") == null);
+    // A DISTINCT latch (another site, or the same site in another instance)
+    // is its own: two monitors must not mask each other.
+    try std.testing.expectEqualStrings("b\n", k.zMonitor(&l2, &.{2}, "b\n").?);
+    try std.testing.expect(k.zMonitor(&l1, &.{2}, "b\n") == null);
+    // Order matters: the same values swapped are a change.
+    try std.testing.expectEqualStrings("c\n", k.zMonitor(&l1, &.{ 2, 1 }, "c\n").?);
+    try std.testing.expectEqualStrings("d\n", k.zMonitor(&l1, &.{ 1, 2 }, "d\n").?);
 }
 
 test "§9.5.4.2 a scan consumes per DIRECTIVE, and says how much" {
