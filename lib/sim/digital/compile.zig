@@ -487,6 +487,50 @@ test "§12.7 a named block's local shadows the module's, and each instance has i
     , "m.u.b 6\n1\nm.w.b 6\n1\n");
 }
 
+test "§12.5 a named block is a scope of its own, so a nested or cousin block may reuse a name and a sibling may not" {
+    // Oracle: IEEE 1364-2005 §12.5 "Named blocks within named blocks ...
+    // shall create new branches" and §12.7 "An identifier shall be used to
+    // declare only one item within a scope"; each transcript is iverilog
+    // 13.0's, run on the same source.
+    try expectRun(
+        \\module top;
+        \\initial begin : b begin : b $display("%m"); end end
+        \\initial begin begin : x begin : c $display("%m"); end end begin : y begin : c $display("%m"); end end end
+        \\endmodule
+    , "top.b.b\ntop.x.c\ntop.y.c\n");
+    // §10.3 with §12.7's upward search: `b` from inside the inner block is
+    // found first in the outer block's scope, so it is the inner block.
+    try expectRun(
+        \\module top;
+        \\initial begin : b
+        \\  begin : b $display("before"); disable b; $display("inner after disable"); end
+        \\  $display("outer after inner");
+        \\end
+        \\endmodule
+    , "before\nouter after inner\n");
+    // The same in a §10.4.5 constant function, compiled for a parameter
+    // before pass one reaches its body, so `compileStmt` makes its scopes.
+    try expectRun(
+        \\module top;
+        \\function integer f; input integer a; begin : b begin : b f = a; disable b; f = 0; end f = f + 1; end endfunction
+        \\parameter P = f(3);
+        \\initial $display("%0d", P);
+        \\endmodule
+    , "4\n");
+    // §12.5 a hierarchical name through two blocks named `b`, beside a third
+    // `b` under the sibling `c`, which declares nothing.
+    try expectRun(
+        \\module top;
+        \\initial begin : b
+        \\  begin : b integer x; x = 5; end
+        \\  begin : c begin : b $display("%m"); end end
+        \\end
+        \\initial #1 $display("%0d", top.b.b.x);
+        \\endmodule
+    , "top.b.c.b\n5\n");
+    try expectRejected("module top; initial begin begin : b end begin : b end end endmodule", "duplicate named block");
+}
+
 test "§5.3 a min:typ:max expression reads its typical member everywhere" {
     try expectRun("module m; initial $display(\"%0d\", (1:2:3) * 10 + (3:2:1)); endmodule", "22\n");
 }

@@ -21,6 +21,12 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Veri
   (the monitor latches) and the latched §9.5 results move from
   `zf__.res__<site>` to top-level `zf_res__<site>`; `--display=drop` and
   `record` devices change only in unused kernel text (#123).
+- **A named block nested in one of the same name runs** (`begin : b begin :
+  b … end end`, and cousins `x.c` and `y.c`): every named block is a scope of
+  its own (IEEE 1364-2005 §12.5), where it was refused as "duplicate named
+  block" unless it declared something; `disable b` inside the inner block
+  ends the inner one (§10.3, §12.7). Two sibling blocks of one name are still
+  refused (#124).
 
 ## v0.22.0 — 2026-11-02
 
