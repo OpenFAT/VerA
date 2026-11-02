@@ -471,8 +471,9 @@ pub fn build(b: *Build) void {
     if (language != .ams) return;
     for (hostTests(b)) |h| {
         const gen = genRun(b, va_gen, h.va);
-        gen.addArgs(&.{ "--emit-zig", "-I" });
+        gen.addArg("--emit-zig");
         if (h.emit) gen.addArg("--display=emit");
+        gen.addArg("-I"); // its directory is the next argument
         gen.addDirectoryArg2(b.path("tests/conformance/tests/include"), .{});
         gen.addFileArg(b.path(h.va));
         gen.addArg("-o");
