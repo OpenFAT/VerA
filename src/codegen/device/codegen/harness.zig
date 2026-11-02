@@ -6,7 +6,7 @@
 //! Contents:
 //! - `pub const Harness = struct`
 //! - members: `Harness.run`, `Harness.runOver`, `Harness.gen`, `Harness.genDisplay`,
-//!   `Harness.genOut`, `Harness.genWith`, `Harness.deinit`
+//!   `Harness.genOut`, `Harness.genWith`, `Harness.deinit`; field `Harness.first_error`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -25,17 +25,24 @@ const Output = codegen.Output;
 const generate = codegen.generate;
 
 /// One source lowered into MIR, owning everything in `arena_state`; `gen*`
-/// runs proof and codegen over it. Call `deinit` when done.
+/// runs proof and codegen over it. Call `deinit` when done. A `run` that
+/// fails has freed everything already and leaves only `first_error`; `deinit`
+/// after it is a no-op.
 pub const Harness = struct {
     arena_state: std.heap.ArenaAllocator,
     file: Ast.SourceFile,
     mir: Mir,
     lowered: Lowered,
     bag: diag.Bag,
+    /// After a failed `run`: the code of the first error lowering reported,
+    /// or null when it failed otherwise (out of memory).
+    first_error: ?diag.Code = null,
 
     /// Lowers `src` into `out`; diagnostics land in `out.bag`. Everything
     /// `out` holds lives in its arena on `gpa`: free it with `deinit`, or pass
-    /// an arena as `gpa` and let it go with that.
+    /// an arena as `gpa` and let it go with that. On failure (a refusal is
+    /// `error.DiagnosticsReported`) nothing stays allocated, so a caller that
+    /// `try`s it leaks nothing; `out.first_error` names the refusal.
     pub fn run(gpa: std.mem.Allocator, src: []const u8, out: *Harness) !void {
         return runOver(gpa, src, &.{}, out);
     }
@@ -52,6 +59,14 @@ pub const Harness = struct {
         const arena = out.arena_state.allocator();
         // One diagnostic bag threaded through every stage (diag.zig).
         out.bag = diag.Bag.init(arena);
+        errdefer {
+            out.first_error = firstError(&out.bag);
+            out.arena_state.deinit();
+            // Empty, so a `deinit` after the failure frees nothing twice.
+            out.arena_state = .init(gpa);
+            out.bag = diag.Bag.init(out.arena_state.allocator());
+            assert(out.bag.isEmpty());
+        }
         const pp = try preprocessor.process(arena, src, .{ .bag = &out.bag });
         const text = pp.text;
         const toks = try lexer.tokenize(arena, text, null);
@@ -128,5 +143,10 @@ pub const Harness = struct {
     /// Frees everything `run` lowered and every output generated since.
     pub fn deinit(self: *Harness) void {
         self.arena_state.deinit();
+    }
+
+    fn firstError(bag: *const diag.Bag) ?diag.Code {
+        for (0..bag.count()) |i| if (bag.at(i).severity == .err) return bag.at(i).code;
+        return null;
     }
 };

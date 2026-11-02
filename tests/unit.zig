@@ -13165,9 +13165,10 @@ pub const sim_digital_tests = struct {
 
     test "A.5.1 a UDP with no input port is refused, declared or instantiated" {
         // Oracle: A.5.1's udp_port_list, `output_port_identifier ,
-        // input_port_identifier { , input_port_identifier }`.
-        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; wire w; p g(w); endmodule", "at least one input port");
-        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; endmodule", "at least one input port");
+        // input_port_identifier { , input_port_identifier }`. The parser
+        // refuses it (E0207) before `checkUdp` would; either names the rule.
+        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; wire w; p g(w); endmodule", "at least one input");
+        try root.expectRejected("primitive p(q); output q; table endtable endprimitive module t; endmodule", "at least one input");
     }
 
     test "§12.4.1 a loop generate's genvar declared again as a variable, net or parameter is refused" {
@@ -14640,21 +14641,44 @@ pub const codegen_tests = struct {
         try std.testing.expect(std.mem.find(u8, src, "((sim.kind == .ac or sim.kind == .noise) and std.mem.eql(u8, contract.hostString(model.analysis_name_idx__, inst.analysis_name), \"xf\"))") != null);
     }
 
+    test "Harness.run: a source lowering refuses frees what it lowered, and keeps the refusal's code" {
+        // Oracle: std.testing.allocator's leak check. A caller that `try`s
+        // `run` never reaches its `defer deinit`, so a refused source must
+        // leave nothing allocated; `deinit` after it must still be safe (no
+        // double free), and the refusal's code survives for the caller.
+        // §4.4 Table 4-16: `I(p, p)` is an error (E0315).
+        const src =
+            \\module m(p);
+            \\  inout p;
+            \\  electrical p;
+            \\  analog I(p, p) <+ V(p);
+            \\endmodule
+        ;
+        var h: Harness = undefined;
+        try std.testing.expectError(error.DiagnosticsReported, Harness.run(std.testing.allocator, src, &h));
+        try std.testing.expectEqual(@as(?@import("diag").Code, .E0315), h.first_error);
+        var h2: Harness = undefined;
+        try std.testing.expectError(error.DiagnosticsReported, Harness.run(std.testing.allocator, src, &h2));
+        h2.deinit();
+    }
+
     test "codegen: §4.6.4 a generator VerA cannot export refuses the device" {
         // Both halves of the same rule: a `noise_gens` row that cannot be written
         // must take the DECL with it. Silently dropping the row would tell a host
         // the model declares no such noise, which is a PSD it can never ask for;
         // and `@compileError` is how codegen refuses (see `f64Expr`/E0515).
         const cases = [_][]const u8{
-            // §1.3.1.1 a ground-ground branch has no row and no column (E0520).
+            // §1.3.1.1 a ground-ground branch has no row and no column (E0520):
+            // two `ground` nets, one node. Not `I(g, g)`, which §4.4 Table
+            // 4-16 makes an error of its own however `ground` is exempted.
             \\module ngnd(p);
             \\  inout p;
             \\  electrical p;
-            \\  ground g;
-            \\  electrical g;
+            \\  ground g1, g2;
+            \\  electrical g1, g2;
             \\  analog begin
             \\    I(p) <+ V(p) * 1e-3;
-            \\    I(g, g) <+ white_noise(1e-20);
+            \\    I(g1, g2) <+ white_noise(1e-20);
             \\  end
             \\endmodule
             ,
@@ -18444,17 +18468,18 @@ pub const codegen_tests = struct {
             var h: Harness = undefined;
             const lowered = Harness.run(gpa, src, &h);
             defer h.deinit();
-            // A refusal at lowering lands in the bag.
+            // A refusal at lowering leaves its code in `first_error`.
             if (lowered) |_| {} else |e| if (e != error.DiagnosticsReported) return e;
             const a = h.arena_state.allocator();
-            if (!h.bag.failed()) {
+            const ran = if (lowered) |_| true else |_| false;
+            if (ran and !h.bag.failed()) {
                 // As `Compilation.lowerAndProve` runs it.
                 _ = try ifconv.run(a, &h.mir, .pure, null);
                 const v = try proof.prove(a, &h.mir, &h.lowered, .{}, &h.bag);
                 _ = try ifconv.run(a, &h.mir, .speculate, null);
                 if (!h.bag.failed()) _ = try generate(a, a, &h.mir, &h.lowered, v, .{ .display = display, .diags = &h.bag });
             }
-            var first: ?diag.Code = null;
+            var first: ?diag.Code = h.first_error;
             for (0..h.bag.count()) |i| if (h.bag.at(i).severity == .err) {
                 first = h.bag.at(i).code;
                 break;
