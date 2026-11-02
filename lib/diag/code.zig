@@ -137,10 +137,7 @@ const names = [_][]const u8{
     // ---------------------------------------------------------------- class 7
     // Events and timing — src/analog/.
     "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707",
-    "E0708",
-    // A monitored event under the fixed-grid testbench, which inserts no
-    // timepoint at a crossing or timer.
-    "W0750",
+    "E0708", "W0750",
 
     // ---------------------------------------------------------------- class 8
     // System tasks and functions — src/analog/.
@@ -158,42 +155,9 @@ const names = [_][]const u8{
     // Runtime / artifact contract — codegen.zig, root.zig.
     "E1001", "E1002", "E1003", "E1004", "E1010", "E1011", "E1012", "E1013",
     "E1014", "E1015", "E1016", "E1017", "E1018", "E1019", "E1020", "E1021",
-    "E1022", "E1100", "E1101",
-    // IEEE 1364-2005 §17.2.10: an SDF file `$sdf_annotate` cannot read.
-    "E1102",
-    // IEEE 1364-2005 §16: an SDF construct the annotator does not apply.
-    "W1105",
-    // A `.v` design that cannot be a contract device.
-    "E1103",
-    // A SystemVerilog source.
-    "E1104",
-    // IEEE 1364-2005 §15: a timing check argument the digital engine
-    // cannot bind (a notifier that is no variable, an event terminal that
-    // is no whole or constant-select vector).
-    "E1147",
-    // IEEE 1364-2005 Tables 15-1..15-11: a limit or threshold that is not
-    // a non-negative constant expression.
-    "E1148",
-    // IEEE 1364-2005 §15: a timing check form the digital engine does not
-    // evaluate, refused by name.
-    "E1149", "W1150", "W1151", "W1152", "W1153", "W1154",
-    // A `.v` device whose digital tick is 1 s.
-    "W1155",
-    // A `$readmem` file address outside the memory, with no bounds given.
-    "W1156",
-    // IEEE 1364-2005 §17.2.9: a `$readmem` load that cannot go on (a file
-    // address outside the task's range, a malformed word or address, a
-    // file that cannot be read, a bound outside the memory); the load is
-    // terminated, the run goes on.
-    "W1157", "W1160",
-    // IEEE 1364-2005 §12.2.2.1: more ordered parameter values than the
-    // module has parameters; the extra ones are ignored.
-    "W1161",
-    // IEEE 1364-2005 §15.5.1: negative timing check limits no delayed
-    // signals can meet; the most negative one is set to 0.
-    "W1162",
-    // IEEE 1364-2005 §15: a timing check reported a violation at run time.
-    "W1199",
+    "E1022", "E1100", "E1101", "E1102", "W1105", "E1103", "E1104", "E1147",
+    "E1148", "E1149", "W1150", "W1151", "W1152", "W1153", "W1154", "W1155",
+    "W1156", "W1157", "W1160", "W1161", "W1162", "W1199",
     // --------------------------------------------------------------- class 12
     // `--emit-rtlil` refusals: a construct outside the synthesizable subset
     // (src/codegen/digital/rtlil*.zig), one code per refusal.
@@ -212,43 +176,8 @@ const names = [_][]const u8{
     "E0920", "E0921", "E0922", "E0923", "E0924", "E0925", "E0926", "E0927",
     "E0928", "E0929", "E0930", "E0960", "E0982", "E0997", "E0998", "E0482",
     "E0483", "E0484", "E0485", "E0486", "E0887", "E0888", "E0889", "E0890",
-    // §9.17.3 a `$limit` argument that is not the form Syntax 9-12 spells.
-    "E0891",
-    // §9.14 / IEEE 1364-2005 §17.11.1 `$clog2` takes an integral operand.
-    "E0892",
-    // §9.14 an analog wide operand whose high bits the carrier erased.
-    "E0893", "E0894",
-    // §9.17.3 a `$limit` site the device does not honour: the probe is
-    // returned unchanged, which the clause permits.
-    "W0853",
-    // A `$limit` seed on a branch `seed` does not start: named, never
-    // silently dropped.
-    "W0854",
-    // §9.16 a `$simprobe` name that does not fold: run-time resolution is
-    // not implemented, and the fallback would answer a valid name wrongly.
-    "E0823",
-    // `--emit-osdi` of a device with `$vera_reject_step`: OSDI 0.4 has no
-    // slot for a step-rejection request (VD-102).
-    "E1099",
-    // `--emit-osdi` of a device whose §4.6.4.6 noise generator feeds two
-    // rows: OSDI 0.4 reports them as independent sources (VD-102).
-    "W1098",
-    // LRM 4.5.7: an absdelay history ring that filled while its window was
-    // still needed now keeps older samples at a coarser spacing.
-    "W1051",
-    // §9.4.3 the '#' flag on a conversion that has no alternative form.
-    "E0825",
-    // §9.4.2 Table 9-21's `%%` written with a flag, width or precision.
-    "E0826",
-    // IEEE 1364-2005 §17.1.1.2 C's '-', '+' or ' ' flag on a digital-context
-    // conversion that is not a real one.
-    "E0827",
-    // §9.4.3 an analog-context format's field width or precision past
-    // VerA's limit of 2^30.
-    "E0828",
-    // §9.2 a system function the tables allow in the digital context that
-    // VerA's digital engine does not run, refused by name.
-    "E0829",
+    "E0891", "E0892", "E0893", "E0894", "W0853", "W0854", "E0823", "E1099",
+    "W1098", "W1051", "E0825", "E0826", "E0827", "E0828", "E0829",
 };
 
 /// Every class's rows (`codes/`), in catalogue order.

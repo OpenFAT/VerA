@@ -99,16 +99,20 @@ pub const rows = .{
         \\the clause prints.
         ,
     },
+    // §9.14 / IEEE 1364-2005 §17.11.1 `$clog2` takes an integral operand.
     .E0892 = .{
         .title = "$clog2 requires an integer or vector argument",
         .lrm = "9.14",
         .explain = "IEEE 1364-2005 §17.11.1 permits an integer or an arbitrary sized vector, interpreted as unsigned. A real operand has no integral bit width; convert it explicitly with $rtoi if truncation is intended.",
     },
+    // §9.14 an analog wide operand whose high bits the carrier erased.
     .E0893 = .{
         .title = "analog $clog2 cannot recover this wide operand's high bits",
         .lrm = "9.14",
         .explain = "Inside an analog $clog2 operand, arithmetic, unary negation and shifts retain at most 32 bits per intermediate. Bitwise, conditional and comparison contexts retain at most 64 bits. Above 64 bits only exact wide literals and parameter aliases preserving their width retain proven high bits. The compiler refuses a wider intermediate rather than inventing erased bits; digital execution preserves arbitrary vector widths.",
     },
+    // §9.16 a `$simprobe` name that does not fold: run-time resolution is
+    // not implemented, and the fallback would answer a valid name wrongly.
     .E0823 = .{
         .title = "$simprobe name known only at run time, with no fallback",
         .lrm = "9.16",
@@ -186,6 +190,7 @@ pub const rows = .{
         \\Only a value that folds without the model card is judged here.
         ,
     },
+    // §9.17.3 a `$limit` argument that is not the form Syntax 9-12 spells.
     .E0891 = .{
         .title = "$limit argument is not the form Syntax 9-12 requires",
         .lrm = "9.17.3",

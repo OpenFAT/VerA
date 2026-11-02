@@ -10,6 +10,7 @@
 const retiredInfo = @import("../code.zig").retiredInfo;
 
 pub const rows = .{
+    // IEEE 1364-2005 §15: a timing check reported a violation at run time.
     .W1199 = .{
         .title = "timing violation",
         .lrm = "IEEE 1364-2005 15.2",
@@ -216,6 +217,8 @@ pub const rows = .{
         \\arguments say which case it is.
         ,
     },
+    // `--emit-osdi` of a device with `$vera_reject_step`: OSDI 0.4 has no
+    // slot for a step-rejection request (VD-102).
     .E1099 = .{
         .title = "`--emit-osdi` cannot carry `$vera_reject_step`",
         .lrm = "",
@@ -233,6 +236,8 @@ pub const rows = .{
         \\`--emit-exe` and `--run`. For an OSDI simulator, drop the call.
         ,
     },
+    // `--emit-osdi` of a device whose §4.6.4.6 noise generator feeds two
+    // rows: OSDI 0.4 reports them as independent sources (VD-102).
     .W1098 = .{
         .title = "`--emit-osdi` reports correlated noise rows as independent sources",
         .lrm = "4.6.4.6",
@@ -276,6 +281,8 @@ pub const rows = .{
         \\write, and `--allow=W1050`.
         ,
     },
+    // §9.17.3 a `$limit` site the device does not honour: the probe is
+    // returned unchanged, which the clause permits.
     .W0853 = .{
         .title = "$limit is not applied at this call",
         .lrm = "9.17.3",
@@ -316,6 +323,8 @@ pub const rows = .{
         \\`--allow=W0853`.
         ,
     },
+    // A `$limit` seed on a branch `seed` does not start: named, never
+    // silently dropped.
     .W0854 = .{
         .title = "$limit seed is not applied here",
         .lrm = "9.17.3",
@@ -335,6 +344,8 @@ pub const rows = .{
         \\A junction with no seed joins the tree at its vcrit.
         ,
     },
+    // LRM 4.5.7: an absdelay history ring that filled while its window was
+    // still needed now keeps older samples at a coarser spacing.
     .W1051 = .{
         .title = "absdelay history thinned to cover its delay",
         .lrm = "4.5.7",

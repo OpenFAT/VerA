@@ -204,6 +204,7 @@ pub const rows = .{
         \\Verilog-AMS; consult the conformance backlog for implementation gaps.
         ,
     },
+    // §9.4.3 the '#' flag on a conversion that has no alternative form.
     .E0825 = .{
         .title = "'#' flag on a format conversion that has no alternative form",
         .lrm = "9.4.3",
@@ -224,6 +225,7 @@ pub const rows = .{
         \\the value with %e, %f or %g.
         ,
     },
+    // §9.4.2 Table 9-21's `%%` written with a flag, width or precision.
     .E0826 = .{
         .title = "a flag, width or precision written on `%%`",
         .lrm = "9.4.2",
@@ -243,6 +245,8 @@ pub const rows = .{
         \\percent sign, or `%5s` over "%" for a padded one.
         ,
     },
+    // IEEE 1364-2005 §17.1.1.2 C's '-', '+' or ' ' flag on a digital-context
+    // conversion that is not a real one.
     .E0827 = .{
         .title = "a C format flag on a digital-context conversion that is not a real one",
         .lrm = "9.4.7",
@@ -264,6 +268,8 @@ pub const rows = .{
         \\is E0825.)
         ,
     },
+    // §9.4.3 an analog-context format's field width or precision past
+    // VerA's limit of 2^30.
     .E0828 = .{
         .title = "a format field width or precision past VerA's limit",
         .lrm = "9.4.3",
@@ -284,6 +290,8 @@ pub const rows = .{
         \\goes and takes any width.)
         ,
     },
+    // §9.2 a system function the tables allow in the digital context that
+    // VerA's digital engine does not run, refused by name.
     .E0829 = .{
         .title = "system function not run by VerA's digital engine",
         .lrm = "9.2",

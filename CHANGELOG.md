@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`diag.Code` has no `name()` method** (the `vera` Zig module's API): use
+  `@tagName(code)`. The code catalogue moved to `lib/diag/codes/`, one file
+  per class, and `Code` is built from one ordered list of names, so every
+  code keeps its tag and its number; diagnostics and `--explain` text are
+  byte-identical.
 - **No expected conformance failures again**: the twelve fixtures v0.21.0
   listed in `tools/vera.xfail` now expect what the LRM says
   (OpenFAT/VAMS-Conformance-Suite#2). An instance's own port flow and a

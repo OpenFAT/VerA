@@ -124,6 +124,8 @@ pub const rows = .{
         \\    analog @(initial_step) r = 1.0;     // yes
         ,
     },
+    // A monitored event under the fixed-grid testbench, which inserts no
+    // timepoint at a crossing or timer.
     .W0750 = .{
         .title = "event fires on the testbench's fixed time grid, not at its own time",
         .lrm = "5.10.3",

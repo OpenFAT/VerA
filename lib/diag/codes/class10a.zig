@@ -132,6 +132,7 @@ pub const rows = .{
         .lrm = "8.5",
         .explain = "The digital executor supports a documented subset of source processes. Unsupported forms are diagnosed before simulation; timing and capacity failures stop execution explicitly. This does not make legal unsupported Verilog-AMS forms illegal.",
     },
+    // IEEE 1364-2005 §17.2.10: an SDF file `$sdf_annotate` cannot read.
     .E1102 = .{
         .title = "an SDF file the annotator cannot read",
         .lrm = "IEEE 1364-2005 17.2.10",
@@ -149,6 +150,7 @@ pub const rows = .{
         \\the working directory, as a $readmemh file is.
         ,
     },
+    // IEEE 1364-2005 §16: an SDF construct the annotator does not apply.
     .W1105 = .{
         .title = "an SDF construct the annotator does not apply",
         .lrm = "IEEE 1364-2005 16.2",
@@ -162,6 +164,9 @@ pub const rows = .{
         \\and line.
         ,
     },
+    // IEEE 1364-2005 §15: a timing check argument the digital engine
+    // cannot bind (a notifier that is no variable, an event terminal that
+    // is no whole or constant-select vector).
     .E1147 = .{
         .title = "a timing check argument the digital engine cannot bind",
         .lrm = "IEEE 1364-2005 15.5",
@@ -185,6 +190,8 @@ pub const rows = .{
         \\one) as each event.
         ,
     },
+    // IEEE 1364-2005 Tables 15-1..15-11: a limit or threshold that is not
+    // a non-negative constant expression.
     .E1148 = .{
         .title = "a timing check limit that is not a non-negative constant",
         .lrm = "IEEE 1364-2005 15.1",
@@ -200,6 +207,8 @@ pub const rows = .{
         \\(15.5.4).
         ,
     },
+    // IEEE 1364-2005 §15: a timing check form the digital engine does not
+    // evaluate, refused by name.
     .E1149 = .{
         .title = "a timing check VerA's digital engine does not evaluate",
         .lrm = "IEEE 1364-2005 15",
@@ -241,6 +250,7 @@ pub const rows = .{
         \\4-state logic.
         ,
     },
+    // A `.v` design that cannot be a contract device.
     .E1103 = .{
         .title = "design cannot be a contract device",
         .lrm = "7.8",
@@ -265,6 +275,7 @@ pub const rows = .{
         \\`--emit-exe` still run such a design on its own.
         ,
     },
+    // A SystemVerilog source.
     .E1104 = .{
         .title = "a SystemVerilog source is not supported",
         .lrm = "",
@@ -310,26 +321,36 @@ pub const rows = .{
         .lrm = "IEEE 1364-2005 17.2.1",
         .explain = "$fclose closes the channels a descriptor names and does not allow any further output to them. A $fdisplay or $fwrite whose descriptor names only closed channels, or a file opened only for reading, writes nothing; $ferror reports the error. The simulation continues.",
     },
+    // A `.v` device whose digital tick is 1 s.
     .W1155 = .{
         .title = "device digital tick is 1 s",
         .lrm = "IEEE 1364-2005 19.8",
         .explain = "A design with no `timescale directive runs at the simulator's default time unit and precision, which for VerA is 1 s. A contract device built from it delivers every analog-to-digital event at a whole second and schedules every delay in seconds, which an analog host rarely means. Add a `timescale directive (for example `timescale 1ns/1ps) to the design.",
     },
+    // A `$readmem` file address outside the memory, with no bounds given.
     .W1156 = .{
         .title = "memory file address outside the memory",
         .lrm = "IEEE 1364-2005 17.2.9",
         .explain = "A `$readmemb`/`$readmemh` call with no start or finish argument met an `@` address outside the memory's declared range. The clause's error for an address outside the load range applies only when the task gives addresses, so VerA does not stop the load: the words at addresses outside the memory are skipped, and loading continues at the next in-range address. The warning names the first such address (specification/Vague_Decisions.md VD-040).",
     },
+    // IEEE 1364-2005 §17.2.9: a `$readmem` load that cannot go on (a file
+    // address outside the task's range, a malformed word or address, a
+    // file that cannot be read, a bound outside the memory); the load is
+    // terminated, the run goes on.
     .W1157 = .{
         .title = "a $readmem load terminated",
         .lrm = "IEEE 1364-2005 17.2.9",
         .explain = "A `$readmemb`/`$readmemh` load could not go on: a file address outside the start..finish range the task gives (§17.2.9: \"an error message is issued, and the load operation is terminated\"), a word or `@` address that is not a number in the task's radix (the file \"shall contain only\" white space, comments and such numbers), a file that cannot be opened or read, a file name with an x or z bit, a start or finish address that is x, z or outside the memory. VerA issues this message and stops that load: the words loaded before it stay, none after it is loaded, and the simulation goes on. The run's exit status is untouched, as iverilog's is (specification/Vague_Decisions.md VD-134). With no start or finish argument an address outside the memory is W1156 instead.",
     },
+    // IEEE 1364-2005 §15.5.1: negative timing check limits no delayed
+    // signals can meet; the most negative one is set to 0.
     .W1162 = .{
         .title = "negative timing check limits that cannot all be met",
         .lrm = "IEEE 1364-2005 15.5.1",
         .explain = "With --negative-timing, $setuphold and $recrem take negative limits through delayed copies of their signals, one delay per signal per instance, chosen so every adjusted limit is non-negative. A set of limits whose windows contradict each other (a setup and hold summing below zero around a cycle of signals) has no such delays. §15.5.1: \"the problem shall be resolved by changing the smallest negative limit value to 0\"; VerA does that, warns once per change, and solves again.",
     },
+    // IEEE 1364-2005 §12.2.2.1: more ordered parameter values than the
+    // module has parameters; the extra ones are ignored.
     .W1161 = .{
         .title = "extra ordered parameter values ignored",
         .lrm = "IEEE 1364-2005 12.2.2.1",
