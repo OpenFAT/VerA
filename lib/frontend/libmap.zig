@@ -85,11 +85,13 @@ pub const Map = struct {
         return out;
     }
 
-    /// Returns the index of the library called `name` in `libraries`, or null.
+    /// Returns the index of the library called `name` in `libraries`, or
+    /// null. `name` may be anything (`-L ''` reaches here from argv); an empty
+    /// one names no library, since every declared name is an identifier.
     pub fn declares(map: Map, name: []const u8) ?usize {
-        assert(name.len > 0);
         for (map.libraries, 0..) |l, i| if (std.mem.eql(u8, l.name, name)) {
             assert(i < map.libraries.len);
+            assert(name.len > 0);
             return i;
         };
         return null;
@@ -150,7 +152,7 @@ const Loader = struct {
                 const spec = t.next() orelse return l.fail(here, "`include` names no file_path_spec", .{});
                 if (isPunct(spec.text)) return l.fail(.{ .file = file, .tok = spec }, "`include` names no file_path_spec", .{});
                 try l.expectSemicolon(&t, file, spec);
-                const next = try std.fs.path.resolveAllocPosix(l.arena, &.{ dir, unquote(spec.text) });
+                const next = try std.fs.path.resolveAllocPosix(l.arena, &.{ dir, try l.specText(file, spec) });
                 const site: Site = .{ .file = file, .tok = spec };
                 // Every 1024 nested files continue on a fresh stack segment,
                 // so nesting is bounded by memory, not the caller's stack.
@@ -172,7 +174,7 @@ const Loader = struct {
                     const spec = t.next() orelse return l.fail(.{ .file = file, .tok = prev }, "a library declaration ends with `;`", .{});
                     // A.1.1: the `-incdir` list follows at least one file_path_spec.
                     if (isPunct(spec.text) or std.mem.eql(u8, spec.text, "-incdir")) return l.fail(.{ .file = file, .tok = spec }, "`library {s}` needs a file_path_spec here (Syntax 13-2), found `{s}`", .{ name.text, spec.text });
-                    try lib.specs.append(l.arena, try resolveSpec(l.arena, dir, unquote(spec.text)));
+                    try lib.specs.append(l.arena, try resolveSpec(l.arena, dir, try l.specText(file, spec)));
                     const sep = t.next() orelse return l.fail(.{ .file = file, .tok = spec }, "a library declaration ends with `;`", .{});
                     if (std.mem.eql(u8, sep.text, ";")) break;
                     // A.1.1 `[ -incdir file_path_spec { , file_path_spec } ] ;`
@@ -181,7 +183,7 @@ const Loader = struct {
                         while (true) {
                             const d = t.next() orelse return l.fail(.{ .file = file, .tok = prev_tok }, "a library declaration ends with `;`", .{});
                             if (isPunct(d.text)) return l.fail(.{ .file = file, .tok = d }, "`-incdir` needs a file_path_spec here (Syntax 13-2), found `{s}`", .{d.text});
-                            try l.incdirs.append(l.arena, try std.fs.path.resolveAllocPosix(l.arena, &.{ dir, unquote(d.text) }));
+                            try l.incdirs.append(l.arena, try std.fs.path.resolveAllocPosix(l.arena, &.{ dir, try l.specText(file, d) }));
                             const next = t.next() orelse return l.fail(.{ .file = file, .tok = d }, "a library declaration ends with `;`", .{});
                             if (std.mem.eql(u8, next.text, ";")) break;
                             if (!std.mem.eql(u8, next.text, ",")) return l.fail(.{ .file = file, .tok = next }, "found `{s}`: -incdir file_path_specs are separated by `,` and end with `;`", .{next.text});
@@ -194,6 +196,15 @@ const Loader = struct {
                 }
             } else return l.fail(here, "found `{s}`: a library map holds `library` and `include` statements only (IEEE 1364-2005 §13.2.2)", .{kw.text});
         }
+    }
+
+    /// Returns `tok`'s file_path_spec, unquoted. `""` names no file, and
+    /// Syntax 13-2 has no empty file_path_spec: refused.
+    fn specText(l: *Loader, file: diag.FileId, tok: Token) Error![]const u8 {
+        const text = unquote(tok.text);
+        if (text.len == 0) return l.fail(.{ .file = file, .tok = tok }, "`{s}` is an empty file_path_spec (Syntax 13-2)", .{tok.text});
+        assert(text.len <= tok.text.len);
+        return text;
     }
 
     fn expectSemicolon(l: *Loader, t: *Tokens, file: diag.FileId, after: Token) Error!void {
@@ -611,6 +622,8 @@ test "§13.5.1 order is declaration order, with `work` last unless a map declare
     const map: Map = .{ .libraries = &.{ .{ .name = "x", .specs = &.{} }, .{ .name = "y", .specs = &.{} } } };
     try testing.expectEqual(@as(?usize, 1), map.declares("y"));
     try testing.expectEqual(@as(?usize, null), map.declares("work"));
+    // `-L ''` reaches here from argv: no library is called that.
+    try testing.expectEqual(@as(?usize, null), map.declares(""));
 }
 
 test "§13.2.2 load reads library and include statements, and a library declared twice holds both" {
@@ -684,6 +697,10 @@ test "§13.2.2 Syntax 13-2: every malformed statement is E0244 naming what it fo
         .{ "include x.map", "an `include` statement ends with `;`" },
         .{ "include x.map y;", "found `y`: an `include` statement ends with `;`" },
         .{ "include missing.map;", "cannot read library map" },
+        // Syntax 13-2 has no empty file_path_spec, in any of its three places.
+        .{ "library lib \"\";", "`\"\"` is an empty file_path_spec" },
+        .{ "library lib a.v -incdir \"\";", "`\"\"` is an empty file_path_spec" },
+        .{ "include \"\";", "`\"\"` is an empty file_path_spec" },
         // A map that includes itself would never end: a named cycle.
         .{ "include bad.map;", "library map `include` cycle:" },
     }) |c| {

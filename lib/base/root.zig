@@ -41,11 +41,11 @@ pub const Region = @import("directive.zig").Region;
 /// A `timescale's two operands, in seconds (`directive_events.Timescale`).
 pub const Timescale = @import("directive.zig").Timescale;
 
-/// §7.8.4 one port re-pointed at a connect module (`Elaborate.Inserted`).
+/// §7.8.4 one port re-pointed at a connect module (`elab.design.Inserted`).
 pub const Inserted = @import("design.zig").Inserted;
-/// §7.4.4 basic or detail discipline resolution (`Elaborate.DisciplineResolution`).
+/// §7.4.4 basic or detail discipline resolution (`elab.design.DisciplineResolution`).
 pub const DisciplineResolution = @import("design.zig").DisciplineResolution;
-/// §3.4 a `--param name=value` override (`Elaborate.ParamOverride`).
+/// §3.4 a `--param name=value` override (`elab.design.ParamOverride`).
 pub const ParamOverride = @import("design.zig").ParamOverride;
 /// §9.18 one Table 9-29 hierarchical system parameter (`hier_param.Kind`).
 pub const SystemParam = @import("design.zig").SystemParam;

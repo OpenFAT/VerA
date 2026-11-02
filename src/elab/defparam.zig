@@ -199,19 +199,40 @@ pub fn seededValue(self: *Flatten, path: []const u8, local: []const u8, dp: *Def
         try self.err(dp.tok, .E0907, "`{s}{s}` is applied before its declaring instance is elaborated, and its value reads the cycle {s}, which no replacement ends (IEEE 1364-2005 12.8.1)", .{ path, local, names });
         return null;
     }
-    // Acyclic, so this ends: each replacement trades a name for names
-    // strictly further down a finite graph.
-    var v = dp.value;
-    while (readsUndeclared(self, v)) |hit| {
-        const name = self.ctx.file.exprs.strOf(hit);
+    // Each name's final expression is built once, after the names it reads
+    // (post-order on a heap stack), and substituted whole. Replacing the
+    // first undeclared read until none was left re-walked the growing value
+    // per step and eliminated a name once per path to it: `p_i = p_{i-1} +
+    // p_{i-1}` doubled the walk per level. Acyclic, so this ends.
+    const a = self.ctx.arena;
+    var done: std.AutoHashMapUnmanaged(Ast.StrId, Ast.ExprId) = .empty;
+    var stack: std.ArrayList(Ast.StrId) = .empty;
+    const roots = try undeclaredReads(self, dp.value);
+    try stack.appendSlice(a, roots);
+    var pushes: usize = roots.len;
+    var steps: usize = 0;
+    while (stack.getLastOrNull()) |name| : (steps += 1) {
+        // A step pops a copy or expands a name, and a name expands at most
+        // twice (its reads, then itself), so steps stay within 2 * pushes.
+        assert(steps <= 2 * pushes);
+        if (done.contains(name)) {
+            _ = stack.pop();
+            continue;
+        }
         const with = seedValueOf(self, name) orelse {
             dp.used = true;
             try self.err(dp.tok, .E0907, "`{s}{s}` is applied before its declaring instance is elaborated, and its value reads `{s}`, which names no parameter of the elaborated design (IEEE 1364-2005 12.8.1)", .{ path, local, self.ctx.file.str(name) });
             return null;
         };
-        v = try generate.substIdent(self, v, name, with);
+        const reads = try undeclaredReads(self, with);
+        const before = stack.items.len;
+        for (reads) |r| if (!done.contains(r)) try stack.append(a, r);
+        pushes += stack.items.len - before;
+        if (stack.items.len != before) continue;
+        try done.put(a, name, try generate.substIdents(self, with, &done));
+        _ = stack.pop();
     }
-    return v;
+    return try generate.substIdents(self, dp.value, &done);
 }
 
 /// Reports E0907 for every defparam no parameter claimed. §6.3.1 a defparam
@@ -375,8 +396,10 @@ fn seedValueOf(self: *Flatten, name: Ast.StrId) ?Ast.ExprId {
 /// `seedDefparams`' second walk applies every defparam the first collected,
 /// so this is reached only by one that `mayBindEarly` did not foresee.
 fn boundEarlier(self: *Flatten, key: []const u8) bool {
-    assert(key.len != 0);
+    // `key` comes from source text: a defparam rooted at a top whose
+    // escaped name holds a period can leave it empty, which names nothing.
     const k = (std.mem.findScalarLast(u8, key, sep) orelse return false) + 1;
+    assert(k <= key.len);
     for (self.out.units.items(.path), self.out.units.items(.decl)) |up, decl| if (std.mem.eql(u8, up, key[0..k])) {
         for (decl.get(self.ctx.file).params) |p| if (!p.is_local and std.mem.eql(u8, self.ctx.file.str(p.name), key[k..])) return true;
     };
@@ -460,4 +483,50 @@ test "IEEE 1364-2005 §12.8.1 an upward defparam's value is replaced down a chai
     try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
     try std.testing.expectEqual(diag.Code.E0907, f.bag.at(0).code);
     try std.testing.expect(std.mem.find(u8, f.bag.at(0).message, "the cycle `w.y` → `w.x` → `w.y`") != null);
+}
+
+test "IEEE 1364-2005 §12.8.1 an upward defparam's value is replaced once per parameter, not once per path to it" {
+    // `p<i>` is `p<i-1> + p<i-1>`: 40 levels are 2^40 paths down to `p0` and
+    // 41 parameters. Oracle: the shared expression's own structure, each
+    // level one `+` over the level below, read back to `p0`'s literal.
+    const gpa = std.testing.allocator;
+    const n = 40;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendSlice(gpa,
+        \\module top(p); inout p; electrical p; kid u(p); writer w(p); endmodule
+        \\module kid(c); inout c; electrical c; parameter real g = 0.0; endmodule
+        \\module writer(c); inout c; electrical c; parameter real p0 = 1.0;
+        \\
+    );
+    for (1..n + 1) |i| try text.print(gpa, "parameter real p{d} = p{d} + p{d};\n", .{ i, i - 1, i - 1 });
+    try text.print(gpa, "defparam top.u.g = p{d};\nendmodule\n", .{n});
+    var f: fixture.Fixture = .{ .arena = .init(gpa) };
+    defer f.deinit();
+    try fixture.parse(&f, text.items);
+    const d = try elaborate.elaborate(f.ctx());
+    try std.testing.expectEqual(@as(usize, 0), f.bag.count());
+    const x = &f.file.exprs;
+    var e = fixture.paramNamed(&f.file, d.top, "u.g").?.default;
+    for (0..n) |_| {
+        try std.testing.expectEqual(Ast.ExprTag.binary, x.tag(e));
+        try std.testing.expectEqual(x.lhs(e), x.rhs(e)); // one shared operand
+        e = x.lhs(e);
+    }
+    try std.testing.expectEqual(@as(f64, 1.0), x.realValue(e));
+}
+
+test "IEEE 1364-2005 §12.2.1 a defparam rooted at a top whose escaped name holds periods is a verdict" {
+    // Oracle: §3.7.1, `\$t.` is one name, so `$root.\$t..` is the top's
+    // `\$t.` and then an empty segment: no parameter, reported. Neither the
+    // top's period nor the empty last part may reach a lookup as an assertion.
+    for ([_][]const u8{
+        "module \\$t. (a); inout a; electrical a; parameter real p = 1; defparam $root.\\$t.. = 2; endmodule",
+        "module top(a); inout a; electrical a; parameter real p = 1; defparam \\$root.top. = 2; endmodule",
+    }) |src| {
+        var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try fixture.parse(&f, src);
+        try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
+    }
 }

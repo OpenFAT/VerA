@@ -274,10 +274,10 @@ discrete_probes: std.StringArrayHashMapUnmanaged([2][]const u8) = .empty,
 discrete_params: std.StringArrayHashMapUnmanaged(u32) = .empty,
 /// The module's discrete half needs the event queue (`lower_context.isMixed`).
 mixed_signal: bool = false,
-/// §7.8.4 the connect modules elaboration inserted (see `Elaborate.Design.inserts`).
+/// §7.8.4 the connect modules elaboration inserted (see `elab.Design.inserts`).
 inserts: []const Inserted = &.{},
 /// §9.18 Table 9-29 domains of card-dependent system parameters
-/// (`Elaborate.SystemCheck`), each value lowered over the parameters.
+/// (`elab.design.SystemCheck`), each value lowered over the parameters.
 /// Codegen's `checkCard` names the first one the card puts outside.
 system_checks: std.ArrayList(SystemCheck) = .empty,
 
@@ -978,7 +978,7 @@ pub const Inserted = base.Inserted;
 /// `name`; the testbench and `vera` pass it to lowering.
 pub const ParamOverride = base.ParamOverride;
 /// §7.4.4 basic or detail discipline resolution, which the testbench passes
-/// to lowering (`Elaborate.DisciplineResolution`).
+/// to lowering (`base.DisciplineResolution`).
 pub const DisciplineResolution = base.DisciplineResolution;
 /// Reports whether a §9.15 simulation parameter is answered at run time
 /// (`simparam.isRuntime`).

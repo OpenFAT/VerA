@@ -792,6 +792,17 @@ pub const parser_tests = struct {
         }
     }
 
+    test "A.5.1 a UDP's port list is an output and at least one input, in both header arms" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        try expectFirstErrors(arena_state.allocator(), &.{
+            .{ .src = "primitive u(q); output q; table 0 : 1; endtable endprimitive", .code = .E0207 },
+            .{ .src = "primitive u(output q); table 0 : 1; endtable endprimitive", .code = .E0207 },
+            .{ .src = "primitive u(q, a); output q; input a; table 0 : 1; endtable endprimitive", .code = null },
+            .{ .src = "primitive u(output q, input a); table 0 : 1; endtable endprimitive", .code = null },
+        }, true);
+    }
+
     test "A.5.1 a udp_declaration survives the parse, both header arms" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
@@ -1673,6 +1684,46 @@ pub const parser_tests = struct {
         try std.testing.expectEqualStrings("\\$display", q.file.str(try q.internTok(0)));
     }
 
+    test "internTok keeps every two escaped names apart, and no interned name holds a period (§2.8.1; IEEE 1364-2005 §3.7.1, §3.7.3)" {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        // Oracle: §3.7.1's identity, `identity` below. A period would read as
+        // a hierarchy separator after this point (`elab.sep`).
+        const names = [_][]const u8{
+            "ab",     "$ab",     "\\ab",    "\\$ab", "\\\\ab", "\\\\$ab", "\\\\\\$ab", "\\a.b",
+            "\\$a.b", "\\\\a.b", "\\$a.b.", "\\.ab", "\\ab.",  "\\$",     "\\\\",      "\\1ab",
+            "a_b",    "\\a_b",
+        };
+        const src = try std.mem.join(arena, " ", &names);
+        const list = try lexer.tokenize(arena, src, null);
+        var p = Parser.init(arena, src, list.items(.tag), list.items(.start), try newBag(arena, src));
+        try std.testing.expectEqual(names.len + 1, list.len); // one token each, then `.eof`
+        var ids: [names.len]Ast.StrId = undefined;
+        for (&ids, 0..) |*id, i| {
+            id.* = try p.internTok(@intCast(i));
+            try std.testing.expect(std.mem.findScalar(u8, p.file.str(id.*), '.') == null);
+        }
+        for (names, ids, 0..) |a, ia, i| for (names[i + 1 ..], ids[i + 1 ..]) |b, ib| {
+            if (std.mem.eql(u8, identity(a), identity(b)) != (ia == ib)) {
+                std.debug.print("`{s}` and `{s}` intern as `{s}` and `{s}`\n", .{ a, b, p.file.str(ia), p.file.str(ib) });
+                return error.TestUnexpectedResult;
+            }
+        };
+    }
+
+    /// §3.7.1: an escaped name is the text after its `\`, the same identifier
+    /// as a simple one of that spelling and no other; §3.7.3: `\$x` is not
+    /// the system name `$x`. So a name's identity is that simple spelling, or
+    /// else the escaped spelling itself.
+    fn identity(name: []const u8) []const u8 {
+        if (name[0] != '\\') return name;
+        const text = name[1..];
+        if (!std.ascii.isAlphabetic(text[0]) and text[0] != '_') return name;
+        for (text) |c| if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '$') return name;
+        return text;
+    }
+
     test "tokenText's identifier fast path agrees with the lexer's re-scan on every token" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
@@ -1746,28 +1797,48 @@ pub const parser_tests = struct {
     test "nesting has no parser bound: each construct at the old 1024 cap and far past it" {
         var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const m = "module m(p); inout p; electrical p; real r; integer k; analog begin ";
-        const e = " end endmodule";
         // 1025 was one past E0241's old cap; 100,000 crosses many stack segments
         // (`segment_levels`), so the run also checks `frames` unwinds across them.
-        for ([_]usize{ 1025, 100_000 }) |n| {
-            const deep: u32 = @intCast(n);
-            try std.testing.expect(try parseNested(arena, m ++ "r = ", "(", "1.0", ")", ";" ++ e, n) >= deep);
-            // A.8.3: a unary operand is a primary, so a deep unary chain is
-            // parenthesized (`- -x` is E0209).
-            try std.testing.expect(try parseNested(arena, m ++ "r = ", "-(", "1.0", ")", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? 1 : ", "0", "", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? ", "1", " : 0", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "r = 1.0", " + 1.0", "", "", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m, "begin ", "r = 1;", " end", e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m, "if (V(p) > 1) r = 1; else ", "r = 0;", "", e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "k = ", "{", "1'b1", "}", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, "module m; generate ", "if (1) begin ", "", "end ", "endgenerate endmodule", n) >= deep);
-            // Left-assoc chains a loop builds: each link is one level of the tree.
-            try std.testing.expect(try parseNested(arena, m ++ "r = x", "[0]", "", "", ";" ++ e, n) >= deep);
-            try std.testing.expect(try parseNested(arena, m ++ "@(cross(V(p))", " or cross(V(p))", ") r = 1;", "", e, n) >= deep);
-        }
+        for ([_]usize{ 1025, 100_000 }) |n| try parseEveryNesting(arena_state.allocator(), n);
+    }
+
+    test "nesting 5000 deep parses on a 1 MiB thread: the caller's stack is not what bounds it" {
+        // Oracle: the guard page. An embedder's thread may have 1 MiB, and
+        // `deep_stack` says nesting is bounded by memory, not by that stack.
+        if (@import("builtin").single_threaded) return error.SkipZigTest;
+        const Run = struct {
+            fn on(out: *anyerror!void) void {
+                var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena_state.deinit();
+                out.* = parseEveryNesting(arena_state.allocator(), 5000);
+            }
+        };
+        var result: anyerror!void = {};
+        const t = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.on, .{&result});
+        t.join();
+        try result;
+    }
+
+    /// Parses each nesting construct `n` deep, failing on a diagnostic or on
+    /// a `deepest` short of `n`.
+    fn parseEveryNesting(arena: std.mem.Allocator, n: usize) !void {
+        const m = "module m(p); inout p; electrical p; real r; integer k; analog begin ";
+        const e = " end endmodule";
+        const deep: u32 = @intCast(n);
+        try std.testing.expect(try parseNested(arena, m ++ "r = ", "(", "1.0", ")", ";" ++ e, n) >= deep);
+        // A.8.3: a unary operand is a primary, so a deep unary chain is
+        // parenthesized (`- -x` is E0209).
+        try std.testing.expect(try parseNested(arena, m ++ "r = ", "-(", "1.0", ")", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? 1 : ", "0", "", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "r = ", "V(p) > 1 ? ", "1", " : 0", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "r = 1.0", " + 1.0", "", "", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m, "begin ", "r = 1;", " end", e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m, "if (V(p) > 1) r = 1; else ", "r = 0;", "", e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "k = ", "{", "1'b1", "}", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, "module m; generate ", "if (1) begin ", "", "end ", "endgenerate endmodule", n) >= deep);
+        // Left-assoc chains a loop builds: each link is one level of the tree.
+        try std.testing.expect(try parseNested(arena, m ++ "r = x", "[0]", "", "", ";" ++ e, n) >= deep);
+        try std.testing.expect(try parseNested(arena, m ++ "@(cross(V(p))", " or cross(V(p))", ") r = 1;", "", e, n) >= deep);
     }
 
     test "a defparam path's index folds on a stack sized for its depth (A.9.3)" {
@@ -8643,6 +8714,129 @@ pub const lower_tests = struct {
             \\endmodule
         , .E0511);
     }
+
+    /// Lowers `body` inside `expectBodies`' module and returns the first error's
+    /// code, or null when it lowered clean.
+    fn bodyVerdict(body: []const u8) !?diag.Code {
+        const gpa = std.testing.allocator;
+        const src = try gpa.print(
+            \\module m(p, q);
+            \\  inout p, q; electrical p, q;
+            \\  real x;
+            \\{s}
+            \\endmodule
+        , .{body});
+        defer gpa.free(src);
+        var h: Lower.Harness = undefined;
+        try h.init(gpa, src);
+        defer h.deinit();
+        if (try h.lower() != null) return null;
+        for (0..h.bag.count()) |i| if (h.bag.at(i).severity == .err) return h.bag.at(i).code;
+        return error.TestUnexpectedResult; // `lower` failed with no error reported
+    }
+
+    test "A.8.2 an analog operator's omitted argument is a verdict, and one past its longest list an error" {
+        // Oracle: Syntax 4-3 and 4-4 fix each operator's longest list, so one
+        // argument more is an error, and the longest list itself lowers clean.
+        // An omitted slot is its clause's to judge (§4.5.14 defaults some), so
+        // any verdict passes there, but a verdict: the slot is source text.
+        const longest = [_][]const u8{
+            "ddt(V(p), 1u)",                                  "ddx(V(p), V(q))",
+            "idt(V(p), 0.0, 0, 1u)",                          "idtmod(V(p), 0.0, 1.0, 0.0, 1u)",
+            "absdelay(V(p), 1n, 2n)",                         "transition(x, 0, 1n, 1n, 1p)",
+            "slew(V(p), 1e9, -1e9)",                          "laplace_nd(V(p), '{1.0}, '{1.0, 1.0}, 1u)",
+            "zi_nd(V(p), '{1.0}, '{1.0}, 1n, 1p, 0)",         "limexp(V(p))",
+            "white_noise(1e-20, \"th\")",                     "flicker_noise(1e-20, 1.0, \"fl\")",
+            "noise_table('{1.0, 1e-20, 2.0, 1e-20}, \"nt\")", "ac_stim(\"ac\", 1.0, 0.0)",
+        };
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        for (longest) |call| {
+            const open = std.mem.findScalar(u8, call, '(').?;
+            const args = call[open + 1 .. call.len - 1];
+            try expectBodyCode(try arena.print("analog I(p) <+ {s};", .{call}), null);
+            try std.testing.expect(try bodyVerdict(try arena.print("analog I(p) <+ {s}, 1.0);", .{call[0 .. call.len - 1]})) != null);
+            // Each slot in turn left empty, its commas kept.
+            var depth: u32 = 0;
+            var start: usize = 0;
+            for (args, 0..) |c, i| {
+                switch (c) {
+                    '(', '{' => depth += 1,
+                    ')', '}' => depth -= 1,
+                    else => {},
+                }
+                if (i + 1 != args.len and (c != ',' or depth != 0)) continue;
+                const end = if (c == ',') i else args.len;
+                _ = try bodyVerdict(try arena.print("analog I(p) <+ {s}({s}{s});", .{ call[0..open], args[0..start], args[end..] }));
+                start = i + 1;
+            }
+        }
+        // §5.6.7.2's indirect form reads its operator's first slot for a probe.
+        for ([_][]const u8{ "ddt(, 1u)", "idt(, 0.0)", "idtmod(, 0.0, 1.0)" }) |op|
+            _ = try bodyVerdict(try arena.print("analog V(p) : {s} == V(q);", .{op}));
+        // The clauses that do judge an omitted slot.
+        try expectBodyCode("analog I(p) <+ ddt(V(p), );", .E0505);
+        try expectBodyCode("analog I(p) <+ ddx(V(p), );", .E0504);
+        try expectBodyCode("analog I(p) <+ $simprobe(, \"g\");", .E0894);
+    }
+
+    fn expectBodyCode(body: []const u8, want: ?diag.Code) !void {
+        const got = try bodyVerdict(body);
+        if (got != want) std.debug.print("`{s}`: got {?t}, want {?t}\n", .{ body, got, want });
+        try std.testing.expectEqual(want, got);
+    }
+
+    test "§3.12 a named branch whose two ends are one node lowers: a short, not a V(n, n)" {
+        // Oracle: §4.4's "they shall not evaluate to the same signal" constrains
+        // the two net expressions of an access, and `I(br)` has one; §3.12
+        // puts no rule on a branch's terminals being the same net.
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        for ([_][]const u8{
+            "analog begin I(br) <+ V(q); I(q) <+ I(br); end",
+            "analog I(br) <+ V(q);",
+            "analog I(q) <+ I(br);",
+            "analog begin I(br) <+ ddt(V(q) * 1p); I(q) <+ I(br); end",
+            "analog V(br) <+ 0.0;",
+        }) |b| try expectBodyCode(try arena_state.allocator().print("branch (p, p) br;\n{s}", .{b}), null);
+    }
+
+    test "§4.4 one net named twice in an access is E0315; two ports a parent shorts are two nets" {
+        // Oracle: §4.4's "they shall not evaluate to the same signal", read on
+        // the module as written. A module is legal or not by its own text, so
+        // an instance connecting two ports to one net (`res r1(a, a)`, a SPICE
+        // `R1 a a`) cannot make it illegal; Table 4-16's `I(n1, n1)` can.
+        const res = "module res(p, n); inout p, n; electrical p, n; {s} endmodule\nmodule top(a); inout a; electrical a; res r1(a, a); endmodule\n";
+        for ([_]Lower.Case{
+            .{ .src = "analog I(p, n) <+ V(p, n) / 1k;", .code = null },
+            .{ .src = "branch (p, n) b; analog I(b) <+ V(b) / 1k;", .code = null },
+            .{ .src = "analog I(p, p) <+ V(p, n) / 1k;", .code = .E0315 },
+        }) |c| {
+            const src = try std.testing.allocator.print(res, .{c.src});
+            defer std.testing.allocator.free(src);
+            try Lower.expectVerdict(src, c.code);
+        }
+        // §1.3.1.1 collapses every ground net onto one node: two of them are
+        // two signals.
+        try expectBodyCode("ground g1, g2; analog I(p) <+ V(g1, g2);", null);
+    }
+
+    test "IEEE 1364-2005 §4.11 a genvar shares the module name space with parameters, variables and nets (E0362)" {
+        for ([_]Lower.Case{
+            .{ .src = "genvar i; real i; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar i; parameter real i = 1.0; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar i; electrical i; analog I(p) <+ V(p);", .code = .E0362 },
+            .{ .src = "genvar k; real i; analog I(p) <+ V(p);", .code = null },
+        }) |c| try expectBodyCode(c.src, c.code);
+    }
+
+    test "a call with more operands than its 24-bit count holds is E1021, and one with fewer lowers" {
+        // Oracle: `Mir.call_args_max`, the row's count field; a pattern
+        // argument is one operand per element (A.8.1 replication included).
+        try expectBodyCode("analog I(p) <+ laplace_nd(V(p), '{16777216{1.0}}, '{1.0});", .E1021);
+        try expectBodyCode("analog I(p) <+ laplace_nd(V(p), '{4{1.0}}, '{1.0});", null);
+    }
 };
 
 pub const rtlil_tests = struct {
@@ -10924,6 +11118,15 @@ pub const preprocessor_tests = struct {
             const out = try process(arena_state.allocator(), ok_src, .{ .std_defs = false, .bag = &ok_bag, .text_limit = 1 << 20 });
             try testing.expectEqual(@as(usize, 1 << 17), std.mem.countScalar(u8, out.text, 'x'));
         }
+        // The bound is on the whole text, whichever files make it: the annex D
+        // prelude alone passes 64 bytes, though a one-line source is under it.
+        {
+            var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+            defer arena_state.deinit();
+            var bag: diag.Bag = .init(arena_state.allocator());
+            try testing.expectError(error.PreprocessFailed, process(arena_state.allocator(), "module m; endmodule\n", .{ .bag = &bag, .text_limit = 64 }));
+            try testing.expectEqual(diag.Code.E0150, bag.at(0).code);
+        }
     }
 
     test "macro nesting has no depth bound: 100,000 nested uses and a 100,000-macro chain" {
@@ -11133,6 +11336,29 @@ pub const preprocessor_tests = struct {
         var bag: diag.Bag = .init(arena);
         const d = (try process(arena, src, .{ .std_defs = false, .bag = &bag })).directives;
         return .{ .nettypes = d.nettypes, .cells = d.cells, .drives = d.drives };
+    }
+
+    test "§10.1 a region directive written as a macro actual opens its region where the expansion lands" {
+        // Oracle: the same directive written in place of the call. IEEE 1364
+        // §19.3.1 substitutes an actual literally, so both spellings give one
+        // text and one set of region lists.
+        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const head = "`define ID(x) x\nmodule a; endmodule\n";
+        const tail = "\nmodule b; endmodule\n";
+        for ([_][]const u8{
+            "`timescale 1ns/1ps",       "`default_discipline electrical", "`default_transition 1n",
+            "`default_nettype none",    "`celldefine",                    "`endcelldefine",
+            "`unconnected_drive pull1", "`nounconnected_drive",           "`resetall",
+        }) |d| {
+            var bag: diag.Bag = .init(arena);
+            const direct = try process(arena, try std.mem.concat(arena, u8, &.{ head, d, tail }), .{ .std_defs = false, .bag = &bag });
+            const actual = try process(arena, try std.mem.concat(arena, u8, &.{ head, "`ID(", d, ")", tail }), .{ .std_defs = false, .bag = &bag });
+            try testing.expectEqual(@as(usize, 0), bag.count());
+            try testing.expectEqualStrings(direct.text, actual.text);
+            try testing.expectEqualDeep(direct.directives, actual.directives);
+        }
     }
 
     test "IEEE 1364 §19.2 `default_nettype publishes a region per directive" {

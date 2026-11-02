@@ -425,7 +425,6 @@ fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []con
     try out.ensureTotalCapacity(pp.scratch, body.len);
 
     var i: usize = 0;
-    defer assert(i >= body.len);
     while (i < body.len) {
         const c = body[i];
         if (c == '"') {
@@ -497,6 +496,8 @@ fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []con
         try out.append(pp.scratch, c);
         i += 1;
     }
+    // Not a `defer`: an error return leaves the body part-scanned.
+    assert(i >= body.len);
     return out.items;
 }
 

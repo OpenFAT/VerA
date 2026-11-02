@@ -216,7 +216,7 @@ pub fn cloneLocalVars(self: *Flatten, vs: []const Ast.VarDecl) design.Error![]co
 /// override's source module in `over`.
 fn checkArraySize(self: *Flatten, p: Ast.ParamDecl, overridden: bool) design.Error!void {
     assert(p.dims.len != 0); // only an array parameter is judged
-    const got, const want = patternMismatch(self, p.default, p.dims) orelse return;
+    const got, const want = try patternMismatch(self, p.default, p.dims) orelse return;
     const tok = if (overridden) self.ctx.file.exprs.mainTok(p.default) else p.main_tok;
     if (overridden)
         try self.err(tok, .E0921, "the array assigned to `{s}` has {d} elements, and its declared range has {d}", .{ self.ctx.file.str(p.name), got, want })
@@ -225,26 +225,39 @@ fn checkArraySize(self: *Flatten, p: Ast.ParamDecl, overridden: bool) design.Err
 }
 
 /// The first `{ got, want }` element-count disagreement between assignment
-/// pattern `e` and `dims`, outermost dimension first; null when they agree
-/// or when either side does not fold (lowering owns those diagnostics).
-fn patternMismatch(self: *Flatten, e: Ast.ExprId, dims: []const Ast.Dim) ?struct { i128, i128 } {
-    assert(dims.len < 64); // one recursion level per dimension
-    if (dims.len == 0) return null;
+/// pattern `e` and `dims`, outermost dimension first, in source order; null
+/// when they agree or when either side does not fold (lowering owns those
+/// diagnostics). A worklist: `dims.len` is the source's own dimension count.
+fn patternMismatch(self: *Flatten, e: Ast.ExprId, dims: []const Ast.Dim) design.Error!?struct { i128, i128 } {
+    const Frame = struct { e: Ast.ExprId, d: u32 };
     const ex = &self.ctx.file.exprs;
-    if (e == .none or (ex.tag(e) != .assign_pattern and ex.tag(e) != .concat)) return null;
-    const msb = fold.constIntFlat(self, dims[0].msb) orelse return null;
-    const lsb = fold.constIntFlat(self, dims[0].lsb) orelse return null;
-    var elems = ex.args(e);
-    var reps: i64 = 1;
-    // A.8.1's `'{N{...}}` with a non-literal count: see `Ast.Tag.pattern_repl`.
-    if (elems.len == 1 and ex.tag(elems[0]) == .pattern_repl) {
-        reps = fold.constIntFlat(self, ex.lhs(elems[0])) orelse return null;
-        elems = ex.args(ex.rhs(elems[0]));
+    var work: std.ArrayList(Frame) = .empty;
+    defer work.deinit(self.ctx.arena);
+    try work.append(self.ctx.arena, .{ .e = e, .d = 0 });
+    while (work.pop()) |f| {
+        assert(f.d <= dims.len);
+        if (f.d == dims.len) continue;
+        if (f.e == .none or (ex.tag(f.e) != .assign_pattern and ex.tag(f.e) != .concat)) continue;
+        const msb = fold.constIntFlat(self, dims[f.d].msb) orelse continue;
+        const lsb = fold.constIntFlat(self, dims[f.d].lsb) orelse continue;
+        var elems = ex.args(f.e);
+        var reps: i64 = 1;
+        // A.8.1's `'{N{...}}` with a non-literal count: see `Ast.Tag.pattern_repl`.
+        if (elems.len == 1 and ex.tag(elems[0]) == .pattern_repl) {
+            reps = fold.constIntFlat(self, ex.lhs(elems[0])) orelse continue;
+            elems = ex.args(ex.rhs(elems[0]));
+        }
+        const got = @as(i128, reps) * elems.len;
+        const want: i128 = @intCast(@abs(@as(i128, msb) - lsb) + 1);
+        if (got != want) return .{ got, want };
+        // Reversed, so the first element pops first, as recursion visited it.
+        var k = elems.len;
+        while (k > 0) {
+            k -= 1;
+            try work.append(self.ctx.arena, .{ .e = elems[k], .d = f.d + 1 });
+        }
     }
-    const got = @as(i128, reps) * elems.len;
-    const want: i128 = @intCast(@abs(@as(i128, msb) - lsb) + 1);
-    if (got != want) return .{ got, want };
-    for (elems) |el| if (patternMismatch(self, el, dims[1..])) |m| return m;
+    assert(work.items.len == 0);
     return null;
 }
 
@@ -307,4 +320,35 @@ test "§3.4.4 an array override must have the parameter's size (E0921)" {
     defer good.deinit();
     try fixture.parse(&good, try good.arena.allocator().print(src, .{"1.0, 2.0"}));
     _ = try elaborate.elaborate(good.ctx());
+}
+
+test "§3.4.4 an override of a 70-dimension array parameter is sized level by level, with no bound on the count" {
+    // Oracle: §3.4.4's element count at each level, as in the case above; 64
+    // was an assertion's bound on the dimensions, which the source sets.
+    const gpa = std.testing.allocator;
+    const n = 70;
+    for ([_]struct { []const u8, bool }{ .{ "1.0", true }, .{ "1.0, 2.0", false } }) |c| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(gpa);
+        try text.appendSlice(gpa, "module top(p); inout p; electrical p; kid #(.c(");
+        for (0..n) |_| try text.appendSlice(gpa, "'{");
+        try text.appendSlice(gpa, c[0]);
+        try text.appendNTimes(gpa, '}', n);
+        try text.appendSlice(gpa, ")) u(p); endmodule\nmodule kid(a); inout a; electrical a; parameter real c");
+        for (0..n) |_| try text.appendSlice(gpa, "[0:0]");
+        try text.appendSlice(gpa, " = ");
+        for (0..n) |_| try text.appendSlice(gpa, "'{");
+        try text.appendSlice(gpa, "0.0");
+        try text.appendNTimes(gpa, '}', n);
+        try text.appendSlice(gpa, "; endmodule\n");
+        var f: fixture.Fixture = .{ .arena = .init(gpa) };
+        defer f.deinit();
+        try fixture.parse(&f, text.items);
+        if (c[1]) {
+            _ = try elaborate.elaborate(f.ctx());
+        } else {
+            try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
+            try std.testing.expect(fixture.hasCode(&f.bag, .E0921));
+        }
+    }
 }

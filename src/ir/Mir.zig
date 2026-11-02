@@ -16,7 +16,7 @@
 //! - `pub const Opcode`, `pub const OpClass`, `pub const opClass`, `pub const opIsInteger`
 //! - `pub const Inst = enum(u32)`, `pub const Value = enum(u32)` (`Value.first_dynamic`), `pub const Block = enum(u32)`, `pub const StrId`
 //! - `pub const insts_max: u32`, `pub const values_max: u32`, `pub const blocks_max: u32`, `pub const extra_max: u32`
-//! - `pub const no_tok: u32`, `pub const callee_bits`
+//! - `pub const no_tok: u32`, `pub const callee_bits`, `pub const call_args_max: usize`
 //! - `pub const InstRow = struct`, `pub const BlockRow = struct`, `pub const ValueRow = struct`
 //! - `pub const DefKind = enum(u8)`, `pub const Def = union(DefKind)`, `pub const InstData = union(OpClass)`
 //! - `pub const PhiPair = struct`, `pub const GuardLit = struct` (`GuardLit.end`), `pub const InstIterator`, `pub const GuardIter`
@@ -182,6 +182,9 @@ pub const InstRow = struct {
 
 /// Width of a call row's `Callee` field in `a`; the arg count sits above it.
 pub const callee_bits = @bitSizeOf(Callee);
+/// The most operands a call row holds: its count is the 24 bits above
+/// `callee_bits`. A caller lowering source checks against it (E1021).
+pub const call_args_max: usize = (1 << (32 - callee_bits)) - 1;
 
 /// First and last instruction of a block's `next` chain; `.none` when empty.
 /// Invariant: both are `.none` or neither is.

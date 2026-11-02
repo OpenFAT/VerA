@@ -18,7 +18,7 @@
 //! - `pub fn Kernel(comptime Op: type) type`
 //! - `pub const Info = struct`
 //! - `pub const table: std.EnumArray(Opcode, Info)`
-//! - `pub fn get(op: Opcode) Info`
+//! - `pub fn get(op: Opcode) *const Info`
 //! - `pub fn class(op: Opcode) OpClass`
 //! - `pub fn isInteger(op: Opcode) bool`
 //! - `pub fn operandCount(c: OpClass) ?u8`
@@ -347,9 +347,10 @@ pub fn Kernel(comptime Op: type) type {
     return struct { f: Op, int: bool = false, wrap: bool = false };
 }
 
-/// Returns `op`'s row of `table`.
-pub fn get(op: Opcode) Info {
-    return table.get(op);
+/// Returns `op`'s row of `table`, in place: `EnumArray.get` takes the table
+/// by value, which a Debug build copies whole on every call.
+pub fn get(op: Opcode) *const Info {
+    return table.getPtrConst(op);
 }
 
 /// Returns the operand shape of `op`, which drives `Mir.instData` decoding.

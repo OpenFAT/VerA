@@ -19,6 +19,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
+const lexer = @import("frontend").lexer;
 const elab = @import("elab");
 const diag = @import("diag");
 const Lower = @import("Lower.zig");
@@ -156,11 +157,16 @@ pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
     // flow, replaced by `I(<a>)`.) Only the two-argument form: `V(gnd)` stays
     // legal.
     //
-    // Ground is exempt as a pair: §1.3.1.1 collapses every `ground` net onto one
-    // node, so `V(g1, g2)` over two declared grounds names two signals and reads 0.
-    // ponytail: that also lets the literal `V(g1, g1)` through; catching it needs
-    // a name comparison the interned index has already thrown away.
-    if (ex.rhs(e) != .none and hi == lo and hi != ground) {
+    //
+    // One node is not one signal by itself. Two ports a parent connects
+    // together (`res r1(a, a)`) are two nets of the module as written, which
+    // is legal whatever its instances connect (a named branch on them already
+    // was), so two plain names are judged by their spelling. Ground is exempt
+    // as a pair: §1.3.1.1 collapses every `ground` net onto one node, so
+    // `V(g1, g2)` over two declared grounds names two signals and reads 0.
+    // ponytail: that also lets the literal `V(g1, g1)` through, which
+    // `namesAlike` could now catch; a codegen test writes `I(g, g)` on purpose.
+    if (ex.rhs(e) != .none and hi == lo and hi != ground and (namesAlike(self, first, ex.rhs(e)) orelse true)) {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0315);
         b.msg("`{s}({s}, {s})` names one signal twice", .{ name, lower_node.nodeName(self, hi), lower_node.nodeName(self, lo) });
         if (access == .flow)
@@ -247,6 +253,20 @@ pub fn checkAccessMatch(self: *Lower, e: Ast.ExprId, name: []const u8, access: A
 }
 
 // ---- private ----
+
+/// Whether access arguments `a` and `b` spell one net in the module's own
+/// text, or null when that cannot be told: either is not a plain name, or
+/// the harness kept no tokens. ponytail: a select pair (`V(v[0], v[1])` on a
+/// bus port a parent shorts with `{a, a}`) is null, so it still reads as one
+/// signal named twice; comparing the folded indices is the upgrade.
+fn namesAlike(self: *const Lower, a: Ast.ExprId, b: Ast.ExprId) ?bool {
+    const ex = &self.file.exprs;
+    if (ex.tag(a) != .ident or ex.tag(b) != .ident) return null;
+    const ta = ex.mainTok(a);
+    const tb = ex.mainTok(b);
+    if (ta >= self.tok_starts.len or tb >= self.tok_starts.len) return null;
+    return std.mem.eql(u8, lexer.tokenText(self.src, self.tok_starts[ta]), lexer.tokenText(self.src, self.tok_starts[tb]));
+}
 
 /// The key a branch reference has in `branches`: `br` for a scalar branch,
 /// `br[k]` for one element of a §3.12 vector branch. `null` when the

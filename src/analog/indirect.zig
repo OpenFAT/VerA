@@ -120,7 +120,7 @@ fn isIndirectProbe(self: *const Lower, e: Ast.ExprId) bool {
         std.mem.eql(u8, name, "idtmod");
     if (!is_op) return false;
     const args = ex.args(e);
-    if (args.len == 0) return false;
+    if (args.len == 0 or args[0] == .none) return false;
     return switch (ex.tag(args[0])) {
         .branch_access, .port_access => true,
         else => false, // else: A.8.3 takes the operator OF a probe only

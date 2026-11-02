@@ -41,9 +41,9 @@ pub const Error = error{ OutOfMemory, ParseError };
 pub const segment_levels = 4096;
 
 /// Levels the caller's own stack holds before the first segment. The parser
-/// peaks near 6 KB a level in Debug, so 32 is under 200 KB: an embedder's
-/// 1 MiB thread holds it with room for the caller. 512 overflowed that thread
-/// (a 5000-deep else-if chain, tests/generators.zig `wide`).
+/// peaks at 5.8 KB a level in Debug (`deep_stack.bytes_per_level`), so 32
+/// is under 200 KB: an embedder's 1 MiB thread holds it with room for the
+/// caller. 512 overflowed that thread (a 5000-deep else-if chain).
 pub const caller_levels = 32;
 
 /// Parser state for one token stream. Every allocation comes from `arena`;
@@ -502,7 +502,7 @@ pub const Parser = struct {
     /// Interns token `i`'s text as a name. Each period in an escaped identifier
     /// (§2.8.1: `\x.y ` is the identifier `x.y`) becomes a space, so that after
     /// this point a period in a name always means a hierarchy separator
-    /// (`Elaborate.sep`). Without it, `\x.y` inside instance `u` and net `y`
+    /// (`elab.sep`). Without it, `\x.y` inside instance `u` and net `y`
     /// inside `u.x` would flatten to the same `u.x.y`. A space cannot occur in
     /// an identifier, so the mapping is injective; `naming.sanitize` later
     /// spells it `Z20`. Allocates only for an escaped name with a period.
@@ -512,11 +512,16 @@ pub const Parser = struct {
         defer assert(self.pos >= pos_in);
         // The bytes are spelled out, not imported from `ir/`: the frontend owns
         // the source half of this convention and does not depend on the IR.
-        const text = self.tokenText(i);
-        if (self.tags[i] != .escaped_identifier) return self.file.intern(self.arena, text);
+        if (self.tags[i] != .escaped_identifier) return self.file.intern(self.arena, self.tokenText(i));
         // IEEE 1364-2005 §3.7.3: a system task or function "shall not be
-        // escaped", so `\$display` keeps its `\` and names no system task.
-        if (text[0] == '$') return self.file.intern(self.arena, lexer.tokenText(self.src, self.starts[i]));
+        // escaped", so `\$display` keeps its `\` and names no system task. A
+        // text that itself starts with `\` keeps its own, so `\\$x ` (the
+        // name `\$x`) stays apart from `\$x ` (the name `$x`): either way the
+        // interned spelling is the token's, and stripping its `\` gives the
+        // text back. Its periods map like any other escaped name's (`\$u.p`
+        // and port `p` of instance `\$u` are two names).
+        const raw = self.tokenText(i);
+        const text = if (raw[0] == '$' or raw[0] == '\\') lexer.tokenText(self.src, self.starts[i]) else raw;
         if (std.mem.findScalar(u8, text, '.') == null)
             return self.file.intern(self.arena, text);
         const buf = try self.arena.dupe(u8, text);

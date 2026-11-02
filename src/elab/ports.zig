@@ -92,6 +92,10 @@ const Binder = struct {
         const all = &self.out.net_parts;
         const start = all.items.len;
         const is_concat = self.ctx.file.exprs.tag(c.expr) == .concat;
+        // A.8.1 `concatenation ::= { expression { , expression } }` has at
+        // least one member; the parser keeps `{}` for the digital path's E1100.
+        if (is_concat and self.ctx.file.exprs.args(c.expr).len == 0)
+            return self.err(c.main_tok, .E0906, "a port connection's concatenation lists no net (an empty concatenation is invalid)", .{});
         const ok = if (is_concat) for (self.ctx.file.exprs.args(c.expr)) |o| {
             if (!try netPart(self, b.parent, o, all)) break false;
         } else true else try netPart(self, b.parent, c.expr, all);
@@ -497,6 +501,14 @@ test "§6.5.5 a connection list is all ordered or all named, at most as long as 
         var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
         defer f.deinit();
         try fixture.parse(&f, try f.arena.allocator().print(src, .{conns}));
+        try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
+        try std.testing.expect(fixture.hasCode(&f.bag, .E0906));
+    }
+    // A.8.1: a concatenation has at least one member, whatever the port's width.
+    for ([_][]const u8{ "kid(a, b); inout a, b; electrical a, b;", "kid(v); inout [1:0] v; electrical [1:0] v;" }) |kid| {
+        var f: fixture.Fixture = .{ .arena = .init(std.testing.allocator) };
+        defer f.deinit();
+        try fixture.parse(&f, try f.arena.allocator().print("module top(p); inout p; electrical p; kid u({{}}); endmodule\nmodule {s} endmodule", .{kid}));
         try std.testing.expectError(error.DiagnosticsReported, elaborate.elaborate(f.ctx()));
         try std.testing.expect(fixture.hasCode(&f.bag, .E0906));
     }

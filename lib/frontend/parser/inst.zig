@@ -98,7 +98,7 @@ pub fn parseInstantiation(self: *Parser, b: *parse_module.Body) Error!void {
                 // A.4.1.1 gives both connection forms a leading
                 // `{ attribute_instance }`, the slot E.3.2.1's per-port
                 // `port_discipline` uses. Collected like any §2.9 attribute
-                // and not tied to the port: `Elaborate.primitiveAccess`
+                // and not tied to the port: `primitive.primitiveAccess` (src/elab)
                 // applies E.3.2 from the connected net instead.
                 try self.skipAttributes();
                 const tok = self.pos;

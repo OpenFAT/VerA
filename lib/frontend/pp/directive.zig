@@ -8,6 +8,7 @@
 //!
 //! Contents:
 //! - `pub const Directive = enum(u8)`
+//! - `pub fn Directive.marksRegion(kind: Directive) bool`
 //! - `pub const directive_map: std.StaticStringMap(Directive)`
 //! - `pub fn directive(pp: *Pp, text: []const u8, at: usize) Error!usize`
 //! - `pub fn logicalLineEnd(text: []const u8, i: usize) usize`
@@ -53,6 +54,18 @@ pub const Directive = enum(u8) {
     unconnected_drive, // IEEE 1364 §19.9: read by §6.2.2 port binding
     nounconnected_drive,
     pragma, // IEEE 1364 §19.10: no effect, except §28's `protect` (pp/protect.zig)
+
+    /// Returns whether the directive records a `Directives` event, a region
+    /// that opens at its own offset in the output.
+    pub fn marksRegion(kind: Directive) bool {
+        return switch (kind) {
+            .resetall, .default_discipline, .default_transition, .timescale => true,
+            .default_nettype, .celldefine, .endcelldefine => true,
+            .unconnected_drive, .nounconnected_drive => true,
+            .define, .undef, .ifdef, .ifndef, .elsif, .@"else", .endif => false,
+            .include, .keywords, .line, .pragma => false,
+        };
+    }
 };
 
 /// Directive name, without its backtick, to kind.
@@ -150,6 +163,14 @@ pub fn directive(pp: *Pp, text: []const u8, at: usize) Error!usize {
     };
     if (!pp.emitting()) {
         try pp.putNewlines(text[at..end]);
+        return end;
+    }
+    // A directive whose effect is a region starting at its own place in the
+    // output cannot take effect inside a macro actual: the actual's buffer is
+    // not the output (`expandArg`). Passed through whole, it runs when the
+    // expansion that substitutes it is rescanned, at its place in the output.
+    if (pp.in_actual and kind.marksRegion()) {
+        try pp.out.appendSlice(pp.scratch, text[at..end]);
         return end;
     }
     switch (kind) {

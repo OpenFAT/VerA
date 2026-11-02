@@ -298,7 +298,7 @@ pub fn readText(io: std.Io, dir: std.Io.Dir, path: []const u8, gpa: Allocator) R
     const st = try file.stat(io);
     if (st.kind == .file and st.size > max_text_bytes) return error.StreamTooLong;
     var r = file.reader(io, &.{});
-    const text = r.interface.allocRemaining(gpa, .limited(max_text_bytes +| 1)) catch |e| switch (e) {
+    const text = r.interface.allocRemaining(gpa, .limited(max_text_bytes)) catch |e| switch (e) {
         error.ReadFailed => return r.err.?,
         else => |other| return other,
     };
