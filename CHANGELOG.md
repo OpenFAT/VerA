@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A printing device's `$monitor` and `$fmonitor` keep one latch per
+  instance** (§9.4.1): two instances of one model each compare against their
+  own last report, where before one instance's report could repeat or hide
+  the other's (`tests/host/fmonitor_host.zig`). In a batch, each point now
+  reads the `$fopen`/`$ftell`/... result its own instance latched, not the
+  first point's. For `--display=emit` devices only, `Instance` gains `zm__`
+  (the monitor latches) and the latched §9.5 results move from
+  `zf__.res__<site>` to top-level `zf_res__<site>`; `--display=drop` and
+  `record` devices change only in unused kernel text (#PR).
+
 ## v0.22.0 — 2026-11-02
 
 On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Verilog-AMS 746/754, Cumulative: 6805/6817.
