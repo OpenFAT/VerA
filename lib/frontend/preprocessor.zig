@@ -80,6 +80,10 @@ pub const Options = struct {
     /// IEEE 1364-2005 §28.2: the keys "supplied by the user" for decryption
     /// envelopes (`vera --protect-keys`). None: an envelope is E0152.
     protect_keys: protect.Keys = .{},
+    /// Where the call's working memory (`Pp.scratch`, freed on return) takes
+    /// its pages: a `FixedBufferAllocator` bounds what a source can make the
+    /// preprocessor hold, past which the call fails with `OutOfMemory`.
+    scratch: Allocator = std.heap.page_allocator,
 };
 
 /// One of `Options.more`: the name it registers under in the bag (and
@@ -156,13 +160,15 @@ pub const predefined_macros = [_][]const u8{
 /// output owned by `arena`. Fails with `error.PreprocessFailed` once the
 /// diagnostic is in `opts.bag` (the first error ends the call), or with
 /// `error.OutOfMemory`. O(output) apart from `__LINE__`, which is O(offset)
-/// per use.
+/// per use, and from macro uses nested in actuals, which are O(depth^2) in
+/// time (each level reads and copies its whole actual) and O(output) in
+/// memory.
 pub fn process(arena: Allocator, source: []const u8, opts: Options) Error!Output {
     // Everything that dies with this call (the macro table, the stacks, every
     // expansion's arguments and substituted body, and the output while it
     // grows) lives on scratch, freed on return. What outlives the call is
     // copied to `arena` once, exactly sized, at the end.
-    var scratch_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    var scratch_state: std.heap.ArenaAllocator = .init(opts.scratch);
     defer scratch_state.deinit();
     assert(opts.text_limit <= max_text_bytes);
     var pp: Pp = .{ .arena = arena, .scratch = scratch_state.allocator(), .opts = opts };

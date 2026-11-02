@@ -23,6 +23,7 @@
 //! - `pub fn removeMacro(pp: *Pp, name: []const u8) void`
 //! - `pub fn nested(pp: *Pp, span: diag.Span, comptime f: anytype, args: anytype) Error!void`
 //! - `pub fn checkTextSize(pp: *Pp, span: diag.Span) Error!void`
+//! - `pub fn actualStack(pp: *Pp) *std.ArrayList(u8)`
 //! - `pub fn emitting(pp: *const Pp) bool`
 //! - `pub fn mark(pp: *Pp, list: anytype, value: anytype) Allocator.Error!void`
 //! - `pub fn putNewlines(pp: *Pp, span: []const u8) Error!void`
@@ -112,10 +113,21 @@ cur_file_id: diag.FileId = .root,
 /// The outermost invocation's offset while a macro body is rescanned.
 /// Offsets inside a body index no file, so diagnostics there report here.
 expand_site: ?u32 = null,
-/// `out` is an actual's own buffer (`expandArg`), not the output, so no
+/// `out` is the actuals stack (`actualStack`), not the output, so no
 /// segment may be recorded: the text is mapped when the expansion that
 /// substitutes it is.
 in_actual: bool = false,
+/// The pre-expanded actuals of every expansion between `macro.expandArg`
+/// and its substitution, a region each, innermost last; popped once
+/// substituted. While `in_actual` it is `out` and this list holds nothing.
+actuals: std.ArrayList(u8) = .empty,
+/// Where the actual being expanded begins in `out`; 0 outside one.
+out_base: usize = 0,
+/// Per `expanding` depth, the buffer a substituted body is built in and
+/// reused from (`macro.expand`).
+bodies: std.ArrayList(std.ArrayList(u8)) = .empty,
+/// `macro.macroArgs`'s bracket stack, reused by every call.
+brackets: std.ArrayList(u8) = .empty,
 /// Index in `segs` of the outermost expansion's `.macro` segment, valid
 /// while that expansion set `expand_site` outside an actual. `runFile`
 /// repeats it after an `include the expansion reached.
@@ -219,12 +231,19 @@ pub fn nested(pp: *Pp, span: diag.Span, comptime f: anytype, args: anytype) Erro
     };
 }
 
-/// E0150 when the text built so far (`out`, or an actual's own buffer
-/// while one is expanded) has passed `Options.text_limit`.
+/// E0150 when the text built so far (`out`, or the actual being expanded
+/// while one is) has passed `Options.text_limit`.
 pub fn checkTextSize(pp: *Pp, span: diag.Span) Error!void {
     assert(pp.opts.text_limit <= max_text_bytes);
-    if (pp.out.items.len > pp.opts.text_limit)
+    assert(pp.out_base <= pp.out.items.len);
+    if (pp.out.items.len - pp.out_base > pp.opts.text_limit)
         return pp.fail(span, .E0150, "past {d} bytes", .{pp.opts.text_limit});
+}
+
+/// The actuals stack: `out` inside an actual, else `actuals`.
+pub fn actualStack(pp: *Pp) *std.ArrayList(u8) {
+    if (pp.in_actual) assert(pp.actuals.items.len == 0);
+    return if (pp.in_actual) &pp.out else &pp.actuals;
 }
 
 /// Returns whether every enclosing conditional arm is active.
@@ -431,7 +450,7 @@ pub fn runFile(pp: *Pp, raw: []const u8, file: []const u8, existing: diag.FileId
     pp.cur_file_id = id;
     // Each file is in bounds alone; several given together (argv, `.hdl`
     // cards) can still pass the bound on offsets between them.
-    if (pp.out.items.len + raw.len > pp.opts.text_limit)
+    if (pp.out.items.len - pp.out_base + raw.len > pp.opts.text_limit)
         return pp.fail(.{ .start = 0, .end = 0 }, .E0150, "past {d} bytes", .{pp.opts.text_limit});
 
     // Registered raw first so a stripComments failure resolves, then

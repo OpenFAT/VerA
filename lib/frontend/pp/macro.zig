@@ -34,6 +34,9 @@ const escapedEnd = lexer.escapedEnd;
 /// A macro use's trimmed actual arguments and the offset just past its `)`.
 const MacroArgs = struct { args: []const []const u8, end: usize };
 
+/// A pre-expanded actual's bytes on the actuals stack (`Pp.actualStack`).
+const Region = struct { start: usize, end: usize };
+
 /// Parses a §10.4 `define and adds or replaces its macro. `rest` is everything
 /// after the word on one logical line, starting at offset `off`; `at` is the
 /// '`'. The macro borrows `rest`, which must outlive `pp.macros`. Fails with
@@ -225,23 +228,31 @@ pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []c
     // before substitution, as in the C preprocessor. So arguments expand here,
     // before `name` is pushed, while a self-reference in the body is rescanned
     // with the name on the stack and is still E0118.
-    const body = if (m.is_func) blk: {
-        var actuals = args;
-        for (args, 0..) |a, first| {
-            if (std.mem.findScalar(u8, a, '`') == null) continue;
-            // Some argument invokes a macro: expand from here on into a copy.
-            // Backtick-free arguments are substituted verbatim.
-            const copy = try pp.scratch.dupe([]const u8, args);
-            for (copy[first..]) |*slot| try pp.nested(sp, expandArg, .{ pp, slot, at });
-            actuals = copy;
-            break;
-        }
-        break :blk try substitute(pp, m.body, m.params, actuals);
-    } else if (std.mem.findScalar(u8, m.body, '`') != null)
-        // IEEE 1800-2017 §22.5.1's `" `\`" `` work in an object-like body too.
-        try substitute(pp, m.body, &.{}, &.{})
-    else
-        m.body;
+    //
+    // The body is built in this depth's buffer (`Pp.bodies`), taken for the
+    // expansion. One with a '`' is kept: its rescan runs directives and
+    // uses, and a `define borrows its text (`Macro`). Any other is read by
+    // its rescan alone and goes back for the next body at this depth, so
+    // nested uses cost the text live at once, not every level's copy.
+    const depth = pp.expanding.items.len;
+    var buf: std.ArrayList(u8) = .empty;
+    var kept = true;
+    defer if (!kept) {
+        pp.bodies.items[depth] = buf;
+    };
+    // IEEE 1800-2017 §22.5.1's `" `\`" `` work in an object-like body too.
+    const body = if (m.is_func or std.mem.findScalar(u8, m.body, '`') != null) blk: {
+        const actuals = try expandActuals(pp, args, sp, at);
+        if (pp.bodies.items.len <= depth) try pp.bodies.appendNTimes(pp.scratch, .empty, depth + 1 - pp.bodies.items.len);
+        buf = pp.bodies.items[depth];
+        pp.bodies.items[depth] = .empty;
+        buf.clearRetainingCapacity();
+        try substitute(pp, &buf, m.body, m.params, actuals.args);
+        // Substituted: the actuals' regions are popped.
+        if (actuals.base) |b| pp.actualStack().shrinkRetainingCapacity(b);
+        kept = std.mem.findScalar(u8, buf.items, '`') != null;
+        break :blk buf.items;
+    } else m.body;
     try pp.expanding.append(pp.scratch, name);
     try pp.expanding_set.put(pp.scratch, name, {});
     defer {
@@ -324,28 +335,60 @@ fn joinContinuations(pp: *Pp, body: []const u8) Error![]const u8 {
     return out.items;
 }
 
-/// Replaces `arg.*` with that actual argument fully macro-expanded, on
-/// `pp.scratch`. Scans into a fresh output list with `expand_site` set to
-/// `at`, the invocation's '`', so diagnostics and `__LINE__` behave as in a
-/// body rescan. Backtick-free text is kept as is.
-fn expandArg(pp: *Pp, arg: *[]const u8, at: usize) Error!void {
-    if (std.mem.findScalar(u8, arg.*, '`') == null) return;
-    // The output list is swapped out for the actual's own and swapped back.
-    const out_len = pp.out.items.len;
-    defer assert(pp.out.items.len == out_len);
+/// `args` with each one that invokes a macro fully expanded (`expandArg`),
+/// and where their regions begin on the actuals stack, which the caller
+/// pops once it has substituted them. Backtick-free actuals are kept as is,
+/// and with none to expand `args` is returned and nothing is pushed.
+fn expandActuals(pp: *Pp, args: []const []const u8, sp: diag.Span, at: usize) Error!struct { args: []const []const u8, base: ?usize } {
+    const first = for (args, 0..) |a, k| {
+        if (std.mem.findScalar(u8, a, '`') != null) break k;
+    } else return .{ .args = args, .base = null };
+    const base = pp.actualStack().items.len;
+    const copy = try pp.scratch.dupe([]const u8, args);
+    const regions = try pp.scratch.alloc(?Region, args.len - first);
+    for (copy[first..], regions) |a, *r| try pp.nested(sp, expandArg, .{ pp, a, at, r });
+    // Sliced only now: a later actual's expansion may move the stack.
+    const stack = pp.actualStack().items;
+    for (copy[first..], regions) |*slot, r| if (r) |x| {
+        slot.* = stack[x.start..x.end];
+    };
+    assert(regions[0] != null);
+    return .{ .args = copy, .base = base };
+}
+
+/// Expands `arg` onto the actuals stack and sets `region` to where it
+/// landed, or to null for backtick-free text, which is kept as is. Scans
+/// with `in_actual` set and `expand_site` set to `at`, the invocation's
+/// '`', so diagnostics and `__LINE__` behave as in a body rescan.
+fn expandArg(pp: *Pp, arg: []const u8, at: usize, region: *?Region) Error!void {
+    region.* = null;
+    if (std.mem.findScalar(u8, arg, '`') == null) return;
+    // Outside an actual the output is swapped out for the stack and back;
+    // inside one `out` already is the stack, and this actual goes on top.
+    const outer = !pp.in_actual;
     const saved_out = pp.out;
     const saved_site = pp.expand_site;
-    const saved_actual = pp.in_actual;
-    pp.out = .empty;
+    const saved_base = pp.out_base;
+    if (outer) {
+        pp.out = pp.actuals;
+        pp.actuals = .empty;
+    }
+    const start = pp.out.items.len;
     pp.in_actual = true;
+    pp.out_base = start;
     if (pp.expand_site == null) pp.expand_site = @intCast(at);
     defer {
-        pp.out = saved_out;
+        if (outer) {
+            pp.actuals = pp.out;
+            pp.out = saved_out;
+        }
         pp.expand_site = saved_site;
-        pp.in_actual = saved_actual;
+        pp.in_actual = !outer;
+        pp.out_base = saved_base;
     }
-    try scan(pp, arg.*);
-    arg.* = pp.out.items;
+    try scan(pp, arg);
+    region.* = .{ .start = start, .end = pp.out.items.len };
+    assert(region.*.?.end >= start);
 }
 
 /// Splits the top-level comma list opening at `lparen`. Nested (), [], {},
@@ -356,7 +399,10 @@ fn macroArgs(pp: *Pp, text: []const u8, lparen: usize, at: usize, name: []const 
     assert(text[lparen] == '(');
     assert(lparen > at);
     var args: std.ArrayList([]const u8) = .empty;
-    var opens: std.ArrayList(u8) = .empty;
+    // One list for every call: a nest of uses would otherwise keep a stack
+    // per level, as deep as the brackets left in the text.
+    const opens = &pp.brackets;
+    opens.clearRetainingCapacity();
     var i = lparen;
     var arg_start = lparen + 1;
     while (i < text.len) {
@@ -416,12 +462,12 @@ fn oneLine(pp: *Pp, arg: []const u8) Error![]const u8 {
     return copy;
 }
 
-/// Returns `body` with each whole-identifier formal replaced by its actual,
-/// on `pp.scratch`. Strings, escaped identifiers, numbers and the name after a
+/// Appends `body` to `out` with each whole-identifier formal replaced by its
+/// actual, on `pp.scratch`. Strings, escaped identifiers, numbers and the name after a
 /// '`' are never substituted into. Asserts one actual per formal.
-fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []const []const u8) Error![]const u8 {
+fn substitute(pp: *Pp, out: *std.ArrayList(u8), body: []const u8, params: []const []const u8, args: []const []const u8) Error!void {
     assert(params.len == args.len);
-    var out: std.ArrayList(u8) = .empty;
+    assert(out.items.len == 0);
     try out.ensureTotalCapacity(pp.scratch, body.len);
 
     var i: usize = 0;
@@ -446,7 +492,7 @@ fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []con
                 continue;
             }
             if (i + 1 < body.len and body[i + 1] == '"') {
-                i = try stringify(pp, &out, body, i + 2, params, args);
+                i = try stringify(pp, out, body, i + 2, params, args);
                 continue;
             }
             const start = i;
@@ -498,7 +544,6 @@ fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []con
     }
     // Not a `defer`: an error return leaves the body part-scanned.
     assert(i >= body.len);
-    return out.items;
 }
 
 /// Copies the IEEE 1800-2017 §22.5.1 `"...`" string whose text starts at
