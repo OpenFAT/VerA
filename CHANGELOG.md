@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A `$clog2` operand folds in time linear in its depth** (IEEE
+  §§5.4–5.5): `foldSized` sizes each row once, bottom-up, instead of
+  re-walking every operator's whole operand, so a 100,000-level sized chain
+  folds in 0.65 s in Debug, where the old fold ran 17 minutes without
+  finishing.
 - **A deep connect-module chain with `connectrules` elaborates in linear
   time** (§7.8.4, Annex F.2.1): `segment.up` climbs the chain once, not once
   per level above it, so a 1500-level chain takes 0.26 s where it took
