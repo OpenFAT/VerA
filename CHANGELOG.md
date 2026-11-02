@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Nested macro uses take memory linear in their depth**: each level's
+  expanded actual and substituted body are freed once substituted, so
+  10,000 nested `` `M( `` uses preprocess in under 4 MB of working memory
+  where they kept 200 MB of copies (a 347 MB peak, now 118 MB, most of it
+  stack). `preprocessor.Options.scratch` takes the allocator that working
+  memory comes from, so a caller can bound it.
 - **`--emit-rtlil` writes a deep else-if chain in linear space**: a process
   line is indented at most 32 levels, so 10,000 arms are 3.9 MB of RTLIL
   where they were 977 MB, and emitting them takes under 60 MB of memory
