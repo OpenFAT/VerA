@@ -72,10 +72,35 @@ pub fn lowerExpr(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 
 /// IEEE §§5.4–5.5 inside a self-determined `$clog2` argument. Function
 /// calls still lower their bodies and arguments on their own ordinary path.
+/// The operand is sized once, in a table of its own (`Lower.clog2_sizes`), so
+/// a `$clog2` inside a function it calls keeps its own.
 pub fn lowerClog2Arg(self: *Lower, e: Ast.ExprId, parent: ?constfold.IntContext) Oom!TypedValue {
     assert(e == .none or self.exprValid(e));
+    var sizes: constfold.Sizes = .empty;
+    defer sizes.deinit(self.arena);
+    const outer = self.clog2_sizes;
+    self.clog2_sizes = &sizes;
+    defer self.clog2_sizes = outer;
+    const value = try lowerSized(self, e, parent);
+    assert(self.clog2_sizes == &sizes);
+    return value;
+}
+
+/// Lowers operand `index` of a `$clog2` plan when `sized`, else as `lowerExpr`:
+/// the one call the operator files make for each operand, so a self-determined
+/// operand keeps its IEEE width (§9.14) wherever it sits in the tree.
+pub fn lowerOperand(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool, index: usize) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    return if (sized) lowerSized(self, e, if (plan) |p| p.operands[index] else null) else lowerExpr(self, e);
+}
+
+// ---- private ----
+
+/// `lowerClog2Arg` within the operand's sizing table.
+fn lowerSized(self: *Lower, e: Ast.ExprId, parent: ?constfold.IntContext) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
     if (e == .none) return poison;
-    const plan = try lower_constfold.clog2Plan(self, e, parent);
+    const plan = try lower_constfold.clog2Plan(self, e, self.clog2_sizes.?, parent);
     if (plan) |p| if (!p.supported) {
         var width = p.from_width;
         for (p.operands) |operand| if (operand) |c| {
@@ -92,16 +117,6 @@ pub fn lowerClog2Arg(self: *Lower, e: Ast.ExprId, parent: ?constfold.IntContext)
     assert(self.valueValid(value.v));
     return value;
 }
-
-/// Lowers operand `index` of a `$clog2` plan when `sized`, else as `lowerExpr`:
-/// the one call the operator files make for each operand, so a self-determined
-/// operand keeps its IEEE width (§9.14) wherever it sits in the tree.
-pub fn lowerOperand(self: *Lower, e: Ast.ExprId, plan: ?constfold.IntPlan, sized: bool, index: usize) Oom!TypedValue {
-    assert(e == .none or self.exprValid(e));
-    return if (sized) lowerClog2Arg(self, e, if (plan) |p| p.operands[index] else null) else lowerExpr(self, e);
-}
-
-// ---- private ----
 
 // Timer capture belongs on both ordinary and width-aware expression paths.
 // A $clog2 operand must retain its dependency when its timer is rescheduled.

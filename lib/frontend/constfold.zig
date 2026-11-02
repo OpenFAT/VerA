@@ -24,7 +24,9 @@
 //! - `pub const operandWidth = size.operandWidth`
 //! - `pub const clog2Width = size.clog2Width`
 //! - `pub const clog2Signed = size.clog2Signed`
-//! - `pub const intPlan = size.intPlan`
+//! - `pub const Sizes = size.Sizes`
+//! - `pub const measure = size.measure`
+//! - `pub const measuredPlan = size.measuredPlan`
 //! - `pub const Error = size.Error`
 //! - `pub fn parameterValue(ty: Ast.Type, value: Const) Const`
 //! - `pub fn parameterCardValue(ty: Ast.Type, declared: ?Const, value: f64) Const`
@@ -74,7 +76,11 @@ pub const clog2Width = size.clog2Width;
 
 pub const clog2Signed = size.clog2Signed;
 
-pub const intPlan = size.intPlan;
+pub const Sizes = size.Sizes;
+
+pub const measure = size.measure;
+
+pub const measuredPlan = size.measuredPlan;
 
 pub const Error = size.Error;
 
@@ -133,7 +139,7 @@ const TestExpr = struct { file: Ast.SourceFile, e: Ast.ExprId, vars: []const Ast
 /// One operator `foldContext` has entered, waiting on its operands.
 const Frame = struct {
     e: Ast.ExprId,
-    /// Its IEEE §5.5 plan when `sized` (`intPlan`).
+    /// Its IEEE §5.5 plan when `sized` (`measuredPlan`).
     plan: ?IntPlan,
     /// Folded under `foldSized`'s rules; a §4.3 call's arguments are not.
     sized: bool,
@@ -277,16 +283,16 @@ fn foldContext(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprI
     var frames: Pending(Frame) = .init(&in_place, gpa);
     defer frames.deinit();
     // Every row a sized fold plans, sized once up front (`size.measure`).
-    var sizes: size.Sizes = .empty;
+    var sizes: Sizes = .empty;
     defer sizes.deinit(gpa);
-    if (sized and e != .none) try size.measure(gpa, file, e, env, &sizes);
+    if (sized and e != .none) try measure(gpa, file, e, env, &sizes);
     // The row folded next: the root, then each operand an operator asks for.
     var at: Operand = .{ .e = e, .sized = sized, .parent = parent };
     descend: while (true) {
         // Every frame is a distinct ancestor of `at`, in an acyclic store.
         assert(frames.items().len < ex.len());
         if (at.e == .none) return null;
-        const plan: ?IntPlan = if (at.sized) size.measuredPlan(file, at.e, &sizes, at.parent) else null;
+        const plan: ?IntPlan = if (at.sized) measuredPlan(file, at.e, &sizes, at.parent) else null;
         if (plan) |p| if (!p.supported) return null;
         const first: ?Operand = switch (ex.tag(at.e)) {
             .unary, .binary, .ternary => .{ .e = ex.lhs(at.e), .sized = at.sized, .parent = if (plan) |p| p.operands[0] else null },
@@ -713,9 +719,9 @@ test "measure sizes every row it reaches as clog2Width and clog2Signed do" {
     }) |src| {
         const t = try testParse(a, "", src);
         const env: TestEnv = .{ .file = &t.file };
-        var sizes: size.Sizes = .empty;
+        var sizes: Sizes = .empty;
         defer sizes.deinit(testing.allocator);
-        try size.measure(testing.allocator, &t.file, t.e, env, &sizes);
+        try measure(testing.allocator, &t.file, t.e, env, &sizes);
         var it = sizes.iterator();
         while (it.next()) |kv| {
             try testing.expectEqual(try clog2Width(testing.allocator, &t.file, kv.key_ptr.*, env), kv.value_ptr.width);
@@ -815,7 +821,7 @@ test "every walk out of memory is error.OutOfMemory, never the null of an unknow
     const chain = try nested(a, "", "40'd1", " | 1", 1000);
     // `(<chain>) < u`: an unsigned operand, so `unsignedCompare` sizes the chain.
     const cmp = try testParse(a, "", try std.mem.concat(a, u8, &.{ "(", chain, ") < u" }));
-    const Walk = enum { fold, fold_sized, operand_width, clog2_width, clog2_signed, int_plan, unsigned_compare, first_state_read };
+    const Walk = enum { fold, fold_sized, operand_width, clog2_width, clog2_signed, measure, unsigned_compare, first_state_read };
     for (std.enums.values(Walk)) |walk| for ([_]usize{ 0, 1 }) |fail_index| {
         var failing: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
         const gpa = failing.allocator();
@@ -828,7 +834,11 @@ test "every walk out of memory is error.OutOfMemory, never the null of an unknow
             .operand_width => testing.expectError(error.OutOfMemory, operandWidth(gpa, f, e, env)),
             .clog2_width => testing.expectError(error.OutOfMemory, clog2Width(gpa, f, e, env)),
             .clog2_signed => testing.expectError(error.OutOfMemory, clog2Signed(gpa, f, e, env)),
-            .int_plan => testing.expectError(error.OutOfMemory, intPlan(gpa, f, e, env, null)),
+            .measure => blk: {
+                var sizes: Sizes = .empty;
+                defer sizes.deinit(gpa);
+                break :blk testing.expectError(error.OutOfMemory, measure(gpa, f, e, env, &sizes));
+            },
             .unsigned_compare => testing.expectError(error.OutOfMemory, unsignedCompare(gpa, f, e, f.exprs.rhs(cmp.e), env)),
             .first_state_read => testing.expectError(error.OutOfMemory, firstStateRead(gpa, f, e, &.{})),
         };

@@ -7,6 +7,10 @@
   re-walking every operator's whole operand, so a 100,000-level sized chain
   folds in 0.65 s in Debug, where the old fold ran 17 minutes without
   finishing.
+- **A non-constant `$clog2` operand lowers in time linear in its depth**
+  (§9.14; IEEE §5.5): lowering sizes the operand once instead of planning
+  every operator over its whole operand, so a 10,000-operator operand lowers
+  in 0.24 s in Debug where it took 65 s.
 - **A deep port chain without `connectrules` also climbs once** (§7.8.4,
   Annex F.2.1): `segment.up` keeps its answers from level to level unless a
   level adds an out-of-context declaration or the climb read a paramset

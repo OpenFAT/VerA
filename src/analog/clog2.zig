@@ -84,3 +84,32 @@ fn hostSized(self: *Lower, e: Ast.ExprId, acc: *HostSized) Oom!void {
     var buf: [3]Ast.ExprId = undefined;
     for (ex.children(e, &buf)) |c| try hostSized(self, c, acc);
 }
+
+test "§9.14 a $clog2 operand 10,000 operators deep lowers in time linear in its depth" {
+    // Oracle: IEEE 1364-2005 §5.5 sizes every operator of the operand from
+    // its operands, so lowering it is one sizing pass plus one lowering
+    // pass; it lowers with no diagnostic. Planning each operator by walking
+    // its whole operand again was quadratic in the depth: 65 s in Debug here,
+    // against 0.24 s sized once.
+    const n = 10_000;
+    const bound_ms = 2_000;
+    const gpa = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    try src.appendSlice(gpa, "module m(p);\n  inout p;\n  electrical p;\n  integer k, j;\n  analog begin\n    k = V(p);\n    j = $clog2(k");
+    for (0..n) |_| try src.appendSlice(gpa, " + 1");
+    try src.appendSlice(gpa, ");\n    I(p) <+ j;\n  end\nendmodule\n");
+    var h: Lower.Harness = undefined;
+    try h.init(gpa, src.items);
+    defer h.deinit();
+    const io = std.testing.io;
+    const start: std.Io.Timestamp = .now(io, .awake);
+    // Lowering recurses once per operator: a stack for the depth, not the walk.
+    _ = try h.lowerOnStack(256 << 20) orelse {
+        h.dump();
+        return error.TestUnexpectedResult;
+    };
+    const ms = start.durationTo(.now(io, .awake)).toMilliseconds();
+    try std.testing.expectEqual(@as(usize, 0), h.bag.count());
+    try std.testing.expect(ms < bound_ms);
+}

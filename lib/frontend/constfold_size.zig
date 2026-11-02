@@ -16,7 +16,6 @@
 //! - `pub fn operandWidth(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?u32`
 //! - `pub fn clog2Width(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?u32`
 //! - `pub fn clog2Signed(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?bool`
-//! - `pub fn intPlan(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) Error!?IntPlan`
 //! - `pub fn measure(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sizes: *Sizes) Error!void`
 //! - `pub fn measuredPlan(file: *const Ast.SourceFile, e: Ast.ExprId, sizes: *const Sizes, parent: ?IntContext) ?IntPlan`
 //! - `pub fn literalWidth(ex: *const Ast.ExprStore, e: Ast.ExprId) u32`
@@ -101,7 +100,7 @@ pub const IntPlan = struct {
     }
 };
 
-/// One row's self-determined size, as `intPlan` reads it: `clog2Width`'s
+/// One row's self-determined size, as `measuredPlan` reads it: `clog2Width`'s
 /// width and `clog2Signed`'s signedness, each null where that walk's is.
 pub const Size = struct { width: ?u32, signed: ?bool };
 
@@ -211,21 +210,6 @@ pub fn clog2Signed(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.E
     return signed;
 }
 
-/// Returns how `e` is sized inside `parent` (null: `e` is self-determined).
-/// IEEE Table 5-22 and §5.5.2: logical operands, a shift/power's RHS, and a
-/// conditional's condition are self-determined. Comparisons share a context
-/// between their operands, independent of their one-bit result. Null when
-/// `env` cannot give a width or signedness the plan needs.
-pub fn intPlan(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) Error!?IntPlan {
-    const ex = &file.exprs;
-    const own: IntContext = .{ .width = (try clog2Width(gpa, file, e, env)) orelse return null, .signed = (try clog2Signed(gpa, file, e, env)) orelse return null };
-    const comparison: ?IntContext = if (!compares(ex, e)) null else .{
-        .width = @max((try clog2Width(gpa, file, ex.lhs(e), env)) orelse return null, (try clog2Width(gpa, file, ex.rhs(e), env)) orelse return null),
-        .signed = (try clog2OperandsSigned(gpa, file, ex.lhs(e), ex.rhs(e), env)) orelse return null,
-    };
-    return planOf(ex, e, own, comparison, parent);
-}
-
 /// Records in `sizes` the `Size` of `e` and of every row its operators
 /// reach (each operand of a `.unary`, `.binary` or `.ternary`), each from
 /// its operands' once they are in. Sizing a whole tree is so one pass over
@@ -256,21 +240,69 @@ pub fn measure(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprI
     assert(sizes.contains(e));
 }
 
-/// `intPlan` from the sizes `measure` recorded, which reached `e`.
+/// Returns how `e` is sized inside `parent` (null: `e` is self-determined).
+/// IEEE Table 5-22 and §5.5.2: logical operands, a shift/power's RHS, and a
+/// conditional's condition are self-determined. Comparisons share a context
+/// between their operands, independent of their one-bit result. Read from
+/// the sizes `measure` recorded, which reached `e`; null when they lack a
+/// width or signedness the plan needs.
 pub fn measuredPlan(file: *const Ast.SourceFile, e: Ast.ExprId, sizes: *const Sizes, parent: ?IntContext) ?IntPlan {
     const ex = &file.exprs;
     assert(@backingInt(e) < ex.len());
     const s = sizes.get(e).?;
     const own: IntContext = .{ .width = s.width orelse return null, .signed = s.signed orelse return null };
-    const comparison: ?IntContext = if (!compares(ex, e)) null else blk: {
-        const l = sizeAt(sizes, ex.lhs(e));
-        const r = sizeAt(sizes, ex.rhs(e));
-        break :blk .{
-            .width = @max(l.width orelse return null, r.width orelse return null),
-            .signed = (l.signed orelse return null) and (r.signed orelse return null),
-        };
-    };
-    return planOf(ex, e, own, comparison, parent);
+    const result: IntContext = if (parent) |p| .{ .width = @max(p.width, own.width), .signed = p.signed } else own;
+    var plan: IntPlan = .{ .result = result, .from_width = own.width };
+    assert(plan.result.width >= own.width);
+    switch (ex.tag(e)) {
+        .unary => switch (ex.unOp(e)) {
+            .plus, .minus, .bit_not => {
+                plan.from_width = result.width;
+                plan.operands[0] = result;
+                plan.supported = result.width <= (if (ex.unOp(e) == .minus) @as(u32, 32) else 64);
+            },
+            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => {},
+        },
+        .binary => switch (ex.binOp(e)) {
+            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => {
+                plan.from_width = result.width;
+                plan.operands[0] = result;
+                plan.operands[1] = result;
+                const bitwise = switch (ex.binOp(e)) {
+                    .bit_and, .bit_or, .bit_xor, .bit_xnor => true,
+                    else => false, // else: the enclosing prong's five arithmetic operations wrap at 32
+                };
+                plan.supported = result.width <= (if (bitwise) @as(u32, 64) else 32);
+            },
+            .pow, .shl, .shr, .ashl, .ashr => {
+                plan.from_width = result.width;
+                plan.operands[0] = result;
+                plan.supported = result.width <= 32;
+            },
+            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => {
+                const l = sizeAt(sizes, ex.lhs(e));
+                const r = sizeAt(sizes, ex.rhs(e));
+                const c: IntContext = .{
+                    .width = @max(l.width orelse return null, r.width orelse return null),
+                    .signed = (l.signed orelse return null) and (r.signed orelse return null),
+                };
+                plan.operands[0] = c;
+                plan.operands[1] = c;
+                plan.supported = c.width <= 64;
+            },
+            .logical_and, .logical_or => {},
+        },
+        .ternary => {
+            plan.from_width = result.width;
+            plan.operands[1] = result;
+            plan.operands[2] = result;
+            plan.supported = result.width <= 64;
+        },
+        else => {}, // else: a primary keeps its own width until converted to its parent
+    }
+    // A self-determined result carries no context of its own into operands.
+    if (plan.operands[0]) |c| assert(c.width >= 1);
+    return plan;
 }
 
 /// A §2.6.1 integer literal's width: its size, or, unsized, "at least 32"
@@ -381,69 +413,6 @@ fn expressionWidth(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.E
     return widest;
 }
 
-/// `intPlan`'s rules over `e`'s own self-determined context and, for a
-/// comparison, the context its operands share (null otherwise).
-fn planOf(ex: *const Ast.ExprStore, e: Ast.ExprId, own: IntContext, comparison: ?IntContext, parent: ?IntContext) IntPlan {
-    assert((comparison != null) == compares(ex, e));
-    const result: IntContext = if (parent) |p| .{ .width = @max(p.width, own.width), .signed = p.signed } else own;
-    var plan: IntPlan = .{ .result = result, .from_width = own.width };
-    assert(plan.result.width >= own.width);
-    switch (ex.tag(e)) {
-        .unary => switch (ex.unOp(e)) {
-            .plus, .minus, .bit_not => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.supported = result.width <= (if (ex.unOp(e) == .minus) @as(u32, 32) else 64);
-            },
-            .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => {},
-        },
-        .binary => switch (ex.binOp(e)) {
-            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.operands[1] = result;
-                const bitwise = switch (ex.binOp(e)) {
-                    .bit_and, .bit_or, .bit_xor, .bit_xnor => true,
-                    else => false, // else: the enclosing prong's five arithmetic operations wrap at 32
-                };
-                plan.supported = result.width <= (if (bitwise) @as(u32, 64) else 32);
-            },
-            .pow, .shl, .shr, .ashl, .ashr => {
-                plan.from_width = result.width;
-                plan.operands[0] = result;
-                plan.supported = result.width <= 32;
-            },
-            .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => {
-                const c = comparison.?;
-                plan.operands[0] = c;
-                plan.operands[1] = c;
-                plan.supported = c.width <= 64;
-            },
-            .logical_and, .logical_or => {},
-        },
-        .ternary => {
-            plan.from_width = result.width;
-            plan.operands[1] = result;
-            plan.operands[2] = result;
-            plan.supported = result.width <= 64;
-        },
-        else => {}, // else: a primary keeps its own width until converted to its parent
-    }
-    // A self-determined result carries no context of its own into operands.
-    if (plan.operands[0]) |c| assert(c.width >= 1);
-    return plan;
-}
-
-/// Whether `e` is a comparison, whose operands share one context (IEEE
-/// §5.5.2) apart from its one-bit result.
-fn compares(ex: *const Ast.ExprStore, e: Ast.ExprId) bool {
-    if (ex.tag(e) != .binary) return false;
-    return switch (ex.binOp(e)) {
-        .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => true,
-        .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor, .pow, .shl, .shr, .ashl, .ashr, .logical_and, .logical_or => false,
-    };
-}
-
 /// The operands `measure` sizes before `e`: a `.unary`'s, `.binary`'s or
 /// `.ternary`'s, the condition included; none for any other row.
 fn operands(ex: *const Ast.ExprStore, e: Ast.ExprId, buf: *[3]Ast.ExprId) []const Ast.ExprId {
@@ -504,14 +473,6 @@ fn widthFloor(w: u32, comptime self_determined: bool) u32 {
     const out = if (self_determined) w else @max(w, 32);
     assert(out >= w);
     return out;
-}
-
-fn clog2OperandsSigned(gpa: std.mem.Allocator, file: *const Ast.SourceFile, a: Ast.ExprId, b: Ast.ExprId, env: anytype) Error!?bool {
-    assert(a != .none);
-    assert(b != .none);
-    const sa = (try clog2Signed(gpa, file, a, env)) orelse return null;
-    const sb = (try clog2Signed(gpa, file, b, env)) orelse return null;
-    return sa and sb;
 }
 
 /// `env.width(e)`, from an `env` whose methods may or may not fail.
