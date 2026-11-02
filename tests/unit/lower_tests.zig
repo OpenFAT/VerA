@@ -13,6 +13,14 @@ const Ssa = @import("analog").Ssa;
 const Mir = @import("ir").Mir;
 const diag = @import("diag");
 
+// ---------------------------------------------------------------------------
+// Lowering self-checks: source in, diagnostics or MIR out.
+// ---------------------------------------------------------------------------
+const Access = Lower.Access;
+
+/// The one lowering harness (`Lower.Harness`), shared with every `analog/*.zig` test.
+const Harness = Lower.Harness;
+
 /// Sources that between them reach every file of the module: parameters and an
 /// alias, ports, a vector net and a branch, variables and a runtime-indexed
 /// array, a function, a conditional, a loop, a §7.3.1 select of a wide
@@ -80,6 +88,8 @@ const oom_sources = [_][]const u8{
     ,
 };
 
+// ---- private ----
+
 /// Lowers `src` with every buffer, the SSA builder's tables included, from
 /// `gpa`; a failed allocation must come back as `error.OutOfMemory`.
 fn lowerAll(gpa: std.mem.Allocator, src: []const u8) !void {
@@ -92,27 +102,6 @@ fn lowerAll(gpa: std.mem.Allocator, src: []const u8) !void {
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(out.nodes.len != 0);
-}
-
-test "lower: every allocation failure unwinds as OutOfMemory and leaks nothing" {
-    for (oom_sources) |src| try std.testing.checkAllAllocationFailures(std.testing.allocator, lowerAll, .{src});
-}
-
-test "lower: the same source lowers to the same MIR and node table twice" {
-    // Determinism oracle: a hash map's iteration order reaching the output
-    // would make two lowerings of one source differ.
-    for (oom_sources) |src| {
-        var runs: [2]Lower.Harness = undefined;
-        for (&runs) |*h| try h.init(std.testing.allocator, src);
-        defer for (&runs) |*h| h.deinit();
-        var outs: [2]Lower.Lowered = undefined;
-        for (&runs, &outs) |*h, *o| o.* = (try h.lower()).?;
-        try std.testing.expectEqualSlices(Mir.Opcode, runs[0].mir.insts.items(.op), runs[1].mir.insts.items(.op));
-        try std.testing.expectEqual(outs[0].nodes.len, outs[1].nodes.len);
-        for (outs[0].nodes.items(.name), outs[1].nodes.items(.name)) |a, b| try std.testing.expectEqualStrings(a, b);
-        try std.testing.expectEqual(outs[0].params.items.len, outs[1].params.items.len);
-        for (outs[0].params.items, outs[1].params.items) |a, b| try std.testing.expectEqualStrings(a.name, b.name);
-    }
 }
 
 /// A diamond (§5.8) then a loop (§5.9) whose header is sealed after its
@@ -158,10 +147,6 @@ fn ssaProgram(gpa: std.mem.Allocator) !void {
     try std.testing.expectEqual(iv, mir.resolveAlias(try b.readVariable(i, exit)));
 }
 
-test "SsaBuilder: every allocation failure unwinds as OutOfMemory and leaks nothing" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, ssaProgram, .{});
-}
-
 /// The one noise row of contribution 0 of `body`, lowered in a module with
 /// electrical `p`, `q` and real variables `n`, `x`.
 fn noiseRow(h: *Lower.Harness, body: []const u8) !Lower.NoiseSrc {
@@ -190,6 +175,106 @@ fn constOf(mir: *const Mir, v: Mir.Value) ?f64 {
         .float_const => |x| x,
         .inst_result, .int_const, .undef, .str_const, .param_ref, .block_param => null,
     };
+}
+
+/// Lowers `body` (as `expectBodies` does) with `tbl` written to `t.tbl` in a
+/// fresh directory on the include path; null means it lowered clean.
+fn tableVerdict(body: []const u8, tbl: []const u8) !?@import("diag").Code {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "t.tbl", .data = tbl });
+    const dir = ".zig-cache/tmp/" ++ tmp.sub_path;
+    const gpa = std.testing.allocator;
+    const src = try gpa.print(
+        \\module m(p, q);
+        \\  inout p, q; electrical p, q;
+        \\{s}
+        \\endmodule
+    , .{body});
+    defer gpa.free(src);
+    var h: Lower.Harness = undefined;
+    try h.init(gpa, src);
+    defer h.deinit();
+    const dirs = [_][]const u8{dir};
+    h.low.opts.include_dirs = &dirs;
+    if (try h.lower() != null) return null;
+    return h.bag.at(0).code;
+}
+
+/// Lowers `body` inside `expectBodies`' module and returns the first error's
+/// code, or null when it lowered clean.
+fn bodyVerdict(body: []const u8) !?diag.Code {
+    const gpa = std.testing.allocator;
+    const src = try gpa.print(
+        \\module m(p, q);
+        \\  inout p, q; electrical p, q;
+        \\  real x;
+        \\{s}
+        \\endmodule
+    , .{body});
+    defer gpa.free(src);
+    var h: Lower.Harness = undefined;
+    try h.init(gpa, src);
+    defer h.deinit();
+    if (try h.lower() != null) return null;
+    for (0..h.bag.count()) |i| if (h.bag.at(i).severity == .err) return h.bag.at(i).code;
+    return error.TestUnexpectedResult; // `lower` failed with no error reported
+}
+
+fn expectBodyCode(body: []const u8, want: ?diag.Code) !void {
+    const got = try bodyVerdict(body);
+    if (got != want) std.debug.print("`{s}`: got {?t}, want {?t}\n", .{ body, got, want });
+    try std.testing.expectEqual(want, got);
+}
+
+/// Lowers a one-port module with `decls` and the analog `body`, and fails
+/// unless exactly one error, E0316, is reported.
+fn expectOnlyE0316(decls: []const u8, body: []const u8) !void {
+    const src = try std.testing.allocator.print(
+        \\module m(p);
+        \\  inout p; electrical p;
+        \\{s}
+        \\  analog begin
+        \\{s}
+        \\    I(p) <+ V(p);
+        \\  end
+        \\endmodule
+    , .{ decls, body });
+    defer std.testing.allocator.free(src);
+    var h: Lower.Harness = undefined;
+    try h.init(std.testing.allocator, src);
+    defer h.deinit();
+    _ = try h.lower();
+    if (h.count(.E0316) == 1 and h.bag.err_count == 1) return;
+    std.debug.print("want exactly one E0316, got:\n", .{});
+    h.dump();
+    std.debug.print("source:\n{s}\n", .{src});
+    return error.TestUnexpectedResult;
+}
+
+test "lower: every allocation failure unwinds as OutOfMemory and leaks nothing" {
+    for (oom_sources) |src| try std.testing.checkAllAllocationFailures(std.testing.allocator, lowerAll, .{src});
+}
+
+test "lower: the same source lowers to the same MIR and node table twice" {
+    // Determinism oracle: a hash map's iteration order reaching the output
+    // would make two lowerings of one source differ.
+    for (oom_sources) |src| {
+        var runs: [2]Lower.Harness = undefined;
+        for (&runs) |*h| try h.init(std.testing.allocator, src);
+        defer for (&runs) |*h| h.deinit();
+        var outs: [2]Lower.Lowered = undefined;
+        for (&runs, &outs) |*h, *o| o.* = (try h.lower()).?;
+        try std.testing.expectEqualSlices(Mir.Opcode, runs[0].mir.insts.items(.op), runs[1].mir.insts.items(.op));
+        try std.testing.expectEqual(outs[0].nodes.len, outs[1].nodes.len);
+        for (outs[0].nodes.items(.name), outs[1].nodes.items(.name)) |a, b| try std.testing.expectEqualStrings(a, b);
+        try std.testing.expectEqual(outs[0].params.items.len, outs[1].params.items.len);
+        for (outs[0].params.items, outs[1].params.items) |a, b| try std.testing.expectEqualStrings(a.name, b.name);
+    }
+}
+
+test "SsaBuilder: every allocation failure unwinds as OutOfMemory and leaks nothing" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, ssaProgram, .{});
 }
 
 test "§4.6.4.6 noise coefficient: the factor, its §1.3.1.2 sign, and the shapes with none" {
@@ -294,30 +379,6 @@ test "Clause 9 calls in expression position: the argument rules lowering judges"
     });
 }
 
-/// Lowers `body` (as `expectBodies` does) with `tbl` written to `t.tbl` in a
-/// fresh directory on the include path; null means it lowered clean.
-fn tableVerdict(body: []const u8, tbl: []const u8) !?@import("diag").Code {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "t.tbl", .data = tbl });
-    const dir = ".zig-cache/tmp/" ++ tmp.sub_path;
-    const gpa = std.testing.allocator;
-    const src = try gpa.print(
-        \\module m(p, q);
-        \\  inout p, q; electrical p, q;
-        \\{s}
-        \\endmodule
-    , .{body});
-    defer gpa.free(src);
-    var h: Lower.Harness = undefined;
-    try h.init(gpa, src);
-    defer h.deinit();
-    const dirs = [_][]const u8{dir};
-    h.low.opts.include_dirs = &dirs;
-    if (try h.lower() != null) return null;
-    return h.bag.at(0).code;
-}
-
 test "§9.21.1 data files and §4.6.4.3 noise_table files: the shared format" {
     const D = @import("diag").Code;
     const cases = [_]struct { body: []const u8, tbl: []const u8, want: ?D }{
@@ -354,14 +415,6 @@ test "§5.8.1 isStaticValue: a block or value judged static once stays judged, a
         .{ .src = "analog begin x = g; if (g > 0) x = 2 * g; if (x > 0) r = 1; if (V(q) > 0) x = V(p); if (x > 0) r = ddt(V(p)); I(p) <+ r; end", .code = .E0514 },
     });
 }
-
-// ---------------------------------------------------------------------------
-// Lowering self-checks: source in, diagnostics or MIR out.
-// ---------------------------------------------------------------------------
-const Access = Lower.Access;
-
-/// The one lowering harness (`Lower.Harness`), shared with every `analog/*.zig` test.
-const Harness = Lower.Harness;
 
 test "§6.3.1 paramset defparams follow final parameter values and freeze the selected generate shape" {
     const source =
@@ -1145,26 +1198,6 @@ test "§9.17.3 a limiter's formals are all input, and the simulator supplies two
     , .E0511);
 }
 
-/// Lowers `body` inside `expectBodies`' module and returns the first error's
-/// code, or null when it lowered clean.
-fn bodyVerdict(body: []const u8) !?diag.Code {
-    const gpa = std.testing.allocator;
-    const src = try gpa.print(
-        \\module m(p, q);
-        \\  inout p, q; electrical p, q;
-        \\  real x;
-        \\{s}
-        \\endmodule
-    , .{body});
-    defer gpa.free(src);
-    var h: Lower.Harness = undefined;
-    try h.init(gpa, src);
-    defer h.deinit();
-    if (try h.lower() != null) return null;
-    for (0..h.bag.count()) |i| if (h.bag.at(i).severity == .err) return h.bag.at(i).code;
-    return error.TestUnexpectedResult; // `lower` failed with no error reported
-}
-
 test "A.8.2 an analog operator's omitted argument is a verdict, and one past its longest list an error" {
     // Oracle: Syntax 4-3 and 4-4 fix each operator's longest list, so one
     // argument more is an error, and the longest list itself lowers clean.
@@ -1209,12 +1242,6 @@ test "A.8.2 an analog operator's omitted argument is a verdict, and one past its
     try expectBodyCode("analog I(p) <+ ddt(V(p), );", .E0505);
     try expectBodyCode("analog I(p) <+ ddx(V(p), );", .E0504);
     try expectBodyCode("analog I(p) <+ $simprobe(, \"g\");", .E0894);
-}
-
-fn expectBodyCode(body: []const u8, want: ?diag.Code) !void {
-    const got = try bodyVerdict(body);
-    if (got != want) std.debug.print("`{s}`: got {?t}, want {?t}\n", .{ body, got, want });
-    try std.testing.expectEqual(want, got);
 }
 
 test "§3.12 a named branch whose two ends are one node lowers: a short, not a V(n, n)" {
@@ -1266,31 +1293,6 @@ test "a call with more operands than its 24-bit count holds is E1021, and one wi
     // argument is one operand per element (A.8.1 replication included).
     try expectBodyCode("analog I(p) <+ laplace_nd(V(p), '{16777216{1.0}}, '{1.0});", .E1021);
     try expectBodyCode("analog I(p) <+ laplace_nd(V(p), '{4{1.0}}, '{1.0});", null);
-}
-
-/// Lowers a one-port module with `decls` and the analog `body`, and fails
-/// unless exactly one error, E0316, is reported.
-fn expectOnlyE0316(decls: []const u8, body: []const u8) !void {
-    const src = try std.testing.allocator.print(
-        \\module m(p);
-        \\  inout p; electrical p;
-        \\{s}
-        \\  analog begin
-        \\{s}
-        \\    I(p) <+ V(p);
-        \\  end
-        \\endmodule
-    , .{ decls, body });
-    defer std.testing.allocator.free(src);
-    var h: Lower.Harness = undefined;
-    try h.init(std.testing.allocator, src);
-    defer h.deinit();
-    _ = try h.lower();
-    if (h.count(.E0316) == 1 and h.bag.err_count == 1) return;
-    std.debug.print("want exactly one E0316, got:\n", .{});
-    h.dump();
-    std.debug.print("source:\n{s}\n", .{src});
-    return error.TestUnexpectedResult;
 }
 
 test "§5.7 an analog write to a bit or part of a reg is E0316 and nothing else" {

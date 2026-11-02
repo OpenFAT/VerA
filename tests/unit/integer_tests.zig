@@ -19,6 +19,8 @@ const Arithmetic = integer.Arithmetic;
 const parse = integer.parse;
 const radixOf = integer.radixOf;
 
+// ---- private ----
+
 fn testConcatAllocation(allocator: std.mem.Allocator) !void {
     const a = try parse(allocator, "65'b10xz");
     defer allocator.free(a.planes);

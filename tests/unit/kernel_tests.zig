@@ -25,6 +25,13 @@
 //! Tests the shipped kernels fail carry zrunner's `xfail(...)` prefix. A
 //! kernel that exits the process (E0816, E1011, a §9.21 `E` extrapolation)
 //! is a fixture's job (`tests/rng_reference.zig`, `reject-run`), not this file's.
+//!
+//! Contents:
+//! - `pub fn Dual.con(c: f64) Dual`
+//! - `pub fn Dual.val(a: Dual) f64`
+//! - `pub fn Dual.add(a: Dual, b: Dual) Dual`
+//! - `pub fn Dual.addC(a: Dual, c: f64) Dual`
+//! - `pub fn Dual.scale(a: Dual, c: f64) Dual`
 
 const std = @import("std");
 const gm = @import("contract").gm;
@@ -38,6 +45,9 @@ const str_real = @import("kernels").str_real;
 const str_format = @import("kernels").str_format;
 const str_store = @import("kernels").str_store;
 const file_k = @import("kernels").file_kernels;
+const hist_k = @import("kernels").hist_kernels;
+const wide = @import("kernels").wide_kernels;
+
 /// The table the file kernel tests share, as a device instance's or a
 /// digital run's (`file_kernels.zFCtx`).
 var file_table: @import("kernels").file_table.ZfTable = .{};
@@ -67,9 +77,298 @@ const Dual = struct {
     }
 };
 
+// ---- private ----
+
 /// Fails unless `got` has exactly `want`'s bit pattern (so -0.0 is not 0.0).
 fn expectSameBits(want: f64, got: f64) !void {
     try std.testing.expectEqual(@as(u64, @bitCast(want)), @as(u64, @bitCast(got)));
+}
+
+// ------------------------------------------------------------------ oracles
+// limit_kernels.zig's original branchy ngspice transcriptions, verbatim, kept
+// as the differential test's reference (simd-first T8: keep the scalar
+// reference after the fast one ships). Test-only, so they live here and not in
+// the device text.
+
+fn zPnjlimOracle(vnew0: f64, vold: f64, vt: f64, vcrit: f64) f64 {
+    var vnew = vnew0;
+    if (vnew > vcrit and @abs(vnew - vold) > vt + vt) {
+        if (vold > 0.0) {
+            // The guard above makes |arg| > 2, so both logs take a
+            // strictly positive argument (or exactly 0 after rounding).
+            const arg = (vnew - vold) / vt;
+            vnew = if (arg > 0.0)
+                vold + vt * (2.0 + gm.log(arg - 2.0))
+            else
+                vold - vt * (2.0 + gm.log(2.0 - arg));
+        } else {
+            vnew = vt * gm.log(vnew / vt);
+        }
+    } else if (vnew < 0.0) {
+        const arg = if (vold > 0.0) -vold - 1.0 else 2.0 * vold - 1.0;
+        if (vnew < arg) vnew = arg;
+    }
+    return vnew;
+}
+
+fn zFetlimOracle(vnew0: f64, vold: f64, vto: f64) f64 {
+    var vnew = vnew0;
+    const vtsthi = @abs(2.0 * (vold - vto)) + 2.0;
+    const vtstlo = vtsthi * 0.5 + 2.0;
+    const vtox = vto + 3.5;
+    const delv = vnew - vold;
+    if (vold >= vto) {
+        if (vold >= vtox) {
+            if (delv <= 0.0) { // going off
+                if (vnew >= vtox) {
+                    if (-delv > vtstlo) vnew = vold - vtstlo;
+                } else vnew = if (vnew > vto + 2.0) vnew else vto + 2.0; // ngspice MAX(a,b)
+            } else { // staying on
+                if (delv >= vtsthi) vnew = vold + vtsthi;
+            }
+        } else { // middle region
+            vnew = if (delv <= 0.0)
+                (if (vnew > vto - 0.5) vnew else vto - 0.5) // MAX
+            else
+                (if (vnew < vto + 4.0) vnew else vto + 4.0); // MIN
+        }
+    } else { // off
+        if (delv <= 0.0) {
+            if (-delv > vtsthi) vnew = vold - vtsthi;
+        } else {
+            const vtemp = vto + 0.5;
+            if (vnew <= vtemp) {
+                if (delv > vtstlo) vnew = vold + vtstlo;
+            } else vnew = vtemp;
+        }
+    }
+    return vnew;
+}
+
+fn zLimvdsOracle(vnew0: f64, vold: f64) f64 {
+    var vnew = vnew0;
+    if (vold >= 3.5) {
+        if (vnew > vold) {
+            vnew = @min(vnew, 3.0 * vold + 2.0);
+        } else if (vnew < 3.5) vnew = @max(vnew, 2.0);
+    } else {
+        vnew = if (vnew > vold) @min(vnew, 4.0) else @max(vnew, -0.5);
+    }
+    return vnew;
+}
+
+/// ngspice `B4SOIlimit` minus the NaN reset (see zSteplim's header for why
+/// the kernel bounds NaN instead of zeroing it).
+fn zSteplimOracle(vnew0: f64, vold: f64, lim: f64) f64 {
+    const t0 = vnew0 - vold;
+    if (@abs(t0) > lim)
+        return if (t0 > 0.0) vold + lim else vold - lim;
+    return vnew0;
+}
+
+/// A seed `zRng*Next` returned, back in the i64 the seed variable holds.
+fn seedOf(x: f64) i64 {
+    return @intFromFloat(x);
+}
+
+/// `zRngNext` applied `n` times: `n` plain `uniform()` steps.
+fn steps(seed: i64, n: usize) i64 {
+    var s = seed;
+    for (0..n) |_| s = seedOf(rng.zRngNext(s));
+    return s;
+}
+
+/// The path `file_kernels` opens for `name` inside `tmp`: the kernels resolve
+/// against the process cwd, where `std.testing.tmpDir` makes
+/// `.zig-cache/tmp/<sub_path>`.
+fn tmpPath(buf: []u8, tmp: *const std.testing.TmpDir, name: []const u8) []const u8 {
+    return std.mem.print(buf, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path[0..], name }) catch unreachable;
+}
+
+/// Runs the file kernels over `gpa` from an empty table, and frees what they
+/// own afterwards: `std.testing.allocator` then reports any leak.
+fn fileOver(gpa: std.mem.Allocator) void {
+    file_k.zFFreeAll(zc);
+    file_k.zf_gpa = gpa;
+}
+fn fileDone() void {
+    file_k.zFFreeAll(zc);
+    file_k.zf_gpa = std.heap.page_allocator;
+}
+
+/// One accepted step of a ring as `updateState` runs it: the thinning
+/// against window `w` (`zHistThin`, skipped when `thin` is false: a plain
+/// ring), then the push.
+fn histStep(comptime site: []const u8, ts: []f64, vs: []f64, head: *u64, t: f64, v: f64, w: f64, thin: bool) void {
+    if (thin) hist_k.zHistThin(site, ts, vs, head, t, w);
+    hist_k.zHistPush(ts, vs, head, t, v);
+}
+
+/// A random `n`-bit pattern, or one of the edge patterns.
+fn wideOperand(comptime n: u32, r: std.Random) @Int(.unsigned, n) {
+    const U = @Int(.unsigned, n);
+    var bytes: [(n + 7) / 8 + 8]u8 = undefined;
+    r.bytes(&bytes);
+    var x: U = 0;
+    for (bytes[0 .. (n + 7) / 8]) |b| x = if (n > 8) (x << 8) | b else @truncate(b);
+    return switch (r.uintLessThan(u8, 8)) {
+        0 => 0,
+        1 => 1,
+        2 => std.math.maxInt(U),
+        3 => @as(U, 1) << (n - 1),
+        // Short operands, so a division has a nonzero quotient and the
+        // single-digit path runs.
+        4 => x >> @intCast(n - @min(n, r.uintLessThan(u32, 40) + 1)),
+        else => x,
+    };
+}
+
+fn limbsOf(comptime n: u32, x: @Int(.unsigned, n)) [wide.zwLimbs(n)]u32 {
+    var r: [wide.zwLimbs(n)]u32 = undefined;
+    for (&r, 0..) |*d, i| d.* = @truncate(@as(@Int(.unsigned, 32 * wide.zwLimbs(n)), x) >> @intCast(32 * i));
+    return r;
+}
+
+fn expectLimbs(comptime n: u32, what: []const u8, want: @Int(.unsigned, n), got: [wide.zwLimbs(n)]u32) !void {
+    if (std.mem.eql(u32, &limbsOf(n, want), &got)) return;
+    std.debug.print("n={d} {s}: want 0x{x} got {any}\n", .{ n, what, want, got });
+    return error.TestExpectedEqual;
+}
+
+/// IEEE 1364 §5.1.5 `/` and `%` on native `n`-bit patterns, with the analog
+/// context's 0 for a zero divisor (wide_kernels.zig's header).
+fn nativeDivRem(comptime n: u32, comptime signed: bool, comptime rem: bool, a: @Int(.unsigned, n), b: @Int(.unsigned, n)) @Int(.unsigned, n) {
+    const S = @Int(.signed, n);
+    if (b == 0) return 0;
+    if (!signed) return if (rem) a % b else a / b;
+    if (b == std.math.maxInt(@Int(.unsigned, n))) return if (rem) 0 else 0 -% a;
+    const x: S = @bitCast(a);
+    const y: S = @bitCast(b);
+    return @bitCast(if (rem) @rem(x, y) else @divTrunc(x, y));
+}
+
+fn wideNativeVsLimbs(comptime n: u32, r: std.Random) !void {
+    const U = @Int(.unsigned, n);
+    const S = @Int(.signed, n);
+    const L = wide.zwL;
+    for (0..24) |_| {
+        const a = wideOperand(n, r);
+        const b = wideOperand(n, r);
+        const la = limbsOf(n, a);
+        const lb = limbsOf(n, b);
+        try expectLimbs(n, "+", a +% b, L.add(n, la, lb));
+        try expectLimbs(n, "-", a -% b, L.sub(n, la, lb));
+        try expectLimbs(n, "*", a *% b, L.mul(n, la, lb));
+        try expectLimbs(n, "~", ~a, L.not(n, la));
+        try expectLimbs(n, "&", a & b, L.bit(n, .@"and", la, lb));
+        try expectLimbs(n, "|", a | b, L.bit(n, .@"or", la, lb));
+        try expectLimbs(n, "^", a ^ b, L.bit(n, .xor, la, lb));
+        inline for (.{ false, true }) |signed| inline for (.{ false, true }) |rem| {
+            try expectLimbs(n, if (rem) "%" else "/", nativeDivRem(n, signed, rem, a, b), L.divRem(n, signed, rem, la, lb));
+        };
+        const counts = [_]u64{ 0, 1, 31, 32, 33, n - 1, n, n + 1, r.uintLessThan(u64, n + 8), std.math.maxInt(u64) };
+        for (counts) |c| {
+            try expectLimbs(n, "<<", std.math.shl(U, a, c), L.shl(n, la, c));
+            try expectLimbs(n, ">>", std.math.shr(U, a, c), L.shr(n, false, la, c));
+            try expectLimbs(n, ">>>", @bitCast(std.math.shr(S, @bitCast(a), c)), L.shr(n, true, la, c));
+        }
+        try std.testing.expectEqual(a < b, blk: {
+            var i: usize = wide.zwLimbs(n);
+            while (i > 0) {
+                i -= 1;
+                if (la[i] != lb[i]) break :blk la[i] < lb[i];
+            }
+            break :blk false;
+        });
+        // LLVM cannot lower `@floatFromInt` past 128 bits for aarch64
+        // ("unsupported library call operation"), so wider widths take the
+        // big-integer oracle's rounding.
+        const real: f64 = if (n <= 128) @floatFromInt(a) else blk: {
+            var m = try wideBig(std.testing.allocator, n, la, false);
+            defer m.deinit();
+            break :blk m.toConst().toFloat(f64, .nearest_even)[0];
+        };
+        try std.testing.expectEqual(real, L.toReal(n, la));
+        inline for (.{ 1, n + 7, n + 64 }) |to| for ([_]bool{ false, true }) |signed| {
+            const want: @Int(.unsigned, to) = if (to <= n) @truncate(a) else if (signed) @bitCast(@as(@Int(.signed, to), @as(S, @bitCast(a)))) else a;
+            try expectLimbs(to, "resize", want, L.resize(to, n, signed, la));
+        };
+    }
+}
+
+/// `x` as an exact integer: the `n`-bit pattern, read signed when `signed`.
+fn wideBig(gpa: std.mem.Allocator, comptime n: u32, x: wide.ZW(n), signed: bool) !std.math.big.int.Managed {
+    const l = wide.zwToLimbs(n, x);
+    var m = try std.math.big.int.Managed.init(gpa);
+    try m.set(0);
+    var i: usize = l.len;
+    while (i > 0) {
+        i -= 1;
+        try m.shiftLeft(&m, 32);
+        var d = try std.math.big.int.Managed.initSet(gpa, l[i]);
+        defer d.deinit();
+        try m.add(&m, &d);
+    }
+    if (signed and wide.zwBit(n, x, n - 1)) {
+        var p = try std.math.big.int.Managed.initSet(gpa, 1);
+        defer p.deinit();
+        try p.shiftLeft(&p, n);
+        try m.sub(&m, &p);
+    }
+    return m;
+}
+
+fn expectBig(gpa: std.mem.Allocator, comptime n: u32, what: []const u8, want: *std.math.big.int.Managed, got: wide.ZW(n)) !void {
+    try want.truncate(want, .unsigned, n);
+    var g = try wideBig(gpa, n, got, false);
+    defer g.deinit();
+    if (want.eql(g)) return;
+    std.debug.print("n={d} {s}: want {f} got {f}\n", .{ n, what, want.*, g });
+    return error.TestExpectedEqual;
+}
+
+fn wideAgainstBig(comptime n: u32, r: std.Random) !void {
+    const gpa = std.testing.allocator;
+    const Big = std.math.big.int.Managed;
+    for (0..6) |_| {
+        var la: [wide.zwLimbs(n)]u32 = undefined;
+        var lb: [wide.zwLimbs(n)]u32 = undefined;
+        for (&la, &lb) |*x, *y| {
+            x.* = r.int(u32);
+            y.* = r.int(u32);
+        }
+        // A short divisor half the time: the single-digit and early-exit paths.
+        if (r.boolean()) @memset(lb[r.uintLessThan(usize, lb.len) + 1 ..], 0);
+        const a = wide.zwFromLimbs(n, wide.zwL.norm(n, la));
+        const b = wide.zwFromLimbs(n, wide.zwL.norm(n, lb));
+        inline for (.{ false, true }) |signed| {
+            var x = try wideBig(gpa, n, a, signed);
+            defer x.deinit();
+            var y = try wideBig(gpa, n, b, signed);
+            defer y.deinit();
+            var t = try Big.init(gpa);
+            defer t.deinit();
+            try t.add(&x, &y);
+            try expectBig(gpa, n, "+", &t, wide.zwAdd(n, a, b));
+            try t.sub(&x, &y);
+            try expectBig(gpa, n, "-", &t, wide.zwSub(n, a, b));
+            try t.mul(&x, &y);
+            try expectBig(gpa, n, "*", &t, wide.zwMul(n, a, b));
+            if (!wide.zwIsZero(n, b)) {
+                var q = try Big.init(gpa);
+                defer q.deinit();
+                try q.divTrunc(&t, &x, &y);
+                try expectBig(gpa, n, "/", &q, wide.zwDiv(n, signed, a, b));
+                try expectBig(gpa, n, "%", &t, wide.zwRem(n, signed, a, b));
+            }
+            const e: u64 = r.uintLessThan(u64, 70);
+            try t.pow(&x, @intCast(e));
+            try expectBig(gpa, n, "**", &t, wide.zwPow(n, signed, a, 64, false, e));
+            try std.testing.expectEqual(x.order(y) == .lt, wide.zwLt(n, signed, a, b));
+            const f = x.toConst().toFloat(f64, .nearest_even);
+            try std.testing.expectEqual(f[0], wide.zwToReal(n, signed, a));
+        }
+    }
 }
 
 // ---------------------------------------------------------------- filter
@@ -357,88 +656,6 @@ test "zRootSecs: real s-domain roots pair in order, and a zero root is s" {
     try std.testing.expectEqual([1][3]f64{.{ 0.0, 1.0, 0.0 }}, filt.zRootSecs(1, false, .{ 0.0, 0.0 }));
 }
 
-// ------------------------------------------------------------------ oracles
-// limit_kernels.zig's original branchy ngspice transcriptions, verbatim, kept
-// as the differential test's reference (simd-first T8: keep the scalar
-// reference after the fast one ships). Test-only, so they live here and not in
-// the device text.
-
-fn zPnjlimOracle(vnew0: f64, vold: f64, vt: f64, vcrit: f64) f64 {
-    var vnew = vnew0;
-    if (vnew > vcrit and @abs(vnew - vold) > vt + vt) {
-        if (vold > 0.0) {
-            // The guard above makes |arg| > 2, so both logs take a
-            // strictly positive argument (or exactly 0 after rounding).
-            const arg = (vnew - vold) / vt;
-            vnew = if (arg > 0.0)
-                vold + vt * (2.0 + gm.log(arg - 2.0))
-            else
-                vold - vt * (2.0 + gm.log(2.0 - arg));
-        } else {
-            vnew = vt * gm.log(vnew / vt);
-        }
-    } else if (vnew < 0.0) {
-        const arg = if (vold > 0.0) -vold - 1.0 else 2.0 * vold - 1.0;
-        if (vnew < arg) vnew = arg;
-    }
-    return vnew;
-}
-
-fn zFetlimOracle(vnew0: f64, vold: f64, vto: f64) f64 {
-    var vnew = vnew0;
-    const vtsthi = @abs(2.0 * (vold - vto)) + 2.0;
-    const vtstlo = vtsthi * 0.5 + 2.0;
-    const vtox = vto + 3.5;
-    const delv = vnew - vold;
-    if (vold >= vto) {
-        if (vold >= vtox) {
-            if (delv <= 0.0) { // going off
-                if (vnew >= vtox) {
-                    if (-delv > vtstlo) vnew = vold - vtstlo;
-                } else vnew = if (vnew > vto + 2.0) vnew else vto + 2.0; // ngspice MAX(a,b)
-            } else { // staying on
-                if (delv >= vtsthi) vnew = vold + vtsthi;
-            }
-        } else { // middle region
-            vnew = if (delv <= 0.0)
-                (if (vnew > vto - 0.5) vnew else vto - 0.5) // MAX
-            else
-                (if (vnew < vto + 4.0) vnew else vto + 4.0); // MIN
-        }
-    } else { // off
-        if (delv <= 0.0) {
-            if (-delv > vtsthi) vnew = vold - vtsthi;
-        } else {
-            const vtemp = vto + 0.5;
-            if (vnew <= vtemp) {
-                if (delv > vtstlo) vnew = vold + vtstlo;
-            } else vnew = vtemp;
-        }
-    }
-    return vnew;
-}
-
-fn zLimvdsOracle(vnew0: f64, vold: f64) f64 {
-    var vnew = vnew0;
-    if (vold >= 3.5) {
-        if (vnew > vold) {
-            vnew = @min(vnew, 3.0 * vold + 2.0);
-        } else if (vnew < 3.5) vnew = @max(vnew, 2.0);
-    } else {
-        vnew = if (vnew > vold) @min(vnew, 4.0) else @max(vnew, -0.5);
-    }
-    return vnew;
-}
-
-/// ngspice `B4SOIlimit` minus the NaN reset (see zSteplim's header for why
-/// the kernel bounds NaN instead of zeroing it).
-fn zSteplimOracle(vnew0: f64, vold: f64, lim: f64) f64 {
-    const t0 = vnew0 - vold;
-    if (@abs(t0) > lim)
-        return if (t0 > 0.0) vold + lim else vold - lim;
-    return vnew0;
-}
-
 // §4.5.15 the branchless limiters against the oracles above.
 test "§4.5.15 branchless limiters ≡ branchy ngspice oracles, bit for bit" {
     const expectBits = struct {
@@ -631,18 +848,6 @@ test "§9.21 zTable: a spline dimension carries its own slope, and `E` admits th
 }
 
 // --------------------------------------------------------------------- rng
-
-/// A seed `zRng*Next` returned, back in the i64 the seed variable holds.
-fn seedOf(x: f64) i64 {
-    return @intFromFloat(x);
-}
-
-/// `zRngNext` applied `n` times: `n` plain `uniform()` steps.
-fn steps(seed: i64, n: usize) i64 {
-    var s = seed;
-    for (0..n) |_| s = seedOf(rng.zRngNext(s));
-    return s;
-}
 
 test "§9.13 every routine consumes the uniform steps IEEE 1364 §17.9.3 says" {
     // The seed is an inout source variable, so the write-back must walk as far
@@ -1168,13 +1373,6 @@ test "§9.4.3 zCReal: a field wider than the row returns what fits, '-' or not" 
 
 // -------------------------------------------------------------------- file
 
-/// The path `file_kernels` opens for `name` inside `tmp`: the kernels resolve
-/// against the process cwd, where `std.testing.tmpDir` makes
-/// `.zig-cache/tmp/<sub_path>`.
-fn tmpPath(buf: []u8, tmp: *const std.testing.TmpDir, name: []const u8) []const u8 {
-    return std.mem.print(buf, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path[0..], name }) catch unreachable;
-}
-
 test "§9.5.1/§9.5.2 append writes at the end; r+ reads and writes one position" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1302,17 +1500,6 @@ test "IEEE 1364 §17.2.4.1 $ungetc needs a byte to step back over, and holds 16"
     }
     try std.testing.expectEqual(@as(i64, 'h'), file_k.zFGetc(zc, r));
     _ = file_k.zFClose(zc, r);
-}
-
-/// Runs the file kernels over `gpa` from an empty table, and frees what they
-/// own afterwards: `std.testing.allocator` then reports any leak.
-fn fileOver(gpa: std.mem.Allocator) void {
-    file_k.zFFreeAll(zc);
-    file_k.zf_gpa = gpa;
-}
-fn fileDone() void {
-    file_k.zFFreeAll(zc);
-    file_k.zf_gpa = std.heap.page_allocator;
 }
 
 test "§9.5.1 thirty mcd channels; a file descriptor is not limited by them" {
@@ -1546,16 +1733,6 @@ test "§9.5.4.2 $fscanf consumes exactly what matched, and only an EOF scan sets
 
 // ------------------------------------------------------------ absdelay ring
 
-const hist_k = @import("kernels").hist_kernels;
-
-/// One accepted step of a ring as `updateState` runs it: the thinning
-/// against window `w` (`zHistThin`, skipped when `thin` is false: a plain
-/// ring), then the push.
-fn histStep(comptime site: []const u8, ts: []f64, vs: []f64, head: *u64, t: f64, v: f64, w: f64, thin: bool) void {
-    if (thin) hist_k.zHistThin(site, ts, vs, head, t, w);
-    hist_k.zHistPush(ts, vs, head, t, v);
-}
-
 test "§4.5.7 a ring whose oldest sample leaves the window first is a plain ring, bit for bit" {
     var ta: [64]f64 = @splat(0);
     var va: [64]f64 = @splat(0);
@@ -1652,178 +1829,9 @@ test "§4.5.7 zHistRevert undoes a thinning push exactly, at every ring size and
 // edge patterns (0, 1, all ones, the sign bit alone). Past that, the `zw*`
 // entry points against `std.math.big`'s exact integers.
 
-const wide = @import("kernels").wide_kernels;
-
-/// A random `n`-bit pattern, or one of the edge patterns.
-fn wideOperand(comptime n: u32, r: std.Random) @Int(.unsigned, n) {
-    const U = @Int(.unsigned, n);
-    var bytes: [(n + 7) / 8 + 8]u8 = undefined;
-    r.bytes(&bytes);
-    var x: U = 0;
-    for (bytes[0 .. (n + 7) / 8]) |b| x = if (n > 8) (x << 8) | b else @truncate(b);
-    return switch (r.uintLessThan(u8, 8)) {
-        0 => 0,
-        1 => 1,
-        2 => std.math.maxInt(U),
-        3 => @as(U, 1) << (n - 1),
-        // Short operands, so a division has a nonzero quotient and the
-        // single-digit path runs.
-        4 => x >> @intCast(n - @min(n, r.uintLessThan(u32, 40) + 1)),
-        else => x,
-    };
-}
-
-fn limbsOf(comptime n: u32, x: @Int(.unsigned, n)) [wide.zwLimbs(n)]u32 {
-    var r: [wide.zwLimbs(n)]u32 = undefined;
-    for (&r, 0..) |*d, i| d.* = @truncate(@as(@Int(.unsigned, 32 * wide.zwLimbs(n)), x) >> @intCast(32 * i));
-    return r;
-}
-
-fn expectLimbs(comptime n: u32, what: []const u8, want: @Int(.unsigned, n), got: [wide.zwLimbs(n)]u32) !void {
-    if (std.mem.eql(u32, &limbsOf(n, want), &got)) return;
-    std.debug.print("n={d} {s}: want 0x{x} got {any}\n", .{ n, what, want, got });
-    return error.TestExpectedEqual;
-}
-
-/// IEEE 1364 §5.1.5 `/` and `%` on native `n`-bit patterns, with the analog
-/// context's 0 for a zero divisor (wide_kernels.zig's header).
-fn nativeDivRem(comptime n: u32, comptime signed: bool, comptime rem: bool, a: @Int(.unsigned, n), b: @Int(.unsigned, n)) @Int(.unsigned, n) {
-    const S = @Int(.signed, n);
-    if (b == 0) return 0;
-    if (!signed) return if (rem) a % b else a / b;
-    if (b == std.math.maxInt(@Int(.unsigned, n))) return if (rem) 0 else 0 -% a;
-    const x: S = @bitCast(a);
-    const y: S = @bitCast(b);
-    return @bitCast(if (rem) @rem(x, y) else @divTrunc(x, y));
-}
-
-fn wideNativeVsLimbs(comptime n: u32, r: std.Random) !void {
-    const U = @Int(.unsigned, n);
-    const S = @Int(.signed, n);
-    const L = wide.zwL;
-    for (0..24) |_| {
-        const a = wideOperand(n, r);
-        const b = wideOperand(n, r);
-        const la = limbsOf(n, a);
-        const lb = limbsOf(n, b);
-        try expectLimbs(n, "+", a +% b, L.add(n, la, lb));
-        try expectLimbs(n, "-", a -% b, L.sub(n, la, lb));
-        try expectLimbs(n, "*", a *% b, L.mul(n, la, lb));
-        try expectLimbs(n, "~", ~a, L.not(n, la));
-        try expectLimbs(n, "&", a & b, L.bit(n, .@"and", la, lb));
-        try expectLimbs(n, "|", a | b, L.bit(n, .@"or", la, lb));
-        try expectLimbs(n, "^", a ^ b, L.bit(n, .xor, la, lb));
-        inline for (.{ false, true }) |signed| inline for (.{ false, true }) |rem| {
-            try expectLimbs(n, if (rem) "%" else "/", nativeDivRem(n, signed, rem, a, b), L.divRem(n, signed, rem, la, lb));
-        };
-        const counts = [_]u64{ 0, 1, 31, 32, 33, n - 1, n, n + 1, r.uintLessThan(u64, n + 8), std.math.maxInt(u64) };
-        for (counts) |c| {
-            try expectLimbs(n, "<<", std.math.shl(U, a, c), L.shl(n, la, c));
-            try expectLimbs(n, ">>", std.math.shr(U, a, c), L.shr(n, false, la, c));
-            try expectLimbs(n, ">>>", @bitCast(std.math.shr(S, @bitCast(a), c)), L.shr(n, true, la, c));
-        }
-        try std.testing.expectEqual(a < b, blk: {
-            var i: usize = wide.zwLimbs(n);
-            while (i > 0) {
-                i -= 1;
-                if (la[i] != lb[i]) break :blk la[i] < lb[i];
-            }
-            break :blk false;
-        });
-        // LLVM cannot lower `@floatFromInt` past 128 bits for aarch64
-        // ("unsupported library call operation"), so wider widths take the
-        // big-integer oracle's rounding.
-        const real: f64 = if (n <= 128) @floatFromInt(a) else blk: {
-            var m = try wideBig(std.testing.allocator, n, la, false);
-            defer m.deinit();
-            break :blk m.toConst().toFloat(f64, .nearest_even)[0];
-        };
-        try std.testing.expectEqual(real, L.toReal(n, la));
-        inline for (.{ 1, n + 7, n + 64 }) |to| for ([_]bool{ false, true }) |signed| {
-            const want: @Int(.unsigned, to) = if (to <= n) @truncate(a) else if (signed) @bitCast(@as(@Int(.signed, to), @as(S, @bitCast(a)))) else a;
-            try expectLimbs(to, "resize", want, L.resize(to, n, signed, la));
-        };
-    }
-}
-
 test "IEEE 1364 §5 wide integers: the limb algorithms equal native uN at every width to the threshold + 64" {
     var prng = std.Random.DefaultPrng.init(0x1364_0504);
     inline for (1..wide.zw_native_max + 65) |n| try wideNativeVsLimbs(n, prng.random());
-}
-
-/// `x` as an exact integer: the `n`-bit pattern, read signed when `signed`.
-fn wideBig(gpa: std.mem.Allocator, comptime n: u32, x: wide.ZW(n), signed: bool) !std.math.big.int.Managed {
-    const l = wide.zwToLimbs(n, x);
-    var m = try std.math.big.int.Managed.init(gpa);
-    try m.set(0);
-    var i: usize = l.len;
-    while (i > 0) {
-        i -= 1;
-        try m.shiftLeft(&m, 32);
-        var d = try std.math.big.int.Managed.initSet(gpa, l[i]);
-        defer d.deinit();
-        try m.add(&m, &d);
-    }
-    if (signed and wide.zwBit(n, x, n - 1)) {
-        var p = try std.math.big.int.Managed.initSet(gpa, 1);
-        defer p.deinit();
-        try p.shiftLeft(&p, n);
-        try m.sub(&m, &p);
-    }
-    return m;
-}
-
-fn expectBig(gpa: std.mem.Allocator, comptime n: u32, what: []const u8, want: *std.math.big.int.Managed, got: wide.ZW(n)) !void {
-    try want.truncate(want, .unsigned, n);
-    var g = try wideBig(gpa, n, got, false);
-    defer g.deinit();
-    if (want.eql(g)) return;
-    std.debug.print("n={d} {s}: want {f} got {f}\n", .{ n, what, want.*, g });
-    return error.TestExpectedEqual;
-}
-
-fn wideAgainstBig(comptime n: u32, r: std.Random) !void {
-    const gpa = std.testing.allocator;
-    const Big = std.math.big.int.Managed;
-    for (0..6) |_| {
-        var la: [wide.zwLimbs(n)]u32 = undefined;
-        var lb: [wide.zwLimbs(n)]u32 = undefined;
-        for (&la, &lb) |*x, *y| {
-            x.* = r.int(u32);
-            y.* = r.int(u32);
-        }
-        // A short divisor half the time: the single-digit and early-exit paths.
-        if (r.boolean()) @memset(lb[r.uintLessThan(usize, lb.len) + 1 ..], 0);
-        const a = wide.zwFromLimbs(n, wide.zwL.norm(n, la));
-        const b = wide.zwFromLimbs(n, wide.zwL.norm(n, lb));
-        inline for (.{ false, true }) |signed| {
-            var x = try wideBig(gpa, n, a, signed);
-            defer x.deinit();
-            var y = try wideBig(gpa, n, b, signed);
-            defer y.deinit();
-            var t = try Big.init(gpa);
-            defer t.deinit();
-            try t.add(&x, &y);
-            try expectBig(gpa, n, "+", &t, wide.zwAdd(n, a, b));
-            try t.sub(&x, &y);
-            try expectBig(gpa, n, "-", &t, wide.zwSub(n, a, b));
-            try t.mul(&x, &y);
-            try expectBig(gpa, n, "*", &t, wide.zwMul(n, a, b));
-            if (!wide.zwIsZero(n, b)) {
-                var q = try Big.init(gpa);
-                defer q.deinit();
-                try q.divTrunc(&t, &x, &y);
-                try expectBig(gpa, n, "/", &q, wide.zwDiv(n, signed, a, b));
-                try expectBig(gpa, n, "%", &t, wide.zwRem(n, signed, a, b));
-            }
-            const e: u64 = r.uintLessThan(u64, 70);
-            try t.pow(&x, @intCast(e));
-            try expectBig(gpa, n, "**", &t, wide.zwPow(n, signed, a, 64, false, e));
-            try std.testing.expectEqual(x.order(y) == .lt, wide.zwLt(n, signed, a, b));
-            const f = x.toConst().toFloat(f64, .nearest_even);
-            try std.testing.expectEqual(f[0], wide.zwToReal(n, signed, a));
-        }
-    }
 }
 
 test "IEEE 1364 §5 wide integers: the zw entry points equal std.math.big past the threshold" {

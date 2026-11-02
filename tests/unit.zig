@@ -10,6 +10,29 @@
 //! namespace so its tests keep their names (`unit.parser_tests.test...`);
 //! it keeps its own imports. This file declares only the namespaces and the
 //! test below.
+//!
+//! Contents:
+//! - `pub const fuzz_targets`
+//! - `pub const kernel_tests`
+//! - `pub const integer_tests`
+//! - `pub const proof_tests`
+//! - `pub const ssa_tests`
+//! - `pub const prove_oom_tests`
+//! - `pub const zigbuild_tests`
+//! - `pub const lower_tests`
+//! - `pub const rtlil_tests`
+//! - `pub const diag_tests`
+//! - `pub const preprocessor_tests`
+//! - `pub const sim_digital_tests`
+//! - `pub const codegen_tests`
+//! - `pub const verilog_tests`
+//! - `pub const digital_tests`
+//! - `pub const exe_tests`
+//! - `pub const vpi_tests`
+//! - `pub const oom_tests`
+//! - `pub const ulp_tests`
+//! - `pub const vpi_negative_tests`
+//! - `pub const contract_tests`
 
 /// Every module, `pub` so the `refAllDecls` test below reaches each one.
 pub const modules = @import("unit/modules.zig");
@@ -17,11 +40,6 @@ pub const modules = @import("unit/modules.zig");
 /// The in-process fuzz targets, replayed with seeded inputs by zrunner's
 /// `fuzz`; their own root for `zig build fuzz`.
 pub const fuzz_targets = @import("fuzz.zig");
-
-test {
-    @import("std").testing.refAllDecls(@This());
-    @import("std").testing.refAllDecls(modules);
-}
 
 /// Every `contract.<name>` the backend emits must be a decl contract.zig has.
 ///
@@ -62,3 +80,8 @@ pub const vpi_negative_tests = @import("unit/vpi_negative_tests.zig");
 /// `contract`'s public functions, as a host calls them; a test of a
 /// contract file's private declarations stays beside that file.
 pub const contract_tests = @import("unit/contract_tests.zig");
+
+test {
+    @import("std").testing.refAllDecls(@This());
+    @import("std").testing.refAllDecls(modules);
+}

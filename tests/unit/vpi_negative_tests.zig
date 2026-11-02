@@ -1,8 +1,24 @@
+//! The call side of the VPI negative-input table (`tests/vpi_negative/`
+//! holds the entry points a C application calls): what an application's
+//! derivtf returns and what a device library hands back reach VerA as input,
+//! and each refusal is a `vpi_chk_error` code and a 0 or empty answer, never
+//! a crash. Driven in process because no C application can reach the library
+//! side: VerA builds and loads the device itself. Cites IEEE 1364-2005 §27.4,
+//! VAMS-2023 §12.32.2.
+
 const std = @import("std");
 const vpi = @import("vpi");
 const abi = vpi.abi;
 const user = vpi.user;
 const OneCall = vpi.analog.OneCall;
+
+var null_partials: abi.Partials = .{ .count = 2, .derivative_of = null, .derivative_wrt = null };
+
+/// The hops the library is handed at `attach`, kept to call back with.
+var hop_call: ?vpi.analog.HostCall = null;
+var hop_out: ?vpi.analog.HostOut = null;
+
+// ---- private ----
 
 /// The code of the error `vpi_chk_error` reports, or null when none.
 fn errorCode() ?[]const u8 {
@@ -17,9 +33,18 @@ fn register(derivtf: ?*const fn (*abi.CbData) callconv(.c) ?*abi.Partials) !void
     try std.testing.expect(vpi.systf.vpi_register_analog_systf(&reg) != null);
 }
 
-var null_partials: abi.Partials = .{ .count = 2, .derivative_of = null, .derivative_wrt = null };
 fn nullPartials(_: *abi.CbData) callconv(.c) ?*abi.Partials {
     return &null_partials;
+}
+
+fn keepHops(_: ?*anyopaque, call: ?vpi.analog.HostCall, out: ?vpi.analog.HostOut) callconv(.c) void {
+    hop_call = call;
+    hop_out = out;
+}
+
+fn plainName(_: usize, len: *usize) callconv(.c) [*]const u8 {
+    len.* = 1;
+    return "c";
 }
 
 test "§12.32.2 derivtf: a positive count with NULL arrays is BADPARTIALS and declares none" {
@@ -30,14 +55,6 @@ test "§12.32.2 derivtf: a positive count with NULL arrays is BADPARTIALS and de
     vpi.systf.buildCalls();
     try std.testing.expectEqualStrings("BADPARTIALS", errorCode() orelse "");
     try std.testing.expectEqual(@as(usize, 0), vpi.systf.partialsOf(.at(0)).len);
-}
-
-/// The hops the library is handed at `attach`, kept to call back with.
-var hop_call: ?vpi.analog.HostCall = null;
-var hop_out: ?vpi.analog.HostOut = null;
-fn keepHops(_: ?*anyopaque, call: ?vpi.analog.HostCall, out: ?vpi.analog.HostOut) callconv(.c) void {
-    hop_call = call;
-    hop_out = out;
 }
 
 test "a device library calling back without its ctx is NOCTX and gets 0" {
@@ -57,11 +74,6 @@ test "a device library calling back without its ctx is NOCTX and gets 0" {
     vpi.status.clearError();
     try std.testing.expectEqual(@as(f64, 0), hop_out.?(null, 0, 0, 1, &args, 1, &partials));
     try std.testing.expectEqualStrings("NOCTX", errorCode() orelse "");
-}
-
-fn plainName(_: usize, len: *usize) callconv(.c) [*]const u8 {
-    len.* = 1;
-    return "c";
 }
 
 test "a library call name that is not a `$` name binds to no call, refused when called" {

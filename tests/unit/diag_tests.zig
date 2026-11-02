@@ -8,6 +8,231 @@ const Severity = diag.Severity;
 const Level = diag.Level;
 const Levels = diag.Levels;
 
+// ---- private ----
+
+/// Renders a bag to an arena-owned string. Test helper, and the shape a host
+/// that wants the text rather than a writer would use.
+fn renderToString(bag: *diag.Bag, opts: diag.RenderOptions) ![]const u8 {
+    // ponytail: the arena owns the result; transfer ownership only if it must outlive it.
+    var aw: std.Io.Writer.Allocating = .init(bag.arena);
+    try diag.render(bag, &aw.writer, opts);
+    return aw.writer.buffered();
+}
+
+/// How many codes `levels` holds at other than their default level.
+fn overridden(levels: Levels) usize {
+    var n: usize = 0;
+    for (0..@typeInfo(diag.Code).@"enum".field_names.len) |i| {
+        const c: diag.Code = @fromBackingInt(@intCast(i));
+        n += @intFromBool(levels.get(c) != Levels.empty.get(c));
+    }
+    return n;
+}
+
+/// `LineIndex` against a byte-at-a-time walk: every offset up to three past
+/// the end, and every line's text against `splitScalar` with one '\r' cut.
+fn lineIndexOne(_: void, s: *std.testing.Smith) anyerror!void {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var buf: [256]u8 = undefined;
+    const text = buf[0..s.slice(&buf)];
+    const idx = try diag.LineIndex.build(arena_state.allocator(), text);
+
+    var line: u32 = 1;
+    var line_start: u32 = 0;
+    for (0..text.len + 3) |o| {
+        const off: u32 = @intCast(o);
+        try std.testing.expectEqual(diag.Loc{ .line = line, .col = off - line_start + 1 }, idx.loc(off));
+        if (o < text.len and text[o] == '\n') {
+            line += 1;
+            line_start = off + 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, line), idx.starts.len);
+
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var k: u32 = 1;
+    while (it.next()) |raw| : (k += 1) {
+        const want = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
+        try std.testing.expectEqualStrings(want, idx.lineText(text, k));
+    }
+    try std.testing.expectEqualStrings("", idx.lineText(text, k));
+}
+
+/// Builds and renders one full diagnostic on `gpa`: the shape a failing
+/// compilation takes, for the allocation-failure sweep below. The writer is
+/// fixed, so every failure it can see is the bag's or the renderer's.
+fn buildAndRender(gpa: std.mem.Allocator) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    var bag = diag.Bag.init(arena_state.allocator());
+    try bag.setSingleFile("o.va", "module m;\n  x = 1;\nendmodule\n");
+    var b = bag.build(.lower, .E0313, .{ .start = 12, .end = 13 });
+    b.msg("`{s}`", .{"x"});
+    b.label(.{ .start = 0, .end = 6 }, "here", .{});
+    b.suggestHere("y");
+    try b.emit();
+    var out: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try diag.render(&bag, &w, .{});
+    try diag.renderJson(&bag, &w);
+}
+
+/// Detaches a bag holding a stripped file and a macro segment onto `gpa`.
+fn detachOnce(gpa: std.mem.Allocator) !void {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var bag = diag.Bag.init(arena_state.allocator());
+    _ = try bag.addFile("m.va", "abc /* c */ def\n");
+    bag.setStrippedText(.root, "abc   def\n", &.{.{ .out = 5, .src = 11 }});
+    bag.map = .{ .segs = &[_]diag.Segment{
+        .{ .out_start = 0, .in_start = 0, .file = .root, .kind = .verbatim },
+        .{ .out_start = 3, .in_start = 3, .file = .root, .kind = .macro, .parent = 0, .macro = "M" },
+    } };
+    try bag.add(.lower, .E0313, .at(6), "m", .{});
+
+    bag.detach(gpa) catch |err| {
+        // Unchanged, still on its arena.
+        try std.testing.expectEqual(@as(usize, 1), bag.count());
+        try std.testing.expectEqualStrings("m", bag.at(0).message);
+        try std.testing.expectEqual(@as(usize, 0), bag.detached_bytes.len);
+        return err;
+    };
+    defer bag.deinit(gpa);
+    try std.testing.expectEqualStrings("abc /* c */ def\n", bag.sourceText(.root));
+    try std.testing.expectEqualStrings("abc   def\n", bag.fileText(.root));
+    try std.testing.expectEqualStrings("M", bag.map.segs[1].macro);
+    try std.testing.expectEqual(@as(u32, 12), bag.toSourceOffset(.root, 6));
+}
+
+/// The bag's counters against a model written from `Builder.emit`'s
+/// contract: an allowed code is never counted, a full bag counts the rest as
+/// suppressed, and otherwise (code, start) dedupes.
+fn bagModelOne(_: void, s: *std.testing.Smith) anyerror!void {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var bag = diag.Bag.init(arena);
+
+    const codes = [_]diag.Code{ .E0313, .W0650, .W0651 };
+    const warning_levels = [_]Level{ .allow, .warn, .deny, .forbid };
+    var level: [codes.len]Level = .{ .deny, .warn, .warn };
+    for (1..codes.len) |c| {
+        level[c] = warning_levels[s.index(warning_levels.len)];
+        try bag.levels.set(codes[c], level[c]);
+    }
+
+    var seen = std.mem.zeroes([codes.len][32]bool);
+    var kept: usize = 0;
+    var errs: u32 = 0;
+    var warns: u32 = 0;
+    var dups: u32 = 0;
+    var supp: u32 = 0;
+    var n: usize = 0;
+    while (n < 200 and !s.eos()) : (n += 1) {
+        const c = s.index(codes.len);
+        const start = s.index(32);
+        try bag.add(.lower, codes[c], .{ .start = @intCast(start), .end = @intCast(start + 1) }, "", .{});
+        if (level[c] == .allow) continue;
+        if (seen[c][start]) {
+            dups += 1;
+            continue;
+        }
+        // Counted whether the cap keeps the row or drops it.
+        if (level[c] == .warn) warns += 1 else errs += 1;
+        if (kept >= diag.max_entries) {
+            supp += 1;
+            continue;
+        }
+        seen[c][start] = true;
+        kept += 1;
+    }
+    try std.testing.expectEqual(kept, bag.count());
+    try std.testing.expectEqual(supp, bag.suppressed);
+    try std.testing.expectEqual(dups, bag.deduped);
+    try std.testing.expectEqual(errs, bag.err_count);
+    try std.testing.expectEqual(warns, bag.warn_count);
+    try std.testing.expectEqual(errs != 0, bag.failed());
+}
+
+/// Textbook optimal string alignment, the full matrix with no cap: the
+/// oracle for `editDistance`'s rolling, early-exiting rows.
+fn naiveOsa(a: []const u8, b: []const u8) usize {
+    var t: [8][8]usize = undefined;
+    for (0..a.len + 1) |i| t[i][0] = i;
+    for (0..b.len + 1) |j| t[0][j] = j;
+    for (1..a.len + 1) |i| {
+        for (1..b.len + 1) |j| {
+            const cost: usize = @intFromBool(a[i - 1] != b[j - 1]);
+            var v = @min(t[i - 1][j] + 1, t[i][j - 1] + 1, t[i - 1][j - 1] + cost);
+            if (i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1])
+                v = @min(v, t[i - 2][j - 2] + 1);
+            t[i][j] = v;
+        }
+    }
+    return t[a.len][b.len];
+}
+
+/// Arbitrary text, arbitrary (inverted, past-the-end) spans, labels and
+/// fixes: rendering never panics, prints one headline per kept row, and the
+/// JSON line and column of each primary span match a byte-by-byte count.
+fn renderAnyOne(_: void, s: *std.testing.Smith) anyerror!void {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var text_buf: [256]u8 = undefined;
+    const text = text_buf[0..s.slice(&text_buf)];
+    var bag = diag.Bag.init(arena);
+    try bag.setSingleFile("f.va", text);
+
+    // Now and then out to maxInt(u32): a span no stage should make, which
+    // must still render rather than overflow.
+    const hi: u32 = if (s.boolWeighted(7, 1)) @intCast(text.len + 4) else std.math.maxInt(u32);
+    var n: usize = 0;
+    while (n < 80 and !s.eos()) : (n += 1) {
+        const a = s.valueRangeAtMost(u32, 0, hi);
+        const z = s.valueRangeAtMost(u32, 0, hi);
+        var b = bag.build(.parse, .E0207, .{ .start = a, .end = z });
+        if (s.boolWeighted(1, 1)) b.point("p", .{});
+        if (s.boolWeighted(1, 1)) {
+            const ls = s.valueRangeAtMost(u32, 0, hi);
+            b.label(.{ .start = ls, .end = s.valueRangeAtMost(u32, 0, hi) }, "l", .{});
+        }
+        if (s.boolWeighted(1, 1)) {
+            const fs = s.valueRangeAtMost(u32, 0, hi);
+            b.suggest(.{ .span = .{ .start = fs, .end = s.valueRangeAtMost(u32, 0, hi) }, .replacement = "r\tµ" }, "h", .{});
+        }
+        try b.emit();
+    }
+
+    var text_out: std.Io.Writer.Allocating = .init(arena);
+    try diag.render(&bag, &text_out.writer, .{});
+    try std.testing.expectEqual(bag.count(), std.mem.count(u8, text_out.writer.buffered(), "error[E0207]"));
+
+    var json_out: std.Io.Writer.Allocating = .init(arena);
+    try diag.renderJson(&bag, &json_out.writer);
+    const json = json_out.writer.buffered();
+    try std.testing.expectEqual(bag.count(), std.mem.countScalar(u8, json, '\n'));
+
+    var lines = std.mem.splitScalar(u8, json, '\n');
+    for (0..bag.count()) |i| {
+        const line = lines.next().?;
+        const span = bag.at(i).span;
+        if (span.isNone()) {
+            try std.testing.expect(std.mem.find(u8, line, "\"span\":null") != null);
+            continue;
+        }
+        const upto = @min(span.start, text.len);
+        const want_line = std.mem.countScalar(u8, text[0..upto], '\n') + 1;
+        const line_start = if (std.mem.findScalarLast(u8, text[0..upto], '\n')) |nl| nl + 1 else 0;
+        const want = try arena.print("\"span\":{{\"file\":\"f.va\",\"line\":{d},\"col\":{d},\"byte_start\":{d},", .{
+            want_line, span.start - line_start + 1, span.start,
+        });
+        try std.testing.expect(std.mem.find(u8, line, want) != null);
+    }
+}
+
 test "edit distance and suggestion" {
     try std.testing.expectEqual(@as(usize, 0), diag.editDistance("abc", "abc", 4));
     try std.testing.expectEqual(@as(usize, 1), diag.editDistance("abc", "abd", 4));
@@ -176,15 +401,6 @@ test "line index" {
     try std.testing.expectEqualStrings("bbbb", idx.lineText(text, 2));
     try std.testing.expectEqualStrings("", idx.lineText(text, 3));
     try std.testing.expectEqualStrings("ccc", idx.lineText(text, 4));
-}
-
-/// Renders a bag to an arena-owned string. Test helper, and the shape a host
-/// that wants the text rather than a writer would use.
-fn renderToString(bag: *diag.Bag, opts: diag.RenderOptions) ![]const u8 {
-    // ponytail: the arena owns the result; transfer ownership only if it must outlive it.
-    var aw: std.Io.Writer.Allocating = .init(bag.arena);
-    try diag.render(bag, &aw.writer, opts);
-    return aw.writer.buffered();
 }
 
 test "render: full diagnostic with label, note, suggestion" {
@@ -527,16 +743,6 @@ test "levels: parseFlag reads only exact level=code directives" {
     try std.testing.expectError(error.CannotAllowError, levels.parseFlag("warn=E0313"));
 }
 
-/// How many codes `levels` holds at other than their default level.
-fn overridden(levels: Levels) usize {
-    var n: usize = 0;
-    for (0..@typeInfo(diag.Code).@"enum".field_names.len) |i| {
-        const c: diag.Code = @fromBackingInt(@intCast(i));
-        n += @intFromBool(levels.get(c) != Levels.empty.get(c));
-    }
-    return n;
-}
-
 test "levels: setting and parsing levels takes no allocator, and a copy is a snapshot" {
     // `Levels` is one byte a code: no allocator to fail, nothing to free,
     // and `bag.levels = lint` copies rather than shares.
@@ -593,36 +799,6 @@ test "line index: empty text, CRLF, and offsets past the end" {
     try std.testing.expectEqual(Loc{ .line = 1, .col = 4 }, idx.loc(3));
     // Past the end: the last line (start 8), column 10 - 8 + 1.
     try std.testing.expectEqual(Loc{ .line = 3, .col = 3 }, idx.loc(10));
-}
-
-/// `LineIndex` against a byte-at-a-time walk: every offset up to three past
-/// the end, and every line's text against `splitScalar` with one '\r' cut.
-fn lineIndexOne(_: void, s: *std.testing.Smith) anyerror!void {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    var buf: [256]u8 = undefined;
-    const text = buf[0..s.slice(&buf)];
-    const idx = try diag.LineIndex.build(arena_state.allocator(), text);
-
-    var line: u32 = 1;
-    var line_start: u32 = 0;
-    for (0..text.len + 3) |o| {
-        const off: u32 = @intCast(o);
-        try std.testing.expectEqual(diag.Loc{ .line = line, .col = off - line_start + 1 }, idx.loc(off));
-        if (o < text.len and text[o] == '\n') {
-            line += 1;
-            line_start = off + 1;
-        }
-    }
-    try std.testing.expectEqual(@as(usize, line), idx.starts.len);
-
-    var it = std.mem.splitScalar(u8, text, '\n');
-    var k: u32 = 1;
-    while (it.next()) |raw| : (k += 1) {
-        const want = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
-        try std.testing.expectEqualStrings(want, idx.lineText(text, k));
-    }
-    try std.testing.expectEqualStrings("", idx.lineText(text, k));
 }
 
 test "line index agrees with a byte-at-a-time count" {
@@ -817,54 +993,8 @@ test "builder: an allocation failure is latched and reported by emit" {
     try std.testing.expect(!bag.failed());
 }
 
-/// Builds and renders one full diagnostic on `gpa`: the shape a failing
-/// compilation takes, for the allocation-failure sweep below. The writer is
-/// fixed, so every failure it can see is the bag's or the renderer's.
-fn buildAndRender(gpa: std.mem.Allocator) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    var bag = diag.Bag.init(arena_state.allocator());
-    try bag.setSingleFile("o.va", "module m;\n  x = 1;\nendmodule\n");
-    var b = bag.build(.lower, .E0313, .{ .start = 12, .end = 13 });
-    b.msg("`{s}`", .{"x"});
-    b.label(.{ .start = 0, .end = 6 }, "here", .{});
-    b.suggestHere("y");
-    try b.emit();
-    var out: [4096]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&out);
-    try diag.render(&bag, &w, .{});
-    try diag.renderJson(&bag, &w);
-}
-
 test "every allocation failure while building and rendering propagates" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, buildAndRender, .{});
-}
-
-/// Detaches a bag holding a stripped file and a macro segment onto `gpa`.
-fn detachOnce(gpa: std.mem.Allocator) !void {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    var bag = diag.Bag.init(arena_state.allocator());
-    _ = try bag.addFile("m.va", "abc /* c */ def\n");
-    bag.setStrippedText(.root, "abc   def\n", &.{.{ .out = 5, .src = 11 }});
-    bag.map = .{ .segs = &[_]diag.Segment{
-        .{ .out_start = 0, .in_start = 0, .file = .root, .kind = .verbatim },
-        .{ .out_start = 3, .in_start = 3, .file = .root, .kind = .macro, .parent = 0, .macro = "M" },
-    } };
-    try bag.add(.lower, .E0313, .at(6), "m", .{});
-
-    bag.detach(gpa) catch |err| {
-        // Unchanged, still on its arena.
-        try std.testing.expectEqual(@as(usize, 1), bag.count());
-        try std.testing.expectEqualStrings("m", bag.at(0).message);
-        try std.testing.expectEqual(@as(usize, 0), bag.detached_bytes.len);
-        return err;
-    };
-    defer bag.deinit(gpa);
-    try std.testing.expectEqualStrings("abc /* c */ def\n", bag.sourceText(.root));
-    try std.testing.expectEqualStrings("abc   def\n", bag.fileText(.root));
-    try std.testing.expectEqualStrings("M", bag.map.segs[1].macro);
-    try std.testing.expectEqual(@as(u32, 12), bag.toSourceOffset(.root, 6));
 }
 
 test "detach: every allocation failure leaves the bag on its arena and leaks nothing" {
@@ -960,56 +1090,6 @@ test "strip marks: a second strip of the same file keeps the original" {
     try std.testing.expectEqualStrings("", bag.fileText(nine));
 }
 
-/// The bag's counters against a model written from `Builder.emit`'s
-/// contract: an allowed code is never counted, a full bag counts the rest as
-/// suppressed, and otherwise (code, start) dedupes.
-fn bagModelOne(_: void, s: *std.testing.Smith) anyerror!void {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var bag = diag.Bag.init(arena);
-
-    const codes = [_]diag.Code{ .E0313, .W0650, .W0651 };
-    const warning_levels = [_]Level{ .allow, .warn, .deny, .forbid };
-    var level: [codes.len]Level = .{ .deny, .warn, .warn };
-    for (1..codes.len) |c| {
-        level[c] = warning_levels[s.index(warning_levels.len)];
-        try bag.levels.set(codes[c], level[c]);
-    }
-
-    var seen = std.mem.zeroes([codes.len][32]bool);
-    var kept: usize = 0;
-    var errs: u32 = 0;
-    var warns: u32 = 0;
-    var dups: u32 = 0;
-    var supp: u32 = 0;
-    var n: usize = 0;
-    while (n < 200 and !s.eos()) : (n += 1) {
-        const c = s.index(codes.len);
-        const start = s.index(32);
-        try bag.add(.lower, codes[c], .{ .start = @intCast(start), .end = @intCast(start + 1) }, "", .{});
-        if (level[c] == .allow) continue;
-        if (seen[c][start]) {
-            dups += 1;
-            continue;
-        }
-        // Counted whether the cap keeps the row or drops it.
-        if (level[c] == .warn) warns += 1 else errs += 1;
-        if (kept >= diag.max_entries) {
-            supp += 1;
-            continue;
-        }
-        seen[c][start] = true;
-        kept += 1;
-    }
-    try std.testing.expectEqual(kept, bag.count());
-    try std.testing.expectEqual(supp, bag.suppressed);
-    try std.testing.expectEqual(dups, bag.deduped);
-    try std.testing.expectEqual(errs, bag.err_count);
-    try std.testing.expectEqual(warns, bag.warn_count);
-    try std.testing.expectEqual(errs != 0, bag.failed());
-}
-
 test "bag counters agree with a model of emit" {
     try std.testing.fuzz({}, bagModelOne, .{});
 }
@@ -1031,24 +1111,6 @@ test "edit distance: empty inputs, the limit, and the OSA restriction" {
     // OSA, not full Damerau-Levenshtein: CA -> ABC is 3 (it may not edit
     // the transposed pair again), where unrestricted DL says 2.
     try std.testing.expectEqual(@as(usize, 3), d("ca", "abc", 5));
-}
-
-/// Textbook optimal string alignment, the full matrix with no cap: the
-/// oracle for `editDistance`'s rolling, early-exiting rows.
-fn naiveOsa(a: []const u8, b: []const u8) usize {
-    var t: [8][8]usize = undefined;
-    for (0..a.len + 1) |i| t[i][0] = i;
-    for (0..b.len + 1) |j| t[0][j] = j;
-    for (1..a.len + 1) |i| {
-        for (1..b.len + 1) |j| {
-            const cost: usize = @intFromBool(a[i - 1] != b[j - 1]);
-            var v = @min(t[i - 1][j] + 1, t[i][j - 1] + 1, t[i - 1][j - 1] + cost);
-            if (i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1])
-                v = @min(v, t[i - 2][j - 2] + 1);
-            t[i][j] = v;
-        }
-    }
-    return t[a.len][b.len];
 }
 
 test "edit distance equals the full matrix wherever it is within the limit" {
@@ -1489,66 +1551,6 @@ test "explain: a code with no citation prints no LRM line" {
     defer aw2.deinit();
     try diag.explain(.E0207, &aw2.writer, .off);
     try std.testing.expect(std.mem.startsWith(u8, aw2.writer.buffered(), "E0207: unexpected token\nLRM annex A.1.2\n\n"));
-}
-
-/// Arbitrary text, arbitrary (inverted, past-the-end) spans, labels and
-/// fixes: rendering never panics, prints one headline per kept row, and the
-/// JSON line and column of each primary span match a byte-by-byte count.
-fn renderAnyOne(_: void, s: *std.testing.Smith) anyerror!void {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var text_buf: [256]u8 = undefined;
-    const text = text_buf[0..s.slice(&text_buf)];
-    var bag = diag.Bag.init(arena);
-    try bag.setSingleFile("f.va", text);
-
-    // Now and then out to maxInt(u32): a span no stage should make, which
-    // must still render rather than overflow.
-    const hi: u32 = if (s.boolWeighted(7, 1)) @intCast(text.len + 4) else std.math.maxInt(u32);
-    var n: usize = 0;
-    while (n < 80 and !s.eos()) : (n += 1) {
-        const a = s.valueRangeAtMost(u32, 0, hi);
-        const z = s.valueRangeAtMost(u32, 0, hi);
-        var b = bag.build(.parse, .E0207, .{ .start = a, .end = z });
-        if (s.boolWeighted(1, 1)) b.point("p", .{});
-        if (s.boolWeighted(1, 1)) {
-            const ls = s.valueRangeAtMost(u32, 0, hi);
-            b.label(.{ .start = ls, .end = s.valueRangeAtMost(u32, 0, hi) }, "l", .{});
-        }
-        if (s.boolWeighted(1, 1)) {
-            const fs = s.valueRangeAtMost(u32, 0, hi);
-            b.suggest(.{ .span = .{ .start = fs, .end = s.valueRangeAtMost(u32, 0, hi) }, .replacement = "r\tµ" }, "h", .{});
-        }
-        try b.emit();
-    }
-
-    var text_out: std.Io.Writer.Allocating = .init(arena);
-    try diag.render(&bag, &text_out.writer, .{});
-    try std.testing.expectEqual(bag.count(), std.mem.count(u8, text_out.writer.buffered(), "error[E0207]"));
-
-    var json_out: std.Io.Writer.Allocating = .init(arena);
-    try diag.renderJson(&bag, &json_out.writer);
-    const json = json_out.writer.buffered();
-    try std.testing.expectEqual(bag.count(), std.mem.countScalar(u8, json, '\n'));
-
-    var lines = std.mem.splitScalar(u8, json, '\n');
-    for (0..bag.count()) |i| {
-        const line = lines.next().?;
-        const span = bag.at(i).span;
-        if (span.isNone()) {
-            try std.testing.expect(std.mem.find(u8, line, "\"span\":null") != null);
-            continue;
-        }
-        const upto = @min(span.start, text.len);
-        const want_line = std.mem.countScalar(u8, text[0..upto], '\n') + 1;
-        const line_start = if (std.mem.findScalarLast(u8, text[0..upto], '\n')) |nl| nl + 1 else 0;
-        const want = try arena.print("\"span\":{{\"file\":\"f.va\",\"line\":{d},\"col\":{d},\"byte_start\":{d},", .{
-            want_line, span.start - line_start + 1, span.start,
-        });
-        try std.testing.expect(std.mem.find(u8, line, want) != null);
-    }
 }
 
 test "render never panics on any span over any text" {

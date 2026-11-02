@@ -23,6 +23,93 @@ const Q = f128;
 const inf = std.math.inf(f64);
 const nan = std.math.nan(f64);
 
+const Worst = struct {
+    ulp: f64 = 0,
+    x: f64 = 0,
+    y: f64 = 0,
+
+    fn see(w: *Worst, e: f64, x: f64, y: f64) void {
+        if (e > w.ulp or std.math.isNan(e)) w.* = .{ .ulp = e, .x = x, .y = y };
+    }
+
+    /// Whether the worst case is within `bound`; prints it when not, so
+    /// one run reports every function.
+    fn within(w: Worst, name: []const u8, limit: f64) bool {
+        if (w.ulp <= limit) return true;
+        std.debug.print("ulp: {s}: {d:.4} ulp at x = {e} (y = {e}), over the bound {d}\n", .{ name, w.ulp, w.x, w.y, limit });
+        return false;
+    }
+};
+
+const n_random = 250_000;
+
+/// Hard cases every unary function sees besides its own.
+const common = [_]f64{
+    0,         -0.0,      inf,                     -inf,         nan,    0x1p-1074,              -0x1p-1074,
+    0x1p-1022, 0x1p-1023, 0x1.fffffffffffffp-1023, 1,            -1,     0.5,                    -0.5,
+    2,         -2,        std.math.pi,             -std.math.pi, 1e-300, std.math.floatMax(f64), -std.math.floatMax(f64),
+};
+
+/// exp's seams: the overflow and underflow thresholds, and the last
+/// argument whose result is normal.
+const exp_hard = [_]f64{
+    0x1.62e42fefa39efp9,  0x1.62e42fefa39f0p9,  -0x1.74910d52d3051p9, -0x1.74910d52d3052p9,
+    -0x1.6232bdd7abcd2p9, -0x1.6232bdd7abcd3p9, 709.7,                -708.4,
+    -745.0,               1e-17,                -1e-17,               0x1p-53,
+};
+const log_hard = [_]f64{
+    0x1.0000000000001p0,  0x1.fffffffffffffp-1, 0x1.0000000000002p0, 0x1.ffffffffffffep-1,
+    0x1.6a09e667f3bcdp-1, 0x1.6a09e667f3bccp-1, 0x1p-1060,           1e-310,
+    std.math.e,           10,                   0x1p1023,            1.0000001,
+};
+const expm1_hard = [_]f64{
+    0x1p-60, -0x1p-60, 0x1p-54, -0x1p-54, 0.3465,  -0.3465, 0.3466, -0.3466, 1.0397, -1.0397,
+    1.0398,  -1.0398,  0.25,    -0.25,    -0.2501, 38.8,    -38.8,  38.9,    709.78, 710,
+    -745,
+};
+const hyp_hard = [_]f64{ 0.625, -0.625, 0.6249999999999999, 22, -22, 710.4, 710.5, -710.5, 0x1p-28, 20, 40.5 };
+const trig_hard = [_]f64{
+    std.math.pi / 2.0, -std.math.pi / 2.0, std.math.pi / 4.0, 3.0 * std.math.pi / 2.0, 1e5, 1.6e6, 1e9, 1e22, 1e300, 0x1p-28,
+};
+const atan_hard = [_]f64{ 0.4375, 0.6875, 1.1875, 2.4375, 0x1p66, -0x1p66, 0x1p-27, 7.0 / 16.0, 39.0 / 16.0 };
+/// The musl branch seams (|x| = 2^-26, 2, 2^26; acosh's 2 and 2^26;
+/// atanh's 2^-32 and 0.5), and #60's values.
+const asinh_hard = [_]f64{ 0x1p-26, -0x1p-26, 0x1.fffffffffffffp-27, 2, -2, 0x1.fffffffffffffp0, 0x1p26, -0x1p26, 1e154, 1e155, -1e8, -1e3, 1e-10, 1e300 };
+const acosh_hard = [_]f64{ 0x1.0000000000001p0, 0x1.0000000000002p0, 1.0000000001, 0x1.fffffffffffffp0, 0x1p26, 0x1.fffffffffffffp25, 1e154, 1e300, 0.5, 0x1.fffffffffffffp-1 };
+const atanh_hard = [_]f64{ 0x1p-32, 0x1.fffffffffffffp-33, 0.5, 0x1.fffffffffffffp-2, -0.5, 0x1.fffffffffffffp-1, -0x1.fffffffffffffp-1, 1e-10, 0.9999999999 };
+const log10_hard = [_]f64{ 1e15, 1e-15, 10, 100, 1e22, 1e-300, 1e300, 0x1.6a09e667f3bcdp-1, 0x1.0000000000001p0, 0x1.fffffffffffffp-1, 0x1p-1060 };
+
+/// The bounds: each function's worst case on 2026-10-08 with this file's
+/// seeds, rounded up in the third decimal. `gm`'s own promise is "faithful
+/// (< 1 ulp)" for exp, log and pow; a change that moves a bound moves it here.
+const bound = struct {
+    const exp = 0.507; // 0.5062 at 163.57479821851769 (vector: 0.5052)
+    const log = 0.515; // 0.5142 at 1.0843856890111225, a vector lane (scalar: 0.5112)
+    const pow = 0.506; // 0.5059 at (-143136349.3604563, 21), scalar and powV
+    // On the host the rest are std.math's and compiler_rt's, which promise
+    // no bound; sinh, cosh and tanh are not faithful.
+    const expm1 = 0.810; // 0.8094 at 0.35354502149644396
+    const sinh = 1.739; // 1.7386 at 0.6943002823977769
+    const cosh = 1.200; // 1.1992 at -1.0407498633762968
+    const tanh = 2.030; // 2.0294 at 0.2498982405738699
+    const sin = 0.747; // 0.7463 at 7.080094367729739
+    const cos = 0.733; // 0.7327 at -3.863213591144243
+    const atan = 0.751; // 0.7507 at 2.680128387647313
+    // #60's rows (asinh, acosh, atanh, log10, atan2, tan: `gm`'s musl ports
+    // and sin/cos quotient; asin/acos: `std.math`, what a device calls),
+    // measured by this file on 2026-10-18 (ReleaseSafe, x86_64).
+    const asinh = 1.524; // 1.5239 at 0.51700870116405
+    const acosh = 2.016; // 2.0151 at 1.001887151218172
+    const atanh = 1.505; // 1.5049 at -0.12030145777284262
+    const log10 = 0.630; // 0.6297 at 1.374951715281116
+    const tan = 2.006; // 2.0055 at -145126.64517723466
+    const asin = 0.817; // 0.8162 at -0.5042767798999156
+    const acos = 0.864; // 0.8632 at -0.5232333655933563
+    const atan2 = 1.441; // 1.4405 at y = 0.06365036518777245
+};
+
+// ---- private ----
+
 /// |got - ref| in units of 2^(e-52), where 2^e <= |ref| < 2^(e+1), e clamped
 /// to f64's normal range [-1022, 1023] (so below 2^-1022 the unit is the
 /// least subnormal). An infinite `got` stands for 2^1024, one unit past the
@@ -351,33 +438,6 @@ fn acosQ(x: f64) Q {
 
 // ---- the judge -----------------------------------------------------------
 
-const Worst = struct {
-    ulp: f64 = 0,
-    x: f64 = 0,
-    y: f64 = 0,
-
-    fn see(w: *Worst, e: f64, x: f64, y: f64) void {
-        if (e > w.ulp or std.math.isNan(e)) w.* = .{ .ulp = e, .x = x, .y = y };
-    }
-
-    /// Whether the worst case is within `bound`; prints it when not, so
-    /// one run reports every function.
-    fn within(w: Worst, name: []const u8, limit: f64) bool {
-        if (w.ulp <= limit) return true;
-        std.debug.print("ulp: {s}: {d:.4} ulp at x = {e} (y = {e}), over the bound {d}\n", .{ name, w.ulp, w.x, w.y, limit });
-        return false;
-    }
-};
-
-const n_random = 250_000;
-
-/// Hard cases every unary function sees besides its own.
-const common = [_]f64{
-    0,         -0.0,      inf,                     -inf,         nan,    0x1p-1074,              -0x1p-1074,
-    0x1p-1022, 0x1p-1023, 0x1.fffffffffffffp-1023, 1,            -1,     0.5,                    -0.5,
-    2,         -2,        std.math.pi,             -std.math.pi, 1e-300, std.math.floatMax(f64), -std.math.floatMax(f64),
-};
-
 fn judge1(comptime f: fn (f64) f64, comptime ref: fn (f64) Q, hard: []const f64, comptime gen: fn (std.Random) f64, seed: u64) Worst {
     var w: Worst = .{};
     for (common) |x| w.see(ulpErr(f(x), ref(x)), x, 0);
@@ -402,64 +462,6 @@ fn judgeV(comptime f: fn (@Vector(4, f64)) @Vector(4, f64), comptime ref: fn (f6
     }
     return w;
 }
-
-/// exp's seams: the overflow and underflow thresholds, and the last
-/// argument whose result is normal.
-const exp_hard = [_]f64{
-    0x1.62e42fefa39efp9,  0x1.62e42fefa39f0p9,  -0x1.74910d52d3051p9, -0x1.74910d52d3052p9,
-    -0x1.6232bdd7abcd2p9, -0x1.6232bdd7abcd3p9, 709.7,                -708.4,
-    -745.0,               1e-17,                -1e-17,               0x1p-53,
-};
-const log_hard = [_]f64{
-    0x1.0000000000001p0,  0x1.fffffffffffffp-1, 0x1.0000000000002p0, 0x1.ffffffffffffep-1,
-    0x1.6a09e667f3bcdp-1, 0x1.6a09e667f3bccp-1, 0x1p-1060,           1e-310,
-    std.math.e,           10,                   0x1p1023,            1.0000001,
-};
-const expm1_hard = [_]f64{
-    0x1p-60, -0x1p-60, 0x1p-54, -0x1p-54, 0.3465,  -0.3465, 0.3466, -0.3466, 1.0397, -1.0397,
-    1.0398,  -1.0398,  0.25,    -0.25,    -0.2501, 38.8,    -38.8,  38.9,    709.78, 710,
-    -745,
-};
-const hyp_hard = [_]f64{ 0.625, -0.625, 0.6249999999999999, 22, -22, 710.4, 710.5, -710.5, 0x1p-28, 20, 40.5 };
-const trig_hard = [_]f64{
-    std.math.pi / 2.0, -std.math.pi / 2.0, std.math.pi / 4.0, 3.0 * std.math.pi / 2.0, 1e5, 1.6e6, 1e9, 1e22, 1e300, 0x1p-28,
-};
-const atan_hard = [_]f64{ 0.4375, 0.6875, 1.1875, 2.4375, 0x1p66, -0x1p66, 0x1p-27, 7.0 / 16.0, 39.0 / 16.0 };
-/// The musl branch seams (|x| = 2^-26, 2, 2^26; acosh's 2 and 2^26;
-/// atanh's 2^-32 and 0.5), and #60's values.
-const asinh_hard = [_]f64{ 0x1p-26, -0x1p-26, 0x1.fffffffffffffp-27, 2, -2, 0x1.fffffffffffffp0, 0x1p26, -0x1p26, 1e154, 1e155, -1e8, -1e3, 1e-10, 1e300 };
-const acosh_hard = [_]f64{ 0x1.0000000000001p0, 0x1.0000000000002p0, 1.0000000001, 0x1.fffffffffffffp0, 0x1p26, 0x1.fffffffffffffp25, 1e154, 1e300, 0.5, 0x1.fffffffffffffp-1 };
-const atanh_hard = [_]f64{ 0x1p-32, 0x1.fffffffffffffp-33, 0.5, 0x1.fffffffffffffp-2, -0.5, 0x1.fffffffffffffp-1, -0x1.fffffffffffffp-1, 1e-10, 0.9999999999 };
-const log10_hard = [_]f64{ 1e15, 1e-15, 10, 100, 1e22, 1e-300, 1e300, 0x1.6a09e667f3bcdp-1, 0x1.0000000000001p0, 0x1.fffffffffffffp-1, 0x1p-1060 };
-
-/// The bounds: each function's worst case on 2026-10-08 with this file's
-/// seeds, rounded up in the third decimal. `gm`'s own promise is "faithful
-/// (< 1 ulp)" for exp, log and pow; a change that moves a bound moves it here.
-const bound = struct {
-    const exp = 0.507; // 0.5062 at 163.57479821851769 (vector: 0.5052)
-    const log = 0.515; // 0.5142 at 1.0843856890111225, a vector lane (scalar: 0.5112)
-    const pow = 0.506; // 0.5059 at (-143136349.3604563, 21), scalar and powV
-    // On the host the rest are std.math's and compiler_rt's, which promise
-    // no bound; sinh, cosh and tanh are not faithful.
-    const expm1 = 0.810; // 0.8094 at 0.35354502149644396
-    const sinh = 1.739; // 1.7386 at 0.6943002823977769
-    const cosh = 1.200; // 1.1992 at -1.0407498633762968
-    const tanh = 2.030; // 2.0294 at 0.2498982405738699
-    const sin = 0.747; // 0.7463 at 7.080094367729739
-    const cos = 0.733; // 0.7327 at -3.863213591144243
-    const atan = 0.751; // 0.7507 at 2.680128387647313
-    // #60's rows (asinh, acosh, atanh, log10, atan2, tan: `gm`'s musl ports
-    // and sin/cos quotient; asin/acos: `std.math`, what a device calls),
-    // measured by this file on 2026-10-18 (ReleaseSafe, x86_64).
-    const asinh = 1.524; // 1.5239 at 0.51700870116405
-    const acosh = 2.016; // 2.0151 at 1.001887151218172
-    const atanh = 1.505; // 1.5049 at -0.12030145777284262
-    const log10 = 0.630; // 0.6297 at 1.374951715281116
-    const tan = 2.006; // 2.0055 at -145126.64517723466
-    const asin = 0.817; // 0.8162 at -0.5042767798999156
-    const acos = 0.864; // 0.8632 at -0.5232333655933563
-    const atan2 = 1.441; // 1.4405 at y = 0.06365036518777245
-};
 
 test "L3 ulp: gm.asinh, acosh, atanh, log10 and tan, and std's asin and acos (#60)" {
     var ok = judge1(asinh, asinhQ, &asinh_hard, genAsinh, 13).within("asinh", bound.asinh);

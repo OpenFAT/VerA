@@ -35,6 +35,24 @@ const plain_dyn =
     \\
 ;
 
+// A copy of src/zigbuild/tree.zig's `split_prologue`, `split_tail` and
+// `split_prelude`, which its `splitOutput` still reads: the pieces a
+// hand-tiled device is cut from.
+const split_prologue =
+    \\const contract = @import("contract");
+    \\pub const k2: f64 = 2.0;
+    \\
+;
+const split_tail =
+    \\pub fn eval(x: f64) callconv(.c) f64 {
+    \\    return unit_a(x) + unit_b(x);
+    \\}
+    \\
+;
+const split_prelude = "const dev = @import(\"../device.zig\");\nconst k2 = dev.k2;\n";
+
+// ---- private ----
+
 /// The path of a successful build, or the test fails with its report.
 fn expectOk(io: Io, r: Artifact) ![]u8 {
     return switch (r) {
@@ -59,22 +77,6 @@ fn standIns(arena: Allocator, tmp: std.testing.TmpDir, sub: []const u8, contract
         .{ .name = "dyn", .root = try std.fs.path.join(arena, &.{ dir, "dyn.zig" }) },
     };
 }
-
-// A copy of src/zigbuild/tree.zig's `split_prologue`, `split_tail` and
-// `split_prelude`, which its `splitOutput` still reads: the pieces a
-// hand-tiled device is cut from.
-const split_prologue =
-    \\const contract = @import("contract");
-    \\pub const k2: f64 = 2.0;
-    \\
-;
-const split_tail =
-    \\pub fn eval(x: f64) callconv(.c) f64 {
-    \\    return unit_a(x) + unit_b(x);
-    \\}
-    \\
-;
-const split_prelude = "const dev = @import(\"../device.zig\");\nconst k2 = dev.k2;\n";
 
 test "Backend.auto is self-hosted only for Debug on x86_64" {
     try std.testing.expectEqual(Backend.self_hosted, Backend.auto(.debug, .x86_64));

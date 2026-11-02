@@ -18,12 +18,50 @@
 //!   - the build command is wrong: argv derived by hand; src/zigbuild/exe.zig's tests.
 //! The emitted solver and gates execute only in the fixture suite (`zig
 //! build benchmark`), which builds and runs a testbench per fixture.
+//!
+//! Contents:
+//! - `pub fn expectAstGen(src: []const u8) !void`
 
 const std = @import("std");
 const tb = @import("exe");
 const Analysis = tb.Analysis;
 
 const testing = std.testing;
+
+/// A mixed-signal plan with every naming hazard `writeMixed` escapes: a
+/// quote and a backslash in the source, an `x`/`z` input, a three-word `reg`,
+/// a `Z` (the escape marker) in a name, an event and an inserted module.
+const sample_mixed: tb.Mixed = .{
+    .source = "module m(a); \"quoted\" \\ endmodule\n",
+    .top = "m",
+    .timescales = &.{.{ .at = 0, .value = .{ .unit = 1e-9, .precision = 1e-12 } }},
+    .inputs = &.{ "clk", "bus", "Zq" },
+    .xz = &.{"clk"},
+    .wide = &.{"bus"},
+    .words = &.{3},
+    .snaps = &.{"go"},
+    .events = &.{.{ .name = "go", .edge = .posedge, .param = "go__ev" }},
+    .inserts = &.{.{ .path = "m.i", .inst = "i", .port = "p", .module = "cm", .name = "cm0", .upper_port = "a", .lower_port = "d" }},
+};
+
+/// Asserts that `src` parses and passes AstGen: every check a testbench
+/// build makes before it resolves `device` and `contract` (unused or
+/// never-mutated locals, undeclared names, shadowing). Prints `src` on
+/// failure, since a generator chose it.
+pub fn expectAstGen(src: []const u8) !void {
+    const gpa = testing.allocator;
+    const z = try gpa.dupeSentinel(u8, src, 0);
+    defer gpa.free(z);
+    var tree = try std.zig.Ast.parse(gpa, z, .{ .mode = .zig });
+    defer tree.deinit(gpa);
+    var zir = try std.zig.AstGen.generate(gpa, tree);
+    defer zir.deinit(gpa);
+    if (tree.errors.len == 0 and !zir.hasCompileErrors()) return;
+    std.debug.print("{s}\n", .{src});
+    return error.TestUnexpectedResult;
+}
+
+// ---- private ----
 
 /// `Spec.parse` with no diagnostics.
 fn parse(arena: std.mem.Allocator, src: []const u8) tb.ParseError!tb.Spec {
@@ -71,38 +109,15 @@ fn expand(arena: std.mem.Allocator, bench: tb.Bench) ![]const []const f64 {
     return rows;
 }
 
-/// Asserts that `src` parses and passes AstGen: every check a testbench
-/// build makes before it resolves `device` and `contract` (unused or
-/// never-mutated locals, undeclared names, shadowing). Prints `src` on
-/// failure, since a generator chose it.
-pub fn expectAstGen(src: []const u8) !void {
-    const gpa = testing.allocator;
-    const z = try gpa.dupeSentinel(u8, src, 0);
-    defer gpa.free(z);
-    var tree = try std.zig.Ast.parse(gpa, z, .{ .mode = .zig });
-    defer tree.deinit(gpa);
-    var zir = try std.zig.AstGen.generate(gpa, tree);
-    defer zir.deinit(gpa);
-    if (tree.errors.len == 0 and !zir.hasCompileErrors()) return;
-    std.debug.print("{s}\n", .{src});
-    return error.TestUnexpectedResult;
+/// `parse` then `writeRunner` and `writeVpiLib`, in an arena over `gpa`.
+fn parseRender(gpa: std.mem.Allocator, src: []const u8) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const d = try parse(arena, src);
+    _ = try runner(arena, "oom", d);
+    _ = try vpiLib(arena, "oom", d);
 }
-
-/// A mixed-signal plan with every naming hazard `writeMixed` escapes: a
-/// quote and a backslash in the source, an `x`/`z` input, a three-word `reg`,
-/// a `Z` (the escape marker) in a name, an event and an inserted module.
-const sample_mixed: tb.Mixed = .{
-    .source = "module m(a); \"quoted\" \\ endmodule\n",
-    .top = "m",
-    .timescales = &.{.{ .at = 0, .value = .{ .unit = 1e-9, .precision = 1e-12 } }},
-    .inputs = &.{ "clk", "bus", "Zq" },
-    .xz = &.{"clk"},
-    .wide = &.{"bus"},
-    .words = &.{3},
-    .snaps = &.{"go"},
-    .events = &.{.{ .name = "go", .edge = .posedge, .param = "go__ev" }},
-    .inserts = &.{.{ .path = "m.i", .inst = "i", .port = "p", .module = "cm", .name = "cm0", .upper_port = "a", .lower_port = "d" }},
-};
 
 test "directives: defaults when the source has none" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
@@ -969,16 +984,6 @@ test "the operand forms of meta, acstim and acdyn refuse what they cannot read" 
         "//! noise hum(a,b)#0\n", // not a generator kind
         "//! noise thermal(a,b)#0 points=\n", // an empty knot list
     }) |line| try testing.expectError(error.BadSyntax, parse(arena, line));
-}
-
-/// `parse` then `writeRunner` and `writeVpiLib`, in an arena over `gpa`.
-fn parseRender(gpa: std.mem.Allocator, src: []const u8) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const d = try parse(arena, src);
-    _ = try runner(arena, "oom", d);
-    _ = try vpiLib(arena, "oom", d);
 }
 
 test "parse and render report OutOfMemory at every allocation" {

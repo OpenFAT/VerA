@@ -41,6 +41,19 @@ const registry = [_]struct { name: []const u8, fields: []const []const u8 }{
     .{ .name = "token.Tag", .fields = @typeInfo(@import("frontend").token.Tag).@"enum".field_names },
 };
 
+/// Spellings that reach an OS, or a C ABI's varargs, past `std`'s portable
+/// layer. Matched as text, so a `\\` line of emitted device code counts too.
+const os_apis = [_][]const u8{
+    "std.posix", "std.os.",   "std.c.",  "@cImport", "std.DynLib",
+    "@cVaStart", "@cVaArg",   "@cVaEnd", "@cVaCopy", "std.lang.VaList",
+    ".os.tag",   "extern \"", "\"/tmp",  "\"/dev/",
+};
+
+/// The files that may name one: each says why in its header.
+const os_allowed = [_][]const u8{"src/dynlib.zig"};
+
+// ---- private ----
+
 fn has(fields: []const []const u8, s: []const u8) bool {
     for (fields) |f| if (std.mem.eql(u8, f, s)) return true;
     return false;
@@ -110,6 +123,29 @@ fn scan(arena: std.mem.Allocator, path: []const u8, src: [:0]const u8) !usize {
     return n_found;
 }
 
+/// Counts every line of `src` naming an `os_apis` entry without `// os:`,
+/// comment lines aside, printing each when `report`.
+fn scanOs(path: []const u8, src: []const u8, report: bool) usize {
+    var n: usize = 0;
+    var lines = std.mem.splitScalar(u8, src, '\n');
+    var line_no: usize = 0;
+    while (lines.next()) |line| {
+        line_no += 1;
+        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "//")) continue;
+        if (std.mem.find(u8, line, "// os:") != null) continue;
+        for (os_apis) |api| if (std.mem.find(u8, line, api) != null) {
+            if (report) std.debug.print(
+                "{s}:{d}: `{s}` is an OS API\n    fix: use the portable `std` API, move it to {s}, " ++
+                    "or put `// os: <why every target still builds>` on the line\n",
+                .{ path, line_no, api, os_allowed[0] },
+            );
+            n += 1;
+            break;
+        };
+    }
+    return n;
+}
+
 test "every `else` over a boundary enum is written out or annotated" {
     var arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena_state.deinit();
@@ -138,40 +174,6 @@ test "every `else` over a boundary enum is written out or annotated" {
         std.debug.print("exhaustive guard: {d} unannotated `else =>`\n", .{found});
         return error.ExhaustiveGuard;
     }
-}
-
-/// Spellings that reach an OS, or a C ABI's varargs, past `std`'s portable
-/// layer. Matched as text, so a `\\` line of emitted device code counts too.
-const os_apis = [_][]const u8{
-    "std.posix", "std.os.",   "std.c.",  "@cImport", "std.DynLib",
-    "@cVaStart", "@cVaArg",   "@cVaEnd", "@cVaCopy", "std.lang.VaList",
-    ".os.tag",   "extern \"", "\"/tmp",  "\"/dev/",
-};
-
-/// The files that may name one: each says why in its header.
-const os_allowed = [_][]const u8{"src/dynlib.zig"};
-
-/// Counts every line of `src` naming an `os_apis` entry without `// os:`,
-/// comment lines aside, printing each when `report`.
-fn scanOs(path: []const u8, src: []const u8, report: bool) usize {
-    var n: usize = 0;
-    var lines = std.mem.splitScalar(u8, src, '\n');
-    var line_no: usize = 0;
-    while (lines.next()) |line| {
-        line_no += 1;
-        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "//")) continue;
-        if (std.mem.find(u8, line, "// os:") != null) continue;
-        for (os_apis) |api| if (std.mem.find(u8, line, api) != null) {
-            if (report) std.debug.print(
-                "{s}:{d}: `{s}` is an OS API\n    fix: use the portable `std` API, move it to {s}, " ++
-                    "or put `// os: <why every target still builds>` on the line\n",
-                .{ path, line_no, api, os_allowed[0] },
-            );
-            n += 1;
-            break;
-        };
-    }
-    return n;
 }
 
 test "no OS API outside the allowlisted module" {

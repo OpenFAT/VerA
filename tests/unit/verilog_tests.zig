@@ -24,6 +24,8 @@ const emit = verilog.emit;
 const four = [_][]const u8{ "a", "y", "vdd", "vss" };
 const logic: Options = .{ .digital = &.{ "a", "y" }, .source = "buf.va" };
 
+// ---- private ----
+
 // Test support. // Each model is a hand-built MIR (`Fixture`), so the test states the residual
 // it hands `emit`. The expected values follow from `settle.zig`'s formulas:
 // F = -S(0)·VDD/(S(VDD)-S(0)), tau = ΔQ/ΔS, delay = tau·ln2 + td.

@@ -1,3 +1,10 @@
+//! Every `contract.<name>` the backend emits must be a decl contract.zig
+//! has: a generated device's source text -> the names it references, each
+//! looked up in `contract`. Codegen writes the reference as text into a device
+//! it never compiles, and the engine never links contract.zig, so a renamed
+//! decl would otherwise surface as a compile error inside a generated device
+//! on the host's side. Oracle: contract.zig's own declarations.
+
 const std = @import("std");
 const vera = @import("vera");
 const contract = @import("contract");
@@ -23,6 +30,8 @@ const wide_device =
     \\  end
     \\endmodule
 ;
+
+// ---- private ----
 
 /// Whether `contract` declares `name`, read from the module itself so there is
 /// no third list to keep in step.

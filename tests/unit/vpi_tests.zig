@@ -96,6 +96,7 @@ const vpi_release_handle = trust.vpi_release_handle;
 const vpi_scan = iterate.vpi_scan;
 
 const vera = @import("vera");
+const Time = abi.Time;
 
 /// A three-deep design with something of every answered class at every level.
 const nested_src =
@@ -123,12 +124,103 @@ const nested_src =
     \\  analog I(x,y) <+ r*V(x,y);
     \\endmodule
 ;
+var startup_calls: usize = 0;
+var probe_starting = false;
+var probe_get: c_int = 0;
+var probe_refused = false;
+var probe_timed: vpiHandle = null;
+var probe_compile: vpiHandle = null;
+
+// ---- private ----
 
 fn openSource(src: []const u8) !vera.Result {
     var res = try vera.analyze(std.testing.allocator, src, .{}, null);
     errdefer res.deinit(std.testing.allocator);
     try open(std.testing.allocator, &res);
     return res;
+}
+
+fn countStartupCall() callconv(.c) void {
+    startup_calls += 1;
+}
+
+/// The `Scope` whose §6.7 path is `path`, or a test failure.
+fn scopeAt(path: []const u8) !*const Scope {
+    for (session.design.?.scopes) |*s| if (std.mem.eql(u8, s.path, path)) return s;
+    std.debug.print("no scope at `{s}`\n", .{path});
+    return error.TestExpectedEqual;
+}
+
+fn noteNothing(_: *abi.CbData) callconv(.c) c_int {
+    return 0;
+}
+
+fn probeStartup() callconv(.c) void {
+    probe_starting = session.starting;
+    probe_get = vpi_get(vpiType, null);
+    var info: ErrorInfo = undefined;
+    _ = vpi_chk_error(&info);
+    probe_refused = info.code != null and std.mem.eql(u8, std.mem.span(info.code), "STARTUP");
+    var t: abi.Time = .{ .type = user.vpiSimTime, .high = 0, .low = 1, .real = 0 };
+    const timed: abi.CbData = .{ .reason = user.cbAfterDelay, .cb_rtn = noteNothing, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };
+    probe_timed = callback.vpi_register_cb(&timed);
+    const compiled: abi.CbData = .{ .reason = user.cbEndOfCompile, .cb_rtn = noteNothing, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
+    probe_compile = callback.vpi_register_cb(&compiled);
+}
+
+/// The message of the error the previous call recorded; "" for none.
+fn lastMessage() []const u8 {
+    var info: ErrorInfo = undefined;
+    if (vpi_chk_error(&info) == 0) return "";
+    return std.mem.span(info.message);
+}
+
+/// The port of instance `inst` named `name`, or null.
+fn portNamed(inst: vpiHandle, name: []const u8) vpiHandle {
+    const itr = vpi_iterate(vpiPort, inst);
+    var found: vpiHandle = null;
+    while (vpi_scan(itr)) |p| {
+        if (found == null and std.mem.eql(u8, std.mem.span(vpi_get_str(vpiName, p)), name)) found = p;
+    }
+    return found;
+}
+
+fn noCb(_: *abi.CbData) callconv(.c) c_int {
+    return 0;
+}
+
+/// True for a decl name spelled as a vpi_user.h constant: `vpi*`, `cb*` or
+/// VerA's `acb*`, with no underscore (that is `vpi_get` and the routines).
+fn isHeaderSpelling(comptime name: []const u8) bool {
+    const prefixed = std.mem.startsWith(u8, name, "vpi") or std.mem.startsWith(u8, name, "cb") or
+        std.mem.startsWith(u8, name, "acb");
+    return prefixed and std.mem.findScalar(u8, name, '_') == null;
+}
+
+fn scaled(v: f64) Time {
+    return .{ .type = user.vpiScaledRealTime, .high = 0, .low = 0, .real = v };
+}
+
+fn ticks(n: u32) Time {
+    return .{ .type = user.vpiSimTime, .high = 0, .low = n, .real = 0 };
+}
+
+fn delayOf(da: []Time, n: c_int, time_type: c_int) abi.Delay {
+    return .{ .da = da.ptr, .no_of_delays = n, .time_type = time_type, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
+}
+
+/// The `n`th object (from 0) `vpi_iterate(tag, scope)` yields.
+fn nth(tag: c_int, scope: abi.vpiHandle, n: usize) ?*anyopaque {
+    const itr = iterate.vpi_iterate(tag, scope);
+    defer _ = trust.vpi_free_object(itr);
+    for (0..n) |_| _ = iterate.vpi_scan(itr);
+    return iterate.vpi_scan(itr);
+}
+
+/// The `vpiFullName` of `obj`'s `rel` (vpiLowConn, vpiHighConn), or "".
+fn connName(rel: c_int, obj: ?*anyopaque) []const u8 {
+    const h = handle.vpi_handle(rel, @ptrCast(obj)) orelse return "";
+    return std.mem.span(property.vpi_get_str(user.vpiFullName, h));
 }
 
 test "the scope tree is the instance tree, with definition names" {
@@ -501,12 +593,6 @@ test "handles survive the compilation they were built from" {
     ));
 }
 
-var startup_calls: usize = 0;
-
-fn countStartupCall() callconv(.c) void {
-    startup_calls += 1;
-}
-
 test "§12.33.2 runs every entry of the table, in order, and stops at the 0" {
     startup_calls = 0;
     // A null table is a no-op: an application that registers nothing at startup
@@ -532,13 +618,6 @@ test "no design open is an error on every routine" {
 }
 
 // ---- the scope tree is elaboration's, read and not re-derived --------------
-
-/// The `Scope` whose §6.7 path is `path`, or a test failure.
-fn scopeAt(path: []const u8) !*const Scope {
-    for (session.design.?.scopes) |*s| if (std.mem.eql(u8, s.path, path)) return s;
-    std.debug.print("no scope at `{s}`\n", .{path});
-    return error.TestExpectedEqual;
-}
 
 test "an instance array is one scope per element (§6.2.2, §6.7)" {
     // §6.2.2 `name_of_module_instance ::= module_instance_identifier [ range ]`,
@@ -1007,29 +1086,6 @@ test "§12.2: a message past the 512-byte buffer is cut short and still terminat
     try std.testing.expectEqual(vpiError, vpi_chk_error(null));
 }
 
-var probe_starting = false;
-var probe_get: c_int = 0;
-var probe_refused = false;
-var probe_timed: vpiHandle = null;
-var probe_compile: vpiHandle = null;
-
-fn noteNothing(_: *abi.CbData) callconv(.c) c_int {
-    return 0;
-}
-
-fn probeStartup() callconv(.c) void {
-    probe_starting = session.starting;
-    probe_get = vpi_get(vpiType, null);
-    var info: ErrorInfo = undefined;
-    _ = vpi_chk_error(&info);
-    probe_refused = info.code != null and std.mem.eql(u8, std.mem.span(info.code), "STARTUP");
-    var t: abi.Time = .{ .type = user.vpiSimTime, .high = 0, .low = 1, .real = 0 };
-    const timed: abi.CbData = .{ .reason = user.cbAfterDelay, .cb_rtn = noteNothing, .obj = null, .time = &t, .value = null, .index = 0, .user_data = null };
-    probe_timed = callback.vpi_register_cb(&timed);
-    const compiled: abi.CbData = .{ .reason = user.cbEndOfCompile, .cb_rtn = noteNothing, .obj = null, .time = null, .value = null, .index = 0, .user_data = null };
-    probe_compile = callback.vpi_register_cb(&compiled);
-}
-
 test "IEEE 1364-2005 §26.2.4: during startup only the registrations answer" {
     close();
     defer close();
@@ -1203,23 +1259,6 @@ test "§12.30/IEEE 1364 §19.8: a scaled time is in the unit of the object's own
     try std.testing.expectEqual(@as(?u64, 2000), run.ticksOf(two, a));
 }
 
-/// The message of the error the previous call recorded; "" for none.
-fn lastMessage() []const u8 {
-    var info: ErrorInfo = undefined;
-    if (vpi_chk_error(&info) == 0) return "";
-    return std.mem.span(info.message);
-}
-
-/// The port of instance `inst` named `name`, or null.
-fn portNamed(inst: vpiHandle, name: []const u8) vpiHandle {
-    const itr = vpi_iterate(vpiPort, inst);
-    var found: vpiHandle = null;
-    while (vpi_scan(itr)) |p| {
-        if (found == null and std.mem.eql(u8, std.mem.span(vpi_get_str(vpiName, p)), name)) found = p;
-    }
-    return found;
-}
-
 test "IEEE 1364-2005 §1.7 Annex G: a name VerA does not answer is refused by that name" {
     var h: run.Harness = undefined;
     try h.init(
@@ -1249,10 +1288,6 @@ test "IEEE 1364-2005 §1.7 Annex G: a name VerA does not answer is refused by th
     try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
     try std.testing.expect(vpi_iterate(user.vpiTask, m) == null);
     try std.testing.expectEqual(@as(c_int, 0), vpi_chk_error(null));
-}
-
-fn noCb(_: *abi.CbData) callconv(.c) c_int {
-    return 0;
 }
 
 test "§12.22: vpi_handle_multi(vpiInterModPath) is one path per port pair, holding its delays" {
@@ -1329,14 +1364,6 @@ test "§12.22: vpi_handle_multi(vpiInterModPath) is one path per port pair, hold
     try std.testing.expectEqual(vpiError, vpi_chk_error(null));
 }
 
-/// True for a decl name spelled as a vpi_user.h constant: `vpi*`, `cb*` or
-/// VerA's `acb*`, with no underscore (that is `vpi_get` and the routines).
-fn isHeaderSpelling(comptime name: []const u8) bool {
-    const prefixed = std.mem.startsWith(u8, name, "vpi") or std.mem.startsWith(u8, name, "cb") or
-        std.mem.startsWith(u8, name, "acb");
-    return prefixed and std.mem.findScalar(u8, name, '_') == null;
-}
-
 test "every vpi_user.h constant the Zig side spells has the header's value" {
     // The header's integer macros: `#define NAME <int>`, decimal or `0x` hex,
     // signed, at most one pair of parentheses. Aliases (`vpiSysFuncInt`),
@@ -1405,20 +1432,6 @@ test "every vpi_user.h constant the Zig side spells has the header's value" {
 // digital designs run through `run.Harness`.
 // ---------------------------------------------------------------------------
 
-const Time = abi.Time;
-
-fn scaled(v: f64) Time {
-    return .{ .type = user.vpiScaledRealTime, .high = 0, .low = 0, .real = v };
-}
-
-fn ticks(n: u32) Time {
-    return .{ .type = user.vpiSimTime, .high = 0, .low = n, .real = 0 };
-}
-
-fn delayOf(da: []Time, n: c_int, time_type: c_int) abi.Delay {
-    return .{ .da = da.ptr, .no_of_delays = n, .time_type = time_type, .mtm_flag = 0, .append_flag = 0, .pulsere_flag = 0 };
-}
-
 test "§12.2: a message past Figure 12-1's buffer is truncated and still NUL-terminated" {
     session.close();
     const long: [600]u8 = @splat('x');
@@ -1454,14 +1467,6 @@ test "§12.29: a delay put in ticks reads back in the module's time unit" {
     delays.vpi_get_delays(g, &dl);
     try std.testing.expectEqual(@as(c_int, 0), status.vpi_chk_error(null));
     for (da, [_]f64{ 2, 3, 2 }) |t, want| try std.testing.expectEqual(want, t.real);
-}
-
-/// The `n`th object (from 0) `vpi_iterate(tag, scope)` yields.
-fn nth(tag: c_int, scope: abi.vpiHandle, n: usize) ?*anyopaque {
-    const itr = iterate.vpi_iterate(tag, scope);
-    defer _ = trust.vpi_free_object(itr);
-    for (0..n) |_| _ = iterate.vpi_scan(itr);
-    return iterate.vpi_scan(itr);
 }
 
 test "§12.29: a delay that is NaN, infinite or negative is refused, and the held one stays" {
@@ -1632,12 +1637,6 @@ test "§12.18 runMixed refuses a transient whose grid has no integer step count,
         .{ .kind = .tran, .start = 0, .stop = std.math.nan(f64) },
         .{ .kind = .tran, .start = -1, .stop = 1 },
     }) |a| try std.testing.expectError(error.BadAnalysis, b.runMixed(a, undefined, 1e-9, &.{}, &.{}));
-}
-
-/// The `vpiFullName` of `obj`'s `rel` (vpiLowConn, vpiHighConn), or "".
-fn connName(rel: c_int, obj: ?*anyopaque) []const u8 {
-    const h = handle.vpi_handle(rel, @ptrCast(obj)) orelse return "";
-    return std.mem.span(property.vpi_get_str(user.vpiFullName, h));
 }
 
 test "§26.6.5 a digital port's vpiLowConn is its module's net of that name, its vpiHighConn the parent's connected net" {
